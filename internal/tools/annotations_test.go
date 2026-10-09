@@ -44,7 +44,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one O_EXCL create of gitignored .sdlc-v2/preplan/<slug>.md (slug from branch.Slug, checked before the join) for preplan_context",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -488,6 +488,14 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				}
 				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget", "proposal.md")); err != nil {
 					t.Fatalf("openspec_stage did not write the staging dir: %v", err)
+				}
+				// preplan_context really writes the topic file: check the
+				// write stays untracked.
+				if _, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"}); err != nil {
+					t.Fatalf("preplan_context: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")); err != nil {
+					t.Fatalf("preplan_context did not write the topic file: %v", err)
 				}
 			case "verify_pipeline_classify":
 				_ = ClassifyLogs("error: build failed")

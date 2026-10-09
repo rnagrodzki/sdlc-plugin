@@ -463,6 +463,59 @@ func TestDashboardJoin_PlanStation(t *testing.T) {
 		}
 	})
 
+	t.Run("stored rounds join the explorers", func(t *testing.T) {
+		root := dashRoot(t)
+		data := dashJoinShipData()
+		data["planExploreSummary"] = entries
+		data["planReviewRounds"] = []any{
+			map[string]any{
+				"round": 1, "mergedStatus": planStatusIssuesFound, "found": 3, "fixed": 2,
+				"lenses": []any{map[string]any{"name": "structure", "verdict": planStatusIssuesFound}},
+			},
+			map[string]any{"round": 2, "mergedStatus": planStatusApproved, "found": 0, "fixed": 0, "lenses": []any{}},
+		}
+		dashWriteState(t, root, dashJoinShipFile, data, dashJoinFresh)
+
+		ship := dashOne(t, root)
+		if ship.Steps[0].Name != "plan" {
+			t.Fatalf("steps = %+v, want a first plan step", ship.Steps)
+		}
+		want := &DashboardStepDetail{
+			Kind:      dashboardKindExplorers,
+			Explorers: dashboardExplorers(entries),
+			Rounds: []DashboardRound{
+				{N: 1, Status: planStatusIssuesFound, Found: 3, Fixed: 2, Lenses: []DashboardLens{{Name: "structure", Verdict: planStatusIssuesFound}}},
+				{N: 2, Status: planStatusApproved, Lenses: []DashboardLens{}},
+			},
+			MaxRounds: maxReviewRounds,
+		}
+		if !reflect.DeepEqual(ship.Steps[0].Detail, want) {
+			t.Errorf("plan detail = %+v, want %+v", ship.Steps[0].Detail, want)
+		}
+	})
+
+	t.Run("empty or undecodable rounds show explorers only", func(t *testing.T) {
+		cases := map[string]any{
+			"empty list": []any{},
+			"not a list": "round 1",
+		}
+		for name, rounds := range cases {
+			t.Run(name, func(t *testing.T) {
+				root := dashRoot(t)
+				data := dashJoinShipData()
+				data["planExploreSummary"] = entries
+				data["planReviewRounds"] = rounds
+				dashWriteState(t, root, dashJoinShipFile, data, dashJoinFresh)
+
+				ship := dashOne(t, root)
+				want := &DashboardStepDetail{Kind: dashboardKindExplorers, Explorers: dashboardExplorers(entries)}
+				if !reflect.DeepEqual(ship.Steps[0].Detail, want) {
+					t.Errorf("plan detail = %+v, want %+v", ship.Steps[0].Detail, want)
+				}
+			})
+		}
+	})
+
 	t.Run("no key gives no station", func(t *testing.T) {
 		root := dashRoot(t)
 		dashWriteState(t, root, dashJoinShipFile, dashJoinShipData(), dashJoinFresh)

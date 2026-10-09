@@ -2380,6 +2380,11 @@ const (
 // explorer summary copied at cleanup.
 const shipPlanExploreSummaryKey = "planExploreSummary"
 
+// shipPlanReviewRoundsKey is the ship state data key that holds the plan
+// review rounds copied at cleanup. The rows have the shape of the plan state
+// "reviewRounds" list.
+const shipPlanReviewRoundsKey = "planReviewRounds"
+
 // shipDeleteReportedPlanRun deletes the plan run linked to this ship run —
 // its plan-<slug>-<ts>.json state file and its .evidence directory — once
 // the ship report for this ship run is on disk. The link is the one the
@@ -2390,12 +2395,14 @@ const shipPlanExploreSummaryKey = "planExploreSummary"
 // action derives it.
 //
 // Before the delete, it copies the plan explorer summary into ship.Data
-// under "planExploreSummary" and writes the ship state. The write comes
-// before the evidence delete, because the delete loses the explorer data. If
-// the summary read or the ship state write fails, nothing is deleted and the
-// reason starts with shipPlanRunReasonSummaryFailed, so a retry finds the
-// plan run again. A retry after a failed delete reads an empty summary. It
-// then keeps a stored non-empty list.
+// under "planExploreSummary" and writes the ship state. It also copies the
+// plan review rounds under "planReviewRounds" when the plan run has any. The
+// write comes before the evidence delete, because the delete loses the
+// explorer data. If the summary read or the ship state write fails, nothing
+// is deleted and the reason starts with shipPlanRunReasonSummaryFailed, so a
+// retry finds the plan run again. A retry after a failed delete reads an
+// empty summary. It then keeps a stored non-empty list. A plan run with no
+// rounds leaves a stored list of rounds as it is.
 //
 // It fails safe: any lookup error, a missing startedAt, or a stat error
 // other than not-exist deletes nothing. It never returns an error, so the
@@ -2424,6 +2431,9 @@ func shipDeleteReportedPlanRun(root, branch string, ship *state.State) ShipPlanR
 	// A retry after the evidence delete reads []. Keep a stored non-empty list.
 	if prev, _ := ship.Data[shipPlanExploreSummaryKey].([]any); len(summary) > 0 || len(prev) == 0 {
 		ship.Data[shipPlanExploreSummaryKey] = summary
+	}
+	if rounds, ok := planRun.Data["reviewRounds"].([]any); ok && len(rounds) > 0 {
+		ship.Data[shipPlanReviewRoundsKey] = rounds
 	}
 	if err := shipStateWriteFunc(ship); err != nil {
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonSummaryFailed + err.Error() + shipPlanRunSummaryRetryHint}

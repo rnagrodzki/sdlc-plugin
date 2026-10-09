@@ -2222,3 +2222,447 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// preplan_context
+// ---------------------------------------------------------------------------
+
+// preplanSkeletonFor returns the exact text of a new topic file for topic.
+func preplanSkeletonFor(topic string) string {
+	return "# Preplan: " + topic + "\n" +
+		"\n" +
+		"**Status:** in progress\n" +
+		"\n" +
+		"## Goal\n" +
+		"\n" +
+		"## Users and effect\n" +
+		"\n" +
+		"## Flows\n" +
+		"\n" +
+		"## Decisions\n" +
+		"\n" +
+		"| # | Decision | Reason |\n" +
+		"|---|---|---|\n" +
+		"\n" +
+		"## Open questions\n" +
+		"\n" +
+		"## Guardrail check\n" +
+		"\n" +
+		"| Proposal | Guardrail | Severity | Result |\n" +
+		"|---|---|---|---|\n"
+}
+
+// dataDirEntries lists the names directly under root/.sdlc-v2.
+func dataDirEntries(t *testing.T, root string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, ".sdlc-v2"))
+	if err != nil {
+		t.Fatalf("read data dir: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// TestPlanSupportPreplanContext verifies preplan_context returns the same
+// guardrails as plan_prepare, creates the topic file once with the skeleton,
+// never changes an existing file, and starts no plan run.
+func TestPlanSupportPreplanContext(t *testing.T) {
+	const guardrailsToml = "" +
+		"[plan.guardrails.no-secrets]\n" +
+		"description = \"Never commit secrets\"\n" +
+		"\n" +
+		"[plan.guardrails.test-coverage]\n" +
+		"description = \"Cover new branches\"\n"
+
+	t.Run("creates the topic file and returns the plan_prepare guardrails", func(t *testing.T) {
+		root := newOpenspecStageFixture(t, guardrailsToml)
+		before := dataDirEntries(t, root)
+
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		wantFile := filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")
+		if out.PreplanFile != wantFile {
+			t.Errorf("PreplanFile = %q, want %q", out.PreplanFile, wantFile)
+		}
+		if !out.PreplanCreated {
+			t.Error("PreplanCreated = false, want true for an absent file")
+		}
+		got, err := os.ReadFile(wantFile)
+		if err != nil {
+			t.Fatalf("read topic file: %v", err)
+		}
+		if string(got) != preplanSkeletonFor("auth flow") {
+			t.Errorf("topic file =\n%s\nwant the skeleton:\n%s", got, preplanSkeletonFor("auth flow"))
+		}
+		if want := "2 guardrail(s) loaded. Created topic file auth-flow.md."; out.Summary != want {
+			t.Errorf("Summary = %q, want %q", out.Summary, want)
+		}
+		if want := "Read preplanFile, then ask the first question."; out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+
+		// No run, no state write: only the preplan dir is new.
+		after := dataDirEntries(t, root)
+		var added []string
+		seen := map[string]bool{}
+		for _, n := range before {
+			seen[n] = true
+		}
+		for _, n := range after {
+			if !seen[n] {
+				added = append(added, n)
+			}
+		}
+		if !reflect.DeepEqual(added, []string{"preplan"}) {
+			t.Errorf("new entries under .sdlc-v2 = %v, want [preplan]", added)
+		}
+		if s := gitStatusPorcelain(t, root); s != "" {
+			t.Errorf("topic file shows in git status:\n%s", s)
+		}
+
+		prep, err := runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatalf("plan_prepare: %v", err)
+		}
+		if len(out.Guardrails) != 2 || !reflect.DeepEqual(out.Guardrails, prep.Guardrails) {
+			t.Errorf("Guardrails = %+v, want plan_prepare's %+v (2 entries)", out.Guardrails, prep.Guardrails)
+		}
+	})
+
+	t.Run("an existing file stays unchanged", func(t *testing.T) {
+		root := newOpenspecStageFixture(t, guardrailsToml)
+		file := filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")
+		const custom = "# Preplan: auth flow\n\nMy own notes.\n"
+		writeFile(t, file, custom)
+
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		if out.PreplanCreated {
+			t.Error("PreplanCreated = true, want false for an existing file")
+		}
+		if out.PreplanFile != file {
+			t.Errorf("PreplanFile = %q, want %q", out.PreplanFile, file)
+		}
+		if got, _ := os.ReadFile(file); string(got) != custom {
+			t.Errorf("topic file = %q, want it unchanged (%q)", got, custom)
+		}
+		if want := "2 guardrail(s) loaded. Topic file auth-flow.md exists."; out.Summary != want {
+			t.Errorf("Summary = %q, want %q", out.Summary, want)
+		}
+		if want := "Read preplanFile, then continue with its open questions."; out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+	})
+
+	t.Run("topics with the same slug share one file", func(t *testing.T) {
+		root := newOpenspecStageFixture(t, "")
+		first, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "  Auth Flow  "})
+		if err != nil {
+			t.Fatalf("first call: %v", err)
+		}
+		if !first.PreplanCreated {
+			t.Error("first PreplanCreated = false, want true")
+		}
+		if got, _ := os.ReadFile(first.PreplanFile); string(got) != preplanSkeletonFor("Auth Flow") {
+			t.Errorf("topic file = %q, want the skeleton with the trimmed topic", got)
+		}
+		second, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth-flow"})
+		if err != nil {
+			t.Fatalf("second call: %v", err)
+		}
+		if second.PreplanCreated || second.PreplanFile != first.PreplanFile {
+			t.Errorf("second = {created %v, file %q}, want {false, %q}", second.PreplanCreated, second.PreplanFile, first.PreplanFile)
+		}
+	})
+
+	t.Run("a path-like topic stays inside the preplan dir", func(t *testing.T) {
+		root := newOpenspecStageFixture(t, "")
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "../../etc/passwd"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		if want := filepath.Join(root, ".sdlc-v2", "preplan", "etc-passwd.md"); out.PreplanFile != want {
+			t.Errorf("PreplanFile = %q, want %q", out.PreplanFile, want)
+		}
+	})
+
+	t.Run("a topic of 50 characters is accepted", func(t *testing.T) {
+		root := newOpenspecStageFixture(t, "")
+		topic := strings.Repeat("a", 50)
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: topic})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		if want := filepath.Join(root, ".sdlc-v2", "preplan", topic+".md"); out.PreplanFile != want {
+			t.Errorf("PreplanFile = %q, want %q", out.PreplanFile, want)
+		}
+	})
+
+	t.Run("no config returns an empty non-nil list", func(t *testing.T) {
+		root := t.TempDir()
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		if out.Guardrails == nil || len(out.Guardrails) != 0 {
+			t.Errorf("Guardrails = %#v, want empty non-nil slice", out.Guardrails)
+		}
+		if want := "0 guardrail(s) loaded — none configured. Created topic file auth-flow.md."; out.Summary != want {
+			t.Errorf("Summary = %q, want %q", out.Summary, want)
+		}
+		if want := "Read preplanFile, then ask the first question."; out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+		raw, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		var asMap map[string]any
+		if err := json.Unmarshal(raw, &asMap); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if _, has := asMap["guardrails"]; has {
+			t.Errorf("JSON keeps an empty guardrails field: %s", raw)
+		}
+		if v, has := asMap["preplanCreated"]; !has || v != true {
+			t.Errorf("JSON preplanCreated = %v (present %v), want true", v, has)
+		}
+	})
+
+	t.Run("malformed config returns an empty list and the warning", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, ".sdlc-v2", "config.toml"), "[plan\nguardrails = [\n")
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		if out.Guardrails == nil || len(out.Guardrails) != 0 {
+			t.Errorf("Guardrails = %#v, want empty non-nil slice", out.Guardrails)
+		}
+		if !strings.HasPrefix(out.Summary, "0 guardrail(s) loaded. Warning: Failed to read plan config: ") ||
+			!strings.HasSuffix(out.Summary, ". Created topic file auth-flow.md.") {
+			t.Errorf("Summary = %q, want the read warning between the count and the file state", out.Summary)
+		}
+		if want := "Read preplanFile, then ask the first question. Record the warning in the Guardrail check section."; out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+	})
+
+	t.Run("served over MCP", func(t *testing.T) {
+		root := newOpenspecStageFixture(t, guardrailsToml)
+		text := evidenceRender(t, root, map[string]any{"action": "preplan_context", "topic": "auth flow"})
+		if !strings.Contains(text, "auth-flow.md") {
+			t.Errorf("rendered result lacks the topic file name:\n%s", text)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")); err != nil {
+			t.Errorf("topic file missing after the MCP call: %v", err)
+		}
+	})
+}
+
+// TestPlanSupportPreplanContextErrors maps every bad topic to its DomainError
+// and Suggestion with nothing written, and a failed create to its InfraError.
+func TestPlanSupportPreplanContextErrors(t *testing.T) {
+	const (
+		wordsSuggestion = "Pass a short topic name with letters or digits, for example \"auth flow\"."
+		asciiSuggestion = "Pass a topic name with ASCII letters or digits, for example \"auth flow\"."
+		longSuggestion  = "Pass a shorter topic name. Put the detail in the first answer."
+		lineSuggestion  = "Pass the topic name on one line."
+	)
+	for _, tc := range []struct {
+		name           string
+		topic          string
+		wantMsg        string
+		wantSuggestion string
+	}{
+		{"empty", "", `preplan_context: topic "" has no letter or digit`, wordsSuggestion},
+		{"blank", " \t ", `preplan_context: topic "" has no letter or digit`, wordsSuggestion},
+		{"punctuation only", "-- !! --", `preplan_context: topic "-- !! --" has no letter or digit`, wordsSuggestion},
+		{"non-ASCII letters only", "日本語", `preplan_context: topic "日本語" has no ASCII letter or digit`, asciiSuggestion},
+		{"51 characters", strings.Repeat("a", 51), "preplan_context: topic has 51 characters, max 50", longSuggestion},
+		{"51 multi-byte characters", "a" + strings.Repeat("é", 50), "preplan_context: topic has 51 characters, max 50", longSuggestion},
+		{"line feed", "auth\nflow", "preplan_context: topic has a line break", lineSuggestion},
+		{"carriage return", "auth\rflow", "preplan_context: topic has a line break", lineSuggestion},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			_, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: tc.topic})
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if got := errorClassOf(err); got != "domain" {
+				t.Errorf("error class = %q, want domain (err %v)", got, err)
+			}
+			if err.Error() != tc.wantMsg {
+				t.Errorf("err.Error() = %q, want %q", err.Error(), tc.wantMsg)
+			}
+			if got := suggestionOf(err); got != tc.wantSuggestion {
+				t.Errorf("Suggestion = %q, want %q", got, tc.wantSuggestion)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".sdlc-v2")); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("a refused call created the data dir (stat err %v)", err)
+			}
+		})
+	}
+
+	t.Run("a regular file at the preplan dir path", func(t *testing.T) {
+		root := t.TempDir()
+		blocker := filepath.Join(root, ".sdlc-v2", "preplan")
+		writeFile(t, blocker, "not a directory\n")
+
+		_, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err == nil {
+			t.Fatal("expected an error, got nil")
+		}
+		if got := errorClassOf(err); got != "infra" {
+			t.Errorf("error class = %q, want infra (err %v)", got, err)
+		}
+		wantPrefix := "preplan_context: create " + filepath.Join(blocker, "auth-flow.md") + ": "
+		if !strings.HasPrefix(err.Error(), wantPrefix) {
+			t.Errorf("err.Error() = %q, want prefix %q", err.Error(), wantPrefix)
+		}
+		if want := "Check write permission on .sdlc-v2/preplan/, then run the skill again."; suggestionOf(err) != want {
+			t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
+		}
+		if got, _ := os.ReadFile(blocker); string(got) != "not a directory\n" {
+			t.Errorf("blocking file = %q, want it unchanged", got)
+		}
+	})
+}
+
+// errInjectedPreplan is the error the preplan write and close seams return.
+var errInjectedPreplan = errors.New("injected preplan failure")
+
+// savePreplanSeams saves the real write and close functions of
+// createPreplanFile. It registers a cleanup that puts them back when the test
+// ends, and it returns a function that puts them back at once.
+func savePreplanSeams(t *testing.T) (restore func()) {
+	t.Helper()
+	origWrite, origClose := preplanWriteString, preplanCloseFile
+	restore = func() {
+		preplanWriteString, preplanCloseFile = origWrite, origClose
+	}
+	t.Cleanup(restore)
+	return restore
+}
+
+// failPreplanWrite makes the preplan write fail after the create. It returns
+// the function that restores the real seams.
+func failPreplanWrite(t *testing.T) (restore func()) {
+	t.Helper()
+	restore = savePreplanSeams(t)
+	preplanWriteString = func(*os.File, string) error { return errInjectedPreplan }
+	return restore
+}
+
+// failPreplanClose makes the preplan close fail after a successful write. The
+// replacement still closes the file, so the test leaks no descriptor. It
+// returns the function that restores the real seams.
+func failPreplanClose(t *testing.T) (restore func()) {
+	t.Helper()
+	restore = savePreplanSeams(t)
+	preplanCloseFile = func(f *os.File) error {
+		_ = f.Close()
+		return errInjectedPreplan
+	}
+	return restore
+}
+
+// TestCreatePreplanFileWriteStepFailures covers each failure point after the
+// create succeeded. A failed write and a failed close both return the error,
+// leave no file, and let a later call create the file.
+func TestCreatePreplanFileWriteStepFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		inject func(*testing.T) func()
+	}{
+		{"write fails after the create", failPreplanWrite},
+		{"close fails after a successful write", failPreplanClose},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			file := filepath.Join(t.TempDir(), "preplan", "auth-flow.md")
+			const content = "# Preplan: auth flow\n"
+
+			restore := tc.inject(t)
+			created, err := createPreplanFile(file, content)
+			if created || !errors.Is(err, errInjectedPreplan) {
+				t.Fatalf("createPreplanFile = (%v, %v), want (false, %v)", created, err, errInjectedPreplan)
+			}
+			if _, statErr := os.Stat(file); !errors.Is(statErr, fs.ErrNotExist) {
+				t.Errorf("partial file left behind (stat err %v)", statErr)
+			}
+
+			restore()
+			created, err = createPreplanFile(file, content)
+			if !created || err != nil {
+				t.Fatalf("retry createPreplanFile = (%v, %v), want (true, nil)", created, err)
+			}
+			if got, _ := os.ReadFile(file); string(got) != content {
+				t.Errorf("file after retry = %q, want %q", got, content)
+			}
+		})
+	}
+}
+
+// TestPlanPreplanContextWriteFailure verifies a write failure after the create
+// reaches the caller as an InfraError with a Suggestion, reports no created
+// file, and leaves no topic file.
+func TestPlanPreplanContextWriteFailure(t *testing.T) {
+	root := t.TempDir()
+	failPreplanWrite(t)
+
+	out, err := planPreplanContext(root, "auth flow")
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("error = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if infra.Suggestion == "" {
+		t.Error("InfraError.Suggestion is empty, want recovery text")
+	}
+	if !errors.Is(err, errInjectedPreplan) {
+		t.Errorf("error = %v, want it to wrap the write error", err)
+	}
+	if out.PreplanCreated || out.PreplanFile != "" {
+		t.Errorf("output = {created %v, file %q}, want {false, \"\"}", out.PreplanCreated, out.PreplanFile)
+	}
+	topicFile := filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")
+	if _, statErr := os.Stat(topicFile); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("topic file left behind (stat err %v)", statErr)
+	}
+}
+
+// TestCreatePreplanFileOpenFailure verifies a create that fails for a reason
+// other than "exists" returns the error and leaves no file. A read-only
+// directory makes the open fail.
+func TestCreatePreplanFileOpenFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory modes")
+	}
+	dir := filepath.Join(t.TempDir(), "preplan")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("make preplan dir: %v", err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("make preplan dir read-only: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	file := filepath.Join(dir, "auth-flow.md")
+	created, err := createPreplanFile(file, "# Preplan: auth flow\n")
+	if created || err == nil {
+		t.Fatalf("createPreplanFile = (%v, %v), want (false, non-nil error)", created, err)
+	}
+	if errors.Is(err, fs.ErrExist) {
+		t.Errorf("error = %v, want a failure other than \"exists\"", err)
+	}
+	if _, statErr := os.Stat(file); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("topic file exists after a failed open (stat err %v)", statErr)
+	}
+}

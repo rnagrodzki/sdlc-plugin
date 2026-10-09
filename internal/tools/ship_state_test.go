@@ -2985,6 +2985,171 @@ func TestShipState_CleanupPipeline_ExploreSummary_RetryKeepsStoredList(t *testin
 	}
 }
 
+// wantReviewRound is one plan review round as the state file stores it after a
+// JSON round trip: numbers are float64 and lists are []any.
+func wantReviewRound(round int, status string, found, fixed int) map[string]any {
+	return map[string]any{
+		"round": float64(round), "mergedStatus": status,
+		"found": float64(found), "fixed": float64(fixed),
+		"lenses": []any{map[string]any{"name": "structure", "verdict": status}},
+	}
+}
+
+// writeReviewRounds stores rounds in the "reviewRounds" key of the fixture's
+// plan run.
+func (f planRunCleanupFixture) writeReviewRounds(t *testing.T, rounds []any) {
+	t.Helper()
+	planRun, err := state.FindPlanRunByPlanFile(f.dir, linkedPlanFile(f.dir))
+	if err != nil || planRun == nil {
+		t.Fatalf("find plan run: st=%v err=%v", planRun, err)
+	}
+	planRun.Data["reviewRounds"] = rounds
+	if err := state.Write(planRun); err != nil {
+		t.Fatalf("write plan run: %v", err)
+	}
+}
+
+// TestShipState_CleanupPipeline_ReviewRounds_StoredBeforeDelete covers the
+// copy: after cleanup deletes the plan run, the ship state file holds the
+// plan review rounds beside the explorer summary, and the file validates
+// against the schema.
+func TestShipState_CleanupPipeline_ReviewRounds_StoredBeforeDelete(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-rounds-stored", true, linkedPlanFile)
+	f.writeExplorer(t, "auth-flow", "done", 2)
+	rounds := []any{wantReviewRound(1, planStatusIssuesFound, 3, 2), wantReviewRound(2, planStatusApproved, 0, 0)}
+	f.writeReviewRounds(t, rounds)
+	f.writeShipReport(t, "md")
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+		t.Errorf("planRun = %#v, want %#v", pr, want)
+	}
+	f.assertDeleted(t)
+
+	data := f.shipStateOnDisk(t)
+	if got := data[shipPlanReviewRoundsKey]; !reflect.DeepEqual(got, any(rounds)) {
+		t.Errorf("stored planReviewRounds = %#v, want %#v", got, rounds)
+	}
+	want := []any{wantExploreEntry("auth-flow", "done", 2, 2)}
+	if got := data[shipPlanExploreSummaryKey]; !reflect.DeepEqual(got, any(want)) {
+		t.Errorf("stored planExploreSummary = %#v, want %#v", got, want)
+	}
+	if err := shipStateSchemaValidator(t)(data); err != nil {
+		t.Errorf("ship state with review rounds: schema rejected it: %v", err)
+	}
+}
+
+// TestShipState_CleanupPipeline_ReviewRounds_AbsentWhenPlanHasNone covers a
+// plan run with no review rounds: the key is not stored, so a ship page shows
+// explorers only.
+func TestShipState_CleanupPipeline_ReviewRounds_AbsentWhenPlanHasNone(t *testing.T) {
+	for name, rounds := range map[string][]any{"no key": nil, "empty list": {}} {
+		t.Run(name, func(t *testing.T) {
+			f := newPlanRunCleanupFixture(t, "feat/planrun-rounds-none-"+strings.ReplaceAll(name, " ", "-"), true, linkedPlanFile)
+			if rounds != nil {
+				f.writeReviewRounds(t, rounds)
+			}
+			f.writeShipReport(t, "md")
+
+			pr, err := f.cleanupPipeline(t, nil)
+			if err != nil {
+				t.Fatalf("cleanup-pipeline: %v", err)
+			}
+			if !pr.Deleted {
+				t.Fatalf("planRun = %#v, want Deleted", pr)
+			}
+			if got, present := f.shipStateOnDisk(t)[shipPlanReviewRoundsKey]; present {
+				t.Errorf("planReviewRounds must be absent, got %#v", got)
+			}
+		})
+	}
+}
+
+// TestShipState_CleanupPipeline_ReviewRounds_RetryKeepsStoredList seeds the
+// state a failed earlier delete leaves: stored rounds in the ship state and a
+// plan run that holds no rounds. A new cleanup-pipeline call must keep the
+// stored list.
+func TestShipState_CleanupPipeline_ReviewRounds_RetryKeepsStoredList(t *testing.T) {
+	f := newPlanRunCleanupFixture(t, "feat/planrun-rounds-retry", true, linkedPlanFile)
+	stored := []any{wantReviewRound(1, planStatusIssuesFound, 3, 3)}
+	st, err := state.Find(f.dir, "ship", f.branch)
+	if err != nil || st == nil {
+		t.Fatalf("find ship state: st=%v err=%v", st, err)
+	}
+	st.Data[shipPlanReviewRoundsKey] = stored
+	if err := state.Write(st); err != nil {
+		t.Fatalf("seed ship state: %v", err)
+	}
+	f.writeShipReport(t, "md")
+
+	pr, err := f.cleanupPipeline(t, nil)
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+		t.Errorf("planRun = %#v, want %#v", pr, want)
+	}
+	f.assertDeleted(t)
+	if got := f.shipStateOnDisk(t)[shipPlanReviewRoundsKey]; !reflect.DeepEqual(got, any(stored)) {
+		t.Errorf("stored planReviewRounds = %#v, want the seeded list %#v", got, stored)
+	}
+}
+
+// TestShipStateSchema_PlanReviewRounds covers the optional planReviewRounds
+// key: absent, empty and filled lists validate; a wrong shape does not.
+func TestShipStateSchema_PlanReviewRounds(t *testing.T) {
+	validate := shipStateSchemaValidator(t)
+	base := func(extra map[string]any) map[string]any {
+		doc := map[string]any{
+			"version":   float64(1),
+			"startedAt": "2026-03-01T12:00:00Z",
+			"branch":    "feat/schema-test",
+			"flags":     map[string]any{},
+			"steps":     []any{map[string]any{"name": "review", "status": "completed"}},
+		}
+		for k, v := range extra {
+			doc[k] = v
+		}
+		return doc
+	}
+
+	accepted := map[string]any{
+		"absent":     nil,
+		"empty list": []any{},
+		"one round":  []any{wantReviewRound(1, planStatusIssuesFound, 3, 2)},
+		"two rounds": []any{wantReviewRound(1, planStatusIssuesFound, 3, 2), wantReviewRound(2, planStatusApproved, 0, 0)},
+		"with findings": []any{map[string]any{
+			"round": float64(1), "mergedStatus": planStatusIssuesFound, "found": float64(1), "fixed": float64(1),
+			"lenses":   []any{},
+			"findings": []any{map[string]any{"id": "F-1", "fixed": true}},
+		}},
+	}
+	for name, v := range accepted {
+		extra := map[string]any{}
+		if v != nil {
+			extra[shipPlanReviewRoundsKey] = v
+		}
+		if err := validate(base(extra)); err != nil {
+			t.Errorf("%s: want accepted, got %v", name, err)
+		}
+	}
+
+	rejected := map[string]any{
+		"not a list":    map[string]any{"round": float64(1)},
+		"null":          nil,
+		"entry is text": []any{"round 1"},
+		"entry is list": []any{[]any{}},
+	}
+	for name, v := range rejected {
+		if err := validate(base(map[string]any{shipPlanReviewRoundsKey: v})); err == nil {
+			t.Errorf("%s: want schema rejection, got nil", name)
+		}
+	}
+}
+
 // TestShipStateSchema_PlanExploreSummary covers the optional planExploreSummary
 // key: absent, empty and filled lists validate; a wrong shape does not.
 func TestShipStateSchema_PlanExploreSummary(t *testing.T) {

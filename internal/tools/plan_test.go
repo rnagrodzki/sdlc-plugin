@@ -98,26 +98,32 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 		t.Errorf("Errors = %v, want empty", out.Errors)
 	}
 
-	// Lane fan-out: 4 static lanes + 1 mirrored G17 (dimension-coverage) lane.
-	if len(out.Lanes) != 5 {
-		t.Fatalf("len(Lanes) = %d, want 5", len(out.Lanes))
+	// Lane fan-out: 4 static lanes + 1 mirrored G17 (dimension-coverage) lane + 1 style lane.
+	if len(out.Lanes) != 6 {
+		t.Fatalf("len(Lanes) = %d, want 6", len(out.Lanes))
 	}
-	wantLaneNames := []string{"static-structural", "content-coverage", "file-existence", "guardrail-compliance", "dimension-coverage"}
+	wantLaneNames := []string{"static-structural", "content-coverage", "file-existence", "guardrail-compliance", "dimension-coverage", "style-compliance"}
 	for i, name := range wantLaneNames {
 		if out.Lanes[i].Name != name {
 			t.Errorf("Lanes[%d].Name = %q, want %q", i, out.Lanes[i].Name, name)
 		}
 	}
-	wantGuardrailGates := []string{"G14", "G22"}
+	wantGuardrailGates := []string{"G14"}
 	if !reflect.DeepEqual(out.Lanes[3].GateIDs, wantGuardrailGates) {
 		t.Errorf("Lanes[3] (guardrail-compliance) GateIDs = %v, want %v", out.Lanes[3].GateIDs, wantGuardrailGates)
 	}
-	last := out.Lanes[len(out.Lanes)-1]
+	last := out.Lanes[4]
 	if last.SubagentType != out.G17Dispatch.SubagentType || last.Model != out.G17Dispatch.Model {
 		t.Errorf("dimension-coverage lane %+v does not mirror g17Dispatch %+v", last, out.G17Dispatch)
 	}
 	if len(last.GateIDs) != 1 || last.GateIDs[0] != "G17" {
 		t.Errorf("dimension-coverage lane GateIDs = %v, want [G17]", last.GateIDs)
+	}
+	if !reflect.DeepEqual(out.Lanes[5].GateIDs, []string{"G22"}) {
+		t.Errorf("Lanes[5] (style-compliance) GateIDs = %v, want [G22]", out.Lanes[5].GateIDs)
+	}
+	if out.Lanes[5].SubagentType != "general-purpose" || out.Lanes[5].Model != "sonnet" {
+		t.Errorf("Lanes[5] (style-compliance) = %+v, want subagentType=general-purpose model=sonnet", out.Lanes[5])
 	}
 
 	// Lens reviewers: 3 static lenses.
@@ -140,6 +146,36 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 
 	if out.ReviewLoop.MaxRounds != 5 {
 		t.Errorf("ReviewLoop.MaxRounds = %d, want 5", out.ReviewLoop.MaxRounds)
+	}
+}
+
+// TestPlanPrepare_LanesCoverAllGates verifies the six plan_prepare lanes
+// together cover G1..G22 exactly: feeding each lane's GateIDs to merge_results
+// as a passing lane result reports no coverage gap. G22 lives in its own
+// style-compliance lane, so a lane that drops a gate shows up here.
+func TestPlanPrepare_LanesCoverAllGates(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if len(out.Lanes) != 6 {
+		t.Fatalf("len(Lanes) = %d, want 6", len(out.Lanes))
+	}
+
+	results := make([]LaneResult, 0, len(out.Lanes))
+	for _, lane := range out.Lanes {
+		results = append(results, LaneResult{Name: lane.Name, Status: "pass", GateIDs: lane.GateIDs})
+	}
+	merged, err := mergeResults(PlanSupportIn{LaneResults: results, ExpectedGates: allGates()})
+	if err != nil {
+		t.Fatalf("mergeResults: %v", err)
+	}
+	if len(merged.CoverageGaps) != 0 {
+		t.Errorf("CoverageGaps = %v, want empty (lanes must cover G1..G22)", merged.CoverageGaps)
 	}
 }
 

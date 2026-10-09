@@ -21,9 +21,11 @@ const dashboardExecuteRefPrefix = "execute:"
 // dashboardShipDetail adds the ship-only data of a ship state to its
 // pipeline: the session id, the join keys (run start and the window of each
 // step), the review totals on the review step, and a first "plan" step when
-// the state holds data.planExploreSummary. The review step gets a dimensions
-// detail only when shipBuildReviewLedger returns a ledger. A
-// planExploreSummary value that does not decode gives no plan step.
+// the state holds data.planExploreSummary. The plan step also lists the
+// review rounds of data.planReviewRounds, with maxRounds, when that list
+// holds rounds. The review step gets a dimensions detail only when
+// shipBuildReviewLedger returns a ledger. A planExploreSummary value that
+// does not decode gives no plan step.
 func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	data := st.Data
 	p.SessionID = dashboardStr(data["sessionId"])
@@ -75,6 +77,9 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 			Name:   dashboardShipStepPlan,
 			Status: StepCompleted,
 			Detail: &DashboardStepDetail{Kind: dashboardKindExplorers, Explorers: dashboardExplorers(entries)},
+		}
+		if rounds := dashboardPlanRounds(dashboardPlanStoredRounds(data[shipPlanReviewRoundsKey])); len(rounds) > 0 {
+			plan.Detail.Rounds, plan.Detail.MaxRounds = rounds, maxReviewRounds
 		}
 		p.Steps = append([]DashboardStep{plan}, p.Steps...)
 		p.Progress.Done++

@@ -228,6 +228,13 @@
         "required": ["name", "status", "total", "top"]
       }
     },
+    "planReviewRounds": {
+      "type": "array",
+      "description": "Plan review rounds copied by cleanup-pipeline before it deletes the linked plan run. Same row shape as the plan state reviewRounds.",
+      "items": {
+        "type": "object"
+      }
+    },
     "issues": {
       "type": "array",
       "description": "Structured issue accumulator appended by fail (R-TASK-17). Mirrors deferredFindings above and execute-state.schema.json's issues[].",

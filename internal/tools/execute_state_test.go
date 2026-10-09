@@ -5881,8 +5881,8 @@ func TestUnknownAction_NamesBinaryAndAdvisesUpdate(t *testing.T) {
 				return err
 			},
 			kind:      "action",
-			msgTail:   " — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix, openspec_instructions, openspec_stage, evidence_record, evidence_digest, evidence_get",
-			adviceHas: []string{"call plan_support again", "openspec_appendix", "evidence_get"},
+			msgTail:   " — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix, openspec_instructions, openspec_stage, evidence_record, evidence_digest, evidence_get, preplan_context",
+			adviceHas: []string{"call plan_support again", "openspec_appendix", "evidence_get", "preplan_context"},
 		},
 		{
 			name: "jira",

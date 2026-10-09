@@ -50,3 +50,16 @@ func List() []Surface {
 		},
 	}
 }
+
+// ProposalIDs returns the ids of the surfaces for which harden writes
+// proposals, in List order: plan-guardrails, execute-guardrails,
+// review-dimensions, copilot-instructions. The other surfaces in List are
+// read-only inputs. Each call returns a new slice, so a caller may change it.
+func ProposalIDs() []string {
+	return []string{
+		"plan-guardrails",
+		"execute-guardrails",
+		"review-dimensions",
+		"copilot-instructions",
+	}
+}

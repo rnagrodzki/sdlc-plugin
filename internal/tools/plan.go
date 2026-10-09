@@ -953,7 +953,8 @@ func buildIntakeAuditDispatch() Dispatch {
 }
 
 // buildLanes mirrors plan.js's buildLanes (KD1 lane partitioning: four
-// static lane definitions plus a fifth entry mirroring g17Dispatch verbatim).
+// static lane definitions, a fifth entry mirroring g17Dispatch verbatim, and
+// a sixth style-compliance lane that owns G22).
 func buildLanes(g17Dispatch Dispatch) []Lane {
 	type laneDef struct {
 		name         string
@@ -965,10 +966,10 @@ func buildLanes(g17Dispatch Dispatch) []Lane {
 		{"static-structural", "haiku", "lane-static-structural-prompt.md", []string{"G1", "G2", "G3", "G7", "G12"}},
 		{"content-coverage", "sonnet", "lane-content-coverage-prompt.md", []string{"G5", "G6", "G8", "G9", "G11", "G13", "G15", "G16", "G18", "G19", "G20", "G21"}},
 		{"file-existence", "haiku", "lane-file-existence-prompt.md", []string{"G4", "G10"}},
-		{"guardrail-compliance", "sonnet", "lane-guardrail-compliance-prompt.md", []string{"G14", "G22"}},
+		{"guardrail-compliance", "sonnet", "lane-guardrail-compliance-prompt.md", []string{"G14"}},
 	}
 
-	lanes := make([]Lane, 0, len(defs)+1)
+	lanes := make([]Lane, 0, len(defs)+2)
 	for _, d := range defs {
 		lanes = append(lanes, Lane{
 			Name:               d.name,
@@ -985,6 +986,16 @@ func buildLanes(g17Dispatch Dispatch) []Lane {
 		Model:              g17Dispatch.Model,
 		PromptTemplatePath: g17Dispatch.PromptTemplatePath,
 		GateIDs:            []string{"G17"},
+	})
+
+	// The style lane stays last so lanes[3] (guardrail-compliance) and
+	// lanes[4] (dimension-coverage) keep their indices.
+	lanes = append(lanes, Lane{
+		Name:               "style-compliance",
+		SubagentType:       "general-purpose",
+		Model:              "sonnet",
+		PromptTemplatePath: resolveSkillTemplate("lane-style-compliance-prompt.md"),
+		GateIDs:            []string{"G22"},
 	})
 
 	return lanes
