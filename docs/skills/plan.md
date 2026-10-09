@@ -247,7 +247,7 @@ lane judges because they need meaning:
 
 PF13 is a deterministic hard gate: a false hit would block a correct plan, so
 it checks only what a pattern can decide safely. G22 (the
-`guardrail-compliance` review lane, Step 3) judges every rule that needs
+`style-compliance` review lane, Step 3) judges every rule that needs
 meaning, scaled to `audience`, and reviews the pattern-checked rules too, as
 a second pass.
 

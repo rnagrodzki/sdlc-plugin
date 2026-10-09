@@ -291,7 +291,9 @@ type dashboardJoinInfo struct {
 }
 
 // DashboardSession is one Claude Code session seen in the evidence files of
-// a repo.
+// a repo. Timeline holds only the newest dashboardSessionTimelineMax events.
+// CommandGroups counts every command of the session, and is [] when the
+// session has no command, never null.
 type DashboardSession struct {
 	ID        string `json:"id"`
 	Active    bool   `json:"active"`
@@ -303,7 +305,8 @@ type DashboardSession struct {
 		Commands int `json:"commands"`
 		MCPCalls int `json:"mcpCalls"`
 	} `json:"counts"`
-	Timeline []DashboardEvent `json:"timeline"`
+	Timeline      []DashboardEvent        `json:"timeline"`
+	CommandGroups []DashboardCommandGroup `json:"commandGroups"`
 }
 
 // DashboardEvent is one timeline entry of a session. Kind is "prompt",
@@ -312,6 +315,22 @@ type DashboardEvent struct {
 	At   string `json:"at"`
 	Kind string `json:"kind"`
 	Text string `json:"text"`
+}
+
+// DashboardCommandGroup is the share of a session's commands that run the
+// same program. Label is the program, "a + b + c" for a command that runs
+// three or more programs, or "(other)" for a command with no program.
+// Programs lists the programs the label names, and is [] for "(other)".
+// Share is Count divided by all commands of the session, rounded to 2
+// decimals. Majority marks the largest group. LastAt is the time of the
+// newest command of the group.
+type DashboardCommandGroup struct {
+	Label    string   `json:"label"`
+	Programs []string `json:"programs"`
+	Count    int      `json:"count"`
+	Share    float64  `json:"share"`
+	Majority bool     `json:"majority"`
+	LastAt   string   `json:"lastAt"`
 }
 
 // DashboardLearning is one learnings entry of a repo.

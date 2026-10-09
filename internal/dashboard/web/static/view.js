@@ -153,6 +153,71 @@
   }
 
   /**
+   * A POST to a guarded route: the token header and a JSON body. The server
+   * refuses a body without the JSON Content-Type (HTTP 415).
+   * @param {string} token
+   * @param {string} url
+   * @param {object} payload
+   * @returns {{method: string, url: string, headers: object, body: string}}
+   */
+  function guardedPost(token, url, payload) {
+    return {
+      method: 'POST',
+      url: url,
+      headers: { 'X-Sdlc-Token': token, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    };
+  }
+
+  /**
+   * The request that archives one run. Use it as `fetch(req.url, req)`.
+   * @param {string} token the server's X-Sdlc-Token for this start
+   * @param {string} repo repo root
+   * @param {string} runId id of the pipeline row
+   * @param {boolean} [confirmStalled] true after the person confirmed a stalled run
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token, repo, or runId is ''
+   */
+  function archiveRequest(token, repo, runId, confirmStalled) {
+    if (!token || !repo || !runId) return null;
+    return guardedPost(token, '/api/run-archive', {
+      repo: repo,
+      runId: runId,
+      confirmStalled: confirmStalled === true,
+    });
+  }
+
+  /**
+   * The request that clears the cache files of one repo. Use it as
+   * `fetch(req.url, req)`.
+   * @param {string} token the server's X-Sdlc-Token for this start
+   * @param {string} repo repo root
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token or repo is ''
+   */
+  function clearRequest(token, repo) {
+    if (!token || !repo) return null;
+    return guardedPost(token, '/api/cache-clear', { repo: repo });
+  }
+
+  /**
+   * The URL that reads the body of one learning. The route only reads, so it
+   * needs no token.
+   * @param {string} repo repo root
+   * @param {string} date learning date
+   * @param {string} heading learning heading
+   * @returns {string|null} null when repo, date, or heading is ''
+   */
+  function learningUrl(repo, date, heading) {
+    if (!repo || !date || !heading) return null;
+    return (
+      '/api/learning?repo=' + encodeURIComponent(repo) +
+      '&date=' + encodeURIComponent(date) +
+      '&heading=' + encodeURIComponent(heading)
+    );
+  }
+
+  /**
    * @param {string} repoRoot
    * @param {string} worktree
    * @returns {string} '' for the main worktree, else its last path part
@@ -253,14 +318,15 @@
   }
 
   /**
-   * A section takes a full row when it holds its own columns: 2 or more
-   * waves, explorers, or review rounds. One wave stays a column.
-   * @param {{kind: string, waves?: Array}} detail
+   * A section takes a full row when it holds its own columns: waves (with 0,
+   * 1, or more waves, so an execute tile has the same width in every run),
+   * explorers, or review rounds.
+   * @param {{kind: string}} detail
    * @returns {boolean}
    */
   function isWideSection(detail) {
     if (!detail) return false;
-    if (detail.kind === 'waves') return (detail.waves || []).length >= 2;
+    if (detail.kind === 'waves') return true;
     return detail.kind === 'explorers' || detail.kind === 'rounds';
   }
 
@@ -752,6 +818,200 @@
     return { pipelineId: raw, station: null };
   }
 
+  // --- Detail viewer keys and items ------------------------------------------------
+
+  /**
+   * The key of one item the detail viewer can open. The key is the same for
+   * the same item in every snapshot, so the page can read the item again
+   * after a rebuild and put the focus back on its row. A kind uses only the
+   * fields its key needs; other fields are ignored.
+   *   deferred: 'deferred:<item.id>'
+   *   issue:    'issue:<where.pipeline>:<where.index>'
+   *   learning: 'learning:<item.date>:<item.heading>'
+   *   finding:  'finding:<where.pipeline>:<where.dimension>:<where.index>'
+   * A key is built, never parsed: a heading or an id can hold ':'. Use
+   * detailItem to find the item of a key.
+   * @param {string} kind 'deferred' | 'issue' | 'learning' | 'finding'
+   * @param {object} [item] the snapshot item (deferred and learning)
+   * @param {{pipeline?: string, dimension?: string, index?: number}} [where]
+   *   pipeline id, review dimension name, and row index in its list
+   *   (issue and finding). A standalone review step is one dimension, so
+   *   its step name is the dimension name.
+   * @returns {string} '' for an unknown kind or a missing key field
+   */
+  function detailKey(kind, item, where) {
+    var it = item || {};
+    var at = where || {};
+    var hasIndex = at.index !== undefined && at.index !== null && at.index !== '';
+    switch (kind) {
+      case 'deferred':
+        return it.id ? 'deferred:' + it.id : '';
+      case 'issue':
+        return at.pipeline && hasIndex ? 'issue:' + at.pipeline + ':' + at.index : '';
+      case 'learning':
+        return it.date && it.heading ? 'learning:' + it.date + ':' + it.heading : '';
+      case 'finding':
+        return at.pipeline && at.dimension && hasIndex
+          ? 'finding:' + at.pipeline + ':' + at.dimension + ':' + at.index
+          : '';
+      default:
+        return '';
+    }
+  }
+
+  function textOf(value) {
+    return value === undefined || value === null ? '' : String(value);
+  }
+
+  // [label, value] pairs without the empty values.
+  function metaRows(pairs) {
+    var rows = [];
+    for (var i = 0; i < pairs.length; i++) {
+      var value = textOf(pairs[i][1]);
+      if (value !== '') rows.push([pairs[i][0], value]);
+    }
+    return rows;
+  }
+
+  // 'head: tail'; just the part that is not empty; else fallback.
+  function joinTitle(head, tail, fallback) {
+    if (head && tail) return head + ': ' + tail;
+    return head || tail || fallback;
+  }
+
+  function deferredItem(root, d) {
+    return {
+      kind: 'deferred',
+      repo: root,
+      title: d.priority ? d.id + ' (' + d.priority + ')' : d.id,
+      text: textOf(d.description),
+      meta: metaRows([
+        ['Created', d.created],
+        ['Source', d.source],
+        ['Severity', d.severity],
+        ['File', d.file],
+        ['Line', d.line > 0 ? d.line : ''],
+        ['Reason', d.reason],
+      ]),
+    };
+  }
+
+  function issueItem(root, issue) {
+    return {
+      kind: 'issue',
+      repo: root,
+      title: joinTitle(issue.severity, issue.source, 'issue'),
+      text: textOf(issue.text),
+      meta: metaRows([
+        ['Source', issue.source],
+        ['Severity', issue.severity],
+        ['File', issue.file],
+        ['Line', issue.line],
+        ['Ref', issue.ref],
+      ]),
+    };
+  }
+
+  // The text of a learning is empty: the page fills it from /api/learning.
+  function learningItem(root, learning) {
+    return {
+      kind: 'learning',
+      repo: root,
+      title: learning.heading,
+      text: '',
+      meta: metaRows([['Date', learning.date]]),
+    };
+  }
+
+  function findingItem(root, pipelineId, dimension, finding) {
+    return {
+      kind: 'finding',
+      repo: root,
+      title: joinTitle(finding.severity, issueLocation({ file: finding.file, line: finding.line }), 'finding'),
+      text: textOf(finding.text),
+      meta: metaRows([
+        ['Pipeline', pipelineId],
+        ['Dimension', dimension],
+        ['Severity', finding.severity],
+      ]),
+    };
+  }
+
+  // The finding of `list` whose key is `key`, as a viewer item, else null.
+  function matchFinding(root, pipeline, dimension, list, key) {
+    var rows = list || [];
+    for (var i = 0; i < rows.length; i++) {
+      if (!rows[i]) continue;
+      if (detailKey('finding', null, { pipeline: pipeline.id, dimension: dimension, index: i }) === key) {
+        return findingItem(root, pipeline.id, dimension, rows[i]);
+      }
+    }
+    return null;
+  }
+
+  function findInPipeline(root, pipeline, key) {
+    var issues = pipeline.issues || [];
+    for (var i = 0; i < issues.length; i++) {
+      if (issues[i] && detailKey('issue', null, { pipeline: pipeline.id, index: i }) === key) {
+        return issueItem(root, issues[i]);
+      }
+    }
+    var steps = pipeline.steps || [];
+    for (var s = 0; s < steps.length; s++) {
+      var detail = steps[s] && steps[s].detail;
+      if (!detail) continue;
+      var hit = null;
+      if (detail.kind === 'findings') {
+        hit = matchFinding(root, pipeline, steps[s].name, detail.findings, key);
+      } else if (detail.kind === 'dimensions') {
+        var dims = detail.dimensions || [];
+        for (var d = 0; d < dims.length && !hit; d++) {
+          if (dims[d]) hit = matchFinding(root, pipeline, dims[d].name, dims[d].findingItems, key);
+        }
+      }
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  function findInRepo(repo, key) {
+    var deferred = repo.deferred || [];
+    for (var i = 0; i < deferred.length; i++) {
+      if (deferred[i] && detailKey('deferred', deferred[i]) === key) return deferredItem(repo.root, deferred[i]);
+    }
+    var learnings = repo.learnings || [];
+    for (var j = 0; j < learnings.length; j++) {
+      if (learnings[j] && detailKey('learning', learnings[j]) === key) return learningItem(repo.root, learnings[j]);
+    }
+    var pipelines = repo.pipelines || [];
+    for (var k = 0; k < pipelines.length; k++) {
+      var hit = pipelines[k] ? findInPipeline(repo.root, pipelines[k], key) : null;
+      if (hit) return hit;
+    }
+    return null;
+  }
+
+  /**
+   * Reads the item of a detail key again from a snapshot. The lookup builds
+   * the key of each candidate with detailKey and compares it, so the key is
+   * never parsed. The first match in snapshot order wins.
+   * @param {{repos?: Array}} snapshot
+   * @param {string} key a detailKey value
+   * @returns {{kind: string, repo: string, title: string, text: string, meta: Array<Array<string>>}|null}
+   *   repo is the root of the repo that holds the item. meta is a list of
+   *   [label, value] pairs without the empty values. null when the key is
+   *   empty or the item is gone.
+   */
+  function detailItem(snapshot, key) {
+    if (!key) return null;
+    var repos = (snapshot && snapshot.repos) || [];
+    for (var i = 0; i < repos.length; i++) {
+      var hit = repos[i] ? findInRepo(repos[i], key) : null;
+      if (hit) return hit;
+    }
+    return null;
+  }
+
   // --- Storage -----------------------------------------------------------------
 
   /**
@@ -823,6 +1083,11 @@
     connectionText: connectionText,
     stopRequest: stopRequest,
     stopResult: stopResult,
+    archiveRequest: archiveRequest,
+    clearRequest: clearRequest,
+    learningUrl: learningUrl,
+    detailKey: detailKey,
+    detailItem: detailItem,
     worktreeLabel: worktreeLabel,
     hasSection: hasSection,
     sectionKind: sectionKind,

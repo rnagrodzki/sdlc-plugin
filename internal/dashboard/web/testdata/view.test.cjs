@@ -181,6 +181,12 @@ describe('page logic exports', () => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
+
+  test('view.js exports the request builders and the detail lookup', () => {
+    ['archiveRequest', 'clearRequest', 'learningUrl', 'detailKey', 'detailItem'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
 });
 
 describe('defaultCollapsed', () => {
@@ -342,14 +348,22 @@ describe('sectionMeta', () => {
 });
 
 describe('isWideSection', () => {
-  test('waves with 2 or more waves, explorers, and rounds are wide', () => {
+  test('every waves tile is wide, with 0, 1, or N waves', () => {
+    assert.equal(view.isWideSection({ kind: 'waves' }), true);
+    assert.equal(view.isWideSection({ kind: 'waves', waves: [] }), true);
+    assert.equal(view.isWideSection({ kind: 'waves', waves: [{}] }), true);
     assert.equal(view.isWideSection({ kind: 'waves', waves: [{}, {}] }), true);
+    assert.equal(view.isWideSection({ kind: 'waves', waves: [{}, {}, {}] }), true);
+  });
+
+  test('explorers and rounds are wide', () => {
     assert.equal(view.isWideSection({ kind: 'explorers' }), true);
     assert.equal(view.isWideSection({ kind: 'rounds' }), true);
   });
 
-  test('one wave, dimensions, and findings are not wide', () => {
-    assert.equal(view.isWideSection({ kind: 'waves', waves: [{}] }), false);
+  test('a missing detail, dimensions, and findings are not wide', () => {
+    assert.equal(view.isWideSection(null), false);
+    assert.equal(view.isWideSection(undefined), false);
     assert.equal(view.isWideSection({ kind: 'dimensions' }), false);
     assert.equal(view.isWideSection({ kind: 'findings' }), false);
     assert.equal(view.isWideSection({ kind: 'guardrails' }), false);
@@ -1049,6 +1063,337 @@ describe('stopResult', () => {
     assert.equal(view.stopResult(403), 'stop-failed');
     assert.equal(view.stopResult(500), 'stop-failed');
     assert.equal(view.stopResult(0), 'stop-failed');
+  });
+});
+
+describe('archiveRequest / clearRequest', () => {
+  test('archiveRequest returns null when the token, repo, or run id is empty', () => {
+    assert.equal(view.archiveRequest('', '/abs/repo', 'ship-x-1', false), null);
+    assert.equal(view.archiveRequest('abc123', '', 'ship-x-1', false), null);
+    assert.equal(view.archiveRequest('abc123', '/abs/repo', '', false), null);
+  });
+
+  test('archiveRequest returns a JSON POST with the token header', () => {
+    const req = view.archiveRequest('abc123', '/abs/repo', 'ship-x-1', false);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/api/run-archive');
+    assert.deepEqual(req.headers, { 'X-Sdlc-Token': 'abc123', 'Content-Type': 'application/json' });
+    assert.equal(typeof req.body, 'string');
+    assert.deepEqual(JSON.parse(req.body), { repo: '/abs/repo', runId: 'ship-x-1', confirmStalled: false });
+  });
+
+  test('archiveRequest always sends confirmStalled as a boolean', () => {
+    assert.equal(JSON.parse(view.archiveRequest('t', '/r', 'id', true).body).confirmStalled, true);
+    assert.equal(JSON.parse(view.archiveRequest('t', '/r', 'id', false).body).confirmStalled, false);
+    assert.equal(JSON.parse(view.archiveRequest('t', '/r', 'id').body).confirmStalled, false);
+    assert.equal(JSON.parse(view.archiveRequest('t', '/r', 'id', 'yes').body).confirmStalled, false);
+  });
+
+  test('clearRequest returns null when the token or repo is empty', () => {
+    assert.equal(view.clearRequest('', '/abs/repo'), null);
+    assert.equal(view.clearRequest('abc123', ''), null);
+  });
+
+  test('clearRequest returns a JSON POST with the token header', () => {
+    const req = view.clearRequest('abc123', '/abs/repo');
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/api/cache-clear');
+    assert.deepEqual(req.headers, { 'X-Sdlc-Token': 'abc123', 'Content-Type': 'application/json' });
+    assert.deepEqual(JSON.parse(req.body), { repo: '/abs/repo' });
+  });
+});
+
+describe('learningUrl', () => {
+  test('returns null when the repo, date, or heading is empty', () => {
+    assert.equal(view.learningUrl('', '2026-10-08', 'plan: x'), null);
+    assert.equal(view.learningUrl('/abs/repo', '', 'plan: x'), null);
+    assert.equal(view.learningUrl('/abs/repo', '2026-10-08', ''), null);
+  });
+
+  test('encodes every value', () => {
+    const url = view.learningUrl('/abs/repo', '2026-10-08', 'plan: x');
+    assert.equal(url, '/api/learning?repo=%2Fabs%2Frepo&date=2026-10-08&heading=plan%3A%20x');
+    const query = new URL(url, 'http://localhost').searchParams;
+    assert.equal(query.get('repo'), '/abs/repo');
+    assert.equal(query.get('date'), '2026-10-08');
+    assert.equal(query.get('heading'), 'plan: x');
+  });
+
+  test('keeps characters that would split the query', () => {
+    const url = view.learningUrl('/a b/repo', '2026-10-08', 'a&b=c#d');
+    const query = new URL(url, 'http://localhost').searchParams;
+    assert.equal(query.get('repo'), '/a b/repo');
+    assert.equal(query.get('heading'), 'a&b=c#d');
+  });
+});
+
+// A snapshot with one item of each detail kind. The ship pipeline has two
+// review dimensions that each hold a finding at index 0. The review pipeline
+// is a standalone review: one step for each dimension, kind findings.
+function detailSnapshot() {
+  return {
+    repos: [
+      {
+        root: '/abs/repo-a',
+        name: 'repo-a',
+        learnings: [
+          { date: '2026-10-08', heading: 'plan: split the lanes', runId: 'r1', branch: 'main' },
+          { date: '2026-10-09', heading: 'harden', runId: 'r2', branch: 'main' },
+        ],
+        deferred: [
+          {
+            id: 'D-1', priority: 'high', description: 'Fix the race', created: '2026-10-01',
+            source: 'review', severity: 'high', file: 'a.go', line: 42, reason: 'out of scope',
+          },
+          {
+            id: 'D-2', priority: 'low', description: 'Rename it', created: '',
+            source: '', severity: '', file: '', line: 0, reason: '',
+          },
+        ],
+        pipelines: [
+          {
+            id: 'ship-x-1',
+            kind: 'ship',
+            issues: [
+              { source: 'step', severity: 'high', text: 'commit failed', file: 'b.go', line: '12-14', ref: 'commit' },
+              { source: 'wave', severity: 'low', text: 'slow wave', file: '', line: '', ref: 'wave 2' },
+            ],
+            steps: [
+              { name: 'execute', detail: { kind: 'waves', waves: [] } },
+              {
+                name: 'review',
+                detail: {
+                  kind: 'dimensions',
+                  dimensions: [
+                    {
+                      name: 'security',
+                      findingItems: [{ text: 'SQL built from input', severity: 'high', file: 's.go', line: '7' }],
+                    },
+                    {
+                      name: 'performance',
+                      findingItems: [{ text: 'N+1 query', severity: 'medium', file: 'p.go', line: '' }],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            id: 'review-20261008T120000',
+            kind: 'review',
+            issues: [],
+            steps: [
+              {
+                name: 'docs',
+                detail: { kind: 'findings', findings: [{ text: 'Stale doc', severity: 'low', file: 'd.md', line: '3' }] },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        root: '/abs/repo-b',
+        name: 'repo-b',
+        learnings: [],
+        deferred: [],
+        pipelines: [],
+      },
+    ],
+  };
+}
+
+describe('detailKey', () => {
+  test('builds the key of each kind from the fields the key uses', () => {
+    assert.equal(view.detailKey('deferred', { id: 'D-1' }), 'deferred:D-1');
+    assert.equal(view.detailKey('issue', null, { pipeline: 'ship-x-1', index: 3 }), 'issue:ship-x-1:3');
+    assert.equal(
+      view.detailKey('learning', { date: '2026-10-08', heading: 'plan: x' }),
+      'learning:2026-10-08:plan: x'
+    );
+    assert.equal(
+      view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'security', index: 0 }),
+      'finding:ship-x-1:security:0'
+    );
+  });
+
+  test('ignores fields that are not in the key', () => {
+    assert.equal(
+      view.detailKey('deferred', { id: 'D-1', priority: 'low' }, { pipeline: 'p', index: 9 }),
+      'deferred:D-1'
+    );
+    assert.equal(
+      view.detailKey('issue', { id: 'D-1', date: 'x' }, { pipeline: 'p', index: 1, dimension: 'd' }),
+      'issue:p:1'
+    );
+  });
+
+  test('accepts index 0', () => {
+    assert.equal(view.detailKey('issue', null, { pipeline: 'p', index: 0 }), 'issue:p:0');
+  });
+
+  test('returns an empty string for an unknown kind or a missing key field', () => {
+    assert.equal(view.detailKey('other', { id: 'D-1' }, { pipeline: 'p', index: 0 }), '');
+    assert.equal(view.detailKey('deferred', {}), '');
+    assert.equal(view.detailKey('deferred'), '');
+    assert.equal(view.detailKey('issue', null, { pipeline: 'p' }), '');
+    assert.equal(view.detailKey('issue', null, { index: 0 }), '');
+    assert.equal(view.detailKey('learning', { date: '2026-10-08' }), '');
+    assert.equal(view.detailKey('learning', { heading: 'h' }), '');
+    assert.equal(view.detailKey('finding', null, { pipeline: 'p', index: 0 }), '');
+    assert.equal(view.detailKey('finding', null, { pipeline: 'p', dimension: 'd' }), '');
+  });
+
+  test('gives the same key for the same item in two snapshots', () => {
+    const first = detailSnapshot();
+    const second = detailSnapshot();
+    second.repos[0].deferred[0].description = 'changed text';
+    const keyIn = (snap) => ({
+      deferred: view.detailKey('deferred', snap.repos[0].deferred[0]),
+      learning: view.detailKey('learning', snap.repos[0].learnings[0]),
+      issue: view.detailKey('issue', snap.repos[0].pipelines[0].issues[0], { pipeline: snap.repos[0].pipelines[0].id, index: 0 }),
+    });
+    assert.deepEqual(keyIn(first), keyIn(second));
+  });
+
+  test('gives two ship dimensions with a finding at index 0 two keys', () => {
+    const a = view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'security', index: 0 });
+    const b = view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'performance', index: 0 });
+    assert.notEqual(a, b);
+  });
+});
+
+describe('detailItem', () => {
+  test('finds a deferred item with its metadata', () => {
+    const item = view.detailItem(detailSnapshot(), 'deferred:D-1');
+    assert.deepEqual(item, {
+      kind: 'deferred',
+      repo: '/abs/repo-a',
+      title: 'D-1 (high)',
+      text: 'Fix the race',
+      meta: [
+        ['Created', '2026-10-01'],
+        ['Source', 'review'],
+        ['Severity', 'high'],
+        ['File', 'a.go'],
+        ['Line', '42'],
+        ['Reason', 'out of scope'],
+      ],
+    });
+  });
+
+  test('leaves out the empty metadata of a deferred item', () => {
+    const item = view.detailItem(detailSnapshot(), 'deferred:D-2');
+    assert.equal(item.title, 'D-2 (low)');
+    assert.deepEqual(item.meta, []);
+  });
+
+  test('finds an issue by pipeline id and row index', () => {
+    const snap = detailSnapshot();
+    assert.deepEqual(view.detailItem(snap, 'issue:ship-x-1:0'), {
+      kind: 'issue',
+      repo: '/abs/repo-a',
+      title: 'high: step',
+      text: 'commit failed',
+      meta: [
+        ['Source', 'step'],
+        ['Severity', 'high'],
+        ['File', 'b.go'],
+        ['Line', '12-14'],
+        ['Ref', 'commit'],
+      ],
+    });
+    assert.equal(view.detailItem(snap, 'issue:ship-x-1:1').text, 'slow wave');
+    assert.equal(view.detailItem(snap, 'issue:ship-x-1:2'), null);
+  });
+
+  test('finds a learning whose heading holds a colon, with an empty text', () => {
+    const item = view.detailItem(detailSnapshot(), 'learning:2026-10-08:plan: split the lanes');
+    assert.deepEqual(item, {
+      kind: 'learning',
+      repo: '/abs/repo-a',
+      title: 'plan: split the lanes',
+      text: '',
+      meta: [['Date', '2026-10-08']],
+    });
+  });
+
+  test('finds a finding of a ship dimension', () => {
+    const item = view.detailItem(detailSnapshot(), 'finding:ship-x-1:security:0');
+    assert.deepEqual(item, {
+      kind: 'finding',
+      repo: '/abs/repo-a',
+      title: 'high: s.go:7',
+      text: 'SQL built from input',
+      meta: [
+        ['Pipeline', 'ship-x-1'],
+        ['Dimension', 'security'],
+        ['Severity', 'high'],
+      ],
+    });
+  });
+
+  test('finds a finding of a standalone review step by the step name', () => {
+    const item = view.detailItem(detailSnapshot(), 'finding:review-20261008T120000:docs:0');
+    assert.equal(item.kind, 'finding');
+    assert.equal(item.title, 'low: d.md:3');
+    assert.equal(item.text, 'Stale doc');
+    assert.deepEqual(item.meta[1], ['Dimension', 'docs']);
+  });
+
+  test('two ship dimensions with a finding at index 0 give two keys and two items', () => {
+    const snap = detailSnapshot();
+    const keyA = view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'security', index: 0 });
+    const keyB = view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'performance', index: 0 });
+    assert.notEqual(keyA, keyB);
+    const itemA = view.detailItem(snap, keyA);
+    const itemB = view.detailItem(snap, keyB);
+    assert.equal(itemA.text, 'SQL built from input');
+    assert.equal(itemB.text, 'N+1 query');
+    assert.deepEqual(itemA.meta[1], ['Dimension', 'security']);
+    assert.deepEqual(itemB.meta[1], ['Dimension', 'performance']);
+  });
+
+  test('a finding without a line shows the file only', () => {
+    assert.equal(view.detailItem(detailSnapshot(), 'finding:ship-x-1:performance:0').title, 'medium: p.go');
+  });
+
+  test('returns the item of every key a builder makes', () => {
+    const snap = detailSnapshot();
+    const keys = [
+      view.detailKey('deferred', snap.repos[0].deferred[1]),
+      view.detailKey('learning', snap.repos[0].learnings[1]),
+      view.detailKey('issue', null, { pipeline: 'ship-x-1', index: 1 }),
+      view.detailKey('finding', null, { pipeline: 'review-20261008T120000', dimension: 'docs', index: 0 }),
+    ];
+    keys.forEach((key) => {
+      assert.notEqual(view.detailItem(snap, key), null, key);
+    });
+  });
+
+  test('returns the item again after a snapshot rebuild', () => {
+    const key = view.detailKey('deferred', { id: 'D-1' });
+    const rebuilt = detailSnapshot();
+    rebuilt.repos[0].deferred[0].description = 'Fix the race, now with a test';
+    assert.equal(view.detailItem(rebuilt, key).text, 'Fix the race, now with a test');
+  });
+
+  test('returns the root of the repo that holds the item', () => {
+    const snap = detailSnapshot();
+    snap.repos[1].deferred = [{ id: 'D-9', priority: 'low', description: 'in b' }];
+    assert.equal(view.detailItem(snap, 'deferred:D-9').repo, '/abs/repo-b');
+  });
+
+  test('returns null for a gone item, an empty key, or an empty snapshot', () => {
+    const snap = detailSnapshot();
+    assert.equal(view.detailItem(snap, 'deferred:D-404'), null);
+    assert.equal(view.detailItem(snap, 'finding:ship-x-1:security:1'), null);
+    assert.equal(view.detailItem(snap, 'finding:ship-x-1:other:0'), null);
+    assert.equal(view.detailItem(snap, 'learning:2026-10-08:gone'), null);
+    assert.equal(view.detailItem(snap, 'bogus'), null);
+    assert.equal(view.detailItem(snap, ''), null);
+    assert.equal(view.detailItem(null, 'deferred:D-1'), null);
+    assert.equal(view.detailItem({}, 'deferred:D-1'), null);
+    assert.equal(view.detailItem({ repos: [{ root: '/r' }] }, 'deferred:D-1'), null);
   });
 });
 
@@ -1988,7 +2333,7 @@ describe('render tiles from the shared fixture', () => {
     const queued = tileByName(block, 'queued');
     assert.equal(textOf(oneByClass(queued, 'wave-head')), 'queued2');
     assert.deepEqual(byClass(queued, 'task-id').map((n) => n.textContent), ['T7', 'T8']);
-    assert.ok(!classesOf(queued).includes('wide'));
+    assert.ok(classesOf(queued).includes('wide'));
   });
 
   test('the stalled issue shows the age of the pipeline updatedAt through relativeWhen', () => {
@@ -2055,11 +2400,15 @@ describe('render stepTile and stepTiles', () => {
     assert.equal(summary.children[3].textContent, view.sectionMeta(step));
   });
 
-  test('a wide section gets the wide class; one wave stays a column; the selected step is marked', () => {
+  test('a wide section gets the wide class; an execute tile is wide with 0, 1, or 2 waves; the selected step is marked', () => {
+    const none = { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [] } };
     const one = { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [{ number: 1, tasks: [] }] } };
     const two = { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [{ number: 1, tasks: [] }, { number: 2, tasks: [] }] } };
-    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), one, 0, true, false).className, 'step-sec');
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), none, 0, true, false).className, 'step-sec wide');
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), one, 0, true, false).className, 'step-sec wide');
     assert.equal(render.stepTile(fakeDoc(), view, pipeline(), two, 0, true, true).className, 'step-sec wide selected');
+    const dims = { name: 'review', status: 'completed', detail: { kind: 'dimensions', dimensions: [] } };
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), dims, 0, true, false).className, 'step-sec');
     const rounds = { name: 'review', status: 'completed', detail: { kind: 'rounds', rounds: [], maxRounds: 5 } };
     assert.equal(render.stepTile(fakeDoc(), view, pipeline(), rounds, 0, true, false).className, 'step-sec wide');
   });

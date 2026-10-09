@@ -58,6 +58,7 @@ type dashboardEvent struct {
 	kind      string // "prompt", "command", or "mcp"
 	text      string
 	branch    string // "" when the source entry carries none (e.g. MCP evidence)
+	command   string // full raw command, kind "command" only. Never serialized
 }
 
 // dashboardSessionAgg accumulates the evidence lines of one session before
@@ -115,6 +116,10 @@ func dashboardSessionsFromEvidence(root string, now time.Time) []DashboardSessio
 		s.LastSeen = dashboardFormatTime(last)
 		s.Active = now.Sub(last) < dashboardSessionActiveWithin
 
+		// Group every command of the session, before the timeline cap drops
+		// the oldest events.
+		s.CommandGroups = groupSessionCommands(a.events)
+
 		for i := len(a.events) - 1; i >= 0 && len(s.Timeline) < dashboardSessionTimelineMax; i-- {
 			e := a.events[i]
 			s.Timeline = append(s.Timeline, DashboardEvent{At: dashboardFormatTime(e.at), Kind: e.kind, Text: e.text})
@@ -144,6 +149,7 @@ func dashboardCLIEvents(root string) []dashboardEvent {
 				kind:      "command",
 				text:      dashboardPreview(e.Command),
 				branch:    e.Branch,
+				command:   e.Command,
 			})
 		}
 	}
