@@ -2,7 +2,9 @@ package hooks
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -926,11 +928,20 @@ func formatNumber(v float64) string {
 // platforms (notably Windows without developer mode).
 var symlinkFunc = os.Symlink
 
+// removeFunc and mkdirAllFunc are test seams, like symlinkFunc, so remove
+// and create failures can be simulated deterministically.
+var (
+	removeFunc   = os.Remove
+	mkdirAllFunc = os.MkdirAll
+)
+
 // worktreeLinkPhase makes the main worktree's run-generated .sdlc-v2/ state
 // (paths.LinkedStateEntries) visible, live, from a linked worktree, per the
-// worktree-state-links spec. In the main worktree (active root == main
-// root) it does nothing: there is nothing to link to, and nothing is
-// printed. In a linked worktree, each missing linked entry becomes a
+// worktree-state-links spec. In the main worktree (its .git is a folder) it
+// links nothing and creates nothing: it only removes dangling links that
+// point to a .sdlc-v2/<entry> path, through cleanMainLinks. When the active
+// root equals the main root and .git is not a folder, it does nothing and
+// prints nothing. In a linked worktree, each missing linked entry becomes a
 // symlink to <main-worktree>/.sdlc-v2/<entry> — created even when that
 // target does not exist yet, so later writes there appear without a new
 // session (the spec's "Link creation trigger" requirement). An entry that
@@ -940,6 +951,9 @@ var symlinkFunc = os.Symlink
 // (root resolution, .sdlc-v2/ creation) degrades silently to no output,
 // matching this file's other phases.
 func worktreeLinkPhase() []string {
+	if root := resolveActiveWorktreeSafe(); root != "" && isMainCheckout(root) {
+		return cleanMainLinks(root)
+	}
 	mainRoot, err := mainRootFunc()
 	if err != nil || mainRoot == "" {
 		return nil
@@ -973,6 +987,60 @@ func worktreeLinkPhase() []string {
 			// Any other Lstat error (e.g. a permission failure reading the
 			// parent directory) is skipped silently — same fail-open
 			// convention as every other branch in this phase.
+		}
+	}
+	return lines
+}
+
+// isMainCheckout reports whether <root>/.git is a folder. A main checkout
+// has a .git folder; a linked worktree has a .git file that points to the
+// main checkout.
+func isMainCheckout(root string) bool {
+	info, err := os.Stat(filepath.Join(root, ".git"))
+	return err == nil && info.IsDir()
+}
+
+// cleanMainLinks examines each paths.LinkedStateEntries entry under
+// <root>/.sdlc-v2/ and returns one line for each action or failure. An
+// entry is dangling when os.Lstat reports a link and os.Stat fails with
+// fs.ErrNotExist. A dangling link whose target ends with
+// /.sdlc-v2/<entry> is removed. Any other link is kept with one advisory
+// line, because the main worktree must hold real state folders and the link
+// may be a user link (for example to an unmounted volume). A real file or
+// folder is never removed. A link that cannot be followed for a reason other
+// than a missing target (for example a loop) is kept with the advisory line.
+// A missing entry, or a link that cannot be read, produces no line.
+func cleanMainLinks(root string) []string {
+	var lines []string
+	dataDir := filepath.Join(root, paths.DataDir)
+	for _, entry := range paths.LinkedStateEntries {
+		linkPath := filepath.Join(dataDir, entry)
+		info, err := os.Lstat(linkPath)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			continue
+		}
+		target, err := os.Readlink(linkPath)
+		if err != nil {
+			continue
+		}
+		advisory := fmt.Sprintf("sdlc: .sdlc-v2/%s in the main worktree is a link to %s — kept; the main worktree must hold real state folders", entry, target)
+
+		_, statErr := os.Stat(linkPath)
+		switch {
+		case statErr == nil, !errors.Is(statErr, fs.ErrNotExist):
+			// A live link, or a link that cannot be followed for a reason
+			// other than a missing target (for example a loop or a
+			// permission failure). The hook cannot confirm that the link is
+			// dangling, so it keeps the link and prints the advisory line.
+			lines = append(lines, advisory)
+		case !strings.HasSuffix(filepath.ToSlash(target), "/"+paths.DataDir+"/"+entry):
+			lines = append(lines, advisory)
+		default:
+			if err := removeFunc(linkPath); err != nil {
+				lines = append(lines, fmt.Sprintf("sdlc: could not remove dangling link .sdlc-v2/%s: %v", entry, err))
+			} else {
+				lines = append(lines, fmt.Sprintf("sdlc: removed dangling link .sdlc-v2/%s", entry))
+			}
 		}
 	}
 	return lines

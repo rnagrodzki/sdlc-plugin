@@ -41,4 +41,4 @@ jobs:
         run: go test -tags integration ./...
 
       - name: Test release scripts
-        run: node --test .github/scripts/__tests__/*.test.cjs internal/dashboard/web/testdata/view.test.cjs
+        run: node --test .github/scripts/__tests__/*.test.cjs internal/dashboard/web/testdata/view.test.cjs cmd/design-preview/testdata/marks.test.cjs

@@ -2042,6 +2042,211 @@ func TestSessionStartWorktreeLinks(t *testing.T) {
 	})
 }
 
+// mustSymlink creates a symlink at link that points to target. The target
+// does not need to exist.
+func mustSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	mustMkdirAll(t, filepath.Dir(link))
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink %s -> %s: %v", link, target, err)
+	}
+}
+
+// mainCheckoutFixture returns a temp dir that looks like a main checkout:
+// its .git is a folder. It points both root seams at that dir.
+func mainCheckoutFixture(t *testing.T) string {
+	t.Helper()
+	root := realPath(t, t.TempDir())
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	withMainRoot(t, root)
+	withActiveRoot(t, root)
+	return root
+}
+
+// danglingTarget returns a path that ends with /.sdlc-v2/<entry> and does
+// not exist, like the target of a link that a deleted linked worktree left.
+func danglingTarget(t *testing.T, entry string) string {
+	t.Helper()
+	return filepath.Join(realPath(t, t.TempDir()), "gone-worktree", paths.DataDir, entry)
+}
+
+func TestIsMainCheckout(t *testing.T) {
+	t.Run("git folder", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if !isMainCheckout(root) {
+			t.Error("isMainCheckout() = false, want true when .git is a folder")
+		}
+	})
+	t.Run("git file", func(t *testing.T) {
+		root := t.TempDir()
+		mustWriteFile(t, filepath.Join(root, ".git"), "gitdir: /elsewhere/.git/worktrees/x\n")
+		if isMainCheckout(root) {
+			t.Error("isMainCheckout() = true, want false when .git is a file")
+		}
+	})
+	t.Run("no git entry", func(t *testing.T) {
+		if isMainCheckout(t.TempDir()) {
+			t.Error("isMainCheckout() = true, want false when .git is missing")
+		}
+	})
+}
+
+func TestSessionStartMainWorktreeLinks(t *testing.T) {
+	t.Run("main checkout creates no link and no data folder", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		// A main root that differs from the active root must not make the
+		// phase link: the .git folder decides.
+		withMainRoot(t, realPath(t, t.TempDir()))
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil", got)
+		}
+		if _, err := os.Lstat(filepath.Join(root, paths.DataDir)); !os.IsNotExist(err) {
+			t.Errorf(".sdlc-v2/ must not be created in the main checkout: err=%v", err)
+		}
+	})
+
+	t.Run("dangling link with a matching target is removed", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		var want []string
+		for _, entry := range paths.LinkedStateEntries {
+			mustSymlink(t, danglingTarget(t, entry), filepath.Join(root, paths.DataDir, entry))
+			want = append(want, "sdlc: removed dangling link .sdlc-v2/"+entry)
+		}
+
+		assertLines(t, worktreeLinkPhase(), want)
+
+		for _, entry := range paths.LinkedStateEntries {
+			if _, err := os.Lstat(filepath.Join(root, paths.DataDir, entry)); !os.IsNotExist(err) {
+				t.Errorf("%s still exists after cleanup: err=%v", entry, err)
+			}
+		}
+	})
+
+	t.Run("live link is kept with an advisory line", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		entry := paths.RunsSubdir
+		target := filepath.Join(realPath(t, t.TempDir()), "other", paths.DataDir, entry)
+		mustMkdirAll(t, target)
+		linkPath := filepath.Join(root, paths.DataDir, entry)
+		mustSymlink(t, target, linkPath)
+
+		want := "sdlc: .sdlc-v2/" + entry + " in the main worktree is a link to " + target + " — kept; the main worktree must hold real state folders"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		info, err := os.Lstat(linkPath)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("live link must stay in place: err=%v info=%v", err, info)
+		}
+	})
+
+	t.Run("dangling link with a foreign target is kept with an advisory line", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		entry := paths.ReportsSubdir
+		target := filepath.Join(realPath(t, t.TempDir()), "unmounted-volume", entry)
+		linkPath := filepath.Join(root, paths.DataDir, entry)
+		mustSymlink(t, target, linkPath)
+
+		want := "sdlc: .sdlc-v2/" + entry + " in the main worktree is a link to " + target + " — kept; the main worktree must hold real state folders"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		if _, err := os.Lstat(linkPath); err != nil {
+			t.Errorf("dangling link with a foreign target must stay in place: %v", err)
+		}
+	})
+
+	t.Run("link loop is kept with an advisory line", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		entry := paths.StateArtifactsSubdir
+		dataDir := filepath.Join(root, paths.DataDir)
+		linkPath := filepath.Join(dataDir, entry)
+		loopPath := filepath.Join(dataDir, "loop-back")
+		// entry -> loop-back -> entry: os.Stat fails with ELOOP, not ErrNotExist.
+		mustSymlink(t, loopPath, linkPath)
+		mustSymlink(t, linkPath, loopPath)
+
+		want := "sdlc: .sdlc-v2/" + entry + " in the main worktree is a link to " + loopPath + " — kept; the main worktree must hold real state folders"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		if _, err := os.Lstat(linkPath); err != nil {
+			t.Errorf("link loop must stay in place: %v", err)
+		}
+	})
+
+	t.Run("remove failure prints one line and the phase continues", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		failing := paths.LinkedStateEntries[0]
+		next := paths.LinkedStateEntries[1]
+		mustSymlink(t, danglingTarget(t, failing), filepath.Join(root, paths.DataDir, failing))
+		mustSymlink(t, danglingTarget(t, next), filepath.Join(root, paths.DataDir, next))
+
+		origRemove := removeFunc
+		removeFunc = func(name string) error {
+			if filepath.Base(name) == failing {
+				return errors.New("permission denied")
+			}
+			return origRemove(name)
+		}
+		t.Cleanup(func() { removeFunc = origRemove })
+
+		assertLines(t, worktreeLinkPhase(), []string{
+			"sdlc: could not remove dangling link .sdlc-v2/" + failing + ": permission denied",
+			"sdlc: removed dangling link .sdlc-v2/" + next,
+		})
+
+		if _, err := os.Lstat(filepath.Join(root, paths.DataDir, failing)); err != nil {
+			t.Errorf("link whose removal failed must still exist: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, paths.DataDir, next)); !os.IsNotExist(err) {
+			t.Errorf("entry after the failing one was not removed: err=%v", err)
+		}
+	})
+
+	t.Run("real file and real folder are left unchanged without a line", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		realDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+		realFile := filepath.Join(root, paths.DataDir, paths.TimingsFile)
+		mustMkdirAll(t, realDir)
+		mustWriteFile(t, filepath.Join(realDir, "run.json"), "keep me")
+		mustWriteFile(t, realFile, "{}")
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil for real entries", got)
+		}
+		if b, err := os.ReadFile(filepath.Join(realDir, "run.json")); err != nil || string(b) != "keep me" {
+			t.Errorf("file inside the real folder changed: content=%q err=%v", b, err)
+		}
+		if b, err := os.ReadFile(realFile); err != nil || string(b) != "{}" {
+			t.Errorf("real file changed: content=%q err=%v", b, err)
+		}
+	})
+
+	t.Run("git file with equal roots does nothing", func(t *testing.T) {
+		root := realPath(t, t.TempDir())
+		mustWriteFile(t, filepath.Join(root, ".git"), "gitdir: /elsewhere/.git/worktrees/x\n")
+		withMainRoot(t, root)
+		withActiveRoot(t, root)
+		entry := paths.RunsSubdir
+		linkPath := filepath.Join(root, paths.DataDir, entry)
+		mustSymlink(t, danglingTarget(t, entry), linkPath)
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil", got)
+		}
+		if _, err := os.Lstat(linkPath); err != nil {
+			t.Errorf("link must stay when .git is a file and the roots are equal: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, paths.DataDir, paths.ReportsSubdir)); !os.IsNotExist(err) {
+			t.Errorf("no entry may be created: err=%v", err)
+		}
+	})
+}
+
 // TestWorktreeLinksGitClean pins the worktree-state-links spec's "Git status
 // stays clean" requirement against a real `git worktree add` linked
 // worktree — mainRootFunc/activeRootFunc are left at their real
