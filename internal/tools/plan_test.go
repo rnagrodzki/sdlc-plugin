@@ -20,6 +20,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
 // ---------------------------------------------------------------------------
@@ -2079,6 +2080,235 @@ func TestPlanPrepare_GuardrailsFileFormat(t *testing.T) {
 	})
 }
 
+// TestPlanPrepare_GuardrailCounts verifies plan_prepare stores the
+// guardrailCounts key in the plan state file: counts by severity (a missing
+// severity counts as error), zeros for no guardrails, no key when the config
+// read fails, and no write at all on a resume call.
+func TestPlanPrepare_GuardrailCounts(t *testing.T) {
+	counts := func(t *testing.T, root string) (map[string]any, bool) {
+		t.Helper()
+		doc := readSoleStateDoc(t, root)
+		v, ok := doc["guardrailCounts"]
+		if !ok {
+			return nil, false
+		}
+		m, ok := v.(map[string]any)
+		if !ok {
+			t.Fatalf("guardrailCounts = %T %v, want object", v, v)
+		}
+		return m, true
+	}
+	want := func(total, errCount, warn int) map[string]any {
+		return map[string]any{"total": float64(total), "error": float64(errCount), "warning": float64(warn)}
+	}
+
+	t.Run("counts by severity, missing severity is error", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), ""+
+			"[[plan.guardrails]]\n"+
+			"id = \"no-new-deps\"\n"+
+			"severity = \"error\"\n"+
+			"description = \"Ask before adding a dependency.\"\n"+
+			"\n"+
+			"[[plan.guardrails]]\n"+
+			"id = \"prefer-helpers\"\n"+
+			"severity = \"warning\"\n"+
+			"description = \"Reuse helpers.\"\n"+
+			"\n"+
+			"[[plan.guardrails]]\n"+
+			"id = \"no-severity\"\n"+
+			"description = \"Has no severity.\"\n")
+
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := counts(t, dir)
+		if !ok {
+			t.Fatal("guardrailCounts missing after the first call")
+		}
+		if !reflect.DeepEqual(got, want(3, 2, 1)) {
+			t.Errorf("guardrailCounts = %v, want %v", got, want(3, 2, 1))
+		}
+	})
+
+	t.Run("zero guardrails store zero counts", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := counts(t, dir)
+		if !ok {
+			t.Fatal("guardrailCounts missing for zero guardrails")
+		}
+		if !reflect.DeepEqual(got, want(0, 0, 0)) {
+			t.Errorf("guardrailCounts = %v, want %v", got, want(0, 0, 0))
+		}
+	})
+
+	t.Run("resolveTemplate call recounts", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		cfg := filepath.Join(dir, paths.DataDir, "config.toml")
+		writeFile(t, cfg, "[[plan.guardrails]]\nid = \"a\"\nseverity = \"warning\"\ndescription = \"d\"\n")
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, cfg, ""+
+			"[[plan.guardrails]]\nid = \"a\"\nseverity = \"warning\"\ndescription = \"d\"\n\n"+
+			"[[plan.guardrails]]\nid = \"b\"\ndescription = \"d\"\n")
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true}); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := counts(t, dir)
+		if !ok || !reflect.DeepEqual(got, want(2, 1, 1)) {
+			t.Errorf("guardrailCounts = %v (present=%v), want %v", got, ok, want(2, 1, 1))
+		}
+	})
+
+	t.Run("guardrails value that is not an array stores zeros", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "[plan]\nguardrails = \"not-an-array\"\n")
+
+		out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out.Errors) != 0 {
+			t.Fatalf("Errors = %v, want none (loadGuardrails reports no error for a non-array)", out.Errors)
+		}
+		got, ok := counts(t, dir)
+		if !ok || !reflect.DeepEqual(got, want(0, 0, 0)) {
+			t.Errorf("guardrailCounts = %v (present=%v), want %v", got, ok, want(0, 0, 0))
+		}
+	})
+
+	t.Run("config read error stores no key", func(t *testing.T) {
+		dir := planTestGitRepo(t, "main")
+		writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "[plan\nguardrails = [\n")
+
+		out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, e := range out.Errors {
+			if strings.Contains(e, "Failed to read plan config: ") {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("Errors = %v, want a \"Failed to read plan config: \" entry", out.Errors)
+		}
+		if got, ok := counts(t, dir); ok {
+			t.Errorf("guardrailCounts = %v, want no key after a config read error", got)
+		}
+	})
+
+	t.Run("resume writes nothing", func(t *testing.T) {
+		dir := planTestTemplateRepo(t)
+		cfg := filepath.Join(dir, paths.DataDir, "config.toml")
+		writeFile(t, cfg, "[[plan.guardrails]]\nid = \"a\"\nseverity = \"error\"\ndescription = \"d\"\n")
+		prev, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		statePath := filepath.Join(planTestRunsDir(dir), prev.RunID+".json")
+		before, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// The config changes after the run started. A resume must not recount.
+		writeFile(t, cfg, ""+
+			"[[plan.guardrails]]\nid = \"a\"\nseverity = \"error\"\ndescription = \"d\"\n\n"+
+			"[[plan.guardrails]]\nid = \"b\"\nseverity = \"warning\"\ndescription = \"d\"\n")
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true}); err != nil {
+			t.Fatal(err)
+		}
+		after, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Errorf("state file changed on resume:\nbefore=%s\nafter=%s", before, after)
+		}
+		if got, ok := counts(t, dir); !ok || !reflect.DeepEqual(got, want(1, 1, 0)) {
+			t.Errorf("guardrailCounts = %v (present=%v), want %v", got, ok, want(1, 1, 0))
+		}
+	})
+
+	t.Run("resume on a run without counts adds none", func(t *testing.T) {
+		dir := planTestTemplateRepo(t)
+		planTestSeedRun(t, dir, "plan-main-20200101T000000Z", planTestActiveData())
+		if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true}); err != nil {
+			t.Fatal(err)
+		}
+		if got, ok := counts(t, dir); ok {
+			t.Errorf("guardrailCounts = %v, want no key after a resume", got)
+		}
+	})
+}
+
+// TestCountGuardrails_SeverityArms verifies the three arms of
+// countGuardrails: "error", "warning", and every other severity, which counts
+// in total only. A missing or non-string severity defaults to "error".
+func TestCountGuardrails_SeverityArms(t *testing.T) {
+	got := countGuardrails([]map[string]any{
+		{"id": "e", "severity": "error"},
+		{"id": "w", "severity": "warning"},
+		{"id": "missing"},
+		{"id": "number", "severity": float64(3)},
+		{"id": "info", "severity": "info"},
+		{"id": "empty", "severity": ""},
+	})
+	// "missing" and "number" default to error. "info" and "empty" are in
+	// neither count.
+	want := map[string]any{"total": 6, "error": 3, "warning": 1}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("countGuardrails = %v, want %v", got, want)
+	}
+
+	other := countGuardrails([]map[string]any{{"severity": "info"}, {"severity": ""}})
+	wantOther := map[string]any{"total": 2, "error": 0, "warning": 0}
+	if !reflect.DeepEqual(other, wantOther) {
+		t.Errorf("countGuardrails(other severities) = %v, want %v", other, wantOther)
+	}
+}
+
+// TestPlanPrepare_GuardrailCountsWriteFails verifies a failed second state
+// write (the one that stores guardrailCounts) returns the plan state write
+// InfraError, and that the first write stays on disk without the key.
+func TestPlanPrepare_GuardrailCountsWriteFails(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+	writeErr := errors.New("disk full")
+	orig := planCountsWrite
+	planCountsWrite = func(*state.State) error { return writeErr }
+	t.Cleanup(func() { planCountsWrite = orig })
+
+	_, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "plan state write failed: ") {
+		t.Errorf("Msg = %q, want prefix %q", ie.Msg, "plan state write failed: ")
+	}
+	if ie.Suggestion == "" {
+		t.Error("Suggestion empty")
+	}
+	if !errors.Is(err, writeErr) {
+		t.Errorf("Cause = %v, want the injected write error", ie.Cause)
+	}
+
+	doc := readSoleStateDoc(t, dir)
+	if _, ok := doc["planIntegrity"]; !ok {
+		t.Errorf("first write missing from state file: %v", doc)
+	}
+	if v, ok := doc["guardrailCounts"]; ok {
+		t.Errorf("guardrailCounts = %v, want no key after the failed second write", v)
+	}
+}
+
 // TestPlanPrepare_ErrorSites verifies the InfraError paths of run selection
 // and the guardrails write.
 func TestPlanPrepare_ErrorSites(t *testing.T) {
@@ -2773,8 +3003,9 @@ func TestPlanMark_Checkpoint_UsesLatestPlanRunExactSlug(t *testing.T) {
 }
 
 // TestPlanMark_InputSchema_ListsCheckpointEnum verifies the plan_mark input
-// schema's "marker" field declares all of validMarkers (9 entries,
-// including "checkpoint" and "review-round") as a jsonschema enum, keeping
+// schema's "marker" field declares all of validMarkers (10 entries,
+// including "checkpoint", "review-round" and "review-outcome") as a
+// jsonschema enum, keeping
 // the MCP tool schema in sync with the marker set planMark actually accepts.
 func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
 	f, ok := reflect.TypeOf(PlanMarkIn{}).FieldByName("Marker")
@@ -2787,7 +3018,7 @@ func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
 			t.Errorf("PlanMarkIn.Marker jsonschema tag missing enum=%s: %q", marker, tag)
 		}
 	}
-	if want := 9; len(validMarkers) != want {
+	if want := 10; len(validMarkers) != want {
 		t.Fatalf("len(validMarkers) = %d, want %d (update this test if the marker set intentionally grows)", len(validMarkers), want)
 	}
 }
@@ -2901,7 +3132,7 @@ func TestPlanMark_ReviewRound_NoNext(t *testing.T) {
 		t.Fatalf("planMark(review-round): %v", err)
 	}
 	if out.Next != "" {
-		t.Errorf("Next = %q, want empty (only checkpoint returns next)", out.Next)
+		t.Errorf("Next = %q, want empty (only checkpoint and review-outcome return next)", out.Next)
 	}
 	rounds := storedReviewRounds(t, dir)
 	if lenses, ok := rounds[0]["lenses"].([]any); !ok || len(lenses) != 0 {
@@ -2978,8 +3209,8 @@ func TestPlanMark_ReviewRound_DataErrors(t *testing.T) {
 		wantMsg        string
 		wantSuggestion string
 	}{
-		{name: "data missing", data: nil, wantMsg: "review-round needs data {round, mergedStatus, found, fixed, lenses}", wantSuggestion: "round, mergedStatus, found, fixed, lenses"},
-		{name: "unknown key", data: with("at", "2026-10-07T00:00:00Z"), wantMsg: `review-round data has unknown key "at"`, wantSuggestion: "allowed keys: round, mergedStatus, found, fixed, lenses"},
+		{name: "data missing", data: nil, wantMsg: "review-round needs data {round, mergedStatus, found, fixed, lenses}", wantSuggestion: "round, mergedStatus, found, fixed, lenses, findings"},
+		{name: "unknown key", data: with("at", "2026-10-07T00:00:00Z"), wantMsg: `review-round data has unknown key "at"`, wantSuggestion: "allowed keys: round, mergedStatus, found, fixed, lenses, findings"},
 		{name: "round missing", data: without("round"), wantMsg: "review-round round must be a whole number >= 1"},
 		{name: "round zero", data: with("round", float64(0)), wantMsg: "review-round round must be a whole number >= 1"},
 		{name: "round not whole", data: with("round", float64(1.5)), wantMsg: "review-round round must be a whole number >= 1"},
@@ -2996,6 +3227,16 @@ func TestPlanMark_ReviewRound_DataErrors(t *testing.T) {
 		{name: "lens bad name", data: with("lenses", []any{map[string]any{"name": "bad name!", "verdict": planStatusApproved}}), wantMsg: `review-round lenses[0].name "bad name!" is not a valid lens name`},
 		{name: "lens unknown key", data: with("lenses", []any{map[string]any{"name": "risk", "verdict": planStatusApproved, "notes": "x"}}), wantMsg: `review-round lenses[0] has unknown key "notes"`},
 		{name: "lens bad verdict", data: with("lenses", []any{map[string]any{"name": "risk", "verdict": "Rejected"}}), wantMsg: `review-round lenses[0].verdict "Rejected" is not valid`, wantSuggestion: statusSuggestion},
+		{name: "findings not an array", data: with("findings", "f-3a9c1e07"), wantMsg: "review-round findings must be a JSON array of {id, fixed}"},
+		{name: "findings null", data: with("findings", nil), wantMsg: "review-round findings must be a JSON array of {id, fixed}"},
+		{name: "findings over max", data: with("findings", manyRoundFindings(maxReviewFindings+1)), wantMsg: "review-round findings has 201 entries, max 200"},
+		{name: "finding not an object", data: with("findings", []any{"f-3a9c1e07"}), wantMsg: "review-round findings[0] must be an object {id, fixed}"},
+		{name: "finding unknown key", data: with("findings", []any{map[string]any{"id": "f-3a9c1e07", "fixed": true, "kind": "lane"}}), wantMsg: `review-round findings[0] has unknown key "kind"`},
+		{name: "finding bad id", data: with("findings", []any{map[string]any{"id": "F-3A9C1E07", "fixed": true}}), wantMsg: `review-round findings[0].id "F-3A9C1E07" does not match ^f-[0-9a-f]{8}$`, wantSuggestion: findingIDSuggestion},
+		{name: "finding duplicate id", data: with("findings", []any{map[string]any{"id": "f-3a9c1e07", "fixed": true}, map[string]any{"id": "f-3a9c1e07", "fixed": false}}), wantMsg: `review-round findings[1].id "f-3a9c1e07" repeats findings[0].id`, wantSuggestion: `Pass each finding id once. Remove the second "f-3a9c1e07" entry.`},
+		{name: "finding id missing", data: with("findings", []any{map[string]any{"fixed": true}}), wantMsg: `review-round findings[0].id "" does not match`, wantSuggestion: findingIDSuggestion},
+		{name: "finding fixed missing", data: with("findings", []any{map[string]any{"id": "f-3a9c1e07"}}), wantMsg: "review-round findings[0].fixed must be true or false"},
+		{name: "finding fixed a string", data: with("findings", []any{map[string]any{"id": "f-3a9c1e07", "fixed": "true"}}), wantMsg: "review-round findings[0].fixed must be true or false"},
 	}
 
 	for _, tt := range tests {
@@ -3048,6 +3289,310 @@ func TestPlanMark_ReviewRound_MaxRoundsStored(t *testing.T) {
 	}
 	if rounds := storedReviewRounds(t, dir); len(rounds) != maxReviewRoundsStored {
 		t.Errorf("len(reviewRounds) = %d, want %d", len(rounds), maxReviewRoundsStored)
+	}
+}
+
+// manyRoundFindings returns n valid "review-round" findings entries with
+// distinct ids.
+func manyRoundFindings(n int) []any {
+	out := make([]any, n)
+	for i := range out {
+		out[i] = map[string]any{"id": fmt.Sprintf("f-%08x", i), "fixed": i%2 == 0}
+	}
+	return out
+}
+
+// seedPlanRun creates a git fixture with one plan run in a fresh temp dir
+// and returns the dir.
+func seedPlanRun(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	if _, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore (seed): %v", err)
+	}
+	return dir
+}
+
+// TestPlanMark_ReviewRound_Findings verifies the optional "findings" key of
+// "review-round": a list is stored as given, [] is stored as [], an absent
+// key stays absent (old callers), and 200 entries are accepted.
+func TestPlanMark_ReviewRound_Findings(t *testing.T) {
+	dir := seedPlanRun(t)
+
+	withFindings := reviewRoundData(1, 2, 2, planStatusIssuesFound)
+	withFindings["findings"] = []any{
+		map[string]any{"id": "f-3a9c1e07", "fixed": true},
+		map[string]any{"id": "f-0b77d2c4", "fixed": false},
+	}
+	empty := reviewRoundData(2, 0, 0, planStatusApproved)
+	empty["findings"] = []any{}
+	full := reviewRoundData(3, 0, 0, planStatusApproved)
+	full["findings"] = manyRoundFindings(maxReviewFindings)
+	absent := reviewRoundData(4, 0, 0, planStatusApproved)
+
+	for _, data := range []map[string]any{withFindings, empty, full, absent} {
+		if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: data}); err != nil {
+			t.Fatalf("planMark(review-round %v): %v", data["round"], err)
+		}
+	}
+
+	rounds := storedReviewRounds(t, dir)
+	if len(rounds) != 4 {
+		t.Fatalf("len(reviewRounds) = %d, want 4: %v", len(rounds), rounds)
+	}
+	wantFindings := []any{
+		map[string]any{"id": "f-3a9c1e07", "fixed": true},
+		map[string]any{"id": "f-0b77d2c4", "fixed": false},
+	}
+	if !reflect.DeepEqual(rounds[0]["findings"], wantFindings) {
+		t.Errorf("reviewRounds[0].findings = %v, want %v", rounds[0]["findings"], wantFindings)
+	}
+	if got, ok := rounds[1]["findings"].([]any); !ok || len(got) != 0 {
+		t.Errorf("reviewRounds[1].findings = %#v, want [] (a passed [] is stored as [])", rounds[1]["findings"])
+	}
+	if got, ok := rounds[2]["findings"].([]any); !ok || len(got) != maxReviewFindings {
+		t.Errorf("len(reviewRounds[2].findings) = %d, want %d", len(got), maxReviewFindings)
+	}
+	if _, present := rounds[3]["findings"]; present {
+		t.Errorf("reviewRounds[3].findings = %v, want the key absent (no findings sent)", rounds[3]["findings"])
+	}
+}
+
+// TestPlanMark_ReviewRound_FindingsSurviveUpsert verifies a stored findings
+// list of one round is kept when another round is upserted, so the stored
+// rows round-trip through the state file without loss.
+func TestPlanMark_ReviewRound_FindingsSurviveUpsert(t *testing.T) {
+	dir := seedPlanRun(t)
+
+	first := reviewRoundData(1, 1, 1, planStatusIssuesFound)
+	first["findings"] = []any{map[string]any{"id": "f-3a9c1e07", "fixed": true}}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: first}); err != nil {
+		t.Fatalf("planMark(review-round 1): %v", err)
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-round", Data: reviewRoundData(2, 0, 0, planStatusApproved)}); err != nil {
+		t.Fatalf("planMark(review-round 2): %v", err)
+	}
+
+	rounds := storedReviewRounds(t, dir)
+	want := []any{map[string]any{"id": "f-3a9c1e07", "fixed": true}}
+	if !reflect.DeepEqual(rounds[0]["findings"], want) {
+		t.Errorf("reviewRounds[0].findings = %v, want %v", rounds[0]["findings"], want)
+	}
+	if _, present := rounds[1]["findings"]; present {
+		t.Errorf("reviewRounds[1].findings = %v, want the key absent", rounds[1]["findings"])
+	}
+}
+
+// TestPlanMark_StateWriteFails covers the state write of the "checkpoint",
+// "review-round" and "review-outcome" markers: with the state directory
+// read-only after one good call, each returns an InfraError with a
+// Suggestion.
+func TestPlanMark_StateWriteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	cases := []struct {
+		name string
+		in   PlanMarkIn
+	}{
+		{"checkpoint", PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "4"}}},
+		{"review-round", PlanMarkIn{Marker: "review-round", Data: reviewRoundData(1, 0, 0, planStatusApproved)}},
+		{"review-outcome", PlanMarkIn{Marker: "review-outcome", Data: map[string]any{
+			"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)},
+		}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := seedPlanRun(t)
+			first, err := planMark(dir, dir, PlanMarkIn{Marker: "checkpoint", Data: map[string]any{"step": "3"}})
+			if err != nil {
+				t.Fatalf("planMark(checkpoint): %v", err)
+			}
+			stateDir := filepath.Dir(first.Path)
+			if err := os.Chmod(stateDir, 0o500); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(stateDir, 0o755); err != nil {
+					t.Errorf("restore mode of %s: %v", stateDir, err)
+				}
+			})
+
+			_, err = planMark(dir, dir, tc.in)
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("err = %T (%v), want *mcpserver.InfraError", err, err)
+			}
+			if ie.Suggestion == "" {
+				t.Errorf("InfraError has an empty Suggestion: %+v", ie)
+			}
+		})
+	}
+}
+
+// outcomeFinding builds one valid "review-outcome" findings entry.
+func outcomeFinding(id, choice string) map[string]any {
+	return map[string]any{"id": id, "text": "Missing test for the stop route", "choice": choice, "reason": "Covered by the flow walk"}
+}
+
+// storedReviewOutcome returns st.Data["reviewOutcome"].findings of the sole
+// plan state file.
+func storedReviewOutcome(t *testing.T, dir string) []any {
+	t.Helper()
+	doc := readSoleStateDoc(t, dir)
+	outcome, ok := doc["reviewOutcome"].(map[string]any)
+	if !ok {
+		t.Fatalf("reviewOutcome missing or wrong type: %v", doc["reviewOutcome"])
+	}
+	findings, ok := outcome["findings"].([]any)
+	if !ok {
+		t.Fatalf("reviewOutcome.findings missing or wrong type: %v", outcome["findings"])
+	}
+	return findings
+}
+
+// TestPlanMark_ReviewOutcome_ReplacesEachCall verifies "review-outcome"
+// stores the full list of each call and returns the Next for its choices:
+// call 1 stores a and b (no stop, reviewOutcomeNext), call 2 with a alone
+// leaves only a (a stop choice, reviewOutcomeStopNext).
+func TestPlanMark_ReviewOutcome_ReplacesEachCall(t *testing.T) {
+	dir := seedPlanRun(t)
+
+	a := outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)
+	b := outcomeFinding("f-0b77d2c4", outcomeChoiceRejected)
+	b["reason"] = ""
+	out, err := planMark(dir, dir, PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": []any{a, b}}})
+	if err != nil {
+		t.Fatalf("planMark(review-outcome) call 1: %v", err)
+	}
+	if !out.OK {
+		t.Error("planMark(review-outcome).OK = false, want true")
+	}
+	if out.Next != reviewOutcomeNext {
+		t.Errorf("Next = %q, want %q", out.Next, reviewOutcomeNext)
+	}
+	if want := "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5."; reviewOutcomeNext != want {
+		t.Errorf("reviewOutcomeNext = %q, want %q", reviewOutcomeNext, want)
+	}
+	if got := storedReviewOutcome(t, dir); !reflect.DeepEqual(got, []any{a, b}) {
+		t.Errorf("reviewOutcome.findings after call 1 = %v, want [a b]", got)
+	}
+
+	stop := outcomeFinding("f-9d01aa42", outcomeChoiceStop)
+	out, err = planMark(dir, dir, PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": []any{stop}}})
+	if err != nil {
+		t.Fatalf("planMark(review-outcome) call 2: %v", err)
+	}
+	if out.Next != reviewOutcomeStopNext {
+		t.Errorf("Next with a stop choice = %q, want %q", out.Next, reviewOutcomeStopNext)
+	}
+	if want := "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; reviewOutcomeStopNext != want {
+		t.Errorf("reviewOutcomeStopNext = %q, want %q", reviewOutcomeStopNext, want)
+	}
+	if got := storedReviewOutcome(t, dir); !reflect.DeepEqual(got, []any{stop}) {
+		t.Errorf("reviewOutcome.findings after call 2 = %v, want only a (replaced, not merged)", got)
+	}
+}
+
+// TestPlanMark_ReviewOutcome_Limits verifies the accepted edges: 200
+// findings, and text and reason of exactly 200 multi-byte runes.
+func TestPlanMark_ReviewOutcome_Limits(t *testing.T) {
+	dir := seedPlanRun(t)
+
+	long := strings.Repeat("é", maxOutcomeFieldRunes)
+	many := make([]any, maxReviewFindings)
+	for i := range many {
+		f := outcomeFinding(fmt.Sprintf("f-%08x", i), outcomeChoiceAccepted)
+		f["text"] = long
+		f["reason"] = long
+		many[i] = f
+	}
+	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": many}}); err != nil {
+		t.Fatalf("planMark(review-outcome) at the limits: %v", err)
+	}
+	if got := storedReviewOutcome(t, dir); len(got) != maxReviewFindings {
+		t.Errorf("len(reviewOutcome.findings) = %d, want %d", len(got), maxReviewFindings)
+	}
+}
+
+// TestPlanMark_ReviewOutcome_DataErrors table-drives every rejected
+// "review-outcome" input: each case returns a *mcpserver.DomainError with
+// the matching Msg and Suggestion, and leaves the stored outcome bytes
+// unchanged.
+func TestPlanMark_ReviewOutcome_DataErrors(t *testing.T) {
+	entry := func(key string, v any) map[string]any {
+		f := outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)
+		if v == nil {
+			delete(f, key)
+		} else {
+			f[key] = v
+		}
+		return map[string]any{"findings": []any{f}}
+	}
+	tooMany := make([]any, maxReviewFindings+1)
+	for i := range tooMany {
+		tooMany[i] = outcomeFinding(fmt.Sprintf("f-%08x", i), outcomeChoiceAccepted)
+	}
+	const allFields = `Give all 4 fields for each finding. Use an empty reason only as "".`
+
+	tests := []struct {
+		name           string
+		data           map[string]any
+		wantMsg        string
+		wantSuggestion string
+	}{
+		{name: "data missing", data: nil, wantMsg: "review-outcome needs data {findings}", wantSuggestion: "Pass at least one answered finding. The stored outcome is unchanged."},
+		{name: "findings empty", data: map[string]any{"findings": []any{}}, wantMsg: "review-outcome needs data {findings}", wantSuggestion: "Pass at least one answered finding. The stored outcome is unchanged."},
+		{name: "findings not an array", data: map[string]any{"findings": "f-9d01aa42"}, wantMsg: "review-outcome findings must be a JSON array of {id, text, choice, reason}", wantSuggestion: "Pass findings as a JSON array, not a string or an object"},
+		{name: "findings an object", data: map[string]any{"findings": outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)}, wantMsg: "review-outcome findings must be a JSON array", wantSuggestion: "Pass findings as a JSON array"},
+		{name: "findings null", data: map[string]any{"findings": nil}, wantMsg: "review-outcome needs data {findings}", wantSuggestion: "Pass at least one answered finding. The stored outcome is unchanged."},
+		{name: "duplicate id", data: map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted), outcomeFinding("f-0b77d2c4", outcomeChoiceRejected), outcomeFinding("f-9d01aa42", outcomeChoiceStop)}}, wantMsg: `review-outcome findings[2].id "f-9d01aa42" repeats findings[0].id`, wantSuggestion: `Pass each finding id once. Remove the second "f-9d01aa42" entry.`},
+		{name: "unknown key", data: map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)}, "round": float64(5)}, wantMsg: `review-outcome data has unknown key "round"`, wantSuggestion: `Remove "round". The only allowed key is findings.`},
+		{name: "over 200 findings", data: map[string]any{"findings": tooMany}, wantMsg: "review-outcome findings has 201 entries, max 200", wantSuggestion: "Stop and report the open findings. Do not call review-outcome."},
+		{name: "entry not an object", data: map[string]any{"findings": []any{"f-9d01aa42"}}, wantMsg: "review-outcome findings[0] must be an object", wantSuggestion: allFields},
+		{name: "entry unknown key", data: entry("kind", "lane"), wantMsg: `review-outcome findings[0] has unknown key "kind"`, wantSuggestion: `Remove "kind". The allowed finding keys are id, text, choice, and reason.`},
+		{name: "id missing", data: entry("id", nil), wantMsg: "review-outcome findings[0] has no string id", wantSuggestion: allFields},
+		{name: "text missing", data: entry("text", nil), wantMsg: "review-outcome findings[0] has no string text", wantSuggestion: allFields},
+		{name: "choice missing", data: entry("choice", nil), wantMsg: "review-outcome findings[0] has no string choice", wantSuggestion: allFields},
+		{name: "reason missing", data: entry("reason", nil), wantMsg: "review-outcome findings[0] has no string reason", wantSuggestion: allFields},
+		{name: "reason not a string", data: entry("reason", float64(1)), wantMsg: "review-outcome findings[0] has no string reason", wantSuggestion: allFields},
+		{name: "bad id", data: entry("id", "f-9D01AA42"), wantMsg: `review-outcome findings[0].id "f-9D01AA42" does not match ^f-[0-9a-f]{8}$`, wantSuggestion: "Pass the id from merge_results allIssues."},
+		{name: "short id", data: entry("id", "f-9d01aa4"), wantMsg: `review-outcome findings[0].id "f-9d01aa4" does not match`, wantSuggestion: "Pass the id from merge_results allIssues."},
+		{name: "bad choice", data: entry("choice", "Accepted"), wantMsg: `review-outcome findings[0].choice "Accepted" is not valid`, wantSuggestion: "Use accepted, rejected, or stop."},
+		{name: "text over 200 runes", data: entry("text", strings.Repeat("é", maxOutcomeFieldRunes+1)), wantMsg: "review-outcome findings[0].text has 201 characters, max 200", wantSuggestion: "Shorten the text to 200 characters."},
+		{name: "reason over 200 runes", data: entry("reason", strings.Repeat("a", maxOutcomeFieldRunes+1)), wantMsg: "review-outcome findings[0].reason has 201 characters, max 200", wantSuggestion: "Shorten the text to 200 characters."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := seedPlanRun(t)
+			// Store an outcome first, so the test proves a rejected call
+			// leaves the stored outcome unchanged.
+			if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": []any{outcomeFinding("f-0b77d2c4", outcomeChoiceRejected)}}}); err != nil {
+				t.Fatalf("planMark(review-outcome) seed: %v", err)
+			}
+			before := readSoleStateFileBytes(t, dir)
+
+			_, err := planMark(dir, dir, PlanMarkIn{Marker: "review-outcome", Data: tt.data})
+			if err == nil {
+				t.Fatal("planMark(review-outcome) = nil error, want an error")
+			}
+			var domainErr *mcpserver.DomainError
+			if !errors.As(err, &domainErr) {
+				t.Fatalf("error type = %T, want *mcpserver.DomainError: %v", err, err)
+			}
+			if !strings.Contains(domainErr.Msg, tt.wantMsg) {
+				t.Errorf("Msg = %q, want substring %q", domainErr.Msg, tt.wantMsg)
+			}
+			if domainErr.Suggestion == "" || !strings.Contains(domainErr.Suggestion, tt.wantSuggestion) {
+				t.Errorf("Suggestion = %q, want non-empty with substring %q", domainErr.Suggestion, tt.wantSuggestion)
+			}
+			if after := readSoleStateFileBytes(t, dir); string(before) != string(after) {
+				t.Errorf("state file changed after a rejected review-outcome call:\nbefore: %s\nafter:  %s", before, after)
+			}
+		})
 	}
 }
 

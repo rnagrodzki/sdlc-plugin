@@ -110,6 +110,36 @@ those same guardrails:
   below-minimum semantics (e.g. `maxParallelDimensions` must be >= 1). Each
   validation must reject the invalid value with a `DomainError` that names
   the value, the rule it breaks, and the acceptable range or constraint.
+- A JSON-encoded collection input (for example `plannedWavesJson`) MUST
+  document its omitted-field behavior and each input the handler rejects (an
+  empty array when entries are required, duplicate IDs, partial coverage of
+  the set it references) in its `jsonschema_description`. The handler MUST
+  reject each one with a `DomainError` that names the broken rule.
+- Every write action (record, append, set, skip) MUST echo the values it wrote
+  in its output. An output that holds only `ok` and `next` is a finding.
+- A no-op or already-done shortcut MUST check the real filesystem or git state
+  it claims, not a marker in a header or input file. Example: the
+  `openspec_save` 'already' path trusted the plan header.
+- A handler that changes git branch or working-tree state, or rewrites a
+  user-owned file, MUST do so after every step that can fail, or restore the
+  prior state when a later step fails. Example: `openspec_save` switched
+  branch before Materialize and left the tree on the new branch.
+- A zero count caused by an absent optional input (for example a missing
+  `tasks.md`) MUST come with a warning that names the file. Example: a
+  missing `tasks.md` reported `refsStamped 0` with no warning.
+- A handler that replaces a user-owned file MUST write a temp file and rename
+  it, or the review MUST confirm that an in-place write is safe. Example:
+  `openspec_save` rewrote the plan file in place.
+- **Closed-set reason values.** Each value of a closed-set state or reason
+  field MUST name one condition. A catch-all value that merges distinct
+  conditions (for example one value for a stalled worker and a worker that
+  never checked in) hides the cause and is a finding. Split the value, or add
+  a field that carries the distinction.
+- **Terminal-write precedence.** When two actions can each write a terminal
+  reason for the same record (for example a stop reason, then a checkout), the
+  description MUST state which write wins on read. A later write MUST NOT drop
+  an earlier stop reason, or change the status a route reads, unless the
+  description names that rule.
 
 ## Cross-references
 

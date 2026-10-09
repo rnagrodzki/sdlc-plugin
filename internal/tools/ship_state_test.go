@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
@@ -5083,5 +5085,657 @@ func TestShipState_DuplicateStepName_AlreadyDonePerOccurrence(t *testing.T) {
 	setSideEffectEntry(t, path, "commit#2", "sha", "feedfacefeedfacefeedfacefeedfacefeedface")
 	if !begin() {
 		t.Error(`AlreadyDone = false for the second commit, want true (sideEffects["commit#2"] exists)`)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// commit-check
+// ---------------------------------------------------------------------------
+
+// commitCheckFixture builds a git repository on branch with one commit, a
+// ship state whose commit step is in_progress, and returns the repository
+// directory and the ship state file path. The ship state lives under the
+// data directory inside the repository, so every commit-check call also
+// proves that the data directory is not staged.
+func commitCheckFixture(t *testing.T, branch string) (string, string) {
+	t.Helper()
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, branch)
+	path := shipStateInitFixture(t, dir, branch)
+	setStepStatus(t, path, "execute", "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+	setStepStatus(t, path, "commit", "in_progress", map[string]any{"startedAt": "2026-01-01T00:00:00Z"})
+	return dir, path
+}
+
+// runCommitCheck calls the commit-check action through the dispatcher with
+// root and workDir both set to dir.
+func runCommitCheck(t *testing.T, dir, branch string) (ShipCommitCheckOut, error) {
+	t.Helper()
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "commit-check",
+		Detail: map[string]any{"branch": branch},
+	}, fixedNow(time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)))
+	if err != nil {
+		return ShipCommitCheckOut{}, err
+	}
+	res, ok := out.(ShipCommitCheckOut)
+	if !ok {
+		t.Fatalf("commit-check output = %T, want ShipCommitCheckOut", out)
+	}
+	return res, nil
+}
+
+// gitOut runs git in dir and returns its trimmed stdout.
+func gitOut(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	out, err := execRun(dir, "git", args...)
+	if err != nil {
+		t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	}
+	return strings.TrimSpace(out)
+}
+
+// commitStepEntry returns the commit step entry of the state file at path.
+func commitStepEntry(t *testing.T, path string) map[string]any {
+	t.Helper()
+	for _, s := range readStateData(t, path)["steps"].([]any) {
+		if sm, ok := s.(map[string]any); ok && sm["name"] == "commit" {
+			return sm
+		}
+	}
+	t.Fatalf("no commit step in %s", path)
+	return nil
+}
+
+// writeExecuteWaves writes an execute state for branch under root whose
+// waves list is waves.
+func writeExecuteWaves(t *testing.T, root, branch string, waves []any) {
+	t.Helper()
+	st, err := state.Init(root, "execute", branch, "sess-exec")
+	if err != nil {
+		t.Fatalf("init execute state: %v", err)
+	}
+	st.Data["waves"] = waves
+	if err := state.Write(st); err != nil {
+		t.Fatalf("write execute state: %v", err)
+	}
+}
+
+// TestShipState_CommitCheck_DirtyStagesAndKeepsStep checks that a dirty tree is staged without the data directory, stores commitBaseHead, and leaves the commit step in_progress.
+func TestShipState_CommitCheck_DirtyStagesAndKeepsStep(t *testing.T) {
+	branch := "feat/cc-dirty"
+	dir, path := commitCheckFixture(t, branch)
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	writeFile(t, filepath.Join(dir, "b.txt"), "b")
+	head := gitOut(t, dir, "rev-parse", "HEAD")
+
+	out, err := runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("commit-check: %v", err)
+	}
+	if out.Clean || out.StagedCount != 2 || out.StepCompleted || out.Result != "" {
+		t.Errorf("out = %+v, want clean=false stagedCount=2 stepCompleted=false result=\"\"", out)
+	}
+	if out.Next != "Changes are staged. Dispatch the commit agent, then 7c2, then complete-step." {
+		t.Errorf("next = %q", out.Next)
+	}
+	staged := gitOut(t, dir, "diff", "--cached", "--name-only")
+	if staged != "a.txt\nb.txt" {
+		t.Errorf("staged = %q, want a.txt and b.txt only (no %s path)", staged, paths.DataDir)
+	}
+	data := readStateData(t, path)
+	if data["commitBaseHead"] != head {
+		t.Errorf("commitBaseHead = %v, want %s", data["commitBaseHead"], head)
+	}
+	if got := commitStepEntry(t, path)["status"]; got != "in_progress" {
+		t.Errorf("commit status = %v, want in_progress", got)
+	}
+}
+
+// TestShipState_CommitCheck_CleanCountsWaveCommits checks that a clean tree at commitBaseHead counts committed waves, records one decision, and completes the commit step.
+func TestShipState_CommitCheck_CleanCountsWaveCommits(t *testing.T) {
+	branch := "feat/cc-waves"
+	dir, path := commitCheckFixture(t, branch)
+	writeExecuteWaves(t, dir, branch, []any{
+		map[string]any{"number": 1, "committedSha": "aaaaaaa"},
+		map[string]any{"number": 2, "committedSha": ""},
+		map[string]any{"number": 3, "committedSha": "bbbbbbb"},
+		"not a wave object",
+	})
+
+	out, err := runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("commit-check: %v", err)
+	}
+	wantResult := "nothing to commit: execute committed 2 wave commit(s)"
+	if !out.Clean || out.StagedCount != 0 || out.WaveCommits != 2 || !out.StepCompleted || out.Result != wantResult {
+		t.Errorf("out = %+v, want clean, waveCommits=2, stepCompleted, result %q", out, wantResult)
+	}
+	if out.Next != "Commit step completed. Skip 7c2 and 7d. Go to the next step." {
+		t.Errorf("next = %q", out.Next)
+	}
+	if len(out.Todos) == 0 || out.Display == "" {
+		t.Errorf("todos/display missing: todos=%d display=%q", len(out.Todos), out.Display)
+	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", out.Warnings)
+	}
+	step := commitStepEntry(t, path)
+	if step["status"] != "completed" || step["result"] != wantResult {
+		t.Errorf("commit step = %v, want completed with result %q", step, wantResult)
+	}
+	if step["completedAt"] != "2026-01-01T00:05:00Z" {
+		t.Errorf("commit step completedAt = %v, want the call time 2026-01-01T00:05:00Z", step["completedAt"])
+	}
+	data := readStateData(t, path)
+	decisions, _ := data["decisions"].([]any)
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %v, want 1 entry", decisions)
+	}
+	d := decisions[0].(map[string]any)
+	if d["step"] != "commit" || d["decision"] != wantResult {
+		t.Errorf("decision = %v, want step commit and decision %q", d, wantResult)
+	}
+	if _, ok := data["sideEffects"]; ok {
+		t.Errorf("sideEffects = %v, want absent for a nothing-to-commit step", data["sideEffects"])
+	}
+	if data["commitBaseHead"] != gitOut(t, dir, "rev-parse", "HEAD") {
+		t.Errorf("commitBaseHead = %v, want HEAD", data["commitBaseHead"])
+	}
+}
+
+// TestShipCommitCheckOut_DisplayIsRaw checks that the display field is tagged
+// to render verbatim, so the multi-line progress block is not code-fenced.
+func TestShipCommitCheckOut_DisplayIsRaw(t *testing.T) {
+	field, ok := reflect.TypeOf(ShipCommitCheckOut{}).FieldByName("Display")
+	if !ok {
+		t.Fatal("ShipCommitCheckOut has no Display field")
+	}
+	if got := field.Tag.Get("render"); got != "raw" {
+		t.Errorf(`Display render tag = %q, want "raw"`, got)
+	}
+}
+
+// TestShipState_CommitCheck_CleanNoExecuteState checks the clean-tree result when the branch has no execute state.
+func TestShipState_CommitCheck_CleanNoExecuteState(t *testing.T) {
+	branch := "feat/cc-clean"
+	dir, path := commitCheckFixture(t, branch)
+
+	out, err := runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("commit-check: %v", err)
+	}
+	want := "nothing to commit: the working tree is clean"
+	if out.WaveCommits != 0 || out.Result != want || !out.StepCompleted {
+		t.Errorf("out = %+v, want waveCommits=0 result %q", out, want)
+	}
+	if got := commitStepEntry(t, path)["result"]; got != want {
+		t.Errorf("stored result = %v, want %q", got, want)
+	}
+	if !strings.HasPrefix(out.Result, commitNothingPrefix) {
+		t.Errorf("result %q does not start with commitNothingPrefix", out.Result)
+	}
+}
+
+// TestShipState_CommitCheck_UnreadableExecuteStateWarns checks that an unreadable execute state gives 0 wave commits and a warning.
+func TestShipState_CommitCheck_UnreadableExecuteStateWarns(t *testing.T) {
+	branch := "feat/cc-badexec"
+	dir, _ := commitCheckFixture(t, branch)
+	bad := filepath.Join(dir, paths.DataDir, paths.RunsSubdir,
+		fmt.Sprintf("execute-%s-20260101T000000Z.json", state.SlugifyBranch(branch)))
+	writeFile(t, bad, "{not json")
+
+	out, err := runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("commit-check: %v", err)
+	}
+	if out.WaveCommits != 0 || out.Result != "nothing to commit: the working tree is clean" {
+		t.Errorf("out = %+v, want waveCommits=0 and the clean-tree result", out)
+	}
+	if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "execute state not read") {
+		t.Errorf("warnings = %v, want one execute-state warning", out.Warnings)
+	}
+}
+
+// TestShipState_CommitCheck_LandedCommitAfterInterrupt checks that later calls keep commitBaseHead and that a clean tree past it journals HEAD and completes the step.
+func TestShipState_CommitCheck_LandedCommitAfterInterrupt(t *testing.T) {
+	branch := "feat/cc-landed"
+	dir, path := commitCheckFixture(t, branch)
+	base := gitOut(t, dir, "rev-parse", "HEAD")
+
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	if _, err := runCommitCheck(t, dir, branch); err != nil {
+		t.Fatalf("first commit-check: %v", err)
+	}
+	mustRun(t, dir, "git", "commit", "-m", "first")
+
+	// A later dirty call keeps the stored base.
+	writeFile(t, filepath.Join(dir, "b.txt"), "b")
+	out, err := runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("second commit-check: %v", err)
+	}
+	if out.Clean || out.StagedCount != 1 {
+		t.Errorf("second out = %+v, want dirty with 1 staged path", out)
+	}
+	if got := readStateData(t, path)["commitBaseHead"]; got != base {
+		t.Errorf("commitBaseHead after second call = %v, want unchanged %s", got, base)
+	}
+	mustRun(t, dir, "git", "commit", "-m", "second")
+	head := gitOut(t, dir, "rev-parse", "HEAD")
+
+	out, err = runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("third commit-check: %v", err)
+	}
+	want := "committed " + head[:7]
+	if !out.Clean || !out.StepCompleted || out.Result != want {
+		t.Errorf("third out = %+v, want clean, completed, result %q", out, want)
+	}
+	if out.Next != "Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step." {
+		t.Errorf("next = %q", out.Next)
+	}
+	data := readStateData(t, path)
+	if data["commitBaseHead"] != base {
+		t.Errorf("commitBaseHead = %v, want unchanged %s", data["commitBaseHead"], base)
+	}
+	entry, ok := data["sideEffects"].(map[string]any)["commit"].(map[string]any)
+	if !ok || entry["kind"] != "sha" || entry["ref"] != head {
+		t.Errorf("sideEffects.commit = %v, want kind sha ref %s", data["sideEffects"], head)
+	}
+	if decisions, _ := data["decisions"].([]any); len(decisions) != 0 {
+		t.Errorf("decisions = %v, want none for a landed commit", decisions)
+	}
+	if step := commitStepEntry(t, path); step["status"] != "completed" || step["result"] != want || step["completedAt"] != "2026-01-01T00:05:00Z" {
+		t.Errorf("commit step = %v, want completed with result %q and completedAt 2026-01-01T00:05:00Z", step, want)
+	}
+}
+
+// TestShipState_CommitCheck_StepNotInProgress checks that a commit step that is not in_progress gives a DomainError before any staging.
+func TestShipState_CommitCheck_StepNotInProgress(t *testing.T) {
+	branch := "feat/cc-pending"
+	dir, path := commitCheckFixture(t, branch)
+	setStepStatus(t, path, "commit", "pending", nil)
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+
+	_, err := runCommitCheck(t, dir, branch)
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %v, want DomainError", err)
+	}
+	if de.Suggestion != "Call begin-step for commit first, then call commit-check again." {
+		t.Errorf("suggestion = %q", de.Suggestion)
+	}
+	if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Errorf("staged = %q, want nothing staged before the step check passes", staged)
+	}
+	if _, ok := readStateData(t, path)["commitBaseHead"]; ok {
+		t.Error("commitBaseHead set, want absent after a rejected call")
+	}
+}
+
+// TestShipState_CommitCheck_NoCommitStep checks that a pipeline with no commit step gives a DataError.
+func TestShipState_CommitCheck_NoCommitStep(t *testing.T) {
+	branch := "feat/cc-nostep"
+	dir, path := commitCheckFixture(t, branch)
+	setSteps(t, path, "execute", "review")
+
+	_, err := runCommitCheck(t, dir, branch)
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) || de.Suggestion == "" {
+		t.Fatalf("err = %v, want DataError with a Suggestion", err)
+	}
+}
+
+// TestShipState_CommitCheck_GitFailures checks that each failed git call gives an InfraError and stores no commitBaseHead.
+func TestShipState_CommitCheck_GitFailures(t *testing.T) {
+	for _, sub := range []string{"add", "diff", "rev-parse"} {
+		t.Run(sub, func(t *testing.T) {
+			branch := "feat/cc-git-" + sub
+			dir, path := commitCheckFixture(t, branch)
+			writeFile(t, filepath.Join(dir, "a.txt"), "a")
+			prev := shipCommitCheckGit
+			shipCommitCheckGit = func(d string, args ...string) (string, error) {
+				if args[0] == sub {
+					return "", errors.New("git exploded")
+				}
+				return prev(d, args...)
+			}
+			t.Cleanup(func() { shipCommitCheckGit = prev })
+
+			_, err := runCommitCheck(t, dir, branch)
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("err = %v, want InfraError", err)
+			}
+			if ie.Suggestion != "Check the repository state with git status, then call commit-check again." {
+				t.Errorf("suggestion = %q", ie.Suggestion)
+			}
+			if !strings.Contains(ie.Msg, "git "+sub) {
+				t.Errorf("msg = %q, want it to name git %s", ie.Msg, sub)
+			}
+			if _, ok := readStateData(t, path)["commitBaseHead"]; ok {
+				t.Error("commitBaseHead set, want absent after a git failure")
+			}
+			// A failure after git add leaves the staging in place.
+			wantStaged := "a.txt"
+			if sub == "add" {
+				wantStaged = ""
+			}
+			if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); staged != wantStaged {
+				t.Errorf("staged = %q, want %q", staged, wantStaged)
+			}
+		})
+	}
+}
+
+// TestShipState_CommitCheck_NotAGitRepository checks that a work directory outside git gives an InfraError.
+func TestShipState_CommitCheck_NotAGitRepository(t *testing.T) {
+	branch := "feat/cc-nogit"
+	root, _ := commitCheckFixture(t, branch)
+	workDir := t.TempDir()
+
+	_, err := shipState(root, workDir, ShipStateIn{
+		Action: "commit-check",
+		Detail: map[string]any{"branch": branch},
+	}, fixedNow(time.Now()))
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) || ie.Suggestion == "" {
+		t.Fatalf("err = %v, want InfraError with a Suggestion", err)
+	}
+}
+
+// TestShipState_CommitCheck_WriteFailureDirty checks that a failed state write on a dirty tree keeps the staging and persists no commitBaseHead.
+func TestShipState_CommitCheck_WriteFailureDirty(t *testing.T) {
+	branch := "feat/cc-wfail-dirty"
+	dir, path := commitCheckFixture(t, branch)
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+
+	_, err := runCommitCheck(t, dir, branch)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) || ie.Suggestion == "" {
+		t.Fatalf("err = %v, want InfraError with a Suggestion", err)
+	}
+	// Staging ran before the write, so it stays; the state file is unchanged.
+	if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); staged != "a.txt" {
+		t.Errorf("staged = %q, want a.txt", staged)
+	}
+	if _, ok := readStateData(t, path)["commitBaseHead"]; ok {
+		t.Error("commitBaseHead persisted, want absent after a failed write")
+	}
+}
+
+// TestShipState_CommitCheck_WriteFailureClean checks that a failed state write on a clean tree persists no decision, no commitBaseHead, and no step change.
+func TestShipState_CommitCheck_WriteFailureClean(t *testing.T) {
+	branch := "feat/cc-wfail-clean"
+	dir, path := commitCheckFixture(t, branch)
+	useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+
+	_, err := runCommitCheck(t, dir, branch)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) || ie.Suggestion == "" {
+		t.Fatalf("err = %v, want InfraError with a Suggestion", err)
+	}
+	data := readStateData(t, path)
+	if _, ok := data["commitBaseHead"]; ok {
+		t.Error("commitBaseHead persisted, want absent after a failed write")
+	}
+	if decisions, _ := data["decisions"].([]any); len(decisions) != 0 {
+		t.Errorf("decisions = %v, want none after a failed write", decisions)
+	}
+	if got := commitStepEntry(t, path)["status"]; got != "in_progress" {
+		t.Errorf("commit status = %v, want in_progress after a failed write", got)
+	}
+}
+
+// TestShipState_CommitCheck_DirtyWithStoredBaseSkipsWrite checks that a dirty call with a stored commitBaseHead writes no state.
+func TestShipState_CommitCheck_DirtyWithStoredBaseSkipsWrite(t *testing.T) {
+	branch := "feat/cc-nowrite"
+	dir, _ := commitCheckFixture(t, branch)
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	if _, err := runCommitCheck(t, dir, branch); err != nil {
+		t.Fatalf("first commit-check: %v", err)
+	}
+	writes := 0
+	useShipStateWrite(t, func(*state.State) error { writes++; return nil })
+
+	out, err := runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("second commit-check: %v", err)
+	}
+	if out.Clean || writes != 0 {
+		t.Errorf("clean=%v writes=%d, want a dirty result and no state write", out.Clean, writes)
+	}
+}
+
+// TestShipState_CommitCheck_ShortSHA checks that shortSHA, which the landed
+// commit result uses, cuts a long sha to 7 characters and keeps a short one.
+func TestShipState_CommitCheck_ShortSHA(t *testing.T) {
+	if got := shortSHA("0123456789abcdef"); got != "0123456" {
+		t.Errorf("long sha = %q, want 0123456", got)
+	}
+	if got := shortSHA("abc"); got != "abc" {
+		t.Errorf("short sha = %q, want abc", got)
+	}
+}
+
+// commitCheckValidateSchema validates the ship state file at path against
+// the published ship-state.schema.json.
+func commitCheckValidateSchema(t *testing.T, path string) {
+	t.Helper()
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read state file %s: %v", path, err)
+	}
+	inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("unmarshal state file for schema validation: %v", err)
+	}
+	if err := sch.Validate(inst); err != nil {
+		t.Errorf("state file written by commit-check: schema rejected it: %v", err)
+	}
+}
+
+// TestShipStateSchema_CommitCheckWrites checks that every state file that
+// commit-check writes passes ship-state.schema.json: the dirty call that
+// stores commitBaseHead, the landed-commit call that journals a sha side
+// effect, and the nothing-to-commit call that appends a decision.
+func TestShipStateSchema_CommitCheckWrites(t *testing.T) {
+	t.Run("dirty then landed commit", func(t *testing.T) {
+		branch := "feat/cc-schema-landed"
+		dir, path := commitCheckFixture(t, branch)
+		writeFile(t, filepath.Join(dir, "a.txt"), "a")
+		if _, err := runCommitCheck(t, dir, branch); err != nil {
+			t.Fatalf("dirty commit-check: %v", err)
+		}
+		if _, ok := readStateData(t, path)["commitBaseHead"].(string); !ok {
+			t.Fatal("dirty commit-check stored no commitBaseHead")
+		}
+		commitCheckValidateSchema(t, path)
+
+		mustRun(t, dir, "git", "commit", "-m", "landed")
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("landed commit-check: %v", err)
+		}
+		if !out.StepCompleted || !strings.HasPrefix(out.Result, "committed ") {
+			t.Fatalf("landed out = %+v, want a completed step with a committed result", out)
+		}
+		if _, ok := readStateData(t, path)["sideEffects"].(map[string]any)["commit"]; !ok {
+			t.Fatal("landed commit-check journaled no commit side effect")
+		}
+		commitCheckValidateSchema(t, path)
+	})
+	t.Run("nothing to commit", func(t *testing.T) {
+		branch := "feat/cc-schema-clean"
+		dir, path := commitCheckFixture(t, branch)
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("commit-check: %v", err)
+		}
+		if !out.StepCompleted || !strings.HasPrefix(out.Result, commitNothingPrefix) {
+			t.Fatalf("out = %+v, want a completed nothing-to-commit step", out)
+		}
+		commitCheckValidateSchema(t, path)
+	})
+}
+
+// TestShipState_CommitCheck_NonStringBaseHead checks that a commitBaseHead
+// that is not a string gives a DataError before any staging, and that the
+// state file keeps the bad value instead of a new HEAD.
+func TestShipState_CommitCheck_NonStringBaseHead(t *testing.T) {
+	branch := "feat/cc-badbase"
+	dir, path := commitCheckFixture(t, branch)
+	data := readStateData(t, path)
+	data["commitBaseHead"] = 42
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+
+	_, err = runCommitCheck(t, dir, branch)
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %v (%T), want *mcpserver.DataError", err, err)
+	}
+	if !strings.Contains(de.Msg, "commitBaseHead") || de.Suggestion == "" {
+		t.Errorf("DataError = %+v, want a message naming commitBaseHead and a suggestion", de)
+	}
+	if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Errorf("staged = %q, want nothing staged", staged)
+	}
+	if got := readStateData(t, path)["commitBaseHead"]; got != float64(42) {
+		t.Errorf("commitBaseHead = %v, want the bad value kept", got)
+	}
+	if got := commitStepEntry(t, path)["status"]; got != "in_progress" {
+		t.Errorf("commit status = %v, want in_progress", got)
+	}
+}
+
+// TestShipState_CommitCheck_BranchUnresolved checks that a missing
+// detail.branch in a work directory outside git gives a DomainError.
+func TestShipState_CommitCheck_BranchUnresolved(t *testing.T) {
+	dir := t.TempDir()
+
+	_, err := shipState(dir, dir, ShipStateIn{Action: "commit-check"}, fixedNow(time.Now()))
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) || de.Suggestion == "" {
+		t.Fatalf("err = %v, want DomainError with a Suggestion", err)
+	}
+	if !strings.Contains(de.Msg, "could not determine branch") {
+		t.Errorf("msg = %q, want the branch resolution failure", de.Msg)
+	}
+}
+
+// TestShipState_CommitCheck_NoShipState checks that a branch with no ship
+// state gives a DataError and stages nothing.
+func TestShipState_CommitCheck_NoShipState(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+
+	_, err := runCommitCheck(t, dir, "feat/cc-nostate")
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) || de.Suggestion == "" {
+		t.Fatalf("err = %v, want DataError with a Suggestion", err)
+	}
+	if !errors.Is(err, errNoShipState) {
+		t.Errorf("err = %v, want the no-ship-state cause", err)
+	}
+	if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Errorf("staged = %q, want nothing staged", staged)
+	}
+}
+
+// TestShipState_CommitCheck_ToolSurface checks that the registered ship_state
+// tool lists commit-check in its action enum and describes its inputs, side
+// effects and errors.
+func TestShipState_CommitCheck_ToolSurface(t *testing.T) {
+	s := mcpserver.New("test", "0.0.0-test")
+	RegisterShipStateTools(s)
+
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	resp, err := c.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	var tool *mcp.Tool
+	for _, candidate := range resp.Tools {
+		if candidate.Name == "ship_state" {
+			tool = candidate
+		}
+	}
+	if tool == nil {
+		t.Fatal(`no "ship_state" tool registered`)
+	}
+
+	var line string
+	for _, l := range strings.Split(tool.Description, "\n") {
+		if strings.HasPrefix(l, "- commit-check: ") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatal("tool description has no commit-check line")
+	}
+	for _, want := range []string{
+		"Requires: (none). Optional: detail.branch.",
+		"staging", "commitBaseHead", "decide", "complete-step", "side-effect journal",
+		"git InfraError", "step-state DomainError",
+		commitNothingPrefix + ": execute committed N wave commit(s)",
+		commitNothingPrefix + ": the working tree is clean",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("commit-check description %q does not contain %q", line, want)
+		}
+	}
+
+	raw, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal input schema: %v", err)
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Enum []string `json:"enum"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("unmarshal input schema: %v", err)
+	}
+	found := false
+	for _, a := range schema.Properties["action"].Enum {
+		if a == "commit-check" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("action enum = %v, want it to contain commit-check", schema.Properties["action"].Enum)
 	}
 }

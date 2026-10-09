@@ -22,7 +22,7 @@ findings are reported with severity levels.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--base <branch>` | Compare against this branch instead of the auto-detected default. | auto-detected |
-| `--dry-run` | Show the review plan (dimensions, file counts) without running it. | off |
+| `--dry-run` | Show the review plan (dimensions, file counts) without running it. Passed to `review_prepare` as `dryRun: true`, so the run writes no ledger. | off |
 
 **Note:** The review scope is controlled by the `scope` key of the `[review]`
 section in `.sdlc-v2/local.toml`, not by command-line flags. Accepted values:
@@ -69,8 +69,12 @@ Compares the current branch against `develop` instead of the default.
 `total_changed_files`, `uncovered_file_count`, and `suggested_dimensions`.
 The manifest file at `manifestPath` repeats `summary` and adds `scope`,
 `git` (`commit_count`, `changed_files_count`), `pr` (`exists`, and the PR
-number and URL when one exists), and `plan_critique` (uncovered files,
-over-broad dimensions, `max_parallel_dimensions`), and `waves`. These describe
+number and URL when one exists), `plan_critique` (uncovered files,
+over-broad dimensions, `max_parallel_dimensions`), `waves`, and `run_id`. The
+`run_id` names the ledger folder of the run. It is empty for `--dry-run` and
+when there are zero waves. Each entry of `dimensions` carries a `worker_id`,
+which names the ledger entry of that dimension. The skill reads both values and
+builds neither. These describe
 the review's *input* (what's being reviewed and with which dimensions) —
 finding counts and severity breakdowns are **not** precomputed, since
 findings don't exist until each dimension's reviewer lane actually runs;
@@ -112,7 +116,13 @@ implementation drift caught automatically in your own project's reviews.
   stops each dimension worker that did not finish (`TaskStop`), then removes
   its manifest and its temp diff directory, but it keeps the ledger. Under
   `/ship`, the stop can fail; the review then names those workers as possibly
-  still running. The
+  still running. A worker that stalls or never checks in twice in a row is
+  stopped, and the review records the reason with `execute_state`
+  `ledger_skip` (`stalled`, `missing`, or `unstopped` when the stop failed or the
+  worker has no task ID). The dashboard shows that dimension as skipped with
+  the reason, until the worker checks out. A review that is
+  stopped and run again gets a new `run_id`. Its old ledger folder shows as
+  `stalled` after 30 minutes and stays until the sweep removes it. The
   [dashboard](dashboard.md) reads the ledger to show the review dimensions of a
   finished run. The first `execute_state` `gc` sweep or `/ship`
   `cleanup-pipeline` sweep after 7 days (the default `state.gc.ttlDays`)

@@ -30,3 +30,8 @@ severity: high
   nested-dispatch note (for example the ship entry for review as well as
   the ship entry for execute). A note present in one entry and absent from
   its sibling is a finding.
+- **Fallback reachability.** A named fallback for a failed stop must work
+  with the dispatch as written. When the fallback uses SendMessage or another
+  call that needs a dispatched name or ID, verify each dispatch passes that
+  name or ID. A fallback that targets workers the dispatch never named is a
+  finding, and each such worker must be listed as not stopped.

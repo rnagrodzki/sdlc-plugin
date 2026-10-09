@@ -3,7 +3,10 @@ package hooks
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -14,17 +17,34 @@ import (
 // for the current session; every other case is a silent no-op (exit 0, no
 // stdout) so this hook never interferes with an interactive session (C18).
 //
+// On every allow path it also writes one question wait record
+// (recordQuestionWait), so the dashboard can show that the session waits for
+// an answer. The record is written here and not in a second PreToolUse hook:
+// a second hook for AskUserQuestion can empty the answer. A denied call
+// writes no record.
+func blockAskUserQuestionAuto(ctx HookCtx, event Event) (Output, error) {
+	if out, deny := autoShipDeny(ctx); deny {
+		return out, nil
+	}
+	recordQuestionWait(ctx, event)
+	return Output{ExitCode: 0}, nil
+}
+
+// autoShipDeny returns the deny output and true when a ship pipeline is
+// actively advancing in --auto mode for the current session. In every other
+// case it returns false and the caller allows the call.
+//
 // The gate is a flat AND-chain of four conditions evaluated in this exact
 // order, each with early-exit-silent on failure: (1) a real branch resolves,
 // (2) a ship state file exists for it and is advancing, (3) the calling
 // session owns that state (HookEnforcementAllowed), (4) flags.auto is
 // strictly the literal boolean true (not merely truthy).
-func blockAskUserQuestionAuto(ctx HookCtx, event Event) (Output, error) {
+func autoShipDeny(ctx HookCtx) (Output, bool) {
 	silent := Output{ExitCode: 0}
 
 	data, _, ok := gatedAdvancingShipState("block-askuserquestion-auto", ctx.SessionID)
 	if !ok {
-		return silent, nil
+		return silent, false
 	}
 
 	// Strict check: flags.auto must literally be the boolean true. A missing
@@ -34,7 +54,7 @@ func blockAskUserQuestionAuto(ctx HookCtx, event Event) (Output, error) {
 	flags, _ := data["flags"].(map[string]any)
 	autoVal, isBool := flags["auto"].(bool)
 	if !isBool || !autoVal {
-		return silent, nil
+		return silent, false
 	}
 
 	return Output{JSON: map[string]any{
@@ -43,7 +63,51 @@ func blockAskUserQuestionAuto(ctx HookCtx, event Event) (Output, error) {
 			"permissionDecision":       "deny",
 			"permissionDecisionReason": "Auto-mode ship pipeline is advancing (flags.auto=true). Do NOT pause for input — proceed on the documented default (auto-dispatch the fix path). See ship R71/#477.",
 		},
-	}, ExitCode: 0}, nil
+	}, ExitCode: 0}, true
+}
+
+// recordQuestionWait writes one question attention record for the
+// AskUserQuestion call in event. It never changes the hook output: it does
+// nothing when the root or branch does not resolve, the session ID or the
+// tool_use_id is empty, or the repo has no data directory (.sdlc-v2/), and it
+// drops a write error. A repo with a data directory gets the record even when
+// no pipeline run is active.
+func recordQuestionWait(ctx HookCtx, event Event) {
+	toolUseID, _ := event.Raw["tool_use_id"].(string)
+	if ctx.SessionID == "" || toolUseID == "" {
+		return
+	}
+	root, branch, ok := resolveRootBranch()
+	if !ok {
+		return
+	}
+	if _, err := os.Stat(filepath.Join(root, paths.DataDir)); err != nil {
+		return
+	}
+	header, text := firstQuestion(event.Raw)
+	// Fire-and-forget: a write failure must never change the allow output.
+	_ = attention.Write(root, attention.Record{
+		Kind:      attention.KindQuestion,
+		SessionID: ctx.SessionID,
+		ToolUseID: toolUseID,
+		Branch:    branch,
+		Header:    header,
+		Text:      text,
+	})
+}
+
+// firstQuestion returns the header and the question text of
+// tool_input.questions[0] in raw. A missing or malformed value gives "".
+func firstQuestion(raw map[string]any) (header, text string) {
+	toolInput, _ := raw["tool_input"].(map[string]any)
+	questions, _ := toolInput["questions"].([]any)
+	if len(questions) == 0 {
+		return "", ""
+	}
+	q, _ := questions[0].(map[string]any)
+	header, _ = q["header"].(string)
+	text, _ = q["question"].(string)
+	return header, text
 }
 
 // gatedAdvancingShipState resolves the current branch's ship state via the

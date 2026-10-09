@@ -22,7 +22,8 @@ BIN_DIR="$CACHE_DIR/bin"
 FAIL_OPEN_MSG="sdlc binary not ready — run any sdlc tool or re-open session"
 
 # Timeout budgets are mode-dependent. "hook" invocations run inside a
-# Claude Code hook budget as tight as 3000ms (see hooks/hooks.json) — on a
+# Claude Code hook budget as tight as 10 s (hooks/hooks.json `timeout` is in
+# seconds; the tightest entries use 10) — on a
 # cold cache they must fail open fast rather than attempt a real download,
 # so a stalled/slow network degrades to the not-ready message instead of
 # the hook being killed mid-download. "mcp" connects have no such budget

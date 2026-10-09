@@ -108,24 +108,15 @@ func TestRun_UnknownHook(t *testing.T) {
 	}
 }
 
-// TestRun_RegistryContainsExactlyKnownHooks was
-// TestRun_RegistryContainsExactlySessionStart under Task 37, when
-// "session-start" was the registry's only entry. Task 38 authorized adding
-// block-askuserquestion-auto, pipeline-continue, and post-tool-validate
-// (see hooks.go); Task 39 added the Stop/PreCompact quartet
-// (pre-compact-save, stop-state-save, stop-plan-integrity,
-// stop-pipeline-continue); Task 10 (config.toml migration run) added
-// record-mcp-invocation; the execute-wave-liveness plan (Task 4) added
-// wave-liveness; the release-ci-worktree-and-ship-report plan's Task 14
-// added record-user-input, bringing the registry to 11 total entries; the
-// user-config-and-pipeline-fixes change's Task 3 added record-user-answer,
-// bringing it to 12 — still a closed-set check, just over the current known
-// set rather than a single entry.
+// TestRun_RegistryContainsExactlyKnownHooks is a closed-set check: the
+// registry holds exactly the 15 hook names in want, no more and no fewer. A
+// new or removed hook needs an update to this list.
 func TestRun_RegistryContainsExactlyKnownHooks(t *testing.T) {
 	want := []string{
 		"session-start", "block-askuserquestion-auto", "pipeline-continue", "post-tool-validate",
 		"pre-compact-save", "stop-state-save", "stop-plan-integrity", "stop-pipeline-continue",
 		"record-mcp-invocation", "wave-liveness", "record-user-input", "record-user-answer",
+		"record-permission-wait", "close-permission-wait", "close-session-waits",
 	}
 	if len(registry) != len(want) {
 		t.Fatalf("registry has %d entries, want exactly %d: %v", len(registry), len(want), registryKeys())

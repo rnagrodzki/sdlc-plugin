@@ -25,6 +25,7 @@ import (
 //   - gatedAdvancingShipState (block_askuserquestion.go) — mainRootFunc,
 //     currentBranchFunc
 //   - waveLiveness (wave_liveness.go) — findStateFunc
+//   - deleteWaits (attention_hooks.go) — mainRootFunc
 //
 // Every other worktree.*/gitx.*/state.Find call site in this package (e.g.
 // post_tool_validate.go, pre_compact_save.go, stop_hooks.go) is

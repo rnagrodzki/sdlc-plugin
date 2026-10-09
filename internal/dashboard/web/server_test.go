@@ -1254,7 +1254,8 @@ func TestStaticCSS_FontAndPalette(t *testing.T) {
 }
 
 // TestStaticCSS_LayoutRules pins the layout rules: a 56 px header, one scroll box (the stage), the
-// block grid and tiles, the cursor of stations, and the rules for a narrow page.
+// block grid and tiles, the full-width track of stations (no width cap, wrap below 88 px per
+// station), the cursor of stations, and the rules for a narrow page.
 func TestStaticCSS_LayoutRules(t *testing.T) {
 	rules := parseCSS(t, staticFile(t, "app.css"))
 
@@ -1273,8 +1274,8 @@ func TestStaticCSS_LayoutRules(t *testing.T) {
 		{"", ".step-sec.selected", "border-color", "var(--scan-cyan-dim)"},
 		{"", ".waves", "grid-template-columns", "minmax(min(100%, 320px), 1fr)"},
 		{"", ".dim-cols", "grid-template-columns", "minmax(100px, 170px)"},
-		{"", ".track", "max-width", "1100px"},
-		{"", ".track", "grid-template-columns", "repeat(auto-fit,"},
+		{"", ".track", "grid-template-columns", "repeat(auto-fit, minmax(88px, 1fr))"},
+		{"", ".track", "overflow-x", "clip"},
 		{"", ".act-grid", "grid-template-columns", "minmax(min(100%, 560px), 1fr)"},
 		{"", ".hist-panel", "max-width", "1180px"},
 		{"", ".station", "cursor", "default"},
@@ -1293,6 +1294,13 @@ func TestStaticCSS_LayoutRules(t *testing.T) {
 			if s == ".rail" || s == ".layout" {
 				t.Errorf("app.css still styles the old layout selector %s", s)
 			}
+			if s == ".track" {
+				for _, prop := range []string{"max-width", "width"} {
+					if v, ok := r.Decls[prop]; ok {
+						t.Errorf(".track { %s: %s }: the track must use the full panel width", prop, v)
+					}
+				}
+			}
 		}
 		for _, prop := range []string{"overflow", "overflow-y"} {
 			for _, v := range strings.Fields(r.Decls[prop]) {
@@ -1304,6 +1312,55 @@ func TestStaticCSS_LayoutRules(t *testing.T) {
 		if v := r.Decls["max-height"]; strings.Contains(v, "vh") {
 			t.Errorf("%s { max-height: %s }: a list must not have a viewport-high box", who, v)
 		}
+	}
+}
+
+// TestStaticCSS_AttentionRules pins the look of a run that waits for a person: the cyan edge of the
+// block, the cyan banner and header count, the pulse of the lamp with its reduced-motion override,
+// and the rule order of the lamp (.lamp.waiting and .lamp.running have the same specificity).
+func TestStaticCSS_AttentionRules(t *testing.T) {
+	rules := parseCSS(t, staticFile(t, "app.css"))
+	const reduce = "@media (prefers-reduced-motion: reduce)"
+
+	for _, w := range []cssWant{
+		{"", ".pipe-block.attn", "border-left", "3px solid var(--scan-cyan)"},
+		{"", ".attn-bar", "color", "var(--scan-cyan)"},
+		{"", ".attn-text", "color", "var(--ivory)"},
+		{"", ".counts .c-wait strong", "color", "var(--scan-cyan)"},
+		{"", ".lamp.waiting", "animation", "waitpulse 1.6s ease-in-out infinite"},
+		{reduce, ".lamp.waiting", "box-shadow", "0 0 0 2px var(--scan-cyan)"},
+	} {
+		got := cssLookup(t, rules, w.at, w.sel)[w.prop]
+		if !strings.Contains(got, w.has) {
+			t.Errorf("%s { %s } = %q; want it to contain %q", w.sel, w.prop, got, w.has)
+		}
+	}
+	if got := cssLookup(t, rules, reduce, ".lamp.waiting")["animation"]; got != "none" {
+		t.Errorf("%s .lamp.waiting { animation } = %q; want none", reduce, got)
+	}
+
+	var keyframes string
+	for _, r := range rules {
+		if r.Prelude == "@keyframes waitpulse" {
+			keyframes = r.Body
+		}
+	}
+	if !strings.Contains(keyframes, "box-shadow: 0 0 0 4px transparent") {
+		t.Errorf("@keyframes waitpulse = %q; want a box-shadow ring that grows to 4px, so the 8px lamp does not grow", keyframes)
+	}
+
+	order := map[string]int{}
+	for i, r := range flattenCSS(t, rules, "") {
+		for _, sel := range r.Selectors {
+			if _, seen := order[sel]; !seen && r.At == "" {
+				order[sel] = i
+			}
+		}
+	}
+	running, okRunning := order[".lamp.running"]
+	waiting, okWaiting := order[".lamp.waiting"]
+	if !okRunning || !okWaiting || waiting < running {
+		t.Errorf("rule index of .lamp.running = %d (found %v), .lamp.waiting = %d (found %v); .lamp.waiting must come after .lamp.running to win", running, okRunning, waiting, okWaiting)
 	}
 }
 
@@ -1573,6 +1630,62 @@ func TestStaticAppJS_ByIDsExistInIndex(t *testing.T) {
 	for _, id := range ids {
 		if !pageIDs[id] {
 			t.Errorf("app.js calls byId(%q), but index.html has no element with that id", id)
+		}
+	}
+}
+
+// TestStaticAppJS_TitleAndElapsedTimer pins that app.js sets the tab title through draw.scopedTitle in
+// render (a filter change renders too), and that it runs one 1 s timer that calls draw.tickElapsed.
+// The title and elapsed logic is in render.js, where the Node tests run it; the two app.js wrappers
+// hold no branch.
+func TestStaticAppJS_TitleAndElapsedTimer(t *testing.T) {
+	code, err := stripJSComments(staticFile(t, "app.js"))
+	if err != nil {
+		t.Fatalf("app.js: %v", err)
+	}
+	// body returns the text of the top-level function that starts with sig, up to its closing brace.
+	body := func(sig string) string {
+		start := strings.Index(code, sig)
+		if start < 0 {
+			t.Fatalf("app.js has no %q", sig)
+		}
+		end := strings.Index(code[start:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("app.js: %q has no closing brace at column 0", sig)
+		}
+		return code[start : start+end]
+	}
+
+	sync := body("function syncTitle(")
+	if !strings.Contains(sync, "document.title = draw.scopedTitle(view, BASE_TITLE, repos, scope);") {
+		t.Errorf("syncTitle = %q; want it to set document.title = draw.scopedTitle(view, BASE_TITLE, repos, scope)", sync)
+	}
+	if render := body("function render("); !strings.Contains(render, "syncTitle(repos, scope);") {
+		t.Errorf("render = %q; want it to call syncTitle(repos, scope)", render)
+	}
+	if scope := body("function applyScope("); !strings.Contains(scope, "render(ui.lastSnapshot);") {
+		t.Errorf("applyScope = %q; want it to call render, so a filter change updates the title", scope)
+	}
+
+	if n := strings.Count(code, "setInterval("); n != 1 {
+		t.Errorf("app.js calls setInterval %d times; want exactly 1 timer", n)
+	}
+	if !strings.Contains(code, "window.setInterval(tickElapsed, ELAPSED_TICK_MS);") {
+		t.Error("app.js does not start the timer with window.setInterval(tickElapsed, ELAPSED_TICK_MS)")
+	}
+	if !strings.Contains(code, "var ELAPSED_TICK_MS = 1000;") {
+		t.Error("app.js does not set ELAPSED_TICK_MS to 1000 (1 s)")
+	}
+	tick := body("function tickElapsed(")
+	if !strings.Contains(tick, "draw.tickElapsed(document, view, Date.now());") {
+		t.Errorf("tickElapsed = %q; want it to call draw.tickElapsed(document, view, Date.now())", tick)
+	}
+	// The wrappers hold no branch and no loop: that logic is in render.js, where Node runs it.
+	for name, fn := range map[string]string{"syncTitle": sync, "tickElapsed": tick} {
+		for _, banned := range []string{"if (", "for (", "while (", "?", ".filter(", "querySelectorAll"} {
+			if strings.Contains(fn, banned) {
+				t.Errorf("%s = %q; want no %q, move the logic to render.js", name, fn, banned)
+			}
 		}
 	}
 }

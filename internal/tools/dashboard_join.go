@@ -2,8 +2,6 @@ package tools
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -109,12 +107,8 @@ func dashboardDecodeExploreSummary(raw any) ([]ExploreSummaryEntry, bool) {
 // run.meta leaves p unchanged, so the review stays its own row; it never fails
 // the snapshot.
 func dashboardReviewMeta(dir string, p *DashboardPipeline) {
-	b, err := os.ReadFile(filepath.Join(dir, ledgerRunMetaFile))
-	if err != nil {
-		return
-	}
-	var meta reviewRunMeta
-	if err := json.Unmarshal(b, &meta); err != nil {
+	meta, ok := readReviewRunMeta(dir)
+	if !ok {
 		return
 	}
 	p.Branch = meta.Branch
@@ -312,31 +306,22 @@ func dashboardNestExecute(ship *DashboardPipeline, exec DashboardPipeline) {
 	}
 }
 
-// dashboardNestReview copies the joined review run review into ship: each
-// review step becomes one dimension of the ship review step, and the review
-// issues go to the ship issues with their Ref unchanged. Findings counts the
-// review issues whose Ref is the dimension name; Worst is the severity of
-// those issues with the highest severityRank value, or "" with none.
+// dashboardNestReview copies the joined review run review into ship: the
+// review rows that readReviewLedgerDir built (review.join.reviewDims) become
+// the dimensions of the ship review step, with their wave, stop reason,
+// finding count, and worst severity. The plan totals go to the step
+// reviewPlan; with no planned dimension it stays absent. The review issues go
+// to the ship issues with their Ref unchanged. A review with no rows gives an
+// empty, non-nil dimension list.
 func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
-	dims := make([]DashboardDimension, 0, len(review.Steps))
-	for _, s := range review.Steps {
-		d := DashboardDimension{Name: s.Name, Status: s.Status}
-		for _, is := range review.Issues {
-			if is.Source != dashboardSourceReview || is.Ref != s.Name {
-				continue
-			}
-			d.Findings++
-			if severityRank[is.Severity] > severityRank[d.Worst] {
-				d.Worst = is.Severity
-			}
-		}
-		dims = append(dims, d)
-	}
+	dims := make([]DashboardDimension, 0, len(review.join.reviewDims))
+	dims = append(dims, review.join.reviewDims...)
 	if step := dashboardStepNamed(ship, dashboardShipStepReview); step != nil {
 		if step.Detail == nil {
 			step.Detail = &DashboardStepDetail{Kind: dashboardKindDimensions}
 		}
 		step.Detail.Dimensions = dims
+		step.Detail.ReviewPlan = review.join.reviewPlan
 	}
 	ship.Issues = append(ship.Issues, review.Issues...)
 }

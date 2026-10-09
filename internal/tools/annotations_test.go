@@ -131,11 +131,12 @@ var toolAnnotations = map[string]annotationPolicy{
 		reason:     "only writes are state.Write and guardrails.md under gitignored .sdlc-v2/runs/; a call without resume starts a new run and prunes the old one, so it is not idempotent",
 	},
 	"review_prepare": {
-		title:      "Prepare code review payload",
-		readOnly:   true,
-		idempotent: true,
-		openWorld:  true,
-		reason:     "every write lands in os.MkdirTemp(\"\", \"sdlc-review-\") — per-dimension .diff/.slice.json and manifest.json; no input field redirects that path; diffs come from local git diff; saveReview mode writes only to gitignored .sdlc-v2/reviews/; open-PR lookup calls ghx.PRForBranch (GitHub API)",
+		title:       "Prepare code review payload",
+		readOnly:    false,
+		destructive: true,
+		idempotent:  false,
+		openWorld:   true,
+		reason:      "writes gitignored .sdlc-v2/runs/ledger/<run_id>/run.meta (the review run plan) when the manifest has at least one wave and dryRun is false; each call mints a new run_id, so it is not idempotent; destructive because run_id has one-second resolution (\"review-\" + RFC3339), so a second such call in the same second overwrites the earlier run.meta, stopReason included; on a failed run.meta write it os.RemoveAll's the ledger run folder, but only when this call created that folder; manifest and per-dimension .diff/.slice.json land in os.MkdirTemp(\"\", \"sdlc-review-\"); saveReview mode writes only to gitignored .sdlc-v2/reviews/; open-PR lookup calls ghx.PRForBranch (GitHub API)",
 	},
 	"setup_prepare": {
 		title:      "Prepare SDLC setup context",
@@ -145,7 +146,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		reason:     "no writes at all: configmigrate.Verify, setupmeta.Sections, gitx.DefaultBranch, git remote get-url, ciScriptDrift are read-only; the managed-section os.WriteFile belongs to setup_write_sections/setup_init, not setupPrepare",
 	},
 
-	// WRITER (16 rows)
+	// WRITER (17 rows)
 	"commit_apply": {
 		title:       "Create a git commit",
 		readOnly:    false,
@@ -184,7 +185,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: true,
 		idempotent:  false,
 		openWorld:   false,
-		reason:      "configmigrate.MigrateWithBackup → tracked config.toml; openWorld:false because ship_state.go has zero ghx references",
+		reason:      "configmigrate.MigrateWithBackup → tracked config.toml; commit-check runs git add -A -- ':!.sdlc-v2/' in the active worktree, which stages every change, untracked files that are not gitignored included; openWorld:false because ship_state.go has zero ghx references",
 	},
 	"ship_prepare": {
 		title:       "Prepare ship pipeline run",
@@ -209,6 +210,14 @@ var toolAnnotations = map[string]annotationPolicy{
 		idempotent:  true,
 		openWorld:   false,
 		reason:      "os.WriteFile → tracked openspec/config.yaml; managed block rewritten in place",
+	},
+	"openspec_save": {
+		title:       "Save OpenSpec change to branch",
+		readOnly:    false,
+		destructive: true,
+		idempotent:  true,
+		openWorld:   false,
+		reason:      "git switch -c openspec/<c>; openspec.Materialize (openspec/changes/<c>/); os.WriteFile ref comments into openspec/changes/<c>/tasks.md; git add; os.WriteFile plan header Staging → Saved; a Saved plan returns already",
 	},
 	"jira": {
 		title:       "Manage local Jira cache",
@@ -508,14 +517,6 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				_, _ = runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
 			case "setup_prepare":
 				_, _ = setupPrepare(root, SetupPrepareIn{})
-			case "review_prepare":
-				// Writes only into os.MkdirTemp("", "sdlc-review-"), never
-				// into root — so the fixture tree must stay clean even when
-				// the call succeeds and produces a full manifest.
-				_, _ = reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true})
-				// saveReview mode writes to gitignored .sdlc-v2/reviews/ —
-				// must also leave the tracked tree clean.
-				_, _ = reviewPrepare(root, root, ReviewPrepareIn{SaveReview: true, Content: "test review comment"})
 			case "received_review_verify":
 				// writeReplyBodies mode writes to gitignored
 				// .sdlc-v2/state/artifacts/ — no GitHub API call involved.

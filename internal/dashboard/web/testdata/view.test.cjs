@@ -87,6 +87,100 @@ describe('feedOrder', () => {
   test('returns an empty array for a missing list', () => {
     assert.deepEqual(view.feedOrder(undefined), []);
   });
+
+  test('returns 5 groups in order: attention, running, failed, stalled, completed', () => {
+    const attention = { kind: 'question', askedAt: '2026-10-08T10:00:00Z', header: 'Q', text: 't' };
+    const c1 = { id: 'c1', status: 'completed' };
+    const s1 = { id: 's1', status: 'stalled' };
+    const f1 = { id: 'f1', status: 'failed' };
+    const r1 = { id: 'r1', status: 'running' };
+    const a1 = { id: 'a1', status: 'running', attention };
+    const ordered = view.feedOrder([c1, s1, f1, r1, a1]);
+    assert.deepEqual(ordered.map((p) => p.id), ['a1', 'r1', 'f1', 's1', 'c1']);
+  });
+
+  test('an attention pipeline goes first whatever its status', () => {
+    const attention = { kind: 'permission', askedAt: '2026-10-08T10:00:00Z', header: 'Permission', text: 't' };
+    const r1 = { id: 'r1', status: 'running' };
+    const c1 = { id: 'c1', status: 'completed', attention };
+    assert.deepEqual(view.feedOrder([r1, c1]).map((p) => p.id), ['c1', 'r1']);
+  });
+
+  test('inside a group the newer startedAt comes first', () => {
+    const old = { id: 'old', status: 'running', startedAt: '2026-10-08T08:00:00Z' };
+    const mid = { id: 'mid', status: 'running', startedAt: '2026-10-08T09:00:00Z' };
+    const fresh = { id: 'fresh', status: 'running', startedAt: '2026-10-08T10:00:00Z' };
+    assert.deepEqual(view.feedOrder([old, fresh, mid]).map((p) => p.id), ['fresh', 'mid', 'old']);
+  });
+
+  test('startedAt orders by time, not by text, across UTC offsets', () => {
+    // 10:00+02:00 is 08:00Z, which is older than 09:00Z although its text sorts later.
+    const offset = { id: 'offset', status: 'failed', startedAt: '2026-10-08T10:00:00+02:00' };
+    const utc = { id: 'utc', status: 'failed', startedAt: '2026-10-08T09:00:00Z' };
+    assert.deepEqual(view.feedOrder([offset, utc]).map((p) => p.id), ['utc', 'offset']);
+  });
+
+  test('an empty or unreadable startedAt comes last inside its group', () => {
+    const none = { id: 'none', status: 'stalled', startedAt: '' };
+    const bad = { id: 'bad', status: 'stalled', startedAt: 'not a time' };
+    const absent = { id: 'absent', status: 'stalled' };
+    const dated = { id: 'dated', status: 'stalled', startedAt: '2026-10-08T09:00:00Z' };
+    assert.deepEqual(view.feedOrder([none, bad, absent, dated]).map((p) => p.id), ['dated', 'none', 'bad', 'absent']);
+  });
+
+  test('the sort is stable: equal pipelines keep their input order', () => {
+    const t = '2026-10-08T09:00:00Z';
+    const list = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ id, status: 'completed', startedAt: t }));
+    assert.deepEqual(view.feedOrder(list).map((p) => p.id), ['a', 'b', 'c', 'd', 'e', 'f']);
+  });
+
+  test('returns the same objects, not copies', () => {
+    const r1 = { id: 'r1', status: 'running' };
+    const c1 = { id: 'c1', status: 'completed' };
+    const ordered = view.feedOrder([c1, r1]);
+    assert.equal(ordered[0], r1);
+    assert.equal(ordered[1], c1);
+  });
+
+  test('a missing entry or an unknown status ranks with the running group', () => {
+    const c1 = { id: 'c1', status: 'completed' };
+    const f1 = { id: 'f1', status: 'failed' };
+    const odd = { id: 'odd', status: 'weird' };
+    const ordered = view.feedOrder([c1, f1, null, odd]);
+    assert.deepEqual(ordered.map((p) => (p ? p.id : null)), [null, 'odd', 'f1', 'c1']);
+  });
+});
+
+describe('compareStartedDesc', () => {
+  const older = { startedAt: '2026-10-08T08:00:00Z' };
+  const newer = { startedAt: '2026-10-08T09:00:00Z' };
+
+  test('a newer pipeline comes first', () => {
+    assert.ok(view.compareStartedDesc(newer, older) < 0);
+    assert.ok(view.compareStartedDesc(older, newer) > 0);
+  });
+
+  test('the same start time gives 0', () => {
+    assert.equal(view.compareStartedDesc(newer, { startedAt: '2026-10-08T09:00:00Z' }), 0);
+  });
+
+  test('an empty startedAt comes after one that has a time', () => {
+    assert.equal(view.compareStartedDesc({ startedAt: '' }, newer), 1);
+    assert.equal(view.compareStartedDesc(newer, {}), -1);
+  });
+
+  test('2 empty or unreadable values give 0', () => {
+    assert.equal(view.compareStartedDesc({ startedAt: '' }, { startedAt: 'bad' }), 0);
+    assert.equal(view.compareStartedDesc(null, undefined), 0);
+  });
+});
+
+describe('page logic exports', () => {
+  test('view.js exports the feed, count, title, and elapsed helpers', () => {
+    ['feedOrder', 'headerCounts', 'pageTitle', 'formatElapsed', 'compareStartedDesc'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
 });
 
 describe('defaultCollapsed', () => {
@@ -148,6 +242,13 @@ describe('sectionMeta', () => {
     assert.equal(view.sectionMeta({ detail: { kind: 'waves', waves, queued } }), '1/3 tasks done');
   });
 
+  test('a planned wave that has not started reads 0 of its tasks, with no queued part', () => {
+    const wave1 = [{ number: 1, status: 'pending', tasks: [task('1', 'pending'), task('2', 'pending')] }];
+    const wave2 = [{ number: 2, status: 'pending', tasks: [task('3', 'pending')] }];
+    assert.equal(view.sectionMeta({ detail: { kind: 'waves', waves: wave1 } }), '0/2 tasks done');
+    assert.equal(view.sectionMeta({ detail: { kind: 'waves', waves: wave2, queued: [] } }), '0/1 tasks done');
+  });
+
   test('dimensions: done count, plus findings when reviewTotals exists', () => {
     const dimensions = [
       { name: 'a', status: 'completed' },
@@ -164,6 +265,32 @@ describe('sectionMeta', () => {
     assert.equal(
       view.sectionMeta({ detail: { kind: 'dimensions', dimensions, reviewTotals } }),
       '3/5 dimensions done · 9 findings'
+    );
+  });
+
+  test('dimensions: the planned count of the review plan is the total, not the listed rows', () => {
+    const dimensions = [
+      { name: 'a', status: 'completed' },
+      { name: 'b', status: 'skipped', reason: 'stalled' },
+    ];
+    const reviewPlan = { wavesPlanned: 3, wavesRun: 1, dimensionsPlanned: 23, dimensionsRun: 2, neverStarted: 21 };
+    assert.equal(
+      view.sectionMeta({ detail: { kind: 'dimensions', dimensions, reviewPlan } }),
+      '1/23 dimensions done'
+    );
+    const reviewTotals = { found: 1, fixed: 0, deferred: 0, unaccounted: 1 };
+    assert.equal(
+      view.sectionMeta({ detail: { kind: 'dimensions', dimensions, reviewPlan, reviewTotals } }),
+      '1/23 dimensions done · 1 finding'
+    );
+  });
+
+  test('dimensions: a review plan with 0 planned dimensions falls back to the listed rows', () => {
+    const dimensions = [{ name: 'a', status: 'completed' }, { name: 'b', status: 'pending' }];
+    const reviewPlan = { wavesPlanned: 0, wavesRun: 0, dimensionsPlanned: 0, dimensionsRun: 0, neverStarted: 0 };
+    assert.equal(
+      view.sectionMeta({ detail: { kind: 'dimensions', dimensions, reviewPlan } }),
+      '1/2 dimensions done'
     );
   });
 
@@ -193,6 +320,21 @@ describe('sectionMeta', () => {
     assert.equal(view.sectionMeta({ detail: { kind: 'findings' } }), 'no findings');
   });
 
+  test('guardrails: the count, singular for 1, 0 with no counts', () => {
+    assert.equal(view.sectionMeta({ detail: { kind: 'guardrails', guardrails: { total: 3, error: 2, warning: 1 } } }), '3 guardrails');
+    assert.equal(view.sectionMeta({ detail: { kind: 'guardrails', guardrails: { total: 1, error: 1, warning: 0 } } }), '1 guardrail');
+    assert.equal(view.sectionMeta({ detail: { kind: 'guardrails' } }), '0 guardrails');
+  });
+
+  test('result: the text before the first colon, or the whole text, or empty', () => {
+    assert.equal(
+      view.sectionMeta({ detail: { kind: 'result', result: 'nothing to commit: execute committed 2 wave commit(s)' } }),
+      'nothing to commit'
+    );
+    assert.equal(view.sectionMeta({ detail: { kind: 'result', result: 'nothing to commit' } }), 'nothing to commit');
+    assert.equal(view.sectionMeta({ detail: { kind: 'result' } }), '');
+  });
+
   test('returns an empty string with no detail or an unknown kind', () => {
     assert.equal(view.sectionMeta({}), '');
     assert.equal(view.sectionMeta({ detail: { kind: 'other' } }), '');
@@ -210,6 +352,8 @@ describe('isWideSection', () => {
     assert.equal(view.isWideSection({ kind: 'waves', waves: [{}] }), false);
     assert.equal(view.isWideSection({ kind: 'dimensions' }), false);
     assert.equal(view.isWideSection({ kind: 'findings' }), false);
+    assert.equal(view.isWideSection({ kind: 'guardrails' }), false);
+    assert.equal(view.isWideSection({ kind: 'result' }), false);
   });
 });
 
@@ -278,6 +422,18 @@ describe('waveCommitState', () => {
   test('an absent commitWaves behaves as on', () => {
     assert.equal(view.waveCommitState({ committedSha: '', tasks: [done] }, undefined), 'due');
   });
+
+  test('a pending wave has no commit state, whatever commitWaves says', () => {
+    const wave = { status: 'pending', committedSha: '', tasks: [open] };
+    assert.equal(view.waveCommitState(wave, true), '');
+    assert.equal(view.waveCommitState(wave, false), '');
+    assert.equal(view.waveCommitState(wave, undefined), '');
+  });
+
+  test('a wave that is not pending keeps its commit state', () => {
+    assert.equal(view.waveCommitState({ status: 'in_progress', committedSha: '', tasks: [open] }, true), 'not-committed');
+    assert.equal(view.waveCommitState({ status: 'completed', committedSha: '', tasks: [done] }, false), 'off');
+  });
 });
 
 describe('taskCounts', () => {
@@ -297,6 +453,19 @@ describe('reviewTotalsText', () => {
       view.reviewTotalsText({ found: 9, fixed: 6, deferred: 3, unaccounted: 0 }),
       '9 findings · 6 fixed · 3 deferred · 0 unaccounted'
     );
+  });
+});
+
+describe('reviewPlanText', () => {
+  test('lists waves run, dimensions run, and never started', () => {
+    assert.equal(
+      view.reviewPlanText({ wavesPlanned: 3, wavesRun: 1, dimensionsPlanned: 23, dimensionsRun: 8, neverStarted: 15 }),
+      'waves 1/3 run · dimensions 8/23 run · 15 never started'
+    );
+  });
+
+  test('is empty without a plan', () => {
+    assert.equal(view.reviewPlanText(undefined), '');
   });
 });
 
@@ -413,7 +582,48 @@ describe('scopedCounts / headerCounts', () => {
   });
 
   test('headerCounts counts running, stalled, and failed over all repos', () => {
-    assert.deepEqual(view.headerCounts(repos), { running: 2, stalled: 1, failed: 1 });
+    assert.deepEqual(view.headerCounts(repos), { running: 2, stalled: 1, failed: 1, waiting: 0 });
+  });
+
+  test('headerCounts waiting counts pipelines with attention over all repos', () => {
+    const attention = { kind: 'question', askedAt: '2026-10-08T10:00:00Z', header: 'Q', text: 't' };
+    const waitingRepos = [
+      { root: '/a', pipelines: [{ status: 'running', attention }, { status: 'running' }] },
+      { root: '/b', pipelines: [{ status: 'running', attention }, { status: 'failed' }, null] },
+    ];
+    assert.deepEqual(view.headerCounts(waitingRepos), { running: 3, stalled: 0, failed: 1, waiting: 2 });
+  });
+
+  test('headerCounts ignores a status that is not running, stalled, or failed', () => {
+    const odd = [{ root: '/a', pipelines: [{ status: 'waiting' }, { status: 'completed' }, { status: 'constructor' }] }];
+    assert.deepEqual(view.headerCounts(odd), { running: 0, stalled: 0, failed: 0, waiting: 0 });
+  });
+
+  test('headerCounts returns zeros for a missing list', () => {
+    assert.deepEqual(view.headerCounts(undefined), { running: 0, stalled: 0, failed: 0, waiting: 0 });
+  });
+});
+
+describe('pageTitle', () => {
+  const attention = { kind: 'permission', askedAt: '2026-10-08T10:00:00Z', header: 'Permission', text: 't' };
+  const repoA = { root: '/a', pipelines: [{ status: 'running', attention }, { status: 'running' }] };
+  const repoB = { root: '/b', pipelines: [{ status: 'running', attention }, null] };
+
+  test('puts the count of waiting runs before the base title', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', [repoA, repoB]), '(2) SDLC dashboard');
+  });
+
+  test('counts only the repos it is given', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', [repoA]), '(1) SDLC dashboard');
+  });
+
+  test('returns the base title when no run waits', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', [{ root: '/c', pipelines: [{ status: 'running' }] }]), 'SDLC dashboard');
+  });
+
+  test('returns the base title for a missing repo list or a repo without pipelines', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', undefined), 'SDLC dashboard');
+    assert.equal(view.pageTitle('SDLC dashboard', [{ root: '/d' }]), 'SDLC dashboard');
   });
 });
 
@@ -486,6 +696,33 @@ describe('formatDuration', () => {
   test('empty for a bad value', () => {
     assert.equal(view.formatDuration(-1), '');
     assert.equal(view.formatDuration(undefined), '');
+  });
+});
+
+describe('formatElapsed', () => {
+  test('seconds under 1 minute', () => {
+    assert.equal(view.formatElapsed(0), '0s');
+    assert.equal(view.formatElapsed(26000), '26s');
+  });
+
+  test('minutes and seconds under 1 hour', () => {
+    assert.equal(view.formatElapsed(60000), '1m 0s');
+    assert.equal(view.formatElapsed(252000), '4m 12s');
+    assert.equal(view.formatElapsed(3599999), '59m 59s');
+  });
+
+  test('1 hour or more uses the formatDuration text', () => {
+    assert.equal(view.formatElapsed(3600000), '1h 00m');
+    assert.equal(view.formatElapsed(3780000), '1h 03m');
+    assert.equal(view.formatElapsed(3780000), view.formatDuration(3780000));
+  });
+
+  test('empty for a bad value', () => {
+    assert.equal(view.formatElapsed(-1), '');
+    assert.equal(view.formatElapsed(NaN), '');
+    assert.equal(view.formatElapsed(Infinity), '');
+    assert.equal(view.formatElapsed(undefined), '');
+    assert.equal(view.formatElapsed('252000'), '');
   });
 });
 
@@ -852,8 +1089,10 @@ describe('browser global fallback', () => {
 
 const render = require('../static/render.js');
 
-// The fake document: the DOM calls render.js may use, and no more. A new DOM
-// call in render.js needs a matching method here.
+// The fake document: the DOM calls the render.js builders may use, and no more.
+// A new DOM call in a builder needs a matching method here. tickElapsed reads
+// the page with querySelectorAll and getAttribute, so its tests use
+// fakeElapsedDoc and fakeElapsedNode below.
 function fakeDoc() {
   function node(tag) { return { tagName: tag, className: '', attrs: {}, children: [], textContent: '', open: false, hidden: false,
     setAttribute(k, v) { this.attrs[k] = String(v); }, appendChild(c) { this.children.push(c); return c; } }; }
@@ -907,6 +1146,17 @@ function pipeline(extra) {
     extra
   );
 }
+
+// An open wait: asked 4m 12s before NOW_WAIT.
+const ATTENTION = {
+  kind: 'question',
+  askedAt: '2026-10-08T14:00:00Z',
+  header: 'Guardrail',
+  text: 'Approve the splice_test.go change?',
+};
+
+// 4m 12s after ATTENTION.askedAt, in ms.
+const NOW_WAIT = Date.parse('2026-10-08T14:04:12Z');
 
 describe('render el', () => {
   test('sets the class and puts text through textContent', () => {
@@ -1002,6 +1252,19 @@ describe('render blockHead', () => {
     assert.equal(oneByClass(linked, 'pipe-branch').attrs.title, 'feat/x · worktree app-feat-x');
   });
 
+  test('a pipeline with an attention has the class waiting on its lamp', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline({ attention: ATTENTION }), false, 0);
+    assert.equal(oneByClass(head, 'lamp').className, 'lamp running waiting');
+    assert.equal(oneByClass(head, 'lamp').attrs['aria-hidden'], 'true');
+    assert.equal(oneByClass(head, 'pipe-status').className, 'pipe-status running');
+  });
+
+  test('a pipeline without an attention has no waiting class on its lamp', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline(), false, 0);
+    assert.equal(oneByClass(head, 'lamp').className, 'lamp running');
+    assert.equal(byClass(head, 'waiting').length, 0);
+  });
+
   test('markup in a branch name stays text: <b>x</b>', () => {
     const head = render.blockHead(fakeDoc(), view, REPO, pipeline({ branch: '<b>x</b>' }), false, 0);
     const branch = oneByClass(head, 'pipe-branch');
@@ -1045,6 +1308,25 @@ describe('render stationTrack', () => {
     assert.equal(oneByClass(stations[2], 'label').className, 'label current');
     assert.equal(oneByClass(stations[0], 'label').textContent, view.stationLabel('execute'));
   });
+
+  test('with an attention the current station shows the waiting glyph and the rest keep their glyphs', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline({ attention: ATTENTION }), 2);
+    const glyphs = byClass(track, 'glyph');
+    assert.deepEqual(glyphs.map((g) => g.className), ['glyph completed', 'glyph completed', 'glyph in_progress', 'glyph pending']);
+    assert.deepEqual(glyphs.map((g) => g.textContent), [
+      view.stepGlyph('completed').glyph,
+      view.stepGlyph('completed').glyph,
+      '◈',
+      view.stepGlyph('pending').glyph,
+    ]);
+  });
+
+  test('without an attention the current station keeps the in_progress glyph', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline(), 2);
+    const current = byClass(track, 'glyph').filter((g) => classesOf(g).includes('in_progress'));
+    assert.deepEqual(current.map((g) => g.textContent), [view.stepGlyph('in_progress').glyph]);
+    assert.ok(!textOf(track).includes('◈'));
+  });
 });
 
 describe('render pipelineBlock', () => {
@@ -1082,18 +1364,248 @@ describe('render pipelineBlock', () => {
     const marked = byClass(block, 'station').map((s) => classesOf(s).includes('selected'));
     assert.equal(marked.indexOf(true), view.defaultStationIndex(p.steps));
   });
+
+  test('without an attention the block has no attn class and no banner', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline(), { collapsed: false, selected: 0, now: NOW_WAIT });
+    assert.equal(block.className, 'pipe-block');
+    assert.equal(byClass(block, 'attn-bar').length, 0);
+    assert.equal(byClass(block, 'attn-text').length, 0);
+    assert.equal(byClass(block, 'waiting').length, 0);
+  });
+
+  test('with an attention the block has the attn class, the banner first, the waiting lamp, and the waiting glyph', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline({ attention: ATTENTION }), {
+      collapsed: false,
+      selected: 0,
+      now: NOW_WAIT,
+    });
+    assert.equal(block.className, 'pipe-block attn');
+    assert.deepEqual(block.children.map((c) => c.className), ['attn-bar', 'attn-text', 'pipe-head', 'track-panel']);
+    assert.equal(textOf(block.children[0]), '◈ WAITING ON YOU · 4m 12s');
+    assert.equal(textOf(block.children[1]), 'Guardrail: "Approve the splice_test.go change?"');
+    assert.equal(oneByClass(block, 'waiting').className, 'lamp running waiting');
+    assert.equal(byClass(block, 'glyph').filter((g) => g.textContent === '◈').length, 1);
+  });
+
+  test('a collapsed block with an attention keeps the banner and has both classes', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline({ attention: ATTENTION }), {
+      collapsed: true,
+      selected: 0,
+      now: NOW_WAIT,
+    });
+    assert.equal(block.className, 'pipe-block collapsed attn');
+    assert.equal(block.children[0].className, 'attn-bar');
+  });
+
+  test('now can be a Date', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline({ attention: ATTENTION }), {
+      collapsed: false,
+      now: new Date(NOW_WAIT),
+    });
+    assert.equal(oneByClass(block, 'attn-elapsed').textContent, '4m 12s');
+  });
+});
+
+describe('render elapsedText', () => {
+  const ASKED = '2026-10-08T14:00:00Z';
+  const ASKED_MS = Date.parse(ASKED);
+
+  test('seconds, then minutes with seconds, then hours with minutes', () => {
+    assert.equal(render.elapsedText(view, ASKED, ASKED_MS + 26000), '26s');
+    assert.equal(render.elapsedText(view, ASKED, ASKED_MS + 252000), '4m 12s');
+    assert.equal(render.elapsedText(view, ASKED, ASKED_MS + 3780000), '1h 03m');
+  });
+
+  test('now can be a Date', () => {
+    assert.equal(render.elapsedText(view, ASKED, new Date(ASKED_MS + 252000)), '4m 12s');
+  });
+
+  test('a time in the future gives 0s, not a negative time', () => {
+    assert.equal(render.elapsedText(view, ASKED, ASKED_MS - 5000), '0s');
+  });
+
+  test('a bad or missing timestamp gives an empty string', () => {
+    assert.equal(render.elapsedText(view, 'bad', ASKED_MS), '');
+    assert.equal(render.elapsedText(view, '', ASKED_MS), '');
+    assert.equal(render.elapsedText(view, undefined, ASKED_MS), '');
+  });
+});
+
+describe('render attentionRows', () => {
+  test('the bar holds the glyph, the label, and the elapsed span with data-asked', () => {
+    const [bar] = render.attentionRows(fakeDoc(), view, ATTENTION, NOW_WAIT);
+    assert.equal(bar.tagName, 'div');
+    assert.equal(bar.className, 'attn-bar');
+    assert.equal(textOf(bar), '◈ WAITING ON YOU · 4m 12s');
+    const glyph = oneByClass(bar, 'attn-glyph');
+    assert.equal(glyph.textContent, '◈');
+    assert.equal(glyph.attrs['aria-hidden'], 'true');
+    const elapsed = oneByClass(bar, 'attn-elapsed');
+    assert.equal(elapsed.attrs['data-asked'], '2026-10-08T14:00:00Z');
+    assert.equal(elapsed.attrs['aria-live'], 'off');
+    assert.equal(elapsed.textContent, '4m 12s');
+  });
+
+  test('the text line is header, colon, and the quoted text', () => {
+    const rows = render.attentionRows(fakeDoc(), view, ATTENTION, NOW_WAIT);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[1].className, 'attn-text');
+    assert.equal(rows[1].textContent, 'Guardrail: "Approve the splice_test.go change?"');
+  });
+
+  test('a header with no text gives the header alone', () => {
+    const rows = render.attentionRows(fakeDoc(), view, { askedAt: ATTENTION.askedAt, header: 'Permission' }, NOW_WAIT);
+    assert.equal(rows[1].textContent, 'Permission');
+  });
+
+  test('a text with no header gives the quoted text alone', () => {
+    const rows = render.attentionRows(fakeDoc(), view, { askedAt: ATTENTION.askedAt, text: 'Run it?' }, NOW_WAIT);
+    assert.equal(rows[1].textContent, '"Run it?"');
+  });
+
+  test('no header and no text gives no text line', () => {
+    const rows = render.attentionRows(fakeDoc(), view, { askedAt: ATTENTION.askedAt }, NOW_WAIT);
+    assert.equal(rows[0].className, 'attn-bar');
+    assert.equal(rows[1], null);
+  });
+
+  test('no askedAt gives an empty data-asked and an empty elapsed text', () => {
+    const [bar] = render.attentionRows(fakeDoc(), view, { header: 'Permission' }, NOW_WAIT);
+    const elapsed = oneByClass(bar, 'attn-elapsed');
+    assert.equal(elapsed.attrs['data-asked'], '');
+    assert.equal(elapsed.textContent, '');
+  });
+
+  test('markup in the header and the text stays text: <b>x</b>', () => {
+    const rows = render.attentionRows(fakeDoc(), view, { askedAt: ATTENTION.askedAt, header: '<i>h</i>', text: '<b>x</b>' }, NOW_WAIT);
+    assert.equal(rows[1].textContent, '<i>h</i>: "<b>x</b>"');
+    assert.equal(rows[1].children.length, 0);
+  });
+});
+
+describe('render scopedTitle', () => {
+  const BASE = 'SDLC dashboard';
+  const waiting = { status: 'running', attention: ATTENTION };
+  const repos = [
+    { root: '/a', pipelines: [waiting, { status: 'running' }] },
+    { root: '/b', pipelines: [{ status: 'running' }] },
+    { root: '/c', pipelines: [waiting] },
+  ];
+
+  test('an empty scope counts the waiting runs of every repo', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set()), '(2) SDLC dashboard');
+  });
+
+  test('a missing scope counts every repo', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, undefined), '(2) SDLC dashboard');
+  });
+
+  test('a scope that leaves out every waiting repo gives the base title', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set(['/b'])), 'SDLC dashboard');
+  });
+
+  test('a scope that holds one waiting repo counts only that repo', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set(['/a', '/b'])), '(1) SDLC dashboard');
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set(['/c'])), '(1) SDLC dashboard');
+  });
+
+  test('a scope that holds both waiting repos counts both', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set(['/a', '/c'])), '(2) SDLC dashboard');
+  });
+
+  test('no repo gives the base title', () => {
+    assert.equal(render.scopedTitle(view, BASE, [], new Set(['/a'])), 'SDLC dashboard');
+  });
+});
+
+// A fake wait-banner node: only getAttribute and textContent, the two members tickElapsed uses.
+function fakeElapsedNode(askedAt, text) {
+  return {
+    textContent: text,
+    getAttribute(name) {
+      return name === 'data-asked' ? askedAt : null;
+    },
+  };
+}
+
+// A fake document for tickElapsed: querySelectorAll gives nodes for '.attn-elapsed' and nothing for any
+// other selector; queries records every selector asked.
+function fakeElapsedDoc(nodes) {
+  const queries = [];
+  return {
+    queries,
+    querySelectorAll(selector) {
+      queries.push(selector);
+      return selector === '.attn-elapsed' ? nodes : [];
+    },
+  };
+}
+
+describe('render tickElapsed', () => {
+  const ASKED = '2026-10-08T14:00:00Z';
+  const ASKED_MS = Date.parse(ASKED);
+
+  test('a readable data-asked rewrites the text from now', () => {
+    const node = fakeElapsedNode(ASKED, '0s');
+    const doc = fakeElapsedDoc([node]);
+    render.tickElapsed(doc, view, ASKED_MS + 252000);
+    assert.equal(node.textContent, '4m 12s');
+    assert.deepEqual(doc.queries, ['.attn-elapsed']);
+  });
+
+  test('now can be a Date', () => {
+    const node = fakeElapsedNode(ASKED, '0s');
+    render.tickElapsed(fakeElapsedDoc([node]), view, new Date(ASKED_MS + 26000));
+    assert.equal(node.textContent, '26s');
+  });
+
+  test('an unreadable data-asked keeps the old text', () => {
+    for (const asked of ['not a time', '', null]) {
+      const node = fakeElapsedNode(asked, '4m 12s');
+      render.tickElapsed(fakeElapsedDoc([node]), view, ASKED_MS + 300000);
+      assert.equal(node.textContent, '4m 12s', `data-asked ${JSON.stringify(asked)}`);
+    }
+  });
+
+  test('every node is handled, and a bad node does not stop the next one', () => {
+    const first = fakeElapsedNode(ASKED, '0s');
+    const bad = fakeElapsedNode('not a time', 'kept');
+    const second = fakeElapsedNode('2026-10-08T13:59:00Z', '0s');
+    render.tickElapsed(fakeElapsedDoc([first, bad, second]), view, ASKED_MS + 26000);
+    assert.equal(first.textContent, '26s');
+    assert.equal(bad.textContent, 'kept');
+    assert.equal(second.textContent, '1m 26s');
+  });
+
+  test('a page with no wait banner changes nothing', () => {
+    const doc = fakeElapsedDoc([]);
+    render.tickElapsed(doc, view, ASKED_MS);
+    assert.deepEqual(doc.queries, ['.attn-elapsed']);
+  });
 });
 
 describe('render headerTotals', () => {
-  test('running, stalled and failed over every repo', () => {
+  test('running, stalled, failed and waiting over every repo', () => {
     const repos = [
       { root: '/a', pipelines: [{ status: 'running' }, { status: 'failed' }] },
       { root: '/b', pipelines: [{ status: 'running' }, { status: 'completed' }] },
     ];
     const out = render.headerTotals(fakeDoc(), view, repos);
-    assert.deepEqual(out.map((n) => n.className), ['c-run', 'c-stall', 'c-fail']);
-    assert.deepEqual(out.map(textOf), ['running · 2', 'stalled · 0', 'failed · 1']);
+    assert.deepEqual(out.map((n) => n.className), ['c-run', 'c-stall', 'c-fail', 'c-wait']);
+    assert.deepEqual(out.map(textOf), ['running · 2', 'stalled · 0', 'failed · 1', 'waiting · 0']);
     assert.equal(out[0].children[0].tagName, 'strong');
+  });
+
+  test('the waiting span counts the pipelines with an attention, in every repo', () => {
+    const repos = [
+      { root: '/a', pipelines: [{ status: 'running', attention: ATTENTION }, { status: 'running' }] },
+      { root: '/b', pipelines: [{ status: 'running', attention: ATTENTION }] },
+    ];
+    const out = render.headerTotals(fakeDoc(), view, repos);
+    assert.deepEqual(out.map(textOf), ['running · 3', 'stalled · 0', 'failed · 0', 'waiting · 2']);
+    assert.equal(out[3].className, 'c-wait');
+    assert.equal(out[3].children[0].tagName, 'strong');
+    assert.equal(out[3].children[0].textContent, '2');
   });
 });
 
@@ -1233,6 +1745,12 @@ describe('render tiles from the shared fixture', () => {
     ['ship: plan station', () => byClass(tileByName(fixtureBlock('sdlc-plugin', SHIP), 'plan'), 'wave-block')],
     ['plan: explorers', () => byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'explore'), 'wave-block')],
     ['plan: rounds', () => byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'review'), 'round-n')],
+    ['plan: setup guardrails line', () => byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'setup'), 'generic-line')],
+    ['plan: review totals, repair limit flag, and answered findings', () => {
+      const t = tileByName(fixtureBlock('payments-service', PLAN), 'review');
+      return [...byClass(t, 'round-sum'), ...byClass(t, 'lens-chips'), ...byClass(t, 'find-row')];
+    }],
+    ['ship: commit result line', () => byClass(tileByName(fixtureBlock('identity-service', SHIP), 'commit'), 'generic-line')],
     ['standalone execute: waves', () =>
       tilesOf(fixtureBlock('payments-service', EXECUTE)).filter((t) => byClass(t, 'wave-block').length > 0)],
     ['standalone execute: queued tasks', () => byClass(tileByName(fixtureBlock('payments-service', EXECUTE), 'queued'), 'task-row')],
@@ -1339,6 +1857,75 @@ describe('render tiles from the shared fixture', () => {
     assert.equal(byClass(body, 'round-sum').length, 0);
   });
 
+  test('a skipped dimension reads skipped with its reason, or skipped alone', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'a', status: 'skipped', reason: 'stalled', findings: 0 },
+      { name: 'b', status: 'skipped', reason: 'unstopped', findings: 0 },
+      { name: 'c', status: 'skipped', findings: 0 },
+    ] });
+    assert.deepEqual(byClass(body, 'dim-meta').map((n) => n.textContent), ['skipped · stalled', 'skipped · unstopped', 'skipped']);
+    assert.deepEqual(byClass(body, 'dim-meta').map((n) => n.className), ['dim-meta', 'dim-meta', 'dim-meta']);
+  });
+
+  test('dimensions with a wave sit under one Wave heading for each wave, lowest wave first', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'docs-review', status: 'pending', findings: 0, wave: 2 },
+      { name: 'security-review', status: 'completed', findings: 2, wave: 1 },
+      { name: 'perf-review', status: 'skipped', reason: 'stalled', findings: 0, wave: 1 },
+      { name: 'style-review', status: 'pending', findings: 0, wave: 3 },
+    ] });
+    const heads = byClass(body, 'wave-head');
+    assert.deepEqual(heads.map((n) => n.textContent), ['Wave 1', 'Wave 2', 'Wave 3']);
+    // Document order: each heading is followed by the rows of its wave.
+    const sequence = body.children.map((n) => (classesOf(n).includes('wave-head') ? n.textContent : oneByClass(n, 'dim-name').textContent));
+    assert.deepEqual(sequence, [
+      'Wave 1', 'security-review', 'perf-review',
+      'Wave 2', 'docs-review',
+      'Wave 3', 'style-review',
+    ]);
+    const metas = byClass(body, 'dim-meta').map((n) => n.textContent);
+    assert.deepEqual(metas, ['2 findings', 'skipped · stalled', 'queued', 'queued']);
+  });
+
+  test('dimensions without a wave render as a flat list with no heading', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'a', status: 'completed', findings: 1 },
+      { name: 'b', status: 'pending', findings: 0, wave: 0 },
+    ] });
+    assert.equal(byClass(body, 'wave-head').length, 0);
+    assert.deepEqual(body.children.map((n) => oneByClass(n, 'dim-name').textContent), ['a', 'b']);
+  });
+
+  test('rows without a wave come first, before the first Wave heading', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'planned', status: 'completed', findings: 0, wave: 1 },
+      { name: 'loose', status: 'completed', findings: 0 },
+    ] });
+    const sequence = body.children.map((n) => (classesOf(n).includes('wave-head') ? n.textContent : oneByClass(n, 'dim-name').textContent));
+    assert.deepEqual(sequence, ['loose', 'Wave 1', 'planned']);
+  });
+
+  test('a review plan adds the totals line under the review totals line', () => {
+    const reviewTotals = { found: 2, fixed: 1, deferred: 0, unaccounted: 1 };
+    const reviewPlan = { wavesPlanned: 3, wavesRun: 1, dimensionsPlanned: 23, dimensionsRun: 8, neverStarted: 15 };
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', reviewTotals, reviewPlan, dimensions: [
+      { name: 'a', status: 'completed', findings: 2, wave: 1 },
+    ] });
+    const sums = byClass(body, 'round-sum');
+    assert.deepEqual(sums.map((n) => n.textContent), [
+      '2 findings · 1 fixed · 0 deferred · 1 unaccounted',
+      'waves 1/3 run · dimensions 8/23 run · 15 never started',
+    ]);
+    assert.deepEqual(body.children.slice(0, 2), sums);
+  });
+
+  test('a review plan without review totals still shows the totals line first', () => {
+    const reviewPlan = { wavesPlanned: 1, wavesRun: 1, dimensionsPlanned: 1, dimensionsRun: 1, neverStarted: 0 };
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', reviewPlan, dimensions: [] });
+    assert.equal(body.children.length, 1);
+    assert.equal(body.children[0].textContent, 'waves 1/1 run · dimensions 1/1 run · 0 never started');
+  });
+
   test('a plan explorers tile: name, N findings, 2 findings and N more; an unreadable explorer has no rows', () => {
     const t = tileByName(fixtureBlock('sdlc-plugin', PLAN), 'explore');
     assert.ok(classesOf(t).includes('wide'));
@@ -1353,10 +1940,12 @@ describe('render tiles from the shared fixture', () => {
     assert.equal(byClass(unreadable, 'find-more').length, 0);
   });
 
-  test('a plan rounds tile: summary line, none and – when a round found 0, one chip for each lens', () => {
+  test('a plan rounds tile with no roundTotals: no totals line, none and – when a round found 0, one chip for each lens', () => {
     const t = tileByName(fixtureBlock('sdlc-plugin', PLAN), 'review');
     assert.ok(classesOf(t).includes('wide'));
-    assert.equal(textOf(oneByClass(t, 'round-sum')), '5 of 5 rounds · 19 issues found · 19 fixed');
+    assert.equal(byClass(t, 'round-sum').length, 0);
+    assert.equal(byClass(t, 'find-row').length, 0);
+    assert.equal(byClass(t, 'lens-chips').filter((n) => textOf(n) === 'REPAIR LIMIT REACHED').length, 0);
     const rows = byClass(t, 'round-row').filter((r) => !classesOf(r).includes('head'));
     assert.equal(rows.length, 5);
     assert.deepEqual(rows[0].children.slice(0, 3).map((c) => c.textContent), ['round 1', '8', '8']);
@@ -1365,6 +1954,30 @@ describe('render tiles from the shared fixture', () => {
     assert.deepEqual(chips.map((c) => c.className), ['lens-chip issues', 'lens-chip ok', 'lens-chip issues']);
     assert.equal(chips[1].textContent, 'requirements · approved');
     assert.equal(chips[0].textContent, 'architecture · issues');
+  });
+
+  test('a plan review tile with roundTotals: totals line, repair limit flag, and the answered finding', () => {
+    const p = fixturePipeline('payments-service', PLAN);
+    const detail = stepOf(p, 'review').detail;
+    const t = tileByName(fixtureBlock('payments-service', PLAN), 'review');
+    assert.equal(textOf(oneByClass(t, 'round-sum')), '5 iterations · 7 violations · 6 fixes');
+    assert.deepEqual(byClass(t, 'lens-chip').filter((c) => c.className === 'lens-chip issues').map((c) => c.textContent).filter((x) => x === 'REPAIR LIMIT REACHED'), ['REPAIR LIMIT REACHED']);
+    const outcome = detail.outcomes[0];
+    const rows = byClass(t, 'find-row');
+    assert.equal(rows.length, 1);
+    assert.equal(textOf(rows[0]), `${outcome.choice} · ${outcome.id} · ${outcome.text} — ${outcome.reason}`);
+  });
+
+  test('a plan setup tile: one guardrails line; a ship commit tile: one result line', () => {
+    const setup = tileByName(fixtureBlock('sdlc-plugin', PLAN), 'setup');
+    assert.equal(oneByClass(setup, 'sec-meta').textContent, '3 guardrails');
+    assert.equal(textOf(oneByClass(setup, 'generic-line')), '3 guardrails loaded (2 error, 1 warning)');
+    assert.ok(!classesOf(setup).includes('wide'));
+    const commit = tileByName(fixtureBlock('identity-service', SHIP), 'commit');
+    const result = stepOf(fixturePipeline('identity-service', SHIP), 'commit').detail.result;
+    assert.equal(oneByClass(commit, 'sec-meta').textContent, 'nothing to commit');
+    assert.equal(textOf(oneByClass(commit, 'generic-line')), result);
+    assert.ok(!classesOf(commit).includes('wide'));
   });
 
   test('a standalone execute: commits off on every wave, queued shows its tasks', () => {
@@ -1452,7 +2065,9 @@ describe('render stepTile and stepTiles', () => {
   });
 
   test('every detail kind has a body builder', () => {
-    assert.deepEqual(Object.keys(render.TILE_BODIES).sort(), ['dimensions', 'explorers', 'findings', 'rounds', 'waves']);
+    assert.deepEqual(Object.keys(render.TILE_BODIES).sort(), [
+      'dimensions', 'explorers', 'findings', 'guardrails', 'result', 'rounds', 'waves',
+    ]);
   });
 
   test('a tile the user closed stays closed; the others stay open', () => {
@@ -1508,6 +2123,38 @@ describe('render tile bodies', () => {
     ]);
     const off = byClass(render.wavesBody(fakeDoc(), view, detail, { commitWaves: false }), 'commit-badge');
     assert.deepEqual(off.map((b) => b.textContent), ['commits off', 'commits off', 'commits off']);
+  });
+
+  test('waves: a pending wave is a block with its tasks and no commit badge', () => {
+    const detail = { kind: 'waves', waves: [
+      { number: 1, status: 'pending', committedSha: '', tasks: [{ id: 'T1', name: 'a', status: 'pending' }, { id: 'T2', name: 'b', status: 'pending' }] },
+      { number: 2, status: 'pending', committedSha: '', tasks: [{ id: 'T3', name: 'c', status: 'pending' }] },
+    ] };
+    for (const commitWaves of [true, false]) {
+      const body = render.wavesBody(fakeDoc(), view, detail, { commitWaves });
+      const blocks = byClass(body, 'wave-block');
+      assert.deepEqual(blocks.map((b) => textOf(oneByClass(b, 'wave-head'))), ['wave 10/2', 'wave 20/1']);
+      assert.deepEqual(blocks.map((b) => byClass(b, 'task-id').map((n) => n.textContent)), [['T1', 'T2'], ['T3']]);
+      assert.equal(byClass(body, 'commit-badge').length, 0);
+    }
+  });
+
+  test('waves: a started wave keeps its badge beside a pending wave', () => {
+    const detail = { kind: 'waves', waves: [
+      { number: 1, status: 'completed', committedSha: '', tasks: [{ id: 'T1', name: 'a', status: 'completed' }] },
+      { number: 2, status: 'pending', committedSha: '', tasks: [{ id: 'T2', name: 'b', status: 'pending' }] },
+    ] };
+    const blocks = byClass(render.wavesBody(fakeDoc(), view, detail, { commitWaves: true }), 'wave-block');
+    assert.deepEqual(byClass(blocks[0], 'commit-badge').map((b) => b.textContent), ['not committed']);
+    assert.equal(byClass(blocks[1], 'commit-badge').length, 0);
+  });
+
+  test('waves: the queued block shows only when queued is not empty', () => {
+    const waves = [{ number: 1, status: 'pending', tasks: [{ id: 'T1', name: 'a', status: 'pending' }] }];
+    const heads = (queued) => byClass(render.wavesBody(fakeDoc(), view, { kind: 'waves', waves, queued }, {}), 'wave-head').map((h) => textOf(h));
+    assert.deepEqual(heads(undefined), ['wave 10/1']);
+    assert.deepEqual(heads([]), ['wave 10/1']);
+    assert.deepEqual(heads([{ id: 'T9', name: 'z', status: 'pending' }]), ['wave 10/1', 'queued1']);
   });
 
   test('waves: a task row has a lamp, the id, and the name', () => {
@@ -1569,9 +2216,94 @@ describe('render tile bodies', () => {
     assert.deepEqual(rows.map((r) => textOf(r)), ['acritical', 'bmedium', 'cinfo']);
   });
 
-  test('rounds: a summary with no rounds', () => {
+  test('rounds: no roundTotals gives no totals line, no flag, no outcome rows, and the head row stays', () => {
     const body = render.roundsBody(fakeDoc(), view, { kind: 'rounds', maxRounds: 3 });
-    assert.equal(textOf(oneByClass(body, 'round-sum')), '0 of 3 rounds · 0 issues found · 0 fixed');
+    assert.equal(byClass(body, 'round-sum').length, 0);
+    assert.equal(byClass(body, 'lens-chips').length, 0);
+    assert.equal(byClass(body, 'find-row').length, 0);
+    assert.deepEqual(byClass(body, 'round-row').map((r) => r.className), ['round-row head']);
+  });
+
+  test('rounds: the totals line shows roundTotals, and the page does not add up found and fixed', () => {
+    const detail = {
+      kind: 'rounds',
+      maxRounds: 5,
+      rounds: [{ n: 1, found: 4, fixed: 4, lenses: [] }, { n: 2, found: 3, fixed: 3, lenses: [] }],
+      roundTotals: { iterations: 2, violations: 5, fixes: 5, distinct: true },
+    };
+    const sum = oneByClass(render.roundsBody(fakeDoc(), view, detail), 'round-sum');
+    assert.equal(textOf(sum), '2 iterations · 5 violations · 5 fixes');
+    assert.deepEqual(sum.children.map((c) => c.tagName), ['strong', 'span', 'strong', 'span', 'strong', 'span']);
+  });
+
+  test('rounds: (sum) ends the totals line when distinct is false, and only then', () => {
+    const totals = { iterations: 3, violations: 7, fixes: 6, distinct: false };
+    const sum = render.roundsBody(fakeDoc(), view, { kind: 'rounds', roundTotals: totals });
+    assert.equal(textOf(oneByClass(sum, 'round-sum')), '3 iterations · 7 violations · 6 fixes (sum)');
+    const distinct = render.roundsBody(fakeDoc(), view, { kind: 'rounds', roundTotals: Object.assign({}, totals, { distinct: true }) });
+    assert.equal(textOf(oneByClass(distinct, 'round-sum')), '3 iterations · 7 violations · 6 fixes');
+  });
+
+  test('rounds: a count of 1 reads in the singular', () => {
+    const body = render.roundsBody(fakeDoc(), view, { kind: 'rounds', roundTotals: { iterations: 1, violations: 1, fixes: 1, distinct: true } });
+    assert.equal(textOf(oneByClass(body, 'round-sum')), '1 iteration · 1 violation · 1 fix');
+    const zero = render.roundsBody(fakeDoc(), view, { kind: 'rounds', roundTotals: { iterations: 0, violations: 0, fixes: 0, distinct: true } });
+    assert.equal(textOf(oneByClass(zero, 'round-sum')), '0 iterations · 0 violations · 0 fixes');
+  });
+
+  test('rounds: REPAIR LIMIT REACHED shows when repairLimit is true, never when false or absent', () => {
+    const flags = (detail) => byClass(render.roundsBody(fakeDoc(), view, detail), 'lens-chip').map((c) => [c.className, c.textContent]);
+    assert.deepEqual(flags({ kind: 'rounds', repairLimit: true }), [['lens-chip issues', 'REPAIR LIMIT REACHED']]);
+    assert.deepEqual(flags({ kind: 'rounds', repairLimit: false }), []);
+    assert.deepEqual(flags({ kind: 'rounds' }), []);
+  });
+
+  test('rounds: each outcome is <choice> · <id> · <text> — <reason>; an empty reason drops the dash', () => {
+    const body = render.roundsBody(fakeDoc(), view, { kind: 'rounds', outcomes: [
+      { id: 'f-9d01aa42', text: 'Missing test for the stop route', choice: 'accepted', reason: 'Covered by Task 19 flow walk' },
+      { id: 'f-0b77d2c4', text: 'Wrong path in Task 4', choice: 'rejected', reason: 'the path exists' },
+      { id: 'f-11111111', text: 'Open question', choice: 'stop', reason: '' },
+    ] });
+    const rows = byClass(body, 'find-row');
+    assert.deepEqual(rows.map((r) => textOf(r)), [
+      'accepted · f-9d01aa42 · Missing test for the stop route — Covered by Task 19 flow walk',
+      'rejected · f-0b77d2c4 · Wrong path in Task 4 — the path exists',
+      'stop · f-11111111 · Open question',
+    ]);
+    assert.equal(oneByClass(rows[2], 'find-text').attrs.title, 'stop · f-11111111 · Open question');
+  });
+
+  test('rounds: order is totals line, flag, outcome rows, then the round table', () => {
+    const body = render.roundsBody(fakeDoc(), view, {
+      kind: 'rounds',
+      rounds: [{ n: 1, found: 1, fixed: 0, lenses: [] }],
+      roundTotals: { iterations: 1, violations: 1, fixes: 0, distinct: true },
+      repairLimit: true,
+      outcomes: [{ id: 'f-1', text: 't', choice: 'accepted', reason: 'r' }],
+    });
+    assert.deepEqual(body.children.map((c) => c.className), ['round-sum', 'lens-chips', 'find-row', 'round-row head', 'round-row']);
+  });
+
+  test('guardrails: the loaded line, singular for 1, and the empty line for 0 or no counts', () => {
+    const line = (detail) => {
+      const p = render.guardrailsBody(fakeDoc(), view, detail);
+      assert.equal(p.tagName, 'p');
+      assert.equal(p.className, 'generic-line');
+      return p.textContent;
+    };
+    assert.equal(line({ kind: 'guardrails', guardrails: { total: 3, error: 2, warning: 1 } }), '3 guardrails loaded (2 error, 1 warning)');
+    assert.equal(line({ kind: 'guardrails', guardrails: { total: 1, error: 1, warning: 0 } }), '1 guardrail loaded (1 error, 0 warning)');
+    assert.equal(line({ kind: 'guardrails', guardrails: { total: 0, error: 0, warning: 0 } }), 'No plan guardrails configured');
+    assert.equal(line({ kind: 'guardrails' }), 'No plan guardrails configured');
+  });
+
+  test('result: one text line, markup stays text, empty when the result is absent', () => {
+    const p = render.resultBody(fakeDoc(), view, { kind: 'result', result: 'nothing to commit: <b>x</b>' });
+    assert.equal(p.tagName, 'p');
+    assert.equal(p.className, 'generic-line');
+    assert.equal(p.textContent, 'nothing to commit: <b>x</b>');
+    assert.equal(p.children.length, 0);
+    assert.equal(render.resultBody(fakeDoc(), view, { kind: 'result' }).textContent, '');
   });
 });
 
@@ -1688,22 +2420,28 @@ describe('render.js browser global fallback', () => {
     assert.deepEqual(Object.keys(fakeRoot.sdlcRender).sort(), [
       'TILE_BODIES',
       'activityPanel',
+      'attentionRows',
       'blockHead',
       'dimensionsBody',
       'el',
+      'elapsedText',
       'emptyState',
       'explorersBody',
       'filterChips',
       'findingsBody',
+      'guardrailsBody',
       'headerTotals',
       'historyTable',
       'issuesTile',
       'pipelineBlock',
+      'resultBody',
       'roundsBody',
+      'scopedTitle',
       'sessionTile',
       'stationTrack',
       'stepTile',
       'stepTiles',
+      'tickElapsed',
       'wavesBody',
     ]);
   });

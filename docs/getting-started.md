@@ -12,7 +12,11 @@ install, see [`smoke-test.md`](smoke-test.md).
 - `git`.
 - [GitHub CLI](https://cli.github.com/) (`gh`), authenticated (`gh auth
   status`). Required by `pr`, `ship`, `received-review`, `verify-pipeline`,
-  and link validation — these shell out to `gh` directly.
+  and link validation — these shell out to `gh` directly. `openspec-save`
+  also needs it, because it runs the `pr` skill.
+- The [OpenSpec CLI](https://github.com/Fission-AI/OpenSpec)
+  (`npm i -g @fission-ai/openspec`), only if you use OpenSpec: `plan` with
+  **Create OpenSpec change**, `openspec-save`, and the OpenSpec steps of `ship`.
 - A Jira/Atlassian MCP connection, only if you plan to use `jira`.
   Everything else works without it.
 
@@ -96,6 +100,7 @@ Each stage of a change maps to one skill. Run them in order, or let
 | Stage | Skill | When to use it |
 |---|---|---|
 | Plan | `/plan` | Turn a requirement, spec, or description into a task-decomposed implementation plan. |
+| Save the spec | `/openspec-save <plan-file>` | After `/plan` staged an OpenSpec change, save it as its own branch, commit, and PR. Merge that PR first, then run `/ship` on a new branch from the default branch. |
 | Execute | `/execute <plan-file>` | Implement a plan file wave by wave, with per-wave verification. |
 | Commit | `/commit` | Generate a commit message from the staged diff and commit history, then commit tracked changes plus staged files (untracked files stay out). |
 | Review | `/review` | Multi-dimension code review (security, performance, docs, etc.) of the current diff. |

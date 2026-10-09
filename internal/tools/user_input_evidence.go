@@ -135,23 +135,12 @@ func CleanUserPrompt(text string) (string, bool) {
 	return cleaned, true
 }
 
-// truncateRunes cuts s to at most max runes, appending a trailing "…" when
-// truncation actually happens. Operates on runes (not bytes) so a multi-byte
-// character is never split mid-sequence.
-func truncateRunes(s string, max int) string {
-	runes := []rune(s)
-	if len(runes) <= max {
-		return s
-	}
-	return string(runes[:max]) + "…"
-}
-
 // appendUserInput redacts entry.Text (telemetry.Redact) and caps it to
-// userInputTextMax runes (truncateRunes), then appends it through
+// userInputTextMax runes (telemetry.TruncateRunes), then appends it through
 // appendJSONLBounded (cli_evidence.go) — the same size-capped,
 // rotate-on-overflow JSONL append path CLI evidence uses.
 func appendUserInput(root string, entry UserInputEntry) error {
-	entry.Text = truncateRunes(telemetry.Redact(entry.Text), userInputTextMax)
+	entry.Text = telemetry.TruncateRunes(telemetry.Redact(entry.Text), userInputTextMax)
 	return appendJSONLBounded(userInputPath(root), entry)
 }
 

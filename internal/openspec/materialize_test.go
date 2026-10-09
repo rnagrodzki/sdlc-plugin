@@ -105,12 +105,42 @@ func TestStagedChangeFromPlan(t *testing.T) {
 		{"no header", "# Plan\n\n**Source:** x\n", "", false},
 		{"other dir", "**OpenSpec-Staging:** tmp/add-widget/\n", "", false},
 		{"not at line start", "see **OpenSpec-Staging:** .sdlc-v2/openspec-staging/add-widget/\n", "", false},
+		{"path on the next line", "**OpenSpec-Staging:**\n.sdlc-v2/openspec-staging/add-widget/\n", "", false},
+		{"CRLF line", "**OpenSpec-Staging:** .sdlc-v2/openspec-staging/add-widget/\r\n", "add-widget", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			change, ok := StagedChangeFromPlan(tc.plan)
 			if change != tc.change || ok != tc.ok {
 				t.Fatalf("StagedChangeFromPlan = (%q, %v), want (%q, %v)", change, ok, tc.change, tc.ok)
+			}
+		})
+	}
+}
+
+// TestReplaceStagingHeader covers the header rewrite: only the header line
+// is replaced, blank lines after it are kept, a CRLF header line loses its
+// carriage return with the rest of the line, and a plan with no header is
+// returned unchanged with ok false.
+func TestReplaceStagingHeader(t *testing.T) {
+	const saved = "**OpenSpec-Saved:** openspec/changes/add-widget/"
+	cases := []struct {
+		name string
+		plan string
+		want string
+		ok   bool
+	}{
+		{"blank lines kept", matPlan("add-widget"), "# Plan\n\n**Source:** user request\n" + saved + "\n\n## Tasks\n", true},
+		{"trailing padding", "**OpenSpec-Staging:** .sdlc-v2/openspec-staging/add-widget/ \t\n\nx\n", saved + "\n\nx\n", true},
+		{"CRLF", "a\r\n**OpenSpec-Staging:** .sdlc-v2/openspec-staging/add-widget/\r\n\r\nb\r\n", "a\r\n" + saved + "\n\r\nb\r\n", true},
+		{"no header", "# Plan\n\n**Source:** x\n", "# Plan\n\n**Source:** x\n", false},
+		{"path on the next line", "**OpenSpec-Staging:**\n.sdlc-v2/openspec-staging/add-widget/\n", "**OpenSpec-Staging:**\n.sdlc-v2/openspec-staging/add-widget/\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := ReplaceStagingHeader(tc.plan, saved)
+			if got != tc.want || ok != tc.ok {
+				t.Fatalf("ReplaceStagingHeader = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.ok)
 			}
 		})
 	}

@@ -32,9 +32,19 @@ import (
 // filesystem errors, `git add` failures) do not wrap it.
 var ErrMaterialize = errors.New("openspec materialize")
 
-// stagingHeaderRe matches the plan header written after a successful stage:
+// stagingHeaderRe matches the whole plan header line written after a
+// successful stage:
 // **OpenSpec-Staging:** .sdlc-v2/openspec-staging/<change>/
-var stagingHeaderRe = regexp.MustCompile(`(?m)^\*\*OpenSpec-Staging:\*\*\s*\.sdlc-v2/openspec-staging/([^\s/]+)/?\s*$`)
+// The line is matched on its own: the padding is spaces and tabs only, so a
+// match never spans a line break. A trailing carriage return of a CRLF plan
+// is part of the match.
+var stagingHeaderRe = regexp.MustCompile(`(?m)^\*\*OpenSpec-Staging:\*\*[ \t]*\.sdlc-v2/openspec-staging/([^\s/]+)/?[ \t\r]*$`)
+
+// Values of MaterializeResult.Materialized.
+const (
+	MaterializedCreated = "created" // this call created openspec/changes/<change>/
+	MaterializedAlready = "already" // an earlier call created it
+)
 
 // openspecMetaFile is the per-change metadata file `openspec new change`
 // creates. Materialize never overwrites it.
@@ -50,6 +60,18 @@ func StagedChangeFromPlan(planContent string) (change string, ok bool) {
 		return "", false
 	}
 	return m[1], true
+}
+
+// ReplaceStagingHeader replaces each **OpenSpec-Staging:** header line of
+// planContent with line, which is inserted as written. It reads the header
+// line in the same shape as StagedChangeFromPlan, and it keeps every other
+// line, blank lines included. ok is false when the plan has no such header;
+// the plan is then returned unchanged.
+func ReplaceStagingHeader(planContent, line string) (replaced string, ok bool) {
+	if !stagingHeaderRe.MatchString(planContent) {
+		return planContent, false
+	}
+	return stagingHeaderRe.ReplaceAllLiteralString(planContent, line), true
 }
 
 // MaterializeResult is the outcome of Materialize. Materialized is
@@ -101,7 +123,7 @@ func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
 	if err != nil {
 		return MaterializeResult{}, err
 	}
-	result := MaterializeResult{Change: change, Materialized: "already"}
+	result := MaterializeResult{Change: change, Materialized: MaterializedAlready}
 
 	if targetExists && !stagingExists {
 		return result, nil // rule 3
@@ -153,7 +175,7 @@ func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
 	if err := os.RemoveAll(stagingDir); err != nil {
 		return MaterializeResult{}, fmt.Errorf("openspec materialize: delete %s: %w", stagingDir, err)
 	}
-	result.Materialized = "created"
+	result.Materialized = MaterializedCreated
 	return result, nil
 }
 

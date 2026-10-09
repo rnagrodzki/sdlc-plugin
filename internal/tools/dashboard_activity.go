@@ -203,15 +203,15 @@ func dashboardMCPEvents(root string) []dashboardEvent {
 	return out
 }
 
-// dashboardPreview redacts (telemetry.Redact) and truncates (truncateRunes)
-// s to dashboardPreviewTextMax runes, for one timeline event's text (D3).
-// Applied uniformly to every kind: user-input text is already redacted and
-// truncated to 2000 runes at write time (appendUserInput, user_input_evidence.go)
-// but gets redacted again here per the task's acceptance criteria; CLI
-// command and MCP tool text are stored unredacted, so the same pass is the
-// only redaction they get before reaching the dashboard.
+// dashboardPreview redacts (telemetry.Redact) and truncates (telemetry.TruncateRunes)
+// s to dashboardPreviewTextMax runes, for the text of one timeline event.
+// It applies the same pass to every event kind. User-input text is already
+// redacted and truncated to 2000 runes when it is written (appendUserInput,
+// user_input_evidence.go), and it is redacted again here. CLI command and
+// MCP tool text are stored unredacted, so this pass is the only redaction
+// they get before they reach the dashboard.
 func dashboardPreview(s string) string {
-	return truncateRunes(telemetry.Redact(s), dashboardPreviewTextMax)
+	return telemetry.TruncateRunes(telemetry.Redact(s), dashboardPreviewTextMax)
 }
 
 // dashboardRecentLearnings reads root's learnings log and returns the
@@ -270,13 +270,13 @@ func dashboardRecentLearnings(root string, now time.Time) []DashboardLearning {
 // tooling-lesson block).
 func dashboardLearningHeading(entry string) string {
 	if m := dashboardLearningHeadingRe.FindStringSubmatch(entry); m != nil {
-		return truncateRunes(strings.TrimSpace(m[1]), dashboardPreviewTextMax)
+		return telemetry.TruncateRunes(strings.TrimSpace(m[1]), dashboardPreviewTextMax)
 	}
 	first := entry
 	if i := strings.IndexByte(entry, '\n'); i >= 0 {
 		first = entry[:i]
 	}
-	return truncateRunes(strings.Trim(strings.TrimSpace(first), "*"), dashboardPreviewTextMax)
+	return telemetry.TruncateRunes(strings.Trim(strings.TrimSpace(first), "*"), dashboardPreviewTextMax)
 }
 
 // dashboardOpenDeferred returns root's open deferred issues as

@@ -6,6 +6,7 @@ This directory contains user-facing documentation for each SDLC plugin skill. Fo
 
 ### Planning
 - [`plan`](plan.md) — Decompose a requirement into an implementation plan with tasks and dependencies.
+- [`openspec-save`](openspec-save.md) — Save the OpenSpec change that plan staged as its own branch, commit, and PR. Merge it first, then ship.
 
 ### Implementation
 - [`execute`](execute.md) — Run a plan wave by wave, with per-wave verification.

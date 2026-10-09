@@ -12,8 +12,10 @@ severity: high
   input. A branch gated on a condition that can never hold — or that
   contradicts an earlier gate in the same flow — is dead.
 - **Exit-state completeness.** Every terminal state the skill describes
-  (success, cancel, error, stall) must have an explicit next instruction.
-  A state the flow can enter but never says how to leave is incomplete.
+  (success, cancel, error, stall, interrupt) must have an explicit next
+  instruction. When the skill has a routes table, each terminal state needs
+  its own row. A state the flow can enter but never says how to leave is
+  incomplete.
 - **Gate consistency.** A condition gating one step must not be
   contradicted by another step in the same file assuming the opposite
   (e.g. one step skips work "if `--force` was NOT passed" while a later
@@ -59,13 +61,18 @@ severity: high
   phases (Step 9), grep for TaskStop calls or equivalent termination logic
   on each dispatched Agent task. Abandoned workers are a resource leak and
   token waste.
+- **Exit-path state record.** Each exit path that ends a dispatched worker
+  must also record that worker's outcome in the run state (for example a
+  `ledger_skip` reason). A path that stops the worker but writes no outcome
+  is a finding.
 - **Routing-bullet exclusivity.** When one step lists several routing
   bullets keyed on the same input (a round number, a verdict, a gate
   result), exactly one bullet must match any given input state. Walk the
   boundary states, such as the last round, a CRITICAL gate result, or a
   single-item batch, against every bullet. A state that matches two
   bullets with different outcomes is a finding, even when each bullet
-  reads correctly on its own.
+  reads correctly on its own. A state that matches no bullet is a dead end,
+  and it is a finding.
 - **Shared-record field parity.** When two or more routes write the same
   persisted record (a round record, a history row, a state snapshot),
   every route must derive each field from the same named source, or the
@@ -80,7 +87,8 @@ severity: high
 - **Stop-failure fallback.** When TaskStop or an equivalent call fails,
   the flow must name a fallback and list the worker as not stopped. A
   worker that cannot be stopped still counts toward any wave or
-  concurrency cap.
+  concurrency cap. A cleanup step that follows an earlier failed stop must
+  retry that stop before it lists the worker as not stopped.
 - **Dispatch without task ID.** An Agent dispatch that returns no task ID
   is a worker that cleanup cannot end. The flow must list it as missing
   or unterminated.
@@ -101,6 +109,18 @@ severity: high
   no longer does, or keeps a number the body renumbered, is a finding. An
   overview that lists steps out of run order misstates the flow, so it is
   a finding.
+- **Count and flag sources.** A route that counts findings (found, open,
+  blocking) must count every source, including findings recorded without an
+  id. A route must not advance on a flag that the fixer set on its own work
+  (for example `fixed: true`) unless an independent re-check runs first.
+- **Delegated next routes.** A step that defers to a tool result's `next`
+  string is a route. List each `next` value the tool can return, and confirm
+  that each one reaches every enabled opt-in step. An offer that hands off
+  to another skill or tool must restate that target's own precondition, and
+  the flow must skip the offer when the precondition fails.
+- **Unattended answers.** An AskUserQuestion that `--auto` or a run without
+  a user can reach must state the answer the flow uses without a user. This
+  extends the option-quality default rule above.
 
 ## What NOT to flag
 

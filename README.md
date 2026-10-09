@@ -88,7 +88,7 @@ rm -rf ~/.sdlc-cache
 
 ### Tool surface
 
-The MCP server (`sdlc mcp`) registers 30 tools across 15 groups (grepped from
+The MCP server (`sdlc mcp`) registers 33 tools across 16 groups (grepped from
 `internal/tools/*.go`, wired in `cmd/sdlc/main.go`):
 
 | Group | Tools |
@@ -96,7 +96,7 @@ The MCP server (`sdlc mcp`) registers 30 tools across 15 groups (grepped from
 | Commit | `commit_prepare`, `commit_apply` |
 | Pull request | `pr_prepare`, `pr_apply` |
 | Plan | `plan_prepare`, `plan_mark`, `plan_explore_prepare`, `plan_support` |
-| Review | `review_prepare`, `received_review_prepare` |
+| Review | `review_prepare`, `received_review_prepare`, `received_review_verify` |
 | Ship | `ship_prepare`, `ship_verify_side_effect`, `ship_state` |
 | Execute state | `execute_state` |
 | Jira | `jira` |
@@ -105,9 +105,10 @@ The MCP server (`sdlc mcp`) registers 30 tools across 15 groups (grepped from
 | Validation & links | `validate`, `links_validate`, `mcp_failure_record` |
 | CI scaffolding | `scaffold_ci`, `verify_tag_ancestry` |
 | Orchestrator | `prepare_orchestrator` |
-| OpenSpec | `openspec_enrich` |
+| OpenSpec | `openspec_enrich`, `openspec_save` |
 | Dimensions rendering | `dimensions_render_instructions` |
 | Learnings | `learnings_log` |
+| Dashboard | `dashboard` |
 
 These are consumed by the plugin's skills (under `plugins/sdlc/skills/`), not typically
 called by name directly.

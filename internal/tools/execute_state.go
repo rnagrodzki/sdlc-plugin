@@ -40,7 +40,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=base-sync,enum=base-sync-resolve,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=base-sync,enum=base-sync-resolve,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=ledger_skip,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Auto                bool           `json:"auto,omitempty" sdlcconfig:"executePrefs.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Omitting it does not mean auto is off: the resolution order is CLI > pipeline > config > default, so auto also resolves to true when branch is supplied and that branch's ship state has flags.auto=true. Optional. Defaults to config executePrefs.auto. Pass only to override."`
 	Quality             string         `json:"quality,omitempty" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over executePrefs.quality in .sdlc-v2/local.toml when non-empty. A resolve-config value outside the enum is non-fatal: it is reported in warnings and resolution falls through to config, then the auto default, then the skill's tier prompt."`
@@ -49,13 +49,14 @@ type ExecuteStateIn struct {
 	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
 	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-await to size its heartbeat/reclaim-grace window. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
 	PlannedTaskIds      []string       `json:"plannedTaskIds,omitempty" jsonschema_description:"IDs of every task planned for this run (init only), used later to detect run completeness."`
+	PlannedWavesJSON    string         `json:"plannedWavesJson,omitempty" jsonschema_description:"init only. JSON-encoded string: array of {number, taskIds}. Wave 0 holds the pre-wave tasks. Task IDs are JSON strings, not numbers. Stored as the plannedWaves state key; when omitted, init writes no plannedWaves key. Display data only: the dashboard reads it to list waves that have not started, and the waves need not cover every ID in plannedTaskIds. init fails with a DomainError and writes no state when the value is not exactly one JSON array of {number, taskIds} (an unknown key, a missing number, or data after the array is an error), the array is empty, a number is below 0 or repeats, a wave has no task IDs, a task ID appears more than once in the schedule, or a task ID is not in plannedTaskIds. The task-ID check against plannedTaskIds is skipped when plannedTaskIds is empty. Example: '[{\"number\":0,\"taskIds\":[\"1\"]},{\"number\":1,\"taskIds\":[\"2\",\"3\"]}]'"`
 	PlanPath            string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
 	PlanHash            string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
 	ExtraDepsJSON       string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
 	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, base-sync, base-sync-resolve, task-done, task-fail, wave-split, wave-await; also task-redispatch, optional, to scope the row search to one wave instead of scanning every wave)."`
 	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional), workerName: string (optional — caller-supplied dispatch identity, never invented; falls back to a generated template when omitted), batchId: string (optional — shared by every task in one batch dispatch; omit for a solo task), batchIndex: number (optional — this task's 0-based position within its batch)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid task."`
-	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
-	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
+	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, ledger_skip, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
+	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout), or the planned review dimension whose stop ledger_skip records."`
 	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: JSON array of decisions made while completing the wave, encoded as a string; surfaced in later summaries. Plain prose is rejected. Example: \"[\\\"Chose sqlite over postgres for the local cache\\\"]\"."`
 	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done, the wave's terminal status, \"completed\" (default) or \"partial\"; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
 	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail and wave-done: true when the wave timed out, rather than erroring outright; stamped on the wave as timedOut."`
@@ -89,6 +90,7 @@ type ExecuteStateIn struct {
 	Payload             map[string]any `json:"payload,omitempty" jsonschema_description:"Reserved for future use; not currently read by any action."`
 	StepID              string         `json:"stepId,omitempty" jsonschema_description:"ledger_checkin only: identifier of the pipeline step the worker is registering activity for."`
 	Findings            string         `json:"findings,omitempty" jsonschema_description:"ledger_checkout only: free-text findings payload to persist alongside this worker's checkout record, returned later by ledger_status. Not schema-validated, but review workers conventionally pass a JSON array of objects shaped {severity, file, line, rationale} (a markdown block is also accepted). Capped at 64 KiB; larger payloads should be persisted to a file under .sdlc-v2/ and referenced by path instead."`
+	Reason              string         `json:"reason,omitempty" jsonschema:"enum=stalled,enum=missing,enum=unstopped" jsonschema_description:"ledger_skip only: why the review worker stopped. Plain text, one of stalled, missing, unstopped; any other value fails with a DomainError. unstopped = TaskStop failed or the worker has no task ID, so the worker may still run. Example: stalled"`
 	Detail              string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
 	LastCompletedTask   string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
 	AcceptanceDone      []int          `json:"acceptanceDone,omitempty" jsonschema_description:"wave-progress write only: 0-based indices, into the task's fact-sheet acceptance criteria, that the worker has completed so far (e.g. [0,2,3]). Replaces the previously recorded list; omit to leave it unchanged."`
@@ -558,7 +560,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
 - resolve-config: resolves this run's effective auto mode, quality tier, commit-waves setting and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto), commitWaves (--commit-waves, "true"|"false"). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), commitWaves (bool; CLI > config execute.commitWaves > default true), highRiskAutoApprove, sources, warnings?}.
-- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ (see openspec.Materialize) before the state file is written at all — a materialize failure aborts init with no state file created. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s). When planPath is readable, init also stores plannedTasks in the state: one {id, name} for each "### Task N:" heading, in plan order (display data only; verify-completeness still reads plannedTaskIds). The key is absent when planPath is empty or the plan is unreadable.
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ (see openspec.Materialize) before the state file is written at all — a materialize failure aborts init with no state file created. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, plannedWavesJson (JSON-encoded array of {number, taskIds}, stored as plannedWaves; wave 0 holds the pre-wave tasks; task IDs are JSON strings; display data only, so the waves need not cover every planned task ID; a malformed value, an empty array, a negative or repeated number, an empty taskIds, a task ID given more than once, or a task ID missing from a non-empty plannedTaskIds fails with a DomainError and writes no state), planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s). When planPath is readable, init also stores plannedTasks in the state: one {id, name} for each "### Task N:" heading, in plan order (display data only; verify-completeness still reads plannedTaskIds). The key is absent when planPath is empty or the plan is unreadable.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status ("completed" default, or "partial"), timedOut (stamps timedOut:true on the wave), detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), detail ("concise"|"full").
@@ -580,10 +582,11 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - wave-progress: Read/write per-task progress. Requires runId. For reads: readProgress=true. For writes: taskId, phase. Optional on writes: lastCompletedTask (recorded in the heartbeat entry), acceptanceDone, filesTouched (each replaces the recorded list), blocker.
 - wave-await: Bounded, non-blocking poll of a wave's still-open tasks, classifying each against its server-owned dispatch state (never-started/stalled/timeout/none) and returning explicit next-instructions (including the exact task-fail/task-redispatch call shape) for whatever it finds. Requires runId, wave. Optional: branch, stateFile (also used to persist wave-await's own resume-state, i.e. the iteration counter, across bounded-poll calls).
 - resume-reset: Reset in-progress waves for session resume. Optional: branch, runId (the run whose server dispatch state is reseeded; falls back to the value derived from startedAt/wave). Returns {resetWaves, clearedTaskIds} as before; when the run is still in flight after the reset, the response also carries a "resumeBriefing" (same shape as read's) reflecting the sets it just cleared — resume-reset's willRedo always matches the task IDs in clearedTaskIds. Reseeds fresh server-owned dispatch state (attempt reset to 1) for every cleared task ID; seeding failure is non-fatal and appends to a "warnings" field.
-- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId, branch. Side effect: the first check-in for a runId also writes runs/ledger/<runId>/run.meta once (branch, startedAt, and shipRunId when this branch has a ship state with its review step in_progress); later check-ins leave it unchanged. The branch is the branch input when set, else the current branch of the work directory. A run.meta write failure does not fail the check-in: the result carries a "warnings" entry that names the path.
+- ledger_checkin: Register a worker as active. Requires runId, workerId. Optional: stepId, branch. review_prepare writes runs/ledger/<runId>/run.meta with the run plan. Side effect: a check-in writes run.meta only when it is absent (branch, startedAt, and shipRunId when this branch has a ship state with its review step in_progress); a check-in never changes an existing run.meta. The branch is the branch input when set, else the current branch of the work directory. A run.meta write failure does not fail the check-in: the result carries a "warnings" entry that names the path.
 - ledger_checkout: Mark a worker as done. Requires runId, workerId. Optional: findings (free-text payload — e.g. a JSON array or markdown block — persisted alongside this worker's checkout record and returned later by ledger_status).
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers). Each entry in the returned workers[] carries a "findings" field when that worker's ledger_checkout call set one; omitted when absent.
 - ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed, workers} where removed is false when the directory didn't exist and workers lists the sorted worker ids that had ledger files (ids only, never findings).
+- ledger_skip: Record why a review worker stopped. Requires runId, workerId, reason (stalled|missing|unstopped). runId is the run_id of the review_prepare manifest of this review run. Sets stopReason of that worker's dimension in runs/ledger/<runId>/run.meta with an atomic write (every dimension with that workerId gets it). A later call for the same worker replaces the earlier stopReason. It reads the worker file but never writes one, so ledger_status output does not change. Returns {ok, workerId, stopReason (the reason just recorded), priorStopReason (the reason it replaced; omitted when there was none), warnings (only when the worker file shows the worker already checked out: the dashboard then shows it as done and ignores the stop reason), next}. Fails with a DomainError when runId or workerId is empty or holds characters other than letters, digits, "_" and "-", when reason is not one of the 3 values, when run.meta is missing (a dry run or a run with zero waves has no run.meta; the Suggestion says to pass the run_id from the review_prepare manifest), or when workerId is not a planned dimension of the run (the Suggestion lists the planned worker ids; when run.meta holds no planned dimensions, which is the run.meta that a ledger_checkin writes without review_prepare, the Suggestion says to pass the run_id from the review_prepare manifest). Fails with a DataError when run.meta is not valid JSON, and with an InfraError when run.meta cannot be read or written. A failed call leaves run.meta as it was.
 - log-cli: Append a CLI-captured output block to the run's evidence log. Requires cliCommand. Optional: cliExitCode, cliOutput, branch, wave.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). The draft title is also recorded durably in .sdlc-v2/history/deferred.json (source "execute-drift", id "execute-drift-<timestamp>-<N>") so it survives state-file GC — no follow-up deferred_add is needed unless warnings is returned. Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N, deferredId (the id just written to deferred.json), next}, plus warnings[] when the deferred.json write failed: the call still succeeds, deferredId is omitted, and next names the exact ship_state action=deferred_add recovery call. Do not retry issue-draft to recover — it appends a second draft under a new id.
@@ -681,6 +684,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionLedgerStatus(root, in, now)
 	case "ledger_cleanup":
 		return execActionLedgerCleanup(root, in)
+	case "ledger_skip":
+		return execActionLedgerSkip(root, in)
 	case "log-cli":
 		return execActionLogCLI(root, workDir, in)
 	case "drift-log":
@@ -2255,12 +2260,104 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	return out, nil
 }
 
+// execPlannedWave is one entry of the init plannedWavesJson input: a wave
+// number (0 for the pre-wave tasks) and the IDs of the tasks in that wave.
+// Number is a pointer so a missing number is told apart from wave 0.
+type execPlannedWave struct {
+	Number  *int     `json:"number"`
+	TaskIDs []string `json:"taskIds"`
+}
+
+// execParsePlannedWaves decodes the init plannedWavesJson input and checks it
+// before init writes any state. It returns the waves as the plannedWaves state
+// value ([{number, taskIds}], in input order), or a DomainError when the input
+// is not exactly one JSON array of {number, taskIds} (unknown keys and any
+// data after the array are errors), the array is empty, a number is below 0
+// or repeats, a wave has no task IDs, a task ID appears more than once in the
+// schedule, or a task ID is not in plannedTaskIDs. An empty plannedTaskIDs
+// skips the task-ID check. The waves need not cover every planned task ID:
+// the schedule is display data only.
+func execParsePlannedWaves(raw string, plannedTaskIDs []string) ([]any, error) {
+	const shapeSuggestion = "Pass plannedWavesJson as a JSON-encoded array, for example '[{\"number\":1,\"taskIds\":[\"2\"]}]'."
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var waves []execPlannedWave
+	if err := dec.Decode(&waves); err != nil {
+		return nil, &mcpserver.DomainError{Msg: "plannedWavesJson is not a JSON array of {number, taskIds}: " + err.Error(), Cause: err, Suggestion: shapeSuggestion}
+	}
+	if waves == nil {
+		return nil, &mcpserver.DomainError{Msg: "plannedWavesJson is not a JSON array of {number, taskIds}: got null", Suggestion: shapeSuggestion}
+	}
+	// Token returns io.EOF only when nothing but white space follows the
+	// array. A stray ] or } is an error of its own, so test for EOF and not
+	// for More, which is false for those. terr is nil when a valid token
+	// follows the array.
+	if _, terr := dec.Token(); terr != io.EOF {
+		msg := "plannedWavesJson is not a JSON array of {number, taskIds}: extra data after the array"
+		if terr != nil {
+			msg += ": " + terr.Error()
+		}
+		return nil, &mcpserver.DomainError{Msg: msg, Cause: terr, Suggestion: shapeSuggestion}
+	}
+	if len(waves) == 0 {
+		return nil, &mcpserver.DomainError{Msg: "plannedWavesJson has no waves", Suggestion: "Leave out plannedWavesJson when the schedule has no waves."}
+	}
+
+	known := make(map[string]bool, len(plannedTaskIDs))
+	for _, id := range plannedTaskIDs {
+		known[id] = true
+	}
+	seen := map[int]bool{}
+	waveOfTask := map[string]int{}
+	out := make([]any, 0, len(waves))
+	for i, w := range waves {
+		if w.Number == nil {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson entry %d has no number", i), Suggestion: shapeSuggestion}
+		}
+		n := *w.Number
+		if n < 0 {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson wave number %d is below 0", n), Suggestion: "Use 0 for the pre-wave tasks and 1 or more for each wave."}
+		}
+		if seen[n] {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson gives wave number %d more than once", n), Suggestion: "Give each wave number once."}
+		}
+		seen[n] = true
+		if len(w.TaskIDs) == 0 {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson wave %d has no taskIds", n), Suggestion: "Leave out a wave that has no tasks."}
+		}
+		for _, id := range w.TaskIDs {
+			if len(known) > 0 && !known[id] {
+				return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson wave %d names task %q, which is not in plannedTaskIds", n, id), Suggestion: "Use the task IDs from plannedTaskIds, for example \"3\"."}
+			}
+			if prev, dup := waveOfTask[id]; dup {
+				return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson names task %q in wave %d and again in wave %d", id, prev, n), Suggestion: "Put each task ID in one wave, once."}
+			}
+			waveOfTask[id] = n
+		}
+		out = append(out, map[string]any{"number": n, "taskIds": w.TaskIDs})
+	}
+	return out, nil
+}
+
+// execActionInit handles the init action: it checks the input, runs the config
+// gate, materializes a staged OpenSpec change, and writes a new execute state
+// file for the branch.
 func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Branch == "" {
 		return nil, &mcpserver.DomainError{Msg: "--branch is required for init", Suggestion: "Pass branch (the target branch name) in the init call."}
 	}
 	if in.Quality == "" {
 		return nil, &mcpserver.DomainError{Msg: "--quality is required for init", Suggestion: "Pass quality as \"full\", \"balanced\", or \"minimal\" — call execute_state resolve-config first to get the value to use."}
+	}
+	// Check plannedWavesJson before the config gate, the materialize step and
+	// state.Init: a bad value must leave nothing written.
+	var plannedWaves []any
+	if in.PlannedWavesJSON != "" {
+		pw, err := execParsePlannedWaves(in.PlannedWavesJSON, in.PlannedTaskIds)
+		if err != nil {
+			return nil, err
+		}
+		plannedWaves = pw
 	}
 
 	// KD5 gate: same auto-migrate-with-backup gate as ship_prepare
@@ -2353,6 +2450,11 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 			planned = append(planned, map[string]any{"id": strconv.Itoa(t.Number), "name": t.Title})
 		}
 		st.Data["plannedTasks"] = planned
+	}
+	// plannedWaves is the wave schedule the caller computed (wave 0 holds the
+	// pre-wave tasks). Written only when init got plannedWavesJson.
+	if in.PlannedWavesJSON != "" {
+		st.Data["plannedWaves"] = plannedWaves
 	}
 	st.Data["waves"] = []any{}
 	st.Data["context"] = map[string]any{}
@@ -2449,34 +2551,16 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 // own case so its suggestion names the actual fix instead of the generic
 // "fix the staged change" wording that fits the other rules. ErrCLINotFound
 // and any other infrastructure failure (filesystem errors, a failed `git
-// add`) do not wrap ErrMaterialize and become an InfraError instead.
+// add`) do not wrap ErrMaterialize and become an InfraError instead. The
+// split itself lives in materializeError (openspec_save.go), which
+// openspec_save calls with its own wording.
 func mapMaterializeError(err error) error {
-	switch {
-	case errors.Is(err, openspec.ErrCLINotFound):
-		return &mcpserver.InfraError{
-			Msg:        openspec.ErrCLINotFound.Error(),
-			Suggestion: openspecCLISuggestion,
-			Cause:      err,
-		}
-	case errors.Is(err, openspec.ErrInvalidChangeName):
-		return &mcpserver.DomainError{
-			Msg:        "init: " + err.Error(),
-			Suggestion: openspecNameSuggestion,
-			Cause:      err,
-		}
-	case errors.Is(err, openspec.ErrMaterialize):
-		return &mcpserver.DomainError{
-			Msg:        "init: " + err.Error(),
-			Suggestion: "Fix the staged change as the message describes — a conflicting openspec/changes/<change>/, a missing staging dir, a staged file edited after validation, or the validate output — then retry execute_state init.",
-			Cause:      err,
-		}
-	default:
-		return &mcpserver.InfraError{
-			Msg:        "init: openspec materialize: " + err.Error(),
-			Suggestion: "Check that openspec/config.yaml exists in the active worktree and that the openspec CLI runs there, then retry.",
-			Cause:      err,
-		}
-	}
+	return materializeError(err, materializeErrorText{
+		MsgPrefix:     "init: ",
+		CLISuggestion: openspecCLISuggestion,
+		RuleRetry:     "retry execute_state init",
+		InfraRetry:    "retry",
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -6019,13 +6103,33 @@ func execActionResumeReset(root, workDir string, in ExecuteStateIn, now func() t
 // dot, so it cannot clash with a worker file.
 const ledgerRunMetaFile = "run.meta"
 
-// reviewRunMeta is runs/ledger/<runId>/run.meta. The first ledger_checkin of a
-// run writes it once.
+// reviewRunMeta is runs/ledger/<runId>/run.meta. review_prepare writes it
+// with the run plan (waves and dimensions). The first ledger_checkin of a run
+// writes it only when it is absent: a fallback for a review run that started
+// before review_prepare wrote it. That fallback has no waves or dimensions.
 type reviewRunMeta struct {
-	Branch    string `json:"branch"`
-	StartedAt string `json:"startedAt"`           // RFC3339, check-in time
-	ShipRunID string `json:"shipRunId,omitempty"` // state.RunID of the ship run, e.g. ship-feat-x-20261007T072607Z
+	Branch     string                   `json:"branch"`
+	StartedAt  string                   `json:"startedAt"`            // RFC3339: review_prepare time, or check-in time for the fallback
+	ShipRunID  string                   `json:"shipRunId,omitempty"`  // state.RunID of the ship run, e.g. ship-feat-x-20261007T072607Z
+	Waves      [][]string               `json:"waves,omitempty"`      // worker IDs by wave
+	Dimensions []reviewRunMetaDimension `json:"dimensions,omitempty"` // every planned dimension
 }
+
+// reviewRunMetaDimension is one planned dimension of a review run in
+// run.meta.
+type reviewRunMetaDimension struct {
+	Name       string `json:"name"`
+	WorkerID   string `json:"workerId"`
+	Wave       int    `json:"wave"`                 // 1-based
+	StopReason string `json:"stopReason,omitempty"` // one of the reviewStop* constants when a stopped worker is recorded; empty until then
+}
+
+// Stop reasons of a review dimension in run.meta.
+const (
+	reviewStopStalled   = "stalled"   // stopped by TaskStop after a stall
+	reviewStopMissing   = "missing"   // never checked in
+	reviewStopUnstopped = "unstopped" // TaskStop failed or no task ID, may still run
+)
 
 // ledgerMetaOpenFunc matches os.OpenFile. Tests replace it to force a write
 // failure of run.meta.
@@ -6054,8 +6158,9 @@ func ledgerShipRunID(root, branch string) string {
 	return state.RunID(st)
 }
 
-// ledgerWriteRunMeta writes runs/ledger/<runID>/run.meta once. It creates the
-// file with O_EXCL: when the file exists, it writes nothing and returns nil.
+// ledgerWriteRunMeta writes runs/ledger/<runID>/run.meta once, as a fallback
+// when review_prepare did not write it. It creates the file with O_EXCL: when
+// the file exists, it writes nothing and returns nil.
 // The branch is the branch argument when set, else the current branch of
 // workDir. When no branch can be resolved, the meta holds an empty branch.
 // The meta holds shipRunId only when ledgerShipRunID finds one. The caller
@@ -6435,6 +6540,137 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 		"workers": workers,
 	}, nil
 }
+
+// ---------------------------------------------------------------------------
+// Action: ledger_skip
+// ---------------------------------------------------------------------------
+
+// reviewStopReasons lists the stop reasons that ledger_skip accepts. It is the
+// order that the error Suggestion uses to name them.
+var reviewStopReasons = []string{reviewStopStalled, reviewStopMissing, reviewStopUnstopped}
+
+// execActionLedgerSkip records why a review worker stopped. It sets
+// stopReason on the planned dimension of in.WorkerID in
+// runs/ledger/<runId>/run.meta and replaces the file with an atomic write.
+// It writes no worker file, so the ledger_status output does not change. It
+// reads the worker file only to warn when the worker already checked out.
+// The result echoes workerId and stopReason, and priorStopReason when the
+// call replaced an earlier reason. A missing run.meta, a workerId that is not
+// a planned dimension, and a reason outside the reviewStop* constants each
+// return a DomainError and leave run.meta as it was.
+func execActionLedgerSkip(root string, in ExecuteStateIn) (any, error) {
+	if in.RunID == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "runId is required",
+			Suggestion: "Pass the runId of the review run whose worker stopped.",
+		}
+	}
+	if in.WorkerID == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "workerId is required",
+			Suggestion: "Pass the workerId of the review worker that stopped, as in the review_prepare manifest.",
+		}
+	}
+	if err := execValidateSafeID(in.RunID, "runId"); err != nil {
+		return nil, err
+	}
+	if err := execValidateSafeID(in.WorkerID, "workerId"); err != nil {
+		return nil, err
+	}
+	validReason := false
+	for _, r := range reviewStopReasons {
+		if in.Reason == r {
+			validReason = true
+			break
+		}
+	}
+	if !validReason {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("reason %q is not a stop reason", in.Reason),
+			Suggestion: "Pass reason as one of: " + strings.Join(reviewStopReasons, ", ") + ".",
+		}
+	}
+
+	metaPath := ledgerRunMetaPath(root, in.RunID)
+	var meta reviewRunMeta
+	if err := fsx.ReadJSON(metaPath, &meta); err != nil {
+		switch {
+		case errors.Is(err, fsx.ErrNotFound):
+			return nil, &mcpserver.DomainError{
+				Msg:        "run.meta not found for runId " + in.RunID,
+				Suggestion: ledgerSkipRunIDSuggestion + " A dry run or a run with zero waves has no run.meta.",
+				Cause:      err,
+			}
+		case errors.Is(err, fsx.ErrParse):
+			return nil, &mcpserver.DataError{
+				Msg:        "run.meta is not valid JSON: " + err.Error(),
+				Suggestion: "Inspect " + metaPath + ". If it is corrupt, call review_prepare to start a new review run.",
+				Cause:      err,
+			}
+		default:
+			return nil, &mcpserver.InfraError{
+				Msg:        "read run.meta: " + err.Error(),
+				Suggestion: "Check read permission on " + metaPath + ", then retry ledger_skip.",
+				Cause:      err,
+			}
+		}
+	}
+
+	planned := make([]string, 0, len(meta.Dimensions))
+	found := false
+	priorReason := ""
+	for i := range meta.Dimensions {
+		planned = append(planned, meta.Dimensions[i].WorkerID)
+		if meta.Dimensions[i].WorkerID == in.WorkerID {
+			if priorReason == "" {
+				priorReason = meta.Dimensions[i].StopReason
+			}
+			meta.Dimensions[i].StopReason = in.Reason
+			found = true
+		}
+	}
+	if !found {
+		suggestion := "Pass one of the planned worker IDs: " + strings.Join(planned, ", ") + "."
+		if len(planned) == 0 {
+			suggestion = "run.meta holds no planned dimensions: a ledger_checkin wrote it, not review_prepare. " + ledgerSkipRunIDSuggestion
+		}
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("workerId %q is not a planned dimension of run %s", in.WorkerID, in.RunID),
+			Suggestion: suggestion,
+		}
+	}
+
+	if err := reviewWriteJSON(metaPath, meta); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        "write run.meta: " + err.Error(),
+			Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/ledger/" + in.RunID + "/ and available disk space, then retry ledger_skip.",
+			Cause:      err,
+		}
+	}
+
+	result := map[string]any{
+		"ok":         true,
+		"workerId":   in.WorkerID,
+		"stopReason": in.Reason,
+		"next":       "Continue Step 3 of review.",
+	}
+	if priorReason != "" {
+		result["priorStopReason"] = priorReason
+	}
+	// Read-only check: a worker that already checked out shows as done on the
+	// dashboard, whatever its stopReason. A missing or unreadable worker file
+	// gives no warning.
+	var worker map[string]any
+	if err := fsx.ReadJSON(ledgerFilePath(root, in.RunID, in.WorkerID), &worker); err == nil {
+		if status, _ := worker["status"].(string); status == "done" {
+			result["warnings"] = []string{"worker already checked out; the dashboard shows it as done and ignores the stop reason"}
+		}
+	}
+	return result, nil
+}
+
+// ledgerSkipRunIDSuggestion tells a ledger_skip caller which runId to pass.
+const ledgerSkipRunIDSuggestion = "Pass the run_id from the review_prepare manifest of this review run."
 
 // ---------------------------------------------------------------------------
 // Action: log-cli

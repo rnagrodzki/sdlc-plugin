@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -186,6 +188,7 @@ type LensResult struct {
 
 // Issue represents a single finding from a lane or lens.
 type Issue struct {
+	ID       string `json:"id,omitempty" jsonschema_description:"Output only. Stable finding ID: f- plus 8 hex chars of sha256(gateId|lower(trim(summary))). Example: f-3a9c1e07. merge_results ignores any value sent here and always writes the computed one."`
 	GateID   string `json:"gateId,omitempty" jsonschema_description:"Gate ID this finding relates to, if any."`
 	Severity string `json:"severity" jsonschema_description:"Severity of the finding: \"blocking\" or \"advisory\"."` // "blocking"|"advisory"
 	Summary  string `json:"summary" jsonschema_description:"Human-readable summary of the finding."`
@@ -261,7 +264,7 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
-- merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch. Lane status must be pass or fail, and every issue severity must be blocking or advisory; any other value fails with a DomainError and nothing is merged.
+- merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch. Lane status must be pass or fail, and every issue severity must be blocking or advisory; any other value fails with a DomainError and nothing is merged. Every issue in allIssues carries an "id" field: "f-" plus the first 8 hex chars of sha256(gateId|lower(trim(summary))). The same gate and summary always give the same id. An "id" in the input is ignored.
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
@@ -344,6 +347,14 @@ func issueKey(iss Issue) string {
 	return iss.GateID + "|" + strings.ToLower(strings.TrimSpace(iss.Summary))
 }
 
+// findingID returns the stable ID of an Issue: "f-" plus the first 8 hex
+// chars of sha256(issueKey). It depends only on GateID and the normalized
+// Summary, so the same finding keeps its ID across calls.
+func findingID(iss Issue) string {
+	sum := sha256.Sum256([]byte(issueKey(iss)))
+	return "f-" + hex.EncodeToString(sum[:])[:8]
+}
+
 // validateMergeEnums rejects a lane status other than "pass"/"fail" and an
 // issue severity other than "blocking"/"advisory". The merge compares these
 // values exactly, so an unmapped value ("ok", "error", "") would otherwise
@@ -378,6 +389,8 @@ func validateMergeEnums(in PlanSupportIn) error {
 	}
 }
 
+// mergeResults merges the lane and lens results of a plan review into one
+// de-duplicated issue list with stable finding IDs and a combined status.
 func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 	if len(in.LaneResults) == 0 && len(in.LensResults) == 0 {
 		return PlanSupportOut{}, &mcpserver.DomainError{
@@ -490,6 +503,11 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 				allIssues = append(allIssues, gapIssue)
 			}
 		}
+	}
+
+	// Stamp every issue with its computed ID. This overwrites any ID sent in.
+	for i := range allIssues {
+		allIssues[i].ID = findingID(allIssues[i])
 	}
 
 	// Compute merged status.

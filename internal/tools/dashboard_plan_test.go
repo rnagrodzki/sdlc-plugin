@@ -297,9 +297,11 @@ func TestDashboardPlan_SessionID(t *testing.T) {
 	})
 }
 
+// TestDashboardPlan_EmptyListsMarshalAsArrays checks that the empty lists of
+// explorers and rounds marshal as [] and never as null.
 func TestDashboardPlan_EmptyListsMarshalAsArrays(t *testing.T) {
 	explorers := dashboardExplorers([]ExploreSummaryEntry{{Name: "a", Status: evidenceStatusRunning}})
-	rounds := dashboardPlanRounds([]any{map[string]any{"round": 1, "mergedStatus": planStatusApproved}})
+	rounds := dashboardPlanRounds(dashboardPlanStoredRounds([]any{map[string]any{"round": 1, "mergedStatus": planStatusApproved}}))
 	if len(rounds) != 1 {
 		t.Fatalf("rounds = %+v, want 1", rounds)
 	}
@@ -320,4 +322,383 @@ func TestDashboardPlan_EmptyListsMarshalAsArrays(t *testing.T) {
 	if b, _ := json.Marshal(dashboardExplorers(nil)); string(b) != "[]" {
 		t.Errorf("dashboardExplorers(nil) JSON = %s, want []", b)
 	}
+}
+
+// dashPlanFindings returns a findings list for a PlanReviewRound. Each
+// argument is a finding ID; an ID that starts with "!" is fixed and the "!"
+// is dropped. The list is non-nil, so a call with no argument gives the
+// empty list that a stored "findings": [] decodes to.
+func dashPlanFindings(ids ...string) *[]PlanRoundFinding {
+	out := make([]PlanRoundFinding, 0, len(ids))
+	for _, id := range ids {
+		fixed := strings.HasPrefix(id, "!")
+		out = append(out, PlanRoundFinding{ID: strings.TrimPrefix(id, "!"), Fixed: fixed})
+	}
+	return &out
+}
+
+// TestDashboardPlanGuardrails_ReadsCounts checks the setup station detail for
+// each shape of the guardrailCounts value that a state file can hold.
+func TestDashboardPlanGuardrails_ReadsCounts(t *testing.T) {
+	counts := func(total, errs, warns any) map[string]any {
+		return map[string]any{"total": total, "error": errs, "warning": warns}
+	}
+	cases := []struct {
+		name string
+		raw  any
+		want *DashboardGuardrailCounts // nil: no detail
+	}{
+		{"counts from a state file", counts(float64(5), float64(3), float64(1)), &DashboardGuardrailCounts{Total: 5, Error: 3, Warning: 1}},
+		{"counts as ints", counts(2, 1, 1), &DashboardGuardrailCounts{Total: 2, Error: 1, Warning: 1}},
+		{"zero counts are a detail", counts(float64(0), float64(0), float64(0)), &DashboardGuardrailCounts{}},
+		{"total above error plus warning", counts(float64(4), float64(1), float64(1)), &DashboardGuardrailCounts{Total: 4, Error: 1, Warning: 1}},
+		{"key absent", nil, nil},
+		{"string", "3 guardrails", nil},
+		{"list", []any{float64(3), float64(2), float64(1)}, nil},
+		{"missing warning", map[string]any{"total": float64(3), "error": float64(2)}, nil},
+		{"missing total", map[string]any{"error": float64(2), "warning": float64(1)}, nil},
+		{"count as string", counts("3", float64(2), float64(1)), nil},
+		{"count as null", counts(float64(3), nil, float64(1)), nil},
+		{"fractional count", counts(float64(3.5), float64(2), float64(1)), nil},
+		{"negative count", counts(float64(3), float64(-2), float64(1)), nil},
+		{"negative total", counts(float64(-3), float64(2), float64(1)), nil},
+		{"negative warning", counts(float64(3), float64(2), float64(-1)), nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dashboardPlanGuardrails(tc.raw)
+			if tc.want == nil {
+				if got != nil {
+					t.Errorf("detail = %+v, want nil", got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatalf("detail = nil, want counts %+v", *tc.want)
+			}
+			if got.Kind != dashboardKindGuardrails {
+				t.Errorf("kind = %q, want %q", got.Kind, dashboardKindGuardrails)
+			}
+			if got.Guardrails == nil || *got.Guardrails != *tc.want {
+				t.Errorf("guardrails = %+v, want %+v", got.Guardrails, *tc.want)
+			}
+		})
+	}
+}
+
+// TestDashboardPlan_SetupDetailShowsGuardrailCounts reads the setup station
+// detail from a plan state file: it holds the stored counts, and only the
+// setup station has it.
+func TestDashboardPlan_SetupDetailShowsGuardrailCounts(t *testing.T) {
+	t.Run("counts stored", func(t *testing.T) {
+		root := dashRoot(t)
+		p := dashPlanState(t, root, "1", map[string]any{
+			"guardrailCounts": map[string]any{"total": 4, "error": 3, "warning": 1},
+		})
+		d := dashPlanStep(t, p, "setup").Detail
+		if d == nil {
+			t.Fatal("setup detail = nil, want guardrails")
+		}
+		if d.Kind != dashboardKindGuardrails {
+			t.Errorf("kind = %q, want %q", d.Kind, dashboardKindGuardrails)
+		}
+		if want := (DashboardGuardrailCounts{Total: 4, Error: 3, Warning: 1}); d.Guardrails == nil || *d.Guardrails != want {
+			t.Errorf("guardrails = %+v, want %+v", d.Guardrails, want)
+		}
+		for _, other := range []string{"explore", "draft", "review", "finalize"} {
+			if dashPlanStep(t, p, other).Detail != nil {
+				t.Errorf("%s detail is set, want nil", other)
+			}
+		}
+	})
+	t.Run("counts malformed", func(t *testing.T) {
+		root := dashRoot(t)
+		p := dashPlanState(t, root, "1", map[string]any{"guardrailCounts": "none"})
+		if d := dashPlanStep(t, p, "setup").Detail; d != nil {
+			t.Errorf("setup detail = %+v, want nil", d)
+		}
+	})
+	t.Run("counts absent", func(t *testing.T) {
+		root := dashRoot(t)
+		p := dashPlanState(t, root, "1", nil)
+		if d := dashPlanStep(t, p, "setup").Detail; d != nil {
+			t.Errorf("setup detail = %+v, want nil", d)
+		}
+	})
+}
+
+// TestDashboardPlanTotals_CountsDistinctOrSums checks the round totals: the
+// distinct count when every round has a findings list, and the sum of the
+// per-round counts when any round has none.
+func TestDashboardPlanTotals_CountsDistinctOrSums(t *testing.T) {
+	cases := []struct {
+		name   string
+		rounds []PlanReviewRound
+		want   DashboardRoundTotals
+	}{
+		{
+			name: "every round has ids",
+			rounds: []PlanReviewRound{
+				{Round: 1, Found: 3, Fixed: 2, Findings: dashPlanFindings("!a", "b", "!g1")},
+				{Round: 2, Found: 1, Fixed: 1, Findings: dashPlanFindings("!b")},
+			},
+			want: DashboardRoundTotals{Iterations: 2, Violations: 3, Fixes: 3, Distinct: true},
+		},
+		{
+			name: "no round has ids",
+			rounds: []PlanReviewRound{
+				{Round: 1, Found: 3, Fixed: 2},
+				{Round: 2, Found: 1, Fixed: 1},
+			},
+			want: DashboardRoundTotals{Iterations: 2, Violations: 4, Fixes: 3, Distinct: false},
+		},
+		{
+			name: "one round without ids sums every round",
+			rounds: []PlanReviewRound{
+				{Round: 1, Found: 2, Fixed: 1, Findings: dashPlanFindings("!a", "b")},
+				{Round: 2, Found: 3, Fixed: 2},
+			},
+			want: DashboardRoundTotals{Iterations: 2, Violations: 5, Fixes: 3, Distinct: false},
+		},
+		{
+			name: "empty findings list counts as a round with ids",
+			rounds: []PlanReviewRound{
+				{Round: 1, Found: 2, Fixed: 1, Findings: dashPlanFindings()},
+				{Round: 2, Found: 1, Fixed: 0, Findings: dashPlanFindings("a")},
+			},
+			want: DashboardRoundTotals{Iterations: 2, Violations: 1, Fixes: 0, Distinct: true},
+		},
+		{
+			name: "same id in two rounds counts once",
+			rounds: []PlanReviewRound{
+				{Round: 1, Found: 1, Fixed: 0, Findings: dashPlanFindings("a")},
+				{Round: 2, Found: 1, Fixed: 1, Findings: dashPlanFindings("!a")},
+			},
+			want: DashboardRoundTotals{Iterations: 2, Violations: 1, Fixes: 1, Distinct: true},
+		},
+		{
+			name: "id fixed in one round counts as fixed",
+			rounds: []PlanReviewRound{
+				{Round: 1, Found: 1, Fixed: 1, Findings: dashPlanFindings("!a")},
+				{Round: 2, Found: 1, Fixed: 0, Findings: dashPlanFindings("a")},
+			},
+			want: DashboardRoundTotals{Iterations: 2, Violations: 1, Fixes: 1, Distinct: true},
+		},
+		{
+			name:   "one round",
+			rounds: []PlanReviewRound{{Round: 1, Found: 4, Fixed: 4}},
+			want:   DashboardRoundTotals{Iterations: 1, Violations: 4, Fixes: 4, Distinct: false},
+		},
+		{
+			name:   "no rounds",
+			rounds: nil,
+			want:   DashboardRoundTotals{Distinct: true},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := dashboardPlanTotals(tc.rounds)
+			if got == nil {
+				t.Fatal("totals = nil, want a value")
+			}
+			if *got != tc.want {
+				t.Errorf("totals = %+v, want %+v", *got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDashboardPlanRepairLimit_LastRoundAtLimit checks that the flag is set
+// only when the last round has reached maxReviewRounds with issues found.
+func TestDashboardPlanRepairLimit_LastRoundAtLimit(t *testing.T) {
+	round := func(n int, status string) PlanReviewRound { return PlanReviewRound{Round: n, MergedStatus: status} }
+	cases := []struct {
+		name   string
+		rounds []PlanReviewRound
+		want   bool
+	}{
+		{"limit round with issues", []PlanReviewRound{round(4, planStatusIssuesFound), round(maxReviewRounds, planStatusIssuesFound)}, true},
+		{"round past the limit with issues", []PlanReviewRound{round(maxReviewRounds, planStatusIssuesFound), round(maxReviewRounds+1, planStatusIssuesFound)}, true},
+		{"limit round approved", []PlanReviewRound{round(4, planStatusIssuesFound), round(maxReviewRounds, planStatusApproved)}, false},
+		{"issues before the limit", []PlanReviewRound{round(3, planStatusIssuesFound), round(maxReviewRounds-1, planStatusIssuesFound)}, false},
+		{"limit round with issues is not last", []PlanReviewRound{round(maxReviewRounds, planStatusIssuesFound), round(maxReviewRounds+1, planStatusApproved)}, false},
+		{"no rounds", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dashboardPlanRepairLimit(tc.rounds); got != tc.want {
+				t.Errorf("repair limit = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDashboardPlanOutcomes_CopiesStoredFindings checks that the outcomes
+// copy the stored review outcome in order, and that every shape without a
+// finding gives no outcomes.
+func TestDashboardPlanOutcomes_CopiesStoredFindings(t *testing.T) {
+	t.Run("copies findings in order", func(t *testing.T) {
+		raw := map[string]any{"findings": []any{
+			map[string]any{"id": "f-0000000a", "text": "Wave 2 has no verify step", "choice": outcomeChoiceAccepted, "reason": "covered by the final check"},
+			map[string]any{"id": "f-0000000b", "text": "Task 4 lists no files", "choice": outcomeChoiceStop, "reason": ""},
+		}}
+		want := []DashboardFindingOutcome{
+			{ID: "f-0000000a", Text: "Wave 2 has no verify step", Choice: outcomeChoiceAccepted, Reason: "covered by the final check"},
+			{ID: "f-0000000b", Text: "Task 4 lists no files", Choice: outcomeChoiceStop, Reason: ""},
+		}
+		if got := dashboardPlanOutcomes(raw); !reflect.DeepEqual(got, want) {
+			t.Errorf("outcomes = %+v, want %+v", got, want)
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		raw  any
+	}{
+		{"key absent", nil},
+		{"empty findings", map[string]any{"findings": []any{}}},
+		{"findings key absent", map[string]any{}},
+		{"findings null", map[string]any{"findings": nil}},
+		{"not an object", "accepted"},
+		{"findings not a list", map[string]any{"findings": "f-0000000a"}},
+		{"finding field of wrong type", map[string]any{"findings": []any{map[string]any{"id": float64(7)}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dashboardPlanOutcomes(tc.raw); got != nil {
+				t.Errorf("outcomes = %+v, want nil", got)
+			}
+		})
+	}
+}
+
+// TestDashboardPlan_ReviewDetailHasTotalsLimitAndOutcomes reads the review
+// station detail from plan state files: the totals, the repair-limit flag and
+// the outcomes.
+func TestDashboardPlan_ReviewDetailHasTotalsLimitAndOutcomes(t *testing.T) {
+	round := func(n int, status string, found, fixed int, findings any) map[string]any {
+		r := map[string]any{"round": n, "mergedStatus": status, "found": found, "fixed": fixed, "lenses": []any{}}
+		if findings != nil {
+			r["findings"] = findings
+		}
+		return r
+	}
+	finding := func(id string, fixed bool) map[string]any { return map[string]any{"id": id, "fixed": fixed} }
+
+	t.Run("distinct totals and no limit", func(t *testing.T) {
+		root := dashRoot(t)
+		p := dashPlanState(t, root, "6", map[string]any{"reviewRounds": []any{
+			round(1, planStatusIssuesFound, 3, 2, []any{finding("f-0000000a", true), finding("f-0000000b", false), finding("f-0000000c", true)}),
+			round(2, planStatusApproved, 1, 1, []any{finding("f-0000000b", true)}),
+		}})
+		d := dashPlanStep(t, p, "review").Detail
+		if d == nil {
+			t.Fatal("review detail = nil, want rounds")
+		}
+		if want := (DashboardRoundTotals{Iterations: 2, Violations: 3, Fixes: 3, Distinct: true}); d.RoundTotals == nil || *d.RoundTotals != want {
+			t.Errorf("roundTotals = %+v, want %+v", d.RoundTotals, want)
+		}
+		if d.RepairLimit {
+			t.Error("repairLimit = true, want false")
+		}
+		if d.Outcomes != nil {
+			t.Errorf("outcomes = %+v, want nil", d.Outcomes)
+		}
+	})
+
+	t.Run("summed totals when a round has no ids", func(t *testing.T) {
+		root := dashRoot(t)
+		p := dashPlanState(t, root, "6", map[string]any{"reviewRounds": []any{
+			round(1, planStatusIssuesFound, 3, 2, nil),
+			round(2, planStatusApproved, 1, 1, []any{finding("f-0000000b", true)}),
+		}})
+		d := dashPlanStep(t, p, "review").Detail
+		if d == nil {
+			t.Fatal("review detail = nil, want rounds")
+		}
+		if want := (DashboardRoundTotals{Iterations: 2, Violations: 4, Fixes: 3, Distinct: false}); d.RoundTotals == nil || *d.RoundTotals != want {
+			t.Errorf("roundTotals = %+v, want %+v", d.RoundTotals, want)
+		}
+	})
+
+	t.Run("empty findings list keeps distinct totals", func(t *testing.T) {
+		root := dashRoot(t)
+		p := dashPlanState(t, root, "6", map[string]any{"reviewRounds": []any{
+			round(1, planStatusApproved, 2, 2, []any{}),
+		}})
+		d := dashPlanStep(t, p, "review").Detail
+		if d == nil {
+			t.Fatal("review detail = nil, want rounds")
+		}
+		if want := (DashboardRoundTotals{Iterations: 1, Violations: 0, Fixes: 0, Distinct: true}); d.RoundTotals == nil || *d.RoundTotals != want {
+			t.Errorf("roundTotals = %+v, want %+v", d.RoundTotals, want)
+		}
+	})
+
+	t.Run("repair limit with outcomes", func(t *testing.T) {
+		root := dashRoot(t)
+		rounds := []any{}
+		for n := 1; n <= maxReviewRounds; n++ {
+			rounds = append(rounds, round(n, planStatusIssuesFound, 1, 0, []any{finding("f-0000000a", false)}))
+		}
+		p := dashPlanState(t, root, "6", map[string]any{
+			"reviewRounds": rounds,
+			"reviewOutcome": map[string]any{"findings": []any{
+				map[string]any{"id": "f-0000000a", "text": "Task 3 depends on itself", "choice": outcomeChoiceRejected, "reason": "plan is still wrong"},
+			}},
+		})
+		d := dashPlanStep(t, p, "review").Detail
+		if d == nil {
+			t.Fatal("review detail = nil, want rounds")
+		}
+		if !d.RepairLimit {
+			t.Error("repairLimit = false, want true")
+		}
+		if want := (DashboardRoundTotals{Iterations: maxReviewRounds, Violations: 1, Fixes: 0, Distinct: true}); d.RoundTotals == nil || *d.RoundTotals != want {
+			t.Errorf("roundTotals = %+v, want %+v", d.RoundTotals, want)
+		}
+		wantOutcomes := []DashboardFindingOutcome{{ID: "f-0000000a", Text: "Task 3 depends on itself", Choice: outcomeChoiceRejected, Reason: "plan is still wrong"}}
+		if !reflect.DeepEqual(d.Outcomes, wantOutcomes) {
+			t.Errorf("outcomes = %+v, want %+v", d.Outcomes, wantOutcomes)
+		}
+		b, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"repairLimit":true`, `"roundTotals":{"iterations":5,"violations":1,"fixes":0,"distinct":true}`, `"outcomes":[{`} {
+			if !strings.Contains(string(b), want) {
+				t.Errorf("JSON = %s, want it to contain %s", b, want)
+			}
+		}
+	})
+
+	t.Run("no outcome key leaves outcomes out of the JSON", func(t *testing.T) {
+		root := dashRoot(t)
+		p := dashPlanState(t, root, "6", map[string]any{"reviewRounds": []any{
+			round(1, planStatusApproved, 0, 0, []any{}),
+		}, "reviewOutcome": map[string]any{"findings": []any{}}})
+		d := dashPlanStep(t, p, "review").Detail
+		if d == nil {
+			t.Fatal("review detail = nil, want rounds")
+		}
+		b, err := json.Marshal(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, absent := range []string{`"outcomes"`, `"repairLimit"`} {
+			if strings.Contains(string(b), absent) {
+				t.Errorf("JSON = %s, want it to omit %s", b, absent)
+			}
+		}
+	})
+
+	t.Run("outcome without rounds gives no review detail", func(t *testing.T) {
+		root := dashRoot(t)
+		p := dashPlanState(t, root, "6", map[string]any{
+			"reviewOutcome": map[string]any{"findings": []any{
+				map[string]any{"id": "f-0000000a", "text": "t", "choice": outcomeChoiceAccepted, "reason": "r"},
+			}},
+		})
+		if d := dashPlanStep(t, p, "review").Detail; d != nil {
+			t.Errorf("review detail = %+v, want nil", d)
+		}
+	})
 }

@@ -5,9 +5,9 @@
  * fake document. Snapshot text goes into the page through textContent only.
  *
  * The builders use only createElement, setAttribute, appendChild and the
- * textContent, className, hidden and open properties. Colours come from
- * class names in app.css, never from inline styles. Event listeners live in
- * app.js.
+ * textContent, className, hidden and open properties. tickElapsed also uses
+ * querySelectorAll and getAttribute. Colours come from class names in
+ * app.css, never from inline styles. Event listeners live in app.js.
  */
 (function (root) {
   'use strict';
@@ -49,6 +49,86 @@
     return n + ' ' + (n === 1 ? one : many);
   }
 
+  // The mark of a run that waits for a person: the banner glyph and the
+  // glyph of the current station.
+  var ATTENTION_GLYPH = '◈';
+
+  /**
+   * Time from the start of a wait to now, for the banner of a waiting run.
+   * @param {object} view
+   * @param {string} askedAt RFC 3339 timestamp of the question
+   * @param {Date|number} now
+   * @returns {string} '26s', '4m 12s', or '1h 03m'; '' for a bad timestamp
+   */
+  function elapsedText(view, askedAt, now) {
+    var asked = Date.parse(askedAt);
+    if (isNaN(asked)) return '';
+    var nowMs = typeof now === 'number' ? now : now.getTime();
+    // A clock that runs behind the host must not give a negative time.
+    return view.formatElapsed(Math.max(0, nowMs - asked));
+  }
+
+  /**
+   * The wait banner of a pipeline: the bar `◈ WAITING ON YOU · <elapsed>`,
+   * then the line `<header>: "<text>"`. The line has only the parts that
+   * exist, and it is left out when the header and the text are both empty.
+   * The elapsed span keeps the question time in data-asked, so a timer can
+   * refresh it without a new snapshot.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{askedAt?: string, header?: string, text?: string}} attention
+   * @param {Date|number} now
+   * @returns {Array<Element|null>} div.attn-bar, then div.attn-text, or null
+   *   when the header and the text are both empty
+   */
+  function attentionRows(doc, view, attention, now) {
+    var glyph = el(doc, 'span', 'attn-glyph', ATTENTION_GLYPH);
+    glyph.setAttribute('aria-hidden', 'true');
+    var elapsed = el(doc, 'span', 'attn-elapsed', elapsedText(view, attention.askedAt, now));
+    elapsed.setAttribute('data-asked', attention.askedAt || '');
+    // The timer rewrites this text each second; a screen reader must not read each change.
+    elapsed.setAttribute('aria-live', 'off');
+    var bar = append(el(doc, 'div', 'attn-bar'), [glyph, el(doc, 'span', '', ' WAITING ON YOU · '), elapsed]);
+
+    var quoted = attention.text ? '"' + attention.text + '"' : '';
+    var line = attention.header && quoted ? attention.header + ': ' + quoted : attention.header || quoted;
+    return [bar, line ? el(doc, 'div', 'attn-text', line) : null];
+  }
+
+  /**
+   * The browser tab title for the repos in scope: view.pageTitle over the
+   * repos that view.inScope accepts.
+   * @param {object} view window.sdlcView
+   * @param {string} base title without a count
+   * @param {Array<{root: string}>} repos every repo of the snapshot
+   * @param {Set<string>} scope selected repo roots; empty means every repo
+   * @returns {string} base, or "(N) " and base when N pipelines of the repos in scope wait for a person
+   */
+  function scopedTitle(view, base, repos, scope) {
+    return view.pageTitle(
+      base,
+      repos.filter(function (repo) {
+        return view.inScope(scope, repo.root);
+      })
+    );
+  }
+
+  /**
+   * Rewrites the text of every `.attn-elapsed` node in doc from its
+   * data-asked value and now. A node whose data-asked is unreadable keeps its
+   * text.
+   * @param {Document} doc
+   * @param {object} view window.sdlcView
+   * @param {Date|number} now
+   */
+  function tickElapsed(doc, view, now) {
+    var nodes = doc.querySelectorAll('.attn-elapsed');
+    for (var i = 0; i < nodes.length; i++) {
+      var text = elapsedText(view, nodes[i].getAttribute('data-asked'), now);
+      if (text) nodes[i].textContent = text;
+    }
+  }
+
   /**
    * The repo filter: `All`, then one toggle button for each repo chip.
    * @param {Document} doc
@@ -88,11 +168,12 @@
 
   /**
    * Head of a pipeline block: lamp, kind, branch, repo, issue chip (only with
-   * issues), status word, and the `details N` toggle.
+   * issues), status word, and the `details N` toggle. A pipeline with an
+   * attention has the class `waiting` on its lamp.
    * @param {Document} doc
    * @param {object} view
    * @param {{root: string, name: string}} repo
-   * @param {{kind: string, branch: string, worktree: string, status: string, issues?: Array}} pipeline
+   * @param {{kind: string, branch: string, worktree: string, status: string, issues?: Array, attention?: object}} pipeline
    * @param {boolean} collapsed
    * @param {number} tiles the tile count of the block (view.tileCount)
    * @returns {Element} header.pipe-head
@@ -100,7 +181,7 @@
   function blockHead(doc, view, repo, pipeline, collapsed, tiles) {
     var head = el(doc, 'header', 'pipe-head');
 
-    var lamp = el(doc, 'span', 'lamp ' + pipeline.status);
+    var lamp = el(doc, 'span', 'lamp ' + pipeline.status + (pipeline.attention ? ' waiting' : ''));
     lamp.setAttribute('aria-hidden', 'true');
 
     var branch = el(doc, 'h2', 'pipe-branch', pipeline.branch);
@@ -132,15 +213,17 @@
   /**
    * The station track. A step with a section is a button with data-station
    * (its index) and data-section (its step name). A step with no section is
-   * a plain div with no click action.
+   * a plain div with no click action. The current station of a pipeline with
+   * an attention shows `◈` in place of its status glyph.
    * @param {Document} doc
    * @param {object} view
-   * @param {{steps?: Array<{name: string, status: string, detail?: object}>}} pipeline
+   * @param {{steps?: Array<{name: string, status: string, detail?: object}>, attention?: object}} pipeline
    * @param {number} selectedIndex index of the marked station
    * @returns {Element} div.track
    */
   function stationTrack(doc, view, pipeline, selectedIndex) {
     var steps = (pipeline && pipeline.steps) || [];
+    var waiting = !!(pipeline && pipeline.attention);
     var track = el(doc, 'div', 'track');
     track.setAttribute('role', 'group');
     track.setAttribute('aria-label', 'Steps');
@@ -162,7 +245,8 @@
       var lit = i > 0 && steps[i - 1].status === 'completed';
       var wire = el(doc, 'span', lit ? 'wire lit' : 'wire');
       wire.setAttribute('aria-hidden', 'true');
-      var glyph = el(doc, 'span', 'glyph ' + step.status, view.stepGlyph(step.status).glyph);
+      var glyphText = waiting && step.status === 'in_progress' ? ATTENTION_GLYPH : view.stepGlyph(step.status).glyph;
+      var glyph = el(doc, 'span', 'glyph ' + step.status, glyphText);
       glyph.setAttribute('aria-hidden', 'true');
       var label = el(doc, 'span', step.status === 'in_progress' ? 'label current' : 'label', view.stationLabel(step.name));
       append(station, [wire, glyph, label]);
@@ -252,8 +336,10 @@
     return row;
   }
 
+  // The commit badge of a wave head, or null for a wave that has no commit state.
   function commitBadge(doc, view, wave, commitWaves) {
     var state = view.waveCommitState(wave, commitWaves);
+    if (!state) return null;
     if (state === 'off') return el(doc, 'span', 'commit-badge', 'commits off');
     if (state === 'committed') {
       var sha = String(wave.committedSha);
@@ -266,7 +352,9 @@
 
   /**
    * Waves: one block for each wave (`wave N`, `done/total`, commit state,
-   * task rows), then the queued tasks.
+   * task rows), then the queued tasks. A planned wave that has not started
+   * (status `pending`) is a block with its tasks and no commit state. The
+   * queued block appears only when `queued` is not empty.
    * @param {Document} doc
    * @param {object} view
    * @param {{waves?: Array, queued?: Array}} detail
@@ -301,28 +389,71 @@
     return out;
   }
 
+  /**
+   * The meta text of a dimension row: the run state while the dimension has
+   * not finished, `skipped · <reason>` for a skipped one, else the finding
+   * count.
+   * @param {{status: string, findings?: number, reason?: string}} dim
+   * @returns {string}
+   */
   function dimensionMeta(dim) {
     if (dim.status === 'in_progress') return 'running';
     if (dim.status === 'pending') return 'queued';
+    if (dim.status === 'skipped') return dim.reason ? 'skipped · ' + dim.reason : 'skipped';
     return plural(dim.findings || 0, 'finding', 'findings');
   }
 
   /**
-   * Dimensions: the review totals line, then one row for each dimension.
-   * A count above 0 is amber; the lamp keeps the run state.
+   * One dimension row: lamp, name, and meta text. A count above 0 is amber.
    * @param {Document} doc
    * @param {object} view
-   * @param {{dimensions?: Array, reviewTotals?: object}} detail
+   * @param {{name: string, status: string, findings?: number, reason?: string}} dim
+   * @returns {Element} div.dim-row
+   */
+  function dimensionRow(doc, view, dim) {
+    var meta = el(doc, 'span', (dim.findings || 0) > 0 ? 'dim-meta has-findings' : 'dim-meta', dimensionMeta(dim));
+    return append(el(doc, 'div', 'dim-row dim-cols'), [lamp(doc, lampClass(view, dim.status)), el(doc, 'span', 'dim-name', dim.name), meta]);
+  }
+
+  /**
+   * Dimensions: the review totals line, the review plan totals line, then
+   * the dimension rows. Rows without a wave come first as a flat list. Rows
+   * with a wave sit under one `Wave N` heading for each wave, lowest first,
+   * in the order the rows arrive. The lamp keeps the run state.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{dimensions?: Array, reviewTotals?: object, reviewPlan?: object}} detail
    * @returns {Element} div
    */
   function dimensionsBody(doc, view, detail) {
     var out = el(doc, 'div', '');
     if (detail.reviewTotals) out.appendChild(el(doc, 'div', 'round-sum', view.reviewTotalsText(detail.reviewTotals)));
+    if (detail.reviewPlan) out.appendChild(el(doc, 'div', 'round-sum', view.reviewPlanText(detail.reviewPlan)));
+    var flat = [];
+    var groups = {};
+    var numbers = [];
     (detail.dimensions || []).forEach(function (dim) {
-      var meta = el(doc, 'span', (dim.findings || 0) > 0 ? 'dim-meta has-findings' : 'dim-meta', dimensionMeta(dim));
-      out.appendChild(
-        append(el(doc, 'div', 'dim-row dim-cols'), [lamp(doc, lampClass(view, dim.status)), el(doc, 'span', 'dim-name', dim.name), meta])
-      );
+      if (!(dim.wave > 0)) {
+        flat.push(dim);
+        return;
+      }
+      if (!groups[dim.wave]) {
+        groups[dim.wave] = [];
+        numbers.push(dim.wave);
+      }
+      groups[dim.wave].push(dim);
+    });
+    numbers.sort(function (a, b) {
+      return a - b;
+    });
+    flat.forEach(function (dim) {
+      out.appendChild(dimensionRow(doc, view, dim));
+    });
+    numbers.forEach(function (number) {
+      out.appendChild(el(doc, 'div', 'wave-head', 'Wave ' + number));
+      groups[number].forEach(function (dim) {
+        out.appendChild(dimensionRow(doc, view, dim));
+      });
     });
     return out;
   }
@@ -370,33 +501,68 @@
     return line;
   }
 
+  // The count with its unit word: the singular when n is 1.
+  function countWord(n, one, many) {
+    return ' ' + (n === 1 ? one : many);
+  }
+
   /**
-   * Rounds: `N of M rounds · X issues found · Y fixed`, a head row, then one
-   * row for each round with one chip for each lens verdict.
+   * The totals line of the review rounds: `N iterations · V violations · F
+   * fixes`, with `(sum)` at the end when the totals are sums of the per-round
+   * counts and not counts of distinct findings. The server computes the
+   * totals; the page only shows them.
+   * @param {Document} doc
+   * @param {{iterations: number, violations: number, fixes: number, distinct: boolean}} totals
+   * @returns {Element} div.round-sum
+   */
+  function roundTotalsLine(doc, totals) {
+    var iterations = totals.iterations || 0;
+    var violations = totals.violations || 0;
+    var fixes = totals.fixes || 0;
+    return strongLine(doc, 'round-sum', [
+      { strong: true, text: iterations },
+      { text: countWord(iterations, 'iteration', 'iterations') + ' · ' },
+      { strong: true, text: violations },
+      { text: countWord(violations, 'violation', 'violations') + ' · ' },
+      { strong: true, text: fixes },
+      { text: countWord(fixes, 'fix', 'fixes') + (totals.distinct ? '' : ' (sum)') },
+    ]);
+  }
+
+  /**
+   * One answered finding of a plan review: `<choice> · <id> · <text> — <reason>`.
+   * The ` — <reason>` part is left out when the reason is empty.
+   * @param {Document} doc
+   * @param {{id: string, text: string, choice: string, reason: string}} outcome
+   * @returns {Element} div.find-row
+   */
+  function outcomeRow(doc, outcome) {
+    var line = outcome.choice + ' · ' + outcome.id + ' · ' + outcome.text + (outcome.reason ? ' — ' + outcome.reason : '');
+    var text = el(doc, 'span', 'find-text', line);
+    text.setAttribute('title', line);
+    return append(el(doc, 'div', 'find-row'), [text]);
+  }
+
+  /**
+   * Rounds: the totals line from `roundTotals` (no line when the server sent
+   * none), the `REPAIR LIMIT REACHED` flag, one row for each answered finding,
+   * a head row, then one row for each round with one chip for each lens
+   * verdict. The page does not add up the per-round counts.
    * @param {Document} doc
    * @param {object} view
-   * @param {{rounds?: Array, maxRounds?: number}} detail
+   * @param {{rounds?: Array, roundTotals?: object, repairLimit?: boolean, outcomes?: Array}} detail
    * @returns {Element} div
    */
   function roundsBody(doc, view, detail) {
     var rounds = detail.rounds || [];
-    var found = 0;
-    var fixed = 0;
-    rounds.forEach(function (r) {
-      found += r.found || 0;
-      fixed += r.fixed || 0;
-    });
     var out = el(doc, 'div', '');
-    out.appendChild(
-      strongLine(doc, 'round-sum', [
-        { strong: true, text: rounds.length },
-        { text: ' of ' + (detail.maxRounds || 0) + ' rounds · ' },
-        { strong: true, text: found },
-        { text: ' issues found · ' },
-        { strong: true, text: fixed },
-        { text: ' fixed' },
-      ])
-    );
+    if (detail.roundTotals) out.appendChild(roundTotalsLine(doc, detail.roundTotals));
+    if (detail.repairLimit) {
+      out.appendChild(append(el(doc, 'div', 'lens-chips'), [el(doc, 'span', 'lens-chip issues', 'REPAIR LIMIT REACHED')]));
+    }
+    (detail.outcomes || []).forEach(function (outcome) {
+      out.appendChild(outcomeRow(doc, outcome));
+    });
     out.appendChild(
       append(el(doc, 'div', 'round-row head'), [
         el(doc, 'span', '', 'round'),
@@ -449,6 +615,38 @@
     return out;
   }
 
+  /**
+   * Guardrails of a plan setup station, on one line:
+   * `N guardrails loaded (E error, W warning)`, or
+   * `No plan guardrails configured` when none is loaded.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{guardrails?: {total: number, error: number, warning: number}}} detail
+   * @returns {Element} p.generic-line
+   */
+  function guardrailsBody(doc, view, detail) {
+    var counts = detail.guardrails || {};
+    var total = counts.total || 0;
+    if (total === 0) return el(doc, 'p', 'generic-line', 'No plan guardrails configured');
+    return el(
+      doc,
+      'p',
+      'generic-line',
+      plural(total, 'guardrail', 'guardrails') + ' loaded (' + (counts.error || 0) + ' error, ' + (counts.warning || 0) + ' warning)'
+    );
+  }
+
+  /**
+   * The result of a step, as one text line.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{result?: string}} detail
+   * @returns {Element} p.generic-line
+   */
+  function resultBody(doc, view, detail) {
+    return el(doc, 'p', 'generic-line', detail.result);
+  }
+
   // Body builder by detail kind: (doc, view, detail, pipeline) -> Element.
   var TILE_BODIES = {
     waves: wavesBody,
@@ -456,6 +654,8 @@
     explorers: explorersBody,
     rounds: roundsBody,
     findings: findingsBody,
+    guardrails: guardrailsBody,
+    result: resultBody,
   };
 
   /**
@@ -566,8 +766,10 @@
   }
 
   /**
-   * One pipeline block: head, then the track panel with the track and
-   * div.step-detail: the step tiles, the issues tile, and the session tile.
+   * One pipeline block: the wait banner (only with an attention), the head,
+   * then the track panel with the track and div.step-detail: the step tiles,
+   * the issues tile, and the session tile. A block with an attention has the
+   * class `attn`.
    * @param {Document} doc
    * @param {object} view
    * @param {{root: string, name: string, sessions?: Array}} repo
@@ -585,7 +787,8 @@
     var session = view.pickSession(pipeline, repo.sessions);
     var key = view.pipelineKey(repo, pipeline);
 
-    var block = el(doc, 'article', collapsed ? 'pipe-block collapsed' : 'pipe-block');
+    var cls = 'pipe-block' + (collapsed ? ' collapsed' : '') + (pipeline.attention ? ' attn' : '');
+    var block = el(doc, 'article', cls);
     block.setAttribute('data-key', key);
     block.setAttribute('data-id', pipeline.id);
 
@@ -599,6 +802,8 @@
     var wrap = append(el(doc, 'div', 'detail-wrap'), [detail]);
     append(panel, [stationTrack(doc, view, pipeline, selected), wrap]);
 
+    // The wait banner comes first, so a collapsed block still shows it.
+    if (pipeline.attention) append(block, attentionRows(doc, view, pipeline.attention, now));
     return append(block, [blockHead(doc, view, repo, pipeline, collapsed, view.tileCount(pipeline, session)), panel]);
   }
 
@@ -668,7 +873,7 @@
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos
-   * @returns {Array<Element>} three spans: running, stalled, failed
+   * @returns {Array<Element>} four spans: running, stalled, failed, waiting
    */
   function headerTotals(doc, view, repos) {
     var counts = view.headerCounts(repos);
@@ -676,6 +881,7 @@
       ['c-run', 'running', counts.running],
       ['c-stall', 'stalled', counts.stalled],
       ['c-fail', 'failed', counts.failed],
+      ['c-wait', 'waiting', counts.waiting],
     ].map(function (row) {
       var span = el(doc, 'span', row[0], row[1] + ' · ');
       span.appendChild(el(doc, 'strong', '', row[2]));
@@ -779,6 +985,10 @@
     filterChips: filterChips,
     blockHead: blockHead,
     stationTrack: stationTrack,
+    elapsedText: elapsedText,
+    attentionRows: attentionRows,
+    scopedTitle: scopedTitle,
+    tickElapsed: tickElapsed,
     pipelineBlock: pipelineBlock,
     headerTotals: headerTotals,
     activityPanel: activityPanel,
@@ -791,6 +1001,8 @@
     explorersBody: explorersBody,
     roundsBody: roundsBody,
     findingsBody: findingsBody,
+    guardrailsBody: guardrailsBody,
+    resultBody: resultBody,
     issuesTile: issuesTile,
     sessionTile: sessionTile,
     historyTable: historyTable,

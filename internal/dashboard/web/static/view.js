@@ -199,7 +199,10 @@
   /**
    * One-line summary of a step section. Queued tasks (planned, wave not
    * started) count in the task total; with no wave at all the summary is
-   * the queued count.
+   * the queued count. A dimensions section counts done dimensions against
+   * the planned dimensions of the review plan when it has one. A guardrails
+   * section reads the guardrail count. A
+   * result section reads the text before the first colon of the result.
    * @param {{detail?: object}} step
    * @returns {string} '' when the step has no section
    */
@@ -221,7 +224,9 @@
       }
       case 'dimensions': {
         var dims = d.dimensions || [];
-        var dimText = countCompleted(dims) + '/' + dims.length + ' dimensions done';
+        // The plan size when the review run planned dimensions, else the rows listed.
+        var planned = d.reviewPlan && d.reviewPlan.dimensionsPlanned > 0 ? d.reviewPlan.dimensionsPlanned : dims.length;
+        var dimText = countCompleted(dims) + '/' + planned + ' dimensions done';
         if (d.reviewTotals) dimText += ' · ' + plural(d.reviewTotals.found, 'finding', 'findings');
         return dimText;
       }
@@ -237,6 +242,11 @@
         var n = (d.findings || []).length;
         return n === 0 ? 'no findings' : plural(n, 'finding', 'findings');
       }
+      case 'guardrails':
+        return plural((d.guardrails && d.guardrails.total) || 0, 'guardrail', 'guardrails');
+      case 'result':
+        // The text before the first colon: `nothing to commit: execute committed 2 wave commit(s)` gives `nothing to commit`.
+        return String(d.result || '').split(':')[0].trim();
       default:
         return '';
     }
@@ -304,18 +314,45 @@
   }
 
   /**
-   * Feed order: every unfinished pipeline first, then the completed ones.
-   * Input order is kept inside each group.
-   * @param {Array<{status: string}>} pipelines
+   * Compares two pipelines by start time, newest first. A pipeline with an
+   * empty or unreadable startedAt sorts after every pipeline that has one.
+   * @param {{startedAt?: string}} a
+   * @param {{startedAt?: string}} b
+   * @returns {number} negative when a comes first, positive when b comes
+   *   first, 0 when both have the same start time or neither has one
+   */
+  function compareStartedDesc(a, b) {
+    var timeA = parseTime(a && a.startedAt);
+    var timeB = parseTime(b && b.startedAt);
+    if (!timeA && !timeB) return 0;
+    if (!timeA) return 1;
+    if (!timeB) return -1;
+    return timeB.getTime() - timeA.getTime();
+  }
+
+  /**
+   * Feed order: 5 groups — waiting for a person (attention), running,
+   * failed, stalled, completed. Inside a group the newest startedAt comes
+   * first, an empty startedAt comes last, and equal pipelines keep their
+   * input order. The pipeline objects are the input objects, not copies.
+   * @param {Array<{status: string, attention?: object, startedAt?: string}>} pipelines
    * @returns {Array} a new array
    */
   function feedOrder(pipelines) {
-    var open = [];
-    var done = [];
-    (pipelines || []).forEach(function (p) {
-      (p && p.status === 'completed' ? done : open).push(p);
-    });
-    return open.concat(done);
+    var RANK = { running: 1, failed: 2, stalled: 3, completed: 4 };
+    function rank(p) {
+      return p && p.attention ? 0 : RANK[p && p.status] || 1;
+    }
+    return (pipelines || [])
+      .map(function (p, i) {
+        return { p: p, i: i };
+      })
+      .sort(function (a, b) {
+        return rank(a.p) - rank(b.p) || compareStartedDesc(a.p, b.p) || a.i - b.i;
+      })
+      .map(function (x) {
+        return x.p;
+      });
   }
 
   /**
@@ -329,13 +366,16 @@
   // --- Execute and review details ------------------------------------------
 
   /**
-   * Commit state of one wave. Only commitWaves === false means "off"; an
-   * absent value behaves as on. "due" needs at least one task, all done.
-   * @param {{committedSha?: string, tasks?: Array}} wave
+   * Commit state of one wave. A wave that has not started (status
+   * `pending`) has no commit state, whatever commitWaves says. Otherwise
+   * only commitWaves === false means "off"; an absent value behaves as on.
+   * "due" needs at least one task, all done.
+   * @param {{status?: string, committedSha?: string, tasks?: Array}} wave
    * @param {boolean|undefined} commitWaves
-   * @returns {string} 'off' | 'committed' | 'due' | 'not-committed'
+   * @returns {string} '' | 'off' | 'committed' | 'due' | 'not-committed'
    */
   function waveCommitState(wave, commitWaves) {
+    if (wave && wave.status === 'pending') return '';
     if (commitWaves === false) return 'off';
     if (wave && wave.committedSha) return 'committed';
     var counts = taskCounts((wave && wave.tasks) || []);
@@ -361,6 +401,20 @@
     return (
       plural(t.found, 'finding', 'findings') +
       ' · ' + t.fixed + ' fixed · ' + t.deferred + ' deferred · ' + t.unaccounted + ' unaccounted'
+    );
+  }
+
+  /**
+   * The run totals line of a review plan: how many waves and dimensions ran
+   * out of those planned, and how many never started.
+   * @param {{wavesPlanned: number, wavesRun: number, dimensionsPlanned: number, dimensionsRun: number, neverStarted: number}} p
+   * @returns {string} '' when there is no plan
+   */
+  function reviewPlanText(p) {
+    if (!p) return '';
+    return (
+      'waves ' + p.wavesRun + '/' + p.wavesPlanned + ' run · dimensions ' +
+      p.dimensionsRun + '/' + p.dimensionsPlanned + ' run · ' + p.neverStarted + ' never started'
     );
   }
 
@@ -486,18 +540,41 @@
   }
 
   /**
-   * Header status counts over all repos; the repo filter does not apply.
+   * Header counts over all repos; the repo filter does not apply. The
+   * running, stalled, and failed counts follow the pipeline status. The
+   * waiting count is the number of pipelines that have an attention.
    * @param {Array} repos
-   * @returns {{running: number, stalled: number, failed: number}}
+   * @returns {{running: number, stalled: number, failed: number, waiting: number}}
    */
   function headerCounts(repos) {
-    var counts = { running: 0, stalled: 0, failed: 0 };
+    var counts = { running: 0, stalled: 0, failed: 0, waiting: 0 };
     (repos || []).forEach(function (repo) {
       (repo.pipelines || []).forEach(function (p) {
-        if (p && Object.prototype.hasOwnProperty.call(counts, p.status)) counts[p.status]++;
+        if (!p) return;
+        if (p.status === 'running' || p.status === 'stalled' || p.status === 'failed') {
+          counts[p.status]++;
+        }
+        if (p.attention) counts.waiting++;
       });
     });
     return counts;
+  }
+
+  /**
+   * Browser tab title. A leading "(N) " shows the number of pipelines that
+   * wait for a person in the given repos; with none, the title is base.
+   * @param {string} base title without a count
+   * @param {Array} repos the repos in scope
+   * @returns {string}
+   */
+  function pageTitle(base, repos) {
+    var waiting = 0;
+    (repos || []).forEach(function (repo) {
+      (repo.pipelines || []).forEach(function (p) {
+        if (p && p.attention) waiting++;
+      });
+    });
+    return waiting > 0 ? '(' + waiting + ') ' + base : base;
   }
 
   // --- Time ------------------------------------------------------------------
@@ -515,6 +592,18 @@
     var hours = Math.floor(minutes / 60);
     var rest = minutes % 60;
     return hours + 'h ' + (rest < 10 ? '0' : '') + rest + 'm';
+  }
+
+  /**
+   * Like formatDuration, but shows seconds below 1 hour. From 1 hour and
+   * for a bad value it returns what formatDuration returns.
+   * @param {number} ms
+   * @returns {string} '26s', '4m 12s', '1h 03m'; '' for a bad value
+   */
+  function formatElapsed(ms) {
+    if (typeof ms !== 'number' || !isFinite(ms) || ms < 0 || ms >= 3600000) return formatDuration(ms);
+    var s = Math.floor(ms / 1000);
+    return s < 60 ? s + 's' : Math.floor(s / 60) + 'm ' + (s % 60) + 's';
   }
 
   function dateParts(date, tz) {
@@ -741,11 +830,13 @@
     isWideSection: isWideSection,
     defaultStationIndex: defaultStationIndex,
     tileCount: tileCount,
+    compareStartedDesc: compareStartedDesc,
     feedOrder: feedOrder,
     defaultCollapsed: defaultCollapsed,
     waveCommitState: waveCommitState,
     taskCounts: taskCounts,
     reviewTotalsText: reviewTotalsText,
+    reviewPlanText: reviewPlanText,
     explorerMore: explorerMore,
     kindLabel: kindLabel,
     stationLabel: stationLabel,
@@ -753,11 +844,13 @@
     inScope: inScope,
     scopedCounts: scopedCounts,
     headerCounts: headerCounts,
+    pageTitle: pageTitle,
     toggleAllLabel: toggleAllLabel,
     severityTone: severityTone,
     issueLocation: issueLocation,
     outcomeGlyph: outcomeGlyph,
     formatDuration: formatDuration,
+    formatElapsed: formatElapsed,
     relativeWhen: relativeWhen,
     clockLabel: clockLabel,
     shortId: shortId,

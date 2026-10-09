@@ -42,6 +42,11 @@ severity: high
   that reads each such field and state its action: stop, retry, or
   disclose to the user. A returned signal with no consuming step in the
   caller is a finding.
+- **Go-side step labels.** A `next` hint, `Suggestion`, or error string in
+  Go that names a SKILL.md step number or label (for example `7c2 and 7d`)
+  must match that SKILL.md's current heading. Grep the heading and compare
+  both the number and the label. A Go string that says `7c2 and d` where the
+  SKILL.md says `7c2 and 7d` is a finding.
 
 ## What NOT to flag
 

@@ -262,7 +262,7 @@ var shipSkillsStepHeaders = map[string]string{
 // through decide like the other inline steps.
 var shipSkillsStepExpectedActions = map[string][]string{
 	"execute":             {"begin-step", "complete-step"},
-	"commit":              {"begin-step", "complete-step"},
+	"commit":              {"begin-step", "commit-check", "complete-step"},
 	"review":              {"begin-step", "complete-step"},
 	"received-review":     {"decide"},
 	"commit-fixes":        {"decide"},
@@ -350,6 +350,16 @@ func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestShipSkillActionsAreRegistered checks that every name({ ... }) tool
+// call in skills/ship/*.md names a registered MCP tool and, when it sets an
+// action, an action in that tool's registered enum. The commit step depends
+// on ship_state commit-check, so the skill must call it. The any-of check in
+// TestShipSkillsStepActionCrossCheck cannot catch a dropped or misspelled
+// commit-check, because begin-step in the same section satisfies it.
+func TestShipSkillActionsAreRegistered(t *testing.T) {
+	flagParityAssertToolsResolve(t, "ship", "ship_state:commit-check")
 }
 
 // shipSkillsBashBlockRe extracts the content of every ```bash ... ``` fenced

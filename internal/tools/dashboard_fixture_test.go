@@ -152,13 +152,7 @@ func TestDashboardFixture_MatchesContract(t *testing.T) {
 		}
 	})
 
-	kinds := []string{
-		dashboardKindWaves,
-		dashboardKindDimensions,
-		dashboardKindExplorers,
-		dashboardKindRounds,
-		dashboardKindFindings,
-	}
+	kinds := dashboardKinds
 	for _, repo := range snap.Repos {
 		for _, p := range repo.Pipelines {
 			for _, s := range p.Steps {
@@ -211,6 +205,9 @@ func TestDashboardFixture_CoversContentTable(t *testing.T) {
 			if p.CommitWaves != nil {
 				seen[fmt.Sprintf("commitWaves:%t", *p.CommitWaves)] = true
 			}
+			if p.Attention != nil && p.Status == PipelineRunning && p.Attention.Text != "" {
+				seen["running pipeline with attention"] = true
+			}
 			for _, is := range p.Issues {
 				seen["source:"+is.Source] = true
 				seen["severity:"+is.Severity] = true
@@ -245,11 +242,13 @@ func TestDashboardFixture_CoversContentTable(t *testing.T) {
 		"execute with queued tasks", "wave with a commit sha", "wave without a commit sha", "task without a name",
 		"review findings tile with a finding", "review findings tile without findings", "review dimension in progress",
 		"harden step without detail",
+		"running pipeline with attention", "guardrail counts", "result line", "round totals", "repair limit",
+		"finding outcome", "review plan", "dimension with a wave", "skipped dimension with a reason",
 	}
 	for _, step := range []string{StepPending, StepInProgress, StepCompleted, StepSkipped, StepFailed} {
 		required = append(required, "step:"+step)
 	}
-	for _, kind := range []string{dashboardKindWaves, dashboardKindDimensions, dashboardKindExplorers, dashboardKindRounds, dashboardKindFindings} {
+	for _, kind := range dashboardKinds {
 		required = append(required, "kind:"+kind)
 	}
 	for _, src := range []string{
@@ -287,6 +286,33 @@ func dashboardFixtureCoverSteps(p DashboardPipeline, seen map[string]bool) {
 			continue
 		}
 		seen["kind:"+d.Kind] = true
+
+		if d.Kind == dashboardKindGuardrails && d.Guardrails != nil && d.Guardrails.Total > 0 {
+			seen["guardrail counts"] = true
+		}
+		if d.Kind == dashboardKindResult && d.Result != "" {
+			seen["result line"] = true
+		}
+		if d.Kind == dashboardKindRounds && d.RoundTotals != nil && d.RoundTotals.Iterations > 0 {
+			seen["round totals"] = true
+		}
+		if d.Kind == dashboardKindRounds && d.RepairLimit {
+			seen["repair limit"] = true
+		}
+		if d.Kind == dashboardKindRounds && len(d.Outcomes) > 0 {
+			seen["finding outcome"] = true
+		}
+		if d.Kind == dashboardKindDimensions && d.ReviewPlan != nil && d.ReviewPlan.DimensionsPlanned > 0 {
+			seen["review plan"] = true
+		}
+		for _, dim := range d.Dimensions {
+			if dim.Wave > 0 {
+				seen["dimension with a wave"] = true
+			}
+			if dim.Status == StepSkipped && dim.Reason != "" {
+				seen["skipped dimension with a reason"] = true
+			}
+		}
 
 		switch {
 		case p.Kind == "ship" && s.Name == "plan" && len(d.Explorers) > 0:

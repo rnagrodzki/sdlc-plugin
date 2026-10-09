@@ -24,16 +24,22 @@ For each registered repo, the page shows:
 
 - **Pipelines** — one entry per `ship`, `execute`, or `plan` state file, plus
   one per `runs/ledger/review-*/` folder, as one block in one feed for all
-  repos. Pipelines that are not `completed` come first and start open.
-  `completed` pipelines come after and start collapsed. An execute run or
+  repos. The feed has 5 groups in this order: waiting on you, running,
+  failed, stalled, and completed. In each group, the newest start comes
+  first. Only `completed` pipelines start collapsed. An execute run or
   review run of a ship run shows inside the ship block, not as its own
   block. Each carries a status (`running`, `stalled`, `completed`, or
   `failed`), a done/total progress count, a track of its steps, and any
   issues. Each step with detail is a tile: waves and tasks, review
-  dimensions, review findings, plan explorers, or plan review rounds. Each
+  dimensions, review findings, plan guardrails, plan explorers, plan review
+  rounds, or the result of a commit step with nothing to commit. Each
   issue has a severity, a location (the file and line of a review finding,
   else the step, wave, or task it came from), and a reason. A `running`
-  pipeline whose state has not changed in 30 minutes shows as `stalled`; a
+  pipeline whose state has not changed in 30 minutes shows as `stalled`,
+  unless it waits for an answer or a permission. A waiting pipeline shows
+  "WAITING ON YOU" and the wait time. The header shows a `waiting` count
+  for all repos. The tab title starts with `(N)`, where N is the number of
+  waiting pipelines in the repos of the repo filter. A
   `completed` or `failed` pipeline drops off the page 24 hours after its
   last update. Ship and execute pipelines also carry the worktree path they
   ran in.
@@ -268,31 +274,38 @@ collector reads the data, and the tool action that writes it.
 
 | Field | Source | Written by |
 |---|---|---|
-| `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, or `findings`. It tells which list of `detail` is filled. | Collector, not stored |
+| `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, `findings`, `guardrails`, or `result`. It tells which field of `detail` is filled. | Collector, not stored |
 | `steps[].detail.waves` | `waves[]` of the execute state, with `number`, `status`, `committedSha`, and `tasks[]`. A task name is the name of its task row, else the name in the wave's `planned[]`, else the `plannedTasks` name. | The execute_state wave and task actions: `wave-start`, `wave-done`, `wave-fail`, `task-done`, `task-fail`, `wave-commit`, `wave-committed`, and the others that edit `waves[]` |
-| `steps[].detail.queued` | `plannedTasks` of the execute state that are in no wave yet. `plannedTasks` is one `{id, name}` for each `### Task N:` heading of the plan. | execute_state `init`, only when `planPath` is readable |
-| `steps[].detail.dimensions` | One dimension file for each worker in a `runs/ledger/review-*/` folder. The file holds `checkinAt`, `checkoutAt`, and `findings`. The collector derives `name` (the file name), `status` (completed when `checkoutAt` is set), and the `findings` count and `worst` severity of the dimension. The `run.meta` of the folder ties the review to its ship run. | execute_state `ledger_checkin`, `ledger_checkout` |
+| `steps[].detail.queued` | `plannedTasks` of the execute state that are in no wave and in no planned wave. `plannedTasks` is one `{id, name}` for each `### Task N:` heading of the plan. | execute_state `init`, only when `planPath` is readable |
+| `steps[].detail.dimensions` | One row for each planned dimension in the `run.meta` of a `runs/ledger/review-*/` folder. A row with no worker file is `pending`. A stopped row is `skipped` with a `reason`. A worker file holds `checkinAt`, `checkoutAt`, and `findings`. The collector derives `name` (the dimension name; the file name when `run.meta` plans no dimension), `status` (completed when `checkoutAt` is set), and the `findings` count and `worst` severity of the dimension. The `run.meta` of the folder ties the review to its ship run. A worker file that cannot be read or does not parse is an `in_progress` row with no findings, and it counts as a run dimension. Findings that are not a JSON list count as none. A `run.meta` that exists but cannot be read or does not parse gives the rows of the worker files, as with no `run.meta`. Each of these three cases also adds a `state` issue that names the file. | execute_state `ledger_checkin`, `ledger_checkout`, `ledger_skip` |
+| `steps[].detail.reviewPlan`, `dimensions[].wave`, `.reason` | `waves`, `dimensions`, and `stopReason` of `run.meta`. `reviewPlan` holds `wavesPlanned`, `wavesRun`, `dimensionsPlanned`, `dimensionsRun`, and `neverStarted`. `reason` is `stalled`, `missing`, or `unstopped`. | `review_prepare`, execute_state `ledger_skip` |
 | `steps[].detail.reviewTotals` (`found`, `fixed`, `deferred`, `unaccounted`) | Ship state: `healing.reviewTotal`, `healing.fixed[]` with origin `local-review`, and `deferredFindings[]`. `unaccounted` is `found` minus `fixed` minus `deferred`. | ship_state `healing_record` (kinds `review-total` and `fixed`), ship_state `defer` |
 | `steps[].detail.findings` | The `findings` text of one completed dimension file, for a review run that has its own block. | execute_state `ledger_checkout` |
+| `steps[].detail.result` | The `result` of the ship `commit` step, when it starts with `nothing to commit`. | ship_state `commit-check` |
+| `steps[].detail.guardrails` | `guardrailCounts` of the plan state: `total`, `error`, and `warning`. | `plan_prepare` |
 | `steps[].detail.explorers` | In a plan block: the `explore-*` writers of the plan run's evidence store. In a ship block: the `planExploreSummary` of the ship state. | plan_support `evidence_record`; ship_state `cleanup-pipeline` for `planExploreSummary` |
 | `steps[].detail.rounds`, `.maxRounds` | `reviewRounds` of the plan state. `maxRounds` is the review-loop limit of the plan skill, not a stored value. | plan_mark `review-round` |
-| `issues[].source`, `.severity`, `.text`, `.file`, `.line`, `.ref` | Failed ship steps, failed or partial waves, failed tasks that have an error, `issues[]` of the state file, review findings, and the stalled notice. `source` is `step`, `wave`, `review`, `state`, `task`, or `pipeline`. `.file` and `.line` are set for `review` issues only. `ref` is the step, wave, dimension, or task. | Collector, derived. Inputs come from ship_state `fail`, the execute_state wave and task actions, and `ledger_checkout` |
+| `steps[].detail.roundTotals`, `.repairLimit`, `.outcomes` | From `reviewRounds` and `reviewOutcome` of the plan state. `roundTotals` holds `iterations` (the number of stored rounds), `violations`, `fixes`, and `distinct`. When every round has a `findings` list, `violations` and `fixes` count distinct finding IDs across all rounds, a finding counts as fixed when any round fixed it, and `distinct` is `true`. Else they are the sums of the `found` and `fixed` counts of the rounds, and `distinct` is `false`. `repairLimit` is derived, not stored: it is `true` when the last stored round has a number of at least the review-loop limit (5) and its merged status is Issues Found. `outcomes` is one `{id, text, choice, reason}` for each finding of `reviewOutcome.findings`, in stored order. | plan_mark `review-round`, `review-outcome` |
+| `issues[].source`, `.severity`, `.text`, `.file`, `.line`, `.ref` | Failed ship steps, failed or partial waves, failed tasks that have an error, `issues[]` of the state file, review findings, review ledger files that cannot be used (as `state` issues with no `ref`), and the stalled notice. `source` is `step`, `wave`, `review`, `state`, `task`, or `pipeline`. `.file` and `.line` are set for `review` issues only. `ref` is the step, wave, dimension, or task. | Collector, derived. Inputs come from ship_state `fail`, the execute_state wave and task actions, and `ledger_checkout` |
 | `sessionId` | `sessionId` of the ship or execute state; `""` when unknown. A plan state is created with no session ID. A review block has none. | ship_prepare or ship_state `init`; execute_state `init` |
+| `attention` | The newest open wait record of the pipeline session and branch. It holds `kind` (`question` or `permission`), `askedAt`, `header`, and `text`. Only a `running` pipeline with a `sessionId` has it. Absent when no wait is open. | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
 | `commitWaves` | `commitWaves` of the execute state; an absent key counts as `true`. A ship block gets it from its joined execute run. It is absent on a plan block, a review block, and a ship block with no joined execute run. | execute_state `init` |
 | `repos[].history` | The 50 newest rows of `.sdlc-v2/history/runs.jsonl`, newest first. A row gives `kind` (the row's `skill`), `branch`, `outcome`, `startedAt`, `endedAt`, and `durationMs`. `startedAt` is `started_at`, else `ts` minus `duration_ms`. A line that does not parse is skipped. | ship_state `history_record` (outcome `success`, `failure`, or `partial`); ship_state `fail` (the first `fail` of a run appends a `failure` row); plan_mark `done` (a `plan` row with outcome `done`) |
 
 ### Which step carries which detail
 
 - **Execute block** — each `wave N` step has `waves` with that one wave. A
-  last step named `queued` has `queued`.
+  planned wave that has not started shows as `pending`. A last step named
+  `queued` has the tasks that are in no planned wave.
 - **Plan block** — five steps: `setup`, `explore`, `draft`, `review`, and
-  `finalize`. `explore` has `explorers`. `review` has `rounds`. The others
-  have no detail.
+  `finalize`. `setup` has `guardrails`. `explore` has `explorers`. `review`
+  has `rounds`. The others have no detail.
 - **Review block** — one step for each dimension. A completed dimension has
   `findings`.
 - **Ship block** — the `execute` step gets all waves and `queued` from the
   joined execute run. The `review` step gets `reviewTotals` from the ship
-  state and `dimensions` from the joined review run. When the ship state
+  state, and `dimensions` and `reviewPlan` from the joined review run. The
+  `commit` step has `result` when it completed with a `nothing to commit` result. When the ship state
   holds `planExploreSummary`, the collector adds a first step `plan` with
   `explorers`.
 
@@ -305,11 +318,14 @@ collector reads the data, and the tool action that writes it.
   `review` step window holds the start of the review run.
 - When two ship runs match, the newest wins. A review folder with no
   `run.meta` joins no ship run and stays its own block.
-- The first `ledger_checkin` of a review run writes `run.meta` once, in the
-  ledger folder: `branch`, `startedAt`, and `shipRunId`. `shipRunId` is set
-  only when the branch has a ship run whose `review` step is in progress. The
-  file name has no `.json` suffix, so the collector does not read it as a
-  dimension file.
+- `review_prepare` writes `run.meta` once, in the ledger folder: `branch`,
+  `startedAt`, `shipRunId`, `waves`, and `dimensions`. A dry run writes no
+  file. A folder with only `run.meta` turns `stalled` after 30 minutes.
+  `shipRunId` is set only when the branch has a ship run whose `review` step
+  is in progress. The file name has no `.json` suffix, so the collector does
+  not read it as a dimension file. A review run that started before
+  `review_prepare` wrote the file gets a `run.meta` from its first
+  `ledger_checkin`, with no `waves` or `dimensions`.
 - The issues of a joined execute run go to the ship block with `execute:`
   before each `ref`. The issues of a joined review run go with their `ref`
   unchanged.

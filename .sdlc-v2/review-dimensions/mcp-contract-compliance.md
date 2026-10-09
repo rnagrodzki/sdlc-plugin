@@ -30,6 +30,9 @@ and `mcp-output-drives-behavior` guardrails.
   - `title`, `body`, `branch`: free-form text
 - Handlers MUST validate input shapes and reject invalid schemas loudly
   before processing, rather than silently producing degraded output.
+- A closed-set field's `jsonschema_description` MUST list every allowed value.
+  A description that calls the field plain text or free text is a finding,
+  even when the field has an enum tag.
 
 ## Output struct contracts (`*Out`)
 
@@ -79,6 +82,10 @@ and `mcp-output-drives-behavior` guardrails.
   or how to confirm the work is done. An untyped `errors.New` or
   `fmt.Errorf` return for this outcome, or reliance on the
   `defaultRecovery` fallback, is a finding.
+- A `Suggestion` MUST name a recovery action the caller can perform. The named
+  tool or action MUST accept the input that failed and MUST be able to change
+  the failing condition. A `Suggestion` that sends the caller to a tool that
+  cannot fix the error is a finding.
 
 Every error result MUST render a non-empty `## Do this` section. When a typed
 error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered

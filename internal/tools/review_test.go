@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
@@ -318,11 +319,13 @@ func TestPlanWaves_EmptyNotNil(t *testing.T) {
 	}
 }
 
-// TestReviewWaveNext pins both manifest-mode next texts.
+// TestReviewWaveNext pins every manifest-mode next text. Zero waves wins
+// over a dry run.
 func TestReviewWaveNext(t *testing.T) {
 	tests := []struct {
 		name      string
 		waveCount int
+		dryRun    bool
 		want      string
 	}{
 		{
@@ -333,12 +336,24 @@ func TestReviewWaveNext(t *testing.T) {
 		{
 			name:      "zero waves",
 			waveCount: 0,
-			want:      "No dimension matched the changes: waves is empty. Do not start agents or poll. Go to the consolidation step with zero findings.",
+			want:      "No dimension matches the diff. Report zero findings. No ledger exists.",
+		},
+		{
+			name:      "dry run",
+			waveCount: 3,
+			dryRun:    true,
+			want:      "Dry run: print the plan from the manifest and stop. No ledger exists.",
+		},
+		{
+			name:      "dry run with zero waves",
+			waveCount: 0,
+			dryRun:    true,
+			want:      "No dimension matches the diff. Report zero findings. No ledger exists.",
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := reviewWaveNext("/tmp/sdlc-review-x/manifest.json", tc.waveCount); got != tc.want {
+			if got := reviewWaveNext("/tmp/sdlc-review-x/manifest.json", tc.waveCount, tc.dryRun); got != tc.want {
 				t.Errorf("reviewWaveNext() = %q, want %q", got, tc.want)
 			}
 		})
@@ -512,6 +527,8 @@ func TestIndexEntrySliceFileGating(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReviewPrepareFixture(t *testing.T) {
+	// reviewPrepare creates its manifest folder under TMPDIR: keep it inside t.TempDir.
+	t.Setenv("TMPDIR", t.TempDir())
 	// Build a minimal git repo with some files and a dimension.
 	root := t.TempDir()
 
@@ -672,6 +689,8 @@ and adherence to best practices. Check for potential bugs and edge cases.
 // worker's .diff file. The manifest must flag this via `truncated`/`status`
 // rather than staying silent.
 func TestReviewPrepareDiffByteCapTruncation(t *testing.T) {
+	// reviewPrepare creates its manifest folder under TMPDIR: keep it inside t.TempDir.
+	t.Setenv("TMPDIR", t.TempDir())
 	root := t.TempDir()
 
 	mustRun(t, root, "git", "init")
@@ -883,7 +902,7 @@ Review.
 	if m.PlanCritique.MaxParallelDimensions != defaultMaxParallelDimensions {
 		t.Errorf("plan_critique.max_parallel_dimensions = %d, want %d", m.PlanCritique.MaxParallelDimensions, defaultMaxParallelDimensions)
 	}
-	if want := reviewWaveNext(out.ManifestPath, 2); out.Next != want {
+	if want := reviewWaveNext(out.ManifestPath, 2, false); out.Next != want {
 		t.Errorf("next = %q, want %q", out.Next, want)
 	}
 }
@@ -1140,9 +1159,14 @@ Review.
 	if out.Summary.WaveCount != 0 || m.Summary.WaveCount != 0 {
 		t.Errorf("wave_count out/manifest = %d/%d, want 0/0", out.Summary.WaveCount, m.Summary.WaveCount)
 	}
-	if want := reviewWaveNext(out.ManifestPath, 0); out.Next != want {
+	if want := reviewWaveNext(out.ManifestPath, 0, false); out.Next != want {
 		t.Errorf("next = %q, want %q", out.Next, want)
 	}
+	// Zero waves: no ledger, so no run id and no run.meta.
+	if m.RunID != "" {
+		t.Errorf("run_id = %q, want \"\"", m.RunID)
+	}
+	assertNoReviewLedger(t, root)
 }
 
 // TestReviewPrepareOldMaxDimensionsKey pins that the old [review]
@@ -1887,5 +1911,516 @@ func writeFile(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Review run plan: run_id, worker_id, and run.meta
+// ---------------------------------------------------------------------------
+
+// assertNoReviewLedger fails when review_prepare created any ledger run
+// folder under root.
+func assertNoReviewLedger(t *testing.T, root string) {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, paths.DataDir, paths.RunsSubdir, "ledger"))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		t.Fatalf("read ledger dir: %v", err)
+	}
+	for _, e := range entries {
+		t.Errorf("ledger run folder %q exists, want none", e.Name())
+	}
+}
+
+// reviewRunPlanDims returns three dimension files: one critical and two
+// medium, so maxParallelDimensions = 2 plans waves [[Security Review, docs],
+// [code-quality]] (critical first, then dimension file order).
+func reviewRunPlanDims() map[string]string {
+	dim := func(name, severity string) string {
+		return fmt.Sprintf("---\nname: %s\ndescription: Dimension\ntriggers:\n  - \"**/*.go\"\nseverity: %s\n---\nReview.\n", name, severity)
+	}
+	return map[string]string{
+		"security.md": dim("Security Review", "critical"),
+		"quality.md":  dim("code-quality", "medium"),
+		"docs.md":     dim("docs", "medium"),
+	}
+}
+
+// newReviewRunPlanFixture builds a fixture with reviewRunPlanDims and a
+// limit of 2 agents at the same time. It points TMPDIR at a test folder, so
+// the os.MkdirTemp review folder of a failed call cannot leak outside
+// t.TempDir.
+func newReviewRunPlanFixture(t *testing.T) string {
+	t.Helper()
+	t.Setenv("TMPDIR", t.TempDir())
+	root := newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, reviewRunPlanDims())
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[review]\nmaxParallelDimensions = 2\n")
+	return root
+}
+
+// TestReviewWorkerID pins the worker id rule: lowercase, then each run of
+// characters outside [a-z0-9_-] becomes one "-".
+func TestReviewWorkerID(t *testing.T) {
+	tests := map[string]string{
+		"Security Review":       "security-review",
+		"code-quality":          "code-quality",
+		"API  /  Contracts!!":   "api-contracts-",
+		"snake_case_Dim":        "snake_case_dim",
+		"Perf.Review (backend)": "perf-review-backend-",
+	}
+	for name, want := range tests {
+		if got := reviewWorkerID(name); got != want {
+			t.Errorf("reviewWorkerID(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// TestReviewStopReasons pins the run.meta stop reason values.
+func TestReviewStopReasons(t *testing.T) {
+	got := []string{reviewStopStalled, reviewStopMissing, reviewStopUnstopped}
+	want := []string{"stalled", "missing", "unstopped"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("stop reasons = %v, want %v", got, want)
+	}
+}
+
+// TestReviewPrepareWritesRunMeta pins the run plan of a normal run: run_id
+// comes from the manifest timestamp, each dimension has a worker_id, and
+// run.meta lists the worker ids by wave, every planned dimension with its
+// 1-based wave, the branch, startedAt, and the in_progress ship run id.
+func TestReviewPrepareWritesRunMeta(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	shipRunID := seedShipReviewStep(t, root, "feature", StepInProgress)
+
+	out, m := readReviewManifest(t, root)
+
+	wantRunID := "review-" + regexp.MustCompile(`[^a-zA-Z0-9_-]`).ReplaceAllString(m.Timestamp, "-")
+	if m.RunID != wantRunID {
+		t.Errorf("run_id = %q, want %q", m.RunID, wantRunID)
+	}
+	if !regexp.MustCompile(`^review-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z$`).MatchString(m.RunID) {
+		t.Errorf("run_id = %q, want review-YYYY-MM-DDTHH-MM-SSZ", m.RunID)
+	}
+	for _, d := range m.Dimensions {
+		if want := reviewWorkerID(d.Name); d.WorkerID != want {
+			t.Errorf("%s worker_id = %q, want %q", d.Name, d.WorkerID, want)
+		}
+	}
+	if want := reviewWaveNext(out.ManifestPath, 2, false); out.Next != want {
+		t.Errorf("next = %q, want %q", out.Next, want)
+	}
+
+	// review_prepare writes only gitignored or untracked state: the tracked
+	// tree stays clean.
+	st, err := execRun(root, "git", "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if st != "" {
+		t.Errorf("tracked tree not clean after review_prepare:\n%s", st)
+	}
+
+	meta, _ := readLedgerRunMeta(t, root, m.RunID)
+	if meta.Branch != "feature" {
+		t.Errorf("run.meta branch = %q, want feature", meta.Branch)
+	}
+	if meta.StartedAt != m.Timestamp {
+		t.Errorf("run.meta startedAt = %q, want the manifest timestamp %q", meta.StartedAt, m.Timestamp)
+	}
+	if meta.ShipRunID != shipRunID {
+		t.Errorf("run.meta shipRunId = %q, want %q", meta.ShipRunID, shipRunID)
+	}
+	if got, want := fmt.Sprint(meta.Waves), "[[security-review docs] [code-quality]]"; got != want {
+		t.Errorf("run.meta waves = %s, want %s", got, want)
+	}
+	wantDims := []reviewRunMetaDimension{
+		{Name: "Security Review", WorkerID: "security-review", Wave: 1},
+		{Name: "docs", WorkerID: "docs", Wave: 1},
+		{Name: "code-quality", WorkerID: "code-quality", Wave: 2},
+	}
+	if fmt.Sprint(meta.Dimensions) != fmt.Sprint(wantDims) {
+		t.Errorf("run.meta dimensions = %+v, want %+v", meta.Dimensions, wantDims)
+	}
+}
+
+// TestReviewPrepareRunMetaNoShipRun pins that run.meta has no shipRunId when
+// the ship review step is not in_progress.
+func TestReviewPrepareRunMetaNoShipRun(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	seedShipReviewStep(t, root, "feature", "pending")
+
+	_, m := readReviewManifest(t, root)
+
+	_, raw := readLedgerRunMeta(t, root, m.RunID)
+	if strings.Contains(string(raw), "shipRunId") {
+		t.Errorf("run.meta = %s, want no shipRunId", raw)
+	}
+}
+
+// TestReviewPrepareShipStateUnreadable pins that a ship state lookup that
+// fails does not stop the review: run.meta has no shipRunId, and the result
+// warnings and the manifest warnings say so.
+func TestReviewPrepareShipStateUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := newReviewRunPlanFixture(t)
+	// No read permission on the state folder makes the ship state lookup
+	// fail. Write and search permission keep the ledger write working.
+	runs := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runs, 0o755); err != nil {
+		t.Fatalf("mkdir runs: %v", err)
+	}
+	if err := os.Chmod(runs, 0o300); err != nil {
+		t.Fatalf("chmod runs: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(runs, 0o755) })
+
+	out, m := readReviewManifest(t, root)
+
+	const want = "the ship state could not be read"
+	hasWarning := func(list []string) bool {
+		for _, w := range list {
+			if strings.Contains(w, want) {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasWarning(out.Warnings) {
+		t.Errorf("result warnings = %q, want one that contains %q", out.Warnings, want)
+	}
+	if !hasWarning(m.Warnings) {
+		t.Errorf("manifest warnings = %q, want one that contains %q", m.Warnings, want)
+	}
+	_, raw := readLedgerRunMeta(t, root, m.RunID)
+	if strings.Contains(string(raw), "shipRunId") {
+		t.Errorf("run.meta = %s, want no shipRunId", raw)
+	}
+}
+
+// TestReviewPrepareWritesNothingTracked pins that review_prepare leaves
+// `git status --porcelain` empty in a repo that setup_init seeded, in
+// manifest mode (which writes run.meta) and in save mode. Untracked files
+// count too: run.meta and the saved review must land in ignored paths.
+func TestReviewPrepareWritesNothingTracked(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	if _, err := setupInit(root, SetupInitIn{}); err != nil {
+		t.Fatalf("setupInit fixture seed: %v", err)
+	}
+	mustRun(t, root, "git", "add", "-A")
+	mustRun(t, root, "git", "commit", "-m", "baseline")
+
+	assertClean := func(when string) {
+		t.Helper()
+		st, err := execRun(root, "git", "status", "--porcelain")
+		if err != nil {
+			t.Fatalf("git status %s: %v", when, err)
+		}
+		if st != "" {
+			t.Errorf("git status not empty %s:\n%s", when, st)
+		}
+	}
+	assertClean("after the baseline commit")
+
+	_, m := readReviewManifest(t, root)
+	if m.RunID == "" {
+		t.Fatal("run_id is empty: review_prepare wrote no run.meta, so this test checks nothing")
+	}
+	assertClean("after review_prepare in manifest mode")
+
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SaveReview: true, Content: "test review comment"})
+	if err != nil {
+		t.Fatalf("reviewPrepare save mode: %v", err)
+	}
+	if !out.Saved {
+		t.Fatal("save mode saved nothing, so this test checks nothing")
+	}
+	assertClean("after review_prepare in save mode")
+}
+
+// TestReviewPrepareRunMetaSurvivesCheckin pins that a later ledger_checkin
+// does not change the run.meta that review_prepare wrote.
+func TestReviewPrepareRunMetaSurvivesCheckin(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	_, m := readReviewManifest(t, root)
+	_, before := readLedgerRunMeta(t, root, m.RunID)
+
+	ledgerCheckin(t, root, root, ExecuteStateIn{RunID: m.RunID, WorkerID: "security-review"}, time.Now().Add(time.Hour))
+
+	_, after := readLedgerRunMeta(t, root, m.RunID)
+	if string(after) != string(before) {
+		t.Errorf("run.meta changed after ledger_checkin:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestReviewPrepareDryRun pins that a dry run writes no run.meta, has an
+// empty run_id, and returns the dry-run next text.
+func TestReviewPrepareDryRun(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main", DryRun: true})
+	if err != nil {
+		t.Fatalf("reviewPrepare failed: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(filepath.Dir(out.ManifestPath)) })
+	raw, err := os.ReadFile(out.ManifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(raw, &generic); err != nil {
+		t.Fatalf("unmarshal manifest: %v", err)
+	}
+	if runID, ok := generic["run_id"].(string); !ok || runID != "" {
+		t.Errorf("manifest run_id = %#v, want \"\"", generic["run_id"])
+	}
+	if out.Summary.WaveCount != 2 {
+		t.Errorf("wave_count = %d, want 2", out.Summary.WaveCount)
+	}
+	if want := "Dry run: print the plan from the manifest and stop. No ledger exists."; out.Next != want {
+		t.Errorf("next = %q, want %q", out.Next, want)
+	}
+	assertNoReviewLedger(t, root)
+}
+
+// TestReviewPrepareSaveModeIgnoresDryRun pins that saveReview wins over
+// dryRun: the call runs save mode and writes no run.meta.
+func TestReviewPrepareSaveModeIgnoresDryRun(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SaveReview: true, DryRun: true, Content: "review body"})
+	if err != nil {
+		t.Fatalf("reviewPrepare failed: %v", err)
+	}
+	if !out.Saved || out.ManifestPath != "" {
+		t.Errorf("saved/manifestPath = %v/%q, want true/\"\"", out.Saved, out.ManifestPath)
+	}
+	assertNoReviewLedger(t, root)
+}
+
+// TestReviewPrepareRunMetaWriteFails pins that a failed run.meta write
+// returns an InfraError with a Suggestion and no manifest path.
+func TestReviewPrepareRunMetaWriteFails(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	// A regular file where the ledger folder goes makes MkdirAll fail.
+	ledgerPath := filepath.Join(root, paths.DataDir, paths.RunsSubdir, "ledger")
+	writeFile(t, ledgerPath, "not a dir\n")
+
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if want := "Check write access to .sdlc-v2/runs/ledger/ and call review_prepare again."; infra.Suggestion != want {
+		t.Errorf("suggestion = %q, want %q", infra.Suggestion, want)
+	}
+	if out.ManifestPath != "" {
+		t.Errorf("manifestPath = %q, want \"\"", out.ManifestPath)
+	}
+	// No ledger folder was created: the blocking file is still a file.
+	if fi, err := os.Stat(ledgerPath); err != nil || fi.IsDir() {
+		t.Errorf("ledger path stat = %v, %v; want the regular file to stay", fi, err)
+	}
+}
+
+// useReviewWriteJSON replaces reviewWriteJSON for one test and restores it
+// when the test ends.
+func useReviewWriteJSON(t *testing.T, fn func(path string, v any) error) {
+	t.Helper()
+	prev := reviewWriteJSON
+	reviewWriteJSON = fn
+	t.Cleanup(func() { reviewWriteJSON = prev })
+}
+
+// useReviewCurrentBranch replaces reviewCurrentBranch for one test and
+// restores it when the test ends.
+func useReviewCurrentBranch(t *testing.T, fn func(dir string) (string, error)) {
+	t.Helper()
+	prev := reviewCurrentBranch
+	reviewCurrentBranch = fn
+	t.Cleanup(func() { reviewCurrentBranch = prev })
+}
+
+// useReviewGitStatus replaces reviewGitStatus for one test and restores it
+// when the test ends.
+func useReviewGitStatus(t *testing.T, fn func(dir string) (string, error)) {
+	t.Helper()
+	prev := reviewGitStatus
+	reviewGitStatus = fn
+	t.Cleanup(func() { reviewGitStatus = prev })
+}
+
+// TestReviewPrepareManifestWriteFails pins the state after a failed manifest
+// write: an InfraError, no manifest path, and no ledger folder, because
+// run.meta is written only after the manifest.
+func TestReviewPrepareManifestWriteFails(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	runMetaWrites := 0
+	useReviewWriteJSON(t, func(path string, v any) error {
+		if filepath.Base(path) == "manifest.json" {
+			return errors.New("disk full")
+		}
+		runMetaWrites++
+		return fsx.AtomicWriteJSON(path, v)
+	})
+
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if !strings.Contains(infra.Msg, "write manifest") || infra.Suggestion == "" {
+		t.Errorf("msg/suggestion = %q/%q, want a write manifest error with a suggestion", infra.Msg, infra.Suggestion)
+	}
+	if out.ManifestPath != "" {
+		t.Errorf("manifestPath = %q, want \"\"", out.ManifestPath)
+	}
+	if runMetaWrites != 0 {
+		t.Errorf("run.meta writes = %d, want 0", runMetaWrites)
+	}
+	assertNoReviewLedger(t, root)
+}
+
+// TestReviewPrepareRunMetaAtomicWriteFails pins the state after the run.meta
+// write fails once the ledger folder exists: an InfraError, no manifest
+// path, the manifest file still on disk in the temp folder, and no ledger
+// run folder, because the call removes the folder it created.
+func TestReviewPrepareRunMetaAtomicWriteFails(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	var manifestPath, runMetaPath string
+	useReviewWriteJSON(t, func(path string, v any) error {
+		if filepath.Base(path) == ledgerRunMetaFile {
+			runMetaPath = path
+			if _, err := os.Stat(filepath.Dir(path)); err != nil {
+				t.Errorf("ledger run folder missing at the run.meta write: %v", err)
+			}
+			return errors.New("disk full")
+		}
+		manifestPath = path
+		return fsx.AtomicWriteJSON(path, v)
+	})
+
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SkipConfigCheck: true, Target: "main"})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if want := "Check write access to .sdlc-v2/runs/ledger/ and call review_prepare again."; infra.Suggestion != want {
+		t.Errorf("suggestion = %q, want %q", infra.Suggestion, want)
+	}
+	if out.ManifestPath != "" {
+		t.Errorf("manifestPath = %q, want \"\"", out.ManifestPath)
+	}
+	if runMetaPath == "" {
+		t.Fatal("run.meta write was not attempted")
+	}
+	if _, err := os.Stat(manifestPath); err != nil {
+		t.Errorf("manifest %q not on disk: %v", manifestPath, err)
+	}
+	if _, err := os.Stat(filepath.Dir(runMetaPath)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ledger run folder stat err = %v, want not exist", err)
+	}
+	assertNoReviewLedger(t, root)
+}
+
+// TestWriteReviewRunMetaKeepsExistingFolder pins that a failed run.meta write
+// does not remove a ledger run folder that existed before the call.
+func TestWriteReviewRunMetaKeepsExistingFolder(t *testing.T) {
+	root := t.TempDir()
+	runID := "review-2026-10-08T11-09-18Z"
+	worker := ledgerFilePath(root, runID, "docs")
+	writeFile(t, worker, "{}\n")
+	useReviewWriteJSON(t, func(string, any) error { return errors.New("disk full") })
+
+	if err := writeReviewRunMeta(root, "feature", runID, time.Now(), [][]string{{"docs"}}); err == nil {
+		t.Fatal("writeReviewRunMeta err = nil, want the write error")
+	}
+	if _, err := os.Stat(worker); err != nil {
+		t.Errorf("worker file of the existing folder is gone: %v", err)
+	}
+}
+
+// TestWriteReviewRunMetaEmptyBranch pins the empty-branch arm: run.meta has
+// an empty branch and no shipRunId.
+func TestWriteReviewRunMetaEmptyBranch(t *testing.T) {
+	root := t.TempDir()
+	runID := "review-2026-10-08T11-09-18Z"
+	startedAt := time.Date(2026, 10, 8, 11, 9, 18, 0, time.UTC)
+
+	if err := writeReviewRunMeta(root, "", runID, startedAt, [][]string{{"Security Review"}}); err != nil {
+		t.Fatalf("writeReviewRunMeta: %v", err)
+	}
+	meta, raw := readLedgerRunMeta(t, root, runID)
+	if meta.Branch != "" {
+		t.Errorf("branch = %q, want \"\"", meta.Branch)
+	}
+	if strings.Contains(string(raw), "shipRunId") {
+		t.Errorf("run.meta = %s, want no shipRunId", raw)
+	}
+	if meta.StartedAt != "2026-10-08T11:09:18Z" {
+		t.Errorf("startedAt = %q, want 2026-10-08T11:09:18Z", meta.StartedAt)
+	}
+	want := []reviewRunMetaDimension{{Name: "Security Review", WorkerID: "security-review", Wave: 1}}
+	if fmt.Sprint(meta.Dimensions) != fmt.Sprint(want) {
+		t.Errorf("dimensions = %+v, want %+v", meta.Dimensions, want)
+	}
+}
+
+// TestReviewPrepareBranchReadFails pins that a failed branch read becomes a
+// warning in the result and the manifest, and that run.meta then has an
+// empty branch and no shipRunId, even when the ship review step is
+// in_progress.
+func TestReviewPrepareGitStatusReadFails(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	useReviewGitStatus(t, func(string) (string, error) { return "", errors.New("status exploded") })
+
+	out, m := readReviewManifest(t, root)
+
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "uncommitted_changes is reported as false") && strings.Contains(w, "status exploded") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("result warnings = %q, want one that names the status error and uncommitted_changes", out.Warnings)
+	}
+	if m.UncommittedChanges {
+		t.Errorf("uncommitted_changes = true, want false after a failed status read")
+	}
+	if m.RunID == "" {
+		t.Errorf("run_id is empty: a failed status read must not stop the review")
+	}
+}
+
+func TestReviewPrepareBranchReadFails(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	seedShipReviewStep(t, root, "feature", StepInProgress)
+	useReviewCurrentBranch(t, func(string) (string, error) { return "", errors.New("git exploded") })
+
+	out, m := readReviewManifest(t, root)
+
+	wantPart := "will not join its ship run"
+	found := false
+	for _, w := range out.Warnings {
+		if strings.Contains(w, wantPart) && strings.Contains(w, "git exploded") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("result warnings = %q, want one that contains %q and the git error", out.Warnings, wantPart)
+	}
+	if fmt.Sprint(m.Warnings) != fmt.Sprint(out.Warnings) {
+		t.Errorf("manifest warnings = %q, want the result warnings %q", m.Warnings, out.Warnings)
+	}
+	if m.CurrentBranch != "" {
+		t.Errorf("current_branch = %q, want \"\"", m.CurrentBranch)
+	}
+	meta, raw := readLedgerRunMeta(t, root, m.RunID)
+	if meta.Branch != "" || strings.Contains(string(raw), "shipRunId") {
+		t.Errorf("run.meta = %s, want an empty branch and no shipRunId", raw)
 	}
 }

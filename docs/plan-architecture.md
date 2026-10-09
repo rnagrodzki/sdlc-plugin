@@ -18,9 +18,9 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | Tool | Registration | Purpose |
 |------|-------------|---------|
 | `plan_prepare` | `internal/tools/plan.go` `RegisterPlanTools` | Context detection, template resolution, OpenSpec validation, guardrail loading, lane/lens construction, complexity routing. Computes pending OpenSpec tasks.md ref stamps but never writes them — see [OpenSpec tasks.md Ref Stamping](#openspec-tasksmd-ref-stamping) |
-| `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, upsert a `review-round` row, or replace the `checkpoint` progress marker. Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` |
+| `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, upsert a `review-round` row, replace the `review-outcome` answers (`reviewOutcome`), or replace the `checkpoint` progress marker. Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
-| `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Seven actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `evidence_record`, `evidence_digest`, `evidence_get` |
+| `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Nine actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `openspec_instructions`, `openspec_stage`, `evidence_record`, `evidence_digest`, `evidence_get` |
 | `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Ten actions (9 today + `plan_style`); plan pipeline uses `plan_format` (PF1-PF14) and `plan_style` |
 | `links_validate` | `internal/tools/links.go` `RegisterLinksTools` | URL extraction + HTTP validation with line tracking |
 | `execute_state` | `internal/tools/execute_state.go` `RegisterExecuteStateTools` | Ledger operations (review skill; plan uses the evidence store instead — see [Evidence store and compaction recovery](#evidence-store-and-compaction-recovery)) |
@@ -267,7 +267,7 @@ structure from `plan_prepare.template.sections` and the context from Step 1.
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_support({action: "merge_results"})`, `plan_mark({marker: "guardrailsEvaluated"})`, `plan_mark({marker: "critiqueRan"})` |
+| **Tools called** | `plan_support({action: "merge_results"})`, `plan_support({action: "evidence_record"})` (`main` item `S3-guardrail-findings`: the `{id, gateId}` of each `G14` blocking or `G22` issue, read by the round 1 review record), `plan_mark({marker: "guardrailsEvaluated"})`, `plan_mark({marker: "critiqueRan"})` |
 | **Subagents** | 5 lane subagents dispatched in a single message (see [Fan-Out Architecture](#step-3-five-lane-gate)) |
 | **Plan sections written** | None (findings stored for Step 4) |
 | **Failure modes** | Lane subagent failure: `merge_results` reports coverage gaps for missing gate IDs. All lanes timeout: critique markers not set, stop hook warns. |
@@ -295,23 +295,31 @@ appendix mapping OpenSpec requirements to plan tasks.
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_support({action: "merge_results"})` |
+| **Tools called** | `plan_support({action: "merge_results"})`; `plan_mark({marker: "review-round"})` when the round is Approved |
 | **Subagents** | 3 lens reviewers dispatched in a single message (see [Fan-Out Architecture](#step-5-three-lens-review)) |
 | **Plan sections written** | `## Verification Scorecard` (regenerated after each lens merge iteration) |
-| **Failure modes** | All lenses approve: proceed to Step 6.5. Reviewer timeout: degraded findings, may miss issues. Max `reviewLoop.maxRounds` (5) iterations: surfaces unresolved issues to user via AskUserQuestion. |
+| **Failure modes** | All lenses approve: proceed to Step 6.5. Reviewer timeout: degraded findings, may miss issues. Round `reviewLoop.maxRounds` (5) ends with blocking issues: Step 6 runs its fix pass, then asks one AskUserQuestion question per open finding (`accepted` / `rejected` / `stop`, 4 per call) and stores the answers with `plan_mark({marker: "review-outcome"})`. No 6th round starts. |
 
 Skipped in `lightweight` mode. Three lens reviewers (architecture,
 requirements, risk) evaluate the plan independently. Results merge through
 `plan_support.merge_results`. After each merge, the `## Verification
 Scorecard` section is assembled and written (or regenerated) in the plan file.
-If issues remain after `reviewLoop.maxRounds` (5) iterations, the loop exits
-and surfaces issues to the user.
+If round `reviewLoop.maxRounds` (5) ends with blocking issues, Step 6 runs
+its fix pass and records the round. It then asks about each open finding
+(a blocking issue that the last fix pass did not fix): `accepted`,
+`rejected`, or `stop`. It stores the answers with `plan_mark` `review-outcome`
+and follows the returned `next`. The plan is handed off only when no answer
+is `stop`; each `accepted` finding gets a `## Deviations & assumptions` row.
+A `stop` answer ends the run with no hand-off (harden is offered in
+interactive mode). With 0 open findings, the skill asks nothing and goes on
+to Step 6.5. With more than 200 open findings, or when AskUserQuestion is
+unavailable, it asks nothing and stops with no hand-off.
 
 ### Step 6: Apply Review Fixes
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_support({action: "material_snapshot"})`, `plan_support({action: "material_compare"})`; Create flow only, at the end of the step: `plan_support({action: "openspec_instructions"})`, `plan_support({action: "openspec_stage"})` (see [OpenSpec staging](#openspec-staging)) |
+| **Tools called** | `plan_support({action: "material_snapshot"})`, `plan_support({action: "material_compare"})`, `plan_mark({marker: "review-round"})` (every round); last round with open findings only: `plan_mark({marker: "review-outcome"})`; Create flow only, at the end of the step: `plan_support({action: "openspec_instructions"})`, `plan_support({action: "openspec_stage"})` (see [OpenSpec staging](#openspec-staging)) |
 | **Subagents** | None |
 | **Plan sections written** | Fixes applied to task sections; Create flow only: `**OpenSpec-Create:**` header line replaced by `**OpenSpec-Staging:**`, `## OpenSpec Appendix` body replaced by the staged-file traceability table |
 | **Failure modes** | Material change detected: re-dispatch from Step 3 (full) or Step 5 (non-material). |
@@ -359,7 +367,9 @@ The `final: true` flag enables PF9 (Verification Scorecard) and PF10
 
 The orchestrator logs learnings and hands off the finalized plan to the user
 or to the `/execute` skill. The Verification Scorecard was already written
-during Step 5's lens-merge iterations.
+during Step 5's lens-merge iterations. When the plan file header has an
+`**OpenSpec-Staging:**` line, the hand-off menu also offers `openspec-save`
+(`/sdlc:openspec-save --plan <path>`). It saves the change as its own PR first.
 
 ### OpenSpec staging
 
@@ -371,18 +381,20 @@ from the reviewed plan at the end of Step 6, and again after handoff feedback.
 that into an authoring phase (plan mode, gitignored) and a materialize phase
 (the first tracked-file write, deferred to the next run's start).
 
-**Header lifecycle — two plan-file header lines, in two phases:**
+**Header lifecycle — three plan-file header lines, in four phases:**
 
 | Phase | When | Header line in the plan file | `## OpenSpec Appendix` body |
 |-------|------|------------------------------|-----------------------------|
 | Create chosen | Step 0 (OpenSpec gate check) | `**OpenSpec-Create:** <changeName>` (with `**Source:** openspec/changes/<changeName>/`) | `[TBD — authored at the end of Step 6]` (written in Step 4) |
 | Staged | End of Step 6 (**Create-flow authoring**), after `openspec_stage` returns `valid: true` | `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<changeName>/` replaces `**OpenSpec-Create:**` | Staged-file traceability table |
 | Re-staged | Step 7, when the user rejects `ExitPlanMode` with feedback | `**OpenSpec-Staging:**` kept | Table rebuilt from the new files |
+| Saved | `/sdlc:openspec-save` (tool `openspec_save`), after the plan hand-off | `**OpenSpec-Saved:** openspec/changes/<changeName>/ (branch openspec/<changeName>)` replaces `**OpenSpec-Staging:**` | Unchanged |
 
 `**OpenSpec-Create:**` marks a run where authoring has not finished yet. A
 resume that finds it at checkpoint `6.5` or later runs **Create-flow
 authoring** once before it continues. Only `**OpenSpec-Staging:**` is read
-by materialize.
+by materialize. `openspec_save` rewrites that line to `**OpenSpec-Saved:**`,
+so a later ship or execute start materializes nothing.
 
 **Authoring — `plan_support`'s `openspec_instructions`/`openspec_stage`
 actions, both plan-mode safe, run by Create-flow authoring at the end of
@@ -544,8 +556,12 @@ sequenceDiagram
 
         alt Approved
             Note over O: Proceed to Step 6.5
+        else Issues found, round 5 (reviewLoop.maxRounds)
+            Note over O: Step 6 - apply fixes, record the round
+            Note over O: Ask accepted / rejected / stop per open finding
+            O->>O: plan_mark(review-outcome)
+            Note over O: No stop - Step 6.5. Stop - end run, no hand-off
         else Issues found
-            Note over O: Step 6 - apply fixes
             O->>PS: material_snapshot(planPath)
             PS-->>O: {snapshotPath}
             Note over O: Apply fixes to plan
@@ -616,7 +632,7 @@ path.
 
 | `writerId` pattern | Writer | Recorded at |
 |---|---|---|
-| `main` | The orchestrator session itself | Brief (Step 1 CONSOLIDATE), R-items, `F-main-<n>` inline findings, `D<n>` decision records |
+| `main` | The orchestrator session itself | Brief (Step 1 CONSOLIDATE), R-items, `F-main-<n>` inline findings, `D<n>` decision records, `S3-guardrail-findings` (Step 3), `<writerId>-result` (the Agent return text of a lane, lens, reviewer, or Gate A writer whose own `evidence_record` failed) |
 | `explore-<dim>` | Step 1 dimension-exploration subagent | One dimension's findings; `<dim>` = `slugify(dimension.name)` |
 | `gate-a` | Step 1 intake-audit subagent | Gate A result |
 | `lane-<name>-r<n>` | Step 3 lane subagent | One lane's result; `<n>` = review iteration |
@@ -625,7 +641,8 @@ path.
 
 Every writer records `status: "running"` before starting and `status: "done"`
 with `items` when finished, via the run-context footer appended to its
-prompt. Every `main` write (brief, R-items, `F-main-<n>`, `D<n>`) runs alone,
+prompt. Every `main` write (brief, R-items, `F-main-<n>`, `D<n>`,
+`S3-guardrail-findings`, `<writerId>-result`) runs alone,
 never in parallel with another `main` write, since two parallel upserts of
 `main.json` would lose one.
 
@@ -635,9 +652,10 @@ never in parallel with another `main` write, since two parallel upserts of
 |---|---|
 | `plan_support({action: "evidence_record", runId, writerId, status, items?, brief?})` | A writer registers itself running, then done with its items. `writerId: "main"` also records the brief (only when it passes validation) and decision records. |
 | `plan_support({action: "evidence_digest", runId, expectedWriters?, timeoutSeconds?, statusOnly?})` | Returns the `writers` status table always, plus a `digest` (run summary including `briefPath`) unless `statusOnly`; never returns item bodies. `expectedWriters` defaults to the checkpoint's `expectedWriters` when omitted. |
-| `plan_support({action: "evidence_get", runId, writerIds})` | Fetches recorded item bodies for CRITIQUE, or for template fills like `{REQUIREMENTS_SUMMARY}` / `{BRIEF_FINDING_IDS}`. |
+| `plan_support({action: "evidence_get", runId, ids?, writerIds?})` | Needs `ids`, `writerIds`, or both. `ids` (max 200) are item IDs: each ID is searched in every writer file, every match is returned in writer-name order (item IDs are unique only within one writer), and an ID with no match is listed in `notFound`. `writerIds` returns every item of each writer; an unknown writer is listed in `notFound`. Fetches recorded item bodies for CRITIQUE, or for template fills like `{REQUIREMENTS_SUMMARY}` / `{BRIEF_FINDING_IDS}`. |
 | `plan_mark({marker: "checkpoint", data: {step, iteration, expectedWriters?}})` | Replaces (not appends) `st.Data["checkpoint"]`. Called at the start of every step (`1, 2, 3, 4, 5, 6, 6.5, 6.6, 7`); `expectedWriters` is passed only at a fan-out step (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer). |
-| `plan_mark({marker: "review-round", data: {round, mergedStatus, found, fixed, lenses}})` | Upserts one row of `st.Data["reviewRounds"]` by `round`. Called once per review round, in Step 5 (Approved) or Step 6 (after the fixes). The dashboard reads the rows. |
+| `plan_mark({marker: "review-round", data: {round, mergedStatus, found, fixed, lenses, findings?}})` | Upserts one row of `st.Data["reviewRounds"]` by `round`. Called once per review round, in Step 5 (Approved) or Step 6 (after the fixes). `findings` is optional: max 200 `{id, fixed}`, where `id` is the `merge_results` `allIssues` id (`^f-[0-9a-f]{8}$`); a passed `[]` is stored as `[]`, an absent key stays absent; a repeated `id` is a `DomainError`. The dashboard reads the rows. |
+| `plan_mark({marker: "review-outcome", data: {findings}})` | Replaces (not appends) `st.Data["reviewOutcome"]` with this call's list: 1 to 200 `{id, text, choice, reason}`, `choice` one of `accepted`, `rejected`, `stop` (the `outcomeChoice*` constants), `text` and `reason` max 200 runes. Pass every answered finding on every call. Returns one of two `next` texts: with a `stop` choice, "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; with no `stop` choice, "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5." (`reviewOutcomeStopNext` / `reviewOutcomeNext`). Also rejects a non-array `findings` and a repeated `id`. Invalid input is a `DomainError` that writes nothing. |
 | `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true})` | Reuses the active run without resetting it. Restores `runId`, `guardrailsFile`, `lanes`, `lensReviewers`, `style`, and `template.activeTemplatePath` as a fresh run would set them. Returns a `no active plan run` domain error when there is none. |
 
 ### Resume flow
@@ -941,7 +959,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | Lens reviewer timeout | 5 | Degraded findings; loop may exit early | No (degraded) |
 | Material change after Step 6 fixes | 6 | Re-dispatch from Step 3 (full pipeline re-evaluation) | No (loop) |
 | Non-material change after Step 6 fixes | 6 | Re-dispatch from Step 5 only | No (loop) |
-| Max review iterations (`reviewLoop.maxRounds`, 5) exceeded | 5-6 | Loop exits, proceeds to Step 6.5 | No |
+| Round `reviewLoop.maxRounds` (5) ends with blocking issues | 5-6 | Last fix pass runs; then one question per open finding (`accepted` / `rejected` / `stop`). Hand-off only when no answer is `stop`. Stops with no hand-off on a `stop` answer, on more than 200 open findings, or when AskUserQuestion is unavailable. 0 open findings: proceeds to Step 6.5 | **Yes** |
 | `links_validate` finds broken URLs | 6.5 | Pipeline blocks, surfaces broken URLs to user | **Yes** |
 | `validate({action: "plan_format"})` finds PF failures | 6.6 | Pipeline blocks, surfaces PF findings to user | **Yes** |
 | Session interrupted (Ctrl+C, timeout) | Any | `stop-plan-integrity` hook fires, warns on missing markers | No (advisory) |

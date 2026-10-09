@@ -54,6 +54,8 @@ type ShipRunReportOut struct {
 	CLIEvidence      []CLIEvidenceEntry  `json:"cliEvidence"`
 	UserInputs       []UserInputEntry    `json:"userInputs" jsonschema_description:"Prompts the user typed and questions the user answered while this run was active, oldest first, redacted, latest 100, injected turns filtered out. Empty array when none."`
 	userInputsCapped bool                // true when the window read hit maxUserInputInWindow, before the injected-turn filter ran
+	reviewWaves      *shipReviewWaves    // review run plan of this ship run; nil when the Review waves section has only a note
+	reviewWavesNote  string              // why reviewWaves is nil; empty means no review ledger matched this run
 	Decisions        []string            `json:"decisions"`
 	LinkedLearnings  int                 `json:"linkedLearnings"`
 	Display          string              `json:"display" render:"raw"` // pre-rendered report; emitted verbatim, never fenced
@@ -112,6 +114,25 @@ const shipPlanNoteReadFailed = "plan history could not be read"
 // shipPlanHistoryWindow is how many recent history records the plan-timing
 // lookup scans.
 const shipPlanHistoryWindow = 100
+
+// shipReviewWaves is the review run plan the Review waves section renders:
+// one row for each planned dimension and the totals line counts.
+type shipReviewWaves struct {
+	Rows   []reviewPlanRow
+	Totals reviewPlanTotals
+}
+
+// shipReviewWavesNone is the Review waves note when no review ledger carries
+// the shipRunId of this run.
+const shipReviewWavesNone = "no review ledger found for this run."
+
+// shipReviewWavesReadFailed is the Review waves note when the review ledger
+// of this run exists but cannot be read.
+const shipReviewWavesReadFailed = "the review ledger of this run could not be read."
+
+// shipReviewWavesNoPlan is the Review waves note when the review ledger of
+// this run holds no planned dimensions.
+const shipReviewWavesNoPlan = "the review ledger of this run holds no planned dimensions."
 
 // shipHardenInterrupted is how a hardened record left at phase "started"
 // renders: harden wrote and committed edits, but the run stopped before the
@@ -313,6 +334,16 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 		out.UserInputs = shipReportFilterUserInput(inputs)
 	}
 
+	waves, wavesNote, err := shipReviewWavesFor(root, state.RunID(shipSt))
+	if err != nil {
+		out.Issues = append(out.Issues, map[string]any{
+			"severity": "warning",
+			"category": "cross-read",
+			"summary":  "Review ledger read failed: " + err.Error(),
+		})
+	}
+	out.reviewWaves, out.reviewWavesNote = waves, wavesNote
+
 	linked, err := countLinkedLearnings(root, runID)
 	if err != nil {
 		out.Issues = append(out.Issues, map[string]any{
@@ -323,6 +354,31 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 	}
 	out.LinkedLearnings = linked
 	return out
+}
+
+// shipReviewWavesFor reads the review run plan of the ship run shipRunID: the
+// ledger run folder whose run.meta shipRunId equals shipRunID. It returns the
+// plan and an empty note when the folder holds planned dimensions. Otherwise
+// the plan is nil and the note says why: shipReviewWavesNone when no folder
+// matches, shipReviewWavesNoPlan when run.meta plans no dimensions, and
+// shipReviewWavesReadFailed together with a non-nil error when the ledger
+// cannot be read.
+func shipReviewWavesFor(root, shipRunID string) (*shipReviewWaves, string, error) {
+	runID, err := findReviewLedgerByShipRun(root, shipRunID)
+	if err != nil {
+		return nil, shipReviewWavesReadFailed, err
+	}
+	if runID == "" {
+		return nil, shipReviewWavesNone, nil
+	}
+	rows, totals, _, err := readReviewLedgerPlan(root, runID)
+	if err != nil {
+		return nil, shipReviewWavesReadFailed, err
+	}
+	if totals.DimensionsPlanned == 0 {
+		return nil, shipReviewWavesNoPlan, nil
+	}
+	return &shipReviewWaves{Rows: rows, Totals: totals}, "", nil
 }
 
 // shipPlanTimingFor finds the plan run that produced the execute run's
@@ -524,14 +580,15 @@ func shipReportSummaryLine(out ShipRunReportOut) string {
 
 // renderShipReportMarkdown renders the report as markdown. Sections come in
 // a fixed order: title, Summary, Plan (timing and critical decisions),
-// Steps, Timeline, Review ledger, Self-healing (Fixed, Hardened, Harden
-// commit), Deferred, Execution (only when included), Guardrail hits, CLI
-// evidence, Decisions, Learnings. Every empty list renders an explicit line,
-// never an empty heading or a header-only table. No stored string reaches
-// the display raw: list text goes through shipReportShort, table cells
-// through shipReportCell, commands through shipReportCode. The tool's next
-// instruction is not rendered; it stays in the output's next field. Each
-// section has its own render helper; this function only fixes their order.
+// Steps, User input, Timeline, Review ledger, Review waves, Self-healing
+// (Fixed, Hardened, Harden commit), Deferred, Execution (only when included),
+// Guardrail hits, CLI evidence, Decisions, Learnings. Every empty list
+// renders an explicit line, never an empty heading or a header-only table.
+// No stored string reaches the display raw: list text goes through
+// shipReportShort, table cells through shipReportCell, commands through
+// shipReportCode. The tool's next instruction is not rendered; it stays in
+// the output's next field. Each section has its own render helper; this
+// function only fixes their order.
 func renderShipReportMarkdown(out ShipRunReportOut) string {
 	w := &shipReportWriter{}
 	renderShipReportHeader(w, out)
@@ -541,6 +598,7 @@ func renderShipReportMarkdown(out ShipRunReportOut) string {
 	renderShipReportUserInput(w, out.UserInputs, out.userInputsCapped)
 	renderShipReportTimeline(w, out.Timeline)
 	renderShipReportReviewLedger(w, out)
+	renderShipReportReviewWaves(w, out)
 	renderShipReportHealing(w, out)
 	renderShipReportDeferred(w, out)
 	renderShipReportExecution(w, out.Execution)
@@ -1251,6 +1309,82 @@ func renderShipReportReviewLedger(w *shipReportWriter, out ShipRunReportOut) {
 	}
 }
 
+// shipReportWaveStatus names the status of a review run plan row in the
+// report: completed is done, pending is never-started, in_progress is
+// in-progress, and skipped is skipped-stalled, skipped-missing or
+// still-running by its reason. A skipped row with another reason, and any
+// other status, render as the status itself ("skipped" for a skipped row).
+func shipReportWaveStatus(r reviewPlanRow) string {
+	switch r.Status {
+	case StepCompleted:
+		return "done"
+	case StepPending:
+		return "never-started"
+	case StepInProgress:
+		return "in-progress"
+	case StepSkipped:
+		switch r.Reason {
+		case reviewStopStalled:
+			return "skipped-stalled"
+		case reviewStopMissing:
+			return "skipped-missing"
+		case reviewStopUnstopped:
+			return "still-running"
+		}
+	}
+	return r.Status
+}
+
+// shipReportWaveFindings renders the Findings cell of a review run plan row:
+// the finding count, followed by the worst severity in parentheses when the
+// row has findings. A row with no findings shows 0 when it is done and an em
+// dash otherwise, because only a finished dimension has a final count.
+func shipReportWaveFindings(r reviewPlanRow) string {
+	switch {
+	case r.Findings > 0:
+		return fmt.Sprintf("%d (%s)", r.Findings, r.Worst)
+	case r.Status == StepCompleted:
+		return "0"
+	}
+	return "—"
+}
+
+// shipReportWaveDuration renders the Duration cell of a review run plan row:
+// the worker's run time, or an empty cell when the row has none.
+func shipReportWaveDuration(r reviewPlanRow) string {
+	if r.DurationSec <= 0 {
+		return ""
+	}
+	return pipeline.Humanize(time.Duration(r.DurationSec) * time.Second)
+}
+
+// renderShipReportReviewWaves renders the Review waves section: one totals
+// line and a table with one row for each planned dimension of the review run
+// that carries this run's shipRunId. When the report holds no plan, the
+// section is one line with the reason.
+func renderShipReportReviewWaves(w *shipReportWriter, out ShipRunReportOut) {
+	w.heading("Review waves")
+	p := out.reviewWaves
+	if p == nil {
+		note := out.reviewWavesNote
+		if note == "" {
+			note = shipReviewWavesNone
+		}
+		w.line("Review waves: %s", note)
+		return
+	}
+	t := p.Totals
+	w.line("Waves planned %d · run %d · dimensions planned %d · run %d · never started %d",
+		t.WavesPlanned, t.WavesRun, t.DimensionsPlanned, t.DimensionsRun, t.NeverStarted)
+	w.line("")
+	w.line("| Wave | Dimension | Status | Findings | Duration |")
+	w.line("|---|---|---|---|---|")
+	for _, r := range p.Rows {
+		w.line("| %d | %s | %s | %s | %s |", r.Wave, shipReportCell(shipReportFlat(r.Name, shipReportCommandMax)),
+			shipReportWaveStatus(r), shipReportWaveFindings(r), shipReportWaveDuration(r))
+	}
+}
+
 func renderShipReportHealing(w *shipReportWriter, out ShipRunReportOut) {
 	w.heading("Self-healing")
 	w.line("### Fixed")
@@ -1437,8 +1571,8 @@ func renderShipReportExecution(w *shipReportWriter, e *ExecutionReportOut) {
 			}
 			if sha == "" {
 				sha = "—"
-			} else if len(sha) > 7 {
-				sha = sha[:7]
+			} else {
+				sha = shortSHA(sha)
 			}
 			w.line("| %d | %s | %d | %s | %s |", wave.Number, shipReportCell(wave.Status), len(wave.Tasks), dur, shipReportCell(sha))
 		}

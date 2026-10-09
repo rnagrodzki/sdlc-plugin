@@ -297,6 +297,7 @@ func TestShipStateReport_EmptyHealingMarkdownLines(t *testing.T) {
 		"_Plan timing not available — no plan linked to this run._",
 		"_No user input during the run._",
 		"_Review ledger not available — review did not run or its total was not recorded._",
+		"Review waves: no review ledger found for this run.",
 		"_No findings fixed._",
 		"_No harden runs recorded._",
 		"_No harden commit._",
@@ -311,7 +312,7 @@ func TestShipStateReport_EmptyHealingMarkdownLines(t *testing.T) {
 		}
 	}
 
-	headings := []string{"# Ship run report — " + shipReportBranch, "## Summary", "## Plan", "## Steps", "## User input", "## Review ledger", "## Self-healing",
+	headings := []string{"# Ship run report — " + shipReportBranch, "## Summary", "## Plan", "## Steps", "## User input", "## Review ledger", "## Review waves", "## Self-healing",
 		"### Fixed", "### Hardened", "### Harden commit", "## Deferred", "## Guardrail hits",
 		"## CLI evidence", "## Decisions", "## Learnings"}
 	last := -1
@@ -1070,7 +1071,7 @@ func TestShipReportCLIEvidence(t *testing.T) {
 			}
 		}
 		wantHeadings := []string{"# Ship run report — " + shipReportBranch, "## Summary", "## Plan", "## Steps", "## User input", "## Timeline",
-			"## Review ledger", "## Self-healing", "### Fixed", "### Hardened", "### Harden commit", "## Deferred",
+			"## Review ledger", "## Review waves", "## Self-healing", "### Fixed", "### Hardened", "### Harden commit", "## Deferred",
 			"## Guardrail hits", "## CLI evidence", "## Decisions", "## Learnings"}
 		if strings.Join(headings, "\n") != strings.Join(wantHeadings, "\n") {
 			t.Errorf("headings:\n%s\nwant:\n%s", strings.Join(headings, "\n"), strings.Join(wantHeadings, "\n"))
@@ -1556,6 +1557,313 @@ func TestShipReportUserInput(t *testing.T) {
 		steps, ui := strings.Index(out.Display, "## Steps"), strings.Index(out.Display, "## User input")
 		if steps < 0 || ui < 0 || ui < steps {
 			t.Errorf("## User input must come right after ## Steps:\n%s", out.Display)
+		}
+	})
+}
+
+// shipReportRunID returns the run id of the ship state that
+// createShipReportState wrote for root.
+func shipReportRunID(t *testing.T, root string) string {
+	t.Helper()
+	st, err := state.Find(root, "ship", shipReportBranch)
+	if err != nil || st == nil {
+		t.Fatalf("find ship state: %v (state %v)", err, st)
+	}
+	return state.RunID(st)
+}
+
+// shipReportWriteReviewRun writes the review ledger run folder run of root:
+// a run.meta that carries shipRunID and the planned dimensions, plus one
+// worker file for each key of workers.
+func shipReportWriteReviewRun(t *testing.T, root, run, shipRunID string, waves [][]string, dims []reviewRunMetaDimension, workers map[string]map[string]any) {
+	t.Helper()
+	reviewPlanWriteMeta(t, root, run, reviewRunMeta{
+		Branch: shipReportBranch, StartedAt: "2026-10-07T09:00:00Z", ShipRunID: shipRunID, Waves: waves, Dimensions: dims,
+	}, dashNow)
+	for id, data := range workers {
+		dashWriteReviewDim(t, root, run, id, data, dashNow)
+	}
+}
+
+// TestShipReportReviewWaves_Table checks the Review waves section of a
+// report whose ship run owns a review ledger: the totals line, one table row
+// for each planned dimension in plan order, every status name, the finding
+// cell, the duration cell, the escaping of a dimension name, and the section
+// position right after Review ledger.
+func TestShipReportReviewWaves_Table(t *testing.T) {
+	root := shipReportRoot(t)
+	createShipReportState(t, root, nil)
+	shipRunID := shipReportRunID(t, root)
+
+	shipReportWriteReviewRun(t, root, "review-2026-10-07T09-00-00Z", shipRunID,
+		[][]string{{"security", "docs", "late"}, {"perf", "lost"}, {"clean"}, {"never"}},
+		[]reviewRunMetaDimension{
+			{Name: "Security", WorkerID: "security", Wave: 1},
+			{Name: "Docs", WorkerID: "docs", Wave: 1, StopReason: reviewStopStalled},
+			{Name: "Late", WorkerID: "late", Wave: 1, StopReason: reviewStopUnstopped},
+			{Name: "Perf|Mem", WorkerID: "perf", Wave: 2},
+			{Name: "Lost", WorkerID: "lost", Wave: 2, StopReason: reviewStopMissing},
+			{Name: "Clean", WorkerID: "clean", Wave: 3},
+			{Name: "Never", WorkerID: "never", Wave: 4},
+		},
+		map[string]map[string]any{
+			"security": {
+				"checkinAt": "2026-10-07T09:00:00Z", "checkoutAt": "2026-10-07T09:04:12Z",
+				"findings": dashLedgerFindings(t,
+					map[string]any{"severity": "warning", "file": "a.go", "rationale": "a"},
+					map[string]any{"severity": "high", "file": "b.go", "rationale": "b"},
+				),
+			},
+			"docs":  {"checkinAt": "2026-10-07T09:00:00Z"},
+			"late":  {"checkinAt": "2026-10-07T09:00:00Z"},
+			"perf":  {"checkinAt": "2026-10-07T09:10:00Z"},
+			"clean": {"checkinAt": "2026-10-07T09:20:00Z", "checkoutAt": "2026-10-07T09:21:00Z"},
+		})
+
+	out := runShipReport(t, root, nil)
+	section := shipReportSection(out.Display, "Review waves")
+	want := []string{
+		"",
+		"Waves planned 4 · run 3 · dimensions planned 7 · run 5 · never started 2",
+		"",
+		"| Wave | Dimension | Status | Findings | Duration |",
+		"|---|---|---|---|---|",
+		"| 1 | Security | done | 2 (high) | 4m 12s |",
+		"| 1 | Docs | skipped-stalled | — |  |",
+		"| 1 | Late | still-running | — |  |",
+		`| 2 | Perf\|Mem | in-progress | — |  |`,
+		"| 2 | Lost | skipped-missing | — |  |",
+		"| 3 | Clean | done | 0 | 1m 00s |",
+		"| 4 | Never | never-started | — |  |",
+		"",
+	}
+	if strings.Join(section, "\n") != strings.Join(want, "\n") {
+		t.Errorf("Review waves section:\n%s\nwant:\n%s", strings.Join(section, "\n"), strings.Join(want, "\n"))
+	}
+
+	var headings []string
+	for _, l := range strings.Split(out.Display, "\n") {
+		if strings.HasPrefix(l, "## ") {
+			headings = append(headings, l)
+		}
+	}
+	ledger := -1
+	for i, h := range headings {
+		if h == "## Review ledger" {
+			ledger = i
+		}
+	}
+	if ledger < 0 || ledger+1 >= len(headings) || headings[ledger+1] != "## Review waves" {
+		t.Errorf("## Review waves must follow ## Review ledger, headings: %v", headings)
+	}
+	if got := strings.Join(shipReportSection(out.Display, "Review ledger"), "\n"); !strings.Contains(got, "_Review ledger not available") {
+		t.Errorf("Review ledger section changed:\n%s", got)
+	}
+}
+
+// TestShipReportReviewWaves_Notes checks that each case without a rendered
+// plan keeps the Review waves heading and shows the one-line note, and that
+// a ledger that cannot be read also adds a cross-read warning to the issues.
+func TestShipReportReviewWaves_Notes(t *testing.T) {
+	oneDim := []reviewRunMetaDimension{{Name: "Security", WorkerID: "security", Wave: 1}}
+	cases := []struct {
+		name      string
+		setup     func(t *testing.T, root, shipRunID string)
+		wantLine  string
+		wantIssue bool
+	}{
+		{
+			name:     "no review ledger folder",
+			setup:    func(t *testing.T, root, shipRunID string) {},
+			wantLine: "Review waves: no review ledger found for this run.",
+		},
+		{
+			name: "ledger of another ship run",
+			setup: func(t *testing.T, root, shipRunID string) {
+				shipReportWriteReviewRun(t, root, "review-a", "ship-other-20261007T080000Z", [][]string{{"security"}}, oneDim, nil)
+			},
+			wantLine: "Review waves: no review ledger found for this run.",
+		},
+		{
+			name: "ledger without a shipRunId",
+			setup: func(t *testing.T, root, shipRunID string) {
+				shipReportWriteReviewRun(t, root, "review-a", "", [][]string{{"security"}}, oneDim, nil)
+			},
+			wantLine: "Review waves: no review ledger found for this run.",
+		},
+		{
+			name: "run.meta without planned dimensions",
+			setup: func(t *testing.T, root, shipRunID string) {
+				shipReportWriteReviewRun(t, root, "review-a", shipRunID, nil, nil, map[string]map[string]any{
+					"security": {"checkinAt": "2026-10-07T09:00:00Z"},
+				})
+			},
+			wantLine: "Review waves: the review ledger of this run holds no planned dimensions.",
+		},
+		{
+			name: "ledger folder is a file",
+			setup: func(t *testing.T, root, shipRunID string) {
+				writeFile(t, filepath.Join(root, paths.DataDir, paths.RunsSubdir, "ledger"), "not a folder")
+			},
+			wantLine:  "Review waves: the review ledger of this run could not be read.",
+			wantIssue: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := shipReportRoot(t)
+			createShipReportState(t, root, nil)
+			tc.setup(t, root, shipReportRunID(t, root))
+
+			out := runShipReport(t, root, nil)
+			section := strings.Join(shipReportSection(out.Display, "Review waves"), "\n")
+			if strings.TrimSpace(section) != tc.wantLine {
+				t.Errorf("Review waves section = %q, want %q", section, tc.wantLine)
+			}
+			if strings.Contains(out.Display, "| Wave |") {
+				t.Errorf("a section without a plan must not render a table:\n%s", out.Display)
+			}
+			var warned bool
+			for _, issue := range out.Issues {
+				m, _ := issue.(map[string]any)
+				if s, _ := m["summary"].(string); strings.HasPrefix(s, "Review ledger read failed: ") {
+					warned = m["severity"] == "warning" && m["category"] == "cross-read"
+				}
+			}
+			if warned != tc.wantIssue {
+				t.Errorf("read-failure warning present = %v, want %v; issues: %v", warned, tc.wantIssue, out.Issues)
+			}
+		})
+	}
+}
+
+// TestRenderShipReportReviewWaves_EmptyNote checks that a report with no plan
+// and no note still shows the no-ledger sentence under the Review waves
+// heading, with no table.
+func TestRenderShipReportReviewWaves_EmptyNote(t *testing.T) {
+	w := &shipReportWriter{}
+
+	renderShipReportReviewWaves(w, ShipRunReportOut{})
+
+	got := w.b.String()
+	if !strings.Contains(got, "## Review waves") {
+		t.Errorf("section lacks the heading:\n%s", got)
+	}
+	if !strings.Contains(got, "Review waves: no review ledger found for this run.\n") {
+		t.Errorf("section lacks the no-ledger sentence:\n%s", got)
+	}
+	if strings.Contains(got, "| Wave |") {
+		t.Errorf("a section without a plan must not render a table:\n%s", got)
+	}
+}
+
+// TestShipReviewWavesFor_RunFolderUnreadable checks the arm where the run
+// folder matches by shipRunId but its listing fails: the plan is nil, the
+// note names the read failure, and the error is returned.
+func TestShipReviewWavesFor_RunFolderUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores folder modes")
+	}
+	root := t.TempDir()
+	const shipRunID = "ship-feat-x-20261007T080000Z"
+	shipReportWriteReviewRun(t, root, "review-a", shipRunID, [][]string{{"security"}},
+		[]reviewRunMetaDimension{{Name: "Security", WorkerID: "security", Wave: 1}}, nil)
+	dir := ledgerDir(root, "review-a")
+	// Execute without read permission: run.meta stays readable, the listing fails.
+	if err := os.Chmod(dir, 0o100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	plan, note, err := shipReviewWavesFor(root, shipRunID)
+	if plan != nil || note != shipReviewWavesReadFailed || err == nil {
+		t.Errorf("got (%v, %q, %v), want (nil, %q, error)", plan, note, err, shipReviewWavesReadFailed)
+	}
+}
+
+// TestShipReviewWavesFor_Plan checks that a matching ledger returns its rows
+// in plan order with the totals and an empty note.
+func TestShipReviewWavesFor_Plan(t *testing.T) {
+	root := t.TempDir()
+	const shipRunID = "ship-feat-x-20261007T080000Z"
+	shipReportWriteReviewRun(t, root, "review-a", shipRunID, [][]string{{"security", "docs"}},
+		[]reviewRunMetaDimension{
+			{Name: "Security", WorkerID: "security", Wave: 1},
+			{Name: "Docs", WorkerID: "docs", Wave: 1},
+		},
+		map[string]map[string]any{"security": {"checkinAt": "2026-10-07T09:00:00Z"}})
+
+	plan, note, err := shipReviewWavesFor(root, shipRunID)
+	if err != nil || note != "" || plan == nil {
+		t.Fatalf("got (%v, %q, %v), want a plan, empty note, nil error", plan, note, err)
+	}
+	if len(plan.Rows) != 2 || plan.Rows[0].Name != "Security" || plan.Rows[1].Name != "Docs" {
+		t.Errorf("rows = %+v, want Security then Docs", plan.Rows)
+	}
+	wantTotals := reviewPlanTotals{WavesPlanned: 1, WavesRun: 1, DimensionsPlanned: 2, DimensionsRun: 1, NeverStarted: 1}
+	if plan.Totals != wantTotals {
+		t.Errorf("totals = %+v, want %+v", plan.Totals, wantTotals)
+	}
+}
+
+// TestShipReportWaveCells checks every arm of the status, finding and
+// duration cells of a review run plan row.
+func TestShipReportWaveCells(t *testing.T) {
+	t.Run("status", func(t *testing.T) {
+		cases := []struct {
+			row  reviewPlanRow
+			want string
+		}{
+			{reviewPlanRow{Status: StepCompleted}, "done"},
+			{reviewPlanRow{Status: StepPending}, "never-started"},
+			{reviewPlanRow{Status: StepInProgress}, "in-progress"},
+			{reviewPlanRow{Status: StepSkipped, Reason: reviewStopStalled}, "skipped-stalled"},
+			{reviewPlanRow{Status: StepSkipped, Reason: reviewStopMissing}, "skipped-missing"},
+			{reviewPlanRow{Status: StepSkipped, Reason: reviewStopUnstopped}, "still-running"},
+			{reviewPlanRow{Status: StepSkipped, Reason: "other"}, "skipped"},
+			{reviewPlanRow{Status: StepSkipped}, "skipped"},
+		}
+		for _, tc := range cases {
+			if got := shipReportWaveStatus(tc.row); got != tc.want {
+				t.Errorf("status of %+v = %q, want %q", tc.row, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("findings", func(t *testing.T) {
+		cases := []struct {
+			row  reviewPlanRow
+			want string
+		}{
+			{reviewPlanRow{Status: StepCompleted, Findings: 2, Worst: "high"}, "2 (high)"},
+			{reviewPlanRow{Status: StepSkipped, Findings: 1, Worst: "low"}, "1 (low)"},
+			{reviewPlanRow{Status: StepCompleted}, "0"},
+			{reviewPlanRow{Status: StepInProgress}, "—"},
+			{reviewPlanRow{Status: StepPending}, "—"},
+			{reviewPlanRow{Status: StepSkipped}, "—"},
+		}
+		for _, tc := range cases {
+			if got := shipReportWaveFindings(tc.row); got != tc.want {
+				t.Errorf("findings of %+v = %q, want %q", tc.row, got, tc.want)
+			}
+		}
+	})
+
+	t.Run("duration", func(t *testing.T) {
+		cases := []struct {
+			sec  int
+			want string
+		}{
+			{0, ""},
+			{-5, ""},
+			{42, "42s"},
+			{252, "4m 12s"},
+			{3780, "1h 03m"},
+		}
+		for _, tc := range cases {
+			if got := shipReportWaveDuration(reviewPlanRow{DurationSec: tc.sec}); got != tc.want {
+				t.Errorf("duration of %ds = %q, want %q", tc.sec, got, tc.want)
+			}
 		}
 	})
 }
