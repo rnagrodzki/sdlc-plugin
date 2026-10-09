@@ -32,7 +32,6 @@ Staging layout for the `spec-driven` schema (artifact paths follow the CLI's `ou
 - **WHEN** staging completes
 - **THEN** `git status --porcelain` in the active worktree prints nothing
 
-
 ### Requirement: Staged names and paths are checked
 The system SHALL reject a staging request before any write when the change name is not a bare kebab-case name or when any file path is absolute, contains `..`, or matches none of the artifact `outputPath` patterns the OpenSpec CLI reports for the project's schema. The system SHALL build this allowlist from `artifactPaths[].outputPath` of `openspec status --change <change> --json`, run in a temp change (a new temp directory holding a copy of `openspec/config.yaml`, after `openspec new change <change>` there); for `spec-driven` the result is `proposal.md`, `design.md`, `tasks.md`, `specs/**/*.md`. The system never hardcodes this list.
 
@@ -44,7 +43,6 @@ The system SHALL reject a staging request before any write when the change name 
 #### Scenario: Bad change name
 - **WHEN** the change name is `grp/demo`
 - **THEN** the call fails with a DomainError and no file is written
-
 
 ### Requirement: Pre-approval validation on a temp copy
 After staging, the system SHALL copy `openspec/config.yaml` and the staged change into a new temp directory, run `openspec validate <change> --strict` there, return the CLI exit code and output, and record `validatedAt` in `stage.json` only when the exit code is 0.
@@ -60,7 +58,6 @@ After staging, the system SHALL copy `openspec/config.yaml` and the staged chang
 - **AND** `stage.json` has no `validatedAt`
 - **AND** the repository is unchanged
 
-
 ### Requirement: Plan header links the plan to staging
 A plan whose OpenSpec change is staged SHALL carry both header lines, verbatim:
 
@@ -73,7 +70,6 @@ A plan whose OpenSpec change is staged SHALL carry both header lines, verbatim:
 - **WHEN** plan stages change `add-widget`
 - **THEN** the plan file contains `**Source:** openspec/changes/add-widget/`
 - **AND** it contains `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/add-widget/`
-
 
 ### Requirement: Materialize when a run starts
 When ship starts (`ship_prepare`) or standalone execute starts (`execute_state` `init`) with a plan that has an `**OpenSpec-Staging:**` header, the system SHALL materialize the staged change before any other run work, by the first matching rule below.
@@ -138,3 +134,10 @@ sequenceDiagram
 - **WHEN** `ship_prepare` is called with `dryRun: true` for a staged plan
 - **THEN** `openspec/changes/<change>/` is not created
 
+### Requirement: Saved header stops a second save
+A plan whose header has `**OpenSpec-Saved:**` and no `**OpenSpec-Staging:**` line SHALL materialize nothing at ship or execute start. `openspec_save` writes this header after it saves the change.
+
+#### Scenario: Ship after openspec-save
+- **WHEN** `/sdlc:openspec-save` saved the change and the user starts ship
+- **THEN** `ship_prepare` materializes nothing
+- **AND** the change is not saved again

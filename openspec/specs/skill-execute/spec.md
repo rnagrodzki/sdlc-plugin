@@ -632,7 +632,6 @@ The skill SHALL resume from the `resumeBriefing` returned by `execute_state` `re
 - **THEN** the skill asks with AskUserQuestion "An unfinished execute run exists for this branch (wave N) — resume it?"
 - **AND** on `no` it starts a fresh run and prints that the unfinished run will be replaced
 
-
 ### Requirement: Base sync conflict resolution
 When `base-sync` returns `status: "conflict"`, the skill SHALL dispatch one sub-agent with the `conflictedFiles`, the plan's goal, and the incoming base commits, and SHALL then call `base-sync-resolve`; when the sub-agent reports failure or `base-sync-resolve` fails, the skill SHALL call `base-sync-resolve` with `abort: true` and continue with the next wave.
 
@@ -660,3 +659,9 @@ When `base-sync` returns `status: "conflict"`, the skill SHALL dispatch one sub-
 - **THEN** the skill prints the error and stops the run as a hard failure, without calling `cleanup`
 - **AND** the state stays resumable — `## Resume` retries the abort on the next run
 
+### Requirement: init receives the wave plan
+The `execute_state` `init` call SHALL pass `plannedWavesJson` with the final wave schedule that Step 4 confirms: wave numbers and task IDs only, with pre-wave tasks as wave `0`.
+
+#### Scenario: Confirmed schedule
+- **WHEN** Step 4 confirms wave 1 with tasks `1`, `2` and wave 2 with task `3`
+- **THEN** `init` gets `plannedWavesJson` `[{"number":1,"taskIds":["1","2"]},{"number":2,"taskIds":["3"]}]`
