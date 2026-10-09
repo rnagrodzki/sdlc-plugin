@@ -78,6 +78,21 @@ tasks:
       - task: vet
       - task: test
 
+  design:
+    desc: Serve the dashboard design draft (start rule, then serve)
+    cmds:
+      - go run ./cmd/design-preview -mode auto
+
+  design:fresh:
+    desc: Replace the design draft with the shipped page, then serve
+    cmds:
+      - go run ./cmd/design-preview -mode fresh
+
+  design:continue:
+    desc: Keep the design draft, move its base commit to HEAD, then serve
+    cmds:
+      - go run ./cmd/design-preview -mode continue
+
   git:clear:
     desc: Delete local branches whose upstream is gone (prunes after fetch, skips current branch)
     cmds:
