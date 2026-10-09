@@ -479,9 +479,9 @@
         }
       ],
       "deferred": [
-        { "id": "d-12", "priority": "high", "description": "shipRunInFlight has no failed terminal case" },
-        { "id": "d-13", "priority": "medium", "description": "The idempotency claim in ensure has no citation" },
-        { "id": "d-14", "priority": "low", "description": "The parity of setupmeta Sections is unclear" }
+        { "id": "d-12", "priority": "high", "description": "shipRunInFlight has no failed terminal case", "created": "2026-10-06T09:12:00Z", "source": "review", "severity": "high", "file": "internal/tools/ship_state.go", "line": 412, "reason": "needs-direction" },
+        { "id": "d-13", "priority": "medium", "description": "The idempotency claim in ensure has no citation", "created": "2026-10-06T09:14:00Z", "source": "review", "severity": "medium", "file": "internal/tools/ensure.go", "line": 88, "reason": "below-threshold" },
+        { "id": "d-14", "priority": "low", "description": "The parity of setupmeta Sections is unclear", "created": "2026-10-07T11:30:00Z", "source": "", "severity": "", "file": "", "line": 0, "reason": "" }
       ],
       "history": [
         {
@@ -976,8 +976,8 @@
       ],
       "learnings": [],
       "deferred": [
-        { "id": "d-31", "priority": "high", "description": "Refund rounding uses float arithmetic in the payout path" },
-        { "id": "d-32", "priority": "medium", "description": "The webhook retry window cannot be set for each tenant" }
+        { "id": "d-31", "priority": "high", "description": "Refund rounding uses float arithmetic in the payout path", "created": "2026-10-07T13:02:00Z", "source": "review", "severity": "critical", "file": "payout/refund.go", "line": 57, "reason": "wont-fix" },
+        { "id": "d-32", "priority": "medium", "description": "The webhook retry window cannot be set for each tenant", "created": "2026-10-07T13:05:00Z", "source": "received-review", "severity": "", "file": "", "line": 0, "reason": "" }
       ],
       "history": [
         {

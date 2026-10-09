@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -263,6 +264,66 @@ func TestDashboardActivity_Deferred(t *testing.T) {
 	want := []string{"d-high-1", "d-high-2", "d-medium", "d-low"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Errorf("deferred order = %v, want %v (high first, Created ascending within priority, resolved excluded)", ids, want)
+	}
+}
+
+// TestDashboardActivity_Deferred_CarriesMetadata checks that an open deferred
+// item keeps its created, source, severity, file, line and reason values, and
+// that an item without the optional values serializes them as "" or 0, never
+// null or a missing key.
+func TestDashboardActivity_Deferred_CarriesMetadata(t *testing.T) {
+	root := dashRoot(t)
+	w := history.NewFileWriter(paths.HistoryDir(root))
+	for _, issue := range []history.DeferredIssue{
+		{
+			ID: "d-full", Created: "2026-10-02T00:00:00Z", Source: "review", Priority: history.PriorityHigh,
+			Description: "full item", Status: history.StatusOpen,
+			Severity: "high", File: "internal/tools/x.go", Line: 42, Reason: history.ReasonNeedsDirection,
+		},
+		{
+			ID: "d-bare", Created: "2026-10-03T00:00:00Z", Source: "ship", Priority: history.PriorityHigh,
+			Description: "bare item", Status: history.StatusOpen,
+		},
+	} {
+		if err := w.AddDeferred(issue); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := dashboardOpenDeferred(root)
+	want := []DashboardDeferred{
+		{
+			ID: "d-full", Priority: history.PriorityHigh, Description: "full item",
+			Created: "2026-10-02T00:00:00Z", Source: "review",
+			Severity: "high", File: "internal/tools/x.go", Line: 42, Reason: history.ReasonNeedsDirection,
+		},
+		{
+			ID: "d-bare", Priority: history.PriorityHigh, Description: "bare item",
+			Created: "2026-10-03T00:00:00Z", Source: "ship",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("dashboardOpenDeferred = %+v, want %+v", got, want)
+	}
+
+	raw, err := json.Marshal(got[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	wantAbsent := map[string]any{"severity": "", "file": "", "line": float64(0), "reason": ""}
+	for key, zero := range wantAbsent {
+		v, ok := fields[key]
+		if !ok {
+			t.Errorf("key %q missing from %s, want %v", key, raw, zero)
+			continue
+		}
+		if v != zero {
+			t.Errorf("key %q = %#v in %s, want %#v", key, v, raw, zero)
+		}
 	}
 }
 

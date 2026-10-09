@@ -323,11 +323,19 @@ type DashboardLearning struct {
 }
 
 // DashboardDeferred is one open deferred item of a repo. Priority is
-// "high", "medium", or "low".
+// "high", "medium", or "low". Created, Source, Severity, File, Line and
+// Reason mirror history.DeferredIssue. None of them has omitempty: a value
+// the record does not hold serializes as "" or 0, never null or a missing key.
 type DashboardDeferred struct {
 	ID          string `json:"id"`
 	Priority    string `json:"priority"`
 	Description string `json:"description"`
+	Created     string `json:"created"`
+	Source      string `json:"source"`
+	Severity    string `json:"severity"`
+	File        string `json:"file"`
+	Line        int    `json:"line"`
+	Reason      string `json:"reason"`
 }
 
 // CollectDashboardSnapshot reads the pipeline state of every repo in roots

@@ -88,10 +88,24 @@ type PrepareOrchestratorIn struct {
 // PrepareOrchestratorOut is prepare_orchestrator's output: the path to the
 // written manifest (KD4 file handoff, same shape both source tools already
 // used), plus the Mode that was actually run.
+//
+// CustomInstructions is set in harden mode only. It is the same map that the
+// manifest file carries under customInstructions. Next is the step after the
+// call, in both modes.
 type PrepareOrchestratorOut struct {
-	ManifestPath string `json:"manifestPath"`
-	Mode         string `json:"mode"`
+	ManifestPath       string              `json:"manifestPath"`
+	Mode               string              `json:"mode"`
+	CustomInstructions map[string][]string `json:"customInstructions,omitempty"` // harden mode only
+	Next               string              `json:"next"`                         // no omitempty: guardrail mcp-output-drives-behavior
 }
+
+// prepareNextHarden is the Next text that prepare_orchestrator returns in
+// harden mode.
+const prepareNextHarden = "Print customInstructions as the harden instruction block, then dispatch sdlc:harden-orchestrator with manifestPath."
+
+// prepareNextErrorReport is the Next text that prepare_orchestrator returns in
+// error_report mode.
+const prepareNextErrorReport = "Dispatch sdlc:error-report-orchestrator with manifestPath."
 
 // ---------------------------------------------------------------------------
 // Field mapping (pure, unit-testable in isolation from worktree/filesystem
@@ -175,7 +189,12 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 			_ = err
 		}
 
-		return PrepareOrchestratorOut{ManifestPath: out.ManifestPath, Mode: in.Mode}, nil
+		return PrepareOrchestratorOut{
+			ManifestPath:       out.ManifestPath,
+			Mode:               in.Mode,
+			CustomInstructions: out.CustomInstructions,
+			Next:               prepareNextHarden,
+		}, nil
 
 	case "error_report":
 		root, err := worktree.MainRoot()
@@ -190,7 +209,7 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 		if err != nil {
 			return PrepareOrchestratorOut{}, err
 		}
-		return PrepareOrchestratorOut{ManifestPath: out.ManifestPath, Mode: in.Mode}, nil
+		return PrepareOrchestratorOut{ManifestPath: out.ManifestPath, Mode: in.Mode, Next: prepareNextErrorReport}, nil
 
 	default:
 		return PrepareOrchestratorOut{}, &mcpserver.DomainError{
@@ -252,7 +271,7 @@ func injectHardenHistory(manifestPath, histPath string) error {
 // the former standalone harden_prepare and error_report_prepare tools.
 func RegisterPrepareOrchestratorTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "prepare_orchestrator",
-		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path.",
+		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path. harden mode also returns customInstructions: the [harden.instructions] lists from config.toml, one list for each proposal surface. An invalid list fails with a DomainError that names the key. Both modes return next: the step after the call.",
 		mcpserver.Annotations{
 			Title:       "Write orchestrator manifest",
 			ReadOnly:    false,

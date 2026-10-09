@@ -99,6 +99,10 @@ type HardenPrepareOut struct {
 	// Branch mirrors hardenManifest.Repository.Branch verbatim.
 	Branch string `json:"branch"`
 
+	// CustomInstructions mirrors hardenManifest.CustomInstructions verbatim.
+	// The skill prints it from the tool result, so it needs no manifest read.
+	CustomInstructions map[string][]string `json:"customInstructions"`
+
 	// Summary is a deterministic one-line triage string: skill/step plus
 	// surface/guardrail/dimension counts and the load-error count. It is
 	// assembled from already-known fields, not generated prose.
@@ -209,15 +213,16 @@ type hardenManifest struct {
 	Failure hardenFailure `json:"failure"`
 	// classification_hint is deliberately snake_case (matches source
 	// byte-for-byte), unlike every other camelCase manifest key.
-	ClassificationHint *string            `json:"classification_hint"`
-	Surfaces           hardenSurfaces     `json:"surfaces"`
-	Pipeline           hardenPipeline     `json:"pipeline"`
-	Repository         hardenRepository   `json:"repository"`
-	History            *hardenHistory     `json:"history,omitempty"`
-	CLIEvidence        []CLIEvidenceEntry `json:"cliEvidence,omitempty"`
-	PluginRepoURL      string             `json:"pluginRepoUrl"`
-	Timestamp          string             `json:"timestamp"`
-	Errors             []surfaceLoadError `json:"errors"`
+	ClassificationHint *string             `json:"classification_hint"`
+	Surfaces           hardenSurfaces      `json:"surfaces"`
+	Pipeline           hardenPipeline      `json:"pipeline"`
+	Repository         hardenRepository    `json:"repository"`
+	CustomInstructions map[string][]string `json:"customInstructions"`
+	History            *hardenHistory      `json:"history,omitempty"`
+	CLIEvidence        []CLIEvidenceEntry  `json:"cliEvidence,omitempty"`
+	PluginRepoURL      string              `json:"pluginRepoUrl"`
+	Timestamp          string              `json:"timestamp"`
+	Errors             []surfaceLoadError  `json:"errors"`
 }
 
 // ---------------------------------------------------------------------------
@@ -766,6 +771,14 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		}
 	}
 
+	// The loader runs after the KD5 gate and after pre-flight, which reads the
+	// same config.toml. A pre-v5 legacy layout is therefore rejected earlier,
+	// with its own message, and never reaches the loader's read-error branch.
+	customInstructions, err := loadHardenInstructions(contentRoot)
+	if err != nil {
+		return HardenPrepareOut{}, err
+	}
+
 	// Load all five surfaces deterministically (R4).
 	loadErrs := []surfaceLoadError{}
 	planGuardrails := loadSurfaceGuardrails(contentRoot, "plan", &loadErrs)
@@ -836,10 +849,11 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 			Branch:            branch,
 			RecentDiffSummary: recentDiffSummary,
 		},
-		CLIEvidence:   branchCLIEvidence,
-		PluginRepoURL: hardenPluginRepoURL,
-		Timestamp:     time.Now().UTC().Format(time.RFC3339),
-		Errors:        loadErrs,
+		CustomInstructions: customInstructions,
+		CLIEvidence:        branchCLIEvidence,
+		PluginRepoURL:      hardenPluginRepoURL,
+		Timestamp:          time.Now().UTC().Format(time.RFC3339),
+		Errors:             loadErrs,
 	}
 
 	tmpDir, err := os.MkdirTemp("", "sdlc-harden-")
@@ -895,6 +909,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		DimensionCount:           dimensionCount,
 		SkillRecommendationCount: len(skillRecommendations),
 		Branch:                   manifest.Repository.Branch,
+		CustomInstructions:       manifest.CustomInstructions,
 		Summary:                  summary,
 	}, nil
 }

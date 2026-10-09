@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/hardensurfaces"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -340,6 +342,122 @@ func TestHardenPrepare_ManifestFieldFidelity(t *testing.T) {
 		if len(list) != 0 {
 			t.Errorf("surfaces.%s expected empty, got %+v", key, list)
 		}
+	}
+
+	// With no config.toml the manifest still carries customInstructions: one
+	// empty (non-null) list for each proposal surface id.
+	ids := hardensurfaces.ProposalIDs()
+	instructions, ok := manifest["customInstructions"].(map[string]any)
+	if !ok {
+		t.Fatalf("customInstructions is not an object: %T", manifest["customInstructions"])
+	}
+	if len(instructions) != len(ids) {
+		t.Errorf("customInstructions has %d keys, want %d: %v", len(instructions), len(ids), instructions)
+	}
+	for _, id := range ids {
+		list, ok := instructions[id].([]any)
+		if !ok {
+			t.Errorf("customInstructions.%s is not an array: %T", id, instructions[id])
+			continue
+		}
+		if len(list) != 0 {
+			t.Errorf("customInstructions.%s expected empty, got %+v", id, list)
+		}
+		if outList, ok := out.CustomInstructions[id]; !ok || outList == nil || len(outList) != 0 {
+			t.Errorf("out.CustomInstructions[%s] = %#v, want a non-nil empty list", id, outList)
+		}
+	}
+}
+
+// hardenInstructionsConfig is a config.toml body with a list for two of the
+// four proposal surfaces; the other two surfaces have no list.
+const hardenInstructionsConfig = "" +
+	"[harden.instructions]\n" +
+	"plan-guardrails = [\"  Prefer a warning over an error.  \", \"\", \"Name the failing task.\"]\n" +
+	"copilot-instructions = [\"Keep each rule to one line.\"]\n"
+
+// TestHardenPrepare_ManifestCarriesConfiguredInstructions asserts that the
+// [harden.instructions] lists of contentRoot reach both the manifest file and
+// the returned output as the same map, trimmed and without blank items, and
+// that the main root config.toml is not read for them.
+func TestHardenPrepare_ManifestCarriesConfiguredInstructions(t *testing.T) {
+	root := t.TempDir()
+	contentRoot := t.TempDir()
+	writeFile(t, filepath.Join(contentRoot, paths.DataDir, "config.toml"), hardenInstructionsConfig)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[harden.instructions]\n"+
+		"review-dimensions = [\"Instruction from the main root.\"]\n")
+
+	out, err := hardenPrepare(root, contentRoot, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	want := map[string][]string{
+		"plan-guardrails":      {"Prefer a warning over an error.", "Name the failing task."},
+		"execute-guardrails":   {},
+		"review-dimensions":    {},
+		"copilot-instructions": {"Keep each rule to one line."},
+	}
+	if !reflect.DeepEqual(out.CustomInstructions, want) {
+		t.Errorf("out.CustomInstructions = %#v, want %#v", out.CustomInstructions, want)
+	}
+
+	manifest := readHardenManifest(t, out.ManifestPath)
+	raw, err := json.Marshal(manifest["customInstructions"])
+	if err != nil {
+		t.Fatalf("marshal manifest customInstructions: %v", err)
+	}
+	var fromManifest map[string][]string
+	if err := json.Unmarshal(raw, &fromManifest); err != nil {
+		t.Fatalf("unmarshal manifest customInstructions: %v", err)
+	}
+	if !reflect.DeepEqual(fromManifest, want) {
+		t.Errorf("manifest customInstructions = %#v, want %#v", fromManifest, want)
+	}
+}
+
+// TestHardenPrepare_InvalidInstructionsStopPrepare asserts that a loader error
+// stops hardenPrepare before the manifest is written and comes back unchanged:
+// the same DomainError that loadHardenInstructions returns, not a wrapped one.
+func TestHardenPrepare_InvalidInstructionsStopPrepare(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[harden.instructions]\n"+
+		"plan-guardrails = \"not a list\"\n")
+
+	_, wantErr := loadHardenInstructions(root)
+	if wantErr == nil {
+		t.Fatal("fixture error: the loader accepted the invalid list")
+	}
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err == nil {
+		t.Fatal("expected the loader error, got nil")
+	}
+	var domainErr *mcpserver.DomainError
+	if !errorsAsDomainError(err, &domainErr) {
+		t.Fatalf("expected an unwrapped *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if err.Error() != wantErr.Error() {
+		t.Errorf("error = %q, want the loader error %q", err.Error(), wantErr.Error())
+	}
+	if !containsSubstr(domainErr.Msg, "harden.instructions.plan-guardrails") {
+		t.Errorf("expected the message to name the key, got: %s", domainErr.Msg)
+	}
+	if domainErr.Suggestion == "" {
+		t.Error("Suggestion is empty")
+	}
+	if out.ManifestPath != "" {
+		t.Errorf("expected no manifest path when the loader fails, got %q", out.ManifestPath)
 	}
 }
 

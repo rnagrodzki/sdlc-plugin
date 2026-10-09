@@ -295,7 +295,17 @@ func dashboardOpenDeferred(root string) []DashboardDeferred {
 		items := groups[prio]
 		sort.Slice(items, func(i, j int) bool { return items[i].Created < items[j].Created })
 		for _, it := range items {
-			out = append(out, DashboardDeferred{ID: it.ID, Priority: it.Priority, Description: it.Description})
+			out = append(out, DashboardDeferred{
+				ID:          it.ID,
+				Priority:    it.Priority,
+				Description: it.Description,
+				Created:     it.Created,
+				Source:      it.Source,
+				Severity:    it.Severity,
+				File:        it.File,
+				Line:        it.Line,
+				Reason:      it.Reason,
+			})
 		}
 	}
 	return out
