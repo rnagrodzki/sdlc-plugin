@@ -1,13 +1,18 @@
 package tools
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/telemetry"
 )
@@ -283,6 +288,72 @@ func dashboardLearningHeading(entry string) string {
 		first = entry[:i]
 	}
 	return telemetry.TruncateRunes(strings.Trim(strings.TrimSpace(first), "*"), dashboardPreviewTextMax)
+}
+
+// dashboardLearningBodyMax bounds the body that DashboardLearningBody returns
+// to this many runes. A longer body is cut and DashboardLearningBodyOut.Truncated
+// is true. The dashboard shows a learning body in a viewer, so it needs enough
+// text to read an entry but not a whole oversized log block.
+const dashboardLearningBodyMax = 8000
+
+// DashboardLearningBodyOut is the result of DashboardLearningBody.
+type DashboardLearningBodyOut struct {
+	// Found is true when the log holds an entry with the requested date and
+	// heading.
+	Found bool `json:"found"`
+	// Body is the redacted text of the entry. It is empty when Found is false.
+	// When Truncated is true, it ends with the "…" marker of
+	// telemetry.TruncateRunes.
+	Body string `json:"body"`
+	// Truncated is true when the entry held more than dashboardLearningBodyMax
+	// runes and Body is the cut text.
+	Truncated bool `json:"truncated"`
+}
+
+// DashboardLearningBody returns the text of the learning in root's log whose
+// date is date and whose heading is heading. Both values are the ones that
+// dashboardRecentLearnings puts in a DashboardLearning row, so the entry is
+// found with the same date and heading parse. The pair is the key: a learning
+// has no id. When two entries share the pair, the newest one (the last in the
+// log) wins, because the snapshot lists the newest entry first.
+//
+// The body passes telemetry.Redact before it is cut, so a secret is never cut
+// in half and left unredacted. A body of more than dashboardLearningBodyMax
+// runes is cut to that length and Truncated is true.
+//
+// A missing log, an empty date or heading, and a pair that matches no entry
+// return Found false and no error. A failure to read the log returns an
+// InfraError.
+func DashboardLearningBody(root, date, heading string) (DashboardLearningBodyOut, error) {
+	data, err := os.ReadFile(learningsLogPath(root))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return DashboardLearningBodyOut{}, nil
+		}
+		return DashboardLearningBodyOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read learnings log: %s", err),
+			Suggestion: "Check that the learnings log of the repo is a regular file that you can read, then open the learning again.",
+			Cause:      err,
+		}
+	}
+	if date == "" || heading == "" {
+		return DashboardLearningBodyOut{}, nil
+	}
+
+	_, entries := learningsSplitEntries(string(data))
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := strings.TrimSpace(entries[i])
+		if learningsDateRe.FindString(entry) != date || dashboardLearningHeading(entry) != heading {
+			continue
+		}
+		body := telemetry.Redact(entry)
+		return DashboardLearningBodyOut{
+			Found:     true,
+			Body:      telemetry.TruncateRunes(body, dashboardLearningBodyMax),
+			Truncated: utf8.RuneCountInString(body) > dashboardLearningBodyMax,
+		}, nil
+	}
+	return DashboardLearningBodyOut{}, nil
 }
 
 // dashboardOpenDeferred returns root's open deferred issues as

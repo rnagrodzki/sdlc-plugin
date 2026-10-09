@@ -74,6 +74,31 @@
                       }
                     ]
                   }
+                ],
+                "maxRounds": 5,
+                "rounds": [
+                  {
+                    "n": 1,
+                    "status": "Issues Found",
+                    "found": 3,
+                    "fixed": 3,
+                    "lenses": [
+                      { "name": "architecture", "verdict": "Issues Found" },
+                      { "name": "requirements", "verdict": "Approved" },
+                      { "name": "risk", "verdict": "Issues Found" }
+                    ]
+                  },
+                  {
+                    "n": 2,
+                    "status": "Approved",
+                    "found": 0,
+                    "fixed": 0,
+                    "lenses": [
+                      { "name": "architecture", "verdict": "Approved" },
+                      { "name": "requirements", "verdict": "Approved" },
+                      { "name": "risk", "verdict": "Approved" }
+                    ]
+                  }
                 ]
               }
             },

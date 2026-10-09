@@ -288,6 +288,7 @@ type dashboardJoinInfo struct {
 	stepWindows map[string][2]time.Time // ship step name -> [startedAt, completedAt]
 	reviewDims  []DashboardDimension    // review rows for the ship review step
 	reviewPlan  *DashboardReviewPlan    // review plan totals; nil when run.meta plans no dimension
+	members     []string                // nested execute state id and nested review ledger name (review-<ts>), filled by the join
 }
 
 // DashboardSession is one Claude Code session seen in the evidence files of

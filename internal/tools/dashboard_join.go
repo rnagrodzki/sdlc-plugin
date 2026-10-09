@@ -297,8 +297,10 @@ func dashboardStepNamed(p *DashboardPipeline, name string) *DashboardStep {
 // dashboardNestExecute copies the joined execute run exec into ship: its
 // full wave detail goes to the ship execute step, its CommitWaves to the
 // ship, and its issues to the ship issues with dashboardExecuteRefPrefix
-// before each Ref. The ship keeps its own session id.
+// before each Ref. The ship keeps its own session id. The execute id goes to
+// the ship join members, so an archive of the ship finds the nested run.
 func dashboardNestExecute(ship *DashboardPipeline, exec DashboardPipeline) {
+	ship.join.members = append(ship.join.members, exec.ID)
 	if step := dashboardStepNamed(ship, dashboardShipStepExecute); step != nil && exec.join.execDetail != nil {
 		step.Detail = exec.join.execDetail
 	}
@@ -320,8 +322,10 @@ func dashboardNestExecute(ship *DashboardPipeline, exec DashboardPipeline) {
 // finding gets an empty, non-nil list. The plan totals go to the step
 // reviewPlan; with no planned dimension it stays absent. The review issues go
 // to the ship issues with their Ref unchanged. A review with no rows gives an
-// empty, non-nil dimension list.
+// empty, non-nil dimension list. The review ledger name goes to the ship join
+// members, so an archive of the ship finds the nested run.
 func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
+	ship.join.members = append(ship.join.members, review.ID)
 	dims := make([]DashboardDimension, 0, len(review.join.reviewDims))
 	dims = append(dims, review.join.reviewDims...)
 	for i := range dims {

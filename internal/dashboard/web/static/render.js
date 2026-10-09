@@ -166,9 +166,32 @@
     return out;
   }
 
+  // Pipeline statuses whose row can be archived. A running row cannot.
+  var ARCHIVABLE = { completed: true, failed: true, stalled: true };
+
+  /**
+   * The Archive button of a pipeline row. The click handler in app.js reads
+   * the three data attributes and asks for a confirm before it sends the
+   * request.
+   * @param {Document} doc
+   * @param {{root: string}} repo
+   * @param {{id: string, status: string}} pipeline
+   * @returns {Element|null} button.archive-btn, or null for a running row
+   */
+  function archiveButton(doc, repo, pipeline) {
+    if (!pipeline.id || !Object.prototype.hasOwnProperty.call(ARCHIVABLE, pipeline.status)) return null;
+    var button = el(doc, 'button', 'archive-btn', 'Archive');
+    button.setAttribute('type', 'button');
+    button.setAttribute('data-archive', pipeline.id);
+    button.setAttribute('data-repo', repo.root);
+    button.setAttribute('data-status', pipeline.status);
+    return button;
+  }
+
   /**
    * Head of a pipeline block: lamp, kind, branch, repo, issue chip (only with
-   * issues), status word, and the `details N` toggle. A pipeline with an
+   * issues), status word, the Archive button (only for a completed, failed,
+   * or stalled pipeline), and the `details N` toggle. A pipeline with an
    * attention has the class `waiting` on its lamp.
    * @param {Document} doc
    * @param {object} view
@@ -197,6 +220,9 @@
     if (issues > 0) side.appendChild(el(doc, 'span', 'issue-chip', plural(issues, 'issue', 'issues')));
 
     side.appendChild(el(doc, 'span', 'pipe-status ' + pipeline.status, pipeline.status));
+
+    var archive = archiveButton(doc, repo, pipeline);
+    if (archive) side.appendChild(archive);
 
     var fold = el(doc, 'button', 'fold-btn');
     fold.setAttribute('type', 'button');
@@ -416,16 +442,84 @@
   }
 
   /**
+   * The detail key of one finding row. The index is the position of the
+   * finding in its list, the same position view.detailItem reads.
+   * @param {object} view
+   * @param {{id?: string}} [pipeline]
+   * @param {string} [dimension] review dimension name
+   * @param {number} index
+   * @returns {string} '' when the pipeline id or the dimension is missing
+   */
+  function findingKey(view, pipeline, dimension, index) {
+    return view.detailKey('finding', null, { pipeline: pipeline && pipeline.id, dimension: dimension, index: index });
+  }
+
+  /**
+   * A button that opens the detail viewer. The key goes in data-detail; a row
+   * with no key has no data-detail, so a click on it opens nothing.
+   * @param {Document} doc
+   * @param {string} className
+   * @param {string} key a view.detailKey value
+   * @returns {Element} button
+   */
+  function detailButton(doc, className, key) {
+    var button = el(doc, 'button', className);
+    button.setAttribute('type', 'button');
+    if (key) button.setAttribute('data-detail', key);
+    return button;
+  }
+
+  /**
+   * One finding of a review dimension: lamp by severity, text, and severity.
+   * Findings of a ship review and of a standalone review use this row.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{text: string, severity: string, file?: string, line?: string}} finding
+   * @param {string} key view.detailKey('finding', ...); '' leaves out data-detail
+   * @returns {Element} button.dim-row.dim-find
+   */
+  function findingRow(doc, view, finding, key) {
+    var text = el(doc, 'span', 'dim-name', finding.text);
+    var location = view.issueLocation(finding);
+    if (location) text.setAttribute('title', location);
+    return append(detailButton(doc, 'dim-row dim-find', key), [
+      lamp(doc, LAMP_BY_TONE[view.severityTone(finding.severity)] || 'stalled'),
+      text,
+      el(doc, 'span', 'dim-meta', finding.severity),
+    ]);
+  }
+
+  /**
+   * A dimension row, then its finding rows in one div.dim-findings. A
+   * dimension with no finding row gives the dimension row alone.
+   * @returns {Array<Element>}
+   */
+  function dimensionBlock(doc, view, dim, pipeline) {
+    var nodes = [dimensionRow(doc, view, dim)];
+    var items = dim.findingItems || [];
+    if (items.length > 0) {
+      var list = el(doc, 'div', 'dim-findings');
+      items.forEach(function (finding, i) {
+        if (finding) list.appendChild(findingRow(doc, view, finding, findingKey(view, pipeline, dim.name, i)));
+      });
+      nodes.push(list);
+    }
+    return nodes;
+  }
+
+  /**
    * Dimensions: the review totals line, the review plan totals line, then
-   * the dimension rows. Rows without a wave come first as a flat list. Rows
-   * with a wave sit under one `Wave N` heading for each wave, lowest first,
-   * in the order the rows arrive. The lamp keeps the run state.
+   * the dimension rows, each followed by its finding rows. Rows without a
+   * wave come first as a flat list. Rows with a wave sit under one `Wave N`
+   * heading for each wave, lowest first, in the order the rows arrive. The
+   * lamp keeps the run state.
    * @param {Document} doc
    * @param {object} view
    * @param {{dimensions?: Array, reviewTotals?: object, reviewPlan?: object}} detail
+   * @param {{id?: string}} [pipeline] the pipeline of the step, for the finding keys
    * @returns {Element} div
    */
-  function dimensionsBody(doc, view, detail) {
+  function dimensionsBody(doc, view, detail, pipeline) {
     var out = el(doc, 'div', '');
     if (detail.reviewTotals) out.appendChild(el(doc, 'div', 'round-sum', view.reviewTotalsText(detail.reviewTotals)));
     if (detail.reviewPlan) out.appendChild(el(doc, 'div', 'round-sum', view.reviewPlanText(detail.reviewPlan)));
@@ -447,12 +541,12 @@
       return a - b;
     });
     flat.forEach(function (dim) {
-      out.appendChild(dimensionRow(doc, view, dim));
+      append(out, dimensionBlock(doc, view, dim, pipeline));
     });
     numbers.forEach(function (number) {
       out.appendChild(el(doc, 'div', 'wave-head', 'Wave ' + number));
       groups[number].forEach(function (dim) {
-        out.appendChild(dimensionRow(doc, view, dim));
+        append(out, dimensionBlock(doc, view, dim, pipeline));
       });
     });
     return out;
@@ -463,11 +557,15 @@
 
   /**
    * Explorers: name, `N findings`, the first findings, and `N more`. A ref
-   * is text, never a link, even when it is a URL.
+   * is text, never a link, even when it is a URL. A ship plan step also
+   * lists its review rounds: when `detail.rounds` is not empty, the rounds
+   * table (roundsBody) follows under a `review rounds` heading, outside the
+   * explorer grid.
    * @param {Document} doc
    * @param {object} view
-   * @param {{explorers?: Array}} detail
-   * @returns {Element} div.waves
+   * @param {{explorers?: Array, rounds?: Array}} detail
+   * @returns {Element} div.waves, or a div that holds div.waves and the rounds
+   *   table when `detail.rounds` is not empty
    */
   function explorersBody(doc, view, detail) {
     var out = el(doc, 'div', 'waves');
@@ -490,7 +588,8 @@
       if (more > 0) block.appendChild(el(doc, 'div', 'find-more', more + ' more'));
       out.appendChild(block);
     });
-    return out;
+    if ((detail.rounds || []).length === 0) return out;
+    return append(el(doc, 'div', ''), [out, el(doc, 'div', 'wave-head', 'review rounds'), roundsBody(doc, view, detail)]);
   }
 
   function strongLine(doc, cls, parts) {
@@ -590,27 +689,22 @@
   }
 
   /**
-   * Findings of one review dimension: lamp by severity, text, severity.
+   * Findings of one review dimension, one findingRow for each. A standalone
+   * review step is one dimension, so the step name is the dimension name in
+   * the finding keys.
    * @param {Document} doc
    * @param {object} view
    * @param {{findings?: Array}} detail
+   * @param {{id?: string}} [pipeline] the pipeline of the step, for the finding keys
+   * @param {{name?: string}} [step] the step of the detail
    * @returns {Element} div, or p.generic-line `No findings.`
    */
-  function findingsBody(doc, view, detail) {
+  function findingsBody(doc, view, detail, pipeline, step) {
     var findings = detail.findings || [];
     if (findings.length === 0) return el(doc, 'p', 'generic-line', 'No findings.');
     var out = el(doc, 'div', '');
-    findings.forEach(function (finding) {
-      var text = el(doc, 'span', 'dim-name', finding.text);
-      var location = view.issueLocation(finding);
-      if (location) text.setAttribute('title', location);
-      out.appendChild(
-        append(el(doc, 'div', 'dim-row'), [
-          lamp(doc, LAMP_BY_TONE[view.severityTone(finding.severity)] || 'stalled'),
-          text,
-          el(doc, 'span', 'dim-meta', finding.severity),
-        ])
-      );
+    findings.forEach(function (finding, i) {
+      out.appendChild(findingRow(doc, view, finding, findingKey(view, pipeline, step && step.name, i)));
     });
     return out;
   }
@@ -647,7 +741,7 @@
     return el(doc, 'p', 'generic-line', detail.result);
   }
 
-  // Body builder by detail kind: (doc, view, detail, pipeline) -> Element.
+  // Body builder by detail kind: (doc, view, detail, pipeline, step) -> Element.
   var TILE_BODIES = {
     waves: wavesBody,
     dimensions: dimensionsBody,
@@ -674,7 +768,7 @@
     var cls = 'step-sec' + (view.isWideSection(detail) ? ' wide' : '') + (selected ? ' selected' : '');
     var details = tile(doc, cls, step.name, lampClass(view, step.status), view.sectionMeta(step), open);
     var body = TILE_BODIES[detail.kind];
-    if (body) details.appendChild(body(doc, view, detail, pipeline));
+    if (body) details.appendChild(body(doc, view, detail, pipeline, step));
     return details;
   }
 
@@ -702,7 +796,8 @@
   /**
    * The issues tile: `N open`, then one row for each issue: severity chip,
    * rationale, and location. The stalled issue shows the age of the last
-   * update in place of a location.
+   * update in place of a location. Each row is a button whose data-detail
+   * key is the pipeline id and the row index.
    * @param {Document} doc
    * @param {object} view
    * @param {{issues?: Array, updatedAt?: string}} pipeline
@@ -718,7 +813,7 @@
       return issue.severity === 'critical' || issue.severity === 'high';
     });
     var details = tile(doc, 'step-sec span2', 'issues', hot ? 'failed' : 'running', issues.length + ' open', open);
-    issues.forEach(function (issue) {
+    issues.forEach(function (issue, i) {
       var main = append(el(doc, 'div', 'issue-main'), [el(doc, 'div', 'issue-text', issue.text)]);
       var location = view.issueLocation(issue);
       if (issue.source === 'pipeline') {
@@ -726,17 +821,63 @@
         location = age ? 'last update ' + age : '';
       }
       if (location) main.appendChild(el(doc, 'div', 'issue-path', location));
-      details.appendChild(append(el(doc, 'div', 'issue-row'), [el(doc, 'span', 'sev sev-' + issue.severity, issue.severity), main]));
+      var row = detailButton(doc, 'issue-row', view.detailKey('issue', null, { pipeline: pipeline.id, index: i }));
+      details.appendChild(append(row, [el(doc, 'span', 'sev sev-' + issue.severity, issue.severity), main]));
     });
     return details;
   }
 
+  // Mark of the largest command group in the group table.
+  var MAJORITY_GLYPH = '◆';
+
+  // 0.67 -> '67%'. The server rounds the share to 2 decimals.
+  function sharePercent(share) {
+    return Math.round((share || 0) * 100) + '%';
+  }
+
+  /**
+   * The command group table of a session: one row for each group with the
+   * label, the count, the share, and a mark on the majority group. The
+   * server sends the groups largest first and sets `majority`; the page
+   * does not sort or count.
+   * @param {Document} doc
+   * @param {Array<{label: string, count: number, share: number, majority: boolean}>} groups
+   * @returns {Element|null} table.cmd-groups, or null for no groups
+   */
+  function commandGroupTable(doc, groups) {
+    var list = groups || [];
+    if (list.length === 0) return null;
+    var headRow = el(doc, 'tr', '');
+    ['command', 'count', 'share', 'majority'].forEach(function (name) {
+      headRow.appendChild(el(doc, 'th', '', name));
+    });
+    var body = el(doc, 'tbody', '');
+    list.forEach(function (group) {
+      var mark = el(doc, 'td', 'cg-mark');
+      if (group.majority) {
+        var glyph = el(doc, 'span', 'cg-glyph', MAJORITY_GLYPH);
+        glyph.setAttribute('aria-hidden', 'true');
+        append(mark, [glyph, el(doc, 'span', 'sr-only', 'yes')]);
+      }
+      body.appendChild(
+        append(el(doc, 'tr', group.majority ? 'cg-row majority' : 'cg-row'), [
+          el(doc, 'td', 'cg-label', group.label),
+          el(doc, 'td', 'cg-count', group.count),
+          el(doc, 'td', 'cg-share', sharePercent(group.share)),
+          mark,
+        ])
+      );
+    });
+    return append(el(doc, 'table', 'cmd-groups'), [append(el(doc, 'thead', ''), [headRow]), body]);
+  }
+
   /**
    * The session tile: closed unless the user opened it. Counts in the
-   * summary; open, the short id, then one row for each timeline event.
+   * summary; open, the short id, the command group table (only when the
+   * session ran commands), then one row for each timeline event.
    * @param {Document} doc
    * @param {object} view
-   * @param {{id: string, active?: boolean, counts?: object, timeline?: Array}|null} session
+   * @param {{id: string, active?: boolean, counts?: object, commandGroups?: Array, timeline?: Array}|null} session
    * @param {boolean} open
    * @param {string} [tz] IANA time zone; the local zone when absent
    * @returns {Element|null} null when there is no session
@@ -752,7 +893,7 @@
     var details = tile(doc, 'step-sec span2', 'session', session.active ? 'running' : 'stalled', meta, open);
     var id = el(doc, 'div', 'sec-id', 'id ' + view.shortId(session.id));
     id.setAttribute('title', session.id || '');
-    details.appendChild(id);
+    append(details, [id, commandGroupTable(doc, session.commandGroups)]);
     (session.timeline || []).forEach(function (event) {
       details.appendChild(
         append(el(doc, 'div', 'timeline-row'), [
@@ -897,12 +1038,13 @@
     return panel;
   }
 
-  function activityRow(doc, view, chip, text, meta) {
+  // One activity row, a button: the list keeps the first 200 characters, and
+  // the detail viewer shows the full text.
+  function activityRow(doc, view, chip, text, meta, key) {
     var main = el(doc, 'div', 'act-main');
     var body = el(doc, 'div', 'act-text', view.cutText(text, 200));
-    body.setAttribute('title', text || '');
     append(main, [body, el(doc, 'div', 'act-meta', meta)]);
-    return append(el(doc, 'div', 'act-row'), [chip, main]);
+    return append(detailButton(doc, 'act-row', key), [chip, main]);
   }
 
   function metaLine(parts) {
@@ -915,7 +1057,8 @@
 
   /**
    * The Activity tab: `Open deferred (n)` first, then `Learnings today (n)`,
-   * both over the repos in scope.
+   * both over the repos in scope. Each row is a button with a data-detail
+   * key (view.detailKey) that opens the item in the detail viewer.
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos
@@ -934,13 +1077,21 @@
             view,
             el(doc, 'span', 'sev sev-' + item.priority, item.priority),
             item.description,
-            metaLine([repo.name, item.id])
+            metaLine([repo.name, item.id]),
+            view.detailKey('deferred', item)
           )
         );
       });
       (repo.learnings || []).forEach(function (item) {
         learnings.push(
-          activityRow(doc, view, el(doc, 'span', 'sev', 'learning'), item.heading, metaLine([repo.name, item.branch]))
+          activityRow(
+            doc,
+            view,
+            el(doc, 'span', 'sev', 'learning'),
+            item.heading,
+            metaLine([repo.name, item.branch]),
+            view.detailKey('learning', item)
+          )
         );
       });
     });
@@ -961,6 +1112,34 @@
     );
 
     return append(el(doc, 'div', 'act-grid'), [deferredPanel, learningsPanel]);
+  }
+
+  /**
+   * The body of the detail viewer for one item of view.detailItem: the title,
+   * the metadata list, and the full text. Every value goes in through
+   * textContent. The text keeps its line breaks through the class
+   * `detail-text` in app.css, never through an inline style.
+   * @param {Document} doc
+   * @param {{title?: string, text?: string, meta?: Array<Array<string>>}} item
+   *   meta is a list of [label, value] pairs
+   * @returns {Element} div.detail-body: h2.detail-heading (tabindex -1, so
+   *   a script can focus it), dl.detail-meta (left out when meta is empty),
+   *   and div.detail-text (always there, so a learning body can fill it
+   *   later)
+   */
+  function detailBody(doc, item) {
+    var it = item || {};
+    var heading = el(doc, 'h2', 'detail-heading', it.title);
+    heading.setAttribute('tabindex', '-1');
+    var pairs = it.meta || [];
+    var meta = null;
+    if (pairs.length > 0) {
+      meta = el(doc, 'dl', 'detail-meta');
+      pairs.forEach(function (pair) {
+        append(meta, [el(doc, 'dt', '', pair[0]), el(doc, 'dd', '', pair[1])]);
+      });
+    }
+    return append(el(doc, 'div', 'detail-body'), [heading, meta, el(doc, 'div', 'detail-text', it.text)]);
   }
 
   /**
@@ -1001,6 +1180,9 @@
     explorersBody: explorersBody,
     roundsBody: roundsBody,
     findingsBody: findingsBody,
+    findingRow: findingRow,
+    commandGroupTable: commandGroupTable,
+    detailBody: detailBody,
     guardrailsBody: guardrailsBody,
     resultBody: resultBody,
     issuesTile: issuesTile,
