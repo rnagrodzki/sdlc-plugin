@@ -26,6 +26,14 @@ Review Go source changes for baseline code quality in this module
 - Function length and cyclomatic complexity are reasonable; large
   `internal/tools/*.go` handler files should still keep each MCP tool's
   logic separable and testable.
+- A new or changed function longer than about 100 lines, or with more than
+  about 10 return statements, must split into named helpers, or the review
+  must state why it stays whole. Example: `openspecSave` was about 160 lines
+  with about 20 return paths.
+- Package-scope regexes, constants, and helpers must not repeat an existing
+  package-scope pattern. Before adding one, grep the package for the same
+  literal and reuse the existing identifier. Example: `openspecStagingLineRe`
+  duplicates `stagingHeaderRe`.
 - Naming is consistent with sibling files in the same package — check for
   drift before introducing a second convention.
 - Documentation strings/doc comments citing paths (`.sdlc`, `.sdlc-v2`) or
@@ -135,3 +143,15 @@ Review Go source changes for baseline code quality in this module
   invariant argument, or a cached value computed twice in different
   branches), consolidate to a single call and reuse the result. Redundant
   calls mask expensive operations and are worse than not optimizing at all.
+- Type assertions use the two-value form (`v, ok := x.(T)`) and handle
+  `ok == false`. A dropped `ok` is a silently discarded error, as in
+  `commitBaseHead`.
+- Helper duplication is checked by behavior, not only by literal. Before
+  adding a helper, grep the package and the module for an existing function
+  that does the same work, even under another name (for example
+  `shipShortSHA` and `shortSHA`), and reuse it. A handler that hand-writes
+  logic a shared core helper already performs (for example step completion
+  instead of `shipCompleteStepCore`) is a finding.
+- Zero-argument clock reads (for example `now()`) count as the same inputs
+  for the redundant-recomputation rule. Read the clock once per handler and
+  reuse the value, so one record carries one timestamp.
