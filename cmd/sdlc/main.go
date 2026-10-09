@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	version "github.com/rnagrodzki/sdlc-plugin"
@@ -122,6 +123,9 @@ func runDashboard(args []string) int {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	v := pluginVersion
+	// logPath is the file that receives the output of this server when it
+	// runs in the background. A cache clear truncates it.
+	logPath := filepath.Join(dashboard.Dir(), "server.log")
 	return web.Serve(ctx, web.Options{
 		Port:    port,
 		Version: v,
@@ -131,7 +135,12 @@ func runDashboard(args []string) int {
 		Collect: func(roots []string, now time.Time) tools.DashboardSnapshot {
 			return tools.CollectDashboardSnapshot(roots, now, v)
 		},
-		Listen: net.Listen,
-		Health: dashboard.DefaultDeps().Health,
+		Listen:  net.Listen,
+		Health:  dashboard.DefaultDeps().Health,
+		Archive: tools.ArchiveRun,
+		ClearCache: func(root string, now time.Time) (tools.ClearCacheOut, error) {
+			return tools.ClearCache(root, logPath, now)
+		},
+		LearningBody: tools.DashboardLearningBody,
 	})
 }

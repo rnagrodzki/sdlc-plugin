@@ -34,7 +34,9 @@ const stageStatusJSON = `{"changeName":"add-widget","schemaName":"spec-driven","
 //   - status: prints stageStatusJSON
 //   - instructions <a>: prints guidance derived from <a>
 //   - validate <c>: fails unless the staged proposal.md and .openspec.yaml
-//     are present in cwd; exits $STUB_VALIDATE_EXIT (default 0) otherwise
+//     are present in cwd; fails with "missing target spec <cap>" when
+//     $STUB_REQUIRE_SPEC is set and openspec/specs/<cap>/spec.md is absent in
+//     cwd; exits $STUB_VALIDATE_EXIT (default 0) otherwise
 func stubOpenspecStage(t *testing.T, dir string) {
 	t.Helper()
 	script := `#!/bin/sh
@@ -53,6 +55,10 @@ case "$1" in
   validate)
     if [ ! -f "openspec/changes/$2/proposal.md" ] || [ ! -f "openspec/changes/$2/.openspec.yaml" ]; then
       echo "Change '$2' is missing files"
+      exit 1
+    fi
+    if [ -n "$STUB_REQUIRE_SPEC" ] && [ ! -f "openspec/specs/$STUB_REQUIRE_SPEC/spec.md" ]; then
+      echo "missing target spec $STUB_REQUIRE_SPEC"
       exit 1
     fi
     code="${STUB_VALIDATE_EXIT:-0}"
@@ -85,8 +91,7 @@ func setupStageRepo(t *testing.T) (root, log string) {
 	mustWrite(t, filepath.Join(root, ".sdlc-v2", ".gitignore"),
 		"# >>> sdlc-v2 managed (do not edit) — selective ignores\n*\n!.gitignore\n!config.toml\n!review-dimensions/\n!review-dimensions/**\n# <<< sdlc-v2 managed\n")
 	git(t, root, "init", "-q")
-	git(t, root, "add", "-A")
-	git(t, root, "-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "-m", "init")
+	gitCommitAll(t, root)
 
 	stub := t.TempDir()
 	stubOpenspecStage(t, stub)
@@ -332,6 +337,237 @@ func TestStage_InvalidChangeReportsCLIOutput(t *testing.T) {
 	assertGitClean(t, root)
 	if _, err := os.Stat(filepath.Join(root, "openspec", "changes")); !os.IsNotExist(err) {
 		t.Fatalf("openspec/changes created in the repo (stat err %v)", err)
+	}
+}
+
+// gitCommitAll stages every change under root and commits it, so a test can
+// add files to the repo and still assert a clean `git status --porcelain`.
+// The commit may be empty: git does not track an empty directory.
+func gitCommitAll(t *testing.T, root string) {
+	t.Helper()
+	git(t, root, "add", "-A")
+	git(t, root, "-c", "user.email=t@example.com", "-c", "user.name=t", "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "commit")
+}
+
+// TestStage_CopiesTargetSpecs checks that Stage puts the current spec of each
+// capability that a staged delta names into the temp dir before validate runs,
+// and that the copy keeps the bytes unchanged.
+func TestStage_CopiesTargetSpecs(t *testing.T) {
+	t.Run("validate sees the current spec", func(t *testing.T) {
+		root, log := setupStageRepo(t)
+		mustWrite(t, filepath.Join(root, "openspec", "specs", "user-auth", "spec.md"), "# user-auth\n")
+		gitCommitAll(t, root)
+		t.Setenv("STUB_REQUIRE_SPEC", "user-auth")
+
+		res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+		if err != nil {
+			t.Fatalf("Stage: %v", err)
+		}
+		if !res.Valid {
+			t.Fatalf("Valid = false, output %q (validate must find the copied spec)", res.ValidateOutput)
+		}
+		assertTempDirsRemoved(t, log, 3)
+		assertGitClean(t, root)
+	})
+
+	t.Run("only the delta capabilities are copied", func(t *testing.T) {
+		root, _ := setupStageRepo(t)
+		mustWrite(t, filepath.Join(root, "openspec", "specs", "user-auth", "spec.md"), "# user-auth\n")
+		mustWrite(t, filepath.Join(root, "openspec", "specs", "billing", "spec.md"), "# billing\n")
+		gitCommitAll(t, root)
+		t.Setenv("STUB_REQUIRE_SPEC", "billing")
+
+		res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+		if err != nil {
+			t.Fatalf("Stage: %v", err)
+		}
+		if res.Valid || !strings.Contains(res.ValidateOutput, "missing target spec billing") {
+			t.Fatalf("Valid = %v, output %q, want validate to miss the billing spec that no delta names", res.Valid, res.ValidateOutput)
+		}
+	})
+
+	t.Run("copy is byte equal and skips other path shapes", func(t *testing.T) {
+		root := t.TempDir()
+		tmp := t.TempDir()
+		// CRLF, a non-UTF-8 byte, a NUL byte and no trailing newline.
+		content := "# user-auth\r\n\xff\x00 end"
+		specs := filepath.Join(root, "openspec", "specs")
+		mustWrite(t, filepath.Join(specs, "user-auth", "spec.md"), content)
+		mustWrite(t, filepath.Join(specs, "user-auth", "other.md"), "other")
+		mustWrite(t, filepath.Join(specs, "a", "b", "spec.md"), "deep")
+		mustWrite(t, filepath.Join(specs, "spec.md"), "top")
+		files := []StageFile{
+			{Path: "proposal.md", Content: "# Proposal\n"},
+			{Path: "specs/user-auth/spec.md", Content: "delta"},
+			{Path: "specs/user-auth/other.md", Content: "delta"},
+			{Path: "specs/a/b/spec.md", Content: "delta"},
+			{Path: "specs/spec.md", Content: "delta"},
+		}
+
+		if err := copyTargetSpecs(root, tmp, files); err != nil {
+			t.Fatalf("copyTargetSpecs: %v", err)
+		}
+
+		got, err := os.ReadFile(filepath.Join(tmp, "openspec", "specs", "user-auth", "spec.md"))
+		if err != nil || string(got) != content {
+			t.Fatalf("copied spec = %q (err %v), want %q", got, err, content)
+		}
+		for _, skipped := range []string{"user-auth/other.md", "a", "spec.md"} {
+			p := filepath.Join(tmp, "openspec", "specs", filepath.FromSlash(skipped))
+			if _, err := os.Stat(p); !os.IsNotExist(err) {
+				t.Fatalf("%s copied into the temp dir (stat err %v)", skipped, err)
+			}
+		}
+	})
+}
+
+// TestStage_NewCapabilityNoTarget checks that a staged spec with no current
+// spec copies nothing and is not an error.
+func TestStage_NewCapabilityNoTarget(t *testing.T) {
+	root, log := setupStageRepo(t)
+
+	res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+	if err != nil {
+		t.Fatalf("Stage: %v (a new capability has no target spec)", err)
+	}
+	if !res.Valid {
+		t.Fatalf("Valid = false, output %q", res.ValidateOutput)
+	}
+	assertTempDirsRemoved(t, log, 3)
+	assertGitClean(t, root)
+
+	tmp := t.TempDir()
+	if err := copyTargetSpecs(root, tmp, stageFiles(false)); err != nil {
+		t.Fatalf("copyTargetSpecs: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(tmp, "openspec")); !os.IsNotExist(err) {
+		t.Fatalf("temp dir holds openspec/ after a copy with no target (stat err %v)", err)
+	}
+}
+
+// TestStage_TargetSpecTooLarge checks that a current spec over 1 MiB, or one
+// that cannot be read, stops Stage with an error that wraps ErrTargetSpec,
+// before anything is written: no staging dir (so no stage.json and no
+// validatedAt) and no change in the repo. A spec of exactly 1 MiB is copied.
+func TestStage_TargetSpecTooLarge(t *testing.T) {
+	specPath := func(root string) string {
+		return filepath.Join(root, "openspec", "specs", "user-auth", "spec.md")
+	}
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, root string)
+		want  string
+	}{
+		{"over 1 MiB", func(t *testing.T, root string) {
+			mustWrite(t, specPath(root), strings.Repeat("a", maxTargetSpecBytes+1))
+		}, "is over 1 MiB"},
+		{"read error", func(t *testing.T, root string) {
+			// A directory in place of the file: open works, read fails.
+			if err := os.MkdirAll(specPath(root), 0o755); err != nil {
+				t.Fatalf("mkdir: %v", err)
+			}
+		}, "read "},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, log := setupStageRepo(t)
+			tc.setup(t, root)
+			gitCommitAll(t, root)
+
+			_, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+			if !errors.Is(err, ErrTargetSpec) {
+				t.Fatalf("Stage err = %v, want ErrTargetSpec", err)
+			}
+			if !strings.Contains(err.Error(), specPath(root)) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name the spec path and %q", err, tc.want)
+			}
+			if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging")); !os.IsNotExist(err) {
+				t.Fatalf("staging root exists after a failed copy (stat err %v)", err)
+			}
+			assertTempDirsRemoved(t, log, 2) // new + status; validate never ran
+			assertGitClean(t, root)
+		})
+	}
+
+	t.Run("exactly 1 MiB is copied", func(t *testing.T) {
+		root := t.TempDir()
+		tmp := t.TempDir()
+		content := strings.Repeat("a", maxTargetSpecBytes)
+		mustWrite(t, specPath(root), content)
+
+		if err := copyTargetSpecs(root, tmp, stageFiles(false)); err != nil {
+			t.Fatalf("copyTargetSpecs: %v", err)
+		}
+		got, err := os.ReadFile(filepath.Join(tmp, "openspec", "specs", "user-auth", "spec.md"))
+		if err != nil || string(got) != content {
+			t.Fatalf("copied spec has %d bytes (err %v), want %d", len(got), err, len(content))
+		}
+	})
+}
+
+// TestStage_RealCLIOmittedScenario runs the real openspec CLI on a MODIFIED
+// delta that drops a scenario of the current spec. Stage must report
+// valid false with the CLI's "omits scenario(s)" message and record no
+// validatedAt. The same delta with the scenario restored must pass. The test
+// skips when the openspec CLI is not on PATH.
+func TestStage_RealCLIOmittedScenario(t *testing.T) {
+	if _, err := exec.LookPath("openspec"); err != nil {
+		t.Skip("openspec not on PATH")
+	}
+	root := t.TempDir()
+	mustWrite(t, filepath.Join(root, "openspec", "config.yaml"), "schema: spec-driven\n")
+	current := "# widget Specification\n\n" +
+		"## Purpose\nWidgets show data to the user on the dashboard page.\n\n" +
+		"## Requirements\n\n" +
+		"### Requirement: Dispatch metadata\nThe system SHALL record dispatch metadata for each task.\n\n" +
+		"#### Scenario: First\n- **WHEN** a task is dispatched\n- **THEN** the metadata is recorded\n\n" +
+		"#### Scenario: Second\n- **WHEN** a task is redispatched\n- **THEN** the attempt count grows\n"
+	specFile := filepath.Join(root, "openspec", "specs", "widget", "spec.md")
+	mustWrite(t, specFile, current)
+
+	first := "#### Scenario: First\n- **WHEN** a task is dispatched\n- **THEN** the metadata is recorded\n"
+	second := "\n#### Scenario: Second\n- **WHEN** a task is redispatched\n- **THEN** the attempt count grows\n"
+	delta := func(scenarios string) string {
+		return "## MODIFIED Requirements\n\n" +
+			"### Requirement: Dispatch metadata\nThe system SHALL record dispatch metadata and the worker name for each task.\n\n" +
+			scenarios
+	}
+	files := func(spec string) []StageFile {
+		return []StageFile{
+			{Path: "proposal.md", Content: "## Why\nThe widget metadata needs the worker name so that a reader can see which worker ran a task.\n\n" +
+				"## What Changes\n- Record the worker name in the dispatch metadata.\n\n" +
+				"## Capabilities\n\n### Modified Capabilities\n- `widget`: record the worker name\n\n## Impact\n- None.\n"},
+			{Path: "specs/widget/spec.md", Content: spec},
+			{Path: "tasks.md", Content: "## 1. Work\n- [ ] 1.1 Record the worker name\n"},
+		}
+	}
+
+	res, err := Stage(root, "add-widget", files(delta(first)), "", fixedNow)
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if res.Valid {
+		t.Fatalf("Valid = true, want false for a delta that drops a current scenario; output %q", res.ValidateOutput)
+	}
+	if !strings.Contains(res.ValidateOutput, "omits scenario(s)") {
+		t.Fatalf("ValidateOutput = %q, want it to contain %q", res.ValidateOutput, "omits scenario(s)")
+	}
+	if m := readManifest(t, root, "add-widget"); m.ValidatedAt != "" {
+		t.Fatalf("ValidatedAt = %q, want empty after a failed validation", m.ValidatedAt)
+	}
+	if got, err := os.ReadFile(specFile); err != nil || string(got) != current {
+		t.Fatalf("current spec changed (err %v): %q", err, got)
+	}
+	if _, err := os.Stat(filepath.Join(root, "openspec", "changes")); !os.IsNotExist(err) {
+		t.Fatalf("openspec/changes created in the repo (stat err %v)", err)
+	}
+
+	res, err = Stage(root, "add-widget", files(delta(first+second)), "", fixedNow)
+	if err != nil {
+		t.Fatalf("Stage with the scenario restored: %v", err)
+	}
+	if !res.Valid {
+		t.Fatalf("Valid = false with the scenario restored; output %q", res.ValidateOutput)
 	}
 }
 

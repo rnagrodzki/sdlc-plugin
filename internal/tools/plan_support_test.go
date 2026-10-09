@@ -2133,9 +2133,12 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 			name           string
 			noCLI          bool
 			unresolved     bool // the active worktree could not be resolved
+			setup          func(t *testing.T, root string)
 			in             PlanSupportIn
 			wantClass      string
 			wantMsg        string
+			wantMsgPrefix  string // when set, the message must start with it instead of equal wantMsg
+			wantCause      error  // when set, errors.Is must find it in the returned chain
 			wantSuggestion string
 		}{
 			{
@@ -2191,10 +2194,32 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 				wantMsg:        "openspec_instructions: active worktree not resolved",
 				wantSuggestion: "Run the call from inside the git worktree that holds the plan.",
 			},
+			{
+				// A directory where the current spec file is expected: the open
+				// succeeds and the read fails with an error that is not not-exist.
+				name: "target spec unreadable (stage)",
+				setup: func(t *testing.T, root string) {
+					t.Helper()
+					if err := os.MkdirAll(filepath.Join(root, "openspec", "specs", "user-auth", "spec.md"), 0o755); err != nil {
+						t.Fatalf("mkdir spec dir: %v", err)
+					}
+				},
+				in: PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget", Files: []openspec.StageFile{
+					{Path: "proposal.md", Content: "# P\n"},
+					{Path: "specs/user-auth/spec.md", Content: "## ADDED Requirements\n"},
+				}},
+				wantClass:      "infra",
+				wantMsgPrefix:  "openspec_stage: openspec stage: target spec: ",
+				wantCause:      openspec.ErrTargetSpec,
+				wantSuggestion: "Check read permission on the named spec under openspec/specs/, then call openspec_stage again.",
+			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				stubOpenspecForStage(t, 0)
 				root := newOpenspecStageFixture(t, "")
+				if tc.setup != nil {
+					tc.setup(t, root)
+				}
 				if tc.noCLI {
 					pathWithoutOpenspec(t)
 				}
@@ -2209,8 +2234,15 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 				if got := errorClassOf(err); got != tc.wantClass {
 					t.Errorf("error class = %q, want %q (err %v)", got, tc.wantClass, err)
 				}
-				if err.Error() != tc.wantMsg {
+				if tc.wantMsgPrefix != "" {
+					if !strings.HasPrefix(err.Error(), tc.wantMsgPrefix) {
+						t.Errorf("err.Error() = %q, want prefix %q", err.Error(), tc.wantMsgPrefix)
+					}
+				} else if err.Error() != tc.wantMsg {
 					t.Errorf("err.Error() = %q, want %q", err.Error(), tc.wantMsg)
+				}
+				if tc.wantCause != nil && !errors.Is(err, tc.wantCause) {
+					t.Errorf("errors.Is(err, %v) = false, want true (err %v)", tc.wantCause, err)
 				}
 				if got := suggestionOf(err); got != tc.wantSuggestion {
 					t.Errorf("Suggestion = %q, want %q", got, tc.wantSuggestion)

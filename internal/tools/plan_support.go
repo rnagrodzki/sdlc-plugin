@@ -1149,6 +1149,12 @@ func mapOpenspecError(action string, in PlanSupportIn, err error) error {
 			Suggestion: openspecCLISuggestion,
 			Cause:      err,
 		}
+	case errors.Is(err, openspec.ErrTargetSpec):
+		return &mcpserver.InfraError{
+			Msg:        action + ": " + err.Error(),
+			Suggestion: "Check read permission on the named spec under openspec/specs/, then call openspec_stage again.",
+			Cause:      err,
+		}
 	default:
 		return &mcpserver.InfraError{
 			Msg:        action + ": " + err.Error(),

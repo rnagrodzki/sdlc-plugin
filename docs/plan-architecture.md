@@ -423,7 +423,9 @@ Step 6 (and again on a Step 7 reject with feedback):**
    (gitignored) with the new files, writes a `stage.json` manifest
    (`change`, `schema`, `planPath`, each file's `path` + SHA-256, and
    `validatedAt` once validation passes), and runs `openspec validate
-   <changeName> --strict` against a temp copy of the staged change. A failed
+   <changeName> --strict` against a temp copy of the staged change and of
+   the current spec of each capability that the change has a delta for, so a
+   MODIFIED delta gets the same check as at ship. A failed
    validation is not an error — the result carries `valid: false` and the
    CLI output, `stage.json` keeps no `validatedAt`, and the skill can fix
    the artifacts and re-stage.

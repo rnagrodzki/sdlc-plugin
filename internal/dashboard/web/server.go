@@ -71,7 +71,9 @@ var (
 	stderr io.Writer = os.Stderr
 )
 
-// Options configures Serve. Every function field is required except Stop.
+// Options configures Serve. Every function field is required except Stop,
+// Archive, ClearCache and LearningBody. A route whose function field is nil
+// answers 500 with a suggestion instead of failing at start.
 type Options struct {
 	Port    int
 	Version string
@@ -91,6 +93,16 @@ type Options struct {
 	// Health calls GET /api/health on 127.0.0.1:port (production:
 	// dashboard.DefaultDeps().Health).
 	Health func(port int, timeout time.Duration) (dashboard.Health, error)
+	// Archive moves the files of one run into run-archive/ (production:
+	// tools.ArchiveRun). POST /api/run-archive calls it.
+	Archive func(in tools.ArchiveRunIn, now time.Time) (tools.ArchiveRunOut, error)
+	// ClearCache deletes the regenerable cache files of one repo (production:
+	// a closure over tools.ClearCache with the server log path).
+	// POST /api/cache-clear calls it.
+	ClearCache func(root string, now time.Time) (tools.ClearCacheOut, error)
+	// LearningBody returns the text of one learning entry (production:
+	// tools.DashboardLearningBody). GET /api/learning calls it.
+	LearningBody func(root, date, heading string) (tools.DashboardLearningBodyOut, error)
 }
 
 // NewToken returns a new stop token: 32 bytes from crypto/rand, hex encoded.
@@ -255,7 +267,10 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 	h.mux.HandleFunc("GET /api/snapshot", h.serveSnapshot)
 	h.mux.HandleFunc("GET /api/events", h.serveEvents)
 	h.mux.HandleFunc("GET /api/health", h.serveHealth)
+	h.mux.HandleFunc("GET /api/learning", h.serveLearning)
 	h.mux.HandleFunc("POST /api/stop", h.serveStop)
+	h.mux.HandleFunc("POST /api/run-archive", h.serveRunArchive)
+	h.mux.HandleFunc("POST /api/cache-clear", h.serveCacheClear)
 	return h
 }
 
@@ -287,6 +302,12 @@ func (h *handler) serveSnapshot(w http.ResponseWriter, _ *http.Request) {
 // failure to list roots gives a snapshot with no repos.
 func (h *handler) snapshot() tools.DashboardSnapshot {
 	t := now()
+	return h.o.Collect(h.rootPaths(t), t)
+}
+
+// rootPaths returns the registered repo roots at time t. A failure to list
+// them is logged and gives no roots.
+func (h *handler) rootPaths(t time.Time) []string {
 	roots, err := h.o.Roots(t)
 	if err != nil {
 		fmt.Fprintf(stderr, "sdlc dashboard: %v\n", err)
@@ -295,7 +316,7 @@ func (h *handler) snapshot() tools.DashboardSnapshot {
 	for _, r := range roots {
 		paths = append(paths, r.Root)
 	}
-	return h.o.Collect(paths, t)
+	return paths
 }
 
 // serveEvents streams snapshots as server-sent events: a retry line and the
@@ -424,6 +445,207 @@ func (h *handler) serveStop(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 	h.stop()
+}
+
+// Codes of the errors that the archive, clear and learning routes raise
+// themselves. The archive codes of the tools package keep their own constants.
+const (
+	// codeBadRequest is the code of a body or query that lacks a field.
+	codeBadRequest = "BAD_REQUEST"
+	// codeRepoNotFound is the code of a repo that the dashboard does not show.
+	codeRepoNotFound = "REPO_NOT_FOUND"
+	// codeClearFailed is the code of a failed cache clear.
+	codeClearFailed = "CLEAR_FAILED"
+	// codeLearningReadFailed is the code of a failed read of a learning body.
+	codeLearningReadFailed = "LEARNING_READ_FAILED"
+	// codeNotConfigured is the code of a route whose Options function is nil.
+	codeNotConfigured = "NOT_CONFIGURED"
+)
+
+// Suggestions of the errors that the archive, clear and learning routes raise
+// themselves.
+const (
+	// suggestBadRequest is the suggestion for codeBadRequest.
+	suggestBadRequest = "Send the fields shown in the route example."
+	// suggestReloadPage is the suggestion for codeRepoNotFound.
+	suggestReloadPage = "Reload the page."
+	// suggestReadLog is the suggestion for an error that the server writes to
+	// server.log.
+	suggestReadLog = "Read server.log, fix the named path, then try again."
+	// suggestRestart is the suggestion for codeNotConfigured.
+	suggestRestart = "Restart the dashboard with the current sdlc plugin."
+)
+
+// archiveRequest is the JSON body of POST /api/run-archive.
+type archiveRequest struct {
+	Repo           string `json:"repo"`
+	RunID          string `json:"runId"`
+	ConfirmStalled bool   `json:"confirmStalled"`
+}
+
+// clearRequest is the JSON body of POST /api/cache-clear.
+type clearRequest struct {
+	Repo string `json:"repo"`
+}
+
+// serveRunArchive archives one run of a registered repo. The request must
+// pass guardMutation; the repo must be a display root.
+func (h *handler) serveRunArchive(w http.ResponseWriter, r *http.Request) {
+	if !h.guardMutation(w, r, true) {
+		return
+	}
+	if h.o.Archive == nil {
+		writeNotConfigured(w, "run archive")
+		return
+	}
+	var req archiveRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if req.Repo == "" || req.RunID == "" {
+		writeBadRequest(w, "repo and runId are required")
+		return
+	}
+	t := now()
+	root, ok := h.displayRoot(w, t, req.Repo)
+	if !ok {
+		return
+	}
+	out, err := h.o.Archive(tools.ArchiveRunIn{Root: root, RunID: req.RunID, ConfirmStalled: req.ConfirmStalled}, t)
+	if err != nil {
+		writeArchiveError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// serveCacheClear clears the cache of one registered repo. The request must
+// pass guardMutation; the repo must be a display root.
+func (h *handler) serveCacheClear(w http.ResponseWriter, r *http.Request) {
+	if !h.guardMutation(w, r, true) {
+		return
+	}
+	if h.o.ClearCache == nil {
+		writeNotConfigured(w, "cache clear")
+		return
+	}
+	var req clearRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	if req.Repo == "" {
+		writeBadRequest(w, "repo is required")
+		return
+	}
+	t := now()
+	root, ok := h.displayRoot(w, t, req.Repo)
+	if !ok {
+		return
+	}
+	out, err := h.o.ClearCache(root, t)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdlc dashboard: cache clear: %v\n", err)
+		writeAPIError(w, http.StatusInternalServerError, codeClearFailed, err.Error(), suggestReadLog)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// serveLearning returns the body of one learning entry of a registered repo.
+// It only reads, so it needs no token, like the snapshot route.
+func (h *handler) serveLearning(w http.ResponseWriter, r *http.Request) {
+	if h.o.LearningBody == nil {
+		writeNotConfigured(w, "learning body")
+		return
+	}
+	q := r.URL.Query()
+	date, heading := q.Get("date"), q.Get("heading")
+	if date == "" || heading == "" {
+		writeBadRequest(w, "date and heading are required")
+		return
+	}
+	root, ok := h.displayRoot(w, now(), q.Get("repo"))
+	if !ok {
+		return
+	}
+	out, err := h.o.LearningBody(root, date, heading)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdlc dashboard: learning body: %v\n", err)
+		writeAPIError(w, http.StatusInternalServerError, codeLearningReadFailed, err.Error(), suggestReadLog)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// displayRoot resolves repo, the path that the page sent, to the display root
+// it names. A repo that is not a display root writes the 404 error and
+// returns false, so a mutating route never acts on a path from the page that
+// the dashboard does not show.
+func (h *handler) displayRoot(w http.ResponseWriter, t time.Time, repo string) (string, bool) {
+	root, ok := tools.ResolveDisplayRoot(h.rootPaths(t), repo)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, codeRepoNotFound, fmt.Sprintf("repo %q is not a repo that the dashboard shows", repo), suggestReloadPage)
+		return "", false
+	}
+	return root, true
+}
+
+// decodeBody decodes the JSON body that guardMutation put back into dst. A
+// body that is not valid JSON of the shape of dst writes the 400 error and
+// returns false.
+func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
+	body, err := io.ReadAll(r.Body)
+	if err == nil {
+		err = json.Unmarshal(body, dst)
+	}
+	if err != nil {
+		writeBadRequest(w, "request body is not a JSON object with the fields of the route")
+		return false
+	}
+	return true
+}
+
+// writeBadRequest writes the 400 error for a request that lacks a field or
+// holds a wrong one.
+func writeBadRequest(w http.ResponseWriter, message string) {
+	writeAPIError(w, http.StatusBadRequest, codeBadRequest, message, suggestBadRequest)
+}
+
+// writeNotConfigured writes the 500 error for a route whose Options function
+// is nil. Production always sets the function; a nil field is a wiring
+// defect.
+func writeNotConfigured(w http.ResponseWriter, what string) {
+	writeAPIError(w, http.StatusInternalServerError, codeNotConfigured, what+" is not available on this server", suggestRestart)
+}
+
+// writeArchiveError maps an error of Options.Archive to a status and a code.
+// An ArchiveError with a code of the tools package keeps that code; every
+// other error, and an ArchiveError with another code, is a 500 with code
+// tools.ArchiveFailed. Every 500 is also written to the server log.
+func writeArchiveError(w http.ResponseWriter, err error) {
+	code, status := tools.ArchiveFailed, http.StatusInternalServerError
+	message, suggestion := err.Error(), suggestReadLog
+	var ae *tools.ArchiveError
+	if errors.As(err, &ae) {
+		message = ae.Message
+		if ae.Suggestion != "" {
+			suggestion = ae.Suggestion
+		}
+		switch ae.Code {
+		case tools.ArchiveBadRunID:
+			code, status = ae.Code, http.StatusBadRequest
+		case tools.ArchiveRunNotFound:
+			code, status = ae.Code, http.StatusNotFound
+		case tools.ArchiveRunActive, tools.ArchiveConfirmStalled:
+			code, status = ae.Code, http.StatusConflict
+		case tools.ArchiveFailed:
+			// The defaults above hold: 500 with this code.
+		}
+	}
+	if status == http.StatusInternalServerError {
+		fmt.Fprintf(stderr, "sdlc dashboard: run archive: %v\n", err)
+	}
+	writeAPIError(w, status, code, message, suggestion)
 }
 
 // writeAPIError writes {"error":{"code","message","suggestion"}} with status.

@@ -111,6 +111,9 @@ and `plugins/sdlc/templates/local.toml`. Both are plain, fully-commented TOML
 ones `/setup`'s menu doesn't prompt for) before or instead of running the
 interactive flow.
 
+`/setup` does not ask about the `[harden.instructions]` section. Edit it by
+hand in `.sdlc-v2/config.toml`. See [Custom instructions](harden.md#custom-instructions).
+
 If your project needs a custom CI push-auth secret — e.g. because
 branch-protection rulesets block the default token — its
 `[version.pushAuth]` section is documented in the `version` section of the
