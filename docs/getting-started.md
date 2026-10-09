@@ -158,6 +158,17 @@ linked worktree, so they stay visible and live without a new session:
 `.sdlc-v2/config.toml` is never linked or symlinked — each worktree keeps its
 own real config file.
 
+At each session start the hook also repairs these links:
+
+- A link that points to a missing folder in another path is replaced by a link to the main worktree.
+- The main worktree folder of each linked folder is created when it is missing.
+- In the main worktree, a state link that points nowhere is removed when its target path ends in `.sdlc-v2/<name>`, where `<name>` is the name of the link. Other links stay, and the hook prints a note. The main worktree keeps real folders.
+
+If a write still stops at a link that points nowhere, the error says:
+`<link> is a link to <target>, which does not exist. Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>`
+
+If the link that points nowhere is in the main worktree, start the new session in the main worktree.
+
 ## 4. Supervised vs. unattended
 
 By default (`automation.mode: supervised` in `.sdlc-v2/local.toml`), every

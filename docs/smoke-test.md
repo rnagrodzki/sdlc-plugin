@@ -84,6 +84,7 @@ retry this step with `/clear`.
 - [ ] `git worktree add ../wt -b smoke` → start a session in `../wt`
 - [ ] `.sdlc-v2/runs` is a symlink to the main worktree; live run files visible
 - [ ] `git status --porcelain` empty
+- [ ] `rm -rf <main>/.sdlc-v2/run-archive` → start a session in `../wt` → `<main>/.sdlc-v2/run-archive/` exists again
 
 ## Pass criteria
 
