@@ -12,7 +12,7 @@
 // internal/configmigrate).
 //
 // Section routing follows the JS precedent (scripts/lib/config.js):
-// ProjectSections (version, jira, commit, pr, plan, execute) live in
+// ProjectSections (version, jira, commit, pr, git, plan, execute, harden) live in
 // config.toml; all other sections (ship, review, receivedReview, workspace,
 // automation, …) live in local.toml.
 package config
@@ -48,6 +48,7 @@ var ProjectSections = map[string]bool{
 	"git":     true,
 	"plan":    true,
 	"execute": true,
+	"harden":  true,
 }
 
 // LocalSections is the set of section names that live in the local config
@@ -909,7 +910,7 @@ func GitBaseBranch(mainRoot string) string {
 // ReadSection reads a single config section by name, routing to the
 // appropriate file based on ProjectSections membership.
 //
-// For project sections (version, jira, commit, pr, plan, execute), reads
+// For project sections (version, jira, commit, pr, git, plan, execute, harden), reads
 // .sdlc-v2/config.toml. For all other sections, reads the same merged view
 // of the user-level config file and .sdlc-v2/local.toml that Read uses (see
 // ReadLocalLayers) — the project file wins on any key both set.

@@ -56,7 +56,7 @@ func TestDashboardContract_NewListsNeverNull(t *testing.T) {
 		}},
 		DashboardStep{Name: "dimensions", Status: StepCompleted, Detail: &DashboardStepDetail{
 			Kind:         dashboardKindDimensions,
-			Dimensions:   []DashboardDimension{{Name: "security", Status: StepCompleted}},
+			Dimensions:   []DashboardDimension{{Name: "security", Status: StepCompleted, FindingItems: []DashboardReviewFinding{}}},
 			ReviewTotals: &DashboardReviewTotals{},
 		}},
 		DashboardStep{Name: "explorers", Status: StepCompleted, Detail: &DashboardStepDetail{
@@ -89,7 +89,7 @@ func TestDashboardContract_NewListsNeverNull(t *testing.T) {
 		}},
 		DashboardStep{Name: "ship review", Status: StepCompleted, Detail: &DashboardStepDetail{
 			Kind:       dashboardKindDimensions,
-			Dimensions: []DashboardDimension{{Name: "docs", Status: StepSkipped, Wave: 2, Reason: "missing"}},
+			Dimensions: []DashboardDimension{{Name: "docs", Status: StepSkipped, Wave: 2, Reason: "missing", FindingItems: []DashboardReviewFinding{}}},
 			ReviewPlan: &DashboardReviewPlan{},
 		}},
 	)
@@ -122,7 +122,7 @@ func TestDashboardContract_NewListsNeverNull(t *testing.T) {
 		`"repairLimit":true`,
 		`"outcomes":[{"id":"f-1","text":"","choice":"stop","reason":""}]`,
 		`"reviewPlan":{"wavesPlanned":0,"wavesRun":0,"dimensionsPlanned":0,"dimensionsRun":0,"neverStarted":0}`,
-		`"wave":2`, `"reason":"missing"`,
+		`"wave":2`, `"reason":"missing"`, `"findingItems":[]`,
 	} {
 		if !strings.Contains(s, key) {
 			t.Errorf("pipeline JSON lacks %s: %s", key, s)

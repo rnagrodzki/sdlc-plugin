@@ -53,6 +53,14 @@ const (
 	PRTemplateFile         = "pr-template.md"
 	ScratchSubdir          = "scratch"
 	BackupsSubdir          = "backups"
+	// PreplanSubdir is the subdirectory (under DataDir) that holds the preplan
+	// files, one <slug>.md file for each topic. A linked worktree links it to
+	// the main worktree through LinkedStateEntries.
+	PreplanSubdir = "preplan"
+	// RunArchiveSubdir is the subdirectory (under DataDir) that holds archived
+	// runs, one <runId> folder for each run. A linked worktree links it to the
+	// main worktree through LinkedStateEntries.
+	RunArchiveSubdir = "run-archive"
 	// BakSuffix is a suffix pattern (matches "*.bak"), not a named entry, so
 	// it is never a list member — see UnlinkedStateEntries.
 	BakSuffix = ".bak"
@@ -63,6 +71,7 @@ const (
 var LinkedStateEntries = []string{
 	RunsSubdir, ReportsSubdir, HistorySubdir, EvidenceSubdir,
 	LearningsSubdir, ReviewsSubdir, StateArtifactsSubdir, TimingsFile,
+	PreplanSubdir, RunArchiveSubdir,
 }
 
 // UnlinkedStateEntries are the DataDir entries that are never linked: tracked

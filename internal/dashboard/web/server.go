@@ -4,6 +4,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,6 +16,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -42,8 +44,10 @@ const (
 	// tokenPlaceholder is the text in static/index.html that GET / replaces
 	// with this server start's token.
 	tokenPlaceholder = "{{SDLC_TOKEN}}"
-	// tokenHeader carries the token on POST /api/stop.
+	// tokenHeader carries the token on every state-changing request.
 	tokenHeader = "X-Sdlc-Token"
+	// maxMutationBody is the largest body guardMutation accepts.
+	maxMutationBody = 8 << 10
 	// sseRetryMillis is the reconnect delay the page's EventSource uses.
 	sseRetryMillis = 3000
 )
@@ -373,17 +377,46 @@ func encodeSnapshot(s tools.DashboardSnapshot) (data []byte, hash string, err er
 	return data, hex.EncodeToString(sum[:]), nil
 }
 
-// serveStop accepts a stop request only from this server's own page: the
-// Origin must be the server's loopback origin and X-Sdlc-Token must equal
-// this start's token.
-func (h *handler) serveStop(w http.ResponseWriter, r *http.Request) {
+// guardMutation lets a state-changing request pass only when it comes from
+// this server's own page: the Origin must be the server's loopback origin and
+// X-Sdlc-Token must equal this start's token. With needsBody it also needs a
+// JSON Content-Type (415) and a body of at most maxMutationBody bytes (413);
+// it reads the body once and puts it back, so the route can decode it. It
+// writes the JSON error and returns false when the request must stop.
+func (h *handler) guardMutation(w http.ResponseWriter, r *http.Request, needsBody bool) bool {
 	origin := r.Header.Get("Origin")
 	if origin != h.origins[0] && origin != h.origins[1] {
-		http.Error(w, "forbidden origin", http.StatusForbidden)
-		return
+		writeAPIError(w, http.StatusForbidden, "FORBIDDEN_ORIGIN", "forbidden origin", "Open the dashboard from its own URL.")
+		return false
 	}
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get(tokenHeader)), []byte(h.token)) != 1 {
-		http.Error(w, "forbidden token", http.StatusForbidden)
+		writeAPIError(w, http.StatusForbidden, "FORBIDDEN_TOKEN", "forbidden token", "Reload the page to get a new token.")
+		return false
+	}
+	if !needsBody {
+		return true
+	}
+	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
+		writeAPIError(w, http.StatusUnsupportedMediaType, "BAD_CONTENT_TYPE", "content type must be application/json", "Send the body as application/json.")
+		return false
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMutationBody))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE", "request body is too large", "Send a body under 8 KiB.")
+		} else {
+			writeAPIError(w, http.StatusBadRequest, "BAD_BODY", "request body could not be read", "Send the body again.")
+		}
+		return false
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	return true
+}
+
+// serveStop accepts a stop request only when guardMutation passes it.
+func (h *handler) serveStop(w http.ResponseWriter, r *http.Request) {
+	if !h.guardMutation(w, r, false) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]bool{"stopping": true})
@@ -391,6 +424,16 @@ func (h *handler) serveStop(w http.ResponseWriter, r *http.Request) {
 		f.Flush()
 	}
 	h.stop()
+}
+
+// writeAPIError writes {"error":{"code","message","suggestion"}} with status.
+func writeAPIError(w http.ResponseWriter, status int, code, message, suggestion string) {
+	type apiError struct {
+		Code       string `json:"code"`
+		Message    string `json:"message"`
+		Suggestion string `json:"suggestion"`
+	}
+	writeJSON(w, status, map[string]apiError{"error": {Code: code, Message: message, Suggestion: suggestion}})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

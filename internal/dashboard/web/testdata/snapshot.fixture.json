@@ -122,11 +122,62 @@
               "detail": {
                 "kind": "dimensions",
                 "dimensions": [
-                  { "name": "security", "status": "completed", "findings": 2, "worst": "critical" },
-                  { "name": "correctness", "status": "completed", "findings": 1, "worst": "medium" },
-                  { "name": "performance", "status": "completed", "findings": 0, "worst": "" },
-                  { "name": "docs", "status": "completed", "findings": 2, "worst": "low" },
-                  { "name": "tests", "status": "completed", "findings": 0, "worst": "" }
+                  {
+                    "name": "security",
+                    "status": "completed",
+                    "findings": 2,
+                    "worst": "critical",
+                    "findingItems": [
+                      {
+                        "text": "The request path is joined to the static root without cleaning, so a crafted path can read files outside the embedded folder",
+                        "severity": "critical",
+                        "file": "internal/dashboard/web/server.go",
+                        "line": "142"
+                      },
+                      {
+                        "text": "The snapshot endpoint has no Origin check, so any web page can read local pipeline data",
+                        "severity": "high",
+                        "file": "internal/dashboard/web/server.go",
+                        "line": "201-208"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "correctness",
+                    "status": "completed",
+                    "findings": 1,
+                    "worst": "medium",
+                    "findingItems": [
+                      {
+                        "text": "The stalled rule uses the file time of the state file, so a copied state file shows as running",
+                        "severity": "medium",
+                        "file": "internal/tools/dashboard_snapshot.go",
+                        "line": "398"
+                      }
+                    ]
+                  },
+                  { "name": "performance", "status": "completed", "findings": 0, "worst": "", "findingItems": [] },
+                  {
+                    "name": "docs",
+                    "status": "completed",
+                    "findings": 2,
+                    "worst": "low",
+                    "findingItems": [
+                      {
+                        "text": "The dashboard doc still names the old tab labels",
+                        "severity": "low",
+                        "file": "docs/skills/dashboard.md",
+                        "line": "57"
+                      },
+                      {
+                        "text": "Add the snapshot version to the example output",
+                        "severity": "info",
+                        "file": "docs/skills/dashboard.md",
+                        "line": ""
+                      }
+                    ]
+                  },
+                  { "name": "tests", "status": "completed", "findings": 0, "worst": "", "findingItems": [] }
                 ],
                 "reviewTotals": { "found": 5, "fixed": 2, "deferred": 2, "unaccounted": 1 }
               }
@@ -495,9 +546,9 @@
               "detail": {
                 "kind": "dimensions",
                 "dimensions": [
-                  { "name": "security", "status": "completed", "findings": 0, "worst": "" },
-                  { "name": "correctness", "status": "completed", "findings": 0, "worst": "" },
-                  { "name": "performance", "status": "completed", "findings": 0, "worst": "" }
+                  { "name": "security", "status": "completed", "findings": 0, "worst": "", "findingItems": [] },
+                  { "name": "correctness", "status": "completed", "findings": 0, "worst": "", "findingItems": [] },
+                  { "name": "performance", "status": "completed", "findings": 0, "worst": "", "findingItems": [] }
                 ],
                 "reviewTotals": { "found": 0, "fixed": 0, "deferred": 0, "unaccounted": 0 }
               }
@@ -585,11 +636,25 @@
               "detail": {
                 "kind": "dimensions",
                 "dimensions": [
-                  { "name": "security", "status": "completed", "findings": 0, "worst": "", "wave": 1 },
-                  { "name": "correctness", "status": "in_progress", "findings": 0, "worst": "", "wave": 1 },
-                  { "name": "performance", "status": "completed", "findings": 1, "worst": "medium", "wave": 1 },
-                  { "name": "tests", "status": "completed", "findings": 0, "worst": "", "wave": 1 },
-                  { "name": "docs", "status": "skipped", "findings": 0, "worst": "", "wave": 2, "reason": "missing" }
+                  { "name": "security", "status": "completed", "findings": 0, "worst": "", "wave": 1, "findingItems": [] },
+                  { "name": "correctness", "status": "in_progress", "findings": 0, "worst": "", "wave": 1, "findingItems": [] },
+                  {
+                    "name": "performance",
+                    "status": "completed",
+                    "findings": 1,
+                    "worst": "medium",
+                    "wave": 1,
+                    "findingItems": [
+                      {
+                        "text": "The idempotency lookup scans the table because the key column has no index",
+                        "severity": "medium",
+                        "file": "internal/webhook/store.go",
+                        "line": "57"
+                      }
+                    ]
+                  },
+                  { "name": "tests", "status": "completed", "findings": 0, "worst": "", "wave": 1, "findingItems": [] },
+                  { "name": "docs", "status": "skipped", "findings": 0, "worst": "", "wave": 2, "reason": "missing", "findingItems": [] }
                 ],
                 "reviewPlan": {
                   "wavesPlanned": 2,

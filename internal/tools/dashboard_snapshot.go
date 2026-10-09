@@ -224,12 +224,13 @@ type DashboardTask struct {
 
 // DashboardDimension is one review dimension of a ship review step.
 type DashboardDimension struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Findings int    `json:"findings"`
-	Worst    string `json:"worst"`            // highest severity, "" when none
-	Wave     int    `json:"wave,omitempty"`   // 1-based wave of the review plan; absent when the dimension is not planned
-	Reason   string `json:"reason,omitempty"` // "stalled" | "missing" | "unstopped" when Status is skipped
+	Name         string                   `json:"name"`
+	Status       string                   `json:"status"`
+	Findings     int                      `json:"findings"`
+	Worst        string                   `json:"worst"`            // highest severity, "" when none
+	Wave         int                      `json:"wave,omitempty"`   // 1-based wave of the review plan; absent when the dimension is not planned
+	Reason       string                   `json:"reason,omitempty"` // "stalled" | "missing" | "unstopped" when Status is skipped
+	FindingItems []DashboardReviewFinding `json:"findingItems"`     // same rows as kind findings; [] when the dimension has no finding
 }
 
 // DashboardReviewTotals is the finding ledger of a ship review step.

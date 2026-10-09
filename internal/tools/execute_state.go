@@ -996,8 +996,8 @@ func execValidateSafeID(id, label string) error {
 // execDeriveRunID derives a default runId from state data's startedAt field,
 // matching JS's startedAt.replace(/[^0-9T]/g, ”).
 func execDeriveRunID(data map[string]any, waveNum int) string {
-	if startedAt, ok := data["startedAt"].(string); ok && startedAt != "" {
-		return execNonDigitTRE.ReplaceAllString(startedAt, "")
+	if id := execRunID(data); id != "" {
+		return id
 	}
 	return fmt.Sprintf("wave-%d", waveNum)
 }
@@ -4841,7 +4841,7 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.
 	}
 
 	if startedAt, _ := st.Data["startedAt"].(string); startedAt != "" {
-		runID := execNonDigitTRE.ReplaceAllString(startedAt, "")
+		runID := execRunID(st.Data)
 		if runID != "" {
 			runDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID)
 			if rmErr := os.RemoveAll(runDir); rmErr != nil {
@@ -5053,8 +5053,8 @@ func execReapRunDirectories(stateDir string, ttlDays int, dryRun bool, now func(
 		fp := filepath.Join(stateDir, e.Name())
 		var data map[string]any
 		if err := fsx.ReadJSON(fp, &data); err == nil {
-			if startedAt, ok := data["startedAt"].(string); ok {
-				liveRunIDs[execNonDigitTRE.ReplaceAllString(startedAt, "")] = true
+			if id := execRunID(data); id != "" {
+				liveRunIDs[id] = true
 			}
 		}
 	}

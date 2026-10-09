@@ -159,3 +159,21 @@ description = """
 Never record task-done from a self-report alone. \
 Always independently confirm via git diff and re-run \
 of build/vet/test commands."""
+
+# ─── Harden instructions ─────────────────────────────────────────
+# Custom text that the harden skill adds to its proposals.
+# One list for each proposal surface. The four lists are independent.
+
+[harden.instructions]
+# Text that harden adds to its plan guardrail proposals. Max 10 items, 1024 characters each.
+# Example: plan-guardrails = ["Prefer error severity for CI rules."]
+plan-guardrails = []
+# Text that harden adds to its execute guardrail proposals. Max 10 items, 1024 characters each.
+# Example: execute-guardrails = ["Re-run the full test suite after every wave."]
+execute-guardrails = []
+# Text that harden adds to its review dimension proposals. Max 10 items, 1024 characters each.
+# Example: review-dimensions = ["Check that every new endpoint has an auth test."]
+review-dimensions = []
+# Text that harden adds to its copilot instruction proposals. Max 10 items, 1024 characters each.
+# Example: copilot-instructions = ["Use table-driven tests for Go code."]
+copilot-instructions = []

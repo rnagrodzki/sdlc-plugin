@@ -417,7 +417,7 @@ func TestHandler_StopChecks(t *testing.T) {
 	}
 }
 
-// TestStopUsesConstantTimeCompare is a tripwire: the stop token compare must
+// TestStopUsesConstantTimeCompare is a tripwire: the guardMutation token compare must
 // stay constant-time, so its timing tells nothing about the token.
 func TestStopUsesConstantTimeCompare(t *testing.T) {
 	src, err := os.ReadFile("server.go")
@@ -425,7 +425,128 @@ func TestStopUsesConstantTimeCompare(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(src), "subtle.ConstantTimeCompare([]byte(r.Header.Get(tokenHeader)), []byte(h.token))") {
-		t.Error("serveStop no longer compares the token with crypto/subtle.ConstantTimeCompare")
+		t.Error("guardMutation no longer compares the token with crypto/subtle.ConstantTimeCompare")
+	}
+}
+
+// apiErrorBody is the JSON error body of writeAPIError.
+type apiErrorBody struct {
+	Error struct {
+		Code       string `json:"code"`
+		Message    string `json:"message"`
+		Suggestion string `json:"suggestion"`
+	} `json:"error"`
+}
+
+// TestHandler_StopErrorBodyIsJSON pins the stop route's error body: same
+// status codes as before, JSON code, message and suggestion instead of text.
+func TestHandler_StopErrorBodyIsJSON(t *testing.T) {
+	cases := []struct {
+		name   string
+		header map[string]string
+		code   string
+	}{
+		{"foreign origin", map[string]string{"Origin": "http://evil.example", tokenHeader: testToken}, "FORBIDDEN_ORIGIN"},
+		{"wrong token", map[string]string{"Origin": testOrigin, tokenHeader: strings.Repeat("f", 64)}, "FORBIDDEN_TOKEN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newTestHandler(t, nil)
+			rec := do(h, "POST", "/api/stop", testHost, tc.header)
+			if rec.Code != http.StatusForbidden {
+				t.Fatalf("POST /api/stop = %d; want 403", rec.Code)
+			}
+			if got := rec.Header().Get("Content-Type"); got != "application/json" {
+				t.Errorf("Content-Type = %q; want application/json", got)
+			}
+			var body apiErrorBody
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+			}
+			if body.Error.Code != tc.code || body.Error.Message == "" || body.Error.Suggestion == "" {
+				t.Errorf("error = %+v; want code %s with message and suggestion", body.Error, tc.code)
+			}
+		})
+	}
+}
+
+// TestHandler_GuardMutation runs guardMutation with needsBody on a probe
+// route that echoes the body it reads after the guard passes.
+func TestHandler_GuardMutation(t *testing.T) {
+	good := map[string]string{"Origin": testOrigin, tokenHeader: testToken, "Content-Type": "application/json"}
+	with := func(k, v string) map[string]string {
+		m := map[string]string{}
+		for hk, hv := range good {
+			m[hk] = hv
+		}
+		if v == "" {
+			delete(m, k)
+		} else {
+			m[k] = v
+		}
+		return m
+	}
+	cases := []struct {
+		name      string
+		header    map[string]string
+		body      string
+		needsBody bool
+		wantCode  int
+		wantErr   string
+	}{
+		{"json body passes", good, `{"repo":"/r"}`, true, 200, ""},
+		{"json with charset passes", with("Content-Type", "application/json; charset=utf-8"), `{}`, true, 200, ""},
+		{"body of exactly 8 KiB passes", good, strings.Repeat("a", maxMutationBody), true, 200, ""},
+		{"empty body passes", good, "", true, 200, ""},
+		{"missing content type", with("Content-Type", ""), `{}`, true, 415, "BAD_CONTENT_TYPE"},
+		{"text content type", with("Content-Type", "text/plain"), `{}`, true, 415, "BAD_CONTENT_TYPE"},
+		{"json lookalike content type", with("Content-Type", "application/jsonx"), `{}`, true, 415, "BAD_CONTENT_TYPE"},
+		{"unparsable content type", with("Content-Type", "application/json;;="), `{}`, true, 415, "BAD_CONTENT_TYPE"},
+		{"body over 8 KiB", good, strings.Repeat("a", maxMutationBody+1), true, 413, "BODY_TOO_LARGE"},
+		{"no body check without needsBody", with("Content-Type", ""), strings.Repeat("a", maxMutationBody+1), false, 200, ""},
+		{"foreign origin wins over body checks", with("Origin", "http://evil.example"), `{}`, true, 403, "FORBIDDEN_ORIGIN"},
+		{"wrong token wins over body checks", with(tokenHeader, strings.Repeat("f", 64)), `{}`, true, 403, "FORBIDDEN_TOKEN"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := newTestHandler(t, nil)
+			var echoed string
+			probe := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !h.guardMutation(w, r, tc.needsBody) {
+					return
+				}
+				b, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read body after guard: %v", err)
+				}
+				echoed = string(b)
+				w.WriteHeader(http.StatusOK)
+			})
+			req := httptest.NewRequest("POST", "/probe", strings.NewReader(tc.body))
+			req.Host = testHost
+			for k, v := range tc.header {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			probe.ServeHTTP(rec, req)
+
+			if rec.Code != tc.wantCode {
+				t.Fatalf("status = %d; want %d (body %q)", rec.Code, tc.wantCode, rec.Body.String())
+			}
+			if tc.wantErr == "" {
+				if echoed != tc.body {
+					t.Errorf("body after guard has %d bytes; want %d", len(echoed), len(tc.body))
+				}
+				return
+			}
+			var body apiErrorBody
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+			}
+			if body.Error.Code != tc.wantErr || body.Error.Message == "" || body.Error.Suggestion == "" {
+				t.Errorf("error = %+v; want code %s with message and suggestion", body.Error, tc.wantErr)
+			}
+		})
 	}
 }
 

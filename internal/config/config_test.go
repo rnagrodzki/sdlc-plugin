@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
@@ -1454,6 +1456,102 @@ func TestSchemaSync(t *testing.T) {
 		if _, ok := schema.Properties[key]; !ok {
 			t.Errorf("AllowedProjectKey %q missing from schema properties", key)
 		}
+	}
+}
+
+// TestHardenSectionRegistered pins the harden section in both project maps.
+// harden is a project section: it routes to config.toml, not local.toml.
+func TestHardenSectionRegistered(t *testing.T) {
+	if !ProjectSections["harden"] {
+		t.Error(`ProjectSections is missing "harden"`)
+	}
+	if !AllowedProjectKeys["harden"] {
+		t.Error(`AllowedProjectKeys is missing "harden"`)
+	}
+	if LocalSections["harden"] {
+		t.Error(`LocalSections must not contain "harden"`)
+	}
+}
+
+// TestRead_AcceptsHardenInstructions verifies a config with a
+// [harden.instructions] table loads without an unknown-key error.
+func TestRead_AcceptsHardenInstructions(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{
+		"harden": map[string]any{
+			"instructions": map[string]any{
+				"plan-guardrails":      []any{"Prefer error severity for CI rules."},
+				"execute-guardrails":   []any{},
+				"review-dimensions":    []any{},
+				"copilot-instructions": []any{},
+			},
+		},
+	})
+
+	if _, err := Read(root); err != nil {
+		t.Fatalf("Read with [harden.instructions]: %v", err)
+	}
+}
+
+// TestSchema_HardenInstructions validates the harden property of the config
+// schema: four independent string lists, at most 10 items, each item 1-1024
+// characters, and no other surface key.
+func TestSchema_HardenInstructions(t *testing.T) {
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "sdlc-config.schema.json"))
+	if err != nil {
+		t.Fatalf("abs schema path: %v", err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	instructions := func(surface string, items []any) map[string]any {
+		return map[string]any{
+			"harden": map[string]any{
+				"instructions": map[string]any{surface: items},
+			},
+		}
+	}
+	repeat := func(n int) []any {
+		out := make([]any, n)
+		for i := range out {
+			out[i] = "rule"
+		}
+		return out
+	}
+
+	cases := []struct {
+		name    string
+		doc     map[string]any
+		wantErr bool
+	}{
+		{"empty section", map[string]any{"harden": map[string]any{}}, false},
+		{"empty instructions", map[string]any{"harden": map[string]any{"instructions": map[string]any{}}}, false},
+		{"plan-guardrails empty list", instructions("plan-guardrails", []any{}), false},
+		{"execute-guardrails one item", instructions("execute-guardrails", []any{"Re-run tests after every wave."}), false},
+		{"review-dimensions ten items", instructions("review-dimensions", repeat(10)), false},
+		{"copilot-instructions 1024 characters", instructions("copilot-instructions", []any{strings.Repeat("a", 1024)}), false},
+		{"unknown surface key", instructions("unknown-surface", []any{"x"}), true},
+		{"eleven items", instructions("plan-guardrails", repeat(11)), true},
+		{"item of 1025 characters", instructions("plan-guardrails", []any{strings.Repeat("a", 1025)}), true},
+		{"empty string item", instructions("plan-guardrails", []any{""}), true},
+		{"non-string item", instructions("plan-guardrails", []any{1}), true},
+		{"unknown harden key", map[string]any{"harden": map[string]any{"other": true}}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := sch.Validate(tc.doc)
+			if tc.wantErr && err == nil {
+				t.Error("schema accepted a document it must reject")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("schema rejected a valid document: %v", err)
+			}
+		})
 	}
 }
 

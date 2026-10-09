@@ -362,6 +362,13 @@
         }
       },
       "additionalProperties": false
+    },
+    "hardenInstructionList": {
+      "type": "array",
+      "default": [],
+      "maxItems": 10,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1024 },
+      "description": "Custom instruction texts that harden adds to its proposals for one surface. At most 10 items, 1-1024 characters each."
     }
   },
   "properties": {
@@ -385,6 +392,24 @@
     },
     "execute": {
       "$ref": "#/$defs/executeSection"
+    },
+    "harden": {
+      "type": "object",
+      "description": "Controls the harden skill.",
+      "properties": {
+        "instructions": {
+          "type": "object",
+          "description": "Custom instructions that harden adds to its proposals, one list for each proposal surface. The four surfaces are independent.",
+          "properties": {
+            "plan-guardrails": { "$ref": "#/$defs/hardenInstructionList" },
+            "execute-guardrails": { "$ref": "#/$defs/hardenInstructionList" },
+            "review-dimensions": { "$ref": "#/$defs/hardenInstructionList" },
+            "copilot-instructions": { "$ref": "#/$defs/hardenInstructionList" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false

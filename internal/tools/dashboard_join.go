@@ -309,13 +309,19 @@ func dashboardNestExecute(ship *DashboardPipeline, exec DashboardPipeline) {
 // dashboardNestReview copies the joined review run review into ship: the
 // review rows that readReviewLedgerDir built (review.join.reviewDims) become
 // the dimensions of the ship review step, with their wave, stop reason,
-// finding count, and worst severity. The plan totals go to the step
+// finding count, and worst severity. Each dimension also gets its finding
+// rows (FindingItems): the review issues whose Ref is the dimension name, in
+// issue order, the same rows the standalone review lists; a dimension with no
+// finding gets an empty, non-nil list. The plan totals go to the step
 // reviewPlan; with no planned dimension it stays absent. The review issues go
 // to the ship issues with their Ref unchanged. A review with no rows gives an
 // empty, non-nil dimension list.
 func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
 	dims := make([]DashboardDimension, 0, len(review.join.reviewDims))
 	dims = append(dims, review.join.reviewDims...)
+	for i := range dims {
+		dims[i].FindingItems = dashboardDimensionFindings(review.Issues, dims[i].Name)
+	}
 	if step := dashboardStepNamed(ship, dashboardShipStepReview); step != nil {
 		if step.Detail == nil {
 			step.Detail = &DashboardStepDetail{Kind: dashboardKindDimensions}
@@ -324,4 +330,20 @@ func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
 		step.Detail.ReviewPlan = review.join.reviewPlan
 	}
 	ship.Issues = append(ship.Issues, review.Issues...)
+}
+
+// dashboardDimensionFindings returns the finding rows of the dimension name:
+// the review issues whose Ref is name, in issue order. It builds the rows as
+// dashboardReviewFindings does for the standalone review. It returns an
+// empty, non-nil list when the dimension has no finding.
+func dashboardDimensionFindings(issues []DashboardIssue, name string) []DashboardReviewFinding {
+	rows := []DashboardReviewFinding{}
+	for _, is := range issues {
+		if is.Source == dashboardSourceReview && is.Ref == name {
+			rows = append(rows, DashboardReviewFinding{
+				Text: is.Text, Severity: is.Severity, File: is.File, Line: is.Line,
+			})
+		}
+	}
+	return rows
 }
