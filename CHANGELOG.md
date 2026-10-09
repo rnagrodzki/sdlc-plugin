@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.4.0] - 2026-10-09
+
+### RC 1
+
+- Runs that wait for an answer show "WAITING ON YOU", a waiting count, and a count in the tab title.
+- Plan, review, and execute stations show planned work: guardrail counts, all review dimensions, all waves.
+- Plan review keeps distinct totals, the repair-limit flag, and each finding's choice.
+- Ship skips the commit agent when the tree is clean.
+- New `/sdlc:openspec-save` skill saves an OpenSpec change in its own PR.
+- Guardrails and review dimensions are stricter.
+
+### RC 2
+
+- Add the preplan skill to gather context before planning, and a faster plan dispatch.
+- Add run archive and cache clear to the dashboard, with a step detail viewer and glass-style dialogs.
+- Let harden read custom instructions from the project, and reject unknown keys in the [harden] config section.
+- Fix the OpenSpec stage check.
+- Dashboard routes return 400 instead of 404 for invalid requests, and error messages use sentence case.
+- Fix the pre-push hook so its tests no longer write to the real repository when you push from a linked worktree.
+
 ## [0.3.5] - 2026-10-08
 
 ### RC 1
