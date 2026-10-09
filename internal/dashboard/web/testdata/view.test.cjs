@@ -1127,6 +1127,180 @@ describe('learningUrl', () => {
   });
 });
 
+describe('page wiring helpers', () => {
+  test('view.js exports the four wiring helpers and errorText', () => {
+    ['closeFocusSelector', 'confirmSteps', 'archiveResultText', 'clearResultText', 'errorText'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
+});
+
+describe('errorText', () => {
+  test('returns the message only, never the suggestion', () => {
+    const body = { error: { code: 'X', message: 'It failed.', suggestion: 'Try again.' } };
+    assert.equal(view.errorText(body, 'fallback'), 'It failed.');
+  });
+
+  test('returns the fallback when there is no message, even with a suggestion', () => {
+    assert.equal(view.errorText({ error: { suggestion: 'Try again.' } }, 'fallback'), 'fallback');
+    assert.equal(view.errorText({ error: { message: '' } }, 'fallback'), 'fallback');
+    assert.equal(view.errorText(null, 'fallback'), 'fallback');
+  });
+});
+
+describe('closeFocusSelector', () => {
+  test('returns the Activity tab button when the key is empty', () => {
+    assert.equal(view.closeFocusSelector(''), '#tab-activity');
+    assert.equal(view.closeFocusSelector(), '#tab-activity');
+    assert.equal(view.closeFocusSelector(null), '#tab-activity');
+  });
+
+  test('returns the attribute selector of the key', () => {
+    assert.equal(view.closeFocusSelector('deferred:d-1'), '[data-detail="deferred:d-1"]');
+    assert.equal(
+      view.closeFocusSelector('learning:2026-10-08:plan: split the lanes'),
+      '[data-detail="learning:2026-10-08:plan: split the lanes"]'
+    );
+  });
+
+  test('escapes the double quote, the backslash, and line breaks of a key', () => {
+    assert.equal(view.closeFocusSelector('learning:2026-10-08:say "hi"'), '[data-detail="learning:2026-10-08:say \\"hi\\""]');
+    assert.equal(view.closeFocusSelector('deferred:a\\b'), '[data-detail="deferred:a\\\\b"]');
+    assert.equal(view.closeFocusSelector('deferred:a\nb'), '[data-detail="deferred:a\\a b"]');
+  });
+
+  test('builds the selector of the key that detailKey builds for each kind', () => {
+    const keys = [
+      view.detailKey('deferred', { id: 'd-1' }),
+      view.detailKey('issue', null, { pipeline: 'ship-1', index: 0 }),
+      view.detailKey('learning', { date: '2026-10-08', heading: 'plan: x' }),
+      view.detailKey('finding', null, { pipeline: 'ship-1', dimension: 'security', index: 2 }),
+    ];
+    keys.forEach((key) => {
+      assert.equal(view.closeFocusSelector(key), '[data-detail="' + key + '"]');
+    });
+  });
+});
+
+describe('confirmSteps', () => {
+  test('archive of a run that is not stalled asks once', () => {
+    assert.deepEqual(view.confirmSteps('archive', 'completed'), ['archive']);
+    assert.deepEqual(view.confirmSteps('archive', 'failed'), ['archive']);
+    assert.deepEqual(view.confirmSteps('archive'), ['archive']);
+  });
+
+  test('archive of a stalled run asks a second time', () => {
+    assert.deepEqual(view.confirmSteps('archive', 'stalled'), ['archive', 'stalled']);
+  });
+
+  test('clear asks once, whatever the status', () => {
+    assert.deepEqual(view.confirmSteps('clear'), ['clear']);
+    assert.deepEqual(view.confirmSteps('clear', 'stalled'), ['clear']);
+  });
+
+  test('an unknown action asks nothing', () => {
+    assert.deepEqual(view.confirmSteps('stop'), []);
+    assert.deepEqual(view.confirmSteps(''), []);
+  });
+});
+
+describe('archiveResultText', () => {
+  test('200 is ok with no text', () => {
+    assert.deepEqual(view.archiveResultText(200, { runId: 'ship-1', dir: '/d', moved: [], deleted: [] }), {
+      ok: true,
+      text: '',
+    });
+  });
+
+  test('409 shows the error message', () => {
+    const body = { error: { code: 'RUN_ACTIVE', message: 'The run is still running.' } };
+    assert.deepEqual(view.archiveResultText(409, body), { ok: false, text: 'The run is still running.' });
+  });
+
+  test('an error with a suggestion shows the message only', () => {
+    const body = { error: { code: 'RUN_STALLED', message: 'The run stalled.', suggestion: 'Confirm to archive it.' } };
+    assert.deepEqual(view.archiveResultText(409, body), {
+      ok: false,
+      text: 'The run stalled.',
+    });
+  });
+
+  test('a response with no JSON body names the status', () => {
+    assert.deepEqual(view.archiveResultText(500, null), { ok: false, text: 'Archive failed (HTTP 500).' });
+  });
+
+  test('a body with no message names the status', () => {
+    assert.deepEqual(view.archiveResultText(500, {}), { ok: false, text: 'Archive failed (HTTP 500).' });
+    assert.deepEqual(view.archiveResultText(500, { error: {} }), { ok: false, text: 'Archive failed (HTTP 500).' });
+    assert.deepEqual(view.archiveResultText(500, { error: { message: '' } }), {
+      ok: false,
+      text: 'Archive failed (HTTP 500).',
+    });
+    assert.deepEqual(view.archiveResultText(500, 'boom'), { ok: false, text: 'Archive failed (HTTP 500).' });
+  });
+
+  test('a network error (status 0) is not ok', () => {
+    assert.deepEqual(view.archiveResultText(0, null), { ok: false, text: 'Archive failed (HTTP 0).' });
+  });
+});
+
+describe('clearResultText', () => {
+  const MB = 1024 * 1024;
+
+  test('two 200 results of 1 MB each give the sum', () => {
+    const text = view.clearResultText([
+      { repo: '/abs/repo-a', status: 200, body: { freedBytes: MB } },
+      { repo: '/abs/repo-b', status: 200, body: { freedBytes: MB } },
+    ]);
+    assert.equal(text, 'Freed 2.0 MB.');
+  });
+
+  test('a failed request adds one line and does not change the sum', () => {
+    const text = view.clearResultText([
+      { repo: '/abs/repo-a', status: 200, body: { freedBytes: MB } },
+      { repo: '/abs/repo', status: 404, body: { error: { code: 'REPO_NOT_FOUND', message: 'No such repo.' } } },
+    ]);
+    assert.equal(text, 'Freed 1.0 MB.\n/abs/repo: No such repo.');
+  });
+
+  test('one line for each failed request, in order, with the message only', () => {
+    const text = view.clearResultText([
+      { repo: '/a', status: 403, body: { error: { message: 'Forbidden.', suggestion: 'Reload the page.' } } },
+      { repo: '/b', status: 500, body: null },
+      { repo: '/c', status: 0, body: null },
+    ]);
+    assert.equal(
+      text,
+      [
+        'Freed 0.0 KB.',
+        '/a: Forbidden.',
+        '/b: Clear failed (HTTP 500).',
+        '/c: Clear failed (HTTP 0).',
+      ].join('\n')
+    );
+  });
+
+  test('a size under 1 MiB shows KB', () => {
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: { freedBytes: 1536 } }]), 'Freed 1.5 KB.');
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: { freedBytes: 0 } }]), 'Freed 0.0 KB.');
+  });
+
+  test('a size of 1 MiB or more shows MB', () => {
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: { freedBytes: MB } }]), 'Freed 1.0 MB.');
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: { freedBytes: 5.5 * MB } }]), 'Freed 5.5 MB.');
+  });
+
+  test('a 200 result with no freedBytes counts as 0', () => {
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: null }]), 'Freed 0.0 KB.');
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: {} }]), 'Freed 0.0 KB.');
+  });
+
+  test('no results give a size of 0', () => {
+    assert.equal(view.clearResultText([]), 'Freed 0.0 KB.');
+    assert.equal(view.clearResultText(), 'Freed 0.0 KB.');
+  });
+});
+
 // A snapshot with one item of each detail kind. The ship pipeline has two
 // review dimensions that each hold a finding at index 0. The review pipeline
 // is a standalone review: one step for each dimension, kind findings.

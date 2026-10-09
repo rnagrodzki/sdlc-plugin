@@ -217,6 +217,100 @@
     );
   }
 
+  // --- Detail viewer, archive, and clear: page decisions ---------------------
+
+  var BYTES_PER_KB = 1024;
+  var BYTES_PER_MB = BYTES_PER_KB * BYTES_PER_KB;
+
+  // The CSS escape of a value inside a double-quoted attribute selector.
+  // split and join, not a regex literal: the Go guard test that scans the
+  // page scripts reads a quote inside a regex literal as the start of a string.
+  function cssString(value) {
+    return String(value)
+      .split('\\').join('\\\\')
+      .split('"').join('\\"')
+      .split('\n').join('\\a ')
+      .split('\r').join('\\d ')
+      .split('\f').join('\\c ');
+  }
+
+  // '12.5 KB' under 1 MiB, else '1.5 MB'. Bytes below 0 or not a number count as 0.
+  function formatBytes(bytes) {
+    var n = typeof bytes === 'number' && bytes > 0 ? bytes : 0;
+    return n >= BYTES_PER_MB
+      ? (n / BYTES_PER_MB).toFixed(1) + ' MB'
+      : (n / BYTES_PER_KB).toFixed(1) + ' KB';
+  }
+
+  /**
+   * The text of an error response: the message only. The suggestion of the
+   * response is not shown. Every error response of the dashboard server has the
+   * shape {"error": {"code", "message", "suggestion"}}.
+   * @param {*} body the parsed JSON body, or null when the response had none
+   * @param {string} fallback the text when the body has no message
+   * @returns {string}
+   */
+  function errorText(body, fallback) {
+    var err = body && typeof body === 'object' ? body.error : null;
+    var message = err && typeof err.message === 'string' ? err.message : '';
+    return message || fallback;
+  }
+
+  /**
+   * The selector of the element that takes the focus when the detail viewer
+   * closes. The page rebuilds its rows on every snapshot, so the focus goes to
+   * the row with the same key, not to the element that opened the viewer.
+   * @param {string} key the detail key of the viewer, '' when none is known
+   * @returns {string} '[data-detail="<key>"]', or '#tab-activity' when key is ''
+   */
+  function closeFocusSelector(key) {
+    return key ? '[data-detail="' + cssString(key) + '"]' : '#tab-activity';
+  }
+
+  /**
+   * The questions the confirm dialog asks before a click changes files, in
+   * order. The person must answer each one with Confirm.
+   * @param {string} action 'archive' | 'clear'
+   * @param {string} [status] the status of the run row, for 'archive'
+   * @returns {Array<string>} ['archive'] | ['archive', 'stalled'] | ['clear'],
+   *   [] for an unknown action
+   */
+  function confirmSteps(action, status) {
+    if (action === 'archive') return status === 'stalled' ? ['archive', 'stalled'] : ['archive'];
+    if (action === 'clear') return ['clear'];
+    return [];
+  }
+
+  /**
+   * @param {number} status HTTP status of POST /api/run-archive, 0 for a network error
+   * @param {*} body the parsed JSON body, or null when the response had none
+   * @returns {{ok: boolean, text: string}} text is '' when ok
+   */
+  function archiveResultText(status, body) {
+    if (status === 200) return { ok: true, text: '' };
+    return { ok: false, text: errorText(body, 'Archive failed (HTTP ' + status + ').') };
+  }
+
+  /**
+   * The result text of a clear over several repos: the freed size of the
+   * requests that returned 200, then one line for each other request.
+   * @param {Array<{repo: string, status: number, body: *}>} results
+   * @returns {string} 'Freed 2.0 MB.' plus a '<repo>: <message>' line for each failure
+   */
+  function clearResultText(results) {
+    var freed = 0;
+    var lines = [];
+    (results || []).forEach(function (r) {
+      if (!r) return;
+      if (r.status === 200) {
+        freed += r.body && typeof r.body.freedBytes === 'number' ? r.body.freedBytes : 0;
+        return;
+      }
+      lines.push(r.repo + ': ' + errorText(r.body, 'Clear failed (HTTP ' + r.status + ').'));
+    });
+    return ['Freed ' + formatBytes(freed) + '.'].concat(lines).join('\n');
+  }
+
   /**
    * @param {string} repoRoot
    * @param {string} worktree
@@ -1086,6 +1180,11 @@
     archiveRequest: archiveRequest,
     clearRequest: clearRequest,
     learningUrl: learningUrl,
+    errorText: errorText,
+    closeFocusSelector: closeFocusSelector,
+    confirmSteps: confirmSteps,
+    archiveResultText: archiveResultText,
+    clearResultText: clearResultText,
     detailKey: detailKey,
     detailItem: detailItem,
     worktreeLabel: worktreeLabel,
