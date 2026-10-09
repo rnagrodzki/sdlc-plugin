@@ -2634,6 +2634,177 @@ func TestPlanSupportPreplanContextErrors(t *testing.T) {
 			t.Errorf("blocking file = %q, want it unchanged", got)
 		}
 	})
+
+	t.Run("a dangling link at the preplan dir path", func(t *testing.T) {
+		root := t.TempDir()
+		dataDir := filepath.Join(root, ".sdlc-v2")
+		if err := os.MkdirAll(dataDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dataDir, "preplan")
+		target := filepath.Join(t.TempDir(), "main", ".sdlc-v2", "preplan")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err == nil {
+			t.Fatal("expected an error, got nil")
+		}
+		if got := errorClassOf(err); got != "infra" {
+			t.Errorf("error class = %q, want infra (err %v)", got, err)
+		}
+		wantMsg := "preplan_context: create " + filepath.Join(link, "auth-flow.md") + ": " +
+			link + " is a link to " + target + ", which does not exist."
+		if err.Error() != wantMsg {
+			t.Errorf("err.Error() = %q, want %q", err.Error(), wantMsg)
+		}
+		wantSuggestion := "Start a new session so the session-start hook repairs the link, or run: mkdir -p " + target
+		if got := suggestionOf(err); got != wantSuggestion {
+			t.Errorf("Suggestion = %q, want %q", got, wantSuggestion)
+		}
+		if _, statErr := os.Lstat(target); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the call created the link target (lstat err %v)", statErr)
+		}
+		if got, readErr := os.Readlink(link); readErr != nil || got != target {
+			t.Errorf("link = (%q, %v), want it unchanged and pointing at %q", got, readErr, target)
+		}
+		entries, readErr := os.ReadDir(dataDir)
+		if readErr != nil || len(entries) != 1 {
+			t.Errorf("data dir entries = %v (err %v), want only the link", entries, readErr)
+		}
+	})
+
+	t.Run("a dangling link at the topic file", func(t *testing.T) {
+		root := t.TempDir()
+		preplanDir := filepath.Join(root, ".sdlc-v2", "preplan")
+		if err := os.MkdirAll(preplanDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(preplanDir, "auth-flow.md")
+		target := filepath.Join(t.TempDir(), "elsewhere", "auth-flow.md")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err == nil {
+			t.Fatalf("expected an error, got nil (preplanCreated %v)", out.PreplanCreated)
+		}
+		if got := errorClassOf(err); got != "infra" {
+			t.Errorf("error class = %q, want infra (err %v)", got, err)
+		}
+		// The recovery is only in the Suggestion, so the message ends with the problem.
+		wantMsg := "preplan_context: create " + link + ": " + link + " is a link to " + target + ", which does not exist."
+		if err.Error() != wantMsg {
+			t.Errorf("err.Error() = %q, want %q", err.Error(), wantMsg)
+		}
+		if want := "Remove the link, then try again: rm " + link; suggestionOf(err) != want {
+			t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
+		}
+		if _, statErr := os.Lstat(target); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the call created the link target (lstat err %v)", statErr)
+		}
+		if got, readErr := os.Readlink(link); readErr != nil || got != target {
+			t.Errorf("link = (%q, %v), want it unchanged and pointing at %q", got, readErr, target)
+		}
+		entries, readErr := os.ReadDir(preplanDir)
+		if readErr != nil || len(entries) != 1 {
+			t.Errorf("preplan dir entries = %v (err %v), want only the link", entries, readErr)
+		}
+	})
+
+	t.Run("a chain of dangling links at the topic file names the topic file", func(t *testing.T) {
+		root := t.TempDir()
+		preplanDir := filepath.Join(root, ".sdlc-v2", "preplan")
+		if err := os.MkdirAll(preplanDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		elsewhere := t.TempDir()
+		file := filepath.Join(preplanDir, "auth-flow.md")
+		middle := filepath.Join(elsewhere, "middle.md")
+		target := filepath.Join(elsewhere, "gone", "auth-flow.md")
+		if err := os.Symlink(target, middle); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(middle, file); err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err == nil {
+			t.Fatalf("expected an error, got nil (preplanCreated %v)", out.PreplanCreated)
+		}
+		if got := errorClassOf(err); got != "infra" {
+			t.Errorf("error class = %q, want infra (err %v)", got, err)
+		}
+		wantMsg := "preplan_context: create " + file + ": " + file + " resolves through links to " + target + ", which does not exist."
+		if err.Error() != wantMsg {
+			t.Errorf("err.Error() = %q, want %q", err.Error(), wantMsg)
+		}
+		if want := "Remove the link, then try again: rm " + file; suggestionOf(err) != want {
+			t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
+		}
+		if got, readErr := os.Readlink(file); readErr != nil || got != middle {
+			t.Errorf("topic link = (%q, %v), want it unchanged and pointing at %q", got, readErr, middle)
+		}
+		if got, readErr := os.Readlink(middle); readErr != nil || got != target {
+			t.Errorf("middle link = (%q, %v), want it unchanged and pointing at %q", got, readErr, target)
+		}
+		if _, statErr := os.Lstat(filepath.Dir(target)); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the call created the link target folder (lstat err %v)", statErr)
+		}
+	})
+
+	notAFile := []struct {
+		name    string
+		setup   func(t *testing.T, file string)
+		wantMsg func(file string) string
+	}{
+		{"a symlink loop at the topic file", func(t *testing.T, file string) {
+			other := filepath.Join(filepath.Dir(file), "other.md")
+			if err := os.Symlink(other, file); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(file, other); err != nil {
+				t.Fatal(err)
+			}
+		}, func(file string) string {
+			return "preplan_context: create " + file + ": stat " + file + ": too many levels of symbolic links"
+		}},
+		{"a folder at the topic file", func(t *testing.T, file string) {
+			if err := os.Mkdir(file, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, func(file string) string {
+			return "preplan_context: create " + file + ": exists and is not a regular file"
+		}},
+	}
+	for _, tc := range notAFile {
+		t.Run(tc.name+" is an InfraError, not an existing topic file", func(t *testing.T) {
+			root := t.TempDir()
+			preplanDir := filepath.Join(root, ".sdlc-v2", "preplan")
+			if err := os.MkdirAll(preplanDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(preplanDir, "auth-flow.md")
+			tc.setup(t, file)
+
+			out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+			if err == nil {
+				t.Fatalf("expected an error, got nil (preplanCreated %v)", out.PreplanCreated)
+			}
+			if got := errorClassOf(err); got != "infra" {
+				t.Errorf("error class = %q, want infra (err %v)", got, err)
+			}
+			if want := tc.wantMsg(file); err.Error() != want {
+				t.Errorf("err.Error() = %q, want %q", err.Error(), want)
+			}
+			if want := "Check write permission on .sdlc-v2/preplan/, then run the skill again."; suggestionOf(err) != want {
+				t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
+			}
+		})
+	}
 }
 
 // errInjectedPreplan is the error the preplan write and close seams return.

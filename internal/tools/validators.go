@@ -2341,7 +2341,7 @@ func sameWorktreePath(a, b string) bool {
 	return ra == rb
 }
 
-// isCorrectStateLink reports whether name is one of paths.LinkedStateEntries
+// IsCorrectStateLink reports whether name is one of paths.LinkedStateEntries
 // and the corresponding entry under <activeRoot>/.sdlc-v2/ is a symlink whose
 // target is <mainRoot>/.sdlc-v2/<name>. Entries that are never linked
 // (paths.UnlinkedStateEntries) always return false here, so they keep
@@ -2357,7 +2357,14 @@ func sameWorktreePath(a, b string) bool {
 // least mainRoot/activeRoot themselves, which are real worktree roots) and
 // leaves the rest of the path unresolved but Clean-normalized, then the two
 // results are compared as plain strings.
-func isCorrectStateLink(mainRoot, activeRoot, name string) bool {
+//
+// Errors map to false: a failed os.Lstat or os.Readlink returns false, and
+// resolveBestEffort treats any filepath.EvalSymlinks error (for example
+// EACCES or ELOOP) like a missing path. So false means "not confirmed
+// correct", not "confirmed wrong". A caller must not take a destructive
+// action on false alone; internal/hooks repairLink, for example, replaces a
+// link only after os.Stat confirms that the link is dangling.
+func IsCorrectStateLink(mainRoot, activeRoot, name string) bool {
 	linked := false
 	for _, n := range paths.LinkedStateEntries {
 		if n == name {
@@ -2413,7 +2420,7 @@ func resolveBestEffort(path string) string {
 // worktree's .sdlc-v2/ (the bug family this check exists to catch). A
 // missing directory is not an error: a linked worktree with no .sdlc-v2/ at
 // all has nothing stray to report. A correctly-linked entry (see
-// isCorrectStateLink) is also not stray -- F-worktree-state-links-7 links
+// IsCorrectStateLink) is also not stray -- F-worktree-state-links-7 links
 // run-generated entries into the active worktree on purpose.
 func findStrayStateEntries(mainRoot, activeRoot string) ([]discovery.Finding, error) {
 	activeDir := filepath.Join(activeRoot, paths.DataDir)
@@ -2435,7 +2442,7 @@ func findStrayStateEntries(mainRoot, activeRoot string) ([]discovery.Finding, er
 		if allowed[entry.Name()] {
 			continue
 		}
-		if isCorrectStateLink(mainRoot, activeRoot, entry.Name()) {
+		if IsCorrectStateLink(mainRoot, activeRoot, entry.Name()) {
 			continue
 		}
 		findings = append(findings, discovery.Finding{

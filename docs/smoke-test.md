@@ -84,6 +84,11 @@ retry this step with `/clear`.
 - [ ] `git worktree add ../wt -b smoke` → start a session in `../wt`
 - [ ] `.sdlc-v2/runs` is a symlink to the main worktree; live run files visible
 - [ ] `git status --porcelain` empty
+- [ ] precondition: in the main worktree, `.sdlc-v2/run-archive/` exists and `ls -A .sdlc-v2/run-archive` prints nothing; if it holds archives, use a scratch clone, or skip the next four items
+- [ ] in the main worktree, `rmdir .sdlc-v2/run-archive` (`rmdir` refuses a folder that is not empty, so no archive is lost)
+- [ ] start a session in `../wt`
+- [ ] in the main worktree, `.sdlc-v2/run-archive/` exists again
+- [ ] `ls ../wt/.sdlc-v2/run-archive` succeeds (the link resolves)
 
 ## Pass criteria
 

@@ -1,9 +1,6 @@
-# worktree-state-links Specification
+# Spec Delta
 
-## Purpose
-Makes run state written by the MCP server under the main worktree visible, live, from every linked git worktree, without ever sharing config.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Linked entry set
 In a linked worktree, the system SHALL make each entry in the "Link" column a symlink to the same entry under `<main-worktree>/.sdlc-v2/`, and SHALL never link an entry in the "Never link" column.
@@ -64,13 +61,6 @@ When a "Link" entry already exists in the linked worktree as a regular file or d
 - **THEN** it is not deleted or replaced
 - **AND** the session-start output contains `sdlc: .sdlc-v2/reports exists in this worktree — not linked to the main worktree`
 
-### Requirement: Git status stays clean
-Created links SHALL be gitignored, so `git status --porcelain` in the linked worktree prints no link path.
-
-#### Scenario: Status after linking
-- **WHEN** links were created in a linked worktree
-- **THEN** `git status --porcelain` lists no path under `.sdlc-v2/`
-
 ### Requirement: Fail open
 When a link step fails, the hook SHALL skip that entry, print one line, and SHALL NOT fail the session start. The link steps are symlink creation, link removal, relink and main-worktree folder creation.
 
@@ -91,16 +81,7 @@ When a link step fails, the hook SHALL skip that entry, print one line, and SHAL
 - **THEN** the session starts normally
 - **AND** the output contains `sdlc: could not create .sdlc-v2/<entry> in the main worktree:`
 
-### Requirement: Stray-state check accepts links
-The worktree anchoring check SHALL NOT report `WORKTREE_ANCHOR_STRAY_STATE` for a "Link" entry that is a symlink resolving to the same entry under the main worktree's `.sdlc-v2/`, and SHALL still report a regular file or directory, or a symlink that resolves anywhere else.
-
-#### Scenario: Correct link
-- **WHEN** `<linked-worktree>/.sdlc-v2/runs` is a symlink to `<main-worktree>/.sdlc-v2/runs`
-- **THEN** no `WORKTREE_ANCHOR_STRAY_STATE` finding names `runs`
-
-#### Scenario: Link to a wrong target
-- **WHEN** `<linked-worktree>/.sdlc-v2/runs` is a symlink to `/tmp/elsewhere`
-- **THEN** a `WORKTREE_ANCHOR_STRAY_STATE` finding names `runs`
+## ADDED Requirements
 
 ### Requirement: Main worktree removes dangling links
 In the main worktree, the SessionStart hook SHALL remove each "Link" entry under `.sdlc-v2/` that is a symlink whose target does not exist and ends with `/.sdlc-v2/<entry>`. The hook SHALL keep each other symlink with one advisory line, and SHALL never remove a regular file or directory.

@@ -17,6 +17,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/branch"
 	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -286,7 +287,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
-- preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. The topic file is <main-worktree>/.sdlc-v2/preplan/<slug>.md. Creates it with a skeleton when it is absent, never overwrites it. Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), summary, next. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Both carry a Suggestion.`,
+- preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. The topic file is <main-worktree>/.sdlc-v2/preplan/<slug>.md. Creates it with a skeleton when it is absent, never overwrites it. Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), summary, next. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Both carry a Suggestion. A dangling symlink on the path to the topic file returns InfraError that names the link and its missing target; nothing is written. Its Suggestion for a folder link is "Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>"; for a topic-file link it is "Remove the link, then try again: rm <link>".`,
 		mcpserver.Annotations{
 			Title:      "Plan support and evidence store",
 			ReadOnly:   true,
@@ -1332,9 +1333,16 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 	file := filepath.Join(mainRoot, paths.DataDir, paths.PreplanSubdir, slug+".md")
 	created, err := createPreplanFile(file, "# Preplan: "+topic+"\n"+preplanSkeletonTail)
 	if err != nil {
+		cause := err.Error()
+		var dl *fsx.DanglingLinkError
+		if errors.As(err, &dl) {
+			// The recovery text is the Suggestion, so the message keeps only
+			// the problem and the caller does not show the recovery twice.
+			cause = dl.Problem()
+		}
 		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("%s: create %s: %v", action, file, err),
-			Suggestion: preplanCreateSuggestion,
+			Msg:        fmt.Sprintf("%s: create %s: %s", action, file, cause),
+			Suggestion: fsx.RecoveryOr(err, preplanCreateSuggestion),
 			Cause:      err,
 		}
 	}
@@ -1382,16 +1390,35 @@ var preplanCloseFile = func(f *os.File) error {
 
 // createPreplanFile creates file with content when it is absent and reports
 // whether it created the file. It makes the parent directory first. The create
-// uses O_EXCL, so an existing file stays unchanged and the call reports false
-// with no error. A write that fails after the create removes the partial file,
-// so the next call starts from a clean state.
+// uses O_EXCL, so an existing regular file stays unchanged and the call
+// reports false with no error. A dangling symlink at file or at any folder on
+// the path to file returns a *fsx.DanglingLinkError and writes nothing. A
+// path at file that cannot be read as a regular file (a link loop, a folder)
+// returns an error. A write that fails after the create removes the partial
+// file, so the next call starts from a clean state.
 func createPreplanFile(file, content string) (bool, error) {
-	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+	if err := fsx.MkdirAll(filepath.Dir(file), 0o755); err != nil {
 		return false, err
 	}
 	f, err := os.OpenFile(file, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
+			// O_EXCL also fails on a dangling link, where file does not exist.
+			// The parent folder exists, so the walk starts at file. When file
+			// links to another link, removing file fixes the whole chain, so
+			// the error names file and not the last link of the chain.
+			if last, target, ok := fsx.FindDanglingLink(file); ok {
+				return false, &fsx.DanglingLinkError{Link: file, Target: target, Remove: true, Chain: last != file, Err: err}
+			}
+			// Something exists at file. Only a regular file (or a live link
+			// to one) is a topic file the caller can read.
+			info, statErr := os.Stat(file)
+			if statErr != nil {
+				return false, statErr
+			}
+			if !info.Mode().IsRegular() {
+				return false, errors.New("exists and is not a regular file")
+			}
 			return false, nil
 		}
 		return false, err

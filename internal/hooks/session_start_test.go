@@ -1937,7 +1937,7 @@ func TestSessionStartWorktreeLinks(t *testing.T) {
 		}
 	})
 
-	t.Run("linked worktree links every missing entry, dangling target allowed", func(t *testing.T) {
+	t.Run("linked worktree links every missing entry and creates each main-worktree folder", func(t *testing.T) {
 		mainRoot := realPath(t, t.TempDir())
 		activeRoot := realPath(t, t.TempDir())
 		withMainRoot(t, mainRoot)
@@ -1962,10 +1962,14 @@ func TestSessionStartWorktreeLinks(t *testing.T) {
 			if want := filepath.Join(mainRoot, paths.DataDir, entry); target != want {
 				t.Errorf("%s target = %q, want %q", entry, target, want)
 			}
-			// Dangling allowed: nothing wrote this entry under the main
-			// worktree, so its target must not exist yet.
-			if _, err := os.Stat(filepath.Join(mainRoot, paths.DataDir, entry)); !os.IsNotExist(err) {
-				t.Fatalf("test setup invariant broken: main target for %s unexpectedly exists", entry)
+			mainTarget := filepath.Join(mainRoot, paths.DataDir, entry)
+			info, err = os.Stat(mainTarget)
+			if entry == paths.TimingsFile {
+				if !os.IsNotExist(err) {
+					t.Errorf("%s: main target must not be created for a file entry", entry)
+				}
+			} else if err != nil || !info.IsDir() {
+				t.Errorf("%s: main-worktree folder not created: %v", entry, err)
 			}
 		}
 		if _, err := os.Lstat(filepath.Join(activeRoot, paths.DataDir, paths.ConfigFile)); !os.IsNotExist(err) {
@@ -2038,6 +2042,513 @@ func TestSessionStartWorktreeLinks(t *testing.T) {
 		}
 		if got := worktreeLinkPhase(); got != nil {
 			t.Errorf("second run: got %q, want nil (idempotent)", got)
+		}
+	})
+
+	t.Run("dangling wrong-target link is relinked and its main-worktree folder created", func(t *testing.T) {
+		mainRoot, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		old := danglingTarget(t, entry)
+		linkPath := filepath.Join(activeRoot, paths.DataDir, entry)
+		mustSymlink(t, old, linkPath)
+
+		want := "sdlc: relinked .sdlc-v2/" + entry + " to the main worktree (old target " + old + " did not exist)"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		assertLinkTarget(t, linkPath, filepath.Join(mainRoot, paths.DataDir, entry))
+		assertMainFolder(t, mainRoot, entry)
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("second run: got %q, want nil (idempotent)", got)
+		}
+	})
+
+	t.Run("correct dangling folder links get main-worktree folders, timings.json does not", func(t *testing.T) {
+		mainRoot, activeRoot := linkedWorktreeFixture(t)
+		for _, entry := range paths.LinkedStateEntries {
+			mustSymlink(t, filepath.Join(mainRoot, paths.DataDir, entry), filepath.Join(activeRoot, paths.DataDir, entry))
+		}
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil", got)
+		}
+		for _, entry := range paths.LinkedStateEntries {
+			if entry == paths.TimingsFile {
+				if _, err := os.Lstat(filepath.Join(mainRoot, paths.DataDir, entry)); !os.IsNotExist(err) {
+					t.Errorf("%s: main target must not be created for a file entry", entry)
+				}
+				continue
+			}
+			assertMainFolder(t, mainRoot, entry)
+		}
+	})
+
+	t.Run("live link to another path is kept with one advisory line", func(t *testing.T) {
+		_, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		other := realPath(t, t.TempDir())
+		mustWriteFile(t, filepath.Join(other, "x.md"), "user data")
+		linkPath := filepath.Join(activeRoot, paths.DataDir, entry)
+		mustSymlink(t, other, linkPath)
+
+		want := "sdlc: .sdlc-v2/" + entry + " links to " + other + ", not to the main worktree — kept"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		assertLinkTarget(t, linkPath, other)
+		if _, err := os.Stat(filepath.Join(other, "x.md")); err != nil {
+			t.Errorf("file behind the kept link was lost: %v", err)
+		}
+	})
+
+	t.Run("wrong-target link that cannot be followed is kept with one advisory line", func(t *testing.T) {
+		_, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		loopDir := realPath(t, t.TempDir())
+		a, b := filepath.Join(loopDir, "a"), filepath.Join(loopDir, "b")
+		mustSymlink(t, b, a)
+		mustSymlink(t, a, b)
+		linkPath := filepath.Join(activeRoot, paths.DataDir, entry)
+		mustSymlink(t, a, linkPath)
+
+		want := "sdlc: .sdlc-v2/" + entry + " links to " + a + ", not to the main worktree — kept"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+		assertLinkTarget(t, linkPath, a)
+	})
+
+	t.Run("remove failure during relink prints one line and keeps the old link", func(t *testing.T) {
+		mainRoot, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		old := danglingTarget(t, entry)
+		linkPath := filepath.Join(activeRoot, paths.DataDir, entry)
+		mustSymlink(t, old, linkPath)
+
+		origRemove := removeFunc
+		removeFunc = func(string) error { return errors.New("remove denied") }
+		t.Cleanup(func() { removeFunc = origRemove })
+
+		want := "sdlc: could not relink .sdlc-v2/" + entry + ": remove denied"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		assertLinkTarget(t, linkPath, old)
+		if _, err := os.Lstat(filepath.Join(mainRoot, paths.DataDir, entry)); !os.IsNotExist(err) {
+			t.Error("main-worktree folder must not be created after a failed remove")
+		}
+		assertMainFolder(t, mainRoot, paths.RunsSubdir)
+		// The entries after the failing one are still linked and get their folders.
+		assertMainFolder(t, mainRoot, paths.HistorySubdir)
+	})
+
+	t.Run("symlink failure during relink prints one line and the next session links the entry", func(t *testing.T) {
+		mainRoot, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		linkPath := filepath.Join(activeRoot, paths.DataDir, entry)
+		mustSymlink(t, danglingTarget(t, entry), linkPath)
+
+		origSymlink := symlinkFunc
+		symlinkFunc = func(oldname, newname string) error {
+			if filepath.Base(newname) == entry {
+				return errors.New("symlink denied")
+			}
+			return origSymlink(oldname, newname)
+		}
+		t.Cleanup(func() { symlinkFunc = origSymlink })
+
+		want := "sdlc: could not relink .sdlc-v2/" + entry + ": symlink denied"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		if _, err := os.Lstat(linkPath); !os.IsNotExist(err) {
+			t.Error("after a failed symlink call the entry must be missing")
+		}
+		if _, err := os.Lstat(filepath.Join(mainRoot, paths.DataDir, entry)); !os.IsNotExist(err) {
+			t.Error("main-worktree folder must not be created after a failed symlink call")
+		}
+		assertMainFolder(t, mainRoot, paths.RunsSubdir)
+		// The entries after the failing one are still linked and get their folders.
+		assertMainFolder(t, mainRoot, paths.HistorySubdir)
+
+		symlinkFunc = origSymlink
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("next session: got %q, want nil", got)
+		}
+		assertLinkTarget(t, linkPath, filepath.Join(mainRoot, paths.DataDir, entry))
+		assertMainFolder(t, mainRoot, entry)
+	})
+
+	t.Run("mkdir failure after relink prints the relinked line then the mkdir line", func(t *testing.T) {
+		mainRoot, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		old := danglingTarget(t, entry)
+		linkPath := filepath.Join(activeRoot, paths.DataDir, entry)
+		mustSymlink(t, old, linkPath)
+		failMkdirFor(t, entry)
+
+		assertLines(t, worktreeLinkPhase(), []string{
+			"sdlc: relinked .sdlc-v2/" + entry + " to the main worktree (old target " + old + " did not exist)",
+			"sdlc: could not create .sdlc-v2/" + entry + " in the main worktree: mkdir denied",
+		})
+		assertLinkTarget(t, linkPath, filepath.Join(mainRoot, paths.DataDir, entry))
+		if _, err := os.Lstat(filepath.Join(mainRoot, paths.DataDir, entry)); !os.IsNotExist(err) {
+			t.Error("main-worktree folder must not exist after a failed mkdir call")
+		}
+		// The entries after the failing one are still linked and get their folders.
+		assertMainFolder(t, mainRoot, paths.HistorySubdir)
+	})
+
+	t.Run("mkdir failure for a new link prints one line and keeps the link", func(t *testing.T) {
+		mainRoot, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		failMkdirFor(t, entry)
+
+		want := "sdlc: could not create .sdlc-v2/" + entry + " in the main worktree: mkdir denied"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		assertLinkTarget(t, filepath.Join(activeRoot, paths.DataDir, entry), filepath.Join(mainRoot, paths.DataDir, entry))
+		assertMainFolder(t, mainRoot, paths.RunsSubdir)
+		// The entries after the failing one are still linked and get their folders.
+		assertMainFolder(t, mainRoot, paths.HistorySubdir)
+	})
+
+	t.Run("mkdir failure for a correct dangling link prints one line", func(t *testing.T) {
+		mainRoot, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		linkPath := filepath.Join(activeRoot, paths.DataDir, entry)
+		mustSymlink(t, filepath.Join(mainRoot, paths.DataDir, entry), linkPath)
+		failMkdirFor(t, entry)
+
+		want := "sdlc: could not create .sdlc-v2/" + entry + " in the main worktree: mkdir denied"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+		assertLinkTarget(t, linkPath, filepath.Join(mainRoot, paths.DataDir, entry))
+		// The entries after the failing one are still linked and get their folders.
+		assertMainFolder(t, mainRoot, paths.HistorySubdir)
+	})
+
+	t.Run("main-worktree folder path that is a dangling link prints one line and is not created", func(t *testing.T) {
+		mainRoot, activeRoot := linkedWorktreeFixture(t)
+		entry := paths.ReportsSubdir
+		mainTarget := filepath.Join(mainRoot, paths.DataDir, entry)
+		mustSymlink(t, danglingTarget(t, entry), mainTarget)
+
+		var mkdirCalls []string
+		origMkdir := mkdirAllFunc
+		mkdirAllFunc = func(path string, perm os.FileMode) error {
+			mkdirCalls = append(mkdirCalls, path)
+			return origMkdir(path, perm)
+		}
+		t.Cleanup(func() { mkdirAllFunc = origMkdir })
+
+		want := "sdlc: .sdlc-v2/" + entry + " in the main worktree is a link that points nowhere. Start a session in the main worktree to remove it."
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		for _, p := range mkdirCalls {
+			if p == mainTarget {
+				t.Errorf("mkdir must not be called for a main-worktree path that is a dangling link")
+			}
+		}
+		info, err := os.Lstat(mainTarget)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("main-worktree dangling link must be left in place: err=%v", err)
+		}
+		assertLinkTarget(t, filepath.Join(activeRoot, paths.DataDir, entry), mainTarget)
+		// The entries after this one are still linked and get their folders.
+		assertMainFolder(t, mainRoot, paths.HistorySubdir)
+	})
+
+	// The usual case for every linked worktree after the first: the
+	// main-worktree entry already exists, so ensureMainFolder does nothing.
+	existingMain := []struct {
+		name  string
+		setup func(t *testing.T, mainTarget string)
+	}{
+		{"a real folder", func(t *testing.T, mainTarget string) {
+			mustMkdirAll(t, mainTarget)
+			mustWriteFile(t, filepath.Join(mainTarget, "x.md"), "keep me")
+		}},
+		{"a live link to a folder", func(t *testing.T, mainTarget string) {
+			elsewhere := realPath(t, t.TempDir())
+			mustWriteFile(t, filepath.Join(elsewhere, "x.md"), "keep me")
+			mustSymlink(t, elsewhere, mainTarget)
+		}},
+	}
+	for _, tc := range existingMain {
+		t.Run("main-worktree entry that is "+tc.name+" gets no mkdir call and no line", func(t *testing.T) {
+			mainRoot, activeRoot := linkedWorktreeFixture(t)
+			entry := paths.ReportsSubdir
+			mainTarget := filepath.Join(mainRoot, paths.DataDir, entry)
+			tc.setup(t, mainTarget)
+
+			var mkdirCalls []string
+			origMkdir := mkdirAllFunc
+			mkdirAllFunc = func(path string, perm os.FileMode) error {
+				mkdirCalls = append(mkdirCalls, path)
+				return origMkdir(path, perm)
+			}
+			t.Cleanup(func() { mkdirAllFunc = origMkdir })
+
+			if got := worktreeLinkPhase(); got != nil {
+				t.Errorf("worktreeLinkPhase() = %q, want nil", got)
+			}
+			for _, p := range mkdirCalls {
+				if p == mainTarget {
+					t.Errorf("mkdir was called for the existing main-worktree entry %s", mainTarget)
+				}
+			}
+			if data, err := os.ReadFile(filepath.Join(mainTarget, "x.md")); err != nil || string(data) != "keep me" {
+				t.Errorf("content of the existing main-worktree entry changed: %q, %v", data, err)
+			}
+			assertLinkTarget(t, filepath.Join(activeRoot, paths.DataDir, entry), mainTarget)
+		})
+	}
+}
+
+// linkedWorktreeFixture returns two temp dirs, a main root and an active
+// root, and points both root seams at them, so worktreeLinkPhase runs its
+// linked-worktree branch.
+func linkedWorktreeFixture(t *testing.T) (mainRoot, activeRoot string) {
+	t.Helper()
+	mainRoot = realPath(t, t.TempDir())
+	activeRoot = realPath(t, t.TempDir())
+	withMainRoot(t, mainRoot)
+	withActiveRoot(t, activeRoot)
+	return mainRoot, activeRoot
+}
+
+// assertLinkTarget fails the test unless linkPath is a symlink whose target
+// is want.
+func assertLinkTarget(t *testing.T, linkPath, want string) {
+	t.Helper()
+	got, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("Readlink(%s): %v", linkPath, err)
+	}
+	if got != want {
+		t.Errorf("%s target = %q, want %q", linkPath, got, want)
+	}
+}
+
+// assertMainFolder fails the test unless <mainRoot>/.sdlc-v2/<entry> is a
+// real folder.
+func assertMainFolder(t *testing.T, mainRoot, entry string) {
+	t.Helper()
+	info, err := os.Lstat(filepath.Join(mainRoot, paths.DataDir, entry))
+	if err != nil || !info.IsDir() {
+		t.Errorf("%s: main-worktree folder not created: %v", entry, err)
+	}
+}
+
+// failMkdirFor makes mkdirAllFunc fail with "mkdir denied" for a path whose
+// last element is entry, for the test's duration. Other paths are created.
+func failMkdirFor(t *testing.T, entry string) {
+	t.Helper()
+	orig := mkdirAllFunc
+	mkdirAllFunc = func(path string, perm os.FileMode) error {
+		if filepath.Base(path) == entry {
+			return errors.New("mkdir denied")
+		}
+		return orig(path, perm)
+	}
+	t.Cleanup(func() { mkdirAllFunc = orig })
+}
+
+// mustSymlink creates a symlink at link that points to target. The target
+// does not need to exist.
+func mustSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	mustMkdirAll(t, filepath.Dir(link))
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatalf("symlink %s -> %s: %v", link, target, err)
+	}
+}
+
+// mainCheckoutFixture returns a temp dir that looks like a main checkout:
+// its .git is a folder. It points both root seams at that dir.
+func mainCheckoutFixture(t *testing.T) string {
+	t.Helper()
+	root := realPath(t, t.TempDir())
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatalf("mkdir .git: %v", err)
+	}
+	withMainRoot(t, root)
+	withActiveRoot(t, root)
+	return root
+}
+
+// danglingTarget returns a path that ends with /.sdlc-v2/<entry> and does
+// not exist, like the target of a link that a deleted linked worktree left.
+func danglingTarget(t *testing.T, entry string) string {
+	t.Helper()
+	return filepath.Join(realPath(t, t.TempDir()), "gone-worktree", paths.DataDir, entry)
+}
+
+func TestIsMainCheckout(t *testing.T) {
+	t.Run("git folder", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if !isMainCheckout(root) {
+			t.Error("isMainCheckout() = false, want true when .git is a folder")
+		}
+	})
+	t.Run("git file", func(t *testing.T) {
+		root := t.TempDir()
+		mustWriteFile(t, filepath.Join(root, ".git"), "gitdir: /elsewhere/.git/worktrees/x\n")
+		if isMainCheckout(root) {
+			t.Error("isMainCheckout() = true, want false when .git is a file")
+		}
+	})
+	t.Run("no git entry", func(t *testing.T) {
+		if isMainCheckout(t.TempDir()) {
+			t.Error("isMainCheckout() = true, want false when .git is missing")
+		}
+	})
+}
+
+func TestSessionStartMainWorktreeLinks(t *testing.T) {
+	t.Run("main checkout creates no link and no data folder", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		// A main root that differs from the active root must not make the
+		// phase link: the .git folder decides.
+		withMainRoot(t, realPath(t, t.TempDir()))
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil", got)
+		}
+		if _, err := os.Lstat(filepath.Join(root, paths.DataDir)); !os.IsNotExist(err) {
+			t.Errorf(".sdlc-v2/ must not be created in the main checkout: err=%v", err)
+		}
+	})
+
+	t.Run("dangling link with a matching target is removed", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		var want []string
+		for _, entry := range paths.LinkedStateEntries {
+			mustSymlink(t, danglingTarget(t, entry), filepath.Join(root, paths.DataDir, entry))
+			want = append(want, "sdlc: removed dangling link .sdlc-v2/"+entry)
+		}
+
+		assertLines(t, worktreeLinkPhase(), want)
+
+		for _, entry := range paths.LinkedStateEntries {
+			if _, err := os.Lstat(filepath.Join(root, paths.DataDir, entry)); !os.IsNotExist(err) {
+				t.Errorf("%s still exists after cleanup: err=%v", entry, err)
+			}
+		}
+	})
+
+	t.Run("live link is kept with an advisory line", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		entry := paths.RunsSubdir
+		target := filepath.Join(realPath(t, t.TempDir()), "other", paths.DataDir, entry)
+		mustMkdirAll(t, target)
+		linkPath := filepath.Join(root, paths.DataDir, entry)
+		mustSymlink(t, target, linkPath)
+
+		want := "sdlc: .sdlc-v2/" + entry + " in the main worktree is a link to " + target + " — kept; the main worktree must hold real state folders"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		info, err := os.Lstat(linkPath)
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("live link must stay in place: err=%v info=%v", err, info)
+		}
+	})
+
+	t.Run("dangling link with a foreign target is kept with an advisory line", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		entry := paths.ReportsSubdir
+		target := filepath.Join(realPath(t, t.TempDir()), "unmounted-volume", entry)
+		linkPath := filepath.Join(root, paths.DataDir, entry)
+		mustSymlink(t, target, linkPath)
+
+		want := "sdlc: .sdlc-v2/" + entry + " in the main worktree is a link to " + target + " — kept; the main worktree must hold real state folders"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		if _, err := os.Lstat(linkPath); err != nil {
+			t.Errorf("dangling link with a foreign target must stay in place: %v", err)
+		}
+	})
+
+	t.Run("link loop is kept with an advisory line", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		entry := paths.StateArtifactsSubdir
+		dataDir := filepath.Join(root, paths.DataDir)
+		linkPath := filepath.Join(dataDir, entry)
+		loopPath := filepath.Join(dataDir, "loop-back")
+		// entry -> loop-back -> entry: os.Stat fails with ELOOP, not ErrNotExist.
+		mustSymlink(t, loopPath, linkPath)
+		mustSymlink(t, linkPath, loopPath)
+
+		want := "sdlc: .sdlc-v2/" + entry + " in the main worktree is a link to " + loopPath + " — kept; the main worktree must hold real state folders"
+		assertLines(t, worktreeLinkPhase(), []string{want})
+
+		if _, err := os.Lstat(linkPath); err != nil {
+			t.Errorf("link loop must stay in place: %v", err)
+		}
+	})
+
+	t.Run("remove failure prints one line and the phase continues", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		failing := paths.LinkedStateEntries[0]
+		next := paths.LinkedStateEntries[1]
+		mustSymlink(t, danglingTarget(t, failing), filepath.Join(root, paths.DataDir, failing))
+		mustSymlink(t, danglingTarget(t, next), filepath.Join(root, paths.DataDir, next))
+
+		origRemove := removeFunc
+		removeFunc = func(name string) error {
+			if filepath.Base(name) == failing {
+				return errors.New("permission denied")
+			}
+			return origRemove(name)
+		}
+		t.Cleanup(func() { removeFunc = origRemove })
+
+		assertLines(t, worktreeLinkPhase(), []string{
+			"sdlc: could not remove dangling link .sdlc-v2/" + failing + ": permission denied",
+			"sdlc: removed dangling link .sdlc-v2/" + next,
+		})
+
+		if _, err := os.Lstat(filepath.Join(root, paths.DataDir, failing)); err != nil {
+			t.Errorf("link whose removal failed must still exist: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, paths.DataDir, next)); !os.IsNotExist(err) {
+			t.Errorf("entry after the failing one was not removed: err=%v", err)
+		}
+	})
+
+	t.Run("real file and real folder are left unchanged without a line", func(t *testing.T) {
+		root := mainCheckoutFixture(t)
+		realDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+		realFile := filepath.Join(root, paths.DataDir, paths.TimingsFile)
+		mustMkdirAll(t, realDir)
+		mustWriteFile(t, filepath.Join(realDir, "run.json"), "keep me")
+		mustWriteFile(t, realFile, "{}")
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil for real entries", got)
+		}
+		if b, err := os.ReadFile(filepath.Join(realDir, "run.json")); err != nil || string(b) != "keep me" {
+			t.Errorf("file inside the real folder changed: content=%q err=%v", b, err)
+		}
+		if b, err := os.ReadFile(realFile); err != nil || string(b) != "{}" {
+			t.Errorf("real file changed: content=%q err=%v", b, err)
+		}
+	})
+
+	t.Run("git file with equal roots does nothing", func(t *testing.T) {
+		root := realPath(t, t.TempDir())
+		mustWriteFile(t, filepath.Join(root, ".git"), "gitdir: /elsewhere/.git/worktrees/x\n")
+		withMainRoot(t, root)
+		withActiveRoot(t, root)
+		entry := paths.RunsSubdir
+		linkPath := filepath.Join(root, paths.DataDir, entry)
+		mustSymlink(t, danglingTarget(t, entry), linkPath)
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Errorf("worktreeLinkPhase() = %q, want nil", got)
+		}
+		if _, err := os.Lstat(linkPath); err != nil {
+			t.Errorf("link must stay when .git is a file and the roots are equal: %v", err)
+		}
+		if _, err := os.Lstat(filepath.Join(root, paths.DataDir, paths.ReportsSubdir)); !os.IsNotExist(err) {
+			t.Errorf("no entry may be created: err=%v", err)
 		}
 	})
 }
