@@ -242,6 +242,13 @@ describe('sectionMeta', () => {
     assert.equal(view.sectionMeta({ detail: { kind: 'waves', waves, queued } }), '1/3 tasks done');
   });
 
+  test('a planned wave that has not started reads 0 of its tasks, with no queued part', () => {
+    const wave1 = [{ number: 1, status: 'pending', tasks: [task('1', 'pending'), task('2', 'pending')] }];
+    const wave2 = [{ number: 2, status: 'pending', tasks: [task('3', 'pending')] }];
+    assert.equal(view.sectionMeta({ detail: { kind: 'waves', waves: wave1 } }), '0/2 tasks done');
+    assert.equal(view.sectionMeta({ detail: { kind: 'waves', waves: wave2, queued: [] } }), '0/1 tasks done');
+  });
+
   test('dimensions: done count, plus findings when reviewTotals exists', () => {
     const dimensions = [
       { name: 'a', status: 'completed' },
@@ -414,6 +421,18 @@ describe('waveCommitState', () => {
 
   test('an absent commitWaves behaves as on', () => {
     assert.equal(view.waveCommitState({ committedSha: '', tasks: [done] }, undefined), 'due');
+  });
+
+  test('a pending wave has no commit state, whatever commitWaves says', () => {
+    const wave = { status: 'pending', committedSha: '', tasks: [open] };
+    assert.equal(view.waveCommitState(wave, true), '');
+    assert.equal(view.waveCommitState(wave, false), '');
+    assert.equal(view.waveCommitState(wave, undefined), '');
+  });
+
+  test('a wave that is not pending keeps its commit state', () => {
+    assert.equal(view.waveCommitState({ status: 'in_progress', committedSha: '', tasks: [open] }, true), 'not-committed');
+    assert.equal(view.waveCommitState({ status: 'completed', committedSha: '', tasks: [done] }, false), 'off');
   });
 });
 
@@ -2104,6 +2123,38 @@ describe('render tile bodies', () => {
     ]);
     const off = byClass(render.wavesBody(fakeDoc(), view, detail, { commitWaves: false }), 'commit-badge');
     assert.deepEqual(off.map((b) => b.textContent), ['commits off', 'commits off', 'commits off']);
+  });
+
+  test('waves: a pending wave is a block with its tasks and no commit badge', () => {
+    const detail = { kind: 'waves', waves: [
+      { number: 1, status: 'pending', committedSha: '', tasks: [{ id: 'T1', name: 'a', status: 'pending' }, { id: 'T2', name: 'b', status: 'pending' }] },
+      { number: 2, status: 'pending', committedSha: '', tasks: [{ id: 'T3', name: 'c', status: 'pending' }] },
+    ] };
+    for (const commitWaves of [true, false]) {
+      const body = render.wavesBody(fakeDoc(), view, detail, { commitWaves });
+      const blocks = byClass(body, 'wave-block');
+      assert.deepEqual(blocks.map((b) => textOf(oneByClass(b, 'wave-head'))), ['wave 10/2', 'wave 20/1']);
+      assert.deepEqual(blocks.map((b) => byClass(b, 'task-id').map((n) => n.textContent)), [['T1', 'T2'], ['T3']]);
+      assert.equal(byClass(body, 'commit-badge').length, 0);
+    }
+  });
+
+  test('waves: a started wave keeps its badge beside a pending wave', () => {
+    const detail = { kind: 'waves', waves: [
+      { number: 1, status: 'completed', committedSha: '', tasks: [{ id: 'T1', name: 'a', status: 'completed' }] },
+      { number: 2, status: 'pending', committedSha: '', tasks: [{ id: 'T2', name: 'b', status: 'pending' }] },
+    ] };
+    const blocks = byClass(render.wavesBody(fakeDoc(), view, detail, { commitWaves: true }), 'wave-block');
+    assert.deepEqual(byClass(blocks[0], 'commit-badge').map((b) => b.textContent), ['not committed']);
+    assert.equal(byClass(blocks[1], 'commit-badge').length, 0);
+  });
+
+  test('waves: the queued block shows only when queued is not empty', () => {
+    const waves = [{ number: 1, status: 'pending', tasks: [{ id: 'T1', name: 'a', status: 'pending' }] }];
+    const heads = (queued) => byClass(render.wavesBody(fakeDoc(), view, { kind: 'waves', waves, queued }, {}), 'wave-head').map((h) => textOf(h));
+    assert.deepEqual(heads(undefined), ['wave 10/1']);
+    assert.deepEqual(heads([]), ['wave 10/1']);
+    assert.deepEqual(heads([{ id: 'T9', name: 'z', status: 'pending' }]), ['wave 10/1', 'queued1']);
   });
 
   test('waves: a task row has a lamp, the id, and the name', () => {

@@ -366,13 +366,16 @@
   // --- Execute and review details ------------------------------------------
 
   /**
-   * Commit state of one wave. Only commitWaves === false means "off"; an
-   * absent value behaves as on. "due" needs at least one task, all done.
-   * @param {{committedSha?: string, tasks?: Array}} wave
+   * Commit state of one wave. A wave that has not started (status
+   * `pending`) has no commit state, whatever commitWaves says. Otherwise
+   * only commitWaves === false means "off"; an absent value behaves as on.
+   * "due" needs at least one task, all done.
+   * @param {{status?: string, committedSha?: string, tasks?: Array}} wave
    * @param {boolean|undefined} commitWaves
-   * @returns {string} 'off' | 'committed' | 'due' | 'not-committed'
+   * @returns {string} '' | 'off' | 'committed' | 'due' | 'not-committed'
    */
   function waveCommitState(wave, commitWaves) {
+    if (wave && wave.status === 'pending') return '';
     if (commitWaves === false) return 'off';
     if (wave && wave.committedSha) return 'committed';
     var counts = taskCounts((wave && wave.tasks) || []);

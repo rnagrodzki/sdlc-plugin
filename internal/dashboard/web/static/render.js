@@ -336,8 +336,10 @@
     return row;
   }
 
+  // The commit badge of a wave head, or null for a wave that has no commit state.
   function commitBadge(doc, view, wave, commitWaves) {
     var state = view.waveCommitState(wave, commitWaves);
+    if (!state) return null;
     if (state === 'off') return el(doc, 'span', 'commit-badge', 'commits off');
     if (state === 'committed') {
       var sha = String(wave.committedSha);
@@ -350,7 +352,9 @@
 
   /**
    * Waves: one block for each wave (`wave N`, `done/total`, commit state,
-   * task rows), then the queued tasks.
+   * task rows), then the queued tasks. A planned wave that has not started
+   * (status `pending`) is a block with its tasks and no commit state. The
+   * queued block appears only when `queued` is not empty.
    * @param {Document} doc
    * @param {object} view
    * @param {{waves?: Array, queued?: Array}} detail

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
 // dashExecFile is the execute state file name of the execute detail tests.
@@ -324,5 +325,358 @@ func TestDashboardExecuteDetail_CommitWavesAndSession(t *testing.T) {
 				t.Errorf("sessionId = %q, want %q", p.SessionID, c.wantSession)
 			}
 		})
+	}
+}
+
+// dashPlannedWaves builds a plannedWaves state value from {number, taskIds}
+// pairs, in the shape execute_state init stores.
+func dashPlannedWaves(pairs ...[2]any) []any {
+	out := []any{}
+	for _, p := range pairs {
+		out = append(out, map[string]any{"number": p[0], "taskIds": p[1]})
+	}
+	return out
+}
+
+// dashStepNames returns the step names of p in order.
+func dashStepNames(p DashboardPipeline) []string {
+	names := []string{}
+	for _, s := range p.Steps {
+		names = append(names, s.Name)
+	}
+	return names
+}
+
+// TestDashboardExecuteDetail_PlannedWavesBeforeFirstStart checks that an
+// execute run with no started wave shows each planned wave as a pending step
+// with its task names, and no queued step.
+func TestDashboardExecuteDetail_PlannedWavesBeforeFirstStart(t *testing.T) {
+	root := dashRoot(t)
+	p := dashExecOne(t, root, map[string]any{
+		"waves": []any{},
+		"plannedTasks": []any{
+			map[string]any{"id": "1", "name": "one"},
+			map[string]any{"id": "2", "name": "two"},
+			map[string]any{"id": "3", "name": "three"},
+		},
+		"plannedWaves": dashPlannedWaves(
+			[2]any{1, []any{"1", "2"}},
+			[2]any{2, []any{"3"}},
+		),
+	})
+
+	if want := []string{"wave 1", "wave 2"}; !reflect.DeepEqual(dashStepNames(p), want) {
+		t.Fatalf("steps = %v, want %v and no queued step", dashStepNames(p), want)
+	}
+	want := []DashboardWave{
+		{Number: 1, Status: StepPending, Tasks: []DashboardTask{
+			{ID: "1", Name: "one", Status: StepPending},
+			{ID: "2", Name: "two", Status: StepPending},
+		}},
+		{Number: 2, Status: StepPending, Tasks: []DashboardTask{
+			{ID: "3", Name: "three", Status: StepPending},
+		}},
+	}
+	for i, s := range p.Steps {
+		if s.Status != StepPending {
+			t.Errorf("step %q status = %q, want pending", s.Name, s.Status)
+		}
+		if s.Detail == nil || s.Detail.Kind != dashboardKindWaves || !reflect.DeepEqual(s.Detail.Waves, want[i:i+1]) {
+			t.Errorf("step %q detail = %+v, want wave %+v", s.Name, s.Detail, want[i])
+		}
+	}
+	if all := p.join.execDetail; all == nil || !reflect.DeepEqual(all.Waves, want) || all.Queued != nil {
+		t.Errorf("join.execDetail = %+v, want both planned waves and no queued", all)
+	}
+	if p.Progress.Done != 0 || p.Progress.Total != 0 || p.Status != PipelineRunning {
+		t.Errorf("progress = %+v status = %q, want planned waves to leave task counts alone", p.Progress, p.Status)
+	}
+	dashNoNull(t, p.Steps)
+	dashNoNull(t, p.join.execDetail)
+}
+
+// TestDashboardExecuteDetail_StartedWaveKeepsStateStatus checks that a wave
+// in waves[] keeps its state status and tasks, the planned waves after it stay
+// pending in ascending order, and a task in no planned wave is queued.
+func TestDashboardExecuteDetail_StartedWaveKeepsStateStatus(t *testing.T) {
+	root := dashRoot(t)
+	p := dashExecOne(t, root, map[string]any{
+		"plannedTasks": []any{
+			map[string]any{"id": "1", "name": "one"},
+			map[string]any{"id": "2", "name": "two"},
+			map[string]any{"id": "3", "name": "three"},
+			map[string]any{"id": "4", "name": "four"},
+			map[string]any{"id": "5", "name": "five"},
+		},
+		"waves": []any{map[string]any{
+			"number": 1, "status": "in_progress",
+			"planned": []any{map[string]any{"id": "1", "name": "one"}, map[string]any{"id": "2", "name": "two"}},
+			"tasks":   []any{map[string]any{"id": "1", "status": "completed"}},
+		}},
+		// Out of order on purpose: the page needs ascending wave numbers.
+		"plannedWaves": dashPlannedWaves(
+			[2]any{3, []any{"4"}},
+			[2]any{1, []any{"1", "2"}},
+			[2]any{2, []any{"3"}},
+		),
+	})
+
+	if want := []string{"wave 1", "wave 2", "wave 3", dashboardQueuedStep}; !reflect.DeepEqual(dashStepNames(p), want) {
+		t.Fatalf("steps = %v, want %v", dashStepNames(p), want)
+	}
+	if got := dashStepStatuses(p); !reflect.DeepEqual(got, []string{StepInProgress, StepPending, StepPending, StepPending}) {
+		t.Errorf("step statuses = %v, want in_progress then pending", got)
+	}
+	started := dashStep(t, p, "wave 1").Detail.Waves[0]
+	wantStarted := DashboardWave{Number: 1, Status: "in_progress", Tasks: []DashboardTask{
+		{ID: "1", Name: "one", Status: "completed"},
+		{ID: "2", Name: "two", Status: StepPending},
+	}}
+	if !reflect.DeepEqual(started, wantStarted) {
+		t.Errorf("wave 1 = %+v, want %+v", started, wantStarted)
+	}
+	if got := dashStep(t, p, "wave 2").Detail.Waves[0].Tasks; !reflect.DeepEqual(got, []DashboardTask{{ID: "3", Name: "three", Status: StepPending}}) {
+		t.Errorf("wave 2 tasks = %+v, want task 3", got)
+	}
+	if got := dashStep(t, p, "wave 3").Detail.Waves[0].Tasks; !reflect.DeepEqual(got, []DashboardTask{{ID: "4", Name: "four", Status: StepPending}}) {
+		t.Errorf("wave 3 tasks = %+v, want task 4", got)
+	}
+	if got := dashStep(t, p, dashboardQueuedStep).Detail.Queued; !reflect.DeepEqual(got, []DashboardTask{{ID: "5", Name: "five", Status: StepPending}}) {
+		t.Errorf("queued = %+v, want only task 5, which is in no planned wave", got)
+	}
+	all := p.join.execDetail
+	if all == nil || len(all.Waves) != 3 || all.Waves[0].Number != 1 || all.Waves[1].Number != 2 || all.Waves[2].Number != 3 {
+		t.Errorf("join.execDetail waves = %+v, want waves 1, 2, 3", all)
+	}
+}
+
+// TestDashboardExecuteDetail_PlannedWaveHiddenOnceStarted checks that a
+// planned wave whose number is in waves[] never shows twice, whatever the
+// status of that wave entry.
+func TestDashboardExecuteDetail_PlannedWaveHiddenOnceStarted(t *testing.T) {
+	for _, status := range []string{"in_progress", "completed", "partial", "failed", ""} {
+		t.Run("status "+status, func(t *testing.T) {
+			root := dashRoot(t)
+			p := dashExecOne(t, root, map[string]any{
+				"waves":        []any{map[string]any{"number": 1, "status": status}},
+				"plannedWaves": dashPlannedWaves([2]any{1, []any{"1"}}),
+			})
+			if want := []string{"wave 1"}; !reflect.DeepEqual(dashStepNames(p), want) {
+				t.Errorf("steps = %v, want %v", dashStepNames(p), want)
+			}
+			if got := p.join.execDetail.Waves; len(got) != 1 || len(got[0].Tasks) != 0 {
+				t.Errorf("join waves = %+v, want only the state wave", got)
+			}
+		})
+	}
+}
+
+// TestDashboardExecuteDetail_PlannedWaveZero checks that the pre-wave tasks
+// of plannedWaves show as a pending "wave 0" step.
+func TestDashboardExecuteDetail_PlannedWaveZero(t *testing.T) {
+	root := dashRoot(t)
+	p := dashExecOne(t, root, map[string]any{
+		"plannedTasks": []any{map[string]any{"id": "1", "name": "one"}, map[string]any{"id": "2", "name": "two"}},
+		"plannedWaves": dashPlannedWaves([2]any{0, []any{"1"}}, [2]any{1, []any{"2"}}),
+	})
+	if want := []string{"wave 0", "wave 1"}; !reflect.DeepEqual(dashStepNames(p), want) {
+		t.Fatalf("steps = %v, want %v", dashStepNames(p), want)
+	}
+	if w := dashStep(t, p, "wave 0").Detail.Waves[0]; w.Number != 0 || w.Status != StepPending || len(w.Tasks) != 1 || w.Tasks[0].Name != "one" {
+		t.Errorf("wave 0 = %+v, want one pending task named one", w)
+	}
+}
+
+// TestDashboardExecuteDetail_PlannedWaveTaskShownOnce checks that a task that
+// a started wave or an earlier planned wave already shows is left out of a
+// later planned wave, that T-prefixed ids match plannedTasks names, and that a
+// planned wave left with no task still shows as a step with "tasks":[].
+func TestDashboardExecuteDetail_PlannedWaveTaskShownOnce(t *testing.T) {
+	root := dashRoot(t)
+	p := dashExecOne(t, root, map[string]any{
+		"plannedTasks": []any{
+			map[string]any{"id": "1", "name": "one"},
+			map[string]any{"id": "2", "name": "two"},
+			map[string]any{"id": "3", "name": "three"},
+		},
+		"waves": []any{map[string]any{"number": 1, "status": "completed", "tasks": []any{
+			map[string]any{"id": "1", "status": "completed"},
+		}}},
+		"plannedWaves": dashPlannedWaves(
+			[2]any{2, []any{"T1", "T2"}},
+			[2]any{3, []any{"2", "T3"}},
+			[2]any{4, []any{"1"}},
+		),
+	})
+	if want := []string{"wave 1", "wave 2", "wave 3", "wave 4"}; !reflect.DeepEqual(dashStepNames(p), want) {
+		t.Fatalf("steps = %v, want %v", dashStepNames(p), want)
+	}
+	if got := dashStep(t, p, "wave 2").Detail.Waves[0].Tasks; !reflect.DeepEqual(got, []DashboardTask{{ID: "T2", Name: "two", Status: StepPending}}) {
+		t.Errorf("wave 2 tasks = %+v, want only T2: task 1 is in wave 1", got)
+	}
+	if got := dashStep(t, p, "wave 3").Detail.Waves[0].Tasks; !reflect.DeepEqual(got, []DashboardTask{{ID: "T3", Name: "three", Status: StepPending}}) {
+		t.Errorf("wave 3 tasks = %+v, want only T3: task 2 is in wave 2", got)
+	}
+	empty := dashStep(t, p, "wave 4")
+	if !strings.Contains(string(dashMarshal(t, empty.Detail)), `"tasks":[]`) {
+		t.Errorf("wave 4 detail = %s, want \"tasks\":[]", dashMarshal(t, empty.Detail))
+	}
+	for _, s := range p.Steps {
+		if s.Name == dashboardQueuedStep {
+			t.Errorf("queued step present, want none: every planned task is in a wave")
+		}
+	}
+	dashNoNull(t, p.Steps)
+}
+
+// TestDashboardExecuteDetail_WithoutPlannedWaves checks that a run with no
+// plannedWaves key, or an empty one, keeps today's steps: one for each wave
+// and a queued step for the unstarted planned tasks.
+func TestDashboardExecuteDetail_WithoutPlannedWaves(t *testing.T) {
+	cases := []struct {
+		name string
+		key  any
+	}{
+		{"key absent", nil},
+		{"empty list", []any{}},
+		{"not a list", "1,2"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := dashRoot(t)
+			data := map[string]any{
+				"plannedTasks": []any{map[string]any{"id": "1", "name": "one"}, map[string]any{"id": "2", "name": "two"}},
+				"waves":        []any{map[string]any{"number": 1, "status": "in_progress", "planned": []any{map[string]any{"id": "1"}}}},
+			}
+			if c.key != nil {
+				data["plannedWaves"] = c.key
+			}
+			p := dashExecOne(t, root, data)
+			if want := []string{"wave 1", dashboardQueuedStep}; !reflect.DeepEqual(dashStepNames(p), want) {
+				t.Errorf("steps = %v, want %v", dashStepNames(p), want)
+			}
+			if got := dashStep(t, p, dashboardQueuedStep).Detail.Queued; !reflect.DeepEqual(got, []DashboardTask{{ID: "2", Name: "two", Status: StepPending}}) {
+				t.Errorf("queued = %+v, want task 2", got)
+			}
+		})
+	}
+}
+
+// TestDashboardExecuteDetail_PendingPlannedWavesSkipsBadEntries checks the
+// entries that dashboardPendingPlannedWaves leaves out or trims. Number values
+// are float64, as a state file decoded from JSON holds them.
+func TestDashboardExecuteDetail_PendingPlannedWavesSkipsBadEntries(t *testing.T) {
+	data := map[string]any{
+		"waves": []any{"not an object", map[string]any{"number": 1.0}},
+		"plannedWaves": []any{
+			"not an object",
+			map[string]any{"taskIds": []any{"1"}},                    // no number
+			map[string]any{"number": "2", "taskIds": []any{"1"}},     // number is a string
+			map[string]any{"number": -1.0, "taskIds": []any{"1"}},    // negative number
+			map[string]any{"number": 1.0, "taskIds": []any{"1"}},     // started
+			map[string]any{"number": 3.0},                            // no taskIds
+			map[string]any{"number": 4.0, "taskIds": []any{"", 7.0}}, // no usable task ID
+			map[string]any{"number": 5.0, "taskIds": []any{"a", 7.0, "", "b"}},
+			map[string]any{"number": 5.0, "taskIds": []any{"x"}}, // repeats number 5
+		},
+	}
+	want := []dashboardPlannedWave{{number: 5, taskIDs: []string{"a", "b"}}}
+	if got := dashboardPendingPlannedWaves(data); !reflect.DeepEqual(got, want) {
+		t.Errorf("dashboardPendingPlannedWaves = %+v, want %+v", got, want)
+	}
+	if got := dashboardPendingPlannedWaves(map[string]any{}); got != nil {
+		t.Errorf("dashboardPendingPlannedWaves(empty) = %+v, want nil", got)
+	}
+}
+
+// TestDashboardExecuteDetail_PlannedWaveNumbersMatchWaves checks that
+// dashboardPlannedWaveNumbers and dashboardPlannedWaves give the same waves
+// in the same order, because dashboardExecuteSteps pairs them by position.
+func TestDashboardExecuteDetail_PlannedWaveNumbersMatchWaves(t *testing.T) {
+	data := map[string]any{
+		"waves":        []any{map[string]any{"number": 2.0}},
+		"plannedWaves": dashPlannedWaves([2]any{4.0, []any{"4"}}, [2]any{2.0, []any{"2"}}, [2]any{3.0, []any{"3"}}, [2]any{1.0, []any{"1"}}),
+	}
+	nums := dashboardPlannedWaveNumbers(data)
+	if want := []int{1, 3, 4}; !reflect.DeepEqual(nums, want) {
+		t.Fatalf("dashboardPlannedWaveNumbers = %v, want %v", nums, want)
+	}
+	waves := dashboardPlannedWaves(data, map[string]string{}, map[string]bool{})
+	if len(waves) != len(nums) {
+		t.Fatalf("dashboardPlannedWaves gave %d waves, want %d", len(waves), len(nums))
+	}
+	for i, w := range waves {
+		if w.Number != nums[i] {
+			t.Errorf("wave %d number = %d, want %d", i, w.Number, nums[i])
+		}
+	}
+	if got := dashboardPlannedWaveNumbers(map[string]any{}); got != nil {
+		t.Errorf("dashboardPlannedWaveNumbers(empty) = %v, want nil", got)
+	}
+}
+
+// TestDashboardExecuteDetail_PlannedWavesNestInShip checks that a ship run
+// that nests an execute run shows the planned waves in its one execute step.
+func TestDashboardExecuteDetail_PlannedWavesNestInShip(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteState(t, root, dashJoinShipFile, dashJoinShipData(), dashJoinFresh)
+	exec := map[string]any{
+		"branch":       "feat/x",
+		"startedAt":    "2026-10-07T08:01:00Z",
+		"plannedTasks": []any{map[string]any{"id": "1", "name": "one"}, map[string]any{"id": "2", "name": "two"}},
+		"waves":        []any{},
+		"plannedWaves": dashPlannedWaves([2]any{1, []any{"1"}}, [2]any{2, []any{"2"}}),
+	}
+	dashWriteState(t, root, dashJoinExecFile("20261007T080100Z"), exec, dashJoinFresh)
+
+	ship := dashOne(t, root)
+	if ship.Kind != "ship" {
+		t.Fatalf("kind = %q, want ship", ship.Kind)
+	}
+	d := dashJoinStep(t, ship, "execute").Detail
+	if d == nil || d.Kind != dashboardKindWaves || len(d.Waves) != 2 {
+		t.Fatalf("execute detail = %+v, want kind waves with two planned waves", d)
+	}
+	for i, w := range d.Waves {
+		if w.Number != i+1 || w.Status != StepPending || len(w.Tasks) != 1 {
+			t.Errorf("wave %d = %+v, want a pending wave with one task", i, w)
+		}
+	}
+	if d.Waves[1].Tasks[0].Name != "two" || d.Queued != nil {
+		t.Errorf("execute detail = %+v, want task 2 named two and no queued", d)
+	}
+}
+
+// TestDashboardExecuteSteps_ShortStepList checks that dashboardExecuteSteps
+// does not index past p.Steps when the caller gives fewer steps than the
+// state has started and planned waves. The waves reach join.execDetail, no
+// wave step gets a detail, and the queued step is still added.
+func TestDashboardExecuteSteps_ShortStepList(t *testing.T) {
+	st := &state.State{Data: map[string]any{
+		"plannedTasks": []any{
+			map[string]any{"id": "1", "name": "one"},
+			map[string]any{"id": "2", "name": "two"},
+			map[string]any{"id": "3", "name": "three"},
+		},
+		// Numbers are float64 because the state file is JSON.
+		"waves": []any{map[string]any{
+			"number": float64(1), "status": "completed",
+			"tasks": []any{map[string]any{"id": "1", "status": "completed"}},
+		}},
+		"plannedWaves": dashPlannedWaves([2]any{float64(1), []any{"1"}}, [2]any{float64(2), []any{"2"}}),
+	}}
+	p := DashboardPipeline{}
+
+	dashboardExecuteSteps(&p, st)
+
+	if want := []string{dashboardQueuedStep}; !reflect.DeepEqual(dashStepNames(p), want) {
+		t.Errorf("steps = %v, want %v", dashStepNames(p), want)
+	}
+	all := p.join.execDetail
+	if all == nil || len(all.Waves) != 2 || len(all.Queued) != 1 || all.Queued[0].ID != "3" {
+		t.Fatalf("join.execDetail = %+v, want two waves and task 3 queued", all)
+	}
+	if all.Waves[0].Number != 1 || all.Waves[1].Number != 2 || all.Waves[1].Status != StepPending {
+		t.Errorf("waves = %+v, want started wave 1 then pending wave 2", all.Waves)
 	}
 }

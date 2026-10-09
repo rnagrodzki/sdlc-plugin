@@ -90,7 +90,7 @@ type ExecuteStateIn struct {
 	Payload             map[string]any `json:"payload,omitempty" jsonschema_description:"Reserved for future use; not currently read by any action."`
 	StepID              string         `json:"stepId,omitempty" jsonschema_description:"ledger_checkin only: identifier of the pipeline step the worker is registering activity for."`
 	Findings            string         `json:"findings,omitempty" jsonschema_description:"ledger_checkout only: free-text findings payload to persist alongside this worker's checkout record, returned later by ledger_status. Not schema-validated, but review workers conventionally pass a JSON array of objects shaped {severity, file, line, rationale} (a markdown block is also accepted). Capped at 64 KiB; larger payloads should be persisted to a file under .sdlc-v2/ and referenced by path instead."`
-	Reason              string         `json:"reason,omitempty" jsonschema:"enum=stalled,enum=missing,enum=unstopped" jsonschema_description:"ledger_skip only: why the review worker stopped. Plain text. unstopped = stalled and TaskStop failed, so the worker may still run. Example: stalled"`
+	Reason              string         `json:"reason,omitempty" jsonschema:"enum=stalled,enum=missing,enum=unstopped" jsonschema_description:"ledger_skip only: why the review worker stopped. Plain text. unstopped = TaskStop failed or the worker has no task ID, so the worker may still run. Example: stalled"`
 	Detail              string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
 	LastCompletedTask   string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
 	AcceptanceDone      []int          `json:"acceptanceDone,omitempty" jsonschema_description:"wave-progress write only: 0-based indices, into the task's fact-sheet acceptance criteria, that the worker has completed so far (e.g. [0,2,3]). Replaces the previously recorded list; omit to leave it unchanged."`
@@ -6133,7 +6133,7 @@ type reviewRunMetaDimension struct {
 const (
 	reviewStopStalled   = "stalled"   // stopped by TaskStop after a stall
 	reviewStopMissing   = "missing"   // never checked in
-	reviewStopUnstopped = "unstopped" // stalled, TaskStop failed, may still run
+	reviewStopUnstopped = "unstopped" // TaskStop failed or no task ID, may still run
 )
 
 // ledgerMetaOpenFunc matches os.OpenFile. Tests replace it to force a write

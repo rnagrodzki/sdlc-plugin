@@ -645,8 +645,9 @@ func dashboardShip(p *DashboardPipeline, data map[string]any) {
 	}
 }
 
-// dashboardExecute fills an execute pipeline: one step for each wave, done
-// and total count tasks. It returns the newest modification time of the task
+// dashboardExecute fills an execute pipeline: one step for each wave, then one
+// pending step for each planned wave that has not started. Done and total
+// count tasks. It returns the newest modification time of the task
 // progress files, found through waves[].runId.
 func dashboardExecute(p *DashboardPipeline, st *state.State) time.Time {
 	data := st.Data
@@ -700,6 +701,11 @@ func dashboardExecute(p *DashboardPipeline, st *state.State) time.Time {
 				doneTasks[id] = true
 			}
 		}
+	}
+
+	// A planned wave that no waves entry covers yet is a pending step.
+	for _, n := range dashboardPlannedWaveNumbers(data) {
+		p.Steps = append(p.Steps, DashboardStep{Name: fmt.Sprintf("wave %d", n), Status: StepPending})
 	}
 
 	total := dashboardInt(data["totalTasks"])

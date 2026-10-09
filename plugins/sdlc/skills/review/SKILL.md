@@ -25,9 +25,9 @@ orchestrator agent used to run, now inline.
 Parse `$ARGUMENTS`:
 
 - `--base <branch>` → forwarded as `target`.
-- `--dry-run` → handled entirely by Step 1 below; not forwarded to the tool.
+- `--dry-run` → forwarded as `dryRun: true` (no ledger is written), then handled by Step 1 below.
 
-**Scope note:** `review_prepare`'s only inputs are `target` and `skipConfigCheck` — scope
+**Scope note:** `review_prepare`'s only inputs are `target`, `skipConfigCheck`, and `dryRun` — scope
 (`all` / `committed` / `staged` / `working` / `worktree`) is read by the tool from the
 `scope` key of the `[review]` section in `.sdlc-v2/local.toml` (default `all`), not from a CLI
 flag. This port does not expose `--committed` / `--staged` / `--working` / `--worktree` /
@@ -41,7 +41,7 @@ review agents run at the same time. Every matching dimension runs, in the order 
 Only the fields that this skill reads (the tool returns more):
 
 ```
-review_prepare({ target: "<branch from --base, or empty>", skipConfigCheck: false })
+review_prepare({ target: "<branch from --base, or empty>", skipConfigCheck: false, dryRun: <true when --dry-run> })
 → { manifestPath, style, summary: {
       total_dimensions, active_dimensions, skipped_dimensions, wave_count,
       total_changed_files, uncovered_file_count, suggested_dimensions
@@ -55,8 +55,9 @@ if the tool reported one before failing.
 there is no separate agent to shield this session from the manifest — the manifest is a
 **thin index** (R-manifest-index-slices, #447): each `dimensions[]` entry carries only
 `name, description, severity, model, status, requires_full_diff, truncated, matched_count,
-diff_file, slice_file` (exactly `reviewDimIndexEntry`'s JSON tags), plus root-level
-`subagent_model` and `waves`. `waves` is an array of waves; each wave is an array of
+diff_file, slice_file, worker_id` (exactly `reviewDimIndexEntry`'s JSON tags), plus root-level
+`subagent_model`, `run_id`, and `waves`. `run_id` is empty for a dry run and for zero waves.
+`waves` is an array of waves; each wave is an array of
 dimension names, most severe first, with at most `manifest.plan_critique.max_parallel_dimensions`
 names. Every started dimension is in exactly one wave; a `SKIPPED` dimension is in none.
 **Do NOT read the contents of any `slice_file` or `diff_file` referenced
@@ -100,7 +101,7 @@ To execute the full review, run /review (without --dry-run).
 ```
 
 Run the Step 9 file cleanup (`rm -f "<manifestPath>"` and `rm -rf "{manifest.diff_dir}"`).
-No `runId` exists yet, so the run has no ledger. Stop here.
+`dryRun: true` made `review_prepare` write no ledger, so the run has none. Stop here.
 
 ---
 
@@ -110,16 +111,15 @@ No `runId` exists yet, so the run has no ledger. Stop here.
 Step 2 and Step 3: start no agent and make no `ledger_status` call. Go to Step 4 with zero
 findings. Step 9 then has no worker to stop.
 
-Otherwise, **mint a `runId` for this review run** once, before the first wave — this run's
-ledger namespace:
+Otherwise, take this run's ledger namespace from the manifest, once, before the first wave:
 
 ```
-runId := "review-" + sanitize(manifest.timestamp)
+runId := manifest.run_id
 ```
 
-`sanitize` replaces every character outside `[A-Za-z0-9_-]` with `-` (the manifest
-timestamp is RFC3339 and contains `:` characters, which are unsafe for a ledger path
-segment).
+`review_prepare` computed `manifest.run_id` and wrote the run's ledger folder
+(`runs/ledger/<run_id>/run.meta`) before it returned. This skill keeps no rule of its own to
+build the value.
 
 Start with an empty `expectedWorkers` list. Then, for each wave `W` in `manifest.waves`, in
 order (`waves[0]` first), do these steps:
@@ -127,14 +127,14 @@ order (`waves[0]` first), do these steps:
 1. **Find each dimension of `W`.** For each name in `W`, find the `manifest.dimensions[]`
    entry with that `name`. Use the fields of that entry to build the agent prompt below.
 
-2. **Derive the `workerId` of each dimension of `W`:**
+2. **Read the `workerId` of each dimension of `W`:**
 
    ```
-   workerId := slugify(dimension.name)
+   workerId := dimension.worker_id
    ```
 
-   `slugify` lowercases the name, then collapses every run of one-or-more characters
-   outside `[A-Za-z0-9_-]` to a single `-`. **Append each `workerId` of `W` to
+   `review_prepare` computes `worker_id` for each dimension and plans it in `run.meta`.
+   **Append each `workerId` of `W` to
    `expectedWorkers`** — Step 3 passes the list to `ledger_status`. Add a `workerId` only for
    an agent that this step starts now. `expectedWorkers` never holds a worker of a later
    wave: `ledger_status` reports an expected worker with no ledger file as missing at once.
@@ -247,8 +247,8 @@ every worker of `W` is done, skipped, or stopped:
 
 - **done** — its `workerId` shows `status: "done"` in `workers[]`.
 - **skipped or stopped** — it was stalled or missing on two polls in a row, and the skill
-  called `TaskStop` once for it, per the rules below. It counts as stopped also when
-  `TaskStop` failed or had no task ID. The Step 5 comment names its dimension as skipped.
+  called `TaskStop` once for it and `ledger_skip` once for it, per the rules below. It counts
+  as stopped also when `TaskStop` failed or had no task ID. The Step 5 comment names its dimension as skipped.
 
 Keep one **stopped** list for the run: every worker that this step stopped or skipped, in
 any wave. A worker stays on it also when a later poll shows it `done`. Step 4 ignores the
@@ -272,6 +272,8 @@ the findings from the last poll.
   one more poll cycle.
 - If it is **still** present in `stalledWorkers` on the next poll, stop waiting on that
   worker: call `TaskStop` once with its task ID (see **Stopping a skipped worker** below).
+  Then call `execute_state({ action: "ledger_skip", runId, workerId, reason: "stalled" })`.
+  Use `reason: "unstopped"` instead when `TaskStop` fails or Step 2 got no task ID.
   The worker now counts as stopped. Note the skipped dimension by name for the final
   `review-comment.md` (Step 5) — this is a disclosed degraded mode, not a silent drop. Keep
   the poll for the other workers of `W`.
@@ -282,8 +284,11 @@ the findings from the last poll.
   not treat it as failed yet — wait one more poll cycle.
 - If it is **still** present in `missingWorkers` on the next poll, stop waiting on that
   worker: call `TaskStop` once with its task ID (see below; skip the call when Step 2 got no
-  task ID for it), and log a warning. The worker
-  now counts as stopped. Note the skipped dimension by name for the final
+  task ID for it), and log a warning. Then call
+  `execute_state({ action: "ledger_skip", runId, workerId, reason: "missing" })`.
+  Use `reason: "unstopped"` instead when `TaskStop` fails or Step 2 got no task ID: the
+  worker may still run.
+  The worker now counts as stopped. Note the skipped dimension by name for the final
   `review-comment.md` (Step 5) — this is a disclosed degraded mode, not a silent drop. Keep
   the poll for the other workers of `W`.
 
@@ -297,6 +302,13 @@ ownership/authorization error. That is an expected fallback, not a blocker: do n
 Add the worker to the unstoppable list. Name each worker that could not be stopped in the
 Step 5 comment and in the final output as "possibly still running; a later ledger entry for
 it was not consolidated".
+
+**Recording a skipped worker:** `ledger_skip` sets the stop reason of the worker's dimension in
+the run's `run.meta`. The dashboard then shows that dimension as skipped with the reason,
+until the worker checks out. A worker that checks out later shows as done, whatever the reason. The
+call writes no worker file, so the `ledger_status` output does not change. When `ledger_skip`
+fails, print the error. Name the worker in the Step 5 comment as skipped, as for any skipped
+worker, and continue the wave loop.
 
 ---
 
@@ -576,7 +588,7 @@ finished run. The first execute `gc` or ship `cleanup-pipeline` sweep after 7 da
 default `state.gc.ttlDays`) removes it.
 
 **Interruption.** An interrupted `/review` does not resume. Run it again. It starts at Step 0
-with a new manifest and a new `runId`. It does not read the ledger files of the old run.
+with a new manifest and a new `run_id`. It does not read the ledger files of the old run.
 
 The new run holds no task IDs of the old run's workers. Before you start it, run this Step 9
 for the interrupted run when this session still has its task IDs. When the task IDs are
@@ -586,10 +598,28 @@ writes only to the old run's ledger, which the new run does not read.
 
 ---
 
+## Routes
+
+The dry-run route, the zero-wave route, and the stall routes each reach Step 9.
+
+| Route | Exit |
+|---|---|
+| dry run | Step 1, then Step 9 cleanup, no ledger |
+| zero waves | Step 4 with zero findings |
+| worker missing twice, `TaskStop` succeeds | `ledger_skip` reason `missing`, continue the wave loop |
+| worker stalled twice, `TaskStop` succeeds | `ledger_skip` reason `stalled`, continue the wave loop |
+| worker stalled or missing twice, `TaskStop` fails or no task ID (for example nested under `/ship`) | `ledger_skip` reason `unstopped`, add the worker to the unstoppable list (Step 3), continue the wave loop |
+| `ledger_skip` fails | print the error, name the worker in the Step 5 comment as skipped (stalled or missing), continue |
+| review run stopped and invoked again | Step 0 runs again and gets a new `run_id`. The old ledger folder shows as `stalled` on the dashboard after 30 minutes with no change. It stays there until the ledger sweep removes it (7 days by default) |
+
+---
+
 ## DO NOT
 
 - Do NOT read a dimension's `slice_file` or `diff_file` contents into this session — the
   dispatched agent reads them (Step 2)
+- Do NOT build a `runId` or a `workerId` in this skill — read `manifest.run_id` and
+  `dimension.worker_id` (Step 2)
 - Do NOT write findings to a `.sdlc-v2/runs/ledger/` file directly — pass them via
   `ledger_checkout`'s `findings` field (Step 2) and read them back from `ledger_status`'s
   response (Step 4)
@@ -601,6 +631,8 @@ writes only to the old run's ledger, which the new run does not read.
 - Do NOT leave a skipped worker unnamed: every dimension skipped in Step 3 (stalled or
   missing) is named in the Step 5 comment, and every worker that `TaskStop` could not stop is
   named in the output
+- Do NOT skip the `ledger_skip` call for a worker that Step 3 stops: it is the only way the
+  dashboard learns why the dimension has no result
 - Do NOT delete the manifest or `diff_dir` in Step 9 before the `TaskStop` pass, and do NOT
   delete `diff_dir` while a worker is on the unstoppable list
 - Do NOT consolidate the findings of a worker that Step 3 stopped or skipped
