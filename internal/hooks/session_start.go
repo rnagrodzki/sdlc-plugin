@@ -23,6 +23,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -942,14 +943,18 @@ var (
 // point to a .sdlc-v2/<entry> path, through cleanMainLinks. When the active
 // root equals the main root and .git is not a folder, it does nothing and
 // prints nothing. In a linked worktree, each missing linked entry becomes a
-// symlink to <main-worktree>/.sdlc-v2/<entry> — created even when that
-// target does not exist yet, so later writes there appear without a new
-// session (the spec's "Link creation trigger" requirement). An entry that
-// already exists as a real file or directory is left untouched, with one
-// advisory line; a failed symlink creation is reported the same way, one
-// line per failed entry, and never aborts the hook. Every failure path
-// (root resolution, .sdlc-v2/ creation) degrades silently to no output,
-// matching this file's other phases.
+// symlink to <main-worktree>/.sdlc-v2/<entry>, and right after the link is
+// created the main-worktree folder for a folder entry is created through
+// ensureMainFolder, so the new link does not point nowhere (timings.json is
+// a file and gets no folder; it may stay a dangling link until a run writes
+// it). An existing link is checked by repairLink: a dangling link to the
+// wrong path is replaced, a correct dangling link gets its main-worktree
+// folder, and a live link to another path is kept with one advisory line.
+// An entry that already exists as a real file or directory is left
+// untouched, with one advisory line; every failed remove, symlink or mkdir
+// call is reported the same way, one line per failure, and never aborts the
+// hook. Every failure path (root resolution, .sdlc-v2/ creation) degrades
+// silently to no output, matching this file's other phases.
 func worktreeLinkPhase() []string {
 	if root := resolveActiveWorktreeSafe(); root != "" && isMainCheckout(root) {
 		return cleanMainLinks(root)
@@ -971,17 +976,18 @@ func worktreeLinkPhase() []string {
 	var lines []string
 	for _, entry := range paths.LinkedStateEntries {
 		linkPath := filepath.Join(activeDataDir, entry)
+		target := filepath.Join(mainRoot, paths.DataDir, entry)
 		info, statErr := os.Lstat(linkPath)
 		switch {
 		case statErr == nil && info.Mode()&os.ModeSymlink != 0:
-			// Already linked (an earlier session) — nothing to do, nothing to
-			// print (the spec's "Idempotent" scenario).
+			lines = append(lines, repairLink(mainRoot, activeRoot, entry, linkPath, target)...)
 		case statErr == nil:
 			lines = append(lines, fmt.Sprintf("sdlc: .sdlc-v2/%s exists in this worktree — not linked to the main worktree", entry))
 		case os.IsNotExist(statErr):
-			target := filepath.Join(mainRoot, paths.DataDir, entry)
 			if err := symlinkFunc(target, linkPath); err != nil {
 				lines = append(lines, fmt.Sprintf("sdlc: could not link .sdlc-v2/%s: %v", entry, err))
+			} else if line := ensureMainFolder(entry, target); line != "" {
+				lines = append(lines, line)
 			}
 		default:
 			// Any other Lstat error (e.g. a permission failure reading the
@@ -990,6 +996,83 @@ func worktreeLinkPhase() []string {
 		}
 	}
 	return lines
+}
+
+// repairLink checks one existing symlink at linkPath in a linked worktree
+// and returns one line for each action or failure. A link is correct when
+// tools.IsCorrectStateLink reports that it points to target, and dangling
+// when os.Stat on it fails with fs.ErrNotExist.
+//
+//   - correct and live: no action, no line.
+//   - correct and dangling: ensureMainFolder creates the main-worktree
+//     folder; only a failure prints a line.
+//   - wrong and dangling: the link is removed and created again to point to
+//     target, then ensureMainFolder runs. A failed remove or symlink call
+//     prints one line and stops. Remove then symlink is not atomic: after a
+//     failed symlink call the entry is missing, and the next session links
+//     it through the missing-entry branch of worktreeLinkPhase.
+//   - wrong and live, or wrong and not followable for another reason (for
+//     example a loop): the link is kept with one advisory line, because it
+//     may be a user link.
+//
+// A link that cannot be read produces no line.
+func repairLink(mainRoot, activeRoot, entry, linkPath, target string) []string {
+	_, statErr := os.Stat(linkPath)
+	dangling := errors.Is(statErr, fs.ErrNotExist)
+
+	if tools.IsCorrectStateLink(mainRoot, activeRoot, entry) {
+		if !dangling {
+			return nil
+		}
+		if line := ensureMainFolder(entry, target); line != "" {
+			return []string{line}
+		}
+		return nil
+	}
+
+	old, err := os.Readlink(linkPath)
+	if err != nil {
+		return nil
+	}
+	if !dangling {
+		return []string{fmt.Sprintf("sdlc: .sdlc-v2/%s links to %s, not to the main worktree — kept", entry, old)}
+	}
+	if err := removeFunc(linkPath); err != nil {
+		return []string{fmt.Sprintf("sdlc: could not relink .sdlc-v2/%s: %v", entry, err)}
+	}
+	if err := symlinkFunc(target, linkPath); err != nil {
+		return []string{fmt.Sprintf("sdlc: could not relink .sdlc-v2/%s: %v", entry, err)}
+	}
+	lines := []string{fmt.Sprintf("sdlc: relinked .sdlc-v2/%s to the main worktree (old target %s did not exist)", entry, old)}
+	if line := ensureMainFolder(entry, target); line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// ensureMainFolder creates target, the main-worktree path of a linked
+// folder entry, with mkdirAllFunc. It returns "" on success, for
+// paths.TimingsFile (a file, not a folder), and when target already exists.
+// When target is a link that points nowhere, it makes no mkdir call and
+// returns a line that tells the user to start a session in the main
+// worktree, where cleanMainLinks removes that link. A failed mkdir call
+// returns one line with the error.
+func ensureMainFolder(entry, target string) string {
+	if entry == paths.TimingsFile {
+		return ""
+	}
+	if info, err := os.Lstat(target); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			if _, statErr := os.Stat(target); errors.Is(statErr, fs.ErrNotExist) {
+				return fmt.Sprintf("sdlc: .sdlc-v2/%s in the main worktree is a link that points nowhere. Start a session in the main worktree to remove it.", entry)
+			}
+		}
+		return ""
+	}
+	if err := mkdirAllFunc(target, 0o755); err != nil {
+		return fmt.Sprintf("sdlc: could not create .sdlc-v2/%s in the main worktree: %v", entry, err)
+	}
+	return ""
 }
 
 // isMainCheckout reports whether <root>/.git is a folder. A main checkout

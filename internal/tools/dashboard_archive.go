@@ -298,8 +298,13 @@ type archiveMover struct {
 
 // run applies the six steps of the move order that ArchiveRun documents.
 func (m *archiveMover) run(runID string, members []archiveRunFiles, root archiveRunFiles, now time.Time) error {
-	if err := os.MkdirAll(m.dir, 0o755); err != nil {
-		return archiveErr(ArchiveFailed, "Create archive folder "+m.dir, archiveSuggestFSFailed, err)
+	if err := fsx.MkdirAll(m.dir, 0o755); err != nil {
+		suggestion := archiveSuggestFSFailed
+		var dl *fsx.DanglingLinkError
+		if errors.As(err, &dl) {
+			suggestion = dl.Recovery()
+		}
+		return archiveErr(ArchiveFailed, "Create archive folder "+m.dir, suggestion, err)
 	}
 	all := append(append([]archiveRunFiles{}, members...), root)
 	for _, f := range all {

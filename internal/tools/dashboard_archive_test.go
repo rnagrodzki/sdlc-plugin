@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
@@ -486,7 +487,52 @@ func TestArchiveRun_Step1MkdirFails(t *testing.T) {
 	if !ccExists(archData(root, "runs", archExecFile)) || !ccExists(archData(root, "runs", "ledger", archExecRun)) {
 		t.Errorf("a file moved before the archive folder existed")
 	}
+	var dl *fsx.DanglingLinkError
+	if errors.As(err, &dl) {
+		t.Errorf("a regular file blocker gave a dangling link error: %v", dl)
+	}
+	var ae *ArchiveError
+	if errors.As(err, &ae) && ae.Suggestion != archiveSuggestFSFailed {
+		t.Errorf("suggestion = %q, want %q", ae.Suggestion, archiveSuggestFSFailed)
+	}
 	if err := os.Remove(block); err != nil {
+		t.Fatal(err)
+	}
+	archAssertRetry(t, root, err)
+}
+
+// TestArchiveRun_Step1DanglingLink checks that a run-archive link to a missing
+// folder gives ARCHIVE_FAILED with the recovery text of the link error as the
+// suggestion, and that nothing moves.
+func TestArchiveRun_Step1DanglingLink(t *testing.T) {
+	root := archShipFixture(t, PipelineCompleted, dashJoinFresh)
+	link := archData(root, paths.RunArchiveSubdir)
+	target := filepath.Join(t.TempDir(), "main", paths.DataDir, paths.RunArchiveSubdir)
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	_, err := archRun(root, archShipID, false)
+	if !ccExists(archData(root, "runs", archExecFile)) || !ccExists(archData(root, "runs", "ledger", archExecRun)) {
+		t.Errorf("a file moved before the archive folder existed")
+	}
+	var dl *fsx.DanglingLinkError
+	if !errors.As(err, &dl) {
+		t.Fatalf("err = %v (%T), want a wrapped *fsx.DanglingLinkError", err, err)
+	}
+	var ae *ArchiveError
+	if !errors.As(err, &ae) {
+		t.Fatalf("err = %v (%T), want *ArchiveError", err, err)
+	}
+	if want := "mkdir -p " + target; !strings.Contains(ae.Message, link) || !strings.Contains(ae.Message, target) || !strings.Contains(ae.Message, want) {
+		t.Errorf("message %q lacks the link %q, the target %q, or %q", ae.Message, link, target, want)
+	}
+	if ae.Suggestion != dl.Recovery() {
+		t.Errorf("suggestion = %q, want %q", ae.Suggestion, dl.Recovery())
+	}
+	if ae.Suggestion == archiveSuggestFSFailed {
+		t.Errorf("suggestion is the permission text: %q", ae.Suggestion)
+	}
+	if err := os.Remove(link); err != nil {
 		t.Fatal(err)
 	}
 	archAssertRetry(t, root, err)
