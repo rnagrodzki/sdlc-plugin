@@ -99,6 +99,7 @@ Each stage of a change maps to one skill. Run them in order, or let
 
 | Stage | Skill | When to use it |
 |---|---|---|
+| Preplan | [`/preplan`](skills/preplan.md) | Shape an idea into a topic file, with each proposal checked against the plan guardrails. Pass the file to `/plan`. |
 | Plan | `/plan` | Turn a requirement, spec, or description into a task-decomposed implementation plan. |
 | Save the spec | `/openspec-save <plan-file>` | After `/plan` staged an OpenSpec change, save it as its own branch, commit, and PR. Merge that PR first, then run `/ship` on a new branch from the default branch. |
 | Execute | `/execute <plan-file>` | Implement a plan file wave by wave, with per-wave verification. |
@@ -151,6 +152,8 @@ linked worktree, so they stay visible and live without a new session:
 - `reviews`
 - `state`
 - `timings.json`
+- `preplan`
+- `run-archive`
 
 `.sdlc-v2/config.toml` is never linked or symlinked — each worktree keeps its
 own real config file.

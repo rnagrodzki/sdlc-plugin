@@ -181,6 +181,12 @@ describe('page logic exports', () => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
+
+  test('view.js exports the request builders and the detail lookup', () => {
+    ['archiveRequest', 'clearRequest', 'learningUrl', 'detailKey', 'detailItem'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
 });
 
 describe('defaultCollapsed', () => {
@@ -342,14 +348,22 @@ describe('sectionMeta', () => {
 });
 
 describe('isWideSection', () => {
-  test('waves with 2 or more waves, explorers, and rounds are wide', () => {
+  test('every waves tile is wide, with 0, 1, or N waves', () => {
+    assert.equal(view.isWideSection({ kind: 'waves' }), true);
+    assert.equal(view.isWideSection({ kind: 'waves', waves: [] }), true);
+    assert.equal(view.isWideSection({ kind: 'waves', waves: [{}] }), true);
     assert.equal(view.isWideSection({ kind: 'waves', waves: [{}, {}] }), true);
+    assert.equal(view.isWideSection({ kind: 'waves', waves: [{}, {}, {}] }), true);
+  });
+
+  test('explorers and rounds are wide', () => {
     assert.equal(view.isWideSection({ kind: 'explorers' }), true);
     assert.equal(view.isWideSection({ kind: 'rounds' }), true);
   });
 
-  test('one wave, dimensions, and findings are not wide', () => {
-    assert.equal(view.isWideSection({ kind: 'waves', waves: [{}] }), false);
+  test('a missing detail, dimensions, and findings are not wide', () => {
+    assert.equal(view.isWideSection(null), false);
+    assert.equal(view.isWideSection(undefined), false);
     assert.equal(view.isWideSection({ kind: 'dimensions' }), false);
     assert.equal(view.isWideSection({ kind: 'findings' }), false);
     assert.equal(view.isWideSection({ kind: 'guardrails' }), false);
@@ -1052,6 +1066,511 @@ describe('stopResult', () => {
   });
 });
 
+describe('archiveRequest / clearRequest', () => {
+  test('archiveRequest returns null when the token, repo, or run id is empty', () => {
+    assert.equal(view.archiveRequest('', '/abs/repo', 'ship-x-1', false), null);
+    assert.equal(view.archiveRequest('abc123', '', 'ship-x-1', false), null);
+    assert.equal(view.archiveRequest('abc123', '/abs/repo', '', false), null);
+  });
+
+  test('archiveRequest returns a JSON POST with the token header', () => {
+    const req = view.archiveRequest('abc123', '/abs/repo', 'ship-x-1', false);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/api/run-archive');
+    assert.deepEqual(req.headers, { 'X-Sdlc-Token': 'abc123', 'Content-Type': 'application/json' });
+    assert.equal(typeof req.body, 'string');
+    assert.deepEqual(JSON.parse(req.body), { repo: '/abs/repo', runId: 'ship-x-1', confirmStalled: false });
+  });
+
+  test('archiveRequest always sends confirmStalled as a boolean', () => {
+    assert.equal(JSON.parse(view.archiveRequest('t', '/r', 'id', true).body).confirmStalled, true);
+    assert.equal(JSON.parse(view.archiveRequest('t', '/r', 'id', false).body).confirmStalled, false);
+    assert.equal(JSON.parse(view.archiveRequest('t', '/r', 'id').body).confirmStalled, false);
+    assert.equal(JSON.parse(view.archiveRequest('t', '/r', 'id', 'yes').body).confirmStalled, false);
+  });
+
+  test('clearRequest returns null when the token or repo is empty', () => {
+    assert.equal(view.clearRequest('', '/abs/repo'), null);
+    assert.equal(view.clearRequest('abc123', ''), null);
+  });
+
+  test('clearRequest returns a JSON POST with the token header', () => {
+    const req = view.clearRequest('abc123', '/abs/repo');
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/api/cache-clear');
+    assert.deepEqual(req.headers, { 'X-Sdlc-Token': 'abc123', 'Content-Type': 'application/json' });
+    assert.deepEqual(JSON.parse(req.body), { repo: '/abs/repo' });
+  });
+});
+
+describe('learningUrl', () => {
+  test('returns null when the repo, date, or heading is empty', () => {
+    assert.equal(view.learningUrl('', '2026-10-08', 'plan: x'), null);
+    assert.equal(view.learningUrl('/abs/repo', '', 'plan: x'), null);
+    assert.equal(view.learningUrl('/abs/repo', '2026-10-08', ''), null);
+  });
+
+  test('encodes every value', () => {
+    const url = view.learningUrl('/abs/repo', '2026-10-08', 'plan: x');
+    assert.equal(url, '/api/learning?repo=%2Fabs%2Frepo&date=2026-10-08&heading=plan%3A%20x');
+    const query = new URL(url, 'http://localhost').searchParams;
+    assert.equal(query.get('repo'), '/abs/repo');
+    assert.equal(query.get('date'), '2026-10-08');
+    assert.equal(query.get('heading'), 'plan: x');
+  });
+
+  test('keeps characters that would split the query', () => {
+    const url = view.learningUrl('/a b/repo', '2026-10-08', 'a&b=c#d');
+    const query = new URL(url, 'http://localhost').searchParams;
+    assert.equal(query.get('repo'), '/a b/repo');
+    assert.equal(query.get('heading'), 'a&b=c#d');
+  });
+});
+
+describe('page wiring helpers', () => {
+  test('view.js exports the four wiring helpers and errorText', () => {
+    ['closeFocusSelector', 'confirmSteps', 'archiveResultText', 'clearResultText', 'errorText'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
+});
+
+describe('errorText', () => {
+  test('returns the message only, never the suggestion', () => {
+    const body = { error: { code: 'X', message: 'It failed.', suggestion: 'Try again.' } };
+    assert.equal(view.errorText(body, 'fallback'), 'It failed.');
+  });
+
+  test('returns the fallback when there is no message, even with a suggestion', () => {
+    assert.equal(view.errorText({ error: { suggestion: 'Try again.' } }, 'fallback'), 'fallback');
+    assert.equal(view.errorText({ error: { message: '' } }, 'fallback'), 'fallback');
+    assert.equal(view.errorText(null, 'fallback'), 'fallback');
+  });
+});
+
+describe('closeFocusSelector', () => {
+  test('returns the Activity tab button when the key is empty', () => {
+    assert.equal(view.closeFocusSelector(''), '#tab-activity');
+    assert.equal(view.closeFocusSelector(), '#tab-activity');
+    assert.equal(view.closeFocusSelector(null), '#tab-activity');
+  });
+
+  test('returns the attribute selector of the key', () => {
+    assert.equal(view.closeFocusSelector('deferred:d-1'), '[data-detail="deferred:d-1"]');
+    assert.equal(
+      view.closeFocusSelector('learning:2026-10-08:plan: split the lanes'),
+      '[data-detail="learning:2026-10-08:plan: split the lanes"]'
+    );
+  });
+
+  test('escapes the double quote, the backslash, and line breaks of a key', () => {
+    assert.equal(view.closeFocusSelector('learning:2026-10-08:say "hi"'), '[data-detail="learning:2026-10-08:say \\"hi\\""]');
+    assert.equal(view.closeFocusSelector('deferred:a\\b'), '[data-detail="deferred:a\\\\b"]');
+    assert.equal(view.closeFocusSelector('deferred:a\nb'), '[data-detail="deferred:a\\a b"]');
+  });
+
+  test('builds the selector of the key that detailKey builds for each kind', () => {
+    const keys = [
+      view.detailKey('deferred', { id: 'd-1' }),
+      view.detailKey('issue', null, { pipeline: 'ship-1', index: 0 }),
+      view.detailKey('learning', { date: '2026-10-08', heading: 'plan: x' }),
+      view.detailKey('finding', null, { pipeline: 'ship-1', dimension: 'security', index: 2 }),
+    ];
+    keys.forEach((key) => {
+      assert.equal(view.closeFocusSelector(key), '[data-detail="' + key + '"]');
+    });
+  });
+});
+
+describe('confirmSteps', () => {
+  test('archive of a run that is not stalled asks once', () => {
+    assert.deepEqual(view.confirmSteps('archive', 'completed'), ['archive']);
+    assert.deepEqual(view.confirmSteps('archive', 'failed'), ['archive']);
+    assert.deepEqual(view.confirmSteps('archive'), ['archive']);
+  });
+
+  test('archive of a stalled run asks a second time', () => {
+    assert.deepEqual(view.confirmSteps('archive', 'stalled'), ['archive', 'stalled']);
+  });
+
+  test('clear asks once, whatever the status', () => {
+    assert.deepEqual(view.confirmSteps('clear'), ['clear']);
+    assert.deepEqual(view.confirmSteps('clear', 'stalled'), ['clear']);
+  });
+
+  test('an unknown action asks nothing', () => {
+    assert.deepEqual(view.confirmSteps('stop'), []);
+    assert.deepEqual(view.confirmSteps(''), []);
+  });
+});
+
+describe('archiveResultText', () => {
+  test('200 is ok with no text', () => {
+    assert.deepEqual(view.archiveResultText(200, { runId: 'ship-1', dir: '/d', moved: [], deleted: [] }), {
+      ok: true,
+      text: '',
+    });
+  });
+
+  test('409 shows the error message', () => {
+    const body = { error: { code: 'RUN_ACTIVE', message: 'The run is still running.' } };
+    assert.deepEqual(view.archiveResultText(409, body), { ok: false, text: 'The run is still running.' });
+  });
+
+  test('an error with a suggestion shows the message only', () => {
+    const body = { error: { code: 'RUN_STALLED', message: 'The run stalled.', suggestion: 'Confirm to archive it.' } };
+    assert.deepEqual(view.archiveResultText(409, body), {
+      ok: false,
+      text: 'The run stalled.',
+    });
+  });
+
+  test('a response with no JSON body names the status', () => {
+    assert.deepEqual(view.archiveResultText(500, null), { ok: false, text: 'Archive failed (HTTP 500).' });
+  });
+
+  test('a body with no message names the status', () => {
+    assert.deepEqual(view.archiveResultText(500, {}), { ok: false, text: 'Archive failed (HTTP 500).' });
+    assert.deepEqual(view.archiveResultText(500, { error: {} }), { ok: false, text: 'Archive failed (HTTP 500).' });
+    assert.deepEqual(view.archiveResultText(500, { error: { message: '' } }), {
+      ok: false,
+      text: 'Archive failed (HTTP 500).',
+    });
+    assert.deepEqual(view.archiveResultText(500, 'boom'), { ok: false, text: 'Archive failed (HTTP 500).' });
+  });
+
+  test('a network error (status 0) is not ok', () => {
+    assert.deepEqual(view.archiveResultText(0, null), { ok: false, text: 'Archive failed (HTTP 0).' });
+  });
+});
+
+describe('clearResultText', () => {
+  const MB = 1024 * 1024;
+
+  test('two 200 results of 1 MB each give the sum', () => {
+    const text = view.clearResultText([
+      { repo: '/abs/repo-a', status: 200, body: { freedBytes: MB } },
+      { repo: '/abs/repo-b', status: 200, body: { freedBytes: MB } },
+    ]);
+    assert.equal(text, 'Freed 2.0 MB.');
+  });
+
+  test('a failed request adds one line and does not change the sum', () => {
+    const text = view.clearResultText([
+      { repo: '/abs/repo-a', status: 200, body: { freedBytes: MB } },
+      { repo: '/abs/repo', status: 404, body: { error: { code: 'REPO_NOT_FOUND', message: 'No such repo.' } } },
+    ]);
+    assert.equal(text, 'Freed 1.0 MB.\n/abs/repo: No such repo.');
+  });
+
+  test('one line for each failed request, in order, with the message only', () => {
+    const text = view.clearResultText([
+      { repo: '/a', status: 403, body: { error: { message: 'Forbidden.', suggestion: 'Reload the page.' } } },
+      { repo: '/b', status: 500, body: null },
+      { repo: '/c', status: 0, body: null },
+    ]);
+    assert.equal(
+      text,
+      [
+        'Freed 0.0 KB.',
+        '/a: Forbidden.',
+        '/b: Clear failed (HTTP 500).',
+        '/c: Clear failed (HTTP 0).',
+      ].join('\n')
+    );
+  });
+
+  test('a size under 1 MiB shows KB', () => {
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: { freedBytes: 1536 } }]), 'Freed 1.5 KB.');
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: { freedBytes: 0 } }]), 'Freed 0.0 KB.');
+  });
+
+  test('a size of 1 MiB or more shows MB', () => {
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: { freedBytes: MB } }]), 'Freed 1.0 MB.');
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: { freedBytes: 5.5 * MB } }]), 'Freed 5.5 MB.');
+  });
+
+  test('a 200 result with no freedBytes counts as 0', () => {
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: null }]), 'Freed 0.0 KB.');
+    assert.equal(view.clearResultText([{ repo: '/a', status: 200, body: {} }]), 'Freed 0.0 KB.');
+  });
+
+  test('no results give a size of 0', () => {
+    assert.equal(view.clearResultText([]), 'Freed 0.0 KB.');
+    assert.equal(view.clearResultText(), 'Freed 0.0 KB.');
+  });
+});
+
+// A snapshot with one item of each detail kind. The ship pipeline has two
+// review dimensions that each hold a finding at index 0. The review pipeline
+// is a standalone review: one step for each dimension, kind findings.
+function detailSnapshot() {
+  return {
+    repos: [
+      {
+        root: '/abs/repo-a',
+        name: 'repo-a',
+        learnings: [
+          { date: '2026-10-08', heading: 'plan: split the lanes', runId: 'r1', branch: 'main' },
+          { date: '2026-10-09', heading: 'harden', runId: 'r2', branch: 'main' },
+        ],
+        deferred: [
+          {
+            id: 'D-1', priority: 'high', description: 'Fix the race', created: '2026-10-01',
+            source: 'review', severity: 'high', file: 'a.go', line: 42, reason: 'out of scope',
+          },
+          {
+            id: 'D-2', priority: 'low', description: 'Rename it', created: '',
+            source: '', severity: '', file: '', line: 0, reason: '',
+          },
+        ],
+        pipelines: [
+          {
+            id: 'ship-x-1',
+            kind: 'ship',
+            issues: [
+              { source: 'step', severity: 'high', text: 'commit failed', file: 'b.go', line: '12-14', ref: 'commit' },
+              { source: 'wave', severity: 'low', text: 'slow wave', file: '', line: '', ref: 'wave 2' },
+            ],
+            steps: [
+              { name: 'execute', detail: { kind: 'waves', waves: [] } },
+              {
+                name: 'review',
+                detail: {
+                  kind: 'dimensions',
+                  dimensions: [
+                    {
+                      name: 'security',
+                      findingItems: [{ text: 'SQL built from input', severity: 'high', file: 's.go', line: '7' }],
+                    },
+                    {
+                      name: 'performance',
+                      findingItems: [{ text: 'N+1 query', severity: 'medium', file: 'p.go', line: '' }],
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+          {
+            id: 'review-20261008T120000',
+            kind: 'review',
+            issues: [],
+            steps: [
+              {
+                name: 'docs',
+                detail: { kind: 'findings', findings: [{ text: 'Stale doc', severity: 'low', file: 'd.md', line: '3' }] },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        root: '/abs/repo-b',
+        name: 'repo-b',
+        learnings: [],
+        deferred: [],
+        pipelines: [],
+      },
+    ],
+  };
+}
+
+describe('detailKey', () => {
+  test('builds the key of each kind from the fields the key uses', () => {
+    assert.equal(view.detailKey('deferred', { id: 'D-1' }), 'deferred:D-1');
+    assert.equal(view.detailKey('issue', null, { pipeline: 'ship-x-1', index: 3 }), 'issue:ship-x-1:3');
+    assert.equal(
+      view.detailKey('learning', { date: '2026-10-08', heading: 'plan: x' }),
+      'learning:2026-10-08:plan: x'
+    );
+    assert.equal(
+      view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'security', index: 0 }),
+      'finding:ship-x-1:security:0'
+    );
+  });
+
+  test('ignores fields that are not in the key', () => {
+    assert.equal(
+      view.detailKey('deferred', { id: 'D-1', priority: 'low' }, { pipeline: 'p', index: 9 }),
+      'deferred:D-1'
+    );
+    assert.equal(
+      view.detailKey('issue', { id: 'D-1', date: 'x' }, { pipeline: 'p', index: 1, dimension: 'd' }),
+      'issue:p:1'
+    );
+  });
+
+  test('accepts index 0', () => {
+    assert.equal(view.detailKey('issue', null, { pipeline: 'p', index: 0 }), 'issue:p:0');
+  });
+
+  test('returns an empty string for an unknown kind or a missing key field', () => {
+    assert.equal(view.detailKey('other', { id: 'D-1' }, { pipeline: 'p', index: 0 }), '');
+    assert.equal(view.detailKey('deferred', {}), '');
+    assert.equal(view.detailKey('deferred'), '');
+    assert.equal(view.detailKey('issue', null, { pipeline: 'p' }), '');
+    assert.equal(view.detailKey('issue', null, { index: 0 }), '');
+    assert.equal(view.detailKey('learning', { date: '2026-10-08' }), '');
+    assert.equal(view.detailKey('learning', { heading: 'h' }), '');
+    assert.equal(view.detailKey('finding', null, { pipeline: 'p', index: 0 }), '');
+    assert.equal(view.detailKey('finding', null, { pipeline: 'p', dimension: 'd' }), '');
+  });
+
+  test('gives the same key for the same item in two snapshots', () => {
+    const first = detailSnapshot();
+    const second = detailSnapshot();
+    second.repos[0].deferred[0].description = 'changed text';
+    const keyIn = (snap) => ({
+      deferred: view.detailKey('deferred', snap.repos[0].deferred[0]),
+      learning: view.detailKey('learning', snap.repos[0].learnings[0]),
+      issue: view.detailKey('issue', snap.repos[0].pipelines[0].issues[0], { pipeline: snap.repos[0].pipelines[0].id, index: 0 }),
+    });
+    assert.deepEqual(keyIn(first), keyIn(second));
+  });
+
+  test('gives two ship dimensions with a finding at index 0 two keys', () => {
+    const a = view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'security', index: 0 });
+    const b = view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'performance', index: 0 });
+    assert.notEqual(a, b);
+  });
+});
+
+describe('detailItem', () => {
+  test('finds a deferred item with its metadata', () => {
+    const item = view.detailItem(detailSnapshot(), 'deferred:D-1');
+    assert.deepEqual(item, {
+      kind: 'deferred',
+      repo: '/abs/repo-a',
+      title: 'D-1 (high)',
+      text: 'Fix the race',
+      meta: [
+        ['Created', '2026-10-01'],
+        ['Source', 'review'],
+        ['Severity', 'high'],
+        ['File', 'a.go'],
+        ['Line', '42'],
+        ['Reason', 'out of scope'],
+      ],
+    });
+  });
+
+  test('leaves out the empty metadata of a deferred item', () => {
+    const item = view.detailItem(detailSnapshot(), 'deferred:D-2');
+    assert.equal(item.title, 'D-2 (low)');
+    assert.deepEqual(item.meta, []);
+  });
+
+  test('finds an issue by pipeline id and row index', () => {
+    const snap = detailSnapshot();
+    assert.deepEqual(view.detailItem(snap, 'issue:ship-x-1:0'), {
+      kind: 'issue',
+      repo: '/abs/repo-a',
+      title: 'high: step',
+      text: 'commit failed',
+      meta: [
+        ['Source', 'step'],
+        ['Severity', 'high'],
+        ['File', 'b.go'],
+        ['Line', '12-14'],
+        ['Ref', 'commit'],
+      ],
+    });
+    assert.equal(view.detailItem(snap, 'issue:ship-x-1:1').text, 'slow wave');
+    assert.equal(view.detailItem(snap, 'issue:ship-x-1:2'), null);
+  });
+
+  test('finds a learning whose heading holds a colon, with an empty text', () => {
+    const item = view.detailItem(detailSnapshot(), 'learning:2026-10-08:plan: split the lanes');
+    assert.deepEqual(item, {
+      kind: 'learning',
+      repo: '/abs/repo-a',
+      title: 'plan: split the lanes',
+      text: '',
+      meta: [['Date', '2026-10-08']],
+    });
+  });
+
+  test('finds a finding of a ship dimension', () => {
+    const item = view.detailItem(detailSnapshot(), 'finding:ship-x-1:security:0');
+    assert.deepEqual(item, {
+      kind: 'finding',
+      repo: '/abs/repo-a',
+      title: 'high: s.go:7',
+      text: 'SQL built from input',
+      meta: [
+        ['Pipeline', 'ship-x-1'],
+        ['Dimension', 'security'],
+        ['Severity', 'high'],
+      ],
+    });
+  });
+
+  test('finds a finding of a standalone review step by the step name', () => {
+    const item = view.detailItem(detailSnapshot(), 'finding:review-20261008T120000:docs:0');
+    assert.equal(item.kind, 'finding');
+    assert.equal(item.title, 'low: d.md:3');
+    assert.equal(item.text, 'Stale doc');
+    assert.deepEqual(item.meta[1], ['Dimension', 'docs']);
+  });
+
+  test('two ship dimensions with a finding at index 0 give two keys and two items', () => {
+    const snap = detailSnapshot();
+    const keyA = view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'security', index: 0 });
+    const keyB = view.detailKey('finding', null, { pipeline: 'ship-x-1', dimension: 'performance', index: 0 });
+    assert.notEqual(keyA, keyB);
+    const itemA = view.detailItem(snap, keyA);
+    const itemB = view.detailItem(snap, keyB);
+    assert.equal(itemA.text, 'SQL built from input');
+    assert.equal(itemB.text, 'N+1 query');
+    assert.deepEqual(itemA.meta[1], ['Dimension', 'security']);
+    assert.deepEqual(itemB.meta[1], ['Dimension', 'performance']);
+  });
+
+  test('a finding without a line shows the file only', () => {
+    assert.equal(view.detailItem(detailSnapshot(), 'finding:ship-x-1:performance:0').title, 'medium: p.go');
+  });
+
+  test('returns the item of every key a builder makes', () => {
+    const snap = detailSnapshot();
+    const keys = [
+      view.detailKey('deferred', snap.repos[0].deferred[1]),
+      view.detailKey('learning', snap.repos[0].learnings[1]),
+      view.detailKey('issue', null, { pipeline: 'ship-x-1', index: 1 }),
+      view.detailKey('finding', null, { pipeline: 'review-20261008T120000', dimension: 'docs', index: 0 }),
+    ];
+    keys.forEach((key) => {
+      assert.notEqual(view.detailItem(snap, key), null, key);
+    });
+  });
+
+  test('returns the item again after a snapshot rebuild', () => {
+    const key = view.detailKey('deferred', { id: 'D-1' });
+    const rebuilt = detailSnapshot();
+    rebuilt.repos[0].deferred[0].description = 'Fix the race, now with a test';
+    assert.equal(view.detailItem(rebuilt, key).text, 'Fix the race, now with a test');
+  });
+
+  test('returns the root of the repo that holds the item', () => {
+    const snap = detailSnapshot();
+    snap.repos[1].deferred = [{ id: 'D-9', priority: 'low', description: 'in b' }];
+    assert.equal(view.detailItem(snap, 'deferred:D-9').repo, '/abs/repo-b');
+  });
+
+  test('returns null for a gone item, an empty key, or an empty snapshot', () => {
+    const snap = detailSnapshot();
+    assert.equal(view.detailItem(snap, 'deferred:D-404'), null);
+    assert.equal(view.detailItem(snap, 'finding:ship-x-1:security:1'), null);
+    assert.equal(view.detailItem(snap, 'finding:ship-x-1:other:0'), null);
+    assert.equal(view.detailItem(snap, 'learning:2026-10-08:gone'), null);
+    assert.equal(view.detailItem(snap, 'bogus'), null);
+    assert.equal(view.detailItem(snap, ''), null);
+    assert.equal(view.detailItem(null, 'deferred:D-1'), null);
+    assert.equal(view.detailItem({}, 'deferred:D-1'), null);
+    assert.equal(view.detailItem({ repos: [{ root: '/r' }] }, 'deferred:D-1'), null);
+  });
+});
+
 describe('worktreeLabel', () => {
   test('returns an empty string when worktree is empty', () => {
     assert.equal(view.worktreeLabel('/repo', ''), '');
@@ -1618,7 +2137,7 @@ describe('render activityPanel', () => {
         { id: 'd-1', priority: 'high', description: 'fix the cursor' },
         { id: 'd-2', priority: 'low', description: 'rename a helper' },
       ],
-      learnings: [{ heading: 'plan: keep maps small', branch: 'main' }],
+      learnings: [{ date: '2026-10-08', heading: 'plan: keep maps small', branch: 'main' }],
     },
     { root: '/b', name: 'b', deferred: [{ id: 'd-9', priority: 'medium', description: 'other repo' }], learnings: [] },
   ];
@@ -1648,6 +2167,38 @@ describe('render activityPanel', () => {
     assert.equal(row.children[0].textContent, 'learning');
     assert.equal(oneByClass(row, 'act-text').textContent, 'plan: keep maps small');
     assert.equal(oneByClass(row, 'act-meta').textContent, 'a · main');
+  });
+
+  test('every row is a button with a data-detail key: deferred by id, learning by date and heading', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const rows = byClass(grid, 'act-row');
+    assert.deepEqual(rows.map((r) => r.tagName), ['button', 'button', 'button', 'button']);
+    assert.deepEqual(rows.map((r) => r.attrs.type), ['button', 'button', 'button', 'button']);
+    assert.deepEqual(rows.map((r) => r.attrs['data-detail']), [
+      'deferred:d-1', 'deferred:d-2', 'deferred:d-9', 'learning:2026-10-08:plan: keep maps small',
+    ]);
+    for (const row of rows) assert.ok(view.detailItem({ repos }, row.attrs['data-detail']), row.attrs['data-detail']);
+  });
+
+  test('a row with no id or date has no data-detail, so a click opens nothing', () => {
+    const grid = render.activityPanel(fakeDoc(), view, [
+      { root: '/c', name: 'c', deferred: [{ priority: 'low', description: 'x' }], learnings: [{ heading: 'h', branch: 'main' }] },
+    ], new Set());
+    const rows = byClass(grid, 'act-row');
+    assert.equal(rows.length, 2);
+    for (const row of rows) assert.equal(row.attrs['data-detail'], undefined);
+  });
+
+  test('the list keeps the first 200 characters and has no tooltip; the viewer shows the full text', () => {
+    const long = 'x'.repeat(250);
+    const grid = render.activityPanel(fakeDoc(), view, [
+      { root: '/c', name: 'c', deferred: [{ id: 'd-7', priority: 'low', description: long }], learnings: [] },
+    ], new Set());
+    const row = oneByClass(grid, 'act-row');
+    const text = oneByClass(row, 'act-text');
+    assert.equal(text.textContent, 'x'.repeat(200) + '…');
+    assert.equal(text.attrs.title, undefined);
+    assert.equal(view.detailItem({ repos: [{ root: '/c', deferred: [{ id: 'd-7', priority: 'low', description: long }] }] }, 'deferred:d-7').text, long);
   });
 
   test('the scope hides rows of other repos', () => {
@@ -1837,8 +2388,9 @@ describe('render tiles from the shared fixture', () => {
     const body = t.children[1];
     assert.equal(body.children[0].className, 'round-sum');
     assert.equal(body.children[0].textContent, view.reviewTotalsText(stepOf(p, 'review').detail.reviewTotals));
-    const rows = byClass(t, 'dim-row');
+    const rows = byClass(t, 'dim-cols');
     assert.equal(rows.length, 5);
+    assert.equal(byClass(t, 'dim-find').length, 5);
     assert.equal(oneByClass(rows[0], 'dim-name').textContent, 'security');
     assert.equal(oneByClass(rows[0], 'dim-meta').className, 'dim-meta has-findings');
     assert.equal(oneByClass(rows[0], 'dim-meta').textContent, '2 findings');
@@ -1988,7 +2540,7 @@ describe('render tiles from the shared fixture', () => {
     const queued = tileByName(block, 'queued');
     assert.equal(textOf(oneByClass(queued, 'wave-head')), 'queued2');
     assert.deepEqual(byClass(queued, 'task-id').map((n) => n.textContent), ['T7', 'T8']);
-    assert.ok(!classesOf(queued).includes('wide'));
+    assert.ok(classesOf(queued).includes('wide'));
   });
 
   test('the stalled issue shows the age of the pipeline updatedAt through relativeWhen', () => {
@@ -2055,11 +2607,15 @@ describe('render stepTile and stepTiles', () => {
     assert.equal(summary.children[3].textContent, view.sectionMeta(step));
   });
 
-  test('a wide section gets the wide class; one wave stays a column; the selected step is marked', () => {
+  test('a wide section gets the wide class; an execute tile is wide with 0, 1, or 2 waves; the selected step is marked', () => {
+    const none = { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [] } };
     const one = { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [{ number: 1, tasks: [] }] } };
     const two = { name: 'execute', status: 'completed', detail: { kind: 'waves', waves: [{ number: 1, tasks: [] }, { number: 2, tasks: [] }] } };
-    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), one, 0, true, false).className, 'step-sec');
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), none, 0, true, false).className, 'step-sec wide');
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), one, 0, true, false).className, 'step-sec wide');
     assert.equal(render.stepTile(fakeDoc(), view, pipeline(), two, 0, true, true).className, 'step-sec wide selected');
+    const dims = { name: 'review', status: 'completed', detail: { kind: 'dimensions', dimensions: [] } };
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), dims, 0, true, false).className, 'step-sec');
     const rounds = { name: 'review', status: 'completed', detail: { kind: 'rounds', rounds: [], maxRounds: 5 } };
     assert.equal(render.stepTile(fakeDoc(), view, pipeline(), rounds, 0, true, false).className, 'step-sec wide');
   });
@@ -2344,6 +2900,375 @@ describe('render issuesTile', () => {
   });
 });
 
+// --- render.js: rows that open the detail viewer, command groups, Archive, viewer body -----
+
+// The structure of a fake node without its methods, so two nodes can be compared.
+function shape(node) {
+  return { tag: node.tagName, cls: node.className, attrs: node.attrs, text: node.textContent, children: node.children.map(shape) };
+}
+
+function detailButtons(node) {
+  return findAll(node, (n) => 'data-detail' in n.attrs);
+}
+
+describe('render findingRow', () => {
+  const finding = { text: 'Missing check', severity: 'high', file: 'a.go', line: '7' };
+
+  test('a button of type button: lamp by severity, text with the location as title, severity', () => {
+    const row = render.findingRow(fakeDoc(), view, finding, 'finding:p1:security:0');
+    assert.equal(row.tagName, 'button');
+    assert.equal(row.attrs.type, 'button');
+    assert.equal(row.attrs['data-detail'], 'finding:p1:security:0');
+    assert.deepEqual(classesOf(row), ['dim-row', 'dim-find']);
+    assert.deepEqual(row.children.map((c) => c.className), ['lamp failed', 'dim-name', 'dim-meta']);
+    assert.equal(oneByClass(row, 'dim-name').attrs.title, 'a.go:7');
+    assert.equal(textOf(row), 'Missing checkhigh');
+  });
+
+  test('an empty key leaves out data-detail', () => {
+    assert.equal(render.findingRow(fakeDoc(), view, finding, '').attrs['data-detail'], undefined);
+  });
+
+  test('markup in a finding stays text', () => {
+    const row = render.findingRow(fakeDoc(), view, { text: '<img src=x>', severity: 'low', file: '', line: '' }, 'k');
+    const text = oneByClass(row, 'dim-name');
+    assert.equal(text.textContent, '<img src=x>');
+    assert.equal(text.children.length, 0);
+  });
+});
+
+describe('render dimensionsBody finding rows', () => {
+  const sec = [
+    { text: 'path join', severity: 'critical', file: 'server.go', line: '142' },
+    { text: 'no origin check', severity: 'high', file: 'server.go', line: '201-208' },
+  ];
+  const detail = {
+    kind: 'dimensions',
+    dimensions: [
+      { name: 'security', status: 'completed', findings: 2, wave: 1, findingItems: sec },
+      { name: 'docs', status: 'completed', findings: 0, wave: 1, findingItems: [] },
+      { name: 'tests', status: 'completed', findings: 1, findingItems: [{ text: 'gap', severity: 'low', file: '', line: '' }] },
+    ],
+  };
+  const P = { id: 'ship-9' };
+
+  test('each dimension row is followed by its finding rows in one div.dim-findings; none for a dimension with no finding', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, detail, P);
+    // Flat rows first (tests), then Wave 1 (security, docs).
+    assert.deepEqual(body.children.map((n) => n.className), [
+      'dim-row dim-cols', 'dim-findings',
+      'wave-head', 'dim-row dim-cols', 'dim-findings', 'dim-row dim-cols',
+    ]);
+    assert.equal(byClass(body, 'dim-cols').length, 3);
+    assert.equal(byClass(body, 'dim-find').length, 3);
+    assert.equal(byClass(body.children[4], 'dim-find').length, 2);
+  });
+
+  test('a finding row key is the pipeline id, the dimension name, and the index in findingItems', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, detail, P);
+    assert.deepEqual(byClass(body, 'dim-find').map((r) => r.attrs['data-detail']), [
+      'finding:ship-9:tests:0', 'finding:ship-9:security:0', 'finding:ship-9:security:1',
+    ]);
+  });
+
+  test('a finding row is the same row findingsBody builds for the same finding', () => {
+    const fromDims = byClass(render.dimensionsBody(fakeDoc(), view, detail, P), 'dim-find').slice(1);
+    const fromFindings = byClass(render.findingsBody(fakeDoc(), view, { kind: 'findings', findings: sec }, P, { name: 'security' }), 'dim-find');
+    assert.equal(fromFindings.length, 2);
+    assert.deepEqual(fromDims.map(shape), fromFindings.map(shape));
+  });
+
+  test('without a pipeline the rows still render and carry no data-detail', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, detail);
+    const rows = byClass(body, 'dim-find');
+    assert.equal(rows.length, 3);
+    for (const row of rows) assert.equal(row.attrs['data-detail'], undefined);
+  });
+
+  test('findingsBody keys use the step name as the dimension', () => {
+    const body = render.findingsBody(fakeDoc(), view, { kind: 'findings', findings: sec }, P, { name: 'correctness' });
+    assert.deepEqual(byClass(body, 'dim-find').map((r) => r.attrs['data-detail']), [
+      'finding:ship-9:correctness:0', 'finding:ship-9:correctness:1',
+    ]);
+  });
+
+  test('stepTile gives the pipeline and the step to the body builder', () => {
+    const p = pipeline({ id: 'ship-3' });
+    const review = { name: 'review', status: 'completed', detail: { kind: 'dimensions', dimensions: detail.dimensions } };
+    const dims = render.stepTile(fakeDoc(), view, p, review, 2, true, false);
+    assert.equal(byClass(dims, 'dim-find')[0].attrs['data-detail'], 'finding:ship-3:tests:0');
+    const standalone = { name: 'security', status: 'completed', detail: { kind: 'findings', findings: sec } };
+    const tile = render.stepTile(fakeDoc(), view, p, standalone, 0, true, false);
+    assert.equal(byClass(tile, 'dim-find')[1].attrs['data-detail'], 'finding:ship-3:security:1');
+  });
+});
+
+describe('render issue rows', () => {
+  const issues = [
+    { source: 'review', severity: 'critical', text: 'a', file: 'x.go', line: '1', ref: 'security' },
+    { source: 'state', severity: 'info', text: 'b', file: '', line: '', ref: '' },
+  ];
+
+  test('each issue row is a button with the key issue:<pipeline id>:<index>', () => {
+    const t = render.issuesTile(fakeDoc(), view, pipeline({ id: 'ship-5', issues }), true, FIXTURE_NOW, 'UTC');
+    const rows = byClass(t, 'issue-row');
+    assert.deepEqual(rows.map((r) => r.tagName), ['button', 'button']);
+    assert.deepEqual(rows.map((r) => r.attrs.type), ['button', 'button']);
+    assert.deepEqual(rows.map((r) => r.attrs['data-detail']), ['issue:ship-5:0', 'issue:ship-5:1']);
+    assert.equal(rows[0].children[0].className, 'sev sev-critical');
+  });
+});
+
+describe('render rows and the detail lookup, over the fixture', () => {
+  const keys = [];
+  const rows = [];
+  for (const repo of FIXTURE.repos) {
+    for (const p of repo.pipelines) {
+      rows.push(...detailButtons(render.pipelineBlock(fakeDoc(), view, repo, p, { now: FIXTURE_NOW, tz: 'UTC' })));
+    }
+  }
+  rows.push(...detailButtons(render.activityPanel(fakeDoc(), view, FIXTURE.repos, new Set())));
+  for (const row of rows) keys.push(row.attrs['data-detail']);
+
+  test('activity, issue, and finding rows are buttons of type button', () => {
+    assert.ok(rows.length > 0);
+    for (const row of rows) {
+      assert.equal(row.tagName, 'button');
+      assert.equal(row.attrs.type, 'button');
+    }
+  });
+
+  test('the rows cover the four item kinds, and every key is different', () => {
+    assert.deepEqual([...new Set(keys.map((k) => k.split(':')[0]))].sort(), ['deferred', 'finding', 'issue', 'learning']);
+    assert.equal(new Set(keys).size, keys.length);
+  });
+
+  test('every key finds its item again in the snapshot', () => {
+    for (const key of keys) assert.ok(view.detailItem(FIXTURE, key), key);
+  });
+});
+
+describe('render Archive button', () => {
+  const head = (extra) => render.blockHead(fakeDoc(), view, REPO, pipeline(extra), false, 0);
+
+  test('a completed, failed, or stalled row gets one button with the three data attributes', () => {
+    for (const status of ['completed', 'failed', 'stalled']) {
+      const button = oneByClass(head({ status }), 'archive-btn');
+      assert.equal(button.tagName, 'button');
+      assert.equal(button.textContent, 'Archive');
+      assert.deepEqual(button.attrs, { type: 'button', 'data-archive': 'ship-1', 'data-repo': '/src/app', 'data-status': status });
+    }
+  });
+
+  test('a running row gets none, and neither does a row with an unknown status or no id', () => {
+    assert.equal(byClass(head({ status: 'running' }), 'archive-btn').length, 0);
+    assert.equal(byClass(head({ status: 'constructor' }), 'archive-btn').length, 0);
+    assert.equal(byClass(head({ status: 'completed', id: '' }), 'archive-btn').length, 0);
+  });
+
+  test('the button sits after the status and before the details toggle', () => {
+    const side = oneByClass(head({ status: 'failed', issues: [{ text: 'a' }] }), 'pipe-side');
+    assert.deepEqual(side.children.map((c) => c.className), ['pipe-repo', 'issue-chip', 'pipe-status failed', 'archive-btn', 'fold-btn']);
+  });
+
+  test('the button is not a step tile: every child of .step-detail stays a details element', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline({ status: 'completed' }), { collapsed: true, selected: 0 });
+    oneByClass(block, 'archive-btn');
+    for (const child of oneByClass(block, 'step-detail').children) assert.equal(child.tagName, 'details');
+  });
+
+  test('over the fixture: one button for each completed, failed, or stalled pipeline, none for a running one', () => {
+    for (const repo of FIXTURE.repos) {
+      for (const p of repo.pipelines) {
+        const buttons = byClass(render.pipelineBlock(fakeDoc(), view, repo, p, { now: FIXTURE_NOW, tz: 'UTC' }), 'archive-btn');
+        const want = ['completed', 'failed', 'stalled'].includes(p.status) ? 1 : 0;
+        assert.equal(buttons.length, want, p.id);
+        if (want) {
+          assert.equal(buttons[0].attrs['data-archive'], p.id);
+          assert.equal(buttons[0].attrs['data-repo'], repo.root);
+          assert.equal(buttons[0].attrs['data-status'], p.status);
+        }
+      }
+    }
+  });
+});
+
+describe('render commandGroupTable', () => {
+  const groups = [
+    { label: 'go', programs: ['go'], count: 2, share: 0.67, majority: true, lastAt: '2026-10-08T14:21:02Z' },
+    { label: 'git + go + task', programs: ['git', 'go', 'task'], count: 1, share: 0.33, majority: false, lastAt: '2026-10-08T11:12:08Z' },
+  ];
+
+  test('no table for no groups', () => {
+    assert.equal(render.commandGroupTable(fakeDoc(), []), null);
+    assert.equal(render.commandGroupTable(fakeDoc(), undefined), null);
+  });
+
+  test('a head row, then one row for each group: label, count, share as a percent, and the mark', () => {
+    const table = render.commandGroupTable(fakeDoc(), groups);
+    assert.equal(table.tagName, 'table');
+    assert.equal(table.className, 'cmd-groups');
+    assert.deepEqual(findAll(table, (n) => n.tagName === 'th').map((n) => n.textContent), ['command', 'count', 'share', 'majority']);
+    const body = findAll(table, (n) => n.tagName === 'tbody')[0];
+    assert.deepEqual(body.children.map((r) => r.children.slice(0, 3).map((c) => c.textContent)), [
+      ['go', '2', '67%'],
+      ['git + go + task', '1', '33%'],
+    ]);
+  });
+
+  test('only the majority group has the mark: a hidden glyph and the word yes for a screen reader', () => {
+    const body = findAll(render.commandGroupTable(fakeDoc(), groups), (n) => n.tagName === 'tbody')[0];
+    assert.deepEqual(body.children.map((r) => r.className), ['cg-row majority', 'cg-row']);
+    const mark = oneByClass(body.children[0], 'cg-mark');
+    assert.equal(oneByClass(mark, 'cg-glyph').textContent, '◆');
+    assert.equal(oneByClass(mark, 'cg-glyph').attrs['aria-hidden'], 'true');
+    assert.equal(oneByClass(mark, 'sr-only').textContent, 'yes');
+    assert.equal(oneByClass(body.children[1], 'cg-mark').children.length, 0);
+  });
+
+  test('a share of 1 reads 100%, and markup in a label stays text', () => {
+    const table = render.commandGroupTable(fakeDoc(), [{ label: '<b>x</b>', programs: [], count: 3, share: 1, majority: true, lastAt: '' }]);
+    assert.equal(oneByClass(table, 'cg-share').textContent, '100%');
+    const label = oneByClass(table, 'cg-label');
+    assert.equal(label.textContent, '<b>x</b>');
+    assert.equal(label.children.length, 0);
+  });
+
+  test('the session tile puts the table after the short id and before the timeline rows', () => {
+    const session = FIXTURE.repos[0].sessions[0];
+    const t = render.sessionTile(fakeDoc(), view, session, true, 'UTC');
+    assert.deepEqual(t.children.slice(1, 3).map((c) => c.className), ['sec-id', 'cmd-groups']);
+    assert.equal(t.children[3].className, 'timeline-row');
+    const labels = byClass(t, 'cg-label').map((n) => n.textContent);
+    assert.deepEqual(labels, session.commandGroups.map((g) => g.label));
+    assert.equal(byClass(t, 'majority').length, 1);
+  });
+
+  test('a session with no command groups has no table', () => {
+    const t = render.sessionTile(fakeDoc(), view, { id: 's1', counts: {}, commandGroups: [], timeline: [] }, true, 'UTC');
+    assert.equal(byClass(t, 'cmd-groups').length, 0);
+    const bare = render.sessionTile(fakeDoc(), view, { id: 's1', counts: {}, timeline: [] }, true, 'UTC');
+    assert.equal(byClass(bare, 'cmd-groups').length, 0);
+  });
+});
+
+describe('render detailBody', () => {
+  test('title with tabindex -1, a metadata list of dt and dd, and the text, from a deferred item', () => {
+    const item = view.detailItem(FIXTURE, 'deferred:d-12');
+    const body = render.detailBody(fakeDoc(), item);
+    assert.equal(body.className, 'detail-body');
+    assert.deepEqual(body.children.map((c) => c.className), ['detail-heading', 'detail-meta', 'detail-text']);
+    const heading = body.children[0];
+    assert.equal(heading.tagName, 'h2');
+    assert.equal(heading.attrs.tabindex, '-1');
+    assert.equal(heading.textContent, item.title);
+    const list = body.children[1];
+    assert.equal(list.tagName, 'dl');
+    assert.deepEqual(list.children.map((c) => c.tagName), item.meta.flatMap(() => ['dt', 'dd']));
+    assert.deepEqual(list.children.map((c) => c.textContent), item.meta.flat());
+    assert.equal(body.children[2].textContent, item.text);
+    assert.equal(body.children[2].textContent, 'shipRunInFlight has no failed terminal case');
+  });
+
+  test('a learning item has an empty text element that the page fills later', () => {
+    const item = view.detailItem(FIXTURE, 'learning:2026-10-08:ship: harden reads the reasoning of the deferring agent');
+    const body = render.detailBody(fakeDoc(), item);
+    const text = oneByClass(body, 'detail-text');
+    assert.equal(text.textContent, '');
+    text.textContent = 'body from the server';
+    assert.equal(textOf(oneByClass(body, 'detail-text')), 'body from the server');
+  });
+
+  test('an item with no metadata has no dl; a missing item gives an empty title and text', () => {
+    const none = render.detailBody(fakeDoc(), { title: 't', text: 'x', meta: [] });
+    assert.deepEqual(none.children.map((c) => c.className), ['detail-heading', 'detail-text']);
+    const gone = render.detailBody(fakeDoc(), null);
+    assert.deepEqual(gone.children.map((c) => [c.className, c.textContent]), [['detail-heading', ''], ['detail-text', '']]);
+    assert.equal(gone.children[0].attrs.tabindex, '-1');
+  });
+
+  test('markup in the title, the metadata, and the text stays text; no style, link, or handler attribute', () => {
+    const body = render.detailBody(fakeDoc(), {
+      title: '<b>t</b>',
+      text: '<img src=x onerror=alert(1)>\nline two',
+      meta: [['<i>k</i>', '<u>v</u>']],
+    });
+    assert.equal(oneByClass(body, 'detail-heading').textContent, '<b>t</b>');
+    assert.equal(oneByClass(body, 'detail-text').textContent, '<img src=x onerror=alert(1)>\nline two');
+    assert.deepEqual(byClass(body, 'detail-meta')[0].children.map((c) => c.textContent), ['<i>k</i>', '<u>v</u>']);
+    for (const n of findAll(body, (x) => ['h2', 'dt', 'dd'].includes(x.tagName) || classesOf(x).includes('detail-text'))) {
+      assert.equal(n.children.length, 0, n.tagName);
+    }
+    for (const n of findAll(body, () => true)) {
+      for (const k of Object.keys(n.attrs)) assert.equal(k, 'tabindex', `attribute ${k} on ${n.tagName}`);
+    }
+  });
+});
+
+describe('render explorersBody with review rounds', () => {
+  const explorers = [{ name: 'area', status: 'done', total: 1, findings: [{ summary: 'one', ref: '' }] }];
+  const rounds = [
+    { n: 1, status: 'Issues Found', found: 3, fixed: 3, lenses: [{ name: 'risk', verdict: 'Issues Found' }] },
+    { n: 2, status: 'Approved', found: 0, fixed: 0, lenses: [{ name: 'risk', verdict: 'Approved' }] },
+  ];
+
+  test('no rounds, or an empty list, gives the explorer grid alone', () => {
+    for (const detail of [{ kind: 'explorers', explorers }, { kind: 'explorers', explorers, rounds: [], maxRounds: 5 }]) {
+      const body = render.explorersBody(fakeDoc(), view, detail);
+      assert.equal(body.className, 'waves');
+      assert.equal(byClass(body, 'round-row').length, 0);
+    }
+  });
+
+  test('rounds append the rounds table under the grid, with a review rounds heading', () => {
+    const body = render.explorersBody(fakeDoc(), view, { kind: 'explorers', explorers, rounds, maxRounds: 5 });
+    assert.deepEqual(body.children.map((c) => c.className), ['waves', 'wave-head', '']);
+    assert.equal(body.children[1].textContent, 'review rounds');
+    const table = body.children[2];
+    assert.equal(byClass(body.children[0], 'round-row').length, 0);
+    const rows = byClass(table, 'round-row');
+    assert.deepEqual(rows.map((r) => r.className), ['round-row head', 'round-row', 'round-row']);
+    assert.deepEqual(rows[1].children.slice(0, 3).map((c) => c.textContent), ['round 1', '3', '3']);
+    assert.deepEqual(rows[2].children.slice(0, 3).map((c) => c.textContent), ['round 2', 'none', '–']);
+  });
+
+  test('the fixture: the ship plan station lists its rounds, the plan explore station does not', () => {
+    const ship = tileByName(fixtureBlock('sdlc-plugin', SHIP), 'plan');
+    const detail = stepOf(fixturePipeline('sdlc-plugin', SHIP), 'plan').detail;
+    assert.equal(detail.maxRounds, 5);
+    assert.equal(byClass(ship, 'round-row').filter((r) => !classesOf(r).includes('head')).length, detail.rounds.length);
+    assert.ok(classesOf(ship).includes('wide'));
+    assert.equal(byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'explore'), 'round-row').length, 0);
+  });
+});
+
+describe('render execute stations', () => {
+  const step = {
+    name: 'execute',
+    status: 'completed',
+    detail: { kind: 'waves', waves: [{ number: 1, status: 'completed', committedSha: '', tasks: [{ id: 'T1', name: 'a', status: 'completed' }] }] },
+  };
+
+  test('a ship execute station and a standalone wave station use the same wavesBody', () => {
+    assert.equal(render.TILE_BODIES.waves, render.wavesBody);
+    const ship = render.stepTile(fakeDoc(), view, pipeline({ kind: 'ship', commitWaves: true }), step, 0, true, false);
+    const solo = render.stepTile(fakeDoc(), view, pipeline({ kind: 'execute', commitWaves: true }), step, 0, true, false);
+    assert.deepEqual(shape(ship), shape(solo));
+    assert.equal(ship.className, 'step-sec wide');
+  });
+
+  test('over the fixture: both stations are wide and each wave is a wave-block with a wave head first', () => {
+    const tiles = [
+      tileByName(fixtureBlock('sdlc-plugin', SHIP), 'execute'),
+      tilesOf(fixtureBlock('payments-service', EXECUTE)).find((t) => byClass(t, 'wave-block').length > 0),
+    ];
+    for (const t of tiles) {
+      assert.ok(classesOf(t).includes('wide'));
+      for (const block of byClass(t, 'wave-block')) assert.equal(block.children[0].className, 'wave-head');
+    }
+  });
+});
+
 describe('render historyTable', () => {
   const repos = [
     { root: '/a', name: 'a', history: [
@@ -2422,12 +3347,15 @@ describe('render.js browser global fallback', () => {
       'activityPanel',
       'attentionRows',
       'blockHead',
+      'commandGroupTable',
+      'detailBody',
       'dimensionsBody',
       'el',
       'elapsedText',
       'emptyState',
       'explorersBody',
       'filterChips',
+      'findingRow',
       'findingsBody',
       'guardrailsBody',
       'headerTotals',

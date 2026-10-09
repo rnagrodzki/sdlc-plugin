@@ -21,9 +21,11 @@ const dashboardExecuteRefPrefix = "execute:"
 // dashboardShipDetail adds the ship-only data of a ship state to its
 // pipeline: the session id, the join keys (run start and the window of each
 // step), the review totals on the review step, and a first "plan" step when
-// the state holds data.planExploreSummary. The review step gets a dimensions
-// detail only when shipBuildReviewLedger returns a ledger. A
-// planExploreSummary value that does not decode gives no plan step.
+// the state holds data.planExploreSummary. The plan step also lists the
+// review rounds of data.planReviewRounds, with maxRounds, when that list
+// holds rounds. The review step gets a dimensions detail only when
+// shipBuildReviewLedger returns a ledger. A planExploreSummary value that
+// does not decode gives no plan step.
 func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	data := st.Data
 	p.SessionID = dashboardStr(data["sessionId"])
@@ -75,6 +77,9 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 			Name:   dashboardShipStepPlan,
 			Status: StepCompleted,
 			Detail: &DashboardStepDetail{Kind: dashboardKindExplorers, Explorers: dashboardExplorers(entries)},
+		}
+		if rounds := dashboardPlanRounds(dashboardPlanStoredRounds(data[shipPlanReviewRoundsKey])); len(rounds) > 0 {
+			plan.Detail.Rounds, plan.Detail.MaxRounds = rounds, maxReviewRounds
 		}
 		p.Steps = append([]DashboardStep{plan}, p.Steps...)
 		p.Progress.Done++
@@ -292,8 +297,10 @@ func dashboardStepNamed(p *DashboardPipeline, name string) *DashboardStep {
 // dashboardNestExecute copies the joined execute run exec into ship: its
 // full wave detail goes to the ship execute step, its CommitWaves to the
 // ship, and its issues to the ship issues with dashboardExecuteRefPrefix
-// before each Ref. The ship keeps its own session id.
+// before each Ref. The ship keeps its own session id. The execute id goes to
+// the ship join members, so an archive of the ship finds the nested run.
 func dashboardNestExecute(ship *DashboardPipeline, exec DashboardPipeline) {
+	ship.join.members = append(ship.join.members, exec.ID)
 	if step := dashboardStepNamed(ship, dashboardShipStepExecute); step != nil && exec.join.execDetail != nil {
 		step.Detail = exec.join.execDetail
 	}
@@ -309,13 +316,21 @@ func dashboardNestExecute(ship *DashboardPipeline, exec DashboardPipeline) {
 // dashboardNestReview copies the joined review run review into ship: the
 // review rows that readReviewLedgerDir built (review.join.reviewDims) become
 // the dimensions of the ship review step, with their wave, stop reason,
-// finding count, and worst severity. The plan totals go to the step
+// finding count, and worst severity. Each dimension also gets its finding
+// rows (FindingItems): the review issues whose Ref is the dimension name, in
+// issue order, the same rows the standalone review lists; a dimension with no
+// finding gets an empty, non-nil list. The plan totals go to the step
 // reviewPlan; with no planned dimension it stays absent. The review issues go
 // to the ship issues with their Ref unchanged. A review with no rows gives an
-// empty, non-nil dimension list.
+// empty, non-nil dimension list. The review ledger name goes to the ship join
+// members, so an archive of the ship finds the nested run.
 func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
+	ship.join.members = append(ship.join.members, review.ID)
 	dims := make([]DashboardDimension, 0, len(review.join.reviewDims))
 	dims = append(dims, review.join.reviewDims...)
+	for i := range dims {
+		dims[i].FindingItems = dashboardDimensionFindings(review.Issues, dims[i].Name)
+	}
 	if step := dashboardStepNamed(ship, dashboardShipStepReview); step != nil {
 		if step.Detail == nil {
 			step.Detail = &DashboardStepDetail{Kind: dashboardKindDimensions}
@@ -324,4 +339,20 @@ func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
 		step.Detail.ReviewPlan = review.join.reviewPlan
 	}
 	ship.Issues = append(ship.Issues, review.Issues...)
+}
+
+// dashboardDimensionFindings returns the finding rows of the dimension name:
+// the review issues whose Ref is name, in issue order. It is the only copy of
+// the issue to row mapping: dashboardReviewFindings uses it for the standalone
+// review. It returns an empty, non-nil list when the dimension has no finding.
+func dashboardDimensionFindings(issues []DashboardIssue, name string) []DashboardReviewFinding {
+	rows := []DashboardReviewFinding{}
+	for _, is := range issues {
+		if is.Source == dashboardSourceReview && is.Ref == name {
+			rows = append(rows, DashboardReviewFinding{
+				Text: is.Text, Severity: is.Severity, File: is.File, Line: is.Line,
+			})
+		}
+	}
+	return rows
 }

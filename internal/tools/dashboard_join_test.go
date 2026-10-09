@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,8 +237,12 @@ func TestDashboardJoin_ReviewByShipRunID(t *testing.T) {
 		t.Fatalf("review detail = %+v, want kind %q", d, dashboardKindDimensions)
 	}
 	want := []DashboardDimension{
-		{Name: "docs", Status: StepInProgress, Findings: 0, Worst: ""},
-		{Name: "security", Status: StepCompleted, Findings: 3, Worst: "high"},
+		{Name: "docs", Status: StepInProgress, Findings: 0, Worst: "", FindingItems: []DashboardReviewFinding{}},
+		{Name: "security", Status: StepCompleted, Findings: 3, Worst: "high", FindingItems: []DashboardReviewFinding{
+			{Text: "a", Severity: "medium", File: "internal/a.go", Line: "1"},
+			{Text: "token check skips expiry", Severity: "high", File: "internal/x.go", Line: "42"},
+			{Text: "b", Severity: "low", File: "internal/b.go", Line: ""},
+		}},
 	}
 	if !reflect.DeepEqual(d.Dimensions, want) {
 		t.Errorf("dimensions = %+v, want %+v", d.Dimensions, want)
@@ -257,6 +262,54 @@ func TestDashboardJoin_ReviewByShipRunID(t *testing.T) {
 	}
 	if review != 3 {
 		t.Errorf("ship review issues = %d, want 3: %+v", review, ship.Issues)
+	}
+}
+
+// TestDashboardJoin_ShipFindingItemsEqualStandalone checks that each dimension
+// of the ship review step lists the same finding rows as the same dimension
+// of the standalone review, and that a dimension with no finding lists an
+// empty, non-nil list that encodes as [].
+func TestDashboardJoin_ShipFindingItemsEqualStandalone(t *testing.T) {
+	joined := dashRoot(t)
+	dashWriteState(t, joined, dashJoinShipFile, dashJoinShipData(), dashJoinFresh)
+	dashJoinReviewDims(t, joined, dashJoinReview)
+	dashJoinRunMeta(t, joined, dashJoinReview, reviewRunMeta{Branch: "feat/x", StartedAt: "2026-10-07T08:31:00Z", ShipRunID: dashJoinShipID})
+
+	alone := dashRoot(t)
+	dashJoinReviewDims(t, alone, dashJoinReview)
+
+	d := dashJoinStep(t, dashOne(t, joined), "review").Detail
+	if d == nil || len(d.Dimensions) != 2 {
+		t.Fatalf("ship review detail = %+v, want two dimensions", d)
+	}
+	standalone := dashOne(t, alone)
+
+	for _, dim := range d.Dimensions {
+		if dim.FindingItems == nil {
+			t.Errorf("dimension %q findingItems = nil, want a non-nil list", dim.Name)
+		}
+		if len(dim.FindingItems) != dim.Findings {
+			t.Errorf("dimension %q lists %d rows, want its %d findings", dim.Name, len(dim.FindingItems), dim.Findings)
+		}
+		// A standalone step with no finding detail lists no row.
+		want := []DashboardReviewFinding{}
+		if sd := dashJoinStep(t, standalone, dim.Name).Detail; sd != nil {
+			if sd.Kind != dashboardKindFindings {
+				t.Fatalf("standalone %q detail kind = %q, want %q", dim.Name, sd.Kind, dashboardKindFindings)
+			}
+			want = append(want, sd.Findings...)
+		}
+		if !reflect.DeepEqual(dim.FindingItems, want) {
+			t.Errorf("dimension %q rows = %+v, want the standalone rows %+v", dim.Name, dim.FindingItems, want)
+		}
+	}
+
+	b, err := json.Marshal(d.Dimensions[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(b); !strings.Contains(got, `"findingItems":[]`) {
+		t.Errorf("dimension with no finding encodes as %s, want findingItems:[]", got)
 	}
 }
 
@@ -310,7 +363,7 @@ func TestDashboardJoin_TwoReviewsNewestNests(t *testing.T) {
 	}
 	dashJoinFind(t, repo.Pipelines, older)
 	ship := dashJoinFind(t, repo.Pipelines, dashJoinShipID)
-	want := []DashboardDimension{{Name: "perf", Status: StepInProgress}}
+	want := []DashboardDimension{{Name: "perf", Status: StepInProgress, FindingItems: []DashboardReviewFinding{}}}
 	if d := dashJoinStep(t, ship, "review").Detail; d == nil || !reflect.DeepEqual(d.Dimensions, want) {
 		t.Errorf("review detail = %+v, want the newest review run", d)
 	}
@@ -407,6 +460,59 @@ func TestDashboardJoin_PlanStation(t *testing.T) {
 		}
 		if ship.Progress.Done != 3 || ship.Progress.Total != 4 {
 			t.Errorf("progress = %+v, want done 3 of 4", ship.Progress)
+		}
+	})
+
+	t.Run("stored rounds join the explorers", func(t *testing.T) {
+		root := dashRoot(t)
+		data := dashJoinShipData()
+		data["planExploreSummary"] = entries
+		data["planReviewRounds"] = []any{
+			map[string]any{
+				"round": 1, "mergedStatus": planStatusIssuesFound, "found": 3, "fixed": 2,
+				"lenses": []any{map[string]any{"name": "structure", "verdict": planStatusIssuesFound}},
+			},
+			map[string]any{"round": 2, "mergedStatus": planStatusApproved, "found": 0, "fixed": 0, "lenses": []any{}},
+		}
+		dashWriteState(t, root, dashJoinShipFile, data, dashJoinFresh)
+
+		ship := dashOne(t, root)
+		if ship.Steps[0].Name != "plan" {
+			t.Fatalf("steps = %+v, want a first plan step", ship.Steps)
+		}
+		want := &DashboardStepDetail{
+			Kind:      dashboardKindExplorers,
+			Explorers: dashboardExplorers(entries),
+			Rounds: []DashboardRound{
+				{N: 1, Status: planStatusIssuesFound, Found: 3, Fixed: 2, Lenses: []DashboardLens{{Name: "structure", Verdict: planStatusIssuesFound}}},
+				{N: 2, Status: planStatusApproved, Lenses: []DashboardLens{}},
+			},
+			MaxRounds: maxReviewRounds,
+		}
+		if !reflect.DeepEqual(ship.Steps[0].Detail, want) {
+			t.Errorf("plan detail = %+v, want %+v", ship.Steps[0].Detail, want)
+		}
+	})
+
+	t.Run("empty or undecodable rounds show explorers only", func(t *testing.T) {
+		cases := map[string]any{
+			"empty list": []any{},
+			"not a list": "round 1",
+		}
+		for name, rounds := range cases {
+			t.Run(name, func(t *testing.T) {
+				root := dashRoot(t)
+				data := dashJoinShipData()
+				data["planExploreSummary"] = entries
+				data["planReviewRounds"] = rounds
+				dashWriteState(t, root, dashJoinShipFile, data, dashJoinFresh)
+
+				ship := dashOne(t, root)
+				want := &DashboardStepDetail{Kind: dashboardKindExplorers, Explorers: dashboardExplorers(entries)}
+				if !reflect.DeepEqual(ship.Steps[0].Detail, want) {
+					t.Errorf("plan detail = %+v, want %+v", ship.Steps[0].Detail, want)
+				}
+			})
 		}
 	})
 

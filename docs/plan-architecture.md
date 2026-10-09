@@ -20,7 +20,7 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | `plan_prepare` | `internal/tools/plan.go` `RegisterPlanTools` | Context detection, template resolution, OpenSpec validation, guardrail loading, lane/lens construction, complexity routing. Computes pending OpenSpec tasks.md ref stamps but never writes them — see [OpenSpec tasks.md Ref Stamping](#openspec-tasksmd-ref-stamping) |
 | `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, upsert a `review-round` row, replace the `review-outcome` answers (`reviewOutcome`), or replace the `checkpoint` progress marker. Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
-| `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Nine actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `openspec_instructions`, `openspec_stage`, `evidence_record`, `evidence_digest`, `evidence_get` |
+| `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Ten actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `openspec_instructions`, `openspec_stage`, `evidence_record`, `evidence_digest`, `evidence_get`, `preplan_context` |
 | `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Ten actions (9 today + `plan_style`); plan pipeline uses `plan_format` (PF1-PF14) and `plan_style` |
 | `links_validate` | `internal/tools/links.go` `RegisterLinksTools` | URL extraction + HTTP validation with line tracking |
 | `execute_state` | `internal/tools/execute_state.go` `RegisterExecuteStateTools` | Ledger operations (review skill; plan uses the evidence store instead — see [Evidence store and compaction recovery](#evidence-store-and-compaction-recovery)) |
@@ -30,7 +30,7 @@ Subagents dispatched by the plan skill may call additional tools (e.g., `Glob`,
 
 ### Skill Files
 
-Fourteen files in `plugins/sdlc/skills/plan/`:
+Fifteen files in `plugins/sdlc/skills/plan/`:
 
 | File | Role |
 |------|------|
@@ -43,8 +43,9 @@ Fourteen files in `plugins/sdlc/skills/plan/`:
 | `lane-static-structural-prompt.md` | Lane 0 prompt: G1, G2, G3, G7, G12 |
 | `lane-content-coverage-prompt.md` | Lane 1 prompt: G5, G6, G8, G9, G11, G13, G15, G16, G18-G21 |
 | `lane-file-existence-prompt.md` | Lane 2 prompt: G4, G10 |
-| `lane-guardrail-compliance-prompt.md` | Lane 3 prompt: G14, G22 |
+| `lane-guardrail-compliance-prompt.md` | Lane 3 prompt: G14 |
 | `g17-dimension-coverage-prompt.md` | Lane 4 prompt: G17 |
+| `lane-style-compliance-prompt.md` | Lane 5 prompt: G22 |
 | `lens-architecture-prompt.md` | Step 5 architecture lens prompt |
 | `lens-requirements-prompt.md` | Step 5 requirements lens prompt |
 | `lens-risk-prompt.md` | Step 5 risk lens prompt |
@@ -97,7 +98,8 @@ rules:
   (see [Plan run lifetime](#plan-run-lifetime)). `ship_state({action:
   "cleanup-pipeline"})` additionally removes a `done` plan run as soon as
   the ship report has read it, independently of GC's TTL/newest rule. It first
-  copies the explorer summary into ship state `planExploreSummary`.
+  copies the explorer summary into ship state `planExploreSummary` and the plan
+  state `reviewRounds` into ship state `planReviewRounds`.
 
 ### Hooks
 
@@ -134,7 +136,7 @@ flowchart TD
     S2["Step 2 - Decompose Into Tasks"]
     S2 --> S3
 
-    S3["Step 3 - Five-Lane Gate Evaluation"]
+    S3["Step 3 - Six-Lane Gate Evaluation"]
     S3 --> S4["Step 4 - Revise Plan From Findings"]
     S4 --> lw_check{Lightweight?}
     lw_check -->|yes| S6_5
@@ -255,24 +257,31 @@ recover in-progress findings after a context compaction.
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | None (orchestrator writes directly) |
+| **Tools called** | `validate({action: "plan_format", final: false})` (the format pre-check at the end of the step) |
 | **Subagents** | None |
 | **Plan sections written** | `## Task N` sections with metadata: Complexity, Risk, Depends on, Verify, Files, Contract, Acceptance Criteria, Notes |
-| **Failure modes** | None (author-driven step) |
+| **Failure modes** | None (author-driven step). A format finding that is left after the pre-check does not stop the step |
 
 The orchestrator decomposes the goal into numbered tasks using the template
 structure from `plan_prepare.template.sections` and the context from Step 1.
 
-### Step 3: Five-Lane Gate Evaluation
+At the end of Step 2, the orchestrator runs the format pre-check as a loop:
+it calls `validate({action: "plan_format", final: false})`, fixes each
+finding in the plan file, then calls it again. The loop makes at most 3
+calls. The call passes the active template path, except for a lightweight
+plan. A finding that is left stays until the Step 6.6 format gate. Then the
+orchestrator goes to Step 3.
+
+### Step 3: Six-Lane Gate Evaluation
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_support({action: "merge_results"})`, `plan_support({action: "evidence_record"})` (`main` item `S3-guardrail-findings`: the `{id, gateId}` of each `G14` blocking or `G22` issue, read by the round 1 review record), `plan_mark({marker: "guardrailsEvaluated"})`, `plan_mark({marker: "critiqueRan"})` |
-| **Subagents** | 5 lane subagents dispatched in a single message (see [Fan-Out Architecture](#step-3-five-lane-gate)) |
+| **Tools called** | `plan_support({action: "merge_results"})`, `plan_support({action: "evidence_record"})` (`main` item `S3-guardrail-findings`: the `{id, gateId}` of each `G14` and `G22` issue from `allIssues`, without the synthetic lane issues, read by the round 1 review record), `plan_mark({marker: "guardrailsEvaluated"})`, `plan_mark({marker: "critiqueRan"})` |
+| **Subagents** | 6 lane subagents dispatched in a single message (see [Fan-Out Architecture](#step-3-six-lane-gate)) |
 | **Plan sections written** | None (findings stored for Step 4) |
-| **Failure modes** | Lane subagent failure: `merge_results` reports coverage gaps for missing gate IDs. All lanes timeout: critique markers not set, stop hook warns. |
+| **Failure modes** | Lane failure, or a lane not returned after its retry: the lane is recorded with `status: "fail"` and a blocking synthetic issue (lanes 0–3 and 5). `merge_results` lists it in `laneFailures` and sets the merged status to `Issues Found`. A Lane 4 failure alone is advisory. Session stops during Step 3: critique markers are not set and the stop hook warns. The resume path dispatches the lanes again. |
 
-All five lanes run in parallel. Each lane evaluates its assigned gates against
+All six lanes run in parallel. Each lane evaluates its assigned gates against
 the plan file and returns structured findings. `merge_results` deduplicates
 issues, checks for coverage gaps (missing gate IDs), and produces a merged
 status. The two once-per-run markers (`guardrailsEvaluated`, `critiqueRan`)
@@ -298,7 +307,7 @@ appendix mapping OpenSpec requirements to plan tasks.
 | **Tools called** | `plan_support({action: "merge_results"})`; `plan_mark({marker: "review-round"})` when the round is Approved |
 | **Subagents** | 3 lens reviewers dispatched in a single message (see [Fan-Out Architecture](#step-5-three-lens-review)) |
 | **Plan sections written** | `## Verification Scorecard` (regenerated after each lens merge iteration) |
-| **Failure modes** | All lenses approve: proceed to Step 6.5. Reviewer timeout: degraded findings, may miss issues. Round `reviewLoop.maxRounds` (5) ends with blocking issues: Step 6 runs its fix pass, then asks one AskUserQuestion question per open finding (`accepted` / `rejected` / `stop`, 4 per call) and stores the answers with `plan_mark({marker: "review-outcome"})`. No 6th round starts. |
+| **Failure modes** | All lenses approve: proceed to Step 6.5. Lens or reviewer not returned after its retry: the orchestrator does that review inline from the same filled prompt and records it as `<writerId>-inline-fallback`. Round `reviewLoop.maxRounds` (5) ends with blocking issues: Step 6 runs its fix pass, then asks one AskUserQuestion question per open finding (`accepted` / `rejected` / `stop`, 4 per call) and stores the answers with `plan_mark({marker: "review-outcome"})`. No 6th round starts. |
 
 Skipped in `lightweight` mode. Three lens reviewers (architecture,
 requirements, risk) evaluate the plan independently. Results merge through
@@ -418,7 +427,9 @@ Step 6 (and again on a Step 7 reject with feedback):**
    (gitignored) with the new files, writes a `stage.json` manifest
    (`change`, `schema`, `planPath`, each file's `path` + SHA-256, and
    `validatedAt` once validation passes), and runs `openspec validate
-   <changeName> --strict` against a temp copy of the staged change. A failed
+   <changeName> --strict` against a temp copy of the staged change and of
+   the current spec of each capability that the change has a delta for, so a
+   MODIFIED delta gets the same check as at ship. A failed
    validation is not an error — the result carries `valid: false` and the
    CLI output, `stage.json` keeps no `validatedAt`, and the skill can fix
    the artifacts and re-stage.
@@ -485,11 +496,37 @@ exploration; the brief is never stored (only a brief that passes validation
 is written), and the writer evidence files stay in `<runId>.evidence/` until
 the Stop hook removes the whole directory after the `done` marker.
 
-### Step 3: Five-Lane Gate
+### Step 3: Six-Lane Gate
 
-Five subagents are dispatched in a single `Agent` tool-use message. Each lane
+Six subagents are dispatched in a single `Agent` tool-use message, in the
+foreground, each with its filled prompt inline. Each lane
 runs independently with its own model and prompt template. All must complete
-before the merge barrier.
+before the merge barrier. A lane has no timeout: the foreground call returns
+when the agent ends.
+
+The same dispatch rules apply to lanes, lenses, the reviewer and Gate A:
+
+- The filled prompt goes inline in the `Agent` call. The orchestrator never
+  writes a prompt to a file. It never sends a prompt that tells the agent to
+  read its instructions from a file.
+- The orchestrator does not poll `evidence_digest` or the evidence directory.
+  The text that the `Agent` call returns is the result.
+- A transient dispatch failure (an Agent tool error, a timeout, an empty
+  return, or a permission denial that is not a user answer) gets one more
+  send. A user denial is terminal. A transient failure on the second send is
+  terminal too. A writer with a terminal failure is "not returned".
+- A lane that is not returned gets a synthetic `laneResults` entry with
+  `status: "fail"` and one blocking issue `Lane <name> not returned — <failure>`.
+  The entry counts as collected, so the merge and the JOIN barriers go on.
+  Every failed entry of lanes 0–3 and 5 carries such a blocking issue. Step 4
+  sends the lane again one time (not after a user denial). When the lane
+  still fails, Step 4 adds a `## Deviations & assumptions` row and continues.
+- A lens, the reviewer or Gate A that is not returned is reviewed inline from
+  the same filled prompt. The orchestrator records the text as the `main`
+  item `<writerId>-inline-fallback`.
+- After each merge, the orchestrator writes the `main` item `dispatch-status`
+  (failed, not-returned and skipped lanes, inline fallbacks, explorers that
+  were not stopped). Step 7 reads it and prints `unknown` when it is absent.
 
 ```mermaid
 sequenceDiagram
@@ -499,6 +536,7 @@ sequenceDiagram
     participant L2 as Lane 2 file-existence
     participant L3 as Lane 3 guardrail-compliance
     participant L4 as Lane 4 dimension-coverage
+    participant L5 as Lane 5 style-compliance
     participant PS as plan_support
     participant PM as plan_mark
 
@@ -507,13 +545,15 @@ sequenceDiagram
     O->>L2: dispatch (haiku)
     O->>L3: dispatch (sonnet)
     O->>L4: dispatch (sonnet)
-    Note over O,L4: All 5 lanes dispatched in single message
+    O->>L5: dispatch (sonnet)
+    Note over O,L5: All 6 lanes dispatched in single message
 
     L0-->>O: {gateIds, issues, passes}
     L1-->>O: {gateIds, issues, passes}
     L2-->>O: {gateIds, issues, passes}
     L3-->>O: {gateIds, issues, guardrailCompliancePayload}
     L4-->>O: {gateIds, findings}
+    L5-->>O: {gateIds, issues, passes}
 
     O->>PS: merge_results(laneResults, expectedGates)
     PS-->>O: {allIssues, coverageGaps, mergedStatus}
@@ -586,7 +626,7 @@ Lens definitions from `buildLensReviewers()` in `plan.go`:
 ### Merged Re-Dispatch Path
 
 When Step 6 detects a material change (any of the 7 snapshot dimensions
-differ), the pipeline re-dispatches from Step 3. This means all five lanes
+differ), the pipeline re-dispatches from Step 3. This means all six lanes
 re-evaluate the revised plan. When the change is non-material, only Step 5
 re-dispatches.
 
@@ -632,7 +672,7 @@ path.
 
 | `writerId` pattern | Writer | Recorded at |
 |---|---|---|
-| `main` | The orchestrator session itself | Brief (Step 1 CONSOLIDATE), R-items, `F-main-<n>` inline findings, `D<n>` decision records, `S3-guardrail-findings` (Step 3), `<writerId>-result` (the Agent return text of a lane, lens, reviewer, or Gate A writer whose own `evidence_record` failed) |
+| `main` | The orchestrator session itself | Brief (Step 1 CONSOLIDATE), R-items, `F-main-<n>` inline findings, `D<n>` decision records, `S3-guardrail-findings` (Step 3), `dispatch-status` (the writers that did not run as planned, read by Step 7), `<writerId>-inline-fallback` (the inline review of a lens, reviewer, or Gate A writer that was not returned) |
 | `explore-<dim>` | Step 1 dimension-exploration subagent | One dimension's findings; `<dim>` = `slugify(dimension.name)` |
 | `gate-a` | Step 1 intake-audit subagent | Gate A result |
 | `lane-<name>-r<n>` | Step 3 lane subagent | One lane's result; `<n>` = review iteration |
@@ -642,7 +682,7 @@ path.
 Every writer records `status: "running"` before starting and `status: "done"`
 with `items` when finished, via the run-context footer appended to its
 prompt. Every `main` write (brief, R-items, `F-main-<n>`, `D<n>`,
-`S3-guardrail-findings`, `<writerId>-result`) runs alone,
+`S3-guardrail-findings`, `dispatch-status`, `<writerId>-inline-fallback`) runs alone,
 never in parallel with another `main` write, since two parallel upserts of
 `main.json` would lose one.
 
@@ -669,11 +709,18 @@ never in parallel with another `main` write, since two parallel upserts of
 3. `plan_support({action: "evidence_digest", runId})` returns the writer
    status table plus `briefPath`. On error, the skill prints it, stops, and
    tells the user to re-invoke `/sdlc:plan`.
-4. Execution continues at `checkpoint.step` and `checkpoint.iteration`. Any
-   writer still listed in `missingWriters` or `stalledWriters` gets one more
-   poll cycle, then is force-progressed past (skipped, and disclosed in the
-   brief's `## Zero-Finding Dimensions` section) — the same fail-partial-open
-   rule a fresh POLL uses.
+4. Execution continues at `checkpoint.step` and `checkpoint.iteration`. Only
+   step 1 polls:
+   - At step 1, a writer listed in `missingWriters` or `stalledWriters` gets
+     one poll cycle (`evidence_digest` with `statusOnly: true`). The skill
+     then force-progresses past each writer that is still listed. It skips
+     the writer and discloses it in the brief's `## Zero-Finding Dimensions`
+     section. This is the same fail-partial-open rule a fresh POLL uses.
+     After a compaction the task ID is usually lost, so the skill names the
+     writer as possibly still running.
+   - At step 3 or later, the skill does not poll. Lanes, lenses, the reviewer
+     and Gate A run in the foreground. The skill dispatches the step again
+     under the dispatch rules of [Step 3: Six-Lane Gate](#step-3-six-lane-gate).
 5. If the resume call returns `no active plan run`, the skill prints "No
    active plan run to resume — starting a new plan." and runs Step 0
    normally.
@@ -734,7 +781,7 @@ Every field of `PlanPrepareOut` and its consuming step:
 | `next` | `string` | Step 0 (the literal next instruction — see [MCP Output Contract](mcp-output-contract.md)) |
 | `runId` | `string` | Steps 0-7 (the run ID passed to every `plan_support` evidence call and every subagent's `{RUN_ID}` template var) |
 | `guardrailsFile` | `string` | Step 3 lanes 0, 1, 3, Step 5 lenses and reviewer (`{GUARDRAILS_FILE}` template var) |
-| `styleGuideFile` | `string` | Step 3 lane 3 (`{STYLE_GUIDE_FILE}`) |
+| `styleGuideFile` | `string` | Step 3 lane 5 (`{STYLE_GUIDE_FILE}`) |
 | `openspec` | `OpenspecInfo` | Step 0 (banner), Step 1 (explore context) |
 | `fromOpenspec` | `*FromOpenspecResult` | Step 0 (validation gate) |
 | `openspecContext` | `OpenspecContext` | Steps 2, 4 (task mapping, appendix generation) |
@@ -746,7 +793,7 @@ Every field of `PlanPrepareOut` and its consuming step:
 | `githubHosting` | `GithubHosting` | Step 3 Lane 4 (`{GITHUB_HOSTING_DETECTED}`) |
 | `g17Dispatch` | `Dispatch` | Step 3 Lane 4 (subagent type, model, prompt path) |
 | `intakeAuditDispatch` | `Dispatch` | Step 1 (intake audit subagent config) |
-| `lanes` | `[]Lane` | Step 3 (5 lane configs: name, model, prompt, gateIds) |
+| `lanes` | `[]Lane` | Step 3 (6 lane configs: name, model, prompt, gateIds) |
 | `lensReviewers` | `[]LensReviewer` | Step 5 (3 lens configs: lens, model, prompt, focusCategories) |
 | `reviewLoop` | `ReviewLoop` | Step 5 (loop limit, `reviewLoop.maxRounds`) |
 | `template` | `*TemplateResolution` | Step 0 (skeleton, routing, sections, questions) |
@@ -842,7 +889,7 @@ produce findings or validation results that feed into subsequent writing steps.
 | G19 | Render-don't-narrate | 1 content-coverage | sonnet | error | **Yes** |
 | G20 | Notes rationale-only | 1 content-coverage | sonnet | error | **Yes** |
 | G21 | Self-contained code references | 1 content-coverage | sonnet | error | **Yes** |
-| G22 | Style compliance | 3 guardrail-compliance | sonnet | error | **Yes** |
+| G22 | Style compliance | 5 style-compliance | sonnet | error | **Yes** |
 
 **\* Escalation rule:** G1, G2, G7 escalate from `warning` to `error`
 (blocking) when the plan has 3 or more uncovered requirements or orphan tasks.
@@ -939,7 +986,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 |---|---|
 | `plan_mark done` | kept |
 | ship `report` (write) | read for `## Planning` / `## Timeline` |
-| ship `cleanup-pipeline` | deleted when the report file exists, after the explorer summary is copied to ship state |
+| ship `cleanup-pipeline` | deleted when the report file exists, after the explorer summary and the review rounds are copied to ship state (`planExploreSummary`, `planReviewRounds`) |
 | GC (TTL, default 7 days) | deleted |
 
 `state.Write`'s prune-on-write (and `state.PruneEvidenceDirs`) both special-case a `done` plan run: a sibling state file for the same branch is pruned on every write *unless* it is itself a finished (`done`) plan run, in which case it is left alone. That is what lets the file survive from Step 7's `done` marker through the Stop hook (which only reads it) to the point ship's `report` step reads `planIntegrity`/`planTiming` from it. Actual removal then comes from whichever happens first: `ship_state({action: "cleanup-pipeline"})` removing it once the ship report has been written (the table's third row), or the standalone TTL/branch-liveness sweep (`ship --gc` / `execute --gc`, `state.GC`) once it is both past the TTL and no longer the newest file for its branch — a gone branch's files are removed regardless of age.
@@ -954,9 +1001,9 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | Complexity routing returns `skip` | 0 | Pipeline ends cleanly (no plan needed) | No |
 | Intake audit returns CRITICAL findings | 1 | Pipeline blocks, surfaces findings to user | **Yes** |
 | Explore pack partial failure (e.g., git scope unavailable) | 1 | Degraded mode with partial context; no block | No |
-| Lane subagent timeout or crash | 3 | `merge_results` reports coverage gaps for missing gate IDs | No (degraded) |
+| Lane subagent fails, or is not returned after its retry | 3 | The lane is recorded with `status: "fail"` and a blocking synthetic issue; Step 4 sends it again one time, then adds a `## Deviations & assumptions` row; Step 7 reports it from `dispatch-status` | No (degraded) |
 | `merge_results` finds coverage gaps | 3 | Missing gates flagged in merge output; orchestrator decides | No (advisory) |
-| Lens reviewer timeout | 5 | Degraded findings; loop may exit early | No (degraded) |
+| Lens reviewer not returned after its retry | 5 | The orchestrator does that review inline from the same filled prompt, records it as `<writerId>-inline-fallback`, and Step 7 reports it | No |
 | Material change after Step 6 fixes | 6 | Re-dispatch from Step 3 (full pipeline re-evaluation) | No (loop) |
 | Non-material change after Step 6 fixes | 6 | Re-dispatch from Step 5 only | No (loop) |
 | Round `reviewLoop.maxRounds` (5) ends with blocking issues | 5-6 | Last fix pass runs; then one question per open finding (`accepted` / `rejected` / `stop`). Hand-off only when no answer is `stop`. Stops with no hand-off on a `stop` answer, on more than 200 open findings, or when AskUserQuestion is unavailable. 0 open findings: proceeds to Step 6.5 | **Yes** |

@@ -1102,9 +1102,11 @@ func TestDashboardSnapshot_ReviewPlanNested(t *testing.T) {
 		t.Fatal("review detail = nil, want dimensions")
 	}
 	wantDims := []DashboardDimension{
-		{Name: "security", Status: StepCompleted, Findings: 1, Worst: "high", Wave: 1},
-		{Name: "docs", Status: StepSkipped, Wave: 1, Reason: reviewStopMissing},
-		{Name: "perf", Status: StepPending, Wave: 2},
+		{Name: "security", Status: StepCompleted, Findings: 1, Worst: "high", Wave: 1, FindingItems: []DashboardReviewFinding{
+			{Text: "r", Severity: "high", File: "x.go", Line: "4"},
+		}},
+		{Name: "docs", Status: StepSkipped, Wave: 1, Reason: reviewStopMissing, FindingItems: []DashboardReviewFinding{}},
+		{Name: "perf", Status: StepPending, Wave: 2, FindingItems: []DashboardReviewFinding{}},
 	}
 	if !reflect.DeepEqual(d.Dimensions, wantDims) {
 		t.Errorf("dimensions = %+v, want %+v", d.Dimensions, wantDims)

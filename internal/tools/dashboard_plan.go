@@ -51,7 +51,7 @@ func dashboardPlan(p *DashboardPipeline, st *state.State) {
 
 	checkpoint, _ := data["checkpoint"].(map[string]any)
 	cur := dashboardPlanStationIndex(dashboardStr(checkpoint["step"]))
-	stored := dashboardPlanStoredRounds(data["reviewRounds"])
+	stored := dashboardPlanStoredRounds(data[planReviewRoundsKey])
 	rounds := dashboardPlanRounds(stored)
 
 	for i, s := range dashboardPlanStations {

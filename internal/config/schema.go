@@ -25,6 +25,7 @@ var AllowedProjectKeys = map[string]bool{
 	"git":     true,
 	"plan":    true,
 	"execute": true,
+	"harden":  true,
 }
 
 // validateProjectKeys checks that every top-level key in raw belongs to

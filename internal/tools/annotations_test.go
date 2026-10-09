@@ -44,7 +44,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one O_EXCL create of gitignored .sdlc-v2/preplan/<slug>.md (slug from branch.Slug, checked before the join) for preplan_context",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -281,7 +281,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: false,
 		idempotent:  true,
 		openWorld:   false,
-		reason:      "spawns a detached dashboard server process (dashboard.Ensure) and writes only the shared user cache dir (dashboard.Dir(): roots/*.json, server.json, server.log); never touches a git-tracked file. Not destructive: stop ends a process this plugin itself started, and ensure/status/stop all converge on the same recorded state when repeated",
+		reason:      "the call spawns a detached dashboard server process (dashboard.Ensure) and writes only the shared user cache dir (dashboard.Dir(): roots/*.json, server.json, server.log); it never touches a repo file. Its only deletes are its own bookkeeping in that dir: dashboard.Roots prunes stale roots/*.json records, and stop removes server.json. The server it starts serves run-archive (tools.ArchiveRun: moves and deletes files under each repo's .sdlc-v2/) and clear-cache (tools.ClearCache: deletes reports, evidence rotations, orphan reports and sdlc-* temp dirs, and truncates server.log); those run only when a person acts in the page, never from this call. Not destructive: the call itself loses no data, stop ends a process this plugin itself started, and ensure/status/stop all converge on the same recorded state when repeated",
 	},
 }
 
@@ -488,6 +488,14 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				}
 				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget", "proposal.md")); err != nil {
 					t.Fatalf("openspec_stage did not write the staging dir: %v", err)
+				}
+				// preplan_context really writes the topic file: check the
+				// write stays untracked.
+				if _, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"}); err != nil {
+					t.Fatalf("preplan_context: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")); err != nil {
+					t.Fatalf("preplan_context did not write the topic file: %v", err)
 				}
 			case "verify_pipeline_classify":
 				_ = ClassifyLogs("error: build failed")

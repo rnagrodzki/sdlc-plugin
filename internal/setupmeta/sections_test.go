@@ -458,6 +458,30 @@ func TestCommunicationStyleSection(t *testing.T) {
 	}
 }
 
+// TestSections_PreplanConsumesPlanGuardrailsAndStyle verifies that the
+// preplan skill is listed in ConsumedBy of the "plan-guardrails" and
+// "communication-style" sections, so the setup wizard names preplan as a
+// consumer of both.
+func TestSections_PreplanConsumesPlanGuardrailsAndStyle(t *testing.T) {
+	sections := Sections()
+	for _, id := range []string{"plan-guardrails", "communication-style"} {
+		var found *Section
+		for i := range sections {
+			if sections[i].ID == id {
+				found = &sections[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("Sections() has no %q section", id)
+			continue
+		}
+		if !slices.Contains(found.ConsumedBy, "preplan") {
+			t.Errorf("%s.ConsumedBy = %v, want it to contain %q", id, found.ConsumedBy, "preplan")
+		}
+	}
+}
+
 // TestStyleFields_NamesAndOptions pins the DRY split of plan Task 4: the 5
 // keys shared by every sdlc skill live in styleFields (backing [style]),
 // and the 3 plan-only keys live in planStyleFields (backing [planStyle]).

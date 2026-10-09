@@ -41,6 +41,9 @@ enabled = true
 # Tag prefix (e.g. "v" → "v1.2.3", "" → "1.2.3")
 prefix = "v"
 
+# In [version.versionFile] below, path = "" and fileType = "" are placeholders.
+# fileType = "" is not a valid value. Set both, or set enabled = false.
+
 [version.versionFile]
 # Write version number to a file on release.
 enabled = true
@@ -57,6 +60,8 @@ enabled = true
 file = "CHANGELOG.md"
 
 # ─── Jira integration (optional — delete this section if not using Jira) ──────
+# The empty defaultProject value below is a placeholder, not a valid key.
+# Set a key, or delete this section.
 
 [jira]
 # Default Jira project key (2–10 uppercase letters, e.g. "PROJ").
@@ -159,3 +164,23 @@ description = """
 Never record task-done from a self-report alone. \
 Always independently confirm via git diff and re-run \
 of build/vet/test commands."""
+
+# ─── Harden instructions ─────────────────────────────────────────
+# Custom instructions for the harden skill. Each item guides how harden
+# drafts its proposals for one surface. An item never relaxes or removes a rule.
+# One list for each proposal surface. The four lists are independent.
+# Harden trims each item and ignores an item that is blank after the trim.
+
+[harden.instructions]
+# Guides how harden drafts plan guardrail proposals. Max 10 items, 1-1024 characters each (no empty strings).
+# Example: plan-guardrails = ["Prefer error severity for CI rules."]
+plan-guardrails = []
+# Guides how harden drafts execute guardrail proposals. Max 10 items, 1-1024 characters each (no empty strings).
+# Example: execute-guardrails = ["Re-run the full test suite after every wave."]
+execute-guardrails = []
+# Guides how harden drafts review dimension proposals. Max 10 items, 1-1024 characters each (no empty strings).
+# Example: review-dimensions = ["Check that every new endpoint has an auth test."]
+review-dimensions = []
+# Guides how harden drafts copilot instruction proposals. Max 10 items, 1-1024 characters each (no empty strings).
+# Example: copilot-instructions = ["Use table-driven tests for Go code."]
+copilot-instructions = []

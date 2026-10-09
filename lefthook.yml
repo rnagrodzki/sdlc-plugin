@@ -1,10 +1,16 @@
 # Pre-push hook: runs the identical commands as .github/workflows/test.yml
 # (go vet, then go test -tags integration) so local and CI never diverge on
 # what green means. Install with `lefthook install`.
+#
+# Git exports GIT_DIR (absolute, in a linked worktree) and GIT_PREFIX to hooks.
+# The tests build their own throwaway repos, and with GIT_DIR set every git
+# call in them hits the real repo instead: commits, checkouts, branches and
+# git config land in it. The test command clears the repo-location variables
+# so the tests see the same environment they see in CI.
 pre-push:
   parallel: false
   commands:
     vet:
       run: go vet ./...
     test:
-      run: go test -tags integration ./...
+      run: env -u GIT_DIR -u GIT_PREFIX -u GIT_WORK_TREE -u GIT_INDEX_FILE -u GIT_COMMON_DIR go test -tags integration ./...

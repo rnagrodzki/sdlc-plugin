@@ -36,6 +36,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "sideEffects": { ... },
   "healing": { ... },
   "planExploreSummary": [ ... ],
+  "planReviewRounds": [ ... ],
   "pipelineStatus": "completed",
   "pipelineCompletedAt": "2026-03-27T15:10:00Z"
 }
@@ -59,6 +60,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name, which `ship_prepare` never writes — see "Repeated step names"). Written by `ship_verify_side_effect` and by `commit-check` when it finds a landed commit; consulted by `begin-step`'s `alreadyDone` flag. See below. |
 | `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
 | `planExploreSummary` | array | Absent until `cleanup-pipeline` saves the summary copy, which it does before it deletes the linked plan run. If the delete then fails (`planRun.reason` `remove failed: ...`), the key stays set and the plan run stays on disk. One `{name, status, total, top[]}` entry for each plan explorer; `status` is `running`, `done`, or `unreadable`; `top` holds at most 5 `{summary, ref}` findings. `[]` when the plan run had no explorer files. See "Lifecycle: Cleanup." |
+| `planReviewRounds` | array | Absent until `cleanup-pipeline` copies the plan state `reviewRounds` before it deletes the linked plan run. The copy goes into the same ship state write as `planExploreSummary`. If the delete then fails (`planRun.reason` `remove failed: ...`), the key stays set and the plan run stays on disk. Absent when the plan run had no rounds. A later call on a plan run with no rounds keeps a stored list as it is. Same row shape as the plan state: `{round, mergedStatus, found, fixed, lenses[{name, verdict}], findings?[{id, fixed}]}`. See "Lifecycle: Cleanup." |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
 | `pipelineCompletedAt` | string | Paired timestamp, set alongside `pipelineStatus`. |
 
@@ -345,19 +347,20 @@ Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the sta
   `directories` reaps stale per-run execute directories and their ledger subdirectory (keyed off `execute-*.json` state files' `startedAt`) — this is the run-dir/ledger cleanup that happens alongside, not instead of, the state-file stamp.
 
   `planRun` reports the deletion of the linked plan run (the plan run that this branch's execute state
-  `planPath` points to). Its shape is `{deleted, runId?, reason?}`. The delete has two gates: the stamp
+  `planPath` points to). Its shape is `{deleted, runId?, reason?, exploreSummaryCount?, reviewRoundsCount?}`. The two counts are set only after the ship state write that holds the copies succeeds: they give the number of entries that ship state now holds under `planExploreSummary` and `planReviewRounds`. The delete has two gates: the stamp
   above must have landed, and the ship report `.sdlc-v2/reports/ship-<runId>-report.<md|json>` must
   exist. Before the delete, the action copies the plan explorer summary into ship state
   `planExploreSummary` (one `{name, status, total, top[]}` entry for each explorer, `top` capped at 5)
-  and writes the ship state. `reason` is one of:
+  and the plan state `reviewRounds` into `planReviewRounds` (copied as is, only when the plan run
+  has rounds). It then writes the ship state. `reason` is one of:
 
   | `planRun.reason` | Meaning |
   |---|---|
   | `run not stamped` | `force:true`, no state file, or no stamp. Nothing is deleted. |
   | `no linked plan run` | No execute state, or no plan run for its `planPath` (also after an earlier delete). |
   | `report not written` | The ship report file does not exist yet. |
-  | `explorer summary not saved: <err>. Fix the cause and call cleanup-pipeline again.` | The summary read or the ship state write failed. Nothing is deleted. |
-  | `remove failed: <err>` | The summary is saved, but the evidence directory or the plan state file was not removed. |
+  | `explorer summary and review rounds not saved: <err>. Fix the cause and call cleanup-pipeline again.` | The summary read or the ship state write failed. Nothing is deleted. |
+  | `remove failed: <err>` | The summary and the review rounds are saved, but the evidence directory or the plan state file was not removed. |
 
 Because contract validation only inspects `steps[]` entries, `received-review`/`commit-fixes` (which never get an entry) can never trip this check either way — their outcome is invisible to `cleanup`/`cleanup-pipeline`, tracked only in `decisions[]`.
 

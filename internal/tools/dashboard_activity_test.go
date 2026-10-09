@@ -2,14 +2,17 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -240,6 +243,216 @@ func TestDashboardActivity_Learnings(t *testing.T) {
 	})
 }
 
+// TestDashboardLearningBody_MatchReturnsRedactedEntry asserts that a matching
+// date and heading return the text of that entry only, and that the body
+// passes the redactor.
+func TestDashboardLearningBody_MatchReturnsRedactedEntry(t *testing.T) {
+	root := dashRoot(t)
+	writeFile(t, learningsLogPath(root), "# SDLC Execution Learnings\n\n"+
+		"<!-- sdlc:run=20261007T070000 branch=feat/x -->\n"+
+		"## 2026-10-07 — plan: line-keyed skillcheck maps\n- detail one\n- mail owner@example.com for access\n\n"+
+		"## 2026-10-06 — fix: another entry\n- other detail\n")
+
+	got, err := DashboardLearningBody(root, "2026-10-07", "plan: line-keyed skillcheck maps")
+	if err != nil {
+		t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+	}
+	if !got.Found || got.Truncated {
+		t.Fatalf("result = found %v truncated %v, want found true truncated false", got.Found, got.Truncated)
+	}
+	if !strings.Contains(got.Body, "- detail one") {
+		t.Errorf("body = %q, want the entry detail", got.Body)
+	}
+	if strings.Contains(got.Body, "owner@example.com") {
+		t.Errorf("body = %q, want the e-mail address redacted", got.Body)
+	}
+	if strings.Contains(got.Body, "other detail") {
+		t.Errorf("body = %q, want only the matched entry", got.Body)
+	}
+}
+
+// TestDashboardLearningBody_FallbackHeadingMatches asserts that an entry with
+// no "## <date> — <heading>" line is found by the fallback heading that the
+// snapshot shows for it.
+func TestDashboardLearningBody_FallbackHeadingMatches(t *testing.T) {
+	root := dashRoot(t)
+	writeFile(t, learningsLogPath(root), "# SDLC Execution Learnings\n\n"+
+		"**Investigated the session cache on 2026-10-07.**\nRoot cause was a stale pointer.\n")
+
+	got, err := DashboardLearningBody(root, "2026-10-07", "Investigated the session cache on 2026-10-07.")
+	if err != nil {
+		t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+	}
+	if !got.Found || !strings.Contains(got.Body, "Root cause was a stale pointer.") {
+		t.Errorf("result = %+v, want the fallback entry", got)
+	}
+}
+
+// TestDashboardLearningBody_LongHeadingMatchesSnapshotHeading asserts that the
+// heading the snapshot shows for a heading longer than 120 runes finds the
+// entry.
+func TestDashboardLearningBody_LongHeadingMatchesSnapshotHeading(t *testing.T) {
+	root := dashRoot(t)
+	writeFile(t, learningsLogPath(root), "# SDLC Execution Learnings\n\n"+
+		"## 2026-10-07 — execute: "+strings.Repeat("y", 200)+"\n- long heading detail\n")
+
+	rows := dashboardRecentLearnings(root, dashNow)
+	if len(rows) != 1 {
+		t.Fatalf("learnings = %d, want 1: %+v", len(rows), rows)
+	}
+	got, err := DashboardLearningBody(root, rows[0].Date, rows[0].Heading)
+	if err != nil {
+		t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+	}
+	if !got.Found || !strings.Contains(got.Body, "long heading detail") {
+		t.Errorf("result = %+v, want the entry of the snapshot row", got)
+	}
+}
+
+// TestDashboardLearningBody_DuplicateKeyReturnsNewest asserts that two entries
+// with the same date and heading give the body of the one that the log holds
+// last.
+func TestDashboardLearningBody_DuplicateKeyReturnsNewest(t *testing.T) {
+	root := dashRoot(t)
+	writeFile(t, learningsLogPath(root), "# SDLC Execution Learnings\n\n"+
+		"## 2026-10-07 — plan: same title\n- first body\n\n"+
+		"## 2026-10-07 — plan: same title\n- second body\n")
+
+	got, err := DashboardLearningBody(root, "2026-10-07", "plan: same title")
+	if err != nil {
+		t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+	}
+	if !got.Found || !strings.Contains(got.Body, "second body") || strings.Contains(got.Body, "first body") {
+		t.Errorf("body = %q, want the newest entry", got.Body)
+	}
+}
+
+// TestDashboardLearningBody_LongBodyIsCut asserts that a body of more than
+// dashboardLearningBodyMax runes is cut with the truncation marker and that
+// Truncated is true, while a body of exactly the limit is kept whole.
+func TestDashboardLearningBody_LongBodyIsCut(t *testing.T) {
+	const prefix = "## 2026-10-07 — plan: big entry\n"
+
+	t.Run("over the limit", func(t *testing.T) {
+		root := dashRoot(t)
+		filler := strings.Repeat("é", dashboardLearningBodyMax+500)
+		writeFile(t, learningsLogPath(root), "# SDLC Execution Learnings\n\n"+prefix+filler+"\n")
+
+		got, err := DashboardLearningBody(root, "2026-10-07", "plan: big entry")
+		if err != nil {
+			t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+		}
+		if !got.Found || !got.Truncated {
+			t.Fatalf("result = found %v truncated %v, want both true", got.Found, got.Truncated)
+		}
+		if n := len([]rune(got.Body)); n != dashboardLearningBodyMax+1 {
+			t.Errorf("body rune length = %d, want %d", n, dashboardLearningBodyMax+1)
+		}
+		if !strings.HasSuffix(got.Body, "…") {
+			t.Errorf("body does not end with the truncation marker")
+		}
+	})
+
+	t.Run("exactly at the limit", func(t *testing.T) {
+		root := dashRoot(t)
+		filler := strings.Repeat("x", dashboardLearningBodyMax-len([]rune(prefix)))
+		writeFile(t, learningsLogPath(root), "# SDLC Execution Learnings\n\n"+prefix+filler+"\n")
+
+		got, err := DashboardLearningBody(root, "2026-10-07", "plan: big entry")
+		if err != nil {
+			t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+		}
+		if !got.Found || got.Truncated {
+			t.Fatalf("result = found %v truncated %v, want found true truncated false", got.Found, got.Truncated)
+		}
+		if n := len([]rune(got.Body)); n != dashboardLearningBodyMax {
+			t.Errorf("body rune length = %d, want %d", n, dashboardLearningBodyMax)
+		}
+	})
+}
+
+// TestDashboardLearningBody_NoMatchIsNotAnError asserts that a missing log, an
+// unknown date, an unknown heading and an empty key each return found false
+// and no error.
+func TestDashboardLearningBody_NoMatchIsNotAnError(t *testing.T) {
+	root := dashRoot(t)
+	missing := dashRoot(t)
+	writeFile(t, learningsLogPath(root), "# SDLC Execution Learnings\n\n"+
+		"## 2026-10-07 — plan: only entry\n- detail\n")
+
+	cases := []struct {
+		name          string
+		root          string
+		date, heading string
+	}{
+		{"missing log", missing, "2026-10-07", "plan: only entry"},
+		{"other date", root, "2026-10-06", "plan: only entry"},
+		{"other heading", root, "2026-10-07", "plan: another entry"},
+		{"empty date", root, "", "plan: only entry"},
+		{"empty heading", root, "2026-10-07", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := DashboardLearningBody(c.root, c.date, c.heading)
+			if err != nil {
+				t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+			}
+			if got != (DashboardLearningBodyOut{}) {
+				t.Errorf("result = %+v, want the zero value", got)
+			}
+		})
+	}
+}
+
+// TestDashboardLearningBody_ReadErrorIsInfraError asserts that a log that
+// cannot be read returns an InfraError with a Suggestion and a Cause. A
+// directory in place of the log file gives a read error that is not "not found".
+func TestDashboardLearningBody_ReadErrorIsInfraError(t *testing.T) {
+	root := dashRoot(t)
+	if err := os.MkdirAll(learningsLogPath(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := DashboardLearningBody(root, "2026-10-07", "plan: only entry")
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("error = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if infra.Suggestion == "" {
+		t.Error("InfraError.Suggestion is empty")
+	}
+	if infra.Cause == nil {
+		t.Error("InfraError.Cause is nil")
+	}
+	if got != (DashboardLearningBodyOut{}) {
+		t.Errorf("result = %+v, want the zero value", got)
+	}
+}
+
+// TestDashboardLearningBody_EmptyKeySkipsUnreadableLog asserts that an empty
+// date or heading returns found false and no error before the log is read, so
+// a log that cannot be read gives no InfraError.
+func TestDashboardLearningBody_EmptyKeySkipsUnreadableLog(t *testing.T) {
+	root := dashRoot(t)
+	if err := os.MkdirAll(learningsLogPath(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, date, heading string }{
+		{"empty date", "", "plan: only entry"},
+		{"empty heading", "2026-10-07", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := DashboardLearningBody(root, c.date, c.heading)
+			if err != nil {
+				t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+			}
+			if got != (DashboardLearningBodyOut{}) {
+				t.Errorf("result = %+v, want the zero value", got)
+			}
+		})
+	}
+}
+
 func TestDashboardActivity_Deferred(t *testing.T) {
 	root := dashRoot(t)
 	w := history.NewFileWriter(paths.HistoryDir(root))
@@ -263,6 +476,66 @@ func TestDashboardActivity_Deferred(t *testing.T) {
 	want := []string{"d-high-1", "d-high-2", "d-medium", "d-low"}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {
 		t.Errorf("deferred order = %v, want %v (high first, Created ascending within priority, resolved excluded)", ids, want)
+	}
+}
+
+// TestDashboardActivity_Deferred_CarriesMetadata checks that an open deferred
+// item keeps its created, source, severity, file, line and reason values, and
+// that an item without the optional values serializes them as "" or 0, never
+// null or a missing key.
+func TestDashboardActivity_Deferred_CarriesMetadata(t *testing.T) {
+	root := dashRoot(t)
+	w := history.NewFileWriter(paths.HistoryDir(root))
+	for _, issue := range []history.DeferredIssue{
+		{
+			ID: "d-full", Created: "2026-10-02T00:00:00Z", Source: "review", Priority: history.PriorityHigh,
+			Description: "full item", Status: history.StatusOpen,
+			Severity: "high", File: "internal/tools/x.go", Line: 42, Reason: history.ReasonNeedsDirection,
+		},
+		{
+			ID: "d-bare", Created: "2026-10-03T00:00:00Z", Source: "ship", Priority: history.PriorityHigh,
+			Description: "bare item", Status: history.StatusOpen,
+		},
+	} {
+		if err := w.AddDeferred(issue); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := dashboardOpenDeferred(root)
+	want := []DashboardDeferred{
+		{
+			ID: "d-full", Priority: history.PriorityHigh, Description: "full item",
+			Created: "2026-10-02T00:00:00Z", Source: "review",
+			Severity: "high", File: "internal/tools/x.go", Line: 42, Reason: history.ReasonNeedsDirection,
+		},
+		{
+			ID: "d-bare", Priority: history.PriorityHigh, Description: "bare item",
+			Created: "2026-10-03T00:00:00Z", Source: "ship",
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("dashboardOpenDeferred = %+v, want %+v", got, want)
+	}
+
+	raw, err := json.Marshal(got[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatal(err)
+	}
+	wantAbsent := map[string]any{"severity": "", "file": "", "line": float64(0), "reason": ""}
+	for key, zero := range wantAbsent {
+		v, ok := fields[key]
+		if !ok {
+			t.Errorf("key %q missing from %s, want %v", key, raw, zero)
+			continue
+		}
+		if v != zero {
+			t.Errorf("key %q = %#v in %s, want %#v", key, v, raw, zero)
+		}
 	}
 }
 

@@ -31,6 +31,7 @@
         <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.074.546-.174.546-.386 0-.19-.007-.693-.01-1.36-2.226.484-2.696-1.073-2.696-1.073-.364-.924-.89-1.17-.89-1.17-.726-.497.056-.487.056-.487.803.057 1.225.825 1.225.825.714 1.223 1.873.87 2.33.665.072-.517.28-.87.508-1.07-1.777-.202-3.644-.888-3.644-3.953 0-.873.312-1.587.823-2.147-.083-.202-.357-1.015.078-2.117 0 0 .672-.215 2.2.82a7.66 7.66 0 0 1 2-.27c.68.003 1.364.092 2 .27 1.527-1.035 2.198-.82 2.198-.82.436 1.102.162 1.915.08 2.117.512.56.822 1.274.822 2.147 0 3.073-1.87 3.749-3.653 3.947.287.247.543.735.543 1.48 0 1.07-.01 1.933-.01 2.195 0 .214.144.464.55.385A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
         <span class="sr-only">GitHub</span>
       </a>
+      <button type="button" id="clear-btn">Clear cache</button>
       <button type="button" class="stop-btn" id="stop-btn">Stop server</button>
     </header>
 
@@ -54,6 +55,20 @@
     <div class="dialog-actions">
       <button type="button" class="stop-confirm" id="stop-confirm">Stop server</button>
       <button type="button" id="stop-cancel" autofocus>Cancel</button>
+    </div>
+  </dialog>
+
+  <dialog class="detail-dialog" id="detail-dialog" aria-labelledby="detail-title">
+    <h2 id="detail-title" tabindex="-1"></h2>
+    <div id="detail-content"></div>
+    <button type="button" id="detail-close">Close</button>
+  </dialog>
+
+  <dialog class="stop-dialog" id="confirm-dialog" aria-labelledby="confirm-text">
+    <p id="confirm-text"></p>
+    <div class="dialog-actions">
+      <button type="button" id="confirm-ok">Confirm</button>
+      <button type="button" id="confirm-cancel" autofocus>Cancel</button>
     </div>
   </dialog>
 </body>

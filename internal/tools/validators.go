@@ -1,7 +1,8 @@
 // Package tools: validate action-enum tool (Task 36).
 //
 // Ports six source validators behind one MCP tool ("validate"), following
-// the KD16 action-enum precedent established by Task 35's ship_state:
+// the action-enum pattern of ship_state (one tool, one "action" input that
+// selects the operation):
 //
 //   - plan_format  -- scripts/ci/validate-plan-format.js  (PF1-PF7, PF9, PF10),
 //     plus PF11-PF12 and the style (PF13) and diagram-contrast (PF14) checks
@@ -107,9 +108,11 @@ type ValidateIn struct {
 	// for the guardrails action only. Each candidate is checked together with
 	// the section on disk, in memory: a candidate whose id matches a disk
 	// entry's id replaces that entry for the check; a candidate with a new id
-	// is added and all entries are checked. Nothing is ever written. Without
+	// is added and all entries are checked. A candidate that lowers the
+	// severity of the disk entry it replaces (error to warning) is an error
+	// finding: harden is strengthen-only. Nothing is ever written. Without
 	// it, only the disk entries are checked.
-	CandidatesJSON string `json:"candidatesJson,omitempty" jsonschema_description:"guardrails action only: JSON array of proposed guardrail entries, e.g. [{\"id\":\"no-ci-bypass\",\"description\":\"Plans must not skip CI.\",\"severity\":\"error\"}]. Checked together with the section on disk, in memory — a candidate's id matching a disk entry replaces it for the check, a new id is added. Nothing is written."`
+	CandidatesJSON string `json:"candidatesJson,omitempty" jsonschema_description:"guardrails action only: JSON array of proposed guardrail entries, e.g. [{\"id\":\"no-ci-bypass\",\"description\":\"Plans must not skip CI.\",\"severity\":\"error\"}]. Checked together with the section on disk, in memory — a candidate's id matching a disk entry replaces it for the check, a new id is added. A candidate that lowers the severity of the disk entry it replaces (error to warning) returns an error finding. Nothing is written."`
 	// Body is the PR body text to validate for the pr_body action, matching
 	// the former standalone pr_validate_body tool's input.
 	Body string `json:"body,omitempty" jsonschema_description:"PR body text to validate. Used by the pr_body action."`
@@ -155,7 +158,7 @@ validate only reports; the calling skill step decides the next action from findi
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
 - cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables in docs/cost-tiers.md. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning"). When docs/cost-tiers.md does not exist, the check is skipped and one NO_COST_DOC warning is returned.
-- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity; every finding carries a fix (the repair step). Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback), candidatesJson (JSON array of proposed guardrail entries checked together with the section on disk, in memory, replacing same-id disk entries; nothing is written). A section that does not exist returns no findings; candidatesJson entries are still checked.
+- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity; every finding carries a fix (the repair step). Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback), candidatesJson (JSON array of proposed guardrail entries checked together with the section on disk, in memory, replacing same-id disk entries; nothing is written). A candidate that lowers the severity of a disk entry with the same id returns an error finding. A section that does not exist returns no findings; candidatesJson entries are still checked.
 - dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike most other actions (ci_script_drift also reads the active worktree). No inputs.
 - pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
 - ci_script_drift: Check the generated CI scripts against their current sources. Reads the ACTIVE worktree (falls back to main when it cannot be resolved), since scaffold_ci now writes there too. No inputs.
@@ -2061,7 +2064,7 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 		raw, _ = data["guardrails"].([]any)
 	}
 
-	entries, err := mergeGuardrailCandidates(raw, in.CandidatesJSON)
+	entries, reps, err := mergeGuardrailCandidates(raw, in.CandidatesJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -2074,7 +2077,44 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 	for _, g := range entries {
 		findings = append(findings, validateOneGuardrail(g, seen)...)
 	}
+	findings = append(findings, guardrailSeverityDowngrades(reps)...)
 	return findings, nil
+}
+
+// guardrailReplacement pairs a disk guardrail with the candidate that
+// replaces it (same id) in mergeGuardrailCandidates.
+type guardrailReplacement struct{ Disk, Candidate map[string]any }
+
+// guardrailSeverityDowngradeFix is the repair step for a severity downgrade.
+const guardrailSeverityDowngradeFix = `Keep severity error, or propose a new guardrail id for the weaker rule.`
+
+// guardrailIsWarning reports whether a guardrail entry carries severity
+// "warning". A missing or any other severity counts as error, the default.
+func guardrailIsWarning(g map[string]any) bool {
+	sev, _ := g["severity"].(string)
+	return sev == "warning"
+}
+
+// guardrailSeverityDowngrades returns one finding per replacement that lowers
+// severity. harden is strengthen-only, so a candidate may not weaken a disk
+// entry that has the same id. A disk entry with no severity counts as error.
+// Every finding is an error and carries a fix, mirroring validateOneGuardrail.
+func guardrailSeverityDowngrades(reps []guardrailReplacement) []discovery.Finding {
+	var findings []discovery.Finding
+	for _, r := range reps {
+		if guardrailIsWarning(r.Disk) || !guardrailIsWarning(r.Candidate) {
+			continue
+		}
+		id, _ := r.Disk["id"].(string)
+		findings = append(findings, discovery.Finding{
+			ID:       id,
+			Severity: "error",
+			Message:  fmt.Sprintf("%s: severity lowered from error to warning (harden is strengthen-only)", id),
+			Path:     "",
+			Fix:      guardrailSeverityDowngradeFix,
+		})
+	}
+	return findings
 }
 
 // mergeGuardrailCandidates merges candidatesJSON's proposed entries over the
@@ -2082,9 +2122,12 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 // entirely in memory -- nothing is written back. A candidate whose "id"
 // equals a disk entry's "id" replaces that entry in place; a candidate with
 // a new id (or no disk entries at all) is appended. Without candidatesJSON
-// the disk entries are returned unchanged. candidatesJSON that does not
-// decode into a JSON array of objects is a DomainError; no entry is checked.
-func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]any, error) {
+// the disk entries are returned unchanged, with no replacement pairs.
+// candidatesJSON that does not decode into a JSON array of objects is a
+// DomainError; no entry is checked. The second return value lists each
+// (disk, candidate) pair the merge replaced, in disk order, for
+// guardrailSeverityDowngrades.
+func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]any, []guardrailReplacement, error) {
 	disk := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
 		if g, ok := item.(map[string]any); ok {
@@ -2092,12 +2135,12 @@ func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]an
 		}
 	}
 	if candidatesJSON == "" {
-		return disk, nil
+		return disk, nil, nil
 	}
 
 	var candidates []map[string]any
 	if err := json.Unmarshal([]byte(candidatesJSON), &candidates); err != nil {
-		return nil, &mcpserver.DomainError{
+		return nil, nil, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("guardrails: candidatesJson is not a JSON array of objects: %s", err.Error()),
 			Suggestion: `Pass candidatesJson as a JSON array of guardrail objects, e.g. [{"id":"no-ci-bypass","description":"Plans must not skip CI.","severity":"error"}].`,
 			Cause:      err,
@@ -2105,6 +2148,7 @@ func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]an
 	}
 
 	used := make([]bool, len(candidates))
+	var reps []guardrailReplacement
 	merged := make([]map[string]any, 0, len(disk)+len(candidates))
 	for _, entry := range disk {
 		id, _ := entry["id"].(string)
@@ -2122,6 +2166,7 @@ func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]an
 		}
 		if replacement >= 0 {
 			merged = append(merged, candidates[replacement])
+			reps = append(reps, guardrailReplacement{Disk: entry, Candidate: candidates[replacement]})
 			used[replacement] = true
 		} else {
 			merged = append(merged, entry)
@@ -2132,7 +2177,7 @@ func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]an
 			merged = append(merged, c)
 		}
 	}
-	return merged, nil
+	return merged, reps, nil
 }
 
 // ---------------------------------------------------------------------------

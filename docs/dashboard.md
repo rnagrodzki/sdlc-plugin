@@ -18,7 +18,8 @@ self-cleans both cases).
 
 The header has three tabs: Pipelines, Activity, and History. A repo filter
 under the header applies to all three tabs. With no repo chip on, the page
-shows all repos.
+shows all repos. The header also has a **Clear cache** button (see
+[Clear cache files](#clear-cache-files)) and a **Stop server** button.
 
 For each registered repo, the page shows:
 
@@ -34,7 +35,10 @@ For each registered repo, the page shows:
   dimensions, review findings, plan guardrails, plan explorers, plan review
   rounds, or the result of a commit step with nothing to commit. Each
   issue has a severity, a location (the file and line of a review finding,
-  else the step, wave, or task it came from), and a reason. A `running`
+  else the step, wave, or task it came from), and a reason. A click on an
+  issue opens it in the [detail viewer](#detail-viewer). A `completed`,
+  `failed`, or `stalled` pipeline has an **Archive** button (see
+  [Archive a run](#archive-a-run)). A `running`
   pipeline whose state has not changed in 30 minutes shows as `stalled`,
   unless it waits for an answer or a permission. A waiting pipeline shows
   "WAITING ON YOU" and the wait time. The header shows a `waiting` count
@@ -46,12 +50,15 @@ For each registered repo, the page shows:
 - **Session** — a tile with the Claude Code session of the pipeline, else the
   newest session on the same branch. The collector builds each session from
   the repo's evidence files, grouped by session ID, with
-  prompt/command/MCP-call counts and a timeline of its newest 50 events. A
-  session's timeline text is redacted and truncated to 120 characters before
-  it reaches the page. A session shows as "active" when its newest evidence
-  line is less than 30 minutes old.
+  prompt/command/MCP-call counts, a table of command groups (see
+  [Session command groups](#session-command-groups)), and a timeline of its
+  newest 50 events. A session's timeline text is redacted and truncated to
+  120 characters before it reaches the page. A session shows as "active" when
+  its newest evidence line is less than 30 minutes old.
 - **Activity tab** — the repo's open deferred issues, high priority first,
-  and the entries of its learnings log dated within the last 24 hours.
+  and the entries of its learnings log dated within the last 24 hours. A row
+  shows the first 200 characters of its text. A click on a row opens the
+  full item in the [detail viewer](#detail-viewer).
 - **History tab** — the 50 newest runs of `runs.jsonl`, newest first, failed
   ship runs too. Each row shows the outcome, kind, branch, repo, finish time,
   and duration.
@@ -64,6 +71,36 @@ The page updates itself: it opens a server-sent-events stream
 (`GET /api/events`) that re-collects the snapshot every 2 seconds and pushes
 a new one only when its content actually changed, so an idle page sends no
 data beyond an occasional keep-alive comment.
+
+### Session command groups
+
+The session tile has a table of command groups. It shows which programs the
+session ran most. A session with no command has no table.
+
+- The groups count every command of the session. The timeline keeps only
+  the newest 50 events, but the groups do not.
+- The collector splits a command at `|`, `&&`, `||`, and `;`. It does not
+  split inside single or double quotes. Only the first line that is not
+  blank and not a comment counts, so the body of a heredoc is not read as a
+  command.
+- In each part of the command, the words `VAR=x` and `sudo` are skipped.
+  The next word is the program.
+- A group label comes from the programs of the command:
+
+  | Programs in the command | Label | Example command | Label of the example |
+  |---|---|---|---|
+  | 1 or 2 | The first program | `git add . && git commit` | `git` |
+  | 3 or more | All programs, as `a + b + c` | `cat a \| grep x \| wc -l` | `cat + grep + wc` |
+  | None (empty text, or only `VAR=x`) | `(other)` | `FOO=1` | `(other)` |
+
+- The `share` of a group is the number of its commands divided by the number
+  of all commands of the session. It is rounded to 2 decimals. The page shows
+  it as a percent.
+- The largest group has the majority mark. When two groups have the same
+  count, the group with the newest command is the largest. The page lists
+  the largest group first.
+
+The program names go through the same redaction as the timeline text.
 
 ## Start and stop
 
@@ -90,6 +127,171 @@ endpoint for up to 2 seconds (`stopPolls` in `control.go`) waiting for the
 port to stop answering, while the server's own graceful shutdown after
 `POST /api/stop` allows at most 1 second (`shutdownTimeout` in
 `internal/dashboard/web/server.go`) before it force-closes every connection.
+
+## Detail viewer
+
+A list row shows a short text. The detail viewer shows the full item in a
+dialog. Four kinds of row open it:
+
+| Row | Where | What the viewer shows |
+|---|---|---|
+| Deferred item | Activity tab | The description, and the Created, Source, Severity, File, Line, and Reason of the item |
+| Learning | Activity tab | The Date, and the text of the learning |
+| Issue | Issues tile of a pipeline | The text, and the Source, Severity, File, Line, and Ref of the issue |
+| Finding | Review step of a pipeline, for each dimension | The text, and the Pipeline, Dimension, and Severity of the finding |
+
+- The viewer leaves out a field with no value.
+- The snapshot holds only the heading of a learning. The page reads the text
+  with `GET /api/learning` when the row opens. The server redacts the text
+  and cuts it at 8000 characters. A cut text ends with `…`. When the log has
+  no such entry any more, the viewer shows "The body of this learning was not
+  found."
+- Close the viewer with the **Close** button or the Esc key. The focus goes
+  back to the row that opened it, or to the Activity tab when that row is
+  gone.
+- The viewer follows the snapshot. When the item leaves the snapshot, for
+  example because someone resolved the deferred item, the viewer shows "This
+  item is no longer open."
+
+## Archive a run
+
+Archive takes a run off the page and keeps its files. It moves them to
+`<repo>/.sdlc-v2/run-archive/<runId>/`. Use it for a run that you do not need
+any more, such as a stalled run that will not resume.
+
+Archive asks for a confirm before it changes a file. The dialog shows the
+question "Archive run `<runId>`?".
+
+| Status of the row | Archive button | Confirm steps | Result |
+|---|---|---|---|
+| `running` | None | None | The server refuses with `RUN_ACTIVE` |
+| `stalled` | Shown | 2: the second asks "The run stalled. Archive removes its resume point." | Archived after the second confirm |
+| `completed`, `failed` | Shown | 1 | Archived after the confirm |
+
+The server decides from the status of a fresh collect. It does not trust the
+status that the page sends. A stalled run needs `confirmStalled: true` in the
+request.
+
+What Archive does:
+
+- Only a top-level pipeline row can be archived. A run nested in a ship
+  block, such as its execute run or its review run, has no button. It moves
+  with its ship.
+- A `completed` or `failed` run is a row for 24 hours after its last update.
+  After that the run is not a row, and its id returns `RUN_NOT_FOUND`.
+- Archive moves the files that hold results. It deletes the working
+  folders. Archive does not move them.
+
+| Row | Moved into the archive folder | Deleted |
+|---|---|---|
+| `ship-…` | The ship state file, the report of the ship run, and for the nested execute run its state file, its ledger folder, and its report. The ledger folder of a nested review run. | `runs/<id>/`, the working folder of the nested execute run |
+| `execute-…` | The state file, the ledger folder, and the report | `runs/<id>/`, the working folder of the run |
+| `plan-…` | The state file, and `brief.md` of its evidence folder (it lands in `evidence/brief.md`) | The evidence folder `runs/<plan state>.evidence/` |
+| `review-<ts>` | The ledger folder of the review run | None |
+
+A path keeps its form below `.sdlc-v2/` in the archive folder, without the
+leading `runs/`. For example:
+
+```text
+Before: runs/ship-x-1.json
+        runs/execute-x-2.json
+        runs/20261008T120000/                      (working folder, execute run)
+        runs/ledger/20261008T120000/
+        reports/ship-20261008T110000-report.md
+After:  run-archive/ship-x-1/ship-x-1.json
+        run-archive/ship-x-1/execute-x-2.json
+        run-archive/ship-x-1/ledger/20261008T120000/
+        run-archive/ship-x-1/reports/ship-20261008T110000-report.md
+        run-archive/ship-x-1/archive.json
+        runs/20261008T120000/ is deleted
+```
+
+The file `archive.json` records the archive: `runId`, `archivedAt` (UTC),
+`moved`, and `deleted`. The last two are lists of paths below `.sdlc-v2/`.
+They are `[]` when empty. `moved` does not list the last move, because that
+move happens after `archive.json` is written. The last move is the state file
+of the run, or the ledger folder of a review run.
+
+The state file moves last. When a move fails, the state file stays in
+`runs/`, so the run stays on the page. Fix the cause and archive the run
+again. The second try handles the files that are still in place.
+
+No sdlc tool reads or deletes `run-archive/`. A linked worktree shares it with
+the main worktree, like `runs/`. Delete a folder by hand when you do not need
+it. [Clear cache](#clear-cache-files) keeps it.
+
+The server answers `200` with `{"runId","dir","moved","deleted"}`. An error
+answer has one of five codes:
+
+| Code | HTTP status | Cause | What to do |
+|---|---|---|---|
+| `BAD_RUN_ID` | 400 | The id is not a bare run name. It has a path part, or it does not start with `ship-`, `execute-`, `plan-`, or `review-`. | Send the id of a pipeline row. |
+| `RUN_NOT_FOUND` | 404 | No pipeline row has this id, or the run has no file on disk. A nested run and a finished run older than 24 hours are not rows. | Reload the page. The run is gone. |
+| `RUN_ACTIVE` | 409 | The row has the status `running`. | Wait until the run ends or stalls. |
+| `CONFIRM_STALLED` | 409 | The row is `stalled`, and the request has no `confirmStalled: true`. | Confirm. Archive removes the resume point. |
+| `ARCHIVE_FAILED` | 500 | A read, a move, or a delete failed. An unexpected error gets this code too. | Read the message. Fix the permission of the named file, then archive again. |
+
+The page shows the message of the error. The other errors of the route are in
+[Security](#security).
+
+## Clear cache files
+
+The **Clear cache** button in the header deletes cache data that the plugin
+can build again. It asks one confirm: "Clear cache files?". The dialog does
+not list the files, so read this table before you click.
+
+| Class | What Clear does | Only when |
+|---|---|---|
+| `evidence-rotations` | Deletes `<repo>/.sdlc-v2/evidence/*.jsonl.1` | The file did not change for more than 30 minutes |
+| `temp-dirs` | Deletes the `sdlc-*` folders of the temp folder of the system (`$TMPDIR`, else `/tmp`), except `sdlc-explore-*` | The folder did not change for more than 24 hours |
+| `orphan-reports` | Deletes the files of `<repo>/.sdlc-v2/reports/` | The run id in the file name matches no ship or execute state in `runs/` |
+| `server-log` | Cuts `~/.sdlc-cache/dashboard/server.log` to 0 bytes. It does not delete the file. | Always, when the file is not empty |
+
+Details of each class:
+
+- **`evidence-rotations`** — A writer renames an evidence file to `.jsonl.1`
+  when the file reaches 5 MiB. Clear never touches the live `.jsonl` file. A
+  rewrite of a live file would lose lines that another process adds at the
+  same time.
+- **`temp-dirs`** — Tools such as review, harden, error-report, and the
+  OpenSpec stage check create these folders. The `sdlc-explore-*` folders
+  stay, because the state `gc` sweep owns them.
+- **`orphan-reports`** — A report name is `ship-<id>-report.md`,
+  `ship-<id>-report.json`, `<id>-report.md`, or `<id>-report.json`. The `<id>`
+  is the run id of a ship or execute state. Clear keeps a file with any other
+  name. When Clear cannot read every state file in `runs/`, it deletes no
+  report.
+- **`server-log`** — The running server keeps the log open for append, so a
+  new line goes to the new end of the file.
+
+Clear keeps these data: `history/`, `learnings/`, `timings.json`, `runs/`,
+`run-archive/`, the live evidence files, and `~/.sdlc-cache/bin`.
+
+The button clears every repo that the page lists, one after another. The repo
+filter does not change this. `evidence-rotations` and `orphan-reports` belong
+to one repo. `temp-dirs` and `server-log` are global, so the first repo clears
+them and the next repos find them empty.
+
+The page shows the freed size, for example "Freed 2.0 MB.", and one line for
+each repo whose request failed. It does not show the list of kept files.
+
+The server answers `200` with `freedBytes`, a `classes` list, and a `skipped`
+list. Each class has `name`, `files`, and `bytes`. A class with nothing to
+clear shows `files: 0`. A `skipped` row has a `path` and a `reason`. Clear
+continues after a skipped row. The reasons are:
+
+| Reason | Meaning |
+|---|---|
+| `Changed less than 30 minutes ago` | Clear kept a rotated evidence file that is too new |
+| `Changed less than 24 hours ago` | Clear kept a temp folder that is too new |
+| `Report name has no run id` | Clear kept a report with an unknown name |
+| `Not a regular file` | Clear kept a server log path that is not a regular file |
+| `Read failed: <error>` | Clear could not read the path, so it kept the path |
+| `Delete failed: <error>` | Clear could not delete the path |
+| `Truncate failed: <error>` | Clear could not cut the server log |
+
+Only a failed read of the repo folder fails the request. The answer is `500`
+with the code `CLEAR_FAILED`.
 
 ## Settings
 
@@ -140,11 +342,18 @@ port = 7385         # 1024-65535, loopback only
 |---|---|---|
 | `~/.sdlc-cache/dashboard/server.json` | server | `{pid, port, version, startedAt, url}` |
 | `~/.sdlc-cache/dashboard/roots/<hash>.json` | hook, tool | `{root, lastSeen}` |
-| `~/.sdlc-cache/dashboard/server.log` | server | output of the detached process |
+| `~/.sdlc-cache/dashboard/server.log` | server | output of the detached process. Clear cache class `server-log` cuts it to 0 bytes |
+| `<repo>/.sdlc-v2/run-archive/<runId>/` | server | archived runs: state files, ledgers, reports, `archive.json` |
+| `<repo>/.sdlc-v2/evidence/*.jsonl.1` | hook, tool | rotated evidence files. Clear cache class `evidence-rotations` deletes the old ones |
+| `$TMPDIR/sdlc-*` (else `/tmp/sdlc-*`) | tool | temp folders of tools. Clear cache class `temp-dirs` deletes the old ones |
+| `<repo>/.sdlc-v2/reports/*` | ship, execute | run reports. Clear cache class `orphan-reports` deletes the ones that no run owns |
 
 `~/.sdlc-cache` is `paths.CacheDir()`: `$SDLC_CACHE_DIR` when set, else the
 user's home directory, shared with `sdlc-launcher.sh`. `dashboard.Dir()`
-joins `dashboard` onto that root for all three paths above.
+joins `dashboard` onto that root for the first three paths above. The last
+four paths do not live under `~/.sdlc-cache/dashboard/`. See
+[Archive a run](#archive-a-run) and [Clear cache files](#clear-cache-files)
+for the rules of the last four paths.
 
 - **`server.json`** is written once the listener binds and is removed when
   the server stops — but only by the process whose own PID still matches
@@ -159,7 +368,8 @@ joins `dashboard` onto that root for all three paths above.
   gone — the registry self-cleans with no separate garbage-collection pass.
 - **`server.log`** collects the detached process's stdout and stderr,
   appended for the life of that process; a new server start appends to the
-  same file rather than rotating or truncating it.
+  same file rather than rotating or truncating it. Only the **Clear cache**
+  button cuts it to 0 bytes.
 
 ## Security
 
@@ -174,18 +384,22 @@ names pass. On its own, this check does **not** stop a cross-origin `POST`
 from a browser tab open on another site: a page can issue a request that
 correctly targets `127.0.0.1:<port>` and still originate from anywhere.
 
-Every route is `GET` except `POST /api/stop`. `GET /` additionally serves
-`index.html` with its `{{SDLC_TOKEN}}` placeholder replaced by this server
-start's token (`Cache-Control: no-store`, so the token is never cached) —
-only a client that has actually loaded the page has ever seen that value.
+Three `POST` routes change files: `POST /api/stop`, `POST /api/run-archive`
+and `POST /api/cache-clear`. Each one checks the Origin and the token. Every
+other route is `GET`, including the read-only `GET /api/learning`. `GET /`
+additionally serves `index.html` with its `{{SDLC_TOKEN}}` placeholder
+replaced by this server start's token (`Cache-Control: no-store`, so the
+token is never cached) — only a client that has actually loaded the page has
+ever seen that value.
 
-The stop request is held to two further checks, both required:
+Each `POST` route is held to two further checks, both required:
 
 - Its `Origin` header must be `http://127.0.0.1:<port>` or
-  `http://localhost:<port>`, else `403`.
+  `http://localhost:<port>`, else `403` with the code `FORBIDDEN_ORIGIN`.
 - Its `X-Sdlc-Token` header must equal this server start's token — 32 bytes
   from `crypto/rand`, hex-encoded, generated fresh each time the server
-  starts — compared with `crypto/subtle.ConstantTimeCompare`, else `403`.
+  starts — compared with `crypto/subtle.ConstantTimeCompare`, else `403` with
+  the code `FORBIDDEN_TOKEN`.
 
 Both checks exist together because they block two different attacks: the
 `Origin` check blocks a cross-site `POST` that a browser attaches
@@ -193,6 +407,46 @@ automatically to every request, including one a malicious page fires at
 `127.0.0.1` without the victim's knowledge; the token check blocks a
 same-origin request forged by something that was never served the page at
 all, such as a `curl` replay run from the same machine.
+
+The archive and clear routes read a JSON body. After the Origin and token
+checks, they also need the header `Content-Type: application/json` (else
+`415`) and a body of at most 8 KiB (else `413`). The stop route has no body,
+so it skips these two checks.
+
+| Route | What it does | Guard after the `Host` check |
+|---|---|---|
+| `POST /api/stop` | Stops the server | Origin and token |
+| `POST /api/run-archive` | Moves one run into `run-archive/`. See [Archive a run](#archive-a-run). | Origin, token, JSON content type, body of 8 KiB or less. The body is `{"repo", "runId", "confirmStalled"}`. `repo` and `runId` are required. `confirmStalled` is a bool. |
+| `POST /api/cache-clear` | Deletes cache files. See [Clear cache files](#clear-cache-files). | Origin, token, JSON content type, body of 8 KiB or less. The body is `{"repo"}`, and `repo` is required. |
+| `GET /api/learning?repo=…&date=…&heading=…` | Returns the text of one learning. See [Detail viewer](#detail-viewer). | No Origin check and no token: the route only reads, like `GET /api/snapshot`. `repo`, `date` and `heading` are required. The text is redacted and cut at 8000 characters. |
+
+For the archive, clear, and learning routes, `repo` must be the path of a
+repo that the page shows. The server compares it with the registered repos,
+where a linked worktree counts as its main repo. Any other path gets `404`,
+and the server does no file work.
+
+Each error answer of these routes has the body
+`{"error":{"code","message","suggestion"}}`. The `Host` check and a request
+with a wrong method (`405`) answer with plain text. The error answers are:
+
+| Status | Code | Cause | Route |
+|---|---|---|---|
+| 403 | `FORBIDDEN_ORIGIN`, `FORBIDDEN_TOKEN` | The Origin or the token check failed | The three `POST` routes |
+| 415 | `BAD_CONTENT_TYPE` | The content type is not `application/json` | Archive, clear |
+| 413 | `BODY_TOO_LARGE` | The body is over 8 KiB | Archive, clear |
+| 400 | `BAD_BODY` | The server could not read the body | Archive, clear |
+| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo`, `date` or `heading` is missing (learning). | Archive, clear, learning |
+| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, learning |
+| 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, learning |
+| 500 | `CLEAR_FAILED` | Clear cannot read the repo folder | Clear |
+| 500 | `LEARNING_READ_FAILED` | The server cannot read the learnings log | Learning |
+| 400, 404, 409, 500 | `BAD_RUN_ID`, `RUN_NOT_FOUND`, `RUN_ACTIVE`, `CONFIRM_STALLED`, `ARCHIVE_FAILED` | See [Archive a run](#archive-a-run) | Archive |
+
+An example of an error answer:
+
+```http
+409 {"error":{"code":"RUN_ACTIVE","message":"Run \"ship-feat-x-20261008T120000Z\" is running","suggestion":"Wait until the run ends or stalls."}}
+```
 
 The server has no idle stop — nothing shuts it down just because it sat
 unused. There are exactly three ways to stop it:
@@ -277,20 +531,22 @@ collector reads the data, and the tool action that writes it.
 | `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, `findings`, `guardrails`, or `result`. It tells which field of `detail` is filled. | Collector, not stored |
 | `steps[].detail.waves` | `waves[]` of the execute state, with `number`, `status`, `committedSha`, and `tasks[]`. A task name is the name of its task row, else the name in the wave's `planned[]`, else the `plannedTasks` name. | The execute_state wave and task actions: `wave-start`, `wave-done`, `wave-fail`, `task-done`, `task-fail`, `wave-commit`, `wave-committed`, and the others that edit `waves[]` |
 | `steps[].detail.queued` | `plannedTasks` of the execute state that are in no wave and in no planned wave. `plannedTasks` is one `{id, name}` for each `### Task N:` heading of the plan. | execute_state `init`, only when `planPath` is readable |
-| `steps[].detail.dimensions` | One row for each planned dimension in the `run.meta` of a `runs/ledger/review-*/` folder. A row with no worker file is `pending`. A stopped row is `skipped` with a `reason`. A worker file holds `checkinAt`, `checkoutAt`, and `findings`. The collector derives `name` (the dimension name; the file name when `run.meta` plans no dimension), `status` (completed when `checkoutAt` is set), and the `findings` count and `worst` severity of the dimension. The `run.meta` of the folder ties the review to its ship run. A worker file that cannot be read or does not parse is an `in_progress` row with no findings, and it counts as a run dimension. Findings that are not a JSON list count as none. A `run.meta` that exists but cannot be read or does not parse gives the rows of the worker files, as with no `run.meta`. Each of these three cases also adds a `state` issue that names the file. | execute_state `ledger_checkin`, `ledger_checkout`, `ledger_skip` |
+| `steps[].detail.dimensions` | One row for each planned dimension in the `run.meta` of a `runs/ledger/review-*/` folder. A row with no worker file is `pending`. A stopped row is `skipped` with a `reason`. A worker file holds `checkinAt`, `checkoutAt`, and `findings`. The collector derives `name` (the dimension name; the file name when `run.meta` plans no dimension), `status` (completed when `checkoutAt` is set), and the `findings` count and `worst` severity of the dimension. The `run.meta` of the folder ties the review to its ship run. A worker file that cannot be read or does not parse is an `in_progress` row with no findings, and it counts as a run dimension. Findings that are not a JSON list count as none. A `run.meta` that exists but cannot be read or does not parse gives the rows of the worker files, as with no `run.meta`. Each of these three cases also adds a `state` issue that names the file. Each dimension row also has `findingItems`: its finding rows (`text`, `severity`, `file`, `line`), the same rows as `steps[].detail.findings`, or `[]` when the dimension has no finding. | execute_state `ledger_checkin`, `ledger_checkout`, `ledger_skip` |
 | `steps[].detail.reviewPlan`, `dimensions[].wave`, `.reason` | `waves`, `dimensions`, and `stopReason` of `run.meta`. `reviewPlan` holds `wavesPlanned`, `wavesRun`, `dimensionsPlanned`, `dimensionsRun`, and `neverStarted`. `reason` is `stalled`, `missing`, or `unstopped`. | `review_prepare`, execute_state `ledger_skip` |
 | `steps[].detail.reviewTotals` (`found`, `fixed`, `deferred`, `unaccounted`) | Ship state: `healing.reviewTotal`, `healing.fixed[]` with origin `local-review`, and `deferredFindings[]`. `unaccounted` is `found` minus `fixed` minus `deferred`. | ship_state `healing_record` (kinds `review-total` and `fixed`), ship_state `defer` |
 | `steps[].detail.findings` | The `findings` text of one completed dimension file, for a review run that has its own block. | execute_state `ledger_checkout` |
 | `steps[].detail.result` | The `result` of the ship `commit` step, when it starts with `nothing to commit`. | ship_state `commit-check` |
 | `steps[].detail.guardrails` | `guardrailCounts` of the plan state: `total`, `error`, and `warning`. | `plan_prepare` |
-| `steps[].detail.explorers` | In a plan block: the `explore-*` writers of the plan run's evidence store. In a ship block: the `planExploreSummary` of the ship state. | plan_support `evidence_record`; ship_state `cleanup-pipeline` for `planExploreSummary` |
-| `steps[].detail.rounds`, `.maxRounds` | `reviewRounds` of the plan state. `maxRounds` is the review-loop limit of the plan skill, not a stored value. | plan_mark `review-round` |
+| `steps[].detail.explorers` | In a plan block: the `explore-*` writers of the plan run's evidence store. In a ship block: the `planExploreSummary` of the ship state, and `rounds` from its `planReviewRounds`. | plan_support `evidence_record`; ship_state `cleanup-pipeline` for `planExploreSummary` and `planReviewRounds` |
+| `steps[].detail.rounds`, `.maxRounds` | `reviewRounds` of the plan state. In a ship block: `planReviewRounds` of the ship state, which holds the same rows. `maxRounds` is the review-loop limit of the plan skill, not a stored value. | plan_mark `review-round`; ship_state `cleanup-pipeline` for `planReviewRounds` |
 | `steps[].detail.roundTotals`, `.repairLimit`, `.outcomes` | From `reviewRounds` and `reviewOutcome` of the plan state. `roundTotals` holds `iterations` (the number of stored rounds), `violations`, `fixes`, and `distinct`. When every round has a `findings` list, `violations` and `fixes` count distinct finding IDs across all rounds, a finding counts as fixed when any round fixed it, and `distinct` is `true`. Else they are the sums of the `found` and `fixed` counts of the rounds, and `distinct` is `false`. `repairLimit` is derived, not stored: it is `true` when the last stored round has a number of at least the review-loop limit (5) and its merged status is Issues Found. `outcomes` is one `{id, text, choice, reason}` for each finding of `reviewOutcome.findings`, in stored order. | plan_mark `review-round`, `review-outcome` |
 | `issues[].source`, `.severity`, `.text`, `.file`, `.line`, `.ref` | Failed ship steps, failed or partial waves, failed tasks that have an error, `issues[]` of the state file, review findings, review ledger files that cannot be used (as `state` issues with no `ref`), and the stalled notice. `source` is `step`, `wave`, `review`, `state`, `task`, or `pipeline`. `.file` and `.line` are set for `review` issues only. `ref` is the step, wave, dimension, or task. | Collector, derived. Inputs come from ship_state `fail`, the execute_state wave and task actions, and `ledger_checkout` |
 | `sessionId` | `sessionId` of the ship or execute state; `""` when unknown. A plan state is created with no session ID. A review block has none. | ship_prepare or ship_state `init`; execute_state `init` |
 | `attention` | The newest open wait record of the pipeline session and branch. It holds `kind` (`question` or `permission`), `askedAt`, `header`, and `text`. Only a `running` pipeline with a `sessionId` has it. Absent when no wait is open. | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
 | `commitWaves` | `commitWaves` of the execute state; an absent key counts as `true`. A ship block gets it from its joined execute run. It is absent on a plan block, a review block, and a ship block with no joined execute run. | execute_state `init` |
 | `repos[].history` | The 50 newest rows of `.sdlc-v2/history/runs.jsonl`, newest first. A row gives `kind` (the row's `skill`), `branch`, `outcome`, `startedAt`, `endedAt`, and `durationMs`. `startedAt` is `started_at`, else `ts` minus `duration_ms`. A line that does not parse is skipped. | ship_state `history_record` (outcome `success`, `failure`, or `partial`); ship_state `fail` (the first `fail` of a run appends a `failure` row); plan_mark `done` (a `plan` row with outcome `done`) |
+| `repos[].sessions[].commandGroups` | One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
+| `repos[].deferred[]` | The open items of `.sdlc-v2/history/deferred.json`, high priority first, then oldest first. Each item has `id`, `priority`, `description`, `created`, `source`, `severity`, `file`, `line`, and `reason`. A value that the record lacks is `""`, or `0` for `line`, never `null`. | ship_state `defer` and `deferred_add`; execute_state `issue-draft` |
 
 ### Which step carries which detail
 
@@ -307,7 +563,8 @@ collector reads the data, and the tool action that writes it.
   state, and `dimensions` and `reviewPlan` from the joined review run. The
   `commit` step has `result` when it completed with a `nothing to commit` result. When the ship state
   holds `planExploreSummary`, the collector adds a first step `plan` with
-  `explorers`.
+  `explorers`. When it also holds `planReviewRounds`, the step adds `rounds`
+  and `maxRounds`.
 
 ### How runs join a ship block
 
@@ -333,7 +590,8 @@ collector reads the data, and the tool action that writes it.
 A state file written before a field existed does not fail the snapshot. The
 page shows less. An execute state without `plannedTasks` shows task ids
 without names, unless a wave stores the name. A ship state without
-`planExploreSummary` has no `plan` step.
+`planExploreSummary` has no `plan` step. A ship state without
+`planReviewRounds` shows explorers only.
 
 ### Lifetime of the source data
 
@@ -344,11 +602,16 @@ without names, unless a wave stores the name. A ship state without
   7 days is the default of `state.gc.ttlDays`. A completed review leaves the
   page 24 hours after its last update, but its folder stays on disk until the
   sweep.
-- **Ship stores the explorer summary at cleanup.** The explorer findings of a
-  plan run live in its `.evidence` directory, and `cleanup-pipeline` deletes
-  that directory with the plan state file. Before it deletes them,
-  `cleanup-pipeline` copies the explorer summary into the ship state key
-  `planExploreSummary`: one `{name, status, total, top[]}` entry for each
-  explorer, with at most 5 findings in `top`. It does this only after the ship
-  report exists. If the copy fails, it deletes nothing, and `planRun.reason`
-  starts with `explorer summary not saved: `.
+- **Ship stores the explorer summary and the review rounds at cleanup.**
+  The explorer findings of a plan run live in its `.evidence` directory, and
+  `cleanup-pipeline` deletes that directory with the plan state file. Before
+  it deletes them, `cleanup-pipeline` copies the explorer summary into the
+  ship state key `planExploreSummary`: one `{name, status, total, top[]}`
+  entry for each explorer, with at most 5 findings in `top`. It does this
+  only after the ship report exists. If the copy fails, it deletes nothing,
+  and `planRun.reason` starts with
+  `explorer summary and review rounds not saved: `. It also copies the plan
+  state `reviewRounds` into `planReviewRounds`, when the plan run has rounds,
+  in the same ship state write. A retry keeps a stored list of rounds. After
+  that write, `planRun` carries `exploreSummaryCount` and `reviewRoundsCount`:
+  the number of entries the ship state now holds in each key.

@@ -33,6 +33,15 @@ func mkRepoRoot(t *testing.T) string {
 	return root
 }
 
+// TestLogPath pins the server log path that Ensure spawns with and that a
+// cache clear truncates: server.log in the dashboard directory of the cache.
+func TestLogPath(t *testing.T) {
+	dir := isolateCacheDir(t)
+	if got, want := LogPath(), filepath.Join(dir, "dashboard", "server.log"); got != want {
+		t.Errorf("LogPath() = %q, want %q", got, want)
+	}
+}
+
 func hashedRootFile(root string) string {
 	sum := sha256.Sum256([]byte(root))
 	return hex.EncodeToString(sum[:])[:16] + ".json"

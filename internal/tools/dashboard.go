@@ -212,7 +212,7 @@ func dashboardSummary(result dashboard.Result, repos []string) string {
 // RegisterDashboardTools registers the dashboard tool on the server.
 func RegisterDashboardTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "dashboard",
-		"Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open (ensure only). ensure starts the server when it is not active and returns its address. status reports it. stop ends it.",
+		"Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open (ensure only). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person archive a finished run (moves its files to .sdlc-v2/run-archive/ and deletes its working files) and clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* temp dirs, and empties the server log).",
 		mcpserver.Annotations{
 			Title:       "Start, check, or stop the local dashboard",
 			ReadOnly:    false,

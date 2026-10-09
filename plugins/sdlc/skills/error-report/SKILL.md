@@ -141,13 +141,14 @@ prepare_orchestrator({
                             // the isolated orchestrator agent, which has no
                             // conversation context and must read the file itself
   mode,                    // echoes the mode parameter ("error_report")
+  next,                    // the step after this call (Step 5 dispatches the orchestrator)
 }
 ```
 
 The input fields `skill`, `step`, `operation`, and `errorText` are required; the
 rest may be empty strings — the tool tolerates empty optional fields. The return
-value contains only `manifestPath` and `mode`; the orchestrator reads all other
-fields from the manifest file at `manifestPath`.
+value contains only `manifestPath`, `mode`, and `next`; the orchestrator reads all
+other fields from the manifest file at `manifestPath`.
 
 When the main context needs a value later (e.g. `skill` for the duplicate-issue
 search's label filter in Step 6b), use the value it passed in this call — do not

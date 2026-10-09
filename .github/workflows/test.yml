@@ -26,13 +26,19 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      - name: Test
-        run: go test -tags integration ./...
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      # Tests that run the real openspec CLI (e.g. TestStage_RealCLIOmittedScenario)
+      # skip when it is not on PATH. Pin the version so a CLI release cannot
+      # change test results without a commit here.
+      - name: Install OpenSpec CLI
+        run: npm install -g @fission-ai/openspec@1.14.1
+
+      - name: Test
+        run: go test -tags integration ./...
 
       - name: Test release scripts
         run: node --test .github/scripts/__tests__/*.test.cjs internal/dashboard/web/testdata/view.test.cjs

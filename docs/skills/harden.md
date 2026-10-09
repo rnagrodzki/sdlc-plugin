@@ -31,7 +31,62 @@ Strengthen-only: it never relaxes or removes an existing rule.
 | `--error-type <type>` | Category of error, if known. | — |
 | `--user-intent <text>` | What the user was trying to accomplish. | — |
 | `--args-string <text>` | The invocation arguments that led to the failure. | — |
-| `--auto` | Accept every proposal without asking, and list each one under "Auto-accepted" in the output. Two callers pass it: [`/received-review --auto`](received-review.md), when its Step 11.6 dispatches `/harden` (subagent dispatch, where `AskUserQuestion` is not available), and [`/ship --auto`](ship.md)'s own `harden` step, which forwards the flag because the run is unattended. Does not change what may be proposed: still strengthen-only, and each edit is still validated and reverted on failure. Never files an `error-report` issue. Not valid with `--from-learnings`. | off |
+| `--auto` | Accept every proposal without asking, and list each one under "Auto-accepted" in the output. Two callers pass it: [`/received-review --auto`](received-review.md), when its Step 11.6 dispatches `/harden` (subagent dispatch, where `AskUserQuestion` is not available), and [`/ship --auto`](ship.md)'s own `harden` step, which forwards the flag because the run is unattended. Does not change what may be proposed: still strengthen-only, and each edit is still validated and reverted on failure. Custom instructions still apply (see [Custom instructions](#custom-instructions)). Never files an `error-report` issue. Not valid with `--from-learnings`. | off |
+
+## Custom instructions
+
+`/harden` can follow project guidance that you write in the
+`[harden.instructions]` table of `.sdlc-v2/config.toml`. Each list holds
+plain-text instructions for one proposal surface. The orchestrator reads them
+from the manifest when it drafts proposals. Edit this table by hand.
+[`/setup`](setup.md#config-templates) does not ask about it.
+
+```toml
+[harden.instructions]
+plan-guardrails = ["Prefer error severity for CI rules."]
+```
+
+| Key | Proposals it shapes | Default | Limit |
+|-----|---------------------|---------|-------|
+| `plan-guardrails` | Plan guardrails | `[]` | 10 items, 1024 characters each |
+| `execute-guardrails` | Execute guardrails | `[]` | 10 items, 1024 characters each |
+| `review-dimensions` | Review dimensions | `[]` | 10 items, 1024 characters each |
+| `copilot-instructions` | Copilot instructions | `[]` | 10 items, 1024 characters each |
+
+The four lists are independent. A missing table, a missing key and an empty
+list all mean "no instructions". The limits apply to each list. `/harden`
+counts the characters of an item before it trims the item, and it ignores an
+item that is blank after the trim. The config schema requires at least 1
+character in each item.
+
+**To change the instructions:** edit the lists in `.sdlc-v2/config.toml`, save
+the file, then run `/harden` again. `/harden` reads the table at the start of
+each run. The config template at `plugins/sdlc/templates/config.toml` shows
+the same four keys.
+
+**What `/harden` prints:** after it loads the failure, `/harden` prints each
+list, one line for each surface, or `Custom harden instructions: none
+configured.` when all four lists are empty. In `--from-learnings` mode it
+prints the block once, after the first entry that loads.
+
+**Rules that custom instructions never change:**
+
+- Strengthen-only. An instruction cannot make `/harden` relax or remove a rule.
+- Approval prompts. An instruction cannot add or skip an approval prompt.
+- `--auto`. An instruction cannot turn `--auto` on or off. In an `--auto` run
+  the instructions still apply, and the summary shows
+  `Custom instructions: <N> configured (config.toml [harden.instructions])`,
+  where `<N>` is the total number of items in the four lists.
+- Target files. Each proposal is still limited to the files of its surface.
+
+**An invalid table stops the run.** An unknown key, a value that is not a list,
+more than 10 items, an item that is not a string and an item over 1024
+characters each give an error that names the key and a suggested fix. `/harden`
+does not offer `error-report` for this error, because the cause is the config
+and not the plugin. Fix the file and run `/harden` again. A `config.toml` that
+`/harden` cannot read or parse also stops the run. In `--from-learnings` mode
+the first such error stops the whole triage run, and `/harden` removes no
+learnings entry.
 
 ## Examples
 
@@ -52,17 +107,11 @@ pre-classified plugin defect, skipping straight to the `error-report` route.
 
 ## Structured output
 
-`/harden`'s preparation step returns structured summary fields alongside the
-manifest path, so the orchestrator (and you, inspecting the raw tool output)
-don't have to open the manifest file just to see the shape of what loaded:
-`failure`, `classificationHint`, `surfaces` (IDs of surfaces that found at
-least one item — any of `plan-guardrails`, `execute-guardrails`,
-`review-dimensions`, `copilot-instructions`, `error-report-skill`,
-`skill-recommendation`), `guardrailCount`, `dimensionCount`,
-`skillRecommendationCount`, `branch`, and a one-line deterministic `summary`.
-The full manifest at `manifestPath` is still what the orchestrator reads to
-build proposals — these fields are a cheap summary layer on top of it, not a
-replacement.
+`/harden`'s preparation step returns four fields: `manifestPath`, `mode`,
+`customInstructions` (the `[harden.instructions]` lists, one list for each
+proposal surface) and `next` (the step after the call). The orchestrator
+reads the full manifest at `manifestPath` to build proposals. The manifest
+holds the failure, the surfaces and the same `customInstructions` map.
 
 ## Learnings stats
 
@@ -109,9 +158,11 @@ consumption gap is closed.
   must happen before any other tool call (unless invoked with
   `--from-learnings`, which first reads the log with `learnings_log` and then
   calls `prepare_orchestrator` once per entry, config-version check included).
+  The same call loads the [custom instructions](#custom-instructions), and an
+  invalid `[harden.instructions]` table stops the run here.
 - **Strengthen-only.** `/harden` never proposes relaxing or removing an
   existing rule — every proposal adds or tightens a guardrail, dimension, or
-  instruction.
+  instruction. Custom instructions do not change this.
 - **Guardrail proposals are checked before they are written.** A
   `plan`/`execute` guardrail proposal is validated in memory against the
   current config first; if the check finds a problem (e.g. a description over
@@ -119,7 +170,11 @@ consumption gap is closed.
   splitting it into independent guardrails like `<id>-1`, `<id>-2` — and
   checks again, up to 2 repair rounds. Only a clean check is written to
   `config.toml`, and the write is validated once more on disk as a final
-  safety net. Review dimensions and Copilot instructions still use the
+  safety net. One finding gets a different repair: when a proposal lowers the
+  severity of a guardrail that is already on disk (`severity lowered from
+  error to warning`), `/harden` sets the old severity back once and checks
+  again. If that finding remains, `/harden` skips the proposal with no prompt,
+  with or without `--auto`. Review dimensions and Copilot instructions still use the
   original write-first-then-revert-on-failure flow, since they have no
   equivalent in-memory check.
 - **Nothing is written without approval.** Each proposal is presented

@@ -224,12 +224,13 @@ type DashboardTask struct {
 
 // DashboardDimension is one review dimension of a ship review step.
 type DashboardDimension struct {
-	Name     string `json:"name"`
-	Status   string `json:"status"`
-	Findings int    `json:"findings"`
-	Worst    string `json:"worst"`            // highest severity, "" when none
-	Wave     int    `json:"wave,omitempty"`   // 1-based wave of the review plan; absent when the dimension is not planned
-	Reason   string `json:"reason,omitempty"` // "stalled" | "missing" | "unstopped" when Status is skipped
+	Name         string                   `json:"name"`
+	Status       string                   `json:"status"`
+	Findings     int                      `json:"findings"`
+	Worst        string                   `json:"worst"`            // highest severity, "" when none
+	Wave         int                      `json:"wave,omitempty"`   // 1-based wave of the review plan; absent when the dimension is not planned
+	Reason       string                   `json:"reason,omitempty"` // "stalled" | "missing" | "unstopped" when Status is skipped
+	FindingItems []DashboardReviewFinding `json:"findingItems"`     // same rows as kind findings; [] when the dimension has no finding
 }
 
 // DashboardReviewTotals is the finding ledger of a ship review step.
@@ -287,10 +288,13 @@ type dashboardJoinInfo struct {
 	stepWindows map[string][2]time.Time // ship step name -> [startedAt, completedAt]
 	reviewDims  []DashboardDimension    // review rows for the ship review step
 	reviewPlan  *DashboardReviewPlan    // review plan totals; nil when run.meta plans no dimension
+	members     []string                // nested execute state id and nested review ledger name (review-<ts>), filled by the join
 }
 
 // DashboardSession is one Claude Code session seen in the evidence files of
-// a repo.
+// a repo. Timeline holds only the newest dashboardSessionTimelineMax events.
+// CommandGroups counts every command of the session, and is [] when the
+// session has no command, never null.
 type DashboardSession struct {
 	ID        string `json:"id"`
 	Active    bool   `json:"active"`
@@ -302,7 +306,8 @@ type DashboardSession struct {
 		Commands int `json:"commands"`
 		MCPCalls int `json:"mcpCalls"`
 	} `json:"counts"`
-	Timeline []DashboardEvent `json:"timeline"`
+	Timeline      []DashboardEvent        `json:"timeline"`
+	CommandGroups []DashboardCommandGroup `json:"commandGroups"`
 }
 
 // DashboardEvent is one timeline entry of a session. Kind is "prompt",
@@ -311,6 +316,22 @@ type DashboardEvent struct {
 	At   string `json:"at"`
 	Kind string `json:"kind"`
 	Text string `json:"text"`
+}
+
+// DashboardCommandGroup is the share of a session's commands that run the
+// same program. Label is the program, "a + b + c" for a command that runs
+// three or more programs, or "(other)" for a command with no program.
+// Programs lists the programs the label names, and is [] for "(other)".
+// Share is Count divided by all commands of the session, rounded to 2
+// decimals. Majority marks the largest group. LastAt is the time of the
+// newest command of the group.
+type DashboardCommandGroup struct {
+	Label    string   `json:"label"`
+	Programs []string `json:"programs"`
+	Count    int      `json:"count"`
+	Share    float64  `json:"share"`
+	Majority bool     `json:"majority"`
+	LastAt   string   `json:"lastAt"`
 }
 
 // DashboardLearning is one learnings entry of a repo.
@@ -322,11 +343,19 @@ type DashboardLearning struct {
 }
 
 // DashboardDeferred is one open deferred item of a repo. Priority is
-// "high", "medium", or "low".
+// "high", "medium", or "low". Created, Source, Severity, File, Line and
+// Reason mirror history.DeferredIssue. None of them has omitempty: a value
+// the record does not hold serializes as "" or 0, never null or a missing key.
 type DashboardDeferred struct {
 	ID          string `json:"id"`
 	Priority    string `json:"priority"`
 	Description string `json:"description"`
+	Created     string `json:"created"`
+	Source      string `json:"source"`
+	Severity    string `json:"severity"`
+	File        string `json:"file"`
+	Line        int    `json:"line"`
+	Reason      string `json:"reason"`
 }
 
 // CollectDashboardSnapshot reads the pipeline state of every repo in roots

@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path"
@@ -37,6 +38,22 @@ var ErrInvalidChangeName = errors.New("invalid change name")
 // earlier path, or matches none of the artifact outputPath patterns the CLI
 // reports for the project's schema. The wrapping error names the path.
 var ErrPathNotAllowed = errors.New("path not allowed")
+
+// ErrTargetSpec is returned by Stage when the current spec of a capability
+// that a staged delta names cannot be copied into the temp directory: the
+// file is over maxTargetSpecBytes (ErrTargetSpecTooLarge), or reading it
+// fails for a reason other than the file being absent. The wrapping error
+// names the spec path.
+var ErrTargetSpec = errors.New("openspec stage: target spec")
+
+// ErrTargetSpecTooLarge is returned by Stage when a current spec is over
+// maxTargetSpecBytes. It wraps ErrTargetSpec, so errors.Is(err, ErrTargetSpec)
+// is true for it too.
+var ErrTargetSpecTooLarge = fmt.Errorf("%w: too large", ErrTargetSpec)
+
+// maxTargetSpecBytes is the size limit for one current spec that Stage copies
+// into the temp directory (1 MiB).
+const maxTargetSpecBytes = 1 << 20
 
 // StageManifestFile is the manifest file name written at the root of a
 // change's staging directory.
@@ -139,11 +156,17 @@ func PrepareInstructions(activeRoot, change string) (schema string, guides []Art
 // validates a temp copy of the staged change with `openspec validate
 // <change> --strict`.
 //
+// Before validating, Stage copies the current spec of each capability that a
+// staged specs/<capability>/spec.md names into the temp directory, so a
+// MODIFIED delta is checked against the current spec the same way as at ship.
+// A capability with no current spec is a new capability and copies nothing.
+//
 // Every check runs before the first write under activeRoot: the change name
-// (ErrInvalidChangeName), and each file path against the outputPath patterns
-// the CLI reports for a temp change (ErrPathNotAllowed). A failed validation
-// is not an error: the result has Valid false and the CLI output, and
-// stage.json has no validatedAt. now defaults to time.Now when nil.
+// (ErrInvalidChangeName), each file path against the outputPath patterns the
+// CLI reports for a temp change (ErrPathNotAllowed), and the copy of the
+// current specs (ErrTargetSpec). A failed validation is not an error: the
+// result has Valid false and the CLI output, and stage.json has no
+// validatedAt. now defaults to time.Now when nil.
 func Stage(activeRoot, change string, files []StageFile, planPath string, now func() time.Time) (StageResult, error) {
 	if now == nil {
 		now = time.Now
@@ -178,6 +201,10 @@ func Stage(activeRoot, change string, files []StageFile, planPath string, now fu
 		if !matchesAny(patterns, f.Path) {
 			return StageResult{}, fmt.Errorf("%w: %q matches no artifact outputPath (%s)", ErrPathNotAllowed, f.Path, strings.Join(patterns, ", "))
 		}
+	}
+
+	if err := copyTargetSpecs(activeRoot, tmp, files); err != nil {
+		return StageResult{}, err
 	}
 
 	// All checks passed: replace the staging dir as a whole, so a file
@@ -256,6 +283,62 @@ func newTempChange(activeRoot, change string) (string, func(), error) {
 		return "", nil, err
 	}
 	return tmp, cleanup, nil
+}
+
+// copyTargetSpecs copies <activeRoot>/openspec/specs/<cap>/spec.md into
+// <tmp>/openspec/specs/<cap>/spec.md for each staged specs/<cap>/spec.md,
+// so validate --strict checks a MODIFIED delta the same way ship does. A
+// staged path of any other shape is skipped. A capability with no current
+// spec is skipped too: a new capability has only ADDED requirements.
+//
+// A current spec over maxTargetSpecBytes returns an error that wraps
+// ErrTargetSpecTooLarge. One whose read fails for a reason other than
+// not-exist returns an error that wraps ErrTargetSpec. A failed
+// write into tmp returns the writeFile error. Nothing under activeRoot is
+// written.
+func copyTargetSpecs(activeRoot, tmp string, files []StageFile) error {
+	for _, f := range files {
+		segs := strings.Split(f.Path, "/")
+		if len(segs) != 3 || segs[0] != "specs" || segs[2] != "spec.md" {
+			continue
+		}
+		rel := filepath.Join("openspec", "specs", segs[1], "spec.md")
+		src := filepath.Join(activeRoot, rel)
+		data, err := readTargetSpec(src)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := writeFile(filepath.Join(tmp, rel), string(data)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// readTargetSpec reads the current spec at p. It returns an error that wraps
+// os.ErrNotExist when the file is absent, an error that wraps
+// ErrTargetSpecTooLarge when the file is over maxTargetSpecBytes, and an error
+// that wraps ErrTargetSpec when the file cannot be read.
+func readTargetSpec(p string) ([]byte, error) {
+	file, err := os.Open(p)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: read %s: %w", ErrTargetSpec, p, err)
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxTargetSpecBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%w: read %s: %w", ErrTargetSpec, p, err)
+	}
+	if len(data) > maxTargetSpecBytes {
+		return nil, fmt.Errorf("%w: %s is over %d MiB", ErrTargetSpecTooLarge, p, maxTargetSpecBytes>>20)
+	}
+	return data, nil
 }
 
 // checkPathSyntax rejects any file path that is empty, absolute, not a clean

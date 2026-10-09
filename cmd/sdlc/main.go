@@ -121,17 +121,35 @@ func runDashboard(args []string) int {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	v := pluginVersion
-	return web.Serve(ctx, web.Options{
+	return web.Serve(ctx, dashboardOptions(port, pluginVersion, cancel, tools.ClearCache))
+}
+
+// clearCacheFunc is the signature of tools.ClearCache: it clears the cache of
+// the repo at root and truncates the server log at serverLog.
+type clearCacheFunc func(root, serverLog string, now time.Time) (tools.ClearCacheOut, error)
+
+// dashboardOptions builds the web.Options of "sdlc dashboard serve" on port
+// for plugin version v. stop ends the server. clearCache is tools.ClearCache
+// in production; the cache clear route calls it with dashboard.LogPath(), the
+// file that receives the output of this server when it runs in the
+// background.
+func dashboardOptions(port int, v string, stop func(), clearCache clearCacheFunc) web.Options {
+	logPath := dashboard.LogPath()
+	return web.Options{
 		Port:    port,
 		Version: v,
 		Token:   web.NewToken(),
-		Stop:    cancel,
+		Stop:    stop,
 		Roots:   dashboard.Roots,
 		Collect: func(roots []string, now time.Time) tools.DashboardSnapshot {
 			return tools.CollectDashboardSnapshot(roots, now, v)
 		},
-		Listen: net.Listen,
-		Health: dashboard.DefaultDeps().Health,
-	})
+		Listen:  net.Listen,
+		Health:  dashboard.DefaultDeps().Health,
+		Archive: tools.ArchiveRun,
+		ClearCache: func(root string, now time.Time) (tools.ClearCacheOut, error) {
+			return clearCache(root, logPath, now)
+		},
+		LearningBody: tools.DashboardLearningBody,
+	}
 }

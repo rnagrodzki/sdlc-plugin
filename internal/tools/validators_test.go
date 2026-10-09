@@ -1151,6 +1151,226 @@ func TestValidateGuardrailsCandidates_WithoutCandidatesJSON_UnaffectedByFlag(t *
 }
 
 // ---------------------------------------------------------------------------
+// guardrails: severity downgrade check (harden is strengthen-only)
+// ---------------------------------------------------------------------------
+
+// guardrailDowngradeFix is the Fix text that the severity downgrade finding
+// carries.
+const guardrailDowngradeFix = "Keep severity error, or propose a new guardrail id for the weaker rule."
+
+// TestValidateGuardrailsCandidates_SeverityDowngrade checks that a candidate
+// which lowers a disk guardrail from error to warning gets one error finding,
+// and that no other severity pair gets a finding.
+func TestValidateGuardrailsCandidates_SeverityDowngrade(t *testing.T) {
+	cases := []struct {
+		name          string
+		disk          string // [plan.guardrails.dry] body
+		candidateSev  string // candidate severity JSON fragment, empty = omit
+		wantDowngrade bool
+	}{
+		{"error to warning", `severity = "error"`, `,"severity":"warning"`, true},
+		{"missing disk severity counts as error", ``, `,"severity":"warning"`, true},
+		{"warning to error", `severity = "warning"`, `,"severity":"error"`, false},
+		{"error to error", `severity = "error"`, `,"severity":"error"`, false},
+		{"warning to warning", `severity = "warning"`, `,"severity":"warning"`, false},
+		{"missing disk to error", ``, `,"severity":"error"`, false},
+		{"error to missing candidate severity", `severity = "error"`, ``, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"),
+				"[plan.guardrails.dry]\ndescription = \"Reuse existing helpers.\"\n"+tc.disk+"\n")
+
+			candidatesJSON := `[{"id":"dry","description":"Reuse existing helpers."` + tc.candidateSev + `}]`
+			out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if !tc.wantDowngrade {
+				if len(out.Findings) != 0 {
+					t.Fatalf("expected no findings, got %+v", out.Findings)
+				}
+				return
+			}
+			if len(out.Findings) != 1 {
+				t.Fatalf("expected exactly 1 finding, got %+v", out.Findings)
+			}
+			f := out.Findings[0]
+			if f.ID != "dry" || f.Severity != "error" {
+				t.Errorf("finding id/severity = %q/%q, want dry/error", f.ID, f.Severity)
+			}
+			wantMsg := "dry: severity lowered from error to warning (harden is strengthen-only)"
+			if f.Message != wantMsg {
+				t.Errorf("message = %q, want %q", f.Message, wantMsg)
+			}
+			if f.Fix != guardrailDowngradeFix {
+				t.Errorf("fix = %q, want %q", f.Fix, guardrailDowngradeFix)
+			}
+		})
+	}
+}
+
+// TestValidateGuardrailsCandidates_SeverityDowngrade_NewIDNoFinding checks that
+// a warning candidate with an id not on disk gets no downgrade finding.
+func TestValidateGuardrailsCandidates_SeverityDowngrade_NewIDNoFinding(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"),
+		"[plan.guardrails.dry]\ndescription = \"Reuse existing helpers.\"\nseverity = \"error\"\n")
+
+	candidatesJSON := `[{"id":"other-rule","description":"A different rule.","severity":"warning"}]`
+	out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.Findings) != 0 {
+		t.Fatalf("expected no findings for a new id, got %+v", out.Findings)
+	}
+}
+
+// TestValidateGuardrailsCandidates_SeverityDowngrade_NoCandidatesNoCheck checks
+// that the guardrails action with no candidatesJson returns no findings.
+func TestValidateGuardrailsCandidates_SeverityDowngrade_NoCandidatesNoCheck(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"),
+		"[plan.guardrails.dry]\ndescription = \"Reuse existing helpers.\"\nseverity = \"warning\"\n")
+
+	out, err := validate(root, ValidateIn{Action: "guardrails"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.Findings) != 0 {
+		t.Fatalf("expected no findings without candidatesJson, got %+v", out.Findings)
+	}
+}
+
+// TestValidateGuardrailsCandidates_SeverityDowngrade_MissingSectionNoFinding
+// checks that a warning candidate gets no downgrade finding when no config file
+// exists on disk.
+func TestValidateGuardrailsCandidates_SeverityDowngrade_MissingSectionNoFinding(t *testing.T) {
+	root := t.TempDir() // no config file: nothing on disk to downgrade
+
+	candidatesJSON := `[{"id":"dry","description":"Reuse existing helpers.","severity":"warning"}]`
+	out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.Findings) != 0 {
+		t.Fatalf("expected no findings for a missing section, got %+v", out.Findings)
+	}
+}
+
+// A candidate that both fails validation and lowers severity returns both
+// findings: the downgrade check adds to validateOneGuardrail, it does not
+// replace it.
+func TestValidateGuardrailsCandidates_SeverityDowngrade_AddsToOtherFindings(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"),
+		"[plan.guardrails.dry]\ndescription = \"Reuse existing helpers.\"\nseverity = \"error\"\n")
+
+	candidatesJSON := `[{"id":"dry","description":"","severity":"warning"}]`
+	out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.Findings) != 2 {
+		t.Fatalf("expected 2 findings (empty description + downgrade), got %+v", out.Findings)
+	}
+	var sawDowngrade bool
+	for _, f := range out.Findings {
+		if strings.Contains(f.Message, "severity lowered from error to warning") {
+			sawDowngrade = true
+		}
+	}
+	if !sawDowngrade {
+		t.Errorf("no downgrade finding in %+v", out.Findings)
+	}
+}
+
+// TestGuardrailSeverityDowngrades_TwoIDs checks that two downgraded ids each
+// get their own finding that names only that id, in the order of the
+// replacement pairs (disk order), and that a kept severity gets none.
+func TestGuardrailSeverityDowngrades_TwoIDs(t *testing.T) {
+	reps := []guardrailReplacement{
+		{Disk: map[string]any{"id": "alpha", "severity": "error"}, Candidate: map[string]any{"id": "alpha", "severity": "warning"}},
+		{Disk: map[string]any{"id": "beta", "severity": "error"}, Candidate: map[string]any{"id": "beta", "severity": "error"}},
+		{Disk: map[string]any{"id": "gamma"}, Candidate: map[string]any{"id": "gamma", "severity": "warning"}},
+	}
+	findings := guardrailSeverityDowngrades(reps)
+	wantIDs := []string{"alpha", "gamma"}
+	if len(findings) != len(wantIDs) {
+		t.Fatalf("got %d findings, want %d: %+v", len(findings), len(wantIDs), findings)
+	}
+	for i, id := range wantIDs {
+		f := findings[i]
+		wantMsg := id + ": severity lowered from error to warning (harden is strengthen-only)"
+		if f.ID != id || f.Message != wantMsg || f.Severity != "error" || f.Fix != guardrailDowngradeFix {
+			t.Errorf("finding %d = %+v, want id %q, message %q, severity error", i, f, id, wantMsg)
+		}
+		for _, other := range []string{"alpha", "beta", "gamma"} {
+			if other != id && strings.Contains(f.Message, other) {
+				t.Errorf("finding %d message %q names another id %q", i, f.Message, other)
+			}
+		}
+	}
+
+	t.Run("through validate", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"),
+			"[plan.guardrails.alpha]\ndescription = \"Rule alpha.\"\nseverity = \"error\"\n\n"+
+				"[plan.guardrails.beta]\ndescription = \"Rule beta.\"\nseverity = \"error\"\n\n"+
+				"[plan.guardrails.gamma]\ndescription = \"Rule gamma.\"\nseverity = \"error\"\n")
+		// Candidates in reverse order: the findings still follow disk order.
+		candidatesJSON := `[{"id":"gamma","description":"Rule gamma.","severity":"warning"},` +
+			`{"id":"beta","description":"Rule beta.","severity":"error"},` +
+			`{"id":"alpha","description":"Rule alpha.","severity":"warning"}]`
+		out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		var gotIDs []string
+		for _, f := range out.Findings {
+			gotIDs = append(gotIDs, f.ID)
+		}
+		if !reflect.DeepEqual(gotIDs, wantIDs) {
+			t.Fatalf("finding ids = %v, want %v (findings %+v)", gotIDs, wantIDs, out.Findings)
+		}
+	})
+}
+
+// TestMergeGuardrailCandidates_ReturnsReplacedPairs checks that
+// mergeGuardrailCandidates returns one disk and candidate pair for each
+// replaced id, and no pair when candidatesJson is empty.
+func TestMergeGuardrailCandidates_ReturnsReplacedPairs(t *testing.T) {
+	raw := []any{
+		map[string]any{"id": "a", "severity": "error"},
+		map[string]any{"id": "b", "severity": "warning"},
+	}
+	merged, reps, err := mergeGuardrailCandidates(raw,
+		`[{"id":"b","severity":"error"},{"id":"c","severity":"warning"}]`)
+	if err != nil {
+		t.Fatalf("mergeGuardrailCandidates: %v", err)
+	}
+	if len(merged) != 3 {
+		t.Fatalf("merged = %+v, want 3 entries (a, b replaced, c added)", merged)
+	}
+	if len(reps) != 1 {
+		t.Fatalf("reps = %+v, want exactly 1 replaced pair (b)", reps)
+	}
+	if reps[0].Disk["severity"] != "warning" || reps[0].Candidate["severity"] != "error" {
+		t.Errorf("pair = %+v, want Disk warning and Candidate error", reps[0])
+	}
+
+	_, noReps, err := mergeGuardrailCandidates(raw, "")
+	if err != nil {
+		t.Fatalf("mergeGuardrailCandidates (no candidates): %v", err)
+	}
+	if len(noReps) != 0 {
+		t.Errorf("reps without candidatesJson = %+v, want none", noReps)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // dimensions
 // ---------------------------------------------------------------------------
 

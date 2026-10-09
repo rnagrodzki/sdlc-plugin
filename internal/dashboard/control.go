@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -148,7 +147,7 @@ func Ensure(d Deps, o EnsureOpts) (Result, error) {
 		return Result{}, spawnError(err)
 	}
 	args := []string{"dashboard", "serve", "--port", fmt.Sprint(o.Port)}
-	pid, err := d.Spawn(exe, args, filepath.Join(Dir(), "server.log"))
+	pid, err := d.Spawn(exe, args, LogPath())
 	if err != nil {
 		if errors.Is(err, ErrUnsupported) {
 			return Result{}, unsupportedError()

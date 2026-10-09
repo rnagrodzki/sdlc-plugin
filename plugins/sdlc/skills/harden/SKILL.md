@@ -88,6 +88,8 @@ proposed.
 - This skill then calls `AskUserQuestion` nowhere. Every gate has a
   non-interactive branch: the Step 5 per-proposal gate, the 5a validation-failure
   prompt, the 5c upstream-report offer, and the Step 6 dispatch prompt.
+- It prints the Step 1 custom instruction block like any other run. The
+  instructions apply in `--auto` runs, and the 5d summary names their count.
 - It never relaxes or removes a rule. Proposals stay strengthen-only, the
   orchestrator's severity vocabulary stays fixed, and 5a's
   check-repair-write-revalidate flow (guardrails) or write-then-validate-then-revert
@@ -121,18 +123,50 @@ prepare_orchestrator({
   userIntent: "<user intent, if any>",
   argsString: "<invocation arguments, if any>",
   skipConfigCheck: false,
-}) → { manifestPath }
+}) → { manifestPath, mode, customInstructions, next }
 ```
 
 Empty values for optional fields are tolerated.
+
+`customInstructions` is a map with four keys — `plan-guardrails`,
+`execute-guardrails`, `review-dimensions`, `copilot-instructions` — each a list
+of strings from `[harden.instructions]` in `.sdlc-v2/config.toml`. The manifest
+at `manifestPath` carries the same map.
 
 **On tool error:** show the error message to the user and stop. Do **not**
 recursively dispatch this skill on its own crash — a `prepare_orchestrator` crash (as
 opposed to a validation error) is a plugin defect and belongs in
 `error-report`, not another harden run. A validation error (missing
-required field, `--failure-text`/`--from-issue` mutual exclusion, or R16
+required field, `--failure-text`/`--from-issue` mutual exclusion, an invalid
+`[harden.instructions]` table, or R16
 pre-flight failure on the *existing* guardrails/dimensions files) is a stop
 condition, not a crash — do not offer `error-report` for those.
+
+**On success, print the custom instruction block.** Print it before Step 2, from
+`customInstructions`, one line for each surface in the order shown. Print it in
+`--auto` runs too: the caller reads the output. Keep the total count of items in
+the four lists as `<N>` for the 5d summary.
+
+**Custom harden instructions** (printed once, after Step 1):
+```text
+Custom harden instructions (config.toml [harden.instructions] — they shape proposals, never relax a rule):
+  plan-guardrails:
+    1. Prefer error severity for CI rules.
+  execute-guardrails: none
+  review-dimensions: none
+  copilot-instructions: none
+```
+Empty case (all four lists are empty): `Custom harden instructions: none configured.`
+
+This skill only prints the instructions. It does not follow them: the
+orchestrator agent reads them from the manifest in Step 3. They never change an
+approval gate, `--auto`, the Step 5a path confinement, or strengthen-only. A new
+run after an interrupt prints the block again and changes nothing.
+
+The `next` field names two actions: print the block, then dispatch the
+orchestrator. This skill does the print here. Step 3 does the dispatch, after
+Step 2 classifies the failure. Step 3 does not run when Step 2 builds `RESULT`
+from a `plugin-defect` hint.
 
 The manifest now includes a `history` section (when `.sdlc-v2/history/` exists)
 with `recentRuns` (last 10 pipeline run records from `runs.jsonl`) and
@@ -219,18 +253,32 @@ For each candidate entry, in order:
      failureText: "<full entry text>",
      skill: "<parsed_skill>",
      skipConfigCheck: false,
-   }) → { manifestPath }
+   }) → { manifestPath, mode, customInstructions, next }
    ```
    `skipConfigCheck: false` — the config-version check is read-only and cheap,
    so it runs on every call, as in the normal path's Step 1. Store the
    `manifestPath` in a side table alongside the entry's original 1-indexed
    position.
 
-   **On a config-version error** (message starts with `config-version:`): the
-   error is about the project config, not this entry, so every later entry
-   would fail the same way. Show the error to the user and stop the triage run
-   — do not dispatch more entries, do not remove any learnings entry, and do
-   not run Step 7. `rm -f` the manifests already in the side table first.
+   **Print the custom instruction block once.** After the first call that
+   returns a result, print the **Custom harden instructions** block from Step 1
+   (same format, same empty case). Do not print it again after later calls:
+   every call reads the same `config.toml`, so the lists are the same. If no
+   call returns a result, print no block. The 5d summary does not apply in this
+   mode, because `--auto` is not valid with `--from-learnings`.
+
+   **On a config-version error or a harden-config error:** the
+   `## What happened` text of the error starts with one of these prefixes:
+   - `config-version:` (the config-version check)
+   - `harden.` or `harden:` (an invalid key or value in the `[harden]` section
+     of `config.toml`, for example `harden.instructions has unknown key ...`)
+   - `read harden instructions` (the tool cannot read or parse `config.toml`).
+
+   Each of these errors is about the project config, not this entry, so every
+   later entry would fail the same way. Show the error and its Suggestion to
+   the user once and stop the triage run — do not dispatch more entries, do
+   not remove any learnings entry, and do not run Step 7. `rm -f` the
+   manifests already in the side table first.
 
    **On any other tool error for a single entry:** log the error, record the
    entry as errored in the side table, and continue to the next. Do not abort
@@ -242,6 +290,7 @@ For each candidate entry, in order:
    Agent({
      subagent_type: "sdlc:harden-orchestrator",
      model: "haiku",
+     run_in_background: false,
      prompt: "MANIFEST_FILE: <manifestPath>\nPROJECT_ROOT: <contentRoot>",
    }) → RESULT
    ```
@@ -301,9 +350,10 @@ entries. If no entries were addressed, skip the remove call.
 #### 1-FL.7 — Cleanup
 
 `rm -f` every `manifestPath` in the side table on every exit path — including
-cancel mid-loop, zero-candidate exit, a config-version stop, and normal
-completion. Then proceed to Step 7 (Learning Capture) as usual — except after
-a config-version stop, which ends the run here.
+cancel mid-loop, zero-candidate exit, a config-version or harden-config
+stop, and normal completion. Then proceed to Step 7 (Learning Capture) as
+usual — except after a config-version or harden-config stop, which ends
+the run here.
 
 ## Step 2 — CLASSIFY: Surface the Failure Classification (R5, R9)
 
@@ -379,12 +429,17 @@ Use the `Agent` tool with:
 
 - `subagent_type`: `sdlc:harden-orchestrator`
 - `model`: `haiku`
+- `run_in_background`: `false` (the next step waits on the result)
 - `prompt` (exactly two lines, no other content):
 
   ```text
   MANIFEST_FILE: <manifestPath>
   PROJECT_ROOT: <CONTENT_ROOT>
   ```
+
+Do not add the custom instructions to the prompt. The orchestrator reads
+`customInstructions` from the manifest at `manifestPath`. The dispatch is a
+foreground `Agent` call, and the orchestrator asks the user no question.
 
 The orchestrator returns ONLY a JSON object:
 
@@ -559,14 +614,28 @@ the next proposal: there is no `targetFile` to safely resolve for it.
    standalone rule — never a fragment). Re-run the step 1 check against the
    repaired candidates. Repeat at most twice (2 repair rounds total, counting
    from the first check) — this cap holds under `--auto` too, there is no
-   unbounded retry loop. If findings remain after 2 repair rounds: write
-   nothing. Surface the findings and use `AskUserQuestion` to offer **retry**
-   (let the user adjust the proposal, then repeat from step 1) or **cancel**.
+   unbounded retry loop. If findings remain after 2 repair rounds and none of
+   them is a severity downgrade (see below): write nothing. Surface the
+   findings and use `AskUserQuestion` to offer **retry** (let the user adjust
+   the proposal, then repeat from step 1) or **cancel**.
    With `--auto`: do not call `AskUserQuestion`; take the **cancel** branch for
    this proposal only — record it under `Reverted` in the 5d summary with the
    final findings (nothing was ever written, but the outcome for this proposal
    is the same as a revert: no change lands) — and continue to the next
    proposal.
+
+   **Severity-downgrade finding.** A finding whose message contains `severity
+   lowered from error to warning` means a candidate weakens a guardrail that is already
+   on disk with the same id. Strengthen-only forbids it. This finding gets one
+   repair, as one of the rounds above: set that candidate's `severity` back to
+   the on-disk value (`error`) and keep the rest of the candidate. Do not take
+   the "new guardrail id" option in the finding's `fix` text: it changes what
+   the orchestrator proposed. Then re-run the step 1 check. If a downgrade
+   finding remains after this repair, or shows up after the 2 repair rounds are
+   used, write nothing and skip this proposal — do not call
+   `AskUserQuestion`, with or without `--auto`. Without `--auto`, show the
+   finding to the user. With `--auto`, list the proposal under `Skipped` in the
+   5d summary as `severity downgrade`. Then continue to the next proposal.
 3. **Write.** Once a check reports no findings (on the first pass or after
    repair), persist every entry in one call, one dotted leaf per id:
    ```
@@ -696,7 +765,9 @@ flow as 5a (steps 1-4 of the `plan-guardrails`/`execute-guardrails` path) —
 the merged candidate is checked via `candidatesJson` (a candidate's id matches
 the disk entry, so it replaces it for the check), repaired on findings up to
 2 rounds, written via `setup_write_sections` at `<section>.guardrails.<id>`
-once clean, then validated on disk with revert-on-failure.
+once clean, then validated on disk with revert-on-failure. A merged candidate
+that lowers severity gets the severity-downgrade finding, handled as in 5a
+step 2.
 
 ### 5c. Ambiguous upstream-report offer (R-ambig-offer)
 
@@ -733,10 +804,15 @@ already suppressed by the paragraph above, and Step 7 records `not-applicable`.
 Display this block as harden's own output — the caller receives it as the
 result of the dispatch. Emit it once, after 5c, and also on any early exit from
 Steps 4–6 (Step 4's empty-proposals exit, a 5b halt, or the Step 6 route). Always
-print the header line; omit a section whose list is empty.
+print the header line and the `Custom instructions` line; omit a section whose
+list is empty. `<N>` in the `Custom instructions` line is the total count of
+items in the four `customInstructions` lists from Step 1. The line is there
+because nobody sees a proposal before it applies under `--auto`: the caller
+learns that instructions shaped the proposals.
 
 ```text
 harden --auto: {A} auto-accepted, {R} reverted, {S} skipped, {U} not processed
+Custom instructions: <N> configured (config.toml [harden.instructions])
 Auto-accepted:
   [{i}] {action} on {surface} → {targetFile} — {rationale, first 120 chars}
 Repaired:
@@ -744,7 +820,7 @@ Repaired:
 Reverted (validation failed, file restored):
   [{i}] {action} on {surface} → {targetFile} — {first validation finding}
 Skipped:
-  [{i}] {surface} — {reason, e.g. skill-recommendation surface, malformed consolidate, targetFile outside surface: <path>}
+  [{i}] {surface} — {reason, e.g. skill-recommendation surface, malformed consolidate, severity downgrade, targetFile outside surface: <path>}
 Not processed (5b halt):
   [{i}] {action} on {surface} → {targetFile}
 Not filed (needs a human — invoke error-report manually):
@@ -763,7 +839,9 @@ belongs to ended up under `Auto-accepted` (repair succeeded within 2 rounds)
 or `Reverted` (it did not). `{method}` names what changed: `split into <id>-1,
 <id>-2 (description <N> bytes)` for an over-length description, or a short
 phrase for any other repair (e.g. `added missing id`, `set severity to
-error`). Omit this section when no entry needed repair.
+error`, `kept severity error (candidate lowered it to warning)`). A proposal
+skipped for `severity downgrade` appears only under `Skipped`. Omit this
+section when no entry needed repair.
 
 ### 5e. Record Completion in Ship State (ship-harden dispatch only)
 
@@ -899,6 +977,10 @@ cleanup path).
   who approves, nothing else. Strengthen-only, the orchestrator's severity
   vocabulary, the guardrail check-repair-write-revalidate flow, and the
   dimensions/Copilot write-then-validate-then-revert flow apply unchanged.
+- Treat custom instructions (`[harden.instructions]`) as permission to change an
+  approval gate, `--auto`, the 5a path confinement, or strengthen-only — they
+  never change any of these. They shape what the orchestrator proposes, nothing
+  else. This skill prints them and does not follow them.
 - Invoke `error-report` under `--auto` — filing a GitHub issue needs a
   human-approved draft; list the payload under `Not filed` instead.
 - Infer `--auto` from pipeline context, conversation history, or the caller being
@@ -929,7 +1011,8 @@ cleanup path).
   check first, write second (5a).
 - Repair a guardrail finding for more than 2 rounds, with or without
   `--auto` — stop and offer retry/cancel (or record `Reverted` under
-  `--auto`) after 2 rounds (5a).
+  `--auto`) after 2 rounds, except a severity downgrade, which is skipped
+  with no prompt (5a).
 - Issue sequential single-index `learnings_log` remove calls in
   `--from-learnings` mode — each remove rewrites the file and shifts entry
   positions. Always collect all addressed indices and issue one batch remove

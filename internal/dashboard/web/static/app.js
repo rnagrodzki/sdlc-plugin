@@ -37,7 +37,35 @@ var ui = {
   lastSnapshot: null,
   source: null,
   hash: null, // a pipeline hash that waits for the first snapshot
+  // The detail key of the open detail viewer, or null. The viewer reads its
+  // item again from each snapshot, so it never holds a row element.
+  detail: null,
+  detailSig: '', // JSON of the item the viewer shows, so an equal item rebuilds nothing
+  detailSeq: 0, // grows on each open and close; a late learning body of an older open is dropped
 };
+
+// The title of the detail viewer when its item is not in the snapshot any more.
+var GONE_TEXT = 'This item is no longer open.';
+
+// The questions of the confirm dialog, by the steps of view.confirmSteps.
+var CONFIRM_PROMPT = {
+  archive: function (runId) {
+    return 'Archive run ' + runId + '?';
+  },
+  stalled: function () {
+    return 'The run stalled. Archive removes its resume point.';
+  },
+  clear: function () {
+    return 'Clear cache files?';
+  },
+};
+
+// The confirm flow that is on screen, or null:
+// { prompts, step, label, run, busy, returnKey }.
+var confirmFlow = null;
+
+// The text of the confirm dialog when flow.run() throws.
+var CONFIRM_FAILED_TEXT = 'The request could not be sent. Close this dialog and try again.';
 
 // Blocks of the last render: { key, pipeline, node }, in feed order.
 var blocks = [];
@@ -106,6 +134,11 @@ function focusKeyOf(node) {
   var block = node.closest('[data-key]');
   var prefix = block ? block.getAttribute('data-key') + '\n' : '';
   if (node.hasAttribute('data-root')) return 'chip\n' + node.getAttribute('data-root');
+  // A row that opens the detail viewer, and an Archive button, are rebuilt on each snapshot too.
+  if (node.hasAttribute('data-detail')) return 'detail\n' + node.getAttribute('data-detail');
+  if (node.hasAttribute('data-archive')) {
+    return 'archive\n' + node.getAttribute('data-repo') + '\n' + node.getAttribute('data-archive');
+  }
   if (node.hasAttribute('data-station')) return prefix + 'station\n' + node.getAttribute('data-station');
   if (node.classList.contains('fold-btn')) return prefix + 'fold';
   var tile = node.closest('[data-section]');
@@ -121,7 +154,9 @@ function restoreFocus() {
   if (!ui.focusKey) return;
   var active = document.activeElement;
   if (active && active !== document.body && document.contains(active)) return;
-  var candidates = document.querySelectorAll('[data-root], [data-station], .fold-btn, [data-section] > summary');
+  var candidates = document.querySelectorAll(
+    '[data-root], [data-station], .fold-btn, [data-section] > summary, [data-detail], [data-archive]'
+  );
   for (var i = 0; i < candidates.length; i++) {
     if (focusKeyOf(candidates[i]) === ui.focusKey) {
       candidates[i].focus({ preventScroll: true });
@@ -238,6 +273,7 @@ function render(snapshot) {
 
   restoreFocus();
   restoreScroll();
+  refreshDetail();
 
   if (ui.hash !== null) {
     var hash = ui.hash;
@@ -371,9 +407,14 @@ function applyHash(hash) {
 
 // --- Stop flow ------------------------------------------------------------------
 
-function stopServer() {
+// The token the server put in the page. '' when the page has none.
+function pageToken() {
   var meta = document.querySelector('meta[name="sdlc-token"]');
-  var request = view.stopRequest(meta ? meta.getAttribute('content') : '');
+  return meta ? meta.getAttribute('content') : '';
+}
+
+function stopServer() {
+  var request = view.stopRequest(pageToken());
   var status = request
     ? fetch(request.url, request.init).then(function (response) {
         return response.status;
@@ -391,6 +432,273 @@ function stopServer() {
       }
       setConnection(result);
     });
+}
+
+// --- Requests ---------------------------------------------------------------------
+
+// Reads one response as { status, body }. A response with no JSON has a null
+// body. A network error has status 0 and a null body.
+function fetchJSON(url, init) {
+  return fetch(url, init)
+    .then(function (response) {
+      return response.json().then(
+        function (body) {
+          return { status: response.status, body: body };
+        },
+        function () {
+          return { status: response.status, body: null };
+        }
+      );
+    })
+    .catch(function () {
+      return { status: 0, body: null };
+    });
+}
+
+// Sends a request of view.archiveRequest or view.clearRequest. A null request
+// (the page has no token) gives the same result as a network error.
+function post(request) {
+  return request ? fetchJSON(request.url, request) : Promise.resolve({ status: 0, body: null });
+}
+
+// --- Detail viewer ----------------------------------------------------------------
+
+function metaValue(item, label) {
+  var pairs = item.meta || [];
+  for (var i = 0; i < pairs.length; i++) {
+    if (pairs[i][0] === label) return pairs[i][1];
+  }
+  return '';
+}
+
+// Puts the text in the text part of the open viewer, if it has one.
+function setDetailText(text) {
+  var node = byId('detail-content').querySelector('.detail-text');
+  if (node) node.textContent = text;
+}
+
+// Fills the viewer. #detail-title is the one visible title, the focus target,
+// and the name of the dialog, so the heading that detailBody builds is dropped
+// before the body is mounted. A null item shows GONE_TEXT and no body.
+function showDetail(item) {
+  byId('detail-title').textContent = item ? item.title : GONE_TEXT;
+  if (!item) {
+    replaceChildren(byId('detail-content'), []);
+    return;
+  }
+  var body = draw.detailBody(document, item);
+  var heading = body.querySelector('.detail-heading');
+  if (heading) body.removeChild(heading);
+  replaceChildren(byId('detail-content'), [body]);
+}
+
+// The body of a learning is not in the snapshot. GET /api/learning returns it.
+function loadLearning(item) {
+  var seq = ui.detailSeq;
+  var url = view.learningUrl(item.repo, metaValue(item, 'Date'), item.title);
+  if (!url) {
+    setDetailText('The body of this learning cannot be loaded.');
+    return;
+  }
+  fetchJSON(url).then(function (result) {
+    if (seq !== ui.detailSeq) return;
+    if (result.status === 200 && result.body && result.body.found) {
+      setDetailText(result.body.body);
+    } else if (result.status === 200) {
+      setDetailText('The body of this learning was not found.');
+    } else {
+      setDetailText(view.errorText(result.body, 'The learning cannot be loaded (HTTP ' + result.status + ').'));
+    }
+  });
+}
+
+// Reads the item of the open viewer again from the last snapshot. An item
+// that did not change rebuilds nothing, so a learning body stays on screen.
+function refreshDetail(force) {
+  if (ui.detail === null) return;
+  var item = view.detailItem(ui.lastSnapshot, ui.detail);
+  var sig = JSON.stringify(item);
+  if (!force && sig === ui.detailSig) return;
+  ui.detailSig = sig;
+  showDetail(item);
+  if (item && item.kind === 'learning') loadLearning(item);
+}
+
+function openDetail(key) {
+  var dialog = byId('detail-dialog');
+  ui.detail = key;
+  ui.detailSeq++;
+  refreshDetail(true);
+  if (!dialog.open) dialog.showModal();
+  byId('detail-title').focus();
+}
+
+// Runs when the viewer closed, by Close or by Esc. The focus goes to the
+// rebuilt row with the same key, else to the Activity tab button.
+function closeDetail() {
+  var key = ui.detail || '';
+  ui.detail = null;
+  ui.detailSig = '';
+  ui.detailSeq++;
+  var row = key ? document.querySelector(view.closeFocusSelector(key)) : null;
+  if (row) row.focus();
+  if (!row || document.activeElement !== row) {
+    document.querySelector(view.closeFocusSelector('')).focus();
+  }
+}
+
+// --- Confirm dialog: archive and clear -------------------------------------------
+
+// Sets the text of a node. A '\n' becomes a line break; every line goes in as a text node.
+function setLines(node, text) {
+  var nodes = [];
+  text.split('\n').forEach(function (line, index) {
+    if (index > 0) nodes.push(document.createElement('br'));
+    nodes.push(document.createTextNode(line));
+  });
+  replaceChildren(node, nodes);
+}
+
+// Opens the confirm dialog with the first question of the flow. Each Confirm
+// click moves to the next question. The last Confirm click calls flow.run(),
+// which returns a promise of the text to show, or of null when the flow is
+// done and the dialog closes.
+//   flow = { prompts: [string], label: string, run: function(): Promise<string|null>,
+//            returnKey?: string }
+// returnKey is the focusKeyOf of the control that opened the dialog. A control
+// that the next snapshot rebuilds cannot take the focus back from the browser,
+// so the close handler finds the rebuilt control by this key.
+function confirmAction(flow) {
+  if (flow.prompts.length === 0) return;
+  var ok = byId('confirm-ok');
+  var cancel = byId('confirm-cancel');
+  confirmFlow = {
+    prompts: flow.prompts,
+    step: 0,
+    label: flow.label,
+    run: flow.run,
+    busy: false,
+    returnKey: flow.returnKey || null,
+  };
+  ok.textContent = flow.label;
+  ok.hidden = false;
+  ok.disabled = false;
+  cancel.textContent = 'Cancel';
+  cancel.disabled = false;
+  setLines(byId('confirm-text'), flow.prompts[0]);
+  byId('confirm-dialog').showModal();
+}
+
+// A click on Confirm: the next question, or the request. The second click of a
+// double click (event.detail > 1) is not a new answer: it must not confirm the
+// stalled question that the first click just showed. Enter and Space give 0.
+// The mouse press of that second click put the focus back on Confirm, so the
+// focus goes to Cancel again.
+function confirmStep(event) {
+  if (event && event.detail > 1) {
+    if (confirmFlow && !confirmFlow.busy) byId('confirm-cancel').focus();
+    return;
+  }
+  var flow = confirmFlow;
+  if (!flow || flow.busy) return;
+  var ok = byId('confirm-ok');
+  var cancel = byId('confirm-cancel');
+  if (flow.step + 1 < flow.prompts.length) {
+    flow.step++;
+    setLines(byId('confirm-text'), flow.prompts[flow.step]);
+    // The focus leaves Confirm, so a repeated Enter or Space cannot answer this question.
+    cancel.focus();
+    return;
+  }
+  flow.busy = true;
+  ok.disabled = true;
+  cancel.disabled = true;
+  setLines(byId('confirm-text'), 'Working...');
+  // The promise constructor turns a throw of run() into a rejection.
+  new Promise(function (resolve) {
+    resolve(flow.run());
+  })
+    .then(function (text) {
+      flow.busy = false;
+      if (confirmFlow !== flow) return;
+      if (text === null) {
+        // Done. The row of the run goes away with the next snapshot, so the
+        // focus goes to the tab that is on screen.
+        byId('confirm-dialog').close();
+        tabs[ui.tab].tab.focus();
+        return;
+      }
+      showConfirmResult(text);
+    })
+    .catch(function () {
+      // run() failed. Clear the busy state, so Esc and Close work again.
+      flow.busy = false;
+      if (confirmFlow !== flow) return;
+      showConfirmResult(CONFIRM_FAILED_TEXT);
+    });
+}
+
+// Shows the end text of a flow. Only Close is left.
+function showConfirmResult(text) {
+  var ok = byId('confirm-ok');
+  var cancel = byId('confirm-cancel');
+  setLines(byId('confirm-text'), text);
+  ok.hidden = true;
+  ok.disabled = false;
+  cancel.disabled = false;
+  cancel.textContent = 'Close';
+  cancel.focus();
+}
+
+// A click on an Archive button of a pipeline row. A stalled run asks a second
+// question; only that second Confirm sends confirmStalled: true.
+function archiveRun(button) {
+  var runId = button.getAttribute('data-archive');
+  var repo = button.getAttribute('data-repo');
+  var steps = view.confirmSteps('archive', button.getAttribute('data-status'));
+  var stalled = steps.indexOf('stalled') !== -1;
+  confirmAction({
+    prompts: steps.map(function (step) {
+      return CONFIRM_PROMPT[step](runId);
+    }),
+    label: 'Archive',
+    // The next snapshot rebuilds this button, so the dialog cannot return the focus to it.
+    returnKey: focusKeyOf(button),
+    run: function () {
+      return post(view.archiveRequest(pageToken(), repo, runId, stalled)).then(function (result) {
+        var outcome = view.archiveResultText(result.status, result.body);
+        return outcome.ok ? null : outcome.text;
+      });
+    },
+  });
+}
+
+// A click on Clear cache. It clears the repos of the last snapshot, one after
+// another, and shows the freed size and the error of each repo that failed.
+function clearCache() {
+  confirmAction({
+    prompts: view.confirmSteps('clear').map(function (step) {
+      return CONFIRM_PROMPT[step]();
+    }),
+    label: 'Clear',
+    run: function () {
+      var token = pageToken();
+      var repos = (ui.lastSnapshot && ui.lastSnapshot.repos) || [];
+      var results = [];
+      return repos
+        .reduce(function (chain, repo) {
+          if (!repo || !repo.root) return chain;
+          return chain.then(function () {
+            return post(view.clearRequest(token, repo.root)).then(function (result) {
+              results.push({ repo: repo.root, status: result.status, body: result.body });
+            });
+          });
+        }, Promise.resolve())
+        .then(function () {
+          return view.clearResultText(results);
+        });
+    },
+  });
 }
 
 // --- Wiring ---------------------------------------------------------------------
@@ -450,8 +758,53 @@ function init() {
     true
   );
 
+  // A row button with data-detail opens the detail viewer; Enter on the
+  // button fires the same click. The rows are in the feed and in the
+  // Activity panel, so the listener is on the stage.
+  stage.addEventListener('click', function (event) {
+    var row = event.target.closest('[data-detail]');
+    if (row) openDetail(row.getAttribute('data-detail'));
+  });
+  feed.addEventListener('click', function (event) {
+    var button = event.target.closest('.archive-btn');
+    if (button) archiveRun(button);
+  });
+
   window.addEventListener('hashchange', function () {
     applyHash(location.hash);
+  });
+
+  var detailDialog = byId('detail-dialog');
+  byId('detail-close').addEventListener('click', function () {
+    detailDialog.close();
+  });
+  // Close and Esc both end in a close event, so one handler returns the focus.
+  detailDialog.addEventListener('close', closeDetail);
+
+  var confirmDialog = byId('confirm-dialog');
+  byId('clear-btn').addEventListener('click', clearCache);
+  byId('confirm-ok').addEventListener('click', confirmStep);
+  byId('confirm-cancel').addEventListener('click', function () {
+    confirmDialog.close();
+  });
+  // Esc cannot close the dialog while a request is on its way.
+  confirmDialog.addEventListener('cancel', function (event) {
+    if (confirmFlow && confirmFlow.busy) event.preventDefault();
+  });
+  confirmDialog.addEventListener('close', function () {
+    var flow = confirmFlow;
+    confirmFlow = null;
+    // The control that opened the dialog may be rebuilt, and then the browser cannot
+    // return the focus to it. The focus stays on the Cancel button of the closed dialog
+    // until the browser moves it to the body, so leave that button first. restoreFocus
+    // does nothing when the focus is on another control, as after a done flow, which
+    // moves the focus to the tab.
+    if (flow && flow.returnKey) {
+      var active = document.activeElement;
+      if (active && confirmDialog.contains(active)) active.blur();
+      ui.focusKey = flow.returnKey;
+      restoreFocus();
+    }
   });
 
   var dialog = byId('stop-dialog');

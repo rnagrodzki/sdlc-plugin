@@ -56,7 +56,7 @@ func TestCacheDir(t *testing.T) {
 	})
 }
 
-// stateEntrySpecNames is the full 21-name spec set: every DataDir entry the
+// stateEntrySpecNames is the full 23-name spec set: every DataDir entry the
 // MCP server or hooks write to, from the worktree-state-links spec's
 // Link / Never-link table. BakSuffix is deliberately excluded: it is a
 // suffix pattern ("*.bak"), not a named entry.
@@ -67,18 +67,19 @@ func stateEntrySpecNames() []string {
 		ConfigFile, GitignoreFile, ReviewDimensionsSubdir, LocalConfigFile,
 		LegacyLocalJSONFile, LegacyConfigJSONFile, JiraTemplatesSubdir, LegacyExecutionSubdir,
 		OpenspecStagingSubdir, PlanTemplateFile, PRTemplateFile, ScratchSubdir, BackupsSubdir,
+		PreplanSubdir, RunArchiveSubdir,
 	}
 }
 
 // TestStateEntryListsCoverEveryEntry pins LinkedStateEntries and
-// UnlinkedStateEntries to the worktree-state-links spec's 21-name set: every
+// UnlinkedStateEntries to the worktree-state-links spec's 23-name set: every
 // entry must appear in exactly one of the two lists (never both, never
 // neither), so a future DataDir addition that forgets to classify itself as
 // linked or unlinked fails this test instead of silently falling through.
 func TestStateEntryListsCoverEveryEntry(t *testing.T) {
 	want := stateEntrySpecNames()
-	if len(want) != 21 {
-		t.Fatalf("stateEntrySpecNames() has %d names, want 21", len(want))
+	if len(want) != 23 {
+		t.Fatalf("stateEntrySpecNames() has %d names, want 23", len(want))
 	}
 
 	seen := make(map[string]int, len(want))

@@ -59,13 +59,13 @@ type HardenPrepareIn struct {
 	// the manifest's failure.text is populated from the issue body instead.
 	FromIssue string `json:"fromIssue,omitempty"`
 
-	// SkipConfigCheck gates the KD5 configmigrate.Verify call. Source:
+	// SkipConfigCheck skips the config-version gate (configmigrate.Verify). Source:
 	// ensureConfigVersion(cwdForVerify, { skip: skipConfigCheck, ... }).
 	SkipConfigCheck bool `json:"skipConfigCheck,omitempty"`
 }
 
 // HardenPrepareOut is hardenPrepare's result: the path to the written
-// manifest (KD4 file handoff) plus a set of the manifest's top-level fields
+// manifest (the orchestrator agent reads the manifest by file) plus a set of the manifest's top-level fields
 // mirrored inline (R7), so callers that only need small/cheap fields (the
 // failure preview, surface/guardrail/dimension counts, branch) can read them
 // from the tool result instead of re-opening the manifest file. The full
@@ -74,7 +74,7 @@ type HardenPrepareIn struct {
 // duplicate those larger sections.
 type HardenPrepareOut struct {
 	// ManifestPath is kept for the orchestrator agent, which still consumes
-	// the full manifest file (KD4 handoff unchanged).
+	// the full manifest file.
 	ManifestPath string `json:"manifestPath"`
 
 	// Failure mirrors hardenManifest.Failure verbatim.
@@ -98,6 +98,10 @@ type HardenPrepareOut struct {
 
 	// Branch mirrors hardenManifest.Repository.Branch verbatim.
 	Branch string `json:"branch"`
+
+	// CustomInstructions mirrors hardenManifest.CustomInstructions verbatim.
+	// The skill prints it from the tool result, so it needs no manifest read.
+	CustomInstructions map[string][]string `json:"customInstructions"`
 
 	// Summary is a deterministic one-line triage string: skill/step plus
 	// surface/guardrail/dimension counts and the load-error count. It is
@@ -163,7 +167,7 @@ type SkillRecommendation struct {
 // source does `data.X || null`, which passes the original JSON value
 // through unchanged (string, number, or object) rather than coercing to a
 // fixed type — only falsy values collapse to null. LastFailedStep/
-// FailedTask/FailedWave are typed fields (Task 19): each has exactly one
+// FailedTask/FailedWave are typed fields: each has exactly one
 // dedicated writer (ship_state.go / execute_state.go), so their Go type is
 // known and asserted directly instead of passed through as `any`.
 type hardenShipState struct {
@@ -182,7 +186,7 @@ type hardenExecuteState struct {
 // found by readHardenPipelineState, ship first then execute, in the order
 // each was appended on disk. Nil/omitted when neither state carries any
 // issues, so older state files without issues[] round-trip unchanged
-// (backward compatible — Task 19 AC).
+// (backward compatible).
 type hardenPipeline struct {
 	ShipState    *hardenShipState    `json:"shipState"`
 	ExecuteState *hardenExecuteState `json:"executeState"`
@@ -209,15 +213,16 @@ type hardenManifest struct {
 	Failure hardenFailure `json:"failure"`
 	// classification_hint is deliberately snake_case (matches source
 	// byte-for-byte), unlike every other camelCase manifest key.
-	ClassificationHint *string            `json:"classification_hint"`
-	Surfaces           hardenSurfaces     `json:"surfaces"`
-	Pipeline           hardenPipeline     `json:"pipeline"`
-	Repository         hardenRepository   `json:"repository"`
-	History            *hardenHistory     `json:"history,omitempty"`
-	CLIEvidence        []CLIEvidenceEntry `json:"cliEvidence,omitempty"`
-	PluginRepoURL      string             `json:"pluginRepoUrl"`
-	Timestamp          string             `json:"timestamp"`
-	Errors             []surfaceLoadError `json:"errors"`
+	ClassificationHint *string             `json:"classification_hint"`
+	Surfaces           hardenSurfaces      `json:"surfaces"`
+	Pipeline           hardenPipeline      `json:"pipeline"`
+	Repository         hardenRepository    `json:"repository"`
+	CustomInstructions map[string][]string `json:"customInstructions"`
+	History            *hardenHistory      `json:"history,omitempty"`
+	CLIEvidence        []CLIEvidenceEntry  `json:"cliEvidence,omitempty"`
+	PluginRepoURL      string              `json:"pluginRepoUrl"`
+	Timestamp          string              `json:"timestamp"`
+	Errors             []surfaceLoadError  `json:"errors"`
 }
 
 // ---------------------------------------------------------------------------
@@ -334,8 +339,8 @@ func loadCopilotInstructions(contentRoot string, errs *[]surfaceLoadError) []cop
 // containing .claude-plugin/plugin.json. It is a deliberately simplified,
 // single-strategy stand-in for internal/hooks's unexported
 // resolvePluginRoot (which has a fuller 3-tier exe-dir/cwd/
-// scan-~/.claude/plugins strategy, per Task 37) — out of this task's Files
-// scope to export or duplicate in full. resolveErrorReportSkill's use case
+// scan-~/.claude/plugins strategy) — not exported, and too large to
+// duplicate in full. resolveErrorReportSkill's use case
 // is low-stakes and soft-fail-only (a single manifest field, non-fatal on
 // failure), so this simpler version is a proportionate substitute; flagged
 // as a known simplification relative to session_start.go's precedent.
@@ -506,8 +511,8 @@ func anySliceToStrings(v any) []string {
 // ---------------------------------------------------------------------------
 
 // dimensionsPreflight validates every review-dimension file under
-// <contentRoot>/.sdlc-v2/review-dimensions using dimensions.Load/Validate
-// (Task 11), formatting each finding as "existing-review-dimension
+// <contentRoot>/.sdlc-v2/review-dimensions using dimensions.Load/Validate,
+// formatting each finding as "existing-review-dimension
 // <file>: <msg>" to match source's preflightErrors.push(...) format
 // exactly. dimensions.Load's own (nil, nil)-on-missing-directory
 // convention already mirrors source's `if (fs.existsSync(dimDir))` guard,
@@ -590,7 +595,7 @@ func extractStateIssues(data map[string]any) []StateIssue {
 // failure both leave the corresponding state nil — source only logs the
 // latter to stderr, it does not surface it as a manifest or surface-load
 // error, so neither case is recorded in errs here. The issues[] accumulator
-// (Task 19) is merged from both state files, ship first then execute.
+// is merged from both state files, ship first then execute.
 func readHardenPipelineState(root string) (*hardenShipState, *hardenExecuteState, []StateIssue) {
 	var issues []StateIssue
 
@@ -674,7 +679,8 @@ func issueLabelNames(raw []any) []string {
 // main worktree (pipeline state, skill recommendations); contentRoot is the
 // active worktree (guardrails, dimensions, copilot instructions — #474).
 func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareOut, error) {
-	// KD5 — param-first config-version gate.
+	// Config-version gate: refuse an out-of-date config.toml unless the caller
+	// passed skipConfigCheck.
 	if !in.SkipConfigCheck {
 		if err := configmigrate.Verify(root); err != nil {
 			return HardenPrepareOut{}, &mcpserver.DataError{
@@ -766,6 +772,14 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		}
 	}
 
+	// The loader runs after the config-version gate and after pre-flight, which reads the
+	// same config.toml. A pre-v5 legacy layout is therefore rejected earlier,
+	// with its own message, and never reaches the loader's read-error branch.
+	customInstructions, err := loadHardenInstructions(contentRoot)
+	if err != nil {
+		return HardenPrepareOut{}, err
+	}
+
 	// Load all five surfaces deterministically (R4).
 	loadErrs := []surfaceLoadError{}
 	planGuardrails := loadSurfaceGuardrails(contentRoot, "plan", &loadErrs)
@@ -836,10 +850,11 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 			Branch:            branch,
 			RecentDiffSummary: recentDiffSummary,
 		},
-		CLIEvidence:   branchCLIEvidence,
-		PluginRepoURL: hardenPluginRepoURL,
-		Timestamp:     time.Now().UTC().Format(time.RFC3339),
-		Errors:        loadErrs,
+		CustomInstructions: customInstructions,
+		CLIEvidence:        branchCLIEvidence,
+		PluginRepoURL:      hardenPluginRepoURL,
+		Timestamp:          time.Now().UTC().Format(time.RFC3339),
+		Errors:             loadErrs,
 	}
 
 	tmpDir, err := os.MkdirTemp("", "sdlc-harden-")
@@ -895,6 +910,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		DimensionCount:           dimensionCount,
 		SkillRecommendationCount: len(skillRecommendations),
 		Branch:                   manifest.Repository.Branch,
+		CustomInstructions:       manifest.CustomInstructions,
 		Summary:                  summary,
 	}, nil
 }

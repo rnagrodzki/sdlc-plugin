@@ -48,7 +48,7 @@ Example — OpenSpec gate check:
 | `--auto` | Suppresses the questions that have a safe default (each `--auto` rule below names its choice). At the OpenSpec gate check it takes **Create OpenSpec change** |
 | `--spec` | Opts into OpenSpec and skips the gate-check question. Without a name: use the branch-matched change, else ask which active change to use, or offer **Create OpenSpec change** when none exists (see **OpenSpec gate check** below) |
 | `--spec <change-name>` | Plans from the existing change `openspec/changes/<change-name>/`. The name goes to `plan_prepare` as `fromOpenspec` |
-| `[spec-file-path]` | Requirements file. A path into `openspec/changes/<name>/` works the same as `--spec <name>` |
+| `[spec-file-path]` | Requirements file. A path into `openspec/changes/<name>/` works the same as `--spec <name>`. A preplan topic file has its own read rule (Step 1 **Preplan topic file**) |
 
 `--from-openspec <change-name>` is a deprecated alias of `--spec <change-name>`. When it is passed, print this line, then behave exactly as if `--spec <change-name>` had been passed:
 `--from-openspec is deprecated — use --spec <change-name>`
@@ -79,7 +79,9 @@ Pass `fromOpenspec` only when flag parsing resolved a change name (`--spec <chan
 2. Call `plan_support({ action: "evidence_digest", runId: "<runId>" })`. Print its custom instructions. Store `digest.briefPath` as `briefPath` for `{BRIEF_FILE}` (`(none)` maps to `"none — orchestrator skipped"`). On error, print it, stop, and tell the user to re-invoke `/sdlc:plan`.
 3. Read the plan file. Re-create TodoWrite items (full pipeline) and mark the steps before `checkpoint.step` as done. New decision items continue the `D<n>` numbering after the highest `D` id in the digest index.
 4. If the plan file has an `**OpenSpec-Create:**` or `**OpenSpec-Staging:**` header line, follow **Create flow on resume** (in **OpenSpec gate check** below) before you continue.
-5. Continue at `checkpoint.step` and `checkpoint.iteration`. Background agents started before compaction still deliver their results. If `writers.missingWriters` or `writers.stalledWriters` is not empty, wait one poll cycle (`evidence_digest` with `statusOnly: true`). Then re-dispatch or force-progress past each writer that is still listed (the POLL rule, including its **Stopping a skipped writer** rule: after a compaction the task ID is usually lost, so name the writer as possibly still running). Fetch bodies with `evidence_get` only when the current step needs them.
+5. Continue at `checkpoint.step` and `checkpoint.iteration`. Fetch bodies with `evidence_get` only when the current step needs them.
+   - **At step 1:** background explorers started before compaction still deliver their results. If `writers.missingWriters` or `writers.stalledWriters` lists an explorer, wait one poll cycle (`evidence_digest` with `statusOnly: true`). Then force-progress past each explorer that is still listed (the POLL rule, including its **Stopping a skipped writer** rule: after a compaction the task ID is usually lost, so the explorer is not stopped). Gate A runs at the end of Step 1. When Gate A applies, call `plan_support({ action: "evidence_get", runId: "<runId>", ids: ["gate-a-result", "gate-a-inline-fallback"] })`. If it returns an item, use that item's body as the Gate A result. Otherwise dispatch Gate A again under the **Dispatch rules** in Step 3.
+   - **At step 3 or later:** do not poll. Lanes, lenses and the reviewer run in the foreground, so dispatch the step again under the **Dispatch rules** in Step 3.
 6. If a resume call fails in a way this block does not name, start a new run: follow Step 0 without `resume` and ignore the `Active plan (post-compact):` line for the rest of the session.
 
 Resume table (the **Session recovery** rule selects one row):
@@ -90,7 +92,7 @@ Resume table (the **Session recovery** rule selects one row):
 | line present, plan file path ≠ designated plan file | normal Step 0 |
 | match, `step 0`, plan file has an `**OpenSpec-Create:**` or `**OpenSpec-Staging:**` line | skip the first `plan_prepare` call. Do NOT ask the OpenSpec gate check again: Create was chosen. Call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })` to reload the run, follow **Create flow on resume** (in **OpenSpec gate check** below), then continue Step 0 at the `plan-file` marker |
 | match, `step 0`, no `**OpenSpec-Create:**` and no `**OpenSpec-Staging:**` line | skip the first `plan_prepare` call; call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })` to reload the run and its `openspec` fields; redo the OpenSpec gate check from that output (Create, if chosen, starts fresh at its step a) and complexity routing; make the template-resolution call with the resulting flags (no `resume` — it reuses the active run); write the template only if the plan file is empty; when Skip or Use existing change was chosen, apply **Header cleanup** (in **OpenSpec gate check** below); continue Step 0 at the `plan-file` marker |
-| match, `step 1` | **Post-compact resume** block above. Keep every explorer that shows `done` in the writers table and use its recorded items. For a listed missing or stalled explorer, wait one poll cycle, then force-progress past it per the POLL rule's **Stopping a skipped writer**: the SCOPE dimension list is not stored, so it is not re-dispatched. Then continue CRITIQUE and CONSOLIDATE |
+| match, `step 1` | **Post-compact resume** block above. Keep every explorer that shows `done` in the writers table and use its recorded items. For a listed missing or stalled explorer, wait one poll cycle, then force-progress past it per the POLL rule's **Stopping a skipped writer**: the SCOPE dimension list is not stored, so it is not re-dispatched. Then continue CRITIQUE and CONSOLIDATE. When Gate A applies, reuse its recorded result or dispatch it again (block above, step 5) |
 | match, step ≥ 2 | **Post-compact resume** block above |
 | resume `plan_prepare` returns `no active plan run` | print `No active plan run to resume — starting a new plan.`; normal Step 0 |
 | `evidence_digest` returns an error | print the error; stop; tell the user to re-invoke `/sdlc:plan` to start fresh |
@@ -136,11 +138,26 @@ If a call fails or the tool is not available, ignore the failure and still retur
 ```
 `{PLAN_INSTRUCTIONS}` = `style.instructions` as `- <instruction>` lines, or `- none configured`. `{RUN_ID}` = `runId`. `{WRITER_ID}` is set per dispatch (writer IDs: `explore-<dim>`, `lane-<name>-r<n>`, `lens-<name>-r<n>`, `reviewer-r<n>`, `gate-a`; the orchestrator itself writes as `main`).
 
-When a lane, lens, reviewer, or Gate A writer has no `done` evidence file (its `evidence_record` failed), use the result text from its Agent return value instead, the same as for explorers in Step 1 CRITIQUE. Record that text right away as a `main` item (`id: "<writerId>-result"`, `summary`, `body`) so it survives a compaction.
+**Result of a lane, lens, reviewer, or Gate A writer:** the Agent return text is the result. Do not check for its evidence file. The writer's own `evidence_record` call keeps a copy for a compaction only, and `main` does not record the text again. When the agent is not returned (Step 3 **Dispatch failures**), the review is done inline and recorded as the `main` item `<writerId>-inline-fallback`.
+
+**Dispatch status record:** the `main` item `dispatch-status` keeps the writers that did not run as planned, so Step 7 can report them after a compaction. Its body is one JSON object:
+```json
+{ "lanes": { "failed": ["static-structural"], "notReturned": [], "skipped": [] },
+  "inlineFallback": ["lens-risk-r2-inline-fallback"],
+  "notStopped": ["explore-auth-flow"] }
+```
+- `lanes` — the three lane buckets of the last lane merge (Step 3 **Lane status line**).
+- `inlineFallback` — the id of each `<writerId>-inline-fallback` item of this run.
+- `notStopped` — the writer id of each Step 1 explorer that `TaskStop` could not stop.
+
+Write the item after each lane merge (Step 3, the Step 4 lane re-dispatch, a Step 5 merged re-dispatch). Also write it after each event that adds an id: an inline fallback, or an explorer that was not stopped. One write can include all the changes of one step. To write the item:
+1. Read it: `plan_support({ action: "evidence_get", runId: "<runId>", ids: ["dispatch-status"] })`. Its body is the text after the `- summary:` line. When the result lists it under not found, or the body is not a JSON object, start from empty lists.
+2. Keep its lists. After a lane merge, replace `lanes`. Add each new id to `inlineFallback` or `notStopped`.
+3. Write the whole item back: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "dispatch-status", summary: "<F> failed, <N> not returned, <S> skipped lanes; <I> inline; <T> not stopped", body: "<the JSON object>" }] })`. If a call fails, print the error and continue: Step 7 then prints `unknown`.
 
 **Decision records:** After each AskUserQuestion answer, once `runId` exists (answers given before the first `plan_prepare` call are recorded right after it), record the decision: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "D<n>", summary: "<question → chosen option>" }] })`. The per-finding questions at the review limit (Step 5) are the exception: `review-outcome` stores those answers, so they get no `D<n>` record.
 
-Every `main` `evidence_record` call (brief, R-items, `F-main-<n>`, `D<n>`, `S3-guardrail-findings`, `<writerId>-result`, and any other `main` item) runs alone, never in parallel with another `main` call: two parallel upserts of `main.json` would lose one write.
+Every `main` `evidence_record` call (brief, R-items, `F-main-<n>`, `D<n>`, `S3-guardrail-findings`, `dispatch-status`, `<writerId>-inline-fallback`, and any other `main` item) runs alone, never in parallel with another `main` call: two parallel upserts of `main.json` would lose one write.
 
 **Step checkpoints:** At the start of each step (1, 2, 3, 4, 5, 6, 6.5, 6.6, 7), call `plan_mark({ marker: "checkpoint", path: "", data: { step: "<n>", iteration: <i>, expectedWriters: [<writer ids of this fan-out>] } })`. Pass `expectedWriters` only at fan-outs (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer); `<i>` follows the **Iteration counter** rule in Step 5. Make one `plan_mark` call at a time.
 
@@ -251,6 +268,13 @@ Call `plan_mark({ marker: "checkpoint", path: "", data: { step: "0", iteration: 
 - Use `tasks.md` as the PRIMARY decomposition skeleton — OpenSpec tasks were deliberately authored
 - Skip the "Structured discovery" AskUserQuestion below — the proposal and delta specs already provide scope, integration, and success criteria
 - Delta specs remain the authoritative requirements for Step 3 coverage validation
+
+**Preplan topic file:** the requirements file is a preplan topic file when its path is under `<main-worktree>/.sdlc-v2/preplan/` or its first line starts with `# Preplan:`. `/sdlc:preplan` writes it. Use its sections this way:
+- `## Goal`, `## Users and effect`, `## Flows` — the requirements context.
+- `## Decisions` — each row is one requirement. Skip each row whose `Decision` cell starts with `Dropped:`: a guardrail removed that proposal.
+- `## Guardrail check` — the check record of preplan. It is not a requirement, so do not copy it into the plan. Step 3 (lane 3) checks the plan against the guardrails again. A `kept — <ids>` row tells you that the user kept that proposal with a `warning` conflict.
+- `## Open questions` — each bullet is a scope question with no answer. Ask it in **Structured discovery** below. Under `--auto`, use the **`--auto` suppression** rule there.
+- The `**Status:**` line is the state of preplan. It is not a requirement.
 
 **Discovery dispatch (full pipeline only, implements R24–R28):**
 
@@ -384,11 +408,11 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
   4. **POLL.** Loop calling `plan_support({ action: "evidence_digest", runId: "<runId>", expectedWriters: [ids], timeoutSeconds: 1800, statusOnly: true })`, passing the `expectedWriters` list accumulated above, roughly every 60 seconds until every dispatched `writerId` shows `done` in the writers table.
 
-     **Stall handling (fail-partial-open, disclosed):** a `writerId` appearing in `writers.stalledWriters` is not yet failed — wait one more poll cycle. If it is **still** stalled on the next poll, stop waiting on it: call `TaskStop` with its task ID, then proceed to CRITIQUE with the results collected so far, and explicitly name the skipped dimension(s) in the brief's `## Zero-Finding Dimensions` section with the note "skipped — writer stalled twice; no findings collected" — a disclosed degraded mode, not a silent drop.
+     **Stall handling (fail-partial-open, disclosed):** a `writerId` appearing in `writers.stalledWriters` is not yet failed — wait one more poll cycle. If it is **still** stalled on the next poll, stop waiting on it: call `TaskStop` with its task ID, print the warning from **Stopping a skipped writer** below, then proceed to CRITIQUE with the results collected so far, and explicitly name the skipped dimension(s) in the brief's `## Zero-Finding Dimensions` section with the note "skipped — writer stalled twice; no findings collected" — a disclosed degraded mode, not a silent drop.
 
-     **Missing-writer handling (same escalation pattern as stalls):** a `writerId` appearing in `writers.missingWriters` (dispatched but never recorded) is not yet failed — wait one more poll cycle. If it is **still** present in `writers.missingWriters` on the next poll, force-progress past it: call `TaskStop` with its task ID, proceed to CRITIQUE with the results collected so far, log a warning, and explicitly name the skipped dimension(s) in the brief's `## Zero-Finding Dimensions` section with the note "skipped — writer never recorded; no findings collected" — a disclosed degraded mode, not a silent drop.
+     **Missing-writer handling (same escalation pattern as stalls):** a `writerId` appearing in `writers.missingWriters` (dispatched but never recorded) is not yet failed — wait one more poll cycle. If it is **still** present in `writers.missingWriters` on the next poll, force-progress past it: call `TaskStop` with its task ID, print the warning from **Stopping a skipped writer** below, proceed to CRITIQUE with the results collected so far, and explicitly name the skipped dimension(s) in the brief's `## Zero-Finding Dimensions` section with the note "skipped — writer never recorded; no findings collected" — a disclosed degraded mode, not a silent drop.
 
-     **Stopping a skipped writer:** if `TaskStop` fails (for example, an ownership/authorization error when this session is itself a nested agent), or the task ID is no longer known (after a compaction), do not retry. Name that writer in the warning as possibly still running. CRITIQUE does not wait for it or read its later evidence.
+     **Stopping a skipped writer:** for each skipped writer, print one warning: `Warning: explorer <writerId> skipped — <stalled twice | never recorded>.` If `TaskStop` fails (for example, an ownership/authorization error when this session is itself a nested agent), or the task ID is no longer known (after a compaction), do not retry. Add `Not stopped, it can still run.` to the warning, and add `; not stopped` to its brief note. Add its writer id to `notStopped` in the `dispatch-status` item (Step 0 **Dispatch status record**). Step 7 prints it. CRITIQUE does not wait for it or read its later evidence.
 
   5. **CRITIQUE.** Once every dispatched writer is `done` (or force-progressed past a stall above), read each writer's items with `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: [ids] })`. When an explorer has no evidence file (its `evidence_record` failed), use the findings text from its Agent return value instead. Then:
      - **Deduplicate** — same file:line or same URL; keep the most specific observation.
@@ -504,7 +528,7 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
 
 1. Dispatch one Gate A audit Agent using `intakeAuditDispatch` parameters from the prepare output (P20). Source `subagentType`, `model`, and `promptTemplatePath` verbatim from `intakeAuditDispatch` — do NOT hardcode model or template path (`agent-dispatch-script-driven` guardrail). If `intakeAuditDispatch.promptTemplatePath` is null, skip Gate A and emit one note: `Gate A skipped — intake-verify-prompt.md not found.`
 
-   Read the file at `intakeAuditDispatch.promptTemplatePath`; fill the following template variables before dispatching. Append the run-context footer with `{WRITER_ID}` = `gate-a`.
+   Read the file at `intakeAuditDispatch.promptTemplatePath`; fill the following template variables before dispatching. Append the run-context footer with `{WRITER_ID}` = `gate-a`. Follow the **Dispatch rules** in Step 3, including **Dispatch failures** (inline prompt, no poll, one more send after a transient failure, inline review when the agent is not returned). After Gate A, print one line: `Gate A: returned.` or `Gate A: done inline (agent not returned) — gate-a-inline-fallback.` After an inline review, write the `dispatch-status` item (Step 0 **Dispatch status record**).
 
 2. Fill the prompt template variables:
    - `{PROPOSAL}` — content of `openspec/changes/<name>/proposal.md` (already read in Step 0), or `"[artifact missing]"` if absent
@@ -514,7 +538,7 @@ When `openspecContext.requirements` is present (non-null) in the prepare output:
    - `{REQUIREMENTS_JSON}` — `JSON.stringify(openspecContext.requirements)` from prepare output, or `"null"` if null
    - `{GUARDRAILS}` — content of `guardrailsFile` from `plan_prepare` output, or `"none configured"` when no guardrails are loaded
 
-3. Parse the agent's JSON response `{ findings, verdict, skipped }`.
+3. Parse the JSON response `{ findings, verdict, skipped }` from the agent's return text, or from the inline review when the agent was not returned.
 
 4. Verdict handling:
    - `verdict: "CRITICAL"` — **block decomposition**. Do NOT proceed to Step 2. Surface findings to user with E7 menu: (a) fix source change artifacts and re-run; (b) override (proceed anyway, recording the override in `## Intake Audit Caveats`). No `--auto` bypass for CRITICAL.
@@ -666,31 +690,69 @@ full syntax and when to use it.
 
 **Post-write cleanup:** Remove the `## Requirements` working section from the plan file. Requirements are traceable through task acceptance criteria; the section was temporary scaffolding.
 
-## Step 3 (CRITIQUE): Self-Review Plan — 5-Lane Parallel Gate Evaluation (R35, Fixes #418)
+**Format pre-check:** Call `validate({ action: "plan_format", file: "<plan file path>", final: false, template: "<template.activeTemplatePath>" })`. On a lightweight plan, omit `template`, the same as Step 6.6. Fix each finding in the plan file. Call it again. Stop after 3 calls. Findings that are left stay until the Step 6.6 format gate. Then go to Step 3.
+
+## Step 3 (CRITIQUE): Self-Review Plan — 6-Lane Parallel Gate Evaluation (R35, Fixes #418)
 
 **Re-anchor:** Re-read the plan file before dispatching lanes. The file — not your memory of it — is the source of truth.
 
-**Checkpoint:** Before the dispatch, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "3", iteration: <iteration>, expectedWriters: [<every dispatched lane writer, lane-<lanes[i].name>-r<iteration> for i = 0..4, Lane 4 included>] } })`.
+**Checkpoint:** Before the dispatch, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "3", iteration: <iteration>, expectedWriters: [<every dispatched lane writer, lane-<lanes[i].name>-r<iteration> for i = 0..5, Lanes 4 and 5 included>] } })`.
 
-**Fan-out dispatch: Dispatch ALL FIVE Step 3 lanes from `lanes[]` (P16) in a SINGLE message as parallel Agent tool calls. Do not dispatch them sequentially.**
+<!-- fan-out-dispatch: await-barrier-required -->
+**Fan-out dispatch: Dispatch ALL six Step 3 lanes from `lanes[]` (P16) in a SINGLE message as parallel Agent tool calls, each with `run_in_background: false` (R-orchestrator-await, #487). Do not dispatch them sequentially.**
 
-All 22 quality gates (G1–G22) are partitioned across five lanes — each gate belongs to exactly one lane. G20 and G21 are owned by the content-coverage lane (lanes[1]); G22 (style compliance) by the guardrail-compliance lane (lanes[3]), which also receives `{STYLE_GUIDE_FILE}` = `styleGuideFile`. Lane dispatch parameters (`subagent_type`, `model`, and prompt body read from `promptTemplatePath`) MUST be sourced verbatim from the corresponding `lanes[i]` entry in the prepare output (`agent-dispatch-script-driven` guardrail — do NOT hardcode these values).
+**Await barrier (R-orchestrator-await, #487):** do not merge lane results or advance until all 6 lane entries are collected. A lane entry is **collected** when the lane returned text, or when the lane has its synthetic `status: "fail"` entry: skipped for a null `promptTemplatePath`, or not returned under **Dispatch failures** below. Never merge on partial or zero returns.
 
-For each `lanes[i]` entry (i = 0..4):
+**Dispatch rules (lanes, lenses, the reviewer, Gate A):**
+
+Pass the filled template as the Agent `prompt` text. Never write a prompt to a file.
+Send every lane, lens, reviewer and Gate A Agent call with `run_in_background: false`.
+Never send a prompt that tells the agent to read its instructions from a file.
+Do not poll evidence_digest or the evidence directory for lanes, lenses, the reviewer, or Gate A.
+The Agent return text is the result.
+A foreground Agent call returns when the agent ends. It leaves no task to stop.
+If the session stops during Step 3, the Post-compact resume path dispatches the lanes again.
+
+**Dispatch failures:** each failure of an Agent call has one kind and one action.
+
+| Failure of the Agent call | Kind | Action |
+|---|---|---|
+| the Agent tool returns an error | transient | send the same dispatch again one time |
+| the call times out | transient | send the same dispatch again one time |
+| the agent returns no text | transient | send the same dispatch again one time |
+| the permission check denies the call, and the error text does not show a user answer (for example, a hook or an automatic check denied it) | transient | send the same dispatch again one time |
+| the error text shows that the user denied the call | terminal | do not send it again |
+
+When you cannot tell if the user denied the call, treat the failure as transient. A transient failure on the second send is terminal. A writer with a terminal failure is **not returned**:
+- **Lane not returned:** add its synthetic fail entry with the reason `not returned — <failure>` (see "Map lane results" below). The entry counts as collected. Lane 4 gets its `status: "fail"` entry and the empty `g17Findings` fallback instead (**Null `promptTemplatePath` handling**, lane 4 exception, without its `learnings_log` call).
+- **Lens, reviewer or Gate A not returned:** do that review inline from the same filled prompt. The inline text is its result. Record it as a `main` item: `id: "<writerId>-inline-fallback"`, `summary`, `body`. This is a `main` write: run it alone. Add the item id to `inlineFallback` in `dispatch-status` (Step 0 **Dispatch status record**).
+
+All 22 quality gates (G1–G22) are partitioned across six lanes — each gate belongs to exactly one lane. G20 and G21 are owned by the content-coverage lane (lanes[1]); G22 (style compliance) by the style-compliance lane (lanes[5]), which also receives `{STYLE_GUIDE_FILE}` = `styleGuideFile`. Lane dispatch parameters (`subagent_type`, `model`, and prompt body read from `promptTemplatePath`) MUST be sourced verbatim from the corresponding `lanes[i]` entry in the prepare output (`agent-dispatch-script-driven` guardrail — do NOT hardcode these values).
+
+For each `lanes[i]` entry (i = 0..5):
 
 - `subagent_type`: `lanes[i].subagentType`
 - `model`: `lanes[i].model`
-- prompt body: Read `lanes[i].promptTemplatePath` and fill template variables:
-  - All lanes: `{PLAN_FILE_PATH}` (absolute path to plan file), `{PROJECT_ROOT}` (cwd). Append the run-context footer to every lane prompt, Lane 4 included, with `{WRITER_ID}` = `lane-<lanes[i].name>-r<iteration>`.
-  - Lanes 0–3 non-G17: `{REQUIREMENTS_SUMMARY}` (the R-items from `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: ["main"] })`, one `R<n>: <body or summary>` line each), `{GUARDRAILS_FILE}` (`guardrailsFile` from `plan_prepare`), `{OPENSPEC_TASKS}` (from `openspecContext.tasks` P13, null when not OpenSpec-sourced), `{BRIEF_FINDING_IDS}` (fresh run: the `F-…` ids in the brief in context; resume: the ids of the `explore-*` rows of the `evidence_digest` index — when the index ends with the `… more` row, call `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: [<explore writers>] })` and keep only the ids; null when `briefPath` is none)
-  - Lane 1 (content-coverage) additionally: `{FORMAT_REFERENCE_PATH}` — absolute path to plan-format-reference.md (sibling of lane-content-coverage-prompt.md in the same skill directory; resolve as `dirname(lanes[1].promptTemplatePath)/plan-format-reference.md`), `{PLAN_TEMPLATE_PATH}` — `activeTemplatePath` resolved in Step 0 (the absolute path to the active plan template — project override or shipped default)
-  - Lane 3 (guardrail-compliance) additionally: `{STYLE_GUIDE_FILE}` — `styleGuideFile` from `plan_prepare` (the rendered writing guide; G22 reads it to judge narrative sections and the Goal)
-  - Lane 4 (G17/dimension-coverage): `{DIMENSIONS_DIR}` (`.sdlc-v2/review-dimensions/`), `{COPILOT_DIR}` (`.github/instructions/`), `{GITHUB_HOSTING_DETECTED}` (`githubHosting.detected` from P14), `{LEARNINGS_LOG_PATH}` (`.sdlc-v2/learnings/log.md`), `{PR_COMMIT_WINDOW}` (best-effort "last 14 days" if unknown)
+- prompt body: Read `lanes[i].promptTemplatePath` and fill its template variables. Append the run-context footer to every lane prompt, Lanes 4 and 5 included, with `{WRITER_ID}` = `lane-<lanes[i].name>-r<iteration>`. The table gives the variables of each lane template:
 
-**Null `promptTemplatePath` handling:** When `lanes[i].promptTemplatePath` is null (prepare script reported it could not find the template), skip that lane's dispatch and immediately add this synthetic `laneResults` entry (already in the `merge_results` shape — see "Map lane results" below):
-```
-{ name: lanes[i].name, status: "fail", gateIds: lanes[i].gateIds, issues: [{ gateId: lanes[i].gateIds[0], severity: "blocking", summary: "Lane <name> skipped — promptTemplatePath null (template not found at prepare time)" }], passes: [] }
-```
+  | Lane | Template variables |
+  |---|---|
+  | 0 (static-structural) | `{PLAN_FILE_PATH}`, `{GUARDRAILS_FILE}`, `{REQUIREMENTS_SUMMARY}` |
+  | 1 (content-coverage) | `{PLAN_FILE_PATH}`, `{GUARDRAILS_FILE}`, `{REQUIREMENTS_SUMMARY}`, `{OPENSPEC_TASKS}`, `{BRIEF_FINDING_IDS}`, `{FORMAT_REFERENCE_PATH}`, `{PLAN_TEMPLATE_PATH}` |
+  | 2 (file-existence) | `{PLAN_FILE_PATH}`, `{PROJECT_ROOT}` |
+  | 3 (guardrail-compliance) | `{PLAN_FILE_PATH}`, `{GUARDRAILS_FILE}` |
+  | 4 (G17/dimension-coverage) | `{PLAN_FILE_PATH}`, `{DIMENSIONS_DIR}`, `{COPILOT_DIR}`, `{GITHUB_HOSTING_DETECTED}`, `{LEARNINGS_LOG_PATH}`, `{PR_COMMIT_WINDOW}` |
+  | 5 (style-compliance) | `{PLAN_FILE_PATH}`, `{STYLE_GUIDE_FILE}`, `{PLAN_TEMPLATE_PATH}` |
+
+  Values:
+  - `{PLAN_FILE_PATH}` — absolute path to the plan file. `{PROJECT_ROOT}` — the cwd.
+  - `{REQUIREMENTS_SUMMARY}` — the R-items from `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: ["main"] })`, one `R<n>: <body or summary>` line each. `{GUARDRAILS_FILE}` — `guardrailsFile` from `plan_prepare`. `{OPENSPEC_TASKS}` — from `openspecContext.tasks` P13, null when not OpenSpec-sourced. `{BRIEF_FINDING_IDS}` — fresh run: the `F-…` ids in the brief in context; resume: the ids of the `explore-*` rows of the `evidence_digest` index — when the index ends with the `… more` row, call `plan_support({ action: "evidence_get", runId: "<runId>", writerIds: [<explore writers>] })` and keep only the ids; null when `briefPath` is none.
+  - `{FORMAT_REFERENCE_PATH}` — absolute path to plan-format-reference.md (sibling of lane-content-coverage-prompt.md in the same skill directory; resolve as `dirname(lanes[1].promptTemplatePath)/plan-format-reference.md`).
+  - `{PLAN_TEMPLATE_PATH}` — `activeTemplatePath` resolved in Step 0 (the absolute path to the active plan template — project override or shipped default). Lane 5 on a lightweight plan gets `none`: the lane then calls `plan_style` without `template`, the same as Step 6.6.
+  - `{STYLE_GUIDE_FILE}` — `styleGuideFile` from `plan_prepare` (the rendered writing guide; G22 reads it to judge narrative sections and the Goal).
+  - Lane 4 only: `{DIMENSIONS_DIR}` (`.sdlc-v2/review-dimensions/`), `{COPILOT_DIR}` (`.github/instructions/`), `{GITHUB_HOSTING_DETECTED}` (`githubHosting.detected` from P14), `{LEARNINGS_LOG_PATH}` (`.sdlc-v2/learnings/log.md`), `{PR_COMMIT_WINDOW}` (best-effort "last 14 days" if unknown)
+
+**Null `promptTemplatePath` handling:** When `lanes[i].promptTemplatePath` is null (prepare script reported it could not find the template), skip that lane's dispatch and immediately add its synthetic fail entry (see "Map lane results" below) with the reason `skipped — promptTemplatePath null (template not found at prepare time)`. The entry counts as collected.
 Exception: lane 4 (G17/dimension-coverage) — when `lanes[4].promptTemplatePath` is null, treat as empty findings (`g17Findings` = `{ findings: [], rendering: "", suppressed_count: 0 }`, advisory per R31 dispatch-failure fallback), add the lane 4 `status: "fail"` entry from "Map lane results" below, and continue. Call:
 ```
 learnings_log({action:"append", entry:"## YYYY-MM-DD — plan: G17 skipped — promptTemplatePath null (template not found at prepare time)"})
@@ -707,34 +769,62 @@ Each lane returns a JSON object with schema:
 Lane 3 (guardrail-compliance) additionally returns `guardrailCompliancePayload` in the JSON object — store this for Step 4's `## Guardrail Compliance` section.
 Lane 4 (dimension-coverage/G17) returns the G17 findings JSON — parse the `findings` object and persist as `g17Findings` for Step 4.
 
-**Map lane results to the `merge_results` shape:** The lane prompts' field names differ from the ones `plan_support` reads. Build one `laneResults[]` entry per lane (lanes 0–4) with this mapping — never pass a lane's raw JSON:
+**Map lane results to the `merge_results` shape:** The lane prompts' field names differ from the ones `plan_support` reads. Build one `laneResults[]` entry per lane (lanes 0–5) with this mapping — never pass a lane's raw JSON:
 
-| `laneResults[]` field | Lanes 0–3 | Lane 4 (G17) |
+| `laneResults[]` field | Lanes 0–3 and 5 | Lane 4 (G17) |
 |---|---|---|
 | `name` | `lanes[i].name` | `lanes[4].name` |
-| `status` | `"pass"` when `laneStatus` is `"ok"`; `"fail"` when `laneStatus` is `"failed"` or `"timeout"`, or the lane returned no parseable JSON | `"pass"` when the G17 JSON parsed; `"fail"` on dispatch failure, timeout, malformed JSON, or null `promptTemplatePath` |
-| `gateIds` | the lane's `gateIds` (`lanes[i].gateIds` when no parseable JSON) | `["G17"]` |
-| `passes` | the lane's `passes` (`[]` when no parseable JSON) | `[]` |
+| `status` | `"pass"` when `laneStatus` is `"ok"`; `"fail"` when `laneStatus` is `"failed"` or `"timeout"`, the lane returned no parseable JSON, the lane was not returned, or the lane was skipped | `"pass"` when the G17 JSON parsed; `"fail"` when the lane was not returned, timed out, returned malformed JSON, or had a null `promptTemplatePath` |
+| `gateIds` | the lane's `gateIds`; `lanes[i].gateIds` on a `"fail"` entry | `["G17"]` |
+| `passes` | the lane's `passes`; `[]` on a `"fail"` entry | `[]` |
 | `issues[].gateId` | the issue's `gateId` | — (`issues` is `[]`; G17 findings go to `g17Findings`, not the merge) |
 | `issues[].severity` | `"blocking"` when the issue has `blocking: true` or `severity: "error"`; otherwise `"advisory"` | — |
 | `issues[].summary` | `"<taskRef>: <message>"`, or just `message` when `taskRef` is null | — |
 
+**Synthetic fail entry (lanes 0–3 and 5):** every `"fail"` entry of these lanes carries one extra blocking issue. A failed lane then never counts as a clean pass of its gates:
+```
+{ name: lanes[i].name, status: "fail", gateIds: lanes[i].gateIds, passes: [],
+  issues: [<the lane's own mapped issues, if any>, { gateId: lanes[i].gateIds[0], severity: "blocking", summary: "Lane <name> <reason>" }] }
+```
+`<reason>` is one of these:
+- `failed — laneStatus <failed|timeout>`
+- `returned no parseable JSON`
+- `not returned — <failure>` (Step 3 **Dispatch failures**). `<failure>` is `user denied`, or the transient failure that occurred two times, for example `timeout twice`
+- `skipped — promptTemplatePath null (template not found at prepare time)`
+
+An issue whose summary starts with `Lane <name> ` is a **synthetic lane issue**. Step 4 resolves it (**Synthetic lane issues**). Lane 4 gets no synthetic issue (R31).
+
 The tool accepts only lane `status` `"pass"` or `"fail"` and issue `severity` `"blocking"` or `"advisory"`, compared exactly. Any other value (for example `"ok"`, `"error"`, or a missing value) makes `merge_results` return a DomainError and merge nothing, so map every value first. A failed lane 4 (gateIds `["G17"]` only) becomes an advisory note, never a blocker (R31). Lane 4 must be in `laneResults` even when it failed — otherwise G17 shows up as a blocking coverage gap.
 
-**Merge algorithm:** Collect the mapped entries (including the synthetic entries for null-`promptTemplatePath` lanes) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G22"]})`. Process the returned `allIssues`, `coverageGaps`, and `laneFailures` — the tool handles issue/pass union, gate-coverage checks, lane-failure injection (G17 advisory per R31), and deduplication by (`gateId`, lower-cased trimmed `summary`).
+**Merge algorithm:** Collect the mapped entries (including the synthetic fail entries) into a `laneResults` array. Call `plan_support({action: "merge_results", laneResults: [...], expectedGates: ["G1".."G22"]})`. Process the returned `allIssues` and `coverageGaps`. The tool unions issues and passes, checks gate coverage, and deduplicates by (`gateId`, lower-cased trimmed `summary`). For a failed lane whose only gate is G17, the tool adds an advisory G17 issue (R31). For any other failed lane, the tool only adds the lane name to `laneFailures` and still counts the lane's gates as covered. It adds no issue for that lane, so the synthetic blocking issue is the only blocker for it.
+
+**Lane status line:** After each lane merge, print one line. The prefix is `Step 3:`, or `Step 5:` after a merged re-dispatch:
+```text
+Step 3: Lanes: <D> dispatched, <R> returned. Failed: <names or none>. Not returned: <names or none>. Skipped: <names or none>.
+```
+Each lane is in one bucket only:
+
+| Bucket | Lane |
+|---|---|
+| Skipped | `promptTemplatePath` is null; the lane is not dispatched |
+| Not returned | dispatched, with a terminal failure under **Dispatch failures** (no text after the retry) |
+| Failed | returned text, and its entry has `status: "fail"` |
+| (not printed) | returned text, and its entry has `status: "pass"` |
+
+`<D>` = 6 minus the Skipped lanes. `<R>` = `<D>` minus the Not returned lanes. Then write the `dispatch-status` item (Step 0 **Dispatch status record**) with these three buckets as `lanes`.
 
 Note every issue from `allIssues`. Do NOT write to the plan file in this step.
-Then store the guardrail-lane issues (`G14` blocking, or `G22`) once:
+Then store the `G14` and `G22` issues from `allIssues` once. Leave out the synthetic lane issues: the Step 4 **Synthetic lane issues** rule resolves them.
 `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "S3-guardrail-findings", summary: "<N> guardrail findings from Step 3", body: "<JSON array of {id, gateId}>" }] })`.
-Each entry's `id` and `gateId` come from its `allIssues` entry. Do not copy the issue text: the body only carries IDs, so it stays small in `main.json` (64 KiB cap for each writer file). With no guardrail-lane issues, store `N` = 0 and `body: "[]"`. This is a `main` write: run it alone, as the evidence rules above say. The round 1 **Round record** (Step 6) reads this item. If the call fails, print the error and continue: the round 1 Round record then uses its fallback (Step 6). Example:
+Each entry's `id` and `gateId` come from its `allIssues` entry. Do not copy the issue text: the body only carries IDs, so it stays small in `main.json` (64 KiB cap for each writer file). With no `G14` or `G22` issues, store `N` = 0 and `body: "[]"`. After a Step 4 lane re-dispatch, store the item again from the new `allIssues`. This is a `main` write: run it alone, as the evidence rules above say. The round 1 **Round record** (Step 6) reads this item. If the call fails, print the error and continue: the round 1 Round record then uses its fallback (Step 6). Example:
 ```json
 { "id": "S3-guardrail-findings", "summary": "2 guardrail findings from Step 3",
   "body": "[{\"id\":\"f-0b77d2c4\",\"gateId\":\"G14\"}]" }
 ```
 
-**JOIN barrier — `guardrailsEvaluated` (implements R20, R35):** After the guardrail-compliance lane (lanes[3]) result is incorporated into the merged issue list, record the checkpoint by calling `plan_mark({ marker: "guardrailsEvaluated" })` — writes the `planIntegrity` marker consumed by the `stop-plan-integrity` Stop hook. **Do NOT call this before lanes[3] returns.**
+**JOIN barrier — `guardrailsEvaluated` (implements R20, R35):** After the guardrail-compliance lane (lanes[3]) entry is collected and incorporated into the merged issue list, record the checkpoint by calling `plan_mark({ marker: "guardrailsEvaluated" })` — writes the `planIntegrity` marker consumed by the `stop-plan-integrity` Stop hook. **Do NOT call this before the lanes[3] entry is collected.** A synthetic fail entry is collected: its blocking issue keeps the plan from a silent pass (Step 4 **Synthetic lane issues**).
 
-**JOIN barrier — `critiqueRan` (implements R20, R35):** After ALL five lanes have returned and the merged issue list is complete (including G17/lanes[4] findings parsed into `g17Findings`), record the checkpoint by calling `plan_mark({ marker: "critiqueRan" })`. **Do NOT call this until all five lanes have returned.** This extends the existing G17 join semantics to every lane.
+**JOIN barrier — `critiqueRan` (implements R20, R35):** After all six lane entries are collected and the merged issue list is complete (including G17/lanes[4] findings parsed into `g17Findings`), record the checkpoint by calling `plan_mark({ marker: "critiqueRan" })`. **Do NOT call this until all six lane entries are collected.** This extends the existing G17 join semantics to every lane.
 
 **Once-per-run checkpoints:** `guardrailsEvaluated` and `critiqueRan` are written exactly once — during the initial Step 3 pass. When Step 3 lanes are re-dispatched via the merged dispatch in Step 5 (see "Material change detection and merged re-dispatch" below), these markers are NOT re-written. The Stop hook already holds the integrity proof from the first pass; re-marking would reset the timestamp without adding information.
 
@@ -742,7 +832,17 @@ Each entry's `id` and `gateId` come from its `allIssues` entry. Do not copy the 
 
 **Checkpoint:** First, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "4", iteration: <iteration> } })`.
 
-Fix all issues from Step 3. Rewrite the plan file with fixes applied (edit the existing file, don't append). If any revision changes the scope or approach from what was originally recorded, update the `## Deviations & assumptions` table accordingly.
+Fix all issues from Step 3. Rewrite the plan file with fixes applied (edit the existing file, don't append). Send independent edits (edits to different parts of the plan file that do not depend on each other) in one message as parallel Edit tool calls. If any revision changes the scope or approach from what was originally recorded, update the `## Deviations & assumptions` table accordingly.
+
+**Synthetic lane issues:** a synthetic lane issue (Step 3 **Synthetic fail entry**) has no plan edit. Resolve each one with this table:
+
+| Reason in the summary | Action |
+|---|---|
+| `failed — laneStatus …`, `returned no parseable JSON`, or `not returned — <transient failure> twice` | dispatch that lane again one time under the **Dispatch rules** in Step 3. Replace its `laneResults` entry. Call `merge_results` again with all six entries, print the lane status line, and write the `dispatch-status` item |
+| `not returned — user denied` | do not dispatch the lane again: the user refused it |
+| `skipped — promptTemplatePath null …` | do not dispatch the lane again: its template is missing |
+
+When the lane now has a `"pass"` entry, fix its issues like any other Step 3 issue. When the lane still has a `"fail"` entry, add one `## Deviations & assumptions` row with the lane name, its gates (`lanes[i].gateIds`) and the reason, `asked=no`. The plan then continues without those gates, and Step 7 reports the lane.
 
 **Task block authoring config:** When revising or adding task blocks, honour `tasks.requiredFields` and `tasks.contractShape` from the `plan_prepare` output. `tasks.requiredFields` lists the metadata fields every task block must carry (enforced by PF11). `tasks.contractShape` describes the expected contract format (enforced by PF12). These are project-configurable — do not hardcode defaults when the config provides values.
 
@@ -804,11 +904,12 @@ Skip for lightweight plans (2–3 file scope from Step 0 routing).
 
 When `materialChangeDetected` is true (set by the Step 6 IMPROVE pass — see below), dispatch Step 3 lanes AND Step 5 lens reviewers in a SINGLE message as parallel Agent tool calls (`run_in_background: false` on each). This merged dispatch counts as **one** iteration of the existing review loop — the iteration counter increments by 1, not 2, and the `reviewLoop.maxRounds` cap (R8, R-c1) fires normally.
 
-- **Dispatch contents:** all five `lanes[]` (P16) + all `lensReviewers[]` (P17, or the single reviewer for <5-task plans). Each agent uses the same dispatch parameters, template variables, and model rules defined in Step 3 (lanes) and Step 5 (lenses) respectively.
-- **Await barrier:** do not consolidate or advance until exactly N = (5 lanes + M lenses) results are collected. Never consolidate on partial or zero returns.
-- **Merge:** map lane results as in Step 3 ("Map lane results to the `merge_results` shape") and lens results as in the Step 5 merge section below, then use the combined `plan_support({action: "merge_results", laneResults, lensResults, expectedGates, isRedispatch: true})` call. The tool handles lane/lens merging, gate coverage, and deduplication in one call; `isRedispatch: true` additionally demotes every G17 finding to advisory.
+- **Dispatch contents:** all six `lanes[]` (P16) + all `lensReviewers[]` (P17, or the single reviewer for <5-task plans). Each agent uses the same dispatch parameters, template variables, and model rules defined in Step 3 (lanes) and Step 5 (lenses) respectively.
+- **Await barrier:** do not consolidate or advance until exactly N = (6 lanes + M lenses) results are collected. A lane result is collected as in the Step 3 await barrier. A lens or reviewer result is collected when it returned text, or when its inline review is done (Step 3 **Dispatch failures**). Never consolidate on partial or zero returns.
+- **Merge:** map lane results as in Step 3 ("Map lane results to the `merge_results` shape", synthetic fail entries included) and lens results as in the Step 5 merge section below, then use the combined `plan_support({action: "merge_results", laneResults, lensResults, expectedGates, isRedispatch: true})` call. The tool handles lane/lens merging, gate coverage, and deduplication in one call; `isRedispatch: true` additionally demotes every G17 finding to advisory.
+- **Status lines:** after the merge, print the Step 3 **Lane status line** with the prefix `Step 5:`, then the **Lens status line** below. Write the `dispatch-status` item (Step 0 **Dispatch status record**).
 - **G17 on re-dispatch (advisory only):** lanes[4]/G17 findings from the re-dispatch merge as advisory only. Step 4 has already run, so there is no `## Suggested Review Dimensions` consumer — do not re-splice G17 findings into the plan file. Persist updated `g17Findings` in memory for scorecard reference only.
-- **Guardrail-block gate preservation (R19):** lanes[3] (guardrail-compliance) G14 findings from the re-dispatch are scanned the same way Step 4 scans them. G22 findings go to Step 6 as ordinary blocking issues. If any error-severity G14 guardrail violation is present in the re-dispatch merge, do NOT route it silently into Step 6's blocking-issue set — surface the same guardrail-block harden offer described in Step 4 (offer **harden** alongside the user-revision options; dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 5 — merged re-dispatch"`, `--operation "error-severity guardrail block"` only if the user selects harden, suppressed when `--auto` is set) before proceeding with Step 6 fixes. This preserves R19 across the merged re-dispatch path.
+- **Guardrail-block gate preservation (R19):** lanes[3] (guardrail-compliance) G14 findings from the re-dispatch are scanned the same way Step 4 scans them. lanes[5] (style-compliance) G22 findings go to Step 6 as ordinary blocking issues. If any error-severity G14 guardrail violation is present in the re-dispatch merge, do NOT route it silently into Step 6's blocking-issue set — surface the same guardrail-block harden offer described in Step 4 (offer **harden** alongside the user-revision options; dispatch `Skill(harden)` with `--failure-text "Plan blocked by error-severity guardrail <id>: <description> — <rationale>"`, `--skill plan`, `--step "Step 5 — merged re-dispatch"`, `--operation "error-severity guardrail block"` only if the user selects harden, suppressed when `--auto` is set) before proceeding with Step 6 fixes. This preserves R19 across the merged re-dispatch path.
 - **`guardrailsEvaluated` / `critiqueRan`:** NOT re-written (once-per-run checkpoints — see Step 3).
 - **Clear flag:** set `materialChangeDetected = false` after the merged issue set is assembled.
 
@@ -817,7 +918,7 @@ When `materialChangeDetected` is false (or unset), dispatch only the Step 5 lens
 <!-- fan-out-dispatch: await-barrier-required -->
 **For plans with ≥5 tasks — Multi-lens fan-out:** Dispatch ALL lens reviewers from `lensReviewers[]` (P17) in a SINGLE message as parallel Agent tool calls, each with `run_in_background: false` (R-orchestrator-await, #487). Do not dispatch them sequentially. Reuse canonical fan-out wording: "Dispatch ALL … in a SINGLE message as parallel Agent tool calls."
 
-**Await barrier (R-orchestrator-await, R-c1, #487):** do not consolidate lens findings or advance until exactly N lens results are collected (N = lenses dispatched). Never consolidate on partial or zero returns.
+**Await barrier (R-orchestrator-await, R-c1, #487):** do not consolidate lens findings or advance until exactly N lens results are collected (N = lenses dispatched). A lens result is collected when the lens returned text, or when its inline review is done (Step 3 **Dispatch failures**). Never consolidate on partial or zero returns.
 
 For each `lensReviewers[i]` entry (i = 0..2):
 - `subagent_type`: `lensReviewers[i].subagentType`
@@ -836,9 +937,9 @@ For each `lensReviewers[i]` entry (i = 0..2):
 
 When `lensReviewers[i].promptTemplatePath` is null, skip that lens and call `learnings_log({action:"append", entry:"## YYYY-MM-DD — plan: lens \"<name>\" skipped — promptTemplatePath null (template not found at prepare time)"})`. Continue with remaining lenses.
 
-**No `isolation: "worktree"` on any lens reviewer dispatch** (forbidden per issues #370/#372).
+**No `isolation: "worktree"` on any lens reviewer dispatch** (forbidden per issues #370/#372). Every lens, reviewer and merged re-dispatch follows the **Dispatch rules** in Step 3, including **Dispatch failures** (inline prompt, no poll, one more send after a transient failure, inline review when the agent is not returned).
 
-**Merge lens reviewer results (per iteration):** Build one `lensResults[]` entry per lens reviewer from its markdown output:
+**Merge lens reviewer results (per iteration):** Build one `lensResults[]` entry per lens reviewer from its markdown output. For a lens or reviewer that was not returned, use the markdown of its inline review:
 
 | `lensResults[]` field | Source in the lens output |
 |---|---|
@@ -849,9 +950,15 @@ When `lensReviewers[i].promptTemplatePath` is null, skip that lens and call `lea
 
 Call `plan_support({action: "merge_results", lensResults: [...]})`. Process the returned `mergedStatus` (`Approved` / `Issues Found`), `allIssues`, and `recommendations` — the tool handles status derivation, issue dedup by (`gateId`, lower-cased trimmed `summary`), and recommendation dedup by exact trimmed text. For the merged re-dispatch path (when `materialChangeDetected` is true), combine both in one call: `plan_support({action: "merge_results", laneResults: [...], lensResults: [...], expectedGates: ["G1".."G22"], isRedispatch: true})` — deduplication runs across lanes and lenses as always; `isRedispatch` only makes G17 findings advisory.
 
+**Lens status line:** after each Step 5 merge, print one line:
+```text
+Step 5: Lenses: <M> dispatched, <R> returned. Not returned (done inline): <writer ids or none>.
+```
+`<M>` counts the lenses or the single reviewer that were dispatched. `<R>` = `<M>` minus the not returned writers. A skipped lens (null `promptTemplatePath`) is not dispatched. When a writer was done inline, write the `dispatch-status` item (Step 0 **Dispatch status record**). On a merged re-dispatch, one write covers the lanes and the lenses.
+
 **Iteration counter**: increment by 1 only after the await barrier above is satisfied (exactly N lens results collected, N = lenses dispatched); never increment on partial or zero returns (R-orchestrator-await, R-c1, #487). The counter starts at 0 and counts completed Step 5 rounds. Writer IDs and checkpoints use the round in progress, `<iteration>` = counter + 1: the first Step 3 lanes and the first Step 5 lenses are `r1`; the first merged re-dispatch is `r2`. Checkpoints in Steps 0–2 use `iteration: 0`. On resume, set the counter to `checkpoint.iteration - 1` (never below 0).
 
-**For plans with <5 tasks — Single reviewer (status quo):** Dispatch one reviewer with `{LENS}=all` using `./plan-reviewer-prompt.md` directly (same model acceptable). Status quo behavior preserved. Append the run-context footer with `{WRITER_ID}` = `reviewer-r<n>` (`<n>` = the Step 5 iteration). Build one `lensResults[]` entry from its output with the table above (`name` = `all`). On the normal path, call `plan_support({action: "merge_results", lensResults: [<that entry>]})`. On a merged re-dispatch, do not make this call: put that entry into the one combined `merge_results` call from "Material change detection and merged re-dispatch" above (with `laneResults`, `expectedGates`, and `isRedispatch: true`). Each round makes exactly one `merge_results` call; the Round record reads `mergedStatus` and `blockingCount` from it.
+**For plans with <5 tasks — Single reviewer (status quo):** Dispatch one reviewer with `{LENS}=all` (same model acceptable). Read `./plan-reviewer-prompt.md`, fill its template variables (the lens list above), and pass the filled text inline as the Agent `prompt` (**Dispatch rules** in Step 3). Status quo behavior preserved. Append the run-context footer with `{WRITER_ID}` = `reviewer-r<n>` (`<n>` = the Step 5 iteration). Build one `lensResults[]` entry from its output with the table above (`name` = `all`). On the normal path, call `plan_support({action: "merge_results", lensResults: [<that entry>]})`. On a merged re-dispatch, do not make this call: put that entry into the one combined `merge_results` call from "Material change detection and merged re-dispatch" above (with `laneResults`, `expectedGates`, and `isRedispatch: true`). Each round makes exactly one `merge_results` call; the Round record reads `mergedStatus` and `blockingCount` from it.
 
 **Gate B — Verification Scorecard (implements R40, R42, R44 — Fixes #445):**
 
@@ -902,7 +1009,9 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
 
 **Checkpoint:** First, call `plan_mark({ marker: "checkpoint", path: "", data: { step: "6", iteration: <iteration> } })`.
 
-Fix each blocking issue identified by the reviewer. Rewrite the plan file with fixes applied. If any revision changes the scope or approach from what was originally recorded, update the `## Deviations & assumptions` table accordingly.
+Fix each blocking issue identified by the reviewer. A synthetic lane issue from a merged re-dispatch (Step 3 **Synthetic fail entry**) has no plan edit. Use the reason split of Step 4 **Synthetic lane issues**:
+- `not returned — user denied` or `skipped — promptTemplatePath null …`: make sure `## Deviations & assumptions` has a row for that lane (add one with `asked=no` if not). Record the issue as `fixed: true` in the Round record. Do not set `materialChangeDetected` for it.
+- Any other reason: keep it open (`fixed: false` in the Round record), and set `materialChangeDetected = true` so the next round runs the lanes again. At the last round, it is an open finding like any other. Rewrite the plan file with fixes applied. Send independent edits (edits to different parts of the plan file that do not depend on each other) in one message as parallel Edit tool calls. If any revision changes the scope or approach from what was originally recorded, update the `## Deviations & assumptions` table accordingly.
 
 **Gate B verdict wiring (implements R41 — Fixes #445):** The Gate B Verification Scorecard verdict is treated as an additional blocking-issue source using the same `Issues Found` path. This avoids divergent gate phrasing (`no-opposite-logical-vectors` guardrail) — the CRITICAL verdict does not have a separate code path; it injects findings into the same blocking-issue set that the `Issues Found` path already processes.
 
@@ -986,6 +1095,13 @@ If `findings` is empty, the plan passed every applicable PF check — proceed to
 > Verification Scorecard: `<verdict line>` — see `## Verification Scorecard` in the plan for details.
 
 Where `<verdict line>` is the verbatim verdict label from the scorecard: *"All checks passed. Ready for archive."*, *"…Ready for archive (with noted improvements)."*, or *"…Fix before archiving."*. When no scorecard is present (non-OpenSpec plan or scorecard was not generated), omit this line entirely.
+
+**Dispatch report:** Before the plan-mode or normal-mode branch below, read the `dispatch-status` item: `plan_support({ action: "evidence_get", runId: "<runId>", ids: ["dispatch-status"] })`. Print two lines from its body (Step 0 **Dispatch status record**):
+```text
+Step 7: Lane failures: <lanes.failed or none>. Lanes not returned: <lanes.notReturned or none>. Lanes skipped: <lanes.skipped or none>.
+Step 7: Done inline (agent not returned): <inlineFallback or none>. Explorers not stopped: <notStopped or none>.
+```
+The lane names come from the last lane merge (Step 3, the Step 4 lane re-dispatch, or the last merged re-dispatch in Step 5). When the call fails, the result lists the item under not found, or the body is not a JSON object, print `unknown` for each value. Never fill these lines from memory.
 
 **Style report:** Call `validate({ action: "plan_style", file: "<plan path>", template: "<activeTemplatePath>" })` (omit `template` on a lightweight plan). Print `styleReport.sections` as a table (`Section | Words | Prose | Long sent. | Jargon | Status`), then `Banned phrases:` with each hit or `none`, then `STE hits:` with each `styleReport.steHits` entry or `none`, then `Diagram contrast (PF14):` with each `styleReport.diagramContrast` entry or `none`, then each `styleReport.warnings` line.
 

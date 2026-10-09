@@ -1,13 +1,18 @@
 package tools
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/telemetry"
 )
@@ -58,6 +63,7 @@ type dashboardEvent struct {
 	kind      string // "prompt", "command", or "mcp"
 	text      string
 	branch    string // "" when the source entry carries none (e.g. MCP evidence)
+	command   string // full raw command, kind "command" only. Never serialized
 }
 
 // dashboardSessionAgg accumulates the evidence lines of one session before
@@ -115,6 +121,10 @@ func dashboardSessionsFromEvidence(root string, now time.Time) []DashboardSessio
 		s.LastSeen = dashboardFormatTime(last)
 		s.Active = now.Sub(last) < dashboardSessionActiveWithin
 
+		// Group every command of the session, before the timeline cap drops
+		// the oldest events.
+		s.CommandGroups = groupSessionCommands(a.events)
+
 		for i := len(a.events) - 1; i >= 0 && len(s.Timeline) < dashboardSessionTimelineMax; i-- {
 			e := a.events[i]
 			s.Timeline = append(s.Timeline, DashboardEvent{At: dashboardFormatTime(e.at), Kind: e.kind, Text: e.text})
@@ -144,6 +154,7 @@ func dashboardCLIEvents(root string) []dashboardEvent {
 				kind:      "command",
 				text:      dashboardPreview(e.Command),
 				branch:    e.Branch,
+				command:   e.Command,
 			})
 		}
 	}
@@ -279,6 +290,72 @@ func dashboardLearningHeading(entry string) string {
 	return telemetry.TruncateRunes(strings.Trim(strings.TrimSpace(first), "*"), dashboardPreviewTextMax)
 }
 
+// dashboardLearningBodyMax bounds the body that DashboardLearningBody returns
+// to this many runes. A longer body is cut and DashboardLearningBodyOut.Truncated
+// is true. The dashboard shows a learning body in a viewer, so it needs enough
+// text to read an entry but not a whole oversized log block.
+const dashboardLearningBodyMax = 8000
+
+// DashboardLearningBodyOut is the result of DashboardLearningBody.
+type DashboardLearningBodyOut struct {
+	// Found is true when the log holds an entry with the requested date and
+	// heading.
+	Found bool `json:"found"`
+	// Body is the redacted text of the entry. It is empty when Found is false.
+	// When Truncated is true, it ends with the "…" marker of
+	// telemetry.TruncateRunes.
+	Body string `json:"body"`
+	// Truncated is true when the entry held more than dashboardLearningBodyMax
+	// runes and Body is the cut text.
+	Truncated bool `json:"truncated"`
+}
+
+// DashboardLearningBody returns the text of the learning in root's log whose
+// date is date and whose heading is heading. Both values are the ones that
+// dashboardRecentLearnings puts in a DashboardLearning row, so the entry is
+// found with the same date and heading parse. The pair is the key: a learning
+// has no id. When two entries share the pair, the newest one (the last in the
+// log) wins, because the snapshot lists the newest entry first.
+//
+// The body passes telemetry.Redact before it is cut, so a secret is never cut
+// in half and left unredacted. A body of more than dashboardLearningBodyMax
+// runes is cut to that length and Truncated is true.
+//
+// A missing log, an empty date or heading, and a pair that matches no entry
+// return Found false and no error. A failure to read the log returns an
+// InfraError.
+func DashboardLearningBody(root, date, heading string) (DashboardLearningBodyOut, error) {
+	if date == "" || heading == "" {
+		return DashboardLearningBodyOut{}, nil
+	}
+	data, err := os.ReadFile(learningsLogPath(root))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return DashboardLearningBodyOut{}, nil
+		}
+		return DashboardLearningBodyOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read learnings log: %s", err),
+			Suggestion: "Check that the learnings log of the repo is a regular file that you can read, then open the learning again.",
+			Cause:      err,
+		}
+	}
+
+	_, entries := learningsSplitEntries(string(data))
+	for i := len(entries) - 1; i >= 0; i-- {
+		entry := strings.TrimSpace(entries[i])
+		if learningsDateRe.FindString(entry) != date || dashboardLearningHeading(entry) != heading {
+			continue
+		}
+		body := telemetry.Redact(entry)
+		return DashboardLearningBodyOut{
+			Found:     true,
+			Body:      telemetry.TruncateRunes(body, dashboardLearningBodyMax),
+			Truncated: utf8.RuneCountInString(body) > dashboardLearningBodyMax,
+		}, nil
+	}
+	return DashboardLearningBodyOut{}, nil
+}
+
 // dashboardOpenDeferred returns root's open deferred issues as
 // DashboardDeferred rows, high priority first — same grouping and
 // within-group order (Created ascending) as FormatDeferredSummary
@@ -295,7 +372,17 @@ func dashboardOpenDeferred(root string) []DashboardDeferred {
 		items := groups[prio]
 		sort.Slice(items, func(i, j int) bool { return items[i].Created < items[j].Created })
 		for _, it := range items {
-			out = append(out, DashboardDeferred{ID: it.ID, Priority: it.Priority, Description: it.Description})
+			out = append(out, DashboardDeferred{
+				ID:          it.ID,
+				Priority:    it.Priority,
+				Description: it.Description,
+				Created:     it.Created,
+				Source:      it.Source,
+				Severity:    it.Severity,
+				File:        it.File,
+				Line:        it.Line,
+				Reason:      it.Reason,
+			})
 		}
 	}
 	return out

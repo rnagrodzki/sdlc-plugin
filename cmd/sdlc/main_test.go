@@ -3,9 +3,14 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
+	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
 // forbiddenMCPImport is the import path of the MCP Go SDK this project
@@ -68,5 +73,52 @@ func TestForbidMark3LabsMCPGo(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("walk repo for .go files: %v", err)
+	}
+}
+
+// TestDashboardOptions pins the wiring of "sdlc dashboard serve": the archive
+// and learning routes call the tools functions, and the cache clear route
+// passes the root, the time and dashboard.LogPath() to the clear function.
+func TestDashboardOptions(t *testing.T) {
+	t.Setenv("SDLC_CACHE_DIR", t.TempDir())
+
+	var gotRoot, gotLog string
+	var gotNow time.Time
+	clearFn := func(root, serverLog string, now time.Time) (tools.ClearCacheOut, error) {
+		gotRoot, gotLog, gotNow = root, serverLog, now
+		return tools.ClearCacheOut{FreedBytes: 7}, nil
+	}
+	stopped := false
+	o := dashboardOptions(7385, "v-test", func() { stopped = true }, clearFn)
+
+	if o.Port != 7385 || o.Version != "v-test" || o.Token == "" {
+		t.Errorf("Port, Version, Token = %d, %q, %q; want 7385, v-test and a token", o.Port, o.Version, o.Token)
+	}
+	if o.Archive == nil || reflect.ValueOf(o.Archive).Pointer() != reflect.ValueOf(tools.ArchiveRun).Pointer() {
+		t.Error("Archive is not tools.ArchiveRun")
+	}
+	if o.LearningBody == nil || reflect.ValueOf(o.LearningBody).Pointer() != reflect.ValueOf(tools.DashboardLearningBody).Pointer() {
+		t.Error("LearningBody is not tools.DashboardLearningBody")
+	}
+	if o.ClearCache == nil {
+		t.Fatal("ClearCache is nil")
+	}
+	now := time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)
+	out, err := o.ClearCache("/repo/a", now)
+	if err != nil || out.FreedBytes != 7 {
+		t.Errorf("ClearCache = %+v, %v; want the result of the clear function", out, err)
+	}
+	if gotRoot != "/repo/a" || !gotNow.Equal(now) {
+		t.Errorf("clear function got root %q at %v; want /repo/a at %v", gotRoot, gotNow, now)
+	}
+	if want := dashboard.LogPath(); gotLog != want {
+		t.Errorf("clear function got server log %q; want dashboard.LogPath() %q", gotLog, want)
+	}
+	if o.Stop == nil {
+		t.Fatal("Stop is nil")
+	}
+	o.Stop()
+	if !stopped {
+		t.Error("Stop does not call the stop function")
 	}
 }
