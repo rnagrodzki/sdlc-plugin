@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
@@ -415,8 +416,18 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	if err != nil {
 		repo.Error = err.Error()
 	}
+	// Open waits are best effort: an unreadable record folder shows no
+	// attention and does not fail the snapshot.
+	recs, err := attention.List(root, now, dashboardHistoryWindow)
+	if err != nil {
+		recs = nil
+	}
 	for _, st := range list.States {
 		p, updated, ok := dashboardStatePipeline(st, evidence)
+		if ok {
+			// Before dashboardFinish: the stalled rule reads p.Attention.
+			dashboardAttachAttention(&p, recs)
+		}
 		if ok && dashboardFinish(&p, updated, now) {
 			repo.Pipelines = append(repo.Pipelines, p)
 		}
@@ -444,12 +455,51 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	return repo
 }
 
+// dashboardAttachAttention sets p.Attention from the newest record of recs
+// that belongs to p. A record belongs to p when its session ID equals
+// p.SessionID and the branch slugs (state.SlugifyBranch) of the record and
+// of p are equal. Only a running pipeline with a session ID gets attention.
+// Of several matching records the newest askedAt wins; of equal askedAt the
+// later record in recs wins. A record whose askedAt does not parse is skipped.
+// With no matching record p is unchanged.
+func dashboardAttachAttention(p *DashboardPipeline, recs []attention.Record) {
+	if p.Status != PipelineRunning || p.SessionID == "" {
+		return
+	}
+	slug := state.SlugifyBranch(p.Branch)
+	var best *attention.Record
+	var bestAt time.Time
+	for i := range recs {
+		r := &recs[i]
+		if r.SessionID != p.SessionID || state.SlugifyBranch(r.Branch) != slug {
+			continue
+		}
+		asked, ok := dashboardParseTime(r.AskedAt)
+		if !ok {
+			continue
+		}
+		if best == nil || !asked.Before(bestAt) {
+			best, bestAt = r, asked
+		}
+	}
+	if best == nil {
+		return
+	}
+	p.Attention = &DashboardAttention{
+		Kind:    best.Kind,
+		AskedAt: dashboardFormatTime(bestAt),
+		Header:  best.Header,
+		Text:    best.Text,
+	}
+}
+
 // dashboardFinish stamps updatedAt, applies the stalled rule, and reports
 // whether the pipeline shows: a completed or failed pipeline shows only when
-// updatedAt is within dashboardHistoryWindow of now.
+// updatedAt is within dashboardHistoryWindow of now. A running pipeline with
+// attention waits for a person, so it never turns stalled.
 func dashboardFinish(p *DashboardPipeline, updated, now time.Time) bool {
 	p.UpdatedAt = dashboardFormatTime(updated)
-	if p.Status == PipelineRunning && !updated.IsZero() && now.Sub(updated) > dashboardStallAfter {
+	if p.Status == PipelineRunning && p.Attention == nil && !updated.IsZero() && now.Sub(updated) > dashboardStallAfter {
 		p.Status = PipelineStalled
 		dashboardAddStalledIssue(p)
 	}

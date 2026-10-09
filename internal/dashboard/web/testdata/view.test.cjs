@@ -87,6 +87,100 @@ describe('feedOrder', () => {
   test('returns an empty array for a missing list', () => {
     assert.deepEqual(view.feedOrder(undefined), []);
   });
+
+  test('returns 5 groups in order: attention, running, failed, stalled, completed', () => {
+    const attention = { kind: 'question', askedAt: '2026-10-08T10:00:00Z', header: 'Q', text: 't' };
+    const c1 = { id: 'c1', status: 'completed' };
+    const s1 = { id: 's1', status: 'stalled' };
+    const f1 = { id: 'f1', status: 'failed' };
+    const r1 = { id: 'r1', status: 'running' };
+    const a1 = { id: 'a1', status: 'running', attention };
+    const ordered = view.feedOrder([c1, s1, f1, r1, a1]);
+    assert.deepEqual(ordered.map((p) => p.id), ['a1', 'r1', 'f1', 's1', 'c1']);
+  });
+
+  test('an attention pipeline goes first whatever its status', () => {
+    const attention = { kind: 'permission', askedAt: '2026-10-08T10:00:00Z', header: 'Permission', text: 't' };
+    const r1 = { id: 'r1', status: 'running' };
+    const c1 = { id: 'c1', status: 'completed', attention };
+    assert.deepEqual(view.feedOrder([r1, c1]).map((p) => p.id), ['c1', 'r1']);
+  });
+
+  test('inside a group the newer startedAt comes first', () => {
+    const old = { id: 'old', status: 'running', startedAt: '2026-10-08T08:00:00Z' };
+    const mid = { id: 'mid', status: 'running', startedAt: '2026-10-08T09:00:00Z' };
+    const fresh = { id: 'fresh', status: 'running', startedAt: '2026-10-08T10:00:00Z' };
+    assert.deepEqual(view.feedOrder([old, fresh, mid]).map((p) => p.id), ['fresh', 'mid', 'old']);
+  });
+
+  test('startedAt orders by time, not by text, across UTC offsets', () => {
+    // 10:00+02:00 is 08:00Z, which is older than 09:00Z although its text sorts later.
+    const offset = { id: 'offset', status: 'failed', startedAt: '2026-10-08T10:00:00+02:00' };
+    const utc = { id: 'utc', status: 'failed', startedAt: '2026-10-08T09:00:00Z' };
+    assert.deepEqual(view.feedOrder([offset, utc]).map((p) => p.id), ['utc', 'offset']);
+  });
+
+  test('an empty or unreadable startedAt comes last inside its group', () => {
+    const none = { id: 'none', status: 'stalled', startedAt: '' };
+    const bad = { id: 'bad', status: 'stalled', startedAt: 'not a time' };
+    const absent = { id: 'absent', status: 'stalled' };
+    const dated = { id: 'dated', status: 'stalled', startedAt: '2026-10-08T09:00:00Z' };
+    assert.deepEqual(view.feedOrder([none, bad, absent, dated]).map((p) => p.id), ['dated', 'none', 'bad', 'absent']);
+  });
+
+  test('the sort is stable: equal pipelines keep their input order', () => {
+    const t = '2026-10-08T09:00:00Z';
+    const list = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => ({ id, status: 'completed', startedAt: t }));
+    assert.deepEqual(view.feedOrder(list).map((p) => p.id), ['a', 'b', 'c', 'd', 'e', 'f']);
+  });
+
+  test('returns the same objects, not copies', () => {
+    const r1 = { id: 'r1', status: 'running' };
+    const c1 = { id: 'c1', status: 'completed' };
+    const ordered = view.feedOrder([c1, r1]);
+    assert.equal(ordered[0], r1);
+    assert.equal(ordered[1], c1);
+  });
+
+  test('a missing entry or an unknown status ranks with the running group', () => {
+    const c1 = { id: 'c1', status: 'completed' };
+    const f1 = { id: 'f1', status: 'failed' };
+    const odd = { id: 'odd', status: 'weird' };
+    const ordered = view.feedOrder([c1, f1, null, odd]);
+    assert.deepEqual(ordered.map((p) => (p ? p.id : null)), [null, 'odd', 'f1', 'c1']);
+  });
+});
+
+describe('compareStartedDesc', () => {
+  const older = { startedAt: '2026-10-08T08:00:00Z' };
+  const newer = { startedAt: '2026-10-08T09:00:00Z' };
+
+  test('a newer pipeline comes first', () => {
+    assert.ok(view.compareStartedDesc(newer, older) < 0);
+    assert.ok(view.compareStartedDesc(older, newer) > 0);
+  });
+
+  test('the same start time gives 0', () => {
+    assert.equal(view.compareStartedDesc(newer, { startedAt: '2026-10-08T09:00:00Z' }), 0);
+  });
+
+  test('an empty startedAt comes after one that has a time', () => {
+    assert.equal(view.compareStartedDesc({ startedAt: '' }, newer), 1);
+    assert.equal(view.compareStartedDesc(newer, {}), -1);
+  });
+
+  test('2 empty or unreadable values give 0', () => {
+    assert.equal(view.compareStartedDesc({ startedAt: '' }, { startedAt: 'bad' }), 0);
+    assert.equal(view.compareStartedDesc(null, undefined), 0);
+  });
+});
+
+describe('page logic exports', () => {
+  test('view.js exports the feed, count, title, and elapsed helpers', () => {
+    ['feedOrder', 'headerCounts', 'pageTitle', 'formatElapsed', 'compareStartedDesc'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
 });
 
 describe('defaultCollapsed', () => {
@@ -413,7 +507,48 @@ describe('scopedCounts / headerCounts', () => {
   });
 
   test('headerCounts counts running, stalled, and failed over all repos', () => {
-    assert.deepEqual(view.headerCounts(repos), { running: 2, stalled: 1, failed: 1 });
+    assert.deepEqual(view.headerCounts(repos), { running: 2, stalled: 1, failed: 1, waiting: 0 });
+  });
+
+  test('headerCounts waiting counts pipelines with attention over all repos', () => {
+    const attention = { kind: 'question', askedAt: '2026-10-08T10:00:00Z', header: 'Q', text: 't' };
+    const waitingRepos = [
+      { root: '/a', pipelines: [{ status: 'running', attention }, { status: 'running' }] },
+      { root: '/b', pipelines: [{ status: 'running', attention }, { status: 'failed' }, null] },
+    ];
+    assert.deepEqual(view.headerCounts(waitingRepos), { running: 3, stalled: 0, failed: 1, waiting: 2 });
+  });
+
+  test('headerCounts ignores a status that is not running, stalled, or failed', () => {
+    const odd = [{ root: '/a', pipelines: [{ status: 'waiting' }, { status: 'completed' }, { status: 'constructor' }] }];
+    assert.deepEqual(view.headerCounts(odd), { running: 0, stalled: 0, failed: 0, waiting: 0 });
+  });
+
+  test('headerCounts returns zeros for a missing list', () => {
+    assert.deepEqual(view.headerCounts(undefined), { running: 0, stalled: 0, failed: 0, waiting: 0 });
+  });
+});
+
+describe('pageTitle', () => {
+  const attention = { kind: 'permission', askedAt: '2026-10-08T10:00:00Z', header: 'Permission', text: 't' };
+  const repoA = { root: '/a', pipelines: [{ status: 'running', attention }, { status: 'running' }] };
+  const repoB = { root: '/b', pipelines: [{ status: 'running', attention }, null] };
+
+  test('puts the count of waiting runs before the base title', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', [repoA, repoB]), '(2) SDLC dashboard');
+  });
+
+  test('counts only the repos it is given', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', [repoA]), '(1) SDLC dashboard');
+  });
+
+  test('returns the base title when no run waits', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', [{ root: '/c', pipelines: [{ status: 'running' }] }]), 'SDLC dashboard');
+  });
+
+  test('returns the base title for a missing repo list or a repo without pipelines', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', undefined), 'SDLC dashboard');
+    assert.equal(view.pageTitle('SDLC dashboard', [{ root: '/d' }]), 'SDLC dashboard');
   });
 });
 
@@ -486,6 +621,33 @@ describe('formatDuration', () => {
   test('empty for a bad value', () => {
     assert.equal(view.formatDuration(-1), '');
     assert.equal(view.formatDuration(undefined), '');
+  });
+});
+
+describe('formatElapsed', () => {
+  test('seconds under 1 minute', () => {
+    assert.equal(view.formatElapsed(0), '0s');
+    assert.equal(view.formatElapsed(26000), '26s');
+  });
+
+  test('minutes and seconds under 1 hour', () => {
+    assert.equal(view.formatElapsed(60000), '1m 0s');
+    assert.equal(view.formatElapsed(252000), '4m 12s');
+    assert.equal(view.formatElapsed(3599999), '59m 59s');
+  });
+
+  test('1 hour or more uses the formatDuration text', () => {
+    assert.equal(view.formatElapsed(3600000), '1h 00m');
+    assert.equal(view.formatElapsed(3780000), '1h 03m');
+    assert.equal(view.formatElapsed(3780000), view.formatDuration(3780000));
+  });
+
+  test('empty for a bad value', () => {
+    assert.equal(view.formatElapsed(-1), '');
+    assert.equal(view.formatElapsed(NaN), '');
+    assert.equal(view.formatElapsed(Infinity), '');
+    assert.equal(view.formatElapsed(undefined), '');
+    assert.equal(view.formatElapsed('252000'), '');
   });
 });
 

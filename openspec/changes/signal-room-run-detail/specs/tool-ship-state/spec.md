@@ -20,7 +20,7 @@ The action `commit-check` SHALL stage with `git add -A -- ':!.sdlc-v2/'`, count 
 
 #### Scenario: Wrong step state
 - **WHEN** the `commit` step is `pending`
-- **THEN** the call returns a DomainError with the Suggestion `Call begin-step for commit first.`
+- **THEN** the call returns a DomainError with the Suggestion `Call begin-step for commit first, then call commit-check again.`
 
 #### Scenario: Git error
 - **WHEN** `git add` fails

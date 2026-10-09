@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -727,3 +728,311 @@ func TestDashboardSnapshot_StepConstantsMatchSchema(t *testing.T) {
 }
 
 func dashFormat(t time.Time) string { return t.UTC().Format(time.RFC3339) }
+
+// dashQuestionRecord returns a question wait record of session sid on branch,
+// asked at the given time, with the fixed header "Approach".
+func dashQuestionRecord(sid, toolUseID, branch, text string, asked time.Time) attention.Record {
+	return attention.Record{
+		Kind:      attention.KindQuestion,
+		SessionID: sid,
+		ToolUseID: toolUseID,
+		Branch:    branch,
+		Header:    "Approach",
+		Text:      text,
+		AskedAt:   dashFormat(asked),
+	}
+}
+
+// dashWriteAttention stores r under root with attention.Write and fails the
+// test when the write fails.
+func dashWriteAttention(t *testing.T, root string, r attention.Record) {
+	t.Helper()
+	if err := attention.Write(root, r); err != nil {
+		t.Fatalf("attention.Write: %v", err)
+	}
+}
+
+// dashRunningShip writes a running ship state on feat/x for session sid and
+// sets the file modification time to mtime. An empty sid leaves the state
+// without a session ID.
+func dashRunningShip(t *testing.T, root, sid string, mtime time.Time) {
+	t.Helper()
+	data := map[string]any{"branch": "feat/x", "steps": dashSteps(StepCompleted, StepInProgress)}
+	if sid != "" {
+		data["sessionId"] = sid
+	}
+	dashWriteState(t, root, "ship-feat-x-20261007T090000Z.json", data, mtime)
+}
+
+// TestDashboardSnapshot_AttentionJoin checks which wait records the snapshot
+// joins to a running pipeline: the session ID must match, the branch slugs
+// must match, and the record must be inside the history window.
+func TestDashboardSnapshot_AttentionJoin(t *testing.T) {
+	fresh := dashNow.Add(-time.Minute)
+	asked := dashNow.Add(-5 * time.Minute)
+	perm := attention.Record{
+		Kind: attention.KindPermission, SessionID: "s1", Branch: "feat/x",
+		Header: "Permission", Text: "Bash: go test ./...", AskedAt: dashFormat(asked),
+	}
+
+	cases := []struct {
+		name string
+		rec  attention.Record
+		sid  string // session ID of the pipeline; "" for none
+		want bool
+	}{
+		{"same session and branch", dashQuestionRecord("s1", "t1", "feat/x", "Which approach?", asked), "s1", true},
+		{"branch spelled as its slug", dashQuestionRecord("s1", "t1", "feat-x", "Which approach?", asked), "s1", true},
+		{"permission record", perm, "s1", true},
+		{"other branch", dashQuestionRecord("s1", "t1", "main", "Which approach?", asked), "s1", false},
+		{"other session", dashQuestionRecord("s2", "t1", "feat/x", "Which approach?", asked), "s1", false},
+		{"pipeline without a session ID", dashQuestionRecord("s1", "t1", "feat/x", "Which approach?", asked), "", false},
+		{"record older than the history window", dashQuestionRecord("s1", "t1", "feat/x", "Which approach?", dashNow.Add(-25*time.Hour)), "s1", false},
+		{"record inside the history window", dashQuestionRecord("s1", "t1", "feat/x", "Which approach?", dashNow.Add(-23*time.Hour)), "s1", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			dashRunningShip(t, root, tc.sid, fresh)
+			dashWriteAttention(t, root, tc.rec)
+
+			p := dashOne(t, root)
+			if !tc.want {
+				if p.Attention != nil {
+					t.Errorf("attention = %+v, want nil", *p.Attention)
+				}
+				return
+			}
+			if p.Attention == nil {
+				t.Fatalf("attention = nil, want the record %+v", tc.rec)
+			}
+			want := DashboardAttention{Kind: tc.rec.Kind, AskedAt: tc.rec.AskedAt, Header: tc.rec.Header, Text: tc.rec.Text}
+			if *p.Attention != want {
+				t.Errorf("attention = %+v, want %+v", *p.Attention, want)
+			}
+		})
+	}
+}
+
+// TestDashboardSnapshot_AttentionNewestWins checks that, with two records for
+// one pipeline, the record with the newest askedAt is the one shown. The newer
+// record is written first, so the file order cannot decide the result.
+func TestDashboardSnapshot_AttentionNewestWins(t *testing.T) {
+	root := dashRoot(t)
+	dashRunningShip(t, root, "s1", dashNow.Add(-time.Minute))
+	dashWriteAttention(t, root, dashQuestionRecord("s1", "t-new", "feat/x", "new question", dashNow.Add(-2*time.Minute)))
+	dashWriteAttention(t, root, dashQuestionRecord("s1", "t-old", "feat/x", "old question", dashNow.Add(-20*time.Minute)))
+
+	p := dashOne(t, root)
+	if p.Attention == nil || p.Attention.Text != "new question" {
+		t.Errorf("attention = %+v, want the record with text %q", p.Attention, "new question")
+	}
+}
+
+// TestDashboardSnapshot_AttentionKeepsRunning checks that a running pipeline
+// with an open wait stays running after the stall limit, with no stalled
+// issue, and that a pipeline with no wait of its own still stalls.
+func TestDashboardSnapshot_AttentionKeepsRunning(t *testing.T) {
+	idle := dashNow.Add(-31 * time.Minute)
+	asked := dashNow.Add(-30 * time.Minute)
+
+	cases := []struct {
+		name       string
+		rec        *attention.Record
+		wantStatus string
+	}{
+		{"matching record keeps running", &attention.Record{
+			Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "t1", Branch: "feat/x",
+			Header: "Approach", Text: "Which approach?", AskedAt: dashFormat(asked),
+		}, PipelineRunning},
+		{"no record stalls", nil, PipelineStalled},
+		{"record of another session stalls", &attention.Record{
+			Kind: attention.KindQuestion, SessionID: "s2", ToolUseID: "t1", Branch: "feat/x",
+			Header: "Approach", Text: "Which approach?", AskedAt: dashFormat(asked),
+		}, PipelineStalled},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			dashRunningShip(t, root, "s1", idle)
+			if tc.rec != nil {
+				dashWriteAttention(t, root, *tc.rec)
+			}
+
+			p := dashOne(t, root)
+			if p.Status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", p.Status, tc.wantStatus)
+			}
+			stalledIssues := 0
+			for _, is := range p.Issues {
+				if is.Source == dashboardSourcePipeline && is.Text == dashboardStalledText {
+					stalledIssues++
+				}
+			}
+			if wantIssues := map[string]int{PipelineRunning: 0, PipelineStalled: 1}[tc.wantStatus]; stalledIssues != wantIssues {
+				t.Errorf("stalled issues = %d, want %d", stalledIssues, wantIssues)
+			}
+		})
+	}
+}
+
+// TestDashboardSnapshot_AttentionShipNestedExecute checks that a ship run and
+// its nested execute run share a session and a branch, so the record joins
+// the ship and the snapshot shows one attention mark, on the ship only.
+func TestDashboardSnapshot_AttentionShipNestedExecute(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteState(t, root, dashJoinShipFile, dashJoinShipData(), dashJoinFresh)
+	exec := dashJoinExecData("feat/x", "2026-10-07T08:01:00Z", "a1b2c3d")
+	exec["sessionId"] = "s-ship"
+	dashWriteState(t, root, dashJoinExecFile("20261007T080100Z"), exec, dashJoinFresh)
+	dashWriteAttention(t, root, dashQuestionRecord("s-ship", "t1", "feat/x", "Which approach?", dashNow.Add(-5*time.Minute)))
+
+	repo := dashCollect(t, root)
+	if len(repo.Pipelines) != 1 || repo.Pipelines[0].Kind != "ship" {
+		t.Fatalf("pipelines = %v, want the ship only", dashJoinKinds(repo.Pipelines))
+	}
+	ship := repo.Pipelines[0]
+	if ship.Attention == nil || ship.Attention.Text != "Which approach?" {
+		t.Errorf("ship attention = %+v, want the record", ship.Attention)
+	}
+	if d := dashJoinStep(t, ship, "execute").Detail; d == nil || d.Kind != dashboardKindWaves {
+		t.Errorf("execute detail = %+v, want the nested execute waves", d)
+	}
+	b, err := json.Marshal(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(b), `"attention":`); n != 1 {
+		t.Errorf("attention marks in the repo JSON = %d, want 1", n)
+	}
+}
+
+// TestDashboardSnapshot_AttentionRunningOnly checks that a pipeline whose
+// status is not running never gets attention, even when a record has the same
+// session and branch, and that a running plan does get it.
+func TestDashboardSnapshot_AttentionRunningOnly(t *testing.T) {
+	fresh := dashNow.Add(-time.Minute)
+	cases := []struct {
+		name  string
+		file  string
+		data  map[string]any
+		wants bool
+	}{
+		{"completed ship", "ship-feat-x-20261007T090000Z.json", map[string]any{
+			"branch": "feat/x", "sessionId": "s1", "pipelineStatus": "completed",
+			"pipelineCompletedAt": "2026-10-07T09:50:00Z", "steps": dashSteps(StepCompleted, StepCompleted),
+		}, false},
+		{"failed ship", "ship-feat-x-20261007T090000Z.json", map[string]any{
+			"branch": "feat/x", "sessionId": "s1",
+			"steps": []any{map[string]any{"name": "execute", "status": StepFailed, "error": "boom"}},
+		}, false},
+		{"completed plan", "plan-feat-x-20261007T090000Z.json", map[string]any{
+			"sessionId":     "s1",
+			"planIntegrity": map[string]any{"skillInvoked": "2026-10-07T09:00:00Z", "done": "2026-10-07T09:40:00Z"},
+			"checkpoint":    map[string]any{"step": "7"},
+		}, false},
+		{"running plan", "plan-feat-x-20261007T090000Z.json", map[string]any{
+			"sessionId":     "s1",
+			"planIntegrity": map[string]any{"skillInvoked": "2026-10-07T09:00:00Z"},
+			"checkpoint":    map[string]any{"step": "3"},
+		}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			dashWriteState(t, root, tc.file, tc.data, fresh)
+			dashWriteAttention(t, root, dashQuestionRecord("s1", "t1", "feat/x", "Which approach?", dashNow.Add(-5*time.Minute)))
+
+			p := dashOne(t, root)
+			if got := p.Attention != nil; got != tc.wants {
+				t.Errorf("attention set = %v, want %v (status %q)", got, tc.wants, p.Status)
+			}
+		})
+	}
+}
+
+// TestDashboardSnapshot_AttentionUnreadableFolder checks that a record folder
+// that cannot be read gives no attention and no repo error. A regular file in
+// place of the folder makes the read fail.
+func TestDashboardSnapshot_AttentionUnreadableFolder(t *testing.T) {
+	root := dashRoot(t)
+	dashRunningShip(t, root, "s1", dashNow.Add(-time.Minute))
+	dir := attention.Dir(root)
+	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir, []byte("not a folder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := attention.List(root, dashNow, dashboardHistoryWindow); err == nil {
+		t.Fatal("attention.List error = nil, want a read error for the setup to be valid")
+	}
+
+	repo := dashCollect(t, root)
+	if repo.Error != "" {
+		t.Errorf("repo error = %q, want empty", repo.Error)
+	}
+	if len(repo.Pipelines) != 1 {
+		t.Fatalf("pipelines = %d, want 1", len(repo.Pipelines))
+	}
+	if repo.Pipelines[0].Attention != nil {
+		t.Errorf("attention = %+v, want nil", *repo.Pipelines[0].Attention)
+	}
+}
+
+// TestDashboardAttachAttention checks the branches of dashboardAttachAttention
+// that the snapshot tests do not reach: the guards, a record whose time does
+// not parse, equal times, and the UTC form of askedAt.
+func TestDashboardAttachAttention(t *testing.T) {
+	rec := func(sid, text, asked string) attention.Record {
+		return attention.Record{
+			Kind: attention.KindQuestion, SessionID: sid, ToolUseID: "t-" + text, Branch: "feat/x",
+			Header: "Approach", Text: text, AskedAt: asked,
+		}
+	}
+	pipeline := func(status, sid string) DashboardPipeline {
+		return DashboardPipeline{Kind: "ship", Branch: "feat/x", Status: status, SessionID: sid}
+	}
+
+	cases := []struct {
+		name     string
+		p        DashboardPipeline
+		recs     []attention.Record
+		wantText string // "" means attention stays nil
+		wantAsk  string
+	}{
+		{"no records", pipeline(PipelineRunning, "s1"), nil, "", ""},
+		{"empty session never matches an empty record session", pipeline(PipelineRunning, ""),
+			[]attention.Record{rec("", "q", "2026-10-07T09:55:00Z")}, "", ""},
+		{"completed pipeline", pipeline(PipelineCompleted, "s1"),
+			[]attention.Record{rec("s1", "q", "2026-10-07T09:55:00Z")}, "", ""},
+		{"stalled pipeline", pipeline(PipelineStalled, "s1"),
+			[]attention.Record{rec("s1", "q", "2026-10-07T09:55:00Z")}, "", ""},
+		{"record with an unparseable time is skipped", pipeline(PipelineRunning, "s1"),
+			[]attention.Record{rec("s1", "valid", "2026-10-07T09:50:00Z"), rec("s1", "broken", "yesterday")}, "valid", "2026-10-07T09:50:00Z"},
+		{"equal times: the later record wins", pipeline(PipelineRunning, "s1"),
+			[]attention.Record{rec("s1", "first", "2026-10-07T09:50:00Z"), rec("s1", "second", "2026-10-07T09:50:00Z")}, "second", "2026-10-07T09:50:00Z"},
+		{"newest wins whatever the list order", pipeline(PipelineRunning, "s1"),
+			[]attention.Record{rec("s1", "newer", "2026-10-07T09:55:00Z"), rec("s1", "older", "2026-10-07T09:40:00Z")}, "newer", "2026-10-07T09:55:00Z"},
+		{"askedAt is written in UTC", pipeline(PipelineRunning, "s1"),
+			[]attention.Record{rec("s1", "zoned", "2026-10-07T11:00:00+01:00")}, "zoned", "2026-10-07T10:00:00Z"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := tc.p
+			dashboardAttachAttention(&p, tc.recs)
+			if tc.wantText == "" {
+				if p.Attention != nil {
+					t.Errorf("attention = %+v, want nil", *p.Attention)
+				}
+				return
+			}
+			if p.Attention == nil {
+				t.Fatalf("attention = nil, want text %q", tc.wantText)
+			}
+			if p.Attention.Text != tc.wantText || p.Attention.AskedAt != tc.wantAsk {
+				t.Errorf("attention = %+v, want text %q asked at %q", *p.Attention, tc.wantText, tc.wantAsk)
+			}
+		})
+	}
+}

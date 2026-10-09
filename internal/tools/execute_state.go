@@ -40,7 +40,7 @@ import (
 // ExecuteStateIn carries the merged input for the execute_state tool's
 // actions. Each field is consumed by one or more actions (noted in comments).
 type ExecuteStateIn struct {
-	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=base-sync,enum=base-sync-resolve,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action              string         `json:"action" jsonschema:"enum=wave-compute,enum=init,enum=wave-start,enum=wave-done,enum=wave-fail,enum=wave-committed,enum=wave-commit,enum=base-sync,enum=base-sync-resolve,enum=task-done,enum=task-fail,enum=task-context,enum=context,enum=read,enum=cleanup,enum=gc,enum=summarize-prior-wave-context,enum=wave-split,enum=verify-completeness,enum=wave-progress,enum=wave-await,enum=task-redispatch,enum=resume-reset,enum=ledger_checkin,enum=ledger_checkout,enum=ledger_status,enum=ledger_cleanup,enum=ledger_skip,enum=log-cli,enum=drift-log,enum=issue-draft,enum=decide,enum=resolve-config,enum=report" jsonschema_description:"Selects the operation. Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
 	Branch              string         `json:"branch,omitempty" jsonschema_description:"Git branch the execution state belongs to. Most actions accept it to scope the state file; falls back to the current branch when omitted."`
 	Auto                bool           `json:"auto,omitempty" sdlcconfig:"executePrefs.auto" jsonschema_description:"resolve-config only: true when the caller passed --auto. Omitting it does not mean auto is off: the resolution order is CLI > pipeline > config > default, so auto also resolves to true when branch is supplied and that branch's ship state has flags.auto=true. Optional. Defaults to config executePrefs.auto. Pass only to override."`
 	Quality             string         `json:"quality,omitempty" jsonschema:"enum=full,enum=balanced,enum=minimal" jsonschema_description:"Quality tier. init: required -- the tier stamped on the newly initialized run; pass the value resolve-config returned. resolve-config: the --quality CLI value, which wins over executePrefs.quality in .sdlc-v2/local.toml when non-empty. A resolve-config value outside the enum is non-fatal: it is reported in warnings and resolution falls through to config, then the auto default, then the skill's tier prompt."`
@@ -54,8 +54,8 @@ type ExecuteStateIn struct {
 	ExtraDepsJSON       string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
 	Wave                *int           `json:"wave,omitempty" jsonschema_description:"Wave number the action applies to (wave-start, wave-done, wave-fail, wave-committed, wave-commit, base-sync, base-sync-resolve, task-done, task-fail, wave-split, wave-await; also task-redispatch, optional, to scope the row search to one wave instead of scanning every wave)."`
 	TasksJSON           string         `json:"tasksJson,omitempty" jsonschema_description:"wave-start: JSON array of task objects. Each entry: {id: string, name: string, description: string, complexity: string (optional — Trivial|Standard|Complex), contract: string (optional), acceptanceCriteria: string[] (optional — array of strings), files: string[] (optional), workerName: string (optional — caller-supplied dispatch identity, never invented; falls back to a generated template when omitted), batchId: string (optional — shared by every task in one batch dispatch; omit for a solo task), batchIndex: number (optional — this task's 0-based position within its batch)}. Entries missing required string fields (id, name, description) are dropped with a warning; if zero valid entries remain after filtering, the call fails with an error. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid task."`
-	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
-	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout)."`
+	RunID               string         `json:"runId,omitempty" jsonschema_description:"Execution run identifier. Required by task-context, wave-await, ledger_checkin, ledger_checkout, ledger_skip, and ledger_status; optional elsewhere (e.g. wave-start for fact sheets, task-redispatch) where it falls back to the value derived from the state's startedAt/wave."`
+	WorkerID            string         `json:"workerId,omitempty" jsonschema_description:"Identifier of the per-task worker registering or clearing its ledger entry (ledger_checkin, ledger_checkout), or the planned review dimension whose stop ledger_skip records."`
 	Decisions           string         `json:"decisions,omitempty" jsonschema_description:"wave-done only: JSON array of decisions made while completing the wave, encoded as a string; surfaced in later summaries. Plain prose is rejected. Example: \"[\\\"Chose sqlite over postgres for the local cache\\\"]\"."`
 	Status              string         `json:"status,omitempty" jsonschema_description:"Outcome status to record: for wave-done, the wave's terminal status, \"completed\" (default) or \"partial\"; for task-done, \"DONE_WITH_CONCERNS\" records a warning issue alongside the completion."`
 	TimedOut            bool           `json:"timedOut,omitempty" jsonschema_description:"wave-fail and wave-done: true when the wave timed out, rather than erroring outright; stamped on the wave as timedOut."`
@@ -89,6 +89,7 @@ type ExecuteStateIn struct {
 	Payload             map[string]any `json:"payload,omitempty" jsonschema_description:"Reserved for future use; not currently read by any action."`
 	StepID              string         `json:"stepId,omitempty" jsonschema_description:"ledger_checkin only: identifier of the pipeline step the worker is registering activity for."`
 	Findings            string         `json:"findings,omitempty" jsonschema_description:"ledger_checkout only: free-text findings payload to persist alongside this worker's checkout record, returned later by ledger_status. Not schema-validated, but review workers conventionally pass a JSON array of objects shaped {severity, file, line, rationale} (a markdown block is also accepted). Capped at 64 KiB; larger payloads should be persisted to a file under .sdlc-v2/ and referenced by path instead."`
+	Reason              string         `json:"reason,omitempty" jsonschema:"enum=stalled,enum=missing,enum=unstopped" jsonschema_description:"ledger_skip only: why the review worker stopped. Plain text. unstopped = stalled and TaskStop failed, so the worker may still run. Example: stalled"`
 	Detail              string         `json:"detail,omitempty" jsonschema_description:"Narration verbosity for wave-start/wave-done/wave-fail/wave-commit: \"concise\" or \"full\"."`
 	LastCompletedTask   string         `json:"lastCompletedTask,omitempty" jsonschema_description:"wave-progress write only: ID of the most recently completed task, recorded in the heartbeat entry."`
 	AcceptanceDone      []int          `json:"acceptanceDone,omitempty" jsonschema_description:"wave-progress write only: 0-based indices, into the task's fact-sheet acceptance criteria, that the worker has completed so far (e.g. [0,2,3]). Replaces the previously recorded list; omit to leave it unchanged."`
@@ -584,6 +585,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - ledger_checkout: Mark a worker as done. Requires runId, workerId. Optional: findings (free-text payload — e.g. a JSON array or markdown block — persisted alongside this worker's checkout record and returned later by ledger_status).
 - ledger_status: List worker statuses for a run. Requires runId. Optional: timeoutSeconds, expectedWorkers (worker IDs expected to have checked in; any missing from the ledger are returned as missingWorkers). Each entry in the returned workers[] carries a "findings" field when that worker's ledger_checkout call set one; omitted when absent.
 - ledger_cleanup: Remove a run's entire ledger directory (all per-worker checkin/checkout/findings files). Requires runId. Returns {ok, runId, removed, workers} where removed is false when the directory didn't exist and workers lists the sorted worker ids that had ledger files (ids only, never findings).
+- ledger_skip: Record why a review worker stopped. Requires runId, workerId, reason (stalled|missing|unstopped). Sets stopReason of that worker's dimension in runs/ledger/<runId>/run.meta with an atomic write and touches no worker file, so ledger_status output does not change. Returns {ok, next}. Fails with a DomainError when run.meta is missing (call review_prepare first), when workerId is not a planned dimension of the run (the Suggestion lists the planned worker ids), or when reason is not one of the 3 values. Fails with a DataError when run.meta is not valid JSON, and with an InfraError when run.meta cannot be read or written. A failed call leaves run.meta as it was.
 - log-cli: Append a CLI-captured output block to the run's evidence log. Requires cliCommand. Optional: cliExitCode, cliOutput, branch, wave.
 - drift-log: Append a drift issue and evaluate the server-side stop condition. When accumulated error-severity drift issues exceed the threshold (max(minErrorFloor, ceil(maxErrorRate * totalTasks))), returns {halt:true}. Requires driftSeverity (error|warning|info), driftSummary. Optional: driftDetail, wave, taskId, branch.
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). The draft title is also recorded durably in .sdlc-v2/history/deferred.json (source "execute-drift", id "execute-drift-<timestamp>-<N>") so it survives state-file GC — no follow-up deferred_add is needed unless warnings is returned. Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N, deferredId (the id just written to deferred.json), next}, plus warnings[] when the deferred.json write failed: the call still succeeds, deferredId is omitted, and next names the exact ship_state action=deferred_add recovery call. Do not retry issue-draft to recover — it appends a second draft under a new id.
@@ -681,6 +683,8 @@ func executeState(root, workDir string, in ExecuteStateIn, now func() time.Time)
 		return execActionLedgerStatus(root, in, now)
 	case "ledger_cleanup":
 		return execActionLedgerCleanup(root, in)
+	case "ledger_skip":
+		return execActionLedgerSkip(root, in)
 	case "log-cli":
 		return execActionLogCLI(root, workDir, in)
 	case "drift-log":
@@ -6454,6 +6458,113 @@ func execActionLedgerCleanup(root string, in ExecuteStateIn) (any, error) {
 		"runId":   in.RunID,
 		"removed": removed,
 		"workers": workers,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Action: ledger_skip
+// ---------------------------------------------------------------------------
+
+// reviewStopReasons lists the stop reasons that ledger_skip accepts. It is the
+// order that the error Suggestion uses to name them.
+var reviewStopReasons = []string{reviewStopStalled, reviewStopMissing, reviewStopUnstopped}
+
+// execActionLedgerSkip records why a review worker stopped. It sets
+// stopReason on the planned dimension of in.WorkerID in
+// runs/ledger/<runId>/run.meta and replaces the file with an atomic write.
+// It reads and writes no worker file, so the ledger_status output does not
+// change. A missing run.meta, a workerId that is not a planned dimension, and
+// a reason outside the reviewStop* constants each return a DomainError and
+// leave run.meta as it was.
+func execActionLedgerSkip(root string, in ExecuteStateIn) (any, error) {
+	if in.RunID == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "runId is required",
+			Suggestion: "Pass the runId of the review run whose worker stopped.",
+		}
+	}
+	if in.WorkerID == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "workerId is required",
+			Suggestion: "Pass the workerId of the review worker that stopped, as in the review_prepare manifest.",
+		}
+	}
+	if err := execValidateSafeID(in.RunID, "runId"); err != nil {
+		return nil, err
+	}
+	if err := execValidateSafeID(in.WorkerID, "workerId"); err != nil {
+		return nil, err
+	}
+	validReason := false
+	for _, r := range reviewStopReasons {
+		if in.Reason == r {
+			validReason = true
+			break
+		}
+	}
+	if !validReason {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("reason %q is not a stop reason", in.Reason),
+			Suggestion: "Pass reason as one of: " + strings.Join(reviewStopReasons, ", ") + ".",
+		}
+	}
+
+	metaPath := ledgerRunMetaPath(root, in.RunID)
+	var meta reviewRunMeta
+	if err := fsx.ReadJSON(metaPath, &meta); err != nil {
+		switch {
+		case errors.Is(err, fsx.ErrNotFound):
+			return nil, &mcpserver.DomainError{
+				Msg:        "run.meta not found for runId " + in.RunID,
+				Suggestion: "run.meta is written by review_prepare. Call review_prepare first",
+				Cause:      err,
+			}
+		case errors.Is(err, fsx.ErrParse):
+			return nil, &mcpserver.DataError{
+				Msg:        "run.meta is not valid JSON: " + err.Error(),
+				Suggestion: "Inspect " + metaPath + ". If it is corrupt, call review_prepare to start a new review run.",
+				Cause:      err,
+			}
+		default:
+			return nil, &mcpserver.InfraError{
+				Msg:        "read run.meta: " + err.Error(),
+				Suggestion: "Check read permission on " + metaPath + ", then retry ledger_skip.",
+				Cause:      err,
+			}
+		}
+	}
+
+	planned := make([]string, 0, len(meta.Dimensions))
+	found := false
+	for i := range meta.Dimensions {
+		planned = append(planned, meta.Dimensions[i].WorkerID)
+		if meta.Dimensions[i].WorkerID == in.WorkerID {
+			meta.Dimensions[i].StopReason = in.Reason
+			found = true
+		}
+	}
+	if !found {
+		suggestion := "Pass one of the planned worker IDs: " + strings.Join(planned, ", ") + "."
+		if len(planned) == 0 {
+			suggestion = "run.meta holds no planned dimensions. review_prepare writes them. Call review_prepare first"
+		}
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("workerId %q is not a planned dimension of run %s", in.WorkerID, in.RunID),
+			Suggestion: suggestion,
+		}
+	}
+
+	if err := reviewWriteJSON(metaPath, meta); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        "write run.meta: " + err.Error(),
+			Suggestion: "Check write permission on " + paths.DataDir + "/" + paths.RunsSubdir + "/ledger/" + in.RunID + "/ and available disk space, then retry ledger_skip.",
+			Cause:      err,
+		}
+	}
+
+	return map[string]any{
+		"ok":   true,
+		"next": "Continue Step 3 of review.",
 	}, nil
 }
 

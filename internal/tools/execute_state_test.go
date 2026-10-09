@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -20,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	version "github.com/rnagrodzki/sdlc-plugin"
@@ -9604,4 +9606,527 @@ func TestExecuteBaseSyncResolve(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Ledger: ledger_skip records a stopped review worker in run.meta
+// ---------------------------------------------------------------------------
+
+// ledgerSkipRunID is the run id of the review run that the ledger_skip tests
+// seed.
+const ledgerSkipRunID = "review-skip-run"
+
+// seedLedgerSkipRun writes the run.meta that review_prepare writes, with
+// docs-review and security in wave 1 and performance in wave 2.
+func seedLedgerSkipRun(t *testing.T, root string) {
+	t.Helper()
+	waves := [][]string{{"docs-review", "security"}, {"performance"}}
+	if err := writeReviewRunMeta(root, "feat/x", ledgerSkipRunID, testNow, waves); err != nil {
+		t.Fatalf("seed run.meta: %v", err)
+	}
+}
+
+// ledgerSkip runs ledger_skip for the seeded review run.
+func ledgerSkip(root, workerID, reason string) (any, error) {
+	return executeState(root, root, ExecuteStateIn{
+		Action:   "ledger_skip",
+		RunID:    ledgerSkipRunID,
+		WorkerID: workerID,
+		Reason:   reason,
+	}, fixedClock(testNow))
+}
+
+// ledgerSkipMetaBytes returns the raw run.meta bytes of the seeded review run.
+func ledgerSkipMetaBytes(t *testing.T, root string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(ledgerRunMetaPath(root, ledgerSkipRunID))
+	if err != nil {
+		t.Fatalf("read run.meta: %v", err)
+	}
+	return raw
+}
+
+// ledgerDirNames returns the sorted entry names of a ledger run folder.
+func ledgerDirNames(t *testing.T, root, runID string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(ledgerDir(root, runID))
+	if err != nil {
+		t.Fatalf("read ledger dir: %v", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// TestExecState_LedgerSkip_SetsStopReason checks that ledger_skip sets stopReason on only the named dimension for each of the 3 reasons, returns the next hint, and changes nothing else in run.meta.
+func TestExecState_LedgerSkip_SetsStopReason(t *testing.T) {
+	for _, reason := range []string{reviewStopStalled, reviewStopMissing, reviewStopUnstopped} {
+		t.Run(reason, func(t *testing.T) {
+			root := t.TempDir()
+			seedLedgerSkipRun(t, root)
+			before, _ := readLedgerRunMeta(t, root, ledgerSkipRunID)
+
+			result, err := ledgerSkip(root, "security", reason)
+			if err != nil {
+				t.Fatalf("ledger_skip: %v", err)
+			}
+			want := map[string]any{"ok": true, "next": "Continue Step 3 of review."}
+			if !reflect.DeepEqual(result, want) {
+				t.Errorf("result = %v, want %v", result, want)
+			}
+
+			after, raw := readLedgerRunMeta(t, root, ledgerSkipRunID)
+			if n := strings.Count(string(raw), "stopReason"); n != 1 {
+				t.Errorf("run.meta holds %d stopReason keys, want 1:\n%s", n, raw)
+			}
+			for _, d := range after.Dimensions {
+				wantReason := ""
+				if d.WorkerID == "security" {
+					wantReason = reason
+				}
+				if d.StopReason != wantReason {
+					t.Errorf("dimension %s stopReason = %q, want %q", d.WorkerID, d.StopReason, wantReason)
+				}
+			}
+			// Everything else in run.meta stays as review_prepare wrote it.
+			for i := range after.Dimensions {
+				after.Dimensions[i].StopReason = ""
+			}
+			if !reflect.DeepEqual(after, before) {
+				t.Errorf("run.meta changed beyond stopReason:\nbefore %+v\nafter  %+v", before, after)
+			}
+		})
+	}
+}
+
+// TestExecState_LedgerSkip_ReplacesEarlierReasonAndKeepsOtherWorkers checks that a later ledger_skip replaces the stopReason of the same worker and keeps the stopReason of the other workers.
+func TestExecState_LedgerSkip_ReplacesEarlierReasonAndKeepsOtherWorkers(t *testing.T) {
+	root := t.TempDir()
+	seedLedgerSkipRun(t, root)
+
+	steps := []struct{ worker, reason string }{
+		{"docs-review", reviewStopStalled},
+		{"performance", reviewStopMissing},
+		{"docs-review", reviewStopUnstopped},
+	}
+	for _, s := range steps {
+		if _, err := ledgerSkip(root, s.worker, s.reason); err != nil {
+			t.Fatalf("ledger_skip %s %s: %v", s.worker, s.reason, err)
+		}
+	}
+
+	meta, _ := readLedgerRunMeta(t, root, ledgerSkipRunID)
+	got := map[string]string{}
+	for _, d := range meta.Dimensions {
+		got[d.WorkerID] = d.StopReason
+	}
+	want := map[string]string{"docs-review": reviewStopUnstopped, "security": "", "performance": reviewStopMissing}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("stop reasons = %v, want %v", got, want)
+	}
+}
+
+// TestExecState_LedgerSkip_TouchesNoWorkerFile checks that ledger_skip leaves the ledger_status output, the worker files and the entries of the ledger folder unchanged.
+func TestExecState_LedgerSkip_TouchesNoWorkerFile(t *testing.T) {
+	root := t.TempDir()
+	seedLedgerSkipRun(t, root)
+	for _, w := range []string{"docs-review", "security"} {
+		ledgerCheckin(t, root, root, ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: w, Branch: "feat/x"}, testNow)
+	}
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action: "ledger_checkout", RunID: ledgerSkipRunID, WorkerID: "docs-review", Findings: "[]",
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("ledger_checkout: %v", err)
+	}
+
+	statusIn := ExecuteStateIn{
+		Action:          "ledger_status",
+		RunID:           ledgerSkipRunID,
+		TimeoutSeconds:  60,
+		ExpectedWorkers: []string{"docs-review", "security", "performance"},
+	}
+	statusBefore, err := executeState(root, root, statusIn, fixedClock(testNow.Add(time.Hour)))
+	if err != nil {
+		t.Fatalf("ledger_status before: %v", err)
+	}
+	filesBefore := map[string][]byte{}
+	for _, w := range []string{"docs-review", "security"} {
+		raw, err := os.ReadFile(ledgerFilePath(root, ledgerSkipRunID, w))
+		if err != nil {
+			t.Fatalf("read worker file %s: %v", w, err)
+		}
+		filesBefore[w] = raw
+	}
+	namesBefore := ledgerDirNames(t, root, ledgerSkipRunID)
+
+	// One worker with a ledger file, one without.
+	for _, w := range []string{"security", "performance"} {
+		if _, err := ledgerSkip(root, w, reviewStopStalled); err != nil {
+			t.Fatalf("ledger_skip %s: %v", w, err)
+		}
+	}
+
+	statusAfter, err := executeState(root, root, statusIn, fixedClock(testNow.Add(time.Hour)))
+	if err != nil {
+		t.Fatalf("ledger_status after: %v", err)
+	}
+	if !reflect.DeepEqual(statusAfter, statusBefore) {
+		t.Errorf("ledger_status changed:\nbefore %v\nafter  %v", statusBefore, statusAfter)
+	}
+	for w, before := range filesBefore {
+		after, err := os.ReadFile(ledgerFilePath(root, ledgerSkipRunID, w))
+		if err != nil {
+			t.Fatalf("read worker file %s after: %v", w, err)
+		}
+		if string(after) != string(before) {
+			t.Errorf("worker file %s changed:\nbefore %s\nafter  %s", w, before, after)
+		}
+	}
+	if namesAfter := ledgerDirNames(t, root, ledgerSkipRunID); !reflect.DeepEqual(namesAfter, namesBefore) {
+		t.Errorf("ledger folder entries = %v, want %v (no worker file or temp file added)", namesAfter, namesBefore)
+	}
+}
+
+// TestExecState_LedgerSkip_MissingRunMeta checks that ledger_skip without a run.meta returns a DomainError that points at review_prepare and creates no ledger folder.
+func TestExecState_LedgerSkip_MissingRunMeta(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := ledgerSkip(root, "security", reviewStopStalled)
+
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+	}
+	const wantSuggestion = "run.meta is written by review_prepare. Call review_prepare first"
+	if de.Suggestion != wantSuggestion {
+		t.Errorf("Suggestion = %q, want %q", de.Suggestion, wantSuggestion)
+	}
+	if _, statErr := os.Stat(ledgerDir(root, ledgerSkipRunID)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("ledger folder stat error = %v, want not-exist (ledger_skip must not create it)", statErr)
+	}
+}
+
+// TestExecState_LedgerSkip_RunMetaWithoutDimensions checks that ledger_skip on the fallback run.meta of a check-in, which has no planned dimensions, returns a DomainError and leaves run.meta unchanged.
+func TestExecState_LedgerSkip_RunMetaWithoutDimensions(t *testing.T) {
+	root := t.TempDir()
+	// A check-in without review_prepare writes the fallback run.meta, which
+	// has no planned dimensions.
+	ledgerCheckin(t, root, root, ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "security", Branch: "feat/x"}, testNow)
+	before := ledgerSkipMetaBytes(t, root)
+
+	_, err := ledgerSkip(root, "security", reviewStopStalled)
+
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+	}
+	if !strings.Contains(de.Suggestion, "Call review_prepare first") {
+		t.Errorf("Suggestion = %q, want it to tell the caller to call review_prepare", de.Suggestion)
+	}
+	if after := ledgerSkipMetaBytes(t, root); string(after) != string(before) {
+		t.Errorf("run.meta changed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestExecState_LedgerSkip_UnknownWorker checks that ledger_skip for a worker that is not a planned dimension returns a DomainError that lists the planned worker ids and leaves run.meta unchanged.
+func TestExecState_LedgerSkip_UnknownWorker(t *testing.T) {
+	root := t.TempDir()
+	seedLedgerSkipRun(t, root)
+	before := ledgerSkipMetaBytes(t, root)
+
+	_, err := ledgerSkip(root, "not-planned", reviewStopStalled)
+
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+	}
+	if !strings.Contains(de.Msg, "not-planned") {
+		t.Errorf("Msg = %q, want it to name the unknown worker", de.Msg)
+	}
+	const wantPlanned = "docs-review, security, performance"
+	if !strings.Contains(de.Suggestion, wantPlanned) {
+		t.Errorf("Suggestion = %q, want it to list %q", de.Suggestion, wantPlanned)
+	}
+	if after := ledgerSkipMetaBytes(t, root); string(after) != string(before) {
+		t.Errorf("run.meta changed:\nbefore %s\nafter  %s", before, after)
+	}
+}
+
+// TestExecState_LedgerSkip_InvalidInput checks that ledger_skip rejects a missing or unsafe runId or workerId and a reason outside the 3 stop reasons with a DomainError, and leaves run.meta unchanged.
+func TestExecState_LedgerSkip_InvalidInput(t *testing.T) {
+	tests := []struct {
+		name           string
+		in             ExecuteStateIn
+		wantSuggestion string
+	}{
+		{
+			name:           "empty runId",
+			in:             ExecuteStateIn{WorkerID: "security", Reason: reviewStopStalled},
+			wantSuggestion: "runId",
+		},
+		{
+			name:           "empty workerId",
+			in:             ExecuteStateIn{RunID: ledgerSkipRunID, Reason: reviewStopStalled},
+			wantSuggestion: "workerId",
+		},
+		{
+			name:           "unsafe runId",
+			in:             ExecuteStateIn{RunID: "../x", WorkerID: "security", Reason: reviewStopStalled},
+			wantSuggestion: "runId",
+		},
+		{
+			name:           "unsafe workerId",
+			in:             ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "a/b", Reason: reviewStopStalled},
+			wantSuggestion: "workerId",
+		},
+		{
+			name:           "empty reason",
+			in:             ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "security"},
+			wantSuggestion: "stalled, missing, unstopped",
+		},
+		{
+			name:           "unknown reason",
+			in:             ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "security", Reason: "bogus"},
+			wantSuggestion: "stalled, missing, unstopped",
+		},
+		{
+			name:           "reason in another case",
+			in:             ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "security", Reason: "Stalled"},
+			wantSuggestion: "stalled, missing, unstopped",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			seedLedgerSkipRun(t, root)
+			before := ledgerSkipMetaBytes(t, root)
+			tt.in.Action = "ledger_skip"
+
+			_, err := executeState(root, root, tt.in, fixedClock(testNow))
+
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+			}
+			if !strings.Contains(de.Suggestion, tt.wantSuggestion) {
+				t.Errorf("Suggestion = %q, want it to contain %q", de.Suggestion, tt.wantSuggestion)
+			}
+			if after := ledgerSkipMetaBytes(t, root); string(after) != string(before) {
+				t.Errorf("run.meta changed:\nbefore %s\nafter  %s", before, after)
+			}
+		})
+	}
+}
+
+// TestExecState_LedgerSkip_CorruptRunMeta checks that ledger_skip on a run.meta that is not valid JSON returns a DataError with a Suggestion and leaves the file unchanged.
+func TestExecState_LedgerSkip_CorruptRunMeta(t *testing.T) {
+	root := t.TempDir()
+	seedLedgerSkipRun(t, root)
+	corrupt := []byte("{not json")
+	if err := os.WriteFile(ledgerRunMetaPath(root, ledgerSkipRunID), corrupt, 0o644); err != nil {
+		t.Fatalf("write corrupt run.meta: %v", err)
+	}
+
+	_, err := ledgerSkip(root, "security", reviewStopStalled)
+
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %T %v, want *mcpserver.DataError", err, err)
+	}
+	if !strings.Contains(de.Suggestion, "review_prepare") {
+		t.Errorf("Suggestion = %q, want it to point at review_prepare", de.Suggestion)
+	}
+	if after := ledgerSkipMetaBytes(t, root); string(after) != string(corrupt) {
+		t.Errorf("run.meta changed: %s", after)
+	}
+}
+
+// TestExecState_LedgerSkip_UnreadableRunMeta checks that ledger_skip returns an
+// InfraError with a Suggestion when run.meta exists but cannot be read, and
+// that it writes nothing.
+func TestExecState_LedgerSkip_UnreadableRunMeta(t *testing.T) {
+	root := t.TempDir()
+	// A directory at the run.meta path: the path exists, so the read fails
+	// with an I/O error and not with a not-found error.
+	metaPath := ledgerRunMetaPath(root, ledgerSkipRunID)
+	if err := os.MkdirAll(metaPath, 0o755); err != nil {
+		t.Fatalf("make run.meta a directory: %v", err)
+	}
+	writes := 0
+	useReviewWriteJSON(t, func(path string, v any) error {
+		writes++
+		return nil
+	})
+
+	_, err := ledgerSkip(root, "security", reviewStopStalled)
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "read run.meta: ") {
+		t.Errorf("Msg = %q, want the prefix %q", ie.Msg, "read run.meta: ")
+	}
+	if !strings.Contains(ie.Suggestion, metaPath) || !strings.Contains(ie.Suggestion, "retry ledger_skip") {
+		t.Errorf("Suggestion = %q, want it to name %s and tell the caller to retry ledger_skip", ie.Suggestion, metaPath)
+	}
+	if ie.Cause == nil {
+		t.Error("Cause is nil, want the read error")
+	}
+	if writes != 0 {
+		t.Errorf("run.meta writes = %d, want 0", writes)
+	}
+}
+
+// TestExecState_LedgerSkip_WriteFailureKeepsEarlierSkip checks that when the run.meta write of a second ledger_skip fails, the caller gets an InfraError and run.meta keeps the stopReason of the first call.
+func TestExecState_LedgerSkip_WriteFailureKeepsEarlierSkip(t *testing.T) {
+	root := t.TempDir()
+	seedLedgerSkipRun(t, root)
+
+	// The first write goes to disk. The second write fails.
+	calls := 0
+	var failedPath string
+	var failedMeta reviewRunMeta
+	useReviewWriteJSON(t, func(path string, v any) error {
+		calls++
+		if calls == 1 {
+			return fsx.AtomicWriteJSON(path, v)
+		}
+		failedPath = path
+		failedMeta = v.(reviewRunMeta)
+		return errors.New("disk full")
+	})
+
+	if _, err := ledgerSkip(root, "docs-review", reviewStopStalled); err != nil {
+		t.Fatalf("first ledger_skip: %v", err)
+	}
+	afterFirst := ledgerSkipMetaBytes(t, root)
+
+	_, err := ledgerSkip(root, "security", reviewStopMissing)
+
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("second ledger_skip err = %T %v, want *mcpserver.InfraError", err, err)
+	}
+	if !strings.Contains(ie.Msg, "disk full") {
+		t.Errorf("Msg = %q, want it to carry the write error", ie.Msg)
+	}
+	if !strings.Contains(ie.Suggestion, "ledger_skip") {
+		t.Errorf("Suggestion = %q, want it to tell the caller to retry ledger_skip", ie.Suggestion)
+	}
+	if want := ledgerRunMetaPath(root, ledgerSkipRunID); failedPath != want {
+		t.Errorf("failed write path = %q, want %q", failedPath, want)
+	}
+	for _, d := range failedMeta.Dimensions {
+		if d.WorkerID == "security" && d.StopReason != reviewStopMissing {
+			t.Errorf("write attempt carried stopReason %q for security, want %q", d.StopReason, reviewStopMissing)
+		}
+	}
+
+	// The first skip stays on disk. The failed one is not there.
+	if afterSecond := ledgerSkipMetaBytes(t, root); string(afterSecond) != string(afterFirst) {
+		t.Errorf("run.meta changed by the failed write:\nbefore %s\nafter  %s", afterFirst, afterSecond)
+	}
+	meta, _ := readLedgerRunMeta(t, root, ledgerSkipRunID)
+	got := map[string]string{}
+	for _, d := range meta.Dimensions {
+		got[d.WorkerID] = d.StopReason
+	}
+	want := map[string]string{"docs-review": reviewStopStalled, "security": "", "performance": ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("persisted stop reasons = %v, want %v", got, want)
+	}
+}
+
+// TestExecState_LedgerSkip_ToolSurface checks that the execute_state tool lists ledger_skip in its description, action enum and reason enum, and names ledger_skip in the runId and workerId descriptions.
+func TestExecState_LedgerSkip_ToolSurface(t *testing.T) {
+	s := mcpserver.New("test", "0.0.0-test")
+	RegisterExecuteStateTools(s)
+
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	resp, err := c.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	var tool *mcp.Tool
+	for _, candidate := range resp.Tools {
+		if candidate.Name == "execute_state" {
+			tool = candidate
+		}
+	}
+	if tool == nil {
+		t.Fatal(`no "execute_state" tool registered`)
+	}
+
+	var line string
+	for _, l := range strings.Split(tool.Description, "\n") {
+		if strings.HasPrefix(l, "- ledger_skip: ") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatal("tool description has no ledger_skip line")
+	}
+	for _, want := range []string{
+		"Requires runId, workerId, reason",
+		"run.meta",
+		"atomic write",
+		"DomainError",
+		"review_prepare",
+		"DataError when run.meta is not valid JSON",
+		"InfraError when run.meta cannot be read or written",
+		"leaves run.meta as it was",
+	} {
+		if !strings.Contains(line, want) {
+			t.Errorf("ledger_skip description %q does not contain %q", line, want)
+		}
+	}
+
+	raw, err := json.Marshal(tool.InputSchema)
+	if err != nil {
+		t.Fatalf("marshal input schema: %v", err)
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Description string   `json:"description"`
+			Enum        []string `json:"enum"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal(raw, &schema); err != nil {
+		t.Fatalf("unmarshal input schema: %v", err)
+	}
+	if got := schema.Properties["reason"].Enum; !reflect.DeepEqual(got, reviewStopReasons) {
+		t.Errorf("reason enum = %v, want %v", got, reviewStopReasons)
+	}
+	if !strings.Contains(schema.Properties["reason"].Description, "ledger_skip only") {
+		t.Errorf("reason description = %q, want it to say ledger_skip only", schema.Properties["reason"].Description)
+	}
+	for _, field := range []string{"runId", "workerId"} {
+		if !strings.Contains(schema.Properties[field].Description, "ledger_skip") {
+			t.Errorf("%s description = %q, want it to name ledger_skip", field, schema.Properties[field].Description)
+		}
+	}
+	hasSkip := false
+	for _, a := range schema.Properties["action"].Enum {
+		if a == "ledger_skip" {
+			hasSkip = true
+		}
+	}
+	if !hasSkip {
+		t.Errorf("action enum %v does not contain ledger_skip", schema.Properties["action"].Enum)
+	}
 }

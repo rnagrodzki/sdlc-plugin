@@ -191,6 +191,10 @@
       "type": "boolean",
       "description": "Set to true by the first ship_state fail of a run, before it appends the failure row to runs.jsonl. true does not prove the row exists: a failed append leaves the flag set. Stops a second fail row for the same run; the final history_record row of the run is separate."
     },
+    "commitBaseHead": {
+      "type": "string",
+      "description": "HEAD sha seen by the first ship_state commit-check call of the run. Later commit-check calls keep it. A clean tree with HEAD equal to it means nothing to commit; a clean tree with HEAD not equal to it means the commit landed."
+    },
     "planExploreSummary": {
       "type": "array",
       "description": "Plan explorer summary copied by cleanup-pipeline before it deletes the linked plan run. One entry for each explorer; top holds at most 5 findings. An empty list means the plan run had no explorer files.",
@@ -261,7 +265,7 @@
     },
     "sideEffects": {
       "type": "object",
-      "description": "Idempotency journal keyed by step name (\"<step>#<n>\" for the n-th entry of a name that occurs more than once in steps[], e.g. \"commit#2\"), recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed. Written by ship_verify_side_effect; consulted by begin-step's alreadyDone flag.",
+      "description": "Idempotency journal keyed by step name (\"<step>#<n>\" for the n-th entry of a name that occurs more than once in steps[], e.g. \"commit#2\"), recording each step's verified git/PR side effect so a resumed pipeline can skip re-doing work that already landed. Written by ship_verify_side_effect, and by ship_state commit-check (kind sha, ref = the full HEAD sha) when a clean tree has HEAD not equal to commitBaseHead; consulted by begin-step's alreadyDone flag.",
       "additionalProperties": {
         "type": "object",
         "properties": {

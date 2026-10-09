@@ -32,6 +32,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "issues": [ ... ],
   "lastFailedStep": null,
   "historyFailureRecorded": true,
+  "commitBaseHead": "3f2a9c1e...",
   "sideEffects": { ... },
   "healing": { ... },
   "planExploreSummary": [ ... ],
@@ -49,12 +50,13 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `sessionId` | string | The `sessionId` passed to init (or a later action that re-claims the run). |
 | `flags` | object | The resolved pipeline configuration `ship_prepare` merged — see below. |
 | `steps` | array | One entry per configured step. See "The `steps[]` scaffold" below — this is config-driven, not a fixed list. |
-| `decisions` | array | Appended by `ship_state{action:"decide"}`. |
+| `decisions` | array | Appended by `ship_state{action:"decide"}` and by `ship_state{action:"commit-check"}`. See "`decisions` Array" below. |
 | `deferredFindings` | array | Appended by `ship_state{action:"defer"}`. |
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
 | `historyFailureRecorded` | boolean | Absent until the first `fail` of the run. The first `ship_state{action:"fail"}` of a run sets it to `true` before it appends the failure row to `runs.jsonl`. `true` does not prove the row exists: a failed append leaves the flag set. It stops a second `fail` row for the same run. It does not stop Step 10c's `history_record` row, so a run that fails, resumes, and completes has two rows: the `failure` row and the final row. See "Issues and `lastFailedStep`" below. |
-| `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name, which `ship_prepare` never writes — see "Repeated step names"). Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag. See below. |
+| `commitBaseHead` | string | Absent until the first `ship_state{action:"commit-check"}` of the run. That call stores the HEAD sha of the active worktree. Later `commit-check` calls do not change it. With a clean tree, HEAD equal to `commitBaseHead` means nothing to commit; HEAD not equal to it means the commit landed. See "The `commit-check` Action" below. |
+| `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name, which `ship_prepare` never writes — see "Repeated step names"). Written by `ship_verify_side_effect` and by `commit-check` when it finds a landed commit; consulted by `begin-step`'s `alreadyDone` flag. See below. |
 | `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
 | `planExploreSummary` | array | Absent until `cleanup-pipeline` saves the summary copy, which it does before it deletes the linked plan run. If the delete then fails (`planRun.reason` `remove failed: ...`), the key stays set and the plan run stays on disk. One `{name, status, total, top[]}` entry for each plan explorer; `status` is `running`, `done`, or `unreadable`; `top` holds at most 5 `{summary, ref}` findings. `[]` when the plan run had no explorer files. See "Lifecycle: Cleanup." |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
@@ -164,18 +166,49 @@ Renders one `todos[N]` section per entry — each with `content`, `activeForm`, 
 
 ---
 
+## The `commit-check` Action
+
+`ship_state{action:"commit-check", detail:{branch?}}` decides the commit step from the working tree. It reads only `detail.branch`; it does not honor `detail.stateFile`. The `commit` step must be `in_progress`. A `commit` step in any other status gives a `DomainError` with the suggestion "Call begin-step for commit first, then call commit-check again." A pipeline with no `commit` step gives a `DataError`. In both cases the call runs none of the three git commands below (`add`, `diff --cached`, `rev-parse`). When `detail.branch` is omitted, the call first runs `git branch --show-current` in the active worktree to find the branch; when that fails, it returns a `DomainError`.
+
+Git runs in the active worktree. The ship state lives in the main root. The call runs these steps in order:
+
+1. `git add -A -- ':!.sdlc-v2/'` stages every change except the data directory.
+2. `git diff --cached --name-only` counts the staged paths (`stagedCount`).
+3. `git rev-parse HEAD` reads HEAD. When `commitBaseHead` is absent, the call stores HEAD there. A later call keeps the stored value.
+
+A failed git command returns an `InfraError` with the suggestion "Check the repository state with git status, then call commit-check again." The outcome then depends on the tree and on HEAD:
+
+| Tree | HEAD | Effect | `result` |
+|---|---|---|---|
+| dirty (`stagedCount` > 0) | any | No step change. Writes the state only to store a new `commitBaseHead`. | `""` |
+| clean | equal to `commitBaseHead` | Appends one `decisions[]` entry (`step:"commit"`, `decision` = `result`) and completes the `commit` step with `result`. | `nothing to commit: execute committed N wave commit(s)` when N > 0, else `nothing to commit: the working tree is clean` |
+| clean | not equal to `commitBaseHead` | Writes the `commit` key of `sideEffects` (`kind:"sha"`, `ref` = the full HEAD sha) and completes the `commit` step with `result`. | `committed <first 7 characters of HEAD>` |
+
+N (`waveCommits`) counts the `waves[]` entries with a non-empty `committedSha` in this branch's execute state. No execute state gives 0. An unreadable execute state also gives 0, and the response names the cause in `warnings`. All state changes of one call go to disk in one write. When that write fails, the call returns an `InfraError`, and the state file keeps its earlier content. The changes that `git add` staged stay staged.
+
+The response carries `clean`, `stagedCount`, `waveCommits`, `stepCompleted`, `result`, `warnings`, and `next`. When `stepCompleted` is `true`, it also carries the `todos` and `display` of the completed step, the same as `complete-step`. `next` is one of:
+
+| Outcome | `next` |
+|---|---|
+| dirty | `Changes are staged. Dispatch the commit agent, then 7c2, then complete-step.` |
+| clean, nothing to commit | `Commit step completed. Skip 7c2 and d. Go to the next step.` |
+| clean, commit landed | `Commit step completed from the landed commit. Skip 7c2 and d. Go to the next step.` |
+
+---
+
 ## `decisions` Array
 
-Appended by `ship_state{action:"decide", step, detail:{text}}`. Never overwritten, and never validated against `steps[]` — `step` can be any name, tracked or inline, configured or not (it's most useful for `received-review`/`commit-fixes`, which have no other way to record an outcome, but nothing stops calling it for a tracked step too, e.g. to leave a supplementary note).
+Appended by `ship_state{action:"decide", step, detail:{text}}`, and by `commit-check` when the commit step has nothing to commit (`decision` is then the commit step `result`). Never overwritten, and never validated against `steps[]` — `step` can be any name, tracked or inline, configured or not (it's most useful for `received-review`/`commit-fixes`, which have no other way to record an outcome, but nothing stops calling it for a tracked step too, e.g. to leave a supplementary note).
 
 ```json
-{ "step": "verify-openspec", "decision": "openspec validate --strict: passed" }
+{ "step": "verify-openspec", "decision": "openspec validate --strict: passed", "at": "2026-03-27T14:50:00Z" }
 ```
 
 | Field | Type | Description |
 |---|---|---|
-| `step` | string | The `step` value passed to `decide`. |
-| `decision` | string | The `detail.text` value passed. |
+| `step` | string | The `step` value passed to `decide`; `"commit"` for a `commit-check` entry. |
+| `decision` | string | The `detail.text` value passed to `decide`; the commit step `result` for a `commit-check` entry. |
+| `at` | string | ISO 8601 UTC timestamp of the call, written by both `decide` and `commit-check`. |
 
 ---
 
@@ -235,7 +268,7 @@ Idempotency journal keyed by step name, recording each step's verified git/PR si
 }
 ```
 
-`kind` is one of `"pr"` or `"sha"` — there is no `"release-intent"` kind. `ship_verify_side_effect({step:"commit"})` writes the key of the `commit` entry that the step lookup selects (see "Repeated step names"), which is the one in progress when the call follows `begin-step`. Written by `ship_verify_side_effect`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-dispatch the pr step once its PR (`ref` = `"#<number>"`) is already journaled. Release-intent correctness (bump level, pre-release label, notes) has no journal entry of its own — it is enforced synchronously by `pr_apply` itself at call time, not tracked as a separate side effect here.
+`kind` is one of `"pr"` or `"sha"` — there is no `"release-intent"` kind. `ship_verify_side_effect({step:"commit"})` writes the key of the `commit` entry that the step lookup selects (see "Repeated step names"), which is the one in progress when the call follows `begin-step`. Written by `ship_verify_side_effect`, and by `commit-check` when a clean tree has HEAD past `commitBaseHead`; consulted by `begin-step`'s `alreadyDone` flag (surfaced in `ShipStepNarrationOut.AlreadyDone`) so a resumed pipeline doesn't, say, re-dispatch the pr step once its PR (`ref` = `"#<number>"`) is already journaled. Release-intent correctness (bump level, pre-release label, notes) has no journal entry of its own — it is enforced synchronously by `pr_apply` itself at call time, not tracked as a separate side effect here.
 
 ---
 
