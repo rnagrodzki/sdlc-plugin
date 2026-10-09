@@ -32,12 +32,21 @@ When `run.meta` is absent, the first `ledger_checkin` of a run id SHALL create `
 ## ADDED Requirements
 
 ### Requirement: ledger_skip records a stopped review worker
-The action `ledger_skip` SHALL take `runId`, `workerId`, and `reason` (`stalled`, `missing`, or `unstopped`) and SHALL set `stopReason` of that dimension in `run.meta` with an atomic write. It SHALL not write any worker file; it MAY read the worker file to warn that the worker already checked out. The result SHALL echo `workerId`, the recorded `stopReason`, and the replaced `priorStopReason` when one was set. A missing `run.meta`, an unknown `workerId`, or a bad `reason` SHALL return a DomainError with a Suggestion.
+The action `ledger_skip` SHALL take `runId`, `workerId`, and `reason` (`stalled`, `missing`, or `unstopped`) and SHALL set `stopReason` of that dimension in `run.meta` with an atomic write. It SHALL not write any worker file. A missing `run.meta`, an unknown `workerId`, or a bad `reason` SHALL return a DomainError with a Suggestion.
 
 #### Scenario: Missing worker
 - **WHEN** `ledger_skip` gets `workerId` `docs-review` and `reason` `missing`
 - **THEN** the `docs-review` entry of `run.meta` has `stopReason` `missing`
 - **AND** `ledger_status` output does not change
+
+#### Scenario: Result echo
+- **WHEN** `ledger_skip` replaces an earlier `stopReason`
+- **THEN** the result holds `workerId`, the recorded `stopReason`, and the replaced `priorStopReason`
+
+#### Scenario: Worker already checked out
+- **WHEN** the worker file shows that the worker already checked out
+- **THEN** the call still records `stopReason`
+- **AND** the result warns that the dashboard ignores the stop reason of a worker that checked out
 
 #### Scenario: No run meta
 - **WHEN** `run.meta` does not exist
