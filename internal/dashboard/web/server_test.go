@@ -1615,8 +1615,9 @@ func TestStaticIndex_NoInlineCodeOrExternalURLs(t *testing.T) {
 	}
 }
 
-// TestStaticIndex_IdsAndScripts pins the ids the page script builds into, the tab wiring, the
-// removed rail, and the script order.
+// TestStaticIndex_IdsAndScripts pins the ids the page script builds into, including the detail
+// viewer, the confirm dialog, and the Clear button, the tab wiring, the removed rail, and the
+// script order.
 func TestStaticIndex_IdsAndScripts(t *testing.T) {
 	page := htmlCommentRe.ReplaceAllString(staticFile(t, "index.html"), "")
 
@@ -1628,6 +1629,8 @@ func TestStaticIndex_IdsAndScripts(t *testing.T) {
 		"conn", "conn-text", "totals", "stop-btn", "stop-dialog", "stop-dialog-text", "stop-confirm", "stop-cancel",
 		"tab-pipelines", "tab-activity", "tab-history", "n-pipelines", "n-activity", "n-history",
 		"filter-chips", "toggle-all", "panel-pipelines", "panel-activity", "panel-history", "feed",
+		"detail-dialog", "detail-title", "detail-content", "detail-close",
+		"confirm-dialog", "confirm-text", "confirm-ok", "confirm-cancel", "clear-btn",
 	} {
 		if counts[id] != 1 {
 			t.Errorf("index.html has id %q %d times; want 1", id, counts[id])
@@ -1892,8 +1895,9 @@ func TestStaticCSS_FontAndPalette(t *testing.T) {
 }
 
 // TestStaticCSS_LayoutRules pins the layout rules: a 56 px header, one scroll box (the stage), the
-// block grid and tiles, the full-width track of stations (no width cap, wrap below 88 px per
-// station), the cursor of stations, and the rules for a narrow page.
+// block grid and tiles, the track of stations (no width cap, 112 px for each station, wrap to a
+// new row), the right-anchored detail panel (full height without vh, no overflow rule), the
+// cursor of stations, and the rules for a narrow page.
 func TestStaticCSS_LayoutRules(t *testing.T) {
 	rules := parseCSS(t, staticFile(t, "app.css"))
 
@@ -1912,8 +1916,15 @@ func TestStaticCSS_LayoutRules(t *testing.T) {
 		{"", ".step-sec.selected", "border-color", "var(--scan-cyan-dim)"},
 		{"", ".waves", "grid-template-columns", "minmax(min(100%, 320px), 1fr)"},
 		{"", ".dim-cols", "grid-template-columns", "minmax(100px, 170px)"},
-		{"", ".track", "grid-template-columns", "repeat(auto-fit, minmax(88px, 1fr))"},
+		{"", ".track", "grid-template-columns", "repeat(auto-fill, 112px)"},
+		{"", ".track", "justify-content", "start"},
 		{"", ".track", "overflow-x", "clip"},
+		{"", ".detail-dialog", "margin", "0 0 0 auto"},
+		{"", ".detail-dialog", "inset-block", "0"},
+		{"", ".detail-dialog", "max-height", "none"},
+		{"", ".detail-dialog", "height", "100%"},
+		{"", ".detail-dialog", "width", "min(36rem, 100%)"},
+		{"", ".detail-text", "white-space", "pre-wrap"},
 		{"", ".act-grid", "grid-template-columns", "minmax(min(100%, 560px), 1fr)"},
 		{"", ".hist-panel", "max-width", "1180px"},
 		{"", ".station", "cursor", "default"},
@@ -1936,6 +1947,16 @@ func TestStaticCSS_LayoutRules(t *testing.T) {
 				for _, prop := range []string{"max-width", "width"} {
 					if v, ok := r.Decls[prop]; ok {
 						t.Errorf(".track { %s: %s }: the track must use the full panel width", prop, v)
+					}
+				}
+			}
+			if s == ".detail-dialog" || strings.HasPrefix(s, ".detail-dialog ") {
+				for prop, v := range r.Decls {
+					if strings.HasPrefix(prop, "overflow") {
+						t.Errorf(".detail-dialog { %s: %s }: the browser scrolls the dialog; the rule must not set overflow", prop, v)
+					}
+					if strings.Contains(v, "vh") {
+						t.Errorf(".detail-dialog { %s: %s }: the panel is full height through height: 100%%, not vh", prop, v)
 					}
 				}
 			}
