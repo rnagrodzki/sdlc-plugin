@@ -271,6 +271,34 @@ func TestPrepareOrchestrator_ErrorReportOmitsInstructions(t *testing.T) {
 	}
 }
 
+// TestPrepareOrchestrator_ErrorReportWritesFreshManifestPerCall asserts that
+// two error_report calls with the same input return different manifest paths.
+func TestPrepareOrchestrator_ErrorReportWritesFreshManifestPerCall(t *testing.T) {
+	newOrchestratorRepo(t, hardenInstructionsConfig)
+	in := PrepareOrchestratorIn{
+		Mode:      "error_report",
+		Skill:     "ship",
+		Step:      "step-1",
+		Operation: "do-thing",
+		Error:     "boom",
+	}
+
+	first, err := prepareOrchestrator(in)
+	if err != nil {
+		t.Fatalf("first prepareOrchestrator: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(first.ManifestPath)) })
+	second, err := prepareOrchestrator(in)
+	if err != nil {
+		t.Fatalf("second prepareOrchestrator: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(second.ManifestPath)) })
+
+	if first.ManifestPath == second.ManifestPath {
+		t.Errorf("both calls returned manifestPath %q, want different paths", first.ManifestPath)
+	}
+}
+
 // TestPrepareOrchestrator_HardenInvalidInstructionsReturnsError asserts that
 // an invalid [harden.instructions] list fails harden mode with the loader
 // DomainError, which names the key, and returns no output.

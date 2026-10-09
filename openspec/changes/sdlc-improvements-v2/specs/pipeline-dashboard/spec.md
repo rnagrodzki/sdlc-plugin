@@ -34,6 +34,33 @@ A ship run whose state has `planExploreSummary` SHALL get a first step `plan` wi
 - **WHEN** a ship state also has `planReviewRounds` with 2 rounds
 - **THEN** the `plan` step lists the 2 rounds and `maxRounds`
 
+### Requirement: Loopback access
+The server SHALL listen on `127.0.0.1` only, SHALL reject a request whose `Host` header is not `127.0.0.1:<port>` or `localhost:<port>`, and SHALL accept GET only, except `POST /api/stop`, `POST /api/run-archive` and `POST /api/cache-clear`.
+
+#### Scenario: Foreign host header
+- **WHEN** a request has `Host: evil.example:7385`
+- **THEN** the response status is 403
+
+#### Scenario: Write method on a read endpoint
+- **WHEN** a POST request reaches `/api/snapshot`
+- **THEN** the response status is 405
+
+#### Scenario: Unknown path
+- **WHEN** a GET request reaches `/nothing`
+- **THEN** the response status is 404
+
+### Requirement: Station track
+The station track SHALL use the full panel width. Every station SHALL be 112 px wide and SHALL start at the left edge of the track. Stations SHALL wrap to a new row when the track has no room for one more station. The track SHALL not scroll sideways.
+
+#### Scenario: Wide panel
+- **WHEN** a panel is 2560 px wide and a ship run has 10 stations
+- **THEN** all stations are in one row
+
+#### Scenario: Narrow panel
+- **WHEN** a review run has 23 stations in a 1280 px panel
+- **THEN** the stations wrap to more rows
+- **AND** the track has no horizontal scroll
+
 ## ADDED Requirements
 
 ### Requirement: Guarded change requests

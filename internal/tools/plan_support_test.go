@@ -85,8 +85,7 @@ func gateRange(from, to int) []string {
 
 // allGates returns G1..G22, the full expected coverage set (SKILL.md Step 3
 // coverageCheck: "the union of all gateIds[] arrays returned by lanes MUST
-// equal {G1..G22} exactly"). G22 (style compliance) joined the set in the
-// same change that added the guardrail-compliance lane's second gate.
+// equal {G1..G22} exactly"). G22 (style compliance) has its own lane.
 func allGates() []string {
 	return gateRange(1, 22)
 }
@@ -112,6 +111,31 @@ func TestPlanMergeResults_CoveragePass(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("mergeResults: %v", err)
+	}
+	if len(out.CoverageGaps) != 0 {
+		t.Errorf("CoverageGaps = %v, want empty", out.CoverageGaps)
+	}
+}
+
+// TestPlanSupportCore_UnusedFieldsAreIgnored verifies that merge_results
+// merges the lane results and does not read filePath, a field that only the
+// material actions use.
+func TestPlanSupportCore_UnusedFieldsAreIgnored(t *testing.T) {
+	prev := readFileFunc
+	t.Cleanup(func() { readFileFunc = prev })
+	readFileFunc = func(path string) ([]byte, error) {
+		t.Errorf("merge_results read %q, want no file read", path)
+		return nil, os.ErrNotExist
+	}
+
+	out, err := planSupportCore("", "", PlanSupportIn{
+		Action:        "merge_results",
+		FilePath:      "/nonexistent/plan.md",
+		LaneResults:   fiveLanesCoveringAllGates(),
+		ExpectedGates: allGates(),
+	})
+	if err != nil {
+		t.Fatalf("planSupportCore: %v", err)
 	}
 	if len(out.CoverageGaps) != 0 {
 		t.Errorf("CoverageGaps = %v, want empty", out.CoverageGaps)
