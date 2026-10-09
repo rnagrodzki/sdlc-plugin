@@ -1014,8 +1014,10 @@ describe('browser global fallback', () => {
 
 const render = require('../static/render.js');
 
-// The fake document: the DOM calls render.js may use, and no more. A new DOM
-// call in render.js needs a matching method here.
+// The fake document: the DOM calls the render.js builders may use, and no more.
+// A new DOM call in a builder needs a matching method here. tickElapsed reads
+// the page with querySelectorAll and getAttribute, so its tests use
+// fakeElapsedDoc and fakeElapsedNode below.
 function fakeDoc() {
   function node(tag) { return { tagName: tag, className: '', attrs: {}, children: [], textContent: '', open: false, hidden: false,
     setAttribute(k, v) { this.attrs[k] = String(v); }, appendChild(c) { this.children.push(c); return c; } }; }
@@ -1069,6 +1071,17 @@ function pipeline(extra) {
     extra
   );
 }
+
+// An open wait: asked 4m 12s before NOW_WAIT.
+const ATTENTION = {
+  kind: 'question',
+  askedAt: '2026-10-08T14:00:00Z',
+  header: 'Guardrail',
+  text: 'Approve the splice_test.go change?',
+};
+
+// 4m 12s after ATTENTION.askedAt, in ms.
+const NOW_WAIT = Date.parse('2026-10-08T14:04:12Z');
 
 describe('render el', () => {
   test('sets the class and puts text through textContent', () => {
@@ -1164,6 +1177,19 @@ describe('render blockHead', () => {
     assert.equal(oneByClass(linked, 'pipe-branch').attrs.title, 'feat/x · worktree app-feat-x');
   });
 
+  test('a pipeline with an attention has the class waiting on its lamp', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline({ attention: ATTENTION }), false, 0);
+    assert.equal(oneByClass(head, 'lamp').className, 'lamp running waiting');
+    assert.equal(oneByClass(head, 'lamp').attrs['aria-hidden'], 'true');
+    assert.equal(oneByClass(head, 'pipe-status').className, 'pipe-status running');
+  });
+
+  test('a pipeline without an attention has no waiting class on its lamp', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline(), false, 0);
+    assert.equal(oneByClass(head, 'lamp').className, 'lamp running');
+    assert.equal(byClass(head, 'waiting').length, 0);
+  });
+
   test('markup in a branch name stays text: <b>x</b>', () => {
     const head = render.blockHead(fakeDoc(), view, REPO, pipeline({ branch: '<b>x</b>' }), false, 0);
     const branch = oneByClass(head, 'pipe-branch');
@@ -1207,6 +1233,25 @@ describe('render stationTrack', () => {
     assert.equal(oneByClass(stations[2], 'label').className, 'label current');
     assert.equal(oneByClass(stations[0], 'label').textContent, view.stationLabel('execute'));
   });
+
+  test('with an attention the current station shows the waiting glyph and the rest keep their glyphs', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline({ attention: ATTENTION }), 2);
+    const glyphs = byClass(track, 'glyph');
+    assert.deepEqual(glyphs.map((g) => g.className), ['glyph completed', 'glyph completed', 'glyph in_progress', 'glyph pending']);
+    assert.deepEqual(glyphs.map((g) => g.textContent), [
+      view.stepGlyph('completed').glyph,
+      view.stepGlyph('completed').glyph,
+      '◈',
+      view.stepGlyph('pending').glyph,
+    ]);
+  });
+
+  test('without an attention the current station keeps the in_progress glyph', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline(), 2);
+    const current = byClass(track, 'glyph').filter((g) => classesOf(g).includes('in_progress'));
+    assert.deepEqual(current.map((g) => g.textContent), [view.stepGlyph('in_progress').glyph]);
+    assert.ok(!textOf(track).includes('◈'));
+  });
 });
 
 describe('render pipelineBlock', () => {
@@ -1244,18 +1289,248 @@ describe('render pipelineBlock', () => {
     const marked = byClass(block, 'station').map((s) => classesOf(s).includes('selected'));
     assert.equal(marked.indexOf(true), view.defaultStationIndex(p.steps));
   });
+
+  test('without an attention the block has no attn class and no banner', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline(), { collapsed: false, selected: 0, now: NOW_WAIT });
+    assert.equal(block.className, 'pipe-block');
+    assert.equal(byClass(block, 'attn-bar').length, 0);
+    assert.equal(byClass(block, 'attn-text').length, 0);
+    assert.equal(byClass(block, 'waiting').length, 0);
+  });
+
+  test('with an attention the block has the attn class, the banner first, the waiting lamp, and the waiting glyph', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline({ attention: ATTENTION }), {
+      collapsed: false,
+      selected: 0,
+      now: NOW_WAIT,
+    });
+    assert.equal(block.className, 'pipe-block attn');
+    assert.deepEqual(block.children.map((c) => c.className), ['attn-bar', 'attn-text', 'pipe-head', 'track-panel']);
+    assert.equal(textOf(block.children[0]), '◈ WAITING ON YOU · 4m 12s');
+    assert.equal(textOf(block.children[1]), 'Guardrail: "Approve the splice_test.go change?"');
+    assert.equal(oneByClass(block, 'waiting').className, 'lamp running waiting');
+    assert.equal(byClass(block, 'glyph').filter((g) => g.textContent === '◈').length, 1);
+  });
+
+  test('a collapsed block with an attention keeps the banner and has both classes', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline({ attention: ATTENTION }), {
+      collapsed: true,
+      selected: 0,
+      now: NOW_WAIT,
+    });
+    assert.equal(block.className, 'pipe-block collapsed attn');
+    assert.equal(block.children[0].className, 'attn-bar');
+  });
+
+  test('now can be a Date', () => {
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline({ attention: ATTENTION }), {
+      collapsed: false,
+      now: new Date(NOW_WAIT),
+    });
+    assert.equal(oneByClass(block, 'attn-elapsed').textContent, '4m 12s');
+  });
+});
+
+describe('render elapsedText', () => {
+  const ASKED = '2026-10-08T14:00:00Z';
+  const ASKED_MS = Date.parse(ASKED);
+
+  test('seconds, then minutes with seconds, then hours with minutes', () => {
+    assert.equal(render.elapsedText(view, ASKED, ASKED_MS + 26000), '26s');
+    assert.equal(render.elapsedText(view, ASKED, ASKED_MS + 252000), '4m 12s');
+    assert.equal(render.elapsedText(view, ASKED, ASKED_MS + 3780000), '1h 03m');
+  });
+
+  test('now can be a Date', () => {
+    assert.equal(render.elapsedText(view, ASKED, new Date(ASKED_MS + 252000)), '4m 12s');
+  });
+
+  test('a time in the future gives 0s, not a negative time', () => {
+    assert.equal(render.elapsedText(view, ASKED, ASKED_MS - 5000), '0s');
+  });
+
+  test('a bad or missing timestamp gives an empty string', () => {
+    assert.equal(render.elapsedText(view, 'bad', ASKED_MS), '');
+    assert.equal(render.elapsedText(view, '', ASKED_MS), '');
+    assert.equal(render.elapsedText(view, undefined, ASKED_MS), '');
+  });
+});
+
+describe('render attentionRows', () => {
+  test('the bar holds the glyph, the label, and the elapsed span with data-asked', () => {
+    const [bar] = render.attentionRows(fakeDoc(), view, ATTENTION, NOW_WAIT);
+    assert.equal(bar.tagName, 'div');
+    assert.equal(bar.className, 'attn-bar');
+    assert.equal(textOf(bar), '◈ WAITING ON YOU · 4m 12s');
+    const glyph = oneByClass(bar, 'attn-glyph');
+    assert.equal(glyph.textContent, '◈');
+    assert.equal(glyph.attrs['aria-hidden'], 'true');
+    const elapsed = oneByClass(bar, 'attn-elapsed');
+    assert.equal(elapsed.attrs['data-asked'], '2026-10-08T14:00:00Z');
+    assert.equal(elapsed.attrs['aria-live'], 'off');
+    assert.equal(elapsed.textContent, '4m 12s');
+  });
+
+  test('the text line is header, colon, and the quoted text', () => {
+    const rows = render.attentionRows(fakeDoc(), view, ATTENTION, NOW_WAIT);
+    assert.equal(rows.length, 2);
+    assert.equal(rows[1].className, 'attn-text');
+    assert.equal(rows[1].textContent, 'Guardrail: "Approve the splice_test.go change?"');
+  });
+
+  test('a header with no text gives the header alone', () => {
+    const rows = render.attentionRows(fakeDoc(), view, { askedAt: ATTENTION.askedAt, header: 'Permission' }, NOW_WAIT);
+    assert.equal(rows[1].textContent, 'Permission');
+  });
+
+  test('a text with no header gives the quoted text alone', () => {
+    const rows = render.attentionRows(fakeDoc(), view, { askedAt: ATTENTION.askedAt, text: 'Run it?' }, NOW_WAIT);
+    assert.equal(rows[1].textContent, '"Run it?"');
+  });
+
+  test('no header and no text gives no text line', () => {
+    const rows = render.attentionRows(fakeDoc(), view, { askedAt: ATTENTION.askedAt }, NOW_WAIT);
+    assert.equal(rows[0].className, 'attn-bar');
+    assert.equal(rows[1], null);
+  });
+
+  test('no askedAt gives an empty data-asked and an empty elapsed text', () => {
+    const [bar] = render.attentionRows(fakeDoc(), view, { header: 'Permission' }, NOW_WAIT);
+    const elapsed = oneByClass(bar, 'attn-elapsed');
+    assert.equal(elapsed.attrs['data-asked'], '');
+    assert.equal(elapsed.textContent, '');
+  });
+
+  test('markup in the header and the text stays text: <b>x</b>', () => {
+    const rows = render.attentionRows(fakeDoc(), view, { askedAt: ATTENTION.askedAt, header: '<i>h</i>', text: '<b>x</b>' }, NOW_WAIT);
+    assert.equal(rows[1].textContent, '<i>h</i>: "<b>x</b>"');
+    assert.equal(rows[1].children.length, 0);
+  });
+});
+
+describe('render scopedTitle', () => {
+  const BASE = 'SDLC dashboard';
+  const waiting = { status: 'running', attention: ATTENTION };
+  const repos = [
+    { root: '/a', pipelines: [waiting, { status: 'running' }] },
+    { root: '/b', pipelines: [{ status: 'running' }] },
+    { root: '/c', pipelines: [waiting] },
+  ];
+
+  test('an empty scope counts the waiting runs of every repo', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set()), '(2) SDLC dashboard');
+  });
+
+  test('a missing scope counts every repo', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, undefined), '(2) SDLC dashboard');
+  });
+
+  test('a scope that leaves out every waiting repo gives the base title', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set(['/b'])), 'SDLC dashboard');
+  });
+
+  test('a scope that holds one waiting repo counts only that repo', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set(['/a', '/b'])), '(1) SDLC dashboard');
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set(['/c'])), '(1) SDLC dashboard');
+  });
+
+  test('a scope that holds both waiting repos counts both', () => {
+    assert.equal(render.scopedTitle(view, BASE, repos, new Set(['/a', '/c'])), '(2) SDLC dashboard');
+  });
+
+  test('no repo gives the base title', () => {
+    assert.equal(render.scopedTitle(view, BASE, [], new Set(['/a'])), 'SDLC dashboard');
+  });
+});
+
+// A fake wait-banner node: only getAttribute and textContent, the two members tickElapsed uses.
+function fakeElapsedNode(askedAt, text) {
+  return {
+    textContent: text,
+    getAttribute(name) {
+      return name === 'data-asked' ? askedAt : null;
+    },
+  };
+}
+
+// A fake document for tickElapsed: querySelectorAll gives nodes for '.attn-elapsed' and nothing for any
+// other selector; queries records every selector asked.
+function fakeElapsedDoc(nodes) {
+  const queries = [];
+  return {
+    queries,
+    querySelectorAll(selector) {
+      queries.push(selector);
+      return selector === '.attn-elapsed' ? nodes : [];
+    },
+  };
+}
+
+describe('render tickElapsed', () => {
+  const ASKED = '2026-10-08T14:00:00Z';
+  const ASKED_MS = Date.parse(ASKED);
+
+  test('a readable data-asked rewrites the text from now', () => {
+    const node = fakeElapsedNode(ASKED, '0s');
+    const doc = fakeElapsedDoc([node]);
+    render.tickElapsed(doc, view, ASKED_MS + 252000);
+    assert.equal(node.textContent, '4m 12s');
+    assert.deepEqual(doc.queries, ['.attn-elapsed']);
+  });
+
+  test('now can be a Date', () => {
+    const node = fakeElapsedNode(ASKED, '0s');
+    render.tickElapsed(fakeElapsedDoc([node]), view, new Date(ASKED_MS + 26000));
+    assert.equal(node.textContent, '26s');
+  });
+
+  test('an unreadable data-asked keeps the old text', () => {
+    for (const asked of ['not a time', '', null]) {
+      const node = fakeElapsedNode(asked, '4m 12s');
+      render.tickElapsed(fakeElapsedDoc([node]), view, ASKED_MS + 300000);
+      assert.equal(node.textContent, '4m 12s', `data-asked ${JSON.stringify(asked)}`);
+    }
+  });
+
+  test('every node is handled, and a bad node does not stop the next one', () => {
+    const first = fakeElapsedNode(ASKED, '0s');
+    const bad = fakeElapsedNode('not a time', 'kept');
+    const second = fakeElapsedNode('2026-10-08T13:59:00Z', '0s');
+    render.tickElapsed(fakeElapsedDoc([first, bad, second]), view, ASKED_MS + 26000);
+    assert.equal(first.textContent, '26s');
+    assert.equal(bad.textContent, 'kept');
+    assert.equal(second.textContent, '1m 26s');
+  });
+
+  test('a page with no wait banner changes nothing', () => {
+    const doc = fakeElapsedDoc([]);
+    render.tickElapsed(doc, view, ASKED_MS);
+    assert.deepEqual(doc.queries, ['.attn-elapsed']);
+  });
 });
 
 describe('render headerTotals', () => {
-  test('running, stalled and failed over every repo', () => {
+  test('running, stalled, failed and waiting over every repo', () => {
     const repos = [
       { root: '/a', pipelines: [{ status: 'running' }, { status: 'failed' }] },
       { root: '/b', pipelines: [{ status: 'running' }, { status: 'completed' }] },
     ];
     const out = render.headerTotals(fakeDoc(), view, repos);
-    assert.deepEqual(out.map((n) => n.className), ['c-run', 'c-stall', 'c-fail']);
-    assert.deepEqual(out.map(textOf), ['running · 2', 'stalled · 0', 'failed · 1']);
+    assert.deepEqual(out.map((n) => n.className), ['c-run', 'c-stall', 'c-fail', 'c-wait']);
+    assert.deepEqual(out.map(textOf), ['running · 2', 'stalled · 0', 'failed · 1', 'waiting · 0']);
     assert.equal(out[0].children[0].tagName, 'strong');
+  });
+
+  test('the waiting span counts the pipelines with an attention, in every repo', () => {
+    const repos = [
+      { root: '/a', pipelines: [{ status: 'running', attention: ATTENTION }, { status: 'running' }] },
+      { root: '/b', pipelines: [{ status: 'running', attention: ATTENTION }] },
+    ];
+    const out = render.headerTotals(fakeDoc(), view, repos);
+    assert.deepEqual(out.map(textOf), ['running · 3', 'stalled · 0', 'failed · 0', 'waiting · 2']);
+    assert.equal(out[3].className, 'c-wait');
+    assert.equal(out[3].children[0].tagName, 'strong');
+    assert.equal(out[3].children[0].textContent, '2');
   });
 });
 
@@ -1850,9 +2125,11 @@ describe('render.js browser global fallback', () => {
     assert.deepEqual(Object.keys(fakeRoot.sdlcRender).sort(), [
       'TILE_BODIES',
       'activityPanel',
+      'attentionRows',
       'blockHead',
       'dimensionsBody',
       'el',
+      'elapsedText',
       'emptyState',
       'explorersBody',
       'filterChips',
@@ -1862,10 +2139,12 @@ describe('render.js browser global fallback', () => {
       'issuesTile',
       'pipelineBlock',
       'roundsBody',
+      'scopedTitle',
       'sessionTile',
       'stationTrack',
       'stepTile',
       'stepTiles',
+      'tickElapsed',
       'wavesBody',
     ]);
   });

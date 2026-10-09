@@ -433,9 +433,10 @@ func pendingTaskRefs(original string) (lines []string, parsed []TaskEntry, updat
 }
 
 // stampTaskRefs reads tasksPath, applies pendingTaskRefs, and writes the
-// result back only when at least one line gained a ref comment. Called only
-// from execute_state's init handler (after plan approval) — plan_prepare
-// itself must not write git-tracked files, since it runs inside plan mode.
+// result back only when at least one line gained a ref comment. Called from
+// execute_state's init handler (after plan approval) and from openspecSave —
+// plan_prepare itself must not write git-tracked files, since it runs inside
+// plan mode.
 func stampTaskRefs(tasksPath string) (updated int, err error) {
 	original, err := os.ReadFile(tasksPath)
 	if err != nil {

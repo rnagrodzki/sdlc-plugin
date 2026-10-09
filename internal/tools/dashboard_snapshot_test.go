@@ -1036,3 +1036,187 @@ func TestDashboardAttachAttention(t *testing.T) {
 		})
 	}
 }
+
+// dashPlanMeta returns a review run plan of three dimensions: security and
+// docs in wave 1, perf in wave 2. docs carries stopReason missing.
+func dashPlanMeta(shipRunID string) reviewRunMeta {
+	return reviewRunMeta{
+		Branch: "feat/x", StartedAt: "2026-10-07T08:31:00Z", ShipRunID: shipRunID,
+		Waves: [][]string{{"security", "docs"}, {"perf"}},
+		Dimensions: []reviewRunMetaDimension{
+			{Name: "security", WorkerID: "security", Wave: 1},
+			{Name: "docs", WorkerID: "docs", Wave: 1, StopReason: reviewStopMissing},
+			{Name: "perf", WorkerID: "perf", Wave: 2},
+		},
+	}
+}
+
+// dashWritePlanRun writes the dashPlanMeta run.meta and a checked-out
+// security worker file with one high finding into review ledger folder run.
+func dashWritePlanRun(t *testing.T, root, run, shipRunID string, mtime time.Time) {
+	t.Helper()
+	dashWriteJSON(t, ledgerRunMetaPath(root, run), dashPlanMeta(shipRunID), mtime)
+	dashWriteReviewDim(t, root, run, "security", map[string]any{
+		"checkinAt": "2026-10-07T08:31:00Z", "checkoutAt": "2026-10-07T08:35:00Z",
+		"findings": dashLedgerFindings(t, map[string]any{"severity": "high", "file": "x.go", "line": 4, "rationale": "r"}),
+	}, mtime)
+}
+
+// TestDashboardSnapshot_ReviewPlanRows checks a standalone review run with a
+// plan: one step per planned dimension, a planned dimension with no worker
+// file is pending, a stopped one is skipped, the progress total is the
+// planned count, and done counts the completed and skipped rows.
+func TestDashboardSnapshot_ReviewPlanRows(t *testing.T) {
+	root := dashRoot(t)
+	dashWritePlanRun(t, root, "review-2026-10-07T08-31-00Z", "", dashNow.Add(-time.Minute))
+
+	p := dashOne(t, root)
+	if got, want := dashStepStatuses(p), []string{StepCompleted, StepSkipped, StepPending}; !reflect.DeepEqual(got, want) {
+		t.Errorf("step statuses = %v, want %v", got, want)
+	}
+	wantProgress := DashboardProgress{Done: 2, Total: 3, Current: "perf", Label: "2 of 3 dimensions"}
+	if p.Progress != wantProgress {
+		t.Errorf("progress = %+v, want %+v", p.Progress, wantProgress)
+	}
+	if p.Status != PipelineRunning {
+		t.Errorf("status = %q, want %q", p.Status, PipelineRunning)
+	}
+	if len(p.Issues) != 1 || p.Issues[0].Ref != "security" {
+		t.Errorf("issues = %+v, want one security finding", p.Issues)
+	}
+}
+
+// TestDashboardSnapshot_ReviewPlanNested checks a review run with a plan
+// nested into its ship: each dimension has its wave and stop reason, and the
+// review step detail has the plan totals.
+func TestDashboardSnapshot_ReviewPlanNested(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteState(t, root, dashJoinShipFile, dashJoinShipData(), dashJoinFresh)
+	dashWritePlanRun(t, root, dashJoinReview, dashJoinShipID, dashJoinFresh)
+
+	ship := dashOne(t, root)
+	d := dashJoinStep(t, ship, "review").Detail
+	if d == nil {
+		t.Fatal("review detail = nil, want dimensions")
+	}
+	wantDims := []DashboardDimension{
+		{Name: "security", Status: StepCompleted, Findings: 1, Worst: "high", Wave: 1},
+		{Name: "docs", Status: StepSkipped, Wave: 1, Reason: reviewStopMissing},
+		{Name: "perf", Status: StepPending, Wave: 2},
+	}
+	if !reflect.DeepEqual(d.Dimensions, wantDims) {
+		t.Errorf("dimensions = %+v, want %+v", d.Dimensions, wantDims)
+	}
+	wantPlan := &DashboardReviewPlan{WavesPlanned: 2, WavesRun: 1, DimensionsPlanned: 3, DimensionsRun: 1, NeverStarted: 2}
+	if !reflect.DeepEqual(d.ReviewPlan, wantPlan) {
+		t.Errorf("reviewPlan = %+v, want %+v", d.ReviewPlan, wantPlan)
+	}
+}
+
+// TestDashboardSnapshot_ReviewNoPlanHasNoTotals checks that a nested review
+// whose run.meta plans no dimension gives dimensions without a wave and no
+// reviewPlan totals.
+func TestDashboardSnapshot_ReviewNoPlanHasNoTotals(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteState(t, root, dashJoinShipFile, dashJoinShipData(), dashJoinFresh)
+	dashJoinReviewDims(t, root, dashJoinReview)
+	dashJoinRunMeta(t, root, dashJoinReview, reviewRunMeta{Branch: "feat/x", StartedAt: "2026-10-07T08:31:00Z", ShipRunID: dashJoinShipID})
+
+	d := dashJoinStep(t, dashOne(t, root), "review").Detail
+	if d == nil || d.ReviewPlan != nil {
+		t.Fatalf("review detail = %+v, want no reviewPlan", d)
+	}
+	for _, dim := range d.Dimensions {
+		if dim.Wave != 0 || dim.Reason != "" {
+			t.Errorf("dimension %+v, want no wave and no reason", dim)
+		}
+	}
+}
+
+// TestDashboardSnapshot_ReviewOnlyRunMetaStall checks the stall rule of a
+// review folder: only run.meta written 31 min ago is stalled, only run.meta
+// written 1 min ago is running, and an old run.meta with a worker file
+// updated 5 min ago is running. It also checks the current step: the first
+// pending dimension when no worker runs (security; docs is skipped), and the
+// running worker (perf) even though the earlier security dimension is still
+// pending.
+func TestDashboardSnapshot_ReviewOnlyRunMetaStall(t *testing.T) {
+	run := "review-2026-10-07T09-00-00Z"
+	cases := []struct {
+		name        string
+		setup       func(t *testing.T, root string)
+		want        string
+		wantCurrent string
+	}{
+		{"only run.meta, 31 min old", func(t *testing.T, root string) {
+			dashWriteJSON(t, ledgerRunMetaPath(root, run), dashPlanMeta(""), dashNow.Add(-31*time.Minute))
+		}, PipelineStalled, "security"},
+		{"only run.meta, 1 min old", func(t *testing.T, root string) {
+			dashWriteJSON(t, ledgerRunMetaPath(root, run), dashPlanMeta(""), dashNow.Add(-time.Minute))
+		}, PipelineRunning, "security"},
+		{"old run.meta, worker file 5 min old", func(t *testing.T, root string) {
+			dashWriteJSON(t, ledgerRunMetaPath(root, run), dashPlanMeta(""), dashNow.Add(-31*time.Minute))
+			dashWriteReviewDim(t, root, run, "perf", map[string]any{"checkinAt": "2026-10-07T09:50:00Z"}, dashNow.Add(-5*time.Minute))
+		}, PipelineRunning, "perf"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			tc.setup(t, root)
+			p := dashOne(t, root)
+			if p.Status != tc.want {
+				t.Errorf("status = %q, want %q", p.Status, tc.want)
+			}
+			if p.Progress.Current != tc.wantCurrent {
+				t.Errorf("progress current = %q, want %q", p.Progress.Current, tc.wantCurrent)
+			}
+			if p.Progress.Total != 3 {
+				t.Errorf("progress total = %d, want the planned count 3", p.Progress.Total)
+			}
+		})
+	}
+}
+
+// TestDashboardSnapshot_ReviewRunMetaNoDimensionsNoFiles checks that a
+// review folder with a run.meta that plans no dimension and no worker file
+// gives no pipeline.
+func TestDashboardSnapshot_ReviewRunMetaNoDimensionsNoFiles(t *testing.T) {
+	root := dashRoot(t)
+	dashJoinRunMeta(t, root, dashJoinReview, reviewRunMeta{Branch: "feat/x", StartedAt: "2026-10-07T08:31:00Z"})
+	if repo := dashCollect(t, root); len(repo.Pipelines) != 0 {
+		t.Errorf("pipelines = %v, want none", dashJoinKinds(repo.Pipelines))
+	}
+}
+
+// TestDashboardSnapshot_ReviewAllSkippedCompletes checks that a review run
+// whose every planned dimension is skipped is completed, and that its
+// completedAt is the folder update time when no worker checked out.
+func TestDashboardSnapshot_ReviewAllSkippedCompletes(t *testing.T) {
+	root := dashRoot(t)
+	run := "review-2026-10-07T09-00-00Z"
+	mtime := dashNow.Add(-2 * time.Minute)
+	dashWriteJSON(t, ledgerRunMetaPath(root, run), reviewRunMeta{
+		Waves:      [][]string{{"docs"}},
+		Dimensions: []reviewRunMetaDimension{{Name: "docs", WorkerID: "docs", Wave: 1, StopReason: reviewStopStalled}},
+	}, mtime)
+
+	p := dashOne(t, root)
+	if p.Status != PipelineCompleted {
+		t.Fatalf("status = %q, want %q", p.Status, PipelineCompleted)
+	}
+	if p.CompletedAt == nil || *p.CompletedAt != dashFormat(mtime) {
+		t.Errorf("completedAt = %v, want %s", p.CompletedAt, dashFormat(mtime))
+	}
+}
+
+// TestDashboardReviewPipeline_UnreadableFolder checks that a ledger folder
+// path that is not a folder gives no review pipeline.
+func TestDashboardReviewPipeline_UnreadableFolder(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "review-2026-10-07T09-00-00Z")
+	if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := dashboardReviewPipeline(path, filepath.Base(path)); ok {
+		t.Error("ok = true, want false for a path that is not a folder")
+	}
+}

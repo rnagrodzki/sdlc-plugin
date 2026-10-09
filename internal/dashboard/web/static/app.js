@@ -6,12 +6,20 @@
  */
 'use strict';
 
-// Event wiring and page state only. The DOM builders are in render.js
-// (window.sdlcRender); each takes the document as its first argument.
+// Event wiring and page state only. The DOM builders, the tab title, and the
+// elapsed-time refresh are in render.js (window.sdlcRender). A DOM builder and
+// tickElapsed take the document as their first argument; scopedTitle takes
+// view first and reads no document.
 var view = window.sdlcView;
 var draw = window.sdlcRender;
 
 var TAB_KEYS = ['ArrowLeft', 'ArrowRight', 'Home', 'End'];
+
+// The tab title as served. A waiting count goes in front of it.
+var BASE_TITLE = document.title;
+
+// How often the elapsed time of each wait banner refreshes, in ms.
+var ELAPSED_TICK_MS = 1000;
 
 // State kept across render(). collapsed and selected hold the user's
 // choice only; a pipeline with no entry follows the view.js default.
@@ -153,6 +161,18 @@ function timeZone() {
   }
 }
 
+// Sets the tab title: "(N) " in front of the base title when N pipelines of
+// the repos in scope wait for a person.
+function syncTitle(repos, scope) {
+  document.title = draw.scopedTitle(view, BASE_TITLE, repos, scope);
+}
+
+// Rewrites the elapsed time of every wait banner from its data-asked value.
+// A banner with an unreadable time keeps its text.
+function tickElapsed() {
+  draw.tickElapsed(document, view, Date.now());
+}
+
 function renderFeed(snapshot, repos, scope, now, tz) {
   var nodes = [];
   var pipelines = [];
@@ -189,6 +209,8 @@ function renderFeed(snapshot, repos, scope, now, tz) {
   replaceChildren(byId('feed'), nodes);
 }
 
+// Draws one snapshot: the tab title, the header counts, the filter chips, the
+// tab counts, and the three panels. The scroll and focus survive the rebuild.
 function render(snapshot) {
   ui.lastSnapshot = snapshot || { repos: [] };
   var repos = ui.lastSnapshot.repos || [];
@@ -197,6 +219,8 @@ function render(snapshot) {
   saveScroll();
   saveFocus();
 
+  // A filter change calls render too, so the title follows the filter.
+  syncTitle(repos, scope);
   replaceChildren(byId('totals'), draw.headerTotals(document, view, repos));
   replaceChildren(byId('filter-chips'), draw.filterChips(document, view, view.repoChips(repos), scope));
 
@@ -371,6 +395,8 @@ function stopServer() {
 
 // --- Wiring ---------------------------------------------------------------------
 
+// Wires the event listeners, starts the one timer for the wait banners, and
+// opens the event stream.
 function init() {
   view.TAB_NAMES.forEach(function (name, index) {
     var tab = tabs[name].tab;
@@ -439,6 +465,8 @@ function init() {
     dialog.close();
     stopServer();
   });
+
+  window.setInterval(tickElapsed, ELAPSED_TICK_MS);
 
   selectTab(ui.tab);
   applyHash(location.hash);

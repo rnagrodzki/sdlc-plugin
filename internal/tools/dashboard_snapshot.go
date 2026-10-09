@@ -228,7 +228,7 @@ type DashboardDimension struct {
 	Status   string `json:"status"`
 	Findings int    `json:"findings"`
 	Worst    string `json:"worst"`            // highest severity, "" when none
-	Wave     int    `json:"wave,omitempty"`   // 1-based wave of the review plan; absent = no plan
+	Wave     int    `json:"wave,omitempty"`   // 1-based wave of the review plan; absent when the dimension is not planned
 	Reason   string `json:"reason,omitempty"` // "stalled" | "missing" | "unstopped" when Status is skipped
 }
 
@@ -285,6 +285,8 @@ type dashboardJoinInfo struct {
 	shipRunID   string                  // review run.meta shipRunId
 	startedAt   time.Time               // run start, for the join window
 	stepWindows map[string][2]time.Time // ship step name -> [startedAt, completedAt]
+	reviewDims  []DashboardDimension    // review rows for the ship review step
+	reviewPlan  *DashboardReviewPlan    // review plan totals; nil when run.meta plans no dimension
 }
 
 // DashboardSession is one Claude Code session seen in the evidence files of
@@ -764,8 +766,8 @@ type dashboardFinding struct {
 }
 
 // dashboardReviewPipelines returns one review pipeline for each
-// runs/ledger/review-*/ folder that holds at least one dimension file,
-// newest folder first.
+// runs/ledger/review-*/ folder that holds at least one dimension file or a
+// run.meta with planned dimensions, newest folder first.
 func dashboardReviewPipelines(root string) []dashboardReviewRow {
 	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, "ledger")
 	entries, err := os.ReadDir(dir)
@@ -789,63 +791,76 @@ func dashboardReviewPipelines(root string) []dashboardReviewRow {
 	return rows
 }
 
-// dashboardReviewPipeline builds the review pipeline of one ledger folder:
-// one step for each dimension file. ok is false when the folder holds no
-// readable dimension file.
+// dashboardReviewPipeline builds the review pipeline of one ledger folder
+// from readReviewLedgerDir: one step for each row, so a planned dimension
+// with no worker file is a pending step. The progress total is the row count;
+// done counts the completed and skipped rows. The pipeline is completed when
+// no row is pending or in progress. Its completedAt is the newest checkoutAt,
+// else the folder update time (every row skipped). updated is the newest
+// modification time of run.meta and the worker files, so a folder with only
+// run.meta turns stalled. ok is false when the folder cannot be read or gives
+// no row.
 func dashboardReviewPipeline(dir, name string) (dashboardReviewRow, bool) {
-	files, err := os.ReadDir(dir)
-	if err != nil {
+	rows, totals, updated, err := readReviewLedgerDir(dir)
+	if err != nil || len(rows) == 0 {
 		return dashboardReviewRow{}, false
 	}
 	p := DashboardPipeline{
 		ID:     name,
 		Kind:   "review",
-		Steps:  []DashboardStep{},
+		Steps:  make([]DashboardStep, 0, len(rows)),
 		Issues: []DashboardIssue{},
 	}
-	var updated, firstCheckin, lastCheckout time.Time
-	for _, f := range files {
-		if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
-			continue
-		}
-		path := filepath.Join(dir, f.Name())
-		b, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var dim dashboardReviewDim
-		if err := json.Unmarshal(b, &dim); err != nil {
-			continue
-		}
-		updated = dashboardLatest(updated, dashboardModTime(path))
-
-		dimName := strings.TrimSuffix(f.Name(), ".json")
-		status := StepInProgress
-		if dim.CheckoutAt != "" {
-			status = StepCompleted
-			p.Progress.Done++
-			if t, ok := dashboardParseTime(dim.CheckoutAt); ok {
-				lastCheckout = dashboardLatest(lastCheckout, t)
-			}
-		} else if p.Progress.Current == "" {
-			p.Progress.Current = dimName
-		}
-		if t, ok := dashboardParseTime(dim.CheckinAt); ok && (firstCheckin.IsZero() || t.Before(firstCheckin)) {
-			firstCheckin = t
-		}
-		p.Steps = append(p.Steps, DashboardStep{Name: dimName, Status: status})
-		for _, fd := range dashboardParseFindings(dim.Findings) {
-			p.Issues = append(p.Issues, dashboardReviewIssue(dimName, fd))
+	p.join.reviewDims = make([]DashboardDimension, 0, len(rows))
+	if totals.DimensionsPlanned > 0 {
+		p.join.reviewPlan = &DashboardReviewPlan{
+			WavesPlanned:      totals.WavesPlanned,
+			WavesRun:          totals.WavesRun,
+			DimensionsPlanned: totals.DimensionsPlanned,
+			DimensionsRun:     totals.DimensionsRun,
+			NeverStarted:      totals.NeverStarted,
 		}
 	}
-	if len(p.Steps) == 0 {
-		return dashboardReviewRow{}, false
+	var firstCheckin, lastCheckout time.Time
+	var firstPending string
+	for _, r := range rows {
+		switch r.Status {
+		case StepCompleted:
+			p.Progress.Done++
+			lastCheckout = dashboardLatest(lastCheckout, r.checkoutAt)
+		case StepSkipped:
+			p.Progress.Done++
+		case StepInProgress:
+			if p.Progress.Current == "" {
+				p.Progress.Current = r.Name
+			}
+		case StepPending:
+			if firstPending == "" {
+				firstPending = r.Name
+			}
+		}
+		if !r.checkinAt.IsZero() && (firstCheckin.IsZero() || r.checkinAt.Before(firstCheckin)) {
+			firstCheckin = r.checkinAt
+		}
+		p.Steps = append(p.Steps, DashboardStep{Name: r.Name, Status: r.Status})
+		p.join.reviewDims = append(p.join.reviewDims, DashboardDimension{
+			Name: r.Name, Status: r.Status, Findings: r.Findings, Worst: r.Worst, Wave: r.Wave, Reason: r.Reason,
+		})
+		for _, fd := range r.findings {
+			p.Issues = append(p.Issues, dashboardReviewIssue(r.Name, fd))
+		}
+	}
+	if p.Progress.Current == "" {
+		p.Progress.Current = firstPending
 	}
 
 	p.Progress.Total = len(p.Steps)
 	p.Progress.Label = fmt.Sprintf("%d of %d dimensions", p.Progress.Done, p.Progress.Total)
 	if p.Progress.Done == p.Progress.Total {
 		p.Status = PipelineCompleted
+		if lastCheckout.IsZero() {
+			lastCheckout = updated
+		}
 		p.CompletedAt = dashboardStrPtr(dashboardFormatTime(lastCheckout))
 	} else {
 		p.Status = PipelineRunning
