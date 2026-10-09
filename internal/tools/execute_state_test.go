@@ -358,6 +358,134 @@ func TestExecState_Init_PlannedTasksEmptyForPlanWithoutTaskHeadings(t *testing.T
 	assertStateMatchesSchema(t, result.(map[string]any)["filePath"].(string))
 }
 
+// TestExecState_Init_StoresPlannedWaves covers the plannedWaves stamp: init
+// stores the plannedWavesJson input as given, in input order, with wave 0 for
+// the pre-wave tasks.
+func TestExecState_Init_StoresPlannedWaves(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:           "init",
+		Branch:           "feat/test",
+		Quality:          "balanced",
+		PlannedTaskIds:   []string{"1", "2", "3"},
+		PlannedWavesJSON: `[{"number":0,"taskIds":["1"]},{"number":1,"taskIds":["2","3"]}]`,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	want := []any{
+		map[string]any{"number": float64(0), "taskIds": []any{"1"}},
+		map[string]any{"number": float64(1), "taskIds": []any{"2", "3"}},
+	}
+	if !reflect.DeepEqual(data["plannedWaves"], want) {
+		t.Errorf("plannedWaves = %#v, want %#v", data["plannedWaves"], want)
+	}
+	assertStateMatchesSchema(t, result.(map[string]any)["filePath"].(string))
+}
+
+// TestExecState_Init_NoPlannedWavesWithoutInput covers the absent-key case:
+// init without plannedWavesJson writes no plannedWaves key.
+func TestExecState_Init_NoPlannedWavesWithoutInput(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:         "init",
+		Branch:         "feat/test",
+		Quality:        "balanced",
+		PlannedTaskIds: []string{"1"},
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	if v, present := data["plannedWaves"]; present {
+		t.Errorf("plannedWaves = %#v, want the key absent", v)
+	}
+}
+
+// TestExecState_Init_PlannedWavesSkipsTaskIDCheckWithoutPlannedTaskIds covers
+// the skipped task-ID check: with no plannedTaskIds, init accepts any task ID
+// in plannedWavesJson and stores it.
+func TestExecState_Init_PlannedWavesSkipsTaskIDCheckWithoutPlannedTaskIds(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:           "init",
+		Branch:           "feat/test",
+		Quality:          "balanced",
+		PlannedWavesJSON: `[{"number":1,"taskIds":["7"]}]`,
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	want := []any{map[string]any{"number": float64(1), "taskIds": []any{"7"}}}
+	if !reflect.DeepEqual(data["plannedWaves"], want) {
+		t.Errorf("plannedWaves = %#v, want %#v", data["plannedWaves"], want)
+	}
+}
+
+// TestExecState_Init_PlannedWavesRejected covers each plannedWavesJson error:
+// init returns a DomainError with the matching Suggestion and writes no state
+// file.
+func TestExecState_Init_PlannedWavesRejected(t *testing.T) {
+	const shape = "Pass plannedWavesJson as a JSON-encoded array, for example '[{\"number\":1,\"taskIds\":[\"2\"]}]'."
+	cases := []struct {
+		name       string
+		raw        string
+		suggestion string
+	}{
+		{"not JSON", `not json`, shape},
+		{"object, not array", `{"number":1,"taskIds":["2"]}`, shape},
+		{"null", `null`, shape},
+		{"unknown key", `[{"number":1,"tasks":["2"]}]`, shape},
+		{"missing number", `[{"taskIds":["2"]}]`, shape},
+		{"string number", `[{"number":"1","taskIds":["2"]}]`, shape},
+		{"trailing data", `[{"number":1,"taskIds":["2"]}] []`, shape},
+		{"stray closing bracket", `[{"number":1,"taskIds":["2"]}]]`, shape},
+		{"stray closing brace", `[{"number":1,"taskIds":["2"]}]}`, shape},
+		{"negative number", `[{"number":-1,"taskIds":["2"]}]`, "Use 0 for the pre-wave tasks and 1 or more for each wave."},
+		{"repeated number", `[{"number":1,"taskIds":["2"]},{"number":1,"taskIds":["3"]}]`, "Give each wave number once."},
+		{"empty taskIds", `[{"number":1,"taskIds":[]}]`, "Leave out a wave that has no tasks."},
+		{"missing taskIds", `[{"number":1}]`, "Leave out a wave that has no tasks."},
+		{"unknown task ID", `[{"number":1,"taskIds":["2","9"]}]`, "Use the task IDs from plannedTaskIds, for example \"3\"."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			seedInitConfig(t, root)
+
+			_, err := executeState(root, root, ExecuteStateIn{
+				Action:           "init",
+				Branch:           "feat/test",
+				Quality:          "balanced",
+				PlannedTaskIds:   []string{"1", "2", "3"},
+				PlannedWavesJSON: tc.raw,
+			}, fixedClock(testNow))
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) {
+				t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+			}
+			if de.Suggestion != tc.suggestion {
+				t.Errorf("Suggestion = %q, want %q", de.Suggestion, tc.suggestion)
+			}
+			st, findErr := state.Find(root, "execute", "feat/test")
+			if findErr != nil {
+				t.Fatalf("find state: %v", findErr)
+			}
+			if st != nil {
+				t.Errorf("init wrote a state file at %s, want none", st.Path)
+			}
+		})
+	}
+}
+
 // TestExecState_Init_MissingOpenspecTasksWarns covers the stampTaskRefs
 // failure path: the plan names an openspec change, but that change has no
 // tasks.md on disk.

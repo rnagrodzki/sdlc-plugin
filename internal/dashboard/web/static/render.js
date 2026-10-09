@@ -454,33 +454,68 @@
     return line;
   }
 
+  // The count with its unit word: the singular when n is 1.
+  function countWord(n, one, many) {
+    return ' ' + (n === 1 ? one : many);
+  }
+
   /**
-   * Rounds: `N of M rounds · X issues found · Y fixed`, a head row, then one
-   * row for each round with one chip for each lens verdict.
+   * The totals line of the review rounds: `N iterations · V violations · F
+   * fixes`, with `(sum)` at the end when the totals are sums of the per-round
+   * counts and not counts of distinct findings. The server computes the
+   * totals; the page only shows them.
+   * @param {Document} doc
+   * @param {{iterations: number, violations: number, fixes: number, distinct: boolean}} totals
+   * @returns {Element} div.round-sum
+   */
+  function roundTotalsLine(doc, totals) {
+    var iterations = totals.iterations || 0;
+    var violations = totals.violations || 0;
+    var fixes = totals.fixes || 0;
+    return strongLine(doc, 'round-sum', [
+      { strong: true, text: iterations },
+      { text: countWord(iterations, 'iteration', 'iterations') + ' · ' },
+      { strong: true, text: violations },
+      { text: countWord(violations, 'violation', 'violations') + ' · ' },
+      { strong: true, text: fixes },
+      { text: countWord(fixes, 'fix', 'fixes') + (totals.distinct ? '' : ' (sum)') },
+    ]);
+  }
+
+  /**
+   * One answered finding of a plan review: `<choice> · <id> · <text> — <reason>`.
+   * The ` — <reason>` part is left out when the reason is empty.
+   * @param {Document} doc
+   * @param {{id: string, text: string, choice: string, reason: string}} outcome
+   * @returns {Element} div.find-row
+   */
+  function outcomeRow(doc, outcome) {
+    var line = outcome.choice + ' · ' + outcome.id + ' · ' + outcome.text + (outcome.reason ? ' — ' + outcome.reason : '');
+    var text = el(doc, 'span', 'find-text', line);
+    text.setAttribute('title', line);
+    return append(el(doc, 'div', 'find-row'), [text]);
+  }
+
+  /**
+   * Rounds: the totals line from `roundTotals` (no line when the server sent
+   * none), the `REPAIR LIMIT REACHED` flag, one row for each answered finding,
+   * a head row, then one row for each round with one chip for each lens
+   * verdict. The page does not add up the per-round counts.
    * @param {Document} doc
    * @param {object} view
-   * @param {{rounds?: Array, maxRounds?: number}} detail
+   * @param {{rounds?: Array, roundTotals?: object, repairLimit?: boolean, outcomes?: Array}} detail
    * @returns {Element} div
    */
   function roundsBody(doc, view, detail) {
     var rounds = detail.rounds || [];
-    var found = 0;
-    var fixed = 0;
-    rounds.forEach(function (r) {
-      found += r.found || 0;
-      fixed += r.fixed || 0;
-    });
     var out = el(doc, 'div', '');
-    out.appendChild(
-      strongLine(doc, 'round-sum', [
-        { strong: true, text: rounds.length },
-        { text: ' of ' + (detail.maxRounds || 0) + ' rounds · ' },
-        { strong: true, text: found },
-        { text: ' issues found · ' },
-        { strong: true, text: fixed },
-        { text: ' fixed' },
-      ])
-    );
+    if (detail.roundTotals) out.appendChild(roundTotalsLine(doc, detail.roundTotals));
+    if (detail.repairLimit) {
+      out.appendChild(append(el(doc, 'div', 'lens-chips'), [el(doc, 'span', 'lens-chip issues', 'REPAIR LIMIT REACHED')]));
+    }
+    (detail.outcomes || []).forEach(function (outcome) {
+      out.appendChild(outcomeRow(doc, outcome));
+    });
     out.appendChild(
       append(el(doc, 'div', 'round-row head'), [
         el(doc, 'span', '', 'round'),
@@ -533,6 +568,38 @@
     return out;
   }
 
+  /**
+   * Guardrails of a plan setup station, on one line:
+   * `N guardrails loaded (E error, W warning)`, or
+   * `No plan guardrails configured` when none is loaded.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{guardrails?: {total: number, error: number, warning: number}}} detail
+   * @returns {Element} p.generic-line
+   */
+  function guardrailsBody(doc, view, detail) {
+    var counts = detail.guardrails || {};
+    var total = counts.total || 0;
+    if (total === 0) return el(doc, 'p', 'generic-line', 'No plan guardrails configured');
+    return el(
+      doc,
+      'p',
+      'generic-line',
+      plural(total, 'guardrail', 'guardrails') + ' loaded (' + (counts.error || 0) + ' error, ' + (counts.warning || 0) + ' warning)'
+    );
+  }
+
+  /**
+   * The result of a step, as one text line.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{result?: string}} detail
+   * @returns {Element} p.generic-line
+   */
+  function resultBody(doc, view, detail) {
+    return el(doc, 'p', 'generic-line', detail.result);
+  }
+
   // Body builder by detail kind: (doc, view, detail, pipeline) -> Element.
   var TILE_BODIES = {
     waves: wavesBody,
@@ -540,6 +607,8 @@
     explorers: explorersBody,
     rounds: roundsBody,
     findings: findingsBody,
+    guardrails: guardrailsBody,
+    result: resultBody,
   };
 
   /**
@@ -885,6 +954,8 @@
     explorersBody: explorersBody,
     roundsBody: roundsBody,
     findingsBody: findingsBody,
+    guardrailsBody: guardrailsBody,
+    resultBody: resultBody,
     issuesTile: issuesTile,
     sessionTile: sessionTile,
     historyTable: historyTable,

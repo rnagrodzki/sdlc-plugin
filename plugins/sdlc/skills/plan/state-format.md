@@ -74,7 +74,8 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
 | `creationIntent`| object           | The prompt and routing decision that started this run, plus flags needed to resume it. Written once by `plan_prepare` when the run is created; never written by `plan_mark`. See [creationIntent](#creationintent) below. |
 | `guardrailCounts` | object \| absent | Counts of the plan guardrails that `plan_prepare` loaded: `total`, `error`, `warning`. Written for the dashboard plan setup tile. Absent when the first call's guardrail config read failed (a later successful call without `resume` writes it). Never written for a run with no named branch. See [guardrailCounts](#guardrailcounts) below. |
 | `checkpoint`    | object \| absent | The plan run's current step/iteration/expected-writers, replaced on every `plan_mark({marker: "checkpoint"})` call. Absent until the first checkpoint marker is written. See [checkpoint](#checkpoint) below. |
-| `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`. Upserted by `plan_mark({marker: "review-round"})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
+| `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`, and an optional `findings`. Upserted by `plan_mark({marker: "review-round"})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
+| `reviewOutcome` | object \| absent | The user's answer to each finding still open at the review-loop limit. Replaced on every `plan_mark({marker: "review-outcome"})` call. Absent until the first call. See [reviewOutcome](#reviewoutcome) below. |
 
 ---
 
@@ -158,9 +159,9 @@ The resume flow (`plan_prepare({resume: true})`) reads `checkpoint.step` to tell
 
 Written by `plan_mark({ marker: "review-round", data: {...} })`, once for each Step 5 review round, at every exit of the round (Step 5 Approved, or Step 6 after the fixes; the last round also records in Step 6, before it goes to the user). `reviewRounds` lives in its own top-level state key and never participates in the Stop hook's four-marker check. Unlike `criticalDecisions`, it is **not appended to**: each call **upserts** one row by `round`. A call replaces the row with the same `round`, or inserts a new row. A resumed run can send the same round twice, so a replay is safe. The list stays sorted by `round`. The key is absent until the first `review-round` call. The dashboard reads the rows. They are display data only.
 
-Caps: a state file holds at most **20 rounds**. Each round holds at most **32 lenses**. A call over a cap returns an error and leaves the state file unchanged.
+Caps: a state file holds at most **20 rounds**. Each round holds at most **32 lenses** and **200 findings**. A call over a cap returns an error and leaves the state file unchanged.
 
-Each row of `reviewRounds` (all five keys are required, and no other key is allowed):
+Each row of `reviewRounds` (the first five keys are required, `findings` is optional, and no other key is allowed):
 
 | Field          | Type     | Description                                                                 |
 |----------------|----------|-------------------------------------------------------------------------------|
@@ -169,6 +170,7 @@ Each row of `reviewRounds` (all five keys are required, and no other key is allo
 | `found`        | integer  | Blocking issues found in the round (>= 0): the `blockingCount` of the `merge_results` call. |
 | `fixed`        | integer  | Blocking issues the round fixed (>= 0). `0` for an Approved round. The last round (`reviewLoop.maxRounds`) also gets the Step 6 fix pass, so its `fixed` is the real count. |
 | `lenses`       | object[] | One `{ name, verdict }` for each lens (max 32). `name`: letters, digits, `.`, `_`, `-` (max 64); the first character must be a letter or a digit (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, the same rule as `writerId`). `verdict`: exactly `Approved` or `Issues Found`. A single reviewer (<5 tasks) gives `[{ "name": "all", "verdict": "<mergedStatus>" }]`. Lanes are not listed. |
+| `findings`     | object[] \| absent | One `{ id, fixed }` for each finding of the round (max 200). `id`: the `id` of the issue in the `merge_results` `allIssues`, `f-` plus 8 lower-case hex characters (`^f-[0-9a-f]{8}$`). `fixed`: a boolean, `true` when the round fixed the finding. Guardrail findings and lens findings share one ID space, so no kind is stored. A passed `[]` is stored as `[]`. The key is absent when the call did not send `findings` (an older caller). An invalid entry returns an error and writes nothing. |
 
 ```json
 {
@@ -176,12 +178,16 @@ Each row of `reviewRounds` (all five keys are required, and no other key is allo
     {
       "round": 1,
       "mergedStatus": "Issues Found",
-      "found": 4,
-      "fixed": 4,
+      "found": 2,
+      "fixed": 2,
       "lenses": [
         { "name": "architecture", "verdict": "Approved" },
         { "name": "requirements", "verdict": "Issues Found" },
         { "name": "risk", "verdict": "Issues Found" }
+      ],
+      "findings": [
+        { "id": "f-3a9c1e07", "fixed": true },
+        { "id": "f-0b77d2c4", "fixed": true }
       ]
     },
     {
@@ -196,6 +202,46 @@ Each row of `reviewRounds` (all five keys are required, and no other key is allo
       ]
     }
   ]
+}
+```
+
+---
+
+## reviewOutcome
+
+Written by `plan_mark({ marker: "review-outcome", data: { findings: [...] } })` after the review loop reaches its limit with findings still open, and the user answers each one. Like `checkpoint`, `reviewOutcome` is **replaced**, not appended, on every call: the stored list is the list of the last call. Pass every answered finding on every call. For example, call 1 with `a` and `b`, then call 2 with `a` alone, leaves only `a`. The key is absent until the first call. A call with invalid data returns an error and leaves the stored outcome unchanged.
+
+The call returns `next`: "Outcome stored. If any choice is stop, end the run and report the open findings. Else continue to Create-flow authoring, then Step 6.5."
+
+`findings` holds 1 to 200 entries. Each entry has all 4 keys, each a string, and no other key:
+
+| Field    | Type   | Description                                                                 |
+|----------|--------|-------------------------------------------------------------------------------|
+| `id`     | string | The `id` of the issue in the `merge_results` `allIssues` (`^f-[0-9a-f]{8}$`). |
+| `text`   | string | The finding text that the user saw. Max 200 characters (runes).             |
+| `choice` | string | Exactly `accepted`, `rejected`, or `stop`.                                  |
+| `reason` | string | The user's reason. Max 200 characters (runes). `""` when there is none.     |
+
+Rejected input (each returns an error with a suggestion, and writes nothing):
+
+| Input | Suggestion |
+|---|---|
+| `choice` not `accepted`, `rejected`, or `stop` | Use accepted, rejected, or stop. |
+| `id` does not match `^f-[0-9a-f]{8}$` | Pass the id from merge_results allIssues. |
+| More than 200 findings | Stop and report the open findings. Do not call review-outcome. |
+| `text` or `reason` over 200 characters | Shorten the text to 200 characters. |
+| `findings` missing, empty, or not an array | Pass at least one answered finding. The stored outcome is unchanged. |
+| An entry without a string `id`, `text`, `choice`, or `reason` | Give all 4 fields for each finding. Use an empty reason only as "". |
+
+An unknown key in `data` or in an entry is also rejected.
+
+```json
+{
+  "reviewOutcome": {
+    "findings": [
+      { "id": "f-9d01aa42", "text": "Missing test for the stop route", "choice": "accepted", "reason": "Covered by the flow walk task" }
+    ]
+  }
 }
 ```
 
@@ -287,7 +333,7 @@ Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` 
 1. On a genuinely new run (no active run for the branch, and not a `resume: true` call), `plan_prepare(...)` writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent: { userPrompt, timestamp }` through `state.Write`, which prunes prior `plan-<branchSlug>-*.json` files for the same branch — **except** a sibling run whose `planIntegrity.done` marker is already set, which is kept (see [Evaluate, Don't Delete](#evaluate-dont-delete) below). It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs the same way (`state.PruneEvidenceDirs`, same done-run exception).
 2. The first `resolveTemplate: true` call for that run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags).
 3. A `resume: true` call does not create or prune anything; it reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
-4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically; `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically. Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
+4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically; `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically; `plan_mark({ marker: "review-outcome", data })` replaces `reviewOutcome` in-place, atomically. Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
 
 ### Evaluate, Don't Delete
 

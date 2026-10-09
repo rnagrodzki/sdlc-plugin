@@ -287,6 +287,21 @@ describe('sectionMeta', () => {
     assert.equal(view.sectionMeta({ detail: { kind: 'findings' } }), 'no findings');
   });
 
+  test('guardrails: the count, singular for 1, 0 with no counts', () => {
+    assert.equal(view.sectionMeta({ detail: { kind: 'guardrails', guardrails: { total: 3, error: 2, warning: 1 } } }), '3 guardrails');
+    assert.equal(view.sectionMeta({ detail: { kind: 'guardrails', guardrails: { total: 1, error: 1, warning: 0 } } }), '1 guardrail');
+    assert.equal(view.sectionMeta({ detail: { kind: 'guardrails' } }), '0 guardrails');
+  });
+
+  test('result: the text before the first colon, or the whole text, or empty', () => {
+    assert.equal(
+      view.sectionMeta({ detail: { kind: 'result', result: 'nothing to commit: execute committed 2 wave commit(s)' } }),
+      'nothing to commit'
+    );
+    assert.equal(view.sectionMeta({ detail: { kind: 'result', result: 'nothing to commit' } }), 'nothing to commit');
+    assert.equal(view.sectionMeta({ detail: { kind: 'result' } }), '');
+  });
+
   test('returns an empty string with no detail or an unknown kind', () => {
     assert.equal(view.sectionMeta({}), '');
     assert.equal(view.sectionMeta({ detail: { kind: 'other' } }), '');
@@ -304,6 +319,8 @@ describe('isWideSection', () => {
     assert.equal(view.isWideSection({ kind: 'waves', waves: [{}] }), false);
     assert.equal(view.isWideSection({ kind: 'dimensions' }), false);
     assert.equal(view.isWideSection({ kind: 'findings' }), false);
+    assert.equal(view.isWideSection({ kind: 'guardrails' }), false);
+    assert.equal(view.isWideSection({ kind: 'result' }), false);
   });
 });
 
@@ -1670,6 +1687,12 @@ describe('render tiles from the shared fixture', () => {
     ['ship: plan station', () => byClass(tileByName(fixtureBlock('sdlc-plugin', SHIP), 'plan'), 'wave-block')],
     ['plan: explorers', () => byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'explore'), 'wave-block')],
     ['plan: rounds', () => byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'review'), 'round-n')],
+    ['plan: setup guardrails line', () => byClass(tileByName(fixtureBlock('sdlc-plugin', PLAN), 'setup'), 'generic-line')],
+    ['plan: review totals, repair limit flag, and answered findings', () => {
+      const t = tileByName(fixtureBlock('payments-service', PLAN), 'review');
+      return [...byClass(t, 'round-sum'), ...byClass(t, 'lens-chips'), ...byClass(t, 'find-row')];
+    }],
+    ['ship: commit result line', () => byClass(tileByName(fixtureBlock('identity-service', SHIP), 'commit'), 'generic-line')],
     ['standalone execute: waves', () =>
       tilesOf(fixtureBlock('payments-service', EXECUTE)).filter((t) => byClass(t, 'wave-block').length > 0)],
     ['standalone execute: queued tasks', () => byClass(tileByName(fixtureBlock('payments-service', EXECUTE), 'queued'), 'task-row')],
@@ -1790,10 +1813,12 @@ describe('render tiles from the shared fixture', () => {
     assert.equal(byClass(unreadable, 'find-more').length, 0);
   });
 
-  test('a plan rounds tile: summary line, none and – when a round found 0, one chip for each lens', () => {
+  test('a plan rounds tile with no roundTotals: no totals line, none and – when a round found 0, one chip for each lens', () => {
     const t = tileByName(fixtureBlock('sdlc-plugin', PLAN), 'review');
     assert.ok(classesOf(t).includes('wide'));
-    assert.equal(textOf(oneByClass(t, 'round-sum')), '5 of 5 rounds · 19 issues found · 19 fixed');
+    assert.equal(byClass(t, 'round-sum').length, 0);
+    assert.equal(byClass(t, 'find-row').length, 0);
+    assert.equal(byClass(t, 'lens-chips').filter((n) => textOf(n) === 'REPAIR LIMIT REACHED').length, 0);
     const rows = byClass(t, 'round-row').filter((r) => !classesOf(r).includes('head'));
     assert.equal(rows.length, 5);
     assert.deepEqual(rows[0].children.slice(0, 3).map((c) => c.textContent), ['round 1', '8', '8']);
@@ -1802,6 +1827,30 @@ describe('render tiles from the shared fixture', () => {
     assert.deepEqual(chips.map((c) => c.className), ['lens-chip issues', 'lens-chip ok', 'lens-chip issues']);
     assert.equal(chips[1].textContent, 'requirements · approved');
     assert.equal(chips[0].textContent, 'architecture · issues');
+  });
+
+  test('a plan review tile with roundTotals: totals line, repair limit flag, and the answered finding', () => {
+    const p = fixturePipeline('payments-service', PLAN);
+    const detail = stepOf(p, 'review').detail;
+    const t = tileByName(fixtureBlock('payments-service', PLAN), 'review');
+    assert.equal(textOf(oneByClass(t, 'round-sum')), '5 iterations · 7 violations · 6 fixes');
+    assert.deepEqual(byClass(t, 'lens-chip').filter((c) => c.className === 'lens-chip issues').map((c) => c.textContent).filter((x) => x === 'REPAIR LIMIT REACHED'), ['REPAIR LIMIT REACHED']);
+    const outcome = detail.outcomes[0];
+    const rows = byClass(t, 'find-row');
+    assert.equal(rows.length, 1);
+    assert.equal(textOf(rows[0]), `${outcome.choice} · ${outcome.id} · ${outcome.text} — ${outcome.reason}`);
+  });
+
+  test('a plan setup tile: one guardrails line; a ship commit tile: one result line', () => {
+    const setup = tileByName(fixtureBlock('sdlc-plugin', PLAN), 'setup');
+    assert.equal(oneByClass(setup, 'sec-meta').textContent, '3 guardrails');
+    assert.equal(textOf(oneByClass(setup, 'generic-line')), '3 guardrails loaded (2 error, 1 warning)');
+    assert.ok(!classesOf(setup).includes('wide'));
+    const commit = tileByName(fixtureBlock('identity-service', SHIP), 'commit');
+    const result = stepOf(fixturePipeline('identity-service', SHIP), 'commit').detail.result;
+    assert.equal(oneByClass(commit, 'sec-meta').textContent, 'nothing to commit');
+    assert.equal(textOf(oneByClass(commit, 'generic-line')), result);
+    assert.ok(!classesOf(commit).includes('wide'));
   });
 
   test('a standalone execute: commits off on every wave, queued shows its tasks', () => {
@@ -1889,7 +1938,9 @@ describe('render stepTile and stepTiles', () => {
   });
 
   test('every detail kind has a body builder', () => {
-    assert.deepEqual(Object.keys(render.TILE_BODIES).sort(), ['dimensions', 'explorers', 'findings', 'rounds', 'waves']);
+    assert.deepEqual(Object.keys(render.TILE_BODIES).sort(), [
+      'dimensions', 'explorers', 'findings', 'guardrails', 'result', 'rounds', 'waves',
+    ]);
   });
 
   test('a tile the user closed stays closed; the others stay open', () => {
@@ -2006,9 +2057,94 @@ describe('render tile bodies', () => {
     assert.deepEqual(rows.map((r) => textOf(r)), ['acritical', 'bmedium', 'cinfo']);
   });
 
-  test('rounds: a summary with no rounds', () => {
+  test('rounds: no roundTotals gives no totals line, no flag, no outcome rows, and the head row stays', () => {
     const body = render.roundsBody(fakeDoc(), view, { kind: 'rounds', maxRounds: 3 });
-    assert.equal(textOf(oneByClass(body, 'round-sum')), '0 of 3 rounds · 0 issues found · 0 fixed');
+    assert.equal(byClass(body, 'round-sum').length, 0);
+    assert.equal(byClass(body, 'lens-chips').length, 0);
+    assert.equal(byClass(body, 'find-row').length, 0);
+    assert.deepEqual(byClass(body, 'round-row').map((r) => r.className), ['round-row head']);
+  });
+
+  test('rounds: the totals line shows roundTotals, and the page does not add up found and fixed', () => {
+    const detail = {
+      kind: 'rounds',
+      maxRounds: 5,
+      rounds: [{ n: 1, found: 4, fixed: 4, lenses: [] }, { n: 2, found: 3, fixed: 3, lenses: [] }],
+      roundTotals: { iterations: 2, violations: 5, fixes: 5, distinct: true },
+    };
+    const sum = oneByClass(render.roundsBody(fakeDoc(), view, detail), 'round-sum');
+    assert.equal(textOf(sum), '2 iterations · 5 violations · 5 fixes');
+    assert.deepEqual(sum.children.map((c) => c.tagName), ['strong', 'span', 'strong', 'span', 'strong', 'span']);
+  });
+
+  test('rounds: (sum) ends the totals line when distinct is false, and only then', () => {
+    const totals = { iterations: 3, violations: 7, fixes: 6, distinct: false };
+    const sum = render.roundsBody(fakeDoc(), view, { kind: 'rounds', roundTotals: totals });
+    assert.equal(textOf(oneByClass(sum, 'round-sum')), '3 iterations · 7 violations · 6 fixes (sum)');
+    const distinct = render.roundsBody(fakeDoc(), view, { kind: 'rounds', roundTotals: Object.assign({}, totals, { distinct: true }) });
+    assert.equal(textOf(oneByClass(distinct, 'round-sum')), '3 iterations · 7 violations · 6 fixes');
+  });
+
+  test('rounds: a count of 1 reads in the singular', () => {
+    const body = render.roundsBody(fakeDoc(), view, { kind: 'rounds', roundTotals: { iterations: 1, violations: 1, fixes: 1, distinct: true } });
+    assert.equal(textOf(oneByClass(body, 'round-sum')), '1 iteration · 1 violation · 1 fix');
+    const zero = render.roundsBody(fakeDoc(), view, { kind: 'rounds', roundTotals: { iterations: 0, violations: 0, fixes: 0, distinct: true } });
+    assert.equal(textOf(oneByClass(zero, 'round-sum')), '0 iterations · 0 violations · 0 fixes');
+  });
+
+  test('rounds: REPAIR LIMIT REACHED shows when repairLimit is true, never when false or absent', () => {
+    const flags = (detail) => byClass(render.roundsBody(fakeDoc(), view, detail), 'lens-chip').map((c) => [c.className, c.textContent]);
+    assert.deepEqual(flags({ kind: 'rounds', repairLimit: true }), [['lens-chip issues', 'REPAIR LIMIT REACHED']]);
+    assert.deepEqual(flags({ kind: 'rounds', repairLimit: false }), []);
+    assert.deepEqual(flags({ kind: 'rounds' }), []);
+  });
+
+  test('rounds: each outcome is <choice> · <id> · <text> — <reason>; an empty reason drops the dash', () => {
+    const body = render.roundsBody(fakeDoc(), view, { kind: 'rounds', outcomes: [
+      { id: 'f-9d01aa42', text: 'Missing test for the stop route', choice: 'accepted', reason: 'Covered by Task 19 flow walk' },
+      { id: 'f-0b77d2c4', text: 'Wrong path in Task 4', choice: 'rejected', reason: 'the path exists' },
+      { id: 'f-11111111', text: 'Open question', choice: 'stop', reason: '' },
+    ] });
+    const rows = byClass(body, 'find-row');
+    assert.deepEqual(rows.map((r) => textOf(r)), [
+      'accepted · f-9d01aa42 · Missing test for the stop route — Covered by Task 19 flow walk',
+      'rejected · f-0b77d2c4 · Wrong path in Task 4 — the path exists',
+      'stop · f-11111111 · Open question',
+    ]);
+    assert.equal(oneByClass(rows[2], 'find-text').attrs.title, 'stop · f-11111111 · Open question');
+  });
+
+  test('rounds: order is totals line, flag, outcome rows, then the round table', () => {
+    const body = render.roundsBody(fakeDoc(), view, {
+      kind: 'rounds',
+      rounds: [{ n: 1, found: 1, fixed: 0, lenses: [] }],
+      roundTotals: { iterations: 1, violations: 1, fixes: 0, distinct: true },
+      repairLimit: true,
+      outcomes: [{ id: 'f-1', text: 't', choice: 'accepted', reason: 'r' }],
+    });
+    assert.deepEqual(body.children.map((c) => c.className), ['round-sum', 'lens-chips', 'find-row', 'round-row head', 'round-row']);
+  });
+
+  test('guardrails: the loaded line, singular for 1, and the empty line for 0 or no counts', () => {
+    const line = (detail) => {
+      const p = render.guardrailsBody(fakeDoc(), view, detail);
+      assert.equal(p.tagName, 'p');
+      assert.equal(p.className, 'generic-line');
+      return p.textContent;
+    };
+    assert.equal(line({ kind: 'guardrails', guardrails: { total: 3, error: 2, warning: 1 } }), '3 guardrails loaded (2 error, 1 warning)');
+    assert.equal(line({ kind: 'guardrails', guardrails: { total: 1, error: 1, warning: 0 } }), '1 guardrail loaded (1 error, 0 warning)');
+    assert.equal(line({ kind: 'guardrails', guardrails: { total: 0, error: 0, warning: 0 } }), 'No plan guardrails configured');
+    assert.equal(line({ kind: 'guardrails' }), 'No plan guardrails configured');
+  });
+
+  test('result: one text line, markup stays text, empty when the result is absent', () => {
+    const p = render.resultBody(fakeDoc(), view, { kind: 'result', result: 'nothing to commit: <b>x</b>' });
+    assert.equal(p.tagName, 'p');
+    assert.equal(p.className, 'generic-line');
+    assert.equal(p.textContent, 'nothing to commit: <b>x</b>');
+    assert.equal(p.children.length, 0);
+    assert.equal(render.resultBody(fakeDoc(), view, { kind: 'result' }).textContent, '');
   });
 });
 
@@ -2134,10 +2270,12 @@ describe('render.js browser global fallback', () => {
       'explorersBody',
       'filterChips',
       'findingsBody',
+      'guardrailsBody',
       'headerTotals',
       'historyTable',
       'issuesTile',
       'pipelineBlock',
+      'resultBody',
       'roundsBody',
       'scopedTitle',
       'sessionTile',

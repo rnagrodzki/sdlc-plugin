@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
@@ -1840,6 +1841,11 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 // plan skill can send the same round twice after a resume. Like
 // "checkpoint", it is absent from structuredDataMarkers and has its own
 // branch in planMark, but it returns no Next.
+//
+// "review-outcome" is a tenth kind: it owns the top-level st.Data key
+// "reviewOutcome", a PlanReviewOutcome that holds the user's answer to
+// each finding still open at the review-loop limit. Like "checkpoint", it
+// replaces its key on every call and returns a Next.
 var validMarkers = map[string]bool{
 	"plan-file":           true,
 	"skillInvoked":        true,
@@ -1850,6 +1856,7 @@ var validMarkers = map[string]bool{
 	"criticalDecisions":   true,
 	"checkpoint":          true,
 	"review-round":        true,
+	"review-outcome":      true,
 }
 
 // structuredDataMarkers maps a plan_mark structured-data marker name to the
@@ -2005,17 +2012,74 @@ const maxReviewRoundsStored = 20
 // PlanCheckpoint.ExpectedWriters.
 const maxReviewRoundLenses = 32
 
+// maxReviewFindings caps PlanReviewRound.Findings and
+// PlanReviewOutcome.Findings.
+const maxReviewFindings = 200
+
+// maxOutcomeFieldRunes caps PlanOutcomeFinding.Text and
+// PlanOutcomeFinding.Reason, counted in runes.
+const maxOutcomeFieldRunes = 200
+
+// findingIDRe validates a review finding ID: "f-" plus 8 lower-case hex
+// characters, the id that plan_support merge_results gives each issue in
+// allIssues.
+var findingIDRe = regexp.MustCompile(`^f-[0-9a-f]{8}$`)
+
+// findingIDSuggestion is the Suggestion for a finding id that fails
+// findingIDRe.
+const findingIDSuggestion = "Pass the id from merge_results allIssues."
+
 // PlanReviewRound is one entry of data.reviewRounds: the result of one plan
 // review round of the plan skill. Found is the blocking-issue count of the
 // round's merge_results call (its blockingCount); Fixed is how many of them
-// the round fixed.
+// the round fixed. Findings is nil when the caller sent no findings key (the
+// JSON key is then absent), and points to an empty list when the caller
+// sent findings: [].
 type PlanReviewRound struct {
-	Round        int             `json:"round"`
-	MergedStatus string          `json:"mergedStatus"` // planStatusApproved | planStatusIssuesFound
-	Found        int             `json:"found"`
-	Fixed        int             `json:"fixed"`
-	Lenses       []PlanRoundLens `json:"lenses"`
+	Round        int                 `json:"round"`
+	MergedStatus string              `json:"mergedStatus"` // planStatusApproved | planStatusIssuesFound
+	Found        int                 `json:"found"`
+	Fixed        int                 `json:"fixed"`
+	Lenses       []PlanRoundLens     `json:"lenses"`
+	Findings     *[]PlanRoundFinding `json:"findings,omitempty"`
 }
+
+// PlanRoundFinding is one finding of a PlanReviewRound: its merge_results
+// id and whether the round fixed it.
+type PlanRoundFinding struct {
+	ID    string `json:"id"` // matches findingIDRe
+	Fixed bool   `json:"fixed"`
+}
+
+// PlanReviewOutcome is the "review-outcome" marker's payload, stored at
+// st.Data["reviewOutcome"]: the user's answer to each finding that was
+// still open when the review loop reached its limit. Each call replaces
+// the stored value.
+type PlanReviewOutcome struct {
+	Findings []PlanOutcomeFinding `json:"findings"`
+}
+
+// The PlanOutcomeFinding.Choice values. They are the only source of the
+// choice set.
+const (
+	// outcomeChoiceAccepted: the user accepts the open finding as is.
+	outcomeChoiceAccepted = "accepted"
+	// outcomeChoiceRejected: the user rejects the open finding.
+	outcomeChoiceRejected = "rejected"
+	// outcomeChoiceStop: the user ends the plan run on this finding.
+	outcomeChoiceStop = "stop"
+)
+
+// PlanOutcomeFinding is one answered finding of a PlanReviewOutcome.
+type PlanOutcomeFinding struct {
+	ID     string `json:"id"`     // matches findingIDRe
+	Text   string `json:"text"`   // max maxOutcomeFieldRunes runes
+	Choice string `json:"choice"` // outcomeChoiceAccepted | outcomeChoiceRejected | outcomeChoiceStop
+	Reason string `json:"reason"` // max maxOutcomeFieldRunes runes
+}
+
+// reviewOutcomeNext is the Next of a successful "review-outcome" call.
+const reviewOutcomeNext = "Outcome stored. If any choice is stop, end the run and report the open findings. Else continue to Create-flow authoring, then Step 6.5."
 
 // PlanRoundLens is the verdict of one review lens in a PlanReviewRound.
 type PlanRoundLens struct {
@@ -2042,22 +2106,24 @@ func reviewRoundInt(data map[string]any, key string, lowest int) (int, error) {
 }
 
 // validateReviewRoundData validates and parses the "review-round" marker's
-// data payload into a PlanReviewRound. All five keys are required. Every
-// failure is a DomainError with a non-empty Suggestion; nothing is written
-// to state by this function. The cap on stored rounds needs the state file,
-// so planMark checks it.
+// data payload into a PlanReviewRound. The keys round, mergedStatus, found,
+// fixed and lenses are required; findings is optional. Every failure is a
+// DomainError with a non-empty Suggestion; nothing is written to state by
+// this function. The cap on stored rounds needs the state file, so planMark
+// checks it.
 func validateReviewRoundData(data map[string]any) (PlanReviewRound, error) {
-	const allowedKeys = "round, mergedStatus, found, fixed, lenses"
+	const requiredKeys = "round, mergedStatus, found, fixed, lenses"
+	const allowedKeys = requiredKeys + ", findings"
 	if len(data) == 0 {
 		return PlanReviewRound{}, &mcpserver.DomainError{
-			Msg:        "review-round needs data {" + allowedKeys + "}",
+			Msg:        "review-round needs data {" + requiredKeys + "}",
 			Suggestion: fmt.Sprintf("call plan_mark with data {round:1, mergedStatus:%q, found:0, fixed:0, lenses:[]}; keys: %s", planStatusApproved, allowedKeys),
 		}
 	}
 
 	for k := range data {
 		switch k {
-		case "round", "mergedStatus", "found", "fixed", "lenses":
+		case "round", "mergedStatus", "found", "fixed", "lenses", "findings":
 		default:
 			return PlanReviewRound{}, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("review-round data has unknown key %q", k),
@@ -2134,7 +2200,157 @@ func validateReviewRoundData(data map[string]any) (PlanReviewRound, error) {
 		lenses = append(lenses, PlanRoundLens{Name: name, Verdict: verdict})
 	}
 
-	return PlanReviewRound{Round: round, MergedStatus: mergedStatus, Found: found, Fixed: fixed, Lenses: lenses}, nil
+	rr := PlanReviewRound{Round: round, MergedStatus: mergedStatus, Found: found, Fixed: fixed, Lenses: lenses}
+	if raw, present := data["findings"]; present {
+		findings, err := validateRoundFindings(raw)
+		if err != nil {
+			return PlanReviewRound{}, err
+		}
+		rr.Findings = &findings
+	}
+	return rr, nil
+}
+
+// validateRoundFindings validates the optional "findings" value of a
+// "review-round" payload: a JSON array of at most maxReviewFindings
+// {id, fixed} objects. It returns a non-nil list, empty for [], so the
+// stored key holds [] and not null. Every failure is a DomainError with a
+// non-empty Suggestion.
+func validateRoundFindings(raw any) ([]PlanRoundFinding, error) {
+	arr, ok := raw.([]any)
+	if !ok {
+		return nil, &mcpserver.DomainError{
+			Msg:        "review-round findings must be a JSON array of {id, fixed}",
+			Suggestion: `pass findings as an array, e.g. findings:[{id:"f-3a9c1e07", fixed:true}]; pass [] when the round found nothing`,
+		}
+	}
+	if len(arr) > maxReviewFindings {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("review-round findings has %d entries, max %d", len(arr), maxReviewFindings),
+			Suggestion: fmt.Sprintf("pass at most %d findings: only the findings of this round", maxReviewFindings),
+		}
+	}
+	findings := make([]PlanRoundFinding, 0, len(arr))
+	for i, el := range arr {
+		obj, ok := el.(map[string]any)
+		if !ok {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-round findings[%d] must be an object {id, fixed}", i),
+				Suggestion: `pass each finding as {id:"f-3a9c1e07", fixed:true}`,
+			}
+		}
+		for k := range obj {
+			if k != "id" && k != "fixed" {
+				return nil, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("review-round findings[%d] has unknown key %q", i, k),
+					Suggestion: fmt.Sprintf("remove %q; allowed finding keys: id, fixed", k),
+				}
+			}
+		}
+		id, _ := obj["id"].(string)
+		if !findingIDRe.MatchString(id) {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-round findings[%d].id %q does not match ^f-[0-9a-f]{8}$", i, id),
+				Suggestion: findingIDSuggestion,
+			}
+		}
+		fixed, ok := obj["fixed"].(bool)
+		if !ok {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-round findings[%d].fixed must be true or false", i),
+				Suggestion: "pass fixed as a JSON boolean: true when this round fixed the finding, else false",
+			}
+		}
+		findings = append(findings, PlanRoundFinding{ID: id, Fixed: fixed})
+	}
+	return findings, nil
+}
+
+// validateReviewOutcomeData validates and parses the "review-outcome"
+// marker's data payload into a PlanReviewOutcome. data must hold only
+// "findings": a non-empty array of at most maxReviewFindings entries, each
+// with exactly the string keys id, text, choice and reason. Every failure
+// is a DomainError with a non-empty Suggestion; nothing is written to state
+// by this function.
+func validateReviewOutcomeData(data map[string]any) (PlanReviewOutcome, error) {
+	for k := range data {
+		if k != "findings" {
+			return PlanReviewOutcome{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-outcome data has unknown key %q", k),
+				Suggestion: fmt.Sprintf("remove %q; the only allowed key is findings", k),
+			}
+		}
+	}
+	arr, _ := data["findings"].([]any)
+	if len(arr) == 0 {
+		return PlanReviewOutcome{}, &mcpserver.DomainError{
+			Msg:        "review-outcome needs data {findings} with at least one entry {id, text, choice, reason}",
+			Suggestion: "Pass at least one answered finding. The stored outcome is unchanged.",
+		}
+	}
+	if len(arr) > maxReviewFindings {
+		return PlanReviewOutcome{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("review-outcome findings has %d entries, max %d", len(arr), maxReviewFindings),
+			Suggestion: "Stop and report the open findings. Do not call review-outcome.",
+		}
+	}
+
+	const allFieldsSuggestion = `Give all 4 fields for each finding. Use an empty reason only as "".`
+	findings := make([]PlanOutcomeFinding, 0, len(arr))
+	for i, el := range arr {
+		obj, ok := el.(map[string]any)
+		if !ok {
+			return PlanReviewOutcome{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-outcome findings[%d] must be an object {id, text, choice, reason}", i),
+				Suggestion: allFieldsSuggestion,
+			}
+		}
+		for k := range obj {
+			switch k {
+			case "id", "text", "choice", "reason":
+			default:
+				return PlanReviewOutcome{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("review-outcome findings[%d] has unknown key %q", i, k),
+					Suggestion: fmt.Sprintf("remove %q; allowed finding keys: id, text, choice, reason", k),
+				}
+			}
+		}
+		fields := make(map[string]string, 4)
+		for _, k := range []string{"id", "text", "choice", "reason"} {
+			s, ok := obj[k].(string)
+			if !ok {
+				return PlanReviewOutcome{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("review-outcome findings[%d] has no string %s", i, k),
+					Suggestion: allFieldsSuggestion,
+				}
+			}
+			fields[k] = s
+		}
+		if !findingIDRe.MatchString(fields["id"]) {
+			return PlanReviewOutcome{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-outcome findings[%d].id %q does not match ^f-[0-9a-f]{8}$", i, fields["id"]),
+				Suggestion: findingIDSuggestion,
+			}
+		}
+		switch fields["choice"] {
+		case outcomeChoiceAccepted, outcomeChoiceRejected, outcomeChoiceStop:
+		default:
+			return PlanReviewOutcome{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("review-outcome findings[%d].choice %q is not valid", i, fields["choice"]),
+				Suggestion: fmt.Sprintf("Use %s, %s, or %s.", outcomeChoiceAccepted, outcomeChoiceRejected, outcomeChoiceStop),
+			}
+		}
+		for _, k := range []string{"text", "reason"} {
+			if n := utf8.RuneCountInString(fields[k]); n > maxOutcomeFieldRunes {
+				return PlanReviewOutcome{}, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("review-outcome findings[%d].%s has %d characters, max %d", i, k, n, maxOutcomeFieldRunes),
+					Suggestion: fmt.Sprintf("Shorten the text to %d characters.", maxOutcomeFieldRunes),
+				}
+			}
+		}
+		findings = append(findings, PlanOutcomeFinding{ID: fields["id"], Text: fields["text"], Choice: fields["choice"], Reason: fields["reason"]})
+	}
+	return PlanReviewOutcome{Findings: findings}, nil
 }
 
 // upsertReviewRound returns the stored reviewRounds list with rr in place
@@ -2320,9 +2536,9 @@ func appendPlanRunRecord(mainRoot, branch string, st *state.State) error {
 
 // PlanMarkIn is the input for the plan_mark tool.
 type PlanMarkIn struct {
-	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint,enum=review-round" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data). \"review-round\" records one plan review round in reviewRounds and replaces the entry with the same round (requires data {round, mergedStatus, found, fixed, lenses})."`
+	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint,enum=review-round,enum=review-outcome" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data). \"review-round\" records one plan review round in reviewRounds and replaces the entry with the same round (requires data {round, mergedStatus, found, fixed, lenses}; findings optional). \"review-outcome\" replaces reviewOutcome with the user's answers to the findings open at the review-loop limit (requires data {findings})."`
 	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
-	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,rejected,reason}]}; rejected is [{option,why}], defaults to [] when omitted; the tool always sets at to the call time, overwriting any caller-supplied value). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. For \"review-round\": JSON object, all keys required: {round: integer >= 1; mergedStatus: \"Approved\" or \"Issues Found\" (exact text); found: integer >= 0, blocking issues found in the round; fixed: integer >= 0, blocking issues fixed; lenses: JSON array (max 32) of {name: lens name, letters, digits, '.', '_', '-'; verdict: \"Approved\" or \"Issues Found\"}}. Example: {\"round\":2,\"mergedStatus\":\"Issues Found\",\"found\":4,\"fixed\":4,\"lenses\":[{\"name\":\"architecture\",\"verdict\":\"Approved\"},{\"name\":\"risk\",\"verdict\":\"Issues Found\"}]}. Replaces the entry with the same round; max 20 rounds stored. Ignored for every other marker."`
+	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,rejected,reason}]}; rejected is [{option,why}], defaults to [] when omitted; the tool always sets at to the call time, overwriting any caller-supplied value). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. For \"review-round\": JSON object, every key required except findings: {round: integer >= 1; mergedStatus: \"Approved\" or \"Issues Found\" (exact text); found: integer >= 0, blocking issues found in the round; fixed: integer >= 0, blocking issues fixed; lenses: JSON array (max 32) of {name: lens name, letters, digits, '.', '_', '-'; verdict: \"Approved\" or \"Issues Found\"}; findings (optional): JSON array (max 200) of {id: the merge_results allIssues id, \"f-\" plus 8 lower-case hex characters; fixed: boolean}}. Example: {\"round\":2,\"mergedStatus\":\"Issues Found\",\"found\":4,\"fixed\":4,\"lenses\":[{\"name\":\"architecture\",\"verdict\":\"Approved\"},{\"name\":\"risk\",\"verdict\":\"Issues Found\"}],\"findings\":[{\"id\":\"f-3a9c1e07\",\"fixed\":true}]}. Replaces the entry with the same round; max 20 rounds stored. For \"review-outcome\": JSON object {findings: JSON array, 1 to 200 entries, of {id: the merge_results allIssues id; text: string, max 200 characters; choice: \"accepted\", \"rejected\", or \"stop\"; reason: string, max 200 characters, \"\" when there is none}}, all 4 entry keys required. Pass every answered finding on every call: the call replaces the stored reviewOutcome. Example: {\"findings\":[{\"id\":\"f-9d01aa42\",\"text\":\"Missing test for the stop route\",\"choice\":\"accepted\",\"reason\":\"Covered by the flow walk task\"}]}. Ignored for every other marker."`
 }
 
 // PlanMarkOut is the output for the plan_mark tool.
@@ -2330,7 +2546,7 @@ type PlanMarkOut struct {
 	OK       bool     `json:"ok"`
 	Marker   string   `json:"marker"`
 	Path     string   `json:"path"`
-	Next     string   `json:"next,omitempty"`     // checkpoint only
+	Next     string   `json:"next,omitempty"`     // checkpoint and review-outcome only
 	Warnings []string `json:"warnings,omitempty"` // done only: history write failed; the marker itself was saved
 }
 
@@ -2378,6 +2594,15 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		}
 		reviewRound = rr
 	}
+	// "review-outcome" data is validated up front too, for the same reason.
+	var reviewOutcome PlanReviewOutcome
+	if in.Marker == "review-outcome" {
+		ro, verr := validateReviewOutcomeData(in.Data)
+		if verr != nil {
+			return PlanMarkOut{}, verr
+		}
+		reviewOutcome = ro
+	}
 
 	branch, err := gitx.CurrentBranch(contentRoot)
 	if err != nil || branch == "" {
@@ -2406,8 +2631,8 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 	}
 
 	// "checkpoint" replaces its own top-level state key on every call (no
-	// append, unlike the structured-data markers below) and is the only
-	// marker that returns a non-empty Next.
+	// append, unlike the structured-data markers below). It and
+	// "review-outcome" are the only markers that return a non-empty Next.
 	if in.Marker == "checkpoint" {
 		checkpoint.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		st.Data["checkpoint"] = checkpoint
@@ -2441,6 +2666,22 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 			}
 		}
 		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path}, nil
+	}
+
+	// "review-outcome" replaces reviewOutcome with this call's full list,
+	// like "checkpoint", and returns reviewOutcomeNext.
+	if in.Marker == "review-outcome" {
+		st.Data["reviewOutcome"] = reviewOutcome
+
+		refreshPlanTiming(st, contentRoot)
+		if err := state.Write(st); err != nil {
+			return PlanMarkOut{}, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("write plan state file: %s", err.Error()),
+				Suggestion: "Check write permission on the plan state file path above and free disk space on the project root, then retry plan_mark with the same marker and data.",
+				Cause:      err,
+			}
+		}
+		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path, Next: reviewOutcomeNext}, nil
 	}
 
 	// Structured-data markers append to their own top-level state key and
@@ -2540,10 +2781,11 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "plan_mark",
-		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, replace the progress checkpoint (checkpoint), or record a review round (review-round). "+
+		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, replace the progress checkpoint (checkpoint), record a review round (review-round), or store the answers to the findings open at the review-loop limit (review-outcome). "+
 			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next: the step-continuation sentence, plus the full custom plan instructions text (from [planStyle].instructions) when any are configured, plus a last-round sentence when step is \"5\" and iteration reaches the review-loop limit (plan_prepare's reviewLoop.maxRounds). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
-			"review-round — Requires: data.round, data.mergedStatus, data.found, data.fixed, data.lenses. Replaces the row with the same round. Returns no next. "+
-			"Markers other than checkpoint return no next: the call only records state; continue the current SKILL.md step. "+
+			"review-round — Requires: data.round, data.mergedStatus, data.found, data.fixed, data.lenses. Optional: data.findings (max 200 {id, fixed}). Replaces the row with the same round. Returns no next. "+
+			"review-outcome — Requires: data.findings (1 to 200 {id, text, choice, reason}; choice is accepted, rejected, or stop). Pass every answered finding on every call: each call replaces the stored reviewOutcome. Returns next. Invalid input returns DomainError and writes nothing. "+
+			"Markers other than checkpoint and review-outcome return no next: the call only records state; continue the current SKILL.md step. "+
 			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warnings set. Repeating done appends another history record.",
 		mcpserver.Annotations{
 			Title:      "Record plan progress marker",

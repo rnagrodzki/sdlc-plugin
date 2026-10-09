@@ -199,7 +199,8 @@
   /**
    * One-line summary of a step section. Queued tasks (planned, wave not
    * started) count in the task total; with no wave at all the summary is
-   * the queued count.
+   * the queued count. A guardrails section reads the guardrail count. A
+   * result section reads the text before the first colon of the result.
    * @param {{detail?: object}} step
    * @returns {string} '' when the step has no section
    */
@@ -237,6 +238,11 @@
         var n = (d.findings || []).length;
         return n === 0 ? 'no findings' : plural(n, 'finding', 'findings');
       }
+      case 'guardrails':
+        return plural((d.guardrails && d.guardrails.total) || 0, 'guardrail', 'guardrails');
+      case 'result':
+        // The text before the first colon: `nothing to commit: execute committed 2 wave commit(s)` gives `nothing to commit`.
+        return String(d.result || '').split(':')[0].trim();
       default:
         return '';
     }

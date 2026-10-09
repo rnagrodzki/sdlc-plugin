@@ -188,3 +188,32 @@ func TestExecuteStateSchema_AcceptsPlannedTasks(t *testing.T) {
 	}
 	assertStateMatchesSchema(t, filePath)
 }
+
+// TestExecuteStateSchema_AcceptsPlannedWaves covers the optional plannedWaves
+// key: init with plannedWavesJson writes it, and the schema accepts it.
+func TestExecuteStateSchema_AcceptsPlannedWaves(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+
+	out, err := executeState(root, root, ExecuteStateIn{
+		Action:           "init",
+		Branch:           "feat/schema-waves",
+		Quality:          "balanced",
+		PlannedTaskIds:   []string{"1", "2", "3"},
+		PlannedWavesJSON: `[{"number":0,"taskIds":["1"]},{"number":1,"taskIds":["2","3"]}]`,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	filePath := out.(map[string]any)["filePath"].(string)
+
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	// Guard that init really wrote the key this test exists for.
+	if !strings.Contains(string(raw), `"plannedWaves"`) {
+		t.Fatalf("state file has no plannedWaves key; the run did not exercise it\nstate: %s", raw)
+	}
+	assertStateMatchesSchema(t, filePath)
+}

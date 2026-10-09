@@ -1220,3 +1220,93 @@ func TestDashboardReviewPipeline_UnreadableFolder(t *testing.T) {
 		t.Error("ok = true, want false for a path that is not a folder")
 	}
 }
+
+// TestDashboardSnapshot_ShipCommitResult checks which ship steps carry a
+// detail of kind result: only a completed commit step whose result starts
+// with commitNothingPrefix. Every other step, status, or result gives none.
+func TestDashboardSnapshot_ShipCommitResult(t *testing.T) {
+	const cleanTree = commitNothingPrefix + ": the working tree is clean"
+	const waveCommits = commitNothingPrefix + ": execute committed 2 wave commit(s)"
+
+	tests := []struct {
+		name   string
+		step   map[string]any // the step under test, at index 1
+		want   *DashboardStepDetail
+		stepAt string // name of the step under test
+	}{
+		{
+			name:   "clean tree result",
+			step:   map[string]any{"name": "commit", "status": StepCompleted, "result": cleanTree},
+			want:   &DashboardStepDetail{Kind: dashboardKindResult, Result: cleanTree},
+			stepAt: "commit",
+		},
+		{
+			name:   "wave commits result",
+			step:   map[string]any{"name": "commit", "status": StepCompleted, "result": waveCommits},
+			want:   &DashboardStepDetail{Kind: dashboardKindResult, Result: waveCommits},
+			stepAt: "commit",
+		},
+		{
+			name:   "committed sha result",
+			step:   map[string]any{"name": "commit", "status": StepCompleted, "result": "committed abc1234"},
+			stepAt: "commit",
+		},
+		{
+			name:   "no result field",
+			step:   map[string]any{"name": "commit", "status": StepCompleted},
+			stepAt: "commit",
+		},
+		{
+			name:   "result is not a string",
+			step:   map[string]any{"name": "commit", "status": StepCompleted, "result": 7},
+			stepAt: "commit",
+		},
+		{
+			name:   "prefix not at the start",
+			step:   map[string]any{"name": "commit", "status": StepCompleted, "result": "skip: " + cleanTree},
+			stepAt: "commit",
+		},
+		{
+			name:   "commit step still in progress",
+			step:   map[string]any{"name": "commit", "status": StepInProgress, "result": cleanTree},
+			stepAt: "commit",
+		},
+		{
+			name:   "commit step skipped",
+			step:   map[string]any{"name": "commit", "status": StepSkipped, "result": cleanTree},
+			stepAt: "commit",
+		},
+		{
+			name:   "other step with the same result",
+			step:   map[string]any{"name": "pr", "status": StepCompleted, "result": cleanTree},
+			stepAt: "pr",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			dashWriteState(t, root, "ship-feat-x-20261007T090000Z.json", map[string]any{
+				"branch": "feat/x",
+				"steps": []any{
+					map[string]any{"name": "execute", "status": StepCompleted, "result": cleanTree},
+					tc.step,
+					map[string]any{"name": "review", "status": StepPending},
+				},
+			}, dashNow.Add(-time.Minute))
+
+			p := dashOne(t, root)
+			if len(p.Steps) != 3 {
+				t.Fatalf("steps = %d, want 3", len(p.Steps))
+			}
+			if p.Steps[1].Name != tc.stepAt {
+				t.Fatalf("step 1 = %q, want %q", p.Steps[1].Name, tc.stepAt)
+			}
+			if !reflect.DeepEqual(p.Steps[1].Detail, tc.want) {
+				t.Errorf("detail = %+v, want %+v", p.Steps[1].Detail, tc.want)
+			}
+			if p.Steps[0].Detail != nil || p.Steps[2].Detail != nil {
+				t.Errorf("other steps carry a detail: execute=%+v review=%+v", p.Steps[0].Detail, p.Steps[2].Detail)
+			}
+		})
+	}
+}

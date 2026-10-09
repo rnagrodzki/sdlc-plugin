@@ -595,7 +595,9 @@ func dashboardStatePipeline(st *state.State, evidence map[string]time.Time) (Das
 }
 
 // dashboardShip fills a ship pipeline. A completed or skipped step counts
-// as done.
+// as done. A completed commit step whose result starts with
+// commitNothingPrefix carries a detail of kind result, so the page shows why
+// no commit was made.
 func dashboardShip(p *DashboardPipeline, data map[string]any) {
 	p.StartedAt = dashboardStr(data["startedAt"])
 	failed := false
@@ -605,7 +607,12 @@ func dashboardShip(p *DashboardPipeline, data map[string]any) {
 			continue
 		}
 		name, status := dashboardStr(s["name"]), dashboardStr(s["status"])
-		p.Steps = append(p.Steps, DashboardStep{Name: name, Status: status})
+		step := DashboardStep{Name: name, Status: status}
+		result := dashboardStr(s["result"]) // ship_state stores step["result"] on complete-step
+		if name == "commit" && status == StepCompleted && strings.HasPrefix(result, commitNothingPrefix) {
+			step.Detail = &DashboardStepDetail{Kind: dashboardKindResult, Result: result}
+		}
+		p.Steps = append(p.Steps, step)
 		switch status {
 		case StepCompleted, StepSkipped:
 			p.Progress.Done++

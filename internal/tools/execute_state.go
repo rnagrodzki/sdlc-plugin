@@ -49,6 +49,7 @@ type ExecuteStateIn struct {
 	WaveTimeoutSeconds  int            `json:"waveTimeoutSeconds,omitempty" jsonschema_description:"init only: this run's wave wall-clock deadline in seconds (the invoking CLI's --wave-timeout). Recorded on init and later read back by wave-await to size its reclaim/timeout window. When omitted, falls back to a ship-state cross-read of flags.executeWaveTimeout, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveTimeout (1800s)."`
 	WaveIntervalSeconds int            `json:"waveIntervalSeconds,omitempty" jsonschema_description:"init only: this run's heartbeat liveness cadence in seconds (the invoking CLI's --wave-interval). Recorded on init and later read back by wave-await to size its heartbeat/reclaim-grace window. When omitted, falls back to a ship-state cross-read of flags.executeWaveInterval, then internal/shipmeta.ShipBuiltInDefaults.ExecuteWaveInterval (60s)."`
 	PlannedTaskIds      []string       `json:"plannedTaskIds,omitempty" jsonschema_description:"IDs of every task planned for this run (init only), used later to detect run completeness."`
+	PlannedWavesJSON    string         `json:"plannedWavesJson,omitempty" jsonschema_description:"init only. JSON-encoded string: array of {number, taskIds}. Wave 0 holds the pre-wave tasks. Example: '[{\"number\":0,\"taskIds\":[\"1\"]},{\"number\":1,\"taskIds\":[\"2\",\"3\"]}]'"`
 	PlanPath            string         `json:"planPath,omitempty" jsonschema_description:"Path to the plan file to parse into a wave schedule (wave-compute), or to record on a newly initialized run (init)."`
 	PlanHash            string         `json:"planHash,omitempty" jsonschema_description:"Hash of the plan file content, recorded on a newly initialized run (init only) to detect later plan drift."`
 	ExtraDepsJSON       string         `json:"extraDepsJson,omitempty" jsonschema_description:"wave-compute only: JSON array of {task, dependsOn, reason} objects merged with each task's explicit \"Depends on\" field before the wave schedule is computed."`
@@ -559,7 +560,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
 - resolve-config: resolves this run's effective auto mode, quality tier, commit-waves setting and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto), commitWaves (--commit-waves, "true"|"false"). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), commitWaves (bool; CLI > config execute.commitWaves > default true), highRiskAutoApprove, sources, warnings?}.
-- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ (see openspec.Materialize) before the state file is written at all — a materialize failure aborts init with no state file created. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s). When planPath is readable, init also stores plannedTasks in the state: one {id, name} for each "### Task N:" heading, in plan order (display data only; verify-completeness still reads plannedTaskIds). The key is absent when planPath is empty or the plan is unreadable.
+- init: Create execution state. Runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ (see openspec.Materialize) before the state file is written at all — a materialize failure aborts init with no state file created. Returns {filePath, pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, plannedWavesJson (JSON-encoded array of {number, taskIds}, stored as plannedWaves; wave 0 holds the pre-wave tasks; a malformed value, a negative or repeated number, an empty taskIds, or a task ID missing from a non-empty plannedTaskIds fails with a DomainError and writes no state), planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s). When planPath is readable, init also stores plannedTasks in the state: one {id, name} for each "### Task N:" heading, in plan order (display data only; verify-completeness still reads plannedTaskIds). The key is absent when planPath is empty or the plan is unreadable.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status ("completed" default, or "partial"), timedOut (stamps timedOut:true on the wave), detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), detail ("concise"|"full").
@@ -2259,12 +2260,91 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	return out, nil
 }
 
+// execPlannedWave is one entry of the init plannedWavesJson input: a wave
+// number (0 for the pre-wave tasks) and the IDs of the tasks in that wave.
+// Number is a pointer so a missing number is told apart from wave 0.
+type execPlannedWave struct {
+	Number  *int     `json:"number"`
+	TaskIDs []string `json:"taskIds"`
+}
+
+// execParsePlannedWaves decodes the init plannedWavesJson input and checks it
+// before init writes any state. It returns the waves as the plannedWaves state
+// value ([{number, taskIds}], in input order), or a DomainError when the input
+// is not exactly one JSON array of {number, taskIds} (unknown keys and any
+// data after the array are errors), a number is below 0 or repeats, a
+// wave has no task IDs, or a task ID is not in plannedTaskIDs. An empty
+// plannedTaskIDs skips the task-ID check.
+func execParsePlannedWaves(raw string, plannedTaskIDs []string) ([]any, error) {
+	const shapeSuggestion = "Pass plannedWavesJson as a JSON-encoded array, for example '[{\"number\":1,\"taskIds\":[\"2\"]}]'."
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var waves []execPlannedWave
+	if err := dec.Decode(&waves); err != nil {
+		return nil, &mcpserver.DomainError{Msg: "plannedWavesJson is not a JSON array of {number, taskIds}: " + err.Error(), Cause: err, Suggestion: shapeSuggestion}
+	}
+	if waves == nil {
+		return nil, &mcpserver.DomainError{Msg: "plannedWavesJson is not a JSON array of {number, taskIds}: got null", Suggestion: shapeSuggestion}
+	}
+	// Token returns io.EOF only when nothing but white space follows the
+	// array. A stray ] or } is an error of its own, so test for EOF and not
+	// for More, which is false for those.
+	if _, terr := dec.Token(); terr != io.EOF {
+		return nil, &mcpserver.DomainError{Msg: "plannedWavesJson is not a JSON array of {number, taskIds}: extra data after the array", Suggestion: shapeSuggestion}
+	}
+
+	known := make(map[string]bool, len(plannedTaskIDs))
+	for _, id := range plannedTaskIDs {
+		known[id] = true
+	}
+	seen := map[int]bool{}
+	out := make([]any, 0, len(waves))
+	for i, w := range waves {
+		if w.Number == nil {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson entry %d has no number", i), Suggestion: shapeSuggestion}
+		}
+		n := *w.Number
+		if n < 0 {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson wave number %d is below 0", n), Suggestion: "Use 0 for the pre-wave tasks and 1 or more for each wave."}
+		}
+		if seen[n] {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson gives wave number %d more than once", n), Suggestion: "Give each wave number once."}
+		}
+		seen[n] = true
+		if len(w.TaskIDs) == 0 {
+			return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson wave %d has no taskIds", n), Suggestion: "Leave out a wave that has no tasks."}
+		}
+		if len(known) > 0 {
+			for _, id := range w.TaskIDs {
+				if !known[id] {
+					return nil, &mcpserver.DomainError{Msg: fmt.Sprintf("plannedWavesJson wave %d names task %q, which is not in plannedTaskIds", n, id), Suggestion: "Use the task IDs from plannedTaskIds, for example \"3\"."}
+				}
+			}
+		}
+		out = append(out, map[string]any{"number": n, "taskIds": w.TaskIDs})
+	}
+	return out, nil
+}
+
+// execActionInit handles the init action: it checks the input, runs the config
+// gate, materializes a staged OpenSpec change, and writes a new execute state
+// file for the branch.
 func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
 	if in.Branch == "" {
 		return nil, &mcpserver.DomainError{Msg: "--branch is required for init", Suggestion: "Pass branch (the target branch name) in the init call."}
 	}
 	if in.Quality == "" {
 		return nil, &mcpserver.DomainError{Msg: "--quality is required for init", Suggestion: "Pass quality as \"full\", \"balanced\", or \"minimal\" — call execute_state resolve-config first to get the value to use."}
+	}
+	// Check plannedWavesJson before the config gate, the materialize step and
+	// state.Init: a bad value must leave nothing written.
+	var plannedWaves []any
+	if in.PlannedWavesJSON != "" {
+		pw, err := execParsePlannedWaves(in.PlannedWavesJSON, in.PlannedTaskIds)
+		if err != nil {
+			return nil, err
+		}
+		plannedWaves = pw
 	}
 
 	// KD5 gate: same auto-migrate-with-backup gate as ship_prepare
@@ -2357,6 +2437,11 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 			planned = append(planned, map[string]any{"id": strconv.Itoa(t.Number), "name": t.Title})
 		}
 		st.Data["plannedTasks"] = planned
+	}
+	// plannedWaves is the wave schedule the caller computed (wave 0 holds the
+	// pre-wave tasks). Written only when init got plannedWavesJson.
+	if in.PlannedWavesJSON != "" {
+		st.Data["plannedWaves"] = plannedWaves
 	}
 	st.Data["waves"] = []any{}
 	st.Data["context"] = map[string]any{}
