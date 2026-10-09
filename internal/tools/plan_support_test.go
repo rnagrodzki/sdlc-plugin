@@ -2712,6 +2712,48 @@ func TestPlanSupportPreplanContextErrors(t *testing.T) {
 			t.Errorf("preplan dir entries = %v (err %v), want only the link", entries, readErr)
 		}
 	})
+
+	t.Run("a chain of dangling links at the topic file names the topic file", func(t *testing.T) {
+		root := t.TempDir()
+		preplanDir := filepath.Join(root, ".sdlc-v2", "preplan")
+		if err := os.MkdirAll(preplanDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		elsewhere := t.TempDir()
+		file := filepath.Join(preplanDir, "auth-flow.md")
+		middle := filepath.Join(elsewhere, "middle.md")
+		target := filepath.Join(elsewhere, "gone", "auth-flow.md")
+		if err := os.Symlink(target, middle); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(middle, file); err != nil {
+			t.Fatal(err)
+		}
+
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err == nil {
+			t.Fatalf("expected an error, got nil (preplanCreated %v)", out.PreplanCreated)
+		}
+		if got := errorClassOf(err); got != "infra" {
+			t.Errorf("error class = %q, want infra (err %v)", got, err)
+		}
+		wantMsg := "preplan_context: create " + file + ": " + file + " is a link to " + target + ", which does not exist."
+		if !strings.HasPrefix(err.Error(), wantMsg) {
+			t.Errorf("err.Error() = %q, want prefix %q", err.Error(), wantMsg)
+		}
+		if want := "Remove the link, then try again: rm " + file; suggestionOf(err) != want {
+			t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
+		}
+		if got, readErr := os.Readlink(file); readErr != nil || got != middle {
+			t.Errorf("topic link = (%q, %v), want it unchanged and pointing at %q", got, readErr, middle)
+		}
+		if got, readErr := os.Readlink(middle); readErr != nil || got != target {
+			t.Errorf("middle link = (%q, %v), want it unchanged and pointing at %q", got, readErr, target)
+		}
+		if _, statErr := os.Lstat(filepath.Dir(target)); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("the call created the link target folder (lstat err %v)", statErr)
+		}
+	})
 }
 
 // errInjectedPreplan is the error the preplan write and close seams return.

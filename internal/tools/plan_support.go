@@ -1400,8 +1400,11 @@ func createPreplanFile(file, content string) (bool, error) {
 	if err != nil {
 		if errors.Is(err, fs.ErrExist) {
 			// O_EXCL also fails on a dangling link, where file does not exist.
-			if link, target, ok := fsx.FindDanglingLink(file); ok {
-				return false, &fsx.DanglingLinkError{Link: link, Target: target, Remove: link == file, Err: err}
+			// The parent folder exists, so the walk starts at file. When file
+			// links to another link, removing file fixes the whole chain, so
+			// the error names file and not the last link of the chain.
+			if _, target, ok := fsx.FindDanglingLink(file); ok {
+				return false, &fsx.DanglingLinkError{Link: file, Target: target, Remove: true, Err: err}
 			}
 			return false, nil
 		}
