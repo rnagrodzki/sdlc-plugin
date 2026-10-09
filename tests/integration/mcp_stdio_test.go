@@ -30,7 +30,7 @@ import (
 var expectedMCPTools = []string{
 	"commit_apply", "commit_prepare", "dashboard", "dimensions_render_instructions",
 	"execute_state", "jira", "learnings_log", "links_validate",
-	"mcp_failure_record", "migrate", "openspec_enrich",
+	"mcp_failure_record", "migrate", "openspec_enrich", "openspec_save",
 	"plan_explore_prepare", "plan_mark", "plan_prepare", "plan_support",
 	"poll_await", "pr_apply", "pr_prepare", "prepare_orchestrator",
 	"received_review_prepare", "received_review_verify", "review_prepare", "scaffold_ci",

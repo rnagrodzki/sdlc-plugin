@@ -310,13 +310,23 @@ contrast of 4.5:1 or more. No pastel fills.
   the table above).
 - The Step 5 review loop runs up to **5 rounds** (`plan_prepare`'s
   `reviewLoop.maxRounds`). If round 5 finds blocking issues, the skill runs
-  its fix pass, records the round, and then asks you with `AskUserQuestion`
-  instead of starting a 6th round.
+  its fix pass, records the round, and then asks one question for each open
+  finding: accepted, rejected, or stop. It stores the answers with
+  `plan_mark` `review-outcome` and does not start a 6th round.
   Each review round is recorded with `plan_mark` `review-round` for the
   dashboard. A failed record call does not stop the skill. A plan with fewer
   than 5 tasks uses one reviewer. The skill still sends the output of that
   reviewer through `merge_results` as one lens named `all`, so the record has
   the merged status and the blocking count.
+  Each record also lists the blocking findings of the round as `{id, fixed}`.
+  Step 3 stores its guardrail findings (`G14` blocking or `G22`) as the
+  evidence item `S3-guardrail-findings`. The round 1 record adds them with
+  `fixed: true`. A plan with open findings is handed off only when no answer is
+  stop. An accepted finding gets a row in `## Deviations & assumptions`. A
+  stop answer ends the run with no hand-off. With no open finding, the skill
+  asks nothing and continues. With more than 200 open findings, or when
+  `AskUserQuestion` is unavailable, it asks nothing and stops with no
+  hand-off. On a stop answer, it offers harden in interactive mode.
 
 Sample `styleReport` (abbreviated; writingStandard=ste, visualDensity=high):
 

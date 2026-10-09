@@ -44,6 +44,7 @@ var inputTypes = map[string]reflect.Type{
 	"links_validate":                 reflect.TypeOf(LinksValidateIn{}),
 	"mcp_failure_record":             reflect.TypeOf(MCPFailureRecordIn{}),
 	"openspec_enrich":                reflect.TypeOf(OpenspecEnrichIn{}),
+	"openspec_save":                  reflect.TypeOf(OpenspecSaveIn{}),
 	"scaffold_ci":                    reflect.TypeOf(ScaffoldCIIn{}),
 	"verify_tag_ancestry":            reflect.TypeOf(VerifyTagAncestryIn{}),
 	"plan_prepare":                   reflect.TypeOf(PlanPrepareIn{}),

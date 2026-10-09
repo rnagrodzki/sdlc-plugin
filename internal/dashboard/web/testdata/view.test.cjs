@@ -261,6 +261,32 @@ describe('sectionMeta', () => {
     );
   });
 
+  test('dimensions: the planned count of the review plan is the total, not the listed rows', () => {
+    const dimensions = [
+      { name: 'a', status: 'completed' },
+      { name: 'b', status: 'skipped', reason: 'stalled' },
+    ];
+    const reviewPlan = { wavesPlanned: 3, wavesRun: 1, dimensionsPlanned: 23, dimensionsRun: 2, neverStarted: 21 };
+    assert.equal(
+      view.sectionMeta({ detail: { kind: 'dimensions', dimensions, reviewPlan } }),
+      '1/23 dimensions done'
+    );
+    const reviewTotals = { found: 1, fixed: 0, deferred: 0, unaccounted: 1 };
+    assert.equal(
+      view.sectionMeta({ detail: { kind: 'dimensions', dimensions, reviewPlan, reviewTotals } }),
+      '1/23 dimensions done · 1 finding'
+    );
+  });
+
+  test('dimensions: a review plan with 0 planned dimensions falls back to the listed rows', () => {
+    const dimensions = [{ name: 'a', status: 'completed' }, { name: 'b', status: 'pending' }];
+    const reviewPlan = { wavesPlanned: 0, wavesRun: 0, dimensionsPlanned: 0, dimensionsRun: 0, neverStarted: 0 };
+    assert.equal(
+      view.sectionMeta({ detail: { kind: 'dimensions', dimensions, reviewPlan } }),
+      '1/2 dimensions done'
+    );
+  });
+
   test('explorers: area count and the sum of totals', () => {
     const explorers = [20, 15, 14, 12, 10].map((total, i) => ({ name: 'e' + i, total }));
     assert.equal(
@@ -408,6 +434,19 @@ describe('reviewTotalsText', () => {
       view.reviewTotalsText({ found: 9, fixed: 6, deferred: 3, unaccounted: 0 }),
       '9 findings · 6 fixed · 3 deferred · 0 unaccounted'
     );
+  });
+});
+
+describe('reviewPlanText', () => {
+  test('lists waves run, dimensions run, and never started', () => {
+    assert.equal(
+      view.reviewPlanText({ wavesPlanned: 3, wavesRun: 1, dimensionsPlanned: 23, dimensionsRun: 8, neverStarted: 15 }),
+      'waves 1/3 run · dimensions 8/23 run · 15 never started'
+    );
+  });
+
+  test('is empty without a plan', () => {
+    assert.equal(view.reviewPlanText(undefined), '');
   });
 });
 
@@ -1797,6 +1836,75 @@ describe('render tiles from the shared fixture', () => {
     assert.deepEqual(byClass(body, 'dim-meta').map((n) => n.textContent), ['running', 'queued', '0 findings']);
     assert.deepEqual(byClass(body, 'lamp').map((n) => n.className), ['lamp running', 'lamp stalled', 'lamp failed']);
     assert.equal(byClass(body, 'round-sum').length, 0);
+  });
+
+  test('a skipped dimension reads skipped with its reason, or skipped alone', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'a', status: 'skipped', reason: 'stalled', findings: 0 },
+      { name: 'b', status: 'skipped', reason: 'unstopped', findings: 0 },
+      { name: 'c', status: 'skipped', findings: 0 },
+    ] });
+    assert.deepEqual(byClass(body, 'dim-meta').map((n) => n.textContent), ['skipped · stalled', 'skipped · unstopped', 'skipped']);
+    assert.deepEqual(byClass(body, 'dim-meta').map((n) => n.className), ['dim-meta', 'dim-meta', 'dim-meta']);
+  });
+
+  test('dimensions with a wave sit under one Wave heading for each wave, lowest wave first', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'docs-review', status: 'pending', findings: 0, wave: 2 },
+      { name: 'security-review', status: 'completed', findings: 2, wave: 1 },
+      { name: 'perf-review', status: 'skipped', reason: 'stalled', findings: 0, wave: 1 },
+      { name: 'style-review', status: 'pending', findings: 0, wave: 3 },
+    ] });
+    const heads = byClass(body, 'wave-head');
+    assert.deepEqual(heads.map((n) => n.textContent), ['Wave 1', 'Wave 2', 'Wave 3']);
+    // Document order: each heading is followed by the rows of its wave.
+    const sequence = body.children.map((n) => (classesOf(n).includes('wave-head') ? n.textContent : oneByClass(n, 'dim-name').textContent));
+    assert.deepEqual(sequence, [
+      'Wave 1', 'security-review', 'perf-review',
+      'Wave 2', 'docs-review',
+      'Wave 3', 'style-review',
+    ]);
+    const metas = byClass(body, 'dim-meta').map((n) => n.textContent);
+    assert.deepEqual(metas, ['2 findings', 'skipped · stalled', 'queued', 'queued']);
+  });
+
+  test('dimensions without a wave render as a flat list with no heading', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'a', status: 'completed', findings: 1 },
+      { name: 'b', status: 'pending', findings: 0, wave: 0 },
+    ] });
+    assert.equal(byClass(body, 'wave-head').length, 0);
+    assert.deepEqual(body.children.map((n) => oneByClass(n, 'dim-name').textContent), ['a', 'b']);
+  });
+
+  test('rows without a wave come first, before the first Wave heading', () => {
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', dimensions: [
+      { name: 'planned', status: 'completed', findings: 0, wave: 1 },
+      { name: 'loose', status: 'completed', findings: 0 },
+    ] });
+    const sequence = body.children.map((n) => (classesOf(n).includes('wave-head') ? n.textContent : oneByClass(n, 'dim-name').textContent));
+    assert.deepEqual(sequence, ['loose', 'Wave 1', 'planned']);
+  });
+
+  test('a review plan adds the totals line under the review totals line', () => {
+    const reviewTotals = { found: 2, fixed: 1, deferred: 0, unaccounted: 1 };
+    const reviewPlan = { wavesPlanned: 3, wavesRun: 1, dimensionsPlanned: 23, dimensionsRun: 8, neverStarted: 15 };
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', reviewTotals, reviewPlan, dimensions: [
+      { name: 'a', status: 'completed', findings: 2, wave: 1 },
+    ] });
+    const sums = byClass(body, 'round-sum');
+    assert.deepEqual(sums.map((n) => n.textContent), [
+      '2 findings · 1 fixed · 0 deferred · 1 unaccounted',
+      'waves 1/3 run · dimensions 8/23 run · 15 never started',
+    ]);
+    assert.deepEqual(body.children.slice(0, 2), sums);
+  });
+
+  test('a review plan without review totals still shows the totals line first', () => {
+    const reviewPlan = { wavesPlanned: 1, wavesRun: 1, dimensionsPlanned: 1, dimensionsRun: 1, neverStarted: 0 };
+    const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', reviewPlan, dimensions: [] });
+    assert.equal(body.children.length, 1);
+    assert.equal(body.children[0].textContent, 'waves 1/1 run · dimensions 1/1 run · 0 never started');
   });
 
   test('a plan explorers tile: name, N findings, 2 findings and N more; an unreadable explorer has no rows', () => {

@@ -37,15 +37,17 @@ echo "openspec stub: unsupported args: $*" >&2
 exit 2
 `
 
-// setupOpenspecFlowClient registers the tools this flow drives (ship_prepare,
-// ship_state, execute_state) on a fresh in-process MCP server/client pair,
-// using the same recipe as setupShipClient.
+// setupOpenspecFlowClient registers the tools these flows drive
+// (ship_prepare, ship_state, execute_state, openspec_save) on a fresh
+// in-process MCP server/client pair, using the same recipe as
+// setupShipClient.
 func setupOpenspecFlowClient(t *testing.T) *mcp.ClientSession {
 	t.Helper()
 	srv := mcpserver.New("openspec-flow-test", "0.0.0-test")
 	tools.RegisterShipTools(srv)
 	tools.RegisterShipStateTools(srv)
 	tools.RegisterExecuteStateTools(srv)
+	tools.RegisterOpenspecTools(srv)
 
 	ctx := context.Background()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
@@ -268,4 +270,118 @@ func TestOpenspecMaterializeFlow(t *testing.T) {
 	// --- both state files match their JSON schemas ---
 	validateAgainstSchema(t, shipStatePath, schemasDir, "ship-state.schema.json")
 	validateAgainstSchema(t, execStatePath, schemasDir, "execute-state.schema.json")
+}
+
+// TestOpenspecSaveFlow saves a staged OpenSpec change from the default
+// branch through the real MCP tool surface. openspec_save creates the branch
+// openspec/<change>, stages openspec/changes/<change>/, and rewrites the
+// plan header to **OpenSpec-Saved:**. A second openspec_save call returns
+// "already", and a later ship_prepare on the same plan materializes nothing
+// and stages nothing more.
+func TestOpenspecSaveFlow(t *testing.T) {
+	const change = "demo"
+	const target = "openspec/" + change
+
+	// --- openspec stub on PATH (prepended, so git stays visible) ---
+	binDir := t.TempDir()
+	mustWriteFile(t, filepath.Join(binDir, "openspec"), openspecStubScript)
+	if err := os.Chmod(filepath.Join(binDir, "openspec"), 0o755); err != nil {
+		t.Fatalf("chmod openspec stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	// --- working repo on main, the default branch ---
+	repo := realPath(t, t.TempDir())
+	runGit(t, repo, "init", "-q")
+	runGit(t, repo, "checkout", "-q", "-b", "main")
+	runGit(t, repo, "config", "user.email", "integration-test@example.com")
+	runGit(t, repo, "config", "user.name", "integration-test")
+	// .sdlc-v2/ is ignored, so the staging dir, the plan, config.toml and
+	// the ship state never make the tracked tree dirty.
+	mustWriteFile(t, filepath.Join(repo, ".gitignore"), ".sdlc-v2/\n")
+	runGit(t, repo, "add", ".gitignore")
+	runGit(t, repo, "commit", "-q", "-m", "init")
+
+	mustWriteFile(t, filepath.Join(repo, ".sdlc-v2", "config.toml"), "[git]\nbaseBranch = \"main\"\n")
+
+	// --- staged change: one file plus stage.json (openspec.StageManifest) ---
+	stagingDir := filepath.Join(repo, ".sdlc-v2", "openspec-staging", change)
+	proposal := "# Proposal\n\nDemo change for the save flow.\n"
+	mustWriteFile(t, filepath.Join(stagingDir, "proposal.md"), proposal)
+	sum := sha256.Sum256([]byte(proposal))
+	mustWriteFile(t, filepath.Join(stagingDir, "stage.json"),
+		`{"change":"`+change+`","schema":"spec-driven","files":[{"path":"proposal.md","sha256":"`+hex.EncodeToString(sum[:])+`"}]}`)
+
+	planPath := filepath.Join(repo, ".sdlc-v2", "plan-demo.md")
+	mustWriteFile(t, planPath, "# Demo plan\n\n"+
+		"**Source:** openspec/changes/"+change+"/\n"+
+		"**OpenSpec-Staging:** .sdlc-v2/openspec-staging/"+change+"/\n\n"+
+		"### Task 1: demo\n")
+
+	chdir(t, repo)
+	c := setupOpenspecFlowClient(t)
+
+	// --- openspec_save on main: creates the branch and stages the change ---
+	save := callTool(t, c, "openspec_save", map[string]any{"planPath": planPath})
+	if !save.OK {
+		t.Fatalf("openspec_save: not ok: code=%s body=%s", save.Code, save.Body)
+	}
+	fields := renderedSection(save.Body, "Fields")
+	if fields["change"] != change || fields["branch"] != target ||
+		fields["branchCreated"] != "true" || fields["materialized"] != "created" {
+		t.Fatalf("openspec_save fields = %v, want change=%s branch=%s branchCreated=true materialized=created; body:\n%s",
+			fields, change, target, save.Body)
+	}
+	if got := runGit(t, repo, "branch", "--show-current"); got != target {
+		t.Fatalf("current branch = %q, want %q", got, target)
+	}
+	plan, err := os.ReadFile(planPath)
+	if err != nil {
+		t.Fatalf("read plan: %v", err)
+	}
+	savedLine := "**OpenSpec-Saved:** openspec/changes/" + change + "/ (branch " + target + ")"
+	if !strings.Contains(string(plan), savedLine+"\n") {
+		t.Fatalf("plan has no %q line:\n%s", savedLine, plan)
+	}
+	if strings.Contains(string(plan), "**OpenSpec-Staging:**") {
+		t.Fatalf("plan still has the **OpenSpec-Staging:** line:\n%s", plan)
+	}
+	if _, err := os.Stat(stagingDir); !os.IsNotExist(err) {
+		t.Fatalf("staging dir %s still present after openspec_save (stat err %v)", stagingDir, err)
+	}
+	staged := runGit(t, repo, "diff", "--cached", "--name-only")
+	if !strings.Contains(staged, "openspec/changes/"+change+"/proposal.md") ||
+		!strings.Contains(staged, "openspec/changes/"+change+"/.openspec.yaml") {
+		t.Fatalf("git diff --cached --name-only = %q, want openspec/changes/%s/ files", staged, change)
+	}
+
+	// --- a second openspec_save changes nothing ---
+	again := callTool(t, c, "openspec_save", map[string]any{"planPath": planPath})
+	if !again.OK {
+		t.Fatalf("second openspec_save: not ok: code=%s body=%s", again.Code, again.Body)
+	}
+	if got := renderedSection(again.Body, "Fields"); got["materialized"] != "already" || got["branch"] != target {
+		t.Fatalf("second openspec_save fields = %v, want materialized=already branch=%s; body:\n%s", got, target, again.Body)
+	}
+	if got := runGit(t, repo, "diff", "--cached", "--name-only"); got != staged {
+		t.Fatalf("second openspec_save changed the index: got %q, want %q", got, staged)
+	}
+
+	// --- ship_prepare on the saved plan: nothing more to materialize ---
+	prep := callTool(t, c, "ship_prepare", map[string]any{
+		"sessionId": "openspec-save-session",
+		"planFile":  planPath,
+	})
+	if !prep.OK {
+		t.Fatalf("ship_prepare: not ok: code=%s body=%s", prep.Code, prep.Body)
+	}
+	if got := renderedSection(prep.Body, "openspec"); got != nil {
+		t.Fatalf("ship_prepare openspec = %v, want no openspec section; body:\n%s", got, prep.Body)
+	}
+	if got := runGit(t, repo, "diff", "--cached", "--name-only"); got != staged {
+		t.Fatalf("ship_prepare changed the index: got %q, want %q", got, staged)
+	}
+	if got := runGit(t, repo, "branch", "--show-current"); got != target {
+		t.Fatalf("current branch after ship_prepare = %q, want %q", got, target)
+	}
 }

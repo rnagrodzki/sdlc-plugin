@@ -67,7 +67,8 @@ type OpenspecEnrichOut struct {
 	MatchedChange *openspec.Change `json:"matchedChange,omitempty"`
 }
 
-// RegisterOpenspecTools registers openspec-related tools on the server.
+// RegisterOpenspecTools registers the openspec_enrich and openspec_save
+// tools on the server.
 func RegisterOpenspecTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "openspec_enrich",
 		"INTERNAL — called by sdlc skills only. Idempotent enrichment of openspec/config.yaml with an sdlc-v2 managed block that points contributors to the sdlc plugin skills /plan, /execute, and /ship.",
@@ -88,6 +89,33 @@ func RegisterOpenspecTools(s *mcpserver.Server) {
 				}
 			}
 			return enrichConfig(root, in)
+		},
+	)
+
+	mcpserver.Register(s, "openspec_save",
+		"INTERNAL — called by sdlc skills only. Saves the OpenSpec change that a plan staged under .sdlc-v2/openspec-staging/<change>/ into openspec/changes/<change>/, so the change can go to review as its own docs pull request before any code is written. "+
+			"Call it after /plan created the change, from the default branch or from the branch openspec/<change>, with tracked files outside openspec/changes/<change>/ and .sdlc-v2/ clean. "+
+			"Input: planPath, the absolute path of the plan file with an **OpenSpec-Staging:** header line. "+
+			"Output: change, branch, branchCreated, materialized (created | already), refsStamped, stagedFiles, summary, next. "+
+			"Side effects: on the default branch it creates and switches to the branch openspec/<change> (git switch -c); it moves the staged files into openspec/changes/<change>/ through the OpenSpec CLI; it writes a ref comment into each task line of openspec/changes/<change>/tasks.md; it runs git add on openspec/changes/<change>/; it rewrites the plan's **OpenSpec-Staging:** header line to **OpenSpec-Saved:** openspec/changes/<change>/ (branch openspec/<change>). It does not commit. "+
+			"A plan that already has the **OpenSpec-Saved:** line changes nothing and returns materialized \"already\".",
+		mcpserver.Annotations{
+			Title:       "Save OpenSpec change to branch",
+			ReadOnly:    false,
+			Destructive: true,
+			Idempotent:  true,
+			OpenWorld:   false,
+		},
+		func(ctx mcpserver.Ctx, in OpenspecSaveIn) (OpenspecSaveOut, error) {
+			workDir, err := worktree.ActiveRoot()
+			if err != nil {
+				return OpenspecSaveOut{}, &mcpserver.InfraError{
+					Msg:        "openspec_save: resolve worktree root: " + err.Error(),
+					Suggestion: "Run from inside a git worktree, then call openspec_save again.",
+					Cause:      err,
+				}
+			}
+			return openspecSave(workDir, in)
 		},
 	)
 }

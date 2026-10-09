@@ -385,28 +385,71 @@
     return out;
   }
 
+  /**
+   * The meta text of a dimension row: the run state while the dimension has
+   * not finished, `skipped · <reason>` for a skipped one, else the finding
+   * count.
+   * @param {{status: string, findings?: number, reason?: string}} dim
+   * @returns {string}
+   */
   function dimensionMeta(dim) {
     if (dim.status === 'in_progress') return 'running';
     if (dim.status === 'pending') return 'queued';
+    if (dim.status === 'skipped') return dim.reason ? 'skipped · ' + dim.reason : 'skipped';
     return plural(dim.findings || 0, 'finding', 'findings');
   }
 
   /**
-   * Dimensions: the review totals line, then one row for each dimension.
-   * A count above 0 is amber; the lamp keeps the run state.
+   * One dimension row: lamp, name, and meta text. A count above 0 is amber.
    * @param {Document} doc
    * @param {object} view
-   * @param {{dimensions?: Array, reviewTotals?: object}} detail
+   * @param {{name: string, status: string, findings?: number, reason?: string}} dim
+   * @returns {Element} div.dim-row
+   */
+  function dimensionRow(doc, view, dim) {
+    var meta = el(doc, 'span', (dim.findings || 0) > 0 ? 'dim-meta has-findings' : 'dim-meta', dimensionMeta(dim));
+    return append(el(doc, 'div', 'dim-row dim-cols'), [lamp(doc, lampClass(view, dim.status)), el(doc, 'span', 'dim-name', dim.name), meta]);
+  }
+
+  /**
+   * Dimensions: the review totals line, the review plan totals line, then
+   * the dimension rows. Rows without a wave come first as a flat list. Rows
+   * with a wave sit under one `Wave N` heading for each wave, lowest first,
+   * in the order the rows arrive. The lamp keeps the run state.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{dimensions?: Array, reviewTotals?: object, reviewPlan?: object}} detail
    * @returns {Element} div
    */
   function dimensionsBody(doc, view, detail) {
     var out = el(doc, 'div', '');
     if (detail.reviewTotals) out.appendChild(el(doc, 'div', 'round-sum', view.reviewTotalsText(detail.reviewTotals)));
+    if (detail.reviewPlan) out.appendChild(el(doc, 'div', 'round-sum', view.reviewPlanText(detail.reviewPlan)));
+    var flat = [];
+    var groups = {};
+    var numbers = [];
     (detail.dimensions || []).forEach(function (dim) {
-      var meta = el(doc, 'span', (dim.findings || 0) > 0 ? 'dim-meta has-findings' : 'dim-meta', dimensionMeta(dim));
-      out.appendChild(
-        append(el(doc, 'div', 'dim-row dim-cols'), [lamp(doc, lampClass(view, dim.status)), el(doc, 'span', 'dim-name', dim.name), meta])
-      );
+      if (!(dim.wave > 0)) {
+        flat.push(dim);
+        return;
+      }
+      if (!groups[dim.wave]) {
+        groups[dim.wave] = [];
+        numbers.push(dim.wave);
+      }
+      groups[dim.wave].push(dim);
+    });
+    numbers.sort(function (a, b) {
+      return a - b;
+    });
+    flat.forEach(function (dim) {
+      out.appendChild(dimensionRow(doc, view, dim));
+    });
+    numbers.forEach(function (number) {
+      out.appendChild(el(doc, 'div', 'wave-head', 'Wave ' + number));
+      groups[number].forEach(function (dim) {
+        out.appendChild(dimensionRow(doc, view, dim));
+      });
     });
     return out;
   }

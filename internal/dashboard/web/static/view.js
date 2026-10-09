@@ -199,7 +199,9 @@
   /**
    * One-line summary of a step section. Queued tasks (planned, wave not
    * started) count in the task total; with no wave at all the summary is
-   * the queued count. A guardrails section reads the guardrail count. A
+   * the queued count. A dimensions section counts done dimensions against
+   * the planned dimensions of the review plan when it has one. A guardrails
+   * section reads the guardrail count. A
    * result section reads the text before the first colon of the result.
    * @param {{detail?: object}} step
    * @returns {string} '' when the step has no section
@@ -222,7 +224,9 @@
       }
       case 'dimensions': {
         var dims = d.dimensions || [];
-        var dimText = countCompleted(dims) + '/' + dims.length + ' dimensions done';
+        // The plan size when the review run planned dimensions, else the rows listed.
+        var planned = d.reviewPlan && d.reviewPlan.dimensionsPlanned > 0 ? d.reviewPlan.dimensionsPlanned : dims.length;
+        var dimText = countCompleted(dims) + '/' + planned + ' dimensions done';
         if (d.reviewTotals) dimText += ' · ' + plural(d.reviewTotals.found, 'finding', 'findings');
         return dimText;
       }
@@ -394,6 +398,20 @@
     return (
       plural(t.found, 'finding', 'findings') +
       ' · ' + t.fixed + ' fixed · ' + t.deferred + ' deferred · ' + t.unaccounted + ' unaccounted'
+    );
+  }
+
+  /**
+   * The run totals line of a review plan: how many waves and dimensions ran
+   * out of those planned, and how many never started.
+   * @param {{wavesPlanned: number, wavesRun: number, dimensionsPlanned: number, dimensionsRun: number, neverStarted: number}} p
+   * @returns {string} '' when there is no plan
+   */
+  function reviewPlanText(p) {
+    if (!p) return '';
+    return (
+      'waves ' + p.wavesRun + '/' + p.wavesPlanned + ' run · dimensions ' +
+      p.dimensionsRun + '/' + p.dimensionsPlanned + ' run · ' + p.neverStarted + ' never started'
     );
   }
 
@@ -815,6 +833,7 @@
     waveCommitState: waveCommitState,
     taskCounts: taskCounts,
     reviewTotalsText: reviewTotalsText,
+    reviewPlanText: reviewPlanText,
     explorerMore: explorerMore,
     kindLabel: kindLabel,
     stationLabel: stationLabel,

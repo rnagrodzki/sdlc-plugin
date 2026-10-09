@@ -146,7 +146,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		reason:     "no writes at all: configmigrate.Verify, setupmeta.Sections, gitx.DefaultBranch, git remote get-url, ciScriptDrift are read-only; the managed-section os.WriteFile belongs to setup_write_sections/setup_init, not setupPrepare",
 	},
 
-	// WRITER (16 rows)
+	// WRITER (17 rows)
 	"commit_apply": {
 		title:       "Create a git commit",
 		readOnly:    false,
@@ -210,6 +210,14 @@ var toolAnnotations = map[string]annotationPolicy{
 		idempotent:  true,
 		openWorld:   false,
 		reason:      "os.WriteFile → tracked openspec/config.yaml; managed block rewritten in place",
+	},
+	"openspec_save": {
+		title:       "Save OpenSpec change to branch",
+		readOnly:    false,
+		destructive: true,
+		idempotent:  true,
+		openWorld:   false,
+		reason:      "git switch -c openspec/<c>; openspec.Materialize (openspec/changes/<c>/); os.WriteFile ref comments into openspec/changes/<c>/tasks.md; git add; os.WriteFile plan header Staging → Saved; a Saved plan returns already",
 	},
 	"jira": {
 		title:       "Manage local Jira cache",
