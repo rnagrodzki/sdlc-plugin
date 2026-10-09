@@ -1,7 +1,8 @@
 // Package tools: validate action-enum tool (Task 36).
 //
 // Ports six source validators behind one MCP tool ("validate"), following
-// the KD16 action-enum precedent established by Task 35's ship_state:
+// the action-enum pattern of ship_state (one tool, one "action" input that
+// selects the operation):
 //
 //   - plan_format  -- scripts/ci/validate-plan-format.js  (PF1-PF7, PF9, PF10),
 //     plus PF11-PF12 and the style (PF13) and diagram-contrast (PF14) checks

@@ -45,7 +45,8 @@ import (
 //
 // plan_explore_prepare (scripts/skill/plan-explore.js) lives in
 // plan_explore.go; buildExplorePack there is called in-process from
-// planPrepareCore below (KD4: prepare inline, explore manifest by file).
+// planPrepareCore below: prepare runs inline, and the explore manifest is
+// handed off by file.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -71,7 +72,7 @@ type PlanPrepareIn struct {
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
-// defined here; Task 37 Ruling A relocated them (verbatim, unexported
+// defined here; they were relocated (verbatim, unexported
 // functions and all) into internal/openspec/openspec.go, since
 // internal/hooks' session-start handler needs the same filesystem-walking
 // OpenSpec shape and could not reach unexported symbols in this package.
@@ -247,8 +248,7 @@ type PlanPrepareOut struct {
 // ---------------------------------------------------------------------------
 
 // isSafeChangeName rejects path-traversal-unsafe OpenSpec change names. The
-// logic now lives in openspec.IsSafeChangeName (Task 37 Ruling A
-// relocation); this thin forwarder exists solely so plan_explore.go's
+// logic now lives in openspec.IsSafeChangeName; this thin forwarder exists solely so plan_explore.go's
 // getOpenSpecPaths call site keeps compiling against the unexported name
 // without that file needing to import internal/openspec itself.
 func isSafeChangeName(name string) bool {
@@ -694,8 +694,8 @@ func loadPlanStyle(mainRoot string) (PlanStyle, string) {
 // falls back to defaults. Applies the "full" default for ContractShape
 // when absent, and silently drops any requiredFields entry that duplicates
 // one of the five fields already guaranteed by the task contract's fixed
-// shape (Complexity, Risk, Files, Verify, Depends on) -- KD5, additive-only
-// enforced in Go.
+// shape (Complexity, Risk, Files, Verify, Depends on): requiredFields can only
+// add fields, never remove a fixed one.
 func loadPlanTasks(mainRoot string) PlanTasks {
 	tasks := PlanTasks{ContractShape: "full"}
 
@@ -952,7 +952,7 @@ func buildIntakeAuditDispatch() Dispatch {
 	}
 }
 
-// buildLanes mirrors plan.js's buildLanes (KD1 lane partitioning: four
+// buildLanes mirrors plan.js's buildLanes (lane partitioning: four
 // static lane definitions, a fifth entry mirroring g17Dispatch verbatim, and
 // a sixth style-compliance lane that owns G22).
 func buildLanes(g17Dispatch Dispatch) []Lane {
@@ -1001,7 +1001,7 @@ func buildLanes(g17Dispatch Dispatch) []Lane {
 	return lanes
 }
 
-// buildLensReviewers mirrors plan.js's buildLensReviewers (KD3 lens
+// buildLensReviewers mirrors plan.js's buildLensReviewers (lens
 // partitioning: three lens definitions).
 func buildLensReviewers() []LensReviewer {
 	type lensDef struct {
@@ -1625,7 +1625,7 @@ func writeStyleGuideFile(st *state.State, guide string) (string, error) {
 func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepareOut, error) {
 	errs := []string{}
 
-	// KD5 gate: hard-abort with a minimal errors-only payload on config
+	// Config-version gate: hard-abort with a minimal errors-only payload on config
 	// migration failure, mirroring plan.js's ensureConfigVersion short-circuit
 	// (main() returns before touching openspec/guardrails/lanes/etc). Go's
 	// fixed output schema cannot reproduce JS's differently-shaped early
@@ -1764,7 +1764,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 		styleGuideFile = sp
 	}
 
-	// 4. plan-explore discovery pack (KD4: in-process call, not subprocess).
+	// 4. plan-explore discovery pack (an in-process call, not a subprocess).
 	// A resume call keeps the zero value: the run's research already exists,
 	// so no new explore tempdir is created.
 	var explorePack ExplorePack
@@ -2016,7 +2016,12 @@ func validateCheckpointData(data map[string]any) (PlanCheckpoint, error) {
 	return PlanCheckpoint{Step: step, Iteration: iteration, ExpectedWriters: expectedWriters}, nil
 }
 
-// maxReviewRoundsStored caps the number of entries in st.Data["reviewRounds"].
+// planReviewRoundsKey is the plan state data key that holds the list of
+// PlanReviewRound entries. The plan_mark review-round marker writes it; the
+// dashboard and ship_state cleanup-pipeline read it.
+const planReviewRoundsKey = "reviewRounds"
+
+// maxReviewRoundsStored caps the number of entries in st.Data[planReviewRoundsKey].
 const maxReviewRoundsStored = 20
 
 // maxReviewRoundLenses caps PlanReviewRound.Lenses, the same cap as
@@ -2711,11 +2716,11 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 	// "review-round" upserts its entry into reviewRounds by round. It
 	// returns no Next.
 	if in.Marker == "review-round" {
-		rounds, uerr := upsertReviewRound(st.Data["reviewRounds"], reviewRound)
+		rounds, uerr := upsertReviewRound(st.Data[planReviewRoundsKey], reviewRound)
 		if uerr != nil {
 			return PlanMarkOut{}, uerr
 		}
-		st.Data["reviewRounds"] = rounds
+		st.Data[planReviewRoundsKey] = rounds
 
 		refreshPlanTiming(st, contentRoot)
 		if err := state.Write(st); err != nil {

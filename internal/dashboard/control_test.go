@@ -165,7 +165,7 @@ func TestEnsureVersionDiffersRestarts(t *testing.T) {
 	wantSpawn := []spawnCall{{
 		exe:     "/usr/local/bin/sdlc",
 		args:    []string{"dashboard", "serve", "--port", "7385"},
-		logPath: filepath.Join(Dir(), "server.log"),
+		logPath: LogPath(),
 	}}
 	if !reflect.DeepEqual(w.spawns, wantSpawn) {
 		t.Errorf("spawns = %v, want %v", w.spawns, wantSpawn)

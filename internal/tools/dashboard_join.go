@@ -342,9 +342,9 @@ func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
 }
 
 // dashboardDimensionFindings returns the finding rows of the dimension name:
-// the review issues whose Ref is name, in issue order. It builds the rows as
-// dashboardReviewFindings does for the standalone review. It returns an
-// empty, non-nil list when the dimension has no finding.
+// the review issues whose Ref is name, in issue order. It is the only copy of
+// the issue to row mapping: dashboardReviewFindings uses it for the standalone
+// review. It returns an empty, non-nil list when the dimension has no finding.
 func dashboardDimensionFindings(issues []DashboardIssue, name string) []DashboardReviewFinding {
 	rows := []DashboardReviewFinding{}
 	for _, is := range issues {

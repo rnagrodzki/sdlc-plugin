@@ -231,9 +231,9 @@ lane judges because they need meaning:
 | 5. Only 5 verb forms | G22 (needs judgment) |
 | 6. No perfect tenses | PF13: `perfect-tense` |
 | 7. No "-ing" verb forms | PF13: `ing-form` |
-| 8. Past participle placement | PF13: `passive-instruction` (in an instruction) |
-| 9. Active voice | PF13: `passive-instruction` (in an instruction) |
-| 10. No phrasal verbs | PF13: `phrasal-verb` |
+| 8. Past participle placement | PF13: `passive-instruction` (in an instruction). G22: a passive description with a known doer |
+| 9. Active voice | PF13: `passive-instruction` (in an instruction). G22: a passive description with a known doer |
+| 10. No phrasal verbs | PF13: `phrasal-verb` (a fixed list). G22: a phrasal verb that is not on the PF13 list |
 | 11. One instruction per sentence | G22 (needs judgment) |
 | 12. Condition first | G22 (needs judgment) |
 | 13. Sentence length | PF13: `instruction-length` / `description-length` |
@@ -243,7 +243,7 @@ lane judges because they need meaning:
 | 17. Paragraph length (6 sentences) | PF13: `paragraph-length` |
 | 18. Vertical list for 3+ items | G22 (needs judgment) |
 | 19. Warning: command first | G22 (needs judgment) |
-| 20. No contractions / semicolons | PF13: `contraction` / `semicolon` |
+| 20. No contractions / semicolons | PF13: `contraction` / `semicolon`. G22: idioms, slang, figurative words, and an uncommon term with no explanation at first use |
 
 PF13 is a deterministic hard gate: a false hit would block a correct plan, so
 it checks only what a pattern can decide safely. G22 (the
@@ -309,6 +309,10 @@ contrast of 4.5:1 or more. No pastel fills.
   `styleReport` — pass or fail — with the settings in effect, the numeric
   limits, per-section numbers, every banned-phrase and STE hit, the diagram
   contrast hits, and the custom instructions.
+- At the end of Step 2, the skill runs a format pre-check: it calls
+  `validate({action:"plan_format", final:false})`, fixes each finding, and
+  calls it again, at most 3 calls. A finding that is left waits for the
+  Step 6.6 format gate.
 - The STE and banned-phrase scans cover the whole plan file. The density and
   readability limits cover only the measured `##` sections (the narrative
   sections of the plan template, or Context / Research Findings / Key
@@ -326,7 +330,7 @@ contrast of 4.5:1 or more. No pastel fills.
   reviewer through `merge_results` as one lens named `all`, so the record has
   the merged status and the blocking count.
   Each record also lists the blocking findings of the round as `{id, fixed}`.
-  Step 3 stores its guardrail findings (`G14` blocking or `G22`) as the
+  Step 3 stores the `G14` and `G22` issues, without the synthetic lane issues, as the
   evidence item `S3-guardrail-findings`. The round 1 record adds them with
   `fixed: true`. A plan with open findings is handed off only when no answer is
   stop. An accepted finding gets a row in `## Deviations & assumptions`. A

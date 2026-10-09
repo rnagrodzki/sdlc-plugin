@@ -2237,6 +2237,29 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 				wantCause:      openspec.ErrTargetSpec,
 				wantSuggestion: "Check read permission on the named spec under openspec/specs/, then call openspec_stage again.",
 			},
+			{
+				// A current spec over the size limit is a caller problem: the
+				// spec must shrink, so it is a DomainError, not a read error.
+				name: "target spec too large (stage)",
+				setup: func(t *testing.T, root string) {
+					t.Helper()
+					p := filepath.Join(root, "openspec", "specs", "user-auth", "spec.md")
+					if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+						t.Fatalf("mkdir spec dir: %v", err)
+					}
+					if err := os.WriteFile(p, []byte(strings.Repeat("a", 1<<20+1)), 0o644); err != nil {
+						t.Fatalf("write spec: %v", err)
+					}
+				},
+				in: PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget", Files: []openspec.StageFile{
+					{Path: "proposal.md", Content: "# P\n"},
+					{Path: "specs/user-auth/spec.md", Content: "## MODIFIED Requirements\n"},
+				}},
+				wantClass:      "domain",
+				wantMsgPrefix:  "openspec_stage: openspec stage: target spec: too large: ",
+				wantCause:      openspec.ErrTargetSpecTooLarge,
+				wantSuggestion: "Shrink the named spec under openspec/specs/ below the size limit in the message (for example, split the capability into two specs), then call openspec_stage again.",
+			},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				stubOpenspecForStage(t, 0)
@@ -2345,8 +2368,8 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if out.PreplanFile != wantFile {
 			t.Errorf("PreplanFile = %q, want %q", out.PreplanFile, wantFile)
 		}
-		if !out.PreplanCreated {
-			t.Error("PreplanCreated = false, want true for an absent file")
+		if out.PreplanCreated == nil || !*out.PreplanCreated {
+			t.Errorf("PreplanCreated = %v, want true for an absent file", out.PreplanCreated)
 		}
 		got, err := os.ReadFile(wantFile)
 		if err != nil {
@@ -2400,8 +2423,8 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if err != nil {
 			t.Fatalf("preplan_context: %v", err)
 		}
-		if out.PreplanCreated {
-			t.Error("PreplanCreated = true, want false for an existing file")
+		if out.PreplanCreated == nil || *out.PreplanCreated {
+			t.Errorf("PreplanCreated = %v, want false (set) for an existing file", out.PreplanCreated)
 		}
 		if out.PreplanFile != file {
 			t.Errorf("PreplanFile = %q, want %q", out.PreplanFile, file)
@@ -2423,8 +2446,8 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if err != nil {
 			t.Fatalf("first call: %v", err)
 		}
-		if !first.PreplanCreated {
-			t.Error("first PreplanCreated = false, want true")
+		if first.PreplanCreated == nil || !*first.PreplanCreated {
+			t.Errorf("first PreplanCreated = %v, want true", first.PreplanCreated)
 		}
 		if got, _ := os.ReadFile(first.PreplanFile); string(got) != preplanSkeletonFor("Auth Flow") {
 			t.Errorf("topic file = %q, want the skeleton with the trimmed topic", got)
@@ -2433,7 +2456,7 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if err != nil {
 			t.Fatalf("second call: %v", err)
 		}
-		if second.PreplanCreated || second.PreplanFile != first.PreplanFile {
+		if second.PreplanCreated == nil || *second.PreplanCreated || second.PreplanFile != first.PreplanFile {
 			t.Errorf("second = {created %v, file %q}, want {false, %q}", second.PreplanCreated, second.PreplanFile, first.PreplanFile)
 		}
 	})
@@ -2517,8 +2540,29 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if !strings.Contains(text, "auth-flow.md") {
 			t.Errorf("rendered result lacks the topic file name:\n%s", text)
 		}
+		if !strings.Contains(text, "- preplanCreated: true") {
+			t.Errorf("rendered result lacks preplanCreated: true:\n%s", text)
+		}
 		if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")); err != nil {
 			t.Errorf("topic file missing after the MCP call: %v", err)
+		}
+		again := evidenceRender(t, root, map[string]any{"action": "preplan_context", "topic": "auth flow"})
+		if !strings.Contains(again, "- preplanCreated: false") {
+			t.Errorf("second call must render preplanCreated: false:\n%s", again)
+		}
+	})
+
+	t.Run("other actions omit preplanCreated", func(t *testing.T) {
+		root := t.TempDir()
+		text := evidenceRender(t, root, map[string]any{
+			"action":      "merge_results",
+			"laneResults": []any{map[string]any{"name": "lane-a", "status": "pass"}},
+		})
+		if !strings.HasPrefix(text, "# plan_support — ok") {
+			t.Fatalf("merge_results failed:\n%s", text)
+		}
+		if strings.Contains(text, "preplanCreated") {
+			t.Errorf("merge_results output renders preplanCreated:\n%s", text)
 		}
 	})
 }
@@ -2527,7 +2571,6 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 // and Suggestion with nothing written, and a failed create to its InfraError.
 func TestPlanSupportPreplanContextErrors(t *testing.T) {
 	const (
-		wordsSuggestion = "Pass a short topic name with letters or digits, for example \"auth flow\"."
 		asciiSuggestion = "Pass a topic name with ASCII letters or digits, for example \"auth flow\"."
 		longSuggestion  = "Pass a shorter topic name. Put the detail in the first answer."
 		lineSuggestion  = "Pass the topic name on one line."
@@ -2538,9 +2581,9 @@ func TestPlanSupportPreplanContextErrors(t *testing.T) {
 		wantMsg        string
 		wantSuggestion string
 	}{
-		{"empty", "", `preplan_context: topic "" has no letter or digit`, wordsSuggestion},
-		{"blank", " \t ", `preplan_context: topic "" has no letter or digit`, wordsSuggestion},
-		{"punctuation only", "-- !! --", `preplan_context: topic "-- !! --" has no letter or digit`, wordsSuggestion},
+		{"empty", "", `preplan_context: topic "" has no ASCII letter or digit`, asciiSuggestion},
+		{"blank", " \t ", `preplan_context: topic "" has no ASCII letter or digit`, asciiSuggestion},
+		{"punctuation only", "-- !! --", `preplan_context: topic "-- !! --" has no ASCII letter or digit`, asciiSuggestion},
 		{"non-ASCII letters only", "日本語", `preplan_context: topic "日本語" has no ASCII letter or digit`, asciiSuggestion},
 		{"51 characters", strings.Repeat("a", 51), "preplan_context: topic has 51 characters, max 50", longSuggestion},
 		{"51 multi-byte characters", "a" + strings.Repeat("é", 50), "preplan_context: topic has 51 characters, max 50", longSuggestion},
@@ -2685,8 +2728,8 @@ func TestPlanPreplanContextWriteFailure(t *testing.T) {
 	if !errors.Is(err, errInjectedPreplan) {
 		t.Errorf("error = %v, want it to wrap the write error", err)
 	}
-	if out.PreplanCreated || out.PreplanFile != "" {
-		t.Errorf("output = {created %v, file %q}, want {false, \"\"}", out.PreplanCreated, out.PreplanFile)
+	if out.PreplanCreated != nil || out.PreplanFile != "" {
+		t.Errorf("output = {created %v, file %q}, want {nil, \"\"}", out.PreplanCreated, out.PreplanFile)
 	}
 	topicFile := filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")
 	if _, statErr := os.Stat(topicFile); !errors.Is(statErr, fs.ErrNotExist) {

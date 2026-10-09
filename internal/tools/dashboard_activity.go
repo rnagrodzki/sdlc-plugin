@@ -325,6 +325,9 @@ type DashboardLearningBodyOut struct {
 // return Found false and no error. A failure to read the log returns an
 // InfraError.
 func DashboardLearningBody(root, date, heading string) (DashboardLearningBodyOut, error) {
+	if date == "" || heading == "" {
+		return DashboardLearningBodyOut{}, nil
+	}
 	data, err := os.ReadFile(learningsLogPath(root))
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -335,9 +338,6 @@ func DashboardLearningBody(root, date, heading string) (DashboardLearningBodyOut
 			Suggestion: "Check that the learnings log of the repo is a regular file that you can read, then open the learning again.",
 			Cause:      err,
 		}
-	}
-	if date == "" || heading == "" {
-		return DashboardLearningBodyOut{}, nil
 	}
 
 	_, entries := learningsSplitEntries(string(data))

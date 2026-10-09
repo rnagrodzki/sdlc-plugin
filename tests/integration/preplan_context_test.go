@@ -15,8 +15,8 @@ import (
 )
 
 // preplanWordsSuggestion is the Suggestion text that preplan_context returns
-// for a topic with no letter or digit.
-const preplanWordsSuggestion = `Pass a short topic name with letters or digits, for example "auth flow".`
+// for a topic with no ASCII letter or digit.
+const preplanWordsSuggestion = `Pass a topic name with ASCII letters or digits, for example "auth flow".`
 
 // preplanDirEntries returns the names of the entries in dir, or fails the test
 // when dir cannot be read. A missing dir returns an empty list.

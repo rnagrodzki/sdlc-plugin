@@ -152,6 +152,8 @@ linked worktree, so they stay visible and live without a new session:
 - `reviews`
 - `state`
 - `timings.json`
+- `preplan`
+- `run-archive`
 
 `.sdlc-v2/config.toml` is never linked or symlinked — each worktree keeps its
 own real config file.

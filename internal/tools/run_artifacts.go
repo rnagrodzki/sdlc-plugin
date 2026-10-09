@@ -18,24 +18,40 @@ import (
 // as a report.
 var runReportExts = []string{"md", "json"}
 
+// execRunIDClass is the regexp character class of the run id alphabet that
+// execRunID produces: digits and 'T'. Every regexp that strips or matches a
+// run id builds on it.
+const execRunIDClass = `0-9T`
+
 // reportOwnerRE matches a file name in reports/ that belongs to a run:
 // ship-<id>-report.<ext> (ship run) or <id>-report.<ext> (execute run).
-// <id> is the alphabet execRunID produces: digits and 'T'.
-var reportOwnerRE = regexp.MustCompile(`^(?:ship-)?([0-9T]+)-report\.(?:md|json)$`)
+// <id> uses execRunIDClass and <ext> is one of runReportExts.
+var reportOwnerRE = regexp.MustCompile(`^(?:ship-)?([` + execRunIDClass + `]+)-report\.(?:` + reportExtAlternation() + `)$`)
 
-// RunArtifacts lists the on-disk artifacts of one run. Every path is absolute
-// and exists when ResolveRunArtifacts returns it.
+// reportExtAlternation returns runReportExts as a regexp alternation, each
+// format quoted, for example md|json.
+func reportExtAlternation() string {
+	quoted := make([]string, len(runReportExts))
+	for i, ext := range runReportExts {
+		quoted[i] = regexp.QuoteMeta(ext)
+	}
+	return strings.Join(quoted, "|")
+}
+
+// RunArtifacts lists the on-disk artifacts of one run. Every path existed
+// when ResolveRunArtifacts checked it. A path is absolute only when the root
+// and the state path given to ResolveRunArtifacts are absolute.
 type RunArtifacts struct {
-	StateFile string   // runs/<prefix>-<slug>-<ts>.json
+	StateFile string   // runs/<prefix>-<slug>-<ts>.json; "" when the state has no path or its file is gone
 	Keep      []string // reports, execute ledger: archive moves them
 	Working   []string // execute progress dir, plan .evidence dir: archive deletes them
 }
 
 // execRunID derives the per-run id from data.startedAt with every character
-// other than digits and 'T' removed, for example 20261008T120000. It returns
-// "" when startedAt is absent or empty. It is the only copy of the id rule:
-// the per-run directory, the ledger folder and the report file names all use
-// its result.
+// outside execRunIDClass removed, for example 20261008T120000. It returns ""
+// when startedAt is absent or empty. It is the only copy of the id rule: the
+// per-run directory, the ledger folder and the report file names all use its
+// result.
 func execRunID(data map[string]any) string {
 	startedAt, _ := data["startedAt"].(string)
 	if startedAt == "" {
@@ -90,10 +106,14 @@ func ReportOwner(name string) (runID string, ok bool) {
 //	execute: Keep = runs/ledger/<id>/, reports/<id>-report.<ext>; Working = runs/<id>/
 //	plan:    Keep = runs/<state base name>.evidence/brief.md; Working = runs/<state base name>.evidence/
 //
-// <id> is execRunID(st.Data). The function returns only paths that exist; a
-// missing path is not an error. It returns an error and no paths when the run
-// has no usable id (ship or execute state without startedAt, plan state
-// without a file name) or when the state kind has no per-run artifacts.
+// <id> is execRunID(st.Data). The paths join under root, so they are absolute
+// only when root is. The function returns only paths that exist; a missing
+// path is not an error. StateFile is st.Path when that file exists, and ""
+// when st.Path is empty or the file is gone. It returns an error and no paths
+// when the run has no usable id (ship or execute state without startedAt,
+// plan state without a file name), when the state kind has no per-run
+// artifacts, or when a stat of a path fails for a reason other than a missing
+// file.
 func ResolveRunArtifacts(root string, st *state.State) (RunArtifacts, error) {
 	if st == nil {
 		return RunArtifacts{}, errors.New("resolve run artifacts: state is nil")

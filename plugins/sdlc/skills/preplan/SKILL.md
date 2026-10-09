@@ -32,9 +32,9 @@ The tool writes the skeleton once: a `# Preplan: <topic>` heading, a `**Status:*
 | `## Goal` | one or two sentences: the result the user wants |
 | `## Users and effect` | who uses the change, what changes for them, what fails today |
 | `## Flows` | one before/after Mermaid diagram with its text twin for each flow that a proposal changes, or the line `No flow change.` |
-| `## Decisions` | a table with the columns `#`, `Decision` and `Reason`, one row for each proposal. A proposal is one row of this table. The `#` value of a row never changes and is never used again |
+| `## Decisions` | a table with the columns `#`, `Decision` and `Reason`, one row for each proposal. A proposal is one row of this table, except a row whose `Decision` cell starts with `Moved:` (see Step 4). The `#` value of a row never changes and is never used again. The skill never deletes a row, so the next unused `#` value is one more than the highest `#` in the table |
 | `## Open questions` | one bullet for each question that has no answer yet |
-| `## Guardrail check` | a table with the columns `Proposal`, `Guardrail`, `Severity` and `Result`, one Step 4 result in each row. `Proposal` holds the `#` value of the proposal |
+| `## Guardrail check` | a table with the columns `Proposal`, `Guardrail`, `Severity` and `Result`, one Step 4 result in each row. `Proposal` holds the `#` value of the proposal. `Guardrail` holds the `id` values that the row is about. A `pass` result holds its basis (see Step 4) |
 
 ### Topic file status
 
@@ -148,17 +148,18 @@ Guardrail check rules:
 |---|---|---|
 | breaks one or more `error` guardrails | rework the proposal once, then check it again. If it still breaks an `error` guardrail, drop it | `dropped — <ids>`. After a rework that clears every `error` conflict: the row that matches the new check |
 | breaks only `warning` guardrails | show the reason for each, ask the user once: keep or rework | keep: `kept — <ids>`. rework: no row. The proposal goes to `## Open questions` |
-| no conflict | none | `pass` |
+| no conflict | none | `pass — <basis>` |
 | guardrails unavailable | continue | `unavailable — <warning>`. Step 4 counts it as `pass` |
 
 How to write the rows:
 
 - Write one row for each proposal. If the proposal breaks one guardrail, put its `id` in `Guardrail` and its severity in `Severity`. If it breaks more than one, list every `id` in `Guardrail`, separated by commas, and put the highest severity (`error` over `warning`) in `Severity`. The `Result` follows the highest severity. In the `Result` cell, `<ids>` is the same list of `id` values as in `Guardrail`.
-- A proposal with no conflict gets one row: `Guardrail` is `all`, `Severity` is `—`, `Result` is `pass`. Use this row also when `guardrails` is empty.
+- A proposal with no conflict gets one row: `Guardrail` lists every guardrail `id` that the skill checked, separated by commas. `Severity` is `—`. `Result` is `pass — <basis>`. `<basis>` gives, for each `id`, the fact of the proposal that clears that guardrail, in one short clause (for example `pass — G1: no new public API; G4: the change has a test`). A bare `pass` with no basis is not a valid row.
+- When `guardrails` is empty, a proposal gets one row: `Guardrail` is `—`, `Severity` is `—`, `Result` is `pass — no guardrail configured`.
 - When the guardrails are unavailable, give each proposal one row: `Guardrail` is `—`, `Severity` is `—`, `Result` is `unavailable — <warning>`.
 - Rework: edit the `## Decisions` row so that it no longer breaks the guardrail. Tell the user in one line what changed and which guardrails caused it.
 - Drop: keep the `## Decisions` row, so the check row still points to it. Start its `Decision` cell with `Dropped:`. Tell the user which guardrails caused the drop.
-- Warning conflict: ask with AskUserQuestion. Restate the proposal, each guardrail `id`, and its `description`. Options: keep the proposal as it is, or rework it later. On rework, remove the row from `## Decisions` and add the proposal as a bullet to `## Open questions`. Write no check row. On cancel, go to the cancel step.
+- Warning conflict: ask with AskUserQuestion. Restate the proposal, each guardrail `id`, and its `description`. Options: keep the proposal as it is, rework it later, or cancel. On rework, keep the row in `## Decisions` and start its `Decision` cell with `Moved:`. Add the proposal as a bullet to `## Open questions`. Write no check row. A `Moved:` row is not a proposal: Step 4 does not check it, and the Step 3 and Step 4 routes do not count it. When an answer brings the proposal back, add it as a new row with the next unused `#` value. On cancel, go to the cancel step.
 
 Step 4 routes (one row matches each result):
 
@@ -233,7 +234,7 @@ After:
 
 - Never call `plan_prepare`. This skill starts no plan run.
 - Never write the skeleton and never create the topic file. `preplan_context` creates it.
-- Write and edit only the file at `preplanFile`. Never write a topic file under a `plans/` directory: the plan hook blocks it.
+- Write and edit only the file at `preplanFile`. Never write a topic file under a `plans/` directory: after each write there, the plan format hook checks the file as a plan and reports plan format findings, because a topic file is not a plan.
 - Edit the topic file after each answer, before the next question.
 - Check each proposal against the guardrails before the user sees it as accepted.
 - Ask one question at a time, about function and effect, not about code.

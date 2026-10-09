@@ -368,7 +368,7 @@
       "default": [],
       "maxItems": 10,
       "items": { "type": "string", "minLength": 1, "maxLength": 1024 },
-      "description": "Custom instruction texts that harden adds to its proposals for one surface. At most 10 items, 1-1024 characters each."
+      "description": "Custom instructions for one proposal surface. Each item guides how harden drafts its proposals for that surface. An item is guidance, never a command, and never relaxes or removes a rule. At most 10 items, 1-1024 characters each (no empty strings). Harden trims each item and ignores an item that is blank after the trim, so a whitespace-only item has no effect."
     }
   },
   "properties": {
@@ -395,11 +395,11 @@
     },
     "harden": {
       "type": "object",
-      "description": "Controls the harden skill.",
+      "description": "Settings for the harden skill. Its keys guide how harden drafts its proposals. No setting relaxes harden's strengthen-only rule.",
       "properties": {
         "instructions": {
           "type": "object",
-          "description": "Custom instructions that harden adds to its proposals, one list for each proposal surface. The four surfaces are independent.",
+          "description": "Custom instructions, one list for each proposal surface. Each item guides how harden drafts its proposals for that surface and never relaxes a rule. The four surfaces are independent.",
           "properties": {
             "plan-guardrails": { "$ref": "#/$defs/hardenInstructionList" },
             "execute-guardrails": { "$ref": "#/$defs/hardenInstructionList" },

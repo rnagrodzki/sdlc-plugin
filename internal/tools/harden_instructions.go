@@ -29,7 +29,10 @@ const hardenInstructionMaxItems, hardenInstructionMaxChars = 10, 1024
 //
 // The loader trims each item and drops blank items. A config read failure
 // other than not-found returns an InfraError. Each invalid input returns a
-// DomainError that names the key: an unknown key, a value that is not a list,
+// DomainError that names the key: an unknown key under [harden] (the only
+// valid key is instructions, so a typo such as [harden.instruction] fails
+// instead of dropping the lists), an unknown key under [harden.instructions],
+// a value that is not a list,
 // more than hardenInstructionMaxItems items, a non-string item, or an item
 // over hardenInstructionMaxChars characters. The loader counts the characters
 // of the raw item, before it trims the item, so a padded item over the limit
@@ -53,7 +56,11 @@ func loadHardenInstructions(contentRoot string) (map[string][]string, error) {
 		}
 	}
 
-	rawInstructions, ok := section["instructions"]
+	if err := rejectUnknownHardenKeys(section); err != nil {
+		return nil, err
+	}
+
+	rawInstructions, ok := section[hardenInstructionsKey]
 	if !ok {
 		return out, nil
 	}
@@ -81,6 +88,29 @@ func loadHardenInstructions(contentRoot string) (map[string][]string, error) {
 		out[id] = items
 	}
 	return out, nil
+}
+
+// hardenInstructionsKey is the only valid key of the [harden] section.
+const hardenInstructionsKey = "instructions"
+
+// rejectUnknownHardenKeys returns a DomainError for the first key of the
+// [harden] section (in sorted order, so the message is stable) that is not
+// hardenInstructionsKey.
+func rejectUnknownHardenKeys(section map[string]any) error {
+	keys := make([]string, 0, len(section))
+	for key := range section {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if key != hardenInstructionsKey {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("harden: unknown key %q under [harden]", key),
+				Suggestion: "Use the only valid key under [harden]: " + hardenInstructionsKey + ". Write it as [harden.instructions] in .sdlc-v2/config.toml, then run harden again.",
+			}
+		}
+	}
+	return nil
 }
 
 // rejectUnknownInstructionKeys returns a DomainError for the first key of

@@ -163,7 +163,8 @@ func TestLoadHardenInstructions_ItemLimits(t *testing.T) {
 }
 
 // TestLoadHardenInstructions_InvalidInputReturnsDomainError asserts that each
-// invalid input (unknown key, item over the character limit, too many items,
+// invalid input (unknown key under [harden] or [harden.instructions], item
+// over the character limit, too many items,
 // non-string item, value that is not a list, instructions that is not a table)
 // returns a nil map and a DomainError with the expected message and Suggestion.
 func TestLoadHardenInstructions_InvalidInputReturnsDomainError(t *testing.T) {
@@ -227,6 +228,18 @@ func TestLoadHardenInstructions_InvalidInputReturnsDomainError(t *testing.T) {
 			config:     "[harden.instructions]\nplan-guardrails = \"Prefer error severity.\"\n",
 			wantMsg:    "harden.instructions.plan-guardrails must be a list of strings",
 			wantSuggst: "Write each item as a quoted TOML string, inside square brackets.",
+		},
+		{
+			name:       "typo in the [harden] table name",
+			config:     "[harden.instruction]\nplan-guardrails = [\"a\"]\n",
+			wantMsg:    `harden: unknown key "instruction" under [harden]`,
+			wantSuggst: "Use the only valid key under [harden]: instructions. Write it as [harden.instructions] in .sdlc-v2/config.toml, then run harden again.",
+		},
+		{
+			name:       "unknown scalar key beside instructions",
+			config:     "[harden]\nmode = \"strict\"\n\n[harden.instructions]\nplan-guardrails = [\"a\"]\n",
+			wantMsg:    `harden: unknown key "mode" under [harden]`,
+			wantSuggst: "Use the only valid key under [harden]: instructions. Write it as [harden.instructions] in .sdlc-v2/config.toml, then run harden again.",
 		},
 		{
 			name:       "instructions is not a table",

@@ -41,9 +41,15 @@ var ErrPathNotAllowed = errors.New("path not allowed")
 
 // ErrTargetSpec is returned by Stage when the current spec of a capability
 // that a staged delta names cannot be copied into the temp directory: the
-// file is over maxTargetSpecBytes, or reading it fails for a reason other
-// than the file being absent. The wrapping error names the spec path.
+// file is over maxTargetSpecBytes (ErrTargetSpecTooLarge), or reading it
+// fails for a reason other than the file being absent. The wrapping error
+// names the spec path.
 var ErrTargetSpec = errors.New("openspec stage: target spec")
+
+// ErrTargetSpecTooLarge is returned by Stage when a current spec is over
+// maxTargetSpecBytes. It wraps ErrTargetSpec, so errors.Is(err, ErrTargetSpec)
+// is true for it too.
+var ErrTargetSpecTooLarge = fmt.Errorf("%w: too large", ErrTargetSpec)
 
 // maxTargetSpecBytes is the size limit for one current spec that Stage copies
 // into the temp directory (1 MiB).
@@ -285,8 +291,9 @@ func newTempChange(activeRoot, change string) (string, func(), error) {
 // staged path of any other shape is skipped. A capability with no current
 // spec is skipped too: a new capability has only ADDED requirements.
 //
-// A current spec over maxTargetSpecBytes, or one whose read fails for a reason
-// other than not-exist, returns an error that wraps ErrTargetSpec. A failed
+// A current spec over maxTargetSpecBytes returns an error that wraps
+// ErrTargetSpecTooLarge. One whose read fails for a reason other than
+// not-exist returns an error that wraps ErrTargetSpec. A failed
 // write into tmp returns the writeFile error. Nothing under activeRoot is
 // written.
 func copyTargetSpecs(activeRoot, tmp string, files []StageFile) error {
@@ -312,8 +319,9 @@ func copyTargetSpecs(activeRoot, tmp string, files []StageFile) error {
 }
 
 // readTargetSpec reads the current spec at p. It returns an error that wraps
-// os.ErrNotExist when the file is absent, and an error that wraps ErrTargetSpec
-// when the file is over maxTargetSpecBytes or cannot be read.
+// os.ErrNotExist when the file is absent, an error that wraps
+// ErrTargetSpecTooLarge when the file is over maxTargetSpecBytes, and an error
+// that wraps ErrTargetSpec when the file cannot be read.
 func readTargetSpec(p string) ([]byte, error) {
 	file, err := os.Open(p)
 	if err != nil {
@@ -328,7 +336,7 @@ func readTargetSpec(p string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: read %s: %w", ErrTargetSpec, p, err)
 	}
 	if len(data) > maxTargetSpecBytes {
-		return nil, fmt.Errorf("%w: %s is over 1 MiB", ErrTargetSpec, p)
+		return nil, fmt.Errorf("%w: %s is over %d MiB", ErrTargetSpecTooLarge, p, maxTargetSpecBytes>>20)
 	}
 	return data, nil
 }

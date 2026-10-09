@@ -1,11 +1,13 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -94,6 +96,10 @@ func TestExecDeriveRunID_UsesExecRunID(t *testing.T) {
 	}
 	if got := execDeriveRunID(map[string]any{}, 3); got != "wave-3" {
 		t.Errorf("without startedAt: got %q, want %q", got, "wave-3")
+	}
+	// A startedAt with no digit and no T strips to "": the wave fallback applies.
+	if got := execDeriveRunID(map[string]any{"startedAt": "abc"}, 3); got != "wave-3" {
+		t.Errorf("with startedAt %q: got %q, want %q", "abc", got, "wave-3")
 	}
 }
 
@@ -447,5 +453,76 @@ func TestResolveRunArtifacts_NeverReturnsRunsOrLedgerRoot(t *testing.T) {
 				t.Errorf("%s: resolved forbidden root %q", prefix, p)
 			}
 		}
+	}
+}
+
+// TestReportOwner_AcceptsEveryReportPath checks that reportOwnerRE follows
+// runReportExts: every candidate report name of a ship run and of an execute
+// run maps back to its run id.
+func TestReportOwner_AcceptsEveryReportPath(t *testing.T) {
+	for _, stem := range []string{raTestRunID, "ship-" + raTestRunID} {
+		cands := reportPaths(t.TempDir(), stem)
+		if len(cands) != len(runReportExts) {
+			t.Fatalf("reportPaths(%q) = %v, want one path per format %v", stem, cands, runReportExts)
+		}
+		for _, p := range cands {
+			if id, ok := ReportOwner(filepath.Base(p)); !ok || id != raTestRunID {
+				t.Errorf("ReportOwner(%q) = (%q, %v), want (%q, true)", filepath.Base(p), id, ok, raTestRunID)
+			}
+		}
+	}
+}
+
+// TestResolveRunArtifacts_StatErrorReturnsErrorAndNoPath checks that a stat
+// failure other than a missing file is an error that names the path, and that
+// no path comes back with it. A regular file in place of a parent folder makes
+// the stat fail with ENOTDIR.
+func TestResolveRunArtifacts_StatErrorReturnsErrorAndNoPath(t *testing.T) {
+	t.Run("state file", func(t *testing.T) {
+		root := t.TempDir()
+		blocker := filepath.Join(raRunsDir(root), "blocker")
+		raTouch(t, blocker)
+		bad := filepath.Join(blocker, "ship-feat-x-20261008T120000Z.json")
+		st := &state.State{Path: bad, Root: root, Prefix: "ship", Data: map[string]any{"startedAt": raTestStartedAt}}
+		got, err := ResolveRunArtifacts(root, st)
+		raWantStatErr(t, got, err, bad)
+	})
+	t.Run("keep path", func(t *testing.T) {
+		root := t.TempDir()
+		st := raState(t, root, "ship", "feat/x", map[string]any{"startedAt": raTestStartedAt})
+		raTouch(t, raReportsDir(root)) // reports/ is a regular file
+		got, err := ResolveRunArtifacts(root, st)
+		raWantStatErr(t, got, err, filepath.Join(raReportsDir(root), "ship-"+raTestRunID+"-report.md"))
+	})
+	t.Run("existingPaths stops at the first error", func(t *testing.T) {
+		root := t.TempDir()
+		raTouch(t, filepath.Join(root, "file"))
+		missing := filepath.Join(root, "missing")
+		bad := filepath.Join(root, "file", "child")
+		got, err := existingPaths([]string{missing, bad, root})
+		if err == nil || !strings.Contains(err.Error(), bad) || !errors.Is(err, syscall.ENOTDIR) {
+			t.Errorf("existingPaths error = %v, want ENOTDIR that names %s", err, bad)
+		}
+		if got != nil {
+			t.Errorf("existingPaths = %v, want nil with the error", got)
+		}
+	})
+}
+
+// raWantStatErr checks a ResolveRunArtifacts result that must be a stat error
+// for path with no paths.
+func raWantStatErr(t *testing.T, got RunArtifacts, err error, path string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("ResolveRunArtifacts = %+v, want a stat error", got)
+	}
+	if want := "resolve run artifacts: stat " + path + ": "; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("error = %q, want prefix %q", err, want)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("error = %v, want it to wrap ENOTDIR", err)
+	}
+	if !reflect.DeepEqual(got, RunArtifacts{}) {
+		t.Errorf("ResolveRunArtifacts = %+v, want no paths with the error", got)
 	}
 }

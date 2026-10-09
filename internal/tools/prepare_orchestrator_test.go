@@ -123,6 +123,18 @@ func TestPrepareOrchestratorIn_ExitCodeFieldsAreIndependent(t *testing.T) {
 // Mode dispatch
 // ---------------------------------------------------------------------------
 
+// TestPrepareOrchestratorIn_ModeSchemaEnum pins the input schema of mode to
+// the closed set the handler switches on: harden and error_report.
+func TestPrepareOrchestratorIn_ModeSchemaEnum(t *testing.T) {
+	f, ok := reflect.TypeOf(PrepareOrchestratorIn{}).FieldByName("Mode")
+	if !ok {
+		t.Fatal("PrepareOrchestratorIn has no Mode field")
+	}
+	if got, want := f.Tag.Get("jsonschema"), "enum=harden,enum=error_report"; got != want {
+		t.Errorf("PrepareOrchestratorIn.Mode jsonschema tag = %q, want %q", got, want)
+	}
+}
+
 func TestPrepareOrchestrator_UnknownModeReturnsDomainError(t *testing.T) {
 	_, err := prepareOrchestrator(PrepareOrchestratorIn{Mode: "bogus"})
 	if err == nil {

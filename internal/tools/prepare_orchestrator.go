@@ -15,8 +15,8 @@ import (
 // prepare_orchestrator: merges harden_prepare and error_report_prepare
 // behind a single Mode discriminator. Both source tools already followed
 // the same shape (resolve worktree.MainRoot(), delegate to a pure core
-// function, write a manifest to a temp file, return its path — the KD4
-// pattern); this tool keeps hardenPrepare/errorReportPrepare exactly as
+// function, write a manifest to a temp file, return its path, so the orchestrator
+// agent reads the manifest by file); this tool keeps hardenPrepare/errorReportPrepare exactly as
 // they are (harden.go / error_report.go) and only unifies the MCP-facing
 // registration.
 // ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ import (
 // missing step/operation at runtime.
 type PrepareOrchestratorIn struct {
 	// Mode selects which prepare pipeline runs: "harden" or "error_report".
-	Mode string `json:"mode" jsonschema_description:"Which prepare pipeline runs: \"harden\" or \"error_report\"."`
+	Mode string `json:"mode" jsonschema:"enum=harden,enum=error_report" jsonschema_description:"Which prepare pipeline runs: \"harden\" or \"error_report\"."`
 
 	// --- shared across both modes ---
 	Skill      string `json:"skill" jsonschema_description:"Name of the skill that was executing when the failure occurred."`
@@ -86,8 +86,8 @@ type PrepareOrchestratorIn struct {
 }
 
 // PrepareOrchestratorOut is prepare_orchestrator's output: the path to the
-// written manifest (KD4 file handoff, same shape both source tools already
-// used), plus the Mode that was actually run.
+// written manifest (the orchestrator agent reads it by file, as both source
+// tools already did), plus the Mode that was actually run.
 //
 // CustomInstructions is set in harden mode only. It is the same map that the
 // manifest file carries under customInstructions. Next is the step after the

@@ -1287,6 +1287,57 @@ func TestValidateGuardrailsCandidates_SeverityDowngrade_AddsToOtherFindings(t *t
 	}
 }
 
+// TestGuardrailSeverityDowngrades_TwoIDs checks that two downgraded ids each
+// get their own finding that names only that id, in the order of the
+// replacement pairs (disk order), and that a kept severity gets none.
+func TestGuardrailSeverityDowngrades_TwoIDs(t *testing.T) {
+	reps := []guardrailReplacement{
+		{Disk: map[string]any{"id": "alpha", "severity": "error"}, Candidate: map[string]any{"id": "alpha", "severity": "warning"}},
+		{Disk: map[string]any{"id": "beta", "severity": "error"}, Candidate: map[string]any{"id": "beta", "severity": "error"}},
+		{Disk: map[string]any{"id": "gamma"}, Candidate: map[string]any{"id": "gamma", "severity": "warning"}},
+	}
+	findings := guardrailSeverityDowngrades(reps)
+	wantIDs := []string{"alpha", "gamma"}
+	if len(findings) != len(wantIDs) {
+		t.Fatalf("got %d findings, want %d: %+v", len(findings), len(wantIDs), findings)
+	}
+	for i, id := range wantIDs {
+		f := findings[i]
+		wantMsg := id + ": severity lowered from error to warning (harden is strengthen-only)"
+		if f.ID != id || f.Message != wantMsg || f.Severity != "error" || f.Fix != guardrailDowngradeFix {
+			t.Errorf("finding %d = %+v, want id %q, message %q, severity error", i, f, id, wantMsg)
+		}
+		for _, other := range []string{"alpha", "beta", "gamma"} {
+			if other != id && strings.Contains(f.Message, other) {
+				t.Errorf("finding %d message %q names another id %q", i, f.Message, other)
+			}
+		}
+	}
+
+	t.Run("through validate", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"),
+			"[plan.guardrails.alpha]\ndescription = \"Rule alpha.\"\nseverity = \"error\"\n\n"+
+				"[plan.guardrails.beta]\ndescription = \"Rule beta.\"\nseverity = \"error\"\n\n"+
+				"[plan.guardrails.gamma]\ndescription = \"Rule gamma.\"\nseverity = \"error\"\n")
+		// Candidates in reverse order: the findings still follow disk order.
+		candidatesJSON := `[{"id":"gamma","description":"Rule gamma.","severity":"warning"},` +
+			`{"id":"beta","description":"Rule beta.","severity":"error"},` +
+			`{"id":"alpha","description":"Rule alpha.","severity":"warning"}]`
+		out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: candidatesJSON})
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		var gotIDs []string
+		for _, f := range out.Findings {
+			gotIDs = append(gotIDs, f.ID)
+		}
+		if !reflect.DeepEqual(gotIDs, wantIDs) {
+			t.Fatalf("finding ids = %v, want %v (findings %+v)", gotIDs, wantIDs, out.Findings)
+		}
+	})
+}
+
 // TestMergeGuardrailCandidates_ReturnsReplacedPairs checks that
 // mergeGuardrailCandidates returns one disk and candidate pair for each
 // replaced id, and no pair when candidatesJson is empty.

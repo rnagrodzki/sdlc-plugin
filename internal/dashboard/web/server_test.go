@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"reflect"
 	"regexp"
@@ -23,6 +24,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 	"unicode/utf8"
 
@@ -213,9 +215,20 @@ func postJSON(h http.Handler, path, body string, header map[string]string) *http
 	return rec
 }
 
+// guardErrorText is the message and the suggestion of each error code that
+// guardMutation writes. wantAPIError checks them for these codes.
+var guardErrorText = map[string]struct{ message, suggestion string }{
+	"FORBIDDEN_ORIGIN": {"Forbidden origin", "Open the dashboard from its own URL."},
+	"FORBIDDEN_TOKEN":  {"Forbidden token", "Reload the page to get a new token."},
+	"BAD_CONTENT_TYPE": {"Content type must be application/json", "Send the body as application/json."},
+	"BODY_TOO_LARGE":   {"Request body is too large", "Send a body of at most 8 KiB."},
+	"BAD_BODY":         {"Request body could not be read", "Send the body again."},
+}
+
 // wantAPIError fails the test unless rec holds the JSON error body of
 // writeAPIError with the given status and code, a message and a suggestion.
-// It returns the decoded error for further checks.
+// For a code of guardErrorText it also checks the message and the suggestion
+// text. It returns the decoded error for further checks.
 func wantAPIError(t *testing.T, rec *httptest.ResponseRecorder, status int, code string) apiErrorBody {
 	t.Helper()
 	if rec.Code != status {
@@ -231,7 +244,17 @@ func wantAPIError(t *testing.T, rec *httptest.ResponseRecorder, status int, code
 	if body.Error.Code != code || body.Error.Message == "" || body.Error.Suggestion == "" {
 		t.Errorf("error = %+v; want code %s with message and suggestion", body.Error, code)
 	}
+	if want, ok := guardErrorText[code]; ok {
+		if body.Error.Message != want.message || body.Error.Suggestion != want.suggestion {
+			t.Errorf("error = %+v; want message %q and suggestion %q", body.Error, want.message, want.suggestion)
+		}
+	}
 	return body
+}
+
+// repoNotFoundMessage is the message of the REPO_NOT_FOUND error for repo.
+func repoNotFoundMessage(repo string) string {
+	return fmt.Sprintf("Repo %q is not a repo that the dashboard shows", repo)
 }
 
 // archiveError returns an ArchiveError of the given code whose message and
@@ -599,19 +622,7 @@ func TestHandler_StopErrorBodyIsJSON(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			h, _ := newTestHandler(t, nil)
 			rec := do(h, "POST", "/api/stop", testHost, tc.header)
-			if rec.Code != http.StatusForbidden {
-				t.Fatalf("POST /api/stop = %d; want 403", rec.Code)
-			}
-			if got := rec.Header().Get("Content-Type"); got != "application/json" {
-				t.Errorf("Content-Type = %q; want application/json", got)
-			}
-			var body apiErrorBody
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
-			}
-			if body.Error.Code != tc.code || body.Error.Message == "" || body.Error.Suggestion == "" {
-				t.Errorf("error = %+v; want code %s with message and suggestion", body.Error, tc.code)
-			}
+			wantAPIError(t, rec, http.StatusForbidden, tc.code)
 		})
 	}
 }
@@ -685,15 +696,30 @@ func TestHandler_GuardMutation(t *testing.T) {
 				}
 				return
 			}
-			var body apiErrorBody
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-				t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
-			}
-			if body.Error.Code != tc.wantErr || body.Error.Message == "" || body.Error.Suggestion == "" {
-				t.Errorf("error = %+v; want code %s with message and suggestion", body.Error, tc.wantErr)
-			}
+			wantAPIError(t, rec, tc.wantCode, tc.wantErr)
 		})
 	}
+
+	// A body read that fails with an error other than *http.MaxBytesError is
+	// a 400 BAD_BODY, and the route never runs.
+	t.Run("body read error", func(t *testing.T) {
+		h, _ := newTestHandler(t, nil)
+		passed := false
+		probe := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			passed = h.guardMutation(w, r, true)
+		})
+		req := httptest.NewRequest("POST", "/probe", iotest.ErrReader(errors.New("connection reset")))
+		req.Host = testHost
+		for k, v := range good {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		probe.ServeHTTP(rec, req)
+		if passed {
+			t.Error("guardMutation passed a body that could not be read")
+		}
+		wantAPIError(t, rec, http.StatusBadRequest, "BAD_BODY")
+	})
 }
 
 // TestHandler_ArchiveClearGuards pins the checks of the two routes that
@@ -755,6 +781,22 @@ func TestHandler_ArchiveClearGuards(t *testing.T) {
 			})
 		}
 	}
+}
+
+// archiveBadRequestMessage is the BAD_REQUEST message of each 400 case of
+// TestHandler_RunArchive that the server raises itself.
+var archiveBadRequestMessage = map[string]string{
+	"body is not JSON":           "Request body is not a JSON object with the fields of the route",
+	"body is empty":              "Request body is not a JSON object with the fields of the route",
+	"body is a JSON array":       "Request body is not a JSON object with the fields of the route",
+	"body is JSON null":          "The runId field is required",
+	"repo missing":               "The repo field is required",
+	"repo empty":                 "The repo field is required",
+	"repo is a number":           "Request body is not a JSON object with the fields of the route",
+	"runId missing":              "The runId field is required",
+	"runId empty":                "The runId field is required",
+	"confirmStalled is a string": "Request body is not a JSON object with the fields of the route",
+	"confirmStalled is a number": "Request body is not a JSON object with the fields of the route",
 }
 
 // TestHandler_RunArchive pins the request parse and the status table of
@@ -839,17 +881,30 @@ func TestHandler_RunArchive(t *testing.T) {
 			}
 
 			body := wantAPIError(t, rec, tc.status, tc.code)
+			var ae *tools.ArchiveError
 			switch tc.code {
 			case codeBadRequest:
 				if body.Error.Suggestion != "Send the fields shown in the route example." {
 					t.Errorf("suggestion = %q", body.Error.Suggestion)
 				}
+				if want := archiveBadRequestMessage[tc.name]; body.Error.Message != want {
+					t.Errorf("message = %q; want %q", body.Error.Message, want)
+				}
 			case codeRepoNotFound:
 				if body.Error.Suggestion != "Reload the page." {
 					t.Errorf("suggestion = %q", body.Error.Suggestion)
 				}
+				var req archiveRequest
+				_ = json.Unmarshal([]byte(tc.body), &req)
+				if want := repoNotFoundMessage(req.Repo); body.Error.Message != want {
+					t.Errorf("message = %q; want %q", body.Error.Message, want)
+				}
+			case tools.ArchiveFailed:
+				// A 500 without a suggestion of its own points at the log.
+				if (!errors.As(tc.err, &ae) || ae.Suggestion == "") && body.Error.Suggestion != "Read server.log, fix the named path, then try again." {
+					t.Errorf("suggestion = %q; want the read-log suggestion", body.Error.Suggestion)
+				}
 			}
-			var ae *tools.ArchiveError
 			switch {
 			case errors.As(tc.err, &ae):
 				if body.Error.Message != ae.Message {
@@ -947,13 +1002,25 @@ func TestHandler_CacheClear(t *testing.T) {
 			if body.Error.Suggestion != wantSuggestion {
 				t.Errorf("suggestion = %q; want %q", body.Error.Suggestion, wantSuggestion)
 			}
-			if tc.err != nil {
-				if body.Error.Message != tc.err.Error() {
-					t.Errorf("message = %q; want %q", body.Error.Message, tc.err.Error())
+			wantMessage := ""
+			switch tc.code {
+			case codeBadRequest:
+				wantMessage = "Request body is not a JSON object with the fields of the route"
+				if strings.HasPrefix(tc.name, "repo missing") || strings.HasPrefix(tc.name, "repo empty") {
+					wantMessage = "The repo field is required"
 				}
-				if !strings.Contains(logged.String(), tc.err.Error()) {
-					t.Errorf("the cause was not logged; log = %q", logged.String())
-				}
+			case codeRepoNotFound:
+				var req clearRequest
+				_ = json.Unmarshal([]byte(tc.body), &req)
+				wantMessage = repoNotFoundMessage(req.Repo)
+			default:
+				wantMessage = tc.err.Error()
+			}
+			if body.Error.Message != wantMessage {
+				t.Errorf("message = %q; want %q", body.Error.Message, wantMessage)
+			}
+			if tc.err != nil && !strings.Contains(logged.String(), tc.err.Error()) {
+				t.Errorf("the cause was not logged; log = %q", logged.String())
 			}
 		})
 	}
@@ -982,7 +1049,8 @@ func TestHandler_Learning(t *testing.T) {
 		{"heading missing", "repo=%2Frepo%2Fa&date=d", tools.DashboardLearningBodyOut{}, nil, 400, codeBadRequest, nil},
 		{"heading empty", "repo=%2Frepo%2Fa&date=d&heading=", tools.DashboardLearningBodyOut{}, nil, 400, codeBadRequest, nil},
 		{"no query", "", tools.DashboardLearningBodyOut{}, nil, 400, codeBadRequest, nil},
-		{"repo missing", "date=d&heading=h", tools.DashboardLearningBodyOut{}, nil, 404, codeRepoNotFound, nil},
+		{"repo missing", "date=d&heading=h", tools.DashboardLearningBodyOut{}, nil, 400, codeBadRequest, nil},
+		{"repo empty", "repo=&date=d&heading=h", tools.DashboardLearningBodyOut{}, nil, 400, codeBadRequest, nil},
 		{"repo is not a display root", "repo=%2Frepo%2Fother&date=d&heading=h", tools.DashboardLearningBodyOut{}, nil, 404, codeRepoNotFound, nil},
 		{"LearningBody fails", okQuery, tools.DashboardLearningBodyOut{}, errors.New("read learnings log: denied"), 500, codeLearningReadFailed, &[3]string{"/repo/a", "2026-10-08", "plan: x"}},
 	}
@@ -1028,13 +1096,27 @@ func TestHandler_Learning(t *testing.T) {
 			if body.Error.Suggestion != wantSuggestion {
 				t.Errorf("suggestion = %q; want %q", body.Error.Suggestion, wantSuggestion)
 			}
-			if tc.err != nil {
-				if body.Error.Message != tc.err.Error() {
-					t.Errorf("message = %q; want %q", body.Error.Message, tc.err.Error())
+			q, err := url.ParseQuery(tc.query)
+			if err != nil {
+				t.Fatalf("parse query %q: %v", tc.query, err)
+			}
+			wantMessage := ""
+			switch tc.code {
+			case codeBadRequest:
+				wantMessage = "Date and heading are required"
+				if q.Get("date") != "" && q.Get("heading") != "" {
+					wantMessage = "The repo field is required"
 				}
-				if !strings.Contains(logged.String(), tc.err.Error()) {
-					t.Errorf("the cause was not logged; log = %q", logged.String())
-				}
+			case codeRepoNotFound:
+				wantMessage = repoNotFoundMessage(q.Get("repo"))
+			default:
+				wantMessage = tc.err.Error()
+			}
+			if body.Error.Message != wantMessage {
+				t.Errorf("message = %q; want %q", body.Error.Message, wantMessage)
+			}
+			if tc.err != nil && !strings.Contains(logged.String(), tc.err.Error()) {
+				t.Errorf("the cause was not logged; log = %q", logged.String())
 			}
 		})
 	}
@@ -1045,16 +1127,23 @@ func TestHandler_Learning(t *testing.T) {
 func TestHandler_NilActionFields(t *testing.T) {
 	h, _ := newTestHandler(t, nil)
 	cases := []struct {
-		name string
-		rec  *httptest.ResponseRecorder
+		name    string
+		rec     *httptest.ResponseRecorder
+		message string
 	}{
-		{"run archive", postJSON(h, "/api/run-archive", `{"repo":"/repo/a","runId":"run-1"}`, mutationHeader())},
-		{"cache clear", postJSON(h, "/api/cache-clear", `{"repo":"/repo/a"}`, mutationHeader())},
-		{"learning", do(h, "GET", "/api/learning?repo=%2Frepo%2Fa&date=d&heading=h", testHost, nil)},
+		{"run archive", postJSON(h, "/api/run-archive", `{"repo":"/repo/a","runId":"run-1"}`, mutationHeader()), "Run archive is not available on this server"},
+		{"cache clear", postJSON(h, "/api/cache-clear", `{"repo":"/repo/a"}`, mutationHeader()), "Cache clear is not available on this server"},
+		{"learning", do(h, "GET", "/api/learning?repo=%2Frepo%2Fa&date=d&heading=h", testHost, nil), "Learning body is not available on this server"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			wantAPIError(t, tc.rec, 500, codeNotConfigured)
+			body := wantAPIError(t, tc.rec, 500, codeNotConfigured)
+			if body.Error.Message != tc.message {
+				t.Errorf("message = %q; want %q", body.Error.Message, tc.message)
+			}
+			if want := "Restart the dashboard with the current sdlc plugin."; body.Error.Suggestion != want {
+				t.Errorf("suggestion = %q; want %q", body.Error.Suggestion, want)
+			}
 		})
 	}
 

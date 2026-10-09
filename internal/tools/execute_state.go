@@ -342,8 +342,8 @@ type ExecBaseSyncOut struct {
 // single-call consolidation of what a dispatched per-task worker needs —
 // its fact sheet (which already embeds the plan-task's Contract/Acceptance
 // Criteria/Files block, see wave.Factsheet), a live prior-wave summary,
-// verify guidance, and report-back instructions. Task 12 wires this into a
-// two-line worker dispatch form in place of today's fully-inlined prompts.
+// verify guidance, and report-back instructions. The execute skill uses it for
+// a two-line worker dispatch form instead of a fully-inlined prompt.
 type TaskContextOut struct {
 	TaskID   string        `json:"taskId"`
 	RunID    string        `json:"runId"`
@@ -526,7 +526,7 @@ var execSafeIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
 
 // execNonDigitTRE strips everything except digits and 'T' from a timestamp
 // to derive a run ID from startedAt (matches JS's replace(/[^0-9T]/g, ”)).
-var execNonDigitTRE = regexp.MustCompile(`[^0-9T]`)
+var execNonDigitTRE = regexp.MustCompile("[^" + execRunIDClass + "]")
 
 // execContextKeys is the whitelist of allowed context keys for the "context"
 // action, matching JS's CONTEXT_KEYS.
@@ -993,8 +993,9 @@ func execValidateSafeID(id, label string) error {
 	return nil
 }
 
-// execDeriveRunID derives a default runId from state data's startedAt field,
-// matching JS's startedAt.replace(/[^0-9T]/g, ”).
+// execDeriveRunID derives a default runId from state data's startedAt field
+// with execRunID. When execRunID returns "" (startedAt absent, or a value
+// with no digit and no T, such as "abc"), it returns "wave-<waveNum>".
 func execDeriveRunID(data map[string]any, waveNum int) string {
 	if id := execRunID(data); id != "" {
 		return id
@@ -1251,7 +1252,7 @@ func execActionDriftLog(root, workDir string, in ExecuteStateIn, now func() time
 // data["pendingIssueDrafts"] list. Decision KD-6: this is append-only and
 // deliberately bypasses the "context" action's allowed-key merge semantics —
 // every call accumulates a new entry, never overwrites a prior one. Ship
-// step 10b (Task 11) later reads the accumulated list for one batch
+// step 10b later reads the accumulated list for one batch
 // approval question under --auto.
 //
 // The draft is also written to .sdlc-v2/history/deferred.json here, at
@@ -2108,7 +2109,7 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	// A move that is not safe (e.g. a conflicting value already in
 	// local.toml) is a data problem, not a resolution warning — it is
 	// reported the same way execActionInit reports its config-version gate
-	// (execute_state.go's KD5 gate above).
+	// (the config-version gate in execActionInit).
 	moved, mkErr := configmigrate.MigrateMovedKeys(root)
 	if mkErr != nil {
 		var mk *configmigrate.MovedKeysErr
@@ -2360,7 +2361,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		plannedWaves = pw
 	}
 
-	// KD5 gate: same auto-migrate-with-backup gate as ship_prepare
+	// Config-version gate: same auto-migrate-with-backup gate as ship_prepare
 	// (configmigrate.MigrateWithBackup). Unlike ship_prepare's soft
 	// errors-only style, execute_state has no equivalent partial-payload
 	// convention for this action — a genuinely missing config (never ran
@@ -4071,7 +4072,7 @@ func execActionTaskFail(root, workDir string, in ExecuteStateIn, now func() time
 	// Harvest whatever partial-work claim the worker last reported via
 	// wave-progress (if any) before this failure, so a later task-context
 	// call for a redispatched retry can surface it as a re-verify-first
-	// block (KD5 mitigation) instead of losing it. Advisory only -- stored
+	// block instead of losing it. Advisory only -- stored
 	// on the fresh taskEntry below, never merged with an older record, so a
 	// second failure's harvest fully replaces the first's rather than
 	// accumulating stale data.
@@ -4840,22 +4841,19 @@ func execActionCleanup(root, workDir string, in ExecuteStateIn, now func() time.
 		"ledgerDirCleaned": false,
 	}
 
-	if startedAt, _ := st.Data["startedAt"].(string); startedAt != "" {
-		runID := execRunID(st.Data)
-		if runID != "" {
-			runDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID)
-			if rmErr := os.RemoveAll(runDir); rmErr != nil {
-				out["runDirError"] = rmErr.Error()
-			} else {
-				out["runDirCleaned"] = true
-			}
+	if runID := execRunID(st.Data); runID != "" {
+		runDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID)
+		if rmErr := os.RemoveAll(runDir); rmErr != nil {
+			out["runDirError"] = rmErr.Error()
+		} else {
+			out["runDirCleaned"] = true
+		}
 
-			ldgDir := ledgerDir(root, runID)
-			if rmErr := os.RemoveAll(ldgDir); rmErr != nil {
-				out["ledgerDirError"] = rmErr.Error()
-			} else {
-				out["ledgerDirCleaned"] = true
-			}
+		ldgDir := ledgerDir(root, runID)
+		if rmErr := os.RemoveAll(ldgDir); rmErr != nil {
+			out["ledgerDirError"] = rmErr.Error()
+		} else {
+			out["ledgerDirCleaned"] = true
 		}
 	}
 

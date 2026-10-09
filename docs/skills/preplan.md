@@ -58,7 +58,7 @@ sections in this order:
 | `Goal` | One or two sentences: the result you want. |
 | `Users and effect` | Who uses the change, what changes for them, and what fails today. |
 | `Flows` | A before and after diagram for each flow that a proposal changes, with the same steps as a numbered list. If no flow changes, the line `No flow change.` |
-| `Decisions` | A table with one row for each proposal. The number of a row never changes. |
+| `Decisions` | A table with one row for each proposal. The number of a row never changes, and the skill never uses it again. |
 | `Open questions` | One bullet for each question that has no answer yet. |
 | `Guardrail check` | A table with one result row for each proposal. |
 
@@ -96,7 +96,7 @@ column shows what happened:
 
 | Result | Meaning |
 |---|---|
-| `pass` | The proposal breaks no guardrail. It also shows when no guardrail is configured. |
+| `pass — <basis>` | The proposal breaks no guardrail. The `Guardrail` column lists each guardrail that the skill checked. `<basis>` gives, for each guardrail, the fact of the proposal that clears it. When no guardrail is configured, the result is `pass — no guardrail configured`. |
 | `kept — <ids>` | The proposal breaks only `warning` guardrails, and you chose to keep it. |
 | `dropped — <ids>` | The proposal breaks an `error` guardrail, and it still did after one rework. |
 | `unavailable — <warning>` | The skill could not read the guardrails. The proposal counts as a pass. |
@@ -107,8 +107,10 @@ What the skill does when a proposal breaks a guardrail:
   again. If it still breaks an `error` guardrail, the skill drops it. The
   row stays in the `Decisions` table, marked `Dropped:`, so you can see why.
 - **A `warning` guardrail only:** the skill shows you each guardrail and its
-  rule, then asks once: keep the proposal or rework it. If you rework it, the
-  proposal moves to `Open questions` and has no check row until you answer.
+  rule, then asks once: keep the proposal, rework it, or cancel. If you rework
+  it, the proposal moves to `Open questions` and has no check row until you
+  answer. Its row stays in the `Decisions` table, marked `Moved:`. When the
+  proposal comes back, it gets a new row with a new number.
 
 If you change a proposal later, the skill checks it again.
 

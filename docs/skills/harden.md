@@ -83,8 +83,9 @@ prints the block once, after the first entry that loads.
 more than 10 items, an item that is not a string and an item over 1024
 characters each give an error that names the key and a suggested fix. `/harden`
 does not offer `error-report` for this error, because the cause is the config
-and not the plugin. Fix the file and run `/harden` again. In `--from-learnings`
-mode the first such error stops the whole triage run, and `/harden` removes no
+and not the plugin. Fix the file and run `/harden` again. A `config.toml` that
+`/harden` cannot read or parse also stops the run. In `--from-learnings` mode
+the first such error stops the whole triage run, and `/harden` removes no
 learnings entry.
 
 ## Examples

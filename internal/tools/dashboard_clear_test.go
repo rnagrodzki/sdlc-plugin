@@ -233,8 +233,8 @@ func TestClearCache_EvidenceRotations(t *testing.T) {
 		}
 	}
 	ccWantClass(t, out, clearClassEvidence, 1, 100)
-	ccWantSkip(t, out, newRot, "changed less than 30 minutes ago")
-	ccWantSkip(t, out, edgeRot, "changed less than 30 minutes ago")
+	ccWantSkip(t, out, newRot, "Changed less than 30 minutes ago")
+	ccWantSkip(t, out, edgeRot, "Changed less than 30 minutes ago")
 	ccWantNoSkip(t, out, live)
 	ccWantNoSkip(t, out, other)
 	ccWantNoSkip(t, out, dirRot)
@@ -276,8 +276,8 @@ func TestClearCache_TempDirs(t *testing.T) {
 		}
 	}
 	ccWantClass(t, out, clearClassTempDirs, 1, 40)
-	ccWantSkip(t, out, freshDir, "changed less than 24 hours ago")
-	ccWantSkip(t, out, edgeDir, "changed less than 24 hours ago")
+	ccWantSkip(t, out, freshDir, "Changed less than 24 hours ago")
+	ccWantSkip(t, out, edgeDir, "Changed less than 24 hours ago")
 	for _, p := range []string{exploreDir, foreignDir, fileOnly} {
 		ccWantNoSkip(t, out, p)
 	}
@@ -324,8 +324,8 @@ func TestClearCache_OrphanReports(t *testing.T) {
 		}
 	}
 	ccWantClass(t, out, clearClassReports, 3, 13+14+15)
-	ccWantSkip(t, out, unknown, "report name has no run id")
-	ccWantSkip(t, out, tempFile, "report name has no run id")
+	ccWantSkip(t, out, unknown, "Report name has no run id")
+	ccWantSkip(t, out, tempFile, "Report name has no run id")
 	ccWantNoSkip(t, out, keepShip)
 	ccWantNoSkip(t, out, keepExec)
 	ccWantNoSkip(t, out, report("sub-report.md"))
@@ -429,7 +429,7 @@ func TestClearCache_ServerLogEdgeCases(t *testing.T) {
 		}
 		out := env.clear()
 		ccWantClass(t, out, clearClassServerLog, 0, 0)
-		ccWantSkip(t, out, env.log, "delete failed: not a regular file")
+		ccWantSkip(t, out, env.log, "Not a regular file")
 	})
 }
 
@@ -465,7 +465,7 @@ func TestClearCache_DeleteErrorAddsSkippedRowAndContinues(t *testing.T) {
 		if !ccExists(p) {
 			t.Errorf("%s failed to delete and must stay", p)
 		}
-		ccWantSkip(t, out, p, "delete failed: boom")
+		ccWantSkip(t, out, p, "Delete failed: boom")
 	}
 	for _, p := range []string{okRot, okTmp, okReport} {
 		if ccExists(p) {
@@ -578,7 +578,7 @@ func TestClearCache_MissingDirsAreNotErrors(t *testing.T) {
 }
 
 // TestClearCache_UnreadableSubdirIsSkippedNotFatal asserts that a subdirectory
-// that cannot be read as a directory gives a skipped row with a delete-failed
+// that cannot be read as a directory gives a skipped row with a read-failed
 // reason, and that ClearCache still continues with the next class.
 func TestClearCache_UnreadableSubdirIsSkippedNotFatal(t *testing.T) {
 	env := newCCEnv(t)
@@ -591,8 +591,8 @@ func TestClearCache_UnreadableSubdirIsSkippedNotFatal(t *testing.T) {
 	out := env.clear()
 
 	reason, ok := ccSkipReason(out, evidence)
-	if !ok || !strings.HasPrefix(reason, "delete failed: ") {
-		t.Errorf("want a delete-failed Skipped row for %s, got %q (found=%v)", evidence, reason, ok)
+	if !ok || !strings.HasPrefix(reason, "Read failed: ") {
+		t.Errorf("want a read-failed Skipped row for %s, got %q (found=%v)", evidence, reason, ok)
 	}
 	if ccExists(oldTmp) {
 		t.Errorf("Clear must continue with the next class after a read error; %s stays", oldTmp)
@@ -650,12 +650,219 @@ func TestClearTooNewReason(t *testing.T) {
 		minAge time.Duration
 		want   string
 	}{
-		{dashboardStallAfter, "changed less than 30 minutes ago"},
-		{clearTempDirMinAge, "changed less than 24 hours ago"},
+		{dashboardStallAfter, "Changed less than 30 minutes ago"},
+		{clearTempDirMinAge, "Changed less than 24 hours ago"},
 	}
 	for _, tc := range cases {
 		if got := clearTooNewReason(tc.minAge); got != tc.want {
 			t.Errorf("clearTooNewReason(%v) = %q, want %q", tc.minAge, got, tc.want)
 		}
+	}
+}
+
+// ccSkipIfRoot skips a test whose fixture relies on a permission that root
+// ignores.
+func ccSkipIfRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file permissions")
+	}
+}
+
+// ccChmod sets the mode of path and restores 0o755 when the test ends, so
+// t.TempDir can remove the tree.
+func ccChmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatalf("chmod %s: %v", path, err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o755) })
+}
+
+// ccWantSkipPrefix fails the test unless out has a Skipped row for path whose
+// reason starts with prefix and names path.
+func ccWantSkipPrefix(t *testing.T, out ClearCacheOut, path, prefix string) {
+	t.Helper()
+	reason, ok := ccSkipReason(out, path)
+	if !ok || !strings.HasPrefix(reason, prefix) || !strings.Contains(reason, path) {
+		t.Errorf("Skipped row for %s = %q (found=%v), want a reason that starts with %q and names the path", path, reason, ok, prefix)
+	}
+}
+
+// ccFakeEntry is a directory entry whose Info call returns err.
+type ccFakeEntry struct {
+	fs.DirEntry
+	err error
+}
+
+// Info returns the error of the fake entry.
+func (e ccFakeEntry) Info() (fs.FileInfo, error) { return nil, e.err }
+
+// TestClearCache_ServerLogReadAndTruncateErrors asserts that a stat error and
+// a truncate error of the server log each add a Skipped row with the error,
+// leave the log as it was, and count nothing.
+func TestClearCache_ServerLogReadAndTruncateErrors(t *testing.T) {
+	t.Run("stat error", func(t *testing.T) {
+		env := newCCEnv(t)
+		// The parent of the log is a regular file, so stat fails with ENOTDIR.
+		ccWriteRaw(t, filepath.Dir(env.log), "not a folder")
+		out := env.clear()
+		ccWantClass(t, out, clearClassServerLog, 0, 0)
+		ccWantSkipPrefix(t, out, env.log, "Read failed: ")
+		if out.FreedBytes != 0 {
+			t.Errorf("FreedBytes = %d, want 0", out.FreedBytes)
+		}
+	})
+	t.Run("truncate error", func(t *testing.T) {
+		ccSkipIfRoot(t)
+		env := newCCEnv(t)
+		ccWrite(t, env.log, 41, 0)
+		ccChmod(t, env.log, 0o444)
+		out := env.clear()
+		ccWantClass(t, out, clearClassServerLog, 0, 0)
+		ccWantSkipPrefix(t, out, env.log, "Truncate failed: ")
+		if info, err := os.Stat(env.log); err != nil || info.Size() != 41 {
+			t.Errorf("server log after a failed truncate = %v, %v, want 41 bytes", info, err)
+		}
+	})
+}
+
+// TestClearCache_RemoveIfOlderInfoErrors asserts that removeIfOlder adds no
+// row for an entry that left the directory, adds a read-failed row for any
+// other Info error, and deletes and counts nothing in both cases.
+func TestClearCache_RemoveIfOlderInfoErrors(t *testing.T) {
+	removed := false
+	orig := clearRemove
+	clearRemove = func(string) error { removed = true; return nil }
+	t.Cleanup(func() { clearRemove = orig })
+
+	path := filepath.Join(t.TempDir(), "a.jsonl.1")
+	for _, c := range []struct {
+		name string
+		err  error
+		want []ClearCacheSkip
+	}{
+		{"entry is gone", fs.ErrNotExist, []ClearCacheSkip{}},
+		{"other error", errors.New("boom"), []ClearCacheSkip{{Path: path, Reason: "Read failed: boom"}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			s := &clearSweep{now: ccNow, skipped: []ClearCacheSkip{}}
+			class := ClearCacheClass{Name: clearClassEvidence}
+			s.removeIfOlder(&class, path, ccFakeEntry{err: c.err}, dashboardStallAfter)
+			if !reflect.DeepEqual(s.skipped, c.want) {
+				t.Errorf("Skipped = %+v, want %+v", s.skipped, c.want)
+			}
+			if class.Files != 0 || class.Bytes != 0 || removed {
+				t.Errorf("class = %+v, removed = %v, want nothing deleted", class, removed)
+			}
+		})
+	}
+}
+
+// TestClearCache_TempDirSizeErrors asserts that a temp dir whose size walk
+// fails stays in place with a read-failed row: once for a subdirectory that
+// cannot be listed, once for a file whose info cannot be read.
+func TestClearCache_TempDirSizeErrors(t *testing.T) {
+	ccSkipIfRoot(t)
+	for _, c := range []struct {
+		name string
+		mode os.FileMode
+	}{
+		{"subdirectory cannot be listed", 0o000},
+		{"file info cannot be read", 0o444},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := newCCEnv(t)
+			dir := filepath.Join(env.tmp, "sdlc-walk")
+			sub := filepath.Join(dir, "sub")
+			ccWrite(t, filepath.Join(sub, "f.txt"), 7, 48*time.Hour)
+			ccWriteDir(t, dir, 5, 48*time.Hour)
+			ccChmod(t, sub, c.mode)
+
+			out := env.clear()
+
+			ccWantClass(t, out, clearClassTempDirs, 0, 0)
+			ccWantSkipPrefix(t, out, dir, "Read failed: ")
+			if !ccExists(filepath.Join(dir, "payload.txt")) {
+				t.Errorf("%s must stay when its size cannot be read", dir)
+			}
+		})
+	}
+}
+
+// TestClearCache_OrphanReportInfoErrors asserts the Info arms of
+// orphanReports. A report that leaves reports/ after the listing adds no row.
+// A report whose info cannot be read adds a read-failed row and stays. The
+// clearRemove seam changes reports/ after the first delete.
+func TestClearCache_OrphanReportInfoErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		after func(t *testing.T, dir, second string)
+		row   bool
+	}{
+		{"report is gone", func(t *testing.T, _, second string) {
+			if err := os.Remove(second); err != nil {
+				t.Fatal(err)
+			}
+		}, false},
+		{"report info cannot be read", func(t *testing.T, dir, _ string) {
+			ccChmod(t, dir, 0o644) // no search permission: lstat of a child fails
+		}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if c.row {
+				ccSkipIfRoot(t)
+			}
+			env := newCCEnv(t)
+			dir := env.data(paths.ReportsSubdir)
+			first := filepath.Join(dir, "ship-20260101T000000-report.md")
+			second := filepath.Join(dir, "ship-20260102T000000-report.md")
+			ccWrite(t, first, 10, 0)
+			ccWrite(t, second, 20, 0)
+			clearRemove = func(p string) error {
+				if err := os.RemoveAll(p); err != nil {
+					return err
+				}
+				if p == first {
+					c.after(t, dir, second)
+				}
+				return nil
+			}
+
+			out := env.clear()
+
+			ccWantClass(t, out, clearClassReports, 1, 10)
+			if c.row {
+				ccWantSkipPrefix(t, out, second, "Read failed: ")
+				_ = os.Chmod(dir, 0o755)
+				if !ccExists(second) {
+					t.Errorf("%s must stay when its info cannot be read", second)
+				}
+			} else if len(out.Skipped) != 0 {
+				t.Errorf("Skipped = %+v, want none for a report that is gone", out.Skipped)
+			}
+		})
+	}
+}
+
+// TestClearCache_OrphanReportsKeptWhenRunsUnreadable asserts that a runs/
+// that cannot be listed keeps every report and adds one read-failed row for
+// reports/ that says why.
+func TestClearCache_OrphanReportsKeptWhenRunsUnreadable(t *testing.T) {
+	env := newCCEnv(t)
+	ccWriteRaw(t, env.data(paths.RunsSubdir), "not a folder")
+	orphan := env.data(paths.ReportsSubdir, "ship-20260101T000000-report.md")
+	ccWrite(t, orphan, 10, 0)
+
+	out := env.clear()
+
+	if !ccExists(orphan) {
+		t.Errorf("report %s must stay when runs/ cannot be listed", orphan)
+	}
+	ccWantClass(t, out, clearClassReports, 0, 0)
+	reason, ok := ccSkipReason(out, env.data(paths.ReportsSubdir))
+	if want := "Read failed: cannot list the run states, so no report is deleted: "; !ok || !strings.HasPrefix(reason, want) {
+		t.Errorf("Skipped row for reports/ = %q (found=%v), want prefix %q", reason, ok, want)
 	}
 }

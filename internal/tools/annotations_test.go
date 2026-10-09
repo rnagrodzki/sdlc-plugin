@@ -281,7 +281,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: false,
 		idempotent:  true,
 		openWorld:   false,
-		reason:      "spawns a detached dashboard server process (dashboard.Ensure) and writes only the shared user cache dir (dashboard.Dir(): roots/*.json, server.json, server.log); never touches a git-tracked file. Not destructive: stop ends a process this plugin itself started, and ensure/status/stop all converge on the same recorded state when repeated",
+		reason:      "the call spawns a detached dashboard server process (dashboard.Ensure) and writes only the shared user cache dir (dashboard.Dir(): roots/*.json, server.json, server.log); it never touches a repo file. Its only deletes are its own bookkeeping in that dir: dashboard.Roots prunes stale roots/*.json records, and stop removes server.json. The server it starts serves run-archive (tools.ArchiveRun: moves and deletes files under each repo's .sdlc-v2/) and clear-cache (tools.ClearCache: deletes reports, evidence rotations, orphan reports and sdlc-* temp dirs, and truncates server.log); those run only when a person acts in the page, never from this call. Not destructive: the call itself loses no data, stop ends a process this plugin itself started, and ensure/status/stop all converge on the same recorded state when repeated",
 	},
 }
 

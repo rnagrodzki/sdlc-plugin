@@ -33,7 +33,10 @@ Produce the `## Guardrail Compliance` table with per-guardrail Status (PASS/FAIL
 
 Judge the plan text only. Do not open, read, or search source files.
 If a guardrail needs proof from source, check that the plan cites file:line evidence.
-A missing citation is the issue.
+A missing citation is one G14 issue for that guardrail, and its table Status is FAIL.
+The issue takes the guardrail severity:
+- `error` guardrail: `"severity": "error"`, `"blocking": true`.
+- `warning` guardrail: `"severity": "warning"`, `"blocking": false`.
 
 ---
 

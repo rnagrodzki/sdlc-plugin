@@ -448,35 +448,58 @@ func TestStage_NewCapabilityNoTarget(t *testing.T) {
 // TestStage_TargetSpecTooLarge checks that a current spec over 1 MiB, or one
 // that cannot be read, stops Stage with an error that wraps ErrTargetSpec,
 // before anything is written: no staging dir (so no stage.json and no
-// validatedAt) and no change in the repo. A spec of exactly 1 MiB is copied.
+// validatedAt) and no change in the repo. Only the over-size case wraps
+// ErrTargetSpecTooLarge. A spec of exactly 1 MiB is copied.
 func TestStage_TargetSpecTooLarge(t *testing.T) {
 	specPath := func(root string) string {
 		return filepath.Join(root, "openspec", "specs", "user-auth", "spec.md")
 	}
 	cases := []struct {
-		name  string
-		setup func(t *testing.T, root string)
-		want  string
+		name     string
+		setup    func(t *testing.T, root string)
+		lock     bool // chmod 000 on the spec after the commit, restored after Stage
+		want     string
+		tooLarge bool
 	}{
-		{"over 1 MiB", func(t *testing.T, root string) {
+		{name: "over 1 MiB", setup: func(t *testing.T, root string) {
 			mustWrite(t, specPath(root), strings.Repeat("a", maxTargetSpecBytes+1))
-		}, "is over 1 MiB"},
-		{"read error", func(t *testing.T, root string) {
+		}, want: "is over 1 MiB", tooLarge: true},
+		{name: "read error", setup: func(t *testing.T, root string) {
 			// A directory in place of the file: open works, read fails.
 			if err := os.MkdirAll(specPath(root), 0o755); err != nil {
 				t.Fatalf("mkdir: %v", err)
 			}
-		}, "read "},
+		}, want: "read "},
+		{name: "open permission denied", setup: func(t *testing.T, root string) {
+			// chmod 000 on the file: open fails with EACCES, not not-exist.
+			mustWrite(t, specPath(root), "# Spec\n")
+		}, lock: true, want: "read "},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.lock && os.Geteuid() == 0 {
+				t.Skip("root ignores file permissions")
+			}
 			root, log := setupStageRepo(t)
 			tc.setup(t, root)
 			gitCommitAll(t, root)
+			if tc.lock {
+				if err := os.Chmod(specPath(root), 0); err != nil {
+					t.Fatalf("chmod 000: %v", err)
+				}
+			}
 
 			_, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+			if tc.lock {
+				if cerr := os.Chmod(specPath(root), 0o644); cerr != nil {
+					t.Fatalf("restore mode: %v", cerr)
+				}
+			}
 			if !errors.Is(err, ErrTargetSpec) {
 				t.Fatalf("Stage err = %v, want ErrTargetSpec", err)
+			}
+			if got := errors.Is(err, ErrTargetSpecTooLarge); got != tc.tooLarge {
+				t.Fatalf("errors.Is(err, ErrTargetSpecTooLarge) = %v, want %v (err %v)", got, tc.tooLarge, err)
 			}
 			if !strings.Contains(err.Error(), specPath(root)) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error %q does not name the spec path and %q", err, tc.want)
@@ -488,6 +511,27 @@ func TestStage_TargetSpecTooLarge(t *testing.T) {
 			assertGitClean(t, root)
 		})
 	}
+
+	t.Run("write into temp dir fails", func(t *testing.T) {
+		// tmp is a regular file, so the directory for the copy cannot be
+		// created. The writeFile error is returned as is: it is not a
+		// target-spec error.
+		root := t.TempDir()
+		mustWrite(t, specPath(root), "# Spec\n")
+		tmp := filepath.Join(t.TempDir(), "not-a-dir")
+		mustWrite(t, tmp, "")
+
+		err := copyTargetSpecs(root, tmp, stageFiles(false))
+		if err == nil {
+			t.Fatal("copyTargetSpecs err = nil, want the writeFile error")
+		}
+		if errors.Is(err, ErrTargetSpec) {
+			t.Fatalf("copyTargetSpecs err = %v, want a write error that does not wrap ErrTargetSpec", err)
+		}
+		if !strings.Contains(err.Error(), "openspec: create dir for ") {
+			t.Fatalf("copyTargetSpecs err = %q, want the writeFile create-dir error", err)
+		}
+	})
 
 	t.Run("exactly 1 MiB is copied", func(t *testing.T) {
 		root := t.TempDir()
@@ -512,7 +556,7 @@ func TestStage_TargetSpecTooLarge(t *testing.T) {
 // skips when the openspec CLI is not on PATH.
 func TestStage_RealCLIOmittedScenario(t *testing.T) {
 	if _, err := exec.LookPath("openspec"); err != nil {
-		t.Skip("openspec not on PATH")
+		t.Skip("openspec not on PATH; install it with npm i -g @fission-ai/openspec (CI installs a pinned version in .github/workflows/test.yml)")
 	}
 	root := t.TempDir()
 	mustWrite(t, filepath.Join(root, "openspec", "config.yaml"), "schema: spec-driven\n")

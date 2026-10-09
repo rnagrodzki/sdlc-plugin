@@ -188,8 +188,9 @@ func dashboardAddStalledIssue(p *DashboardPipeline) {
 
 // dashboardReviewFindings gives each completed step of the review pipeline p
 // a findings detail. The findings are the review issues of p whose ref is the
-// name of the step, in issue order. A step with no finding gets the detail
-// with no list. A step that is not completed gets no detail.
+// name of the step, in issue order, as dashboardDimensionFindings builds them.
+// A step with no finding gets the detail with a nil list. A step that is not
+// completed gets no detail.
 func dashboardReviewFindings(p *DashboardPipeline) {
 	for i := range p.Steps {
 		step := &p.Steps[i]
@@ -197,12 +198,8 @@ func dashboardReviewFindings(p *DashboardPipeline) {
 			continue
 		}
 		detail := &DashboardStepDetail{Kind: dashboardKindFindings}
-		for _, is := range p.Issues {
-			if is.Source == dashboardSourceReview && is.Ref == step.Name {
-				detail.Findings = append(detail.Findings, DashboardReviewFinding{
-					Text: is.Text, Severity: is.Severity, File: is.File, Line: is.Line,
-				})
-			}
+		if rows := dashboardDimensionFindings(p.Issues, step.Name); len(rows) > 0 {
+			detail.Findings = rows
 		}
 		step.Detail = detail
 	}

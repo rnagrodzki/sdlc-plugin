@@ -932,7 +932,7 @@ Before `cleanup-pipeline` deletes a `done` plan run, it SHALL copy the explorer 
 #### Scenario: Copy fails
 - **WHEN** the explorer summary cannot be read
 - **THEN** the plan run stays
-- **AND** `planRun.reason` starts with `explorer summary not saved: ` and ends with `. Fix the cause and call cleanup-pipeline again.`
+- **AND** `planRun.reason` starts with `explorer summary and review rounds not saved: ` and ends with `. Fix the cause and call cleanup-pipeline again.`
 
 #### Scenario: Retry after the evidence delete
 - **WHEN** the ship state already has a non-empty `planExploreSummary`

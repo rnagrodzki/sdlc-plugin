@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/branch"
@@ -75,7 +74,7 @@ type PlanSupportIn struct {
 	StatusOnly      bool           `json:"statusOnly,omitempty" jsonschema_description:"Boolean. evidence_digest only: true returns only the writers section (poll mode). Example: true in the Step 1 POLL loop."`
 
 	// preplan_context
-	Topic string `json:"topic,omitempty" jsonschema_description:"preplan_context only (required): plain-text topic name, one line, 1-50 characters, at least one letter or digit. The tool makes the file name with branch.Slug. Example: auth flow"`
+	Topic string `json:"topic,omitempty" jsonschema_description:"preplan_context only (required): plain-text topic name, one line, 1-50 characters after outer spaces are trimmed, with at least one ASCII letter or digit (a-z, A-Z, 0-9). The file name is the topic lowercased, with each run of other characters turned into one hyphen, so two topics can share one file (\"Auth flow\" and \"auth-flow\" both give auth-flow.md). Example: auth flow"`
 }
 
 // EvidenceItem is one evidence entry of a writer, stored in
@@ -176,9 +175,11 @@ type PlanSupportOut struct {
 	Digest  *EvidenceDigestOut  `json:"digest,omitempty"`  // evidence_digest unless statusOnly
 	Get     *EvidenceGetOut     `json:"get,omitempty"`     // evidence_get
 
-	// preplan_context (Guardrails above is also set by this action)
-	PreplanFile    string `json:"preplanFile,omitempty"` // absolute <mainRoot>/.sdlc-v2/preplan/<slug>.md
-	PreplanCreated bool   `json:"preplanCreated"`        // true only when this call created the file
+	// preplan_context (Guardrails above is also set by this action).
+	// PreplanCreated is a pointer so false still renders for preplan_context
+	// while every other action omits it.
+	PreplanFile    string `json:"preplanFile,omitempty"`    // absolute <mainRoot>/.sdlc-v2/preplan/<slug>.md
+	PreplanCreated *bool  `json:"preplanCreated,omitempty"` // true only when this call created the file
 }
 
 // LaneResult represents the outcome of a single review lane.
@@ -281,11 +282,11 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
 - openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a temp copy of openspec/config.yaml. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing in the repository; a missing openspec CLI returns InfraError.
-- openspec_stage: Write the authored artifacts to <active-worktree>/.sdlc-v2/openspec-staging/<changeName>/ (replaces the whole directory) and validate them in a temp copy. Requires changeName, files. Optional: planPath. Returns stagingDir, files, valid, validateOutput. A bad name or path returns DomainError and writes nothing.
+- openspec_stage: Write the authored artifacts to <active-worktree>/.sdlc-v2/openspec-staging/<changeName>/ (replaces the whole directory) and validate them in a temp copy. Requires changeName, files. Optional: planPath. Returns stagingDir, files, valid, validateOutput. A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A current spec that cannot be read returns InfraError.
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
-- preplan_context: Return the plan guardrails and the topic file path. Requires topic. Creates the topic file with a skeleton when it is absent, never overwrites it. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Both carry a Suggestion.`,
+- preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. The topic file is <main-worktree>/.sdlc-v2/preplan/<slug>.md. Creates it with a skeleton when it is absent, never overwrites it. Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), summary, next. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Both carry a Suggestion.`,
 		mcpserver.Annotations{
 			Title:      "Plan support and evidence store",
 			ReadOnly:   true,
@@ -1149,6 +1150,12 @@ func mapOpenspecError(action string, in PlanSupportIn, err error) error {
 			Suggestion: openspecCLISuggestion,
 			Cause:      err,
 		}
+	case errors.Is(err, openspec.ErrTargetSpecTooLarge):
+		return &mcpserver.DomainError{
+			Msg:        action + ": " + err.Error(),
+			Suggestion: "Shrink the named spec under openspec/specs/ below the size limit in the message (for example, split the capability into two specs), then call openspec_stage again.",
+			Cause:      err,
+		}
 	case errors.Is(err, openspec.ErrTargetSpec):
 		return &mcpserver.InfraError{
 			Msg:        action + ": " + err.Error(),
@@ -1247,7 +1254,6 @@ const preplanTopicMaxChars = 50
 
 // Suggestion texts for the preplan_context errors.
 const (
-	preplanTopicWordsSuggestion = "Pass a short topic name with letters or digits, for example \"auth flow\"."
 	preplanTopicASCIISuggestion = "Pass a topic name with ASCII letters or digits, for example \"auth flow\"."
 	preplanTopicLongSuggestion  = "Pass a shorter topic name. Put the detail in the first answer."
 	preplanTopicLineSuggestion  = "Pass the topic name on one line."
@@ -1278,26 +1284,14 @@ const preplanSkeletonTail = `
 |---|---|---|---|
 `
 
-// preplanSlug trims topic, rejects a topic that cannot name a file, and
-// returns branch.Slug of the trimmed topic. A rejected topic returns a
-// DomainError that carries a Suggestion. The checks run before any path join,
-// so the slug is always a bare file name made of [a-z0-9-].
+// preplanSlug rejects a topic that cannot name a file and returns branch.Slug
+// of the topic. It expects a topic the caller already trimmed with
+// strings.TrimSpace. A rejected topic returns a DomainError that carries a
+// Suggestion. The checks run before any path join, so the slug is always a
+// bare file name made of [a-z0-9-]. A topic with no ASCII letter or digit
+// (empty, punctuation only, or only non-ASCII letters) gives an empty slug.
 func preplanSlug(topic string) (string, error) {
 	const action = "preplan_context"
-	topic = strings.TrimSpace(topic)
-	hasAlnum := false
-	for _, r := range topic {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) {
-			hasAlnum = true
-			break
-		}
-	}
-	if !hasAlnum {
-		return "", &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("%s: topic %q has no letter or digit", action, topic),
-			Suggestion: preplanTopicWordsSuggestion,
-		}
-	}
 	slug := branch.Slug(topic)
 	if slug == "" {
 		return "", &mcpserver.DomainError{
@@ -1324,7 +1318,8 @@ func preplanSlug(topic string) (string, error) {
 // topic. It creates <mainRoot>/.sdlc-v2/preplan/<slug>.md with the skeleton
 // when the file is absent and never overwrites an existing file (O_EXCL). It
 // starts no plan run and writes no state. A bad topic returns a DomainError
-// and writes nothing; a failed create returns an InfraError.
+// and writes nothing; a failed create returns an InfraError. The topic is
+// trimmed once here, before preplanSlug and the file heading use it.
 func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 	const action = "preplan_context"
 	topic = strings.TrimSpace(topic)
@@ -1368,7 +1363,7 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 		Next:           next,
 		Guardrails:     guardrails,
 		PreplanFile:    file,
-		PreplanCreated: created,
+		PreplanCreated: &created,
 	}, nil
 }
 
@@ -1402,11 +1397,13 @@ func createPreplanFile(file, content string) (bool, error) {
 		return false, err
 	}
 	if err := preplanWriteString(f, content); err != nil {
+		// Best-effort cleanup; the original write error is returned.
 		_ = f.Close()
 		_ = os.Remove(file)
 		return false, err
 	}
 	if err := preplanCloseFile(f); err != nil {
+		// Best-effort cleanup; the original close error is returned.
 		_ = os.Remove(file)
 		return false, err
 	}

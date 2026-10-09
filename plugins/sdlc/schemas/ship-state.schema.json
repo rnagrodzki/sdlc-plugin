@@ -230,9 +230,70 @@
     },
     "planReviewRounds": {
       "type": "array",
-      "description": "Plan review rounds copied by cleanup-pipeline before it deletes the linked plan run. Same row shape as the plan state reviewRounds.",
+      "description": "Plan review rounds copied by cleanup-pipeline before it deletes the linked plan run. Same row shape as the plan state reviewRounds (PlanReviewRound in internal/tools/plan.go). Absent when the plan run had no rounds.",
+      "maxItems": 20,
       "items": {
-        "type": "object"
+        "type": "object",
+        "properties": {
+          "round": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "mergedStatus": {
+            "type": "string",
+            "enum": ["Approved", "Issues Found"]
+          },
+          "found": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Blocking issues found in the round (the blockingCount of merge_results)."
+          },
+          "fixed": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Blocking issues the round fixed."
+          },
+          "lenses": {
+            "type": "array",
+            "maxItems": 32,
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Lens name. plan_mark review-round checks it at write time."
+                },
+                "verdict": {
+                  "type": "string",
+                  "enum": ["Approved", "Issues Found"]
+                }
+              },
+              "required": ["name", "verdict"],
+              "additionalProperties": false
+            }
+          },
+          "findings": {
+            "type": "array",
+            "maxItems": 200,
+            "description": "Optional. Absent when the plan skill sent no findings key.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "description": "The merge_results allIssues id. plan_mark review-round checks its format at write time."
+                },
+                "fixed": {
+                  "type": "boolean"
+                }
+              },
+              "required": ["id", "fixed"],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": ["round", "mergedStatus", "found", "fixed", "lenses"],
+        "additionalProperties": false
       }
     },
     "issues": {

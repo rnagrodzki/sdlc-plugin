@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -93,16 +95,36 @@ const (
 )
 
 // ArchiveError is the error of ArchiveRun. Code is one of the Archive* code
-// constants. Suggestion is never empty.
-type ArchiveError struct{ Code, Message, Suggestion string }
+// constants. Message is in sentence case, because the page shows it to the
+// person. Suggestion is never empty. Cause is the error that made the archive
+// fail, or nil when no other error caused it.
+type ArchiveError struct {
+	Code, Message, Suggestion string
+	Cause                     error
+}
 
 // Error returns the code and the message of the archive error.
 func (e *ArchiveError) Error() string { return e.Code + ": " + e.Message }
 
-// archiveErr returns an ArchiveError with the given code, message and
-// suggestion.
-func archiveErr(code, msg, suggestion string) *ArchiveError {
-	return &ArchiveError{Code: code, Message: msg, Suggestion: suggestion}
+// Unwrap returns the cause of the archive error, so errors.Is and errors.As
+// reach it.
+func (e *ArchiveError) Unwrap() error { return e.Cause }
+
+// archiveErr returns an *ArchiveError with the given code, suggestion and
+// cause. The message is msg, then ": " and the cause text when cause is not
+// nil, or the cause text alone when msg is empty. Its first letter is upper
+// case.
+func archiveErr(code, msg, suggestion string, cause error) error {
+	switch {
+	case cause != nil && msg == "":
+		msg = cause.Error()
+	case cause != nil:
+		msg += ": " + cause.Error()
+	}
+	if r, size := utf8.DecodeRuneInString(msg); size > 0 {
+		msg = string(unicode.ToUpper(r)) + msg[size:]
+	}
+	return &ArchiveError{Code: code, Message: msg, Suggestion: suggestion, Cause: cause}
 }
 
 // archiveRunFiles lists the files of one run that the archive handles. final
@@ -147,22 +169,22 @@ func ArchiveRun(in ArchiveRunIn, now time.Time) (ArchiveRunOut, error) {
 
 	repo := collectDashboardRepo(in.Root, now)
 	if repo.Error != "" {
-		return out, archiveErr(ArchiveFailed, "read the runs of repo "+in.Root+": "+repo.Error, archiveSuggestReadFailed)
+		return out, archiveErr(ArchiveFailed, "Read the runs of repo "+in.Root+": "+repo.Error, archiveSuggestReadFailed, nil)
 	}
 	row, ok := archiveFindRow(repo.Pipelines, in.RunID)
 	if !ok {
-		return out, archiveErr(ArchiveRunNotFound, fmt.Sprintf("no pipeline row with id %q", in.RunID), archiveSuggestNotFound)
+		return out, archiveErr(ArchiveRunNotFound, fmt.Sprintf("No pipeline row with id %q", in.RunID), archiveSuggestNotFound, nil)
 	}
 	switch {
 	case row.Status == PipelineRunning:
-		return out, archiveErr(ArchiveRunActive, fmt.Sprintf("run %q is running", in.RunID), archiveSuggestActive)
+		return out, archiveErr(ArchiveRunActive, fmt.Sprintf("Run %q is running", in.RunID), archiveSuggestActive, nil)
 	case row.Status == PipelineStalled && !in.ConfirmStalled:
-		return out, archiveErr(ArchiveConfirmStalled, fmt.Sprintf("run %q is stalled and the archive is not confirmed", in.RunID), archiveSuggestStalled)
+		return out, archiveErr(ArchiveConfirmStalled, fmt.Sprintf("Run %q is stalled and the archive is not confirmed", in.RunID), archiveSuggestStalled, nil)
 	}
 
 	list, err := state.List(in.Root)
 	if err != nil {
-		return out, archiveErr(ArchiveFailed, "list the run states: "+err.Error(), archiveSuggestReadFailed)
+		return out, archiveErr(ArchiveFailed, "List the run states", archiveSuggestReadFailed, err)
 	}
 	rootFiles, err := archiveResolve(in.Root, list.States, row.ID)
 	if err != nil {
@@ -198,11 +220,11 @@ func ArchiveRun(in ArchiveRunIn, now time.Time) (ArchiveRunOut, error) {
 // It reads no file.
 func archiveCheckID(id string) error {
 	if err := bareRunName(id); err != nil {
-		return archiveErr(ArchiveBadRunID, err.Error(), archiveSuggestBadID)
+		return archiveErr(ArchiveBadRunID, "", archiveSuggestBadID, err)
 	}
 	if strings.HasPrefix(id, dashboardReviewPrefix) {
 		if _, err := ReviewLedgerDir("", id); err != nil {
-			return archiveErr(ArchiveBadRunID, err.Error(), archiveSuggestBadID)
+			return archiveErr(ArchiveBadRunID, "", archiveSuggestBadID, err)
 		}
 		return nil
 	}
@@ -211,7 +233,7 @@ func archiveCheckID(id string) error {
 			return nil
 		}
 	}
-	return archiveErr(ArchiveBadRunID, fmt.Sprintf("invalid run name %q: not a state run or review run name", id), archiveSuggestBadID)
+	return archiveErr(ArchiveBadRunID, fmt.Sprintf("Invalid run name %q: not a state run or review run name", id), archiveSuggestBadID, nil)
 }
 
 // archiveFindRow returns the pipeline row of ps whose id is id.
@@ -233,14 +255,14 @@ func archiveResolve(root string, states []*state.State, id string) (archiveRunFi
 	if strings.HasPrefix(id, dashboardReviewPrefix) {
 		dir, err := ReviewLedgerDir(root, id)
 		if err != nil {
-			return archiveRunFiles{}, archiveErr(ArchiveBadRunID, err.Error(), archiveSuggestBadID)
+			return archiveRunFiles{}, archiveErr(ArchiveBadRunID, "", archiveSuggestBadID, err)
 		}
 		found, err := existingPath(dir)
 		if err != nil {
-			return archiveRunFiles{}, archiveErr(ArchiveFailed, err.Error(), archiveSuggestReadFailed)
+			return archiveRunFiles{}, archiveErr(ArchiveFailed, "", archiveSuggestReadFailed, err)
 		}
 		if found == "" {
-			return archiveRunFiles{}, archiveErr(ArchiveRunNotFound, fmt.Sprintf("no review ledger folder for %q", id), archiveSuggestNotFound)
+			return archiveRunFiles{}, archiveErr(ArchiveRunNotFound, fmt.Sprintf("No review ledger folder for %q", id), archiveSuggestNotFound, nil)
 		}
 		return archiveRunFiles{final: found}, nil
 	}
@@ -253,14 +275,14 @@ func archiveResolve(root string, states []*state.State, id string) (archiveRunFi
 		}
 	}
 	if st == nil {
-		return archiveRunFiles{}, archiveErr(ArchiveRunNotFound, fmt.Sprintf("no state file for %q", id), archiveSuggestNotFound)
+		return archiveRunFiles{}, archiveErr(ArchiveRunNotFound, fmt.Sprintf("No state file for %q", id), archiveSuggestNotFound, nil)
 	}
 	arts, err := ResolveRunArtifacts(root, st)
 	if err != nil {
-		return archiveRunFiles{}, archiveErr(ArchiveFailed, err.Error(), archiveSuggestReadFailed)
+		return archiveRunFiles{}, archiveErr(ArchiveFailed, "", archiveSuggestReadFailed, err)
 	}
 	if arts.StateFile == "" {
-		return archiveRunFiles{}, archiveErr(ArchiveRunNotFound, fmt.Sprintf("no state file for %q", id), archiveSuggestNotFound)
+		return archiveRunFiles{}, archiveErr(ArchiveRunNotFound, fmt.Sprintf("No state file for %q", id), archiveSuggestNotFound, nil)
 	}
 	return archiveRunFiles{keep: arts.Keep, working: arts.Working, final: arts.StateFile}, nil
 }
@@ -277,7 +299,7 @@ type archiveMover struct {
 // run applies the six steps of the move order that ArchiveRun documents.
 func (m *archiveMover) run(runID string, members []archiveRunFiles, root archiveRunFiles, now time.Time) error {
 	if err := os.MkdirAll(m.dir, 0o755); err != nil {
-		return archiveErr(ArchiveFailed, "create archive folder "+m.dir+": "+err.Error(), archiveSuggestFSFailed)
+		return archiveErr(ArchiveFailed, "Create archive folder "+m.dir, archiveSuggestFSFailed, err)
 	}
 	all := append(append([]archiveRunFiles{}, members...), root)
 	for _, f := range all {
@@ -307,7 +329,7 @@ func (m *archiveMover) run(runID string, members []archiveRunFiles, root archive
 	}
 	recPath := filepath.Join(m.dir, archiveRecordFile)
 	if err := fsx.AtomicWriteJSON(recPath, rec); err != nil {
-		return archiveErr(ArchiveFailed, "write "+recPath+": "+err.Error(), archiveSuggestFSFailed)
+		return archiveErr(ArchiveFailed, "Write "+recPath, archiveSuggestFSFailed, err)
 	}
 	return m.move(root.final)
 }
@@ -320,10 +342,10 @@ func (m *archiveMover) move(src string) error {
 	}
 	dst := filepath.Join(m.dir, archiveDestRel(rel))
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return archiveErr(ArchiveFailed, "create folder "+filepath.Dir(dst)+": "+err.Error(), archiveSuggestFSFailed)
+		return archiveErr(ArchiveFailed, "Create folder "+filepath.Dir(dst), archiveSuggestFSFailed, err)
 	}
 	if err := archiveRename(src, dst); err != nil {
-		return archiveErr(ArchiveFailed, "move "+src+": "+err.Error(), archiveSuggestFSFailed)
+		return archiveErr(ArchiveFailed, "Move "+src, archiveSuggestFSFailed, err)
 	}
 	m.moved = append(m.moved, filepath.ToSlash(rel))
 	return nil
@@ -336,7 +358,7 @@ func (m *archiveMover) remove(src string) error {
 		return err
 	}
 	if err := archiveRemoveAll(src); err != nil {
-		return archiveErr(ArchiveFailed, "delete "+src+": "+err.Error(), archiveSuggestFSFailed)
+		return archiveErr(ArchiveFailed, "Delete "+src, archiveSuggestFSFailed, err)
 	}
 	m.deleted = append(m.deleted, filepath.ToSlash(rel))
 	return nil
@@ -347,7 +369,7 @@ func (m *archiveMover) remove(src string) error {
 func (m *archiveMover) rel(src string) (string, error) {
 	rel, err := filepath.Rel(m.data, src)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", archiveErr(ArchiveFailed, "path "+src+" is outside "+m.data, archiveSuggestReadFailed)
+		return "", archiveErr(ArchiveFailed, "Path "+src+" is outside "+m.data, archiveSuggestReadFailed, nil)
 	}
 	return rel, nil
 }

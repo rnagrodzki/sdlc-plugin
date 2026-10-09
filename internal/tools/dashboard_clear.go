@@ -133,9 +133,15 @@ func (s *clearSweep) skip(path, reason string) {
 	s.skipped = append(s.skipped, ClearCacheSkip{Path: path, Reason: reason})
 }
 
-// skipErr adds a Skipped row for a filesystem error.
-func (s *clearSweep) skipErr(path string, err error) {
-	s.skip(path, "delete failed: "+err.Error())
+// skipReadErr adds a Skipped row for a failure to read path: a directory
+// listing, a stat or a size walk.
+func (s *clearSweep) skipReadErr(path string, err error) {
+	s.skip(path, "Read failed: "+err.Error())
+}
+
+// skipRemoveErr adds a Skipped row for a failure to delete path.
+func (s *clearSweep) skipRemoveErr(path string, err error) {
+	s.skip(path, "Delete failed: "+err.Error())
 }
 
 // readDir lists dir. A dir that does not exist is an empty class and adds no
@@ -145,7 +151,7 @@ func (s *clearSweep) readDir(dir string) ([]fs.DirEntry, bool) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			s.skipErr(dir, err)
+			s.skipReadErr(dir, err)
 		}
 		return nil, false
 	}
@@ -156,7 +162,7 @@ func (s *clearSweep) readDir(dir string) ([]fs.DirEntry, bool) {
 // adds a Skipped row and leaves class unchanged.
 func (s *clearSweep) remove(class *ClearCacheClass, path string, size int64) {
 	if err := clearRemove(path); err != nil {
-		s.skipErr(path, err)
+		s.skipRemoveErr(path, err)
 		return
 	}
 	class.Files++
@@ -171,7 +177,7 @@ func (s *clearSweep) removeIfOlder(class *ClearCacheClass, path string, e fs.Dir
 		// The entry left the directory between the listing and this call (for
 		// example a rotation replaced it). Nothing is left to clear.
 		if !errors.Is(err, fs.ErrNotExist) {
-			s.skipErr(path, err)
+			s.skipReadErr(path, err)
 		}
 		return
 	}
@@ -181,7 +187,7 @@ func (s *clearSweep) removeIfOlder(class *ClearCacheClass, path string, e fs.Dir
 	}
 	size, err := clearEntrySize(path, info)
 	if err != nil {
-		s.skipErr(path, err)
+		s.skipReadErr(path, err)
 		return
 	}
 	s.remove(class, path, size)
@@ -236,7 +242,7 @@ func (s *clearSweep) orphanReports(root string) ClearCacheClass {
 
 	owners, err := clearReportOwners(root)
 	if err != nil {
-		s.skipErr(dir, err)
+		s.skipReadErr(dir, err)
 		return class
 	}
 	for _, e := range entries {
@@ -246,7 +252,7 @@ func (s *clearSweep) orphanReports(root string) ClearCacheClass {
 		path := filepath.Join(dir, e.Name())
 		runID, ok := ReportOwner(e.Name())
 		if !ok {
-			s.skip(path, "report name has no run id")
+			s.skip(path, "Report name has no run id")
 			continue
 		}
 		if owners[runID] {
@@ -256,7 +262,7 @@ func (s *clearSweep) orphanReports(root string) ClearCacheClass {
 		if err != nil {
 			// The report left the directory after the listing. Nothing to clear.
 			if !errors.Is(err, fs.ErrNotExist) {
-				s.skipErr(path, err)
+				s.skipReadErr(path, err)
 			}
 			continue
 		}
@@ -276,19 +282,19 @@ func (s *clearSweep) serverLog(path string) ClearCacheClass {
 	info, err := os.Stat(path)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			s.skipErr(path, err)
+			s.skipReadErr(path, err)
 		}
 		return class
 	}
 	if !info.Mode().IsRegular() {
-		s.skipErr(path, errors.New("not a regular file"))
+		s.skip(path, "Not a regular file")
 		return class
 	}
 	if info.Size() == 0 {
 		return class
 	}
 	if err := os.Truncate(path, 0); err != nil {
-		s.skipErr(path, err)
+		s.skip(path, "Truncate failed: "+err.Error())
 		return class
 	}
 	class.Files = 1
@@ -320,13 +326,13 @@ func clearReportOwners(root string) (map[string]bool, error) {
 }
 
 // clearTooNewReason returns the Skipped reason for an entry that is newer than
-// minAge: "changed less than 24 hours ago" or "changed less than 30 minutes
+// minAge: "Changed less than 24 hours ago" or "Changed less than 30 minutes
 // ago".
 func clearTooNewReason(minAge time.Duration) string {
 	if minAge >= time.Hour {
-		return fmt.Sprintf("changed less than %d hours ago", int(minAge/time.Hour))
+		return fmt.Sprintf("Changed less than %d hours ago", int(minAge/time.Hour))
 	}
-	return fmt.Sprintf("changed less than %d minutes ago", int(minAge/time.Minute))
+	return fmt.Sprintf("Changed less than %d minutes ago", int(minAge/time.Minute))
 }
 
 // clearEntrySize returns the size of a file, or the summed size of the regular

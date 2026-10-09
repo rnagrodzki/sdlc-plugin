@@ -5,7 +5,7 @@
 //
 // Ported from scripts/lib/harden-surfaces.js.  Only the metadata list is
 // exported here; the runtime loaders (loadGuardrails, loadReviewDimensions,
-// etc.) belong to the tool layer (Task 30 scope).
+// etc.) belong to the tool layer.
 package hardensurfaces
 
 // Surface describes a single hardening surface.
@@ -13,6 +13,9 @@ type Surface struct {
 	ID          string
 	Label       string
 	Description string
+	// Proposal is true when harden writes proposals for the surface. A
+	// surface with Proposal false is a read-only input.
+	Proposal bool
 }
 
 // List returns the static catalogue of hardening surfaces.
@@ -22,21 +25,25 @@ func List() []Surface {
 			ID:          "plan-guardrails",
 			Label:       "Plan guardrails",
 			Description: "Guardrail rules from the plan section of .sdlc-v2/config.toml",
+			Proposal:    true,
 		},
 		{
 			ID:          "execute-guardrails",
 			Label:       "Execute guardrails",
 			Description: "Guardrail rules from the execute section of .sdlc-v2/config.toml",
+			Proposal:    true,
 		},
 		{
 			ID:          "review-dimensions",
 			Label:       "Review dimensions",
 			Description: "Custom review dimension definitions from .sdlc-v2/review-dimensions/*.md",
+			Proposal:    true,
 		},
 		{
 			ID:          "copilot-instructions",
 			Label:       "Copilot instructions",
 			Description: "GitHub Copilot instruction files from .github/instructions/*.instructions.md",
+			Proposal:    true,
 		},
 		{
 			ID:          "error-report-skill",
@@ -51,15 +58,16 @@ func List() []Surface {
 	}
 }
 
-// ProposalIDs returns the ids of the surfaces for which harden writes
-// proposals, in List order: plan-guardrails, execute-guardrails,
-// review-dimensions, copilot-instructions. The other surfaces in List are
-// read-only inputs. Each call returns a new slice, so a caller may change it.
+// ProposalIDs returns the ids of the List surfaces with Proposal set, in List
+// order: plan-guardrails, execute-guardrails, review-dimensions,
+// copilot-instructions. Each call returns a new slice, so a caller may change
+// it.
 func ProposalIDs() []string {
-	return []string{
-		"plan-guardrails",
-		"execute-guardrails",
-		"review-dimensions",
-		"copilot-instructions",
+	var ids []string
+	for _, s := range List() {
+		if s.Proposal {
+			ids = append(ids, s.ID)
+		}
 	}
+	return ids
 }

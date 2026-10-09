@@ -282,10 +282,13 @@ continues after a skipped row. The reasons are:
 
 | Reason | Meaning |
 |---|---|
-| `changed less than 30 minutes ago` | Clear kept a rotated evidence file that is too new |
-| `changed less than 24 hours ago` | Clear kept a temp folder that is too new |
-| `report name has no run id` | Clear kept a report with an unknown name |
-| `delete failed: <error>` | Clear could not read, delete, or cut the path |
+| `Changed less than 30 minutes ago` | Clear kept a rotated evidence file that is too new |
+| `Changed less than 24 hours ago` | Clear kept a temp folder that is too new |
+| `Report name has no run id` | Clear kept a report with an unknown name |
+| `Not a regular file` | Clear kept a server log path that is not a regular file |
+| `Read failed: <error>` | Clear could not read the path, so it kept the path |
+| `Delete failed: <error>` | Clear could not delete the path |
+| `Truncate failed: <error>` | Clear could not cut the server log |
 
 Only a failed read of the repo folder fails the request. The answer is `500`
 with the code `CLEAR_FAILED`.
@@ -415,7 +418,7 @@ so it skips these two checks.
 | `POST /api/stop` | Stops the server | Origin and token |
 | `POST /api/run-archive` | Moves one run into `run-archive/`. See [Archive a run](#archive-a-run). | Origin, token, JSON content type, body of 8 KiB or less. The body is `{"repo", "runId", "confirmStalled"}`. `repo` and `runId` are required. `confirmStalled` is a bool. |
 | `POST /api/cache-clear` | Deletes cache files. See [Clear cache files](#clear-cache-files). | Origin, token, JSON content type, body of 8 KiB or less. The body is `{"repo"}`, and `repo` is required. |
-| `GET /api/learning?repo=…&date=…&heading=…` | Returns the text of one learning. See [Detail viewer](#detail-viewer). | No Origin check and no token: the route only reads, like `GET /api/snapshot`. `date` and `heading` are required. The text is redacted and cut at 8000 characters. |
+| `GET /api/learning?repo=…&date=…&heading=…` | Returns the text of one learning. See [Detail viewer](#detail-viewer). | No Origin check and no token: the route only reads, like `GET /api/snapshot`. `repo`, `date` and `heading` are required. The text is redacted and cut at 8000 characters. |
 
 For the archive, clear, and learning routes, `repo` must be the path of a
 repo that the page shows. The server compares it with the registered repos,
@@ -432,8 +435,8 @@ with a wrong method (`405`) answer with plain text. The error answers are:
 | 415 | `BAD_CONTENT_TYPE` | The content type is not `application/json` | Archive, clear |
 | 413 | `BODY_TOO_LARGE` | The body is over 8 KiB | Archive, clear |
 | 400 | `BAD_BODY` | The server could not read the body | Archive, clear |
-| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `date` or `heading` is missing (learning). | Archive, clear, learning |
-| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. A learning request with no `repo` gets this answer too. | Archive, clear, learning |
+| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo`, `date` or `heading` is missing (learning). | Archive, clear, learning |
+| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, learning |
 | 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, learning |
 | 500 | `CLEAR_FAILED` | Clear cannot read the repo folder | Clear |
 | 500 | `LEARNING_READ_FAILED` | The server cannot read the learnings log | Learning |
@@ -442,7 +445,7 @@ with a wrong method (`405`) answer with plain text. The error answers are:
 An example of an error answer:
 
 ```http
-409 {"error":{"code":"RUN_ACTIVE","message":"run \"ship-feat-x-20261008T120000Z\" is running","suggestion":"Wait until the run ends or stalls."}}
+409 {"error":{"code":"RUN_ACTIVE","message":"Run \"ship-feat-x-20261008T120000Z\" is running","suggestion":"Wait until the run ends or stalls."}}
 ```
 
 The server has no idle stop — nothing shuts it down just because it sat
@@ -606,6 +609,9 @@ without names, unless a wave stores the name. A ship state without
   ship state key `planExploreSummary`: one `{name, status, total, top[]}`
   entry for each explorer, with at most 5 findings in `top`. It does this
   only after the ship report exists. If the copy fails, it deletes nothing,
-  and `planRun.reason` starts with `explorer summary not saved: `. It also
-  copies the plan state `reviewRounds` into `planReviewRounds`, when the plan
-  run has rounds. A retry keeps a stored list of rounds.
+  and `planRun.reason` starts with
+  `explorer summary and review rounds not saved: `. It also copies the plan
+  state `reviewRounds` into `planReviewRounds`, when the plan run has rounds,
+  in the same ship state write. A retry keeps a stored list of rounds. After
+  that write, `planRun` carries `exploreSummaryCount` and `reviewRoundsCount`:
+  the number of entries the ship state now holds in each key.

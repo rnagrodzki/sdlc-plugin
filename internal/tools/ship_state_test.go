@@ -2578,7 +2578,8 @@ func TestCleanupPipelineDeletesReportedPlanRun(t *testing.T) {
 			if err != nil {
 				t.Fatalf("cleanup-pipeline: %v", err)
 			}
-			if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+			want := ShipPlanRunCleanup{Deleted: true, RunID: f.runID, ExploreSummaryCount: intPtr(0), ReviewRoundsCount: intPtr(0)}
+			if !reflect.DeepEqual(pr, want) {
 				t.Errorf("planRun = %#v, want %#v", pr, want)
 			}
 			f.assertDeleted(t)
@@ -2599,7 +2600,7 @@ func TestCleanupPipelineDeletesReportedPlanRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cleanup-pipeline: %v", err)
 		}
-		if want := (ShipPlanRunCleanup{Reason: "report not written"}); pr != want {
+		if want := (ShipPlanRunCleanup{Reason: "report not written"}); !reflect.DeepEqual(pr, want) {
 			t.Errorf("planRun = %#v, want %#v", pr, want)
 		}
 		f.assertKept(t)
@@ -2613,7 +2614,7 @@ func TestCleanupPipelineDeletesReportedPlanRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cleanup-pipeline: %v", err)
 		}
-		if want := (ShipPlanRunCleanup{Reason: "no linked plan run"}); pr != want {
+		if want := (ShipPlanRunCleanup{Reason: "no linked plan run"}); !reflect.DeepEqual(pr, want) {
 			t.Errorf("planRun = %#v, want %#v", pr, want)
 		}
 		f.assertKept(t)
@@ -2629,7 +2630,7 @@ func TestCleanupPipelineDeletesReportedPlanRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cleanup-pipeline: %v", err)
 		}
-		if want := (ShipPlanRunCleanup{Reason: "no linked plan run"}); pr != want {
+		if want := (ShipPlanRunCleanup{Reason: "no linked plan run"}); !reflect.DeepEqual(pr, want) {
 			t.Errorf("planRun = %#v, want %#v", pr, want)
 		}
 		f.assertKept(t)
@@ -2643,7 +2644,7 @@ func TestCleanupPipelineDeletesReportedPlanRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cleanup-pipeline force: %v", err)
 		}
-		if want := (ShipPlanRunCleanup{Reason: "run not stamped"}); pr != want {
+		if want := (ShipPlanRunCleanup{Reason: "run not stamped"}); !reflect.DeepEqual(pr, want) {
 			t.Errorf("planRun = %#v, want %#v", pr, want)
 		}
 		f.assertKept(t)
@@ -2676,7 +2677,7 @@ func TestCleanupPipelineDeletesReportedPlanRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("cleanup-pipeline: %v", err)
 		}
-		if want := (ShipPlanRunCleanup{Reason: "report not written"}); pr != want {
+		if want := (ShipPlanRunCleanup{Reason: "report not written"}); !reflect.DeepEqual(pr, want) {
 			t.Errorf("planRun = %#v, want %#v", pr, want)
 		}
 		f.assertKept(t)
@@ -2778,7 +2779,7 @@ func TestShipState_CleanupPipeline_ExploreSummary_StoredBeforeDelete(t *testing.
 	if err != nil {
 		t.Fatalf("cleanup-pipeline: %v", err)
 	}
-	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID, ExploreSummaryCount: intPtr(2), ReviewRoundsCount: intPtr(0)}); !reflect.DeepEqual(pr, want) {
 		t.Errorf("planRun = %#v, want %#v", pr, want)
 	}
 	f.assertDeleted(t)
@@ -2881,8 +2882,8 @@ func TestShipState_CleanupPipeline_ExploreSummary_ReadFailsKeepsPlanRun(t *testi
 	if err != nil {
 		t.Fatalf("cleanup-pipeline: %v", err)
 	}
-	want := ShipPlanRunCleanup{Reason: "explorer summary not saved: evidence unreadable. Fix the cause and call cleanup-pipeline again."}
-	if pr != want {
+	want := ShipPlanRunCleanup{Reason: "explorer summary and review rounds not saved: evidence unreadable. Fix the cause and call cleanup-pipeline again."}
+	if !reflect.DeepEqual(pr, want) {
 		t.Errorf("planRun = %#v, want %#v", pr, want)
 	}
 	f.assertKept(t)
@@ -2912,8 +2913,8 @@ func TestShipState_CleanupPipeline_ExploreSummary_WriteFailsKeepsPlanRun(t *test
 	if err != nil {
 		t.Fatalf("cleanup-pipeline: %v", err)
 	}
-	want := ShipPlanRunCleanup{Reason: "explorer summary not saved: disk full. Fix the cause and call cleanup-pipeline again."}
-	if pr != want {
+	want := ShipPlanRunCleanup{Reason: "explorer summary and review rounds not saved: disk full. Fix the cause and call cleanup-pipeline again."}
+	if !reflect.DeepEqual(pr, want) {
 		t.Errorf("planRun = %#v, want %#v", pr, want)
 	}
 	f.assertKept(t)
@@ -2941,7 +2942,7 @@ func TestShipState_CleanupPipeline_ExploreSummary_DeleteFailsKeepsSummary(t *tes
 	if err != nil {
 		t.Fatalf("cleanup-pipeline: %v", err)
 	}
-	if want := (ShipPlanRunCleanup{Reason: "remove failed: evidence busy"}); pr != want {
+	if want := (ShipPlanRunCleanup{Reason: "remove failed: evidence busy", ExploreSummaryCount: intPtr(1), ReviewRoundsCount: intPtr(0)}); !reflect.DeepEqual(pr, want) {
 		t.Errorf("planRun = %#v, want %#v", pr, want)
 	}
 	f.assertKept(t)
@@ -2976,7 +2977,7 @@ func TestShipState_CleanupPipeline_ExploreSummary_RetryKeepsStoredList(t *testin
 	if err != nil {
 		t.Fatalf("cleanup-pipeline: %v", err)
 	}
-	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID, ExploreSummaryCount: intPtr(1), ReviewRoundsCount: intPtr(0)}); !reflect.DeepEqual(pr, want) {
 		t.Errorf("planRun = %#v, want %#v", pr, want)
 	}
 	f.assertDeleted(t)
@@ -3024,7 +3025,7 @@ func TestShipState_CleanupPipeline_ReviewRounds_StoredBeforeDelete(t *testing.T)
 	if err != nil {
 		t.Fatalf("cleanup-pipeline: %v", err)
 	}
-	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID, ExploreSummaryCount: intPtr(1), ReviewRoundsCount: intPtr(2)}); !reflect.DeepEqual(pr, want) {
 		t.Errorf("planRun = %#v, want %#v", pr, want)
 	}
 	f.assertDeleted(t)
@@ -3089,7 +3090,7 @@ func TestShipState_CleanupPipeline_ReviewRounds_RetryKeepsStoredList(t *testing.
 	if err != nil {
 		t.Fatalf("cleanup-pipeline: %v", err)
 	}
-	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID}); pr != want {
+	if want := (ShipPlanRunCleanup{Deleted: true, RunID: f.runID, ExploreSummaryCount: intPtr(0), ReviewRoundsCount: intPtr(1)}); !reflect.DeepEqual(pr, want) {
 		t.Errorf("planRun = %#v, want %#v", pr, want)
 	}
 	f.assertDeleted(t)

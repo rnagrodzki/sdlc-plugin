@@ -3,15 +3,18 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
 // Fixed names of the archive tests. The ship runs on feat/x from 08:00 to
@@ -619,5 +622,340 @@ func TestArchiveJoinMembers(t *testing.T) {
 	sort.Strings(got)
 	if want := []string{archExecID, archReview}; !reflect.DeepEqual(got, want) {
 		t.Errorf("members = %v, want %v", got, want)
+	}
+}
+
+// archAssertUnchanged fails the test when the tree below <root>/.sdlc-v2
+// differs from before or the archive folder exists.
+func archAssertUnchanged(t *testing.T, root string, before []string) {
+	t.Helper()
+	if after := archTree(t, root); !reflect.DeepEqual(before, after) {
+		t.Errorf("a failed check changed files:\nbefore %v\nafter  %v", before, after)
+	}
+	if ccExists(archData(root, paths.RunArchiveSubdir)) {
+		t.Errorf("a failed check created run-archive/")
+	}
+}
+
+// archShipOnly writes a completed ship state with its report and returns the
+// root. The ship has no member run.
+func archShipOnly(t *testing.T) string {
+	t.Helper()
+	root := dashRoot(t)
+	dashWriteState(t, root, archShipFile, archShipData(PipelineCompleted), dashJoinFresh)
+	writeFile(t, archData(root, "reports", archShipReport), "# report")
+	return root
+}
+
+// TestArchiveRun_CheckErrorsChangeNoFile checks the check phase of ArchiveRun:
+// each failed check returns its code, names the cause in the message, and
+// changes no file.
+func TestArchiveRun_CheckErrorsChangeNoFile(t *testing.T) {
+	t.Run("repo path is a regular file", func(t *testing.T) {
+		base := t.TempDir()
+		root := filepath.Join(base, "repo")
+		writeFile(t, root, "not a folder")
+		_, err := archRun(root, archShipID, false)
+		if code := archCode(t, err); code != ArchiveFailed {
+			t.Fatalf("code = %q, want %q", code, ArchiveFailed)
+		}
+		var ae *ArchiveError
+		errors.As(err, &ae)
+		if want := "Read the runs of repo " + root + ": repo path is not a folder: " + root; ae.Message != want {
+			t.Errorf("message = %q, want %q", ae.Message, want)
+		}
+		if b, rerr := os.ReadFile(root); rerr != nil || string(b) != "not a folder" {
+			t.Errorf("repo file changed: %q, %v", b, rerr)
+		}
+	})
+	t.Run("runs is a regular file", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, archData(root, "runs"), "not a folder")
+		before := archTree(t, root)
+		_, err := archRun(root, archShipID, false)
+		if code := archCode(t, err); code != ArchiveFailed {
+			t.Fatalf("code = %q, want %q", code, ArchiveFailed)
+		}
+		if !strings.Contains(err.Error(), archData(root, "runs")) {
+			t.Errorf("error %q does not name the runs folder", err)
+		}
+		archAssertUnchanged(t, root, before)
+	})
+	t.Run("root Keep path cannot be read", func(t *testing.T) {
+		root := dashRoot(t)
+		dashWriteState(t, root, archShipFile, archShipData(PipelineCompleted), dashJoinFresh)
+		writeFile(t, archData(root, "reports"), "not a folder")
+		before := archTree(t, root)
+		_, err := archRun(root, archShipID, false)
+		if code := archCode(t, err); code != ArchiveFailed {
+			t.Fatalf("code = %q, want %q", code, ArchiveFailed)
+		}
+		if !errors.Is(err, syscall.ENOTDIR) {
+			t.Errorf("err = %v, want it to wrap ENOTDIR", err)
+		}
+		if !strings.Contains(err.Error(), archData(root, "reports", archShipReport)) {
+			t.Errorf("error %q does not name the report path", err)
+		}
+		archAssertUnchanged(t, root, before)
+	})
+	t.Run("member Keep path cannot be read", func(t *testing.T) {
+		root := archShipOnly(t)
+		dashWriteState(t, root, archExecFile, archExecData("feat/x", "2026-10-07T08:01:00Z"), dashJoinFresh)
+		writeFile(t, archData(root, "runs", "ledger"), "not a folder")
+		ship := dashJoinFind(t, dashCollect(t, root).Pipelines, archShipID)
+		if !reflect.DeepEqual(ship.join.members, []string{archExecID}) {
+			t.Fatalf("members = %v, want [%s]", ship.join.members, archExecID)
+		}
+		before := archTree(t, root)
+		_, err := archRun(root, archShipID, false)
+		if code := archCode(t, err); code != ArchiveFailed {
+			t.Fatalf("code = %q, want %q", code, ArchiveFailed)
+		}
+		if !errors.Is(err, syscall.ENOTDIR) {
+			t.Errorf("err = %v, want it to wrap ENOTDIR", err)
+		}
+		if !strings.Contains(err.Error(), archData(root, "runs", "ledger", archExecRun)) {
+			t.Errorf("error %q does not name the ledger path", err)
+		}
+		archAssertUnchanged(t, root, before)
+	})
+}
+
+// TestArchiveResolve_Errors checks the arms of archiveResolve that ArchiveRun
+// reaches only when runs/ changes after the collect: a review ledger that
+// cannot be read, an id with no state, and a state whose file is gone.
+func TestArchiveResolve_Errors(t *testing.T) {
+	root := dashRoot(t)
+	writeFile(t, archData(root, "runs", "ledger"), "not a folder")
+	shipState := &state.State{
+		Path:   archData(root, "runs", archShipFile), // never written
+		Root:   root,
+		Prefix: "ship",
+		Data:   archShipData(PipelineCompleted),
+	}
+	cases := []struct {
+		name, id string
+		states   []*state.State
+		code     string
+		msg      string
+	}{
+		{"bad review name", "review-", nil, ArchiveBadRunID, `Invalid review run name "review-"`},
+		{"review ledger cannot be read", archReview, nil, ArchiveFailed, "Resolve run artifacts: stat " + archData(root, "runs", "ledger", archReview)},
+		{"no state for the id", archShipID, nil, ArchiveRunNotFound, fmt.Sprintf("No state file for %q", archShipID)},
+		{"state file is gone", archShipID, []*state.State{shipState}, ArchiveRunNotFound, fmt.Sprintf("No state file for %q", archShipID)},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			files, err := archiveResolve(root, c.states, c.id)
+			if code := archCode(t, err); code != c.code {
+				t.Errorf("code = %q, want %q", code, c.code)
+			}
+			var ae *ArchiveError
+			errors.As(err, &ae)
+			if !strings.HasPrefix(ae.Message, c.msg) {
+				t.Errorf("message = %q, want prefix %q", ae.Message, c.msg)
+			}
+			if !reflect.DeepEqual(files, archiveRunFiles{}) {
+				t.Errorf("files = %+v, want none", files)
+			}
+		})
+	}
+	t.Run("review ledger is gone", func(t *testing.T) {
+		_, err := archiveResolve(dashRoot(t), nil, archReview)
+		if code := archCode(t, err); code != ArchiveRunNotFound {
+			t.Errorf("code = %q, want %q", code, ArchiveRunNotFound)
+		}
+		if want := fmt.Sprintf("%s: No review ledger folder for %q", ArchiveRunNotFound, archReview); err.Error() != want {
+			t.Errorf("error = %q, want %q", err, want)
+		}
+	})
+}
+
+// TestArchiveMover_RejectsPathsOutsideData checks the containment guard of
+// archiveMover: rel, move and remove refuse a path that is not below
+// .sdlc-v2/ with ARCHIVE_FAILED and change no file.
+func TestArchiveMover_RejectsPathsOutsideData(t *testing.T) {
+	root := dashRoot(t)
+	data := archData(root)
+	outside := filepath.Join(root, "outside.txt")
+	writeFile(t, outside, "keep me")
+	sibling := filepath.Join(root, ".sdlc-v2-other", "x.json")
+	writeFile(t, sibling, "{}")
+	cases := map[string]string{
+		"relative path":         filepath.Join("runs", archShipFile),
+		"the data folder":       data,
+		"the repo root":         root,
+		"a file beside data":    outside,
+		"a sibling folder":      sibling,
+		"dot dot segment":       data + string(filepath.Separator) + ".." + string(filepath.Separator) + "outside.txt",
+		"dot dot past the root": data + string(filepath.Separator) + ".." + string(filepath.Separator) + "..",
+	}
+	for name, src := range cases {
+		t.Run(name, func(t *testing.T) {
+			before := archTree(t, root)
+			m := &archiveMover{data: data, dir: archDir(root, archShipID), moved: []string{}, deleted: []string{}}
+			if _, err := m.rel(src); archCode(t, err) != ArchiveFailed {
+				t.Errorf("rel: code = %q, want %q", archCode(t, err), ArchiveFailed)
+			} else if want := "Path " + src + " is outside " + data; err.Error() != ArchiveFailed+": "+want {
+				t.Errorf("rel: error = %q, want %q", err, ArchiveFailed+": "+want)
+			}
+			if err := m.move(src); archCode(t, err) != ArchiveFailed {
+				t.Errorf("move: code = %q, want %q", archCode(t, err), ArchiveFailed)
+			}
+			if err := m.remove(src); archCode(t, err) != ArchiveFailed {
+				t.Errorf("remove: code = %q, want %q", archCode(t, err), ArchiveFailed)
+			}
+			if len(m.moved) != 0 || len(m.deleted) != 0 {
+				t.Errorf("moved %v, deleted %v, want none", m.moved, m.deleted)
+			}
+			if ccExists(m.dir) {
+				t.Errorf("move created %s for a refused path", m.dir)
+			}
+			if after := archTree(t, root); !reflect.DeepEqual(before, after) {
+				t.Errorf("a refused path changed files:\nbefore %v\nafter  %v", before, after)
+			}
+			for _, p := range []string{outside, sibling} {
+				if !ccExists(p) {
+					t.Errorf("%s is gone", p)
+				}
+			}
+		})
+	}
+}
+
+// TestArchiveRun_FailedShipRow checks that a ship row with status failed
+// archives: its state file and report move.
+func TestArchiveRun_FailedShipRow(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteState(t, root, archShipFile, map[string]any{
+		"branch":    "feat/x",
+		"startedAt": "2026-10-07T08:00:00Z",
+		"steps":     []any{map[string]any{"name": "execute", "status": StepFailed, "error": "boom"}},
+	}, dashJoinFresh)
+	writeFile(t, archData(root, "reports", archShipReport), "# report")
+	row := dashJoinFind(t, dashCollect(t, root).Pipelines, archShipID)
+	if row.Status != PipelineFailed {
+		t.Fatalf("row status = %q, want %q", row.Status, PipelineFailed)
+	}
+
+	out, err := archRun(root, archShipID, false)
+	if err != nil {
+		t.Fatalf("ArchiveRun: %v", err)
+	}
+	if want := []string{"reports/" + archShipReport, "runs/" + archShipFile}; !reflect.DeepEqual(out.Moved, want) {
+		t.Errorf("moved = %v, want %v", out.Moved, want)
+	}
+	for _, p := range []string{archShipFile, filepath.Join("reports", archShipReport), archiveRecordFile} {
+		if !ccExists(filepath.Join(archDir(root, archShipID), p)) {
+			t.Errorf("archive lacks %s", p)
+		}
+	}
+	if got := archRowIDs(t, root); len(got) != 0 {
+		t.Errorf("rows after = %v, want none", got)
+	}
+}
+
+// TestArchiveRun_StandaloneExecuteRow checks that an execute row that no ship
+// nests archives on its own: its state file and report move, and the ship
+// and its members stay.
+func TestArchiveRun_StandaloneExecuteRow(t *testing.T) {
+	root := archShipFixture(t, PipelineCompleted, dashJoinFresh)
+	otherReport := "20261007T090000-report.md"
+
+	out, err := archRun(root, archOtherID, false)
+	if err != nil {
+		t.Fatalf("ArchiveRun: %v", err)
+	}
+	if want := []string{"reports/" + otherReport, "runs/" + archOtherFile}; !reflect.DeepEqual(out.Moved, want) {
+		t.Errorf("moved = %v, want %v", out.Moved, want)
+	}
+	if len(out.Deleted) != 0 {
+		t.Errorf("deleted = %v, want none", out.Deleted)
+	}
+	for _, p := range []string{archOtherFile, filepath.Join("reports", otherReport), archiveRecordFile} {
+		if !ccExists(filepath.Join(archDir(root, archOtherID), p)) {
+			t.Errorf("archive lacks %s", p)
+		}
+	}
+	if !ccExists(archData(root, "runs", archShipFile)) || !ccExists(archData(root, "runs", archExecFile)) {
+		t.Errorf("the archive of the execute row touched the ship")
+	}
+	if got, want := archRowIDs(t, root), []string{archShipID}; !reflect.DeepEqual(got, want) {
+		t.Errorf("rows after = %v, want %v", got, want)
+	}
+}
+
+// TestArchiveError_TextPerCode pins the message, the suggestion and the
+// Error() text of one ArchiveError of each code.
+func TestArchiveError_TextPerCode(t *testing.T) {
+	running := archShipFixture(t, "", dashJoinFresh)
+	stalled := archShipFixture(t, "", dashNow.Add(-2*time.Hour))
+	notDir := filepath.Join(t.TempDir(), "repo")
+	writeFile(t, notDir, "x")
+
+	cases := []struct {
+		name       string
+		run        func() error
+		code, msg  string
+		suggestion string
+	}{
+		{"bad run id", func() error { _, err := archRun(running, "a/b", false); return err },
+			ArchiveBadRunID, `Invalid run name "a/b": must not contain a path separator`,
+			"Pass the run id from the pipeline row."},
+		{"run not found", func() error { _, err := archRun(running, "ship-feat-x-20991231T000000Z", false); return err },
+			ArchiveRunNotFound, `No pipeline row with id "ship-feat-x-20991231T000000Z"`,
+			"Reload the page. The run is gone."},
+		{"run active", func() error { _, err := archRun(running, archShipID, true); return err },
+			ArchiveRunActive, `Run "` + archShipID + `" is running`,
+			"Wait until the run ends or stalls."},
+		{"confirm stalled", func() error { _, err := archRun(stalled, archShipID, false); return err },
+			ArchiveConfirmStalled, `Run "` + archShipID + `" is stalled and the archive is not confirmed`,
+			"Confirm. Archive removes the resume point."},
+		{"read failed", func() error { _, err := archRun(notDir, archShipID, false); return err },
+			ArchiveFailed, "Read the runs of repo " + notDir + ": repo path is not a folder: " + notDir,
+			"Fix the run files named in the message, then archive again."},
+		{"move failed", func() error {
+			archFailRename(t, archShipFile)
+			defer archRestore()
+			_, err := archRun(stalled, archShipID, true)
+			return err
+		}, ArchiveFailed, "Move " + archData(stalled, "runs", archShipFile) + ": permission denied",
+			"Fix the permission of the named file, then archive again."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := c.run()
+			var ae *ArchiveError
+			if !errors.As(err, &ae) {
+				t.Fatalf("err = %v (%T), want *ArchiveError", err, err)
+			}
+			if ae.Code != c.code || ae.Message != c.msg || ae.Suggestion != c.suggestion {
+				t.Errorf("error = {%q, %q, %q}, want {%q, %q, %q}", ae.Code, ae.Message, ae.Suggestion, c.code, c.msg, c.suggestion)
+			}
+			if want := c.code + ": " + c.msg; err.Error() != want {
+				t.Errorf("Error() = %q, want %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestArchiveErr_CauseAndSentenceCase checks that archiveErr keeps the cause
+// for errors.Is, appends the cause text to the message, and starts the
+// message with an upper case letter.
+func TestArchiveErr_CauseAndSentenceCase(t *testing.T) {
+	cause := errors.New("disk on fire")
+	err := archiveErr(ArchiveFailed, "move x", archiveSuggestFSFailed, cause)
+	if !errors.Is(err, cause) {
+		t.Errorf("errors.Is(err, cause) = false, want true")
+	}
+	var ae *ArchiveError
+	if !errors.As(err, &ae) || ae.Message != "Move x: disk on fire" || ae.Cause != cause {
+		t.Errorf("error = %+v, want message %q and the cause", ae, "Move x: disk on fire")
+	}
+	if got := archiveErr(ArchiveBadRunID, "", archiveSuggestBadID, cause).(*ArchiveError).Message; got != "Disk on fire" {
+		t.Errorf("message of a cause alone = %q, want %q", got, "Disk on fire")
+	}
+	if got := archiveErr(ArchiveRunNotFound, "no row", archiveSuggestNotFound, nil); errors.Unwrap(got) != nil || got.(*ArchiveError).Message != "No row" {
+		t.Errorf("error without cause = %+v, want message %q and no cause", got, "No row")
 	}
 }

@@ -93,7 +93,7 @@ type ShipStepNarrationOut struct {
 // and its resolved automation mode (config.AutomationSection.StepMode).
 // Step is "" when every step is terminal-OK (pipeline complete) — no error,
 // since "nothing left to do" is an expected steady state for an executor
-// loop (KD14), not a failure.
+// loop, not a failure.
 type ShipNextOut struct {
 	Step       string `json:"step,omitempty"`
 	Automation string `json:"automation,omitempty"`
@@ -2349,10 +2349,17 @@ var shipGCFunc = state.GC
 
 // ShipPlanRunCleanup is cleanup-pipeline's "planRun" output: whether the
 // plan run linked to this ship run was deleted, and if not, why.
+//
+// ExploreSummaryCount and ReviewRoundsCount are set only after the ship state
+// write that holds the copies succeeded. They give the number of entries the
+// ship state now holds under planExploreSummary and planReviewRounds. They
+// are nil (omitted) when the copy was not written.
 type ShipPlanRunCleanup struct {
-	Deleted bool   `json:"deleted"`
-	RunID   string `json:"runId,omitempty"`
-	Reason  string `json:"reason,omitempty"`
+	Deleted             bool   `json:"deleted"`
+	RunID               string `json:"runId,omitempty"`
+	Reason              string `json:"reason,omitempty"`
+	ExploreSummaryCount *int   `json:"exploreSummaryCount,omitempty"`
+	ReviewRoundsCount   *int   `json:"reviewRoundsCount,omitempty"`
 }
 
 // shipExploreSummaryFunc reads the plan explorer summary of one plan run.
@@ -2365,15 +2372,15 @@ var shipExploreSummaryFunc = planExploreSummary
 var shipRemoveEvidenceFunc = os.RemoveAll
 
 // planRun.reason values. A failed remove reports "remove failed: <error>". A
-// failed summary copy reports shipPlanRunReasonSummaryFailed, then "<error>",
-// then shipPlanRunSummaryRetryHint.
+// failed copy of the explorer summary and review rounds reports
+// shipPlanRunReasonCopyFailed, then "<error>", then shipPlanRunCopyRetryHint.
 const (
-	shipPlanRunReasonNotStamped    = "run not stamped"
-	shipPlanRunReasonNoLinked      = "no linked plan run"
-	shipPlanRunReasonNoReport      = "report not written"
-	shipPlanRunReasonRemoveFailed  = "remove failed: "
-	shipPlanRunReasonSummaryFailed = "explorer summary not saved: "
-	shipPlanRunSummaryRetryHint    = ". Fix the cause and call cleanup-pipeline again."
+	shipPlanRunReasonNotStamped   = "run not stamped"
+	shipPlanRunReasonNoLinked     = "no linked plan run"
+	shipPlanRunReasonNoReport     = "report not written"
+	shipPlanRunReasonRemoveFailed = "remove failed: "
+	shipPlanRunReasonCopyFailed   = "explorer summary and review rounds not saved: "
+	shipPlanRunCopyRetryHint      = ". Fix the cause and call cleanup-pipeline again."
 )
 
 // shipPlanExploreSummaryKey is the ship state data key that holds the plan
@@ -2382,7 +2389,7 @@ const shipPlanExploreSummaryKey = "planExploreSummary"
 
 // shipPlanReviewRoundsKey is the ship state data key that holds the plan
 // review rounds copied at cleanup. The rows have the shape of the plan state
-// "reviewRounds" list.
+// planReviewRoundsKey list.
 const shipPlanReviewRoundsKey = "planReviewRounds"
 
 // shipDeleteReportedPlanRun deletes the plan run linked to this ship run —
@@ -2399,10 +2406,12 @@ const shipPlanReviewRoundsKey = "planReviewRounds"
 // plan review rounds under "planReviewRounds" when the plan run has any. The
 // write comes before the evidence delete, because the delete loses the
 // explorer data. If the summary read or the ship state write fails, nothing
-// is deleted and the reason starts with shipPlanRunReasonSummaryFailed, so a
-// retry finds the plan run again. A retry after a failed delete reads an
-// empty summary. It then keeps a stored non-empty list. A plan run with no
-// rounds leaves a stored list of rounds as it is.
+// is deleted and the reason starts with shipPlanRunReasonCopyFailed, so a
+// retry finds the plan run again. After a successful write, the result
+// carries the number of stored summary entries and review rounds. A retry
+// after a failed delete reads an empty summary. It then keeps a stored
+// non-empty list. A plan run with no rounds leaves a stored list of rounds as
+// it is.
 //
 // It fails safe: any lookup error, a missing startedAt, or a stat error
 // other than not-exist deletes nothing. It never returns an error, so the
@@ -2426,25 +2435,37 @@ func shipDeleteReportedPlanRun(root, branch string, ship *state.State) ShipPlanR
 	runID := state.RunID(planRun)
 	summary, err := shipExploreSummaryFunc(root, runID)
 	if err != nil {
-		return ShipPlanRunCleanup{Reason: shipPlanRunReasonSummaryFailed + err.Error() + shipPlanRunSummaryRetryHint}
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonCopyFailed + err.Error() + shipPlanRunCopyRetryHint}
 	}
 	// A retry after the evidence delete reads []. Keep a stored non-empty list.
+	summaryCount := len(summary)
 	if prev, _ := ship.Data[shipPlanExploreSummaryKey].([]any); len(summary) > 0 || len(prev) == 0 {
 		ship.Data[shipPlanExploreSummaryKey] = summary
+	} else {
+		summaryCount = len(prev)
 	}
-	if rounds, ok := planRun.Data["reviewRounds"].([]any); ok && len(rounds) > 0 {
+	// A plan run with no rounds leaves a stored list as it is.
+	rounds, _ := planRun.Data[planReviewRoundsKey].([]any)
+	if len(rounds) > 0 {
 		ship.Data[shipPlanReviewRoundsKey] = rounds
+	} else {
+		rounds, _ = ship.Data[shipPlanReviewRoundsKey].([]any)
 	}
+	roundsCount := len(rounds)
 	if err := shipStateWriteFunc(ship); err != nil {
-		return ShipPlanRunCleanup{Reason: shipPlanRunReasonSummaryFailed + err.Error() + shipPlanRunSummaryRetryHint}
+		return ShipPlanRunCleanup{Reason: shipPlanRunReasonCopyFailed + err.Error() + shipPlanRunCopyRetryHint}
 	}
+	copied := ShipPlanRunCleanup{ExploreSummaryCount: &summaryCount, ReviewRoundsCount: &roundsCount}
 	if err := shipRemoveEvidenceFunc(state.EvidenceDir(root, runID)); err != nil {
-		return ShipPlanRunCleanup{Reason: shipPlanRunReasonRemoveFailed + err.Error()}
+		copied.Reason = shipPlanRunReasonRemoveFailed + err.Error()
+		return copied
 	}
 	if err := os.Remove(planRun.Path); err != nil && !os.IsNotExist(err) {
-		return ShipPlanRunCleanup{Reason: shipPlanRunReasonRemoveFailed + err.Error()}
+		copied.Reason = shipPlanRunReasonRemoveFailed + err.Error()
+		return copied
 	}
-	return ShipPlanRunCleanup{Deleted: true, RunID: runID}
+	copied.Deleted, copied.RunID = true, runID
+	return copied
 }
 
 // shipReportWritten reports whether the ship report for the ship run in
@@ -2723,7 +2744,7 @@ func shipGCDryRun(stateDir string, ttlDays int, branchExists func(string) bool, 
 // ---------------------------------------------------------------------------
 
 // shipStateMigrate ports cmdMigrate via the shared state.MigrateBranchSlug
-// primitive (Task 10), per "reuse, don't reimplement." Two disclosed gaps
+// primitive, per "reuse, don't reimplement." Two disclosed gaps
 // inherited from that primitive, neither patched here:
 //  1. state.MigrateBranchSlug is a pure filename rename; it never rewrites
 //     data["branch"] inside the JSON payload, unlike ship.js's richer
@@ -2759,7 +2780,7 @@ func shipStateMigrate(root string, in ShipStateIn) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Action: next (Go-native; KD14 — drives the executor loop)
+// Action: next (Go-native; drives the executor loop)
 // ---------------------------------------------------------------------------
 
 func shipStateNext(root, workDir string, in ShipStateIn) (any, error) {
@@ -2793,7 +2814,7 @@ func shipStateNext(root, workDir string, in ShipStateIn) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Action: todos (Go-native; KD16 — TodoWrite fold)
+// Action: todos (Go-native; TodoWrite fold)
 // ---------------------------------------------------------------------------
 
 func shipStateTodos(root, workDir string, in ShipStateIn) (any, error) {
@@ -3177,8 +3198,8 @@ func detailStrSlice(d map[string]any, key string) []string {
 // Registration
 // ---------------------------------------------------------------------------
 
-// RegisterShipStateTools registers the ship_state tool. Registration only —
-// wiring into runMCP's dispatch is Task 40's responsibility.
+// RegisterShipStateTools registers the ship_state tool. Registration only;
+// runMCP wires it into the server.
 func RegisterShipStateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_state",
 		`Manage ship execution state.
@@ -3202,7 +3223,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, healing records, this run's execute state (only when the execute step completed) and its linked plan run, the review run ledger of this ship run (for the Review waves section), CLI evidence, user input and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
-- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
+- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary and the plan review rounds (when the plan run has any) into ship state planReviewRounds, in one ship state write. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary and review rounds not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?, exploreSummaryCount?, reviewRoundsCount?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary and review rounds not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". exploreSummaryCount and reviewRoundsCount are present only after the copy write succeeded: the number of entries ship state now holds in planExploreSummary and planReviewRounds. Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.

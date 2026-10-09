@@ -429,6 +429,30 @@ func TestDashboardLearningBody_ReadErrorIsInfraError(t *testing.T) {
 	}
 }
 
+// TestDashboardLearningBody_EmptyKeySkipsUnreadableLog asserts that an empty
+// date or heading returns found false and no error before the log is read, so
+// a log that cannot be read gives no InfraError.
+func TestDashboardLearningBody_EmptyKeySkipsUnreadableLog(t *testing.T) {
+	root := dashRoot(t)
+	if err := os.MkdirAll(learningsLogPath(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ name, date, heading string }{
+		{"empty date", "", "plan: only entry"},
+		{"empty heading", "2026-10-07", ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			got, err := DashboardLearningBody(root, c.date, c.heading)
+			if err != nil {
+				t.Fatalf("DashboardLearningBody error = %v, want nil", err)
+			}
+			if got != (DashboardLearningBodyOut{}) {
+				t.Errorf("result = %+v, want the zero value", got)
+			}
+		})
+	}
+}
+
 func TestDashboardActivity_Deferred(t *testing.T) {
 	root := dashRoot(t)
 	w := history.NewFileWriter(paths.HistoryDir(root))

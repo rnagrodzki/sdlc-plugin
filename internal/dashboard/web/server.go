@@ -407,27 +407,28 @@ func encodeSnapshot(s tools.DashboardSnapshot) (data []byte, hash string, err er
 func (h *handler) guardMutation(w http.ResponseWriter, r *http.Request, needsBody bool) bool {
 	origin := r.Header.Get("Origin")
 	if origin != h.origins[0] && origin != h.origins[1] {
-		writeAPIError(w, http.StatusForbidden, "FORBIDDEN_ORIGIN", "forbidden origin", "Open the dashboard from its own URL.")
+		writeAPIError(w, http.StatusForbidden, "FORBIDDEN_ORIGIN", "Forbidden origin", "Open the dashboard from its own URL.")
 		return false
 	}
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get(tokenHeader)), []byte(h.token)) != 1 {
-		writeAPIError(w, http.StatusForbidden, "FORBIDDEN_TOKEN", "forbidden token", "Reload the page to get a new token.")
+		writeAPIError(w, http.StatusForbidden, "FORBIDDEN_TOKEN", "Forbidden token", "Reload the page to get a new token.")
 		return false
 	}
 	if !needsBody {
 		return true
 	}
 	if mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mediaType != "application/json" {
-		writeAPIError(w, http.StatusUnsupportedMediaType, "BAD_CONTENT_TYPE", "content type must be application/json", "Send the body as application/json.")
+		writeAPIError(w, http.StatusUnsupportedMediaType, "BAD_CONTENT_TYPE", "Content type must be application/json", "Send the body as application/json.")
 		return false
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMutationBody))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			writeAPIError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE", "request body is too large", "Send a body under 8 KiB.")
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE", "Request body is too large",
+				fmt.Sprintf("Send a body of at most %d KiB.", maxMutationBody>>10))
 		} else {
-			writeAPIError(w, http.StatusBadRequest, "BAD_BODY", "request body could not be read", "Send the body again.")
+			writeAPIError(w, http.StatusBadRequest, "BAD_BODY", "Request body could not be read", "Send the body again.")
 		}
 		return false
 	}
@@ -495,15 +496,15 @@ func (h *handler) serveRunArchive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.o.Archive == nil {
-		writeNotConfigured(w, "run archive")
+		writeNotConfigured(w, "Run archive")
 		return
 	}
 	var req archiveRequest
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if req.Repo == "" || req.RunID == "" {
-		writeBadRequest(w, "repo and runId are required")
+	if req.RunID == "" {
+		writeBadRequest(w, "The runId field is required")
 		return
 	}
 	t := now()
@@ -526,15 +527,11 @@ func (h *handler) serveCacheClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.o.ClearCache == nil {
-		writeNotConfigured(w, "cache clear")
+		writeNotConfigured(w, "Cache clear")
 		return
 	}
 	var req clearRequest
 	if !decodeBody(w, r, &req) {
-		return
-	}
-	if req.Repo == "" {
-		writeBadRequest(w, "repo is required")
 		return
 	}
 	t := now()
@@ -555,13 +552,13 @@ func (h *handler) serveCacheClear(w http.ResponseWriter, r *http.Request) {
 // It only reads, so it needs no token, like the snapshot route.
 func (h *handler) serveLearning(w http.ResponseWriter, r *http.Request) {
 	if h.o.LearningBody == nil {
-		writeNotConfigured(w, "learning body")
+		writeNotConfigured(w, "Learning body")
 		return
 	}
 	q := r.URL.Query()
 	date, heading := q.Get("date"), q.Get("heading")
 	if date == "" || heading == "" {
-		writeBadRequest(w, "date and heading are required")
+		writeBadRequest(w, "Date and heading are required")
 		return
 	}
 	root, ok := h.displayRoot(w, now(), q.Get("repo"))
@@ -578,13 +575,18 @@ func (h *handler) serveLearning(w http.ResponseWriter, r *http.Request) {
 }
 
 // displayRoot resolves repo, the path that the page sent, to the display root
-// it names. A repo that is not a display root writes the 404 error and
-// returns false, so a mutating route never acts on a path from the page that
-// the dashboard does not show.
+// it names. It is the one check of the repo field of the archive, clear and
+// learning routes: an empty repo writes the 400 error, and a repo that is not
+// a display root writes the 404 error. Both return false, so a mutating route
+// never acts on a path from the page that the dashboard does not show.
 func (h *handler) displayRoot(w http.ResponseWriter, t time.Time, repo string) (string, bool) {
+	if repo == "" {
+		writeBadRequest(w, "The repo field is required")
+		return "", false
+	}
 	root, ok := tools.ResolveDisplayRoot(h.rootPaths(t), repo)
 	if !ok {
-		writeAPIError(w, http.StatusNotFound, codeRepoNotFound, fmt.Sprintf("repo %q is not a repo that the dashboard shows", repo), suggestReloadPage)
+		writeAPIError(w, http.StatusNotFound, codeRepoNotFound, fmt.Sprintf("Repo %q is not a repo that the dashboard shows", repo), suggestReloadPage)
 		return "", false
 	}
 	return root, true
@@ -599,7 +601,7 @@ func decodeBody(w http.ResponseWriter, r *http.Request, dst any) bool {
 		err = json.Unmarshal(body, dst)
 	}
 	if err != nil {
-		writeBadRequest(w, "request body is not a JSON object with the fields of the route")
+		writeBadRequest(w, "Request body is not a JSON object with the fields of the route")
 		return false
 	}
 	return true

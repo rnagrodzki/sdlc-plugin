@@ -52,6 +52,13 @@ func Dir() string {
 	return filepath.Join(paths.CacheDir(), "dashboard")
 }
 
+// LogPath returns Dir()/server.log: the file that receives the output of a
+// dashboard server that Ensure starts in the background. A cache clear
+// truncates it.
+func LogPath() string {
+	return filepath.Join(Dir(), "server.log")
+}
+
 // rootsDir returns Dir()/roots, the directory holding one file per
 // registered repo root.
 func rootsDir() string {

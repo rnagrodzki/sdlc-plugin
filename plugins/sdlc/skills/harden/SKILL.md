@@ -267,13 +267,18 @@ For each candidate entry, in order:
    call returns a result, print no block. The 5d summary does not apply in this
    mode, because `--auto` is not valid with `--from-learnings`.
 
-   **On a config-version error** (message starts with `config-version:`) **or a
-   harden-instructions error** (message starts with `harden.instructions`): the
-   error is about the project config, not this entry, so every later entry
-   would fail the same way. Show the error and its Suggestion to the user once
-   and stop the triage run — do not dispatch more entries, do not remove any
-   learnings entry, and do not run Step 7. `rm -f` the manifests already in the
-   side table first.
+   **On a config-version error or a harden-config error:** the
+   `## What happened` text of the error starts with one of these prefixes:
+   - `config-version:` (the config-version check)
+   - `harden.` or `harden:` (an invalid key or value in the `[harden]` section
+     of `config.toml`, for example `harden.instructions has unknown key ...`)
+   - `read harden instructions` (the tool cannot read or parse `config.toml`).
+
+   Each of these errors is about the project config, not this entry, so every
+   later entry would fail the same way. Show the error and its Suggestion to
+   the user once and stop the triage run — do not dispatch more entries, do
+   not remove any learnings entry, and do not run Step 7. `rm -f` the
+   manifests already in the side table first.
 
    **On any other tool error for a single entry:** log the error, record the
    entry as errored in the side table, and continue to the next. Do not abort
@@ -285,6 +290,7 @@ For each candidate entry, in order:
    Agent({
      subagent_type: "sdlc:harden-orchestrator",
      model: "haiku",
+     run_in_background: false,
      prompt: "MANIFEST_FILE: <manifestPath>\nPROJECT_ROOT: <contentRoot>",
    }) → RESULT
    ```
@@ -344,9 +350,9 @@ entries. If no entries were addressed, skip the remove call.
 #### 1-FL.7 — Cleanup
 
 `rm -f` every `manifestPath` in the side table on every exit path — including
-cancel mid-loop, zero-candidate exit, a config-version or harden-instructions
+cancel mid-loop, zero-candidate exit, a config-version or harden-config
 stop, and normal completion. Then proceed to Step 7 (Learning Capture) as
-usual — except after a config-version or harden-instructions stop, which ends
+usual — except after a config-version or harden-config stop, which ends
 the run here.
 
 ## Step 2 — CLASSIFY: Surface the Failure Classification (R5, R9)
@@ -423,6 +429,7 @@ Use the `Agent` tool with:
 
 - `subagent_type`: `sdlc:harden-orchestrator`
 - `model`: `haiku`
+- `run_in_background`: `false` (the next step waits on the result)
 - `prompt` (exactly two lines, no other content):
 
   ```text
@@ -617,8 +624,8 @@ the next proposal: there is no `targetFile` to safely resolve for it.
    is the same as a revert: no change lands) — and continue to the next
    proposal.
 
-   **Severity-downgrade finding.** A finding with the message `severity lowered
-   from error to warning` means a candidate weakens a guardrail that is already
+   **Severity-downgrade finding.** A finding whose message contains `severity
+   lowered from error to warning` means a candidate weakens a guardrail that is already
    on disk with the same id. Strengthen-only forbids it. This finding gets one
    repair, as one of the rounds above: set that candidate's `severity` back to
    the on-disk value (`error`) and keep the rest of the candidate. Do not take
