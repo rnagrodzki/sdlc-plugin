@@ -1254,7 +1254,8 @@ func TestStaticCSS_FontAndPalette(t *testing.T) {
 }
 
 // TestStaticCSS_LayoutRules pins the layout rules: a 56 px header, one scroll box (the stage), the
-// block grid and tiles, the cursor of stations, and the rules for a narrow page.
+// block grid and tiles, the full-width track of stations (no width cap, wrap below 88 px per
+// station), the cursor of stations, and the rules for a narrow page.
 func TestStaticCSS_LayoutRules(t *testing.T) {
 	rules := parseCSS(t, staticFile(t, "app.css"))
 
@@ -1273,8 +1274,8 @@ func TestStaticCSS_LayoutRules(t *testing.T) {
 		{"", ".step-sec.selected", "border-color", "var(--scan-cyan-dim)"},
 		{"", ".waves", "grid-template-columns", "minmax(min(100%, 320px), 1fr)"},
 		{"", ".dim-cols", "grid-template-columns", "minmax(100px, 170px)"},
-		{"", ".track", "max-width", "1100px"},
-		{"", ".track", "grid-template-columns", "repeat(auto-fit,"},
+		{"", ".track", "grid-template-columns", "repeat(auto-fit, minmax(88px, 1fr))"},
+		{"", ".track", "overflow-x", "clip"},
 		{"", ".act-grid", "grid-template-columns", "minmax(min(100%, 560px), 1fr)"},
 		{"", ".hist-panel", "max-width", "1180px"},
 		{"", ".station", "cursor", "default"},
@@ -1292,6 +1293,13 @@ func TestStaticCSS_LayoutRules(t *testing.T) {
 		for _, s := range r.Selectors {
 			if s == ".rail" || s == ".layout" {
 				t.Errorf("app.css still styles the old layout selector %s", s)
+			}
+			if s == ".track" {
+				for _, prop := range []string{"max-width", "width"} {
+					if v, ok := r.Decls[prop]; ok {
+						t.Errorf(".track { %s: %s }: the track must use the full panel width", prop, v)
+					}
+				}
 			}
 		}
 		for _, prop := range []string{"overflow", "overflow-y"} {

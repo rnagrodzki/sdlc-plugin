@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
@@ -18,8 +19,12 @@ import (
 // question answers as to typed prompts. It always returns Output{}: a
 // PostToolUse hook has nothing advisory to say back, and this hook must stay
 // silent on every path — recorded, dropped, or errored — per spec.
+//
+// Its first call is closeQuestionWait, which deletes the question wait record
+// of this call, so the record is gone before any early return.
 func recordUserAnswer(ctx HookCtx, event Event) (Output, error) {
 	silent := Output{}
+	closeQuestionWait(ctx, event)
 
 	toolInput, _ := event.Raw["tool_input"].(map[string]any)
 
@@ -80,4 +85,18 @@ func recordUserAnswer(ctx HookCtx, event Event) (Output, error) {
 	}
 
 	return silent, nil
+}
+
+// closeQuestionWait deletes the question attention record of the
+// AskUserQuestion call in event (keyed by tool_use_id). With no tool_use_id it
+// deletes every question record of the session. It does nothing when the
+// root or branch does not resolve or the session ID is empty, and it drops a
+// delete error: the hook output never changes.
+func closeQuestionWait(ctx HookCtx, event Event) {
+	root, _, ok := resolveRootBranch()
+	if !ok || ctx.SessionID == "" {
+		return
+	}
+	toolUseID, _ := event.Raw["tool_use_id"].(string)
+	_ = attention.DeleteQuestion(root, ctx.SessionID, toolUseID)
 }

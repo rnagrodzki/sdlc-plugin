@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
@@ -17,7 +18,8 @@ import (
 // run is active on this branch. It always returns Output{}: stdout on
 // UserPromptSubmit would be added to Claude's context, so unlike
 // pipeline-continue's advisory nudges, this hook has nothing to say back to
-// the session.
+// the session. A kept prompt also deletes every attention record of the
+// session (attention.DeleteSession), with or without an active run.
 func recordUserInput(ctx HookCtx, event Event) (Output, error) {
 	silent := Output{}
 
@@ -37,6 +39,13 @@ func recordUserInput(ctx HookCtx, event Event) (Output, error) {
 	root, branch, ok := resolveRootBranch()
 	if !ok {
 		return silent, nil
+	}
+
+	// A kept prompt means the user is back: it closes every attention wait of
+	// the session. An injected turn returned above and deletes nothing. A
+	// delete error is dropped: the hook output never changes.
+	if ctx.SessionID != "" {
+		_ = attention.DeleteSession(root, ctx.SessionID)
 	}
 
 	pipelineName, step, wave, active := userInputRunContext(root, branch)

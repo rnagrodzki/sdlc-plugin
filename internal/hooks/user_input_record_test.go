@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -322,6 +323,119 @@ func TestRecordUserInput(t *testing.T) {
 		if !strings.Contains(entries[0].Text, "please continue") || !strings.Contains(entries[0].Text, "with the plan") {
 			t.Errorf("Text = %q, want the surrounding user text preserved", entries[0].Text)
 		}
+	})
+}
+
+// TestRecordUserInput_ClosesSessionWaits covers the delete of every attention
+// record of the session that a kept prompt runs.
+func TestRecordUserInput_ClosesSessionWaits(t *testing.T) {
+	seed := func(t *testing.T, root string) {
+		seedAttention(t, root,
+			attention.Record{Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "tu1", Branch: "b"},
+			attention.Record{Kind: attention.KindPermission, SessionID: "s1", Branch: "b"},
+			attention.Record{Kind: attention.KindQuestion, SessionID: "s2", ToolUseID: "tu1", Branch: "b"},
+		)
+	}
+	all := []string{"s1-permission.json", "s1-tu1.json", "s2-tu1.json"}
+
+	t.Run("kept prompt, no active run: deletes every record of the session", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-close-kept")
+		seed(t, root)
+
+		out, err := recordUserInput(HookCtx{SessionID: "s1"}, Event{Raw: map[string]any{"prompt_text": "go on"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), []string{"s2-tu1.json"})
+		assertNoUserInputFile(t, root)
+	})
+
+	t.Run("injected task-notification turn: deletes nothing", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-close-injected")
+		seed(t, root)
+
+		out, err := recordUserInput(HookCtx{SessionID: "s1"}, Event{Raw: map[string]any{
+			"prompt_text": "<task-notification>background task finished</task-notification>",
+		}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), all)
+	})
+
+	t.Run("blank prompt: deletes nothing", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-close-blank")
+		seed(t, root)
+
+		out, err := recordUserInput(HookCtx{SessionID: "s1"}, Event{Raw: map[string]any{"prompt_text": "   "}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), all)
+	})
+
+	t.Run("empty session ID: deletes nothing", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-close-no-session")
+		seed(t, root)
+
+		out, err := recordUserInput(HookCtx{}, Event{Raw: map[string]any{"prompt_text": "go on"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), all)
+	})
+
+	t.Run("delete error: prompt still recorded, output silent", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-close-error")
+		newShipState(t, root, "feat/ui-close-error", "s1", []any{
+			map[string]any{"name": "review", "status": "in_progress"},
+		}, nil)
+		breakAttentionDir(t, root)
+
+		out, err := recordUserInput(HookCtx{SessionID: "s1"}, Event{Raw: map[string]any{"prompt_text": "go on"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		entries := readUserInputLines(t, root)
+		if len(entries) != 1 || entries[0].Text != "go on" {
+			t.Errorf("entries = %+v, want one entry with Text \"go on\"", entries)
+		}
+	})
+
+	t.Run("delete succeeds, evidence append fails: records stay deleted, output silent", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-close-append-error")
+		newShipState(t, root, "feat/ui-close-append-error", "s1", []any{
+			map[string]any{"name": "review", "status": "in_progress"},
+		}, nil)
+		seed(t, root)
+		mustMkdirAll(t, userInputEvidenceFile(root)) // a folder where the file belongs
+
+		out, err := recordUserInput(HookCtx{SessionID: "s1"}, Event{Raw: map[string]any{"prompt_text": "go on"}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), []string{"s2-tu1.json"})
+	})
+
+	t.Run("full Run dispatch: records deleted, empty stdout", func(t *testing.T) {
+		root := gitFixture(t, "feat/ui-close-run")
+		seed(t, root)
+
+		stdin := `{"hook_event_name":"UserPromptSubmit","session_id":"s1","prompt_text":"go on"}`
+		var out bytes.Buffer
+		if code := Run("record-user-input", strings.NewReader(stdin), &out); code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+		if out.Len() != 0 {
+			t.Errorf("stdout = %q, want empty", out.String())
+		}
+		assertLines(t, attentionFiles(t, root), []string{"s2-tu1.json"})
 	})
 }
 

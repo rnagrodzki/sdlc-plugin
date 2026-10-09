@@ -1,12 +1,16 @@
 package hooks
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -195,6 +199,284 @@ func TestBlockAskUserQuestionAuto(t *testing.T) {
 			t.Error("permissionDecisionReason is empty, want the documented deny message")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Attention record helpers (shared by the question-wait tests in this file,
+// user_input_answer_test.go and user_input_record_test.go)
+// ---------------------------------------------------------------------------
+
+// seedAttention writes each record with attention.Write and fails the test on
+// an error.
+func seedAttention(t *testing.T, root string, recs ...attention.Record) {
+	t.Helper()
+	for _, r := range recs {
+		if err := attention.Write(root, r); err != nil {
+			t.Fatalf("seed attention record %+v: %v", r, err)
+		}
+	}
+}
+
+// attentionFiles returns the sorted file names in the attention folder of
+// root, or nil when the folder does not exist.
+func attentionFiles(t *testing.T, root string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(attention.Dir(root))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatalf("read attention dir: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// breakAttentionDir puts a regular file where the attention folder of root
+// belongs, so every attention write and delete under root fails.
+func breakAttentionDir(t *testing.T, root string) {
+	t.Helper()
+	dir := attention.Dir(root)
+	mustMkdirAll(t, filepath.Dir(dir))
+	mustWriteFile(t, dir, "not a folder")
+}
+
+// questionEvent returns an AskUserQuestion PreToolUse event with the given
+// tool_use_id ("" leaves the key out) and two questions. Only the first
+// question carries the given header and text; the hooks record only that one.
+func questionEvent(toolUseID, header, question string) Event {
+	raw := map[string]any{
+		"tool_name": "AskUserQuestion",
+		"tool_input": map[string]any{
+			"questions": []any{
+				map[string]any{"header": header, "question": question},
+				map[string]any{"header": "Second", "question": "Not recorded?"},
+			},
+		},
+	}
+	if toolUseID != "" {
+		raw["tool_use_id"] = toolUseID
+	}
+	return Event{ToolName: "AskUserQuestion", Raw: raw}
+}
+
+// ---------------------------------------------------------------------------
+// block-askuserquestion-auto: question wait record
+// ---------------------------------------------------------------------------
+
+// TestBlockAskUserQuestionAuto_QuestionWait covers the question wait record
+// that block-askuserquestion-auto writes on every allow path, and its absence
+// on the deny path.
+func TestBlockAskUserQuestionAuto_QuestionWait(t *testing.T) {
+	t.Run("auto ship run: deny output and no record file", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-deny")
+		newShipState(t, root, "feat/qw-deny", "s1", []any{
+			map[string]any{"name": "review", "status": "in_progress"},
+		}, map[string]any{"auto": true})
+
+		out, err := blockAskUserQuestionAuto(HookCtx{SessionID: "s1"}, questionEvent("tu1", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload, _ := out.JSON.(map[string]any)
+		hso, _ := payload["hookSpecificOutput"].(map[string]any)
+		if hso["permissionDecision"] != "deny" {
+			t.Fatalf("permissionDecision = %v, want deny", hso["permissionDecision"])
+		}
+		if files := attentionFiles(t, root); len(files) != 0 {
+			t.Errorf("attention files = %v, want none", files)
+		}
+	})
+
+	t.Run("data dir is a regular file: silent output and no record", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-datadir-file")
+		mustWriteFile(t, filepath.Join(root, paths.DataDir), "not a folder")
+
+		out, err := blockAskUserQuestionAuto(HookCtx{SessionID: "s1"}, questionEvent("tu1", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		info, err := os.Stat(filepath.Join(root, paths.DataDir))
+		if err != nil || info.IsDir() {
+			t.Errorf("data dir stat = %v, %v, want the regular file left as it was", info, err)
+		}
+	})
+
+	t.Run("no active run, data dir present: one record keyed by tool_use_id with the first question", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-record")
+		mustMkdirAll(t, filepath.Join(root, paths.DataDir))
+
+		out, err := blockAskUserQuestionAuto(HookCtx{SessionID: "s1"}, questionEvent("tu1", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+
+		recs, err := attention.List(root, time.Now(), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(recs) != 1 {
+			t.Fatalf("got %d records, want 1: %+v", len(recs), recs)
+		}
+		r := recs[0]
+		if r.Kind != attention.KindQuestion || r.SessionID != "s1" || r.ToolUseID != "tu1" {
+			t.Errorf("record = %+v, want kind question, session s1, tool-use tu1", r)
+		}
+		if r.Branch != "feat/qw-record" {
+			t.Errorf("Branch = %q, want feat/qw-record", r.Branch)
+		}
+		if r.Header != "Scope" || r.Text != "Proceed?" {
+			t.Errorf("Header/Text = %q/%q, want Scope/Proceed?", r.Header, r.Text)
+		}
+		if _, err := time.Parse(time.RFC3339, r.AskedAt); err != nil {
+			t.Errorf("AskedAt = %q, want RFC3339: %v", r.AskedAt, err)
+		}
+		if files := attentionFiles(t, root); len(files) != 1 || files[0] != "s1-tu1.json" {
+			t.Errorf("attention files = %v, want [s1-tu1.json]", files)
+		}
+	})
+
+	t.Run("ship run not in auto mode: allowed and recorded", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-interactive")
+		newShipState(t, root, "feat/qw-interactive", "s1", []any{
+			map[string]any{"name": "review", "status": "in_progress"},
+		}, map[string]any{"auto": false})
+
+		out, err := blockAskUserQuestionAuto(HookCtx{SessionID: "s1"}, questionEvent("tu2", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		if files := attentionFiles(t, root); len(files) != 1 || files[0] != "s1-tu2.json" {
+			t.Errorf("attention files = %v, want [s1-tu2.json]", files)
+		}
+	})
+
+	t.Run("no data dir: no record and no data dir created", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-no-data-dir")
+
+		out, err := blockAskUserQuestionAuto(HookCtx{SessionID: "s1"}, questionEvent("tu1", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		if _, err := os.Stat(filepath.Join(root, paths.DataDir)); !os.IsNotExist(err) {
+			t.Errorf("data dir stat err = %v, want not exist", err)
+		}
+	})
+
+	t.Run("empty session ID: no record", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-no-session")
+		mustMkdirAll(t, filepath.Join(root, paths.DataDir))
+
+		out, err := blockAskUserQuestionAuto(HookCtx{}, questionEvent("tu1", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		if files := attentionFiles(t, root); len(files) != 0 {
+			t.Errorf("attention files = %v, want none", files)
+		}
+	})
+
+	t.Run("no tool_use_id: no record", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-no-tool-use")
+		mustMkdirAll(t, filepath.Join(root, paths.DataDir))
+
+		out, err := blockAskUserQuestionAuto(HookCtx{SessionID: "s1"}, questionEvent("", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		if files := attentionFiles(t, root); len(files) != 0 {
+			t.Errorf("attention files = %v, want none", files)
+		}
+	})
+
+	t.Run("branch does not resolve: no record", func(t *testing.T) {
+		dir := realPath(t, t.TempDir())
+		chdir(t, dir)
+		mustMkdirAll(t, filepath.Join(dir, paths.DataDir))
+
+		out, err := blockAskUserQuestionAuto(HookCtx{SessionID: "s1"}, questionEvent("tu1", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		if files := attentionFiles(t, dir); len(files) != 0 {
+			t.Errorf("attention files = %v, want none", files)
+		}
+	})
+
+	t.Run("write error: output stays silent allow", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-write-error")
+		breakAttentionDir(t, root)
+
+		out, err := blockAskUserQuestionAuto(HookCtx{SessionID: "s1"}, questionEvent("tu1", "Scope", "Proceed?"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		if info, err := os.Stat(attention.Dir(root)); err != nil || info.IsDir() {
+			t.Errorf("attention path stat = %v, %v; want the blocking regular file", info, err)
+		}
+	})
+
+	t.Run("full Run dispatch: empty stdout, exit 0, record written", func(t *testing.T) {
+		root := gitFixture(t, "feat/qw-run")
+		mustMkdirAll(t, filepath.Join(root, paths.DataDir))
+
+		stdin := `{"hook_event_name":"PreToolUse","session_id":"s9","tool_name":"AskUserQuestion","tool_use_id":"tu9","tool_input":{"questions":[{"header":"Base","question":"Which base?"}]}}`
+		var out bytes.Buffer
+		code := Run("block-askuserquestion-auto", strings.NewReader(stdin), &out)
+		if code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+		if out.Len() != 0 {
+			t.Errorf("stdout = %q, want empty", out.String())
+		}
+		if files := attentionFiles(t, root); len(files) != 1 || files[0] != "s9-tu9.json" {
+			t.Errorf("attention files = %v, want [s9-tu9.json]", files)
+		}
+	})
+}
+
+// TestFirstQuestion covers the header and text that firstQuestion reads from
+// the first question, and the empty result for every missing or malformed
+// shape.
+func TestFirstQuestion(t *testing.T) {
+	cases := []struct {
+		name       string
+		raw        map[string]any
+		wantHeader string
+		wantText   string
+	}{
+		{"nil raw", nil, "", ""},
+		{"no tool_input", map[string]any{}, "", ""},
+		{"empty questions", map[string]any{"tool_input": map[string]any{"questions": []any{}}}, "", ""},
+		{"first entry not an object", map[string]any{"tool_input": map[string]any{"questions": []any{"x"}}}, "", ""},
+		{"header and question", map[string]any{"tool_input": map[string]any{"questions": []any{
+			map[string]any{"header": "H", "question": "Q?"},
+			map[string]any{"header": "H2", "question": "Q2?"},
+		}}}, "H", "Q?"},
+		{"question only", map[string]any{"tool_input": map[string]any{"questions": []any{
+			map[string]any{"question": "Q?"},
+		}}}, "", "Q?"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, q := firstQuestion(tc.raw)
+			if h != tc.wantHeader || q != tc.wantText {
+				t.Errorf("firstQuestion = %q, %q; want %q, %q", h, q, tc.wantHeader, tc.wantText)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

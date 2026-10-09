@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
@@ -299,6 +300,127 @@ func TestRecordUserAnswer(t *testing.T) {
 		if !strings.Contains(entries[0].Text, "Bearer [REDACTED]") {
 			t.Errorf("Text = %q, want it to contain Bearer [REDACTED]", entries[0].Text)
 		}
+	})
+}
+
+// TestRecordUserAnswer_ClosesQuestionWait covers the delete of the question
+// attention record that recordUserAnswer runs before any early return.
+func TestRecordUserAnswer_ClosesQuestionWait(t *testing.T) {
+	seed := func(t *testing.T, root string) {
+		seedAttention(t, root,
+			attention.Record{Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "tu1", Branch: "b"},
+			attention.Record{Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "tu2", Branch: "b"},
+			attention.Record{Kind: attention.KindPermission, SessionID: "s1", Branch: "b"},
+			attention.Record{Kind: attention.KindQuestion, SessionID: "s2", ToolUseID: "tu1", Branch: "b"},
+		)
+	}
+	// noAnswers has no answers and no active run, so the handler returns
+	// early right after the delete.
+	noAnswers := func(toolUseID string) Event {
+		return questionEvent(toolUseID, "Scope", "Proceed?")
+	}
+
+	t.Run("tool_use_id: deletes only that record, before the early return", func(t *testing.T) {
+		root := gitFixture(t, "feat/ua-close-one")
+		seed(t, root)
+
+		out, err := recordUserAnswer(HookCtx{SessionID: "s1"}, noAnswers("tu1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), []string{"s1-permission.json", "s1-tu2.json", "s2-tu1.json"})
+	})
+
+	t.Run("no tool_use_id: deletes every question record of the session", func(t *testing.T) {
+		root := gitFixture(t, "feat/ua-close-all")
+		seed(t, root)
+
+		out, err := recordUserAnswer(HookCtx{SessionID: "s1"}, noAnswers(""))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), []string{"s1-permission.json", "s2-tu1.json"})
+	})
+
+	t.Run("empty session ID: deletes nothing", func(t *testing.T) {
+		root := gitFixture(t, "feat/ua-close-no-session")
+		seed(t, root)
+
+		out, err := recordUserAnswer(HookCtx{}, noAnswers("tu1"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), []string{"s1-permission.json", "s1-tu1.json", "s1-tu2.json", "s2-tu1.json"})
+	})
+
+	t.Run("delete error: answer still recorded, output silent", func(t *testing.T) {
+		root := gitFixture(t, "feat/ua-close-error")
+		newShipState(t, root, "feat/ua-close-error", "s1", []any{
+			map[string]any{"name": "review", "status": "in_progress"},
+		}, nil)
+		breakAttentionDir(t, root)
+
+		out, err := recordUserAnswer(HookCtx{SessionID: "s1"}, Event{
+			ToolName: "AskUserQuestion",
+			Raw: map[string]any{
+				"tool_use_id": "tu1",
+				"tool_input": map[string]any{
+					"questions": []any{map[string]any{"header": "Scope", "question": "Proceed?"}},
+					"answers":   map[string]any{"Proceed?": "Yes"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		entries := readUserInputLines(t, root)
+		if len(entries) != 1 || entries[0].Text != "Scope: Yes" {
+			t.Errorf("entries = %+v, want one entry with Text \"Scope: Yes\"", entries)
+		}
+	})
+
+	t.Run("delete succeeds, evidence append fails: record stays deleted, output silent", func(t *testing.T) {
+		root := gitFixture(t, "feat/ua-close-append-error")
+		newShipState(t, root, "feat/ua-close-append-error", "s1", []any{
+			map[string]any{"name": "review", "status": "in_progress"},
+		}, nil)
+		seed(t, root)
+		mustMkdirAll(t, userInputEvidenceFile(root)) // a folder where the file belongs
+
+		out, err := recordUserAnswer(HookCtx{SessionID: "s1"}, Event{
+			ToolName: "AskUserQuestion",
+			Raw: map[string]any{
+				"tool_use_id": "tu1",
+				"tool_input": map[string]any{
+					"questions": []any{map[string]any{"header": "Scope", "question": "Proceed?"}},
+					"answers":   map[string]any{"Proceed?": "Yes"},
+				},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertSilent(t, out)
+		assertLines(t, attentionFiles(t, root), []string{"s1-permission.json", "s1-tu2.json", "s2-tu1.json"})
+	})
+
+	t.Run("full Run dispatch: record deleted, empty stdout", func(t *testing.T) {
+		root := gitFixture(t, "feat/ua-close-run")
+		seed(t, root)
+
+		stdin := `{"hook_event_name":"PostToolUse","session_id":"s1","tool_name":"AskUserQuestion","tool_use_id":"tu2","tool_input":{"questions":[{"header":"Scope","question":"Proceed?"}],"answers":{"Proceed?":"Yes"}}}`
+		var out bytes.Buffer
+		if code := Run("record-user-answer", strings.NewReader(stdin), &out); code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+		if out.Len() != 0 {
+			t.Errorf("stdout = %q, want empty", out.String())
+		}
+		assertLines(t, attentionFiles(t, root), []string{"s1-permission.json", "s1-tu1.json", "s2-tu1.json"})
 	})
 }
 

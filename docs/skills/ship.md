@@ -200,11 +200,15 @@ happens before the terminal cleanup step runs, because cleanup first copies the 
 summary into ship state, then deletes the linked plan run that the report still needs to read. It covers
 per-wave task outcomes, step timings, CLI evidence, drift/error/warning
 counts, guardrail hits, any deferred findings or pending issue drafts, the
-review ledger, self-healing changes (fixes and hardening this run recorded,
+review ledger, a Review waves table, self-healing changes (fixes and hardening this run recorded,
 plus the harden step's own commit when it ran), and the linked plan's
 planning time (start to its last edit — this ends at the last time the plan
 file was modified, not at the moment the plan was accepted, so it reflects
-time actually spent on the plan). The Markdown report opens with a Summary
+time actually spent on the plan). The Review waves table has one row for each
+dimension the review planned, with its wave, status, findings, and duration. It
+is read from the review run that carries this ship run's ID. When there is no
+such review run, the run plans no dimensions, or the review run cannot be read,
+the section is one line that gives the reason. The Markdown report opens with a Summary
 table that holds every run metric in one place; the sections below it show
 counts instead of one line per command, and list only the findings and
 failures a person must act on. It also lists every prompt you typed and every question you answered while
