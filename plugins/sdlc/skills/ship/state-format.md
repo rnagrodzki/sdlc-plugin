@@ -36,6 +36,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "sideEffects": { ... },
   "healing": { ... },
   "planExploreSummary": [ ... ],
+  "planReviewRounds": [ ... ],
   "pipelineStatus": "completed",
   "pipelineCompletedAt": "2026-03-27T15:10:00Z"
 }
@@ -59,6 +60,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name, which `ship_prepare` never writes — see "Repeated step names"). Written by `ship_verify_side_effect` and by `commit-check` when it finds a landed commit; consulted by `begin-step`'s `alreadyDone` flag. See below. |
 | `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
 | `planExploreSummary` | array | Absent until `cleanup-pipeline` saves the summary copy, which it does before it deletes the linked plan run. If the delete then fails (`planRun.reason` `remove failed: ...`), the key stays set and the plan run stays on disk. One `{name, status, total, top[]}` entry for each plan explorer; `status` is `running`, `done`, or `unreadable`; `top` holds at most 5 `{summary, ref}` findings. `[]` when the plan run had no explorer files. See "Lifecycle: Cleanup." |
+| `planReviewRounds` | array | Absent until `cleanup-pipeline` copies the plan state `reviewRounds` before it deletes the linked plan run. Absent when the plan run had no rounds. Same row shape as the plan state. |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
 | `pipelineCompletedAt` | string | Paired timestamp, set alongside `pipelineStatus`. |
 
@@ -349,7 +351,8 @@ Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the sta
   above must have landed, and the ship report `.sdlc-v2/reports/ship-<runId>-report.<md|json>` must
   exist. Before the delete, the action copies the plan explorer summary into ship state
   `planExploreSummary` (one `{name, status, total, top[]}` entry for each explorer, `top` capped at 5)
-  and writes the ship state. `reason` is one of:
+  and the plan state `reviewRounds` into `planReviewRounds` (copied as is, only when the plan run
+  has rounds). It then writes the ship state. `reason` is one of:
 
   | `planRun.reason` | Meaning |
   |---|---|
