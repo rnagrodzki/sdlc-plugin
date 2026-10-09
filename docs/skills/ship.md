@@ -44,8 +44,24 @@ or the plan's `**Source:**` header (or an auto-detected active change). It
 skips when no change is named or detected, and when the change is already
 archived. It fails and stops the pipeline when the named change is missing on
 disk (in both `openspec/changes/<name>/` and the archive) — the same check as
-`verify-openspec`. Outside `--auto`, it asks before archiving a change whose
-`tasks.md` still has unchecked boxes.
+`verify-openspec`, with the same message. Outside `--auto`, it asks before
+archiving a change whose `tasks.md` still has unchecked boxes.
+
+The `commit` step first stages the changes (everything except the `.sdlc-v2/`
+data directory) and checks the working tree. When changes are staged, `/ship`
+runs [/commit](commit.md). When the tree is clean, the step completes at once
+and `/commit` does not run. When the tree is clean, the step result is one of
+two lines:
+
+- `nothing to commit: …` — HEAD has not moved since the first commit check of
+  this run. The line counts the waves that `/execute` committed itself, or says
+  the working tree is clean when `/execute` committed no waves. `/ship` also
+  adds it to the decisions log.
+- `committed <sha>` — a commit landed since the first commit check of this run,
+  for example when an interrupted run resumes after `/commit` finished. `/ship`
+  records that commit in the side-effect journal of the saved state.
+
+A run with `--steps` that leaves out `execute` follows the same rules.
 
 A rebase onto the base branch (`[git] baseBranch`, else the repository default
 branch) happens automatically between review and the
@@ -59,7 +75,10 @@ them via `--steps`):
 - `verify-openspec` — Validates the current implementation against an active
   OpenSpec change before archiving. Skipped automatically if there is no
   active change, even when configured. Fails and stops the pipeline when the
-  plan names a change that is missing on disk.
+  plan names a change that is missing on disk. When the plan has an
+  `**OpenSpec-Saved:**` line, the failure message tells you to merge the
+  OpenSpec PR (branch `openspec/<change>`) first, update the branch from the
+  default branch, and run `/ship --plan <plan-file>` again.
 - `harden` — Groups the review findings into clusters and runs `/harden` on
   each one. It commits the guardrail, review-dimension, and Copilot-instruction
   edits as a separate commit before the PR. It runs after `archive-openspec`.
@@ -161,7 +180,7 @@ automatically by every run and read back automatically on resume.
 ### End-of-run summary
 
 After the last step, `/ship` prints the step table, the decisions log and the
-deferred findings. Two parts of that summary are worth knowing about:
+deferred findings. Three parts of that summary are worth knowing about:
 
 - **Review ledger.** When the review step ran, the summary closes with one
   ledger that accounts for *every* finding the review produced — how many
@@ -178,6 +197,11 @@ deferred findings. Two parts of that summary are worth knowing about:
       UNACCOUNTED: 2 finding(s) have no fix or deferral record
 
   An unbalanced ledger is a reporting bug worth seeing.
+
+- **Review gaps.** When the review skips a dimension (the worker stalled twice
+  or never checked in) or names a worker that may still be running, `/ship`
+  records each one as a decision before the review step completes. The decisions log in this
+  summary lists them.
 
 - **Deferred follow-ups (Step 10b).** After the summary, `/ship` checks for
   deferred items that are still open — review findings that were saved rather
@@ -230,7 +254,8 @@ step silently — nothing is written.
 
 - [/plan](plan.md) — Creates the plan file for the execute step.
 - [/execute](execute.md) — First step of the pipeline (when a plan is given).
-- [/commit](commit.md) — Commit step.
+- [/commit](commit.md) — Commit step. It runs only when the working tree has
+  changes to commit.
 - [/review](review.md) — Review step.
 - [/harden](harden.md) — Opt-in `harden` step: turns clustered review
   findings into guardrail, review-dimension and Copilot-instruction edits.
