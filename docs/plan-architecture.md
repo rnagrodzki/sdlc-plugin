@@ -359,7 +359,9 @@ The `final: true` flag enables PF9 (Verification Scorecard) and PF10
 
 The orchestrator logs learnings and hands off the finalized plan to the user
 or to the `/execute` skill. The Verification Scorecard was already written
-during Step 5's lens-merge iterations.
+during Step 5's lens-merge iterations. When the plan file header has an
+`**OpenSpec-Staging:**` line, the hand-off menu also offers `openspec-save`
+(`/sdlc:openspec-save --plan <path>`). It saves the change as its own PR first.
 
 ### OpenSpec staging
 
@@ -382,7 +384,8 @@ that into an authoring phase (plan mode, gitignored) and a materialize phase
 `**OpenSpec-Create:**` marks a run where authoring has not finished yet. A
 resume that finds it at checkpoint `6.5` or later runs **Create-flow
 authoring** once before it continues. Only `**OpenSpec-Staging:**` is read
-by materialize.
+by materialize. `openspec_save` rewrites that line to `**OpenSpec-Saved:**`,
+so a later ship or execute start saves nothing.
 
 **Authoring — `plan_support`'s `openspec_instructions`/`openspec_stage`
 actions, both plan-mode safe, run by Create-flow authoring at the end of

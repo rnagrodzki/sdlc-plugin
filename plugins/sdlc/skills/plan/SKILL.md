@@ -165,7 +165,7 @@ Then continue the flow. If the contradictory phrase is absent, emit nothing.
    > This project uses OpenSpec — spec-driven development where a change gets a written proposal, delta specs (the requirements), a design, and a task list before implementation starts. Your request looks like a new feature, and no `--spec` flag or existing change path was given.
    >
    > Options:
-   > 1. **Create OpenSpec change** (recommended default) — plans this work first, with your answers and the review fixes. Then it writes the proposal, delta specs, design, and task list from the final plan and validates them. Ship or execute moves them into `openspec/changes/` later. If you reject the plan with feedback, it writes them again.
+   > 1. **Create OpenSpec change** (recommended default) — plans this work first, with your answers and the review fixes. Then it writes the proposal, delta specs, design, and task list from the final plan and validates them. Ship or execute moves them into `openspec/changes/` later, or `/sdlc:openspec-save` moves them first as a separate PR. If you reject the plan with feedback, it writes them again.
    > 2. **Use existing change** — pick one of the active changes; the plan loads its proposal, specs, and tasks (the same as re-invoking with `/sdlc:plan --spec <change-name>`). Choose this when a change already covers this work.
    > 3. **Skip OpenSpec** — plan without OpenSpec. Fastest, but this work gets no written specs, and ship skips its OpenSpec steps with a reason.
    >
@@ -782,7 +782,7 @@ The artifacts exist as staged files under `.sdlc-v2/openspec-staging/<name>/`, s
 
 ```markdown
 ## OpenSpec Appendix
-**Staging:** `.sdlc-v2/openspec-staging/<name>/` (materialized at ship/execute start)
+**Staging:** `.sdlc-v2/openspec-staging/<name>/` (materialized at ship/execute start, or earlier by `/sdlc:openspec-save`)
 | Requirement | Spec file | Covering task(s) |
 |---|---|---|
 | Base branch configuration | specs/base-branch/spec.md | Task 2, Task 3 |
@@ -1006,8 +1006,11 @@ Call `plan_mark({ marker: "done" })` before either branch below — writes the t
 > Plan written to `<path>`. On approval:
 >   ship    — run the full pipeline: execute → commit → review → version → PR (/ship)
 >   execute — execute the plan only (/execute)
+>   openspec-save — save the OpenSpec change as its own PR first (/sdlc:openspec-save --plan <path>)
 
-Then call ExitPlanMode. Do NOT invoke execute or ship in this turn — they run after the user accepts in the next turn.
+List the `openspec-save` line only when the plan file header has an `**OpenSpec-Staging:**` line. Without that line, leave the line out. In the line, `<path>` is the plan file path from the first sentence.
+
+Then call ExitPlanMode. Do NOT invoke execute, ship, or openspec-save in this turn — they run after the user accepts in the next turn.
 
 **Rejected handoff with feedback (Create flow only — the plan file has an `**OpenSpec-Staging:**` header line):** If the user rejects ExitPlanMode with feedback, work from the plan file only. Do not read or write the run state. The run is closed after `done`: `plan_prepare({ resume: true })` finds no active run and fails, and a new `plan_mark` or `evidence_record` call changes the record of a finished run. The state file stays on disk until ship's cleanup step or the GC TTL sweep removes it.
 1. Change the plan file for the feedback.
@@ -1085,12 +1088,15 @@ After writing the plan (normal mode only), present the user with available next 
 What would you like to do next?
   ship     — execute, commit, review, version, and PR (/ship)
   execute  — execute the plan only (/execute)
+  openspec-save — save the OpenSpec change as its own PR first (/sdlc:openspec-save --plan <path>)   [only with an OpenSpec-Staging line]
   done     — stop here
 
 Select:
 ```
 
-On selection, invoke the chosen skill using the Skill tool. On "done", end without further action.
+Show the `openspec-save` line only when the plan file header has an `**OpenSpec-Staging:**` line. Without that line, leave the line out. Replace `<path>` with the plan file path, and do not print the bracketed note.
+
+On selection, invoke the chosen skill using the Skill tool. For `openspec-save`, pass `--plan <path>` with the plan file path. On "done", end without further action.
 
 ## See Also
 

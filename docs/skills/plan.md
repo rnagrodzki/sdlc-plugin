@@ -56,12 +56,19 @@ Loads the proposal, delta specs, and task list from
   implements it wave by wave.
 - [/ship](ship.md) — Runs `/execute` as its first step, so it consumes plan
   files too.
+- [/openspec-save](openspec-save.md) — Saves the staged OpenSpec change as
+  its own branch, commit, and PR before you ship the code.
 
 ## Tips and gotchas
 
 - **Plan files are saved to disk.** The plan is written to a file. You pass
   that file path to `/execute` or `/ship` later — they do not pick it up
   automatically.
+- **The hand-off menu can offer `openspec-save`.** When the plan file header
+  has an `**OpenSpec-Staging:**` line, the menu also lists `openspec-save`
+  (`/sdlc:openspec-save --plan <path>`). It saves the OpenSpec change as its own
+  PR before you ship the code. Without that header line, the menu has no such
+  entry.
 - **`plan_prepare` always runs first, but it only resumes state when asked.**
   The skill's first action is always a `plan_prepare(...)` call. By default it
   starts a fresh run. Pass `resume: true` to reuse the active run instead —

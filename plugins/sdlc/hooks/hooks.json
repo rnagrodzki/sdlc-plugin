@@ -81,6 +81,55 @@
             "timeout": 3000
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sdlc-launcher.sh",
+            "args": ["hook", "close-permission-wait"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "async": true,
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sdlc-launcher.sh",
+            "args": ["hook", "close-permission-wait"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sdlc-launcher.sh",
+            "args": ["hook", "record-permission-wait"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/bin/sdlc-launcher.sh",
+            "args": ["hook", "close-session-waits"],
+            "timeout": 10
+          }
+        ]
       }
     ],
     "UserPromptSubmit": [

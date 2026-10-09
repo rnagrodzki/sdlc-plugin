@@ -74,6 +74,9 @@ var registry = map[string]Handler{
 	"wave-liveness":              waveLiveness,
 	"record-user-input":          recordUserInput,
 	"record-user-answer":         recordUserAnswer,
+	"record-permission-wait":     recordPermissionWait,
+	"close-permission-wait":      closePermissionWait,
+	"close-session-waits":        closeSessionWaits,
 }
 
 // Run reads the hook's stdin envelope, dispatches to the handler registered

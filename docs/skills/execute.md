@@ -112,6 +112,12 @@ file — you do not need to pass it again.
 - **Wave structure.** Tasks are grouped into waves based on their dependencies.
   Independent tasks run in parallel within a wave. The skill pauses between
   waves flagged as high-risk to let you inspect the results.
+- **The wave schedule is saved at the start.** After you confirm the wave
+  structure, the skill passes it to `execute_state({action: "init"})` as
+  `plannedWavesJson`: a JSON array of `{number, taskIds}`, with the pre-wave
+  tasks as wave `0`. The state file stores it as `plannedWaves`, and the
+  dashboard uses it to list waves that have not started. Small plans that run
+  directly never call `init`, so they have no schedule.
 - **Resuming is safe.** If the session ends mid-execution, run
   `/execute --resume` in a new session. Progress is saved after each completed
   wave.
