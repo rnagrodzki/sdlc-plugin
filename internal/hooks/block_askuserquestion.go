@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -74,12 +73,12 @@ func autoShipDeny(ctx HookCtx) (Output, bool) {
 // drops a write error. A repo with a data directory gets the record even when
 // no pipeline run is active.
 func recordQuestionWait(ctx HookCtx, event Event) {
-	root, branch, ok := resolveRootBranch()
-	if !ok || ctx.SessionID == "" {
+	toolUseID, _ := event.Raw["tool_use_id"].(string)
+	if ctx.SessionID == "" || toolUseID == "" {
 		return
 	}
-	toolUseID, _ := event.Raw["tool_use_id"].(string)
-	if toolUseID == "" {
+	root, branch, ok := resolveRootBranch()
+	if !ok {
 		return
 	}
 	if _, err := os.Stat(filepath.Join(root, paths.DataDir)); err != nil {
@@ -88,14 +87,12 @@ func recordQuestionWait(ctx HookCtx, event Event) {
 	header, text := firstQuestion(event.Raw)
 	// Fire-and-forget: a write failure must never change the allow output.
 	_ = attention.Write(root, attention.Record{
-		Version:   1,
 		Kind:      attention.KindQuestion,
 		SessionID: ctx.SessionID,
 		ToolUseID: toolUseID,
 		Branch:    branch,
 		Header:    header,
 		Text:      text,
-		AskedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
 }
 

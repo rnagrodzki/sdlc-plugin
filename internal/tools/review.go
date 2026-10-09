@@ -23,6 +23,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -834,15 +835,49 @@ var reviewGitStatus = gitx.Status
 //
 // When the run.meta write fails and this call created the ledger run folder,
 // it removes that folder, so no run folder without a run.meta stays behind.
+//
+// A ship state that cannot be read gives no shipRunId. reviewPrepare calls
+// writeReviewRunMetaShip instead, so it can warn about that.
 func writeReviewRunMeta(root, branch, runID string, startedAt time.Time, waves [][]string) error {
+	shipRunID := ""
+	if branch != "" {
+		shipRunID, _ = reviewShipRunID(root, branch)
+	}
+	return writeReviewRunMetaShip(root, branch, shipRunID, runID, startedAt, waves)
+}
+
+// reviewShipRunID returns the run id of the ship state of branch when its
+// review step is in_progress. It returns "" and no error when there is no
+// ship state or its review step has any other status. It returns the error
+// of the ship state lookup, so the caller can warn that run.meta has no
+// shipRunId.
+func reviewShipRunID(root, branch string) (string, error) {
+	st, err := state.Find(root, "ship", branch)
+	if err != nil {
+		return "", err
+	}
+	if st == nil {
+		return "", nil
+	}
+	step := shipFindStepEntry(st.Data, "review")
+	if step == nil {
+		return "", nil
+	}
+	if status, _ := step["status"].(string); status != StepInProgress {
+		return "", nil
+	}
+	return state.RunID(st), nil
+}
+
+// writeReviewRunMetaShip is writeReviewRunMeta with a shipRunId that the
+// caller resolved. An empty shipRunID writes no shipRunId.
+func writeReviewRunMetaShip(root, branch, shipRunID, runID string, startedAt time.Time, waves [][]string) error {
 	meta := reviewRunMeta{
 		Branch:     branch,
 		StartedAt:  startedAt.UTC().Format(time.RFC3339),
+		ShipRunID:  shipRunID,
 		Waves:      make([][]string, 0, len(waves)),
 		Dimensions: []reviewRunMetaDimension{},
-	}
-	if branch != "" {
-		meta.ShipRunID = ledgerShipRunID(root, branch)
 	}
 	for wi, wave := range waves {
 		ids := make([]string, 0, len(wave))
@@ -865,6 +900,9 @@ func writeReviewRunMeta(root, branch, runID string, startedAt time.Time, waves [
 	}
 	if err := reviewWriteJSON(ledgerRunMetaPath(root, runID), meta); err != nil {
 		if created {
+			// Best effort: the run.meta write error is the one to return.
+			// A folder left behind holds no worker file, so the dashboard
+			// shows no review for it.
 			_ = os.RemoveAll(dir)
 		}
 		return err
@@ -947,17 +985,17 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	// Git state.
 	// A failed branch read does not stop the review, but run.meta then has
 	// an empty branch and no shipRunId: say so in the warnings.
-	var branchWarnings []string
+	var gitWarnings []string
 	currentBranch, branchErr := reviewCurrentBranch(activeRoot)
 	if branchErr != nil {
 		currentBranch = ""
-		branchWarnings = append(branchWarnings, fmt.Sprintf("the current branch could not be read (%s): current_branch and run.meta branch are empty, so the review will not join its ship run", branchErr.Error()))
+		gitWarnings = append(gitWarnings, fmt.Sprintf("the current branch could not be read (%s): current_branch and run.meta branch are empty, so the review will not join its ship run", branchErr.Error()))
 	}
 	// A failed status read does not stop the review: uncommitted_changes is
 	// reported as false and the warning says so.
 	statusOut, statusErr := reviewGitStatus(activeRoot)
 	if statusErr != nil {
-		branchWarnings = append(branchWarnings, fmt.Sprintf("git status could not be read (%s): uncommitted_changes is reported as false", statusErr.Error()))
+		gitWarnings = append(gitWarnings, fmt.Sprintf("git status could not be read (%s): uncommitted_changes is reported as false", statusErr.Error()))
 	}
 	uncommittedChanges := statusOut != ""
 
@@ -1149,7 +1187,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	if !reviewsUncommitted {
 		pr, warnings = lookupReviewPR(activeRoot)
 	}
-	warnings = append(branchWarnings, warnings...)
+	warnings = append(gitWarnings, warnings...)
 
 	// Build index entries.
 	var indexEntries []reviewDimIndexEntry
@@ -1220,6 +1258,17 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		runID = "review-" + reviewBranchUnsafeRe.ReplaceAllString(timestamp, "-")
 	}
 
+	// A ship state that cannot be read does not stop the review, but
+	// run.meta then has no shipRunId: say so in the warnings.
+	shipRunID := ""
+	if writeRunMeta && currentBranch != "" {
+		id, err := reviewShipRunID(projectRoot, currentBranch)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("the ship state could not be read (%s): run.meta has no shipRunId, so the review will not join its ship run", err.Error()))
+		}
+		shipRunID = id
+	}
+
 	manifest := reviewManifest{
 		Version:            1,
 		Timestamp:          timestamp,
@@ -1255,7 +1304,7 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 	// run.meta goes after the manifest: a failed manifest write then leaves
 	// no ledger folder for the dashboard to show.
 	if writeRunMeta {
-		if err := writeReviewRunMeta(projectRoot, currentBranch, runID, now, waves); err != nil {
+		if err := writeReviewRunMetaShip(projectRoot, currentBranch, shipRunID, runID, now, waves); err != nil {
 			return ReviewPrepareOut{}, &mcpserver.InfraError{
 				Msg:        fmt.Sprintf("write %s: %s", ledgerRunMetaPath(projectRoot, runID), err.Error()),
 				Suggestion: "Check write access to " + paths.DataDir + "/" + paths.RunsSubdir + "/ledger/ and call review_prepare again.",
@@ -1454,11 +1503,11 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxParallelDimensions (review agents that run at the same time, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. The manifest field waves lists every started dimension name, most severe first, in groups of maxParallelDimensions. Start waves[0] first, wait for it, then start the next wave. An old maxDimensions key returns an error that names the new key. An invalid maxParallelDimensions or an unreadable local.toml returns an error. Each call mints a new manifest run_id (\"review-\" plus the sanitized timestamp) and gives each dimension a worker_id (the lowercased name, each run of other characters replaced by one \"-\"). With at least one wave, it writes .sdlc-v2/runs/ledger/<run_id>/run.meta: branch, startedAt, shipRunId (when the branch's ship review step is in_progress), waves of worker ids, and dimensions [{name, workerId, wave}]. When the current branch cannot be read, run.meta has an empty branch and no shipRunId, so the review will not join its ship run; the result warnings say so. With dryRun:true or zero waves, it writes no run.meta and run_id is \"\". A failed run.meta write returns an error with no manifest path and leaves no ledger run folder.", defaultMaxParallelDimensions),
+		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxParallelDimensions (review agents that run at the same time, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. The manifest field waves lists every started dimension name, most severe first, in groups of maxParallelDimensions. Start waves[0] first, wait for it, then start the next wave. An old maxDimensions key returns an error that names the new key. An invalid maxParallelDimensions or an unreadable local.toml returns an error. Each call mints a new manifest run_id (\"review-\" plus the sanitized timestamp) and gives each dimension a worker_id (the lowercased name, each run of other characters replaced by one \"-\"). With at least one wave, it writes .sdlc-v2/runs/ledger/<run_id>/run.meta: branch, startedAt, shipRunId (when the branch's ship review step is in_progress), waves of worker ids, and dimensions [{name, workerId, wave}]. When the current branch cannot be read, run.meta has an empty branch and no shipRunId, so the review will not join its ship run; the result warnings say so. When the ship state cannot be read, run.meta has no shipRunId and the result warnings say so. With dryRun:true or zero waves, it writes no run.meta and run_id is \"\". A failed run.meta write returns an error with no manifest path and leaves no ledger run folder.", defaultMaxParallelDimensions),
 		mcpserver.Annotations{
 			Title:       "Prepare code review payload",
 			ReadOnly:    false,
-			Destructive: false,
+			Destructive: true,
 			Idempotent:  false,
 			OpenWorld:   true,
 		},

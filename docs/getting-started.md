@@ -12,7 +12,11 @@ install, see [`smoke-test.md`](smoke-test.md).
 - `git`.
 - [GitHub CLI](https://cli.github.com/) (`gh`), authenticated (`gh auth
   status`). Required by `pr`, `ship`, `received-review`, `verify-pipeline`,
-  and link validation — these shell out to `gh` directly.
+  and link validation — these shell out to `gh` directly. `openspec-save`
+  also needs it, because it runs the `pr` skill.
+- The [OpenSpec CLI](https://github.com/Fission-AI/OpenSpec)
+  (`npm i -g @fission-ai/openspec`), only if you use OpenSpec: `plan` with
+  **Create OpenSpec change**, `openspec-save`, and the OpenSpec steps of `ship`.
 - A Jira/Atlassian MCP connection, only if you plan to use `jira`.
   Everything else works without it.
 

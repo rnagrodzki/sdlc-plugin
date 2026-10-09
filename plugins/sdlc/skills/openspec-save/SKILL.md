@@ -43,20 +43,26 @@ Call the tool with the absolute plan path (the positional `<plan-path>` or the `
 openspec_save({ planPath: "<absolute plan path>" })
 ```
 
-The result is Markdown with these fields: `change`, `branch`, `branchCreated`, `materialized` (`created` or `already`), `refsStamped`, `stagedFiles`, `summary`, `next`. An empty list renders as `(none)`.
+The result is Markdown with these fields: `change`, `branch`, `branchCreated`, `materialized` (`created` or `already`), `refsStamped`, `stagedFiles`, `warnings` (a `## Warnings` list, present only when a warning exists), `summary`, `next`. An empty list renders as `(none)`.
 
-The tool runs only on the default branch or on the branch `openspec/<change>`. Tracked files outside `openspec/changes/<change>/` and `.sdlc-v2/` must have no changes. On the default branch it creates and switches to `openspec/<change>`. It moves the staged change into `openspec/changes/<change>/`, writes a ref comment into each task line of `tasks.md`, and runs `git add` on the change folder. It rewrites the plan header `**OpenSpec-Staging:**` to `**OpenSpec-Saved:**`. It does not commit.
+The tool runs only on the default branch or on the branch `openspec/<change>`. Tracked files outside `openspec/changes/<change>/` and `.sdlc-v2/` must have no changes. On the default branch it creates and switches to `openspec/<change>`. It moves the staged change into `openspec/changes/<change>/`, writes a ref comment into each task line of `tasks.md`, and runs `git add` on the change folder. It rewrites the plan header `**OpenSpec-Staging:**` to `**OpenSpec-Saved:**`. It does not commit. A change with no `tasks.md` is saved with a warning.
 
-**On tool error:** print the error message and its Suggestion as they are. Stop.
+With the header `**OpenSpec-Saved:**` (a repeat run), the tool returns `materialized` `already`. It first checks that the current branch is the saved branch and that `openspec/changes/<change>/` exists. Each failed check is a tool error. Then it runs `git add` on the change folder again, so a change that was unstaged or edited after the first run is staged again. It does not change the plan file.
 
-**On success:** print `summary`. Then do the branch check below when it applies. Then route on `stagedFiles`. Do not route on `next`. The tool returns one of two `next` texts: "Run the commit skill with --type docs, then the pr skill." or "Nothing is staged for the change. Run the pr skill if the branch has no pull request yet."
+**On tool error:**
 
-**Branch check, first, when `materialized` is `already`:** the plan was saved by an earlier run. With the header `**OpenSpec-Saved:**`, the tool does not check the current branch. Run `git branch --show-current` every time `materialized` is `already`. When the result differs from `branch`, stop. Tell the user to run `git switch <branch>` and then run this skill again.
+1. Print the error message and its Suggestion as they are.
+2. Run `git branch --show-current`. Report the current branch. An error after the tool created `openspec/<change>` leaves the repository on that branch, and the Suggestion says so.
+3. Stop.
 
-**Route on `stagedFiles`, after the branch check:**
+The first line of the result names the error class: `# openspec_save — error (domain)` or `# openspec_save — error (infra)`. A `domain` error needs a fix of the input or of the repository state, as the Suggestion says. An `infra` error needs a fix of the environment, for example file access or the OpenSpec CLI. After either fix, this skill can run again: a stop is safe to repeat.
+
+**On success:** print `summary`. Print each item of `warnings`. Then route on `stagedFiles`. Do not route on `next`. The tool returns one of two `next` texts: "Run the commit skill with --type docs, then the pr skill." or "Nothing is staged for the change. Run the pr skill if the branch has no pull request yet."
+
+**Route on `stagedFiles`:**
 
 - `stagedFiles` has paths: go to Step 2.
-- `stagedFiles` is `(none)`: the change is already committed. Skip Step 2. Go to Step 3.
+- `stagedFiles` is `(none)`: the change folder is the same as in the last commit. The tool staged the folder before it made the list, so nothing is left to commit. Skip Step 2. Go to Step 3.
 
 ---
 
@@ -109,21 +115,22 @@ Print these items:
 
 | Situation | Exit |
 |---|---|
-| Tool error | Print the error and its Suggestion. Stop. |
-| `materialized` is `already` and the current branch differs from `branch` (checked before `stagedFiles`) | Stop. Tell the user to run `git switch <branch>` and run this skill again. |
-| `stagedFiles` is `(none)` | The change is already committed. Skip Step 2. Go to Step 3. |
+| Tool error (also: a repeat run on a branch other than the saved branch, or a missing change folder) | Print the error and its Suggestion. Run `git branch --show-current` and report the branch. Stop. |
+| `stagedFiles` is `(none)` | The change folder is the same as in the last commit. Skip Step 2. Go to Step 3. |
 | User declines the commit | Stop. Report the branch and the staged, uncommitted change. |
-| Step 2 ran, and the commit skill stops with an error, or the pr skill fails | Print its error. Stop. Report the branch. |
+| The commit skill stops with an error | Print its error. Stop. Report the branch. |
+| The pr skill fails, whether Step 2 ran or was skipped | Print its error. Stop. Report the branch. |
 | User declines the PR | Stop. Report the branch. |
 | `--auto` | The commit skill skips its approval question. The pr skill still asks for release intent. |
 | Success | Step 4 report. |
 
 ## Run the skill again
 
-A stop is safe to repeat. The saved plan header makes `openspec_save` return `already`. The tool then stages nothing and changes no file. The next run continues where the last run stopped:
+A stop is safe to repeat. The saved plan header makes `openspec_save` return `already`. The tool then runs `git add` on the change folder again and changes no file. Run the skill again on the saved branch: on any other branch the tool returns an error. The next run continues where the last run stopped:
 
-- The commit did not happen: `stagedFiles` still has paths. The run continues at Step 2.
+- The commit did not happen: `stagedFiles` has paths, also when the change was unstaged after the first run. The run continues at Step 2.
 - The commit happened, but the PR did not: `stagedFiles` is `(none)`. The run skips Step 2 and continues at Step 3.
+- The tool stopped with an error after it created the branch: the repository is on `openspec/<change>`. The next run continues the save on that branch.
 - An open PR exists for the branch: the pr skill updates that PR.
 
 ---
@@ -133,7 +140,7 @@ A stop is safe to repeat. The saved plan header makes `openspec_save` return `al
 - Run the commit skill and the pr skill with the Skill tool. Start no Agent worker.
 - Never pass `--auto` to the pr skill.
 - Never answer a question of the commit skill or the pr skill for the user.
-- Never run `git add`, `git commit`, `git push`, or `gh` by hand. The tool and the two skills do this work. The one git command of this skill is the read-only `git branch --show-current` in Step 1.
+- Never run `git add`, `git commit`, `git push`, or `gh` by hand. The tool and the two skills do this work. The one git command of this skill is the read-only `git branch --show-current` after a tool error in Step 1.
 - Never edit the plan file by hand. The tool rewrites its header.
 - `--auto` does not make this skill unattended. The pr skill always asks.
 

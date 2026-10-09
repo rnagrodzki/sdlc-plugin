@@ -1116,14 +1116,6 @@ func shipNothingToCommitResult(waveCommits int) string {
 	return commitNothingPrefix + ": the working tree is clean"
 }
 
-// shipShortSHA returns the first 7 characters of sha, or sha when shorter.
-func shipShortSHA(sha string) string {
-	if len(sha) > 7 {
-		return sha[:7]
-	}
-	return sha
-}
-
 // shipStateCommitCheck stages the working tree (except the data directory)
 // in workDir and decides the commit step from the result. The ship state in
 // root must have its commit step in_progress. The first call of a run stores
@@ -1156,6 +1148,20 @@ func shipStateCommitCheck(root, workDir string, in ShipStateIn, now func() time.
 			Suggestion: "Call begin-step for commit first, then call commit-check again.",
 		}
 	}
+	// An absent key or an empty string means no earlier commit-check call
+	// stored HEAD. Any other non-string value is a broken state file: using
+	// it as absent would overwrite it and hide a landed commit.
+	baseHead := ""
+	if raw, present := st.Data[shipCommitBaseHeadKey]; present && raw != nil {
+		s, ok := raw.(string)
+		if !ok {
+			return nil, &mcpserver.DataError{
+				Msg:        fmt.Sprintf("commit-check: ship state key %s is %T, want a string sha", shipCommitBaseHeadKey, raw),
+				Suggestion: fmt.Sprintf("Set %s in %s to the HEAD sha seen at the start of the commit step, or remove the key, then call commit-check again.", shipCommitBaseHeadKey, st.Path),
+			}
+		}
+		baseHead = s
+	}
 
 	addArgs := []string{"add", "-A", "--", ":!" + paths.DataDir + "/"}
 	if _, err := shipCommitCheckGit(workDir, addArgs...); err != nil {
@@ -1179,7 +1185,6 @@ func shipStateCommitCheck(root, workDir string, in ShipStateIn, now func() time.
 	}
 	head := strings.TrimSpace(headOut)
 
-	baseHead, _ := st.Data[shipCommitBaseHeadKey].(string)
 	baseChanged := false
 	if baseHead == "" {
 		baseHead = head
@@ -1201,7 +1206,10 @@ func shipStateCommitCheck(root, workDir string, in ShipStateIn, now func() time.
 	}
 
 	out := ShipCommitCheckOut{Clean: true, StepCompleted: true}
+	// One instant for the decision, the side effect, completedAt and the
+	// step timing, so the recorded times agree.
 	at := now()
+	atNow := func() time.Time { return at }
 	if head == baseHead {
 		out.WaveCommits, out.Warnings = shipCountWaveCommits(root, branch)
 		out.Result = shipNothingToCommitResult(out.WaveCommits)
@@ -1211,25 +1219,22 @@ func shipStateCommitCheck(root, workDir string, in ShipStateIn, now func() time.
 			"decision": out.Result,
 			"at":       at.UTC().Format(time.RFC3339),
 		})
-		out.Next = "Commit step completed. Skip 7c2 and d. Go to the next step."
+		out.Next = "Commit step completed. Skip 7c2 and 7d. Go to the next step."
 	} else {
-		out.Result = "committed " + shipShortSHA(head)
+		out.Result = "committed " + shortSHA(head)
 		shipRecordSideEffect(st.Data, shipSideEffectKey(st.Data, shipCommitStep), shipStepSideEffects[shipCommitStep], head, at)
-		out.Next = "Commit step completed from the landed commit. Skip 7c2 and d. Go to the next step."
+		out.Next = "Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step."
 	}
 
-	// Complete the step entry found above, with the same fields that
-	// shipCompleteStepCore sets for a success outcome. The entry is already
-	// in hand, so there is no lookup that can fail here.
 	startedAt, _ := step["startedAt"].(string)
-	step["status"] = "completed"
-	step["completedAt"] = now().UTC().Format(time.RFC3339)
-	step["result"] = out.Result
+	if err := shipCompleteStepCore(st.Data, shipCommitStep, true, out.Result, "success", atNow); err != nil {
+		return nil, err
+	}
 	if err := shipStateWriteFunc(st); err != nil {
 		return nil, shipCommitWriteError(st, err)
 	}
 	completedAt, _ := step["completedAt"].(string)
-	_, ts := shipCompletionTiming(root, st.Data, stepIdx, shipCommitStep, startedAt, completedAt, now())
+	_, ts := shipCompletionTiming(root, st.Data, stepIdx, shipCommitStep, startedAt, completedAt, at)
 	out.Display = pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts)
 	out.Todos = shipmeta.TodosForStep(shipCommitStep, st)
 	return out, nil
@@ -3175,7 +3180,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - init: Create ship state. Optional: detail.branch, detail.flags, sessionId.
 - begin-step: Begin execution of a step (preferred over start). Requires step. Returns narration with progress, ETA, dispatch instruction, todos, and alreadyDone (true when ship_verify_side_effect already recorded this step's side effect in the sideEffects journal — a resumed pipeline can skip redoing it). Optional: detail.branch, detail.stateFile, detail.detail.
 - complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, and issue summary. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
-- commit-check: Decide the commit step from the working tree. Requires: (none). Optional: detail.branch. Side effects: staging (git add -A -- ':!.sdlc-v2/' in the active worktree, then git diff --cached --name-only counts the staged paths); the first call of a run stores HEAD in state key commitBaseHead, and later calls keep it. Dirty tree: returns {clean:false, stagedCount} and changes no step. Clean tree with HEAD equal to commitBaseHead: appends one decide entry and does what complete-step does for the commit step, with result "`+commitNothingPrefix+`: execute committed N wave commit(s)" (N = non-empty waves[].committedSha of this branch's execute state) or "`+commitNothingPrefix+`: the working tree is clean" (N = 0). Clean tree with HEAD not equal to commitBaseHead: records HEAD in the side-effect journal (sideEffects, kind sha) and does what complete-step does for the commit step, with result "committed <short sha>". Returns clean, stagedCount, waveCommits, stepCompleted, result, todos and display (when stepCompleted), warnings, next. Errors: a failed git call is a git InfraError; a commit step that is not in_progress is a step-state DomainError; a pipeline with no commit step is a DataError.
+- commit-check: Decide the commit step from the working tree. Requires: (none). Optional: detail.branch. Side effects: staging (git add -A -- ':!.sdlc-v2/' in the active worktree stages every change, untracked files that are not gitignored included; then git diff --cached --name-only counts the staged paths); the first call of a run stores HEAD in state key commitBaseHead, and later calls keep it. Dirty tree: returns {clean:false, stagedCount} and changes no step. Clean tree with HEAD equal to commitBaseHead: appends one decide entry and does what complete-step does for the commit step, with result "`+commitNothingPrefix+`: execute committed N wave commit(s)" (N = non-empty waves[].committedSha of this branch's execute state) or "`+commitNothingPrefix+`: the working tree is clean" (N = 0). Clean tree with HEAD not equal to commitBaseHead: records HEAD in the side-effect journal (sideEffects, kind sha) and does what complete-step does for the commit step, with result "committed <short sha>". Returns clean, stagedCount, waveCommits, stepCompleted, result, todos and display (when stepCompleted), warnings, next. Errors: a failed git call is a git InfraError; a commit step that is not in_progress is a step-state DomainError; a pipeline with no commit step, or a commitBaseHead that is not a string, is a DataError.
 - start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
 - complete: (Legacy) Complete a step. Requires step. Returns narration with timing. Optional: detail.branch, detail.result, detail.detail.
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
@@ -3185,7 +3190,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns summary, kind, written (true only when this call changed the state file) and record (the validated record as persisted, recordedAt included).
 - harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction", reason? (one of `+strings.Join(history.DeferredReasons(), " | ")+`)}]. Optional: detail.branch (the ship run whose healing.hardened triggers set alreadyHardened). failureText has every double quote replaced by a single quote and every backslash by a slash, so it is safe inside a quoted --failure-text argument. Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
-- report: Compose the end-of-run report from ship state, this run's execute state (only when the execute step completed), CLI evidence and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
+- report: Compose the end-of-run report from ship state, healing records, this run's execute state (only when the execute step completed) and its linked plan run, the review run ledger of this ship run (for the Review waves section), CLI evidence, user input and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
 - cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.

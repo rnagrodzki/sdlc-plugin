@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,10 +169,11 @@ func TestReadReviewLedgerPlan_OnlyRunMeta(t *testing.T) {
 	}
 }
 
-// TestReadReviewLedgerPlan_SkipsBadWorkerFile checks that a worker file that
-// does not parse, and a worker file that cannot be read (a dangling link),
-// give no row and leave the planned dimension pending.
-func TestReadReviewLedgerPlan_SkipsBadWorkerFile(t *testing.T) {
+// TestReadReviewLedger_BadWorkerFile checks that a planned worker file that
+// does not parse is an in_progress row with no findings that counts as run,
+// and that it and a worker file that cannot be read (a dangling link) each
+// give a problem. The unplanned dangling link is not a row.
+func TestReadReviewLedger_BadWorkerFile(t *testing.T) {
 	root := dashRoot(t)
 	reviewPlanWriteMeta(t, root, reviewPlanTestRun, reviewRunMeta{
 		Dimensions: []reviewRunMetaDimension{{Name: "docs", WorkerID: "docs", Wave: 1}},
@@ -182,12 +184,83 @@ func TestReadReviewLedgerPlan_SkipsBadWorkerFile(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "nonexistent"), ledgerFilePath(root, reviewPlanTestRun, "ghost")); err != nil {
 		t.Fatal(err)
 	}
-	rows, totals, _, err := readReviewLedgerPlan(root, reviewPlanTestRun)
+	r, err := readReviewLedger(ledgerDir(root, reviewPlanTestRun))
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
-	if len(rows) != 1 || rows[0].Status != StepPending || totals.DimensionsRun != 0 {
-		t.Errorf("rows = %+v, totals = %+v, want one pending row and no run dimension", rows, totals)
+	if len(r.rows) != 1 || r.rows[0].Status != StepInProgress || r.rows[0].Findings != 0 {
+		t.Errorf("rows = %+v, want one in_progress row with no findings", r.rows)
+	}
+	if want := (reviewPlanTotals{DimensionsPlanned: 1, DimensionsRun: 1, WavesRun: 1}); r.totals != want {
+		t.Errorf("totals = %+v, want %+v", r.totals, want)
+	}
+	if len(r.problems) != 2 ||
+		!strings.Contains(r.problems[0], "worker file docs.json cannot be used") ||
+		!strings.Contains(r.problems[1], "worker file ghost.json cannot be used") {
+		t.Errorf("problems = %q, want one for docs.json, then one for ghost.json", r.problems)
+	}
+}
+
+// TestReadReviewLedger_FindingsNotList checks that findings that are not a
+// JSON list give zero findings and a problem, while a JSON list, an empty
+// string, and null give no problem.
+func TestReadReviewLedger_FindingsNotList(t *testing.T) {
+	root := dashRoot(t)
+	reviewPlanWriteMeta(t, root, reviewPlanTestRun, reviewRunMeta{
+		Dimensions: []reviewRunMetaDimension{
+			{Name: "a", WorkerID: "a", Wave: 1},
+			{Name: "b", WorkerID: "b", Wave: 1},
+			{Name: "c", WorkerID: "c", Wave: 1},
+			{Name: "d", WorkerID: "d", Wave: 1},
+		},
+	}, dashNow)
+	write := func(id string, findings any) {
+		dashWriteJSON(t, ledgerFilePath(root, reviewPlanTestRun, id), map[string]any{
+			"checkinAt": "2026-10-07T09:00:00Z", "checkoutAt": "2026-10-07T09:01:00Z", "findings": findings,
+		}, dashNow)
+	}
+	write("a", "## markdown, not JSON")
+	write("b", `[{"severity":"low","file":"x.go","line":1,"rationale":"r"}]`)
+	write("c", "")
+	write("d", nil)
+
+	r, err := readReviewLedger(ledgerDir(root, reviewPlanTestRun))
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	want := []string{"the findings of worker file a.json are not a JSON list: the dimension shows no findings"}
+	if !reflect.DeepEqual(r.problems, want) {
+		t.Errorf("problems = %q, want %q", r.problems, want)
+	}
+	if got := []int{r.rows[0].Findings, r.rows[1].Findings, r.rows[2].Findings, r.rows[3].Findings}; !reflect.DeepEqual(got, []int{0, 1, 0, 0}) {
+		t.Errorf("findings counts = %v, want [0 1 0 0]", got)
+	}
+}
+
+// TestReadReviewLedger_BadRunMeta checks that a run.meta that does not
+// parse gives a problem and worker-file rows, and that a missing run.meta
+// gives no problem.
+func TestReadReviewLedger_BadRunMeta(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteJSON(t, ledgerFilePath(root, reviewPlanTestRun, "docs"), map[string]any{"checkinAt": "2026-10-07T09:00:00Z"}, dashNow)
+
+	r, err := readReviewLedger(ledgerDir(root, reviewPlanTestRun))
+	if err != nil || len(r.problems) != 0 {
+		t.Fatalf("no run.meta: problems = %q, err = %v, want none", r.problems, err)
+	}
+
+	if err := os.WriteFile(ledgerRunMetaPath(root, reviewPlanTestRun), []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, err = readReviewLedger(ledgerDir(root, reviewPlanTestRun))
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if len(r.problems) != 1 || !strings.Contains(r.problems[0], "run.meta cannot be used") {
+		t.Errorf("problems = %q, want one for run.meta", r.problems)
+	}
+	if len(r.rows) != 1 || r.rows[0].Name != "docs" {
+		t.Errorf("rows = %+v, want the one worker-file row", r.rows)
 	}
 }
 
@@ -250,9 +323,9 @@ func TestReviewWorkerRow_Duration(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "security.json")
 			dashWriteJSON(t, path, tc.data, dashNow)
-			row, ok := reviewWorkerRow(path, "security")
-			if !ok {
-				t.Fatal("ok = false, want true")
+			row, err := reviewWorkerRow(path, "security")
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
 			}
 			if row.DurationSec != tc.wantSec || row.Status != tc.wantStatus {
 				t.Errorf("DurationSec = %d, Status = %q, want %d, %q", row.DurationSec, row.Status, tc.wantSec, tc.wantStatus)

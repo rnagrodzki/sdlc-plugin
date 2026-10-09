@@ -2029,6 +2029,26 @@ var findingIDRe = regexp.MustCompile(`^f-[0-9a-f]{8}$`)
 // findingIDRe.
 const findingIDSuggestion = "Pass the id from merge_results allIssues."
 
+// findingIDError is the DomainError for a finding id that fails findingIDRe.
+// field names the payload entry, e.g. "review-round findings[0]". The
+// message quotes findingIDRe itself, so the pattern has one source.
+func findingIDError(field, id string) error {
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("%s.id %q does not match %s", field, id, findingIDRe.String()),
+		Suggestion: findingIDSuggestion,
+	}
+}
+
+// duplicateFindingIDError is the DomainError for a finding id that appears
+// twice in one payload. field names the second entry; first is the index of
+// the first entry with the same id.
+func duplicateFindingIDError(field, id string, first int) error {
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("%s.id %q repeats findings[%d].id", field, id, first),
+		Suggestion: fmt.Sprintf("Pass each finding id once. Remove the second %q entry.", id),
+	}
+}
+
 // PlanReviewRound is one entry of data.reviewRounds: the result of one plan
 // review round of the plan skill. Found is the blocking-issue count of the
 // round's merge_results call (its blockingCount); Fixed is how many of them
@@ -2078,8 +2098,24 @@ type PlanOutcomeFinding struct {
 	Reason string `json:"reason"` // max maxOutcomeFieldRunes runes
 }
 
-// reviewOutcomeNext is the Next of a successful "review-outcome" call.
-const reviewOutcomeNext = "Outcome stored. If any choice is stop, end the run and report the open findings. Else continue to Create-flow authoring, then Step 6.5."
+// reviewOutcomeNext is the Next of a successful "review-outcome" call with
+// no "stop" choice. reviewOutcomeStopNext is the Next when at least one
+// choice is "stop". The handler picks one, so the caller does not branch.
+const (
+	reviewOutcomeNext     = "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5."
+	reviewOutcomeStopNext = "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."
+)
+
+// reviewOutcomeNextFor returns the Next of a successful "review-outcome"
+// call for the stored outcome o.
+func reviewOutcomeNextFor(o PlanReviewOutcome) string {
+	for _, f := range o.Findings {
+		if f.Choice == outcomeChoiceStop {
+			return reviewOutcomeStopNext
+		}
+	}
+	return reviewOutcomeNext
+}
 
 // PlanRoundLens is the verdict of one review lens in a PlanReviewRound.
 type PlanRoundLens struct {
@@ -2231,6 +2267,7 @@ func validateRoundFindings(raw any) ([]PlanRoundFinding, error) {
 		}
 	}
 	findings := make([]PlanRoundFinding, 0, len(arr))
+	seen := make(map[string]int, len(arr))
 	for i, el := range arr {
 		obj, ok := el.(map[string]any)
 		if !ok {
@@ -2248,12 +2285,14 @@ func validateRoundFindings(raw any) ([]PlanRoundFinding, error) {
 			}
 		}
 		id, _ := obj["id"].(string)
+		field := fmt.Sprintf("review-round findings[%d]", i)
 		if !findingIDRe.MatchString(id) {
-			return nil, &mcpserver.DomainError{
-				Msg:        fmt.Sprintf("review-round findings[%d].id %q does not match ^f-[0-9a-f]{8}$", i, id),
-				Suggestion: findingIDSuggestion,
-			}
+			return nil, findingIDError(field, id)
 		}
+		if first, dup := seen[id]; dup {
+			return nil, duplicateFindingIDError(field, id, first)
+		}
+		seen[id] = i
 		fixed, ok := obj["fixed"].(bool)
 		if !ok {
 			return nil, &mcpserver.DomainError{
@@ -2277,11 +2316,18 @@ func validateReviewOutcomeData(data map[string]any) (PlanReviewOutcome, error) {
 		if k != "findings" {
 			return PlanReviewOutcome{}, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("review-outcome data has unknown key %q", k),
-				Suggestion: fmt.Sprintf("remove %q; the only allowed key is findings", k),
+				Suggestion: fmt.Sprintf("Remove %q. The only allowed key is findings.", k),
 			}
 		}
 	}
-	arr, _ := data["findings"].([]any)
+	raw, present := data["findings"]
+	arr, isArray := raw.([]any)
+	if present && raw != nil && !isArray {
+		return PlanReviewOutcome{}, &mcpserver.DomainError{
+			Msg:        "review-outcome findings must be a JSON array of {id, text, choice, reason}",
+			Suggestion: `Pass findings as a JSON array, not a string or an object: findings:[{id:"f-9d01aa42", text:"…", choice:"accepted", reason:""}]. The stored outcome is unchanged.`,
+		}
+	}
 	if len(arr) == 0 {
 		return PlanReviewOutcome{}, &mcpserver.DomainError{
 			Msg:        "review-outcome needs data {findings} with at least one entry {id, text, choice, reason}",
@@ -2297,6 +2343,7 @@ func validateReviewOutcomeData(data map[string]any) (PlanReviewOutcome, error) {
 
 	const allFieldsSuggestion = `Give all 4 fields for each finding. Use an empty reason only as "".`
 	findings := make([]PlanOutcomeFinding, 0, len(arr))
+	seen := make(map[string]int, len(arr))
 	for i, el := range arr {
 		obj, ok := el.(map[string]any)
 		if !ok {
@@ -2311,7 +2358,7 @@ func validateReviewOutcomeData(data map[string]any) (PlanReviewOutcome, error) {
 			default:
 				return PlanReviewOutcome{}, &mcpserver.DomainError{
 					Msg:        fmt.Sprintf("review-outcome findings[%d] has unknown key %q", i, k),
-					Suggestion: fmt.Sprintf("remove %q; allowed finding keys: id, text, choice, reason", k),
+					Suggestion: fmt.Sprintf("Remove %q. The allowed finding keys are id, text, choice, and reason.", k),
 				}
 			}
 		}
@@ -2326,12 +2373,14 @@ func validateReviewOutcomeData(data map[string]any) (PlanReviewOutcome, error) {
 			}
 			fields[k] = s
 		}
+		field := fmt.Sprintf("review-outcome findings[%d]", i)
 		if !findingIDRe.MatchString(fields["id"]) {
-			return PlanReviewOutcome{}, &mcpserver.DomainError{
-				Msg:        fmt.Sprintf("review-outcome findings[%d].id %q does not match ^f-[0-9a-f]{8}$", i, fields["id"]),
-				Suggestion: findingIDSuggestion,
-			}
+			return PlanReviewOutcome{}, findingIDError(field, fields["id"])
 		}
+		if first, dup := seen[fields["id"]]; dup {
+			return PlanReviewOutcome{}, duplicateFindingIDError(field, fields["id"], first)
+		}
+		seen[fields["id"]] = i
 		switch fields["choice"] {
 		case outcomeChoiceAccepted, outcomeChoiceRejected, outcomeChoiceStop:
 		default:
@@ -2669,7 +2718,8 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 	}
 
 	// "review-outcome" replaces reviewOutcome with this call's full list,
-	// like "checkpoint", and returns reviewOutcomeNext.
+	// like "checkpoint". Its Next depends on the choices: reviewOutcomeStopNext
+	// when any choice is "stop", else reviewOutcomeNext.
 	if in.Marker == "review-outcome" {
 		st.Data["reviewOutcome"] = reviewOutcome
 
@@ -2681,7 +2731,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 				Cause:      err,
 			}
 		}
-		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path, Next: reviewOutcomeNext}, nil
+		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path, Next: reviewOutcomeNextFor(reviewOutcome)}, nil
 	}
 
 	// Structured-data markers append to their own top-level state key and

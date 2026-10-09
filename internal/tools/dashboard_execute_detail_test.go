@@ -563,7 +563,7 @@ func TestDashboardExecuteDetail_WithoutPlannedWaves(t *testing.T) {
 }
 
 // TestDashboardExecuteDetail_PendingPlannedWavesSkipsBadEntries checks the
-// entries that dashboardPendingPlannedWaves leaves out or trims. Number values
+// entries that dashboardParsePendingWaves leaves out or trims. Number values
 // are float64, as a state file decoded from JSON holds them.
 func TestDashboardExecuteDetail_PendingPlannedWavesSkipsBadEntries(t *testing.T) {
 	data := map[string]any{
@@ -581,37 +581,37 @@ func TestDashboardExecuteDetail_PendingPlannedWavesSkipsBadEntries(t *testing.T)
 		},
 	}
 	want := []dashboardPlannedWave{{number: 5, taskIDs: []string{"a", "b"}}}
-	if got := dashboardPendingPlannedWaves(data); !reflect.DeepEqual(got, want) {
-		t.Errorf("dashboardPendingPlannedWaves = %+v, want %+v", got, want)
+	if got := dashboardParsePendingWaves(data); !reflect.DeepEqual(got, want) {
+		t.Errorf("dashboardParsePendingWaves = %+v, want %+v", got, want)
 	}
-	if got := dashboardPendingPlannedWaves(map[string]any{}); got != nil {
-		t.Errorf("dashboardPendingPlannedWaves(empty) = %+v, want nil", got)
+	if got := dashboardParsePendingWaves(map[string]any{}); got != nil {
+		t.Errorf("dashboardParsePendingWaves(empty) = %+v, want nil", got)
 	}
 }
 
 // TestDashboardExecuteDetail_PlannedWaveNumbersMatchWaves checks that
-// dashboardPlannedWaveNumbers and dashboardPlannedWaves give the same waves
+// dashboardPendingWaveNumbers and dashboardPendingWaveDetails give the same waves
 // in the same order, because dashboardExecuteSteps pairs them by position.
 func TestDashboardExecuteDetail_PlannedWaveNumbersMatchWaves(t *testing.T) {
 	data := map[string]any{
 		"waves":        []any{map[string]any{"number": 2.0}},
 		"plannedWaves": dashPlannedWaves([2]any{4.0, []any{"4"}}, [2]any{2.0, []any{"2"}}, [2]any{3.0, []any{"3"}}, [2]any{1.0, []any{"1"}}),
 	}
-	nums := dashboardPlannedWaveNumbers(data)
+	nums := dashboardPendingWaveNumbers(data)
 	if want := []int{1, 3, 4}; !reflect.DeepEqual(nums, want) {
-		t.Fatalf("dashboardPlannedWaveNumbers = %v, want %v", nums, want)
+		t.Fatalf("dashboardPendingWaveNumbers = %v, want %v", nums, want)
 	}
-	waves := dashboardPlannedWaves(data, map[string]string{}, map[string]bool{})
+	waves := dashboardPendingWaveDetails(data, map[string]string{}, map[string]bool{})
 	if len(waves) != len(nums) {
-		t.Fatalf("dashboardPlannedWaves gave %d waves, want %d", len(waves), len(nums))
+		t.Fatalf("dashboardPendingWaveDetails gave %d waves, want %d", len(waves), len(nums))
 	}
 	for i, w := range waves {
 		if w.Number != nums[i] {
 			t.Errorf("wave %d number = %d, want %d", i, w.Number, nums[i])
 		}
 	}
-	if got := dashboardPlannedWaveNumbers(map[string]any{}); got != nil {
-		t.Errorf("dashboardPlannedWaveNumbers(empty) = %v, want nil", got)
+	if got := dashboardPendingWaveNumbers(map[string]any{}); got != nil {
+		t.Errorf("dashboardPendingWaveNumbers(empty) = %v, want nil", got)
 	}
 }
 

@@ -1571,8 +1571,8 @@ func renderShipReportExecution(w *shipReportWriter, e *ExecutionReportOut) {
 			}
 			if sha == "" {
 				sha = "—"
-			} else if len(sha) > 7 {
-				sha = sha[:7]
+			} else {
+				sha = shortSHA(sha)
 			}
 			w.line("| %d | %s | %d | %s | %s |", wave.Number, shipReportCell(wave.Status), len(wave.Tasks), dur, shipReportCell(sha))
 		}

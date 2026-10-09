@@ -75,7 +75,7 @@ func dashboardExecuteSteps(p *DashboardPipeline, st *state.State) {
 		}
 		stepIdx++
 	}
-	for _, wave := range dashboardPlannedWaves(data, planNames, inWave) {
+	for _, wave := range dashboardPendingWaveDetails(data, planNames, inWave) {
 		all.Waves = append(all.Waves, wave)
 		if stepIdx < len(p.Steps) {
 			p.Steps[stepIdx].Detail = &DashboardStepDetail{Kind: dashboardKindWaves, Waves: []DashboardWave{wave}}
@@ -110,13 +110,13 @@ type dashboardPlannedWave struct {
 	taskIDs []string
 }
 
-// dashboardPendingPlannedWaves returns the plannedWaves entries of data whose
+// dashboardParsePendingWaves returns the plannedWaves entries of data whose
 // number no waves entry has, in ascending number order. It leaves out an
 // entry that is not an object, has no number or a negative one, repeats an
 // earlier number, or has no task ID. A task ID that is not a non-empty string
 // is dropped from its entry. A wave number counts as started when a waves
 // entry has it, whatever the status of that entry.
-func dashboardPendingPlannedWaves(data map[string]any) []dashboardPlannedWave {
+func dashboardParsePendingWaves(data map[string]any) []dashboardPlannedWave {
 	started := map[int]bool{}
 	waves, _ := data["waves"].([]any)
 	for _, raw := range waves {
@@ -161,26 +161,26 @@ func dashboardPendingPlannedWaves(data map[string]any) []dashboardPlannedWave {
 	return out
 }
 
-// dashboardPlannedWaveNumbers returns the numbers of the planned waves that no
+// dashboardPendingWaveNumbers returns the numbers of the planned waves that no
 // waves entry covers yet, in ascending order. It gives one number for each
-// wave that dashboardPlannedWaves returns, in the same order.
-func dashboardPlannedWaveNumbers(data map[string]any) []int {
+// wave that dashboardPendingWaveDetails returns, in the same order.
+func dashboardPendingWaveNumbers(data map[string]any) []int {
 	var nums []int
-	for _, pw := range dashboardPendingPlannedWaves(data) {
+	for _, pw := range dashboardParsePendingWaves(data) {
 		nums = append(nums, pw.number)
 	}
 	return nums
 }
 
-// dashboardPlannedWaves returns one pending wave for each planned wave that no
+// dashboardPendingWaveDetails returns one pending wave for each planned wave that no
 // waves entry covers yet, in ascending number order. A task of such a wave
 // takes its name from planNames and has the status pending. A task that is
 // already in inWave stays out of the wave, so a task shows once. The
 // function adds the normalized id of each task that it puts in a wave to
 // inWave.
-func dashboardPlannedWaves(data map[string]any, planNames map[string]string, inWave map[string]bool) []DashboardWave {
+func dashboardPendingWaveDetails(data map[string]any, planNames map[string]string, inWave map[string]bool) []DashboardWave {
 	var out []DashboardWave
-	for _, pw := range dashboardPendingPlannedWaves(data) {
+	for _, pw := range dashboardParsePendingWaves(data) {
 		wave := DashboardWave{Number: pw.number, Status: StepPending, Tasks: []DashboardTask{}}
 		for _, id := range pw.taskIDs {
 			key := execNormalizeTaskID(id)

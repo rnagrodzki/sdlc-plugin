@@ -41,6 +41,26 @@ func saveFixture(t *testing.T) (root, planPath string) {
 	return root, planPath
 }
 
+// savedFixture builds a git repo whose current branch is branch, with
+// openspec/changes/add-widget/proposal.md committed on it, and a plan file
+// outside the repo with the given content. It returns the repo root and the
+// plan path.
+func savedFixture(t *testing.T, branch, plan string) (root, planPath string) {
+	t.Helper()
+	root = t.TempDir()
+	initGitFixture(t, root)
+	gitCommit(t, root, "init")
+	if branch != "main" {
+		runGit(t, root, "switch", "-c", branch)
+	}
+	writeFile(t, filepath.Join(root, "openspec", "changes", saveChange, "proposal.md"), "# Proposal\n")
+	runGit(t, root, "add", "--", "openspec/changes/"+saveChange+"/")
+	runGit(t, root, "commit", "-m", "docs: add change")
+	planPath = filepath.Join(t.TempDir(), "plan.md")
+	writeFile(t, planPath, plan)
+	return root, planPath
+}
+
 // readSaveFile returns the content of path, failing the test on error.
 func readSaveFile(t *testing.T, path string) string {
 	t.Helper()
@@ -127,6 +147,9 @@ func TestOpenspecSave_CreatesBranchAndSaves(t *testing.T) {
 	}
 	if out.RefsStamped != 1 {
 		t.Errorf("RefsStamped = %d, want 1", out.RefsStamped)
+	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("Warnings = %v, want none", out.Warnings)
 	}
 	for _, want := range []string{
 		"openspec/changes/add-widget/.openspec.yaml",
@@ -259,6 +282,17 @@ func TestOpenspecSave_AlreadySaved(t *testing.T) {
 		t.Errorf("an already call changed the plan:\n%s", got)
 	}
 
+	// git reset unstages the change; the files are then untracked. The
+	// already call stages them again instead of reporting nothing staged.
+	runGit(t, root, "reset", "-q")
+	out, err = openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+	if err != nil {
+		t.Fatalf("openspecSave after git reset: %v", err)
+	}
+	if len(out.StagedFiles) != 3 || out.Next != openspecSaveNextCommit {
+		t.Errorf("after git reset: StagedFiles = %v, Next = %q; want 3 files and the commit step", out.StagedFiles, out.Next)
+	}
+
 	runGit(t, root, "commit", "-m", "docs: add change")
 	out, err = openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
 	if err != nil {
@@ -274,17 +308,53 @@ func TestOpenspecSave_AlreadySaved(t *testing.T) {
 	if out.Summary != wantSummary0 {
 		t.Errorf("Summary = %q, want %q", out.Summary, wantSummary0)
 	}
+
+	// An unstaged edit after the commit is staged by the next call.
+	writeFile(t, filepath.Join(root, "openspec", "changes", saveChange, "proposal.md"), "# Proposal v2\n")
+	out, err = openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+	if err != nil {
+		t.Fatalf("openspecSave after an edit: %v", err)
+	}
+	if !slices.Equal(out.StagedFiles, []string{"openspec/changes/add-widget/proposal.md"}) {
+		t.Errorf("after an edit: StagedFiles = %v, want proposal.md", out.StagedFiles)
+	}
+}
+
+// TestOpenspecSave_AlreadyGuards covers the checks of the already path: a
+// current branch other than the saved branch, and a missing change dir on
+// the saved branch, each fail with a DomainError and stage nothing.
+func TestOpenspecSave_AlreadyGuards(t *testing.T) {
+	t.Run("other branch", func(t *testing.T) {
+		root, planPath := savedFixture(t, "main", saveSavedLine+"\n")
+		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		de := wantSaveDomain(t, err, "git switch openspec/add-widget, then run again.")
+		if !strings.Contains(de.Msg, "the current branch is main") {
+			t.Errorf("Msg = %q, want it to name the current branch", de.Msg)
+		}
+	})
+	t.Run("missing change dir", func(t *testing.T) {
+		root := t.TempDir()
+		initGitFixture(t, root)
+		gitCommit(t, root, "init")
+		runGit(t, root, "switch", "-c", saveTarget)
+		planPath := filepath.Join(t.TempDir(), "plan.md")
+		writeFile(t, planPath, saveSavedLine+"\n")
+		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		de := wantSaveDomain(t, err, "Restore openspec/changes/add-widget/ on branch openspec/add-widget")
+		if !strings.Contains(de.Msg, "does not exist") {
+			t.Errorf("Msg = %q, want it to say the change dir does not exist", de.Msg)
+		}
+		if got := gitOutTrim(t, root, "diff", "--cached", "--name-only"); got != "" {
+			t.Errorf("staged files = %q, want none", got)
+		}
+	})
 }
 
 // TestOpenspecSave_AlreadySavedBranchFallback covers a Saved line with no
 // branch part: the output names openspec/<change>, in the branch field and in
 // the summary.
 func TestOpenspecSave_AlreadySavedBranchFallback(t *testing.T) {
-	root := t.TempDir()
-	initGitFixture(t, root)
-	gitCommit(t, root, "init")
-	planPath := filepath.Join(t.TempDir(), "plan.md")
-	writeFile(t, planPath, "# Plan\n**OpenSpec-Saved:** openspec/changes/add-widget/\n")
+	root, planPath := savedFixture(t, saveTarget, "# Plan\n**OpenSpec-Saved:** openspec/changes/add-widget/\n")
 
 	out, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
 	if err != nil {
@@ -300,14 +370,9 @@ func TestOpenspecSave_AlreadySavedBranchFallback(t *testing.T) {
 }
 
 // TestOpenspecSave_AlreadySavedNamedBranch covers a Saved line with a branch
-// part: the output returns that branch as written, not openspec/<change>, even
-// though the repo is on main.
+// part: the output returns that branch as written, not openspec/<change>.
 func TestOpenspecSave_AlreadySavedNamedBranch(t *testing.T) {
-	root := t.TempDir()
-	initGitFixture(t, root)
-	gitCommit(t, root, "init")
-	planPath := filepath.Join(t.TempDir(), "plan.md")
-	writeFile(t, planPath, "# Plan\n**OpenSpec-Saved:** openspec/changes/add-widget/ (branch openspec/other)\n")
+	root, planPath := savedFixture(t, "openspec/other", "# Plan\n**OpenSpec-Saved:** openspec/changes/add-widget/ (branch openspec/other)\n")
 
 	out, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
 	if err != nil {
@@ -335,20 +400,35 @@ func TestOpenspecSave_InputErrors(t *testing.T) {
 	tests := []struct {
 		name       string
 		planPath   string
+		msg        string
 		suggestion string
 	}{
-		{"relative path", "plan.md", "Pass the absolute path of the plan file."},
-		{"unreadable plan", filepath.Join(dir, "missing.md"), "Pass the absolute path of the plan file."},
-		{"no header", plan("none.md", "# Plan\n"), "Run /sdlc:plan with Create OpenSpec change first."},
-		{"both headers", plan("both.md", matPlanHeaders(saveChange)+saveSavedLine+"\n"), "Keep one header line."},
-		{"invalid staged name", plan("bad.md", "**OpenSpec-Staging:** .sdlc-v2/openspec-staging/Bad_Name/\n"), "Rename the change to lowercase letters"},
-		{"invalid saved name", plan("badsaved.md", "**OpenSpec-Saved:** openspec/changes/Bad_Name/\n"), "Rename the change to lowercase letters"},
+		{"relative path", "plan.md", `planPath "plan.md" is not an absolute path`, "Pass the absolute path of the plan file."},
+		{"missing plan", filepath.Join(dir, "missing.md"), "plan file does not exist", "Check that the file exists at that path."},
+		{"no header", plan("none.md", "# Plan\n"), "has no **OpenSpec-Staging:** or **OpenSpec-Saved:** header line", "Run /sdlc:plan with Create OpenSpec change first."},
+		{"both headers", plan("both.md", matPlanHeaders(saveChange)+saveSavedLine+"\n"), "has both an **OpenSpec-Staging:** and an **OpenSpec-Saved:** header line", "Keep one header line."},
+		{"invalid staged name", plan("bad.md", "**OpenSpec-Staging:** .sdlc-v2/openspec-staging/Bad_Name/\n"), `invalid change name "Bad_Name"`, "Rename the change to lowercase letters"},
+		{"invalid saved name", plan("badsaved.md", "**OpenSpec-Saved:** openspec/changes/Bad_Saved/\n"), `invalid change name "Bad_Saved"`, "Rename the change to lowercase letters"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := openspecSave(dir, OpenspecSaveIn{PlanPath: tc.planPath})
-			wantSaveDomain(t, err, tc.suggestion)
+			de := wantSaveDomain(t, err, tc.suggestion)
+			if !strings.HasPrefix(de.Msg, "openspec_save: ") || !strings.Contains(de.Msg, tc.msg) {
+				t.Errorf("Msg = %q, want an openspec_save: prefix and %q", de.Msg, tc.msg)
+			}
 		})
+	}
+}
+
+// TestOpenspecSave_UnreadablePlan covers a plan path that exists but cannot
+// be read as a file (a directory): an InfraError with a read-access hint,
+// not the missing-file DomainError.
+func TestOpenspecSave_UnreadablePlan(t *testing.T) {
+	_, err := openspecSave(t.TempDir(), OpenspecSaveIn{PlanPath: t.TempDir()})
+	ie := wantSaveInfra(t, err, "names a readable file")
+	if !strings.Contains(ie.Msg, "openspec_save: read plan: ") {
+		t.Errorf("Msg = %q, want the read plan message", ie.Msg)
 	}
 }
 
@@ -520,11 +600,31 @@ func TestOpenspecSave_MaterializeFails(t *testing.T) {
 	if strings.Contains(de.Suggestion, "execute_state init") {
 		t.Errorf("Suggestion = %q, must not name execute_state init", de.Suggestion)
 	}
+	const wantNote = "The save created and switched to branch openspec/add-widget. Stay on openspec/add-widget to call openspec_save again."
+	if !strings.HasSuffix(de.Suggestion, wantNote) {
+		t.Errorf("Suggestion = %q, want it to end with %q", de.Suggestion, wantNote)
+	}
 	if got := gitOutTrim(t, root, "branch", "--show-current"); got != saveTarget {
 		t.Errorf("current branch = %q, want %q (the branch persists)", got, saveTarget)
 	}
 	if got := readSaveFile(t, planPath); got != matPlanHeaders(saveChange) {
 		t.Errorf("plan changed:\n%s", got)
+	}
+}
+
+// TestOpenspecSave_MaterializeFailsOnChangeBranch covers the same failure
+// when the save started on openspec/<change>: no branch was created, so the
+// Suggestion has no branch note.
+func TestOpenspecSave_MaterializeFailsOnChangeBranch(t *testing.T) {
+	root, planPath := saveFixture(t)
+	runGit(t, root, "switch", "-c", saveTarget)
+	if err := os.RemoveAll(filepath.Join(root, ".sdlc-v2", "openspec-staging", saveChange)); err != nil {
+		t.Fatal(err)
+	}
+	_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+	de := wantSaveDomain(t, err, "call openspec_save again")
+	if strings.Contains(de.Suggestion, "created and switched") {
+		t.Errorf("Suggestion = %q, want no branch note", de.Suggestion)
 	}
 }
 
@@ -580,6 +680,10 @@ func TestOpenspecSave_NoTasksFile(t *testing.T) {
 	if !slices.Equal(out.StagedFiles, []string{"openspec/changes/add-widget/proposal.md"}) {
 		t.Errorf("StagedFiles = %v, want proposal.md only", out.StagedFiles)
 	}
+	wantWarnings := []string{"openspec/changes/add-widget/tasks.md does not exist, so no task refs were stamped."}
+	if !slices.Equal(out.Warnings, wantWarnings) {
+		t.Errorf("Warnings = %v, want %v", out.Warnings, wantWarnings)
+	}
 }
 
 // TestOpenspecSave_AddFails covers a failure of the fourth write, git add:
@@ -602,20 +706,22 @@ func TestOpenspecSave_AddFails(t *testing.T) {
 }
 
 // TestOpenspecSave_PlanWriteFailsThenRecovers covers a failure of the last
-// write, the plan header: the change is staged on the branch, the plan keeps
-// its Staging line, and a second call after the fix returns already and
-// rewrites the header.
+// write, the plan header: the plan folder is read-only, so the temp file of
+// the atomic write cannot be created. The change is staged on the branch, the
+// plan keeps its Staging line, and a second call after the fix returns
+// already and rewrites the header.
 func TestOpenspecSave_PlanWriteFailsThenRecovers(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file modes")
 	}
 	root, planPath := saveFixture(t)
-	if err := os.Chmod(planPath, 0o444); err != nil {
+	planDir := filepath.Dir(planPath)
+	if err := os.Chmod(planDir, 0o555); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := os.Chmod(planPath, 0o644); err != nil {
-			t.Errorf("restore mode of %s: %v", planPath, err)
+		if err := os.Chmod(planDir, 0o755); err != nil {
+			t.Errorf("restore mode of %s: %v", planDir, err)
 		}
 	})
 
@@ -631,7 +737,7 @@ func TestOpenspecSave_PlanWriteFailsThenRecovers(t *testing.T) {
 		t.Errorf("plan changed:\n%s", got)
 	}
 
-	if err := os.Chmod(planPath, 0o644); err != nil {
+	if err := os.Chmod(planDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	out, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
@@ -644,6 +750,51 @@ func TestOpenspecSave_PlanWriteFailsThenRecovers(t *testing.T) {
 	if !strings.Contains(readSaveFile(t, planPath), saveSavedLine) {
 		t.Error("plan header not rewritten on the second call")
 	}
+}
+
+// TestOpenspecSave_PlanWriteKeepsModeAndLink covers the atomic plan rewrite:
+// the plan keeps its permission bits, and a symlinked plan path stays a
+// link while the file it points to gets the Saved line.
+func TestOpenspecSave_PlanWriteKeepsModeAndLink(t *testing.T) {
+	t.Run("mode", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		if err := os.Chmod(planPath, 0o640); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath}); err != nil {
+			t.Fatalf("openspecSave: %v", err)
+		}
+		info, err := os.Stat(planPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != 0o640 {
+			t.Errorf("plan mode = %o, want 640", got)
+		}
+		if !strings.Contains(readSaveFile(t, planPath), saveSavedLine) {
+			t.Error("plan header not rewritten")
+		}
+	})
+	t.Run("symlink", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		link := filepath.Join(t.TempDir(), "link.md")
+		if err := os.Symlink(planPath, link); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := openspecSave(root, OpenspecSaveIn{PlanPath: link}); err != nil {
+			t.Fatalf("openspecSave: %v", err)
+		}
+		info, err := os.Lstat(link)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("plan path mode = %v, want a symlink", info.Mode())
+		}
+		if !strings.Contains(readSaveFile(t, planPath), saveSavedLine) {
+			t.Error("link target not rewritten")
+		}
+	})
 }
 
 // TestOpenspecSave_StagedFilesFails covers a failed git diff --cached, both
@@ -659,11 +810,7 @@ func TestOpenspecSave_StagedFilesFails(t *testing.T) {
 		}
 	})
 	t.Run("already", func(t *testing.T) {
-		root := t.TempDir()
-		initGitFixture(t, root)
-		gitCommit(t, root, "init")
-		planPath := filepath.Join(t.TempDir(), "plan.md")
-		writeFile(t, planPath, saveSavedLine+"\n")
+		root, planPath := savedFixture(t, saveTarget, saveSavedLine+"\n")
 		failSaveGitOn(t, "diff")
 		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
 		wantSaveInfra(t, err, openspecSaveGitSuggestion)

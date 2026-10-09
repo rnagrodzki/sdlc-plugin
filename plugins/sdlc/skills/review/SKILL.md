@@ -27,7 +27,9 @@ Parse `$ARGUMENTS`:
 - `--base <branch>` → forwarded as `target`.
 - `--dry-run` → forwarded as `dryRun: true` (no ledger is written), then handled by Step 1 below.
 
-**Scope note:** `review_prepare`'s only inputs are `target`, `skipConfigCheck`, and `dryRun` — scope
+**Scope note:** `review_prepare`'s manifest-mode inputs are
+`target`, `skipConfigCheck`, and `dryRun`. Save mode (Step 7) takes `saveReview` and
+`content` instead. Scope
 (`all` / `committed` / `staged` / `working` / `worktree`) is read by the tool from the
 `scope` key of the `[review]` section in `.sdlc-v2/local.toml` (default `all`), not from a CLI
 flag. This port does not expose `--committed` / `--staged` / `--working` / `--worktree` /
@@ -298,9 +300,9 @@ poll still lists it in `stalledWorkers` or `missingWorkers`.
 **Stopping a skipped worker:** a skipped worker can still run and call `ledger_checkout`
 later, and the dashboard reads the ledger. Stop it with `TaskStop`. Under a nested dispatch
 (for example, review dispatched by `/ship`), `TaskStop` can fail with an
-ownership/authorization error. That is an expected fallback, not a blocker: do not retry.
-Add the worker to the unstoppable list. Name each worker that could not be stopped in the
-Step 5 comment and in the final output as "possibly still running; a later ledger entry for
+ownership/authorization error. That is an expected fallback, not a blocker. Do not retry
+`TaskStop` after any failure, whatever the error. Add the worker to the unstoppable list.
+Name each worker that could not be stopped in the Step 5 comment and in the final output as "possibly still running; a later ledger entry for
 it was not consolidated".
 
 **Recording a skipped worker:** `ledger_skip` sets the stop reason of the worker's dimension in
@@ -564,7 +566,8 @@ ownership/authorization error under a `/ship` dispatch), do not retry, add the w
 unstoppable list, and name the worker in the output as possibly still running. Skip this
 when Step 2 dispatched nothing (for example, `manifest.waves` is empty). A wave that never
 started has no worker and needs no `TaskStop`. Do not call `TaskStop` again for a worker
-that Step 3 already stopped.
+on Step 3's stopped list or on the unstoppable list, also when its first `TaskStop` failed.
+Step 9 does not call `ledger_skip`.
 
 Then remove the manifest (skip a path the run never received, e.g. when `review_prepare`
 itself failed):
@@ -600,12 +603,15 @@ writes only to the old run's ledger, which the new run does not read.
 
 ## Routes
 
-The dry-run route, the zero-wave route, and the stall routes each reach Step 9.
+Every route ends in Step 9. A route that continues the wave loop or goes to Step 4 reaches
+Step 9 after the last step it runs.
 
 | Route | Exit |
 |---|---|
 | dry run | Step 1, then Step 9 cleanup, no ledger |
 | zero waves | Step 4 with zero findings |
+| error stop (a step fails and the run cannot go on) | Step 9: `TaskStop` pass for every dispatched worker with no `done` entry, a failed stop adds the worker to the unstoppable list, `diff_dir` is kept while that list is not empty. No `ledger_skip` call |
+| interruption | Step 9 as for an error stop, when this session still has the task IDs. Else tell the user that old workers can still run. No `ledger_skip` call |
 | worker missing twice, `TaskStop` succeeds | `ledger_skip` reason `missing`, continue the wave loop |
 | worker stalled twice, `TaskStop` succeeds | `ledger_skip` reason `stalled`, continue the wave loop |
 | worker stalled or missing twice, `TaskStop` fails or no task ID (for example nested under `/ship`) | `ledger_skip` reason `unstopped`, add the worker to the unstoppable list (Step 3), continue the wave loop |
@@ -632,7 +638,8 @@ The dry-run route, the zero-wave route, and the stall routes each reach Step 9.
   missing) is named in the Step 5 comment, and every worker that `TaskStop` could not stop is
   named in the output
 - Do NOT skip the `ledger_skip` call for a worker that Step 3 stops: it is the only way the
-  dashboard learns why the dimension has no result
+  dashboard learns why that dimension has no result. A worker that Step 9 stops gets no
+  `ledger_skip` call
 - Do NOT delete the manifest or `diff_dir` in Step 9 before the `TaskStop` pass, and do NOT
   delete `diff_dir` while a worker is on the unstoppable list
 - Do NOT consolidate the findings of a worker that Step 3 stopped or skipped

@@ -3,7 +3,6 @@ package hooks
 import (
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -47,7 +46,6 @@ func recordPermissionWait(ctx HookCtx, event Event) (Output, error) {
 		Branch:    branch,
 		Header:    permissionWaitHeader,
 		Text:      message,
-		AskedAt:   time.Now().UTC().Format(time.RFC3339),
 	})
 	return silent, err
 }

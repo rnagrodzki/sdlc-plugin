@@ -431,30 +431,60 @@ func TestExecState_Init_PlannedWavesSkipsTaskIDCheckWithoutPlannedTaskIds(t *tes
 	}
 }
 
+// TestExecState_Init_PlannedWavesPartialCoverage covers partial coverage: the
+// schedule is display data only, so init accepts waves that leave out some
+// plannedTaskIds and stores them as given.
+func TestExecState_Init_PlannedWavesPartialCoverage(t *testing.T) {
+	root := t.TempDir()
+	seedInitConfig(t, root)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:           "init",
+		Branch:           "feat/test",
+		Quality:          "balanced",
+		PlannedTaskIds:   []string{"1", "2", "3"},
+		PlannedWavesJSON: `[{"number":1,"taskIds":["2"]}]`,
+	}, fixedClock(testNow)); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	data := readExecState(t, root, "feat/test")
+	want := []any{map[string]any{"number": float64(1), "taskIds": []any{"2"}}}
+	if !reflect.DeepEqual(data["plannedWaves"], want) {
+		t.Errorf("plannedWaves = %#v, want %#v", data["plannedWaves"], want)
+	}
+}
+
 // TestExecState_Init_PlannedWavesRejected covers each plannedWavesJson error:
-// init returns a DomainError with the matching Suggestion and writes no state
-// file.
+// init returns a DomainError with the matching Msg and Suggestion and writes
+// no state file.
 func TestExecState_Init_PlannedWavesRejected(t *testing.T) {
 	const shape = "Pass plannedWavesJson as a JSON-encoded array, for example '[{\"number\":1,\"taskIds\":[\"2\"]}]'."
+	const notArray = "plannedWavesJson is not a JSON array of {number, taskIds}: "
+	const oneWave = "Put each task ID in one wave, once."
 	cases := []struct {
 		name       string
 		raw        string
+		wantMsg    string // substring of the DomainError Msg
 		suggestion string
 	}{
-		{"not JSON", `not json`, shape},
-		{"object, not array", `{"number":1,"taskIds":["2"]}`, shape},
-		{"null", `null`, shape},
-		{"unknown key", `[{"number":1,"tasks":["2"]}]`, shape},
-		{"missing number", `[{"taskIds":["2"]}]`, shape},
-		{"string number", `[{"number":"1","taskIds":["2"]}]`, shape},
-		{"trailing data", `[{"number":1,"taskIds":["2"]}] []`, shape},
-		{"stray closing bracket", `[{"number":1,"taskIds":["2"]}]]`, shape},
-		{"stray closing brace", `[{"number":1,"taskIds":["2"]}]}`, shape},
-		{"negative number", `[{"number":-1,"taskIds":["2"]}]`, "Use 0 for the pre-wave tasks and 1 or more for each wave."},
-		{"repeated number", `[{"number":1,"taskIds":["2"]},{"number":1,"taskIds":["3"]}]`, "Give each wave number once."},
-		{"empty taskIds", `[{"number":1,"taskIds":[]}]`, "Leave out a wave that has no tasks."},
-		{"missing taskIds", `[{"number":1}]`, "Leave out a wave that has no tasks."},
-		{"unknown task ID", `[{"number":1,"taskIds":["2","9"]}]`, "Use the task IDs from plannedTaskIds, for example \"3\"."},
+		{"not JSON", `not json`, notArray + "invalid character", shape},
+		{"object, not array", `{"number":1,"taskIds":["2"]}`, notArray + "json: cannot unmarshal object", shape},
+		{"null", `null`, notArray + "got null", shape},
+		{"unknown key", `[{"number":1,"tasks":["2"]}]`, notArray + `json: unknown field "tasks"`, shape},
+		{"missing number", `[{"taskIds":["2"]}]`, "plannedWavesJson entry 0 has no number", shape},
+		{"string number", `[{"number":"1","taskIds":["2"]}]`, notArray + "json: cannot unmarshal string", shape},
+		{"trailing data", `[{"number":1,"taskIds":["2"]}] []`, notArray + "extra data after the array", shape},
+		{"stray closing bracket", `[{"number":1,"taskIds":["2"]}]]`, notArray + "extra data after the array: invalid character ']'", shape},
+		{"stray closing brace", `[{"number":1,"taskIds":["2"]}]}`, notArray + "extra data after the array: invalid character '}'", shape},
+		{"empty array", `[]`, "plannedWavesJson has no waves", "Leave out plannedWavesJson when the schedule has no waves."},
+		{"negative number", `[{"number":-1,"taskIds":["2"]}]`, "plannedWavesJson wave number -1 is below 0", "Use 0 for the pre-wave tasks and 1 or more for each wave."},
+		{"repeated number", `[{"number":1,"taskIds":["2"]},{"number":1,"taskIds":["3"]}]`, "plannedWavesJson gives wave number 1 more than once", "Give each wave number once."},
+		{"empty taskIds", `[{"number":1,"taskIds":[]}]`, "plannedWavesJson wave 1 has no taskIds", "Leave out a wave that has no tasks."},
+		{"missing taskIds", `[{"number":1}]`, "plannedWavesJson wave 1 has no taskIds", "Leave out a wave that has no tasks."},
+		{"unknown task ID", `[{"number":1,"taskIds":["2","9"]}]`, `plannedWavesJson wave 1 names task "9", which is not in plannedTaskIds`, "Use the task IDs from plannedTaskIds, for example \"3\"."},
+		{"task ID in two waves", `[{"number":1,"taskIds":["2"]},{"number":2,"taskIds":["3","2"]}]`, `plannedWavesJson names task "2" in wave 1 and again in wave 2`, oneWave},
+		{"task ID twice in one wave", `[{"number":1,"taskIds":["2","2"]}]`, `plannedWavesJson names task "2" in wave 1 and again in wave 1`, oneWave},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -471,6 +501,9 @@ func TestExecState_Init_PlannedWavesRejected(t *testing.T) {
 			var de *mcpserver.DomainError
 			if !errors.As(err, &de) {
 				t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+			}
+			if !strings.Contains(de.Msg, tc.wantMsg) {
+				t.Errorf("Msg = %q, want it to contain %q", de.Msg, tc.wantMsg)
 			}
 			if de.Suggestion != tc.suggestion {
 				t.Errorf("Suggestion = %q, want %q", de.Suggestion, tc.suggestion)
@@ -9801,7 +9834,7 @@ func TestExecState_LedgerSkip_SetsStopReason(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ledger_skip: %v", err)
 			}
-			want := map[string]any{"ok": true, "next": "Continue Step 3 of review."}
+			want := map[string]any{"ok": true, "workerId": "security", "stopReason": reason, "next": "Continue Step 3 of review."}
 			if !reflect.DeepEqual(result, want) {
 				t.Errorf("result = %v, want %v", result, want)
 			}
@@ -9835,14 +9868,23 @@ func TestExecState_LedgerSkip_ReplacesEarlierReasonAndKeepsOtherWorkers(t *testi
 	root := t.TempDir()
 	seedLedgerSkipRun(t, root)
 
-	steps := []struct{ worker, reason string }{
-		{"docs-review", reviewStopStalled},
-		{"performance", reviewStopMissing},
-		{"docs-review", reviewStopUnstopped},
+	steps := []struct{ worker, reason, wantPrior string }{
+		{"docs-review", reviewStopStalled, ""},
+		{"performance", reviewStopMissing, ""},
+		{"docs-review", reviewStopUnstopped, reviewStopStalled},
 	}
 	for _, s := range steps {
-		if _, err := ledgerSkip(root, s.worker, s.reason); err != nil {
+		result, err := ledgerSkip(root, s.worker, s.reason)
+		if err != nil {
 			t.Fatalf("ledger_skip %s %s: %v", s.worker, s.reason, err)
+		}
+		m := result.(map[string]any)
+		prior, present := m["priorStopReason"]
+		if s.wantPrior == "" && present {
+			t.Errorf("ledger_skip %s %s: priorStopReason = %v, want the key absent", s.worker, s.reason, prior)
+		}
+		if s.wantPrior != "" && prior != s.wantPrior {
+			t.Errorf("ledger_skip %s %s: priorStopReason = %v, want %q", s.worker, s.reason, prior, s.wantPrior)
 		}
 	}
 
@@ -9857,7 +9899,7 @@ func TestExecState_LedgerSkip_ReplacesEarlierReasonAndKeepsOtherWorkers(t *testi
 	}
 }
 
-// TestExecState_LedgerSkip_TouchesNoWorkerFile checks that ledger_skip leaves the ledger_status output, the worker files and the entries of the ledger folder unchanged.
+// TestExecState_LedgerSkip_TouchesNoWorkerFile checks that ledger_skip leaves the ledger_status output, the worker files and the entries of the ledger folder unchanged, and returns a warning only for the worker that already checked out.
 func TestExecState_LedgerSkip_TouchesNoWorkerFile(t *testing.T) {
 	root := t.TempDir()
 	seedLedgerSkipRun(t, root)
@@ -9890,10 +9932,20 @@ func TestExecState_LedgerSkip_TouchesNoWorkerFile(t *testing.T) {
 	}
 	namesBefore := ledgerDirNames(t, root, ledgerSkipRunID)
 
-	// One worker with a ledger file, one without.
-	for _, w := range []string{"security", "performance"} {
-		if _, err := ledgerSkip(root, w, reviewStopStalled); err != nil {
+	// One worker checked out, one checked in only, one without a ledger file.
+	for _, w := range []string{"docs-review", "security", "performance"} {
+		result, err := ledgerSkip(root, w, reviewStopStalled)
+		if err != nil {
 			t.Fatalf("ledger_skip %s: %v", w, err)
+		}
+		warnings, present := result.(map[string]any)["warnings"]
+		if w == "docs-review" {
+			want := []string{"worker already checked out; the dashboard shows it as done and ignores the stop reason"}
+			if !reflect.DeepEqual(warnings, want) {
+				t.Errorf("ledger_skip %s: warnings = %v, want %v", w, warnings, want)
+			}
+		} else if present {
+			t.Errorf("ledger_skip %s: warnings = %v, want the key absent", w, warnings)
 		}
 	}
 
@@ -9918,6 +9970,32 @@ func TestExecState_LedgerSkip_TouchesNoWorkerFile(t *testing.T) {
 	}
 }
 
+// TestExecState_LedgerSkip_SharedWorkerID checks that when 2 dimensions of
+// run.meta share a workerId (review_prepare gives "Docs Review" and
+// "docs-review" the same id), ledger_skip sets the stopReason on both and on
+// no other dimension.
+func TestExecState_LedgerSkip_SharedWorkerID(t *testing.T) {
+	root := t.TempDir()
+	waves := [][]string{{"Docs Review", "docs-review"}, {"security"}}
+	if err := writeReviewRunMeta(root, "feat/x", ledgerSkipRunID, testNow, waves); err != nil {
+		t.Fatalf("seed run.meta: %v", err)
+	}
+
+	if _, err := ledgerSkip(root, "docs-review", reviewStopMissing); err != nil {
+		t.Fatalf("ledger_skip: %v", err)
+	}
+
+	meta, _ := readLedgerRunMeta(t, root, ledgerSkipRunID)
+	got := map[string]string{}
+	for _, d := range meta.Dimensions {
+		got[d.Name] = d.StopReason
+	}
+	want := map[string]string{"Docs Review": reviewStopMissing, "docs-review": reviewStopMissing, "security": ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("stop reasons by dimension = %v, want %v", got, want)
+	}
+}
+
 // TestExecState_LedgerSkip_MissingRunMeta checks that ledger_skip without a run.meta returns a DomainError that points at review_prepare and creates no ledger folder.
 func TestExecState_LedgerSkip_MissingRunMeta(t *testing.T) {
 	root := t.TempDir()
@@ -9928,7 +10006,10 @@ func TestExecState_LedgerSkip_MissingRunMeta(t *testing.T) {
 	if !errors.As(err, &de) {
 		t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
 	}
-	const wantSuggestion = "run.meta is written by review_prepare. Call review_prepare first"
+	if want := "run.meta not found for runId " + ledgerSkipRunID; de.Msg != want {
+		t.Errorf("Msg = %q, want %q", de.Msg, want)
+	}
+	const wantSuggestion = "Pass the run_id from the review_prepare manifest of this review run. A dry run or a run with zero waves has no run.meta."
 	if de.Suggestion != wantSuggestion {
 		t.Errorf("Suggestion = %q, want %q", de.Suggestion, wantSuggestion)
 	}
@@ -9951,8 +10032,12 @@ func TestExecState_LedgerSkip_RunMetaWithoutDimensions(t *testing.T) {
 	if !errors.As(err, &de) {
 		t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
 	}
-	if !strings.Contains(de.Suggestion, "Call review_prepare first") {
-		t.Errorf("Suggestion = %q, want it to tell the caller to call review_prepare", de.Suggestion)
+	if want := `workerId "security" is not a planned dimension of run ` + ledgerSkipRunID; de.Msg != want {
+		t.Errorf("Msg = %q, want %q", de.Msg, want)
+	}
+	const wantSuggestion = "run.meta holds no planned dimensions: a ledger_checkin wrote it, not review_prepare. Pass the run_id from the review_prepare manifest of this review run."
+	if de.Suggestion != wantSuggestion {
+		t.Errorf("Suggestion = %q, want %q", de.Suggestion, wantSuggestion)
 	}
 	if after := ledgerSkipMetaBytes(t, root); string(after) != string(before) {
 		t.Errorf("run.meta changed:\nbefore %s\nafter  %s", before, after)
@@ -9988,41 +10073,49 @@ func TestExecState_LedgerSkip_InvalidInput(t *testing.T) {
 	tests := []struct {
 		name           string
 		in             ExecuteStateIn
+		wantMsg        string
 		wantSuggestion string
 	}{
 		{
 			name:           "empty runId",
 			in:             ExecuteStateIn{WorkerID: "security", Reason: reviewStopStalled},
+			wantMsg:        "runId is required",
 			wantSuggestion: "runId",
 		},
 		{
 			name:           "empty workerId",
 			in:             ExecuteStateIn{RunID: ledgerSkipRunID, Reason: reviewStopStalled},
+			wantMsg:        "workerId is required",
 			wantSuggestion: "workerId",
 		},
 		{
 			name:           "unsafe runId",
 			in:             ExecuteStateIn{RunID: "../x", WorkerID: "security", Reason: reviewStopStalled},
+			wantMsg:        `runId contains invalid characters (expected only [A-Za-z0-9_-]): "../x"`,
 			wantSuggestion: "runId",
 		},
 		{
 			name:           "unsafe workerId",
 			in:             ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "a/b", Reason: reviewStopStalled},
+			wantMsg:        `workerId contains invalid characters (expected only [A-Za-z0-9_-]): "a/b"`,
 			wantSuggestion: "workerId",
 		},
 		{
 			name:           "empty reason",
 			in:             ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "security"},
+			wantMsg:        `reason "" is not a stop reason`,
 			wantSuggestion: "stalled, missing, unstopped",
 		},
 		{
 			name:           "unknown reason",
 			in:             ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "security", Reason: "bogus"},
+			wantMsg:        `reason "bogus" is not a stop reason`,
 			wantSuggestion: "stalled, missing, unstopped",
 		},
 		{
 			name:           "reason in another case",
 			in:             ExecuteStateIn{RunID: ledgerSkipRunID, WorkerID: "security", Reason: "Stalled"},
+			wantMsg:        `reason "Stalled" is not a stop reason`,
 			wantSuggestion: "stalled, missing, unstopped",
 		},
 	}
@@ -10038,6 +10131,9 @@ func TestExecState_LedgerSkip_InvalidInput(t *testing.T) {
 			var de *mcpserver.DomainError
 			if !errors.As(err, &de) {
 				t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+			}
+			if de.Msg != tt.wantMsg {
+				t.Errorf("Msg = %q, want %q", de.Msg, tt.wantMsg)
 			}
 			if !strings.Contains(de.Suggestion, tt.wantSuggestion) {
 				t.Errorf("Suggestion = %q, want it to contain %q", de.Suggestion, tt.wantSuggestion)

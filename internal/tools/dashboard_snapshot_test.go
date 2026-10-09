@@ -437,6 +437,8 @@ func TestDashboardSnapshot_IssueSources(t *testing.T) {
 		want := []DashboardIssue{
 			{Source: "review", Severity: "medium", Text: "nil map write", File: "a.go", Line: "12", Ref: "code"},
 			{Source: "review", Severity: "low", Text: "typo", File: "b.go", Line: "3", Ref: "code"},
+			// Markdown findings count as none, and a state issue says so.
+			{Source: "state", Severity: "medium", Text: "the findings of worker file docs.json are not a JSON list: the dimension shows no findings"},
 		}
 		if !reflect.DeepEqual(p.Issues, want) {
 			t.Errorf("issues = %+v, want %+v", p.Issues, want)

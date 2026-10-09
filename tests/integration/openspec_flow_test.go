@@ -332,6 +332,12 @@ func TestOpenspecSaveFlow(t *testing.T) {
 		t.Fatalf("openspec_save fields = %v, want change=%s branch=%s branchCreated=true materialized=created; body:\n%s",
 			fields, change, target, save.Body)
 	}
+	// The staged change has no tasks.md: the save succeeds and says so
+	// under ## Warnings.
+	wantWarning := "- openspec/changes/" + change + "/tasks.md does not exist, so no task refs were stamped."
+	if !strings.Contains(save.Body, "## Warnings\n"+wantWarning) {
+		t.Fatalf("openspec_save body has no warning %q:\n%s", wantWarning, save.Body)
+	}
 	if got := runGit(t, repo, "branch", "--show-current"); got != target {
 		t.Fatalf("current branch = %q, want %q", got, target)
 	}

@@ -146,15 +146,19 @@ var (
 // email) to s. Exported for internal/tools' user-input evidence.
 func Redact(s string) string { return redact(s) }
 
-// TruncateRunes cuts s to at most max runes, appending a trailing "…" when
-// truncation actually happens. Operates on runes (not bytes) so a multi-byte
-// character is never split mid-sequence.
-func TruncateRunes(s string, max int) string {
+// TruncateRunes returns s unchanged when it holds at most n runes. Otherwise it
+// keeps the first n runes and appends a trailing "…", so a cut result holds
+// n+1 runes. A negative n counts as 0. It operates on runes (not bytes) so a
+// multi-byte character is never split mid-sequence.
+func TruncateRunes(s string, n int) string {
+	if n < 0 {
+		n = 0
+	}
 	runes := []rune(s)
-	if len(runes) <= max {
+	if len(runes) <= n {
 		return s
 	}
-	return string(runes[:max]) + "…"
+	return string(runes[:n]) + "…"
 }
 
 // redact applies all redactor patterns to s in source order.

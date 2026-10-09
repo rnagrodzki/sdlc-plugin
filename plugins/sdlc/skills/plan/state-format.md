@@ -63,7 +63,28 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
     "iteration": 1,
     "expectedWriters": ["lane-static-structural-r1"],
     "updatedAt": "2026-05-09T14:10:00.000Z"
-  }
+  },
+  "planTiming": {
+    "startedAt": "2026-05-09T14:00:00Z",
+    "lastModifiedAt": "2026-05-09T14:09:40Z",
+    "durationMs": 580000
+  },
+  "guardrailResults": [
+    { "id": "G14", "status": "pass", "detail": "No error-severity guardrail broken" }
+  ],
+  "reviewRounds": [
+    { "round": 1, "mergedStatus": "Issues Found", "found": 1, "fixed": 1,
+      "lenses": [{ "name": "risk", "verdict": "Issues Found" }],
+      "findings": [{ "id": "f-3a9c1e07", "fixed": true }] }
+  ],
+  "reviewOutcome": {
+    "findings": [
+      { "id": "f-9d01aa42", "text": "Missing test for the stop route", "choice": "accepted", "reason": "" }
+    ]
+  },
+  "criticalDecisions": [
+    { "key": "storage", "choice": "state file", "rejected": [], "reason": "No new dependency", "at": "2026-05-09T14:11:50Z" }
+  ]
 }
 ```
 
@@ -76,6 +97,9 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
 | `checkpoint`    | object \| absent | The plan run's current step/iteration/expected-writers, replaced on every `plan_mark({marker: "checkpoint"})` call. Absent until the first checkpoint marker is written. See [checkpoint](#checkpoint) below. |
 | `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`, and an optional `findings`. Upserted by `plan_mark({marker: "review-round"})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
 | `reviewOutcome` | object \| absent | The user's answer to each finding still open at the review-loop limit. Replaced on every `plan_mark({marker: "review-outcome"})` call. Absent until the first call. See [reviewOutcome](#reviewoutcome) below. |
+| `planTiming` | object \| absent | `startedAt` (the `skillInvoked` time), `lastModifiedAt` (the plan file's modification time), and `durationMs` (the time between them). Rewritten by every `plan_mark` call, before its write (function `refreshPlanTiming`). The same step also rewrites `planFilePath` as an absolute, cleaned path. Left as it is when `skillInvoked` or `planFilePath` is missing, or when the plan file cannot be read. Read by ship's report step. |
+| `guardrailResults` | array \| absent | One `{ id, status, detail }` entry per guardrail result. Appended to (not replaced) by every `plan_mark({marker: "guardrailResults", data: {results}})` call. Absent until the first call. The plan skill makes no such call today; the tool still accepts it. |
+| `criticalDecisions` | array \| absent | One `{ key, choice, rejected, reason, at }` entry per key decision. Appended to by `plan_mark({marker: "criticalDecisions", data: {decisions}})`. Absent until the call. See [criticalDecisions](#criticaldecisions) below. |
 
 ---
 
@@ -170,7 +194,7 @@ Each row of `reviewRounds` (the first five keys are required, `findings` is opti
 | `found`        | integer  | Blocking issues found in the round (>= 0): the `blockingCount` of the `merge_results` call. |
 | `fixed`        | integer  | Blocking issues the round fixed (>= 0). `0` for an Approved round. The last round (`reviewLoop.maxRounds`) also gets the Step 6 fix pass, so its `fixed` is the real count. |
 | `lenses`       | object[] | One `{ name, verdict }` for each lens (max 32). `name`: letters, digits, `.`, `_`, `-` (max 64); the first character must be a letter or a digit (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, the same rule as `writerId`). `verdict`: exactly `Approved` or `Issues Found`. A single reviewer (<5 tasks) gives `[{ "name": "all", "verdict": "<mergedStatus>" }]`. Lanes are not listed. |
-| `findings`     | object[] \| absent | One `{ id, fixed }` for each finding of the round (max 200). `id`: the `id` of the issue in the `merge_results` `allIssues`, `f-` plus 8 lower-case hex characters (`^f-[0-9a-f]{8}$`). `fixed`: a boolean, `true` when the round fixed the finding. Guardrail findings and lens findings share one ID space, so no kind is stored. A passed `[]` is stored as `[]`. The key is absent when the call did not send `findings` (an older caller). An invalid entry returns an error and writes nothing. |
+| `findings`     | object[] \| absent | One `{ id, fixed }` for each finding of the round (max 200). `id`: the `id` of the issue in the `merge_results` `allIssues`, `f-` plus 8 lower-case hex characters (`^f-[0-9a-f]{8}$`). `fixed`: a boolean, `true` when the round fixed the finding. Each `id` appears once in a call: a repeated `id` returns an error. Guardrail findings and lens findings share one ID space, so no kind is stored. A passed `[]` is stored as `[]`. The key is absent when the call did not send `findings` (an older caller). An invalid entry returns an error and writes nothing. |
 
 ```json
 {
@@ -211,7 +235,12 @@ Each row of `reviewRounds` (the first five keys are required, `findings` is opti
 
 Written by `plan_mark({ marker: "review-outcome", data: { findings: [...] } })` after the review loop reaches its limit with findings still open, and the user answers each one. Like `checkpoint`, `reviewOutcome` is **replaced**, not appended, on every call: the stored list is the list of the last call. Pass every answered finding on every call. For example, call 1 with `a` and `b`, then call 2 with `a` alone, leaves only `a`. The key is absent until the first call. A call with invalid data returns an error and leaves the stored outcome unchanged.
 
-The call returns `next`: "Outcome stored. If any choice is stop, end the run and report the open findings. Else continue to Create-flow authoring, then Step 6.5."
+The call returns one of two `next` texts. The tool picks the text from the stored choices:
+
+| Choices in the call | `next` |
+|---|---|
+| No choice is `stop` | "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5." |
+| At least one choice is `stop` | "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan." |
 
 `findings` holds 1 to 200 entries. Each entry has all 4 keys, each a string, and no other key:
 
@@ -230,7 +259,9 @@ Rejected input (each returns an error with a suggestion, and writes nothing):
 | `id` does not match `^f-[0-9a-f]{8}$` | Pass the id from merge_results allIssues. |
 | More than 200 findings | Stop and report the open findings. Do not call review-outcome. |
 | `text` or `reason` over 200 characters | Shorten the text to 200 characters. |
-| `findings` missing, empty, or not an array | Pass at least one answered finding. The stored outcome is unchanged. |
+| `findings` missing, `null`, or empty | Pass at least one answered finding. The stored outcome is unchanged. |
+| `findings` is not an array (for example a string or an object) | Pass findings as a JSON array, not a string or an object: … The stored outcome is unchanged. |
+| The same `id` in two entries | Pass each finding id once. Remove the second "<id>" entry. |
 | An entry without a string `id`, `text`, `choice`, or `reason` | Give all 4 fields for each finding. Use an empty reason only as "". |
 
 An unknown key in `data` or in an entry is also rejected.
@@ -330,10 +361,10 @@ Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` 
 
 ### Write
 
-1. On a genuinely new run (no active run for the branch, and not a `resume: true` call), `plan_prepare(...)` writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent: { userPrompt, timestamp }` through `state.Write`, which prunes prior `plan-<branchSlug>-*.json` files for the same branch — **except** a sibling run whose `planIntegrity.done` marker is already set, which is kept (see [Evaluate, Don't Delete](#evaluate-dont-delete) below). It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs the same way (`state.PruneEvidenceDirs`, same done-run exception).
-2. The first `resolveTemplate: true` call for that run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags).
-3. A `resume: true` call does not create or prune anything; it reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
-4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically; `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically; `plan_mark({ marker: "review-outcome", data })` replaces `reviewOutcome` in-place, atomically. Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
+1. On a genuinely new run (no active run for the branch, and not a `resume: true` call), `plan_prepare(...)` writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent: { userPrompt, timestamp }` through `state.Write`, which prunes prior `plan-<branchSlug>-*.json` files for the same branch — **except** a sibling run whose `planIntegrity.done` marker is already set, which is kept (see [Evaluate, Don't Delete](#evaluate-dont-delete) below). It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs the same way (`state.PruneEvidenceDirs`, same done-run exception). When the guardrail config read succeeds, the same call then writes the state file a second time, to add `guardrailCounts` (see [guardrailCounts](#guardrailcounts)).
+2. The first `resolveTemplate: true` call for that run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags). Every `plan_prepare` call without `resume: true` (the first call and the `resolveTemplate` call) also writes `guardrailCounts` again, in a second `state.Write`, when the guardrail config read succeeds.
+3. A `resume: true` call does not create or prune anything, and writes nothing (not even `guardrailCounts`); it reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
+4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically; `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically; `plan_mark({ marker: "review-outcome", data })` replaces `reviewOutcome` in-place, atomically; `plan_mark({ marker: "guardrailResults", data })` and `plan_mark({ marker: "criticalDecisions", data })` append their array payload to their own top-level key (`guardrailResults`, `criticalDecisions`). Before each of these writes, every `plan_mark` call also refreshes `planTiming` and rewrites `planFilePath` as an absolute, cleaned path (`refreshPlanTiming`; skipped when `skillInvoked` or `planFilePath` is missing, or the plan file cannot be read). Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
 
 ### Evaluate, Don't Delete
 
@@ -383,6 +414,7 @@ All writes use the `internal/state` package's atomic-write helper. No partial-fi
       "fileCount": 6
     }
   },
+  "guardrailCounts": { "total": 3, "error": 2, "warning": 1 },
   "checkpoint": {
     "step": "5",
     "iteration": 2,
@@ -392,7 +424,7 @@ All writes use the `internal/state` package's atomic-write helper. No partial-fi
 }
 ```
 
-A marker file with only `skillInvoked` and the bootstrap `creationIntent` set (plan was invoked but crashed before writing the plan file):
+A marker file with only `skillInvoked`, the bootstrap `creationIntent`, and `guardrailCounts` set (plan was invoked but crashed before writing the plan file):
 
 ```json
 {
@@ -403,7 +435,8 @@ A marker file with only `skillInvoked` and the bootstrap `creationIntent` set (p
   "creationIntent": {
     "userPrompt": "Fix the auth redirect bug",
     "timestamp": "2026-05-09T14:00:05.123Z"
-  }
+  },
+  "guardrailCounts": { "total": 3, "error": 2, "warning": 1 }
 }
 ```
 

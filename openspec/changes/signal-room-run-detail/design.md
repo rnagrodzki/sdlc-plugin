@@ -183,7 +183,8 @@ State key diff:
 
 - [A hook adds time to every tool call] → the close hook is async and does one directory lookup with no record.
 - [No hook fires when the user rejects a prompt] → the next prompt, session end, or a 24 h expiry closes the record.
-- [A sub-agent permission prompt has another session ID] → no mark shows. The run can turn `stalled` as today.
+- [A sub-agent hook carries the session ID of its parent session (plus an `agent_id`)] → a sub-agent permission prompt writes the same session record as a main-thread prompt. The mark does not tell which agent waits.
+- [The `permission_prompt` notification has no `tool_use_id`, and the close hook has no matcher] → any tool call of the session that finishes closes the permission wait, also a sub-agent call or a parallel call that needed no prompt. The mark can clear while a prompt still waits.
 - [A reworded summary gets a new finding ID] → distinct totals are an upper bound.
 - [`openspec_save` switches branches] → it runs only when the user calls `/sdlc:openspec-save`, and every check runs before the switch.
 - [The OpenSpec PR is not merged before ship] → the ship missing-on-disk message tells the user to merge it first.

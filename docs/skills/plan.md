@@ -22,7 +22,7 @@ or a plain description.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `[spec-file-path]` | Path to a requirements or spec file to plan from. A path into `openspec/changes/<name>/` selects that change, same as `--spec <name>`. | none |
-| `--auto` | Skip all interactive prompts. Picks conservative defaults. | off |
+| `--auto` | Skip interactive prompts. Picks conservative defaults. Two prompts stay: a Gate A `CRITICAL` verdict still blocks, and the per-finding questions at the review-loop limit are still asked (only the harden offer is left out). | off |
 | `--spec [<change-name>]` | Opts into OpenSpec and skips the gate-check question. With a name: plan from that existing change (`openspec/changes/<change-name>/`). Without one: use the branch-matched change, else ask which active change to use, or offer to create a new one. | off |
 | `--from-openspec <name>` | Deprecated alias of `--spec <name>`, kept for one release. Prints a deprecation notice. | none |
 
@@ -334,6 +334,7 @@ contrast of 4.5:1 or more. No pastel fills.
   asks nothing and continues. With more than 200 open findings, or when
   `AskUserQuestion` is unavailable, it asks nothing and stops with no
   hand-off. On a stop answer, it offers harden in interactive mode.
+  `--auto` does not skip these questions; only the harden offer is left out.
 
 Sample `styleReport` (abbreviated; writingStandard=ste, visualDensity=high):
 

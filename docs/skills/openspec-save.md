@@ -47,7 +47,7 @@ A relative path is resolved against the current working directory. The
 
 | Step | Action |
 |------|--------|
-| 1. Save | Calls the `openspec_save` tool. It creates the branch, moves the change into `openspec/changes/<change>/`, stamps a ref comment into each task line of `tasks.md`, stages the change, and rewrites the plan header to `**OpenSpec-Saved:**`. It does not commit. |
+| 1. Save | Calls the `openspec_save` tool. It creates the branch, moves the change into `openspec/changes/<change>/`, stamps a ref comment into each task line of `tasks.md`, stages the change, and rewrites the plan header to `**OpenSpec-Saved:**`. It does not commit. A change with no `tasks.md` is saved with a warning, and the skill prints it. |
 | 2. Commit | Runs the commit skill with `--type docs --scope openspec`, and with `--auto` when you passed it. It runs only when the tool reports staged files. |
 | 3. PR | Runs the pr skill. It asks you for release intent. Choose **Skip release (acknowledged)**: the PR holds only the OpenSpec change. |
 | 4. Report | Prints the change, the branch, and the PR URL. It tells you to merge the PR and then run `/ship`. |
@@ -105,22 +105,33 @@ for release intent and for approval of the PR text.
   `--auto` to the pr skill. You answer the question.
 - **A stopped run is safe to repeat.** After the save, the plan has the
   `**OpenSpec-Saved:**` header line. A second run of `/openspec-save` makes the
-  tool return `already`. The tool then stages nothing and changes no file. The
-  run continues where it stopped:
-    - The commit did not happen: the change is still staged, and the run
-      continues at the commit.
-    - The commit happened, but the PR did not: nothing is staged, so the commit
-      is skipped and the run continues at the PR. The commit skill stops when
-      nothing is staged, with the error "no files staged for commit".
+  tool return `already`. The tool then runs `git add` on the change folder
+  again and changes no file. The run continues where it stopped:
+    - The commit did not happen: the change is staged, and the run continues
+      at the commit. This is also true when you unstaged the change, for
+      example with `git reset`.
+    - The commit happened, but the PR did not: the change folder is the same
+      as in the last commit, so the commit is skipped and the run continues at
+      the PR. The commit skill stops when nothing is staged, with the error "no
+      files staged for commit".
     - A PR for the branch is already open: the pr skill updates that PR.
+    - The tool stopped with an error after it created `openspec/<change>`: the
+      repository is on that branch, and the next run continues the save there.
 - **Switch to the saved branch before you run it again.** On a second run the
-  tool does not check the current branch. The skill checks it and stops when it
-  is not the saved branch.
+  tool checks that the current branch is the saved branch and that
+  `openspec/changes/<change>/` exists. When a check fails, the tool returns an
+  error and the run stops.
 - **An error stops the run.** The skill prints the error and stops in these
   cases:
-    - The call has a usage error: no plan path, two different plan paths, or an
-      option the skill does not know. The skill calls no tool first.
-    - The tool returns an error. The skill prints the error and its Suggestion.
+    - The call has a usage error: no plan path, `--plan` with no value, two
+      positional paths, a positional path and a `--plan` path that name
+      different files, or an option the skill does not know. The skill calls no
+      tool first.
+    - The tool returns an error. The skill prints the error and its Suggestion,
+      and reports the current branch. A `domain` error needs a fix of the input
+      or of the repository state. An `infra` error needs a fix of the
+      environment, for example file access or the OpenSpec CLI. After the fix,
+      run the skill again.
     - The commit skill or the pr skill returns an error. The skill also reports
       the branch.
 - **Decline stops the run.** If you decline the commit, the skill stops and

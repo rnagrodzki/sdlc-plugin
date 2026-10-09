@@ -3232,7 +3232,8 @@ func TestPlanMark_ReviewRound_DataErrors(t *testing.T) {
 		{name: "findings over max", data: with("findings", manyRoundFindings(maxReviewFindings+1)), wantMsg: "review-round findings has 201 entries, max 200"},
 		{name: "finding not an object", data: with("findings", []any{"f-3a9c1e07"}), wantMsg: "review-round findings[0] must be an object {id, fixed}"},
 		{name: "finding unknown key", data: with("findings", []any{map[string]any{"id": "f-3a9c1e07", "fixed": true, "kind": "lane"}}), wantMsg: `review-round findings[0] has unknown key "kind"`},
-		{name: "finding bad id", data: with("findings", []any{map[string]any{"id": "F-3A9C1E07", "fixed": true}}), wantMsg: `review-round findings[0].id "F-3A9C1E07" does not match`, wantSuggestion: findingIDSuggestion},
+		{name: "finding bad id", data: with("findings", []any{map[string]any{"id": "F-3A9C1E07", "fixed": true}}), wantMsg: `review-round findings[0].id "F-3A9C1E07" does not match ^f-[0-9a-f]{8}$`, wantSuggestion: findingIDSuggestion},
+		{name: "finding duplicate id", data: with("findings", []any{map[string]any{"id": "f-3a9c1e07", "fixed": true}, map[string]any{"id": "f-3a9c1e07", "fixed": false}}), wantMsg: `review-round findings[1].id "f-3a9c1e07" repeats findings[0].id`, wantSuggestion: `Pass each finding id once. Remove the second "f-3a9c1e07" entry.`},
 		{name: "finding id missing", data: with("findings", []any{map[string]any{"fixed": true}}), wantMsg: `review-round findings[0].id "" does not match`, wantSuggestion: findingIDSuggestion},
 		{name: "finding fixed missing", data: with("findings", []any{map[string]any{"id": "f-3a9c1e07"}}), wantMsg: "review-round findings[0].fixed must be true or false"},
 		{name: "finding fixed a string", data: with("findings", []any{map[string]any{"id": "f-3a9c1e07", "fixed": "true"}}), wantMsg: "review-round findings[0].fixed must be true or false"},
@@ -3453,8 +3454,9 @@ func storedReviewOutcome(t *testing.T, dir string) []any {
 }
 
 // TestPlanMark_ReviewOutcome_ReplacesEachCall verifies "review-outcome"
-// stores the full list of each call and returns the fixed Next: call 1
-// stores a and b, call 2 with a alone leaves only a.
+// stores the full list of each call and returns the Next for its choices:
+// call 1 stores a and b (no stop, reviewOutcomeNext), call 2 with a alone
+// leaves only a (a stop choice, reviewOutcomeStopNext).
 func TestPlanMark_ReviewOutcome_ReplacesEachCall(t *testing.T) {
 	dir := seedPlanRun(t)
 
@@ -3468,17 +3470,26 @@ func TestPlanMark_ReviewOutcome_ReplacesEachCall(t *testing.T) {
 	if !out.OK {
 		t.Error("planMark(review-outcome).OK = false, want true")
 	}
-	wantNext := "Outcome stored. If any choice is stop, end the run and report the open findings. Else continue to Create-flow authoring, then Step 6.5."
-	if out.Next != wantNext {
-		t.Errorf("Next = %q, want %q", out.Next, wantNext)
+	if out.Next != reviewOutcomeNext {
+		t.Errorf("Next = %q, want %q", out.Next, reviewOutcomeNext)
+	}
+	if want := "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5."; reviewOutcomeNext != want {
+		t.Errorf("reviewOutcomeNext = %q, want %q", reviewOutcomeNext, want)
 	}
 	if got := storedReviewOutcome(t, dir); !reflect.DeepEqual(got, []any{a, b}) {
 		t.Errorf("reviewOutcome.findings after call 1 = %v, want [a b]", got)
 	}
 
 	stop := outcomeFinding("f-9d01aa42", outcomeChoiceStop)
-	if _, err := planMark(dir, dir, PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": []any{stop}}}); err != nil {
+	out, err = planMark(dir, dir, PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": []any{stop}}})
+	if err != nil {
 		t.Fatalf("planMark(review-outcome) call 2: %v", err)
+	}
+	if out.Next != reviewOutcomeStopNext {
+		t.Errorf("Next with a stop choice = %q, want %q", out.Next, reviewOutcomeStopNext)
+	}
+	if want := "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; reviewOutcomeStopNext != want {
+		t.Errorf("reviewOutcomeStopNext = %q, want %q", reviewOutcomeStopNext, want)
 	}
 	if got := storedReviewOutcome(t, dir); !reflect.DeepEqual(got, []any{stop}) {
 		t.Errorf("reviewOutcome.findings after call 2 = %v, want only a (replaced, not merged)", got)
@@ -3534,17 +3545,20 @@ func TestPlanMark_ReviewOutcome_DataErrors(t *testing.T) {
 	}{
 		{name: "data missing", data: nil, wantMsg: "review-outcome needs data {findings}", wantSuggestion: "Pass at least one answered finding. The stored outcome is unchanged."},
 		{name: "findings empty", data: map[string]any{"findings": []any{}}, wantMsg: "review-outcome needs data {findings}", wantSuggestion: "Pass at least one answered finding. The stored outcome is unchanged."},
-		{name: "findings not an array", data: map[string]any{"findings": "f-9d01aa42"}, wantMsg: "review-outcome needs data {findings}", wantSuggestion: "Pass at least one answered finding. The stored outcome is unchanged."},
-		{name: "unknown key", data: map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)}, "round": float64(5)}, wantMsg: `review-outcome data has unknown key "round"`, wantSuggestion: "the only allowed key is findings"},
+		{name: "findings not an array", data: map[string]any{"findings": "f-9d01aa42"}, wantMsg: "review-outcome findings must be a JSON array of {id, text, choice, reason}", wantSuggestion: "Pass findings as a JSON array, not a string or an object"},
+		{name: "findings an object", data: map[string]any{"findings": outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)}, wantMsg: "review-outcome findings must be a JSON array", wantSuggestion: "Pass findings as a JSON array"},
+		{name: "findings null", data: map[string]any{"findings": nil}, wantMsg: "review-outcome needs data {findings}", wantSuggestion: "Pass at least one answered finding. The stored outcome is unchanged."},
+		{name: "duplicate id", data: map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted), outcomeFinding("f-0b77d2c4", outcomeChoiceRejected), outcomeFinding("f-9d01aa42", outcomeChoiceStop)}}, wantMsg: `review-outcome findings[2].id "f-9d01aa42" repeats findings[0].id`, wantSuggestion: `Pass each finding id once. Remove the second "f-9d01aa42" entry.`},
+		{name: "unknown key", data: map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)}, "round": float64(5)}, wantMsg: `review-outcome data has unknown key "round"`, wantSuggestion: `Remove "round". The only allowed key is findings.`},
 		{name: "over 200 findings", data: map[string]any{"findings": tooMany}, wantMsg: "review-outcome findings has 201 entries, max 200", wantSuggestion: "Stop and report the open findings. Do not call review-outcome."},
 		{name: "entry not an object", data: map[string]any{"findings": []any{"f-9d01aa42"}}, wantMsg: "review-outcome findings[0] must be an object", wantSuggestion: allFields},
-		{name: "entry unknown key", data: entry("kind", "lane"), wantMsg: `review-outcome findings[0] has unknown key "kind"`, wantSuggestion: "allowed finding keys: id, text, choice, reason"},
+		{name: "entry unknown key", data: entry("kind", "lane"), wantMsg: `review-outcome findings[0] has unknown key "kind"`, wantSuggestion: `Remove "kind". The allowed finding keys are id, text, choice, and reason.`},
 		{name: "id missing", data: entry("id", nil), wantMsg: "review-outcome findings[0] has no string id", wantSuggestion: allFields},
 		{name: "text missing", data: entry("text", nil), wantMsg: "review-outcome findings[0] has no string text", wantSuggestion: allFields},
 		{name: "choice missing", data: entry("choice", nil), wantMsg: "review-outcome findings[0] has no string choice", wantSuggestion: allFields},
 		{name: "reason missing", data: entry("reason", nil), wantMsg: "review-outcome findings[0] has no string reason", wantSuggestion: allFields},
 		{name: "reason not a string", data: entry("reason", float64(1)), wantMsg: "review-outcome findings[0] has no string reason", wantSuggestion: allFields},
-		{name: "bad id", data: entry("id", "f-9D01AA42"), wantMsg: `review-outcome findings[0].id "f-9D01AA42" does not match`, wantSuggestion: "Pass the id from merge_results allIssues."},
+		{name: "bad id", data: entry("id", "f-9D01AA42"), wantMsg: `review-outcome findings[0].id "f-9D01AA42" does not match ^f-[0-9a-f]{8}$`, wantSuggestion: "Pass the id from merge_results allIssues."},
 		{name: "short id", data: entry("id", "f-9d01aa4"), wantMsg: `review-outcome findings[0].id "f-9d01aa4" does not match`, wantSuggestion: "Pass the id from merge_results allIssues."},
 		{name: "bad choice", data: entry("choice", "Accepted"), wantMsg: `review-outcome findings[0].choice "Accepted" is not valid`, wantSuggestion: "Use accepted, rejected, or stop."},
 		{name: "text over 200 runes", data: entry("text", strings.Repeat("é", maxOutcomeFieldRunes+1)), wantMsg: "review-outcome findings[0].text has 201 characters, max 200", wantSuggestion: "Shorten the text to 200 characters."},

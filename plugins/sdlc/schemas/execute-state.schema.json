@@ -90,7 +90,8 @@
     },
     "plannedWaves": {
       "type": "array",
-      "description": "The plannedWavesJson input to init, stored as given: one {number, taskIds} per planned wave. Wave 0 holds the pre-wave tasks. Each number appears once and each wave has at least one task ID. Absent when init got no plannedWavesJson.",
+      "description": "The plannedWavesJson input to init, stored as given: one {number, taskIds} per planned wave. Wave 0 holds the pre-wave tasks. The array has at least one wave, each number appears once, each wave has at least one task ID, and each task ID appears in one wave only. Display data only: the waves need not cover every plannedTaskIds entry. Absent when init got no plannedWavesJson.",
+      "minItems": 1,
       "items": {
         "type": "object",
         "properties": {

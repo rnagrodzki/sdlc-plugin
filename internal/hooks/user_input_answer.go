@@ -90,11 +90,14 @@ func recordUserAnswer(ctx HookCtx, event Event) (Output, error) {
 // closeQuestionWait deletes the question attention record of the
 // AskUserQuestion call in event (keyed by tool_use_id). With no tool_use_id it
 // deletes every question record of the session. It does nothing when the
-// root or branch does not resolve or the session ID is empty, and it drops a
-// delete error: the hook output never changes.
+// session ID is empty or the root does not resolve, and it drops a delete
+// error: the hook output never changes.
 func closeQuestionWait(ctx HookCtx, event Event) {
-	root, _, ok := resolveRootBranch()
-	if !ok || ctx.SessionID == "" {
+	if ctx.SessionID == "" {
+		return
+	}
+	root, err := mainRootFunc()
+	if err != nil {
 		return
 	}
 	toolUseID, _ := event.Raw["tool_use_id"].(string)

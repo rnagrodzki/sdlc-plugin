@@ -2059,6 +2059,88 @@ func TestReviewPrepareRunMetaNoShipRun(t *testing.T) {
 	}
 }
 
+// TestReviewPrepareShipStateUnreadable pins that a ship state lookup that
+// fails does not stop the review: run.meta has no shipRunId, and the result
+// warnings and the manifest warnings say so.
+func TestReviewPrepareShipStateUnreadable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := newReviewRunPlanFixture(t)
+	// No read permission on the state folder makes the ship state lookup
+	// fail. Write and search permission keep the ledger write working.
+	runs := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runs, 0o755); err != nil {
+		t.Fatalf("mkdir runs: %v", err)
+	}
+	if err := os.Chmod(runs, 0o300); err != nil {
+		t.Fatalf("chmod runs: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(runs, 0o755) })
+
+	out, m := readReviewManifest(t, root)
+
+	const want = "the ship state could not be read"
+	hasWarning := func(list []string) bool {
+		for _, w := range list {
+			if strings.Contains(w, want) {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasWarning(out.Warnings) {
+		t.Errorf("result warnings = %q, want one that contains %q", out.Warnings, want)
+	}
+	if !hasWarning(m.Warnings) {
+		t.Errorf("manifest warnings = %q, want one that contains %q", m.Warnings, want)
+	}
+	_, raw := readLedgerRunMeta(t, root, m.RunID)
+	if strings.Contains(string(raw), "shipRunId") {
+		t.Errorf("run.meta = %s, want no shipRunId", raw)
+	}
+}
+
+// TestReviewPrepareWritesNothingTracked pins that review_prepare leaves
+// `git status --porcelain` empty in a repo that setup_init seeded, in
+// manifest mode (which writes run.meta) and in save mode. Untracked files
+// count too: run.meta and the saved review must land in ignored paths.
+func TestReviewPrepareWritesNothingTracked(t *testing.T) {
+	root := newReviewRunPlanFixture(t)
+	if _, err := setupInit(root, SetupInitIn{}); err != nil {
+		t.Fatalf("setupInit fixture seed: %v", err)
+	}
+	mustRun(t, root, "git", "add", "-A")
+	mustRun(t, root, "git", "commit", "-m", "baseline")
+
+	assertClean := func(when string) {
+		t.Helper()
+		st, err := execRun(root, "git", "status", "--porcelain")
+		if err != nil {
+			t.Fatalf("git status %s: %v", when, err)
+		}
+		if st != "" {
+			t.Errorf("git status not empty %s:\n%s", when, st)
+		}
+	}
+	assertClean("after the baseline commit")
+
+	_, m := readReviewManifest(t, root)
+	if m.RunID == "" {
+		t.Fatal("run_id is empty: review_prepare wrote no run.meta, so this test checks nothing")
+	}
+	assertClean("after review_prepare in manifest mode")
+
+	out, err := reviewPrepare(root, root, ReviewPrepareIn{SaveReview: true, Content: "test review comment"})
+	if err != nil {
+		t.Fatalf("reviewPrepare save mode: %v", err)
+	}
+	if !out.Saved {
+		t.Fatal("save mode saved nothing, so this test checks nothing")
+	}
+	assertClean("after review_prepare in save mode")
+}
+
 // TestReviewPrepareRunMetaSurvivesCheckin pins that a later ledger_checkin
 // does not change the run.meta that review_prepare wrote.
 func TestReviewPrepareRunMetaSurvivesCheckin(t *testing.T) {

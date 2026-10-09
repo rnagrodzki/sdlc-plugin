@@ -419,11 +419,10 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 		repo.Error = err.Error()
 	}
 	// Open waits are best effort: an unreadable record folder shows no
-	// attention and does not fail the snapshot.
-	recs, err := attention.List(root, now, dashboardHistoryWindow)
-	if err != nil {
-		recs = nil
-	}
+	// attention and does not fail the snapshot. Unlike a state.List error,
+	// it does not set repo.Error, because the pipelines are still right.
+	// attention.List returns nil records with its error.
+	recs, _ := attention.List(root, now, dashboardHistoryWindow)
 	for _, st := range list.States {
 		p, updated, ok := dashboardStatePipeline(st, evidence)
 		if ok {
@@ -609,7 +608,7 @@ func dashboardShip(p *DashboardPipeline, data map[string]any) {
 		name, status := dashboardStr(s["name"]), dashboardStr(s["status"])
 		step := DashboardStep{Name: name, Status: status}
 		result := dashboardStr(s["result"]) // ship_state stores step["result"] on complete-step
-		if name == "commit" && status == StepCompleted && strings.HasPrefix(result, commitNothingPrefix) {
+		if name == shipCommitStep && status == StepCompleted && strings.HasPrefix(result, commitNothingPrefix) {
 			step.Detail = &DashboardStepDetail{Kind: dashboardKindResult, Result: result}
 		}
 		p.Steps = append(p.Steps, step)
@@ -704,7 +703,7 @@ func dashboardExecute(p *DashboardPipeline, st *state.State) time.Time {
 	}
 
 	// A planned wave that no waves entry covers yet is a pending step.
-	for _, n := range dashboardPlannedWaveNumbers(data) {
+	for _, n := range dashboardPendingWaveNumbers(data) {
 		p.Steps = append(p.Steps, DashboardStep{Name: fmt.Sprintf("wave %d", n), Status: StepPending})
 	}
 
@@ -782,7 +781,7 @@ type dashboardFinding struct {
 // runs/ledger/review-*/ folder that holds at least one dimension file or a
 // run.meta with planned dimensions, newest folder first.
 func dashboardReviewPipelines(root string) []dashboardReviewRow {
-	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir, "ledger")
+	dir := ledgerRootDir(root)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
@@ -811,10 +810,13 @@ func dashboardReviewPipelines(root string) []dashboardReviewRow {
 // no row is pending or in progress. Its completedAt is the newest checkoutAt,
 // else the folder update time (every row skipped). updated is the newest
 // modification time of run.meta and the worker files, so a folder with only
-// run.meta turns stalled. ok is false when the folder cannot be read or gives
+// run.meta turns stalled. Each problem of readReviewLedger (a worker file or
+// run.meta that cannot be used) is a state issue of severity medium, after
+// the review findings. ok is false when the folder cannot be read or gives
 // no row.
 func dashboardReviewPipeline(dir, name string) (dashboardReviewRow, bool) {
-	rows, totals, updated, err := readReviewLedgerDir(dir)
+	read, err := readReviewLedger(dir)
+	rows, totals, updated := read.rows, read.totals, read.updated
 	if err != nil || len(rows) == 0 {
 		return dashboardReviewRow{}, false
 	}
@@ -863,6 +865,9 @@ func dashboardReviewPipeline(dir, name string) (dashboardReviewRow, bool) {
 			p.Issues = append(p.Issues, dashboardReviewIssue(r.Name, fd))
 		}
 	}
+	for _, text := range read.problems {
+		p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "medium", Text: text})
+	}
 	if p.Progress.Current == "" {
 		p.Progress.Current = firstPending
 	}
@@ -892,21 +897,25 @@ func dashboardReviewPipeline(dir, name string) (dashboardReviewRow, bool) {
 // dashboardParseFindings decodes the findings field of a review dimension
 // file: a JSON-encoded string holding a list of findings (a bare JSON list
 // is accepted too). Any other content, such as a markdown block, gives no
-// findings.
-func dashboardParseFindings(raw json.RawMessage) []dashboardFinding {
-	if len(raw) == 0 {
-		return nil
+// findings and isList false. An absent field, JSON null, and an empty or
+// blank string give no findings and isList true.
+func dashboardParseFindings(raw json.RawMessage) (findings []dashboardFinding, isList bool) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, true
 	}
 	list := []byte(raw)
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
+		if strings.TrimSpace(s) == "" {
+			return nil, true
+		}
 		list = []byte(s)
 	}
 	var out []dashboardFinding
 	if err := json.Unmarshal(list, &out); err != nil {
-		return nil
+		return nil, false
 	}
-	return out
+	return out, true
 }
 
 // dashboardStepLabel returns "step <n> of <total>" while a current step is

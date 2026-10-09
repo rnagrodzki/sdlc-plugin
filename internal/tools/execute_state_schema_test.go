@@ -217,3 +217,45 @@ func TestExecuteStateSchema_AcceptsPlannedWaves(t *testing.T) {
 	}
 	assertStateMatchesSchema(t, filePath)
 }
+
+// TestExecuteStateSchema_RejectsEmptyPlannedWaves checks the minItems rule:
+// init never writes plannedWaves:[], and the schema rejects a state that
+// holds it.
+func TestExecuteStateSchema_RejectsEmptyPlannedWaves(t *testing.T) {
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "execute-state.schema.json"))
+	if err != nil {
+		t.Fatalf("abs schema path: %v", err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	root := t.TempDir()
+	seedInitConfig(t, root)
+	out, err := executeState(root, root, ExecuteStateIn{
+		Action:           "init",
+		Branch:           "feat/schema-empty-waves",
+		Quality:          "balanced",
+		PlannedWavesJSON: `[{"number":1,"taskIds":["1"]}]`,
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	raw, err := os.ReadFile(out.(map[string]any)["filePath"].(string))
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse state file: %v", err)
+	}
+	if err := sch.Validate(doc); err != nil {
+		t.Fatalf("state file written by init does not match the schema: %v", err)
+	}
+
+	doc["plannedWaves"] = []any{}
+	if err := sch.Validate(doc); err == nil {
+		t.Error("schema accepts plannedWaves:[], want a minItems error")
+	}
+}

@@ -115,7 +115,10 @@ file — you do not need to pass it again.
 - **The wave schedule is saved at the start.** After you confirm the wave
   structure, the skill passes it to `execute_state({action: "init"})` as
   `plannedWavesJson`: a JSON array of `{number, taskIds}`, with the pre-wave
-  tasks as wave `0`. The state file stores it as `plannedWaves`, and the
+  tasks as wave `0`. Task IDs are JSON strings. `init` rejects an empty array,
+  a repeated wave number or task ID, a wave with no task IDs, and a task ID
+  that is not in the plan. A schedule may leave tasks out. The state file
+  stores it as `plannedWaves`, and the
   dashboard uses it to list waves that have not started. Small plans that run
   directly never call `init`, so they have no schedule.
 - **Resuming is safe.** If the session ends mid-execution, run

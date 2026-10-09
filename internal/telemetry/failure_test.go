@@ -384,3 +384,35 @@ func TestRedact(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// TruncateRunes
+// ---------------------------------------------------------------------------
+
+func TestTruncateRunes(t *testing.T) {
+	tests := []struct {
+		name string
+		s    string
+		n    int
+		want string
+	}{
+		{"under limit", "abc", 5, "abc"},
+		{"at limit", "abcde", 5, "abcde"},
+		{"over limit keeps n runes plus ellipsis", "abcdef", 5, "abcde…"},
+		{"multi-byte runes are not split", "zażółć", 3, "zaż…"},
+		{"multi-byte at limit", "żółć", 4, "żółć"},
+		{"empty input", "", 3, ""},
+		{"zero n on non-empty input", "abc", 0, "…"},
+		{"zero n on empty input", "", 0, ""},
+		{"negative n counts as zero", "abc", -1, "…"},
+		{"negative n on empty input", "", -5, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TruncateRunes(tt.s, tt.n)
+			if got != tt.want {
+				t.Fatalf("TruncateRunes(%q, %d) = %q, want %q", tt.s, tt.n, got, tt.want)
+			}
+		})
+	}
+}

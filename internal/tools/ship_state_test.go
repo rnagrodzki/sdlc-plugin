@@ -5213,7 +5213,7 @@ func TestShipState_CommitCheck_CleanCountsWaveCommits(t *testing.T) {
 	if !out.Clean || out.StagedCount != 0 || out.WaveCommits != 2 || !out.StepCompleted || out.Result != wantResult {
 		t.Errorf("out = %+v, want clean, waveCommits=2, stepCompleted, result %q", out, wantResult)
 	}
-	if out.Next != "Commit step completed. Skip 7c2 and d. Go to the next step." {
+	if out.Next != "Commit step completed. Skip 7c2 and 7d. Go to the next step." {
 		t.Errorf("next = %q", out.Next)
 	}
 	if len(out.Todos) == 0 || out.Display == "" {
@@ -5334,7 +5334,7 @@ func TestShipState_CommitCheck_LandedCommitAfterInterrupt(t *testing.T) {
 	if !out.Clean || !out.StepCompleted || out.Result != want {
 		t.Errorf("third out = %+v, want clean, completed, result %q", out, want)
 	}
-	if out.Next != "Commit step completed from the landed commit. Skip 7c2 and d. Go to the next step." {
+	if out.Next != "Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step." {
 		t.Errorf("next = %q", out.Next)
 	}
 	data := readStateData(t, path)
@@ -5511,13 +5511,119 @@ func TestShipState_CommitCheck_DirtyWithStoredBaseSkipsWrite(t *testing.T) {
 	}
 }
 
-// TestShipShortSHA checks that shipShortSHA cuts a long sha to 7 characters and keeps a short one.
-func TestShipShortSHA(t *testing.T) {
-	if got := shipShortSHA("0123456789abcdef"); got != "0123456" {
+// TestShipState_CommitCheck_ShortSHA checks that shortSHA, which the landed
+// commit result uses, cuts a long sha to 7 characters and keeps a short one.
+func TestShipState_CommitCheck_ShortSHA(t *testing.T) {
+	if got := shortSHA("0123456789abcdef"); got != "0123456" {
 		t.Errorf("long sha = %q, want 0123456", got)
 	}
-	if got := shipShortSHA("abc"); got != "abc" {
+	if got := shortSHA("abc"); got != "abc" {
 		t.Errorf("short sha = %q, want abc", got)
+	}
+}
+
+// commitCheckValidateSchema validates the ship state file at path against
+// the published ship-state.schema.json.
+func commitCheckValidateSchema(t *testing.T, path string) {
+	t.Helper()
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read state file %s: %v", path, err)
+	}
+	inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+	if err != nil {
+		t.Fatalf("unmarshal state file for schema validation: %v", err)
+	}
+	if err := sch.Validate(inst); err != nil {
+		t.Errorf("state file written by commit-check: schema rejected it: %v", err)
+	}
+}
+
+// TestShipStateSchema_CommitCheckWrites checks that every state file that
+// commit-check writes passes ship-state.schema.json: the dirty call that
+// stores commitBaseHead, the landed-commit call that journals a sha side
+// effect, and the nothing-to-commit call that appends a decision.
+func TestShipStateSchema_CommitCheckWrites(t *testing.T) {
+	t.Run("dirty then landed commit", func(t *testing.T) {
+		branch := "feat/cc-schema-landed"
+		dir, path := commitCheckFixture(t, branch)
+		writeFile(t, filepath.Join(dir, "a.txt"), "a")
+		if _, err := runCommitCheck(t, dir, branch); err != nil {
+			t.Fatalf("dirty commit-check: %v", err)
+		}
+		if _, ok := readStateData(t, path)["commitBaseHead"].(string); !ok {
+			t.Fatal("dirty commit-check stored no commitBaseHead")
+		}
+		commitCheckValidateSchema(t, path)
+
+		mustRun(t, dir, "git", "commit", "-m", "landed")
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("landed commit-check: %v", err)
+		}
+		if !out.StepCompleted || !strings.HasPrefix(out.Result, "committed ") {
+			t.Fatalf("landed out = %+v, want a completed step with a committed result", out)
+		}
+		if _, ok := readStateData(t, path)["sideEffects"].(map[string]any)["commit"]; !ok {
+			t.Fatal("landed commit-check journaled no commit side effect")
+		}
+		commitCheckValidateSchema(t, path)
+	})
+	t.Run("nothing to commit", func(t *testing.T) {
+		branch := "feat/cc-schema-clean"
+		dir, path := commitCheckFixture(t, branch)
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("commit-check: %v", err)
+		}
+		if !out.StepCompleted || !strings.HasPrefix(out.Result, commitNothingPrefix) {
+			t.Fatalf("out = %+v, want a completed nothing-to-commit step", out)
+		}
+		commitCheckValidateSchema(t, path)
+	})
+}
+
+// TestShipState_CommitCheck_NonStringBaseHead checks that a commitBaseHead
+// that is not a string gives a DataError before any staging, and that the
+// state file keeps the bad value instead of a new HEAD.
+func TestShipState_CommitCheck_NonStringBaseHead(t *testing.T) {
+	branch := "feat/cc-badbase"
+	dir, path := commitCheckFixture(t, branch)
+	data := readStateData(t, path)
+	data["commitBaseHead"] = 42
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+
+	_, err = runCommitCheck(t, dir, branch)
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %v (%T), want *mcpserver.DataError", err, err)
+	}
+	if !strings.Contains(de.Msg, "commitBaseHead") || de.Suggestion == "" {
+		t.Errorf("DataError = %+v, want a message naming commitBaseHead and a suggestion", de)
+	}
+	if staged := gitOut(t, dir, "diff", "--cached", "--name-only"); staged != "" {
+		t.Errorf("staged = %q, want nothing staged", staged)
+	}
+	if got := readStateData(t, path)["commitBaseHead"]; got != float64(42) {
+		t.Errorf("commitBaseHead = %v, want the bad value kept", got)
+	}
+	if got := commitStepEntry(t, path)["status"]; got != "in_progress" {
+		t.Errorf("commit status = %v, want in_progress", got)
 	}
 }
 

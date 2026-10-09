@@ -32,7 +32,7 @@ When `run.meta` is absent, the first `ledger_checkin` of a run id SHALL create `
 ## ADDED Requirements
 
 ### Requirement: ledger_skip records a stopped review worker
-The action `ledger_skip` SHALL take `runId`, `workerId`, and `reason` (`stalled`, `missing`, or `unstopped`) and SHALL set `stopReason` of that dimension in `run.meta` with an atomic write. It SHALL not touch any worker file. A missing `run.meta`, an unknown `workerId`, or a bad `reason` SHALL return a DomainError with a Suggestion.
+The action `ledger_skip` SHALL take `runId`, `workerId`, and `reason` (`stalled`, `missing`, or `unstopped`) and SHALL set `stopReason` of that dimension in `run.meta` with an atomic write. It SHALL not write any worker file; it MAY read the worker file to warn that the worker already checked out. The result SHALL echo `workerId`, the recorded `stopReason`, and the replaced `priorStopReason` when one was set. A missing `run.meta`, an unknown `workerId`, or a bad `reason` SHALL return a DomainError with a Suggestion.
 
 #### Scenario: Missing worker
 - **WHEN** `ledger_skip` gets `workerId` `docs-review` and `reason` `missing`
@@ -41,7 +41,7 @@ The action `ledger_skip` SHALL take `runId`, `workerId`, and `reason` (`stalled`
 
 #### Scenario: No run meta
 - **WHEN** `run.meta` does not exist
-- **THEN** the call returns a DomainError whose Suggestion says to call `review_prepare` first
+- **THEN** the call returns a DomainError whose Suggestion says to pass the `run_id` from the `review_prepare` manifest of this review run, and that a dry run or a run with zero waves has no `run.meta`
 
 #### Scenario: Unknown worker
 - **WHEN** `workerId` is not in `run.meta` `dimensions`

@@ -121,8 +121,8 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 | `status` | string | always | See Status Values below. |
 | `kind` | string | `ship_prepare`-driven runs only | `"tracked"` or `"inline"` — dispatch-style hint, not a lifecycle exemption (see above). |
 | `startedAt` | string | status is `in_progress` | Set by `begin-step`. |
-| `completedAt` | string | status is `completed` or `skipped` | Set by `complete-step` / `skip`. |
-| `result` | any | status is `completed` and `detail.result` was passed | Free-form value from `detail.result`. |
+| `completedAt` | string | status is `completed` or `skipped` | Set by `complete-step` / `skip`, and by `commit-check` when it completes the `commit` step. |
+| `result` | any | status is `completed` and `detail.result` was passed, or `commit-check` completed the `commit` step | Free-form value from `detail.result`. On a `commit` step that `commit-check` completed, the result string that `commit-check` returned. |
 | `condition` | string | only on the legacy raw-`init` scaffold's `received-review`/`commit-fixes` entries | Never set by `InitialShipStepsFromConfig` — a real `ship_prepare`-driven run has **no entry that ever carries a `condition` key**. |
 | `reason` | string | status is `skipped` and `detail.reason` was passed | Why the step was skipped. |
 | `error` | any | status is `failed` and `detail.error` was passed | Failure detail from `detail.error`. |
@@ -141,7 +141,7 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 
 ### Repeated step names
 
-The step lookup supports a name that occurs more than once in `steps[]`. `ship_prepare` never writes such a state: `[ship.steps]` table keys are unique, and a duplicate `--steps` name is an error. Only a hand-built state file can repeat a name. `begin-step`, `complete-step`, `start`, `complete`, `skip` and `fail` take only a name, so the lookup (`shipFindStepIndex`) selects one entry:
+The step lookup supports a name that occurs more than once in `steps[]`. `ship_prepare` never writes such a state: `[ship.steps]` table keys are unique, and a duplicate `--steps` name is an error. Only a hand-built state file can repeat a name. `begin-step`, `complete-step`, `start`, `complete`, `skip` and `fail` take only a name, and `commit-check` uses the fixed name `commit`, so the lookup (`shipFindStepIndex`) selects one entry:
 
 | Entries with the name | Selected entry |
 |---|---|
@@ -168,11 +168,11 @@ Renders one `todos[N]` section per entry — each with `content`, `activeForm`, 
 
 ## The `commit-check` Action
 
-`ship_state{action:"commit-check", detail:{branch?}}` decides the commit step from the working tree. It reads only `detail.branch`; it does not honor `detail.stateFile`. The `commit` step must be `in_progress`. A `commit` step in any other status gives a `DomainError` with the suggestion "Call begin-step for commit first, then call commit-check again." A pipeline with no `commit` step gives a `DataError`. In both cases the call runs none of the three git commands below (`add`, `diff --cached`, `rev-parse`). When `detail.branch` is omitted, the call first runs `git branch --show-current` in the active worktree to find the branch; when that fails, it returns a `DomainError`.
+`ship_state{action:"commit-check", detail:{branch?}}` decides the commit step from the working tree. It reads only `detail.branch`; it does not honor `detail.stateFile`. The `commit` step must be `in_progress`. A `commit` step in any other status gives a `DomainError` with the suggestion "Call begin-step for commit first, then call commit-check again." A pipeline with no `commit` step gives a `DataError`. A `commitBaseHead` key that holds a value other than a string also gives a `DataError`; an empty string counts as absent. In these cases the call runs none of the three git commands below (`add`, `diff --cached`, `rev-parse`). When `detail.branch` is omitted, the call first runs `git branch --show-current` in the active worktree to find the branch; when that fails, it returns a `DomainError`.
 
 Git runs in the active worktree. The ship state lives in the main root. The call runs these steps in order:
 
-1. `git add -A -- ':!.sdlc-v2/'` stages every change except the data directory.
+1. `git add -A -- ':!.sdlc-v2/'` stages every change except the data directory, untracked files that are not gitignored included.
 2. `git diff --cached --name-only` counts the staged paths (`stagedCount`).
 3. `git rev-parse HEAD` reads HEAD. When `commitBaseHead` is absent, the call stores HEAD there. A later call keeps the stored value.
 
@@ -184,15 +184,15 @@ A failed git command returns an `InfraError` with the suggestion "Check the repo
 | clean | equal to `commitBaseHead` | Appends one `decisions[]` entry (`step:"commit"`, `decision` = `result`) and completes the `commit` step with `result`. | `nothing to commit: execute committed N wave commit(s)` when N > 0, else `nothing to commit: the working tree is clean` |
 | clean | not equal to `commitBaseHead` | Writes the `commit` key of `sideEffects` (`kind:"sha"`, `ref` = the full HEAD sha) and completes the `commit` step with `result`. | `committed <first 7 characters of HEAD>` |
 
-N (`waveCommits`) counts the `waves[]` entries with a non-empty `committedSha` in this branch's execute state. No execute state gives 0. An unreadable execute state also gives 0, and the response names the cause in `warnings`. All state changes of one call go to disk in one write. When that write fails, the call returns an `InfraError`, and the state file keeps its earlier content. The changes that `git add` staged stay staged.
+N (`waveCommits`) counts the `waves[]` entries with a non-empty `committedSha` in this branch's execute state. The call reads the execute state only on the clean, HEAD equal to `commitBaseHead` route. On every other route, `waveCommits` is 0 and `warnings` is empty. On that route, no execute state gives 0. An unreadable execute state also gives 0, and the response names the cause in `warnings`. All state changes of one call go to disk in one write. When that write fails, the call returns an `InfraError`, and the state file keeps its earlier content. The changes that `git add` staged stay staged.
 
 The response carries `clean`, `stagedCount`, `waveCommits`, `stepCompleted`, `result`, `warnings`, and `next`. When `stepCompleted` is `true`, it also carries the `todos` and `display` of the completed step, the same as `complete-step`. `next` is one of:
 
 | Outcome | `next` |
 |---|---|
 | dirty | `Changes are staged. Dispatch the commit agent, then 7c2, then complete-step.` |
-| clean, nothing to commit | `Commit step completed. Skip 7c2 and d. Go to the next step.` |
-| clean, commit landed | `Commit step completed from the landed commit. Skip 7c2 and d. Go to the next step.` |
+| clean, nothing to commit | `Commit step completed. Skip 7c2 and 7d. Go to the next step.` |
+| clean, commit landed | `Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step.` |
 
 ---
 
