@@ -2,11 +2,14 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,8 +24,8 @@ const (
 	proxySnapshotBody = `{"repos":[]}`
 	// proxyReadOnlyBody is the full 405 body of a call that is not a GET.
 	proxyReadOnlyBody = `{"error":{"code":"PREVIEW_READ_ONLY","message":"Disabled in the design preview. The draft does not change real runs.","suggestion":"Use the main dashboard for this action."}}`
-	// proxyNotRunningBody is the full 502 body when the dashboard cannot be reached.
-	proxyNotRunningBody = `{"error":{"code":"DASHBOARD_NOT_RUNNING","message":"Dashboard not running. Run /sdlc:dashboard, then reload.","suggestion":"Run /sdlc:dashboard, then reload."}}`
+	// proxyHealthBody is the sdlc health answer the fake dashboard sends.
+	proxyHealthBody = `{"pid":1,"version":"test"}`
 )
 
 // proxyDashboard is a fake dashboard on 127.0.0.1. Like the real one, it
@@ -96,7 +99,7 @@ func (d *proxyDashboard) serve(w http.ResponseWriter, r *http.Request) {
 		if d.healthStatus != 0 {
 			w.WriteHeader(d.healthStatus)
 		}
-		_, _ = fmt.Fprint(w, `{"pid":1}`)
+		_, _ = fmt.Fprint(w, proxyHealthBody)
 	default:
 		http.NotFound(w, r)
 	}
@@ -110,10 +113,66 @@ func (d *proxyDashboard) seenHosts() []string {
 	return append([]string(nil), d.hosts...)
 }
 
-// proxyRecord returns a ReadRecord function that gives a record with url.
-func proxyRecord(url string) func() (dashboard.ServerRecord, error) {
+// proxyRecord returns a ReadRecord function that gives a record with url and
+// the port of url, like the record of a real dashboard. A url without a port
+// gives port 0.
+func proxyRecord(rawURL string) func() (dashboard.ServerRecord, error) {
+	port := 0
+	if u, err := url.Parse(rawURL); err == nil {
+		port, _ = strconv.Atoi(u.Port())
+	}
 	return func() (dashboard.ServerRecord, error) {
-		return dashboard.ServerRecord{PID: 1, Port: 1, URL: url}, nil
+		return dashboard.ServerRecord{PID: 1, Port: port, URL: rawURL}, nil
+	}
+}
+
+// proxyAssertNotRunning checks a 502 codeNotRunning body whose message names
+// the cause: it starts with notRunningMessage and holds wantCause.
+func proxyAssertNotRunning(t *testing.T, rec *httptest.ResponseRecorder, wantCause string) {
+	t.Helper()
+	if rec.Code != http.StatusBadGateway {
+		t.Errorf("status = %d, want 502", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	var body struct {
+		Error struct {
+			Code, Message, Suggestion string
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q: %v", rec.Body.String(), err)
+	}
+	e := body.Error
+	if e.Code != codeNotRunning || e.Suggestion != notRunningSuggestion {
+		t.Errorf("code/suggestion = %q/%q, want %q/%q", e.Code, e.Suggestion, codeNotRunning, notRunningSuggestion)
+	}
+	if !strings.HasPrefix(e.Message, notRunningMessage+": ") || !strings.Contains(e.Message, wantCause) {
+		t.Errorf("message = %q, want %q and the cause %q", e.Message, notRunningMessage+": <cause>", wantCause)
+	}
+}
+
+// proxyAssertStatus checks a /__design/status reply: the dashboard and url
+// fields, and a reason that holds wantReason ("" means no reason field).
+func proxyAssertStatus(t *testing.T, rec *httptest.ResponseRecorder, wantDashboard, wantURL, wantReason string) {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rec.Code)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("body %q: %v", rec.Body.String(), err)
+	}
+	if got["dashboard"] != wantDashboard || got["url"] != wantURL {
+		t.Errorf("dashboard/url = %q/%q, want %q/%q", got["dashboard"], got["url"], wantDashboard, wantURL)
+	}
+	reason, hasReason := got["reason"]
+	switch {
+	case wantReason == "" && hasReason:
+		t.Errorf("reason = %q, want no reason field", reason)
+	case wantReason != "" && !strings.Contains(reason, wantReason):
+		t.Errorf("reason = %q, want it to hold %q", reason, wantReason)
 	}
 }
 
@@ -239,20 +298,26 @@ func TestServerAPI(t *testing.T) {
 		t.Run("GET /api/ with "+tc.name+" gives 502", func(t *testing.T) {
 			h := proxyHandler(proxyRecordErr(tc.err), time.Second)
 
-			proxyAssertJSON(t, serverGet(h, "/api/snapshot"), http.StatusBadGateway, proxyNotRunningBody)
+			proxyAssertNotRunning(t, serverGet(h, "/api/snapshot"), tc.err.Error())
 		})
 	}
 
 	t.Run("GET /api/ with a record URL without a host gives 502", func(t *testing.T) {
 		h := proxyHandler(proxyRecord(""), time.Second)
 
-		proxyAssertJSON(t, serverGet(h, "/api/snapshot"), http.StatusBadGateway, proxyNotRunningBody)
+		proxyAssertNotRunning(t, serverGet(h, "/api/snapshot"), "has no scheme or host")
+	})
+
+	t.Run("GET /api/ with a record URL that does not parse gives 502", func(t *testing.T) {
+		h := proxyHandler(proxyRecord("http://[::1"), time.Second)
+
+		proxyAssertNotRunning(t, serverGet(h, "/api/snapshot"), "missing ']' in host")
 	})
 
 	t.Run("GET /api/ with a closed dashboard gives 502", func(t *testing.T) {
 		h := proxyHandler(proxyRecord(proxyClosedURL(t)), time.Second)
 
-		proxyAssertJSON(t, serverGet(h, "/api/events"), http.StatusBadGateway, proxyNotRunningBody)
+		proxyAssertNotRunning(t, serverGet(h, "/api/events"), "connection refused")
 	})
 
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
@@ -281,21 +346,37 @@ func TestServerAPI(t *testing.T) {
 	t.Run("GET /__design/status is not running with no record", func(t *testing.T) {
 		h := proxyHandler(proxyRecordErr(dashboard.ErrNoServer), time.Second)
 
-		proxyAssertJSON(t, serverGet(h, "/__design/status"), http.StatusOK, `{"dashboard":"not running","url":""}`)
+		proxyAssertStatus(t, serverGet(h, "/__design/status"), "not running", "", dashboard.ErrNoServer.Error())
 	})
 
 	t.Run("GET /__design/status is not running when the health call fails", func(t *testing.T) {
 		d := proxyFakeDashboard(t, http.StatusInternalServerError, 0)
 		h := proxyHandler(proxyRecord(d.srv.URL), time.Second)
 
-		proxyAssertJSON(t, serverGet(h, "/__design/status"), http.StatusOK, `{"dashboard":"not running","url":"`+d.srv.URL+`"}`)
+		proxyAssertStatus(t, serverGet(h, "/__design/status"), "not running", d.srv.URL, "status 500")
+	})
+
+	t.Run("GET /__design/status is not running when another program answers on the port", func(t *testing.T) {
+		foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = fmt.Fprint(w, `{"ok":true}`)
+		}))
+		t.Cleanup(foreign.Close)
+		h := proxyHandler(proxyRecord(foreign.URL), time.Second)
+
+		proxyAssertStatus(t, serverGet(h, "/__design/status"), "not running", foreign.URL, dashboard.ErrPortForeign.Error())
 	})
 
 	t.Run("GET /__design/status is not running with a closed dashboard", func(t *testing.T) {
-		url := proxyClosedURL(t)
-		h := proxyHandler(proxyRecord(url), time.Second)
+		closed := proxyClosedURL(t)
+		h := proxyHandler(proxyRecord(closed), time.Second)
 
-		proxyAssertJSON(t, serverGet(h, "/__design/status"), http.StatusOK, `{"dashboard":"not running","url":"`+url+`"}`)
+		proxyAssertStatus(t, serverGet(h, "/__design/status"), "not running", closed, "connection refused")
+	})
+
+	t.Run("GET /__design/status is not running with a record URL that does not parse", func(t *testing.T) {
+		h := proxyHandler(proxyRecord("http://[::1"), time.Second)
+
+		proxyAssertStatus(t, serverGet(h, "/__design/status"), "not running", "http://[::1", "missing ']' in host")
 	})
 
 	t.Run("GET /__design/status is not running when the health call times out", func(t *testing.T) {
@@ -305,7 +386,7 @@ func TestServerAPI(t *testing.T) {
 		start := time.Now()
 		rec := serverGet(h, "/__design/status")
 
-		proxyAssertJSON(t, rec, http.StatusOK, `{"dashboard":"not running","url":"`+d.srv.URL+`"}`)
+		proxyAssertStatus(t, rec, "not running", d.srv.URL, "Timeout")
 		if took := time.Since(start); took > 2*time.Second {
 			t.Errorf("status took %v, want the 50ms timeout to end the health call", took)
 		}

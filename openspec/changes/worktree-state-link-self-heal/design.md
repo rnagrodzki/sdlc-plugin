@@ -87,7 +87,7 @@ stateDiagram-v2
 | Main-worktree test | `<active root>/.git` is a folder | a path compare only | git gives each linked worktree a `.git` file |
 | Link compare | reuse `IsCorrectStateLink` | a new string compare | it treats `/var` and `/private/var` as the same path |
 | Folder-link recovery | new session, or `mkdir -p <target>` | remove the link | a removed folder link makes the next write create a real folder in the linked worktree |
-| Link chain | report the last link and its missing target (at most 40 links) | report the first link | the first link points to a link that exists, so `mkdir -p` fails |
+| Link chain | folder link: report the last link and its missing target (at most 40 links). Topic-file link: report the topic file, the missing end target, and the words "resolves through links to" | folder link: report the first link | the first folder link points to a link that exists, so `mkdir -p` fails. For a topic file, `rm <topic file>` fixes the whole chain |
 
 ## Risks / Trade-offs
 

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"regexp"
 	"strings"
@@ -70,36 +71,63 @@ func LoadDependencies(path string) ([]Dependency, error) {
 // readDependenciesFile reads path with a size limit. It reports a missing
 // file, a file over maxDependenciesBytes and any other read failure.
 func readDependenciesFile(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	data, err := readBounded(path, maxDependenciesBytes)
 	if err != nil {
-		return nil, dependenciesReadError(path, err)
-	}
-	defer f.Close()
-
-	// Read one byte more than the limit: a longer result means the file is too large.
-	data, err := io.ReadAll(io.LimitReader(f, maxDependenciesBytes+1))
-	if err != nil {
-		return nil, dependenciesReadError(path, err)
-	}
-	if len(data) > maxDependenciesBytes {
-		return nil, fmt.Errorf("%s: larger than %d KiB", path, maxDependenciesBytes>>10)
+		return nil, pathError(path, err)
 	}
 
 	return data, nil
 }
 
-// dependenciesReadError turns a read failure into an error that names path
-// once. An *os.PathError repeats the path, so only its cause is kept.
-func dependenciesReadError(path string, err error) error {
-	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("%s: not found", path)
+// tooLargeError is the error of readBounded for a file over its limit.
+type tooLargeError struct {
+	max int64 // the limit in bytes
+}
+
+// Error gives "larger than <n> KiB" or "larger than <n> MiB".
+func (e *tooLargeError) Error() string {
+	if e.max >= 1<<20 && e.max%(1<<20) == 0 {
+		return fmt.Sprintf("larger than %d MiB", e.max>>20)
+	}
+
+	return fmt.Sprintf("larger than %d KiB", e.max>>10)
+}
+
+// readBounded reads path and returns a *tooLargeError when the file holds
+// more than max bytes. Other errors are the raw os errors; the caller names
+// the file, for example with pathError.
+func readBounded(path string, max int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	// Read one byte more than the limit: a longer result means the file is too large.
+	data, err := io.ReadAll(io.LimitReader(f, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, &tooLargeError{max: max}
+	}
+
+	return data, nil
+}
+
+// pathError turns a file failure into an error that names name once. A
+// missing file gives "<name>: not found". An *os.PathError repeats the path,
+// so only its cause is kept.
+func pathError(name string, err error) error {
+	if errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%s: not found", name)
 	}
 	var pathErr *os.PathError
 	if errors.As(err, &pathErr) {
 		err = pathErr.Err
 	}
 
-	return fmt.Errorf("%s: %w", path, err)
+	return fmt.Errorf("%s: %w", name, err)
 }
 
 // validateDependency checks one record and adds its ID to seen. The error

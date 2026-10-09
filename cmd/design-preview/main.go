@@ -95,12 +95,12 @@ func parseMode(args []string) (Mode, error) {
 		return "", fmt.Errorf("unexpected argument %q. %s", flags.Arg(0), usageText)
 	}
 
-	switch mode := Mode(*value); mode {
-	case ModeAuto, ModeFresh, ModeContinue:
-		return mode, nil
+	mode := Mode(*value)
+	if err := mode.validate(); err != nil {
+		return "", err
 	}
 
-	return "", fmt.Errorf("unknown mode %q. Allowed: auto, fresh, continue.", *value)
+	return mode, nil
 }
 
 // listenErrorText gives the text of the error line for a failed listen on
@@ -130,7 +130,11 @@ func fail(stderr io.Writer, text string) int {
 // Stop waits stopGrace for active connections, then closes them. A proxied
 // /api/events stream does not end by itself, so Shutdown alone would wait for it.
 func serve(ln net.Listener, c runConfig, stdout, stderr io.Writer) int {
-	port := ln.Addr().(*net.TCPAddr).Port
+	addr, ok := ln.Addr().(*net.TCPAddr)
+	if !ok {
+		return fail(stderr, fmt.Sprintf("%s: listener address %v is not a TCP address", c.Addr, ln.Addr()))
+	}
+	port := addr.Port
 
 	srv := &http.Server{ReadHeaderTimeout: readHeaderTimeout}
 	stopped := make(chan struct{})

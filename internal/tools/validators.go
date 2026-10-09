@@ -2357,6 +2357,13 @@ func sameWorktreePath(a, b string) bool {
 // least mainRoot/activeRoot themselves, which are real worktree roots) and
 // leaves the rest of the path unresolved but Clean-normalized, then the two
 // results are compared as plain strings.
+//
+// Errors map to false: a failed os.Lstat or os.Readlink returns false, and
+// resolveBestEffort treats any filepath.EvalSymlinks error (for example
+// EACCES or ELOOP) like a missing path. So false means "not confirmed
+// correct", not "confirmed wrong". A caller must not take a destructive
+// action on false alone; internal/hooks repairLink, for example, replaces a
+// link only after os.Stat confirms that the link is dangling.
 func IsCorrectStateLink(mainRoot, activeRoot, name string) bool {
 	linked := false
 	for _, n := range paths.LinkedStateEntries {

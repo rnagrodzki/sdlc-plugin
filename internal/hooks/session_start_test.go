@@ -2251,6 +2251,52 @@ func TestSessionStartWorktreeLinks(t *testing.T) {
 		// The entries after this one are still linked and get their folders.
 		assertMainFolder(t, mainRoot, paths.HistorySubdir)
 	})
+
+	// The usual case for every linked worktree after the first: the
+	// main-worktree entry already exists, so ensureMainFolder does nothing.
+	existingMain := []struct {
+		name  string
+		setup func(t *testing.T, mainTarget string)
+	}{
+		{"a real folder", func(t *testing.T, mainTarget string) {
+			mustMkdirAll(t, mainTarget)
+			mustWriteFile(t, filepath.Join(mainTarget, "x.md"), "keep me")
+		}},
+		{"a live link to a folder", func(t *testing.T, mainTarget string) {
+			elsewhere := realPath(t, t.TempDir())
+			mustWriteFile(t, filepath.Join(elsewhere, "x.md"), "keep me")
+			mustSymlink(t, elsewhere, mainTarget)
+		}},
+	}
+	for _, tc := range existingMain {
+		t.Run("main-worktree entry that is "+tc.name+" gets no mkdir call and no line", func(t *testing.T) {
+			mainRoot, activeRoot := linkedWorktreeFixture(t)
+			entry := paths.ReportsSubdir
+			mainTarget := filepath.Join(mainRoot, paths.DataDir, entry)
+			tc.setup(t, mainTarget)
+
+			var mkdirCalls []string
+			origMkdir := mkdirAllFunc
+			mkdirAllFunc = func(path string, perm os.FileMode) error {
+				mkdirCalls = append(mkdirCalls, path)
+				return origMkdir(path, perm)
+			}
+			t.Cleanup(func() { mkdirAllFunc = origMkdir })
+
+			if got := worktreeLinkPhase(); got != nil {
+				t.Errorf("worktreeLinkPhase() = %q, want nil", got)
+			}
+			for _, p := range mkdirCalls {
+				if p == mainTarget {
+					t.Errorf("mkdir was called for the existing main-worktree entry %s", mainTarget)
+				}
+			}
+			if data, err := os.ReadFile(filepath.Join(mainTarget, "x.md")); err != nil || string(data) != "keep me" {
+				t.Errorf("content of the existing main-worktree entry changed: %q, %v", data, err)
+			}
+			assertLinkTarget(t, filepath.Join(activeRoot, paths.DataDir, entry), mainTarget)
+		})
+	}
 }
 
 // linkedWorktreeFixture returns two temp dirs, a main root and an active

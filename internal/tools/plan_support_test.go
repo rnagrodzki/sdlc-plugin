@@ -2656,8 +2656,8 @@ func TestPlanSupportPreplanContextErrors(t *testing.T) {
 		}
 		wantMsg := "preplan_context: create " + filepath.Join(link, "auth-flow.md") + ": " +
 			link + " is a link to " + target + ", which does not exist."
-		if !strings.HasPrefix(err.Error(), wantMsg) {
-			t.Errorf("err.Error() = %q, want prefix %q", err.Error(), wantMsg)
+		if err.Error() != wantMsg {
+			t.Errorf("err.Error() = %q, want %q", err.Error(), wantMsg)
 		}
 		wantSuggestion := "Start a new session so the session-start hook repairs the link, or run: mkdir -p " + target
 		if got := suggestionOf(err); got != wantSuggestion {
@@ -2694,9 +2694,10 @@ func TestPlanSupportPreplanContextErrors(t *testing.T) {
 		if got := errorClassOf(err); got != "infra" {
 			t.Errorf("error class = %q, want infra (err %v)", got, err)
 		}
+		// The recovery is only in the Suggestion, so the message ends with the problem.
 		wantMsg := "preplan_context: create " + link + ": " + link + " is a link to " + target + ", which does not exist."
-		if !strings.HasPrefix(err.Error(), wantMsg) {
-			t.Errorf("err.Error() = %q, want prefix %q", err.Error(), wantMsg)
+		if err.Error() != wantMsg {
+			t.Errorf("err.Error() = %q, want %q", err.Error(), wantMsg)
 		}
 		if want := "Remove the link, then try again: rm " + link; suggestionOf(err) != want {
 			t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
@@ -2737,9 +2738,9 @@ func TestPlanSupportPreplanContextErrors(t *testing.T) {
 		if got := errorClassOf(err); got != "infra" {
 			t.Errorf("error class = %q, want infra (err %v)", got, err)
 		}
-		wantMsg := "preplan_context: create " + file + ": " + file + " is a link to " + target + ", which does not exist."
-		if !strings.HasPrefix(err.Error(), wantMsg) {
-			t.Errorf("err.Error() = %q, want prefix %q", err.Error(), wantMsg)
+		wantMsg := "preplan_context: create " + file + ": " + file + " resolves through links to " + target + ", which does not exist."
+		if err.Error() != wantMsg {
+			t.Errorf("err.Error() = %q, want %q", err.Error(), wantMsg)
 		}
 		if want := "Remove the link, then try again: rm " + file; suggestionOf(err) != want {
 			t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
@@ -2754,6 +2755,56 @@ func TestPlanSupportPreplanContextErrors(t *testing.T) {
 			t.Errorf("the call created the link target folder (lstat err %v)", statErr)
 		}
 	})
+
+	notAFile := []struct {
+		name    string
+		setup   func(t *testing.T, file string)
+		wantMsg func(file string) string
+	}{
+		{"a symlink loop at the topic file", func(t *testing.T, file string) {
+			other := filepath.Join(filepath.Dir(file), "other.md")
+			if err := os.Symlink(other, file); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(file, other); err != nil {
+				t.Fatal(err)
+			}
+		}, func(file string) string {
+			return "preplan_context: create " + file + ": stat " + file + ": too many levels of symbolic links"
+		}},
+		{"a folder at the topic file", func(t *testing.T, file string) {
+			if err := os.Mkdir(file, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, func(file string) string {
+			return "preplan_context: create " + file + ": exists and is not a regular file"
+		}},
+	}
+	for _, tc := range notAFile {
+		t.Run(tc.name+" is an InfraError, not an existing topic file", func(t *testing.T) {
+			root := t.TempDir()
+			preplanDir := filepath.Join(root, ".sdlc-v2", "preplan")
+			if err := os.MkdirAll(preplanDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			file := filepath.Join(preplanDir, "auth-flow.md")
+			tc.setup(t, file)
+
+			out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+			if err == nil {
+				t.Fatalf("expected an error, got nil (preplanCreated %v)", out.PreplanCreated)
+			}
+			if got := errorClassOf(err); got != "infra" {
+				t.Errorf("error class = %q, want infra (err %v)", got, err)
+			}
+			if want := tc.wantMsg(file); err.Error() != want {
+				t.Errorf("err.Error() = %q, want %q", err.Error(), want)
+			}
+			if want := "Check write permission on .sdlc-v2/preplan/, then run the skill again."; suggestionOf(err) != want {
+				t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
+			}
+		})
+	}
 }
 
 // errInjectedPreplan is the error the preplan write and close seams return.

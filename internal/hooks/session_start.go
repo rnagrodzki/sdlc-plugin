@@ -956,14 +956,14 @@ var (
 // hook. Every failure path (root resolution, .sdlc-v2/ creation) degrades
 // silently to no output, matching this file's other phases.
 func worktreeLinkPhase() []string {
-	if root := resolveActiveWorktreeSafe(); root != "" && isMainCheckout(root) {
-		return cleanMainLinks(root)
+	activeRoot := resolveActiveWorktreeSafe()
+	if activeRoot != "" && isMainCheckout(activeRoot) {
+		return cleanMainLinks(activeRoot)
 	}
 	mainRoot, err := mainRootFunc()
 	if err != nil || mainRoot == "" {
 		return nil
 	}
-	activeRoot := resolveActiveWorktreeSafe()
 	if activeRoot == "" || sameRootPath(mainRoot, activeRoot) {
 		return nil
 	}
@@ -1035,15 +1035,16 @@ func repairLink(mainRoot, activeRoot, entry, linkPath, target string) []string {
 		return nil
 	}
 	if !dangling {
-		return []string{fmt.Sprintf("sdlc: .sdlc-v2/%s links to %s, not to the main worktree — kept", entry, old)}
+		return []string{fmt.Sprintf("sdlc: %s/%s links to %s, not to the main worktree — kept", paths.DataDir, entry, old)}
 	}
-	if err := removeFunc(linkPath); err != nil {
-		return []string{fmt.Sprintf("sdlc: could not relink .sdlc-v2/%s: %v", entry, err)}
+	err = removeFunc(linkPath)
+	if err == nil {
+		err = symlinkFunc(target, linkPath)
 	}
-	if err := symlinkFunc(target, linkPath); err != nil {
-		return []string{fmt.Sprintf("sdlc: could not relink .sdlc-v2/%s: %v", entry, err)}
+	if err != nil {
+		return []string{fmt.Sprintf("sdlc: could not relink %s/%s: %v", paths.DataDir, entry, err)}
 	}
-	lines := []string{fmt.Sprintf("sdlc: relinked .sdlc-v2/%s to the main worktree (old target %s did not exist)", entry, old)}
+	lines := []string{fmt.Sprintf("sdlc: relinked %s/%s to the main worktree (old target %s did not exist)", paths.DataDir, entry, old)}
 	if line := ensureMainFolder(entry, target); line != "" {
 		lines = append(lines, line)
 	}
@@ -1064,13 +1065,13 @@ func ensureMainFolder(entry, target string) string {
 	if info, err := os.Lstat(target); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			if _, statErr := os.Stat(target); errors.Is(statErr, fs.ErrNotExist) {
-				return fmt.Sprintf("sdlc: .sdlc-v2/%s in the main worktree is a link that points nowhere. Start a session in the main worktree to remove it.", entry)
+				return fmt.Sprintf("sdlc: %s/%s in the main worktree is a link that points nowhere. Start a session in the main worktree to remove it.", paths.DataDir, entry)
 			}
 		}
 		return ""
 	}
 	if err := mkdirAllFunc(target, 0o755); err != nil {
-		return fmt.Sprintf("sdlc: could not create .sdlc-v2/%s in the main worktree: %v", entry, err)
+		return fmt.Sprintf("sdlc: could not create %s/%s in the main worktree: %v", paths.DataDir, entry, err)
 	}
 	return ""
 }
@@ -1106,11 +1107,11 @@ func cleanMainLinks(root string) []string {
 		if err != nil {
 			continue
 		}
-		advisory := fmt.Sprintf("sdlc: .sdlc-v2/%s in the main worktree is a link to %s — kept; the main worktree must hold real state folders", entry, target)
+		advisory := fmt.Sprintf("sdlc: %s/%s in the main worktree is a link to %s — kept; the main worktree must hold real state folders", paths.DataDir, entry, target)
 
 		_, statErr := os.Stat(linkPath)
 		switch {
-		case statErr == nil, !errors.Is(statErr, fs.ErrNotExist):
+		case !errors.Is(statErr, fs.ErrNotExist):
 			// A live link, or a link that cannot be followed for a reason
 			// other than a missing target (for example a loop or a
 			// permission failure). The hook cannot confirm that the link is
@@ -1120,9 +1121,9 @@ func cleanMainLinks(root string) []string {
 			lines = append(lines, advisory)
 		default:
 			if err := removeFunc(linkPath); err != nil {
-				lines = append(lines, fmt.Sprintf("sdlc: could not remove dangling link .sdlc-v2/%s: %v", entry, err))
+				lines = append(lines, fmt.Sprintf("sdlc: could not remove dangling link %s/%s: %v", paths.DataDir, entry, err))
 			} else {
-				lines = append(lines, fmt.Sprintf("sdlc: removed dangling link .sdlc-v2/%s", entry))
+				lines = append(lines, fmt.Sprintf("sdlc: removed dangling link %s/%s", paths.DataDir, entry))
 			}
 		}
 	}

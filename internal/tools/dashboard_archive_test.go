@@ -492,7 +492,10 @@ func TestArchiveRun_Step1MkdirFails(t *testing.T) {
 		t.Errorf("a regular file blocker gave a dangling link error: %v", dl)
 	}
 	var ae *ArchiveError
-	if errors.As(err, &ae) && ae.Suggestion != archiveSuggestFSFailed {
+	if !errors.As(err, &ae) {
+		t.Fatalf("err = %v (%T), want *ArchiveError", err, err)
+	}
+	if ae.Suggestion != archiveSuggestFSFailed {
 		t.Errorf("suggestion = %q, want %q", ae.Suggestion, archiveSuggestFSFailed)
 	}
 	if err := os.Remove(block); err != nil {

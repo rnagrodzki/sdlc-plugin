@@ -4,11 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -424,5 +427,95 @@ func TestRun(t *testing.T) {
 				startAssertUnchanged(t, repo, before)
 			})
 		}
+	})
+}
+
+// TestServeFailure covers the Serve error branch: a listener that is already
+// closed makes Serve fail at once with an error other than ErrServerClosed.
+func TestServeFailure(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := serve(ln, runConfig{RepoRoot: t.TempDir(), Addr: addr, ReadRecord: proxyRecordErr(dashboard.ErrNoServer)}, &stdout, &stderr)
+
+	if code != exitError {
+		t.Errorf("exit code = %d, want %d", code, exitError)
+	}
+	if want := "design preview: error — " + addr + ": "; !strings.HasPrefix(stderr.String(), want) {
+		t.Errorf("stderr = %q, want prefix %q", stderr.String(), want)
+	}
+}
+
+// TestMainBinary builds the program and runs it, so main() runs with the real
+// repo lookup, listenAddr and dashboard.ReadServerRecord. It covers the two
+// exits that need no free fixed port: outside a git repo, and with listenAddr
+// held. Exit codes are what the design tasks of the Taskfile read.
+func TestMainBinary(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds the program")
+	}
+	startClearGitEnv(t)
+	bin := filepath.Join(t.TempDir(), "design-preview")
+	if out, err := exec.Command("go", "build", "-o", bin, ".").CombinedOutput(); err != nil {
+		t.Fatalf("go build: %v\n%s", err, out)
+	}
+
+	runBin := func(t *testing.T, dir string) (int, string, string) {
+		t.Helper()
+		var stdout, stderr bytes.Buffer
+		cmd := exec.Command(bin)
+		cmd.Dir = dir
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		var exitErr *exec.ExitError
+		switch {
+		case err == nil:
+			return 0, stdout.String(), stderr.String()
+		case errors.As(err, &exitErr):
+			return exitErr.ExitCode(), stdout.String(), stderr.String()
+		}
+		t.Fatalf("run %s: %v", bin, err)
+		return 0, "", ""
+	}
+
+	t.Run("outside a git repo it prints the git error and exits 2", func(t *testing.T) {
+		code, stdout, stderr := runBin(t, t.TempDir())
+		if code != exitError {
+			t.Errorf("exit code = %d, want %d", code, exitError)
+		}
+		if !strings.HasPrefix(stderr, "design preview: error — ") || !strings.Contains(stderr, "not a git repository") {
+			t.Errorf("stderr = %q, want the git error line", stderr)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want empty", stdout)
+		}
+	})
+
+	t.Run("with listenAddr held it prints the in-use line, exits 2 and changes nothing", func(t *testing.T) {
+		repo := startRepo(t)
+		// A listen that fails means another program holds the address, which
+		// gives the same in-use line.
+		if held, err := net.Listen("tcp", listenAddr); err == nil {
+			t.Cleanup(func() { _ = held.Close() })
+		}
+		before := startSnapshot(t, repo)
+
+		code, stdout, stderr := runBin(t, repo)
+
+		if code != exitError {
+			t.Errorf("exit code = %d, want %d", code, exitError)
+		}
+		if want := runErrorLine(fmt.Sprintf("%s is in use. A preview may still run: http://%s/", listenAddr, listenAddr)); stderr != want {
+			t.Errorf("stderr\ngot:  %q\nwant: %q", stderr, want)
+		}
+		if stdout != "" {
+			t.Errorf("stdout = %q, want empty", stdout)
+		}
+		startAssertUnchanged(t, repo, before)
 	})
 }

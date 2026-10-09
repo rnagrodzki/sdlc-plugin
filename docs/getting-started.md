@@ -158,16 +158,48 @@ linked worktree, so they stay visible and live without a new session:
 `.sdlc-v2/config.toml` is never linked or symlinked — each worktree keeps its
 own real config file.
 
-At each session start the hook also repairs these links:
+At each session start the hook also checks the state links. A state link is
+`.sdlc-v2/<name>`, where `<name>` is one of the names in the list above.
+`<main worktree>` is the path of the main worktree. A broken link is a link
+whose target does not exist.
 
-- A link that points to a missing folder in another path is replaced by a link to the main worktree.
-- The main worktree folder of each linked folder is created when it is missing.
-- In the main worktree, a state link that points nowhere is removed when its target path ends in `.sdlc-v2/<name>`, where `<name>` is the name of the link. Other links stay, and the hook prints a note. The main worktree keeps real folders.
+In a linked worktree, the hook does these steps:
 
-If a write still stops at a link that points nowhere, the error says:
+- It creates a missing state link as a link to `<main worktree>/.sdlc-v2/<name>`.
+- It replaces a broken state link that points to another path with a link to `<main worktree>/.sdlc-v2/<name>`. For example, a `.sdlc-v2/run-archive` link to a deleted worktree becomes a link to `<main worktree>/.sdlc-v2/run-archive`.
+- It keeps a state link to another path that exists, and prints a note.
+- It creates the folder `<main worktree>/.sdlc-v2/<name>` when it is missing. It does this for each name in the list except `timings.json`. `timings.json` is a file, and a run writes it later.
+- When `<main worktree>/.sdlc-v2/<name>` is itself a broken link, it prints a note that tells you to start a session in the main worktree.
+
+In the main worktree, the hook never removes a real file or a real folder. It
+does these steps for each state link:
+
+- It removes a broken state link when the target of the state link ends in `.sdlc-v2/<name>`. The next write creates a real folder.
+- It keeps each other state link, and prints a note. This includes a link to a path that exists, a broken link to another path, and a link loop.
+
+Two operations stop at a broken link:
+
+- The dashboard Archive action stops with `ARCHIVE_FAILED` when `.sdlc-v2/run-archive`, or a folder above it, is a broken link. See [Archive a run](dashboard.md#archive-a-run).
+- `/sdlc:preplan` stops in the `plan_support` action `preplan_context` when `.sdlc-v2/preplan`, or a folder above it, is a broken link. It also stops when the topic file `<slug>.md` is a broken link.
+
+For a broken folder link, the error says:
 `<link> is a link to <target>, which does not exist. Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>`
 
-If the link that points nowhere is in the main worktree, start the new session in the main worktree.
+For a broken topic file link, the error says:
+`<link> is a link to <target>, which does not exist. Remove the link, then try again: rm <link>`
+
+When the link is the first link of a chain, the first sentence is
+`<link> resolves through links to <target>, which does not exist.`
+
+The dashboard shows the two sentences in one message. `preplan_context`
+puts the first sentence in the error message and the recovery sentence in the
+suggestion.
+
+To recover from a broken folder link:
+
+- If the link is a state link in a linked worktree, start a new session in that worktree. If the session prints a note about the main worktree, start a session in the main worktree too.
+- If the link is a state link in the main worktree and `<target>` ends in `.sdlc-v2/<name>`, start a new session in the main worktree.
+- In all other cases, the hook keeps the link, so a new session does not repair it. Run `mkdir -p <target>`, or remove the link by hand: `rm <link>`.
 
 ## 4. Supervised vs. unattended
 

@@ -220,6 +220,10 @@ No sdlc tool reads or deletes `run-archive/`. A linked worktree shares it with
 the main worktree, like `runs/`. Delete a folder by hand when you do not need
 it. [Clear cache](#clear-cache-files) keeps it.
 
+Archive stops at a link that points nowhere. Such a link occurs when
+`.sdlc-v2/run-archive` of a linked worktree or of the main worktree is a link
+to the path of a deleted worktree.
+
 The server answers `200` with `{"runId","dir","moved","deleted"}`. An error
 answer has one of five codes:
 
@@ -229,7 +233,7 @@ answer has one of five codes:
 | `RUN_NOT_FOUND` | 404 | No pipeline row has this id, or the run has no file on disk. A nested run and a finished run older than 24 hours are not rows. | Reload the page. The run is gone. |
 | `RUN_ACTIVE` | 409 | The row has the status `running`. | Wait until the run ends or stalls. |
 | `CONFIRM_STALLED` | 409 | The row is `stalled`, and the request has no `confirmStalled: true`. | Confirm. Archive removes the resume point. |
-| `ARCHIVE_FAILED` | 500 | A read, a move, or a delete failed. An unexpected error gets this code too. | Read the message. If the message names a link that points nowhere, do the recovery in the message. Otherwise, fix the permission of the named file, then archive again. |
+| `ARCHIVE_FAILED` | 500 | A read, a move, or a delete failed. An unexpected error gets this code too. | Read the message. If the message names a link that points nowhere, do the recovery in the message. See [Linked worktrees](getting-started.md#linked-worktrees). Otherwise, fix the permission of the named file, then archive again. |
 
 The page shows the message of the error. The other errors of the route are in
 [Security](#security).

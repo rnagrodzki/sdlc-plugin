@@ -1,14 +1,14 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 )
 
 // statusTimeout is how long the status route waits for the dashboard health call.
@@ -29,24 +29,32 @@ const (
 	readOnlyMessage = "Disabled in the design preview. The draft does not change real runs."
 	// readOnlySuggestion is the suggestion of the codeReadOnly body.
 	readOnlySuggestion = "Use the main dashboard for this action."
-	// notRunningMessage is the message of the codeNotRunning body.
-	notRunningMessage = "Dashboard not running. Run /sdlc:dashboard, then reload."
+	// notRunningMessage starts the message of the codeNotRunning body. The
+	// cause follows it.
+	notRunningMessage = "Dashboard not running"
 	// notRunningSuggestion is the suggestion of the codeNotRunning body.
 	notRunningSuggestion = "Run /sdlc:dashboard, then reload."
 )
 
 // Values of the dashboard field in the status reply.
 const (
-	// statusRunning means the health call returned 200.
+	// statusRunning means the health call returned an sdlc health answer.
 	statusRunning = "running"
-	// statusNotRunning means no record, a failed health call or a timeout.
+	// statusNotRunning means no record, a bad record URL, a failed health
+	// call, an answer that is not an sdlc health answer, or a timeout.
 	statusNotRunning = "not running"
 )
 
+// dashboardHealth is the health call of the status route: the dashboard
+// package's own check, which also tells a foreign program on the port from
+// the dashboard. Tests use real servers on 127.0.0.1, so it is not replaced.
+var dashboardHealth = dashboard.DefaultDeps().Health
+
 // designStatus is the reply of GET /__design/status.
 type designStatus struct {
-	Dashboard string `json:"dashboard"` // statusRunning or statusNotRunning
-	URL       string `json:"url"`       // the record URL; empty when there is no record
+	Dashboard string `json:"dashboard"`        // statusRunning or statusNotRunning
+	URL       string `json:"url"`              // the record URL; empty when there is no record
+	Reason    string `json:"reason,omitempty"` // why the dashboard is not running; empty when it runs
 }
 
 // registerAPI adds the API proxy, the status route and the stop route to mux.
@@ -72,14 +80,20 @@ func registerAPIRoutes(mux *http.ServeMux, o serverOptions, timeout time.Duratio
 
 // proxyToDashboard sends each GET request to the dashboard that the server
 // record names. The record is read for each request, so a dashboard that
-// starts or moves after the preview starts is found.
+// starts or moves after the preview starts is found. When the dashboard
+// cannot be reached, the 502 message names the cause.
 func proxyToDashboard(o serverOptions) http.HandlerFunc {
-	notRunning := func(w http.ResponseWriter, _ *http.Request, _ error) {
-		writeError(w, http.StatusBadGateway, codeNotRunning, notRunningMessage, notRunningSuggestion)
+	notRunning := func(w http.ResponseWriter, _ *http.Request, err error) {
+		writeError(w, http.StatusBadGateway, codeNotRunning, fmt.Sprintf("%s: %v", notRunningMessage, err), notRunningSuggestion)
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
-		target, err := dashboardURL(o)
+		rec, err := o.ReadRecord()
+		if err != nil {
+			notRunning(w, r, err)
+			return
+		}
+		target, err := parseRecordURL(rec.URL)
 		if err != nil {
 			notRunning(w, r, err)
 			return
@@ -95,56 +109,42 @@ func proxyToDashboard(o serverOptions) http.HandlerFunc {
 	}
 }
 
-// dashboardURL reads the server record and parses its URL.
-func dashboardURL(o serverOptions) (*url.URL, error) {
-	rec, err := o.ReadRecord()
-	if err != nil {
-		return nil, err
-	}
-	u, err := url.Parse(rec.URL)
+// parseRecordURL parses the URL of the server record. A URL without a scheme
+// or a host is an error.
+func parseRecordURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, err
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("dashboard record URL %q has no scheme or host", rec.URL)
+		return nil, fmt.Errorf("dashboard record URL %q has no scheme or host", raw)
 	}
 
 	return u, nil
 }
 
-// serveStatus answers with the dashboard state from a health call that ends
-// after timeout. A record error, a health error, a status other than 200 or a
-// timeout gives statusNotRunning.
+// serveStatus answers with the dashboard state. The dashboard runs when the
+// record reads, its URL parses, and dashboardHealth on the record port gives
+// an sdlc health answer within timeout. Otherwise the reply is
+// statusNotRunning and Reason holds the cause.
 func serveStatus(o serverOptions, timeout time.Duration) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
 		reply := designStatus{Dashboard: statusNotRunning}
 		rec, err := o.ReadRecord()
 		if err == nil {
 			reply.URL = rec.URL
-			if dashboardHealthy(r.Context(), rec.URL, timeout) {
-				reply.Dashboard = statusRunning
-			}
+			_, err = parseRecordURL(rec.URL)
+		}
+		if err == nil {
+			_, err = dashboardHealth(rec.Port, timeout)
+		}
+		if err != nil {
+			reply.Reason = err.Error()
+		} else {
+			reply.Dashboard = statusRunning
 		}
 		writeJSONReply(w, http.StatusOK, reply)
 	}
-}
-
-// dashboardHealthy reports whether GET <base>/api/health returns 200 within timeout.
-func dashboardHealthy(ctx context.Context, base string, timeout time.Duration) bool {
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/health", nil)
-	if err != nil {
-		return false
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
-
-	return resp.StatusCode == http.StatusOK
 }
 
 // writeError writes {"error":{"code","message","suggestion"}} with status.

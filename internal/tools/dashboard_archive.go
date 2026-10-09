@@ -73,7 +73,10 @@ const (
 	ArchiveRunActive = "RUN_ACTIVE"
 	// ArchiveConfirmStalled is the code for a stalled run with no confirm.
 	ArchiveConfirmStalled = "CONFIRM_STALLED"
-	// ArchiveFailed is the code for a read, move or delete failure.
+	// ArchiveFailed is the code for a read, move or delete failure, including
+	// a dangling link on the archive folder path. Its Suggestion depends on
+	// the cause: a dangling link gets the link recovery text, any other
+	// failure gets the permission or read suggestion.
 	ArchiveFailed = "ARCHIVE_FAILED"
 )
 
@@ -96,7 +99,8 @@ const (
 
 // ArchiveError is the error of ArchiveRun. Code is one of the Archive* code
 // constants. Message is in sentence case, because the page shows it to the
-// person. Suggestion is never empty. Cause is the error that made the archive
+// person. Suggestion is never empty, and for ArchiveFailed it varies by cause
+// (see ArchiveFailed). Cause is the error that made the archive
 // fail, or nil when no other error caused it.
 type ArchiveError struct {
 	Code, Message, Suggestion string
@@ -299,12 +303,7 @@ type archiveMover struct {
 // run applies the six steps of the move order that ArchiveRun documents.
 func (m *archiveMover) run(runID string, members []archiveRunFiles, root archiveRunFiles, now time.Time) error {
 	if err := fsx.MkdirAll(m.dir, 0o755); err != nil {
-		suggestion := archiveSuggestFSFailed
-		var dl *fsx.DanglingLinkError
-		if errors.As(err, &dl) {
-			suggestion = dl.Recovery()
-		}
-		return archiveErr(ArchiveFailed, "Create archive folder "+m.dir, suggestion, err)
+		return archiveErr(ArchiveFailed, "Create archive folder "+m.dir, fsx.RecoveryOr(err, archiveSuggestFSFailed), err)
 	}
 	all := append(append([]archiveRunFiles{}, members...), root)
 	for _, f := range all {
@@ -346,8 +345,8 @@ func (m *archiveMover) move(src string) error {
 		return err
 	}
 	dst := filepath.Join(m.dir, archiveDestRel(rel))
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return archiveErr(ArchiveFailed, "Create folder "+filepath.Dir(dst), archiveSuggestFSFailed, err)
+	if err := fsx.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return archiveErr(ArchiveFailed, "Create folder "+filepath.Dir(dst), fsx.RecoveryOr(err, archiveSuggestFSFailed), err)
 	}
 	if err := archiveRename(src, dst); err != nil {
 		return archiveErr(ArchiveFailed, "Move "+src, archiveSuggestFSFailed, err)

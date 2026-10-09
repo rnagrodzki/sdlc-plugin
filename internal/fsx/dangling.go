@@ -26,13 +26,36 @@ type DanglingLinkError struct {
 	// Remove is true for a file link that is safe to remove, such as a
 	// preplan topic file. It is false for a folder link.
 	Remove bool
+	// Chain is true when Link is the first link of a chain and Target is the
+	// missing target at the end of the chain, not the direct target of Link.
+	Chain bool
 	// Err is the original write error.
 	Err error
 }
 
-// Error returns the link, the missing target, and the recovery text.
+// Error returns the problem and the recovery text.
 func (e *DanglingLinkError) Error() string {
-	return fmt.Sprintf("%s is a link to %s, which does not exist. %s", e.Link, e.Target, e.Recovery())
+	return e.Problem() + " " + e.Recovery()
+}
+
+// Problem returns the link and the missing target, without the recovery
+// text. A caller that shows the recovery as a separate suggestion uses it in
+// place of Error.
+func (e *DanglingLinkError) Problem() string {
+	if e.Chain {
+		return fmt.Sprintf("%s resolves through links to %s, which does not exist.", e.Link, e.Target)
+	}
+	return fmt.Sprintf("%s is a link to %s, which does not exist.", e.Link, e.Target)
+}
+
+// RecoveryOr returns the recovery text of the *DanglingLinkError in the
+// chain of err, or fallback when err holds none.
+func RecoveryOr(err error, fallback string) string {
+	var dl *DanglingLinkError
+	if errors.As(err, &dl) {
+		return dl.Recovery()
+	}
+	return fallback
 }
 
 // Recovery returns the text that tells the user how to fix the link. For a
@@ -62,7 +85,10 @@ func (e *DanglingLinkError) Unwrap() error {
 // maxLinkChain links, and returns the last link together with its target,
 // which does not exist. A relative target is joined to the directory of the
 // link that holds it. A longer chain, or a chain that ends in an existing
-// element, gives ok=false.
+// element, gives ok=false. A chain longer than the kernel limit makes os.Stat
+// fail with ELOOP, so the walk stops before followLinkChain runs; the
+// maxLinkChain bound and the existing-element check guard against a chain
+// that changes between the two reads.
 func FindDanglingLink(path string) (link, target string, ok bool) {
 	for p := path; ; p = filepath.Dir(p) {
 		info, err := os.Lstat(p)

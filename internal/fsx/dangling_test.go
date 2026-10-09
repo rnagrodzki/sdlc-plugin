@@ -280,7 +280,9 @@ func TestFindDanglingLink(t *testing.T) {
 		}
 	})
 
-	t.Run("chain longer than the limit is not a hit", func(t *testing.T) {
+	t.Run("chain longer than the kernel limit is not a hit", func(t *testing.T) {
+		// os.Stat fails with ELOOP on this chain, so the walk stops before
+		// followLinkChain runs. The followLinkChain tests cover maxLinkChain.
 		dir := t.TempDir()
 		const count = maxLinkChain + 5
 		for i := 0; i < count; i++ {
@@ -292,6 +294,69 @@ func TestFindDanglingLink(t *testing.T) {
 		}
 
 		if gotLink, gotTarget, ok := FindDanglingLink(filepath.Join(dir, "l0")); ok {
+			t.Fatalf("unexpected hit link=%q target=%q", gotLink, gotTarget)
+		}
+	})
+}
+
+// TestFollowLinkChain calls followLinkChain directly. It uses os.Lstat for
+// each link, so the maxLinkChain bound and the existing-element end are
+// reachable here, while FindDanglingLink stops before them.
+func TestFollowLinkChain(t *testing.T) {
+	t.Run("chain longer than maxLinkChain is not a hit", func(t *testing.T) {
+		dir := t.TempDir()
+		const count = maxLinkChain + 5
+		for i := 0; i < count; i++ {
+			next := filepath.Join(dir, fmt.Sprintf("l%d", i+1))
+			if i == count-1 {
+				next = filepath.Join(dir, "missing")
+			}
+			mustSymlink(t, next, filepath.Join(dir, fmt.Sprintf("l%d", i)))
+		}
+
+		if gotLink, gotTarget, ok := followLinkChain(filepath.Join(dir, "l0")); ok {
+			t.Fatalf("unexpected hit link=%q target=%q", gotLink, gotTarget)
+		}
+	})
+
+	t.Run("chain of maxLinkChain links is a hit", func(t *testing.T) {
+		dir := t.TempDir()
+		for i := 0; i < maxLinkChain; i++ {
+			next := filepath.Join(dir, fmt.Sprintf("l%d", i+1))
+			if i == maxLinkChain-1 {
+				next = filepath.Join(dir, "missing")
+			}
+			mustSymlink(t, next, filepath.Join(dir, fmt.Sprintf("l%d", i)))
+		}
+
+		gotLink, gotTarget, ok := followLinkChain(filepath.Join(dir, "l0"))
+		wantLink := filepath.Join(dir, fmt.Sprintf("l%d", maxLinkChain-1))
+		if !ok || gotLink != wantLink || gotTarget != filepath.Join(dir, "missing") {
+			t.Fatalf("got link=%q target=%q ok=%v, want link=%q target=%q ok=true",
+				gotLink, gotTarget, ok, wantLink, filepath.Join(dir, "missing"))
+		}
+	})
+
+	t.Run("chain that ends in an existing file is not a hit", func(t *testing.T) {
+		dir := t.TempDir()
+		file := filepath.Join(dir, "file")
+		if err := os.WriteFile(file, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mustSymlink(t, file, filepath.Join(dir, "a"))
+
+		if gotLink, gotTarget, ok := followLinkChain(filepath.Join(dir, "a")); ok {
+			t.Fatalf("unexpected hit link=%q target=%q", gotLink, gotTarget)
+		}
+	})
+
+	t.Run("a path that is not a link is not a hit", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "file")
+		if err := os.WriteFile(file, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if gotLink, gotTarget, ok := followLinkChain(file); ok {
 			t.Fatalf("unexpected hit link=%q target=%q", gotLink, gotTarget)
 		}
 	})
@@ -341,6 +406,31 @@ func TestDanglingLinkError(t *testing.T) {
 			if !errors.Is(e, fs.ErrExist) {
 				t.Fatalf("expected errors.Is(err, fs.ErrExist) through Unwrap")
 			}
+			if got, want := e.Problem(), "/wt/.sdlc-v2/preplan is a link to /main/.sdlc-v2/preplan, which does not exist."; got != want {
+				t.Fatalf("Problem:\n got: %q\nwant: %q", got, want)
+			}
 		})
+	}
+
+	t.Run("chain names the first link and the end of the chain", func(t *testing.T) {
+		e := &DanglingLinkError{Link: "/wt/a.md", Target: "/main/b.md", Remove: true, Chain: true, Err: cause}
+		want := "/wt/a.md resolves through links to /main/b.md, which does not exist. Remove the link, then try again: rm /wt/a.md"
+		if got := e.Error(); got != want {
+			t.Fatalf("Error:\n got: %q\nwant: %q", got, want)
+		}
+	})
+}
+
+func TestRecoveryOr(t *testing.T) {
+	dl := &DanglingLinkError{Link: "/wt/x", Target: "/main/x", Err: fs.ErrExist}
+
+	if got := RecoveryOr(fmt.Errorf("wrap: %w", dl), "fallback"); got != dl.Recovery() {
+		t.Errorf("wrapped dangling link: got %q, want %q", got, dl.Recovery())
+	}
+	if got := RecoveryOr(errors.New("permission denied"), "fallback"); got != "fallback" {
+		t.Errorf("other error: got %q, want fallback", got)
+	}
+	if got := RecoveryOr(nil, "fallback"); got != "fallback" {
+		t.Errorf("nil error: got %q, want fallback", got)
 	}
 }

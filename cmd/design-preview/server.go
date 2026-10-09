@@ -5,9 +5,7 @@ import (
 	_ "embed" // marks.js is embedded into the program
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
@@ -94,11 +92,11 @@ func serveDraftIndex(o serverOptions) http.HandlerFunc {
 	}
 }
 
-// buildIndexPage reads static/index.html of the draft and inserts the
+// buildIndexPage reads static/index.html of the draft folder dir and inserts the
 // design-deps tag and the marks script tag before </head>. A dependency file
 // that does not load is not an error here: the tag then carries the message.
-func buildIndexPage(draftDir string) ([]byte, error) {
-	indexPath := filepath.Join(draftDir, "static", "index.html")
+func buildIndexPage(dir string) ([]byte, error) {
+	indexPath := filepath.Join(dir, "static", "index.html")
 	page, err := readDraftIndex(indexPath)
 	if err != nil {
 		return nil, err
@@ -108,7 +106,7 @@ func buildIndexPage(draftDir string) ([]byte, error) {
 		return nil, fmt.Errorf("%s: no </head> tag", indexPath)
 	}
 
-	depsJSON, err := dependencyTagJSON(filepath.Join(draftDir, "dependencies.json"))
+	depsJSON, err := dependencyTagJSON(filepath.Join(dir, "dependencies.json"))
 	if err != nil {
 		return nil, err
 	}
@@ -126,19 +124,9 @@ func buildIndexPage(draftDir string) ([]byte, error) {
 
 // readDraftIndex reads path with a size limit. Every error names path.
 func readDraftIndex(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	data, err := readBounded(path, maxIndexBytes)
 	if err != nil {
-		return nil, dependenciesReadError(path, err)
-	}
-	defer f.Close()
-
-	// Read one byte more than the limit: a longer result means the file is too large.
-	data, err := io.ReadAll(io.LimitReader(f, maxIndexBytes+1))
-	if err != nil {
-		return nil, dependenciesReadError(path, err)
-	}
-	if len(data) > maxIndexBytes {
-		return nil, fmt.Errorf("%s: larger than %d MiB", path, maxIndexBytes>>20)
+		return nil, pathError(path, err)
 	}
 
 	return data, nil
@@ -153,9 +141,8 @@ func dependencyTagJSON(path string) ([]byte, error) {
 	if err != nil {
 		payload = depsFailed{OK: false, Error: err.Error()}
 	} else {
-		if deps == nil {
-			deps = []Dependency{} // write [] and not null
-		}
+		// LoadDependencies never returns a nil slice without an error: the
+		// root must be an array, and encoding/json decodes [] to an empty slice.
 		payload = depsOK{OK: true, Dependencies: deps}
 	}
 
