@@ -140,6 +140,25 @@ func serverSkipIfRoot(t *testing.T) {
 	}
 }
 
+func TestServerNoCache(t *testing.T) {
+	dir := serverDraft(t, serverIndex, serverOneDep)
+	serverPut(t, dir, filepath.Join("static", "app.js"), []byte("var a = 1;\n"))
+	serverPut(t, dir, filepath.Join("static", "app.css"), []byte("body{}\n"))
+	h := serverHandler(dir)
+
+	for _, path := range []string{"/", "/static/app.js", "/static/app.css", "/__design/marks.js"} {
+		t.Run(path, func(t *testing.T) {
+			rec := serverGet(h, path)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+				t.Errorf("Cache-Control = %q, want no-store", got)
+			}
+		})
+	}
+}
+
 func TestServerPage(t *testing.T) {
 	t.Run("GET / inserts the design-deps tag and the marks tag before </head>", func(t *testing.T) {
 		dir := serverDraft(t, serverIndex, serverOneDep)

@@ -275,24 +275,40 @@ describe('browser bootstrap', () => {
       className: '',
       textContent: '',
       children: [],
+      listeners: {},
       appendChild(child) {
         this.children.push(child);
         return child;
       },
+      addEventListener(name, fn) {
+        this.listeners[name] = fn;
+      },
+    };
+  }
+
+  function fakeClassList() {
+    const set = new Set();
+    return {
+      add: (c) => set.add(c),
+      remove: (c) => set.delete(c),
+      contains: (c) => set.has(c),
     };
   }
 
   // runInBrowser runs marks.js in a vm context with a fake window and document.
   // statusResult is the JSON that fetch gives, or an Error for a failed fetch.
-  function runInBrowser(depsText, statusResult) {
+  // storedOff is the value of the localStorage key, or undefined for no storage.
+  function runInBrowser(depsText, statusResult, storedOff) {
     const head = fakeNode('head');
     const body = fakeNode('body');
+    const documentElement = { classList: fakeClassList() };
     const listeners = {};
     const tags = {};
     if (depsText !== null) tags['design-deps'] = { textContent: depsText };
     const document = {
       head,
       body,
+      documentElement,
       createElement: fakeNode,
       getElementById: (id) => tags[id] || head.children.find((c) => c.id === id) || null,
       addEventListener: (name, fn) => {
@@ -308,11 +324,21 @@ describe('browser bootstrap', () => {
         return Promise.resolve({ json: () => Promise.resolve(statusResult) });
       },
     };
+    const store = {};
+    if (storedOff !== undefined) {
+      store['design-marks-off'] = storedOff;
+      sandbox.localStorage = {
+        getItem: (k) => (k in store ? store[k] : null),
+        setItem: (k, v) => {
+          store[k] = v;
+        },
+      };
+    }
     sandbox.window = sandbox;
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
     vm.runInContext(fs.readFileSync(MARKS_PATH, 'utf8'), sandbox);
-    return { sandbox, head, body, listeners, fetchCalls };
+    return { sandbox, head, body, documentElement, listeners, fetchCalls, store };
   }
 
   const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -368,5 +394,107 @@ describe('browser bootstrap', () => {
     await settle();
     assert.equal(body.children.filter((c) => c.id === 'design-banner').length, 0);
     assert.equal(body.children.filter((c) => c.id === 'design-panel').length, 1);
+  });
+
+  const key = (over) => ({ shiftKey: true, code: 'KeyM', target: { tagName: 'BODY' }, ...over });
+
+  test('the style hides marks, labels and panel under the marks-off class', () => {
+    const { head } = runInBrowser('[]', { dashboard: 'running' });
+    const css = head.children.find((c) => c.id === 'design-marks-style').textContent;
+    assert.match(css, /html\.design-marks-off \.design-missing, html\.design-marks-off \.design-unknown \{ outline: none; \}/);
+    assert.match(css, /html\.design-marks-off \.design-missing::after[^}]*content: none/);
+    assert.match(css, /html\.design-marks-off #design-panel \{ display: none; \}/);
+  });
+
+  test('Shift+M switches the marks off and on, and stores the choice', () => {
+    const { documentElement, listeners, store } = runInBrowser('[]', { dashboard: 'running' }, null);
+    assert.equal(documentElement.classList.contains('design-marks-off'), false);
+    listeners.keydown(key());
+    assert.equal(documentElement.classList.contains('design-marks-off'), true);
+    assert.equal(store['design-marks-off'], '1');
+    listeners.keydown(key());
+    assert.equal(documentElement.classList.contains('design-marks-off'), false);
+    assert.equal(store['design-marks-off'], '0');
+  });
+
+  test('a stored "1" starts the page with the marks off', () => {
+    const { documentElement } = runInBrowser('[]', { dashboard: 'running' }, '1');
+    assert.equal(documentElement.classList.contains('design-marks-off'), true);
+  });
+
+  test('blocked storage does not break the toggle', () => {
+    const { documentElement, listeners } = runInBrowser('[]', { dashboard: 'running' });
+    assert.equal(documentElement.classList.contains('design-marks-off'), false);
+    listeners.keydown(key());
+    assert.equal(documentElement.classList.contains('design-marks-off'), true);
+  });
+
+  test('the toggle button stays visible with marks off and switches them back on', async () => {
+    const { body, head, documentElement, listeners } = runInBrowser('[]', { dashboard: 'running' }, null);
+    const css = head.children.find((c) => c.id === 'design-marks-style').textContent;
+    assert.ok(!css.includes('design-marks-off #design-toggle'), 'the style must not hide the toggle');
+    listeners.DOMContentLoaded();
+    await settle();
+    const panel = body.children.find((c) => c.id === 'design-panel');
+    assert.ok(!panel.children.some((c) => c.tag === 'button'), 'the toggle is not inside the panel');
+    const button = body.children.find((c) => c.id === 'design-toggle');
+    assert.equal(button.textContent, 'Hide marks (Shift+M)');
+    button.listeners.click();
+    assert.equal(documentElement.classList.contains('design-marks-off'), true);
+    assert.equal(button.textContent, 'Show marks (Shift+M)');
+    button.listeners.click();
+    assert.equal(documentElement.classList.contains('design-marks-off'), false);
+    assert.equal(button.textContent, 'Hide marks (Shift+M)');
+  });
+
+  test('Shift+M keeps the toggle label in step', async () => {
+    const { body, listeners } = runInBrowser('[]', { dashboard: 'running' }, null);
+    listeners.DOMContentLoaded();
+    await settle();
+    const button = body.children.find((c) => c.id === 'design-toggle');
+    listeners.keydown(key());
+    assert.equal(button.textContent, 'Show marks (Shift+M)');
+  });
+
+  test('a stored "1" starts the toggle with the show label', async () => {
+    const { body, listeners } = runInBrowser('[]', { dashboard: 'running' }, '1');
+    listeners.DOMContentLoaded();
+    await settle();
+    const button = body.children.find((c) => c.id === 'design-toggle');
+    assert.equal(button.textContent, 'Show marks (Shift+M)');
+  });
+});
+
+describe('clipText', () => {
+  test('keeps a text that fits', () => {
+    assert.equal(marks.clipText('4m 12s', 60), '4m 12s');
+    assert.equal(marks.clipText('abc', 3), 'abc');
+  });
+
+  test('cuts a longer text and adds an ellipsis', () => {
+    assert.equal(marks.clipText('abcdef', 3), 'abc…');
+  });
+});
+
+describe('isToggleKey', () => {
+  const press = (over) => ({ shiftKey: true, code: 'KeyM', target: { tagName: 'BODY' }, ...over });
+
+  test('is true for Shift+M on the page', () => {
+    assert.equal(marks.isToggleKey(press()), true);
+  });
+
+  test('is false for M with no Shift, another key, or Ctrl, Meta or Alt', () => {
+    assert.equal(marks.isToggleKey(press({ shiftKey: false })), false);
+    assert.equal(marks.isToggleKey(press({ code: 'KeyN' })), false);
+    for (const mod of ['ctrlKey', 'metaKey', 'altKey']) {
+      assert.equal(marks.isToggleKey(press({ [mod]: true })), false, mod);
+    }
+  });
+
+  test('is false while the user types in a form field', () => {
+    for (const tagName of ['INPUT', 'TEXTAREA', 'SELECT']) {
+      assert.equal(marks.isToggleKey(press({ target: { tagName } })), false, tagName);
+    }
+    assert.equal(marks.isToggleKey(press({ target: { tagName: 'DIV', isContentEditable: true } })), false);
   });
 });

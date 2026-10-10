@@ -208,6 +208,26 @@ function tickElapsed() {
   draw.tickElapsed(document, view, Date.now());
 }
 
+// The review dimension cards sit in columns of near equal height. The
+// observer fires when a grid first has a width (its tile opens) and when the
+// width changes, and the packing needs the real card heights.
+var dimObserver =
+  typeof ResizeObserver === 'function'
+    ? new ResizeObserver(function (entries) {
+        entries.forEach(function (entry) {
+          draw.packDimensionGrid(entry.target, view);
+        });
+      })
+    : null;
+
+function watchDimensionGrids() {
+  if (!dimObserver) return;
+  dimObserver.disconnect();
+  Array.prototype.forEach.call(byId('feed').querySelectorAll('.dim-grid'), function (grid) {
+    dimObserver.observe(grid);
+  });
+}
+
 function renderFeed(snapshot, repos, scope, now, tz) {
   var nodes = [];
   var pipelines = [];
@@ -242,6 +262,7 @@ function renderFeed(snapshot, repos, scope, now, tz) {
     nodes.push(empty ? draw.emptyState(document, 'no-pipelines', empty) : draw.emptyState(document, 'none-in-scope'));
   }
   replaceChildren(byId('feed'), nodes);
+  watchDimensionGrids();
 }
 
 // Draws one snapshot: the tab title, the header counts, the filter chips, the

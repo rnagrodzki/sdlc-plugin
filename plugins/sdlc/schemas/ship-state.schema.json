@@ -442,6 +442,54 @@
             "additionalProperties": false
           }
         },
+        "fixProgress": {
+          "type": "array",
+          "description": "Fix status of each finding that received-review Step 11 takes. Upserted on (origin, file, line, title). A repeat of the stored status changes nothing. A stored final status (fixed, failed, deferred) is kept when the incoming status is queued or fixing, and a deferred status never replaces a failed status. Any other status change replaces the whole record. firstAt keeps its first value; updatedAt is the time of the last status change. At most 200 records. Independent of fixed[].",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "properties": {
+              "origin": {
+                "type": "string",
+                "enum": ["local-review", "pr-comment"]
+              },
+              "severity": {
+                "type": "string",
+                "enum": ["critical", "high", "medium", "low", "info"]
+              },
+              "file": {
+                "type": "string"
+              },
+              "line": {
+                "oneOf": [
+                  {
+                    "type": "integer"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": ["queued", "fixing", "fixed", "failed", "deferred"]
+              },
+              "firstAt": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "updatedAt": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "required": ["origin", "severity", "file", "title", "status", "firstAt", "updatedAt"],
+            "additionalProperties": false
+          }
+        },
         "hardened": {
           "type": "array",
           "description": "Harden runs, one per trigger. A done record replaces a started record with the same trigger; a started record with no done record marks an interrupted run.",

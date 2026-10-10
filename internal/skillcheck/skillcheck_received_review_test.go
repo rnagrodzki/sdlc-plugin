@@ -28,6 +28,8 @@ func TestReceivedReviewSkillParity(t *testing.T) {
 			"learnings_log:append",
 			// Step 4 records every unfixed finding through this action.
 			"ship_state:defer",
+			// Step 11 records the fix status of each finding through this action.
+			"ship_state:healing_record",
 		)
 	})
 

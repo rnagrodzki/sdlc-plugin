@@ -2,8 +2,10 @@ package tools
 
 import (
 	"encoding/json"
+	"slices"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
@@ -12,6 +14,8 @@ const (
 	dashboardShipStepPlan    = "plan"
 	dashboardShipStepExecute = "execute"
 	dashboardShipStepReview  = "review"
+	// The received-review station is built from data.healing.fixProgress.
+	dashboardShipStepReceivedReview = "received-review"
 )
 
 // dashboardExecuteRefPrefix goes before the Ref of each issue that a joined
@@ -25,7 +29,10 @@ const dashboardExecuteRefPrefix = "execute:"
 // review rounds of data.planReviewRounds, with maxRounds, when that list
 // holds rounds. The review step gets a dimensions detail only when
 // shipBuildReviewLedger returns a ledger. A planExploreSummary value that
-// does not decode gives no plan step.
+// does not decode gives no plan step. A data.healing.fixProgress list with a
+// valid record gives the received-review station
+// (dashboardAttachReceivedReview). A fixProgress value that is not a list, or
+// a list with records and none valid, adds a state issue.
 func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	data := st.Data
 	p.SessionID = dashboardStr(data["sessionId"])
@@ -71,6 +78,14 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 			}
 		}
 	}
+	runCompleted := dashboardStr(data["pipelineCompletedAt"]) != ""
+	rr, problem := dashboardReceivedReviewStep(healing, runCompleted)
+	if rr != nil {
+		dashboardAttachReceivedReview(p, rr)
+	}
+	if problem != "" {
+		p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "medium", Text: problem})
+	}
 
 	if entries, ok := dashboardDecodeExploreSummary(data["planExploreSummary"]); ok {
 		plan := DashboardStep{
@@ -86,6 +101,117 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 		p.Progress.Total++
 		p.Progress.Label = dashboardStepLabel(p.Progress)
 	}
+}
+
+// dashboardTimeSpan holds the earliest and the latest time seen so far, as
+// the RFC 3339 text that was read. An empty text means no time yet.
+type dashboardTimeSpan struct {
+	first, last     time.Time
+	firstAt, lastAt string
+}
+
+// addFirst keeps s as the earliest time when it parses and is earlier than
+// the stored one. A text that does not parse is skipped.
+func (sp *dashboardTimeSpan) addFirst(s string) {
+	if t, ok := dashboardParseTime(s); ok && (sp.firstAt == "" || t.Before(sp.first)) {
+		sp.first, sp.firstAt = t, s
+	}
+}
+
+// addLast keeps s as the latest time when it parses and is later than the
+// stored one. A text that does not parse is skipped.
+func (sp *dashboardTimeSpan) addLast(s string) {
+	if t, ok := dashboardParseTime(s); ok && (sp.lastAt == "" || t.After(sp.last)) {
+		sp.last, sp.lastAt = t, s
+	}
+}
+
+// dashboardReceivedReviewStep builds the received-review step from
+// data.healing.fixProgress. It returns no step when the key is absent or
+// holds no valid record. problem is the text of a state issue: set when the
+// value is not a list (null included), or is a list with records and none
+// of them valid, else empty. A record that is not a map, has no title, or
+// has a status outside healingFixStatuses or a severity outside
+// dimensions.ValidSeverities is skipped: the page puts both values into CSS
+// class names. Each valid record gives one fix row, in list order. The step
+// is in_progress while a record is not in healingFixFinal and the run is
+// live (runCompleted false), else completed. startedAt is the earliest
+// parsable firstAt; completedAt is the latest parsable updatedAt, and is
+// absent while the step runs. A time that does not parse is skipped.
+func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) (step *DashboardStep, problem string) {
+	raw, present := healing["fixProgress"]
+	if !present {
+		return nil, ""
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, "healing.fixProgress of the ship state is not a list — the received-review fixes are not shown"
+	}
+	var fixes []DashboardFix
+	var span dashboardTimeSpan
+	open := false
+	for _, raw := range list {
+		m, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		title := dashboardStr(m["title"])
+		status, severity := dashboardStr(m["status"]), dashboardStr(m["severity"])
+		if title == "" || !slices.Contains(healingFixStatuses, status) || !slices.Contains(dimensions.ValidSeverities, severity) {
+			continue
+		}
+		fixes = append(fixes, DashboardFix{
+			Title:    dashboardPreview(title),
+			Severity: severity,
+			File:     dashboardStr(m["file"]),
+			Line:     dashboardInt(m["line"]),
+			Status:   status,
+		})
+		if !slices.Contains(healingFixFinal, status) {
+			open = true
+		}
+		span.addFirst(dashboardStr(m["firstAt"]))
+		span.addLast(dashboardStr(m["updatedAt"]))
+	}
+	if len(fixes) == 0 {
+		if len(list) > 0 {
+			return nil, "healing.fixProgress of the ship state holds no valid fix record — the received-review fixes are not shown"
+		}
+		return nil, ""
+	}
+	step = &DashboardStep{
+		Name:        dashboardShipStepReceivedReview,
+		Status:      StepCompleted,
+		StartedAt:   span.firstAt,
+		CompletedAt: span.lastAt,
+		Detail:      &DashboardStepDetail{Kind: dashboardKindFixes, Fixes: fixes},
+	}
+	if open && !runCompleted {
+		step.Status, step.CompletedAt = StepInProgress, ""
+	}
+	return step, ""
+}
+
+// dashboardAttachReceivedReview sets rr.Detail on an existing
+// received-review step, which keeps its status and times. With no such step
+// it inserts rr after the first review step and updates p.Progress: Total
+// grows by one, Done grows by one when rr is completed, and Current stays.
+// It does nothing when neither step exists.
+func dashboardAttachReceivedReview(p *DashboardPipeline, rr *DashboardStep) {
+	if step := dashboardStepNamed(p, dashboardShipStepReceivedReview); step != nil {
+		step.Detail = rr.Detail
+		return
+	}
+	i := slices.IndexFunc(p.Steps, func(s DashboardStep) bool { return s.Name == dashboardShipStepReview })
+	if i < 0 {
+		return
+	}
+	p.Steps = slices.Insert(p.Steps, i+1, *rr)
+	p.Progress.Total++
+	if rr.Status == StepCompleted {
+		p.Progress.Done++
+	}
+	p.Progress.Label = dashboardStepLabel(p.Progress)
 }
 
 // dashboardDecodeExploreSummary decodes the ship state value

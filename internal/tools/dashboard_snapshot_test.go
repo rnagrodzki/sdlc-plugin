@@ -1314,3 +1314,146 @@ func TestDashboardSnapshot_ShipCommitResult(t *testing.T) {
 		})
 	}
 }
+
+// dashStepJSON marshals one step the way the snapshot goes on the wire.
+func dashStepJSON(t *testing.T, s DashboardStep) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+func TestDashboardStepTimes_Ship(t *testing.T) {
+	const started = "2026-10-07T09:00:00Z"
+	const completed = "2026-10-07T09:05:30.250Z"
+
+	tests := []struct {
+		name          string
+		step          map[string]any
+		wantStarted   string
+		wantCompleted string
+	}{
+		{
+			name:          "both times",
+			step:          map[string]any{"name": "execute", "status": StepCompleted, "startedAt": started, "completedAt": completed},
+			wantStarted:   started,
+			wantCompleted: completed,
+		},
+		{
+			name:        "running step has startedAt only",
+			step:        map[string]any{"name": "execute", "status": StepInProgress, "startedAt": started},
+			wantStarted: started,
+		},
+		{
+			name: "skipped step with no times",
+			step: map[string]any{"name": "execute", "status": StepSkipped},
+		},
+		{
+			name: "empty strings",
+			step: map[string]any{"name": "execute", "status": StepCompleted, "startedAt": "", "completedAt": ""},
+		},
+		{
+			name:        "bad completedAt is dropped",
+			step:        map[string]any{"name": "execute", "status": StepCompleted, "startedAt": started, "completedAt": "yesterday"},
+			wantStarted: started,
+		},
+		{
+			name:          "bad startedAt is dropped",
+			step:          map[string]any{"name": "execute", "status": StepCompleted, "startedAt": "2026-10-07 09:00:00", "completedAt": completed},
+			wantCompleted: completed,
+		},
+		{
+			name: "time that is not a string",
+			step: map[string]any{"name": "execute", "status": StepCompleted, "startedAt": 1791363600, "completedAt": true},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			dashWriteState(t, root, "ship-feat-x-20261007T090000Z.json", map[string]any{
+				"branch": "feat/x",
+				"steps":  []any{tc.step},
+			}, dashNow.Add(-time.Minute))
+
+			p := dashOne(t, root)
+			if len(p.Steps) != 1 {
+				t.Fatalf("steps = %d, want 1", len(p.Steps))
+			}
+			got := p.Steps[0]
+			if got.StartedAt != tc.wantStarted || got.CompletedAt != tc.wantCompleted {
+				t.Errorf("times = (%q, %q), want (%q, %q)", got.StartedAt, got.CompletedAt, tc.wantStarted, tc.wantCompleted)
+			}
+			assertStepTimeKeys(t, got, tc.wantStarted != "", tc.wantCompleted != "")
+		})
+	}
+}
+
+func TestDashboardStepTimes_Execute(t *testing.T) {
+	const started = "2026-10-07T09:00:00Z"
+	const completed = "2026-10-07T09:20:00Z"
+
+	root := dashRoot(t)
+	dashWriteState(t, root, "execute-feat-x-20261007T090000Z.json", map[string]any{
+		"branch": "feat/x",
+		"waves": []any{
+			map[string]any{"number": 1, "status": "completed", "startedAt": started, "completedAt": completed},
+			map[string]any{"number": 2, "status": "in_progress", "startedAt": completed},
+			map[string]any{"number": 3, "status": "failed", "startedAt": started, "completedAt": "not a time"},
+			map[string]any{"number": 4, "status": "pending"},
+		},
+		"plannedWaves": dashPlannedWaves([2]any{1.0, []any{"1"}}, [2]any{2.0, []any{"2"}}, [2]any{3.0, []any{"3"}}, [2]any{4.0, []any{"4"}}, [2]any{5.0, []any{"5"}}),
+	}, dashNow.Add(-time.Minute))
+
+	p := dashOne(t, root)
+	if got, want := dashStepNames(p), []string{"wave 1", "wave 2", "wave 3", "wave 4", "wave 5"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("step names = %v, want %v", got, want)
+	}
+	want := []struct{ started, completed string }{
+		{started, completed}, // completed wave: both keys
+		{completed, ""},      // running wave: startedAt only
+		{started, ""},        // bad completedAt is dropped
+		{"", ""},             // waves entry with status pending and no times
+		{"", ""},             // planned wave with no waves entry: pending step
+	}
+	for i, w := range want {
+		s := p.Steps[i]
+		if s.StartedAt != w.started || s.CompletedAt != w.completed {
+			t.Errorf("%s times = (%q, %q), want (%q, %q)", s.Name, s.StartedAt, s.CompletedAt, w.started, w.completed)
+		}
+		assertStepTimeKeys(t, s, w.started != "", w.completed != "")
+	}
+}
+
+// assertStepTimeKeys checks the JSON text of s: a key is present only when
+// wantStarted or wantCompleted is true, and never as null.
+func assertStepTimeKeys(t *testing.T, s DashboardStep, wantStarted, wantCompleted bool) {
+	t.Helper()
+	js := dashStepJSON(t, s)
+	if has := strings.Contains(js, `"startedAt"`); has != wantStarted {
+		t.Errorf("%s: startedAt key present = %v, want %v in %s", s.Name, has, wantStarted, js)
+	}
+	if has := strings.Contains(js, `"completedAt"`); has != wantCompleted {
+		t.Errorf("%s: completedAt key present = %v, want %v in %s", s.Name, has, wantCompleted, js)
+	}
+	if strings.Contains(js, "null") {
+		t.Errorf("%s: JSON carries null: %s", s.Name, js)
+	}
+}
+
+func TestDashboardStepTimes_StepTime(t *testing.T) {
+	tests := []struct{ in, want string }{
+		{"2026-10-07T09:00:00Z", "2026-10-07T09:00:00Z"},
+		{"2026-10-07T09:00:00.123456789+02:00", "2026-10-07T09:00:00.123456789+02:00"},
+		{"", ""},
+		{"yesterday", ""},
+		{"2026-10-07", ""},
+		{" 2026-10-07T09:00:00Z", ""},
+	}
+	for _, tc := range tests {
+		if got := dashboardStepTime(tc.in); got != tc.want {
+			t.Errorf("dashboardStepTime(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}

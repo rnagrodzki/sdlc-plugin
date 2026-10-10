@@ -622,3 +622,366 @@ func TestDashboardJoin_KeepsOrder(t *testing.T) {
 		t.Errorf("review detail = %+v, want kind %q and an empty non-nil list", d, dashboardKindDimensions)
 	}
 }
+
+// dashRRFix returns one data.healing.fixProgress record, as decoded JSON:
+// line is a float64.
+func dashRRFix(title, status, firstAt, updatedAt string) map[string]any {
+	return map[string]any{
+		"origin": "local-review", "severity": "high", "file": "internal/x.go", "line": float64(42),
+		"title": title, "status": status, "firstAt": firstAt, "updatedAt": updatedAt,
+	}
+}
+
+// dashRRShip writes a ship state built from dashJoinShipData, with fixes as
+// data.healing.fixProgress (no key when fixes is nil), then returns its
+// pipeline.
+func dashRRShip(t *testing.T, fixes any, edit func(map[string]any)) DashboardPipeline {
+	t.Helper()
+	root := dashRoot(t)
+	data := dashJoinShipData()
+	if fixes != nil {
+		data["healing"] = map[string]any{"fixProgress": fixes}
+	}
+	if edit != nil {
+		edit(data)
+	}
+	dashWriteState(t, root, dashJoinShipFile, data, dashJoinFresh)
+	return dashOne(t, root)
+}
+
+// dashRRStateIssues returns the issues of p with source state.
+func dashRRStateIssues(p DashboardPipeline) []DashboardIssue {
+	var out []DashboardIssue
+	for _, is := range p.Issues {
+		if is.Source == dashboardSourceState {
+			out = append(out, is)
+		}
+	}
+	return out
+}
+
+// dashRRNames returns the step names of p, in order.
+func dashRRNames(p DashboardPipeline) []string {
+	out := []string{}
+	for _, s := range p.Steps {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+// dashRRStepJSON returns the JSON of the step of p named name.
+func dashRRStepJSON(t *testing.T, p DashboardPipeline, name string) string {
+	t.Helper()
+	b, err := json.Marshal(dashJoinStep(t, p, name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestDashboardReceivedReview_StepStatus checks the step status table: no
+// list gives no step; an open fix in a live run gives in_progress with no
+// completedAt; all fixes final, or a completed run, give completed with the
+// earliest firstAt and the latest updatedAt.
+func TestDashboardReceivedReview_StepStatus(t *testing.T) {
+	t.Run("no list gives no step", func(t *testing.T) {
+		for name, fixes := range map[string]any{"absent": nil, "not a list": "fix 1", "empty list": []any{}} {
+			t.Run(name, func(t *testing.T) {
+				ship := dashRRShip(t, fixes, nil)
+				if got, want := dashRRNames(ship), []string{"execute", "commit", "review"}; !reflect.DeepEqual(got, want) {
+					t.Errorf("steps = %v, want %v", got, want)
+				}
+				// Only a value that is not a list is damage; absent and
+				// empty are a run with no fix records.
+				wantIssues := 0
+				if name == "not a list" {
+					wantIssues = 1
+				}
+				if got := dashRRStateIssues(ship); len(got) != wantIssues {
+					t.Errorf("state issues = %v, want %d", got, wantIssues)
+				}
+			})
+		}
+	})
+
+	t.Run("open fix in a live run is in_progress", func(t *testing.T) {
+		ship := dashRRShip(t, []any{
+			dashRRFix("a", "fixed", "2026-10-07T08:41:00Z", "2026-10-07T08:45:00Z"),
+			dashRRFix("b", "fixing", "2026-10-07T08:40:00Z", "2026-10-07T08:50:00Z"),
+		}, nil)
+		s := dashJoinStep(t, ship, "received-review")
+		if s.Status != StepInProgress || s.StartedAt != "2026-10-07T08:40:00Z" || s.CompletedAt != "" {
+			t.Errorf("step = %+v, want in_progress from 08:40 with no completedAt", s)
+		}
+		if strings.Contains(dashRRStepJSON(t, ship, "received-review"), "completedAt") {
+			t.Errorf("step JSON has a completedAt key")
+		}
+	})
+
+	t.Run("all fixes final is completed", func(t *testing.T) {
+		ship := dashRRShip(t, []any{
+			dashRRFix("a", "fixed", "2026-10-07T08:41:00Z", "2026-10-07T08:55:00Z"),
+			dashRRFix("b", "failed", "2026-10-07T08:40:00Z", "2026-10-07T08:50:00Z"),
+			dashRRFix("c", "deferred", "2026-10-07T08:42:00Z", "2026-10-07T08:43:00Z"),
+		}, nil)
+		s := dashJoinStep(t, ship, "received-review")
+		if s.Status != StepCompleted || s.StartedAt != "2026-10-07T08:40:00Z" || s.CompletedAt != "2026-10-07T08:55:00Z" {
+			t.Errorf("step = %+v, want completed 08:40 to 08:55", s)
+		}
+	})
+
+	t.Run("open fix in a completed run is completed", func(t *testing.T) {
+		ship := dashRRShip(t, []any{
+			dashRRFix("a", "queued", "2026-10-07T08:40:00Z", "2026-10-07T08:40:00Z"),
+			dashRRFix("b", "fixing", "2026-10-07T08:41:00Z", "2026-10-07T08:52:00Z"),
+		}, func(d map[string]any) { d["pipelineCompletedAt"] = "2026-10-07T09:00:00Z" })
+		s := dashJoinStep(t, ship, "received-review")
+		if s.Status != StepCompleted || s.StartedAt != "2026-10-07T08:40:00Z" || s.CompletedAt != "2026-10-07T08:52:00Z" {
+			t.Errorf("step = %+v, want completed 08:40 to 08:52", s)
+		}
+		// A stopped fix pass leaves its rows as they were: the station is
+		// completed, a queued or fixing row keeps its last status.
+		var statuses []string
+		for _, f := range s.Detail.Fixes {
+			statuses = append(statuses, f.Status)
+		}
+		if want := []string{"queued", "fixing"}; !reflect.DeepEqual(statuses, want) {
+			t.Errorf("row statuses = %v, want %v", statuses, want)
+		}
+	})
+}
+
+// TestDashboardReceivedReview_Records checks the record table: bad records
+// are skipped, line 0 gives no line key, every stored record is read, a bad
+// time is skipped alone, and valid records keep their list order.
+func TestDashboardReceivedReview_Records(t *testing.T) {
+	fixTitles := func(t *testing.T, p DashboardPipeline) []string {
+		t.Helper()
+		out := []string{}
+		for _, f := range dashJoinStep(t, p, "received-review").Detail.Fixes {
+			out = append(out, f.Title)
+		}
+		return out
+	}
+
+	t.Run("not a map or no title is skipped", func(t *testing.T) {
+		noTitle := dashRRFix("", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")
+		delete(noTitle, "title")
+		ship := dashRRShip(t, []any{"x", noTitle, dashRRFix("ok", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")}, nil)
+		if got := fixTitles(t, ship); !reflect.DeepEqual(got, []string{"ok"}) {
+			t.Errorf("fixes = %v, want [ok]", got)
+		}
+	})
+
+	t.Run("unknown status or severity is skipped", func(t *testing.T) {
+		badSeverity := dashRRFix("bad severity", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")
+		badSeverity["severity"] = "huge x"
+		ship := dashRRShip(t, []any{
+			dashRRFix("bad status", "done now", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z"),
+			badSeverity,
+			dashRRFix("ok", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z"),
+		}, nil)
+		if got := fixTitles(t, ship); !reflect.DeepEqual(got, []string{"ok"}) {
+			t.Errorf("fixes = %v, want [ok]", got)
+		}
+	})
+
+	t.Run("every record skipped gives no station and a state issue", func(t *testing.T) {
+		ship := dashRRShip(t, []any{"x", dashRRFix("bad", "done now", "", "")}, nil)
+		if got, want := dashRRNames(ship), []string{"execute", "commit", "review"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("steps = %v, want %v", got, want)
+		}
+		want := "healing.fixProgress of the ship state holds no valid fix record — the received-review fixes are not shown"
+		if got := dashRRStateIssues(ship); len(got) != 1 || got[0].Text != want || got[0].Severity != "medium" {
+			t.Errorf("state issues = %+v, want one medium issue %q", got, want)
+		}
+	})
+
+	t.Run("one valid record gives no state issue", func(t *testing.T) {
+		ship := dashRRShip(t, []any{"x", dashRRFix("ok", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")}, nil)
+		if got := dashRRStateIssues(ship); len(got) != 0 {
+			t.Errorf("state issues = %+v, want none", got)
+		}
+	})
+
+	t.Run("line is read and 0 gives no key", func(t *testing.T) {
+		noLine := dashRRFix("no line", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")
+		noLine["line"] = float64(0)
+		ship := dashRRShip(t, []any{dashRRFix("line", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z"), noLine}, nil)
+		fixes := dashJoinStep(t, ship, "received-review").Detail.Fixes
+		b, err := json.Marshal(fixes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `[{"title":"line","severity":"high","file":"internal/x.go","line":42,"status":"fixed"},` +
+			`{"title":"no line","severity":"high","file":"internal/x.go","status":"fixed"}]`
+		if string(b) != want {
+			t.Errorf("fixes JSON = %s, want %s", b, want)
+		}
+	})
+
+	t.Run("more than the writer cap is read in full", func(t *testing.T) {
+		list := []any{}
+		for range healingFixProgressMax + 1 {
+			list = append(list, dashRRFix("f", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z"))
+		}
+		ship := dashRRShip(t, list, nil)
+		if n := len(dashJoinStep(t, ship, "received-review").Detail.Fixes); n != healingFixProgressMax+1 {
+			t.Errorf("fixes = %d, want %d", n, healingFixProgressMax+1)
+		}
+	})
+
+	t.Run("bad time is skipped alone", func(t *testing.T) {
+		ship := dashRRShip(t, []any{dashRRFix("a", "fixed", "yesterday", "2026-10-07T08:41:00Z")}, nil)
+		got := dashRRStepJSON(t, ship, "received-review")
+		if strings.Contains(got, "startedAt") || !strings.Contains(got, `"completedAt":"2026-10-07T08:41:00Z"`) {
+			t.Errorf("step JSON = %s, want no startedAt key and completedAt 08:41", got)
+		}
+		ship = dashRRShip(t, []any{dashRRFix("a", "fixed", "2026-10-07T08:40:00Z", "later")}, nil)
+		got = dashRRStepJSON(t, ship, "received-review")
+		if strings.Contains(got, "completedAt") || !strings.Contains(got, `"startedAt":"2026-10-07T08:40:00Z"`) {
+			t.Errorf("step JSON = %s, want startedAt 08:40 and no completedAt key", got)
+		}
+	})
+
+	t.Run("valid records keep list order", func(t *testing.T) {
+		ship := dashRRShip(t, []any{
+			dashRRFix("second by time", "fixed", "2026-10-07T08:45:00Z", "2026-10-07T08:46:00Z"),
+			dashRRFix("first by time", "deferred", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z"),
+		}, nil)
+		d := dashJoinStep(t, ship, "received-review").Detail
+		if d.Kind != dashboardKindFixes {
+			t.Errorf("kind = %q, want %q", d.Kind, dashboardKindFixes)
+		}
+		if got := fixTitles(t, ship); !reflect.DeepEqual(got, []string{"second by time", "first by time"}) {
+			t.Errorf("fixes = %v, want list order", got)
+		}
+	})
+
+	t.Run("title is redacted and truncated", func(t *testing.T) {
+		long := strings.Repeat("y", 300)
+		ship := dashRRShip(t, []any{dashRRFix(long, "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")}, nil)
+		if got := fixTitles(t, ship); got[0] != dashboardPreview(long) || got[0] == long {
+			t.Errorf("title = %q, want dashboardPreview of the stored title", got[0])
+		}
+	})
+}
+
+// TestDashboardReceivedReview_Place checks the place table: an existing
+// received-review step gets the detail and keeps its status and times; a
+// review step gets the station inserted after it; neither gives no station.
+func TestDashboardReceivedReview_Place(t *testing.T) {
+	fixes := []any{dashRRFix("a", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")}
+
+	t.Run("existing step gets the detail", func(t *testing.T) {
+		ship := dashRRShip(t, fixes, func(d map[string]any) {
+			d["steps"] = append(d["steps"].([]any),
+				map[string]any{"name": "received-review", "status": StepInProgress, "startedAt": "2026-10-07T08:39:00Z"})
+		})
+		if got, want := dashRRNames(ship), []string{"execute", "commit", "review", "received-review"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("steps = %v, want %v", got, want)
+		}
+		s := dashJoinStep(t, ship, "received-review")
+		if s.Status != StepInProgress || s.StartedAt != "2026-10-07T08:39:00Z" || s.CompletedAt != "" {
+			t.Errorf("step = %+v, want the stored status and times", s)
+		}
+		if s.Detail == nil || s.Detail.Kind != dashboardKindFixes || len(s.Detail.Fixes) != 1 {
+			t.Errorf("detail = %+v, want one fix", s.Detail)
+		}
+		wantProgress := DashboardProgress{Done: 2, Total: 4, Current: "review", Label: "step 3 of 4"}
+		if ship.Progress != wantProgress {
+			t.Errorf("progress = %+v, want %+v", ship.Progress, wantProgress)
+		}
+	})
+
+	t.Run("review step gets the station after it", func(t *testing.T) {
+		ship := dashRRShip(t, fixes, func(d map[string]any) {
+			d["steps"] = append(d["steps"].([]any), map[string]any{"name": "pr", "status": StepPending})
+		})
+		if got, want := dashRRNames(ship), []string{"execute", "commit", "review", "received-review", "pr"}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("steps = %v, want %v", got, want)
+		}
+		wantProgress := DashboardProgress{Done: 3, Total: 5, Current: "review", Label: "step 4 of 5"}
+		if ship.Progress != wantProgress {
+			t.Errorf("progress = %+v, want %+v", ship.Progress, wantProgress)
+		}
+	})
+
+	t.Run("neither step gives no station", func(t *testing.T) {
+		ship := dashRRShip(t, fixes, func(d map[string]any) {
+			d["steps"] = d["steps"].([]any)[:2]
+		})
+		if got, want := dashRRNames(ship), []string{"execute", "commit"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("steps = %v, want %v", got, want)
+		}
+		wantProgress := DashboardProgress{Done: 2, Total: 2, Current: "commit", Label: "step 2 of 2"}
+		if ship.Progress != wantProgress {
+			t.Errorf("progress = %+v, want %+v", ship.Progress, wantProgress)
+		}
+	})
+}
+
+// TestDashboardReceivedReview_BeforeAfter checks the step list and progress
+// of a ship run with a plan station, before and after the received-review
+// station: all fixes final, one fix still fixing, and no current step.
+func TestDashboardReceivedReview_BeforeAfter(t *testing.T) {
+	steps := func(started bool) []any {
+		at := func(s string) string {
+			if started {
+				return s
+			}
+			return ""
+		}
+		harden := map[string]any{"name": "harden", "status": StepPending}
+		if started {
+			harden["status"], harden["startedAt"] = StepInProgress, "2026-10-07T08:50:00Z"
+		}
+		return []any{
+			map[string]any{"name": "execute", "status": StepCompleted, "startedAt": at("2026-10-07T08:00:00Z")},
+			map[string]any{"name": "commit", "status": StepCompleted, "startedAt": at("2026-10-07T08:20:00Z")},
+			map[string]any{"name": "review", "status": StepCompleted, "startedAt": at("2026-10-07T08:30:00Z")},
+			harden,
+			map[string]any{"name": "pr", "status": StepPending},
+		}
+	}
+	run := func(fixes any, started bool) DashboardPipeline {
+		return dashRRShip(t, fixes, func(d map[string]any) {
+			d["steps"] = steps(started)
+			d["planExploreSummary"] = []any{}
+		})
+	}
+	final := []any{dashRRFix("a", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")}
+	open := []any{
+		dashRRFix("a", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z"),
+		dashRRFix("b", "fixing", "2026-10-07T08:42:00Z", "2026-10-07T08:43:00Z"),
+	}
+	without := []string{"plan", "execute", "commit", "review", "harden", "pr"}
+	with := []string{"plan", "execute", "commit", "review", "received-review", "harden", "pr"}
+
+	cases := []struct {
+		name      string
+		fixes     any
+		started   bool
+		wantSteps []string
+		want      DashboardProgress
+	}{
+		{"before", nil, true, without, DashboardProgress{Done: 4, Total: 6, Current: "harden", Label: "step 5 of 6"}},
+		{"all fixes final", final, true, with, DashboardProgress{Done: 5, Total: 7, Current: "harden", Label: "step 6 of 7"}},
+		{"one fix still fixing", open, true, with, DashboardProgress{Done: 4, Total: 7, Current: "harden", Label: "step 5 of 7"}},
+		{"no current, all fixes final", final, false, with, DashboardProgress{Done: 5, Total: 7, Label: "5 of 7 steps"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ship := run(c.fixes, c.started)
+			if got := dashRRNames(ship); !reflect.DeepEqual(got, c.wantSteps) {
+				t.Errorf("steps = %v, want %v", got, c.wantSteps)
+			}
+			if ship.Progress != c.want {
+				t.Errorf("progress = %+v, want %+v", ship.Progress, c.want)
+			}
+		})
+	}
+	if s := dashJoinStep(t, run(open, true), "received-review"); s.Status != StepInProgress {
+		t.Errorf("received-review status = %q, want %q", s.Status, StepInProgress)
+	}
+}

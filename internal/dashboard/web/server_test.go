@@ -2149,6 +2149,71 @@ func TestStaticCSS_MotionAndFallbacks(t *testing.T) {
 	}
 }
 
+// TestStaticCSS_GlassFill pins the black glass of the popups and the right panel: the neutral
+// fill token and the 5px blur, on both dialog classes.
+func TestStaticCSS_GlassFill(t *testing.T) {
+	rules := parseCSS(t, staticFile(t, "app.css"))
+
+	if got := cssLookup(t, rules, "", ":root")["--glass-fill-dialog"]; got != "rgba(0,0,0,0.38)" {
+		t.Errorf(":root --glass-fill-dialog = %q; want rgba(0,0,0,0.38)", got)
+	}
+	for _, sel := range []string{".stop-dialog", ".detail-dialog"} {
+		decls := cssLookup(t, rules, "", sel)
+		if !strings.Contains(decls["background"], "var(--glass-fill-dialog)") {
+			t.Errorf("%s background = %q; want it to use var(--glass-fill-dialog)", sel, decls["background"])
+		}
+		for _, prop := range []string{"backdrop-filter", "-webkit-backdrop-filter"} {
+			if !strings.HasPrefix(decls[prop], "blur(5px)") {
+				t.Errorf("%s %s = %q; want it to start with blur(5px)", sel, prop, decls[prop])
+			}
+		}
+	}
+}
+
+// TestStaticCSS_BackdropSharp pins that the scrim behind the dialogs has no blur, so only the
+// area behind the dialog box is soft.
+func TestStaticCSS_BackdropSharp(t *testing.T) {
+	rules := parseCSS(t, staticFile(t, "app.css"))
+	for _, sel := range []string{".stop-dialog::backdrop", ".detail-dialog::backdrop"} {
+		decls := cssLookup(t, rules, "", sel)
+		if decls["background"] == "" {
+			t.Errorf("%s has no background; want a scrim fill", sel)
+		}
+		for _, prop := range []string{"backdrop-filter", "-webkit-backdrop-filter"} {
+			if v, has := decls[prop]; has {
+				t.Errorf("%s has %s: %s; want no blur on the scrim", sel, prop, v)
+			}
+		}
+	}
+}
+
+// TestStaticHTML_CloseIconFirst pins that the detail viewer closes with an icon button that is
+// the first child of the panel, is named Close for assistive tech, and holds no visible text.
+func TestStaticHTML_CloseIconFirst(t *testing.T) {
+	page := htmlCommentRe.ReplaceAllString(staticFile(t, "index.html"), "")
+
+	panel := regexp.MustCompile(`(?s)<dialog\b[^>]*\bid="detail-dialog"[^>]*>(.*?)</dialog>`).FindStringSubmatch(page)
+	if panel == nil {
+		t.Fatal("index.html has no <dialog id=\"detail-dialog\">")
+	}
+	first := regexp.MustCompile(`(?s)^<button\b([^>]*)>(.*?)</button>`).FindStringSubmatch(strings.TrimSpace(panel[1]))
+	if first == nil {
+		t.Fatalf("the first child of #detail-dialog is not a <button>: %.60q", strings.TrimSpace(panel[1]))
+	}
+	if !regexp.MustCompile(`\bid="detail-close"`).MatchString(first[1]) {
+		t.Errorf("the first <button> of #detail-dialog has attributes %q; want id=\"detail-close\"", first[1])
+	}
+	if !regexp.MustCompile(`\baria-label="Close"`).MatchString(first[1]) {
+		t.Errorf("#detail-close has attributes %q; want aria-label=\"Close\"", first[1])
+	}
+	if text := strings.TrimSpace(regexp.MustCompile(`(?s)<svg\b.*?</svg>`).ReplaceAllString(first[2], "")); text != "" {
+		t.Errorf("#detail-close holds the text %q; want an icon only", text)
+	}
+	if n := strings.Count(page, `id="detail-close"`); n != 1 {
+		t.Errorf("index.html has %d elements with id=\"detail-close\"; want 1", n)
+	}
+}
+
 // htmlSinkNames are the DOM properties and methods that turn a string into markup.
 var htmlSinkNames = []string{"innerHTML", "outerHTML", "insertAdjacentHTML"}
 
@@ -2435,5 +2500,38 @@ func TestStaticAppJS_TitleAndElapsedTimer(t *testing.T) {
 				t.Errorf("%s = %q; want no %q, move the logic to render.js", name, fn, banned)
 			}
 		}
+	}
+}
+
+// TestStaticAppJS_DimensionGridObserver pins the wiring that packs the review
+// dimension cards: every feed render observes each .dim-grid, and a size change
+// of a grid packs it again through render.js.
+func TestStaticAppJS_DimensionGridObserver(t *testing.T) {
+	code, err := stripJSComments(staticFile(t, "app.js"))
+	if err != nil {
+		t.Fatalf("app.js: %v", err)
+	}
+	// body returns the text of the top-level function that starts with sig, up to its closing brace.
+	body := func(sig string) string {
+		start := strings.Index(code, sig)
+		if start < 0 {
+			t.Fatalf("app.js has no %q", sig)
+		}
+		end := strings.Index(code[start:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("app.js: %q has no closing brace at column 0", sig)
+		}
+		return code[start : start+end]
+	}
+
+	if watch := body("function watchDimensionGrids("); !strings.Contains(watch, "dimObserver.observe(grid);") {
+		t.Errorf("watchDimensionGrids = %q; want it to call dimObserver.observe(grid)", watch)
+	}
+	// dimObserver is a var that holds the ResizeObserver, not a function, so the check reads the whole file.
+	if !strings.Contains(code, "draw.packDimensionGrid(entry.target, view);") {
+		t.Error("app.js does not pack a resized grid with draw.packDimensionGrid(entry.target, view)")
+	}
+	if feed := body("function renderFeed("); !strings.Contains(feed, "watchDimensionGrids();") {
+		t.Errorf("renderFeed = %q; want it to call watchDimensionGrids()", feed)
 	}
 }

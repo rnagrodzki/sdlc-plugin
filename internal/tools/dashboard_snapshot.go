@@ -116,9 +116,11 @@ type DashboardProgress struct {
 // DashboardStep is one step of a pipeline. Status is one of the Step*
 // constants.
 type DashboardStep struct {
-	Name   string               `json:"name"`
-	Status string               `json:"status"`
-	Detail *DashboardStepDetail `json:"detail,omitempty"`
+	Name        string               `json:"name"`
+	Status      string               `json:"status"`
+	StartedAt   string               `json:"startedAt,omitempty"`   // RFC 3339, copied when it parses
+	CompletedAt string               `json:"completedAt,omitempty"` // absent while the step runs
+	Detail      *DashboardStepDetail `json:"detail,omitempty"`
 }
 
 // DashboardIssue is one problem of a pipeline. Source is "step", "wave",
@@ -142,6 +144,7 @@ const (
 	dashboardKindFindings   = "findings"
 	dashboardKindGuardrails = "guardrails" // plan setup station
 	dashboardKindResult     = "result"     // one result line of a ship step
+	dashboardKindFixes      = "fixes"      // received-review station of a ship run
 )
 
 // DashboardStepDetail is what a pipeline did inside one step. Kind tells
@@ -163,6 +166,17 @@ type DashboardStepDetail struct {
 	RepairLimit  bool                      `json:"repairLimit,omitempty"` // kind rounds
 	Outcomes     []DashboardFindingOutcome `json:"outcomes,omitempty"`    // kind rounds
 	ReviewPlan   *DashboardReviewPlan      `json:"reviewPlan,omitempty"`  // kind dimensions
+	Fixes        []DashboardFix            `json:"fixes,omitempty"`       // kind fixes
+}
+
+// DashboardFix is one finding that received-review took. Line 0 means no
+// line.
+type DashboardFix struct {
+	Title    string `json:"title"` // dashboardPreview: redacted, max 120 runes
+	Severity string `json:"severity"`
+	File     string `json:"file"`
+	Line     int    `json:"line,omitempty"`
+	Status   string `json:"status"` // one of healingFixStatuses
 }
 
 // DashboardGuardrailCounts is the guardrail count of a plan setup station.
@@ -636,6 +650,7 @@ func dashboardShip(p *DashboardPipeline, data map[string]any) {
 		}
 		name, status := dashboardStr(s["name"]), dashboardStr(s["status"])
 		step := DashboardStep{Name: name, Status: status}
+		step.StartedAt, step.CompletedAt = dashboardStepTimes(s)
 		result := dashboardStr(s["result"]) // ship_state stores step["result"] on complete-step
 		if name == shipCommitStep && status == StepCompleted && strings.HasPrefix(result, commitNothingPrefix) {
 			step.Detail = &DashboardStepDetail{Kind: dashboardKindResult, Result: result}
@@ -707,7 +722,9 @@ func dashboardExecute(p *DashboardPipeline, st *state.State) time.Time {
 			anyInProgress = true
 			p.Progress.Current = name
 		}
-		p.Steps = append(p.Steps, DashboardStep{Name: name, Status: stepStatus})
+		step := DashboardStep{Name: name, Status: stepStatus}
+		step.StartedAt, step.CompletedAt = dashboardStepTimes(w)
+		p.Steps = append(p.Steps, step)
 
 		if runID := dashboardStr(w["runId"]); runID != "" && !seenRuns[runID] {
 			seenRuns[runID] = true
@@ -992,6 +1009,21 @@ func dashboardParseTime(s string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return t, true
+}
+
+// dashboardStepTime returns s when dashboardParseTime accepts it, else "".
+// The snapshot never carries a step time that the page cannot read.
+func dashboardStepTime(s string) string {
+	if _, ok := dashboardParseTime(s); !ok {
+		return ""
+	}
+	return s
+}
+
+// dashboardStepTimes returns the startedAt and completedAt of the ship step
+// or execute wave m, each through dashboardStepTime.
+func dashboardStepTimes(m map[string]any) (started, completed string) {
+	return dashboardStepTime(dashboardStr(m["startedAt"])), dashboardStepTime(dashboardStr(m["completedAt"]))
 }
 
 // dashboardFormatTime formats t as RFC 3339 UTC, or "" for the zero time.

@@ -21,6 +21,11 @@ var startShippedFiles = map[string]string{
 	"js/app.js":  "console.log('v1');\n",
 }
 
+// startRequestLog is an empty request log: the header of the table and no row.
+const startRequestLog = "# Design requests\n\n" +
+	"| ID | Request | Why | Draft change | Deps | Status |\n" +
+	"|---|---|---|---|---|---|\n"
+
 // startClearGitEnv removes every GIT_* variable for the test, so child git
 // processes work on the test repo and not on a repo a git hook points to.
 func startClearGitEnv(t *testing.T) {
@@ -356,6 +361,10 @@ func TestStartRule(t *testing.T) {
 			startWrite(t, dir, draftDir+"/dependencies.json",
 				`[{"id":"D1","kind":"data","need":"Snapshot gives the wait time.","elements":[]}]`)
 		}},
+		{"one request row", func(t *testing.T, dir string) {
+			startWrite(t, dir, draftDir+"/requests.md", startRequestLog+
+				"| R1 | Show the total time of a run. | — | The head shows a time. | — | dropped |\n")
+		}},
 	}
 	for _, tc := range ownWork {
 		t.Run("case d own work: "+tc.name, func(t *testing.T) {
@@ -368,6 +377,42 @@ func TestStartRule(t *testing.T) {
 				t.Fatalf("StartRule: %v", err)
 			}
 			startAssertOutcome(t, out, "d", false, startCaseDLines(t, dir, base)...)
+			startAssertUnchanged(t, dir, before)
+		})
+	}
+
+	t.Run("an empty request log is not own work", func(t *testing.T) {
+		dir := startRepo(t)
+		startDraftWithChange(t, dir)
+		startWrite(t, dir, draftDir+"/requests.md", startRequestLog+"\nNote: R1 is a plan for later.\n")
+		out := startRun(t, dir, ModeAuto)
+		if out.Case != "c" {
+			t.Fatalf("case = %q, want c", out.Case)
+		}
+		startAssertCopyTree(t, dir)
+	})
+
+	badLogs := []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+	}{
+		{"unreadable", func(t *testing.T, dir string) {
+			startWrite(t, dir, draftDir+"/requests.md/keep", "x")
+		}},
+		{"over the size limit", func(t *testing.T, dir string) {
+			startWrite(t, dir, draftDir+"/requests.md", strings.Repeat("x", maxLogBytes+1))
+		}},
+	}
+	for _, tc := range badLogs {
+		t.Run("a request log that is "+tc.name+" returns its error and changes nothing", func(t *testing.T) {
+			dir := startRepo(t)
+			startDraftWithChange(t, dir)
+			tc.setup(t, dir)
+			before := startSnapshot(t, dir)
+			_, err := StartRule(dir, ModeAuto)
+			if err == nil || !strings.HasPrefix(err.Error(), requestLogFile+": ") {
+				t.Errorf("error = %v, want prefix %q", err, requestLogFile+": ")
+			}
 			startAssertUnchanged(t, dir, before)
 		})
 	}
@@ -389,6 +434,8 @@ func TestStartRule(t *testing.T) {
 		startRun(t, dir, ModeAuto)
 		startWrite(t, dir, draftDir+"/static/extra.js", "x\n")
 		startWrite(t, dir, draftDir+"/requirements.md", "# needs\n")
+		startWrite(t, dir, draftDir+"/requests.md", startRequestLog+
+			"| R1 | Show the total time of a run. | — | The head shows a time. | — | applied |\n")
 		startWrite(t, dir, draftDir+"/dependencies.json",
 			`[{"id":"D1","kind":"flow","need":"Open a run.","elements":[]}]`)
 		startCommitShipped(t, dir, "app.css", "body { color: green; }\n")
@@ -403,6 +450,8 @@ func TestStartRule(t *testing.T) {
 		startRun(t, dir, ModeAuto)
 		startWrite(t, dir, draftDir+"/static/extra.js", "x\n")
 		startWrite(t, dir, draftDir+"/requirements.md", "# needs\n")
+		startWrite(t, dir, draftDir+"/requests.md", startRequestLog+
+			"| R1 | Show the total time of a run. | — | The head shows a time. | — | applied |\n")
 		deps := `[{"id":"D1","kind":"flow","need":"Open a run.","elements":[]}]`
 		startWrite(t, dir, draftDir+"/dependencies.json", deps)
 		startCommitShipped(t, dir, "app.css", "body { color: green; }\n")
@@ -592,6 +641,22 @@ func TestStartRule(t *testing.T) {
 		_, err := StartRule(dir, ModeFresh)
 		if err == nil || !strings.HasPrefix(err.Error(), "design/dashboard/requirements.md: ") {
 			t.Errorf("error = %v, want a requirements.md error", err)
+		}
+		if startExists(dir, draftDir+"/base.json") {
+			t.Error("base.json exists after the failed copy")
+		}
+		if data, _ := os.ReadFile(filepath.Join(dir, draftDir, "dependencies.json")); string(data) != "[]\n" {
+			t.Errorf("dependencies.json = %q, want %q", data, "[]\n")
+		}
+	})
+
+	t.Run("copy failure: requests.md cannot be removed", func(t *testing.T) {
+		dir := startRepo(t)
+		startRun(t, dir, ModeAuto)
+		startWrite(t, dir, draftDir+"/requests.md/keep", "x")
+		_, err := StartRule(dir, ModeFresh)
+		if err == nil || !strings.HasPrefix(err.Error(), requestLogFile+": ") {
+			t.Errorf("error = %v, want a requests.md error", err)
 		}
 		if startExists(dir, draftDir+"/base.json") {
 			t.Error("base.json exists after the failed copy")
@@ -991,4 +1056,61 @@ func startDraftOwnWork(t *testing.T, dir string) {
 	t.Helper()
 	startDraftWithChange(t, dir)
 	startWrite(t, dir, staticDir+"/index.html", "<!doctype html>\n<p>draft</p>\n")
+}
+
+// TestStartHasRequests pins which request log rows count as a request and
+// the size limit of the log: a row starts at column 0 with "|", then an
+// upper-case R and digits, then "|", with or without spaces.
+func TestStartHasRequests(t *testing.T) {
+	cases := []struct {
+		name string
+		rows string
+		want bool
+	}{
+		{"one-digit id with spaces", "| R1 | a | b | c | d | open |\n", true},
+		{"two-digit id", "| R12 | a | b | c | d | open |\n", true},
+		{"no spaces", "|R3|a|b|c|d|open|\n", true},
+		{"tab before the id", "|\tR4\t| a | b | c | d | open |\n", true},
+		{"indented row", "  | R5 | a | b | c | d | open |\n", false},
+		{"lower-case r", "| r6 | a | b | c | d | open |\n", false},
+		{"id with no digits", "| R | a | b | c | d | open |\n", false},
+		{"id with a suffix", "| R7a | a | b | c | d | open |\n", false},
+		{"header only", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			startWrite(t, dir, requestLogFile, startRequestLog+tc.rows)
+			got, err := startHasRequests(dir)
+			if err != nil {
+				t.Fatalf("startHasRequests: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("startHasRequests = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("missing log has no request", func(t *testing.T) {
+		got, err := startHasRequests(t.TempDir())
+		if err != nil || got {
+			t.Errorf("startHasRequests = %v, %v, want false, nil", got, err)
+		}
+	})
+
+	t.Run("a log of exactly maxLogBytes is read", func(t *testing.T) {
+		dir := t.TempDir()
+		row := "| R1 | a | b | c | d | open |\n"
+		content := startRequestLog + row
+		content += strings.Repeat("x", maxLogBytes-len(content))
+		startWrite(t, dir, requestLogFile, content)
+		got, err := startHasRequests(dir)
+		if err != nil || !got {
+			t.Errorf("startHasRequests = %v, %v, want true, nil", got, err)
+		}
+		startWrite(t, dir, requestLogFile, content+"x")
+		if _, err := startHasRequests(dir); err == nil || !strings.HasPrefix(err.Error(), requestLogFile+": ") {
+			t.Errorf("one byte over: error = %v, want prefix %q", err, requestLogFile+": ")
+		}
+	})
 }

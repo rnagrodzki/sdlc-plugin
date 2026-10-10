@@ -29,15 +29,25 @@ const (
 	tmpStaticDir = draftDir + "/.static.tmp"
 	// depsFile is the dependency file of the draft.
 	depsFile = draftDir + "/dependencies.json"
-	// reqFile is the requirements file that an approved design writes.
-	reqFile = draftDir + "/requirements.md"
+	// requirementsFile is the requirements file that an approved design writes.
+	requirementsFile = draftDir + "/requirements.md"
+	// requestLogFile is the request log of the draft. The dashboard-design skill writes it.
+	requestLogFile = draftDir + "/requests.md"
 )
 
 // maxBaseBytes is the largest base.json StartRule accepts.
 const maxBaseBytes = 4 << 10
 
+// maxLogBytes is the largest request log StartRule reads. A bigger file is a
+// mistake, not a design record.
+const maxLogBytes = 256 << 10
+
 // baseCommitPattern is the shape of a full commit sha in base.json.
 var baseCommitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// requestRowPattern is the start of a request row in the log: "| R<number> |".
+// The header rows of the table do not match it.
+var requestRowPattern = regexp.MustCompile(`(?m)^\|\s*R[0-9]+\s*\|`)
 
 // gitRun and gitRunAllowExit run git for the start rule. Tests replace them
 // to make one git call fail.
@@ -332,9 +342,9 @@ func startReadBase(repoRoot string) (string, error) {
 }
 
 // startOwnWork reports whether the draft differs from the shipped page at
-// base: an extra or missing file, a file with another blob id, or one or
-// more dependency records. It compares blob ids, never file text, because
-// execx.Run trims its output.
+// base: an extra or missing file, a file with another blob id, one or more
+// dependency records, or one or more rows in the request log. It compares
+// blob ids, never file text, because execx.Run trims its output.
 func startOwnWork(repoRoot, base string) (bool, error) {
 	shipped, err := startShippedBlobs(repoRoot, base)
 	if err != nil {
@@ -380,7 +390,25 @@ func startOwnWork(repoRoot, base string) (bool, error) {
 		return false, err
 	}
 
-	return len(deps) > 0, nil
+	if len(deps) > 0 {
+		return true, nil
+	}
+
+	return startHasRequests(repoRoot)
+}
+
+// startHasRequests reports whether the request log holds one or more request
+// rows. A missing log has none. A log that cannot be read is an error.
+func startHasRequests(repoRoot string) (bool, error) {
+	data, err := readBounded(filepath.Join(repoRoot, filepath.FromSlash(requestLogFile)), maxLogBytes)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, pathError(requestLogFile, err)
+	}
+
+	return requestRowPattern.Match(data), nil
 }
 
 // startShippedBlobs maps each blob path under shippedPath at commit to its
@@ -533,7 +561,8 @@ func copyShippedToTmp(repoRoot, names string) error {
 }
 
 // swapDraft moves tmpStaticDir to staticDir, resets the dependency file,
-// removes the requirements file, and writes head to base.json last.
+// removes the requirements file and the request log, and writes head to
+// base.json last.
 func swapDraft(repoRoot, head string) error {
 	if err := os.RemoveAll(filepath.Join(repoRoot, staticDir)); err != nil {
 		return pathError(staticDir, err)
@@ -544,8 +573,11 @@ func swapDraft(repoRoot, head string) error {
 	if err := fsx.AtomicWriteBytes(filepath.Join(repoRoot, depsFile), []byte("[]\n")); err != nil {
 		return fmt.Errorf("%s: %w", depsFile, err)
 	}
-	if err := os.Remove(filepath.Join(repoRoot, reqFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return pathError(reqFile, err)
+	if err := os.Remove(filepath.Join(repoRoot, requirementsFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return pathError(requirementsFile, err)
+	}
+	if err := os.Remove(filepath.Join(repoRoot, requestLogFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return pathError(requestLogFile, err)
 	}
 	if err := writeBaseJSON(filepath.Join(repoRoot, baseFile), baseRecord{BaseCommit: head, ShippedPath: shippedPath}); err != nil {
 		return fmt.Errorf("%s: %w", baseFile, err)

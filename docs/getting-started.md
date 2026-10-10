@@ -179,7 +179,7 @@ does these steps for each state link:
 
 Two operations stop at a broken link:
 
-- The dashboard Archive action stops with `ARCHIVE_FAILED` when `.sdlc-v2/run-archive`, or a folder above it, is a broken link. See [Archive a run](dashboard.md#archive-a-run).
+- An archive from the dashboard stops with `ARCHIVE_FAILED` when `.sdlc-v2/run-archive`, or a folder above it, is a broken link. See [Archive a run](dashboard.md#archive-a-run).
 - `/sdlc:preplan` stops in the `plan_support` action `preplan_context` when `.sdlc-v2/preplan`, or a folder above it, is a broken link. It also stops when the topic file `<slug>.md` is a broken link.
 
 For a broken folder link, the error says:

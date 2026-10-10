@@ -66,6 +66,10 @@ func newHandler(o serverOptions, extra ...func(*http.ServeMux, serverOptions)) h
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return
 		}
+		// The draft changes while the page is open. Without this header the file
+		// server sends Last-Modified only, and a browser may reuse an old script or
+		// style file from its cache after the user reloads.
+		w.Header().Set("Cache-Control", "no-store")
 		mux.ServeHTTP(w, r)
 	})
 }

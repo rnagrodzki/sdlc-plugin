@@ -18,12 +18,13 @@ var dashboardKinds = []string{
 	dashboardKindFindings,
 	dashboardKindGuardrails,
 	dashboardKindResult,
+	dashboardKindFixes,
 }
 
 // TestDashboardContract_KindSet pins the closed set of step detail kinds to
-// the 7 values the page reads.
+// the 8 values the page reads.
 func TestDashboardContract_KindSet(t *testing.T) {
-	want := []string{"waves", "dimensions", "explorers", "rounds", "findings", "guardrails", "result"}
+	want := []string{"waves", "dimensions", "explorers", "rounds", "findings", "guardrails", "result", "fixes"}
 	if !slices.Equal(dashboardKinds, want) {
 		t.Errorf("dashboardKinds = %v, want %v", dashboardKinds, want)
 	}

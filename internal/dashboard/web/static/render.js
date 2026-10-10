@@ -6,8 +6,11 @@
  *
  * The builders use only createElement, setAttribute, appendChild and the
  * textContent, className, hidden and open properties. tickElapsed also uses
- * querySelectorAll and getAttribute. Colours come from class names in
- * app.css, never from inline styles. Event listeners live in app.js.
+ * querySelectorAll and getAttribute. packDimensionGrid also uses
+ * removeChild, firstChild, ownerDocument, classList, clientWidth and
+ * offsetHeight.
+ * Colours come from class names in app.css, never from inline styles.
+ * Event listeners live in app.js.
  */
 (function (root) {
   'use strict';
@@ -68,6 +71,77 @@
     return view.formatElapsed(Math.max(0, nowMs - asked));
   }
 
+  // A time as milliseconds: a number, a Date, or an RFC 3339 string. NaN when unreadable.
+  function toMs(t) {
+    if (typeof t === 'number') return t;
+    if (t && typeof t.getTime === 'function') return t.getTime();
+    return Date.parse(t);
+  }
+
+  /**
+   * Time from one moment to another, in the elapsed format.
+   * @param {object} view
+   * @param {string|Date|number} from
+   * @param {string|Date|number} to
+   * @returns {string} '26s', '4m 12s', or '1h 03m'; '' for a bad moment
+   */
+  function spanText(view, from, to) {
+    var start = toMs(from);
+    var end = toMs(to);
+    if (isNaN(start) || isNaN(end)) return '';
+    // A clock that runs behind the host must not give a negative time.
+    return view.formatElapsed(Math.max(0, end - start));
+  }
+
+  /**
+   * The total time of a pipeline, for its head. A running pipeline counts up
+   * to now. A completed one stops at completedAt. A stalled or failed one
+   * stops at its last update. The timer refreshes a running one.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{status: string, startedAt?: string, updatedAt?: string, completedAt?: string|null}} pipeline
+   * @param {Date|number} now
+   * @returns {Element|null} span.pipe-dur, or null when startedAt is unreadable
+   */
+  function pipelineDuration(doc, view, pipeline, now) {
+    var running = pipeline.status === 'running' && !pipeline.completedAt;
+    var end = pipeline.completedAt || (running ? now : pipeline.updatedAt);
+    var text = spanText(view, pipeline.startedAt, end);
+    if (!text) return null;
+    var value = el(doc, 'span', running ? 'dur-live' : '', text);
+    if (running) value.setAttribute('data-since', pipeline.startedAt);
+    // A running chip has a lamp and an amber time, so the reader sees the time is live.
+    var chip = append(el(doc, 'span', running ? 'pipe-dur live' : 'pipe-dur'), [
+      running ? lamp(doc, 'running') : null,
+      el(doc, 'span', 'dur-label', 'total'),
+      value,
+    ]);
+    chip.setAttribute('title', running ? 'Time since the pipeline started' : 'Total time of the pipeline');
+    return chip;
+  }
+
+  /**
+   * The time of one step, for its station: how long a completed or failed
+   * step took, or how long the current step runs. A pending or skipped step
+   * has none. A step with no valid start time gives null.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{status: string, startedAt?: string, completedAt?: string|null}} step
+   * @param {Date|number} now
+   * @returns {Element|null} span.dur, or null for a step with no time
+   */
+  function stepDuration(doc, view, step, now) {
+    if (step.status === 'pending' || step.status === 'skipped') return null;
+    var current = step.status === 'in_progress';
+    var end = step.completedAt || (current ? now : '');
+    var text = step.startedAt && end ? spanText(view, step.startedAt, end) : '';
+    if (!text) return null;
+    var node = el(doc, 'span', 'dur' + (current ? ' current dur-live' : ''), text);
+    if (current) node.setAttribute('data-since', step.startedAt);
+    node.setAttribute('title', current ? 'Time since the step started' : 'Time the step took');
+    return node;
+  }
+
   /**
    * The wait banner of a pipeline: the bar `◈ WAITING ON YOU · <elapsed>`,
    * then the line `<header>: "<text>"`. The line has only the parts that
@@ -115,8 +189,8 @@
 
   /**
    * Rewrites the text of every `.attn-elapsed` node in doc from its
-   * data-asked value and now. A node whose data-asked is unreadable keeps its
-   * text.
+   * data-asked value and now, and the text of every `.dur-live` node from its
+   * data-since value and now. A node whose time is unreadable keeps its text.
    * @param {Document} doc
    * @param {object} view window.sdlcView
    * @param {Date|number} now
@@ -126,6 +200,12 @@
     for (var i = 0; i < nodes.length; i++) {
       var text = elapsedText(view, nodes[i].getAttribute('data-asked'), now);
       if (text) nodes[i].textContent = text;
+    }
+    // The running time of a running pipeline and of the current step.
+    var live = doc.querySelectorAll('.dur-live');
+    for (var j = 0; j < live.length; j++) {
+      var span = spanText(view, live[j].getAttribute('data-since'), now);
+      if (span) live[j].textContent = span;
     }
   }
 
@@ -180,18 +260,22 @@
    */
   function archiveButton(doc, repo, pipeline) {
     if (!pipeline.id || !Object.prototype.hasOwnProperty.call(ARCHIVABLE, pipeline.status)) return null;
-    var button = el(doc, 'button', 'archive-btn', 'Archive');
+    // An icon button: app.css draws the icon, so the name goes in aria-label and title.
+    var button = el(doc, 'button', 'archive-btn');
     button.setAttribute('type', 'button');
     button.setAttribute('data-archive', pipeline.id);
     button.setAttribute('data-repo', repo.root);
     button.setAttribute('data-status', pipeline.status);
+    button.setAttribute('aria-label', 'Archive');
+    button.setAttribute('title', 'Archive this run');
     return button;
   }
 
   /**
-   * Head of a pipeline block: lamp, kind, branch, repo, issue chip (only with
-   * issues), status word, the Archive button (only for a completed, failed,
-   * or stalled pipeline), and the `details N` toggle. A pipeline with an
+   * Head of a pipeline block: lamp, kind, branch, total time, then the side
+   * group: the Archive icon (only for a completed, failed, or stalled
+   * pipeline), repo, issue chip (only with issues), status word, and the
+   * `details N` toggle. A pipeline with an
    * attention has the class `waiting` on its lamp.
    * @param {Document} doc
    * @param {object} view
@@ -199,9 +283,10 @@
    * @param {{kind: string, branch: string, worktree: string, status: string, issues?: Array, attention?: object}} pipeline
    * @param {boolean} collapsed
    * @param {number} tiles the tile count of the block (view.tileCount)
+   * @param {Date|number} now
    * @returns {Element} header.pipe-head
    */
-  function blockHead(doc, view, repo, pipeline, collapsed, tiles) {
+  function blockHead(doc, view, repo, pipeline, collapsed, tiles, now) {
     var head = el(doc, 'header', 'pipe-head');
 
     var lamp = el(doc, 'span', 'lamp ' + pipeline.status + (pipeline.attention ? ' waiting' : ''));
@@ -212,6 +297,10 @@
     branch.setAttribute('title', worktree ? pipeline.branch + ' · worktree ' + worktree : pipeline.branch);
 
     var side = el(doc, 'span', 'pipe-side');
+    // The Archive icon is the first item of the group, far from the details toggle.
+    var archive = archiveButton(doc, repo, pipeline);
+    if (archive) side.appendChild(archive);
+
     var repoName = el(doc, 'span', 'pipe-repo', repo.name);
     repoName.setAttribute('title', repo.root);
     side.appendChild(repoName);
@@ -220,9 +309,6 @@
     if (issues > 0) side.appendChild(el(doc, 'span', 'issue-chip', plural(issues, 'issue', 'issues')));
 
     side.appendChild(el(doc, 'span', 'pipe-status ' + pipeline.status, pipeline.status));
-
-    var archive = archiveButton(doc, repo, pipeline);
-    if (archive) side.appendChild(archive);
 
     var fold = el(doc, 'button', 'fold-btn');
     fold.setAttribute('type', 'button');
@@ -233,7 +319,13 @@
     append(fold, [chev, el(doc, 'span', 'fold-label', 'details'), el(doc, 'span', 'fold-count', tiles)]);
     side.appendChild(fold);
 
-    return append(head, [lamp, el(doc, 'span', 'pipe-kind', view.kindLabel(pipeline.kind)), branch, side]);
+    return append(head, [
+      lamp,
+      el(doc, 'span', 'pipe-kind', view.kindLabel(pipeline.kind)),
+      branch,
+      pipelineDuration(doc, view, pipeline, now),
+      side,
+    ]);
   }
 
   /**
@@ -245,9 +337,10 @@
    * @param {object} view
    * @param {{steps?: Array<{name: string, status: string, detail?: object}>, attention?: object}} pipeline
    * @param {number} selectedIndex index of the marked station
+   * @param {Date|number} now
    * @returns {Element} div.track
    */
-  function stationTrack(doc, view, pipeline, selectedIndex) {
+  function stationTrack(doc, view, pipeline, selectedIndex, now) {
     var steps = (pipeline && pipeline.steps) || [];
     var waiting = !!(pipeline && pipeline.attention);
     var track = el(doc, 'div', 'track');
@@ -275,7 +368,7 @@
       var glyph = el(doc, 'span', 'glyph ' + step.status, glyphText);
       glyph.setAttribute('aria-hidden', 'true');
       var label = el(doc, 'span', step.status === 'in_progress' ? 'label current' : 'label', view.stationLabel(step.name));
-      append(station, [wire, glyph, label]);
+      append(station, [wire, glyph, label, stepDuration(doc, view, step, now)]);
       // A div has no accessible name of its own: the status goes in hidden text.
       if (!section) station.appendChild(el(doc, 'span', 'sr-only', ', ' + statusWords(step.status)));
 
@@ -490,21 +583,23 @@
   }
 
   /**
-   * A dimension row, then its finding rows in one div.dim-findings. A
-   * dimension with no finding row gives the dimension row alone.
-   * @returns {Array<Element>}
+   * One dimension card: the dimension row, then its finding rows in one
+   * div.dim-findings. A dimension with no finding row gives the dimension row
+   * alone.
+   * @returns {Element} div.dim-card
    */
   function dimensionBlock(doc, view, dim, pipeline) {
-    var nodes = [dimensionRow(doc, view, dim)];
+    var card = el(doc, 'div', 'dim-card');
+    card.appendChild(dimensionRow(doc, view, dim));
     var items = dim.findingItems || [];
     if (items.length > 0) {
       var list = el(doc, 'div', 'dim-findings');
       items.forEach(function (finding, i) {
         if (finding) list.appendChild(findingRow(doc, view, finding, findingKey(view, pipeline, dim.name, i)));
       });
-      nodes.push(list);
+      card.appendChild(list);
     }
-    return nodes;
+    return card;
   }
 
   /**
@@ -540,16 +635,97 @@
     numbers.sort(function (a, b) {
       return a - b;
     });
+    // data-pos is the source position of a card or heading. packDimensionGrid
+    // reads it to rebuild the source order from the columns.
+    var grid = el(doc, 'div', 'dim-grid');
+    var pos = 0;
+    function place(node) {
+      node.setAttribute('data-pos', String(pos++));
+      grid.appendChild(node);
+    }
     flat.forEach(function (dim) {
-      append(out, dimensionBlock(doc, view, dim, pipeline));
+      place(dimensionBlock(doc, view, dim, pipeline));
     });
     numbers.forEach(function (number) {
-      out.appendChild(el(doc, 'div', 'wave-head', 'Wave ' + number));
+      place(el(doc, 'div', 'wave-head dim-wave', 'Wave ' + number));
       groups[number].forEach(function (dim) {
-        append(out, dimensionBlock(doc, view, dim, pipeline));
+        place(dimensionBlock(doc, view, dim, pipeline));
       });
     });
+    out.appendChild(grid);
     return out;
+  }
+
+  var DIM_COLUMN_MIN = 360;
+  var DIM_COLUMN_GAP = 12;
+
+  /**
+   * Lays the dimension cards of one div.dim-grid in columns of near equal
+   * height. A wave heading splits the cards into runs, and each run has its
+   * own columns. The page calls this after the grid has a width, and again when
+   * the width changes. A grid with no width (a closed tile) stays as it is.
+   * The card heights come from the browser, so this is the one render function
+   * that reads the layout.
+   * @param {Element} grid div.dim-grid built by dimensionsBody
+   * @param {object} view
+   * @returns {void}
+   */
+  function packDimensionGrid(grid, view) {
+    var width = grid.clientWidth;
+    if (!width) return;
+    var doc = grid.ownerDocument;
+    var count = view.columnCount(width, DIM_COLUMN_MIN, DIM_COLUMN_GAP);
+    if (grid.getAttribute('data-packed') === count + ':' + width) return;
+
+    var items = Array.prototype.slice.call(grid.querySelectorAll('.dim-card, .dim-wave'));
+    items.sort(function (a, b) {
+      return Number(a.getAttribute('data-pos')) - Number(b.getAttribute('data-pos'));
+    });
+    var runs = [];
+    var run = null;
+    var rows = [];
+    items.forEach(function (item) {
+      if (item.classList.contains('dim-wave')) {
+        rows.push(item);
+        run = null;
+        return;
+      }
+      if (!run) {
+        run = [];
+        runs.push(run);
+        rows.push(run);
+      }
+      run.push(item);
+    });
+
+    while (grid.firstChild) grid.removeChild(grid.firstChild);
+    rows.forEach(function (row) {
+      if (!Array.isArray(row)) {
+        grid.appendChild(row);
+        return;
+      }
+      var columns = [];
+      var holder = el(doc, 'div', 'dim-lanes');
+      for (var c = 0; c < count; c++) {
+        var column = el(doc, 'div', 'dim-lane');
+        columns.push(column);
+        holder.appendChild(column);
+      }
+      grid.appendChild(holder);
+      // All cards go in the first column to measure them. The columns are equal, so the width is right.
+      row.forEach(function (card) {
+        columns[0].appendChild(card);
+      });
+      var heights = row.map(function (card) {
+        return card.offsetHeight + DIM_COLUMN_GAP;
+      });
+      view.balanceColumns(heights, count).forEach(function (indexes, c) {
+        indexes.forEach(function (i) {
+          columns[c].appendChild(row[i]);
+        });
+      });
+    });
+    grid.setAttribute('data-packed', count + ':' + width);
   }
 
   // Findings listed under each explorer; the rest is the `N more` line.
@@ -741,6 +917,66 @@
     return el(doc, 'p', 'generic-line', detail.result);
   }
 
+  // Lamp classes by the status of one fix of a received-review step.
+  var LAMP_BY_FIX = { fixed: 'completed', fixing: 'running', failed: 'failed', queued: 'stalled', deferred: 'stalled' };
+
+  /**
+   * One fix of a received-review step: lamp by status, severity chip, the
+   * finding title with its file and line under it, and the status word.
+   * @param {Document} doc
+   * @param {{title: string, severity: string, file?: string, line?: number|null, status: string}} item
+   * @returns {Element} div.fix-row
+   */
+  function fixRow(doc, item) {
+    var where = (item.file || '') + (item.line ? ':' + item.line : '');
+    var main = append(el(doc, 'div', 'fix-main'), [el(doc, 'div', 'fix-title', item.title), where ? el(doc, 'div', 'fix-where', where) : null]);
+    return append(el(doc, 'div', 'fix-row'), [
+      lamp(doc, LAMP_BY_FIX[item.status] || 'stalled'),
+      el(doc, 'span', 'sev sev-' + item.severity, item.severity),
+      main,
+      el(doc, 'span', 'fix-status ' + item.status, item.status),
+    ]);
+  }
+
+  /**
+   * Fixes of a received-review step: the progress line `F of N fixed · X
+   * fixing · Y failed`, a progress bar, then one row for each fix. The line
+   * leaves out a count of 0, except the fixed count. A step with no fix gives
+   * `p.generic-line` `No fixes yet.`
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{fixes?: Array}} detail
+   * @returns {Element} div, or p.generic-line
+   */
+  function fixesBody(doc, view, detail) {
+    var items = detail.fixes || [];
+    if (items.length === 0) return el(doc, 'p', 'generic-line', 'No fixes yet.');
+    var counts = view.fixCounts(items);
+    var parts = [
+      { strong: true, text: counts.fixed },
+      { text: ' of ' },
+      { strong: true, text: counts.total },
+      { text: ' fixed' },
+    ];
+    ['fixing', 'queued', 'failed', 'deferred'].forEach(function (status) {
+      if (counts[status] === 0) return;
+      parts.push({ text: ' · ' });
+      parts.push({ strong: true, text: counts[status] });
+      parts.push({ text: ' ' + status });
+    });
+    var bar = el(doc, 'progress', 'fix-progress');
+    bar.setAttribute('max', String(counts.total));
+    bar.setAttribute('value', String(counts.fixed));
+    bar.setAttribute('aria-label', 'Fixes done');
+    var out = append(el(doc, 'div', 'fixes'), [strongLine(doc, 'round-sum', parts), bar]);
+    var list = el(doc, 'div', 'fix-list');
+    items.forEach(function (item) {
+      list.appendChild(fixRow(doc, item));
+    });
+    out.appendChild(list);
+    return out;
+  }
+
   // Body builder by detail kind: (doc, view, detail, pipeline, step) -> Element.
   var TILE_BODIES = {
     waves: wavesBody,
@@ -750,6 +986,7 @@
     findings: findingsBody,
     guardrails: guardrailsBody,
     result: resultBody,
+    fixes: fixesBody,
   };
 
   /**
@@ -794,8 +1031,9 @@
   }
 
   /**
-   * The issues tile: `N open`, then one row for each issue: severity chip,
-   * rationale, and location. The stalled issue shows the age of the last
+   * The issues tile: `N open`, then one row for each issue, highest severity
+   * first: severity chip, rationale (2 lines at most; the detail viewer shows
+   * all of it), and location. The stalled issue shows the age of the last
    * update in place of a location. Each row is a button whose data-detail
    * key is the pipeline id and the row index.
    * @param {Document} doc
@@ -813,7 +1051,9 @@
       return issue.severity === 'critical' || issue.severity === 'high';
     });
     var details = tile(doc, 'step-sec span2', 'issues', hot ? 'failed' : 'running', issues.length + ' open', open);
-    issues.forEach(function (issue, i) {
+    // Highest severity first. The row keeps the position of its issue in the list for the detail key.
+    view.severityOrder(issues).forEach(function (i) {
+      var issue = issues[i];
       var main = append(el(doc, 'div', 'issue-main'), [el(doc, 'div', 'issue-text', issue.text)]);
       var location = view.issueLocation(issue);
       if (issue.source === 'pipeline') {
@@ -941,11 +1181,11 @@
 
     var panel = el(doc, 'div', 'track-panel');
     var wrap = append(el(doc, 'div', 'detail-wrap'), [detail]);
-    append(panel, [stationTrack(doc, view, pipeline, selected), wrap]);
+    append(panel, [stationTrack(doc, view, pipeline, selected, now), wrap]);
 
     // The wait banner comes first, so a collapsed block still shows it.
     if (pipeline.attention) append(block, attentionRows(doc, view, pipeline.attention, now));
-    return append(block, [blockHead(doc, view, repo, pipeline, collapsed, view.tileCount(pipeline, session)), panel]);
+    return append(block, [blockHead(doc, view, repo, pipeline, collapsed, view.tileCount(pipeline, session), now), panel]);
   }
 
   /**
@@ -1177,6 +1417,7 @@
     stepTiles: stepTiles,
     wavesBody: wavesBody,
     dimensionsBody: dimensionsBody,
+    packDimensionGrid: packDimensionGrid,
     explorersBody: explorersBody,
     roundsBody: roundsBody,
     findingsBody: findingsBody,

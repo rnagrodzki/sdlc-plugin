@@ -105,6 +105,8 @@
             {
               "name": "execute",
               "status": "completed",
+              "startedAt": "2026-10-08T08:15:03Z",
+              "completedAt": "2026-10-08T11:40:10Z",
               "detail": {
                 "kind": "waves",
                 "waves": [
@@ -207,9 +209,22 @@
                 "reviewTotals": { "found": 5, "fixed": 2, "deferred": 2, "unaccounted": 1 }
               }
             },
-            { "name": "received-review", "status": "completed" },
+            {
+              "name": "received-review",
+              "status": "completed",
+              "startedAt": "2026-10-08T12:41:02Z",
+              "completedAt": "2026-10-08T12:49:40Z",
+              "detail": {
+                "kind": "fixes",
+                "fixes": [
+                  { "title": "Token expiry check skips equal times", "severity": "high", "file": "internal/auth/token.go", "line": 42, "status": "fixed" },
+                  { "title": "Error message leaks the user id", "severity": "medium", "file": "internal/api/errors.go", "line": 17, "status": "failed" },
+                  { "title": "Docs miss the new reason field", "severity": "low", "file": "docs/errors.md", "status": "deferred" }
+                ]
+              }
+            },
             { "name": "commit-fixes", "status": "skipped" },
-            { "name": "harden", "status": "in_progress" },
+            { "name": "harden", "status": "in_progress", "startedAt": "2026-10-08T12:49:41Z" },
             { "name": "pr", "status": "pending" },
             { "name": "verify-pipeline", "status": "pending" },
             { "name": "await-remote-review", "status": "pending" },
@@ -738,6 +753,8 @@
             {
               "name": "wave 1",
               "status": "completed",
+              "startedAt": "2026-10-08T10:15:02Z",
+              "completedAt": "2026-10-08T10:52:30Z",
               "detail": {
                 "kind": "waves",
                 "waves": [
