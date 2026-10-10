@@ -183,7 +183,8 @@ describe('page logic exports', () => {
   });
 
   test('view.js exports the request builders and the detail lookup', () => {
-    ['archiveRequest', 'clearRequest', 'learningUrl', 'detailKey', 'detailItem'].forEach((name) => {
+    ['archiveRequest', 'clearRequest', 'learningUrl', 'detailKey', 'detailItem',
+      'deleteRequest', 'deleteResultText', 'deletePrompt', 'deleteKeyFromDataset'].forEach((name) => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
@@ -2950,7 +2951,7 @@ describe('render preplanPanel', () => {
     const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
     assert.equal(panel.className, 'list-panel hist-panel pp-panel');
     assert.equal(textOf(oneByClass(panel, 'list-title')), 'Preplans (3)');
-    assert.deepEqual(findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'th').map(textOf), ['status', 'topic', 'repo', 'updated']);
+    assert.deepEqual(findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'th').map(textOf), ['status', 'topic', 'repo', 'updated', '']);
     assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/alpha.md', '.sdlc-v2/preplan/zeta.md', '.sdlc-v2/preplan/old.md']);
     const first = rowsOf(panel)[0];
     assert.equal(oneByClass(first, 'pp-name').textContent, 'Alpha topic');
@@ -3053,6 +3054,250 @@ describe('render preplanPanel', () => {
     assert.equal(byClass(panel, 'pp-filter').length, 0);
     assert.deepEqual(byClass(panel, 'generic-line').map((l) => l.textContent), ['Warning for c: folder gone', 'No preplans']);
     assert.equal(byClass(panel, 'generic-line')[1].attrs['data-empty'], 'no-preplans');
+  });
+});
+
+// --- Delete flows: bin buttons, keys, requests, prompts, and results ------------
+
+// The data-* keys of a bin button, by name without the data- prefix, in order.
+function dataKeys(button) {
+  return Object.keys(button.attrs).filter((k) => k.startsWith('data-')).map((k) => k.slice(5));
+}
+
+// The dataset the browser gives app.js for a bin button of a fake node.
+function datasetOf(button) {
+  const ds = {};
+  for (const k of dataKeys(button)) ds[k] = button.attrs['data-' + k];
+  return ds;
+}
+
+describe('render bin buttons on Activity rows', () => {
+  const repos = [{
+    root: '/a', name: 'a',
+    deferred: [{ id: 'review-deferred-a1', priority: 'high', description: 'fix the cursor' }],
+    learnings: [{ date: '2026-10-08', heading: 'plan: keep maps small', branch: 'main' }],
+  }];
+
+  test('a deferred row is a div.act-item with the row button and one bin: kind, repo, id, label', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const item = oneByClass(grid.children[0], 'act-item');
+    assert.equal(item.tagName, 'div');
+    assert.deepEqual(item.children.map((c) => c.className), ['act-row', 'archive-btn act-del']);
+    const bin = oneByClass(item, 'act-del');
+    assert.equal(bin.tagName, 'button');
+    assert.equal(bin.attrs.type, 'button');
+    assert.equal(bin.attrs['aria-label'], 'Delete deferred item');
+    assert.equal(bin.attrs['data-detail'], undefined);
+    assert.deepEqual(dataKeys(bin), ['kind', 'repo', 'id', 'label']);
+    assert.deepEqual(datasetOf(bin), { kind: 'deferred', repo: '/a', id: 'review-deferred-a1', label: 'review-deferred-a1' });
+  });
+
+  test('a learning row has one bin: kind, repo, date, heading, label', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const item = oneByClass(grid.children[1], 'act-item');
+    const bin = oneByClass(item, 'act-del');
+    assert.equal(bin.className, 'archive-btn act-del');
+    assert.equal(bin.attrs['aria-label'], 'Delete learning');
+    assert.deepEqual(dataKeys(bin), ['kind', 'repo', 'date', 'heading', 'label']);
+    assert.deepEqual(datasetOf(bin), {
+      kind: 'learning', repo: '/a', date: '2026-10-08', heading: 'plan: keep maps small', label: 'plan: keep maps small',
+    });
+  });
+
+  test('a row with an empty key keeps its act-item and renders no bin', () => {
+    const grid = render.activityPanel(fakeDoc(), view, [{
+      root: '/c', name: 'c',
+      deferred: [{ priority: 'low', description: 'x' }],
+      learnings: [{ heading: 'h', branch: 'main' }, { date: '2026-10-08', heading: '', branch: 'main' }],
+    }], new Set());
+    assert.equal(byClass(grid, 'act-item').length, 3);
+    assert.equal(byClass(grid, 'act-row').length, 3);
+    assert.equal(byClass(grid, 'act-del').length, 0);
+  });
+
+  test('a repo with no root renders no bin', () => {
+    const grid = render.activityPanel(fakeDoc(), view, [{ name: 'x', deferred: [{ id: 'd-1', priority: 'low', description: 'x' }] }], new Set());
+    assert.equal(byClass(grid, 'act-del').length, 0);
+  });
+
+  test('every bin maps back to a delete key', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    for (const bin of byClass(grid, 'act-del')) assert.ok(view.deleteKeyFromDataset(datasetOf(bin)));
+  });
+});
+
+describe('render bin buttons on Preplans rows', () => {
+  const repos = [{ root: '/a', name: 'a', preplans: [
+    { slug: 'zeta', topic: 'Zeta topic', status: 'in progress', path: '.sdlc-v2/preplan/zeta.md', updatedAt: '2026-10-08T10:00:00Z' },
+    { slug: 'bare', topic: '', status: 'paused', path: '.sdlc-v2/preplan/bare.md', updatedAt: '2026-10-07T10:00:00Z' },
+  ] }];
+  const rowsOf = (panel) => findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'tbody')[0].children;
+
+  test('each row has one bin in its last cell: kind, repo, slug, path, status, label (= topic)', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    const row = rowsOf(panel)[0];
+    const cell = row.children[row.children.length - 1];
+    assert.equal(cell.className, 'pp-act');
+    const bin = oneByClass(cell, 'pp-remove');
+    assert.equal(bin.className, 'archive-btn pp-remove');
+    assert.equal(bin.tagName, 'button');
+    assert.equal(bin.attrs.type, 'button');
+    assert.equal(bin.attrs['aria-label'], 'Delete preplan');
+    assert.deepEqual(dataKeys(bin), ['kind', 'repo', 'slug', 'path', 'status', 'label']);
+    assert.deepEqual(datasetOf(bin), {
+      kind: 'preplan', repo: '/a', slug: 'zeta', path: '.sdlc-v2/preplan/zeta.md', status: 'in progress', label: 'Zeta topic',
+    });
+    assert.equal(byClass(panel, 'pp-remove').length, 2);
+  });
+
+  test('a topic file with no topic uses the slug as the label, as the row shows', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    const bin = oneByClass(rowsOf(panel)[1], 'pp-remove');
+    assert.equal(bin.attrs['data-label'], 'bare');
+  });
+
+  test('a row with an empty slug keeps its cell and renders no bin', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, [{ root: '/a', name: 'a', preplans: [
+      { slug: '', topic: 'No slug', status: 'paused', path: '.sdlc-v2/preplan/x.md', updatedAt: '2026-10-08T10:00:00Z' },
+    ] }], new Set());
+    const row = rowsOf(panel)[0];
+    assert.equal(row.children[row.children.length - 1].className, 'pp-act');
+    assert.equal(byClass(panel, 'pp-remove').length, 0);
+  });
+});
+
+describe('deleteKeyFromDataset', () => {
+  test('maps a deferred, a preplan, and a learning dataset', () => {
+    assert.deepEqual(view.deleteKeyFromDataset({ kind: 'deferred', repo: '/r', id: 'd-1', label: 'd-1' }),
+      { kind: 'deferred', repo: '/r', key: { id: 'd-1' }, label: 'd-1' });
+    assert.deepEqual(
+      view.deleteKeyFromDataset({ kind: 'preplan', repo: '/r', slug: 'a', path: '.sdlc-v2/preplan/a.md', status: 'paused', label: 'a b' }),
+      { kind: 'preplan', repo: '/r', key: { slug: 'a' }, label: 'a b', path: '.sdlc-v2/preplan/a.md', status: 'paused' });
+    assert.deepEqual(
+      view.deleteKeyFromDataset({ kind: 'learning', repo: '/r', date: '2026-10-08', heading: 'h one', label: 'h one' }),
+      { kind: 'learning', repo: '/r', key: { date: '2026-10-08', heading: 'h one' }, label: 'h one' });
+  });
+
+  test('returns null for each bad input', () => {
+    for (const ds of [
+      null,
+      undefined,
+      {},
+      { kind: 'run', repo: '/r', id: 'd-1' },
+      { kind: 'deferred', repo: '', id: 'd-1' },
+      { kind: 'deferred', id: 'd-1' },
+      { kind: 'deferred', repo: '/r', id: '' },
+      { kind: 'preplan', repo: '/r', slug: '' },
+      { kind: 'learning', repo: '/r', date: '', heading: 'h' },
+      { kind: 'learning', repo: '/r', date: '2026-10-08', heading: '' },
+    ]) {
+      assert.equal(view.deleteKeyFromDataset(ds), null, JSON.stringify(ds));
+    }
+  });
+});
+
+describe('deleteRequest', () => {
+  test('builds the URL and body of each kind, with the token header', () => {
+    const cases = [
+      ['preplan', { slug: 'a' }, '/api/preplan-delete', { repo: '/r', slug: 'a' }],
+      ['deferred', { id: 'd-1' }, '/api/deferred-delete', { repo: '/r', id: 'd-1' }],
+      ['learning', { date: '2026-10-08', heading: 'h' }, '/api/learning-delete', { repo: '/r', date: '2026-10-08', heading: 'h' }],
+    ];
+    for (const [kind, key, url, body] of cases) {
+      const req = view.deleteRequest('tok', kind, '/r', key);
+      assert.equal(req.method, 'POST', kind);
+      assert.equal(req.url, url, kind);
+      assert.equal(req.headers['X-Sdlc-Token'], 'tok', kind);
+      assert.equal(req.headers['Content-Type'], 'application/json', kind);
+      assert.deepEqual(JSON.parse(req.body), body, kind);
+    }
+  });
+
+  test('takes the key of a deleteKeyFromDataset target as it is', () => {
+    const t = view.deleteKeyFromDataset({ kind: 'preplan', repo: '/r', slug: 'a', path: 'p', status: 'paused', label: 'A' });
+    assert.deepEqual(JSON.parse(view.deleteRequest('tok', t.kind, t.repo, t.key).body), { repo: '/r', slug: 'a' });
+  });
+
+  test('returns null for an empty key field, an empty token or repo, or an unknown kind', () => {
+    assert.equal(view.deleteRequest('tok', 'preplan', '/r', { slug: '' }), null);
+    assert.equal(view.deleteRequest('tok', 'deferred', '/r', { id: '' }), null);
+    assert.equal(view.deleteRequest('tok', 'learning', '/r', { date: '2026-10-08', heading: '' }), null);
+    assert.equal(view.deleteRequest('tok', 'learning', '/r', { date: '', heading: 'h' }), null);
+    assert.equal(view.deleteRequest('tok', 'deferred', '/r', null), null);
+    assert.equal(view.deleteRequest('', 'deferred', '/r', { id: 'd-1' }), null);
+    assert.equal(view.deleteRequest('tok', 'deferred', '', { id: 'd-1' }), null);
+    assert.equal(view.deleteRequest('tok', 'run', '/r', { id: 'd-1' }), null);
+  });
+});
+
+describe('deleteResultText', () => {
+  test('a 200 with deleted:true is a success', () => {
+    assert.deepEqual(view.deleteResultText(200, { deleted: true }), { ok: true, text: '' });
+  });
+
+  test('a 200 with alreadyGone:true is a success', () => {
+    assert.deepEqual(view.deleteResultText(200, { alreadyGone: true }), { ok: true, text: '' });
+  });
+
+  test('an error shows its message, then its suggestion', () => {
+    const body = { error: {
+      code: 'DELETE_FAILED',
+      message: 'write learnings log: permission denied',
+      suggestion: 'Check write permission on .sdlc-v2/learnings/ and free disk space, then retry.',
+    } };
+    assert.deepEqual(view.deleteResultText(500, body), {
+      ok: false,
+      text: 'write learnings log: permission denied Check write permission on .sdlc-v2/learnings/ and free disk space, then retry.',
+    });
+    assert.deepEqual(view.deleteResultText(400, { error: { code: 'BAD_REQUEST', message: 'bad slug' } }),
+      { ok: false, text: 'bad slug' });
+  });
+
+  test('an error with no body names the HTTP status', () => {
+    assert.deepEqual(view.deleteResultText(502, null), { ok: false, text: 'Delete failed (HTTP 502).' });
+  });
+
+  test('a network failure tells the person to check the dashboard', () => {
+    assert.deepEqual(view.deleteResultText(0, null), {
+      ok: false,
+      text: 'The request did not reach the dashboard. Check that it runs, then retry.',
+    });
+  });
+});
+
+describe('deletePrompt', () => {
+  const preplan = (status) => ({ kind: 'preplan', repo: '/r', key: { slug: 'a' }, label: 'A topic', path: '.sdlc-v2/preplan/a.md', status });
+
+  test('preplan', () => {
+    assert.equal(view.deletePrompt(preplan('paused')),
+      'Delete preplan "A topic"?\nThis deletes the topic file: .sdlc-v2/preplan/a.md\nYou cannot undo this.');
+  });
+
+  test('preplan, status in progress, adds the session line', () => {
+    assert.equal(view.deletePrompt(preplan('in progress')),
+      'Delete preplan "A topic"?\nThis deletes the topic file: .sdlc-v2/preplan/a.md\nYou cannot undo this.' +
+      '\nA preplan session can still use this topic file.');
+  });
+
+  test('only in progress gets the session line', () => {
+    for (const status of ['paused', 'ready for plan', 'archived', '']) {
+      assert.ok(!view.deletePrompt(preplan(status)).includes('session'), status);
+    }
+  });
+
+  test('deferred', () => {
+    assert.equal(view.deletePrompt({ kind: 'deferred', repo: '/r', key: { id: 'd-1' }, label: 'd-1' }),
+      'Delete deferred item d-1?\nThis removes the item for good. It is not resolved, it is gone.\nYou cannot undo this.');
+  });
+
+  test('learning', () => {
+    assert.equal(view.deletePrompt({ kind: 'learning', repo: '/r', key: { date: '2026-10-08', heading: 'h one' }, label: 'h one' }),
+      'Delete learning "h one"?\nThis removes the entry from the learnings log for good.\nYou cannot undo this.');
+  });
+
+  test('a null target or an unknown kind gives an empty text', () => {
+    assert.equal(view.deletePrompt(null), '');
+    assert.equal(view.deletePrompt({ kind: 'run', label: 'x' }), '');
   });
 });
 

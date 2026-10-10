@@ -1365,6 +1365,49 @@
     return append(detailButton(doc, 'act-row', key), [chip, main]);
   }
 
+  /**
+   * The bin button that deletes one item. Each field of ds becomes a data-*
+   * attribute, in order; the page reads them back with
+   * view.deleteKeyFromDataset.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {string} cls the class of the button, next to `archive-btn`
+   * @param {string} name the accessible name
+   * @param {string} title the tooltip
+   * @param {Object<string, string>} ds kind, repo, the key fields, and label
+   * @returns {Element|null} null when view.deleteKeyFromDataset rejects ds,
+   *   so a row with an empty key has no bin
+   */
+  function deleteButton(doc, view, cls, name, title, ds) {
+    if (!view.deleteKeyFromDataset(ds)) return null;
+    var button = el(doc, 'button', 'archive-btn ' + cls);
+    button.setAttribute('type', 'button');
+    button.setAttribute('aria-label', name);
+    button.setAttribute('title', title);
+    Object.keys(ds).forEach(function (field) {
+      button.setAttribute('data-' + field, ds[field]);
+    });
+    return button;
+  }
+
+  // An Activity row with its bin button. The row is a button that opens the
+  // detail viewer, and a button cannot hold a button, so the bin sits next to
+  // the row in div.act-item. A row with an empty key has no bin.
+  function activityItem(doc, view, row, repo, kind, item) {
+    var ds = kind === 'deferred'
+      ? { kind: 'deferred', repo: repo.root || '', id: item.id || '', label: item.id || '' }
+      : { kind: 'learning', repo: repo.root || '', date: item.date || '', heading: item.heading || '', label: item.heading || '' };
+    var del = deleteButton(
+      doc,
+      view,
+      'act-del',
+      kind === 'deferred' ? 'Delete deferred item' : 'Delete learning',
+      kind === 'deferred' ? 'Delete this deferred item for good' : 'Delete this learning for good',
+      ds
+    );
+    return append(el(doc, 'div', 'act-item'), [row, del]);
+  }
+
   function metaLine(parts) {
     return parts
       .filter(function (part) {
@@ -1406,7 +1449,8 @@
    * both over the repos in scope. A row of priority chips (all, high,
    * medium, low) filters the deferred list; the row is hidden when no
    * deferred item is in scope. Each row is a button with a data-detail key
-   * (view.detailKey) that opens the item in the detail viewer.
+   * (view.detailKey) that opens the item in the detail viewer, in a
+   * div.act-item next to its bin button (deleteButton).
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos
@@ -1425,28 +1469,26 @@
       (repo.deferred || []).forEach(function (item) {
         allDeferred.push(item);
         if (priority !== 'all' && item.priority !== priority) return;
-        deferred.push(
-          activityRow(
-            doc,
-            view,
-            el(doc, 'span', 'sev sev-' + item.priority, item.priority),
-            item.description,
-            metaLine([repo.name, item.id]),
-            view.detailKey('deferred', item)
-          )
+        var deferredRow = activityRow(
+          doc,
+          view,
+          el(doc, 'span', 'sev sev-' + item.priority, item.priority),
+          item.description,
+          metaLine([repo.name, item.id]),
+          view.detailKey('deferred', item)
         );
+        deferred.push(activityItem(doc, view, deferredRow, repo, 'deferred', item));
       });
       (repo.learnings || []).forEach(function (item) {
-        learnings.push(
-          activityRow(
-            doc,
-            view,
-            el(doc, 'span', 'sev', 'learning'),
-            item.heading,
-            metaLine([repo.name, item.branch]),
-            view.detailKey('learning', item)
-          )
+        var learningRow = activityRow(
+          doc,
+          view,
+          el(doc, 'span', 'sev', 'learning'),
+          item.heading,
+          metaLine([repo.name, item.branch]),
+          view.detailKey('learning', item)
         );
+        learnings.push(activityItem(doc, view, learningRow, repo, 'learning', item));
       });
     });
 
@@ -1535,11 +1577,20 @@
     if (items.length === 0) return append(panel, [emptyState(doc, 'no-preplans-status')]);
 
     var headRow = el(doc, 'tr', '');
-    ['status', 'topic', 'repo', 'updated'].forEach(function (name) {
+    // The last column holds the bin button and has no name.
+    ['status', 'topic', 'repo', 'updated', ''].forEach(function (name) {
       headRow.appendChild(el(doc, 'th', '', name));
     });
     var body = el(doc, 'tbody', '');
     items.forEach(function (item) {
+      var remove = deleteButton(doc, view, 'pp-remove', 'Delete preplan', 'Delete this preplan and its topic file', {
+        kind: 'preplan',
+        repo: item.repo.root || '',
+        slug: item.slug,
+        path: item.path,
+        status: item.status,
+        label: item.topic || item.slug,
+      });
       var label = view.preplanStatus(item.status);
       var m = PREPLAN_MARKS[label];
       var glyph = el(doc, 'span', '', m.glyph);
@@ -1553,7 +1604,15 @@
       repoCell.setAttribute('title', item.repo.root);
       var when = el(doc, 'td', 'h-when', view.dateLabel(item.updatedAt));
       when.setAttribute('title', item.updatedAt);
-      body.appendChild(append(el(doc, 'tr', ''), [append(el(doc, 'td', ''), [tag]), topic, repoCell, when]));
+      body.appendChild(
+        append(el(doc, 'tr', ''), [
+          append(el(doc, 'td', ''), [tag]),
+          topic,
+          repoCell,
+          when,
+          append(el(doc, 'td', 'pp-act'), [remove]),
+        ])
+      );
     });
     var table = append(el(doc, 'table', 'hist pp'), [append(el(doc, 'thead', ''), [headRow]), body]);
     return append(panel, [table]);

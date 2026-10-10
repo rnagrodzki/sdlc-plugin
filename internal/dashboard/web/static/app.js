@@ -147,6 +147,9 @@ function focusKeyOf(node) {
   if (node.hasAttribute('data-hist-sort')) return 'hist-sort\n' + node.getAttribute('data-hist-sort');
   if (node.hasAttribute('data-act-priority')) return 'act-priority\n' + node.getAttribute('data-act-priority');
   if (node.hasAttribute('data-pp-status')) return 'pp-status\n' + node.getAttribute('data-pp-status');
+  if (node.hasAttribute('data-kind')) {
+    return 'delete\n' + node.getAttribute('data-kind') + '\n' + node.getAttribute('data-repo') + '\n' + node.getAttribute('data-label');
+  }
   if (node.hasAttribute('data-station')) return prefix + 'station\n' + node.getAttribute('data-station');
   if (node.classList.contains('fold-btn')) return prefix + 'fold';
   var tile = node.closest('[data-section]');
@@ -164,7 +167,7 @@ function restoreFocus() {
   if (active && active !== document.body && document.contains(active)) return;
   var candidates = document.querySelectorAll(
     '[data-root], [data-station], .fold-btn, [data-section] > summary, [data-detail], [data-archive], ' +
-      '[data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status]'
+      '[data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status], [data-kind]'
   );
   for (var i = 0; i < candidates.length; i++) {
     if (focusKeyOf(candidates[i]) === ui.focusKey) {
@@ -489,7 +492,7 @@ function fetchJSON(url, init) {
     });
 }
 
-// Sends a request of view.archiveRequest or view.clearRequest. A null request
+// Sends a request of view.archiveRequest, view.clearRequest, or view.deleteRequest. A null request
 // (the page has no token) gives the same result as a network error.
 function post(request) {
   return request ? fetchJSON(request.url, request) : Promise.resolve({ status: 0, body: null });
@@ -707,6 +710,26 @@ function archiveRun(button) {
   });
 }
 
+// A click on the bin button of a preplan, deferred, or learning row. One
+// question, then the request. On success the row goes away with the next
+// snapshot; on an error the dialog shows the message and the suggestion.
+function deleteItem(button) {
+  var target = view.deleteKeyFromDataset(button.dataset);
+  if (!target) return;
+  confirmAction({
+    prompts: [view.deletePrompt(target)],
+    label: 'Delete',
+    // The next snapshot rebuilds this button, so the dialog cannot return the focus to it.
+    returnKey: focusKeyOf(button),
+    run: function () {
+      return post(view.deleteRequest(pageToken(), target.kind, target.repo, target.key)).then(function (result) {
+        var outcome = view.deleteResultText(result.status, result.body);
+        return outcome.ok ? null : outcome.text;
+      });
+    },
+  });
+}
+
 // A click on Clear cache. It clears the repos of the last snapshot, one after
 // another, and shows the freed size and the error of each repo that failed.
 function clearCache() {
@@ -820,7 +843,10 @@ function init() {
   });
   // A priority chip filters the Open deferred list. A chip has no
   // data-detail, so the stage listener opens no viewer for it.
+  // A bin button (data-kind) asks to delete its item.
   tabs.activity.panel.addEventListener('click', function (event) {
+    var del = event.target.closest('[data-kind]');
+    if (del) return deleteItem(del);
     var chip = event.target.closest('[data-act-priority]');
     if (!chip) return;
     ui.deferredPriority = chip.getAttribute('data-act-priority');
@@ -828,6 +854,8 @@ function init() {
   });
   // A status chip filters the Preplans table.
   tabs.preplans.panel.addEventListener('click', function (event) {
+    var del = event.target.closest('[data-kind]');
+    if (del) return deleteItem(del);
     var chip = event.target.closest('[data-pp-status]');
     if (!chip) return;
     ui.preplanStatus = chip.getAttribute('data-pp-status');

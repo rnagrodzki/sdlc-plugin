@@ -297,6 +297,122 @@
     return { ok: false, text: errorText(body, 'Archive failed (HTTP ' + status + ').') };
   }
 
+  // --- Delete of a preplan, a deferred item, or a learning ------------------
+
+  // The route of each delete kind.
+  var DELETE_URLS = {
+    preplan: '/api/preplan-delete',
+    deferred: '/api/deferred-delete',
+    learning: '/api/learning-delete',
+  };
+
+  var DELETE_NETWORK_TEXT = 'The request did not reach the dashboard. Check that it runs, then retry.';
+
+  function nonEmpty(value) {
+    return typeof value === 'string' && value.length > 0;
+  }
+
+  // The body fields of a delete request for the key of one kind, or null when
+  // a key field is empty or the kind is unknown.
+  function deleteKeyFields(kind, key) {
+    if (!key || typeof key !== 'object') return null;
+    if (kind === 'preplan') return nonEmpty(key.slug) ? { slug: key.slug } : null;
+    if (kind === 'deferred') return nonEmpty(key.id) ? { id: key.id } : null;
+    if (kind === 'learning') {
+      return nonEmpty(key.date) && nonEmpty(key.heading) ? { date: key.date, heading: key.heading } : null;
+    }
+    return null;
+  }
+
+  /**
+   * The request that deletes one preplan topic file, deferred item, or
+   * learning. Use it as `fetch(req.url, req)`.
+   * @param {string} token the server's X-Sdlc-Token for this start
+   * @param {string} kind 'preplan' | 'deferred' | 'learning'
+   * @param {string} repo repo root
+   * @param {object} key {slug} | {id} | {date, heading}, as deleteKeyFromDataset gives
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token or repo is '', the kind is unknown, or a key field is ''
+   */
+  function deleteRequest(token, kind, repo, key) {
+    if (!token || !repo) return null;
+    var fields = deleteKeyFields(kind, key);
+    if (!fields) return null;
+    var payload = { repo: repo };
+    Object.keys(fields).forEach(function (name) {
+      payload[name] = fields[name];
+    });
+    return guardedPost(token, DELETE_URLS[kind], payload);
+  }
+
+  /**
+   * The delete target of a clicked bin button: the only map from a row to a
+   * delete key.
+   * @param {object} ds the dataset of the button: kind, repo, label, and the
+   *   key fields of the kind (slug, path, status | id | date, heading)
+   * @returns {{kind: string, repo: string, key: object, label: string,
+   *   path?: string, status?: string}|null} null for an unknown kind, an empty
+   *   repo, or an empty key field
+   */
+  function deleteKeyFromDataset(ds) {
+    if (!ds || !nonEmpty(ds.repo)) return null;
+    var key = deleteKeyFields(ds.kind, ds);
+    if (!key) return null;
+    var label = nonEmpty(ds.label) ? ds.label : '';
+    if (ds.kind === 'preplan') {
+      return {
+        kind: 'preplan',
+        repo: ds.repo,
+        key: key,
+        label: label || key.slug,
+        path: nonEmpty(ds.path) ? ds.path : '',
+        status: nonEmpty(ds.status) ? ds.status : '',
+      };
+    }
+    if (ds.kind === 'deferred') return { kind: 'deferred', repo: ds.repo, key: key, label: label || key.id };
+    return { kind: 'learning', repo: ds.repo, key: key, label: label || key.heading };
+  }
+
+  /**
+   * The question of the confirm dialog before a delete. '\n' is a line break.
+   * @param {{kind: string, label: string, path?: string, status?: string}} target
+   *   the result of deleteKeyFromDataset
+   * @returns {string} '' for a null target or an unknown kind
+   */
+  function deletePrompt(target) {
+    if (!target) return '';
+    if (target.kind === 'preplan') {
+      var text = 'Delete preplan "' + target.label + '"?\nThis deletes the topic file: ' + (target.path || '') +
+        '\nYou cannot undo this.';
+      return target.status === 'in progress' ? text + '\nA preplan session can still use this topic file.' : text;
+    }
+    if (target.kind === 'deferred') {
+      return 'Delete deferred item ' + target.label +
+        '?\nThis removes the item for good. It is not resolved, it is gone.\nYou cannot undo this.';
+    }
+    if (target.kind === 'learning') {
+      return 'Delete learning "' + target.label + '"?\nThis removes the entry from the learnings log for good.' +
+        '\nYou cannot undo this.';
+    }
+    return '';
+  }
+
+  /**
+   * The result of a delete request. A 200 is a success, also when the item
+   * was already gone. An error shows its message and its suggestion.
+   * @param {number} status HTTP status of the delete route, 0 for a network error
+   * @param {*} body the parsed JSON body, or null when the response had none
+   * @returns {{ok: boolean, text: string}} text is '' when ok
+   */
+  function deleteResultText(status, body) {
+    if (status === 200) return { ok: true, text: '' };
+    if (!status) return { ok: false, text: DELETE_NETWORK_TEXT };
+    var err = body && typeof body === 'object' ? body.error : null;
+    var message = err && nonEmpty(err.message) ? err.message : 'Delete failed (HTTP ' + status + ').';
+    var suggestion = err && nonEmpty(err.suggestion) ? err.suggestion : '';
+    return { ok: false, text: suggestion ? message + ' ' + suggestion : message };
+  }
+
   /**
    * The result text of a clear over several repos: the freed size of the
    * requests that returned 200, then one line for each other request.
@@ -1497,6 +1613,10 @@
     closeFocusSelector: closeFocusSelector,
     confirmSteps: confirmSteps,
     archiveResultText: archiveResultText,
+    deleteRequest: deleteRequest,
+    deleteKeyFromDataset: deleteKeyFromDataset,
+    deletePrompt: deletePrompt,
+    deleteResultText: deleteResultText,
     clearResultText: clearResultText,
     detailKey: detailKey,
     detailItem: detailItem,
