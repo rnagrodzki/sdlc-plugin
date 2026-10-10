@@ -12,6 +12,8 @@ issues. The full command name is `/sdlc:dashboard`.
 - You want to shut the server down before your laptop sleeps or reboots.
 - You want to start the server without a browser popping up, for example
   when working over SSH.
+- You want to see your preplan topic files and their status.
+- You want to delete a preplan topic file, a deferred item, or a learning.
 
 ## Syntax
 
