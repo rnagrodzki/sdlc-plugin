@@ -1732,7 +1732,8 @@ const render = require('../static/render.js');
 // The fake document: the DOM calls the render.js builders may use, and no more.
 // A new DOM call in a builder needs a matching method here. tickElapsed reads
 // the page with querySelectorAll and getAttribute, so its tests use
-// fakeElapsedDoc and fakeElapsedNode below.
+// fakeElapsedDoc and fakeElapsedNode below. packDimensionGrid reads the
+// layout and moves nodes, so its tests use fakeGridDoc.
 function fakeDoc() {
   function node(tag) { return { tagName: tag, className: '', attrs: {}, children: [], textContent: '', open: false, hidden: false,
     setAttribute(k, v) { this.attrs[k] = String(v); }, appendChild(c) { this.children.push(c); return c; } }; }
@@ -2778,7 +2779,8 @@ describe('render tiles from the shared fixture', () => {
     const heads = byClass(body, 'wave-head');
     assert.deepEqual(heads.map((n) => n.textContent), ['Wave 1', 'Wave 2', 'Wave 3']);
     // Document order: each heading is followed by the rows of its wave.
-    const sequence = body.children.map((n) => (classesOf(n).includes('wave-head') ? n.textContent : oneByClass(n, 'dim-name').textContent));
+    const grid = oneByClass(body, 'dim-grid');
+    const sequence = grid.children.map((n) => (classesOf(n).includes('wave-head') ? n.textContent : oneByClass(n, 'dim-name').textContent));
     assert.deepEqual(sequence, [
       'Wave 1', 'security-review', 'perf-review',
       'Wave 2', 'docs-review',
@@ -2794,7 +2796,9 @@ describe('render tiles from the shared fixture', () => {
       { name: 'b', status: 'pending', findings: 0, wave: 0 },
     ] });
     assert.equal(byClass(body, 'wave-head').length, 0);
-    assert.deepEqual(body.children.map((n) => oneByClass(n, 'dim-name').textContent), ['a', 'b']);
+    const grid = oneByClass(body, 'dim-grid');
+    assert.deepEqual(grid.children.map((n) => n.className), ['dim-card', 'dim-card']);
+    assert.deepEqual(grid.children.map((n) => oneByClass(n, 'dim-name').textContent), ['a', 'b']);
   });
 
   test('rows without a wave come first, before the first Wave heading', () => {
@@ -2802,7 +2806,8 @@ describe('render tiles from the shared fixture', () => {
       { name: 'planned', status: 'completed', findings: 0, wave: 1 },
       { name: 'loose', status: 'completed', findings: 0 },
     ] });
-    const sequence = body.children.map((n) => (classesOf(n).includes('wave-head') ? n.textContent : oneByClass(n, 'dim-name').textContent));
+    const grid = oneByClass(body, 'dim-grid');
+    const sequence = grid.children.map((n) => (classesOf(n).includes('wave-head') ? n.textContent : oneByClass(n, 'dim-name').textContent));
     assert.deepEqual(sequence, ['loose', 'Wave 1', 'planned']);
   });
 
@@ -2823,8 +2828,9 @@ describe('render tiles from the shared fixture', () => {
   test('a review plan without review totals still shows the totals line first', () => {
     const reviewPlan = { wavesPlanned: 1, wavesRun: 1, dimensionsPlanned: 1, dimensionsRun: 1, neverStarted: 0 };
     const body = render.dimensionsBody(fakeDoc(), view, { kind: 'dimensions', reviewPlan, dimensions: [] });
-    assert.equal(body.children.length, 1);
+    assert.equal(body.children.length, 2);
     assert.equal(body.children[0].textContent, 'waves 1/1 run · dimensions 1/1 run · 0 never started');
+    assert.equal(body.children[1].className, 'dim-grid');
   });
 
   test('a plan explorers tile: name, N findings, 2 findings and N more; an unreadable explorer has no rows', () => {
@@ -2971,7 +2977,7 @@ describe('render stepTile and stepTiles', () => {
 
   test('every detail kind has a body builder', () => {
     assert.deepEqual(Object.keys(render.TILE_BODIES).sort(), [
-      'dimensions', 'explorers', 'findings', 'guardrails', 'result', 'rounds', 'waves',
+      'dimensions', 'explorers', 'findings', 'fixes', 'guardrails', 'result', 'rounds', 'waves',
     ]);
   });
 
@@ -3247,6 +3253,27 @@ describe('render issuesTile', () => {
     ]);
     assert.equal(oneByClass(rows[0], 'issue-text').textContent, 'a');
   });
+
+  test('an unsorted issue list renders from critical to info; the key of row N opens the text of that issue', () => {
+    const unsorted = [
+      { source: 'review', severity: 'low', text: 'low one', file: '', line: '', ref: '' },
+      { source: 'review', severity: 'critical', text: 'critical one', file: 'x.go', line: '1', ref: 'security' },
+      { source: 'state', severity: 'info', text: 'info one', file: '', line: '', ref: '' },
+      { source: 'review', severity: 'high', text: 'high one', file: '', line: '', ref: '' },
+      { source: 'review', severity: 'low', text: 'low two', file: '', line: '', ref: '' },
+    ];
+    const p = pipeline({ id: 'ship-7', issues: unsorted });
+    const rows = byClass(render.issuesTile(fakeDoc(), view, p, true, FIXTURE_NOW, 'UTC'), 'issue-row');
+    assert.deepEqual(rows.map((r) => r.children[0].textContent), ['critical', 'high', 'low', 'low', 'info']);
+    // Equal severities keep the source order.
+    assert.deepEqual(rows.map((r) => oneByClass(r, 'issue-text').textContent), ['critical one', 'high one', 'low one', 'low two', 'info one']);
+    // The key keeps the position of the issue in the source list.
+    assert.deepEqual(rows.map((r) => r.attrs['data-detail']), ['issue:ship-7:1', 'issue:ship-7:3', 'issue:ship-7:0', 'issue:ship-7:4', 'issue:ship-7:2']);
+    const snap = { repos: [{ root: '/src/app', name: 'app', pipelines: [p] }] };
+    for (const row of rows) {
+      assert.equal(view.detailItem(snap, row.attrs['data-detail']).text, oneByClass(row, 'issue-text').textContent);
+    }
+  });
 });
 
 // --- render.js: rows that open the detail viewer, command groups, Archive, viewer body -----
@@ -3304,13 +3331,14 @@ describe('render dimensionsBody finding rows', () => {
   test('each dimension row is followed by its finding rows in one div.dim-findings; none for a dimension with no finding', () => {
     const body = render.dimensionsBody(fakeDoc(), view, detail, P);
     // Flat rows first (tests), then Wave 1 (security, docs).
-    assert.deepEqual(body.children.map((n) => n.className), [
-      'dim-row dim-cols', 'dim-findings',
-      'wave-head', 'dim-row dim-cols', 'dim-findings', 'dim-row dim-cols',
-    ]);
+    const grid = oneByClass(body, 'dim-grid');
+    assert.deepEqual(grid.children.map((n) => n.className), ['dim-card', 'wave-head dim-wave', 'dim-card', 'dim-card']);
+    assert.deepEqual(grid.children.map((n) => n.attrs['data-pos']), ['0', '1', '2', '3']);
+    assert.deepEqual(grid.children[2].children.map((n) => n.className), ['dim-row dim-cols', 'dim-findings']);
+    assert.deepEqual(grid.children[3].children.map((n) => n.className), ['dim-row dim-cols']);
     assert.equal(byClass(body, 'dim-cols').length, 3);
     assert.equal(byClass(body, 'dim-find').length, 3);
-    assert.equal(byClass(body.children[4], 'dim-find').length, 2);
+    assert.equal(byClass(grid.children[2], 'dim-find').length, 2);
   });
 
   test('a finding row key is the pipeline id, the dimension name, and the index in findingItems', () => {
@@ -3349,6 +3377,186 @@ describe('render dimensionsBody finding rows', () => {
     const standalone = { name: 'security', status: 'completed', detail: { kind: 'findings', findings: sec } };
     const tile = render.stepTile(fakeDoc(), view, p, standalone, 0, true, false);
     assert.equal(byClass(tile, 'dim-find')[1].attrs['data-detail'], 'finding:ship-3:security:1');
+  });
+
+  test('the key of a finding row inside a card opens the full message of that finding', () => {
+    const p = pipeline({ id: 'ship-4', steps: [{ name: 'review', status: 'completed', detail }] });
+    const cards = byClass(render.dimensionsBody(fakeDoc(), view, detail, p), 'dim-card');
+    const snap = { repos: [{ root: '/src/app', name: 'app', pipelines: [p] }] };
+    const opened = [];
+    for (const card of cards) {
+      for (const row of byClass(card, 'dim-find')) opened.push(view.detailItem(snap, row.attrs['data-detail']).text);
+    }
+    assert.deepEqual(opened, ['gap', 'path join', 'no origin check']);
+  });
+});
+
+// A fake document for packDimensionGrid. A node keeps its parent, so
+// appendChild moves a node from its old parent, as the DOM does.
+// querySelectorAll takes a comma list of class selectors only.
+function fakeGridDoc() {
+  const doc = {
+    createElement(tag) {
+      const n = {
+        tagName: tag, className: '', attrs: {}, children: [], textContent: '', open: false, hidden: false,
+        parent: null, ownerDocument: doc, clientWidth: 0, offsetHeight: 0,
+        classList: { contains: (c) => classesOf(n).includes(c) },
+        get firstChild() { return n.children[0] || null; },
+        setAttribute(k, v) { n.attrs[k] = String(v); },
+        getAttribute(k) { return k in n.attrs ? n.attrs[k] : null; },
+        appendChild(c) {
+          if (c.parent) c.parent.removeChild(c);
+          c.parent = n;
+          n.children.push(c);
+          return c;
+        },
+        removeChild(c) {
+          const i = n.children.indexOf(c);
+          assert.ok(i >= 0, 'removeChild of a node that is not a child');
+          n.children.splice(i, 1);
+          c.parent = null;
+          return c;
+        },
+        querySelectorAll(selector) {
+          const wanted = selector.split(',').map((s) => s.trim().replace(/^\./, ''));
+          return findAll(n, (m) => m !== n && classesOf(m).some((c) => wanted.includes(c)));
+        },
+      };
+      return n;
+    },
+  };
+  return doc;
+}
+
+describe('render packDimensionGrid', () => {
+  // Flat cards a to d, then Wave 1 with e and f.
+  const detail = {
+    kind: 'dimensions',
+    dimensions: [
+      { name: 'a', status: 'completed', findings: 0 },
+      { name: 'b', status: 'completed', findings: 0 },
+      { name: 'c', status: 'completed', findings: 0 },
+      { name: 'd', status: 'completed', findings: 0 },
+      { name: 'e', status: 'completed', findings: 0, wave: 1 },
+      { name: 'f', status: 'completed', findings: 0, wave: 1 },
+    ],
+  };
+  const HEIGHTS = { a: 100, b: 300, c: 100, d: 100, e: 50, f: 50 };
+
+  function grid() {
+    const g = oneByClass(render.dimensionsBody(fakeGridDoc(), view, detail), 'dim-grid');
+    for (const card of byClass(g, 'dim-card')) card.offsetHeight = HEIGHTS[oneByClass(card, 'dim-name').textContent];
+    return g;
+  }
+
+  // The names of the cards in each column of each run; a wave heading reads as its text.
+  function layout(g) {
+    return g.children.map((n) => (classesOf(n).includes('dim-wave')
+      ? n.textContent
+      : n.children.map((lane) => lane.children.map((card) => oneByClass(card, 'dim-name').textContent))));
+  }
+
+  test('a grid with no width stays as dimensionsBody built it', () => {
+    const g = grid();
+    render.packDimensionGrid(g, view);
+    assert.deepEqual(g.children.map((n) => n.className), ['dim-card', 'dim-card', 'dim-card', 'dim-card', 'wave-head dim-wave', 'dim-card', 'dim-card']);
+    assert.equal(g.getAttribute('data-packed'), null);
+  });
+
+  test('two columns: the tallest card first, each card into the shortest column, source order inside a column', () => {
+    const g = grid();
+    g.clientWidth = 744; // (744 + 12) / (360 + 12) gives 2 columns
+    render.packDimensionGrid(g, view);
+    assert.deepEqual(g.children.map((n) => n.className), ['dim-lanes', 'wave-head dim-wave', 'dim-lanes']);
+    for (const lanes of byClass(g, 'dim-lanes')) assert.deepEqual(lanes.children.map((n) => n.className), ['dim-lane', 'dim-lane']);
+    // b (300) goes first into column 1; a, c and d then fill the shorter column 2.
+    // The wave heading starts a new set of columns.
+    assert.deepEqual(layout(g), [[['b'], ['a', 'c', 'd']], 'Wave 1', [['e'], ['f']]]);
+    assert.equal(g.getAttribute('data-packed'), '2:744');
+  });
+
+  test('a new width packs again from the source order', () => {
+    const g = grid();
+    g.clientWidth = 744;
+    render.packDimensionGrid(g, view);
+    g.clientWidth = 1116; // 3 columns
+    render.packDimensionGrid(g, view);
+    for (const lanes of byClass(g, 'dim-lanes')) assert.equal(lanes.children.length, 3);
+    assert.deepEqual(layout(g), [[['b'], ['a', 'd'], ['c']], 'Wave 1', [['e'], ['f'], []]]);
+    assert.equal(g.getAttribute('data-packed'), '3:1116');
+    g.clientWidth = 300; // narrower than one column: 1 column
+    render.packDimensionGrid(g, view);
+    assert.deepEqual(layout(g), [[['a', 'b', 'c', 'd']], 'Wave 1', [['e', 'f']]]);
+  });
+
+  test('the same width and column count leave the grid as it is', () => {
+    const g = grid();
+    g.clientWidth = 744;
+    render.packDimensionGrid(g, view);
+    const lanes = g.children[0];
+    render.packDimensionGrid(g, view);
+    assert.equal(g.children[0], lanes);
+  });
+});
+
+describe('render fixesBody', () => {
+  const fixes = render.TILE_BODIES.fixes;
+  const item = (status, extra) => Object.assign({ title: 'T ' + status, severity: 'high', file: 'a.go', line: 4, status }, extra);
+
+  test('no fix gives the No fixes yet line', () => {
+    for (const detail of [{ kind: 'fixes' }, { kind: 'fixes', fixes: [] }]) {
+      const out = fixes(fakeDoc(), view, detail);
+      assert.equal(out.tagName, 'p');
+      assert.equal(out.className, 'generic-line');
+      assert.equal(out.textContent, 'No fixes yet.');
+    }
+  });
+
+  test('each of the five statuses gives its lamp and its status word', () => {
+    const statuses = ['fixed', 'fixing', 'failed', 'queued', 'deferred'];
+    const out = fixes(fakeDoc(), view, { kind: 'fixes', fixes: statuses.map((s) => item(s)) });
+    const rows = byClass(out, 'fix-row');
+    assert.equal(rows.length, 5);
+    assert.deepEqual(rows.map((r) => r.children[0].className), [
+      'lamp completed', 'lamp running', 'lamp failed', 'lamp stalled', 'lamp stalled',
+    ]);
+    assert.deepEqual(rows.map((r) => r.children[3].className), statuses.map((s) => 'fix-status ' + s));
+    assert.deepEqual(rows.map((r) => r.children[3].textContent), statuses);
+    assert.deepEqual(rows[0].children.map((c) => c.className), ['lamp completed', 'sev sev-high', 'fix-main', 'fix-status fixed']);
+  });
+
+  test('a row shows the title, then the file and line under it; no file gives no location line', () => {
+    const out = fixes(fakeDoc(), view, { kind: 'fixes', fixes: [item('fixed'), item('queued', { file: 'docs/x.md', line: null }), item('fixing', { file: '', line: null })] });
+    const rows = byClass(out, 'fix-row');
+    assert.deepEqual(rows.map((r) => oneByClass(r, 'fix-title').textContent), ['T fixed', 'T queued', 'T fixing']);
+    assert.deepEqual(rows.map((r) => byClass(r, 'fix-where').map((n) => n.textContent)), [['a.go:4'], ['docs/x.md'], []]);
+  });
+
+  test('the progress line counts the fixed fixes of the total, then each other status that is not 0', () => {
+    const out = fixes(fakeDoc(), view, { kind: 'fixes', fixes: [item('fixed'), item('fixing'), item('queued')] });
+    assert.equal(out.className, 'fixes');
+    assert.equal(textOf(oneByClass(out, 'round-sum')), '1 of 3 fixed · 1 fixing · 1 queued');
+    const none = fixes(fakeDoc(), view, { kind: 'fixes', fixes: [item('failed'), item('deferred'), item('deferred')] });
+    assert.equal(textOf(oneByClass(none, 'round-sum')), '0 of 3 fixed · 1 failed · 2 deferred');
+  });
+
+  test('the progress bar has max the total and value the fixed count', () => {
+    const out = fixes(fakeDoc(), view, { kind: 'fixes', fixes: [item('fixed'), item('fixed'), item('failed')] });
+    const bar = oneByClass(out, 'fix-progress');
+    assert.equal(bar.tagName, 'progress');
+    assert.equal(bar.attrs.max, '3');
+    assert.equal(bar.attrs.value, '2');
+    assert.equal(bar.attrs['aria-label'], 'Fixes done');
+    assert.deepEqual(out.children.map((n) => n.className), ['round-sum', 'fix-progress', 'fix-list']);
+  });
+
+  test('the fixture received-review tile lists its fixes', () => {
+    const t = tileByName(fixtureBlock('sdlc-plugin', SHIP), 'received-review');
+    assert.equal(textOf(oneByClass(t, 'round-sum')), '1 of 3 fixed · 1 failed · 1 deferred');
+    assert.deepEqual(byClass(t, 'fix-title').map((n) => n.textContent), [
+      'Token expiry check skips equal times', 'Error message leaks the user id', 'Docs miss the new reason field',
+    ]);
+    assert.deepEqual(byClass(t, 'fix-where').map((n) => n.textContent), ['internal/auth/token.go:42', 'internal/api/errors.go:17', 'docs/errors.md']);
   });
 });
 
@@ -3684,7 +3892,8 @@ describe('page scripts ship no preview code', () => {
   for (const name of ['render.js', 'app.js']) {
     test(`${name} has no fixture data and no note box`, () => {
       const source = fs.readFileSync(path.join(__dirname, '../static', name), 'utf8');
-      for (const word of ['identity-service', 'payments-service', 'scenarios', 'snapshot.fixture', 'note']) {
+      for (const word of ['identity-service', 'payments-service', 'scenarios', 'snapshot.fixture', 'note',
+                          'designDep', 'draftDep', 'sampleFixes', 'withDraftSteps']) {
         assert.ok(!source.includes(word), `${name} contains ${word}`);
       }
     });
@@ -3717,6 +3926,7 @@ describe('render.js browser global fallback', () => {
       'headerTotals',
       'historyTable',
       'issuesTile',
+      'packDimensionGrid',
       'pipelineBlock',
       'resultBody',
       'roundsBody',

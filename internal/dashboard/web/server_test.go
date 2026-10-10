@@ -2502,3 +2502,36 @@ func TestStaticAppJS_TitleAndElapsedTimer(t *testing.T) {
 		}
 	}
 }
+
+// TestStaticAppJS_DimensionGridObserver pins the wiring that packs the review
+// dimension cards: every feed render observes each .dim-grid, and a size change
+// of a grid packs it again through render.js.
+func TestStaticAppJS_DimensionGridObserver(t *testing.T) {
+	code, err := stripJSComments(staticFile(t, "app.js"))
+	if err != nil {
+		t.Fatalf("app.js: %v", err)
+	}
+	// body returns the text of the top-level function that starts with sig, up to its closing brace.
+	body := func(sig string) string {
+		start := strings.Index(code, sig)
+		if start < 0 {
+			t.Fatalf("app.js has no %q", sig)
+		}
+		end := strings.Index(code[start:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("app.js: %q has no closing brace at column 0", sig)
+		}
+		return code[start : start+end]
+	}
+
+	if watch := body("function watchDimensionGrids("); !strings.Contains(watch, "dimObserver.observe(grid);") {
+		t.Errorf("watchDimensionGrids = %q; want it to call dimObserver.observe(grid)", watch)
+	}
+	// dimObserver is a var that holds the ResizeObserver, not a function, so the check reads the whole file.
+	if !strings.Contains(code, "draw.packDimensionGrid(entry.target, view);") {
+		t.Error("app.js does not pack a resized grid with draw.packDimensionGrid(entry.target, view)")
+	}
+	if feed := body("function renderFeed("); !strings.Contains(feed, "watchDimensionGrids();") {
+		t.Errorf("renderFeed = %q; want it to call watchDimensionGrids()", feed)
+	}
+}
