@@ -47,7 +47,9 @@ go.work.sum
 # .idea/
 # .vscode/
 
-/tmp
+design/
+tmp/
+
 # >>> sdlc-utilities managed v3 (do not edit) — transient skill artifacts
 # <<< sdlc-utilities managed
 # >>> sdlc-v2 managed v3 (do not edit) — transient skill artifacts
@@ -55,3 +57,6 @@ go.work.sum
 *-manifest-*.json
 *-prepare-*.json
 # <<< sdlc-v2 managed
+
+# scratch files of Claude sessions
+.ctmp/

@@ -10,6 +10,11 @@
  * Draft pages call designDep(id, value, element) where they show data that the
  * real dashboard snapshot may not give yet. An empty value gets a "missing"
  * mark. An id that is not in dependencies.json gets an "unknown" mark.
+ *
+ * The toggle button (always visible) or Shift+M hides all marks and the panel,
+ * to show the design without them. The same control shows them again. The
+ * choice is kept in localStorage across reloads. The "dashboard not running"
+ * banner stays.
  */
 (function () {
   'use strict';
@@ -17,6 +22,11 @@
   var EMPTY_TEXT = '—';
   var BANNER_DOWN = 'Dashboard not running. Run /sdlc:dashboard, then reload.';
   var STATUS_URL = '/__design/status';
+  var MARKS_OFF_CLASS = 'design-marks-off';
+  var MARKS_OFF_KEY = 'design-marks-off';
+  var LABEL_HIDE = 'Hide marks (Shift+M)';
+  var LABEL_SHOW = 'Show marks (Shift+M)';
+  var SAMPLE_MAX = 60;
 
   // isMissing is true for null, undefined, '' and NaN. 0 and false are values.
   function isMissing(v) {
@@ -105,6 +115,12 @@
     return r.text;
   }
 
+  // clipText cuts text to at most max characters and adds '…' when it cut.
+  // The panel uses it, so a long JSON sample does not fill the panel.
+  function clipText(text, max) {
+    return text.length > max ? text.slice(0, max) + '…' : text;
+  }
+
   // panelModel turns the state into the content of the dependency panel.
   function panelModel(state) {
     var title = 'Design dependencies';
@@ -131,6 +147,15 @@
     return null;
   }
 
+  // isToggleKey is true for Shift+M typed outside a form field. It switches
+  // the marks and the panel on and off, to show the design without them.
+  function isToggleKey(e) {
+    if (!e || e.ctrlKey || e.metaKey || e.altKey || !e.shiftKey || e.code !== 'KeyM') return false;
+    var t = e.target;
+    var tag = t && t.tagName ? String(t.tagName).toLowerCase() : '';
+    return !(tag === 'input' || tag === 'textarea' || tag === 'select' || (t && t.isContentEditable));
+  }
+
   var STYLE = [
     '.design-missing, .design-unknown { outline: 2px dashed #d97706; outline-offset: 2px; }',
     '.design-unknown { outline-color: #dc2626; }',
@@ -138,10 +163,17 @@
     '  content: attr(data-design-label); margin-left: 0.5em; padding: 1px 6px; border-radius: 3px;',
     '  font: 600 11px/1.4 system-ui, sans-serif; color: #fff; background: #b45309; vertical-align: middle; }',
     '.design-unknown::after { background: #b91c1c; }',
-    '#design-panel { position: fixed; right: 12px; bottom: 12px; z-index: 2147483646; max-width: 360px;',
+    'html.design-marks-off .design-missing, html.design-marks-off .design-unknown { outline: none; }',
+    'html.design-marks-off .design-missing::after, html.design-marks-off .design-unknown::after { content: none; }',
+    'html.design-marks-off #design-panel { display: none; }',
+    '#design-toggle { position: fixed; right: 12px; bottom: 12px; z-index: 2147483646; padding: 3px 10px;',
+    '  border: 1px solid #888; border-radius: 12px; background: #fff; color: #111; cursor: pointer;',
+    '  font: 12px/1.4 system-ui, sans-serif; box-shadow: 0 1px 4px rgba(0,0,0,0.25); }',
+    '#design-panel { position: fixed; right: 12px; bottom: 48px; z-index: 2147483646; max-width: 360px;',
     '  max-height: 50vh; overflow: auto; padding: 8px 10px; border: 1px solid #888; border-radius: 6px;',
     '  background: #fff; color: #111; font: 12px/1.4 system-ui, sans-serif; box-shadow: 0 2px 8px rgba(0,0,0,0.25); }',
     '#design-panel ul { margin: 6px 0 0; padding-left: 16px; }',
+    '#design-panel li { overflow-wrap: anywhere; }',
     '#design-panel .design-panel-error { margin-top: 6px; color: #b91c1c; }',
     '#design-banner { position: fixed; top: 0; left: 0; right: 0; z-index: 2147483647; padding: 6px 12px;',
     '  background: #b91c1c; color: #fff; font: 600 13px/1.4 system-ui, sans-serif; text-align: center; }',
@@ -157,6 +189,49 @@
     return node;
   }
 
+  function marksOff() {
+    return document.documentElement.classList.contains(MARKS_OFF_CLASS);
+  }
+
+  // toggleButton is the always-visible control. It stays outside the panel,
+  // because the panel hides with the marks.
+  var toggleButton = null;
+
+  function toggleLabel(off) {
+    return off ? LABEL_SHOW : LABEL_HIDE;
+  }
+
+  // setMarksOff shows or hides all marks and the panel. It keeps the choice in
+  // localStorage, so a reload after a draft edit keeps the same view.
+  function setMarksOff(off) {
+    var list = document.documentElement.classList;
+    if (off) list.add(MARKS_OFF_CLASS);
+    else list.remove(MARKS_OFF_CLASS);
+    if (toggleButton) toggleButton.textContent = toggleLabel(off);
+    try {
+      window.localStorage.setItem(MARKS_OFF_KEY, off ? '1' : '0');
+    } catch (e) {
+      // Storage is blocked: the choice lasts until the next reload.
+    }
+  }
+
+  function storedMarksOff() {
+    try {
+      return window.localStorage.getItem(MARKS_OFF_KEY) === '1';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function renderToggle() {
+    toggleButton = make('button', { id: 'design-toggle', text: toggleLabel(marksOff()) });
+    toggleButton.type = 'button';
+    toggleButton.addEventListener('click', function () {
+      setMarksOff(!marksOff());
+    });
+    document.body.appendChild(toggleButton);
+  }
+
   function renderPanel(model) {
     var panel = make('aside', { id: 'design-panel' });
     panel.appendChild(make('strong', { text: model.title }));
@@ -168,7 +243,7 @@
       var list = make('ul');
       model.rows.forEach(function (row) {
         var text = row.id + ' (' + row.kind + '): ' + row.need;
-        if (row.sample) text += ' [sample: ' + row.sample + ']';
+        if (row.sample) text += ' [sample: ' + clipText(row.sample, SAMPLE_MAX) + ']';
         list.appendChild(make('li', { text: text }));
       });
       panel.appendChild(list);
@@ -189,7 +264,13 @@
     var tag = document.getElementById('design-deps');
     window.__designDeps = readState(tag ? tag.textContent : '');
     window.designDep = designDep;
+    // The class goes on <html> now, in <head>, so the first paint has no flash.
+    if (storedMarksOff()) document.documentElement.classList.add(MARKS_OFF_CLASS);
+    document.addEventListener('keydown', function (e) {
+      if (isToggleKey(e)) setMarksOff(!marksOff());
+    });
     document.addEventListener('DOMContentLoaded', function () {
+      renderToggle();
       renderPanel(panelModel(window.__designDeps));
       if (typeof fetch !== 'function') return;
       fetch(STATUS_URL)
@@ -212,6 +293,8 @@
       readState: readState,
       resolveDep: resolveDep,
       designDep: designDep,
+      isToggleKey: isToggleKey,
+      clipText: clipText,
       panelModel: panelModel,
       bannerModel: bannerModel,
     };
