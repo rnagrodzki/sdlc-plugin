@@ -416,8 +416,8 @@ function selectStation(key, index, reveal) {
   tile.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
 }
 
-// '#activity' and '#history' pick a tab. '#<pipeline id>[/<n>]' scrolls to
-// the first block with that id and selects station n.
+// '#activity', '#history' and '#preplans' pick a tab. '#<pipeline id>[/<n>]'
+// scrolls to the first block with that id and selects station n.
 function applyHash(hash) {
   var target = view.parseHash(hash, view.TAB_NAMES);
   if (!target) return;

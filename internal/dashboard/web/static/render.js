@@ -1539,8 +1539,8 @@
    * The Preplans tab: `Preplans (n)`, one repo-warning line for each warning
    * of a repo in scope, a row of status chips that filter the table, then one
    * row for each topic file, newest change first. A status outside
-   * view.PREPLAN_STATUSES shows as unknown; its chip shows only when a topic
-   * file has such a status or the chip is the chosen one.
+   * view.PREPLAN_STATUSES shows as unknown. The unknown chip always shows,
+   * even when its count is 0.
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos

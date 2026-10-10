@@ -265,7 +265,7 @@ The Activity tab SHALL show `Open deferred (n)` and then `Learnings today (n)`, 
 
 #### Scenario: Ship row columns
 - **WHEN** a ship row has `planDurationMs` 4800000, `durationMs` 3600000 and `totalMs` 9600000
-- **THEN** the plan, ship and total cells show `1h 20m`, `1h 0m` and `2h 40m`
+- **THEN** the plan, ship and total cells show `1h 20m`, `1h 00m` and `2h 40m`
 
 ### Requirement: Durations on the page
 The page SHALL show the run duration in a chip right after the branch name, and the duration of each step that has a valid `startedAt` under the step name. A running time SHALL increase each second. The `plan` step of a ship run SHALL show a duration when it has both `startedAt` and `completedAt`.

@@ -261,7 +261,7 @@ button { font-family: inherit; }
 .gh-link:focus-visible { outline-offset: 3px; border-radius: 4px; }
 .gh-link svg { width: 19px; height: 19px; display: block; }
 
-/* ---------- Tabs in the header: Pipelines, Activity, History ---------- */
+/* ---------- Tabs in the header: Pipelines, Activity, History, Preplans ---------- */
 
 .tabs { display: flex; align-self: stretch; gap: 4px; margin-left: 6px; }
 

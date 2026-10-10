@@ -22,15 +22,15 @@ import (
 
 // RunRecord is one pipeline-completion entry appended to runs.jsonl.
 //
-// PlanFile, StartedAt and LastModifiedAt are written only by the plan
-// skill's "done" marker (internal/tools/plan.go's appendPlanRunRecord): the
-// plan run's resolved plan file path, and its timing window (run start to
-// the plan file's last edit — never the "done" call time). All three are
+// PlanFile, StartedAt and LastModifiedAt are written by the plan skill's
+// "done" marker (internal/tools/plan.go's appendPlanRunRecord): the plan
+// run's resolved plan file path, and its timing window (run start to the
+// plan file's last edit — never the "done" call time). All three are
 // omitempty so every other producer's records, and every record written
 // before these fields existed, keep parsing and serializing exactly as
 // before.
 //
-// PlanFile, PlanStartedAt and PlanDurationMs are also written on ship rows,
+// Ship rows also carry PlanFile, with PlanStartedAt and PlanDurationMs,
 // copied from the ship state linkedPlan (internal/tools/ship_state.go's
 // shipHistoryPlanFields): the linked plan file, its start time and its start
 // to done duration. PlanStartedAt and PlanDurationMs are omitempty for the
