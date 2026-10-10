@@ -81,8 +81,9 @@ type ShipStepNarrationOut struct {
 	AlreadyDone bool `json:"alreadyDone,omitempty"`
 	// Warnings names a best-effort write that failed without failing the
 	// action: fail sets it when the failure row could not be appended to
-	// runs.jsonl. Response-only — never persisted. omitempty: most calls have
-	// nothing to warn about.
+	// runs.jsonl, and complete-step / complete of execute set it when the
+	// linked plan times could not be saved. Response-only — never persisted.
+	// omitempty: most calls have nothing to warn about.
 	Warnings []string `json:"warnings,omitempty"`
 }
 
@@ -826,6 +827,12 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 	if err := shipCompleteStepCore(st.Data, in.Step, hasResult, resultVal, "success", now); err != nil {
 		return nil, err
 	}
+	var warnings []string
+	if in.Step == "execute" {
+		if w := shipSaveLinkedPlan(root, dashboardStr(st.Data["branch"]), st.Data); w != "" {
+			warnings = append(warnings, w)
+		}
+	}
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
@@ -855,6 +862,7 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 			Timing:  timing,
 			Next:    shipBuildNextAction(st.Data, ts),
 		},
+		Warnings: warnings,
 	}
 	return out, nil
 }
@@ -991,6 +999,12 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 	if err := shipCompleteStepCore(st.Data, in.Step, hasResult, resultVal, outcome, now); err != nil {
 		return nil, err
 	}
+	var warnings []string
+	if in.Step == "execute" && outcome != "failure" {
+		if w := shipSaveLinkedPlan(root, dashboardStr(st.Data["branch"]), st.Data); w != "" {
+			warnings = append(warnings, w)
+		}
+	}
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
@@ -1026,13 +1040,78 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 			Timing:  timing,
 			Next:    shipBuildNextAction(st.Data, ts),
 		},
-		Todos: shipmeta.TodosForStep(in.Step, st),
+		Todos:    shipmeta.TodosForStep(in.Step, st),
+		Warnings: warnings,
 	}
 	if count, highlights := execIssueSummary(st.Data, 5); count > 0 {
 		out.IssueCount = count
 		out.IssueHighlights = highlights
 	}
 	return out, nil
+}
+
+// shipLinkedPlanKey is the ship state data key that holds the plan run times
+// saved by complete-step of execute.
+const shipLinkedPlanKey = "linkedPlan"
+
+// shipFindPlanRunByPlanFile is the plan state lookup of shipSaveLinkedPlan.
+// Tests replace it to force the read error that a real runs/ folder cannot
+// give here, because the execute state lookup reads the same folder first.
+var shipFindPlanRunByPlanFile = state.FindPlanRunByPlanFile
+
+// shipSaveLinkedPlan sets data["linkedPlan"] when it is absent and the
+// linked plan run is found. It never returns an error; a lookup failure
+// gives a warning text for the step output. root is the main root.
+//
+// The lookup chain is the one of shipDeleteReportedPlanRun: the execute state
+// of the branch names the plan file, and the plan state of that plan file
+// holds the times. startedAt is planIntegrity.skillInvoked and completedAt is
+// planIntegrity.done (the handoff). Both must be RFC 3339. A start time that
+// is not RFC 3339 saves nothing. A done mark that is absent or not RFC 3339
+// leaves completedAt out. Having no linked plan is not a warning: an execute
+// run can start from a plan file that has no plan state.
+func shipSaveLinkedPlan(root, branch string, data map[string]any) (warning string) {
+	if _, set := data[shipLinkedPlanKey].(map[string]any); set {
+		return ""
+	}
+	execSt, err := state.Find(root, "execute", branch)
+	if err != nil {
+		return shipLinkedPlanLookupWarning(err)
+	}
+	if execSt == nil {
+		return ""
+	}
+	planFile := shipExecPlanPath(execSt.Data)
+	if planFile == "" {
+		return ""
+	}
+	planRun, err := shipFindPlanRunByPlanFile(root, planFile)
+	if err != nil {
+		return shipLinkedPlanLookupWarning(err)
+	}
+	if planRun == nil {
+		return ""
+	}
+
+	integrity, _ := planRun.Data["planIntegrity"].(map[string]any)
+	startedAt := dashboardStr(integrity["skillInvoked"])
+	if _, err := time.Parse(time.RFC3339, startedAt); err != nil {
+		return "plan times not saved: the linked plan run has no start time."
+	}
+	linked := map[string]any{"planFile": planFile, "startedAt": startedAt}
+	if completedAt := dashboardStr(integrity["done"]); completedAt != "" {
+		if _, err := time.Parse(time.RFC3339, completedAt); err == nil {
+			linked["completedAt"] = completedAt
+		}
+	}
+	data[shipLinkedPlanKey] = linked
+	return ""
+}
+
+// shipLinkedPlanLookupWarning is the step warning for a failed read of the
+// execute state or of the plan state.
+func shipLinkedPlanLookupWarning(err error) string {
+	return fmt.Sprintf("plan times not saved: %s. The dashboard falls back to the history join.", err.Error())
 }
 
 // ---------------------------------------------------------------------------
@@ -3436,10 +3515,10 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 
 - init: Create ship state. Optional: detail.branch, detail.flags, sessionId.
 - begin-step: Begin execution of a step (preferred over start). Requires step. Returns narration with progress, ETA, dispatch instruction, todos, and alreadyDone (true when ship_verify_side_effect already recorded this step's side effect in the sideEffects journal — a resumed pipeline can skip redoing it). Optional: detail.branch, detail.stateFile, detail.detail.
-- complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, and issue summary. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
+- complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, issue summary, and warnings. Side effect: complete-step of execute (outcome not failure) reads the execute state planPath and the plan state it names, then saves linkedPlan {planFile, startedAt, completedAt} once. A failed plan lookup adds one warnings entry and never fails the step. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
 - commit-check: Decide the commit step from the working tree. Requires: (none). Optional: detail.branch. Side effects: staging (git add -A -- ':!.sdlc-v2/' in the active worktree stages every change, untracked files that are not gitignored included; then git diff --cached --name-only counts the staged paths); the first call of a run stores HEAD in state key commitBaseHead, and later calls keep it. Dirty tree: returns {clean:false, stagedCount} and changes no step. Clean tree with HEAD equal to commitBaseHead: appends one decide entry and does what complete-step does for the commit step, with result "`+commitNothingPrefix+`: execute committed N wave commit(s)" (N = non-empty waves[].committedSha of this branch's execute state) or "`+commitNothingPrefix+`: the working tree is clean" (N = 0). Clean tree with HEAD not equal to commitBaseHead: records HEAD in the side-effect journal (sideEffects, kind sha) and does what complete-step does for the commit step, with result "committed <short sha>". Returns clean, stagedCount, waveCommits, stepCompleted, result, todos and display (when stepCompleted), warnings, next. Errors: a failed git call is a git InfraError; a commit step that is not in_progress is a step-state DomainError; a pipeline with no commit step, or a commitBaseHead that is not a string, is a DataError.
 - start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
-- complete: (Legacy) Complete a step. Requires step. Returns narration with timing. Optional: detail.branch, detail.result, detail.detail.
+- complete: (Legacy) Complete a step. Requires step. Returns narration with timing and warnings. Same linkedPlan side effect as complete-step. Optional: detail.branch, detail.result, detail.detail.
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
 - fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.

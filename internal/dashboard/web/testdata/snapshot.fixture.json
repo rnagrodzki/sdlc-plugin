@@ -6,6 +6,12 @@
       "root": "/home/dev/repos/sdlc-plugin",
       "name": "sdlc-plugin",
       "error": "",
+      "warnings": [],
+      "preplans": [
+        { "slug": "user-config-autostart", "topic": "user config autostart", "status": "in progress", "path": ".sdlc-v2/preplan/user-config-autostart.md", "updatedAt": "2026-10-08T14:05:00Z" },
+        { "slug": "dashboard-life-cycle-controls", "topic": "dashboard life cycle controls", "status": "ready for plan", "path": ".sdlc-v2/preplan/dashboard-life-cycle-controls.md", "updatedAt": "2026-10-08T13:10:00Z" },
+        { "slug": "review-dimension-cap", "topic": "review dimension cap", "status": "paused", "path": ".sdlc-v2/preplan/review-dimension-cap.md", "updatedAt": "2026-10-06T16:40:00Z" }
+      ],
       "pipelines": [
         {
           "id": "ship-feat-signal-room-redesign-20261008T081500Z",
@@ -26,6 +32,8 @@
             {
               "name": "plan",
               "status": "completed",
+              "startedAt": "2026-10-08T07:05:00Z",
+              "completedAt": "2026-10-08T07:58:30Z",
               "detail": {
                 "kind": "explorers",
                 "explorers": [
@@ -287,7 +295,8 @@
             "askedAt": "2026-10-08T14:27:58Z",
             "header": "Harden",
             "text": "Apply the 2 proposed guardrail edits to the review dimensions?"
-          }
+          },
+          "planStartedAt": "2026-10-08T07:05:00Z"
         },
         {
           "id": "plan-main-20261008T070500Z",
@@ -538,7 +547,10 @@
           "outcome": "success",
           "startedAt": "2026-10-07T17:46:00Z",
           "endedAt": "2026-10-07T18:27:00Z",
-          "durationMs": 2460000
+          "durationMs": 2460000,
+          "planStartedAt": "2026-10-07T16:58:00Z",
+          "planDurationMs": 1320000,
+          "totalMs": 5340000
         },
         {
           "kind": "ship",
@@ -546,7 +558,8 @@
           "outcome": "failure",
           "startedAt": "2026-10-06T18:15:00Z",
           "endedAt": "2026-10-06T18:27:00Z",
-          "durationMs": 720000
+          "durationMs": 720000,
+          "totalMs": 720000
         },
         {
           "kind": "plan",
@@ -554,7 +567,8 @@
           "outcome": "success",
           "startedAt": "2026-10-05T22:25:34Z",
           "endedAt": "2026-10-05T22:26:00Z",
-          "durationMs": 26000
+          "durationMs": 26000,
+          "totalMs": 26000
         }
       ]
     },
@@ -562,6 +576,8 @@
       "root": "/home/dev/repos/identity-service",
       "name": "identity-service",
       "error": "",
+      "warnings": [],
+      "preplans": [],
       "pipelines": [
         {
           "id": "ship-feat-int-4305-http-stat-20261008T093000Z",
@@ -662,6 +678,8 @@
       "root": "/home/dev/repos/payments-service",
       "name": "payments-service",
       "error": "",
+      "warnings": [],
+      "preplans": [],
       "pipelines": [
         {
           "id": "ship-fix-webhook-idempotency-key-20261008T124500Z",
@@ -1045,7 +1063,8 @@
           "outcome": "partial",
           "startedAt": "2026-10-07T15:21:00Z",
           "endedAt": "2026-10-07T15:54:00Z",
-          "durationMs": 1980000
+          "durationMs": 1980000,
+          "totalMs": 1980000
         },
         {
           "kind": "execute",
@@ -1053,7 +1072,8 @@
           "outcome": "success",
           "startedAt": "2026-10-06T09:10:00Z",
           "endedAt": "2026-10-06T09:52:00Z",
-          "durationMs": 2520000
+          "durationMs": 2520000,
+          "totalMs": 2520000
         }
       ]
     }

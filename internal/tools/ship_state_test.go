@@ -6406,3 +6406,298 @@ func TestShipState_CommitCheck_ToolSurface(t *testing.T) {
 		t.Errorf("action enum = %v, want it to contain commit-check", schema.Properties["action"].Enum)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// linkedPlan: complete-step / complete of execute saves the plan run times
+// ---------------------------------------------------------------------------
+
+const (
+	linkedPlanStart = "2026-10-10T08:20:00Z"
+	linkedPlanDone  = "2026-10-10T09:40:00Z"
+)
+
+// newLinkedPlanFixture builds a ship run whose execute state links a plan
+// run (plan file linkedPlanFile). integrity replaces the plan state
+// planIntegrity; nil leaves the plan state as state.Init made it.
+func newLinkedPlanFixture(t *testing.T, branch string, integrity map[string]any) planRunCleanupFixture {
+	t.Helper()
+	f := newPlanRunCleanupFixture(t, branch, false, linkedPlanFile)
+	if integrity != nil {
+		f.setPlanIntegrity(t, integrity)
+	}
+	return f
+}
+
+// setPlanIntegrity rewrites planIntegrity in the fixture's plan state file.
+func (f planRunCleanupFixture) setPlanIntegrity(t *testing.T, integrity map[string]any) {
+	t.Helper()
+	data := readStateData(t, f.planRunPath)
+	data["planIntegrity"] = integrity
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal plan state: %v", err)
+	}
+	if err := os.WriteFile(f.planRunPath, raw, 0o644); err != nil {
+		t.Fatalf("write plan state %s: %v", f.planRunPath, err)
+	}
+}
+
+// completeStep runs one complete-step or complete call on the fixture's ship
+// run and returns the narration output.
+func (f planRunCleanupFixture) completeStep(t *testing.T, action, step string, detail map[string]any) ShipStepNarrationOut {
+	t.Helper()
+	d := map[string]any{"branch": f.branch}
+	for k, v := range detail {
+		d[k] = v
+	}
+	out, err := shipState(f.dir, f.dir, ShipStateIn{Action: action, Step: step, Detail: d},
+		fixedNow(time.Date(2026, 10, 10, 10, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("%s %s: %v", action, step, err)
+	}
+	narr, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("%s output = %#v, want ShipStepNarrationOut", action, out)
+	}
+	return narr
+}
+
+func TestShipState_LinkedPlan_SavedOnExecuteSuccess(t *testing.T) {
+	for _, action := range []string{"complete-step", "complete"} {
+		t.Run(action, func(t *testing.T) {
+			f := newLinkedPlanFixture(t, "feat/linked-plan-"+action, map[string]any{
+				"skillInvoked": linkedPlanStart,
+				"done":         linkedPlanDone,
+			})
+
+			narr := f.completeStep(t, action, "execute", nil)
+			if len(narr.Warnings) != 0 {
+				t.Errorf("warnings = %v, want none", narr.Warnings)
+			}
+
+			data := f.shipStateOnDisk(t)
+			want := map[string]any{
+				"planFile":    filepath.Clean(linkedPlanFile(f.dir)),
+				"startedAt":   linkedPlanStart,
+				"completedAt": linkedPlanDone,
+			}
+			if got := data[shipLinkedPlanKey]; !reflect.DeepEqual(got, any(want)) {
+				t.Errorf("linkedPlan = %#v, want %#v", got, want)
+			}
+			if step := findStepMap(t, data, "execute"); step["status"] != "completed" {
+				t.Errorf("execute status = %v, want completed", step["status"])
+			}
+			if err := shipStateSchemaValidator(t)(data); err != nil {
+				t.Errorf("ship state with linkedPlan: schema rejected it: %v", err)
+			}
+		})
+	}
+}
+
+func TestShipState_LinkedPlan_CompletedAtAbsent(t *testing.T) {
+	cases := map[string]map[string]any{
+		"no done mark":          {"skillInvoked": linkedPlanStart},
+		"done is not RFC 3339":  {"skillInvoked": linkedPlanStart, "done": "yesterday"},
+		"done is not a string":  {"skillInvoked": linkedPlanStart, "done": true},
+		"done is an empty text": {"skillInvoked": linkedPlanStart, "done": ""},
+	}
+	for name, integrity := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newLinkedPlanFixture(t, "feat/linked-plan-no-done", integrity)
+
+			narr := f.completeStep(t, "complete-step", "execute", nil)
+			if len(narr.Warnings) != 0 {
+				t.Errorf("warnings = %v, want none", narr.Warnings)
+			}
+
+			data := f.shipStateOnDisk(t)
+			want := map[string]any{
+				"planFile":  filepath.Clean(linkedPlanFile(f.dir)),
+				"startedAt": linkedPlanStart,
+			}
+			if got := data[shipLinkedPlanKey]; !reflect.DeepEqual(got, any(want)) {
+				t.Errorf("linkedPlan = %#v, want %#v (no completedAt)", got, want)
+			}
+			if err := shipStateSchemaValidator(t)(data); err != nil {
+				t.Errorf("ship state with linkedPlan: schema rejected it: %v", err)
+			}
+		})
+	}
+}
+
+func TestShipState_LinkedPlan_SecondCompleteStepKeepsFirst(t *testing.T) {
+	f := newLinkedPlanFixture(t, "feat/linked-plan-keep", map[string]any{
+		"skillInvoked": linkedPlanStart,
+		"done":         linkedPlanDone,
+	})
+	f.completeStep(t, "complete-step", "execute", nil)
+	first := f.shipStateOnDisk(t)[shipLinkedPlanKey]
+
+	f.setPlanIntegrity(t, map[string]any{
+		"skillInvoked": "2026-10-10T11:00:00Z",
+		"done":         "2026-10-10T12:00:00Z",
+	})
+	narr := f.completeStep(t, "complete-step", "execute", nil)
+	if len(narr.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", narr.Warnings)
+	}
+
+	if got := f.shipStateOnDisk(t)[shipLinkedPlanKey]; !reflect.DeepEqual(got, first) {
+		t.Errorf("linkedPlan after the second call = %#v, want the first %#v", got, first)
+	}
+}
+
+func TestShipState_LinkedPlan_NoSaveNoWarning(t *testing.T) {
+	integrity := map[string]any{"skillInvoked": linkedPlanStart, "done": linkedPlanDone}
+
+	t.Run("no execute state", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/linked-plan-no-exec", false, nil)
+		f.setPlanIntegrity(t, integrity)
+		narr := f.completeStep(t, "complete-step", "execute", nil)
+		assertNoLinkedPlan(t, f, narr)
+	})
+	t.Run("execute state without planPath", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/linked-plan-no-path", false, func(string) string { return "" })
+		f.setPlanIntegrity(t, integrity)
+		narr := f.completeStep(t, "complete-step", "execute", nil)
+		assertNoLinkedPlan(t, f, narr)
+	})
+	t.Run("no plan state for the planPath", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/linked-plan-no-plan", false, func(dir string) string {
+			return filepath.Join(dir, "plans", "other.md")
+		})
+		f.setPlanIntegrity(t, integrity)
+		narr := f.completeStep(t, "complete-step", "execute", nil)
+		assertNoLinkedPlan(t, f, narr)
+	})
+	t.Run("step is not execute (complete-step)", func(t *testing.T) {
+		f := newLinkedPlanFixture(t, "feat/linked-plan-other-step", integrity)
+		narr := f.completeStep(t, "complete-step", "commit", nil)
+		assertNoLinkedPlan(t, f, narr)
+	})
+	t.Run("step is not execute (complete)", func(t *testing.T) {
+		f := newLinkedPlanFixture(t, "feat/linked-plan-other-step-legacy", integrity)
+		narr := f.completeStep(t, "complete", "commit", nil)
+		assertNoLinkedPlan(t, f, narr)
+	})
+	t.Run("outcome failure", func(t *testing.T) {
+		f := newLinkedPlanFixture(t, "feat/linked-plan-failure", integrity)
+		narr := f.completeStep(t, "complete-step", "execute", map[string]any{"outcome": "failure", "result": "boom"})
+		assertNoLinkedPlan(t, f, narr)
+		if step := findStepMap(t, f.shipStateOnDisk(t), "execute"); step["status"] != "failed" {
+			t.Errorf("execute status = %v, want failed", step["status"])
+		}
+	})
+}
+
+// assertNoLinkedPlan checks that a call saved no linkedPlan and returned no
+// warning.
+func assertNoLinkedPlan(t *testing.T, f planRunCleanupFixture, narr ShipStepNarrationOut) {
+	t.Helper()
+	if len(narr.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", narr.Warnings)
+	}
+	if got, has := f.shipStateOnDisk(t)[shipLinkedPlanKey]; has {
+		t.Errorf("linkedPlan = %#v, want the key absent", got)
+	}
+}
+
+func TestShipState_LinkedPlan_StartTimeNotRFC3339(t *testing.T) {
+	const wantWarning = "plan times not saved: the linked plan run has no start time."
+	cases := map[string]map[string]any{
+		"skillInvoked absent":          {"done": linkedPlanDone},
+		"skillInvoked not RFC 3339":    {"skillInvoked": "yesterday", "done": linkedPlanDone},
+		"skillInvoked not a string":    {"skillInvoked": 42, "done": linkedPlanDone},
+		"planIntegrity has no content": {},
+	}
+	for name, integrity := range cases {
+		t.Run(name, func(t *testing.T) {
+			f := newLinkedPlanFixture(t, "feat/linked-plan-bad-start", integrity)
+
+			narr := f.completeStep(t, "complete-step", "execute", nil)
+			if !reflect.DeepEqual(narr.Warnings, []string{wantWarning}) {
+				t.Errorf("warnings = %v, want [%q]", narr.Warnings, wantWarning)
+			}
+
+			data := f.shipStateOnDisk(t)
+			if got, has := data[shipLinkedPlanKey]; has {
+				t.Errorf("linkedPlan = %#v, want the key absent", got)
+			}
+			if step := findStepMap(t, data, "execute"); step["status"] != "completed" {
+				t.Errorf("execute status = %v, want completed", step["status"])
+			}
+		})
+	}
+}
+
+// TestShipState_LinkedPlan_PlanStateReadErrorStillCompletesStep forces a read
+// error from the plan state lookup: the step still completes, and the output
+// carries the warning.
+func TestShipState_LinkedPlan_PlanStateReadErrorStillCompletesStep(t *testing.T) {
+	for _, action := range []string{"complete-step", "complete"} {
+		t.Run(action, func(t *testing.T) {
+			f := newLinkedPlanFixture(t, "feat/linked-plan-plan-read-"+action, map[string]any{
+				"skillInvoked": linkedPlanStart,
+				"done":         linkedPlanDone,
+			})
+			prev := shipFindPlanRunByPlanFile
+			shipFindPlanRunByPlanFile = func(string, string) (*state.State, error) {
+				return nil, errors.New("state: readdir runs: permission denied")
+			}
+			t.Cleanup(func() { shipFindPlanRunByPlanFile = prev })
+
+			narr := f.completeStep(t, action, "execute", nil)
+
+			want := []string{"plan times not saved: state: readdir runs: permission denied. The dashboard falls back to the history join."}
+			if !reflect.DeepEqual(narr.Warnings, want) {
+				t.Errorf("warnings = %v, want %v", narr.Warnings, want)
+			}
+			data := f.shipStateOnDisk(t)
+			if got, has := data[shipLinkedPlanKey]; has {
+				t.Errorf("linkedPlan = %#v, want the key absent", got)
+			}
+			if step := findStepMap(t, data, "execute"); step["status"] != "completed" {
+				t.Errorf("execute status = %v, want completed", step["status"])
+			}
+		})
+	}
+}
+
+// TestShipState_LinkedPlan_LookupErrorStillCompletesStep corrupts the execute
+// state file: state.Find returns a read error, the step still completes, and
+// the output carries the warning.
+func TestShipState_LinkedPlan_LookupErrorStillCompletesStep(t *testing.T) {
+	for _, action := range []string{"complete-step", "complete"} {
+		t.Run(action, func(t *testing.T) {
+			f := newLinkedPlanFixture(t, "feat/linked-plan-lookup-"+action, map[string]any{
+				"skillInvoked": linkedPlanStart,
+				"done":         linkedPlanDone,
+			})
+			execSt, err := state.Find(f.dir, "execute", f.branch)
+			if err != nil || execSt == nil {
+				t.Fatalf("find execute state: st=%v err=%v", execSt, err)
+			}
+			if err := os.WriteFile(execSt.Path, []byte("{not json"), 0o644); err != nil {
+				t.Fatalf("corrupt execute state: %v", err)
+			}
+
+			narr := f.completeStep(t, action, "execute", nil)
+
+			if len(narr.Warnings) != 1 {
+				t.Fatalf("warnings = %v, want exactly one", narr.Warnings)
+			}
+			w := narr.Warnings[0]
+			if !strings.HasPrefix(w, "plan times not saved: state: read ") ||
+				!strings.HasSuffix(w, ". The dashboard falls back to the history join.") {
+				t.Errorf("warning = %q, want the plan-times lookup warning", w)
+			}
+			data := f.shipStateOnDisk(t)
+			if got, has := data[shipLinkedPlanKey]; has {
+				t.Errorf("linkedPlan = %#v, want the key absent", got)
+			}
+			if step := findStepMap(t, data, "execute"); step["status"] != "completed" {
+				t.Errorf("execute status = %v, want completed", step["status"])
+			}
+		})
+	}
+}
