@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
@@ -29,7 +30,7 @@ import (
 func dashboardAttachPlanTimes(root string, p *DashboardPipeline, st *state.State) (warning string) {
 	startedAt, completedAt, err := dashboardPlanTimes(root, st)
 	if err != nil {
-		return fmt.Sprintf("plan times of ship run %s not read: %v", p.ID, err)
+		return fmt.Sprintf("Plan times of ship run %s not read: %v", p.ID, err)
 	}
 	if startedAt == "" {
 		return ""
@@ -48,9 +49,13 @@ func dashboardAttachPlanTimes(root string, p *DashboardPipeline, st *state.State
 // RFC 3339 texts. startedAt is "" when no source holds a plan start. See
 // dashboardAttachPlanTimes for the sources and the rules.
 func dashboardPlanTimes(root string, st *state.State) (startedAt, completedAt string, err error) {
+	// A linkedPlan that is not an object, or has no RFC 3339 startedAt, falls
+	// through to the history join. The history row of ship_state names such
+	// a linkedPlan in a warning (shipHistoryPlanFields).
 	if linked, _ := st.Data[shipLinkedPlanKey].(map[string]any); linked != nil {
-		if start := dashboardStepTime(dashboardStr(linked["startedAt"])); start != "" {
-			return start, dashboardPlanEnd(start, dashboardStr(linked["completedAt"])), nil
+		startedAt := dashboardStr(linked["startedAt"])
+		if start, ok := dashboardParseTime(startedAt); ok {
+			return startedAt, dashboardPlanEnd(start, dashboardStr(linked["completedAt"])), nil
 		}
 	}
 
@@ -66,23 +71,36 @@ func dashboardPlanTimes(root string, st *state.State) (startedAt, completedAt st
 	if err != nil || timing == nil {
 		return "", "", err
 	}
-	start := dashboardStepTime(timing.StartedAt)
-	if start == "" {
+	start, ok := dashboardParseTime(timing.StartedAt)
+	if !ok {
 		return "", "", nil
 	}
-	return start, dashboardPlanEnd(start, timing.LastModifiedAt), nil
+	return timing.StartedAt, dashboardPlanEnd(start, timing.LastModifiedAt), nil
 }
 
-// dashboardPlanEnd returns end when it parses and is not before start, else
-// "". Both are RFC 3339 texts; start has parsed already.
-func dashboardPlanEnd(start, end string) string {
-	end = dashboardStepTime(end)
-	if end == "" {
-		return ""
-	}
-	s, _ := dashboardParseTime(start)
-	if e, _ := dashboardParseTime(end); e.Before(s) {
+// dashboardPlanEnd returns end when planWindowEnd accepts it, else "".
+func dashboardPlanEnd(start time.Time, end string) string {
+	if _, ok := planWindowEnd(start, end); !ok {
 		return ""
 	}
 	return end
+}
+
+// planWindowEnd parses end as the end of a plan window that starts at start.
+// It returns the end and true when end parses as RFC 3339 and is not before
+// start (planWindowOK). An absent end, an end that does not parse and an end
+// before start give false. The ship history row (shipHistoryPlanFields) and
+// the plan station of the snapshot share this rule.
+func planWindowEnd(start time.Time, end string) (time.Time, bool) {
+	e, ok := dashboardParseTime(end)
+	if !ok || !planWindowOK(start, e) {
+		return time.Time{}, false
+	}
+	return e, true
+}
+
+// planWindowOK reports whether a plan window from start to end is valid: end
+// is not before start. An equal start and end is valid and has a zero length.
+func planWindowOK(start, end time.Time) bool {
+	return !end.Before(start)
 }

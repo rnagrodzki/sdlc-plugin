@@ -629,6 +629,15 @@ func TestDashboardActivity_History_PlanAndTotalTimes(t *testing.T) {
 			},
 		},
 		{
+			name: "plan start equal to ts copies the plan fields with a zero total",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/g","outcome":"success","duration_ms":3600000,"plan_started_at":"2026-10-10T09:40:00Z","plan_duration_ms":0}`,
+			want: DashboardRun{
+				Kind: "ship", Branch: "feat/g", Outcome: "success",
+				StartedAt: "2026-10-10T08:40:00Z", EndedAt: "2026-10-10T09:40:00Z", DurationMs: 3600000,
+				PlanStartedAt: "2026-10-10T09:40:00Z", TotalMs: 0,
+			},
+		},
+		{
 			name: "plan start after ts copies no plan field",
 			line: `{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/e","outcome":"success","duration_ms":3600000,"plan_started_at":"2026-10-10T10:00:00Z","plan_duration_ms":4800000}`,
 			want: DashboardRun{

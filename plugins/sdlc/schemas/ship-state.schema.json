@@ -197,7 +197,7 @@
     },
     "linkedPlan": {
       "type": "object",
-      "description": "Plan run linked to this ship run, saved by complete-step of execute. startedAt = planIntegrity.skillInvoked, completedAt = planIntegrity.done (absent when the plan run has no done mark). Survives cleanup-pipeline and GC of the plan state.",
+      "description": "Plan run linked to this ship run, saved by complete-step (or legacy complete) of execute when the outcome is not a failure. planFile = the execute state planPath, resolved against its worktree and cleaned. startedAt = planIntegrity.skillInvoked, completedAt = planIntegrity.done (absent when the plan run has no valid RFC 3339 done mark). Survives cleanup-pipeline and GC of the plan state.",
       "additionalProperties": false,
       "required": ["planFile", "startedAt"],
       "properties": {

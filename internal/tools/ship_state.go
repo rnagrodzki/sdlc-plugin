@@ -85,6 +85,11 @@ type ShipStepNarrationOut struct {
 	// linked plan times could not be saved. Response-only — never persisted.
 	// omitempty: most calls have nothing to warn about.
 	Warnings []string `json:"warnings,omitempty"`
+	// LinkedPlan is the ship state linkedPlan after complete-step or complete
+	// of execute: the value that this call saved, or the value that an
+	// earlier call saved and this call kept. It is absent when no linked plan
+	// run was found, and on every other step. Response-only.
+	LinkedPlan map[string]any `json:"linkedPlan,omitempty"`
 }
 
 // ShipNextOut is the output of the Go-native next action: the first step
@@ -827,12 +832,7 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 	if err := shipCompleteStepCore(st.Data, in.Step, hasResult, resultVal, "success", now); err != nil {
 		return nil, err
 	}
-	var warnings []string
-	if in.Step == "execute" {
-		if w := shipSaveLinkedPlan(root, dashboardStr(st.Data["branch"]), st.Data); w != "" {
-			warnings = append(warnings, w)
-		}
-	}
+	linkedPlan, warnings := shipCompleteLinkedPlan(root, in.Step, "success", st.Data)
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
@@ -862,7 +862,8 @@ func shipStateComplete(root, workDir string, in ShipStateIn, now func() time.Tim
 			Timing:  timing,
 			Next:    shipBuildNextAction(st.Data, ts),
 		},
-		Warnings: warnings,
+		Warnings:   warnings,
+		LinkedPlan: linkedPlan,
 	}
 	return out, nil
 }
@@ -999,12 +1000,7 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 	if err := shipCompleteStepCore(st.Data, in.Step, hasResult, resultVal, outcome, now); err != nil {
 		return nil, err
 	}
-	var warnings []string
-	if in.Step == "execute" && outcome != "failure" {
-		if w := shipSaveLinkedPlan(root, dashboardStr(st.Data["branch"]), st.Data); w != "" {
-			warnings = append(warnings, w)
-		}
-	}
+	linkedPlan, warnings := shipCompleteLinkedPlan(root, in.Step, outcome, st.Data)
 	if err := state.Write(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
@@ -1040,8 +1036,9 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 			Timing:  timing,
 			Next:    shipBuildNextAction(st.Data, ts),
 		},
-		Todos:    shipmeta.TodosForStep(in.Step, st),
-		Warnings: warnings,
+		Todos:      shipmeta.TodosForStep(in.Step, st),
+		Warnings:   warnings,
+		LinkedPlan: linkedPlan,
 	}
 	if count, highlights := execIssueSummary(st.Data, 5); count > 0 {
 		out.IssueCount = count
@@ -1054,109 +1051,175 @@ func shipStateCompleteStep(root, workDir string, in ShipStateIn, now func() time
 // saved by complete-step of execute.
 const shipLinkedPlanKey = "linkedPlan"
 
-// shipFindPlanRunByPlanFile is the plan state lookup of shipSaveLinkedPlan.
+// shipFindPlanRunByPlanFile is the plan state lookup of shipLinkedPlanRun.
 // Tests replace it to force the read error that a real runs/ folder cannot
 // give here, because the execute state lookup reads the same folder first.
 var shipFindPlanRunByPlanFile = state.FindPlanRunByPlanFile
 
-// shipSaveLinkedPlan sets data["linkedPlan"] when it is absent and the
-// linked plan run is found. It never returns an error; a lookup failure
-// gives a warning text for the step output. root is the main root.
-//
-// The lookup chain is the one of shipDeleteReportedPlanRun: the execute state
-// of the branch names the plan file, and the plan state of that plan file
-// holds the times. startedAt is planIntegrity.skillInvoked and completedAt is
-// planIntegrity.done (the handoff). Both must be RFC 3339. A start time that
-// is not RFC 3339 saves nothing. A done mark that is absent or not RFC 3339
-// leaves completedAt out. Having no linked plan is not a warning: an execute
-// run can start from a plan file that has no plan state.
-func shipSaveLinkedPlan(root, branch string, data map[string]any) (warning string) {
-	if _, set := data[shipLinkedPlanKey].(map[string]any); set {
-		return ""
-	}
+// shipLinkedPlanRun returns the plan run linked to the ship run of branch,
+// and the plan file that links them. The execute state of branch names the
+// plan file (shipExecPlanPath: the planPath, joined to the worktree when it
+// is relative, and cleaned), and the newest plan state of that plan file is
+// the plan run. A branch with no execute state, an execute state with no
+// planPath, and a plan file with no plan state give a nil run and no error.
+// A failed read of the execute state or of the plan states gives the error.
+// shipSaveLinkedPlan and shipDeleteReportedPlanRun share this lookup, and
+// each decides what an error means for it.
+func shipLinkedPlanRun(root, branch string) (planRun *state.State, planFile string, err error) {
 	execSt, err := state.Find(root, "execute", branch)
-	if err != nil {
-		return shipLinkedPlanLookupWarning(err)
+	if err != nil || execSt == nil {
+		return nil, "", err
 	}
-	if execSt == nil {
-		return ""
-	}
-	planFile := shipExecPlanPath(execSt.Data)
+	planFile = shipExecPlanPath(execSt.Data)
 	if planFile == "" {
-		return ""
+		return nil, "", nil
 	}
-	planRun, err := shipFindPlanRunByPlanFile(root, planFile)
+	planRun, err = shipFindPlanRunByPlanFile(root, planFile)
+	if err != nil || planRun == nil {
+		return nil, planFile, err
+	}
+	return planRun, planFile, nil
+}
+
+// shipCompleteLinkedPlan is the linkedPlan side effect of complete-step and
+// of legacy complete. Only the execute step with an outcome that is not
+// "failure" saves the linked plan run times (legacy complete passes
+// "success"). It returns the linkedPlan that the ship state holds after the
+// call, nil when none, and the warnings for the step output.
+func shipCompleteLinkedPlan(root, step, outcome string, data map[string]any) (linked map[string]any, warnings []string) {
+	if step != "execute" || outcome == "failure" {
+		return nil, nil
+	}
+	linked, warnings = shipSaveLinkedPlan(root, dashboardStr(data["branch"]), data)
+	return linked, warnings
+}
+
+// shipSaveLinkedPlan sets data["linkedPlan"] when it is not already an object
+// and the linked plan run is found (shipLinkedPlanRun). A linkedPlan that is
+// an object is kept: the first save wins. A linkedPlan of another type is
+// replaced. It never returns an error. It returns the linkedPlan that data
+// holds after the call (nil when none) and the warnings for the step output.
+// root is the main root.
+//
+// startedAt is planIntegrity.skillInvoked and completedAt is
+// planIntegrity.done (the handoff). Both must be RFC 3339. A start time that
+// is absent or not RFC 3339 saves nothing and gives a warning that names the
+// cause. A done mark that is absent leaves completedAt out with no warning; a
+// done mark that is not RFC 3339 leaves completedAt out with a warning.
+// Having no linked plan run is not a warning: an execute run can start from a
+// plan file that has no plan state.
+func shipSaveLinkedPlan(root, branch string, data map[string]any) (linked map[string]any, warnings []string) {
+	if kept, set := data[shipLinkedPlanKey].(map[string]any); set {
+		return kept, nil
+	}
+	planRun, planFile, err := shipLinkedPlanRun(root, branch)
 	if err != nil {
-		return shipLinkedPlanLookupWarning(err)
+		return nil, []string{fmt.Sprintf("Plan times not saved: %s. The dashboard falls back to the history join.", err.Error())}
 	}
 	if planRun == nil {
-		return ""
+		return nil, nil
 	}
 
-	integrity, _ := planRun.Data["planIntegrity"].(map[string]any)
-	startedAt := dashboardStr(integrity["skillInvoked"])
-	if _, err := time.Parse(time.RFC3339, startedAt); err != nil {
-		return "plan times not saved: the linked plan run has no start time."
+	integrity, ok := planRun.Data["planIntegrity"].(map[string]any)
+	if !ok {
+		return nil, []string{fmt.Sprintf("Plan times not saved: the plan run of %s has no planIntegrity object.", planFile)}
 	}
-	linked := map[string]any{"planFile": planFile, "startedAt": startedAt}
-	if completedAt := dashboardStr(integrity["done"]); completedAt != "" {
-		if _, err := time.Parse(time.RFC3339, completedAt); err == nil {
+	rawStart, has := integrity["skillInvoked"]
+	if !has || rawStart == nil || rawStart == "" {
+		return nil, []string{fmt.Sprintf("Plan times not saved: the plan run of %s has no start time (planIntegrity.skillInvoked).", planFile)}
+	}
+	startedAt, isText := rawStart.(string)
+	if _, err := time.Parse(time.RFC3339, startedAt); !isText || err != nil {
+		return nil, []string{fmt.Sprintf("Plan times not saved: the start time of the plan run of %s (planIntegrity.skillInvoked) is %v, not an RFC 3339 time.", planFile, rawStart)}
+	}
+
+	linked = map[string]any{"planFile": planFile, "startedAt": startedAt}
+	if rawDone, has := integrity["done"]; has && rawDone != nil && rawDone != "" {
+		completedAt, isText := rawDone.(string)
+		if _, err := time.Parse(time.RFC3339, completedAt); isText && err == nil {
 			linked["completedAt"] = completedAt
+		} else {
+			warnings = append(warnings, fmt.Sprintf("Plan end time not saved: the done mark of the plan run of %s (planIntegrity.done) is %v, not an RFC 3339 time.", planFile, rawDone))
 		}
 	}
 	data[shipLinkedPlanKey] = linked
-	return ""
-}
-
-// shipLinkedPlanLookupWarning is the step warning for a failed read of the
-// execute state or of the plan state.
-func shipLinkedPlanLookupWarning(err error) string {
-	return fmt.Sprintf("plan times not saved: %s. The dashboard falls back to the history join.", err.Error())
+	return linked, warnings
 }
 
 // shipHistoryPlanFields copies the plan data of the ship state linkedPlan into
-// the plan fields of rec: plan_file, plan_started_at and plan_duration_ms.
-// shipData without a linkedPlan object, or a linkedPlan with no RFC 3339
-// startedAt, leaves rec as it is. plan_duration_ms is completedAt minus
-// startedAt; a missing completedAt, a completedAt that is not RFC 3339 and a
-// completedAt before startedAt leave it out.
-func shipHistoryPlanFields(rec *history.RunRecord, shipData map[string]any) {
-	linked, _ := shipData[shipLinkedPlanKey].(map[string]any)
-	if linked == nil {
-		return
+// the plan fields of rec: plan_file, plan_started_at and plan_duration_ms. An
+// absent linkedPlan leaves rec as it is with no warning. A linkedPlan that is
+// not an object, or has a startedAt that is absent or not RFC 3339, leaves rec
+// as it is and returns a warning that names the bad value, because the
+// history row is append-only and cannot be repaired later.
+// plan_duration_ms is completedAt minus startedAt (planWindowEnd). An absent
+// completedAt leaves it out with no warning; a completedAt that is not RFC
+// 3339 or is before startedAt leaves it out with a warning.
+func shipHistoryPlanFields(rec *history.RunRecord, shipData map[string]any) (warning string) {
+	raw, has := shipData[shipLinkedPlanKey]
+	if !has || raw == nil {
+		return ""
+	}
+	linked, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("Plan fields not added to the history row: linkedPlan is %s, not an object.", shipJSONKind(raw))
 	}
 	startedAt := dashboardStr(linked["startedAt"])
-	start, err := time.Parse(time.RFC3339, startedAt)
-	if err != nil {
-		return
+	start, ok := dashboardParseTime(startedAt)
+	if !ok {
+		return fmt.Sprintf("Plan fields not added to the history row: linkedPlan.startedAt %q is not an RFC 3339 time.", startedAt)
 	}
 	rec.PlanFile = dashboardStr(linked["planFile"])
 	rec.PlanStartedAt = startedAt
-	end, err := time.Parse(time.RFC3339, dashboardStr(linked["completedAt"]))
-	if err != nil || end.Before(start) {
-		return
+	completedAt := dashboardStr(linked["completedAt"])
+	if completedAt == "" {
+		return ""
+	}
+	end, ok := planWindowEnd(start, completedAt)
+	if !ok {
+		return fmt.Sprintf("Plan duration not added to the history row: linkedPlan.completedAt %q is not an RFC 3339 time at or after startedAt.", completedAt)
 	}
 	rec.PlanDurationMs = end.Sub(start).Milliseconds()
+	return ""
+}
+
+// shipJSONKind names the JSON type of a decoded value for a message: "a
+// string", "a number", "a boolean", "a list", "an object" or "null".
+func shipJSONKind(v any) string {
+	switch v.(type) {
+	case nil:
+		return "null"
+	case string:
+		return "a string"
+	case bool:
+		return "a boolean"
+	case float64, int, int64:
+		return "a number"
+	case []any:
+		return "a list"
+	case map[string]any:
+		return "an object"
+	}
+	return fmt.Sprintf("a %T", v)
 }
 
 // shipHistoryPlanFieldsFor reads the ship state of branch and adds its plan
 // fields to rec through shipHistoryPlanFields. An empty branch names no ship
 // state and a branch without a ship state adds nothing; neither gives a
 // warning. A failed read leaves rec as it is and returns the warning text for
-// the history_record response.
+// the history_record response, as does a bad linkedPlan.
 func shipHistoryPlanFieldsFor(root, branch string, rec *history.RunRecord) (warning string) {
 	if branch == "" {
 		return ""
 	}
 	st, err := state.Find(root, "ship", branch)
 	if err != nil {
-		return "plan fields not added to the history row: " + err.Error()
+		return "Plan fields not added to the history row: " + err.Error() + "."
 	}
 	if st == nil {
 		return ""
 	}
-	shipHistoryPlanFields(rec, st.Data)
-	return ""
+	return shipHistoryPlanFields(rec, st.Data)
 }
 
 // ---------------------------------------------------------------------------
@@ -1518,9 +1581,11 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 			DurationMs: shipFailDurationMs(startedAt, failedAt),
 			StartedAt:  startedAt,
 		}
-		shipHistoryPlanFields(&rec, st.Data)
+		if w := shipHistoryPlanFields(&rec, st.Data); w != "" {
+			warnings = append(warnings, w)
+		}
 		if err := shipHistoryAppendFunc(root, rec); err != nil {
-			warnings = append(warnings, "failure history row not written to "+paths.DataDir+"/history/runs.jsonl: "+err.Error()+
+			warnings = append(warnings, "Failure history row not written to "+paths.DataDir+"/history/runs.jsonl: "+err.Error()+
 				`. To add it, call ship_state history_record with detail.skill "ship" and detail.outcome "failure".`)
 		}
 	}
@@ -2770,11 +2835,7 @@ const shipPlanReviewRoundsKey = "planReviewRounds"
 // evidence directory is removed before the state file; if that remove
 // fails, the state file stays so a retry can find the run again.
 func shipDeleteReportedPlanRun(root, branch string, ship *state.State) ShipPlanRunCleanup {
-	execSt, err := state.Find(root, "execute", branch)
-	if err != nil || execSt == nil {
-		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoLinked}
-	}
-	planRun, err := state.FindPlanRunByPlanFile(root, shipExecPlanPath(execSt.Data))
+	planRun, _, err := shipLinkedPlanRun(root, branch)
 	if err != nil || planRun == nil {
 		return ShipPlanRunCleanup{Reason: shipPlanRunReasonNoLinked}
 	}
@@ -3330,11 +3391,20 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 			Cause:      err,
 		}
 	}
-	out := map[string]any{"ok": true, "ts": rec.Timestamp,
-		"next": "Continue with the next ship step."}
+	next := "The history row is written."
+	if len(warnings) > 0 {
+		next = "The history row is written, without the plan fields that the warnings name. No retry is needed."
+	}
+	out := map[string]any{"ok": true, "ts": rec.Timestamp, "next": next}
+	if rec.PlanStartedAt != "" {
+		planFields := map[string]any{"plan_file": rec.PlanFile, "plan_started_at": rec.PlanStartedAt}
+		if rec.PlanDurationMs > 0 {
+			planFields["plan_duration_ms"] = rec.PlanDurationMs
+		}
+		out["planFields"] = planFields
+	}
 	if len(warnings) > 0 {
 		out["warnings"] = warnings
-		out["next"] = "Continue with the next ship step. The history row is written without plan fields. No retry is needed."
 	}
 	return out, nil
 }
@@ -3573,12 +3643,12 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 
 - init: Create ship state. Optional: detail.branch, detail.flags, sessionId.
 - begin-step: Begin execution of a step (preferred over start). Requires step. Returns narration with progress, ETA, dispatch instruction, todos, and alreadyDone (true when ship_verify_side_effect already recorded this step's side effect in the sideEffects journal — a resumed pipeline can skip redoing it). Optional: detail.branch, detail.stateFile, detail.detail.
-- complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, issue summary, and warnings. Side effect: complete-step of execute (outcome not failure) reads the execute state planPath and the plan state it names, then saves linkedPlan {planFile, startedAt, completedAt} once. A failed plan lookup adds one warnings entry and never fails the step. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
+- complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, issue summary, warnings, and linkedPlan. Side effect: complete-step of execute (outcome not failure) reads the execute state planPath and the plan state it names, then saves linkedPlan {planFile, startedAt, completedAt} once; a later call keeps the first object. linkedPlan in the output is the value that the ship state holds after the call (saved or kept), and is absent when no linked plan run was found. A failed lookup, a plan run with no valid start time (nothing saved), and a done mark that is not RFC 3339 (completedAt left out) each add one warnings entry and never fail the step. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
 - commit-check: Decide the commit step from the working tree. Requires: (none). Optional: detail.branch. Side effects: staging (git add -A -- ':!.sdlc-v2/' in the active worktree stages every change, untracked files that are not gitignored included; then git diff --cached --name-only counts the staged paths); the first call of a run stores HEAD in state key commitBaseHead, and later calls keep it. Dirty tree: returns {clean:false, stagedCount} and changes no step. Clean tree with HEAD equal to commitBaseHead: appends one decide entry and does what complete-step does for the commit step, with result "`+commitNothingPrefix+`: execute committed N wave commit(s)" (N = non-empty waves[].committedSha of this branch's execute state) or "`+commitNothingPrefix+`: the working tree is clean" (N = 0). Clean tree with HEAD not equal to commitBaseHead: records HEAD in the side-effect journal (sideEffects, kind sha) and does what complete-step does for the commit step, with result "committed <short sha>". Returns clean, stagedCount, waveCommits, stepCompleted, result, todos and display (when stepCompleted), warnings, next. Errors: a failed git call is a git InfraError; a commit step that is not in_progress is a step-state DomainError; a pipeline with no commit step, or a commitBaseHead that is not a string, is a DataError.
 - start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
-- complete: (Legacy) Complete a step. Requires step. Returns narration with timing and warnings. Same linkedPlan side effect as complete-step. Optional: detail.branch, detail.result, detail.detail.
+- complete: (Legacy) Complete a step. Requires step. Returns narration with timing, warnings, and linkedPlan. Same linkedPlan side effect and output as complete-step. Optional: detail.branch, detail.result, detail.detail.
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
-- fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. The failure row carries the same plan fields from linkedPlan. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
+- fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. The failure row carries the same plan fields from linkedPlan as history_record; a linkedPlan that is not an object or has a bad time adds a warnings entry. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`").
 - healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1); a repeat with the same (origin, file, line, title) is a duplicate) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires the finding fields of "fixed" — detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1) — plus detail.status (one of `+strings.Join(healingFixStatuses, " | ")+`). Upserts data.healing.fixProgress[] on the key (origin, file, line, title): a new key appends a record with firstAt and updatedAt; a repeat of the stored status changes nothing (a new severity included); a stored final status (`+strings.Join(healingFixFinal, " | ")+`) is kept when the incoming status is queued or fixing, and a stored failed is kept when the incoming status is deferred (narration "kept <status>"); any other status change replaces the whole record and keeps firstAt. At most `+fmt.Sprint(healingFixProgressMax)+` records: a new key past the cap is a DomainError, while a stored key still updates. Never writes data.healing.fixed). Optional: detail.branch. A no-op call returns narration "already recorded — no change" (or "kept <status>"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. A damaged data.healing (not an object, or a list key that is not a list) is a DataError that names the state file. Returns summary, kind, written (true only when this call changed the state file), record (the record as stored after the call: recordedAt for review-total, fixed and hardened; status, firstAt and updatedAt for fix-progress; on a no-op call the stored entry, not the incoming one; with no live run the validated incoming record), and next (fix-progress only: id "continue-fix-pass" with the instruction for the fix pass — the other kinds are terminal and return no next).
@@ -3591,7 +3661,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.
 - todos: List remaining todos for a step. Optional: step, detail.branch, detail.stateFile.
-- history_record: Append a pipeline run record to .sdlc-v2/history/runs.jsonl (persistent, survives state-file GC). Requires detail.skill, detail.outcome ("success"|"failure"|"partial"). Optional: detail.ts (ISO timestamp, defaults to now), detail.branch, detail.duration_ms, detail.steps, detail.guardrail_hits, detail.deferred_issues, detail.version. For skill "ship", the row also gets plan_file, plan_started_at and plan_duration_ms from the ship state linkedPlan when present. A ship state read error adds one warnings entry and never fails the call.
+- history_record: Append a pipeline run record to .sdlc-v2/history/runs.jsonl (persistent, survives state-file GC). Requires detail.skill, detail.outcome ("success"|"failure"|"partial"). Optional: detail.ts (ISO timestamp, defaults to now), detail.branch, detail.duration_ms, detail.steps, detail.guardrail_hits, detail.deferred_issues, detail.version. For skill "ship" with detail.branch set, the row also gets plan_file, plan_started_at and plan_duration_ms from the linkedPlan of that branch's ship state when present; with no detail.branch the row gets no plan fields and no warning. Returns {ok, ts, next, planFields?, warnings?}: next is "The history row is written." (or a no-retry text when warnings is present), planFields echoes the plan fields written to the row (absent when none), and warnings names a ship state read error or a linkedPlan that is not an object or has a bad time. A warning never fails the call.
 - deferred_add: Add a deferred issue to .sdlc-v2/history/deferred.json. Requires detail.id, detail.description. Optional: detail.created (defaults to now), detail.source, detail.priority ("high"|"medium"|"low", defaults to "medium").
 - deferred_list: List all deferred issues. Returns {issues, openCount}.
 - deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}.

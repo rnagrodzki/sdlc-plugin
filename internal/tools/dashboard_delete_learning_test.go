@@ -3,6 +3,8 @@ package tools
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,14 +57,14 @@ func learnDelWant(t *testing.T, path string, want []byte) {
 	}
 }
 
-// TestDeleteDashboardLearning_RemovesOnlyTheMatchedEntry removes only the matched entry; the header and the other entries stay byte-equal.
-func TestDeleteDashboardLearning_RemovesOnlyTheMatchedEntry(t *testing.T) {
+// TestDashboardDeleteLearning_RemovesOnlyTheMatchedEntry removes only the matched entry; the header and the other entries stay byte-equal.
+func TestDashboardDeleteLearning_RemovesOnlyTheMatchedEntry(t *testing.T) {
 	root := t.TempDir()
 	path, _ := learnDelLog(t, root, learnDelOld, learnDelMid, learnDelNew)
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Use fsx for store writes")
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
 	if err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if !out.Deleted || out.AlreadyGone || out.Message == "" {
 		t.Errorf("out = %+v, want Deleted with a message", out)
@@ -70,16 +72,16 @@ func TestDeleteDashboardLearning_RemovesOnlyTheMatchedEntry(t *testing.T) {
 	learnDelWant(t, path, []byte(learnDelHeader+"\n"+learnDelOld+"\n"+learnDelNew))
 }
 
-// TestDeleteDashboardLearning_RemovesNewestOfTwoWithSameKey removes only the newest of two entries with the same date and heading.
-func TestDeleteDashboardLearning_RemovesNewestOfTwoWithSameKey(t *testing.T) {
+// TestDashboardDeleteLearning_RemovesNewestOfTwoWithSameKey removes only the newest of two entries with the same date and heading.
+func TestDashboardDeleteLearning_RemovesNewestOfTwoWithSameKey(t *testing.T) {
 	root := t.TempDir()
 	first := "## 2026-10-09 — Retry the write\nfirst body\n"
 	second := "## 2026-10-09 — Retry the write\nsecond body\n"
 	path, _ := learnDelLog(t, root, learnDelOld, first, learnDelNew, second)
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Retry the write")
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Retry the write")
 	if err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if !out.Deleted {
 		t.Errorf("out = %+v, want Deleted", out)
@@ -88,8 +90,8 @@ func TestDeleteDashboardLearning_RemovesNewestOfTwoWithSameKey(t *testing.T) {
 	learnDelWant(t, path, []byte(learnDelHeader+"\n"+learnDelOld+"\n"+first+"\n"+learnDelNew))
 }
 
-// TestDeleteDashboardLearning_LongHeadingMatchesSnapshotText matches a long heading by the cut text that the snapshot shows.
-func TestDeleteDashboardLearning_LongHeadingMatchesSnapshotText(t *testing.T) {
+// TestDashboardDeleteLearning_LongHeadingMatchesSnapshotText matches a long heading by the cut text that the snapshot shows.
+func TestDashboardDeleteLearning_LongHeadingMatchesSnapshotText(t *testing.T) {
 	root := t.TempDir()
 	long := "## 2026-10-09 — " + strings.Repeat("long heading ", 20) + "\nbody\n"
 	path, _ := learnDelLog(t, root, learnDelOld, long)
@@ -100,9 +102,9 @@ func TestDeleteDashboardLearning_LongHeadingMatchesSnapshotText(t *testing.T) {
 		t.Fatalf("heading %q is not cut, the test needs a long heading", heading)
 	}
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", heading)
+	out, err := DashboardDeleteLearning(root, "2026-10-09", heading)
 	if err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if !out.Deleted {
 		t.Errorf("out = %+v, want Deleted", out)
@@ -110,14 +112,14 @@ func TestDeleteDashboardLearning_LongHeadingMatchesSnapshotText(t *testing.T) {
 	learnDelWant(t, path, []byte(learnDelHeader+"\n"+learnDelOld))
 }
 
-// TestDeleteDashboardLearning_LastEntryLeavesHeaderOnly leaves the header only when the last entry is removed.
-func TestDeleteDashboardLearning_LastEntryLeavesHeaderOnly(t *testing.T) {
+// TestDashboardDeleteLearning_LastEntryLeavesHeaderOnly leaves the header only when the last entry is removed.
+func TestDashboardDeleteLearning_LastEntryLeavesHeaderOnly(t *testing.T) {
 	root := t.TempDir()
 	path, _ := learnDelLog(t, root, learnDelNew)
 
-	out, err := DeleteDashboardLearning(root, "2026-10-10", "Cap the read size")
+	out, err := DashboardDeleteLearning(root, "2026-10-10", "Cap the read size")
 	if err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if !out.Deleted {
 		t.Errorf("out = %+v, want Deleted", out)
@@ -125,13 +127,13 @@ func TestDeleteDashboardLearning_LastEntryLeavesHeaderOnly(t *testing.T) {
 	learnDelWant(t, path, []byte(learnDelHeader))
 }
 
-// TestDeleteDashboardLearning_AbsentLogIsAlreadyGone gives already gone when the log file is absent.
-func TestDeleteDashboardLearning_AbsentLogIsAlreadyGone(t *testing.T) {
+// TestDashboardDeleteLearning_AbsentLogIsAlreadyGone gives already gone when the log file is absent.
+func TestDashboardDeleteLearning_AbsentLogIsAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Use fsx for store writes")
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
 	if err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if !out.AlreadyGone || out.Deleted || out.Message == "" {
 		t.Errorf("out = %+v, want AlreadyGone with a message", out)
@@ -141,8 +143,8 @@ func TestDeleteDashboardLearning_AbsentLogIsAlreadyGone(t *testing.T) {
 	}
 }
 
-// TestDeleteDashboardLearning_UnmatchedPairIsAlreadyGone gives already gone when no entry matches the date and heading pair.
-func TestDeleteDashboardLearning_UnmatchedPairIsAlreadyGone(t *testing.T) {
+// TestDashboardDeleteLearning_UnmatchedPairIsAlreadyGone gives already gone when no entry matches the date and heading pair.
+func TestDashboardDeleteLearning_UnmatchedPairIsAlreadyGone(t *testing.T) {
 	cases := []struct{ name, date, heading string }{
 		{"unknown pair", "2026-01-01", "No such learning"},
 		{"date matches, heading differs", "2026-10-09", "Use fsx"},
@@ -153,51 +155,59 @@ func TestDeleteDashboardLearning_UnmatchedPairIsAlreadyGone(t *testing.T) {
 			root := t.TempDir()
 			path, before := learnDelLog(t, root, learnDelOld, learnDelMid, learnDelNew)
 
-			out, err := DeleteDashboardLearning(root, tc.date, tc.heading)
+			out, err := DashboardDeleteLearning(root, tc.date, tc.heading)
 			if err != nil {
-				t.Fatalf("DeleteDashboardLearning: %v", err)
+				t.Fatalf("DashboardDeleteLearning: %v", err)
 			}
 			if !out.AlreadyGone || out.Deleted {
 				t.Errorf("out = %+v, want AlreadyGone", out)
+			}
+			if !strings.HasPrefix(out.Message, "No learning has the date ") {
+				t.Errorf("message = %q, want the no-match message", out.Message)
 			}
 			learnDelWant(t, path, before)
 		})
 	}
 }
 
-// TestDeleteDashboardLearning_HeaderOnlyLogIsAlreadyGone gives already gone when the log holds only the header.
-func TestDeleteDashboardLearning_HeaderOnlyLogIsAlreadyGone(t *testing.T) {
+// TestDashboardDeleteLearning_HeaderOnlyLogIsAlreadyGone gives already gone when the log holds only the header.
+func TestDashboardDeleteLearning_HeaderOnlyLogIsAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 	path, before := learnDelLog(t, root)
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Use fsx for store writes")
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
 	if err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if !out.AlreadyGone {
 		t.Errorf("out = %+v, want AlreadyGone", out)
 	}
+	if !strings.HasPrefix(out.Message, "The learnings log has no entries.") {
+		t.Errorf("message = %q, want the empty-log message", out.Message)
+	}
 	learnDelWant(t, path, before)
 }
 
-// TestDeleteDashboardLearning_EmptyDateOrHeadingRefused refuses an empty date or heading with a DomainError.
-func TestDeleteDashboardLearning_EmptyDateOrHeadingRefused(t *testing.T) {
-	cases := []struct{ name, date, heading string }{
-		{"empty date", "", "Use fsx for store writes"},
-		{"empty heading", "2026-10-09", ""},
-		{"both empty", "", ""},
+// TestDashboardDeleteLearning_EmptyDateOrHeadingRefused refuses an empty date or heading with a DomainError.
+func TestDashboardDeleteLearning_EmptyDateOrHeadingRefused(t *testing.T) {
+	cases := []struct{ name, date, heading, message string }{
+		{"empty date", "", "Use fsx for store writes", "The date field is required"},
+		{"empty heading", "2026-10-09", "", "The heading field is required"},
+		{"both empty", "", "", "The date and heading fields are required"},
+		{"date not YYYY-MM-DD", "10/09/2026", "Use fsx for store writes", `The date "10/09/2026" is not a YYYY-MM-DD date`},
+		{"date with extra text", "2026-10-09 x", "Use fsx for store writes", `The date "2026-10-09 x" is not a YYYY-MM-DD date`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			path, before := learnDelLog(t, root, learnDelMid)
 
-			out, err := DeleteDashboardLearning(root, tc.date, tc.heading)
+			out, err := DashboardDeleteLearning(root, tc.date, tc.heading)
 			dashDelWantErr(t, err, "domain", "Reload the page and try again.")
-			if err.Error() != "The date and heading fields are required" {
-				t.Errorf("message = %q", err.Error())
+			if err.Error() != tc.message {
+				t.Errorf("message = %q, want %q", err.Error(), tc.message)
 			}
-			if out != (DeleteOut{}) {
+			if out != (DashboardDeleteOut{}) {
 				t.Errorf("out = %+v, want zero value", out)
 			}
 			learnDelWant(t, path, before)
@@ -205,8 +215,8 @@ func TestDeleteDashboardLearning_EmptyDateOrHeadingRefused(t *testing.T) {
 	}
 }
 
-// TestDeleteDashboardLearning_TooLargeIsDataError gives a DataError for a log over the read limit and keeps the log bytes.
-func TestDeleteDashboardLearning_TooLargeIsDataError(t *testing.T) {
+// TestDashboardDeleteLearning_TooLargeIsDataError gives a DataError for a log over the read limit and keeps the log bytes.
+func TestDashboardDeleteLearning_TooLargeIsDataError(t *testing.T) {
 	root := t.TempDir()
 	// A valid log with one matching entry, padded past the limit: without the
 	// size check the entry would be found and removed.
@@ -217,19 +227,20 @@ func TestDeleteDashboardLearning_TooLargeIsDataError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Use fsx for store writes")
-	dashDelWantErr(t, err, "data", "Remove old entries from .sdlc-v2/learnings/log.md by hand, then retry.")
-	if err.Error() != "The learnings log is too large to edit from the dashboard" {
-		t.Errorf("message = %q", err.Error())
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
+	dashDelWantErr(t, err, "data", "Remove old entries from .sdlc-v2/learnings/log.md by hand until it is smaller than 8 MiB, then retry.")
+	want := fmt.Sprintf("The learnings log is %d bytes, more than the 8388608 bytes (8 MiB) that a dashboard delete reads", len(big))
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	learnDelWant(t, path, big)
 }
 
-// TestDeleteDashboardLearning_SizeAtLimitIsRead reads a log whose size equals the read limit.
-func TestDeleteDashboardLearning_SizeAtLimitIsRead(t *testing.T) {
+// TestDashboardDeleteLearning_SizeAtLimitIsRead reads a log whose size equals the read limit.
+func TestDashboardDeleteLearning_SizeAtLimitIsRead(t *testing.T) {
 	root := t.TempDir()
 	learnDelLogDir(t, root)
 	// Exactly dashboardDeleteReadMax bytes is allowed.
@@ -240,26 +251,26 @@ func TestDeleteDashboardLearning_SizeAtLimitIsRead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Use fsx for store writes")
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
 	if err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if !out.Deleted {
 		t.Errorf("out = %+v, want Deleted", out)
 	}
 }
 
-// TestDeleteDashboardLearning_LogIsFolderIsInfra gives an InfraError when the log path is a folder.
-func TestDeleteDashboardLearning_LogIsFolderIsInfra(t *testing.T) {
+// TestDashboardDeleteLearning_LogIsFolderIsInfra gives an InfraError when the log path is a folder.
+func TestDashboardDeleteLearning_LogIsFolderIsInfra(t *testing.T) {
 	root := t.TempDir()
 	// The log path is a folder: Stat succeeds and ReadFile fails.
 	if err := os.MkdirAll(learningsLogPath(root), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Use fsx for store writes")
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
 	dashDelWantErr(t, err, "infra", "Check that the learnings log is a regular file you can read, then retry.")
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	if info, statErr := os.Stat(learningsLogPath(root)); statErr != nil || !info.IsDir() {
@@ -267,8 +278,8 @@ func TestDeleteDashboardLearning_LogIsFolderIsInfra(t *testing.T) {
 	}
 }
 
-// TestDeleteDashboardLearning_StatFailureIsInfra gives an InfraError when the log Stat fails.
-func TestDeleteDashboardLearning_StatFailureIsInfra(t *testing.T) {
+// TestDashboardDeleteLearning_StatFailureIsInfra gives an InfraError when the log Stat fails.
+func TestDashboardDeleteLearning_StatFailureIsInfra(t *testing.T) {
 	root := t.TempDir()
 	// The learnings folder is a plain file, so Stat of log.md gives ENOTDIR.
 	if err := os.MkdirAll(filepath.Join(root, paths.DataDir), 0o755); err != nil {
@@ -278,33 +289,33 @@ func TestDeleteDashboardLearning_StatFailureIsInfra(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Use fsx for store writes")
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
 	dashDelWantErr(t, err, "infra", "Check that the learnings log is a regular file you can read, then retry.")
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 }
 
-// TestDeleteDashboardLearning_WriteFailureIsInfra gives an InfraError when the write fails and keeps the log bytes.
-func TestDeleteDashboardLearning_WriteFailureIsInfra(t *testing.T) {
+// TestDashboardDeleteLearning_WriteFailureIsInfra gives an InfraError when the write fails and keeps the log bytes.
+func TestDashboardDeleteLearning_WriteFailureIsInfra(t *testing.T) {
 	root := t.TempDir()
 	path, before := learnDelLog(t, root, learnDelOld, learnDelMid)
 	injected := errors.New("injected write failure")
 	dashDelSeam(t, &dashboardDeleteWriteBytes, func(string, []byte) error { return injected })
 
-	out, err := DeleteDashboardLearning(root, "2026-10-09", "Use fsx for store writes")
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
 	dashDelWantErr(t, err, "infra", "Check write permission on .sdlc-v2/learnings/ and free disk space, then retry.")
 	if !errors.Is(err, injected) {
 		t.Errorf("error does not wrap the injected failure: %v", err)
 	}
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	learnDelWant(t, path, before)
 }
 
-// TestDeleteDashboardLearning_WritesThroughSeamWithRebuiltBytes checks that the write seam receives the log path and the rebuilt bytes.
-func TestDeleteDashboardLearning_WritesThroughSeamWithRebuiltBytes(t *testing.T) {
+// TestDashboardDeleteLearning_WritesThroughSeamWithRebuiltBytes checks that the write seam receives the log path and the rebuilt bytes.
+func TestDashboardDeleteLearning_WritesThroughSeamWithRebuiltBytes(t *testing.T) {
 	root := t.TempDir()
 	path, _ := learnDelLog(t, root, learnDelOld, learnDelMid)
 	var gotPath string
@@ -314,8 +325,8 @@ func TestDeleteDashboardLearning_WritesThroughSeamWithRebuiltBytes(t *testing.T)
 		return nil
 	})
 
-	if _, err := DeleteDashboardLearning(root, "2026-10-08", "Pin schema hashes"); err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+	if _, err := DashboardDeleteLearning(root, "2026-10-08", "Pin schema hashes"); err != nil {
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if gotPath != path {
 		t.Errorf("write path = %q, want %q", gotPath, path)
@@ -326,8 +337,8 @@ func TestDeleteDashboardLearning_WritesThroughSeamWithRebuiltBytes(t *testing.T)
 }
 
 // A row of the snapshot must be deletable with its own date and heading.
-// TestDeleteDashboardLearning_DeletesEachSnapshotRow deletes each row that the snapshot lists, one row at a time.
-func TestDeleteDashboardLearning_DeletesEachSnapshotRow(t *testing.T) {
+// TestDashboardDeleteLearning_DeletesEachSnapshotRow deletes each row that the snapshot lists, one row at a time.
+func TestDashboardDeleteLearning_DeletesEachSnapshotRow(t *testing.T) {
 	root := t.TempDir()
 	path, _ := learnDelLog(t, root, learnDelOld, learnDelMid, learnDelNew)
 	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
@@ -337,7 +348,7 @@ func TestDeleteDashboardLearning_DeletesEachSnapshotRow(t *testing.T) {
 		t.Fatalf("snapshot rows = %d, want 2 (%+v)", len(rows), rows)
 	}
 	for _, row := range rows {
-		out, err := DeleteDashboardLearning(root, row.Date, row.Heading)
+		out, err := DashboardDeleteLearning(root, row.Date, row.Heading)
 		if err != nil {
 			t.Fatalf("delete %+v: %v", row, err)
 		}
@@ -351,7 +362,7 @@ func TestDeleteDashboardLearning_DeletesEachSnapshotRow(t *testing.T) {
 	learnDelWant(t, path, []byte(learnDelHeader+"\n"+learnDelOld))
 }
 
-// learningsRemove and DeleteDashboardLearning share learningsJoin, so the same
+// learningsRemove and DashboardDeleteLearning share learningsJoin, so the same
 // removal must give the same bytes.
 // TestLearningsJoin_RemoveAndDashboardDeleteAgree checks that learningsRemove and the dashboard delete give the same bytes.
 func TestLearningsJoin_RemoveAndDashboardDeleteAgree(t *testing.T) {
@@ -363,8 +374,8 @@ func TestLearningsJoin_RemoveAndDashboardDeleteAgree(t *testing.T) {
 	if _, err := learningsLog(viaTool, LearningsLogIn{Action: "remove", Indices: []int{2}}); err != nil {
 		t.Fatalf("learnings_log remove: %v", err)
 	}
-	if _, err := DeleteDashboardLearning(viaDash, "2026-10-09", "Use fsx for store writes"); err != nil {
-		t.Fatalf("DeleteDashboardLearning: %v", err)
+	if _, err := DashboardDeleteLearning(viaDash, "2026-10-09", "Use fsx for store writes"); err != nil {
+		t.Fatalf("DashboardDeleteLearning: %v", err)
 	}
 	if a, b := dashDelReadFile(t, toolPath), dashDelReadFile(t, dashPath); !bytes.Equal(a, b) {
 		t.Errorf("learnings_log remove gave %q, dashboard delete gave %q", a, b)
@@ -390,5 +401,24 @@ func TestLearningsJoin(t *testing.T) {
 				t.Errorf("learningsJoin = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// TestDashboardDeleteLearning_LogGoneBeforeReadIsAlreadyGone gives already
+// gone, not an InfraError, when the log goes away between the size check and
+// the read.
+func TestDashboardDeleteLearning_LogGoneBeforeReadIsAlreadyGone(t *testing.T) {
+	root := t.TempDir()
+	learnDelLog(t, root, learnDelMid)
+	dashDelSeam(t, &dashboardDeleteReadFile, func(string) ([]byte, error) {
+		return nil, &fs.PathError{Op: "open", Path: "log.md", Err: fs.ErrNotExist}
+	})
+
+	out, err := DashboardDeleteLearning(root, "2026-10-09", "Use fsx for store writes")
+	if err != nil {
+		t.Fatalf("DashboardDeleteLearning: %v", err)
+	}
+	if !out.AlreadyGone || out.Deleted {
+		t.Errorf("out = %+v, want AlreadyGone", out)
 	}
 }

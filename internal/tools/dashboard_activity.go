@@ -341,19 +341,32 @@ func DashboardLearningBody(root, date, heading string) (DashboardLearningBodyOut
 	}
 
 	_, entries := learningsSplitEntries(string(data))
-	for i := len(entries) - 1; i >= 0; i-- {
-		entry := strings.TrimSpace(entries[i])
-		if learningsDateRe.FindString(entry) != date || dashboardLearningHeading(entry) != heading {
-			continue
-		}
-		body := telemetry.Redact(entry)
-		return DashboardLearningBodyOut{
-			Found:     true,
-			Body:      telemetry.TruncateRunes(body, dashboardLearningBodyMax),
-			Truncated: utf8.RuneCountInString(body) > dashboardLearningBodyMax,
-		}, nil
+	at := dashboardFindLearning(entries, date, heading)
+	if at < 0 {
+		return DashboardLearningBodyOut{}, nil
 	}
-	return DashboardLearningBodyOut{}, nil
+	body := telemetry.Redact(strings.TrimSpace(entries[at]))
+	return DashboardLearningBodyOut{
+		Found:     true,
+		Body:      telemetry.TruncateRunes(body, dashboardLearningBodyMax),
+		Truncated: utf8.RuneCountInString(body) > dashboardLearningBodyMax,
+	}, nil
+}
+
+// dashboardFindLearning returns the index in entries of the newest entry
+// whose date and snapshot heading (dashboardLearningHeading) equal date and
+// heading, or -1 when none does. It scans from the last entry back, so the
+// newest of two entries with the same key wins. DashboardLearningBody and
+// DashboardDeleteLearning both use it, so the delete removes the entry that
+// the viewer shows.
+func dashboardFindLearning(entries []string, date, heading string) int {
+	for i := len(entries) - 1; i >= 0; i-- {
+		e := strings.TrimSpace(entries[i])
+		if learningsDateRe.FindString(e) == date && dashboardLearningHeading(e) == heading {
+			return i
+		}
+	}
+	return -1
 }
 
 // dashboardOpenDeferred returns root's open deferred issues as
@@ -414,11 +427,10 @@ func dashboardRecentRuns(root string) []DashboardRun {
 // come after ts also copies the plan fields and counts TotalMs from the plan
 // start to ts.
 func dashboardRunFromRecord(r history.RunRecord) DashboardRun {
+	end, okEnd := dashboardParseTime(r.Timestamp)
 	started := r.StartedAt
-	if started == "" && r.DurationMs > 0 {
-		if end, ok := dashboardParseTime(r.Timestamp); ok {
-			started = dashboardFormatTime(end.Add(-time.Duration(r.DurationMs) * time.Millisecond))
-		}
+	if started == "" && r.DurationMs > 0 && okEnd {
+		started = dashboardFormatTime(end.Add(-time.Duration(r.DurationMs) * time.Millisecond))
 	}
 	run := DashboardRun{
 		Kind:       r.Skill,
@@ -431,8 +443,7 @@ func dashboardRunFromRecord(r history.RunRecord) DashboardRun {
 	}
 	if r.Skill == "ship" && r.PlanStartedAt != "" {
 		planStart, okStart := dashboardParseTime(r.PlanStartedAt)
-		end, okEnd := dashboardParseTime(r.Timestamp)
-		if okStart && okEnd && !planStart.After(end) {
+		if okStart && okEnd && planWindowOK(planStart, end) {
 			run.PlanStartedAt = r.PlanStartedAt
 			run.PlanDurationMs = r.PlanDurationMs
 			run.TotalMs = end.Sub(planStart).Milliseconds()

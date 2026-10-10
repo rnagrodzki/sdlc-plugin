@@ -1,8 +1,10 @@
 # /dashboard
 
 Open, check, or stop the local sdlc dashboard: one web page that shows the
-pipelines of every registered repo, their progress, session activity, and
-issues. The full command name is `/sdlc:dashboard`.
+pipelines of every registered repo, their progress, session activity,
+issues, and preplan topic files (Preplans tab). The page can also delete one
+preplan topic file, deferred item, or learning for good. The full command
+name is `/sdlc:dashboard`.
 
 ## When to use
 
@@ -12,8 +14,11 @@ issues. The full command name is `/sdlc:dashboard`.
 - You want to shut the server down before your laptop sleeps or reboots.
 - You want to start the server without a browser popping up, for example
   when working over SSH.
-- You want to see your preplan topic files and their status.
-- You want to delete a preplan topic file, a deferred item, or a learning.
+- You want to see your preplan topic files and their status on the Preplans
+  tab.
+- You want to delete a preplan topic file (Preplans tab), or a deferred item
+  or a learning (Activity tab). The delete is permanent: the page has no
+  undo. See [Delete an item](../dashboard.md#delete-an-item).
 
 ## Syntax
 

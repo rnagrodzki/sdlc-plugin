@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -51,8 +52,9 @@ func e2eWriteFile(t *testing.T, path, data string) {
 func e2eSeedRepo(t *testing.T, root string) {
 	t.Helper()
 	preplanDir := filepath.Join(root, paths.DataDir, paths.PreplanSubdir)
-	e2eWriteFile(t, filepath.Join(preplanDir, e2ePreplanGone+".md"), "# Preplan: E2E topic\n\n**Status:** ready\n")
-	e2eWriteFile(t, filepath.Join(preplanDir, e2ePreplanKept+".md"), "# Preplan: E2E kept topic\n\n**Status:** draft\n")
+	// Statuses from the canonical list: "ready for plan" and "paused".
+	e2eWriteFile(t, filepath.Join(preplanDir, e2ePreplanGone+".md"), "# Preplan: E2E topic\n\n**Status:** "+tools.PreplanStatuses[1]+"\n")
+	e2eWriteFile(t, filepath.Join(preplanDir, e2ePreplanKept+".md"), "# Preplan: E2E kept topic\n\n**Status:** "+tools.PreplanStatuses[2]+"\n")
 
 	items := []history.DeferredIssue{
 		{ID: e2eDeferredGone, Created: "2026-10-09T08:00:00Z", Source: "review", Priority: history.PriorityHigh, Description: "E2E deferred item to delete", Status: history.StatusOpen},
@@ -126,7 +128,7 @@ func e2eHasLearning(repo tools.DashboardRepo, date, heading string) bool {
 
 // e2eDelete sends one delete request with the mutation headers and returns the
 // decoded 200 body.
-func e2eDelete(t *testing.T, h http.Handler, path string, body map[string]string) tools.DeleteOut {
+func e2eDelete(t *testing.T, h http.Handler, path string, body map[string]string) tools.DashboardDeleteOut {
 	t.Helper()
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -136,7 +138,7 @@ func e2eDelete(t *testing.T, h http.Handler, path string, body map[string]string
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST %s status = %d; want 200 (body %q)", path, rec.Code, rec.Body.String())
 	}
-	var out tools.DeleteOut
+	var out tools.DashboardDeleteOut
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("POST %s: decode body %q: %v", path, rec.Body.String(), err)
 	}
@@ -163,9 +165,9 @@ func TestE2E_DeleteEachKind(t *testing.T) {
 	o.Collect = func(roots []string, at time.Time) tools.DashboardSnapshot {
 		return tools.CollectDashboardSnapshot(roots, at, "test")
 	}
-	o.DeletePreplan = tools.DeletePreplanTopic
-	o.DeleteDeferred = tools.DeleteDeferredItem
-	o.DeleteLearning = tools.DeleteDashboardLearning
+	o.DeletePreplan = tools.DashboardDeletePreplan
+	o.DeleteDeferred = tools.DashboardDeleteDeferred
+	o.DeleteLearning = tools.DashboardDeleteLearning
 	h := newHandler(context.Background(), o, testToken, 4242, e2eFixedNow, func() {})
 
 	// Step 1: each item is in the first snapshot.
@@ -221,4 +223,59 @@ func TestE2E_DeleteEachKind(t *testing.T) {
 			t.Errorf("%s second delete: out = %+v; want deleted:false, alreadyGone:true and a message", k.name, out)
 		}
 	}
+}
+
+// TestE2E_DeleteRefusesEmptyKey sends each delete route a body with an empty
+// or bad key to the real delete functions. The route does not check the key,
+// so the 400 and its message come from the delete function, and no file
+// changes.
+func TestE2E_DeleteRefusesEmptyKey(t *testing.T) {
+	repoRoot := t.TempDir()
+	e2eSeedRepo(t, repoRoot)
+
+	o := testOptions(t, &fakeCollector{})
+	o.Roots = func(time.Time) ([]dashboard.Root, error) {
+		return []dashboard.Root{{Root: repoRoot, LastSeen: e2eFixedNow}}, nil
+	}
+	o.DeletePreplan = tools.DashboardDeletePreplan
+	o.DeleteDeferred = tools.DashboardDeleteDeferred
+	o.DeleteLearning = tools.DashboardDeleteLearning
+	h := newHandler(context.Background(), o, testToken, 4242, e2eFixedNow, func() {})
+
+	cases := []struct {
+		name, path, body, message string
+	}{
+		{"empty slug", "/api/preplan-delete", `{"repo":%q,"slug":""}`, "The slug field is required"},
+		{"slug with .md", "/api/preplan-delete", `{"repo":%q,"slug":"` + e2ePreplanGone + `.md"}`,
+			`The slug "` + e2ePreplanGone + `.md" ends in .md. Send the file name without .md`},
+		{"empty id", "/api/deferred-delete", `{"repo":%q,"id":""}`, "The id field is required"},
+		{"empty date", "/api/learning-delete", `{"repo":%q,"date":"","heading":"h"}`, "The date field is required"},
+		{"empty heading", "/api/learning-delete", `{"repo":%q,"date":"2026-10-10","heading":""}`, "The heading field is required"},
+		{"bad date", "/api/learning-delete", `{"repo":%q,"date":"10/10/2026","heading":"h"}`, `The date "10/10/2026" is not a YYYY-MM-DD date`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := postJSON(h, tc.path, fmt.Sprintf(tc.body, repoRoot), mutationHeader())
+			got := wantAPIError(t, rec, http.StatusBadRequest, codeBadRequest)
+			if got.Error.Message != tc.message {
+				t.Errorf("message = %q; want %q", got.Error.Message, tc.message)
+			}
+		})
+	}
+
+	after := e2eSnapshotRepo(t, repoRoot)
+	if !e2eHasPreplan(after, e2ePreplanGone) || !e2eHasDeferred(after, e2eDeferredGone) || !e2eHasLearning(after, e2eLearningDate, e2eLearningGone) {
+		t.Errorf("a refused delete changed a file: %+v", after)
+	}
+}
+
+// e2eSnapshotRepo collects the snapshot of root at e2eFixedNow without the
+// HTTP route.
+func e2eSnapshotRepo(t *testing.T, root string) tools.DashboardRepo {
+	t.Helper()
+	snap := tools.CollectDashboardSnapshot([]string{root}, e2eFixedNow, "test")
+	if len(snap.Repos) != 1 {
+		t.Fatalf("snapshot repos = %d; want 1", len(snap.Repos))
+	}
+	return snap.Repos[0]
 }

@@ -100,14 +100,14 @@ func TestDashboardOptions(t *testing.T) {
 	if o.LearningBody == nil || reflect.ValueOf(o.LearningBody).Pointer() != reflect.ValueOf(tools.DashboardLearningBody).Pointer() {
 		t.Error("LearningBody is not tools.DashboardLearningBody")
 	}
-	if o.DeletePreplan == nil || reflect.ValueOf(o.DeletePreplan).Pointer() != reflect.ValueOf(tools.DeletePreplanTopic).Pointer() {
-		t.Error("DeletePreplan is not tools.DeletePreplanTopic")
+	if o.DeletePreplan == nil || reflect.ValueOf(o.DeletePreplan).Pointer() != reflect.ValueOf(tools.DashboardDeletePreplan).Pointer() {
+		t.Error("DeletePreplan is not tools.DashboardDeletePreplan")
 	}
-	if o.DeleteDeferred == nil || reflect.ValueOf(o.DeleteDeferred).Pointer() != reflect.ValueOf(tools.DeleteDeferredItem).Pointer() {
-		t.Error("DeleteDeferred is not tools.DeleteDeferredItem")
+	if o.DeleteDeferred == nil || reflect.ValueOf(o.DeleteDeferred).Pointer() != reflect.ValueOf(tools.DashboardDeleteDeferred).Pointer() {
+		t.Error("DeleteDeferred is not tools.DashboardDeleteDeferred")
 	}
-	if o.DeleteLearning == nil || reflect.ValueOf(o.DeleteLearning).Pointer() != reflect.ValueOf(tools.DeleteDashboardLearning).Pointer() {
-		t.Error("DeleteLearning is not tools.DeleteDashboardLearning")
+	if o.DeleteLearning == nil || reflect.ValueOf(o.DeleteLearning).Pointer() != reflect.ValueOf(tools.DashboardDeleteLearning).Pointer() {
+		t.Error("DeleteLearning is not tools.DashboardDeleteLearning")
 	}
 	if o.ClearCache == nil {
 		t.Fatal("ClearCache is nil")

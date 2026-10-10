@@ -29,6 +29,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
@@ -165,7 +166,7 @@ type fakeActions struct {
 	delPreplan  [][2]string // root, slug
 	delDeferred [][2]string // root, id
 	delLearning [][3]string // root, date, heading
-	delOut      tools.DeleteOut
+	delOut      tools.DashboardDeleteOut
 	delErr      error
 }
 
@@ -190,21 +191,21 @@ func (f *fakeActions) learning(root, date, heading string) (tools.DashboardLearn
 }
 
 // deletePreplan is the DeletePreplan function of the fake: it records the call.
-func (f *fakeActions) deletePreplan(root, slug string) (tools.DeleteOut, error) {
+func (f *fakeActions) deletePreplan(root, slug string) (tools.DashboardDeleteOut, error) {
 	f.delPreplan = append(f.delPreplan, [2]string{root, slug})
 	return f.delOut, f.delErr
 }
 
 // deleteDeferred is the DeleteDeferred function of the fake: it records the
 // call.
-func (f *fakeActions) deleteDeferred(root, id string) (tools.DeleteOut, error) {
+func (f *fakeActions) deleteDeferred(root, id string) (tools.DashboardDeleteOut, error) {
 	f.delDeferred = append(f.delDeferred, [2]string{root, id})
 	return f.delOut, f.delErr
 }
 
 // deleteLearning is the DeleteLearning function of the fake: it records the
 // call.
-func (f *fakeActions) deleteLearning(root, date, heading string) (tools.DeleteOut, error) {
+func (f *fakeActions) deleteLearning(root, date, heading string) (tools.DashboardDeleteOut, error) {
 	f.delLearning = append(f.delLearning, [3]string{root, date, heading})
 	return f.delOut, f.delErr
 }
@@ -1085,10 +1086,10 @@ type deleteRoute struct {
 	path     string
 	okBody   string   // a body the route accepts
 	wantArgs []string // the arguments the delete function must get for okBody
-	// refused maps the name of a body with an empty field to that body. The
-	// route answers 400 with the message in refusedMessage and calls nothing.
-	refused        map[string]string
-	refusedMessage string
+	// emptyKey maps the name of a body with an empty key field to that body.
+	// The route does not check the key: it passes the body to the delete
+	// function, which is the one check (TestE2E_DeleteRefusesEmptyKey).
+	emptyKey map[string]string
 	// recorded returns the calls that the fake recorded for this route.
 	recorded func(f *fakeActions) [][]string
 	// bodyWithRepo returns okBody with the repo field set to repo.
@@ -1101,8 +1102,8 @@ type deleteRoute struct {
 func runDeleteRouteTests(t *testing.T, rt deleteRoute) {
 	t.Helper()
 	const readLog = "Read server.log, fix the named path, then try again."
-	okOut := tools.DeleteOut{Deleted: true, Message: "Deleted."}
-	goneOut := tools.DeleteOut{AlreadyGone: true, Message: "Already gone."}
+	okOut := tools.DashboardDeleteOut{Deleted: true, Message: "Deleted."}
+	goneOut := tools.DashboardDeleteOut{AlreadyGone: true, Message: "Already gone."}
 	wantCalls := [][]string{append([]string{"/repo/a"}, rt.wantArgs...)}
 
 	// post runs one request and returns the recorder, the fake and the log.
@@ -1118,7 +1119,7 @@ func runDeleteRouteTests(t *testing.T, rt deleteRoute) {
 		if rec.Code != 200 {
 			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
 		}
-		var got tools.DeleteOut
+		var got tools.DashboardDeleteOut
 		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 			t.Fatalf("body %q: %v", rec.Body.String(), err)
 		}
@@ -1142,7 +1143,7 @@ func runDeleteRouteTests(t *testing.T, rt deleteRoute) {
 		if rec.Code != 200 {
 			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
 		}
-		var got tools.DeleteOut
+		var got tools.DashboardDeleteOut
 		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 			t.Fatalf("body %q: %v", rec.Body.String(), err)
 		}
@@ -1219,16 +1220,16 @@ func runDeleteRouteTests(t *testing.T, rt deleteRoute) {
 		}
 	})
 
-	for name, body := range rt.refused {
-		t.Run(name, func(t *testing.T) {
-			f := &fakeActions{delOut: okOut}
+	for name, body := range rt.emptyKey {
+		t.Run(name+" is passed to the delete function", func(t *testing.T) {
+			f := &fakeActions{delErr: &mcpserver.DomainError{Msg: "key message", Suggestion: "key suggestion"}}
 			rec, _ := post(t, f, body)
 			got := wantAPIError(t, rec, 400, codeBadRequest)
-			if got.Error.Message != rt.refusedMessage {
-				t.Errorf("message = %q; want %q", got.Error.Message, rt.refusedMessage)
+			if got.Error.Message != "key message" {
+				t.Errorf("message = %q; want the message of the delete function", got.Error.Message)
 			}
-			if f.calls() != 0 {
-				t.Errorf("a refused body made %d calls; want 0", f.calls())
+			if len(rt.recorded(f)) != 1 {
+				t.Errorf("calls = %v; want one call", rt.recorded(f))
 			}
 		})
 	}
@@ -1327,12 +1328,11 @@ func TestHandler_PreplanDelete(t *testing.T) {
 		path:     "/api/preplan-delete",
 		okBody:   `{"repo":"/repo/a","slug":"auth-flow"}`,
 		wantArgs: []string{"auth-flow"},
-		refused: map[string]string{
+		emptyKey: map[string]string{
 			"slug missing": `{"repo":"/repo/a"}`,
 			"slug empty":   `{"repo":"/repo/a","slug":""}`,
 		},
-		refusedMessage: "The slug field is required",
-		recorded:       func(f *fakeActions) [][]string { return pairCalls(f.delPreplan) },
+		recorded: func(f *fakeActions) [][]string { return pairCalls(f.delPreplan) },
 		bodyWithRepo: func(repo string) string {
 			return fmt.Sprintf(`{"repo":%q,"slug":"auth-flow"}`, repo)
 		},
@@ -1346,12 +1346,11 @@ func TestHandler_DeferredDelete(t *testing.T) {
 		path:     "/api/deferred-delete",
 		okBody:   `{"repo":"/repo/a","id":"review-deferred-a1"}`,
 		wantArgs: []string{"review-deferred-a1"},
-		refused: map[string]string{
+		emptyKey: map[string]string{
 			"id missing": `{"repo":"/repo/a"}`,
 			"id empty":   `{"repo":"/repo/a","id":""}`,
 		},
-		refusedMessage: "The id field is required",
-		recorded:       func(f *fakeActions) [][]string { return pairCalls(f.delDeferred) },
+		recorded: func(f *fakeActions) [][]string { return pairCalls(f.delDeferred) },
 		bodyWithRepo: func(repo string) string {
 			return fmt.Sprintf(`{"repo":%q,"id":"review-deferred-a1"}`, repo)
 		},
@@ -1365,13 +1364,12 @@ func TestHandler_LearningDelete(t *testing.T) {
 		path:     "/api/learning-delete",
 		okBody:   `{"repo":"/repo/a","date":"2026-10-09","heading":"plan: x"}`,
 		wantArgs: []string{"2026-10-09", "plan: x"},
-		refused: map[string]string{
+		emptyKey: map[string]string{
 			"date missing":    `{"repo":"/repo/a","heading":"h"}`,
 			"date empty":      `{"repo":"/repo/a","date":"","heading":"h"}`,
 			"heading missing": `{"repo":"/repo/a","date":"2026-10-09"}`,
 			"heading empty":   `{"repo":"/repo/a","date":"2026-10-09","heading":""}`,
 		},
-		refusedMessage: "The date and heading fields are required",
 		recorded: func(f *fakeActions) [][]string {
 			var out [][]string
 			for _, c := range f.delLearning {
@@ -1389,7 +1387,7 @@ func TestHandler_LearningDelete(t *testing.T) {
 // TestHandler_DeleteDecodesWireShape pins that the delete routes decode the
 // JSON field names of the contract: slug, id, date and heading.
 func TestHandler_DeleteDecodesWireShape(t *testing.T) {
-	f := &fakeActions{delOut: tools.DeleteOut{Deleted: true, Message: "ok"}}
+	f := &fakeActions{delOut: tools.DashboardDeleteOut{Deleted: true, Message: "ok"}}
 	h := newActionHandler(t, f)
 	for _, c := range []struct{ path, body string }{
 		{"/api/preplan-delete", `{"repo":"/repo/a","slug":"auth-flow","extra":1}`},
@@ -2144,26 +2142,62 @@ func TestStaticIndex_IdsAndScripts(t *testing.T) {
 	}
 }
 
-// preplanStatusesJSRe finds the PREPLAN_STATUSES list in view.js, and
-// jsQuotedRe finds each quoted status inside it.
+// preplanStatusesJSRe finds the PREPLAN_STATUSES list in view.js,
+// deferredPrioritiesJSRe finds the DEFERRED_PRIORITIES list, and jsQuotedRe
+// finds each quoted value inside a list.
 var (
-	preplanStatusesJSRe = regexp.MustCompile(`var PREPLAN_STATUSES = \[([^\]]*)\];`)
-	jsQuotedRe          = regexp.MustCompile(`'([^']*)'`)
+	preplanStatusesJSRe    = regexp.MustCompile(`var PREPLAN_STATUSES = \[([^\]]*)\];`)
+	deferredPrioritiesJSRe = regexp.MustCompile(`var DEFERRED_PRIORITIES = \[([^\]]*)\];`)
+	jsQuotedRe             = regexp.MustCompile(`'([^']*)'`)
 )
 
-// preplanStatusesFromJS returns the values of the PREPLAN_STATUSES list in
-// the text of view.js, in source order.
-func preplanStatusesFromJS(t *testing.T, js string) []string {
+// jsListFromJS returns the quoted values of the list that re finds in the
+// text of view.js, in source order. name is the list name for the failure.
+func jsListFromJS(t *testing.T, js string, re *regexp.Regexp, name string) []string {
 	t.Helper()
-	m := preplanStatusesJSRe.FindStringSubmatch(js)
+	m := re.FindStringSubmatch(js)
 	if m == nil {
-		t.Fatal("view.js has no `var PREPLAN_STATUSES = [...];` line")
+		t.Fatalf("view.js has no `var %s = [...];` line", name)
 	}
 	out := []string{}
 	for _, q := range jsQuotedRe.FindAllStringSubmatch(m[1], -1) {
 		out = append(out, q[1])
 	}
 	return out
+}
+
+// preplanStatusesFromJS returns the values of the PREPLAN_STATUSES list in
+// the text of view.js, in source order.
+func preplanStatusesFromJS(t *testing.T, js string) []string {
+	t.Helper()
+	return jsListFromJS(t, js, preplanStatusesJSRe, "PREPLAN_STATUSES")
+}
+
+// TestDeferredPriorityParity checks that DEFERRED_PRIORITIES in view.js
+// equals the deferred priorities of the history package in value and order,
+// and that the check sees a priority that is changed, removed or added. The
+// chip counter of the page counts only the priorities in the list.
+func TestDeferredPriorityParity(t *testing.T) {
+	js := staticFile(t, "view.js")
+	want := []string{history.PriorityHigh, history.PriorityMedium, history.PriorityLow}
+	if got := jsListFromJS(t, js, deferredPrioritiesJSRe, "DEFERRED_PRIORITIES"); !reflect.DeepEqual(got, want) {
+		t.Errorf("view.js DEFERRED_PRIORITIES = %q, history priorities = %q", got, want)
+	}
+
+	line := deferredPrioritiesJSRe.FindString(js)
+	for name, drifted := range map[string]string{
+		"priority renamed": strings.Replace(js, line, strings.Replace(line, "'low'", "'minor'", 1), 1),
+		"priority removed": strings.Replace(js, line, strings.Replace(line, ", 'low'", "", 1), 1),
+		"priority added":   strings.Replace(js, line, strings.Replace(line, "'low'", "'low', 'urgent'", 1), 1),
+		"order changed":    strings.Replace(js, line, strings.Replace(line, "'high', 'medium'", "'medium', 'high'", 1), 1),
+	} {
+		if drifted == js {
+			t.Fatalf("%s: the drift edit changed nothing; update the test to the view.js line", name)
+		}
+		if got := jsListFromJS(t, drifted, deferredPrioritiesJSRe, "DEFERRED_PRIORITIES"); reflect.DeepEqual(got, want) {
+			t.Errorf("%s: the parity check did not see the change", name)
+		}
+	}
 }
 
 // TestPreplanStatusParity checks that PREPLAN_STATUSES in view.js equals

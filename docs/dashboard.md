@@ -33,11 +33,17 @@ For each registered repo, the page shows:
   `failed`), a done/total progress count, a track of its steps, and any
   issues. A chip after the branch name shows the run duration. The time of
   a running pipeline increases each second. Each ship step and execute wave
-  shows its duration under its name. The plan step of a ship pipeline shows
-  the plan time when the plan run is linked and has both a start and an end.
-  A ship pipeline then counts its run duration from the plan start. With no
-  linked plan, the duration
-  counts from the ship start, and its tooltip says so. Standalone plan and
+  shows its duration under its name. A ship pipeline has plan times when a
+  plan run is linked: from the ship state `linkedPlan`, else from the joined
+  plan row of `runs.jsonl` (see
+  [How runs join a ship block](#how-runs-join-a-ship-block)). The rules:
+  - **Start and end** — the plan step shows the plan time, and the run
+    duration counts from the plan start.
+  - **Start only** (no end, an end that is not RFC 3339, or an end before the
+    start) — the plan step shows no plan time, but the run duration still
+    counts from the plan start.
+  - **No linked plan, or no valid start** — the duration counts from the
+    ship start, and its tooltip says so. Standalone plan and
   review steps show no duration. Each step with detail is a tile: waves and tasks, review
   dimensions as cards in balanced columns, review findings, plan
   guardrails, plan explorers, plan review rounds, the fixes of the
@@ -56,8 +62,13 @@ For each registered repo, the page shows:
   waiting pipelines in the repos of the repo filter. A
   `completed` or `failed` pipeline drops off the page 24 hours after its
   last update. Ship and execute pipelines also carry the worktree path they
-  ran in. A read problem of a repo that does not block an archive shows
-  before the pipeline blocks as the line "Warning for `<repo>`: `<text>`".
+  ran in. Some read problems of a repo are warnings: an unread preplan
+  folder or topic file, more than 100 topic files, and an unread
+  `runs.jsonl` or execute state for plan times. A warning shows before the
+  pipeline blocks as the line "Warning for `<repo>`: `<text>`", and the
+  archive of the runs of the repo still works. Any other read problem of a
+  repo is `repos[].error`, which blocks the archive of every run of the repo
+  (see [Archive a run](#archive-a-run)).
   The Preplans tab shows the same lines. See `repos[].warnings` in the
   [Snapshot contract](#snapshot-contract).
 - **Session** — a tile with the Claude Code session of the pipeline, else the
@@ -291,8 +302,10 @@ Details of each class:
 - **`server-log`** — The running server keeps the log open for append, so a
   new line goes to the new end of the file.
 
-Clear keeps these data: `history/`, `learnings/`, `timings.json`, `runs/`,
-`run-archive/`, the live evidence files, and `~/.sdlc-cache/bin`.
+Clear keeps these data: `history/` (with `deferred.json`), `learnings/` (with
+`log.md`), `preplan/`, `timings.json`, `runs/`, `run-archive/`, the live
+evidence files, and `~/.sdlc-cache/bin`. Only [Delete an item](#delete-an-item)
+changes `deferred.json`, `log.md`, and the topic files of `preplan/`.
 
 The button clears every repo that the page lists, one after another. The repo
 filter does not change this. `evidence-rotations` and `orphan-reports` belong
@@ -324,7 +337,9 @@ with the code `CLEAR_FAILED`.
 
 A bin icon deletes one item for good. Three kinds of row have it: a topic
 file on the Preplans tab, and a deferred item and a learning on the Activity
-tab. A row with an empty key has no bin icon. The page has no undo and no
+tab. A row with an empty key has no bin icon: a topic file row with an
+empty `slug`, a deferred row with an empty `id`, and a learning row with an
+empty `date` or `heading`. The page has no undo and no
 trash. Use [Archive a run](#archive-a-run) for a pipeline run.
 
 | Row | Bin tooltip | Delete removes | The page sends | The match |
@@ -359,23 +374,34 @@ session can still use this topic file." Any status can be deleted. The
 
 What Delete does:
 
+- **Key check** — The delete function of the server checks the key. The
+  route does not. An empty `slug`, `id`, `date`, or `heading` gets
+  `BAD_REQUEST`, and the message names the empty field.
 - **Preplan** — The slug is a file name without `.md`. It has no path
-  separator, and it is not `.` or `..`. A slug that breaks these rules gets
-  `BAD_REQUEST`. A folder in the place of the topic file gets `BAD_REQUEST` too: the server
+  separator, it is not `.` or `..`, and it does not end in `.md`. A slug that
+  breaks these rules gets `BAD_REQUEST`, and the message names the slug and
+  the rule. A folder in the place of the topic file gets `BAD_REQUEST` too: the server
   does not remove a folder. A symbolic link is removed as a link, and its
   target stays.
 - **Deferred item and learning** — The server reads the whole store file and
   writes it again without the item. It writes a temp file first. Then it
   renames the temp file over the store file. A reader sees the old file or the
   new file, never a half-written file. The new file has the mode 0600.
-- **Learning** — A learning has no id. The `heading` is the text that the
-  snapshot sends. When two entries have the same date and heading, Delete
-  removes the newest one.
+- **Learning** — A learning has no id. The `date` must be `YYYY-MM-DD`, else
+  the answer is `BAD_REQUEST`. The `heading` is the text that the snapshot
+  sends. When two entries have the same date and heading, Delete removes the
+  newest one. The viewer opens the same entry, because both use one finder.
+- **Size limit** — A `deferred.json` or `log.md` of more than 8 MiB gets
+  `DELETE_FAILED`. The message names the file size and the limit, and the
+  file keeps its bytes.
 
 The server answers `200` with `{"deleted","alreadyGone","message"}`.
 `deleted` is `true` when this request removed the item. `alreadyGone` is
 `true` when no item matched, for example because another session removed it
-first. This is a success, not an error. The row leaves the page with the next
+first. This is a success, not an error. The `message` tells the cases apart:
+an empty or absent store file ("The deferred store has no items. ..."), or a
+store with no matching item ("No deferred item has the id ..."). A file that
+goes away between the size check and the read also gives `alreadyGone`. The row leaves the page with the next
 snapshot.
 
 An error keeps the row. The dialog shows the message and the suggestion of
@@ -448,13 +474,16 @@ port = 7385         # 1024-65535, loopback only
 | `<repo>/.sdlc-v2/evidence/*.jsonl.1` | hook, tool | rotated evidence files. Clear cache class `evidence-rotations` deletes the old ones |
 | `$TMPDIR/sdlc-*` (else `/tmp/sdlc-*`) | tool | temp folders of tools. Clear cache class `temp-dirs` deletes the old ones |
 | `<repo>/.sdlc-v2/reports/*` | ship, execute | run reports. Clear cache class `orphan-reports` deletes the ones that no run owns |
+| `<repo>/.sdlc-v2/history/deferred.json` | ship_state `defer` and `deferred_add`; server | deferred items. The server rewrites it without one item (see [Delete an item](#delete-an-item)) |
+| `<repo>/.sdlc-v2/learnings/log.md` | `learnings_log`; server | learning entries. The server rewrites it without one entry (see [Delete an item](#delete-an-item)) |
+| `<repo>/.sdlc-v2/preplan/<slug>.md` | plan_support `preplan_context`, preplan skill; server | preplan topic files. The server deletes one file (see [Delete an item](#delete-an-item)) |
 
 `~/.sdlc-cache` is `paths.CacheDir()`: `$SDLC_CACHE_DIR` when set, else the
 user's home directory, shared with `sdlc-launcher.sh`. `dashboard.Dir()`
 joins `dashboard` onto that root for the first three paths above. The last
-four paths do not live under `~/.sdlc-cache/dashboard/`. See
-[Archive a run](#archive-a-run) and [Clear cache files](#clear-cache-files)
-for the rules of the last four paths.
+seven paths do not live under `~/.sdlc-cache/dashboard/`. See
+[Archive a run](#archive-a-run), [Clear cache files](#clear-cache-files), and
+[Delete an item](#delete-an-item) for the rules of the last seven paths.
 
 - **`server.json`** is written once the listener binds and is removed when
   the server stops — but only by the process whose own PID still matches
@@ -653,12 +682,12 @@ collector reads the data, and the tool action that writes it.
 | `sessionId` | `sessionId` of the ship or execute state; `""` when unknown. A plan state is created with no session ID. A review block has none. | ship_prepare or ship_state `init`; execute_state `init` |
 | `attention` | The newest open wait record of the pipeline session and branch. It holds `kind` (`question` or `permission`), `askedAt`, `header`, and `text`. Only a `running` pipeline with a `sessionId` has it. Absent when no wait is open. | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
 | `commitWaves` | `commitWaves` of the execute state; an absent key counts as `true`. A ship block gets it from its joined execute run. It is absent on a plan block, a review block, and a ship block with no joined execute run. | execute_state `init` |
-| `repos[].history` | The 50 newest rows of `.sdlc-v2/history/runs.jsonl`, newest first. A row gives `kind` (the row's `skill`), `branch`, `outcome`, `startedAt`, `endedAt`, `durationMs`, and `totalMs`. A ship row with a linked plan also gives `planStartedAt` and `planDurationMs` (from `plan_started_at`, `plan_duration_ms`). `totalMs` is `ts` minus `plan_started_at` for such a row, else `durationMs`. A `plan_started_at` that does not parse or is after `ts` counts as no linked plan. `0` means no value. `startedAt` is `started_at`, else `ts` minus `duration_ms`. A line that does not parse is skipped. | ship_state `history_record` (outcome `success`, `failure`, or `partial`); ship_state `fail` (the first `fail` of a run appends a `failure` row); plan_mark `done` (a `plan` row with outcome `done`) |
+| `repos[].history` | The 50 newest rows of `.sdlc-v2/history/runs.jsonl`, newest first. A row gives `kind` (the row's `skill`), `branch`, `outcome`, `startedAt`, `endedAt`, `durationMs`, and `totalMs`. A ship row with a linked plan also gives `planStartedAt` and `planDurationMs` (from `plan_started_at`, `plan_duration_ms`). `totalMs` is `ts` minus `plan_started_at` for such a row, else `durationMs`. A `plan_started_at` that does not parse or is after `ts` counts as no linked plan. `0` means no value. `startedAt` is `started_at`, else `ts` minus `duration_ms`. A line that does not parse is skipped. | ship_state `history_record` (outcome `success`, `failure`, or `partial`); ship_state `fail` (the first `fail` of a run appends a `failure` row); plan_mark `done` (a `plan` row with outcome `done`). `history_record` with `detail.skill` `ship` and `detail.branch`, and `fail`, copy `plan_file`, `plan_started_at`, and `plan_duration_ms` from the ship state `linkedPlan` |
 | `repos[].sessions[].commandGroups` | One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
 | `repos[].deferred[]` | The open items of `.sdlc-v2/history/deferred.json`, high priority first, then oldest first. Each item has `id`, `priority`, `description`, `created`, `source`, `severity`, `file`, `line`, and `reason`. A value that the record lacks is `""`, or `0` for `line`, never `null`. | ship_state `defer` and `deferred_add`; execute_state `issue-draft` |
 | `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times. `[]` when none, never `null`. | Collector, derived |
 | `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, and `updatedAt` (the change time of the file). The collector reads the first 4 KiB of each file. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `[]` when none, never `null`. | plan_support `preplan_context` (skeleton), then the preplan skill |
-| `pipelines[].planStartedAt` | Ship blocks only: `linkedPlan.startedAt` of the ship state, else the start of the joined plan row. Absent when no plan is linked. | ship_state `complete-step` of `execute` |
+| `pipelines[].planStartedAt` | Ship blocks only: `linkedPlan.startedAt` of the ship state, else the `started_at` of the joined plan row (see [How runs join a ship block](#how-runs-join-a-ship-block)). Absent when no plan is linked. | ship_state `complete-step` of `execute` (`linkedPlan`); plan_mark `done` (the plan row) |
 
 ### Which step carries which detail
 
@@ -679,7 +708,9 @@ collector reads the data, and the tool action that writes it.
   and `maxRounds`. When the ship state holds `linkedPlan`, the `plan` step
   gets `startedAt` and `completedAt` from it, and the step is added when it
   is absent. A ship run with no `linkedPlan` gets the plan times from the
-  plan row of `runs.jsonl` that `ship_report` also reads. When the ship state holds a valid fix record, the
+  joined plan row of `runs.jsonl` (see
+  [How runs join a ship block](#how-runs-join-a-ship-block)), the same row
+  that the ship_state `report` action reads (`shipPlanTimingFor`). When the ship state holds a valid fix record, the
   `received-review` step has `fixes`. On a completed run, the step shows
   completed. A row keeps its last status. A `queued` or `fixing` row on a
   completed run means that the fix pass stopped.
@@ -704,6 +735,16 @@ collector reads the data, and the tool action that writes it.
 - The issues of a joined execute run go to the ship block with `execute:`
   before each `ref`. The issues of a joined review run go with their `ref`
   unchanged.
+- A plan row of `runs.jsonl` joins a ship run only when the ship state has no
+  `linkedPlan` with a valid start. The ship state names its `branch`. The
+  newest execute state of that branch names the plan file: its `planPath`,
+  joined to its worktree when it is relative, and cleaned. Of the newest 100
+  rows of `runs.jsonl`, the plan rows (`skill` `plan`) whose cleaned
+  `plan_file` equals that path match, and the newest match wins. There is no
+  time window. A ship state with no branch, a branch with no execute state, an
+  execute state with no `planPath`, and no matching row give no plan times.
+  The row gives `started_at` as the plan start and `last_modified_at` as the
+  plan end.
 
 A state file written before a field existed does not fail the snapshot. The
 page shows less. An execute state without `plannedTasks` shows task ids
@@ -713,6 +754,17 @@ joined plan row. A ship state without
 `planReviewRounds` shows explorers only.
 
 ### Lifetime of the source data
+
+- **Ship stores the plan times at the execute step.** `complete-step` (or
+  legacy `complete`) of `execute` copies the start and the end of the linked
+  plan run into the ship state key `linkedPlan`. The key survives
+  `cleanup-pipeline`, which deletes the plan state, and the garbage
+  collection of plan states. The history rows of the run copy the plan fields
+  from it.
+- **The plan row join is a fallback for old runs.** A ship run that
+  completed its execute step before `linkedPlan` existed has no key. Its plan
+  times come from the joined plan row of `runs.jsonl` while that row is in
+  the newest 100 rows.
 
 - **Review ledgers stay after the review.** The review skill does not remove
   its ledger folder, because the dashboard reads it to show the review

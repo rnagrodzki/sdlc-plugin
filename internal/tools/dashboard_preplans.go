@@ -54,7 +54,7 @@ func dashboardPreplans(root string) (list []DashboardPreplan, warnings []string)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
-			warnings = append(warnings, fmt.Sprintf("preplan folder not read: %v", err))
+			warnings = append(warnings, fmt.Sprintf("Preplan folder not read: %v", err))
 		}
 		return list, warnings
 	}
@@ -68,10 +68,13 @@ func dashboardPreplans(root string) (list []DashboardPreplan, warnings []string)
 		slug := strings.TrimSuffix(name, ".md")
 		full := filepath.Join(dir, name)
 		// Stat follows a link, so a link to a file counts as that file and a
-		// dangling link gives the file error.
+		// dangling link gives the file error. A file that is gone since
+		// ReadDir (a delete during the snapshot) is skipped with no warning.
 		fi, err := os.Stat(full)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("preplan %s not read: %v", slug, err))
+			if !dashboardPreplanGone(full, err) {
+				warnings = append(warnings, fmt.Sprintf("Preplan %s not read: %v", slug, err))
+			}
 			continue
 		}
 		// A sub-folder is skipped. So is a pipe or a device: opening one
@@ -97,7 +100,9 @@ func dashboardPreplans(root string) (list []DashboardPreplan, warnings []string)
 	for _, f := range files {
 		head, err := dashboardPreplanHead(f.path)
 		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("preplan %s not read: %v", f.slug, err))
+			if !dashboardPreplanGone(f.path, err) {
+				warnings = append(warnings, fmt.Sprintf("Preplan %s not read: %v", f.slug, err))
+			}
 			continue
 		}
 		topic := f.slug
@@ -122,6 +127,18 @@ func dashboardPreplans(root string) (list []DashboardPreplan, warnings []string)
 		warnings = append(warnings, fmt.Sprintf("%d older preplan topic files not shown", older))
 	}
 	return list, warnings
+}
+
+// dashboardPreplanGone reports whether err, from a Stat or an open of the
+// topic file at p, means that the file itself is gone: err is
+// fs.ErrNotExist and an Lstat of p finds nothing either. A dangling link
+// gives false: its Lstat finds the link, so it keeps its warning.
+func dashboardPreplanGone(p string, err error) bool {
+	if !errors.Is(err, fs.ErrNotExist) {
+		return false
+	}
+	_, lerr := os.Lstat(p)
+	return errors.Is(lerr, fs.ErrNotExist)
 }
 
 // dashboardPreplanHead returns the first dashboardPreplanHeadMax bytes of the

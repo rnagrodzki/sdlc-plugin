@@ -349,10 +349,52 @@ func TestDashboardPlanTimes_RunsJSONLFolderGivesOneWarning(t *testing.T) {
 	if repo.Error != "" {
 		t.Errorf("repo.Error = %q, want none", repo.Error)
 	}
-	if len(repo.Warnings) != 1 || !strings.HasPrefix(repo.Warnings[0], "plan times of ship run "+dashJoinShipID+" not read: ") {
+	if len(repo.Warnings) != 1 || !strings.HasPrefix(repo.Warnings[0], "Plan times of ship run "+dashJoinShipID+" not read: ") {
 		t.Fatalf("warnings = %v, want one plan times warning", repo.Warnings)
 	}
 	dashPlanNoTimes(t, ship)
+}
+
+// TestDashboardPlanTimes_EmptyBranchSkipsTheJoin checks that a ship state
+// with no branch and no linkedPlan reads no execute state and no plan row: it
+// gets no plan station and no warning, even when the join data of feat/x would
+// match.
+func TestDashboardPlanTimes_EmptyBranchSkipsTheJoin(t *testing.T) {
+	root := dashRoot(t)
+	dashPlanExecute(t, root)
+	dashPlanRow(t, root, dashPlanStart, dashPlanEnd)
+	repo, ship := dashPlanShip(t, root, func(d map[string]any) { d["branch"] = "" })
+
+	if len(repo.Warnings) != 0 {
+		t.Errorf("warnings = %v, want none", repo.Warnings)
+	}
+	dashPlanNoTimes(t, ship)
+}
+
+// TestDashboardPlanTimes_WarningOrder pins the order of repo.Warnings when two
+// sources warn: the plan times warning of the ship run comes first, then the
+// preplan warning.
+func TestDashboardPlanTimes_WarningOrder(t *testing.T) {
+	root := dashRoot(t)
+	dashPlanExecute(t, root)
+	if err := os.MkdirAll(history.NewFileWriter(historyDir(root)).RunsPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file in the place of the preplan folder: ReadDir fails.
+	if err := os.WriteFile(filepath.Join(root, paths.DataDir, paths.PreplanSubdir), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repo, _ := dashPlanShip(t, root, nil)
+
+	if len(repo.Warnings) != 2 {
+		t.Fatalf("warnings = %v, want two", repo.Warnings)
+	}
+	if !strings.HasPrefix(repo.Warnings[0], "Plan times of ship run "+dashJoinShipID+" not read: ") {
+		t.Errorf("warnings[0] = %q, want the plan times warning first", repo.Warnings[0])
+	}
+	if !strings.HasPrefix(repo.Warnings[1], "Preplan folder not read: ") {
+		t.Errorf("warnings[1] = %q, want the preplan warning second", repo.Warnings[1])
+	}
 }
 
 // TestDashboardPlanTimes_CorruptExecuteStateGivesOneWarning checks that a corrupt execute state file gives one repo warning and leaves repo.Error empty.
@@ -370,7 +412,7 @@ func TestDashboardPlanTimes_CorruptExecuteStateGivesOneWarning(t *testing.T) {
 	if repo.Error != "" {
 		t.Errorf("repo.Error = %q, want none", repo.Error)
 	}
-	if len(repo.Warnings) != 1 || !strings.HasPrefix(repo.Warnings[0], "plan times of ship run "+dashJoinShipID+" not read: ") {
+	if len(repo.Warnings) != 1 || !strings.HasPrefix(repo.Warnings[0], "Plan times of ship run "+dashJoinShipID+" not read: ") {
 		t.Fatalf("warnings = %v, want one plan times warning", repo.Warnings)
 	}
 	dashPlanNoTimes(t, ship)

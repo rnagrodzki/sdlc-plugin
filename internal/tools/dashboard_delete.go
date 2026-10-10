@@ -15,23 +15,27 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
-// DeleteOut is the 200 body of each delete request.
-type DeleteOut struct {
+// DashboardDeleteOut is the 200 body of each delete request.
+type DashboardDeleteOut struct {
 	Deleted     bool   `json:"deleted"`     // true when this call removed the item
 	AlreadyGone bool   `json:"alreadyGone"` // true when no item matched
 	Message     string `json:"message"`     // one sentence for the dialog
 }
 
-// Seams for injected write failures. Tests replace them to force a remove
-// error or a write error without a broken filesystem.
+// Seams for injected read and write failures. Tests replace them to force a
+// remove error, a read error or a write error without a broken filesystem.
 var (
 	dashboardDeleteRemove    = os.Remove
+	dashboardDeleteReadFile  = os.ReadFile
 	dashboardDeleteWriteJSON = fsx.AtomicWriteJSON
 )
 
 // dashboardDeleteReadMax is the size limit, in bytes, of a store file that a
 // dashboard delete reads. A bigger file is refused before it is read.
 const dashboardDeleteReadMax = 8 << 20
+
+// dashboardDeleteReadMaxText is dashboardDeleteReadMax for a message.
+const dashboardDeleteReadMaxText = "8 MiB"
 
 // Suggestion texts of the delete errors, one for each condition.
 const (
@@ -41,44 +45,102 @@ const (
 	dashboardDeletePreplanWriteSuggestion  = "Check write permission on .sdlc-v2/preplan/ and retry."
 	dashboardDeleteDeferredReadSuggestion  = "Check read permission on .sdlc-v2/history/deferred.json and retry."
 	dashboardDeleteDeferredParseSuggestion = "Fix the JSON syntax in .sdlc-v2/history/deferred.json by hand, then retry."
-	dashboardDeleteDeferredLargeSuggestion = "Remove resolved items from .sdlc-v2/history/deferred.json by hand, then retry."
+	dashboardDeleteDeferredLargeSuggestion = "Remove resolved items from .sdlc-v2/history/deferred.json by hand until it is smaller than " + dashboardDeleteReadMaxText + ", then retry."
 	dashboardDeleteDeferredWriteSuggestion = "Check write permission on .sdlc-v2/history/ and free disk space, then retry."
-	dashboardDeletePreplanSlugMessage      = "The slug field must be a preplan file name"
 	dashboardDeleteDeferredIDMessage       = "The id field is required"
-	dashboardDeleteDeferredTooLargeMessage = "deferred.json is too large to edit from the dashboard"
 )
 
-// DeletePreplanTopic deletes the topic file <slug>.md in the preplan folder
-// of root. Any status can be deleted. The slug is a file name without the
-// ".md" suffix: it has no path separator and is not "." or "..". A topic
-// file that is already gone gives AlreadyGone and no error. A symlink is
-// removed as a link: its target stays.
-func DeletePreplanTopic(root, slug string) (DeleteOut, error) {
-	if slug == "" || slug != filepath.Base(slug) || slug == "." || slug == ".." {
-		return DeleteOut{}, &mcpserver.DomainError{
-			Msg:        dashboardDeletePreplanSlugMessage,
-			Suggestion: dashboardDeleteReloadSuggestion,
+// dashboardReadCapped reads the store file at path for a dashboard delete.
+// name names the file in a message, in lowercase, for example "the
+// learnings log". missing is true when the file does not
+// exist, also when it goes away between the size check and the read. A file
+// of more than dashboardDeleteReadMax bytes gives a DataError that names the
+// size and the limit, and the file is not read. Any other Stat or read
+// failure gives an InfraError with readSuggestion.
+func dashboardReadCapped(path, name, largeSuggestion, readSuggestion string) (data []byte, missing bool, err error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, true, nil
 		}
+		return nil, false, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("Could not read %s: %s", name, err),
+			Suggestion: readSuggestion,
+			Cause:      err,
+		}
+	}
+	if info.Size() > dashboardDeleteReadMax {
+		return nil, false, &mcpserver.DataError{
+			Msg: fmt.Sprintf("%s is %d bytes, more than the %d bytes (%s) that a dashboard delete reads",
+				strings.ToUpper(name[:1])+name[1:], info.Size(), dashboardDeleteReadMax, dashboardDeleteReadMaxText),
+			Suggestion: largeSuggestion,
+		}
+	}
+	data, err = dashboardDeleteReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, true, nil
+		}
+		return nil, false, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("Could not read %s: %s", name, err),
+			Suggestion: readSuggestion,
+			Cause:      err,
+		}
+	}
+	return data, false, nil
+}
+
+// dashboardPreplanSlugError returns the DomainError for a slug that is not a
+// preplan file name without the ".md" suffix, or nil for a good slug. The
+// message names the slug and the rule that it breaks.
+func dashboardPreplanSlugError(slug string) error {
+	var msg string
+	switch {
+	case slug == "":
+		msg = "The slug field is required"
+	case slug == "." || slug == "..":
+		msg = fmt.Sprintf("The slug %q is not a file name", slug)
+	case slug != filepath.Base(slug) || strings.ContainsAny(slug, `/\`):
+		msg = fmt.Sprintf("The slug %q has a path separator. A slug is a file name in .sdlc-v2/preplan/", slug)
+	case strings.HasSuffix(slug, ".md"):
+		msg = fmt.Sprintf("The slug %q ends in .md. Send the file name without .md", slug)
+	default:
+		return nil
+	}
+	return &mcpserver.DomainError{Msg: msg, Suggestion: dashboardDeleteReloadSuggestion}
+}
+
+// DashboardDeletePreplan deletes the topic file <slug>.md in the preplan folder
+// of root. Any status can be deleted. The slug is a file name without the
+// ".md" suffix: it is not empty, has no path separator, is not "." or "..",
+// and does not end in ".md". A topic file that is already gone gives
+// AlreadyGone and no error. A symlink is removed as a link: its target stays.
+//
+// Errors: a bad slug and a folder in the place of the topic file give a
+// DomainError. A failed Lstat or remove gives an InfraError.
+func DashboardDeletePreplan(root, slug string) (DashboardDeleteOut, error) {
+	if err := dashboardPreplanSlugError(slug); err != nil {
+		return DashboardDeleteOut{}, err
 	}
 
 	rel := filepath.ToSlash(filepath.Join(paths.DataDir, paths.PreplanSubdir, slug+".md"))
 	path := filepath.Join(root, paths.DataDir, paths.PreplanSubdir, slug+".md")
-	gone := DeleteOut{AlreadyGone: true, Message: fmt.Sprintf("The preplan topic %s is already gone.", slug)}
+	gone := DashboardDeleteOut{AlreadyGone: true, Message: fmt.Sprintf("The preplan topic %s is already gone.", slug)}
 
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return gone, nil
 		}
-		return DeleteOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("read preplan topic %s: %s", rel, err),
+		return DashboardDeleteOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("Could not read the preplan topic %s: %s", rel, err),
 			Suggestion: dashboardDeletePreplanReadSuggestion,
 			Cause:      err,
 		}
 	}
 	if info.IsDir() {
-		return DeleteOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("%s is a folder, not a topic file", rel),
+		return DashboardDeleteOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("The path %s is a folder, not a topic file", rel),
 			Suggestion: dashboardDeletePreplanFolderSuggestion,
 		}
 	}
@@ -87,66 +149,49 @@ func DeletePreplanTopic(root, slug string) (DeleteOut, error) {
 		if errors.Is(err, fs.ErrNotExist) {
 			return gone, nil
 		}
-		return DeleteOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("delete preplan topic %s: %s", rel, err),
+		return DashboardDeleteOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("Could not delete the preplan topic %s: %s", rel, err),
 			Suggestion: dashboardDeletePreplanWriteSuggestion,
 			Cause:      err,
 		}
 	}
-	return DeleteOut{Deleted: true, Message: fmt.Sprintf("Deleted the preplan topic %s.", slug)}, nil
+	return DashboardDeleteOut{Deleted: true, Message: fmt.Sprintf("Deleted the preplan topic %s.", slug)}, nil
 }
 
-// DeleteDeferredItem deletes the first item with the given id from
-// deferred.json of root, whatever its status. The file is read with a size
-// check and rewritten through a temp file and a rename, with the same bytes
-// as the history writer. An unknown id, an absent file and an empty file give
-// AlreadyGone and no error. A file that is too large or does not parse gives
-// a DataError, and the file keeps its bytes.
-func DeleteDeferredItem(root, id string) (DeleteOut, error) {
+// DashboardDeleteDeferred deletes the first item with the given id from
+// deferred.json of root, whatever its status. The file is read through
+// dashboardReadCapped and rewritten through a temp file and a rename, as
+// indented JSON with a final newline. An absent file, an empty file and an
+// unknown id give AlreadyGone and no error; the message tells an empty store
+// from an unknown id.
+//
+// Errors: an empty id gives a DomainError. A file that is too large or does
+// not parse gives a DataError, and the file keeps its bytes. A failed Stat,
+// read or write gives an InfraError.
+func DashboardDeleteDeferred(root, id string) (DashboardDeleteOut, error) {
 	if id == "" {
-		return DeleteOut{}, &mcpserver.DomainError{
+		return DashboardDeleteOut{}, &mcpserver.DomainError{
 			Msg:        dashboardDeleteDeferredIDMessage,
 			Suggestion: dashboardDeleteReloadSuggestion,
 		}
 	}
 
 	path := history.NewFileWriter(paths.HistoryDir(root)).DeferredPath()
-	gone := DeleteOut{AlreadyGone: true, Message: fmt.Sprintf("The deferred item %s is already gone.", id)}
+	empty := DashboardDeleteOut{AlreadyGone: true, Message: fmt.Sprintf("The deferred store has no items. The deferred item %s is already gone.", id)}
 
-	info, err := os.Stat(path)
+	data, missing, err := dashboardReadCapped(path, "the file deferred.json",
+		dashboardDeleteDeferredLargeSuggestion, dashboardDeleteDeferredReadSuggestion)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return gone, nil
-		}
-		return DeleteOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("read deferred.json: %s", err),
-			Suggestion: dashboardDeleteDeferredReadSuggestion,
-			Cause:      err,
-		}
+		return DashboardDeleteOut{}, err
 	}
-	if info.Size() > dashboardDeleteReadMax {
-		return DeleteOut{}, &mcpserver.DataError{
-			Msg:        dashboardDeleteDeferredTooLargeMessage,
-			Suggestion: dashboardDeleteDeferredLargeSuggestion,
-		}
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return DeleteOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("read deferred.json: %s", err),
-			Suggestion: dashboardDeleteDeferredReadSuggestion,
-			Cause:      err,
-		}
-	}
-	if len(strings.TrimSpace(string(data))) == 0 {
-		return gone, nil
+	if missing || len(strings.TrimSpace(string(data))) == 0 {
+		return empty, nil
 	}
 
 	var items []history.DeferredIssue
 	if err := json.Unmarshal(data, &items); err != nil {
-		return DeleteOut{}, &mcpserver.DataError{
-			Msg:        fmt.Sprintf("parse deferred.json: %s", err),
+		return DashboardDeleteOut{}, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("Could not parse deferred.json: %s", err),
 			Suggestion: dashboardDeleteDeferredParseSuggestion,
 			Cause:      err,
 		}
@@ -160,7 +205,7 @@ func DeleteDeferredItem(root, id string) (DeleteOut, error) {
 		}
 	}
 	if at < 0 {
-		return gone, nil
+		return DashboardDeleteOut{AlreadyGone: true, Message: fmt.Sprintf("No deferred item has the id %s. Another session may have deleted it.", id)}, nil
 	}
 
 	// A new non-nil slice, so that the last item removed writes [] and not null.
@@ -169,11 +214,11 @@ func DeleteDeferredItem(root, id string) (DeleteOut, error) {
 	kept = append(kept, items[at+1:]...)
 
 	if err := dashboardDeleteWriteJSON(path, kept); err != nil {
-		return DeleteOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("write deferred.json: %s", err),
+		return DashboardDeleteOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("Could not write deferred.json: %s", err),
 			Suggestion: dashboardDeleteDeferredWriteSuggestion,
 			Cause:      err,
 		}
 	}
-	return DeleteOut{Deleted: true, Message: fmt.Sprintf("Deleted the deferred item %s.", id)}, nil
+	return DashboardDeleteOut{Deleted: true, Message: fmt.Sprintf("Deleted the deferred item %s.", id)}, nil
 }

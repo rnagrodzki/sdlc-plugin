@@ -3,6 +3,8 @@ package tools
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -138,25 +140,27 @@ func dashDelWantErr(t *testing.T, err error, wantKind, wantSuggestion string) {
 	}
 }
 
-func TestDeletePreplanTopic_DeletesEachStatus(t *testing.T) {
-	cases := []struct {
+func TestDashboardDeletePreplan_DeletesEachStatus(t *testing.T) {
+	type tcase struct {
 		name    string
 		content string
-	}{
-		{"in progress", "# Preplan: topic\n\n**Status:** in progress\n"},
-		{"ready for plan", "# Preplan: topic\n\n**Status:** ready for plan\n"},
-		{"paused", "# Preplan: topic\n\n**Status:** paused\n"},
-		{"no status", "# Preplan: topic\n\nNo status line here.\n"},
 	}
+	// One case for each status of PreplanStatuses, so a new status is
+	// covered, and one for a file with no status line.
+	var cases []tcase
+	for _, status := range PreplanStatuses {
+		cases = append(cases, tcase{status, "# Preplan: topic\n\n**Status:** " + status + "\n"})
+	}
+	cases = append(cases, tcase{"no status", "# Preplan: topic\n\nNo status line here.\n"})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			path := dashDelTopic(t, root, "my_topic", tc.content)
 			other := dashDelTopic(t, root, "other", "# Preplan: other\n")
 
-			out, err := DeletePreplanTopic(root, "my_topic")
+			out, err := DashboardDeletePreplan(root, "my_topic")
 			if err != nil {
-				t.Fatalf("DeletePreplanTopic: %v", err)
+				t.Fatalf("DashboardDeletePreplan: %v", err)
 			}
 			if !out.Deleted || out.AlreadyGone || out.Message == "" {
 				t.Errorf("out = %+v, want Deleted with a message", out)
@@ -171,30 +175,30 @@ func TestDeletePreplanTopic_DeletesEachStatus(t *testing.T) {
 	}
 }
 
-func TestDeletePreplanTopic_AlreadyGone(t *testing.T) {
+func TestDashboardDeletePreplan_AlreadyGone(t *testing.T) {
 	root := t.TempDir()
 	dashDelPreplanDir(t, root)
 
-	out, err := DeletePreplanTopic(root, "missing")
+	out, err := DashboardDeletePreplan(root, "missing")
 	if err != nil {
-		t.Fatalf("DeletePreplanTopic: %v", err)
+		t.Fatalf("DashboardDeletePreplan: %v", err)
 	}
 	if !out.AlreadyGone || out.Deleted || out.Message == "" {
 		t.Errorf("out = %+v, want AlreadyGone with a message", out)
 	}
 }
 
-func TestDeletePreplanTopic_AlreadyGoneWithoutPreplanFolder(t *testing.T) {
-	out, err := DeletePreplanTopic(t.TempDir(), "missing")
+func TestDashboardDeletePreplan_AlreadyGoneWithoutPreplanFolder(t *testing.T) {
+	out, err := DashboardDeletePreplan(t.TempDir(), "missing")
 	if err != nil {
-		t.Fatalf("DeletePreplanTopic: %v", err)
+		t.Fatalf("DashboardDeletePreplan: %v", err)
 	}
 	if !out.AlreadyGone {
 		t.Errorf("out = %+v, want AlreadyGone", out)
 	}
 }
 
-func TestDeletePreplanTopic_FolderRefused(t *testing.T) {
+func TestDashboardDeletePreplan_FolderRefused(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(dashDelPreplanDir(t, root), "nested.md")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -205,9 +209,9 @@ func TestDeletePreplanTopic_FolderRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := DeletePreplanTopic(root, "nested")
+	out, err := DashboardDeletePreplan(root, "nested")
 	dashDelWantErr(t, err, "domain", "Remove the folder by hand.")
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	if _, err := os.Stat(inner); err != nil {
@@ -215,7 +219,7 @@ func TestDeletePreplanTopic_FolderRefused(t *testing.T) {
 	}
 }
 
-func TestDeletePreplanTopic_BadSlugRefused(t *testing.T) {
+func TestDashboardDeletePreplan_BadSlugRefused(t *testing.T) {
 	root := t.TempDir()
 	keep := dashDelTopic(t, root, "keep", "# Preplan: keep\n")
 	outside := filepath.Join(root, paths.DataDir, "outside.md")
@@ -223,14 +227,22 @@ func TestDeletePreplanTopic_BadSlugRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, slug := range []string{"", ".", "..", "a/b", "../outside", "/abs/path"} {
+	for slug, message := range map[string]string{
+		"":           "The slug field is required",
+		".":          `The slug "." is not a file name`,
+		"..":         `The slug ".." is not a file name`,
+		"a/b":        `The slug "a/b" has a path separator. A slug is a file name in .sdlc-v2/preplan/`,
+		"../outside": `The slug "../outside" has a path separator. A slug is a file name in .sdlc-v2/preplan/`,
+		"/abs/path":  `The slug "/abs/path" has a path separator. A slug is a file name in .sdlc-v2/preplan/`,
+		"keep.md":    `The slug "keep.md" ends in .md. Send the file name without .md`,
+	} {
 		t.Run(slug, func(t *testing.T) {
-			out, err := DeletePreplanTopic(root, slug)
+			out, err := DashboardDeletePreplan(root, slug)
 			dashDelWantErr(t, err, "domain", "Reload the page and try again.")
-			if err.Error() != "The slug field must be a preplan file name" {
-				t.Errorf("message = %q", err.Error())
+			if err.Error() != message {
+				t.Errorf("message = %q, want %q", err.Error(), message)
 			}
-			if out != (DeleteOut{}) {
+			if out != (DashboardDeleteOut{}) {
 				t.Errorf("out = %+v, want zero value", out)
 			}
 		})
@@ -242,7 +254,7 @@ func TestDeletePreplanTopic_BadSlugRefused(t *testing.T) {
 	}
 }
 
-func TestDeletePreplanTopic_LstatFailureIsInfra(t *testing.T) {
+func TestDashboardDeletePreplan_LstatFailureIsInfra(t *testing.T) {
 	root := t.TempDir()
 	// The preplan folder is a plain file, so Lstat of a topic path gives ENOTDIR.
 	if err := os.MkdirAll(filepath.Join(root, paths.DataDir), 0o755); err != nil {
@@ -253,25 +265,25 @@ func TestDeletePreplanTopic_LstatFailureIsInfra(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := DeletePreplanTopic(root, "topic")
+	out, err := DashboardDeletePreplan(root, "topic")
 	dashDelWantErr(t, err, "infra", "Check read permission on .sdlc-v2/preplan/ and retry.")
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 }
 
-func TestDeletePreplanTopic_RemoveFailureIsInfra(t *testing.T) {
+func TestDashboardDeletePreplan_RemoveFailureIsInfra(t *testing.T) {
 	root := t.TempDir()
 	path := dashDelTopic(t, root, "topic", "# Preplan: topic\n")
 	injected := errors.New("injected remove failure")
 	dashDelSeam(t, &dashboardDeleteRemove, func(string) error { return injected })
 
-	out, err := DeletePreplanTopic(root, "topic")
+	out, err := DashboardDeletePreplan(root, "topic")
 	dashDelWantErr(t, err, "infra", "Check write permission on .sdlc-v2/preplan/ and retry.")
 	if !errors.Is(err, injected) {
 		t.Errorf("error does not wrap the injected failure: %v", err)
 	}
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -279,21 +291,21 @@ func TestDeletePreplanTopic_RemoveFailureIsInfra(t *testing.T) {
 	}
 }
 
-func TestDeletePreplanTopic_RemoveOfGoneFileIsAlreadyGone(t *testing.T) {
+func TestDashboardDeletePreplan_RemoveOfGoneFileIsAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 	dashDelTopic(t, root, "topic", "# Preplan: topic\n")
 	dashDelSeam(t, &dashboardDeleteRemove, func(p string) error { return &os.PathError{Op: "remove", Path: p, Err: os.ErrNotExist} })
 
-	out, err := DeletePreplanTopic(root, "topic")
+	out, err := DashboardDeletePreplan(root, "topic")
 	if err != nil {
-		t.Fatalf("DeletePreplanTopic: %v", err)
+		t.Fatalf("DashboardDeletePreplan: %v", err)
 	}
 	if !out.AlreadyGone || out.Deleted {
 		t.Errorf("out = %+v, want AlreadyGone", out)
 	}
 }
 
-func TestDeletePreplanTopic_SymlinkRemovesLinkKeepsTarget(t *testing.T) {
+func TestDashboardDeletePreplan_SymlinkRemovesLinkKeepsTarget(t *testing.T) {
 	root := t.TempDir()
 	target := filepath.Join(root, "target.md")
 	if err := os.WriteFile(target, []byte("# Preplan: target\n"), 0o644); err != nil {
@@ -304,9 +316,9 @@ func TestDeletePreplanTopic_SymlinkRemovesLinkKeepsTarget(t *testing.T) {
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	out, err := DeletePreplanTopic(root, "linked")
+	out, err := DashboardDeletePreplan(root, "linked")
 	if err != nil {
-		t.Fatalf("DeletePreplanTopic: %v", err)
+		t.Fatalf("DashboardDeletePreplan: %v", err)
 	}
 	if !out.Deleted {
 		t.Errorf("out = %+v, want Deleted", out)
@@ -319,23 +331,23 @@ func TestDeletePreplanTopic_SymlinkRemovesLinkKeepsTarget(t *testing.T) {
 	}
 }
 
-func TestDeletePreplanTopic_DanglingSymlinkIsRemoved(t *testing.T) {
+func TestDashboardDeletePreplan_DanglingSymlinkIsRemoved(t *testing.T) {
 	root := t.TempDir()
 	link := filepath.Join(dashDelPreplanDir(t, root), "dangling.md")
 	if err := os.Symlink(filepath.Join(root, "nowhere.md"), link); err != nil {
 		t.Skipf("symlink not supported: %v", err)
 	}
 
-	out, err := DeletePreplanTopic(root, "dangling")
+	out, err := DashboardDeletePreplan(root, "dangling")
 	if err != nil {
-		t.Fatalf("DeletePreplanTopic: %v", err)
+		t.Fatalf("DashboardDeletePreplan: %v", err)
 	}
 	if !out.Deleted {
 		t.Errorf("out = %+v, want Deleted", out)
 	}
 }
 
-func TestDeleteDeferredItem_RemovesFirstMatchKeepsOrder(t *testing.T) {
+func TestDashboardDeleteDeferred_RemovesFirstMatchKeepsOrder(t *testing.T) {
 	root := t.TempDir()
 	path := dashDelItems(t, root,
 		dashDelItem("a", "first a", history.StatusOpen),
@@ -344,9 +356,9 @@ func TestDeleteDeferredItem_RemovesFirstMatchKeepsOrder(t *testing.T) {
 		dashDelItem("c", "only c", history.StatusOpen),
 	)
 
-	out, err := DeleteDeferredItem(root, "a")
+	out, err := DashboardDeleteDeferred(root, "a")
 	if err != nil {
-		t.Fatalf("DeleteDeferredItem: %v", err)
+		t.Fatalf("DashboardDeleteDeferred: %v", err)
 	}
 	if !out.Deleted || out.AlreadyGone || out.Message == "" {
 		t.Errorf("out = %+v, want Deleted with a message", out)
@@ -364,7 +376,7 @@ func TestDeleteDeferredItem_RemovesFirstMatchKeepsOrder(t *testing.T) {
 	}
 }
 
-func TestDeleteDeferredItem_DeletesAnyStatus(t *testing.T) {
+func TestDashboardDeleteDeferred_DeletesAnyStatus(t *testing.T) {
 	for _, status := range []string{history.StatusOpen, history.StatusResolved} {
 		t.Run(status, func(t *testing.T) {
 			root := t.TempDir()
@@ -372,7 +384,7 @@ func TestDeleteDeferredItem_DeletesAnyStatus(t *testing.T) {
 				dashDelItem("x", "target", status),
 				dashDelItem("y", "other", history.StatusOpen),
 			)
-			out, err := DeleteDeferredItem(root, "x")
+			out, err := DashboardDeleteDeferred(root, "x")
 			if err != nil || !out.Deleted {
 				t.Fatalf("out = %+v, err = %v, want Deleted", out, err)
 			}
@@ -390,11 +402,11 @@ func TestDeleteDeferredItem_DeletesAnyStatus(t *testing.T) {
 	}
 }
 
-func TestDeleteDeferredItem_LastItemWritesEmptyArray(t *testing.T) {
+func TestDashboardDeleteDeferred_LastItemWritesEmptyArray(t *testing.T) {
 	root := t.TempDir()
 	path := dashDelItems(t, root, dashDelItem("only", "the last", history.StatusOpen))
 
-	out, err := DeleteDeferredItem(root, "only")
+	out, err := DashboardDeleteDeferred(root, "only")
 	if err != nil || !out.Deleted {
 		t.Fatalf("out = %+v, err = %v, want Deleted", out, err)
 	}
@@ -403,29 +415,32 @@ func TestDeleteDeferredItem_LastItemWritesEmptyArray(t *testing.T) {
 	}
 }
 
-func TestDeleteDeferredItem_UnknownIDIsAlreadyGone(t *testing.T) {
+func TestDashboardDeleteDeferred_UnknownIDIsAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 	path := dashDelItems(t, root, dashDelItem("a", "item a", history.StatusOpen))
 	before := dashDelReadFile(t, path)
 
-	out, err := DeleteDeferredItem(root, "nope")
+	out, err := DashboardDeleteDeferred(root, "nope")
 	if err != nil {
-		t.Fatalf("DeleteDeferredItem: %v", err)
+		t.Fatalf("DashboardDeleteDeferred: %v", err)
 	}
-	if !out.AlreadyGone || out.Deleted || out.Message == "" {
-		t.Errorf("out = %+v, want AlreadyGone with a message", out)
+	if !out.AlreadyGone || out.Deleted {
+		t.Errorf("out = %+v, want AlreadyGone", out)
+	}
+	if want := "No deferred item has the id nope. Another session may have deleted it."; out.Message != want {
+		t.Errorf("message = %q, want %q", out.Message, want)
 	}
 	if got := dashDelReadFile(t, path); !bytes.Equal(got, before) {
 		t.Errorf("deferred.json changed: %q", got)
 	}
 }
 
-func TestDeleteDeferredItem_AbsentFileIsAlreadyGone(t *testing.T) {
+func TestDashboardDeleteDeferred_AbsentFileIsAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 
-	out, err := DeleteDeferredItem(root, "a")
+	out, err := DashboardDeleteDeferred(root, "a")
 	if err != nil {
-		t.Fatalf("DeleteDeferredItem: %v", err)
+		t.Fatalf("DashboardDeleteDeferred: %v", err)
 	}
 	if !out.AlreadyGone || out.Deleted {
 		t.Errorf("out = %+v, want AlreadyGone", out)
@@ -435,15 +450,15 @@ func TestDeleteDeferredItem_AbsentFileIsAlreadyGone(t *testing.T) {
 	}
 }
 
-func TestDeleteDeferredItem_EmptyFileIsAlreadyGone(t *testing.T) {
+func TestDashboardDeleteDeferred_EmptyFileIsAlreadyGone(t *testing.T) {
 	for name, content := range map[string]string{"zero bytes": "", "white space": " \n\t\n"} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			path := dashDelDeferredFile(t, root, []byte(content))
 
-			out, err := DeleteDeferredItem(root, "a")
+			out, err := DashboardDeleteDeferred(root, "a")
 			if err != nil {
-				t.Fatalf("DeleteDeferredItem: %v", err)
+				t.Fatalf("DashboardDeleteDeferred: %v", err)
 			}
 			if !out.AlreadyGone || out.Deleted {
 				t.Errorf("out = %+v, want AlreadyGone", out)
@@ -455,17 +470,17 @@ func TestDeleteDeferredItem_EmptyFileIsAlreadyGone(t *testing.T) {
 	}
 }
 
-func TestDeleteDeferredItem_EmptyIDRefused(t *testing.T) {
+func TestDashboardDeleteDeferred_EmptyIDRefused(t *testing.T) {
 	root := t.TempDir()
 	path := dashDelItems(t, root, dashDelItem("a", "item a", history.StatusOpen))
 	before := dashDelReadFile(t, path)
 
-	out, err := DeleteDeferredItem(root, "")
+	out, err := DashboardDeleteDeferred(root, "")
 	dashDelWantErr(t, err, "domain", "Reload the page and try again.")
 	if err.Error() != "The id field is required" {
 		t.Errorf("message = %q", err.Error())
 	}
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	if got := dashDelReadFile(t, path); !bytes.Equal(got, before) {
@@ -473,7 +488,7 @@ func TestDeleteDeferredItem_EmptyIDRefused(t *testing.T) {
 	}
 }
 
-func TestDeleteDeferredItem_StatFailureIsInfra(t *testing.T) {
+func TestDashboardDeleteDeferred_StatFailureIsInfra(t *testing.T) {
 	root := t.TempDir()
 	// The history folder is a plain file, so Stat of deferred.json gives ENOTDIR.
 	if err := os.MkdirAll(filepath.Join(root, paths.DataDir), 0o755); err != nil {
@@ -483,35 +498,35 @@ func TestDeleteDeferredItem_StatFailureIsInfra(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	out, err := DeleteDeferredItem(root, "a")
+	out, err := DashboardDeleteDeferred(root, "a")
 	dashDelWantErr(t, err, "infra", "Check read permission on .sdlc-v2/history/deferred.json and retry.")
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 }
 
-func TestDeleteDeferredItem_ReadFailureIsInfra(t *testing.T) {
+func TestDashboardDeleteDeferred_ReadFailureIsInfra(t *testing.T) {
 	root := t.TempDir()
 	// deferred.json is a folder: Stat succeeds and ReadFile fails.
 	if err := os.MkdirAll(filepath.Join(dashDelHistoryDir(t, root), "deferred.json"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	out, err := DeleteDeferredItem(root, "a")
+	out, err := DashboardDeleteDeferred(root, "a")
 	dashDelWantErr(t, err, "infra", "Check read permission on .sdlc-v2/history/deferred.json and retry.")
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 }
 
-func TestDeleteDeferredItem_BadJSONIsDataError(t *testing.T) {
+func TestDashboardDeleteDeferred_BadJSONIsDataError(t *testing.T) {
 	root := t.TempDir()
 	bad := []byte(`[{"id": "a", "status": `)
 	path := dashDelDeferredFile(t, root, bad)
 
-	out, err := DeleteDeferredItem(root, "a")
+	out, err := DashboardDeleteDeferred(root, "a")
 	dashDelWantErr(t, err, "data", "Fix the JSON syntax in .sdlc-v2/history/deferred.json by hand, then retry.")
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	if got := dashDelReadFile(t, path); !bytes.Equal(got, bad) {
@@ -519,18 +534,19 @@ func TestDeleteDeferredItem_BadJSONIsDataError(t *testing.T) {
 	}
 }
 
-func TestDeleteDeferredItem_TooLargeIsDataError(t *testing.T) {
+func TestDashboardDeleteDeferred_TooLargeIsDataError(t *testing.T) {
 	root := t.TempDir()
 	// Valid JSON with white space padding: without the size check the file would parse.
 	big := append([]byte("[]"), bytes.Repeat([]byte(" "), dashboardDeleteReadMax)...)
 	path := dashDelDeferredFile(t, root, big)
 
-	out, err := DeleteDeferredItem(root, "a")
-	dashDelWantErr(t, err, "data", "Remove resolved items from .sdlc-v2/history/deferred.json by hand, then retry.")
-	if err.Error() != "deferred.json is too large to edit from the dashboard" {
-		t.Errorf("message = %q", err.Error())
+	out, err := DashboardDeleteDeferred(root, "a")
+	dashDelWantErr(t, err, "data", "Remove resolved items from .sdlc-v2/history/deferred.json by hand until it is smaller than 8 MiB, then retry.")
+	want := fmt.Sprintf("The file deferred.json is %d bytes, more than the 8388608 bytes (8 MiB) that a dashboard delete reads", len(big))
+	if err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
 	}
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	if got := dashDelReadFile(t, path); !bytes.Equal(got, big) {
@@ -538,22 +554,22 @@ func TestDeleteDeferredItem_TooLargeIsDataError(t *testing.T) {
 	}
 }
 
-func TestDeleteDeferredItem_SizeAtLimitIsRead(t *testing.T) {
+func TestDashboardDeleteDeferred_SizeAtLimitIsRead(t *testing.T) {
 	root := t.TempDir()
 	// Exactly dashboardDeleteReadMax bytes is allowed.
 	exact := append([]byte("[]"), bytes.Repeat([]byte(" "), dashboardDeleteReadMax-2)...)
 	dashDelDeferredFile(t, root, exact)
 
-	out, err := DeleteDeferredItem(root, "a")
+	out, err := DashboardDeleteDeferred(root, "a")
 	if err != nil {
-		t.Fatalf("DeleteDeferredItem: %v", err)
+		t.Fatalf("DashboardDeleteDeferred: %v", err)
 	}
 	if !out.AlreadyGone {
 		t.Errorf("out = %+v, want AlreadyGone", out)
 	}
 }
 
-func TestDeleteDeferredItem_WriteFailureIsInfra(t *testing.T) {
+func TestDashboardDeleteDeferred_WriteFailureIsInfra(t *testing.T) {
 	root := t.TempDir()
 	path := dashDelItems(t, root,
 		dashDelItem("a", "item a", history.StatusOpen),
@@ -563,15 +579,46 @@ func TestDeleteDeferredItem_WriteFailureIsInfra(t *testing.T) {
 	injected := errors.New("injected write failure")
 	dashDelSeam(t, &dashboardDeleteWriteJSON, func(string, any) error { return injected })
 
-	out, err := DeleteDeferredItem(root, "a")
+	out, err := DashboardDeleteDeferred(root, "a")
 	dashDelWantErr(t, err, "infra", "Check write permission on .sdlc-v2/history/ and free disk space, then retry.")
 	if !errors.Is(err, injected) {
 		t.Errorf("error does not wrap the injected failure: %v", err)
 	}
-	if out != (DeleteOut{}) {
+	if out != (DashboardDeleteOut{}) {
 		t.Errorf("out = %+v, want zero value", out)
 	}
 	if got := dashDelReadFile(t, path); !bytes.Equal(got, before) {
 		t.Errorf("deferred.json changed: %q", got)
+	}
+}
+
+// TestDashboardDeleteDeferred_EmptyStoreMessage tells an empty or absent store from
+// an unknown id in the message.
+func TestDashboardDeleteDeferred_EmptyStoreMessage(t *testing.T) {
+	out, err := DashboardDeleteDeferred(t.TempDir(), "a")
+	if err != nil {
+		t.Fatalf("DashboardDeleteDeferred: %v", err)
+	}
+	if want := "The deferred store has no items. The deferred item a is already gone."; out.Message != want {
+		t.Errorf("message = %q, want %q", out.Message, want)
+	}
+}
+
+// TestDashboardDeleteDeferred_FileGoneBeforeReadIsAlreadyGone gives already gone,
+// not an InfraError, when deferred.json goes away between the size check and
+// the read.
+func TestDashboardDeleteDeferred_FileGoneBeforeReadIsAlreadyGone(t *testing.T) {
+	root := t.TempDir()
+	dashDelItems(t, root, dashDelItem("a", "item a", history.StatusOpen))
+	dashDelSeam(t, &dashboardDeleteReadFile, func(string) ([]byte, error) {
+		return nil, &fs.PathError{Op: "open", Path: "deferred.json", Err: fs.ErrNotExist}
+	})
+
+	out, err := DashboardDeleteDeferred(root, "a")
+	if err != nil {
+		t.Fatalf("DashboardDeleteDeferred: %v", err)
+	}
+	if !out.AlreadyGone || out.Deleted {
+		t.Errorf("out = %+v, want AlreadyGone", out)
 	}
 }

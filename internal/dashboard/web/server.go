@@ -106,14 +106,14 @@ type Options struct {
 	// tools.DashboardLearningBody). GET /api/learning calls it.
 	LearningBody func(root, date, heading string) (tools.DashboardLearningBodyOut, error)
 	// DeletePreplan deletes one preplan topic file (production:
-	// tools.DeletePreplanTopic). POST /api/preplan-delete calls it.
-	DeletePreplan func(root, slug string) (tools.DeleteOut, error)
+	// tools.DashboardDeletePreplan). POST /api/preplan-delete calls it.
+	DeletePreplan func(root, slug string) (tools.DashboardDeleteOut, error)
 	// DeleteDeferred deletes one deferred item (production:
-	// tools.DeleteDeferredItem). POST /api/deferred-delete calls it.
-	DeleteDeferred func(root, id string) (tools.DeleteOut, error)
+	// tools.DashboardDeleteDeferred). POST /api/deferred-delete calls it.
+	DeleteDeferred func(root, id string) (tools.DashboardDeleteOut, error)
 	// DeleteLearning deletes one learning entry (production:
-	// tools.DeleteDashboardLearning). POST /api/learning-delete calls it.
-	DeleteLearning func(root, date, heading string) (tools.DeleteOut, error)
+	// tools.DashboardDeleteLearning). POST /api/learning-delete calls it.
+	DeleteLearning func(root, date, heading string) (tools.DashboardDeleteOut, error)
 }
 
 // NewToken returns a new stop token: 32 bytes from crypto/rand, hex encoded.
@@ -587,7 +587,8 @@ func (h *handler) serveCacheClear(w http.ResponseWriter, r *http.Request) {
 
 // servePreplanDelete deletes one preplan topic file of a registered repo. The
 // request must pass guardMutation; the repo must be a display root. A topic
-// file that is already gone is a 200 with alreadyGone.
+// file that is already gone is a 200 with alreadyGone. The delete function is
+// the one check of the slug: its DomainError is a 400 (writeDeleteError).
 func (h *handler) servePreplanDelete(w http.ResponseWriter, r *http.Request) {
 	if !h.guardMutation(w, r, true) {
 		return
@@ -598,10 +599,6 @@ func (h *handler) servePreplanDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	var req preplanDeleteRequest
 	if !decodeBody(w, r, &req) {
-		return
-	}
-	if req.Slug == "" {
-		writeBadRequest(w, "The slug field is required")
 		return
 	}
 	root, ok := h.displayRoot(w, now(), req.Repo)
@@ -618,7 +615,8 @@ func (h *handler) servePreplanDelete(w http.ResponseWriter, r *http.Request) {
 
 // serveDeferredDelete deletes one deferred item of a registered repo. The
 // request must pass guardMutation; the repo must be a display root. An item
-// that is already gone is a 200 with alreadyGone.
+// that is already gone is a 200 with alreadyGone. The delete function is the
+// one check of the id: its DomainError is a 400 (writeDeleteError).
 func (h *handler) serveDeferredDelete(w http.ResponseWriter, r *http.Request) {
 	if !h.guardMutation(w, r, true) {
 		return
@@ -629,10 +627,6 @@ func (h *handler) serveDeferredDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	var req deferredDeleteRequest
 	if !decodeBody(w, r, &req) {
-		return
-	}
-	if req.ID == "" {
-		writeBadRequest(w, "The id field is required")
 		return
 	}
 	root, ok := h.displayRoot(w, now(), req.Repo)
@@ -649,7 +643,9 @@ func (h *handler) serveDeferredDelete(w http.ResponseWriter, r *http.Request) {
 
 // serveLearningDelete deletes one learning entry of a registered repo. The
 // request must pass guardMutation; the repo must be a display root. An entry
-// that is already gone is a 200 with alreadyGone.
+// that is already gone is a 200 with alreadyGone. The delete function is the
+// one check of the date and the heading: its DomainError is a 400
+// (writeDeleteError).
 func (h *handler) serveLearningDelete(w http.ResponseWriter, r *http.Request) {
 	if !h.guardMutation(w, r, true) {
 		return
@@ -660,10 +656,6 @@ func (h *handler) serveLearningDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	var req learningDeleteRequest
 	if !decodeBody(w, r, &req) {
-		return
-	}
-	if req.Date == "" || req.Heading == "" {
-		writeBadRequest(w, "The date and heading fields are required")
 		return
 	}
 	root, ok := h.displayRoot(w, now(), req.Repo)

@@ -151,8 +151,8 @@ func dashboardOptions(port int, v string, stop func(), clearCache clearCacheFunc
 			return clearCache(root, logPath, now)
 		},
 		LearningBody:   tools.DashboardLearningBody,
-		DeletePreplan:  tools.DeletePreplanTopic,
-		DeleteDeferred: tools.DeleteDeferredItem,
-		DeleteLearning: tools.DeleteDashboardLearning,
+		DeletePreplan:  tools.DashboardDeletePreplan,
+		DeleteDeferred: tools.DashboardDeleteDeferred,
+		DeleteLearning: tools.DashboardDeleteLearning,
 	}
 }

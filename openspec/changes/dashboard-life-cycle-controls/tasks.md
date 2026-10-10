@@ -21,8 +21,8 @@ flowchart LR
 
 ## 2. Delete backend
 
-- [ ] 2.1 Delete preplan topic files and deferred items in internal/tools/dashboard_delete.go — verify: go test ./internal/tools/ -run 'TestDeletePreplanTopic|TestDeleteDeferredItem' <!-- ref:2-1-delete-preplan-topic-files-and-defer-cb3384 -->
-- [ ] 2.2 Delete learning entries in internal/tools/dashboard_delete_learning.go — verify: go test ./internal/tools/ -run 'TestDeleteDashboardLearning|TestLearnings' <!-- ref:2-2-delete-learning-entries-in-internal-74d1e0 -->
+- [ ] 2.1 Delete preplan topic files and deferred items in internal/tools/dashboard_delete.go — verify: go test ./internal/tools/ -run 'TestDashboardDeletePreplan|TestDashboardDeleteDeferred' <!-- ref:2-1-delete-preplan-topic-files-and-defer-cb3384 -->
+- [ ] 2.2 Delete learning entries in internal/tools/dashboard_delete_learning.go — verify: go test ./internal/tools/ -run 'TestDashboardDeleteLearning|TestLearnings' <!-- ref:2-2-delete-learning-entries-in-internal-74d1e0 -->
 - [ ] 2.3 Add three token-guarded routes in internal/dashboard/web/server.go and cmd/sdlc/main.go — verify: go test ./internal/dashboard/web/ ./cmd/sdlc/ -run 'TestHandler_|TestDashboardOptions' <!-- ref:2-3-add-three-token-guarded-routes-in-in-a0632c -->
 
 ## 3. Page port
