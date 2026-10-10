@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.1] - 2026-10-10
+
+### RC 1
+
+- Add a live design preview for the sdlc dashboard page, with a dashboard-design project skill and task design tasks
+- Add start rule, status and stop routes, API proxy, and data markers to the design preview
+- Repair dangling worktree state links at session start in the main worktree and in linked worktrees
+- Name the link, the target, and the recovery in the archive and preplan errors for a dangling link
+- Sync the worktree link specs and update the linked-worktree, dashboard, and smoke-test docs
+
+### RC 2
+
+- Dashboard run details show the duration of each pipeline step
+- Dashboard shows a received-review station with a fixes tile and review cards
+- received-review step writes fix-progress records for the dashboard
+- Refreshed glass style for the dashboard and an updated design system
+- Final fix status is kept, and damaged healing data is rejected
+- Dashboard docs updated for step durations, the archive icon, and received-review fixes
+
 ## [0.4.0] - 2026-10-09
 
 ### RC 1
