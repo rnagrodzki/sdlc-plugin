@@ -445,7 +445,9 @@ link gate and after the recording result below is known.
 
 **Fix progress.** Before the first fix, make one `fix-progress` call with `status:"queued"` for each
 "agree-will-fix" finding. Use the same `origin`, `file`, `line` and `title` in each call for one
-finding. A different title makes a second record.
+finding. A different title makes a second record. `origin` is `local-review` when the finding came
+from the dispatch prompt (Step 1b), conversation context, or user paste — anything with no PR
+comment behind it — and `pr-comment` when it came from a GitHub reviewer or automated PR comment.
 ```
 ship_state({action:"healing_record", step:"received-review", detail:{
   kind:"fix-progress", origin:"<local-review|pr-comment>",
@@ -454,11 +456,23 @@ ship_state({action:"healing_record", step:"received-review", detail:{
 ```
 If a `fix-progress` call fails, print one warning
 (`WARNING: could not record fix progress for <file>:<line> — <error>`). Then continue.
-Follow the `next` line of the result. Never let this call stop a fix or a reply.
+Never let this call stop a fix or a reply.
+
+After a successful call, read its `next` line. `next` never changes the order of the Step 11 work.
+It only says whether to make more `fix-progress` calls.
+
+**Stop rule.** Make no more `fix-progress` calls in this run after one of these results:
+- An error whose suggestion says "Do not retry" (the 200-record cap, or a damaged ship state).
+- A `next` line that says to continue without `fix-progress` calls (no live ship run).
+
+This rule overrides every other `fix-progress` call in this step (`queued`, `fixing`, `fixed`,
+`failed` and `deferred`). It does not change the fixes, the records or the replies.
 
 For each change: make the edit, verify it compiles/passes tests, then move to the next.
 Before the edit, make the `fix-progress` call with `status:"fixing"`. When the fix passes its own
 verification, make the `fix-progress` call with `status:"fixed"` before the next fix starts.
+A pushback that you correct into a fix (see "Gracefully correcting wrong pushback" below) had no
+`queued` call. Make its `queued` call first, then its `fixing` call before the edit.
 Do NOT batch changes across items.
 
 **When a fix fails its own verification (either mode):** revert only that fix's files
@@ -488,7 +502,10 @@ above is finished, including any pushback you just corrected into a fix and, und
 any fix reverted by the failed-fix rule above. Verdicts are final only at this point, in both
 modes.
 
-For each finding that ended up **fixed and verified** (compiles/passes tests), make one call:
+For each finding that ended up **fixed and verified** (compiles/passes tests), make one call.
+This `kind:"fixed"` record is the durable one: the review ledger counts it. The `fix-progress`
+record is for the dashboard only, and the ledger ignores it. Use the same `origin`, `file`, `line`
+and `title` as in the finding's `fix-progress` calls.
 ```
 ship_state({action:"healing_record", step:"received-review", detail:{
   kind:     "fixed",
@@ -499,19 +516,21 @@ ship_state({action:"healing_record", step:"received-review", detail:{
   title:    "<one line>",
 }})
 ```
-`origin` is `local-review` when the finding came from the dispatch prompt (Step 1b),
-conversation context, or user paste — anything with no PR comment behind it — and
-`pr-comment` when it came from a GitHub reviewer or automated PR comment. On failure, print one
+`origin` has the same meaning as in the `fix-progress` calls above. On failure, print one
 warning (`WARNING: could not record healing for <file>:<line> — <error>`) and continue; do not
 retry, and never let it block the rest of this step.
 
 For each finding still **unfixed**, make the `ship_state({action:"defer", ...})` call defined
 in Step 4, once per finding, and handle a `WARNING: could not persist` narration exactly as
 Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that fails too).
-If the finding got a `queued` call, then make the `fix-progress` call with `status:"deferred"`.
-The tool keeps `failed` for a fix that failed. A finding with no `queued` call gets no
-`deferred` call. Track per finding whether its `defer` record succeeded — Step 11.6, Step 12's
-ledger and Step 12's reply bodies all read that result. An unfixed finding with no record is the exact
+Then make the `fix-progress` call with `status:"deferred"` only when all three are true:
+- The finding got a `queued` call.
+- Its fix did not fail. A finding with `status:"failed"` keeps that status and gets no `deferred` call.
+- Its record succeeded: `defer` with no persist warning, or the `deferred_add` fallback.
+
+A finding with no `queued` call gets no `fix-progress` call with `status:"deferred"`. It still
+gets its `defer` record. Track per finding whether its record (`defer` or `deferred_add`)
+succeeded — Step 11.6, Step 12's ledger and Step 12's reply bodies all read that result. An unfixed finding with no record is the exact
 failure this step exists to prevent.
 
 ---

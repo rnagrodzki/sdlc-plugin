@@ -649,6 +649,17 @@ func dashRRShip(t *testing.T, fixes any, edit func(map[string]any)) DashboardPip
 	return dashOne(t, root)
 }
 
+// dashRRStateIssues returns the issues of p with source state.
+func dashRRStateIssues(p DashboardPipeline) []DashboardIssue {
+	var out []DashboardIssue
+	for _, is := range p.Issues {
+		if is.Source == dashboardSourceState {
+			out = append(out, is)
+		}
+	}
+	return out
+}
+
 // dashRRNames returns the step names of p, in order.
 func dashRRNames(p DashboardPipeline) []string {
 	out := []string{}
@@ -674,11 +685,20 @@ func dashRRStepJSON(t *testing.T, p DashboardPipeline, name string) string {
 // earliest firstAt and the latest updatedAt.
 func TestDashboardReceivedReview_StepStatus(t *testing.T) {
 	t.Run("no list gives no step", func(t *testing.T) {
-		for name, fixes := range map[string]any{"absent": nil, "not a list": "fix 1"} {
+		for name, fixes := range map[string]any{"absent": nil, "not a list": "fix 1", "empty list": []any{}} {
 			t.Run(name, func(t *testing.T) {
 				ship := dashRRShip(t, fixes, nil)
 				if got, want := dashRRNames(ship), []string{"execute", "commit", "review"}; !reflect.DeepEqual(got, want) {
 					t.Errorf("steps = %v, want %v", got, want)
+				}
+				// Only a value that is not a list is damage; absent and
+				// empty are a run with no fix records.
+				wantIssues := 0
+				if name == "not a list" {
+					wantIssues = 1
+				}
+				if got := dashRRStateIssues(ship); len(got) != wantIssues {
+					t.Errorf("state issues = %v, want %d", got, wantIssues)
 				}
 			})
 		}
@@ -766,10 +786,21 @@ func TestDashboardReceivedReview_Records(t *testing.T) {
 		}
 	})
 
-	t.Run("every record skipped gives no station", func(t *testing.T) {
+	t.Run("every record skipped gives no station and a state issue", func(t *testing.T) {
 		ship := dashRRShip(t, []any{"x", dashRRFix("bad", "done now", "", "")}, nil)
 		if got, want := dashRRNames(ship), []string{"execute", "commit", "review"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("steps = %v, want %v", got, want)
+		}
+		want := "healing.fixProgress of the ship state holds no valid fix record — the received-review fixes are not shown"
+		if got := dashRRStateIssues(ship); len(got) != 1 || got[0].Text != want || got[0].Severity != "medium" {
+			t.Errorf("state issues = %+v, want one medium issue %q", got, want)
+		}
+	})
+
+	t.Run("one valid record gives no state issue", func(t *testing.T) {
+		ship := dashRRShip(t, []any{"x", dashRRFix("ok", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")}, nil)
+		if got := dashRRStateIssues(ship); len(got) != 0 {
+			t.Errorf("state issues = %+v, want none", got)
 		}
 	})
 

@@ -29,10 +29,10 @@ const (
 	tmpStaticDir = draftDir + "/.static.tmp"
 	// depsFile is the dependency file of the draft.
 	depsFile = draftDir + "/dependencies.json"
-	// reqFile is the requirements file that an approved design writes.
-	reqFile = draftDir + "/requirements.md"
-	// logFile is the request log of the draft. The dashboard-design skill writes it.
-	logFile = draftDir + "/requests.md"
+	// requirementsFile is the requirements file that an approved design writes.
+	requirementsFile = draftDir + "/requirements.md"
+	// requestLogFile is the request log of the draft. The dashboard-design skill writes it.
+	requestLogFile = draftDir + "/requests.md"
 )
 
 // maxBaseBytes is the largest base.json StartRule accepts.
@@ -400,12 +400,12 @@ func startOwnWork(repoRoot, base string) (bool, error) {
 // startHasRequests reports whether the request log holds one or more request
 // rows. A missing log has none. A log that cannot be read is an error.
 func startHasRequests(repoRoot string) (bool, error) {
-	data, err := readBounded(filepath.Join(repoRoot, filepath.FromSlash(logFile)), maxLogBytes)
+	data, err := readBounded(filepath.Join(repoRoot, filepath.FromSlash(requestLogFile)), maxLogBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
-		return false, pathError(logFile, err)
+		return false, pathError(requestLogFile, err)
 	}
 
 	return requestRowPattern.Match(data), nil
@@ -573,11 +573,11 @@ func swapDraft(repoRoot, head string) error {
 	if err := fsx.AtomicWriteBytes(filepath.Join(repoRoot, depsFile), []byte("[]\n")); err != nil {
 		return fmt.Errorf("%s: %w", depsFile, err)
 	}
-	if err := os.Remove(filepath.Join(repoRoot, reqFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return pathError(reqFile, err)
+	if err := os.Remove(filepath.Join(repoRoot, requirementsFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return pathError(requirementsFile, err)
 	}
-	if err := os.Remove(filepath.Join(repoRoot, logFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return pathError(logFile, err)
+	if err := os.Remove(filepath.Join(repoRoot, requestLogFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return pathError(requestLogFile, err)
 	}
 	if err := writeBaseJSON(filepath.Join(repoRoot, baseFile), baseRecord{BaseCommit: head, ShippedPath: shippedPath}); err != nil {
 		return fmt.Errorf("%s: %w", baseFile, err)

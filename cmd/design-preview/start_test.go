@@ -410,8 +410,8 @@ func TestStartRule(t *testing.T) {
 			tc.setup(t, dir)
 			before := startSnapshot(t, dir)
 			_, err := StartRule(dir, ModeAuto)
-			if err == nil || !strings.HasPrefix(err.Error(), logFile+": ") {
-				t.Errorf("error = %v, want prefix %q", err, logFile+": ")
+			if err == nil || !strings.HasPrefix(err.Error(), requestLogFile+": ") {
+				t.Errorf("error = %v, want prefix %q", err, requestLogFile+": ")
 			}
 			startAssertUnchanged(t, dir, before)
 		})
@@ -655,7 +655,7 @@ func TestStartRule(t *testing.T) {
 		startRun(t, dir, ModeAuto)
 		startWrite(t, dir, draftDir+"/requests.md/keep", "x")
 		_, err := StartRule(dir, ModeFresh)
-		if err == nil || !strings.HasPrefix(err.Error(), logFile+": ") {
+		if err == nil || !strings.HasPrefix(err.Error(), requestLogFile+": ") {
 			t.Errorf("error = %v, want a requests.md error", err)
 		}
 		if startExists(dir, draftDir+"/base.json") {
@@ -1056,4 +1056,61 @@ func startDraftOwnWork(t *testing.T, dir string) {
 	t.Helper()
 	startDraftWithChange(t, dir)
 	startWrite(t, dir, staticDir+"/index.html", "<!doctype html>\n<p>draft</p>\n")
+}
+
+// TestStartHasRequests pins which request log rows count as a request and
+// the size limit of the log: a row starts at column 0 with "|", then an
+// upper-case R and digits, then "|", with or without spaces.
+func TestStartHasRequests(t *testing.T) {
+	cases := []struct {
+		name string
+		rows string
+		want bool
+	}{
+		{"one-digit id with spaces", "| R1 | a | b | c | d | open |\n", true},
+		{"two-digit id", "| R12 | a | b | c | d | open |\n", true},
+		{"no spaces", "|R3|a|b|c|d|open|\n", true},
+		{"tab before the id", "|\tR4\t| a | b | c | d | open |\n", true},
+		{"indented row", "  | R5 | a | b | c | d | open |\n", false},
+		{"lower-case r", "| r6 | a | b | c | d | open |\n", false},
+		{"id with no digits", "| R | a | b | c | d | open |\n", false},
+		{"id with a suffix", "| R7a | a | b | c | d | open |\n", false},
+		{"header only", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			startWrite(t, dir, requestLogFile, startRequestLog+tc.rows)
+			got, err := startHasRequests(dir)
+			if err != nil {
+				t.Fatalf("startHasRequests: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("startHasRequests = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("missing log has no request", func(t *testing.T) {
+		got, err := startHasRequests(t.TempDir())
+		if err != nil || got {
+			t.Errorf("startHasRequests = %v, %v, want false, nil", got, err)
+		}
+	})
+
+	t.Run("a log of exactly maxLogBytes is read", func(t *testing.T) {
+		dir := t.TempDir()
+		row := "| R1 | a | b | c | d | open |\n"
+		content := startRequestLog + row
+		content += strings.Repeat("x", maxLogBytes-len(content))
+		startWrite(t, dir, requestLogFile, content)
+		got, err := startHasRequests(dir)
+		if err != nil || !got {
+			t.Errorf("startHasRequests = %v, %v, want true, nil", got, err)
+		}
+		startWrite(t, dir, requestLogFile, content+"x")
+		if _, err := startHasRequests(dir); err == nil || !strings.HasPrefix(err.Error(), requestLogFile+": ") {
+			t.Errorf("one byte over: error = %v, want prefix %q", err, requestLogFile+": ")
+		}
+	})
 }

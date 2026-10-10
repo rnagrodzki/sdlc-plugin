@@ -84,12 +84,6 @@ stale entry behind. They show up in the deferred backlog that
 for every finding as `fixed`, `deferred` (grouped by `reason`), or
 `UNACCOUNTED`.
 
-In a `/ship` run, Step 11 also writes the status of each accepted finding
-(`queued`, `fixing`, `fixed`, `failed`, `deferred`) to `healing.fixProgress`.
-The dashboard shows these rows on the received-review station. One run stores
-at most 200 fix records. No setting changes this cap. At the cap, the tool
-rejects a new finding, and the fix pass continues without more status writes.
-
 **Recording is best-effort, with a fallback.** The primary write attaches the
 finding to the current `/ship` run. When there is no ship state for the branch
 — a standalone run, for instance — or the write cannot be persisted, the skill
@@ -107,6 +101,23 @@ applies strengthen-only guardrail and review-dimension edits to your project
 without a confirmation prompt. Each edit is listed under "Auto-accepted" in the
 summary this skill relays back. Pass `--no-harden` to skip this dispatch — for
 example when `/ship`'s own `harden` step already owns hardening for the run.
+
+## Fix progress on the dashboard
+
+In every mode, Step 11 writes the status of each accepted finding (`queued`,
+`fixing`, `fixed`, `failed`, `deferred`) to `healing.fixProgress` of the ship
+state. The [dashboard](../dashboard.md) shows these rows on the
+received-review step. The rows are for display only: the review ledger counts
+the separate `fixed` records.
+
+The writes need a live `/ship` run. In a standalone run, the first call
+reports that no run is live, and the skill makes no more status writes.
+
+One run stores at most 200 fix records. No setting changes this cap. At the
+cap, the tool rejects a new finding with an error that says "Do not retry".
+The skill then makes no more status writes in the run, so the rows already
+stored keep their last status. The same stop applies to a damaged ship state.
+The fixes, the records and the replies continue.
 
 ## Related skills
 

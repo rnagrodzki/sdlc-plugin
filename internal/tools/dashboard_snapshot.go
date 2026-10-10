@@ -649,9 +649,8 @@ func dashboardShip(p *DashboardPipeline, data map[string]any) {
 			continue
 		}
 		name, status := dashboardStr(s["name"]), dashboardStr(s["status"])
-		step := DashboardStep{Name: name, Status: status,
-			StartedAt:   dashboardStepTime(dashboardStr(s["startedAt"])),
-			CompletedAt: dashboardStepTime(dashboardStr(s["completedAt"]))}
+		step := DashboardStep{Name: name, Status: status}
+		step.StartedAt, step.CompletedAt = dashboardStepTimes(s)
 		result := dashboardStr(s["result"]) // ship_state stores step["result"] on complete-step
 		if name == shipCommitStep && status == StepCompleted && strings.HasPrefix(result, commitNothingPrefix) {
 			step.Detail = &DashboardStepDetail{Kind: dashboardKindResult, Result: result}
@@ -723,9 +722,9 @@ func dashboardExecute(p *DashboardPipeline, st *state.State) time.Time {
 			anyInProgress = true
 			p.Progress.Current = name
 		}
-		p.Steps = append(p.Steps, DashboardStep{Name: name, Status: stepStatus,
-			StartedAt:   dashboardStepTime(dashboardStr(w["startedAt"])),
-			CompletedAt: dashboardStepTime(dashboardStr(w["completedAt"]))})
+		step := DashboardStep{Name: name, Status: stepStatus}
+		step.StartedAt, step.CompletedAt = dashboardStepTimes(w)
+		p.Steps = append(p.Steps, step)
 
 		if runID := dashboardStr(w["runId"]); runID != "" && !seenRuns[runID] {
 			seenRuns[runID] = true
@@ -1019,6 +1018,12 @@ func dashboardStepTime(s string) string {
 		return ""
 	}
 	return s
+}
+
+// dashboardStepTimes returns the startedAt and completedAt of the ship step
+// or execute wave m, each through dashboardStepTime.
+func dashboardStepTimes(m map[string]any) (started, completed string) {
+	return dashboardStepTime(dashboardStr(m["startedAt"])), dashboardStepTime(dashboardStr(m["completedAt"]))
 }
 
 // dashboardFormatTime formats t as RFC 3339 UTC, or "" for the zero time.

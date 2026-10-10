@@ -14,7 +14,7 @@ const (
 	dashboardShipStepPlan    = "plan"
 	dashboardShipStepExecute = "execute"
 	dashboardShipStepReview  = "review"
-
+	// The received-review station is built from data.healing.fixProgress.
 	dashboardShipStepReceivedReview = "received-review"
 )
 
@@ -31,7 +31,8 @@ const dashboardExecuteRefPrefix = "execute:"
 // shipBuildReviewLedger returns a ledger. A planExploreSummary value that
 // does not decode gives no plan step. A data.healing.fixProgress list with a
 // valid record gives the received-review station
-// (dashboardAttachReceivedReview).
+// (dashboardAttachReceivedReview). A fixProgress value that is not a list, or
+// a list with records and none valid, adds a state issue.
 func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	data := st.Data
 	p.SessionID = dashboardStr(data["sessionId"])
@@ -78,8 +79,12 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 		}
 	}
 	runCompleted := dashboardStr(data["pipelineCompletedAt"]) != ""
-	if rr := dashboardReceivedReviewStep(healing, runCompleted); rr != nil {
+	rr, problem := dashboardReceivedReviewStep(healing, runCompleted)
+	if rr != nil {
 		dashboardAttachReceivedReview(p, rr)
+	}
+	if problem != "" {
+		p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "medium", Text: problem})
 	}
 
 	if entries, ok := dashboardDecodeExploreSummary(data["planExploreSummary"]); ok {
@@ -98,24 +103,52 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	}
 }
 
+// dashboardTimeSpan holds the earliest and the latest time seen so far, as
+// the RFC 3339 text that was read. An empty text means no time yet.
+type dashboardTimeSpan struct {
+	first, last     time.Time
+	firstAt, lastAt string
+}
+
+// addFirst keeps s as the earliest time when it parses and is earlier than
+// the stored one. A text that does not parse is skipped.
+func (sp *dashboardTimeSpan) addFirst(s string) {
+	if t, ok := dashboardParseTime(s); ok && (sp.firstAt == "" || t.Before(sp.first)) {
+		sp.first, sp.firstAt = t, s
+	}
+}
+
+// addLast keeps s as the latest time when it parses and is later than the
+// stored one. A text that does not parse is skipped.
+func (sp *dashboardTimeSpan) addLast(s string) {
+	if t, ok := dashboardParseTime(s); ok && (sp.lastAt == "" || t.After(sp.last)) {
+		sp.last, sp.lastAt = t, s
+	}
+}
+
 // dashboardReceivedReviewStep builds the received-review step from
-// data.healing.fixProgress, or returns nil when it holds no valid record.
-// A record that is not a map, has no title, or has a status outside
-// healingFixStatuses or a severity outside dimensions.ValidSeverities is
-// skipped: the page puts both values into CSS class names. Each valid record
-// gives one fix row, in list order. The step is in_progress while a record
-// is not in healingFixFinal and the run is live (runCompleted false), else
-// completed. startedAt is the earliest parsable firstAt; completedAt is the
-// latest parsable updatedAt, and is absent while the step runs. A time that
-// does not parse is skipped.
-func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) *DashboardStep {
-	list, ok := healing["fixProgress"].([]any)
+// data.healing.fixProgress. It returns no step when the key is absent or
+// holds no valid record. problem is the text of a state issue: set when the
+// value is not a list (null included), or is a list with records and none
+// of them valid, else empty. A record that is not a map, has no title, or
+// has a status outside healingFixStatuses or a severity outside
+// dimensions.ValidSeverities is skipped: the page puts both values into CSS
+// class names. Each valid record gives one fix row, in list order. The step
+// is in_progress while a record is not in healingFixFinal and the run is
+// live (runCompleted false), else completed. startedAt is the earliest
+// parsable firstAt; completedAt is the latest parsable updatedAt, and is
+// absent while the step runs. A time that does not parse is skipped.
+func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) (step *DashboardStep, problem string) {
+	raw, present := healing["fixProgress"]
+	if !present {
+		return nil, ""
+	}
+	list, ok := raw.([]any)
 	if !ok {
-		return nil
+		return nil, "healing.fixProgress of the ship state is not a list — the received-review fixes are not shown"
 	}
 	var fixes []DashboardFix
-	var first, last time.Time
-	var firstAt, lastAt string
+	var span dashboardTimeSpan
 	open := false
 	for _, raw := range list {
 		m, ok := raw.(map[string]any)
@@ -137,31 +170,26 @@ func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) *Das
 		if !slices.Contains(healingFixFinal, status) {
 			open = true
 		}
-		if s := dashboardStr(m["firstAt"]); s != "" {
-			if t, ok := dashboardParseTime(s); ok && (firstAt == "" || t.Before(first)) {
-				first, firstAt = t, s
-			}
-		}
-		if s := dashboardStr(m["updatedAt"]); s != "" {
-			if t, ok := dashboardParseTime(s); ok && (lastAt == "" || t.After(last)) {
-				last, lastAt = t, s
-			}
-		}
+		span.addFirst(dashboardStr(m["firstAt"]))
+		span.addLast(dashboardStr(m["updatedAt"]))
 	}
 	if len(fixes) == 0 {
-		return nil
+		if len(list) > 0 {
+			return nil, "healing.fixProgress of the ship state holds no valid fix record — the received-review fixes are not shown"
+		}
+		return nil, ""
 	}
-	step := &DashboardStep{
+	step = &DashboardStep{
 		Name:        dashboardShipStepReceivedReview,
 		Status:      StepCompleted,
-		StartedAt:   firstAt,
-		CompletedAt: lastAt,
+		StartedAt:   span.firstAt,
+		CompletedAt: span.lastAt,
 		Detail:      &DashboardStepDetail{Kind: dashboardKindFixes, Fixes: fixes},
 	}
 	if open && !runCompleted {
 		step.Status, step.CompletedAt = StepInProgress, ""
 	}
-	return step
+	return step, ""
 }
 
 // dashboardAttachReceivedReview sets rr.Detail on an existing

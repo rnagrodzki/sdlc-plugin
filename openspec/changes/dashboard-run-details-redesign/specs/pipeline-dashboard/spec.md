@@ -64,6 +64,11 @@ stateDiagram-v2
 - **WHEN** a ship state has no `healing.fixProgress` key
 - **THEN** the ship pipeline has no `received-review` step
 
+#### Scenario: Damaged fix records
+- **WHEN** `healing.fixProgress` is not a list, or is a list with records and no valid record
+- **THEN** the ship pipeline has no `received-review` step
+- **AND** the pipeline has one `state` issue with severity `medium` that names `healing.fixProgress`
+
 #### Scenario: Fix in progress
 - **WHEN** a live ship run has one record with status `fixing`
 - **THEN** the `received-review` step has status `in_progress` and no `completedAt` key

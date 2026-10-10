@@ -444,7 +444,7 @@
         },
         "fixProgress": {
           "type": "array",
-          "description": "Fix status of each finding that received-review Step 11 takes. Upserted on (origin, file, line, title). At most 200 records.",
+          "description": "Fix status of each finding that received-review Step 11 takes. Upserted on (origin, file, line, title). A repeat of the stored status changes nothing. A stored final status (fixed, failed, deferred) is kept when the incoming status is queued or fixing, and a deferred status never replaces a failed status. Any other status change replaces the whole record. firstAt keeps its first value; updatedAt is the time of the last status change. At most 200 records. Independent of fixed[].",
           "maxItems": 200,
           "items": {
             "type": "object",

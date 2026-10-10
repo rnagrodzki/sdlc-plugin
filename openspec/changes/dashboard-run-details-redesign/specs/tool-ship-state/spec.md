@@ -8,9 +8,9 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 | `detail.kind` | Required fields | Write rule |
 |---|---|---|
 | `review-total` | `total`, `dimensions` (non-negative integers) | Replaces `healing.reviewTotal`. |
-| `fixed` | `origin` (`local-review` \| `pr-comment`), `severity` (review severity, stored lowercase), `file`, `title`; optional integer `line` | Appends to `healing.fixed`; a record with the same `(origin, file, line, title)` is a duplicate. |
+| `fixed` | `origin` (`local-review` \| `pr-comment`), `severity` (review severity, stored lowercase), `file`, `title`; optional integer `line` (>= 1) | Appends to `healing.fixed`; a record with the same `(origin, file, line, title)` is a duplicate. |
 | `hardened` | `phase` (`started` \| `done`), `trigger`, `classification`, `applied` (array of `{surface, action, targetFile}`, may be empty), `skipped` (non-negative integer) | Upserts `healing.hardened` by `trigger`: `done` replaces a stored `started`; any other repeat is a duplicate. |
-| `fix-progress` | `origin`, `severity`, `file`, `title`, `status` (`queued` \| `fixing` \| `fixed` \| `failed` \| `deferred`); optional integer `line` | Upserts `healing.fixProgress` on `(origin, file, line, title)`: keeps `firstAt`, sets `updatedAt`; a `deferred` status keeps a stored `failed`; at most 200 records. |
+| `fix-progress` | The `fixed` fields plus `status` (`queued` \| `fixing` \| `fixed` \| `failed` \| `deferred`) | Upserts `healing.fixProgress` on `(origin, file, line, title)`: the same status changes nothing; a stored final status (`fixed`, `failed`, `deferred`) is kept against `queued` or `fixing`; a `deferred` status keeps a stored `failed`; any other change replaces the record, keeps `firstAt`, and sets `updatedAt`; at most 200 records. |
 
 - `applied[].surface` is one of `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions`, `error-report-skill`, `skill-recommendation`.
 - Each `review-total`, `fixed`, and `hardened` record gets `recordedAt`. A `fix-progress` record gets `firstAt` and `updatedAt`.
@@ -20,11 +20,11 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 
 | Output field | Meaning |
 |---|---|
-| `summary` | `healing_record <kind>: <narration>`; narration is `recorded`, `replaced started record`, `already recorded — no change`, `kept failed`, or `no live ship run on this branch — healing not recorded`. |
+| `summary` | `healing_record <kind>: <narration>`; narration is `recorded`, `replaced started record`, `already recorded — no change`, `kept <status>`, or `no live ship run on this branch — healing not recorded`. |
 | `kind` | The kind. |
 | `written` | `true` only when this call changed the state file. |
-| `record` | The validated record as persisted, `recordedAt` included. |
-| `next` | Kind `fix-progress` only: the next instruction for the fix pass, with id `continue-fix-pass`. |
+| `record` | The record as stored after the call: `recordedAt` for `review-total`, `fixed` and `hardened`; `status`, `firstAt` and `updatedAt` for `fix-progress`. On a no-op call it is the stored entry. With no live run it is the validated incoming record. |
+| `next` | Kind `fix-progress` only: the next instruction for the fix pass, with id `continue-fix-pass`. The other kinds are terminal and return no `next`. |
 
 | Condition | Class | Message (short) |
 |---|---|---|
@@ -34,7 +34,8 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 | Required field missing | `DomainError` | `healing_record: detail.<field> is required for kind "<kind>"` |
 | Integer field negative or fractional | `DomainError` | `healing_record: detail.<field> must be a non-negative integer, got ...` |
 | New `fix-progress` key when 200 records exist | `DomainError` | `healing_record: data.healing.fixProgress holds 200 records — the cap for one run` |
-| Stored `healing.fixProgress` is not a list | `DataError` | `healing_record: data.healing.fixProgress is not a list — the ship state is damaged` |
+| `line` below 1 | `DomainError` | `healing_record: detail.line must be >= 1, got <n>` |
+| Stored `healing.fixed`, `healing.hardened` or `healing.fixProgress` is not a list, or `healing` is not an object | `DataError` | `healing_record: data.healing.<key> in <state file> is not a list — the ship state is damaged` |
 
 #### Scenario: Fixed duplicate
 - **WHEN** the same `fixed` record is sent twice
@@ -56,6 +57,11 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 #### Scenario: Deferred keeps failed
 - **WHEN** a `fix-progress` record has status `failed` and the same key is sent with status `deferred`
 - **THEN** the response has `written:false` and narration `kept failed`
+- **AND** `record` is the stored record with status `failed`
+
+#### Scenario: Final status kept against a late queued
+- **WHEN** a `fix-progress` record has status `fixed` and the same key is sent with status `queued`
+- **THEN** the response has `written:false`, narration `kept fixed`, and `record.status` `fixed`
 
 #### Scenario: Cap reached
 - **WHEN** `healing.fixProgress` holds 200 records and a new key is sent
