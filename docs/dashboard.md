@@ -31,14 +31,20 @@ For each registered repo, the page shows:
   review run of a ship run shows inside the ship block, not as its own
   block. Each carries a status (`running`, `stalled`, `completed`, or
   `failed`), a done/total progress count, a track of its steps, and any
-  issues. Each step with detail is a tile: waves and tasks, review
-  dimensions, review findings, plan guardrails, plan explorers, plan review
-  rounds, or the result of a commit step with nothing to commit. Each
-  issue has a severity, a location (the file and line of a review finding,
-  else the step, wave, or task it came from), and a reason. A click on an
-  issue opens it in the [detail viewer](#detail-viewer). A `completed`,
-  `failed`, or `stalled` pipeline has an **Archive** button (see
-  [Archive a run](#archive-a-run)). A `running`
+  issues. A chip after the branch name shows the run duration. The time of
+  a running pipeline increases each second. Each ship step and execute wave
+  shows its duration under its name. Plan and standalone review steps show
+  no duration. Each step with detail is a tile: waves and tasks, review
+  dimensions as cards in balanced columns, review findings, plan
+  guardrails, plan explorers, plan review rounds, the fixes of the
+  received-review step, or the result of a commit step with nothing to
+  commit. Each issue has a severity, a location (the file and line of a
+  review finding, else the step, wave, or task it came from), and a
+  reason. The issues tile lists issues from critical to info and shows at
+  most 2 lines of each text. A click on an issue opens the full text in
+  the [detail viewer](#detail-viewer). A `completed`, `failed`, or
+  `stalled` pipeline has an archive icon at the left of its options, with
+  the tooltip "Archive this run" (see [Archive a run](#archive-a-run)). A `running`
   pipeline whose state has not changed in 30 minutes shows as `stalled`,
   unless it waits for an answer or a permission. A waiting pipeline shows
   "WAITING ON YOU" and the wait time. The header shows a `waiting` count
@@ -146,7 +152,7 @@ dialog. Four kinds of row open it:
   and cuts it at 8000 characters. A cut text ends with `…`. When the log has
   no such entry any more, the viewer shows "The body of this learning was not
   found."
-- Close the viewer with the **Close** button or the Esc key. The focus goes
+- Close the viewer with the close icon at its top left or the Esc key. The focus goes
   back to the row that opened it, or to the Activity tab when that row is
   gone.
 - The viewer follows the snapshot. When the item leaves the snapshot, for
@@ -162,7 +168,7 @@ any more, such as a stalled run that will not resume.
 Archive asks for a confirm before it changes a file. The dialog shows the
 question "Archive run `<runId>`?".
 
-| Status of the row | Archive button | Confirm steps | Result |
+| Status of the row | Archive icon | Confirm steps | Result |
 |---|---|---|---|
 | `running` | None | None | The server refuses with `RUN_ACTIVE` |
 | `stalled` | Shown | 2: the second asks "The run stalled. Archive removes its resume point." | Archived after the second confirm |
@@ -175,7 +181,7 @@ request.
 What Archive does:
 
 - Only a top-level pipeline row can be archived. A run nested in a ship
-  block, such as its execute run or its review run, has no button. It moves
+  block, such as its execute run or its review run, has no archive icon. It moves
   with its ship.
 - A `completed` or `failed` run is a row for 24 hours after its last update.
   After that the run is not a row, and its id returns `RUN_NOT_FOUND`.
@@ -532,7 +538,10 @@ collector reads the data, and the tool action that writes it.
 
 | Field | Source | Written by |
 |---|---|---|
-| `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, `findings`, `guardrails`, or `result`. It tells which field of `detail` is filled. | Collector, not stored |
+| `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, `findings`, `guardrails`, `result`, or `fixes`. It tells which field of `detail` is filled. | Collector, not stored |
+| `steps[].startedAt`, `steps[].completedAt` | `startedAt` and `completedAt` of a ship step or an execute wave, as RFC 3339 text. No key when the time is absent or does not parse. A running step has no `completedAt`. The `plan` step that the collector adds, and the steps of a standalone plan or review pipeline, have no times. | ship_state step actions; execute_state wave actions |
+| `steps[].detail.fixes` | `healing.fixProgress[]` of the ship state, in stored order. Each row has `title` (redacted, at most 120 characters), `severity`, `file`, `line` (absent when 0), and `status`: `queued`, `fixing`, `fixed`, `failed`, or `deferred`. A record with an unknown status or severity is skipped. | ship_state `healing_record` kind `fix-progress` |
+| received-review step | Added after the first `review` step of a ship block when `healing.fixProgress[]` holds a valid record. `in_progress` while a row is `queued` or `fixing` on a live run, else `completed`. `startedAt` is the earliest `firstAt`. `completedAt` is the latest `updatedAt`. | Collector, derived |
 | `steps[].detail.waves` | `waves[]` of the execute state, with `number`, `status`, `committedSha`, and `tasks[]`. A task name is the name of its task row, else the name in the wave's `planned[]`, else the `plannedTasks` name. | The execute_state wave and task actions: `wave-start`, `wave-done`, `wave-fail`, `task-done`, `task-fail`, `wave-commit`, `wave-committed`, and the others that edit `waves[]` |
 | `steps[].detail.queued` | `plannedTasks` of the execute state that are in no wave and in no planned wave. `plannedTasks` is one `{id, name}` for each `### Task N:` heading of the plan. | execute_state `init`, only when `planPath` is readable |
 | `steps[].detail.dimensions` | One row for each planned dimension in the `run.meta` of a `runs/ledger/review-*/` folder. A row with no worker file is `pending`. A stopped row is `skipped` with a `reason`. A worker file holds `checkinAt`, `checkoutAt`, and `findings`. The collector derives `name` (the dimension name; the file name when `run.meta` plans no dimension), `status` (completed when `checkoutAt` is set), and the `findings` count and `worst` severity of the dimension. The `run.meta` of the folder ties the review to its ship run. A worker file that cannot be read or does not parse is an `in_progress` row with no findings, and it counts as a run dimension. Findings that are not a JSON list count as none. A `run.meta` that exists but cannot be read or does not parse gives the rows of the worker files, as with no `run.meta`. Each of these three cases also adds a `state` issue that names the file. Each dimension row also has `findingItems`: its finding rows (`text`, `severity`, `file`, `line`), the same rows as `steps[].detail.findings`, or `[]` when the dimension has no finding. | execute_state `ledger_checkin`, `ledger_checkout`, `ledger_skip` |
@@ -568,7 +577,10 @@ collector reads the data, and the tool action that writes it.
   `commit` step has `result` when it completed with a `nothing to commit` result. When the ship state
   holds `planExploreSummary`, the collector adds a first step `plan` with
   `explorers`. When it also holds `planReviewRounds`, the step adds `rounds`
-  and `maxRounds`.
+  and `maxRounds`. When the ship state holds fix records, the
+  `received-review` step has `fixes`. On a completed run, the step shows
+  completed. A row keeps its last status. A `queued` or `fixing` row on a
+  completed run means that the fix pass stopped.
 
 ### How runs join a ship block
 
