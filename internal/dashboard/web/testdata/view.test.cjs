@@ -2709,7 +2709,7 @@ describe('render tiles from the shared fixture', () => {
 
   test('tiles follow track order, then issues, then session; skipped and harden steps give no tile', () => {
     const block = fixtureBlock('sdlc-plugin', SHIP);
-    assert.deepEqual(tilesOf(block).map((t) => t.attrs['data-section']), ['plan', 'execute', 'review', 'issues', 'session']);
+    assert.deepEqual(tilesOf(block).map((t) => t.attrs['data-section']), ['plan', 'execute', 'review', 'received-review', 'issues', 'session']);
   });
 
   test('a ship execute tile: three waves, committed with the short sha, a task with no name shows its id only', () => {

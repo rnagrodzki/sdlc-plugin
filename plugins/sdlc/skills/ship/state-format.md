@@ -58,7 +58,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `historyFailureRecorded` | boolean | Absent until the first `fail` of the run. The first `ship_state{action:"fail"}` of a run sets it to `true` before it appends the failure row to `runs.jsonl`. `true` does not prove the row exists: a failed append leaves the flag set. It stops a second `fail` row for the same run. It does not stop Step 10c's `history_record` row, so a run that fails, resumes, and completes has two rows: the `failure` row and the final row. See "Issues and `lastFailedStep`" below. |
 | `commitBaseHead` | string | Absent until the first `ship_state{action:"commit-check"}` of the run. That call stores the HEAD sha of the active worktree. Later `commit-check` calls do not change it. With a clean tree, HEAD equal to `commitBaseHead` means nothing to commit; HEAD not equal to it means the commit landed. See "The `commit-check` Action" below. |
 | `sideEffects` | object | Idempotency journal keyed by step name (`<step>#<n>` for a repeated name, which `ship_prepare` never writes — see "Repeated step names"). Written by `ship_verify_side_effect` and by `commit-check` when it finds a landed commit; consulted by `begin-step`'s `alreadyDone` flag. See below. |
-| `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `hardened[]`). See "`data.healing`" below. |
+| `healing` | object | Absent until the first `ship_state{action:"healing_record"}` call. Self-healing ledger (`reviewTotal`, `fixed[]`, `fixProgress[]`, `hardened[]`). See "`data.healing`" below. |
 | `planExploreSummary` | array | Absent until `cleanup-pipeline` saves the summary copy, which it does before it deletes the linked plan run. If the delete then fails (`planRun.reason` `remove failed: ...`), the key stays set and the plan run stays on disk. One `{name, status, total, top[]}` entry for each plan explorer; `status` is `running`, `done`, or `unreadable`; `top` holds at most 5 `{summary, ref}` findings. `[]` when the plan run had no explorer files. See "Lifecycle: Cleanup." |
 | `planReviewRounds` | array | Absent until `cleanup-pipeline` copies the plan state `reviewRounds` before it deletes the linked plan run. The copy goes into the same ship state write as `planExploreSummary`. If the delete then fails (`planRun.reason` `remove failed: ...`), the key stays set and the plan run stays on disk. Absent when the plan run had no rounds. A later call on a plan run with no rounds keeps a stored list as it is. Same row shape as the plan state: `{round, mergedStatus, found, fixed, lenses[{name, verdict}], findings?[{id, fixed}]}`. See "Lifecycle: Cleanup." |
 | `pipelineStatus` | string | Absent until the pipeline is stamped terminal. Set to `"completed"` by `cleanup`/`cleanup-pipeline` — see "Lifecycle: Cleanup." |
@@ -284,6 +284,11 @@ Self-healing ledger, written only by `ship_state{action:"healing_record", step?,
   "fixed": [
     { "origin": "local-review", "severity": "high", "file": "src/auth.ts", "line": 42, "title": "Extract token validation", "recordedAt": "2026-03-27T15:00:00Z" }
   ],
+  "fixProgress": [
+    { "origin": "pr-comment", "severity": "medium", "file": "internal/api/errors.go", "line": 17,
+      "title": "Error message leaks the user id", "status": "failed",
+      "firstAt": "2026-10-10T10:00:00Z", "updatedAt": "2026-10-10T10:04:51Z" }
+  ],
   "hardened": [
     { "phase": "done", "trigger": "cluster:src/auth.ts", "classification": "plugin-defect", "applied": [{ "surface": "review-dimensions", "action": "strengthen", "targetFile": ".sdlc-v2/review-dimensions/auth-checks.md" }], "skipped": 0, "recordedAt": "2026-03-27T15:05:00Z" }
   ]
@@ -294,6 +299,9 @@ Self-healing ledger, written only by `ship_state{action:"healing_record", step?,
 |---|---|---|
 | `reviewTotal` | object | `{total, dimensions, recordedAt}` — the review step's own finding and dimension count. `kind:"review-total"` (`detail.total`, `detail.dimensions`). A later `review-total` record replaces it; there is only ever one. |
 | `fixed` | array | One entry per fixed-and-verified finding: `{origin, severity, file, line, title, recordedAt}`. `kind:"fixed"` (`detail.origin`, `detail.severity`, `detail.file`, `detail.line`, `detail.title`). `origin` is `"local-review"` or `"pr-comment"`. Deduplicated on `(origin, file, line, title)` — a repeat record with the same key is not appended twice. |
+| `fixProgress[]` | array | One record for each finding that received-review Step 11 takes. Key `(origin, file, line, title)`. `firstAt` is the first write. `updatedAt` is the last write. `kind:"fix-progress"` (`detail.origin`, `detail.severity`, `detail.file`, `detail.line`, `detail.title`, `detail.status`). |
+| `fixProgress[].status` | string | `queued`, `fixing`, `fixed`, `failed` or `deferred`. A `deferred` write keeps a stored `failed`. |
+| cap | — | 200 records for each run. No setting changes it. At the cap, the tool rejects a new key with a `DomainError`. |
 | `hardened` | array | One entry per harden run: `{phase, trigger, classification, applied[], skipped, recordedAt}`. `kind:"hardened"` (`detail.phase`, `detail.trigger`, `detail.classification`, `detail.applied`, `detail.skipped`). `phase` is `"started"` or `"done"`; a `"done"` record replaces the `"started"` record with the same `trigger` — a `"started"` record with no matching `"done"` marks an interrupted run. Each `applied[]` entry is `{surface, action, targetFile}`, `surface` one of `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions`, `error-report-skill`, `skill-recommendation`. |
 
 `step` travels with a `healing_record` call by convention — the caller passes its own step name (`"review"`, `"received-review"`, `"harden"`) — but the handler itself never reads it; only `detail` drives the write.
@@ -309,7 +317,7 @@ Self-healing ledger, written only by `ship_state{action:"healing_record", step?,
 | `reviewLedger` | object \| null | `{total, fixed, deferredByReason, unaccounted}`. `null` when `data.healing.reviewTotal` was never recorded — review didn't run, or its `review-total` call was skipped because `{M}` was unreadable. |
 | `reviewLedgerNote` | string | Present only when `reviewLedger` is `null`: `"review did not run or its total was not recorded"`. |
 | `deferredFindings` | number | Count of `data.deferredFindings` entries — a plain, already-computed count. Do not re-derive it by summing `reviewLedger.deferredByReason`'s values yourself; read this field instead. Not the same thing as the top-level `deferredFindings` array on the `read` response, which holds the entries themselves. |
-| `healing` | object | `data.healing` verbatim (`{reviewTotal?, fixed?, hardened?}` — see `data.healing` above), or `{}` when no `healing_record` call has been made. Ship's harden step reads `reportData.healing.fixed` from here. |
+| `healing` | object | `data.healing` verbatim (`{reviewTotal?, fixed?, fixProgress?, hardened?}` — see `data.healing` above), or `{}` when no `healing_record` call has been made. Ship's harden step reads `reportData.healing.fixed` from here. |
 
 `reviewLedger`'s own fields, computed server-side, never by the calling skill:
 - `total` is `data.healing.reviewTotal.total` verbatim.

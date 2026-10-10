@@ -168,7 +168,7 @@ records, alongside the resolved pipeline flags:
   that produced it.
 - **`reportData`** — step counts (total/completed/pending/skipped/failed),
   duration, decisions, deferred-finding count, bump provenance, the
-  self-healing record (`healing`: fixed findings and harden runs, `{}` when
+  self-healing record (`healing`: fixed findings, fix progress of each finding, and harden runs, `{}` when
   none were recorded), and the review ledger (below), computed on the fly each time state is read (not
   persisted to disk). This lets the final pipeline report be rendered from
   already-computed values instead of re-deriving them from raw step/decision

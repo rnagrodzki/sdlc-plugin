@@ -443,12 +443,28 @@ link gate and after the recording result below is known.
 2. Simple fixes (typos, imports, naming)
 3. Complex fixes (refactoring, logic changes)
 
+**Fix progress.** Before the first fix, make one `fix-progress` call with `status:"queued"` for each
+"agree-will-fix" finding. Use the same `origin`, `file`, `line` and `title` in each call for one
+finding. A different title makes a second record.
+```
+ship_state({action:"healing_record", step:"received-review", detail:{
+  kind:"fix-progress", origin:"<local-review|pr-comment>",
+  severity:"<critical|high|medium|low|info — the finding's own severity; use medium when a human comment carries none>",
+  file:"<path>", line:<line, when known>, title:"<one line>", status:"<status>"}})
+```
+If a `fix-progress` call fails, print one warning
+(`WARNING: could not record fix progress for <file>:<line> — <error>`). Then continue.
+Follow the `next` line of the result. Never let this call stop a fix or a reply.
+
 For each change: make the edit, verify it compiles/passes tests, then move to the next.
+Before the edit, make the `fix-progress` call with `status:"fixing"`. When the fix passes its own
+verification, make the `fix-progress` call with `status:"fixed"` before the next fix starts.
 Do NOT batch changes across items.
 
 **When a fix fails its own verification (either mode):** revert only that fix's files
-(`git checkout -- <files>` for that fix, not the whole tree). Do not call `ship_state` here —
-mark the finding unfixed, with `reason: "needs-direction"` and `description: "fix failed:
+(`git checkout -- <files>` for that fix, not the whole tree). Make the `fix-progress` call with
+`status:"failed"`. Do not make any other `ship_state` call here — mark the finding unfixed, with
+`reason: "needs-direction"` and `description: "fix failed:
 <error, truncated to 200 chars>"`, and let the recording pass at the end of this step make the
 one `ship_state({action:"defer", ...})` call for it (or the `deferred_add` fallback), exactly
 like every other unfixed finding — a second call here would double-record it. Never retry a
@@ -491,10 +507,12 @@ retry, and never let it block the rest of this step.
 
 For each finding still **unfixed**, make the `ship_state({action:"defer", ...})` call defined
 in Step 4, once per finding, and handle a `WARNING: could not persist` narration exactly as
-Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that fails too). Track per finding
-whether its record succeeded — Step 11.6, Step 12's ledger and Step 12's reply bodies all read
-that result. An unfixed finding with no record is the exact failure this step exists to
-prevent.
+Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that fails too).
+If the finding got a `queued` call, then make the `fix-progress` call with `status:"deferred"`.
+The tool keeps `failed` for a fix that failed. A finding with no `queued` call gets no
+`deferred` call. Track per finding whether its `defer` record succeeded — Step 11.6, Step 12's
+ledger and Step 12's reply bodies all read that result. An unfixed finding with no record is the exact
+failure this step exists to prevent.
 
 ---
 

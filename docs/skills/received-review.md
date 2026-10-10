@@ -84,6 +84,12 @@ stale entry behind. They show up in the deferred backlog that
 for every finding as `fixed`, `deferred` (grouped by `reason`), or
 `UNACCOUNTED`.
 
+In a `/ship` run, Step 11 also writes the status of each accepted finding
+(`queued`, `fixing`, `fixed`, `failed`, `deferred`) to `healing.fixProgress`.
+The dashboard shows these rows on the received-review station. One run stores
+at most 200 fix records. No setting changes this cap. At the cap, the tool
+rejects a new finding, and the fix pass continues without more status writes.
+
 **Recording is best-effort, with a fallback.** The primary write attaches the
 finding to the current `/ship` run. When there is no ship state for the branch
 — a standalone run, for instance — or the write cannot be persisted, the skill

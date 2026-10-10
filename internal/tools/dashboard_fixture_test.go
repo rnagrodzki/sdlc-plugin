@@ -119,7 +119,8 @@ func dashboardFixtureDiff(a, b any, path string) string {
 // strictly into DashboardSnapshot, encodes it again, and compares both sides
 // as JSON, so every key of the fixture survives the round trip. It also
 // checks that no string holds an HTML marker, that no value is null except
-// completedAt, and that each step detail has a kind of the closed set.
+// the completedAt of a pipeline, and that each step detail has a kind of the
+// closed set.
 func TestDashboardFixture_MatchesContract(t *testing.T) {
 	raw := dashboardFixtureRead(t)
 	snap := dashboardFixtureDecode(t, raw)
@@ -146,7 +147,7 @@ func TestDashboardFixture_MatchesContract(t *testing.T) {
 				t.Errorf("%s holds an HTML marker: %q", path, n)
 			}
 		case nil:
-			if !strings.HasSuffix(path, ".completedAt") {
+			if !dashboardFixtureNullAllowed(path) {
 				t.Errorf("%s is null: lists are [] and text is a string", path)
 			}
 		}
@@ -160,6 +161,30 @@ func TestDashboardFixture_MatchesContract(t *testing.T) {
 					t.Errorf("%s %s step %s: detail kind %q is not in %v", repo.Name, p.ID, s.Name, s.Detail.Kind, kinds)
 				}
 			}
+		}
+	}
+}
+
+// dashboardFixtureNullAllowed reports whether a null at path is legal. Only
+// the completedAt of a pipeline may be null: a step time is absent, never
+// null.
+func dashboardFixtureNullAllowed(path string) bool {
+	return strings.HasSuffix(path, ".completedAt") && !strings.Contains(path, ".steps[")
+}
+
+// TestDashboardFixture_NullAllowed pins the null rule of the fixture walk.
+func TestDashboardFixture_NullAllowed(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"$.repos[0].pipelines[0].completedAt", true},
+		{"$.repos[0].pipelines[0].steps[2].completedAt", false},
+		{"$.repos[0].pipelines[0].steps[2].startedAt", false},
+	}
+	for _, c := range cases {
+		if got := dashboardFixtureNullAllowed(c.path); got != c.want {
+			t.Errorf("dashboardFixtureNullAllowed(%q) = %t, want %t", c.path, got, c.want)
 		}
 	}
 }
@@ -242,6 +267,7 @@ func TestDashboardFixture_CoversContentTable(t *testing.T) {
 		"execute with queued tasks", "wave with a commit sha", "wave without a commit sha", "task without a name",
 		"review findings tile with a finding", "review findings tile without findings", "review dimension in progress",
 		"harden step without detail",
+		"step with both times", "step with a start time only",
 		"running pipeline with attention", "guardrail counts", "result line", "round totals", "repair limit",
 		"finding outcome", "review plan", "dimension with a wave", "skipped dimension with a reason",
 	}
@@ -275,6 +301,12 @@ func dashboardFixtureCoverSteps(p DashboardPipeline, seen map[string]bool) {
 	}
 	for _, s := range p.Steps {
 		seen["step:"+s.Status] = true
+		if s.StartedAt != "" && s.CompletedAt != "" {
+			seen["step with both times"] = true
+		}
+		if s.StartedAt != "" && s.CompletedAt == "" {
+			seen["step with a start time only"] = true
+		}
 		if p.Kind == "review" && s.Status == StepInProgress {
 			seen["review dimension in progress"] = true
 		}
