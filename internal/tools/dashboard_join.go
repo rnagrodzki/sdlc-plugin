@@ -96,11 +96,18 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 		if rounds := dashboardPlanRounds(dashboardPlanStoredRounds(data[shipPlanReviewRoundsKey])); len(rounds) > 0 {
 			plan.Detail.Rounds, plan.Detail.MaxRounds = rounds, maxReviewRounds
 		}
-		p.Steps = append([]DashboardStep{plan}, p.Steps...)
-		p.Progress.Done++
-		p.Progress.Total++
-		p.Progress.Label = dashboardStepLabel(p.Progress)
+		dashboardInsertPlanStation(p, plan)
 	}
+}
+
+// dashboardInsertPlanStation puts plan first in p.Steps, adds one done
+// step to p.Progress and refreshes p.Progress.Label. Callers:
+// dashboardShipDetail and dashboardAttachPlanTimes.
+func dashboardInsertPlanStation(p *DashboardPipeline, plan DashboardStep) {
+	p.Steps = append([]DashboardStep{plan}, p.Steps...)
+	p.Progress.Done++
+	p.Progress.Total++
+	p.Progress.Label = dashboardStepLabel(p.Progress)
 }
 
 // dashboardTimeSpan holds the earliest and the latest time seen so far, as

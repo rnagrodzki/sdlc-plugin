@@ -410,6 +410,9 @@ func dashboardRecentRuns(root string) []DashboardRun {
 // dashboardRunFromRecord maps one runs.jsonl row to a DashboardRun. EndedAt
 // is the row's ts. StartedAt is the row's started_at when present, else ts
 // minus duration_ms when ts parses and duration_ms is positive, else "".
+// TotalMs is duration_ms. A ship row whose plan_started_at parses and does not
+// come after ts also copies the plan fields and counts TotalMs from the plan
+// start to ts.
 func dashboardRunFromRecord(r history.RunRecord) DashboardRun {
 	started := r.StartedAt
 	if started == "" && r.DurationMs > 0 {
@@ -417,12 +420,23 @@ func dashboardRunFromRecord(r history.RunRecord) DashboardRun {
 			started = dashboardFormatTime(end.Add(-time.Duration(r.DurationMs) * time.Millisecond))
 		}
 	}
-	return DashboardRun{
+	run := DashboardRun{
 		Kind:       r.Skill,
 		Branch:     r.Branch,
 		Outcome:    r.Outcome,
 		StartedAt:  started,
 		EndedAt:    r.Timestamp,
 		DurationMs: r.DurationMs,
+		TotalMs:    r.DurationMs,
 	}
+	if r.Skill == "ship" && r.PlanStartedAt != "" {
+		planStart, okStart := dashboardParseTime(r.PlanStartedAt)
+		end, okEnd := dashboardParseTime(r.Timestamp)
+		if okStart && okEnd && !planStart.After(end) {
+			run.PlanStartedAt = r.PlanStartedAt
+			run.PlanDurationMs = r.PlanDurationMs
+			run.TotalMs = end.Sub(planStart).Milliseconds()
+		}
+	}
+	return run
 }

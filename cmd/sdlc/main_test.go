@@ -76,8 +76,8 @@ func TestForbidMark3LabsMCPGo(t *testing.T) {
 	}
 }
 
-// TestDashboardOptions pins the wiring of "sdlc dashboard serve": the archive
-// and learning routes call the tools functions, and the cache clear route
+// TestDashboardOptions pins the wiring of "sdlc dashboard serve": the archive,
+// learning and three delete routes call the tools functions, and the cache clear route
 // passes the root, the time and dashboard.LogPath() to the clear function.
 func TestDashboardOptions(t *testing.T) {
 	t.Setenv("SDLC_CACHE_DIR", t.TempDir())
@@ -99,6 +99,15 @@ func TestDashboardOptions(t *testing.T) {
 	}
 	if o.LearningBody == nil || reflect.ValueOf(o.LearningBody).Pointer() != reflect.ValueOf(tools.DashboardLearningBody).Pointer() {
 		t.Error("LearningBody is not tools.DashboardLearningBody")
+	}
+	if o.DeletePreplan == nil || reflect.ValueOf(o.DeletePreplan).Pointer() != reflect.ValueOf(tools.DeletePreplanTopic).Pointer() {
+		t.Error("DeletePreplan is not tools.DeletePreplanTopic")
+	}
+	if o.DeleteDeferred == nil || reflect.ValueOf(o.DeleteDeferred).Pointer() != reflect.ValueOf(tools.DeleteDeferredItem).Pointer() {
+		t.Error("DeleteDeferred is not tools.DeleteDeferredItem")
+	}
+	if o.DeleteLearning == nil || reflect.ValueOf(o.DeleteLearning).Pointer() != reflect.ValueOf(tools.DeleteDashboardLearning).Pointer() {
+		t.Error("DeleteLearning is not tools.DeleteDashboardLearning")
 	}
 	if o.ClearCache == nil {
 		t.Fatal("ClearCache is nil")

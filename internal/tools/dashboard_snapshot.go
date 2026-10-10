@@ -499,6 +499,15 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 			dashboardAttachAttention(&p, recs)
 		}
 		if ok && dashboardFinish(&p, updated, now) {
+			// Inside the shown branch: only a shown ship run reads the
+			// execute state and runs.jsonl. A read problem is a warning,
+			// never repo.Error, because repo.Error blocks the archive of
+			// every run of the repo.
+			if p.Kind == "ship" {
+				if w := dashboardAttachPlanTimes(root, &p, st); w != "" {
+					repo.Warnings = append(repo.Warnings, w)
+				}
+			}
 			repo.Pipelines = append(repo.Pipelines, p)
 		}
 	}
