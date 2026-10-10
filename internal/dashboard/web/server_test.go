@@ -2099,8 +2099,9 @@ func TestStaticIndex_IdsAndScripts(t *testing.T) {
 	}
 	for _, id := range []string{
 		"conn", "conn-text", "totals", "stop-btn", "stop-dialog", "stop-dialog-text", "stop-confirm", "stop-cancel",
-		"tab-pipelines", "tab-activity", "tab-history", "n-pipelines", "n-activity", "n-history",
-		"filter-chips", "toggle-all", "panel-pipelines", "panel-activity", "panel-history", "feed",
+		"tab-pipelines", "tab-activity", "tab-history", "tab-preplans",
+		"n-pipelines", "n-activity", "n-history", "n-preplans",
+		"filter-chips", "toggle-all", "panel-pipelines", "panel-activity", "panel-history", "panel-preplans", "feed",
 		"detail-dialog", "detail-title", "detail-content", "detail-close",
 		"confirm-dialog", "confirm-text", "confirm-ok", "confirm-cancel", "clear-btn",
 	} {
@@ -2120,7 +2121,7 @@ func TestStaticIndex_IdsAndScripts(t *testing.T) {
 	if n := strings.Count(page, `role="tablist"`); n != 1 {
 		t.Errorf("index.html has %d tablists; want 1", n)
 	}
-	for _, name := range []string{"pipelines", "activity", "history"} {
+	for _, name := range []string{"pipelines", "activity", "history", "preplans"} {
 		tab, panel := htmlOpenTag(page, "tab-"+name), htmlOpenTag(page, "panel-"+name)
 		if !strings.Contains(tab, `role="tab"`) || !strings.Contains(tab, `aria-controls="panel-`+name+`"`) {
 			t.Errorf("tab %q = %s; want role=tab and aria-controls panel-%s", name, tab, name)
@@ -2140,6 +2141,54 @@ func TestStaticIndex_IdsAndScripts(t *testing.T) {
 	want := []string{"static/view.js", "static/render.js", "static/app.js"}
 	if strings.Join(scripts, ",") != strings.Join(want, ",") {
 		t.Errorf("script order = %v; want %v", scripts, want)
+	}
+}
+
+// preplanStatusesJSRe finds the PREPLAN_STATUSES list in view.js, and
+// jsQuotedRe finds each quoted status inside it.
+var (
+	preplanStatusesJSRe = regexp.MustCompile(`var PREPLAN_STATUSES = \[([^\]]*)\];`)
+	jsQuotedRe          = regexp.MustCompile(`'([^']*)'`)
+)
+
+// preplanStatusesFromJS returns the values of the PREPLAN_STATUSES list in
+// the text of view.js, in source order.
+func preplanStatusesFromJS(t *testing.T, js string) []string {
+	t.Helper()
+	m := preplanStatusesJSRe.FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("view.js has no `var PREPLAN_STATUSES = [...];` line")
+	}
+	out := []string{}
+	for _, q := range jsQuotedRe.FindAllStringSubmatch(m[1], -1) {
+		out = append(out, q[1])
+	}
+	return out
+}
+
+// TestPreplanStatusParity checks that PREPLAN_STATUSES in view.js equals
+// tools.PreplanStatuses in value and order, and that the check sees a status
+// that is changed, removed or added in the view.js text.
+func TestPreplanStatusParity(t *testing.T) {
+	js := staticFile(t, "view.js")
+	want := tools.PreplanStatuses
+	if got := preplanStatusesFromJS(t, js); !reflect.DeepEqual(got, want) {
+		t.Errorf("view.js PREPLAN_STATUSES = %q, tools.PreplanStatuses = %q", got, want)
+	}
+
+	line := preplanStatusesJSRe.FindString(js)
+	for name, drifted := range map[string]string{
+		"status renamed": strings.Replace(js, line, strings.Replace(line, "'paused'", "'stopped'", 1), 1),
+		"status removed": strings.Replace(js, line, strings.Replace(line, ", 'paused'", "", 1), 1),
+		"status added":   strings.Replace(js, line, strings.Replace(line, "'paused'", "'paused', 'archived'", 1), 1),
+		"order changed":  strings.Replace(js, line, strings.Replace(line, "'in progress', 'ready for plan'", "'ready for plan', 'in progress'", 1), 1),
+	} {
+		if drifted == js {
+			t.Fatalf("%s: the drift edit changed nothing; update the test to the view.js line", name)
+		}
+		if got := preplanStatusesFromJS(t, drifted); reflect.DeepEqual(got, want) {
+			t.Errorf("%s: the parity check did not see the change", name)
+		}
 	}
 }
 
@@ -2916,5 +2965,7 @@ func TestStaticAppJS_DimensionGridObserver(t *testing.T) {
 	}
 	if feed := body("function renderFeed("); !strings.Contains(feed, "watchDimensionGrids();") {
 		t.Errorf("renderFeed = %q; want it to call watchDimensionGrids()", feed)
+	} else if !strings.Contains(feed, "repo-warning") {
+		t.Errorf("renderFeed = %q; want it to draw the repo warning lines", feed)
 	}
 }

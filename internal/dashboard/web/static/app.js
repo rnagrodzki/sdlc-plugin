@@ -78,6 +78,7 @@ var tabs = {
   pipelines: { tab: byId('tab-pipelines'), panel: byId('panel-pipelines'), count: byId('n-pipelines') },
   activity: { tab: byId('tab-activity'), panel: byId('panel-activity'), count: byId('n-activity') },
   history: { tab: byId('tab-history'), panel: byId('panel-history'), count: byId('n-history') },
+  preplans: { tab: byId('tab-preplans'), panel: byId('panel-preplans'), count: byId('n-preplans') },
 };
 
 function storage() {
@@ -144,6 +145,8 @@ function focusKeyOf(node) {
   }
   if (node.hasAttribute('data-hist-outcome')) return 'hist-outcome\n' + node.getAttribute('data-hist-outcome');
   if (node.hasAttribute('data-hist-sort')) return 'hist-sort\n' + node.getAttribute('data-hist-sort');
+  if (node.hasAttribute('data-act-priority')) return 'act-priority\n' + node.getAttribute('data-act-priority');
+  if (node.hasAttribute('data-pp-status')) return 'pp-status\n' + node.getAttribute('data-pp-status');
   if (node.hasAttribute('data-station')) return prefix + 'station\n' + node.getAttribute('data-station');
   if (node.classList.contains('fold-btn')) return prefix + 'fold';
   var tile = node.closest('[data-section]');
@@ -161,7 +164,7 @@ function restoreFocus() {
   if (active && active !== document.body && document.contains(active)) return;
   var candidates = document.querySelectorAll(
     '[data-root], [data-station], .fold-btn, [data-section] > summary, [data-detail], [data-archive], ' +
-      '[data-hist-outcome], [data-hist-sort]'
+      '[data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status]'
   );
   for (var i = 0; i < candidates.length; i++) {
     if (focusKeyOf(candidates[i]) === ui.focusKey) {
@@ -243,6 +246,9 @@ function renderFeed(snapshot, repos, scope, now, tz) {
   repos.forEach(function (repo) {
     if (!view.inScope(scope, repo.root)) return;
     if (repo.error) nodes.push(draw.emptyState(document, 'repo-error', repo));
+    (repo.warnings || []).forEach(function (w) {
+      nodes.push(draw.emptyState(document, 'repo-warning', { name: repo.name, warning: w }));
+    });
     (repo.pipelines || []).forEach(function (p) {
       pipelines.push(p);
       owner.set(p, repo);
@@ -272,7 +278,7 @@ function renderFeed(snapshot, repos, scope, now, tz) {
 }
 
 // Draws one snapshot: the tab title, the header counts, the filter chips, the
-// tab counts, and the three panels. The scroll and focus survive the rebuild.
+// tab counts, and the four panels. The scroll and focus survive the rebuild.
 function render(snapshot) {
   ui.lastSnapshot = snapshot || { repos: [] };
   var repos = ui.lastSnapshot.repos || [];
@@ -294,7 +300,8 @@ function render(snapshot) {
   var now = Date.now();
   var tz = timeZone();
   renderFeed(ui.lastSnapshot, repos, scope, now, tz);
-  replaceChildren(tabs.activity.panel, [draw.activityPanel(document, view, repos, scope)]);
+  replaceChildren(tabs.preplans.panel, [draw.preplanPanel(document, view, repos, scope, ui)]);
+  replaceChildren(tabs.activity.panel, [draw.activityPanel(document, view, repos, scope, ui)]);
   replaceChildren(tabs.history.panel, [draw.historyTable(document, view, repos, scope, now, tz, ui)]);
   syncToggleAll();
 
@@ -809,6 +816,21 @@ function init() {
     } else {
       return;
     }
+    render(ui.lastSnapshot);
+  });
+  // A priority chip filters the Open deferred list. A chip has no
+  // data-detail, so the stage listener opens no viewer for it.
+  tabs.activity.panel.addEventListener('click', function (event) {
+    var chip = event.target.closest('[data-act-priority]');
+    if (!chip) return;
+    ui.deferredPriority = chip.getAttribute('data-act-priority');
+    render(ui.lastSnapshot);
+  });
+  // A status chip filters the Preplans table.
+  tabs.preplans.panel.addEventListener('click', function (event) {
+    var chip = event.target.closest('[data-pp-status]');
+    if (!chip) return;
+    ui.preplanStatus = chip.getAttribute('data-pp-status');
     render(ui.lastSnapshot);
   });
 

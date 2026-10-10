@@ -199,6 +199,85 @@ describe('page logic exports', () => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
+
+  test('view.js exports the Preplans and priority chip helpers', () => {
+    ['preplanItems', 'preplanStatus', 'preplanStatusCounts', 'priorityCounts', 'dateLabel'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
+});
+
+describe('PREPLAN_STATUSES', () => {
+  test('lists the 3 statuses in chip order', () => {
+    assert.deepEqual(view.PREPLAN_STATUSES, ['in progress', 'ready for plan', 'paused']);
+  });
+});
+
+describe('preplanItems', () => {
+  const repos = [
+    { root: '/a', name: 'a', preplans: [
+      { slug: 'old', topic: 'Old', status: 'paused', path: '.sdlc-v2/preplan/old.md', updatedAt: '2026-10-01T10:00:00Z' },
+      { slug: 'zeta', topic: 'Zeta', status: 'in progress', path: '.sdlc-v2/preplan/zeta.md', updatedAt: '2026-10-08T10:00:00Z' },
+      { slug: 'none', topic: 'None', status: '', path: '.sdlc-v2/preplan/none.md', updatedAt: '' },
+    ] },
+    { root: '/b', name: 'b', preplans: [
+      { slug: 'alpha', topic: 'Alpha', status: 'ready for plan', path: '.sdlc-v2/preplan/alpha.md', updatedAt: '2026-10-08T10:00:00Z' },
+      { slug: 'new', topic: 'New', status: 'archived', path: '.sdlc-v2/preplan/new.md', updatedAt: '2026-10-09T10:00:00Z' },
+    ] },
+  ];
+
+  test('newest first, equal times by slug, no time last; repo is the snapshot repo', () => {
+    const items = view.preplanItems(repos, new Set());
+    assert.deepEqual(items.map((i) => i.slug), ['new', 'alpha', 'zeta', 'old', 'none']);
+    assert.equal(items[0].repo, repos[1]);
+    assert.deepEqual(Object.keys(items[0]).sort(), ['path', 'repo', 'slug', 'status', 'topic', 'updatedAt']);
+  });
+
+  test('the scope keeps the repos in scope only', () => {
+    assert.deepEqual(view.preplanItems(repos, new Set(['/a'])).map((i) => i.slug), ['zeta', 'old', 'none']);
+  });
+
+  test('a repo with no preplans list gives no item', () => {
+    assert.deepEqual(view.preplanItems([{ root: '/c' }], new Set()), []);
+    assert.deepEqual(view.preplanItems(undefined, new Set()), []);
+  });
+});
+
+describe('preplanStatus / preplanStatusCounts', () => {
+  test('a status outside PREPLAN_STATUSES is unknown', () => {
+    assert.equal(view.preplanStatus('paused'), 'paused');
+    assert.equal(view.preplanStatus('archived'), 'unknown');
+    assert.equal(view.preplanStatus(''), 'unknown');
+    assert.equal(view.preplanStatus(undefined), 'unknown');
+  });
+
+  test('counts each status, and every other status as unknown', () => {
+    const items = [{ status: 'paused' }, { status: 'paused' }, { status: 'in progress' }, { status: 'archived' }, { status: '' }];
+    assert.deepEqual(view.preplanStatusCounts(items), { all: 5, 'in progress': 1, 'ready for plan': 0, paused: 2, unknown: 2 });
+  });
+
+  test('no items gives zeros', () => {
+    assert.deepEqual(view.preplanStatusCounts(undefined), { all: 0, 'in progress': 0, 'ready for plan': 0, paused: 0, unknown: 0 });
+  });
+});
+
+describe('priorityCounts', () => {
+  test('counts high, medium, low; another priority counts in all only', () => {
+    const deferred = [{ priority: 'high' }, { priority: 'low' }, { priority: 'low' }, { priority: 'urgent' }];
+    assert.deepEqual(view.priorityCounts(deferred), { all: 4, high: 1, medium: 0, low: 2 });
+  });
+
+  test('no items gives zeros', () => {
+    assert.deepEqual(view.priorityCounts(undefined), { all: 0, high: 0, medium: 0, low: 0 });
+  });
+});
+
+describe('dateLabel', () => {
+  test('gives Mon D HH:MM in the time zone, and empty for a bad time', () => {
+    assert.equal(view.dateLabel('2026-10-08T14:04:12Z', 'UTC'), 'Oct 8 14:04');
+    assert.equal(view.dateLabel('', 'UTC'), '');
+    assert.equal(view.dateLabel('not a time', 'UTC'), '');
+  });
 });
 
 describe('defaultUi', () => {
@@ -811,6 +890,7 @@ describe('scopedCounts / headerCounts', () => {
     {
       root: '/a',
       pipelines: [{ status: 'running' }, { status: 'failed' }],
+      preplans: [{ slug: 'a1' }],
       learnings: [{}, {}],
       deferred: [{}],
       history: [{}],
@@ -818,6 +898,7 @@ describe('scopedCounts / headerCounts', () => {
     {
       root: '/b',
       pipelines: [{ status: 'stalled' }, { status: 'running' }, { status: 'completed' }],
+      preplans: [{ slug: 'b1' }, { slug: 'b2' }],
       learnings: [],
       deferred: [{}, {}],
       history: [{}, {}, {}],
@@ -825,7 +906,7 @@ describe('scopedCounts / headerCounts', () => {
   ];
 
   test('scopedCounts counts every repo with an empty scope', () => {
-    assert.deepEqual(view.scopedCounts(repos, new Set()), { pipelines: 5, activity: 5, history: 4 });
+    assert.deepEqual(view.scopedCounts(repos, new Set()), { pipelines: 5, activity: 5, history: 4, preplans: 3 });
   });
 
   test('scopedCounts counts only the repos in scope; activity is learnings plus deferred', () => {
@@ -833,6 +914,7 @@ describe('scopedCounts / headerCounts', () => {
       pipelines: 2,
       activity: 3,
       history: 1,
+      preplans: 1,
     });
   });
 
@@ -1068,6 +1150,12 @@ describe('nextTabIndex', () => {
   test('any other key keeps the index', () => {
     assert.equal(view.nextTabIndex(1, 'Enter', 3), 1);
   });
+
+  test('with 4 tabs ArrowRight goes from History to Preplans and End goes to Preplans', () => {
+    assert.equal(view.nextTabIndex(2, 'ArrowRight', 4), 3);
+    assert.equal(view.nextTabIndex(3, 'ArrowRight', 4), 0);
+    assert.equal(view.nextTabIndex(0, 'End', 4), 3);
+  });
 });
 
 describe('pipelineKey / sectionKey', () => {
@@ -1085,13 +1173,17 @@ describe('pipelineKey / sectionKey', () => {
 describe('parseHash', () => {
   const tabs = view.TAB_NAMES;
 
-  test('TAB_NAMES lists the 3 tabs', () => {
-    assert.deepEqual(view.TAB_NAMES, ['pipelines', 'activity', 'history']);
+  test('TAB_NAMES lists the 4 tabs', () => {
+    assert.deepEqual(view.TAB_NAMES, ['pipelines', 'activity', 'history', 'preplans']);
   });
 
   test('a tab name selects the tab', () => {
     assert.deepEqual(view.parseHash('#history', tabs), { tab: 'history' });
     assert.deepEqual(view.parseHash('#activity', tabs), { tab: 'activity' });
+  });
+
+  test('#preplans selects the Preplans tab', () => {
+    assert.deepEqual(view.parseHash('#preplans', tabs), { tab: 'preplans' });
   });
 
   test('a pipeline id and a station number select both', () => {
@@ -2768,6 +2860,202 @@ describe('render activityPanel', () => {
   });
 });
 
+describe('render activityPanel priority chips', () => {
+  const repos = [
+    { root: '/a', name: 'a', deferred: [
+      { id: 'd-1', priority: 'high', description: 'fix the cursor' },
+      { id: 'd-2', priority: 'low', description: 'rename a helper' },
+      { id: 'd-3', priority: 'low', description: 'trim a log line' },
+    ], learnings: [] },
+    { root: '/b', name: 'b', deferred: [{ id: 'd-9', priority: 'medium', description: 'other repo' }], learnings: [] },
+  ];
+  const chipsOf = (grid) => oneByClass(grid.children[0], 'act-filter').children;
+  const chipText = (chip) => chip.children.filter((c) => c.className !== 'chip-n').map(textOf).join('');
+
+  test('all, high, medium, low chips with counts over the repos in scope; all is chosen by default', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const bar = oneByClass(grid.children[0], 'act-filter');
+    assert.equal(bar.className, 'act-filter chips');
+    assert.equal(bar.attrs.role, 'group');
+    const chips = chipsOf(grid);
+    assert.deepEqual(chips.map((c) => c.attrs['data-act-priority']), ['all', 'high', 'medium', 'low']);
+    assert.deepEqual(chips.map((c) => oneByClass(c, 'chip-n').textContent), ['4', '1', '1', '2']);
+    assert.deepEqual(chips.map((c) => c.attrs['aria-pressed']), ['true', 'false', 'false', 'false']);
+    assert.deepEqual(chips.map(chipText), ['all', 'high', 'medium', 'low']);
+    assert.equal(byClass(chips[0], 'chip-dot').length, 0);
+    assert.equal(oneByClass(chips[3], 'chip-dot').className, 'chip-dot sev-low');
+  });
+
+  test('a priority chip shows only the deferred rows with that priority; learnings stay', () => {
+    const ui = view.defaultUi();
+    ui.deferredPriority = 'low';
+    const grid = render.activityPanel(fakeDoc(), view, [
+      Object.assign({}, repos[0], { learnings: [{ date: '2026-10-08', heading: 'h', branch: 'main' }] }),
+    ], new Set(), ui);
+    assert.deepEqual(byClass(grid.children[0], 'act-row').map((r) => r.attrs['data-detail']), ['deferred:d-2', 'deferred:d-3']);
+    assert.equal(textOf(oneByClass(grid.children[0], 'list-title')), 'Open deferred (2)');
+    assert.equal(byClass(grid.children[1], 'act-row').length, 1);
+  });
+
+  test('drawn twice with the same ui and new data, the panel keeps the chosen chip', () => {
+    const ui = view.defaultUi();
+    ui.deferredPriority = 'high';
+    render.activityPanel(fakeDoc(), view, repos, new Set(), ui);
+    const fresh = [{ root: '/a', name: 'a', deferred: repos[0].deferred.concat([
+      { id: 'd-4', priority: 'high', description: 'new item' },
+    ]), learnings: [] }];
+    const grid = render.activityPanel(fakeDoc(), view, fresh, new Set(), ui);
+    const active = chipsOf(grid).filter((c) => c.attrs['aria-pressed'] === 'true');
+    assert.deepEqual(active.map((c) => c.attrs['data-act-priority']), ['high']);
+    assert.deepEqual(byClass(grid.children[0], 'act-row').map((r) => r.attrs['data-detail']), ['deferred:d-1', 'deferred:d-4']);
+  });
+
+  test('a chosen chip with no rows left stays chosen with 0 and shows the filter line', () => {
+    const ui = view.defaultUi();
+    ui.deferredPriority = 'medium';
+    const grid = render.activityPanel(fakeDoc(), view, [repos[0]], new Set(), ui);
+    const medium = chipsOf(grid).find((c) => c.attrs['data-act-priority'] === 'medium');
+    assert.equal(medium.attrs['aria-pressed'], 'true');
+    assert.equal(oneByClass(medium, 'chip-n').textContent, '0');
+    const line = oneByClass(grid.children[0], 'generic-line');
+    assert.equal(line.attrs['data-empty'], 'no-deferred-priority');
+    assert.equal(line.textContent, 'No deferred items match this filter');
+    assert.equal(byClass(grid.children[0], 'hint').length, 0);
+  });
+
+  test('with no deferred items the chips are hidden', () => {
+    const ui = view.defaultUi();
+    ui.deferredPriority = 'high';
+    const grid = render.activityPanel(fakeDoc(), view, [{ root: '/c', name: 'c', deferred: [], learnings: [] }], new Set(), ui);
+    assert.equal(byClass(grid, 'act-filter').length, 0);
+    assert.equal(oneByClass(grid.children[0], 'generic-line').textContent, 'No open deferred items.');
+  });
+});
+
+describe('render preplanPanel', () => {
+  const repos = [
+    { root: '/a', name: 'a', warnings: [], preplans: [
+      { slug: 'old', topic: 'Old topic', status: 'paused', path: '.sdlc-v2/preplan/old.md', updatedAt: '2026-10-01T10:00:00Z' },
+      { slug: 'zeta', topic: 'Zeta topic', status: 'in progress', path: '.sdlc-v2/preplan/zeta.md', updatedAt: '2026-10-08T10:00:00Z' },
+    ] },
+    { root: '/b', name: 'b', warnings: [], preplans: [
+      { slug: 'alpha', topic: 'Alpha topic', status: 'ready for plan', path: '.sdlc-v2/preplan/alpha.md', updatedAt: '2026-10-08T10:00:00Z' },
+    ] },
+  ];
+  const rowsOf = (panel) => findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'tbody')[0].children;
+  const chipsOf = (panel) => oneByClass(panel, 'pp-filter').children;
+  const slugsOf = (panel) => rowsOf(panel).map((r) => oneByClass(r, 'pp-path').textContent);
+
+  test('Preplans (n), one row per topic file, newest first, equal times by slug', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    assert.equal(panel.className, 'list-panel hist-panel pp-panel');
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Preplans (3)');
+    assert.deepEqual(findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'th').map(textOf), ['status', 'topic', 'repo', 'updated']);
+    assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/alpha.md', '.sdlc-v2/preplan/zeta.md', '.sdlc-v2/preplan/old.md']);
+    const first = rowsOf(panel)[0];
+    assert.equal(oneByClass(first, 'pp-name').textContent, 'Alpha topic');
+    assert.equal(oneByClass(first, 'h-repo').textContent, 'b');
+    assert.equal(oneByClass(first, 'h-repo').attrs.title, '/b');
+    assert.equal(oneByClass(first, 'h-when').attrs.title, '2026-10-08T10:00:00Z');
+    assert.equal(oneByClass(first, 'h-when').textContent, view.dateLabel('2026-10-08T10:00:00Z'));
+    assert.equal(oneByClass(first, 'pp-status').className, 'pp-status pp-ready');
+    assert.equal(textOf(oneByClass(first, 'pp-status')), '●ready for plan');
+  });
+
+  test('status chips: all, then each status with its count; all is chosen by default', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    const chips = chipsOf(panel);
+    assert.equal(oneByClass(panel, 'pp-filter').className, 'pp-filter chips');
+    assert.deepEqual(chips.map((c) => c.attrs['data-pp-status']), ['all', 'in progress', 'ready for plan', 'paused', 'unknown']);
+    assert.deepEqual(chips.map((c) => oneByClass(c, 'chip-n').textContent), ['3', '1', '1', '1', '0']);
+    assert.deepEqual(chips.map((c) => c.attrs['aria-pressed']), ['true', 'false', 'false', 'false', 'false']);
+    assert.equal(byClass(chips[0], 'pp-status').length, 0);
+    assert.equal(oneByClass(chips[3], 'pp-status').className, 'pp-status pp-paused');
+  });
+
+  test('a status chip shows only the rows with that status', () => {
+    const ui = view.defaultUi();
+    ui.preplanStatus = 'paused';
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set(), ui);
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Preplans (1)');
+    assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/old.md']);
+  });
+
+  test('drawn twice with the same ui and new data, the panel keeps the chosen chip', () => {
+    const ui = view.defaultUi();
+    ui.preplanStatus = 'in progress';
+    render.preplanPanel(fakeDoc(), view, repos, new Set(), ui);
+    const fresh = [{ root: '/a', name: 'a', preplans: repos[0].preplans.concat([
+      { slug: 'new', topic: 'New topic', status: 'in progress', path: '.sdlc-v2/preplan/new.md', updatedAt: '2026-10-09T10:00:00Z' },
+    ]) }];
+    const panel = render.preplanPanel(fakeDoc(), view, fresh, new Set(), ui);
+    const active = chipsOf(panel).filter((c) => c.attrs['aria-pressed'] === 'true');
+    assert.deepEqual(active.map((c) => c.attrs['data-pp-status']), ['in progress']);
+    assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/new.md', '.sdlc-v2/preplan/zeta.md']);
+  });
+
+  test('a chosen chip with no rows left stays chosen with 0 and shows the filter line', () => {
+    const ui = view.defaultUi();
+    ui.preplanStatus = 'ready for plan';
+    const panel = render.preplanPanel(fakeDoc(), view, [repos[0]], new Set(), ui);
+    const chip = chipsOf(panel).find((c) => c.attrs['data-pp-status'] === 'ready for plan');
+    assert.equal(chip.attrs['aria-pressed'], 'true');
+    assert.equal(oneByClass(chip, 'chip-n').textContent, '0');
+    assert.equal(byClass(panel, 'pp').length, 0);
+    const line = oneByClass(panel, 'generic-line');
+    assert.equal(line.attrs['data-empty'], 'no-preplans-status');
+    assert.equal(line.textContent, 'No preplans match this filter');
+  });
+
+  test('a status outside PREPLAN_STATUSES renders as unknown, with an unknown chip', () => {
+    const odd = [{ root: '/c', name: 'c', preplans: [
+      { slug: 'odd', topic: 'Odd', status: 'archived', path: '.sdlc-v2/preplan/odd.md', updatedAt: '2026-10-08T10:00:00Z' },
+    ] }];
+    const panel = render.preplanPanel(fakeDoc(), view, odd, new Set());
+    const tag = oneByClass(rowsOf(panel)[0], 'pp-status');
+    assert.equal(tag.className, 'pp-status pp-unknown');
+    assert.equal(textOf(tag), '?unknown');
+    const chips = chipsOf(panel);
+    assert.deepEqual(chips.map((c) => c.attrs['data-pp-status']), ['all', 'in progress', 'ready for plan', 'paused', 'unknown']);
+    assert.equal(oneByClass(chips[4], 'chip-n').textContent, '1');
+    const ui = view.defaultUi();
+    ui.preplanStatus = 'unknown';
+    assert.deepEqual(slugsOf(render.preplanPanel(fakeDoc(), view, odd, new Set(), ui)), ['.sdlc-v2/preplan/odd.md']);
+  });
+
+  test('the unknown chip stays in the row with count 0 when no topic file has an unknown status', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    const unknown = chipsOf(panel).filter((c) => c.attrs['data-pp-status'] === 'unknown');
+    assert.equal(unknown.length, 1);
+    assert.equal(oneByClass(unknown[0], 'chip-n').textContent, '0');
+  });
+
+  test('each repo warning in scope renders one Warning line above the chips', () => {
+    const warned = [
+      Object.assign({}, repos[0], { warnings: ['preplan folder not read: permission denied', 'second warning'] }),
+      Object.assign({}, repos[1], { warnings: ['out of scope'] }),
+    ];
+    const panel = render.preplanPanel(fakeDoc(), view, warned, new Set(['/a']));
+    const lines = byClass(panel, 'generic-line');
+    assert.deepEqual(lines.map((l) => l.attrs['data-empty']), ['repo-warning', 'repo-warning']);
+    assert.deepEqual(lines.map((l) => l.textContent), [
+      'Warning for a: preplan folder not read: permission denied',
+      'Warning for a: second warning',
+    ]);
+    const kids = panel.children;
+    assert.ok(kids.indexOf(lines[1]) < kids.indexOf(oneByClass(panel, 'pp-filter')));
+    assert.equal(byClass(panel, 'pp').length, 1);
+  });
+
+  test('an empty list renders No preplans and no chips; warnings still show', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, [{ root: '/c', name: 'c', warnings: ['folder gone'], preplans: [] }], new Set());
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Preplans (0)');
+    assert.equal(byClass(panel, 'pp-filter').length, 0);
+    assert.deepEqual(byClass(panel, 'generic-line').map((l) => l.textContent), ['Warning for c: folder gone', 'No preplans']);
+    assert.equal(byClass(panel, 'generic-line')[1].attrs['data-empty'], 'no-preplans');
+  });
+});
+
 describe('render emptyState', () => {
   const cases = [
     ['none-in-scope', undefined, 'No pipelines for the selected repos.'],
@@ -2777,6 +3065,10 @@ describe('render emptyState', () => {
     ['no-history-outcome', undefined, 'No runs match this filter'],
     ['no-pipelines', view.emptyText({ repos: [] }), view.emptyText({ repos: [] })],
     ['repo-error', { name: 'app', error: 'open state: permission denied' }, 'Cannot read app: open state: permission denied'],
+    ['repo-warning', { name: 'app', warning: 'preplan folder not read: permission denied' }, 'Warning for app: preplan folder not read: permission denied'],
+    ['no-deferred-priority', undefined, 'No deferred items match this filter'],
+    ['no-preplans', undefined, 'No preplans'],
+    ['no-preplans-status', undefined, 'No preplans match this filter'],
   ];
   for (const [kind, detail, want] of cases) {
     test(`${kind} has its own text`, () => {
@@ -4217,6 +4509,7 @@ describe('render.js browser global fallback', () => {
       'issuesTile',
       'packDimensionGrid',
       'pipelineBlock',
+      'preplanPanel',
       'resultBody',
       'roundsBody',
       'scopedTitle',

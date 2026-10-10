@@ -73,7 +73,10 @@
 
   var TAB_KEY = 'sdlc-dashboard-tab';
   var REPO_FILTER_KEY = 'sdlc-dashboard-repo-filter';
-  var TAB_NAMES = ['pipelines', 'activity', 'history'];
+  var TAB_NAMES = ['pipelines', 'activity', 'history', 'preplans'];
+  // The status values of a preplan topic file, in chip order. Must equal
+  // tools.PreplanStatuses (TestPreplanStatusParity in server_test.go).
+  var PREPLAN_STATUSES = ['in progress', 'ready for plan', 'paused'];
 
   // When true, a completed pipeline block starts collapsed.
   var COLLAPSE_FINISHED = true;
@@ -781,15 +784,16 @@
    * deferred items.
    * @param {Array} repos
    * @param {Set<string>} scope
-   * @returns {{pipelines: number, activity: number, history: number}}
+   * @returns {{pipelines: number, activity: number, history: number, preplans: number}}
    */
   function scopedCounts(repos, scope) {
-    var counts = { pipelines: 0, activity: 0, history: 0 };
+    var counts = { pipelines: 0, activity: 0, history: 0, preplans: 0 };
     (repos || []).forEach(function (repo) {
       if (!inScope(scope, repo.root)) return;
       counts.pipelines += (repo.pipelines || []).length;
       counts.activity += (repo.learnings || []).length + (repo.deferred || []).length;
       counts.history += (repo.history || []).length;
+      counts.preplans += (repo.preplans || []).length;
     });
     return counts;
   }
@@ -910,6 +914,17 @@
     if (diff < 60e3) return 'just now';
     if (diff < 3600e3) return Math.floor(diff / 60e3) + 'm ago';
     if (diff < 86400e3) return Math.floor(diff / 3600e3) + 'h ago';
+    return dateLabel(iso, tz);
+  }
+
+  /**
+   * @param {string} iso timestamp
+   * @param {string} [tz] IANA time zone; the local zone when absent
+   * @returns {string} 'Mon D HH:MM' in tz; '' for a bad timestamp
+   */
+  function dateLabel(iso, tz) {
+    var date = parseTime(iso);
+    if (!date) return '';
     var parts = dateParts(date, tz);
     return MONTHS[Number(parts.month) - 1] + ' ' + parts.day + ' ' + parts.hour + ':' + parts.minute;
   }
@@ -1371,10 +1386,102 @@
     return { planMs: null, shipMs: null, totalMs: total };
   }
 
+  // The time of an item for the newest-first order, or null when it has none.
+  function timeValue(iso) {
+    var t = Date.parse(iso);
+    return isNaN(t) ? null : t;
+  }
+
+  /**
+   * The preplan topic files of the repos in scope, newest change first. Equal
+   * times sort by slug; an item with no valid updatedAt goes last.
+   * @param {Array} repos
+   * @param {Set<string>} scope
+   * @returns {Array<{repo: object, slug: string, topic: string, status: string, path: string, updatedAt: string}>}
+   *   repo is the snapshot repo of the topic file
+   */
+  function preplanItems(repos, scope) {
+    var items = [];
+    (repos || []).forEach(function (repo) {
+      if (!inScope(scope, repo.root)) return;
+      (repo.preplans || []).forEach(function (p) {
+        if (!p) return;
+        items.push({
+          repo: repo,
+          slug: p.slug || '',
+          topic: p.topic || '',
+          status: p.status || '',
+          path: p.path || '',
+          updatedAt: p.updatedAt || '',
+        });
+      });
+    });
+    return items.sort(function (a, b) {
+      var x = timeValue(a.updatedAt);
+      var y = timeValue(b.updatedAt);
+      if (x !== y) {
+        if (x === null) return 1;
+        if (y === null) return -1;
+        return y - x;
+      }
+      return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
+    });
+  }
+
+  /**
+   * @param {string} status the raw status of a topic file
+   * @returns {string} the status when it is in PREPLAN_STATUSES, else 'unknown'
+   */
+  function preplanStatus(status) {
+    return PREPLAN_STATUSES.indexOf(status) !== -1 ? status : 'unknown';
+  }
+
+  /**
+   * The count of each status chip of the Preplans tab. A status outside
+   * PREPLAN_STATUSES counts as unknown.
+   * @param {Array<{status?: string}>} items preplanItems
+   * @returns {{all: number, 'in progress': number, 'ready for plan': number, paused: number, unknown: number}}
+   */
+  function preplanStatusCounts(items) {
+    var list = items || [];
+    var counts = { all: list.length };
+    PREPLAN_STATUSES.forEach(function (name) {
+      counts[name] = 0;
+    });
+    counts.unknown = 0;
+    list.forEach(function (item) {
+      counts[preplanStatus(item && item.status)] += 1;
+    });
+    return counts;
+  }
+
+  // The priorities of the deferred filter, in chip order.
+  var DEFERRED_PRIORITIES = ['high', 'medium', 'low'];
+
+  /**
+   * The count of each priority chip of the Open deferred list. An item with
+   * another priority counts in all only.
+   * @param {Array<{priority?: string}>} deferred
+   * @returns {{all: number, high: number, medium: number, low: number}}
+   */
+  function priorityCounts(deferred) {
+    var list = deferred || [];
+    var counts = { all: list.length };
+    DEFERRED_PRIORITIES.forEach(function (name) {
+      counts[name] = 0;
+    });
+    list.forEach(function (item) {
+      var p = item && item.priority;
+      if (DEFERRED_PRIORITIES.indexOf(p) !== -1) counts[p] += 1;
+    });
+    return counts;
+  }
+
   var view = {
     TAB_KEY: TAB_KEY,
     REPO_FILTER_KEY: REPO_FILTER_KEY,
     TAB_NAMES: TAB_NAMES,
+    PREPLAN_STATUSES: PREPLAN_STATUSES,
     COLLAPSE_FINISHED: COLLAPSE_FINISHED,
     stepGlyph: stepGlyph,
     pipelineTone: pipelineTone,
@@ -1443,6 +1550,11 @@
     nextHistorySort: nextHistorySort,
     sortHistory: sortHistory,
     historyCells: historyCells,
+    dateLabel: dateLabel,
+    preplanItems: preplanItems,
+    preplanStatus: preplanStatus,
+    preplanStatusCounts: preplanStatusCounts,
+    priorityCounts: priorityCounts,
   };
 
   if (typeof module === 'object' && module.exports) {

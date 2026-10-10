@@ -21,6 +21,9 @@
     'no-learnings': 'No learnings today.',
     'no-history': 'No finished runs for the selected repos.',
     'no-history-outcome': 'No runs match this filter',
+    'no-deferred-priority': 'No deferred items match this filter',
+    'no-preplans': 'No preplans',
+    'no-preplans-status': 'No preplans match this filter',
   };
 
   /**
@@ -1371,21 +1374,57 @@
   }
 
   /**
+   * One row of filter chips. The chosen chip stays with a count of 0 when a
+   * refresh removes its last row.
+   * @param {Document} doc
+   * @param {string} cls the class of the row, next to `chips`
+   * @param {string} label the accessible name of the row
+   * @param {string} attr the data attribute that holds the chip name
+   * @param {Object<string, number>} counts chip name -> count, in chip order
+   * @param {string} chosen the chosen chip name
+   * @param {function(string): (Element|null)} mark the mark before the name of a chip
+   * @returns {Element} div.chips
+   */
+  function chipRow(doc, cls, label, attr, counts, chosen, mark) {
+    if (!Object.prototype.hasOwnProperty.call(counts, chosen)) counts[chosen] = 0;
+    var bar = el(doc, 'div', cls + ' chips');
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', label);
+    Object.keys(counts).forEach(function (name) {
+      var chip = el(doc, 'button', 'chip');
+      chip.setAttribute('type', 'button');
+      chip.setAttribute(attr, name);
+      chip.setAttribute('aria-pressed', String(name === chosen));
+      append(chip, [name === 'all' ? null : mark(name), el(doc, 'span', '', name), el(doc, 'span', 'chip-n', counts[name])]);
+      bar.appendChild(chip);
+    });
+    return bar;
+  }
+
+  /**
    * The Activity tab: `Open deferred (n)` first, then `Learnings today (n)`,
-   * both over the repos in scope. Each row is a button with a data-detail
-   * key (view.detailKey) that opens the item in the detail viewer.
+   * both over the repos in scope. A row of priority chips (all, high,
+   * medium, low) filters the deferred list; the row is hidden when no
+   * deferred item is in scope. Each row is a button with a data-detail key
+   * (view.detailKey) that opens the item in the detail viewer.
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos
    * @param {Set<string>} scope
+   * @param {{deferredPriority: string}} [ui] the page state; view.defaultUi() when absent
    * @returns {Element} div.act-grid
    */
-  function activityPanel(doc, view, repos, scope) {
+  function activityPanel(doc, view, repos, scope, ui) {
+    ui = ui || view.defaultUi();
+    var priority = ui.deferredPriority || 'all';
+    var allDeferred = [];
     var deferred = [];
     var learnings = [];
     (repos || []).forEach(function (repo) {
       if (!view.inScope(scope, repo.root)) return;
       (repo.deferred || []).forEach(function (item) {
+        allDeferred.push(item);
+        if (priority !== 'all' && item.priority !== priority) return;
         deferred.push(
           activityRow(
             doc,
@@ -1412,13 +1451,21 @@
     });
 
     var deferredPanel = listPanel(doc, 'Open deferred', deferred.length);
+    if (allDeferred.length > 0) {
+      deferredPanel.appendChild(
+        chipRow(doc, 'act-filter', 'Filter deferred items by priority', 'data-act-priority',
+          view.priorityCounts(allDeferred), priority, function (name) {
+            return el(doc, 'span', 'chip-dot sev-' + name);
+          })
+      );
+    }
     if (deferred.length > 0) {
       deferredPanel.appendChild(append(el(doc, 'div', 'list'), deferred));
       var hint = el(doc, 'p', 'hint', 'Triage these with ');
       hint.appendChild(el(doc, 'code', '', '/sdlc:deferred'));
       deferredPanel.appendChild(hint);
     } else {
-      deferredPanel.appendChild(emptyState(doc, 'no-deferred'));
+      deferredPanel.appendChild(emptyState(doc, allDeferred.length > 0 ? 'no-deferred-priority' : 'no-deferred'));
     }
 
     var learningsPanel = listPanel(doc, 'Learnings today', learnings.length);
@@ -1427,6 +1474,89 @@
     );
 
     return append(el(doc, 'div', 'act-grid'), [deferredPanel, learningsPanel]);
+  }
+
+  // The class and glyph of each preplan status, and of a status outside
+  // view.PREPLAN_STATUSES (unknown).
+  var PREPLAN_MARKS = {
+    'in progress': { cls: 'pp-progress', glyph: '◐' },
+    'ready for plan': { cls: 'pp-ready', glyph: '●' },
+    paused: { cls: 'pp-paused', glyph: '‖' },
+    unknown: { cls: 'pp-unknown', glyph: '?' },
+  };
+
+  // The status mark of a chip; a chip name outside PREPLAN_MARKS gets the unknown mark.
+  function preplanMark(doc, status) {
+    var m = PREPLAN_MARKS[status] || PREPLAN_MARKS.unknown;
+    var mark = el(doc, 'span', 'pp-status ' + m.cls, m.glyph);
+    mark.setAttribute('aria-hidden', 'true');
+    return mark;
+  }
+
+  /**
+   * The Preplans tab: `Preplans (n)`, one repo-warning line for each warning
+   * of a repo in scope, a row of status chips that filter the table, then one
+   * row for each topic file, newest change first. A status outside
+   * view.PREPLAN_STATUSES shows as unknown; its chip shows only when a topic
+   * file has such a status or the chip is the chosen one.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {Array} repos
+   * @param {Set<string>} scope
+   * @param {{preplanStatus: string}} [ui] the page state; view.defaultUi() when absent
+   * @returns {Element} section.list-panel.hist-panel.pp-panel
+   */
+  function preplanPanel(doc, view, repos, scope, ui) {
+    ui = ui || view.defaultUi();
+    var status = ui.preplanStatus || 'all';
+    var all = view.preplanItems(repos, scope);
+    var items = all.filter(function (item) {
+      return status === 'all' || view.preplanStatus(item.status) === status;
+    });
+
+    var panel = el(doc, 'section', 'list-panel hist-panel pp-panel');
+    var heading = el(doc, 'h2', 'list-title', 'Preplans ');
+    heading.appendChild(el(doc, 'span', 'n', '(' + items.length + ')'));
+    panel.appendChild(heading);
+    (repos || []).forEach(function (repo) {
+      if (!view.inScope(scope, repo.root)) return;
+      (repo.warnings || []).forEach(function (w) {
+        panel.appendChild(emptyState(doc, 'repo-warning', { name: repo.name, warning: w }));
+      });
+    });
+    if (all.length === 0) return append(panel, [emptyState(doc, 'no-preplans')]);
+
+    var counts = view.preplanStatusCounts(all);
+    panel.appendChild(
+      chipRow(doc, 'pp-filter', 'Filter by status', 'data-pp-status', counts, status, function (name) {
+        return preplanMark(doc, name);
+      })
+    );
+    if (items.length === 0) return append(panel, [emptyState(doc, 'no-preplans-status')]);
+
+    var headRow = el(doc, 'tr', '');
+    ['status', 'topic', 'repo', 'updated'].forEach(function (name) {
+      headRow.appendChild(el(doc, 'th', '', name));
+    });
+    var body = el(doc, 'tbody', '');
+    items.forEach(function (item) {
+      var label = view.preplanStatus(item.status);
+      var m = PREPLAN_MARKS[label];
+      var glyph = el(doc, 'span', '', m.glyph);
+      glyph.setAttribute('aria-hidden', 'true');
+      var tag = append(el(doc, 'span', 'pp-status ' + m.cls), [glyph, el(doc, 'span', '', label)]);
+      var topic = append(el(doc, 'td', 'pp-topic'), [
+        el(doc, 'div', 'pp-name', item.topic || item.slug),
+        el(doc, 'div', 'pp-path', item.path),
+      ]);
+      var repoCell = el(doc, 'td', 'h-repo', item.repo.name);
+      repoCell.setAttribute('title', item.repo.root);
+      var when = el(doc, 'td', 'h-when', view.dateLabel(item.updatedAt));
+      when.setAttribute('title', item.updatedAt);
+      body.appendChild(append(el(doc, 'tr', ''), [append(el(doc, 'td', ''), [tag]), topic, repoCell, when]));
+    });
+    var table = append(el(doc, 'table', 'hist pp'), [append(el(doc, 'thead', ''), [headRow]), body]);
+    return append(panel, [table]);
   }
 
   /**
@@ -1460,15 +1590,17 @@
   /**
    * One empty-state line.
    * @param {Document} doc
-   * @param {string} kind no-pipelines | none-in-scope | repo-error | no-deferred | no-learnings | no-history | no-history-outcome
-   * @param {string|{name: string, error: string}} [detail] the text for no-pipelines
-   *   (view.emptyText), the repo for repo-error; other kinds ignore it
+   * @param {string} kind no-pipelines | none-in-scope | repo-error | repo-warning | no-deferred |
+   *   no-deferred-priority | no-learnings | no-history | no-history-outcome | no-preplans | no-preplans-status
+   * @param {string|{name: string, error?: string, warning?: string}} [detail] the text for no-pipelines
+   *   (view.emptyText), the repo for repo-error, {name, warning} for repo-warning; other kinds ignore it
    * @returns {Element} p.generic-line with data-empty set to kind
    */
   function emptyState(doc, kind, detail) {
     var text = EMPTY_TEXTS[kind] || '';
     if (kind === 'no-pipelines') text = detail || '';
     if (kind === 'repo-error') text = 'Cannot read ' + ((detail && detail.name) || '') + ': ' + ((detail && detail.error) || '');
+    if (kind === 'repo-warning') text = 'Warning for ' + ((detail && detail.name) || '') + ': ' + ((detail && detail.warning) || '');
     var line = el(doc, 'p', 'generic-line', text);
     line.setAttribute('data-empty', kind);
     return line;
@@ -1486,6 +1618,7 @@
     pipelineBlock: pipelineBlock,
     headerTotals: headerTotals,
     activityPanel: activityPanel,
+    preplanPanel: preplanPanel,
     emptyState: emptyState,
     TILE_BODIES: TILE_BODIES,
     stepTile: stepTile,
