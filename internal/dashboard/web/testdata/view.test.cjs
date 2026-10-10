@@ -193,6 +193,126 @@ describe('page logic exports', () => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
+
+  test('view.js exports the History filter and sort helpers', () => {
+    ['defaultUi', 'historyOutcomeCounts', 'filterHistory', 'nextHistorySort', 'sortHistory', 'historyCells'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
+});
+
+describe('defaultUi', () => {
+  test('gives the all outcome, no sort, and the all chips', () => {
+    assert.deepEqual(view.defaultUi(), { historyOutcome: 'all', historySort: null, preplanStatus: 'all', deferredPriority: 'all' });
+  });
+
+  test('gives a new object on each call', () => {
+    const a = view.defaultUi();
+    a.historyOutcome = 'success';
+    assert.equal(view.defaultUi().historyOutcome, 'all');
+  });
+});
+
+describe('historyOutcomeCounts / filterHistory', () => {
+  const runs = [
+    { outcome: 'success' }, { outcome: 'done' }, { outcome: 'failure' }, { outcome: 'success' }, { outcome: '' }, {},
+  ];
+
+  test('counts all, success, failure, partial, then each other outcome in order of first use', () => {
+    const counts = view.historyOutcomeCounts(runs);
+    assert.deepEqual(Object.keys(counts), ['all', 'success', 'failure', 'partial', 'done']);
+    assert.deepEqual(counts, { all: 6, success: 2, failure: 1, partial: 0, done: 1 });
+  });
+
+  test('no runs gives zero counts for the fixed chips', () => {
+    assert.deepEqual(view.historyOutcomeCounts([]), { all: 0, success: 0, failure: 0, partial: 0 });
+    assert.deepEqual(view.historyOutcomeCounts(undefined), { all: 0, success: 0, failure: 0, partial: 0 });
+  });
+
+  test('filterHistory keeps the runs of one outcome, or every run for all', () => {
+    assert.deepEqual(view.filterHistory(runs, 'success'), [runs[0], runs[3]]);
+    assert.deepEqual(view.filterHistory(runs, 'partial'), []);
+    const every = view.filterHistory(runs, 'all');
+    assert.deepEqual(every, runs);
+    assert.notEqual(every, runs);
+  });
+});
+
+describe('nextHistorySort', () => {
+  // One case for each row of the nextHistorySort truth table.
+  const cases = [
+    [null, 'finished', { key: 'finished', dir: 'desc' }],
+    [null, 'total', { key: 'total', dir: 'desc' }],
+    [{ key: 'finished', dir: 'desc' }, 'finished', { key: 'finished', dir: 'asc' }],
+    [{ key: 'finished', dir: 'asc' }, 'finished', { key: 'finished', dir: 'desc' }],
+    [{ key: 'finished', dir: 'asc' }, 'total', { key: 'total', dir: 'desc' }],
+  ];
+  for (const [before, key, after] of cases) {
+    test(`${JSON.stringify(before)} + ${key} gives ${JSON.stringify(after)}`, () => {
+      assert.deepEqual(view.nextHistorySort(before, key), after);
+    });
+  }
+});
+
+describe('sortHistory', () => {
+  const a = { id: 'a', endedAt: '2026-10-08T10:00:00Z', totalMs: 5000 };
+  const b = { id: 'b', endedAt: '2026-10-08T12:00:00Z', totalMs: 0 };
+  const c = { id: 'c', endedAt: '', totalMs: 9000 };
+  const d = { id: 'd', endedAt: '2026-10-08T11:00:00Z', totalMs: 1000 };
+  const runs = [a, b, c, d];
+  const ids = (list) => list.map((r) => r.id);
+
+  test('null sorts newest first by endedAt, with no endedAt last, in a new array', () => {
+    const out = view.sortHistory(runs, null);
+    assert.deepEqual(ids(out), ['b', 'd', 'a', 'c']);
+    assert.notEqual(out, runs);
+    assert.deepEqual(ids(runs), ['a', 'b', 'c', 'd']);
+  });
+
+  test('the first click on finished sorts newest first', () => {
+    assert.deepEqual(ids(view.sortHistory(runs, view.nextHistorySort(null, 'finished'))), ['b', 'd', 'a', 'c']);
+  });
+
+  test('the first click on total sorts longest first', () => {
+    assert.deepEqual(ids(view.sortHistory(runs, view.nextHistorySort(null, 'total'))), ['c', 'a', 'd', 'b']);
+  });
+
+  test('rows with no value go last in both directions', () => {
+    assert.deepEqual(ids(view.sortHistory(runs, { key: 'finished', dir: 'asc' })), ['a', 'd', 'b', 'c']);
+    assert.deepEqual(ids(view.sortHistory(runs, { key: 'total', dir: 'asc' })), ['d', 'a', 'c', 'b']);
+    // totalMs <= 0 or absent counts as no value.
+    const noTotal = [{ id: 'x', totalMs: -1 }, { id: 'y' }, { id: 'z', totalMs: 10 }];
+    assert.deepEqual(ids(view.sortHistory(noTotal, { key: 'total', dir: 'desc' })), ['z', 'x', 'y']);
+    assert.deepEqual(ids(view.sortHistory(noTotal, { key: 'total', dir: 'asc' })), ['z', 'x', 'y']);
+  });
+});
+
+describe('historyCells', () => {
+  test('a ship row: plan from planDurationMs, ship from durationMs, total from totalMs', () => {
+    assert.deepEqual(view.historyCells({ kind: 'ship', durationMs: 3600000, planDurationMs: 1200000, totalMs: 6000000 }),
+      { planMs: 1200000, shipMs: 3600000, totalMs: 6000000 });
+  });
+
+  test('a ship row with no linked plan has no plan time', () => {
+    assert.deepEqual(view.historyCells({ kind: 'ship', durationMs: 3600000, totalMs: 3600000 }),
+      { planMs: null, shipMs: 3600000, totalMs: 3600000 });
+  });
+
+  test('a plan row: plan from durationMs, no ship time', () => {
+    assert.deepEqual(view.historyCells({ kind: 'plan', durationMs: 26000, totalMs: 26000 }),
+      { planMs: 26000, shipMs: null, totalMs: 26000 });
+  });
+
+  test('any other row: total only', () => {
+    assert.deepEqual(view.historyCells({ kind: 'execute', durationMs: 5000, totalMs: 5000 }),
+      { planMs: null, shipMs: null, totalMs: 5000 });
+  });
+
+  test('a total of 0 or none is no value', () => {
+    for (const totalMs of [0, -5, undefined]) {
+      assert.equal(view.historyCells({ kind: 'review', durationMs: 5000, totalMs }).totalMs, null, String(totalMs));
+    }
+  });
 });
 
 describe('severityOrder', () => {
@@ -1924,7 +2044,7 @@ describe('render blockHead total time', () => {
     const h = head({ status: 'running' });
     const chip = oneByClass(h, 'pipe-dur');
     assert.equal(chip.className, 'pipe-dur live');
-    assert.equal(chip.attrs.title, 'Time since the pipeline started');
+    assert.equal(chip.attrs.title, 'Time since the ship run started (no linked plan)');
     assert.equal(h.children[h.children.indexOf(oneByClass(h, 'pipe-branch')) + 1], chip);
     assert.equal(h.children.indexOf(chip) + 1, h.children.indexOf(oneByClass(h, 'pipe-side')));
     assert.deepEqual(chip.children.map((c) => c.className), ['lamp running', 'dur-label', 'dur-live']);
@@ -1946,7 +2066,7 @@ describe('render blockHead total time', () => {
     const h = head({ status: 'completed', completedAt: '2026-10-08T14:12:30Z' }, NOW_WAIT + 3600000);
     const chip = oneByClass(h, 'pipe-dur');
     assert.equal(chip.className, 'pipe-dur');
-    assert.equal(chip.attrs.title, 'Total time of the pipeline');
+    assert.equal(chip.attrs.title, 'Total time of the ship run (no linked plan)');
     assert.deepEqual(chip.children.map((c) => c.className), ['dur-label', '']);
     assert.equal(textOf(chip), 'total12m 30s');
     assert.equal(byClass(h, 'dur-live').length, 0);
@@ -2002,6 +2122,71 @@ describe('render blockHead total time', () => {
   test('a pipeline with no startedAt keeps the old head: lamp, kind, branch, side', () => {
     const h = render.blockHead(fakeDoc(), view, REPO, pipeline(), false, 0, NOW_WAIT);
     assert.deepEqual(h.children.map((c) => c.className), ['lamp running', 'pipe-kind', 'pipe-branch', 'pipe-side']);
+  });
+});
+
+describe('render durationTitle', () => {
+  // One case for each cell of the durationTitle truth table.
+  const cases = [
+    ['ship', true, true, 'Time since the plan started'],
+    ['ship', true, false, 'Time from the plan start to the ship end'],
+    ['ship', false, true, 'Time since the ship run started (no linked plan)'],
+    ['ship', false, false, 'Total time of the ship run (no linked plan)'],
+    ['execute', false, true, 'Time since the pipeline started'],
+    ['execute', false, false, 'Total time of the pipeline'],
+  ];
+  for (const [kind, fromPlan, running, want] of cases) {
+    test(`durationTitle(${kind}, fromPlan ${fromPlan}, running ${running}) is "${want}"`, () => {
+      assert.equal(render.durationTitle(kind, fromPlan, running), want);
+    });
+  }
+});
+
+describe('render blockHead total time from the plan start', () => {
+  const STARTED = '2026-10-08T14:00:00Z'; // the ship start
+  const PLAN_STARTED = '2026-10-08T12:20:00Z'; // 1h 40m before the ship start
+  const DONE = '2026-10-08T15:00:00Z'; // 1h after the ship start, 2h 40m after the plan start
+  const head = (extra, now = NOW_WAIT) =>
+    render.blockHead(fakeDoc(), view, REPO, pipeline(Object.assign({ startedAt: STARTED }, extra)), false, 0, now);
+
+  // now → after row: ship total chip, linked plan.
+  test('a ship pipeline with planStartedAt counts from the plan start', () => {
+    const chip = oneByClass(head({ status: 'completed', completedAt: DONE, planStartedAt: PLAN_STARTED }), 'pipe-dur');
+    assert.equal(textOf(chip), 'total2h 40m');
+    assert.equal(chip.attrs.title, 'Time from the plan start to the ship end');
+  });
+
+  // now → after row: ship total chip, no linked plan.
+  test('a ship pipeline with no planStartedAt names the missing link', () => {
+    const chip = oneByClass(head({ status: 'completed', completedAt: DONE }), 'pipe-dur');
+    assert.equal(textOf(chip), 'total1h 00m');
+    assert.equal(chip.attrs.title, 'Total time of the ship run (no linked plan)');
+  });
+
+  // now → after row: running ship chip, linked plan.
+  test('a running ship pipeline with planStartedAt counts up from the plan start', () => {
+    const h = head({ status: 'running', planStartedAt: PLAN_STARTED }, Date.parse(DONE));
+    const chip = oneByClass(h, 'pipe-dur');
+    assert.equal(chip.attrs.title, 'Time since the plan started');
+    const value = oneByClass(h, 'dur-live');
+    assert.equal(value.attrs['data-since'], PLAN_STARTED);
+    assert.equal(value.textContent, '2h 40m');
+  });
+
+  // now → after row: running ship chip, no linked plan.
+  test('a running ship pipeline with no planStartedAt counts up from the ship start', () => {
+    const h = head({ status: 'running' });
+    assert.equal(oneByClass(h, 'pipe-dur').attrs.title, 'Time since the ship run started (no linked plan)');
+    assert.equal(oneByClass(h, 'dur-live').attrs['data-since'], STARTED);
+  });
+
+  test('a pipeline of kind execute keeps the pipeline titles', () => {
+    const running = head({ kind: 'execute', status: 'running', planStartedAt: PLAN_STARTED });
+    assert.equal(oneByClass(running, 'pipe-dur').attrs.title, 'Time since the pipeline started');
+    assert.equal(oneByClass(running, 'dur-live').attrs['data-since'], STARTED);
+    const done = head({ kind: 'execute', status: 'completed', completedAt: DONE, planStartedAt: PLAN_STARTED });
+    assert.equal(oneByClass(done, 'pipe-dur').attrs.title, 'Total time of the pipeline');
+    assert.equal(textOf(oneByClass(done, 'pipe-dur')), 'total1h 00m');
   });
 });
 
@@ -2138,6 +2323,22 @@ describe('render stationTrack step time', () => {
   test('a clock that runs behind the start gives 0s, not a negative time', () => {
     const track = render.stationTrack(fakeDoc(), view, pipeline({ steps: [{ name: 'review', status: 'in_progress', startedAt: T('10:00') }] }), 0, NOW_WAIT);
     assert.equal(oneByClass(track, 'dur').textContent, '0s');
+  });
+
+  // now → after row: plan station.
+  test('the plan station with both times shows a time box with the step title', () => {
+    const track = stepsOf([{ name: 'plan', status: 'completed', startedAt: '2026-10-08T11:00:00Z', completedAt: '2026-10-08T12:20:00Z' }]);
+    const dur = oneByClass(byClass(track, 'station')[0], 'dur');
+    assert.equal(dur.textContent, '1h 20m');
+    assert.equal(dur.attrs.title, 'Time the step took');
+    assert.equal(dur.attrs['data-since'], undefined);
+  });
+
+  test('the plan station with one time or none shows no time box', () => {
+    for (const times of [{ startedAt: '2026-10-08T11:00:00Z' }, { completedAt: '2026-10-08T12:20:00Z' }, {}]) {
+      const track = stepsOf([Object.assign({ name: 'plan', status: 'completed' }, times)]);
+      assert.equal(byClass(track, 'dur').length, 0, JSON.stringify(times));
+    }
   });
 });
 
@@ -2573,6 +2774,7 @@ describe('render emptyState', () => {
     ['no-deferred', undefined, 'No open deferred items.'],
     ['no-learnings', undefined, 'No learnings today.'],
     ['no-history', undefined, 'No finished runs for the selected repos.'],
+    ['no-history-outcome', undefined, 'No runs match this filter'],
     ['no-pipelines', view.emptyText({ repos: [] }), view.emptyText({ repos: [] })],
     ['repo-error', { name: 'app', error: 'open state: permission denied' }, 'Cannot read app: open state: permission denied'],
   ];
@@ -3836,33 +4038,119 @@ describe('render execute stations', () => {
 describe('render historyTable', () => {
   const repos = [
     { root: '/a', name: 'a', history: [
-      { kind: 'ship', branch: 'feat/a', outcome: 'success', startedAt: '', endedAt: '2026-10-08T14:00:00Z', durationMs: 2460000 },
-      { kind: 'plan', branch: 'main', outcome: 'failure', startedAt: '', endedAt: '2026-10-08T10:00:00Z', durationMs: 26000 },
+      { kind: 'ship', branch: 'feat/a', outcome: 'success', startedAt: '', endedAt: '2026-10-08T14:00:00Z', durationMs: 2460000,
+        planStartedAt: '2026-10-08T12:00:00Z', planDurationMs: 1320000, totalMs: 7200000 },
+      { kind: 'plan', branch: 'main', outcome: 'failure', startedAt: '', endedAt: '2026-10-08T10:00:00Z', durationMs: 26000, totalMs: 26000 },
     ] },
     { root: '/b', name: 'b', history: [
-      { kind: 'execute', branch: 'fix/b', outcome: 'partial', startedAt: '', endedAt: '2026-10-08T12:00:00Z', durationMs: 3720000 },
+      { kind: 'execute', branch: 'fix/b', outcome: 'partial', startedAt: '', endedAt: '2026-10-08T12:00:00Z', durationMs: 3720000, totalMs: 3720000 },
     ] },
   ];
   const now = Date.parse('2026-10-08T14:30:00Z');
+  // The head names; a sort control adds an arrow glyph after its name.
+  const heads = (table) => findAll(table, (n) => n.tagName === 'th').map((n) => textOf(n).replace(/[↕▲▼]/g, ''));
+  const rowsOf = (panel) => findAll(oneByClass(panel, 'hist'), (n) => n.tagName === 'tbody')[0].children;
+  const chipsOf = (panel) => oneByClass(panel, 'hist-filter').children;
 
+  // now → after row: History head.
   test('Finished runs (n), the column heads, and one row of each outcome, newest first', () => {
     const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC');
     assert.equal(panel.className, 'list-panel hist-panel');
     assert.equal(textOf(oneByClass(panel, 'list-title')), 'Finished runs (3)');
     const table = oneByClass(panel, 'hist');
     assert.equal(table.tagName, 'table');
-    assert.deepEqual(findAll(table, (n) => n.tagName === 'th').map((n) => n.textContent),
-      ['outcome', 'kind', 'branch', 'repo', 'finished', 'duration']);
-    const body = findAll(table, (n) => n.tagName === 'tbody')[0];
-    const rows = body.children;
+    assert.deepEqual(heads(table), ['outcome', 'kind', 'branch', 'repo', 'finished', 'plan', 'ship', 'total']);
+    const rows = rowsOf(panel);
     assert.deepEqual(rows.map((r) => oneByClass(r, 'out').className), ['out success', 'out partial', 'out failure']);
     assert.deepEqual(rows.map((r) => textOf(oneByClass(r, 'out'))), ['✓success', '◐partial', '✕failure']);
     assert.equal(oneByClass(rows[0], 'out').children[0].attrs['aria-hidden'], 'true');
     assert.deepEqual(rows[1].children.slice(1).map((c) => c.textContent), [
-      'execute', 'fix/b', 'b', view.relativeWhen('2026-10-08T12:00:00Z', now, 'UTC'), view.formatDuration(3720000),
+      'execute', 'fix/b', 'b', view.relativeWhen('2026-10-08T12:00:00Z', now, 'UTC'), '—', '—', view.formatDuration(3720000),
     ]);
-    assert.deepEqual(rows[1].children.slice(4).map((c) => c.textContent), ['2h ago', '1h 02m']);
-    assert.deepEqual(rows[0].children.map((c) => c.className), ['', 'h-kind', 'h-branch', 'h-repo', 'h-when', 'h-dur']);
+    assert.deepEqual(rows[1].children.slice(4).map((c) => c.textContent), ['2h ago', '—', '—', '1h 02m']);
+    assert.deepEqual(rows[0].children.map((c) => c.className),
+      ['', 'h-kind', 'h-branch', 'h-repo', 'h-when', 'h-dur', 'h-dur', 'h-dur']);
+  });
+
+  test('the plan, ship and total cells follow the column table', () => {
+    const rows = rowsOf(render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC'));
+    // ship row: plan from planDurationMs, ship from durationMs, total from totalMs.
+    assert.deepEqual(rows[0].children.slice(5).map((c) => c.textContent), ['22m', '41m', '2h 00m']);
+    // plan row: plan from durationMs, no ship time.
+    assert.deepEqual(rows[2].children.slice(5).map((c) => c.textContent), ['26s', '—', '26s']);
+  });
+
+  // now → after row: History controls.
+  test('the controls: outcome chips, then finished and total sort buttons, none active at page load', () => {
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC');
+    const bar = oneByClass(panel, 'hist-filter');
+    assert.equal(bar.attrs.role, 'group');
+    const chips = chipsOf(panel);
+    assert.deepEqual(chips.map((c) => c.attrs['data-hist-outcome']), ['all', 'success', 'failure', 'partial']);
+    assert.deepEqual(chips.map((c) => oneByClass(c, 'chip-n').textContent), ['3', '1', '1', '1']);
+    assert.deepEqual(chips.map((c) => c.attrs['aria-pressed']), ['true', 'false', 'false', 'false']);
+    for (const c of chips) assert.equal(c.attrs.type, 'button');
+    const sorts = byClass(panel, 'sort-btn');
+    assert.deepEqual(sorts.map((b) => b.attrs['data-hist-sort']), ['finished', 'total']);
+    assert.deepEqual(sorts.map((b) => b.className), ['sort-btn', 'sort-btn']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['none', 'none']);
+  });
+
+  test('a chip filters the rows', () => {
+    const ui = Object.assign(view.defaultUi(), { historyOutcome: 'partial' });
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC', ui);
+    assert.deepEqual(rowsOf(panel).map((r) => oneByClass(r, 'out').className), ['out partial']);
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Finished runs (1)');
+    assert.deepEqual(chipsOf(panel).map((c) => c.attrs['aria-pressed']), ['false', 'false', 'false', 'true']);
+  });
+
+  test('another outcome gets its own chip after the three known ones', () => {
+    const withDone = [{ root: '/a', name: 'a', history: repos[0].history.concat([
+      { kind: 'plan', branch: 'main', outcome: 'done', endedAt: '2026-10-08T09:00:00Z', durationMs: 1000, totalMs: 1000 },
+    ]) }];
+    const chips = chipsOf(render.historyTable(fakeDoc(), view, withDone, new Set(), now, 'UTC'));
+    assert.deepEqual(chips.map((c) => c.attrs['data-hist-outcome']), ['all', 'success', 'failure', 'partial', 'done']);
+    assert.deepEqual(chips.map((c) => oneByClass(c, 'chip-n').textContent), ['3', '1', '1', '0', '1']);
+  });
+
+  test('a chosen chip with count 0 stays active with the "No runs match this filter" line', () => {
+    for (const outcome of ['partial', 'done']) {
+      const ui = Object.assign(view.defaultUi(), { historyOutcome: outcome });
+      const panel = render.historyTable(fakeDoc(), view, [repos[0]], new Set(), now, 'UTC', ui);
+      const chip = chipsOf(panel).find((c) => c.attrs['data-hist-outcome'] === outcome);
+      assert.ok(chip, outcome);
+      assert.equal(chip.attrs['aria-pressed'], 'true', outcome);
+      assert.equal(oneByClass(chip, 'chip-n').textContent, '0', outcome);
+      assert.equal(byClass(panel, 'hist').length, 0, outcome);
+      const line = oneByClass(panel, 'generic-line');
+      assert.equal(line.attrs['data-empty'], 'no-history-outcome');
+      assert.equal(line.textContent, 'No runs match this filter');
+    }
+  });
+
+  test('an active sort control shows its order', () => {
+    const ui = Object.assign(view.defaultUi(), { historySort: { key: 'total', dir: 'desc' } });
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC', ui);
+    assert.deepEqual(byClass(panel, 'sort-btn').map((b) => b.className), ['sort-btn', 'sort-btn on']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['none', 'descending']);
+    assert.deepEqual(byClass(panel, 'sort-arrow').map((a) => a.textContent), ['↕', '▼']);
+    assert.deepEqual(rowsOf(panel).map((r) => oneByClass(r, 'h-branch').textContent), ['feat/a', 'fix/b', 'main']);
+  });
+
+  test('drawn twice with the same ui and new data, the table keeps the active chip and sort', () => {
+    const ui = view.defaultUi();
+    ui.historyOutcome = 'success';
+    ui.historySort = view.nextHistorySort(ui.historySort, 'finished');
+    ui.historySort = view.nextHistorySort(ui.historySort, 'finished'); // oldest first
+    render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC', ui);
+    const fresh = [{ root: '/a', name: 'a', history: repos[0].history.concat([
+      { kind: 'ship', branch: 'feat/new', outcome: 'success', endedAt: '2026-10-08T14:20:00Z', durationMs: 60000, totalMs: 60000 },
+    ]) }];
+    const panel = render.historyTable(fakeDoc(), view, fresh, new Set(), now, 'UTC', ui);
+    const active = chipsOf(panel).filter((c) => c.attrs['aria-pressed'] === 'true');
+    assert.deepEqual(active.map((c) => c.attrs['data-hist-outcome']), ['success']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['ascending', 'none']);
+    assert.deepEqual(rowsOf(panel).map((r) => oneByClass(r, 'h-branch').textContent), ['feat/a', 'feat/new']);
   });
 
   test('the scope keeps rows of the repos in scope only', () => {
@@ -3915,6 +4203,7 @@ describe('render.js browser global fallback', () => {
       'commandGroupTable',
       'detailBody',
       'dimensionsBody',
+      'durationTitle',
       'el',
       'elapsedText',
       'emptyState',

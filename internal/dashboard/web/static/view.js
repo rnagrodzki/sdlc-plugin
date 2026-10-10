@@ -1260,6 +1260,117 @@
     }
   }
 
+  // --- History filter and sort ---------------------------------------------------
+
+  // The outcomes of the History filter that always have a chip, in chip order.
+  var HISTORY_OUTCOMES = ['success', 'failure', 'partial'];
+
+  /**
+   * The filter and sort state of a new page. A data refresh keeps the state;
+   * a page load starts from here again.
+   * @returns {{historyOutcome: string, historySort: null, preplanStatus: string, deferredPriority: string}}
+   */
+  function defaultUi() {
+    return { historyOutcome: 'all', historySort: null, preplanStatus: 'all', deferredPriority: 'all' };
+  }
+
+  /**
+   * The count of each outcome chip of the History tab.
+   * @param {Array<{outcome?: string}>} runs
+   * @returns {Object<string, number>} all, success, failure, partial, then each
+   *   other outcome of the runs in the order of first use
+   */
+  function historyOutcomeCounts(runs) {
+    var list = runs || [];
+    var counts = { all: list.length };
+    HISTORY_OUTCOMES.forEach(function (name) {
+      counts[name] = 0;
+    });
+    list.forEach(function (run) {
+      var outcome = run && run.outcome;
+      if (!outcome || outcome === 'all') return;
+      counts[outcome] = Object.prototype.hasOwnProperty.call(counts, outcome) ? counts[outcome] + 1 : 1;
+    });
+    return counts;
+  }
+
+  /**
+   * @param {Array<{outcome?: string}>} runs
+   * @param {string} outcome an outcome, or 'all'
+   * @returns {Array} a new array: the runs with this outcome, or every run for 'all'
+   */
+  function filterHistory(runs, outcome) {
+    var list = runs || [];
+    if (!outcome || outcome === 'all') return list.slice();
+    return list.filter(function (run) {
+      return run && run.outcome === outcome;
+    });
+  }
+
+  /**
+   * The sort after a click on a sort control. A new control starts with the
+   * largest value first. A click on the active control flips its order.
+   * @param {{key: string, dir: string}|null} sort
+   * @param {string} key finished | total
+   * @returns {{key: string, dir: string}}
+   */
+  function nextHistorySort(sort, key) {
+    if (sort && sort.key === key) return { key: key, dir: sort.dir === 'desc' ? 'asc' : 'desc' };
+    return { key: key, dir: 'desc' };
+  }
+
+  // The sort value of a run by sort key, or null when the run has none.
+  var HISTORY_SORT_VALUES = {
+    finished: function (run) {
+      var t = Date.parse(run && run.endedAt);
+      return isNaN(t) ? null : t;
+    },
+    // Go sends 0 for an unknown duration.
+    total: function (run) {
+      var ms = run && run.totalMs;
+      return typeof ms === 'number' && isFinite(ms) && ms > 0 ? ms : null;
+    },
+  };
+
+  /**
+   * @param {Array} runs
+   * @param {{key: string, dir: string}|null} sort null sorts by endedAt, newest first
+   * @returns {Array} a new array. finished sorts by endedAt, total by totalMs.
+   *   Runs with no value go last in both orders; equal runs keep their order.
+   */
+  function sortHistory(runs, sort) {
+    var key = sort && HISTORY_SORT_VALUES[sort.key] ? sort.key : 'finished';
+    var sign = sort && sort.dir === 'asc' ? 1 : -1;
+    var valueOf = HISTORY_SORT_VALUES[key];
+    // Array.prototype.sort is stable.
+    return (runs || []).slice().sort(function (a, b) {
+      var x = valueOf(a);
+      var y = valueOf(b);
+      if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1;
+      return x === y ? 0 : (x < y ? -1 : 1) * sign;
+    });
+  }
+
+  function positiveMs(ms) {
+    return typeof ms === 'number' && isFinite(ms) && ms > 0 ? ms : null;
+  }
+
+  /**
+   * The plan, ship and total times of one History row. A ship row shows its
+   * own time and the time of its linked plan. A plan row shows its time in
+   * the plan column. Every row shows its total time.
+   * @param {{kind?: string, durationMs?: number, planDurationMs?: number, totalMs?: number}} run
+   * @returns {{planMs: number|null, shipMs: number|null, totalMs: number|null}} null shows as '—'
+   */
+  function historyCells(run) {
+    var r = run || {};
+    var own = typeof r.durationMs === 'number' && isFinite(r.durationMs) && r.durationMs >= 0 ? r.durationMs : null;
+    var total = positiveMs(r.totalMs);
+    if (r.kind === 'ship') return { planMs: positiveMs(r.planDurationMs), shipMs: own, totalMs: total };
+    if (r.kind === 'plan') return { planMs: own, shipMs: null, totalMs: total };
+    return { planMs: null, shipMs: null, totalMs: total };
+  }
+
   var view = {
     TAB_KEY: TAB_KEY,
     REPO_FILTER_KEY: REPO_FILTER_KEY,
@@ -1326,6 +1437,12 @@
     saveTab: saveTab,
     loadRepoFilter: loadRepoFilter,
     saveRepoFilter: saveRepoFilter,
+    defaultUi: defaultUi,
+    historyOutcomeCounts: historyOutcomeCounts,
+    filterHistory: filterHistory,
+    nextHistorySort: nextHistorySort,
+    sortHistory: sortHistory,
+    historyCells: historyCells,
   };
 
   if (typeof module === 'object' && module.exports) {

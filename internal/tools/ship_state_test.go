@@ -4024,6 +4024,335 @@ func TestShipState_HistoryRecord_MissingSkill(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// history_record / fail: plan fields copied from the ship state linkedPlan
+// ---------------------------------------------------------------------------
+
+// setShipLinkedPlan writes linked as data["linkedPlan"] in the ship state file
+// at path, mirroring setStepStatus's read-mutate-write pattern.
+func setShipLinkedPlan(t *testing.T, path string, linked any) {
+	t.Helper()
+	data := readStateData(t, path)
+	data["linkedPlan"] = linked
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// readRunsRows returns the rows of runs.jsonl under root, each as a generic
+// map, so a test sees exactly which keys the row holds.
+func readRunsRows(t *testing.T, root string) []map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(history.NewFileWriter(historyDir(root)).RunsPath())
+	if err != nil {
+		t.Fatalf("read runs.jsonl: %v", err)
+	}
+	var rows []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		var row map[string]any
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			t.Fatalf("unmarshal row %q: %v", line, err)
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// shipHistoryRecordCall calls history_record for a ship row of branch (the
+// empty branch leaves detail.branch out) and returns the response map.
+func shipHistoryRecordCall(t *testing.T, root, branch string) map[string]any {
+	t.Helper()
+	detail := map[string]any{"skill": "ship", "outcome": "success", "ts": "2026-10-10T11:00:00Z"}
+	if branch != "" {
+		detail["branch"] = branch
+	}
+	out, err := shipState(root, root, ShipStateIn{Action: "history_record", Detail: detail},
+		fixedNow(time.Date(2026, 10, 10, 11, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("history_record: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", out)
+	}
+	return m
+}
+
+// historyPlanNextOK is the history_record next text when the row is written
+// with no warning.
+const historyPlanNextOK = "Continue with the next ship step."
+
+// assertNoPlanKeys fails when row holds any of the three plan fields.
+func assertNoPlanKeys(t *testing.T, row map[string]any) {
+	t.Helper()
+	for _, key := range []string{"plan_file", "plan_started_at", "plan_duration_ms"} {
+		if _, has := row[key]; has {
+			t.Errorf("row %v has key %q, want none", row, key)
+		}
+	}
+}
+
+// TestShipHistoryPlanFields pins the linkedPlan to plan field table.
+func TestShipHistoryPlanFields(t *testing.T) {
+	const (
+		start = "2026-10-10T08:20:00Z"
+		done  = "2026-10-10T09:40:00Z"
+	)
+	cases := []struct {
+		name string
+		data map[string]any
+		want history.RunRecord
+	}{
+		{"absent", map[string]any{}, history.RunRecord{}},
+		{"not an object", map[string]any{"linkedPlan": "x"}, history.RunRecord{}},
+		{"no start time", map[string]any{"linkedPlan": map[string]any{"planFile": "/p/x.md"}}, history.RunRecord{}},
+		{"start not RFC 3339", map[string]any{"linkedPlan": map[string]any{"planFile": "/p/x.md", "startedAt": "yesterday"}}, history.RunRecord{}},
+		{
+			"startedAt only",
+			map[string]any{"linkedPlan": map[string]any{"planFile": "/p/x.md", "startedAt": start}},
+			history.RunRecord{PlanFile: "/p/x.md", PlanStartedAt: start},
+		},
+		{
+			"startedAt and completedAt",
+			map[string]any{"linkedPlan": map[string]any{"planFile": "/p/x.md", "startedAt": start, "completedAt": done}},
+			history.RunRecord{PlanFile: "/p/x.md", PlanStartedAt: start, PlanDurationMs: 4800000},
+		},
+		{
+			"completedAt before startedAt",
+			map[string]any{"linkedPlan": map[string]any{"planFile": "/p/x.md", "startedAt": done, "completedAt": start}},
+			history.RunRecord{PlanFile: "/p/x.md", PlanStartedAt: done},
+		},
+		{
+			"completedAt not RFC 3339",
+			map[string]any{"linkedPlan": map[string]any{"planFile": "/p/x.md", "startedAt": start, "completedAt": "later"}},
+			history.RunRecord{PlanFile: "/p/x.md", PlanStartedAt: start},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got history.RunRecord
+			shipHistoryPlanFields(&got, tc.data)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("rec = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShipState_HistoryRecordPlanFields_Written proves a ship row gets the
+// three plan fields and the plain next text when the ship state has a
+// linkedPlan with a start and a done time.
+func TestShipState_HistoryRecordPlanFields_Written(t *testing.T) {
+	dir, path := deferFixture(t, "feat/hist-plan")
+	setShipLinkedPlan(t, path, map[string]any{
+		"planFile": "/plans/x.md", "startedAt": "2026-10-10T08:20:00Z", "completedAt": "2026-10-10T09:40:00Z",
+	})
+
+	out := shipHistoryRecordCall(t, dir, "feat/hist-plan")
+	if out["ok"] != true || out["next"] != historyPlanNextOK {
+		t.Errorf("out = %v, want ok true and next %q", out, historyPlanNextOK)
+	}
+	if _, has := out["warnings"]; has {
+		t.Errorf("warnings = %v, want none", out["warnings"])
+	}
+	rows := readRunsRows(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if rows[0]["plan_file"] != "/plans/x.md" || rows[0]["plan_started_at"] != "2026-10-10T08:20:00Z" ||
+		rows[0]["plan_duration_ms"] != float64(4800000) {
+		t.Errorf("row = %v, want the three plan fields from linkedPlan", rows[0])
+	}
+}
+
+// TestShipState_HistoryRecordPlanFields_StartOnly proves a linkedPlan with a
+// start time and no done time leaves plan_duration_ms out.
+func TestShipState_HistoryRecordPlanFields_StartOnly(t *testing.T) {
+	dir, path := deferFixture(t, "feat/hist-plan-start")
+	setShipLinkedPlan(t, path, map[string]any{"planFile": "/plans/x.md", "startedAt": "2026-10-10T08:20:00Z"})
+
+	out := shipHistoryRecordCall(t, dir, "feat/hist-plan-start")
+	if out["next"] != historyPlanNextOK {
+		t.Errorf("next = %v, want %q", out["next"], historyPlanNextOK)
+	}
+	row := readRunsRows(t, dir)[0]
+	if row["plan_file"] != "/plans/x.md" || row["plan_started_at"] != "2026-10-10T08:20:00Z" {
+		t.Errorf("row = %v, want plan_file and plan_started_at", row)
+	}
+	if _, has := row["plan_duration_ms"]; has {
+		t.Errorf("row = %v, want no plan_duration_ms", row)
+	}
+}
+
+// TestShipState_HistoryRecordPlanFields_CompletedBeforeStart proves a done
+// time before the start time leaves plan_duration_ms out.
+func TestShipState_HistoryRecordPlanFields_CompletedBeforeStart(t *testing.T) {
+	dir, path := deferFixture(t, "feat/hist-plan-back")
+	setShipLinkedPlan(t, path, map[string]any{
+		"planFile": "/plans/x.md", "startedAt": "2026-10-10T09:40:00Z", "completedAt": "2026-10-10T08:20:00Z",
+	})
+
+	shipHistoryRecordCall(t, dir, "feat/hist-plan-back")
+	row := readRunsRows(t, dir)[0]
+	if row["plan_started_at"] != "2026-10-10T09:40:00Z" {
+		t.Errorf("row = %v, want plan_started_at", row)
+	}
+	if _, has := row["plan_duration_ms"]; has {
+		t.Errorf("row = %v, want no plan_duration_ms", row)
+	}
+}
+
+// TestShipState_HistoryRecordPlanFields_NotApplicable proves the row has no
+// plan fields and the response has no warning when there is no linkedPlan,
+// no ship state, no detail.branch, or the skill is not ship.
+func TestShipState_HistoryRecordPlanFields_NotApplicable(t *testing.T) {
+	linked := map[string]any{"planFile": "/plans/x.md", "startedAt": "2026-10-10T08:20:00Z"}
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) (root, branch, skill string)
+	}{
+		{"no linkedPlan", func(t *testing.T) (string, string, string) {
+			dir, _ := deferFixture(t, "feat/hist-none")
+			return dir, "feat/hist-none", "ship"
+		}},
+		{"ship state not found", func(t *testing.T) (string, string, string) {
+			return t.TempDir(), "feat/hist-missing", "ship"
+		}},
+		{"empty branch", func(t *testing.T) (string, string, string) {
+			dir, path := deferFixture(t, "feat/hist-nobranch")
+			setShipLinkedPlan(t, path, linked)
+			return dir, "", "ship"
+		}},
+		{"skill is not ship", func(t *testing.T) (string, string, string) {
+			dir, path := deferFixture(t, "feat/hist-other")
+			setShipLinkedPlan(t, path, linked)
+			return dir, "feat/hist-other", "execute"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, branch, skill := tc.setup(t)
+			detail := map[string]any{"skill": skill, "outcome": "success", "ts": "2026-10-10T11:00:00Z"}
+			if branch != "" {
+				detail["branch"] = branch
+			}
+			out, err := shipState(root, root, ShipStateIn{Action: "history_record", Detail: detail},
+				fixedNow(time.Date(2026, 10, 10, 11, 0, 0, 0, time.UTC)))
+			if err != nil {
+				t.Fatalf("history_record: %v", err)
+			}
+			m, _ := out.(map[string]any)
+			if m["ok"] != true || m["next"] != historyPlanNextOK {
+				t.Errorf("out = %v, want ok true and next %q", m, historyPlanNextOK)
+			}
+			if _, has := m["warnings"]; has {
+				t.Errorf("warnings = %v, want none", m["warnings"])
+			}
+			assertNoPlanKeys(t, readRunsRows(t, root)[0])
+		})
+	}
+}
+
+// TestShipState_HistoryRecordPlanFields_ReadError proves a corrupt ship state
+// file writes the row with no plan fields, one warning and the retry-free
+// next text. The call does not fail.
+func TestShipState_HistoryRecordPlanFields_ReadError(t *testing.T) {
+	root := t.TempDir()
+	runsDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	corrupt := filepath.Join(runsDir, "ship-"+state.SlugifyBranch("feat/hist-corrupt")+"-20261010T110000Z.json")
+	if err := os.WriteFile(corrupt, []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", corrupt, err)
+	}
+
+	out := shipHistoryRecordCall(t, root, "feat/hist-corrupt")
+	if out["ok"] != true {
+		t.Errorf("ok = %v, want true", out["ok"])
+	}
+	warnings, _ := out["warnings"].([]string)
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "plan fields not added to the history row: ") {
+		t.Errorf("warnings = %#v, want one entry that starts with the plan fields text", out["warnings"])
+	}
+	wantNext := "Continue with the next ship step. The history row is written without plan fields. No retry is needed."
+	if out["next"] != wantNext {
+		t.Errorf("next = %v, want %q", out["next"], wantNext)
+	}
+	rows := readRunsRows(t, root)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	assertNoPlanKeys(t, rows[0])
+}
+
+// TestShipState_FailPlanFields proves the first fail row of a ship run with a
+// linkedPlan carries the three plan fields.
+func TestShipState_FailPlanFields(t *testing.T) {
+	dir, path := deferFixture(t, "feat/fail-plan")
+	setShipLinkedPlan(t, path, map[string]any{
+		"planFile": "/plans/x.md", "startedAt": "2026-10-10T08:20:00Z", "completedAt": "2026-10-10T09:40:00Z",
+	})
+	rows := recordShipHistoryAppends(t, nil)
+
+	if _, err := shipFail(dir, "feat/fail-plan", "execute", time.Date(2026, 1, 1, 0, 30, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	want := history.RunRecord{
+		Timestamp:      "2026-01-01T00:30:00Z",
+		Skill:          "ship",
+		Branch:         "feat/fail-plan",
+		Outcome:        "failure",
+		DurationMs:     1800000,
+		StartedAt:      "2026-01-01T00:00:00Z",
+		PlanFile:       "/plans/x.md",
+		PlanStartedAt:  "2026-10-10T08:20:00Z",
+		PlanDurationMs: 4800000,
+	}
+	if len(*rows) != 1 || !reflect.DeepEqual((*rows)[0], want) {
+		t.Fatalf("appended rows = %+v, want exactly [%+v]", *rows, want)
+	}
+}
+
+// TestShipState_HistoryRecordPlanFields_PlanTimingJoinIgnoresShipRow proves a
+// ship row that carries the same plan_file does not change what
+// shipPlanTimingFor returns: only skill=plan rows match.
+func TestShipState_HistoryRecordPlanFields_PlanTimingJoinIgnoresShipRow(t *testing.T) {
+	root := t.TempDir()
+	planFile := filepath.Join(root, "plans", "x.md")
+	w := history.NewFileWriter(historyDir(root))
+	rowsToWrite := []history.RunRecord{
+		{
+			Timestamp: "2026-10-10T09:40:00Z", Skill: "plan", Branch: "feat/x", Outcome: "done", DurationMs: 300000,
+			PlanFile: planFile, StartedAt: "2026-10-10T08:20:00Z", LastModifiedAt: "2026-10-10T09:45:00Z",
+		},
+		{
+			Timestamp: "2026-10-10T11:00:00Z", Skill: "ship", Branch: "feat/x", Outcome: "success", DurationMs: 3600000,
+			PlanFile: planFile, PlanStartedAt: "2026-10-10T08:20:00Z", PlanDurationMs: 4800000,
+		},
+	}
+	for _, rec := range rowsToWrite {
+		if err := w.AppendRun(rec); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+
+	got, err := shipPlanTimingFor(root, map[string]any{"planPath": planFile})
+	if err != nil {
+		t.Fatalf("shipPlanTimingFor: %v", err)
+	}
+	want := &ShipPlanTiming{
+		PlanFile: planFile, StartedAt: "2026-10-10T08:20:00Z", LastModifiedAt: "2026-10-10T09:45:00Z", DurationMs: 300000,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("timing = %+v, want %+v (the plan row, not the ship row)", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // deferred_add
 // ---------------------------------------------------------------------------
 

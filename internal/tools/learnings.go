@@ -220,6 +220,20 @@ func learningsSplitEntries(content string) (header string, entries []string) {
 	return blocks[0], entries
 }
 
+// learningsJoin rebuilds a learnings log from its header and kept entries. The
+// caller passes each kept entry without trailing newlines.
+func learningsJoin(header string, kept []string) string {
+	var out strings.Builder
+	out.WriteString(strings.TrimRight(header, "\n"))
+	out.WriteString("\n")
+	if len(kept) > 0 {
+		out.WriteString("\n")
+		out.WriteString(strings.Join(kept, "\n\n"))
+		out.WriteString("\n")
+	}
+	return out.String()
+}
+
 func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 	if len(indices) == 0 {
 		return LearningsLogOut{}, &mcpserver.DomainError{
@@ -272,16 +286,7 @@ func learningsRemove(path, rel string, indices []int) (LearningsLogOut, error) {
 		kept = append(kept, strings.TrimRight(entry, "\n"))
 	}
 
-	var out strings.Builder
-	out.WriteString(strings.TrimRight(header, "\n"))
-	out.WriteString("\n")
-	if len(kept) > 0 {
-		out.WriteString("\n")
-		out.WriteString(strings.Join(kept, "\n\n"))
-		out.WriteString("\n")
-	}
-
-	if err := os.WriteFile(path, []byte(out.String()), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(learningsJoin(header, kept)), 0o644); err != nil {
 		return LearningsLogOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write learnings log: %s", err.Error()),
 			Suggestion: "Check write permission on " + rel + " and free disk space, then retry action=\"remove\".",

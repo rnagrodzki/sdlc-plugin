@@ -20,6 +20,7 @@
     'no-deferred': 'No open deferred items.',
     'no-learnings': 'No learnings today.',
     'no-history': 'No finished runs for the selected repos.',
+    'no-history-outcome': 'No runs match this filter',
   };
 
   /**
@@ -94,29 +95,47 @@
   }
 
   /**
+   * The title of the total time chip of a pipeline head.
+   * @param {string} kind the pipeline kind
+   * @param {boolean} fromPlan true for a ship run that counts from the start of its linked plan
+   * @param {boolean} running true while the chip counts up to now
+   * @returns {string}
+   */
+  function durationTitle(kind, fromPlan, running) {
+    if (fromPlan) return running ? 'Time since the plan started' : 'Time from the plan start to the ship end';
+    if (kind === 'ship') {
+      return running ? 'Time since the ship run started (no linked plan)' : 'Total time of the ship run (no linked plan)';
+    }
+    return running ? 'Time since the pipeline started' : 'Total time of the pipeline';
+  }
+
+  /**
    * The total time of a pipeline, for its head. A running pipeline counts up
    * to now. A completed one stops at completedAt. A stalled or failed one
-   * stops at its last update. The timer refreshes a running one.
+   * stops at its last update. The timer refreshes a running one. A ship run
+   * with planStartedAt counts from the start of its linked plan.
    * @param {Document} doc
    * @param {object} view
-   * @param {{status: string, startedAt?: string, updatedAt?: string, completedAt?: string|null}} pipeline
+   * @param {{kind?: string, status: string, startedAt?: string, planStartedAt?: string, updatedAt?: string, completedAt?: string|null}} pipeline
    * @param {Date|number} now
-   * @returns {Element|null} span.pipe-dur, or null when startedAt is unreadable
+   * @returns {Element|null} span.pipe-dur, or null when the start time is unreadable
    */
   function pipelineDuration(doc, view, pipeline, now) {
     var running = pipeline.status === 'running' && !pipeline.completedAt;
     var end = pipeline.completedAt || (running ? now : pipeline.updatedAt);
-    var text = spanText(view, pipeline.startedAt, end);
+    var fromPlan = pipeline.kind === 'ship' && !!pipeline.planStartedAt;
+    var start = fromPlan ? pipeline.planStartedAt : pipeline.startedAt;
+    var text = spanText(view, start, end);
     if (!text) return null;
     var value = el(doc, 'span', running ? 'dur-live' : '', text);
-    if (running) value.setAttribute('data-since', pipeline.startedAt);
+    if (running) value.setAttribute('data-since', start);
     // A running chip has a lamp and an amber time, so the reader sees the time is live.
     var chip = append(el(doc, 'span', running ? 'pipe-dur live' : 'pipe-dur'), [
       running ? lamp(doc, 'running') : null,
       el(doc, 'span', 'dur-label', 'total'),
       value,
     ]);
-    chip.setAttribute('title', running ? 'Time since the pipeline started' : 'Total time of the pipeline');
+    chip.setAttribute('title', durationTitle(pipeline.kind, fromPlan, running));
     return chip;
   }
 
@@ -1188,60 +1207,116 @@
     return append(block, [blockHead(doc, view, repo, pipeline, collapsed, view.tileCount(pipeline, session), now), panel]);
   }
 
+  // The columns of the History table, in order. A column with a sort key has a sort control.
+  var HISTORY_COLUMNS = ['outcome', 'kind', 'branch', 'repo', 'finished', 'plan', 'ship', 'total'];
+  var HISTORY_SORTABLE = { finished: true, total: true };
+
+  // One time cell of the History table: '—' when the value is unknown.
+  function historyTime(doc, view, ms) {
+    var text = ms === null ? '' : view.formatDuration(ms);
+    return el(doc, 'td', 'h-dur', text || '—');
+  }
+
   /**
-   * The History tab: `Finished runs (n)` and one table of the runs of the
-   * repos in scope, newest first. Rows do not open.
+   * The History tab: `Finished runs (n)`, a row of outcome chips that filter
+   * the table, and one table of the runs of the repos in scope. The finished
+   * and total controls sort the table: a new control starts with the largest
+   * value first, and a click on the active control flips the order. With no
+   * active control the rows show newest first. Rows do not open.
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos
    * @param {Set<string>} scope
    * @param {Date|number} now
    * @param {string} [tz] IANA time zone; the local zone when absent
+   * @param {{historyOutcome: string, historySort: {key: string, dir: string}|null}} [ui]
+   *   the page state; view.defaultUi() when absent
    * @returns {Element} section.list-panel.hist-panel
    */
-  function historyTable(doc, view, repos, scope, now, tz) {
-    var runs = [];
+  function historyTable(doc, view, repos, scope, now, tz, ui) {
+    ui = ui || view.defaultUi();
+    var outcome = ui.historyOutcome || 'all';
+    var sort = ui.historySort || null;
+    var all = [];
+    var owner = new Map();
     (repos || []).forEach(function (repo) {
       if (!view.inScope(scope, repo.root)) return;
       (repo.history || []).forEach(function (run) {
-        runs.push({ repo: repo, run: run });
+        all.push(run);
+        owner.set(run, repo);
       });
     });
-    // ISO timestamps sort in time order. Array.prototype.sort is stable.
-    runs.sort(function (a, b) {
-      var x = a.run.endedAt || '';
-      var y = b.run.endedAt || '';
-      return x < y ? 1 : x > y ? -1 : 0;
-    });
+    var runs = view.sortHistory(view.filterHistory(all, outcome), sort);
 
     var panel = el(doc, 'section', 'list-panel hist-panel');
     var heading = el(doc, 'h2', 'list-title', 'Finished runs ');
     heading.appendChild(el(doc, 'span', 'n', '(' + runs.length + ')'));
     panel.appendChild(heading);
-    if (runs.length === 0) return append(panel, [emptyState(doc, 'no-history')]);
+    if (all.length === 0) return append(panel, [emptyState(doc, 'no-history')]);
+
+    // The outcome chips: all, success, failure, partial, then any other outcome
+    // of the runs (a plan run ends with 'done'). The chosen chip stays with a
+    // count of 0 when a refresh removes its last run.
+    var counts = view.historyOutcomeCounts(all);
+    if (!Object.prototype.hasOwnProperty.call(counts, outcome)) counts[outcome] = 0;
+    var bar = el(doc, 'div', 'hist-filter chips');
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', 'Filter by outcome');
+    Object.keys(counts).forEach(function (name) {
+      var chip = el(doc, 'button', 'chip');
+      chip.setAttribute('type', 'button');
+      chip.setAttribute('data-hist-outcome', name);
+      chip.setAttribute('aria-pressed', String(name === outcome));
+      if (name !== 'all') {
+        var mark = el(doc, 'span', 'out ' + name, view.outcomeGlyph(name));
+        mark.setAttribute('aria-hidden', 'true');
+        chip.appendChild(mark);
+      }
+      append(chip, [el(doc, 'span', '', name), el(doc, 'span', 'chip-n', counts[name])]);
+      bar.appendChild(chip);
+    });
+    panel.appendChild(bar);
+    if (runs.length === 0) return append(panel, [emptyState(doc, 'no-history-outcome')]);
 
     var headRow = el(doc, 'tr', '');
-    ['outcome', 'kind', 'branch', 'repo', 'finished', 'duration'].forEach(function (name) {
-      headRow.appendChild(el(doc, 'th', '', name));
+    HISTORY_COLUMNS.forEach(function (name) {
+      if (!HISTORY_SORTABLE[name]) {
+        headRow.appendChild(el(doc, 'th', '', name));
+        return;
+      }
+      var on = !!sort && sort.key === name;
+      var th = el(doc, 'th', 'sortable');
+      th.setAttribute('aria-sort', on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+      var button = el(doc, 'button', 'sort-btn' + (on ? ' on' : ''));
+      button.setAttribute('type', 'button');
+      button.setAttribute('data-hist-sort', name);
+      var arrow = el(doc, 'span', 'sort-arrow', on ? (sort.dir === 'asc' ? '▲' : '▼') : '↕');
+      arrow.setAttribute('aria-hidden', 'true');
+      append(button, [el(doc, 'span', '', name), arrow]);
+      th.appendChild(button);
+      headRow.appendChild(th);
     });
     var body = el(doc, 'tbody', '');
-    runs.forEach(function (item) {
-      var run = item.run;
+    runs.forEach(function (run) {
+      var repo = owner.get(run);
+      var cells = view.historyCells(run);
       var glyph = el(doc, 'span', '', view.outcomeGlyph(run.outcome));
       glyph.setAttribute('aria-hidden', 'true');
-      var outcome = append(el(doc, 'span', 'out ' + run.outcome), [glyph, el(doc, 'span', '', run.outcome)]);
-      var repoCell = el(doc, 'td', 'h-repo', item.repo.name);
-      repoCell.setAttribute('title', item.repo.root);
+      var outcomeTag = append(el(doc, 'span', 'out ' + run.outcome), [glyph, el(doc, 'span', '', run.outcome)]);
+      var repoCell = el(doc, 'td', 'h-repo', repo.name);
+      repoCell.setAttribute('title', repo.root);
       var when = el(doc, 'td', 'h-when', view.relativeWhen(run.endedAt, now, tz));
       when.setAttribute('title', run.endedAt || '');
       body.appendChild(
         append(el(doc, 'tr', ''), [
-          append(el(doc, 'td', ''), [outcome]),
+          append(el(doc, 'td', ''), [outcomeTag]),
           el(doc, 'td', 'h-kind', run.kind),
           el(doc, 'td', 'h-branch', run.branch),
           repoCell,
           when,
-          el(doc, 'td', 'h-dur', view.formatDuration(run.durationMs)),
+          historyTime(doc, view, cells.planMs),
+          historyTime(doc, view, cells.shipMs),
+          historyTime(doc, view, cells.totalMs),
         ])
       );
     });
@@ -1385,7 +1460,7 @@
   /**
    * One empty-state line.
    * @param {Document} doc
-   * @param {string} kind no-pipelines | none-in-scope | repo-error | no-deferred | no-learnings | no-history
+   * @param {string} kind no-pipelines | none-in-scope | repo-error | no-deferred | no-learnings | no-history | no-history-outcome
    * @param {string|{name: string, error: string}} [detail] the text for no-pipelines
    *   (view.emptyText), the repo for repo-error; other kinds ignore it
    * @returns {Element} p.generic-line with data-empty set to kind
@@ -1429,6 +1504,7 @@
     issuesTile: issuesTile,
     sessionTile: sessionTile,
     historyTable: historyTable,
+    durationTitle: durationTitle,
   };
 
   if (typeof module === 'object' && module.exports) {

@@ -43,6 +43,9 @@ var ui = {
   detailSig: '', // JSON of the item the viewer shows, so an equal item rebuilds nothing
   detailSeq: 0, // grows on each open and close; a late learning body of an older open is dropped
 };
+// The filter and sort state of the tabs: historyOutcome, historySort, and more.
+// render() never resets it, so a data refresh keeps the choice.
+Object.assign(ui, view.defaultUi());
 
 // The title of the detail viewer when its item is not in the snapshot any more.
 var GONE_TEXT = 'This item is no longer open.';
@@ -139,6 +142,8 @@ function focusKeyOf(node) {
   if (node.hasAttribute('data-archive')) {
     return 'archive\n' + node.getAttribute('data-repo') + '\n' + node.getAttribute('data-archive');
   }
+  if (node.hasAttribute('data-hist-outcome')) return 'hist-outcome\n' + node.getAttribute('data-hist-outcome');
+  if (node.hasAttribute('data-hist-sort')) return 'hist-sort\n' + node.getAttribute('data-hist-sort');
   if (node.hasAttribute('data-station')) return prefix + 'station\n' + node.getAttribute('data-station');
   if (node.classList.contains('fold-btn')) return prefix + 'fold';
   var tile = node.closest('[data-section]');
@@ -155,7 +160,8 @@ function restoreFocus() {
   var active = document.activeElement;
   if (active && active !== document.body && document.contains(active)) return;
   var candidates = document.querySelectorAll(
-    '[data-root], [data-station], .fold-btn, [data-section] > summary, [data-detail], [data-archive]'
+    '[data-root], [data-station], .fold-btn, [data-section] > summary, [data-detail], [data-archive], ' +
+      '[data-hist-outcome], [data-hist-sort]'
   );
   for (var i = 0; i < candidates.length; i++) {
     if (focusKeyOf(candidates[i]) === ui.focusKey) {
@@ -289,7 +295,7 @@ function render(snapshot) {
   var tz = timeZone();
   renderFeed(ui.lastSnapshot, repos, scope, now, tz);
   replaceChildren(tabs.activity.panel, [draw.activityPanel(document, view, repos, scope)]);
-  replaceChildren(tabs.history.panel, [draw.historyTable(document, view, repos, scope, now, tz)]);
+  replaceChildren(tabs.history.panel, [draw.historyTable(document, view, repos, scope, now, tz, ui)]);
   syncToggleAll();
 
   restoreFocus();
@@ -789,6 +795,21 @@ function init() {
   feed.addEventListener('click', function (event) {
     var button = event.target.closest('.archive-btn');
     if (button) archiveRun(button);
+  });
+  // An outcome chip filters the History table. A sort control sorts it
+  // (view.nextHistorySort). saveFocus runs before the redraw, so the clicked
+  // control keeps the focus.
+  tabs.history.panel.addEventListener('click', function (event) {
+    var chip = event.target.closest('[data-hist-outcome]');
+    var header = event.target.closest('[data-hist-sort]');
+    if (chip) {
+      ui.historyOutcome = chip.getAttribute('data-hist-outcome');
+    } else if (header) {
+      ui.historySort = view.nextHistorySort(ui.historySort, header.getAttribute('data-hist-sort'));
+    } else {
+      return;
+    }
+    render(ui.lastSnapshot);
   });
 
   window.addEventListener('hashchange', function () {

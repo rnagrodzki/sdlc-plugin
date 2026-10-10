@@ -1114,6 +1114,51 @@ func shipLinkedPlanLookupWarning(err error) string {
 	return fmt.Sprintf("plan times not saved: %s. The dashboard falls back to the history join.", err.Error())
 }
 
+// shipHistoryPlanFields copies the plan data of the ship state linkedPlan into
+// the plan fields of rec: plan_file, plan_started_at and plan_duration_ms.
+// shipData without a linkedPlan object, or a linkedPlan with no RFC 3339
+// startedAt, leaves rec as it is. plan_duration_ms is completedAt minus
+// startedAt; a missing completedAt, a completedAt that is not RFC 3339 and a
+// completedAt before startedAt leave it out.
+func shipHistoryPlanFields(rec *history.RunRecord, shipData map[string]any) {
+	linked, _ := shipData[shipLinkedPlanKey].(map[string]any)
+	if linked == nil {
+		return
+	}
+	startedAt := dashboardStr(linked["startedAt"])
+	start, err := time.Parse(time.RFC3339, startedAt)
+	if err != nil {
+		return
+	}
+	rec.PlanFile = dashboardStr(linked["planFile"])
+	rec.PlanStartedAt = startedAt
+	end, err := time.Parse(time.RFC3339, dashboardStr(linked["completedAt"]))
+	if err != nil || end.Before(start) {
+		return
+	}
+	rec.PlanDurationMs = end.Sub(start).Milliseconds()
+}
+
+// shipHistoryPlanFieldsFor reads the ship state of branch and adds its plan
+// fields to rec through shipHistoryPlanFields. An empty branch names no ship
+// state and a branch without a ship state adds nothing; neither gives a
+// warning. A failed read leaves rec as it is and returns the warning text for
+// the history_record response.
+func shipHistoryPlanFieldsFor(root, branch string, rec *history.RunRecord) (warning string) {
+	if branch == "" {
+		return ""
+	}
+	st, err := state.Find(root, "ship", branch)
+	if err != nil {
+		return "plan fields not added to the history row: " + err.Error()
+	}
+	if st == nil {
+		return ""
+	}
+	shipHistoryPlanFields(rec, st.Data)
+	return ""
+}
+
 // ---------------------------------------------------------------------------
 // Action: commit-check
 // ---------------------------------------------------------------------------
@@ -1473,6 +1518,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 			DurationMs: shipFailDurationMs(startedAt, failedAt),
 			StartedAt:  startedAt,
 		}
+		shipHistoryPlanFields(&rec, st.Data)
 		if err := shipHistoryAppendFunc(root, rec); err != nil {
 			warnings = append(warnings, "failure history row not written to "+paths.DataDir+"/history/runs.jsonl: "+err.Error()+
 				`. To add it, call ship_state history_record with detail.skill "ship" and detail.outcome "failure".`)
@@ -3242,6 +3288,12 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 		DurationMs: detailInt64(d, "duration_ms"),
 		Version:    detailStr(d, "version"),
 	}
+	var warnings []string
+	if rec.Skill == "ship" {
+		if w := shipHistoryPlanFieldsFor(root, rec.Branch, &rec); w != "" {
+			warnings = append(warnings, w)
+		}
+	}
 	if rec.Timestamp == "" {
 		rec.Timestamp = time.Now().UTC().Format(time.RFC3339)
 	}
@@ -3278,7 +3330,13 @@ func shipStateHistoryRecord(root string, in ShipStateIn) (any, error) {
 			Cause:      err,
 		}
 	}
-	return map[string]any{"ok": true, "ts": rec.Timestamp}, nil
+	out := map[string]any{"ok": true, "ts": rec.Timestamp,
+		"next": "Continue with the next ship step."}
+	if len(warnings) > 0 {
+		out["warnings"] = warnings
+		out["next"] = "Continue with the next ship step. The history row is written without plan fields. No retry is needed."
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -3520,7 +3578,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
 - complete: (Legacy) Complete a step. Requires step. Returns narration with timing and warnings. Same linkedPlan side effect as complete-step. Optional: detail.branch, detail.result, detail.detail.
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
-- fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
+- fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. The failure row carries the same plan fields from linkedPlan. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`").
 - healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1); a repeat with the same (origin, file, line, title) is a duplicate) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires the finding fields of "fixed" — detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1) — plus detail.status (one of `+strings.Join(healingFixStatuses, " | ")+`). Upserts data.healing.fixProgress[] on the key (origin, file, line, title): a new key appends a record with firstAt and updatedAt; a repeat of the stored status changes nothing (a new severity included); a stored final status (`+strings.Join(healingFixFinal, " | ")+`) is kept when the incoming status is queued or fixing, and a stored failed is kept when the incoming status is deferred (narration "kept <status>"); any other status change replaces the whole record and keeps firstAt. At most `+fmt.Sprint(healingFixProgressMax)+` records: a new key past the cap is a DomainError, while a stored key still updates. Never writes data.healing.fixed). Optional: detail.branch. A no-op call returns narration "already recorded — no change" (or "kept <status>"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. A damaged data.healing (not an object, or a list key that is not a list) is a DataError that names the state file. Returns summary, kind, written (true only when this call changed the state file), record (the record as stored after the call: recordedAt for review-total, fixed and hardened; status, firstAt and updatedAt for fix-progress; on a no-op call the stored entry, not the incoming one; with no live run the validated incoming record), and next (fix-progress only: id "continue-fix-pass" with the instruction for the fix pass — the other kinds are terminal and return no next).
@@ -3533,7 +3591,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.
 - todos: List remaining todos for a step. Optional: step, detail.branch, detail.stateFile.
-- history_record: Append a pipeline run record to .sdlc-v2/history/runs.jsonl (persistent, survives state-file GC). Requires detail.skill, detail.outcome ("success"|"failure"|"partial"). Optional: detail.ts (ISO timestamp, defaults to now), detail.branch, detail.duration_ms, detail.steps, detail.guardrail_hits, detail.deferred_issues, detail.version.
+- history_record: Append a pipeline run record to .sdlc-v2/history/runs.jsonl (persistent, survives state-file GC). Requires detail.skill, detail.outcome ("success"|"failure"|"partial"). Optional: detail.ts (ISO timestamp, defaults to now), detail.branch, detail.duration_ms, detail.steps, detail.guardrail_hits, detail.deferred_issues, detail.version. For skill "ship", the row also gets plan_file, plan_started_at and plan_duration_ms from the ship state linkedPlan when present. A ship state read error adds one warnings entry and never fails the call.
 - deferred_add: Add a deferred issue to .sdlc-v2/history/deferred.json. Requires detail.id, detail.description. Optional: detail.created (defaults to now), detail.source, detail.priority ("high"|"medium"|"low", defaults to "medium").
 - deferred_list: List all deferred issues. Returns {issues, openCount}.
 - deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}.

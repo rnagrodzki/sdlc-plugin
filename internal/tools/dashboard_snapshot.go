@@ -522,6 +522,12 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	if history != nil {
 		repo.History = history
 	}
+
+	// A preplan read problem is a warning, never repo.Error: repo.Error
+	// blocks the archive of every run of the repo.
+	preplans, warnings := dashboardPreplans(root)
+	repo.Preplans = preplans
+	repo.Warnings = append(repo.Warnings, warnings...)
 	return repo
 }
 

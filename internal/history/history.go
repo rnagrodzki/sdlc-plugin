@@ -29,6 +29,12 @@ import (
 // omitempty so every other producer's records, and every record written
 // before these fields existed, keep parsing and serializing exactly as
 // before.
+//
+// PlanFile, PlanStartedAt and PlanDurationMs are also written on ship rows,
+// copied from the ship state linkedPlan (internal/tools/ship_state.go's
+// shipHistoryPlanFields): the linked plan file, its start time and its start
+// to done duration. PlanStartedAt and PlanDurationMs are omitempty for the
+// same reason as the three fields above.
 type RunRecord struct {
 	Timestamp      string   `json:"ts"`
 	Skill          string   `json:"skill"`
@@ -40,6 +46,8 @@ type RunRecord struct {
 	DeferredIssues []string `json:"deferred_issues,omitempty"`
 	Version        string   `json:"version,omitempty"`
 	PlanFile       string   `json:"plan_file,omitempty"`
+	PlanStartedAt  string   `json:"plan_started_at,omitempty"`  // ship rows: linked plan start
+	PlanDurationMs int64    `json:"plan_duration_ms,omitempty"` // ship rows: plan start to plan done
 	StartedAt      string   `json:"started_at,omitempty"`
 	LastModifiedAt string   `json:"last_modified_at,omitempty"`
 }
