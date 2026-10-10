@@ -68,6 +68,77 @@
     return view.formatElapsed(Math.max(0, nowMs - asked));
   }
 
+  // A time as milliseconds: a number, a Date, or an RFC 3339 string. NaN when unreadable.
+  function toMs(t) {
+    if (typeof t === 'number') return t;
+    if (t && typeof t.getTime === 'function') return t.getTime();
+    return Date.parse(t);
+  }
+
+  /**
+   * Time from one moment to another, in the elapsed format.
+   * @param {object} view
+   * @param {string|Date|number} from
+   * @param {string|Date|number} to
+   * @returns {string} '26s', '4m 12s', or '1h 03m'; '' for a bad moment
+   */
+  function spanText(view, from, to) {
+    var start = toMs(from);
+    var end = toMs(to);
+    if (isNaN(start) || isNaN(end)) return '';
+    // A clock that runs behind the host must not give a negative time.
+    return view.formatElapsed(Math.max(0, end - start));
+  }
+
+  /**
+   * The total time of a pipeline, for its head. A running pipeline counts up
+   * to now. A completed one stops at completedAt. A stalled or failed one
+   * stops at its last update. The timer refreshes a running one.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{status: string, startedAt?: string, updatedAt?: string, completedAt?: string|null}} pipeline
+   * @param {Date|number} now
+   * @returns {Element|null} span.pipe-dur, or null when startedAt is unreadable
+   */
+  function pipelineDuration(doc, view, pipeline, now) {
+    var running = pipeline.status === 'running' && !pipeline.completedAt;
+    var end = pipeline.completedAt || (running ? now : pipeline.updatedAt);
+    var text = spanText(view, pipeline.startedAt, end);
+    if (!text) return null;
+    var value = el(doc, 'span', running ? 'dur-live' : '', text);
+    if (running) value.setAttribute('data-since', pipeline.startedAt);
+    // A running chip has a lamp and an amber time, so the reader sees the time is live.
+    var chip = append(el(doc, 'span', running ? 'pipe-dur live' : 'pipe-dur'), [
+      running ? lamp(doc, 'running') : null,
+      el(doc, 'span', 'dur-label', 'total'),
+      value,
+    ]);
+    chip.setAttribute('title', running ? 'Time since the pipeline started' : 'Total time of the pipeline');
+    return chip;
+  }
+
+  /**
+   * The time of one step, for its station: how long a completed or failed
+   * step took, or how long the current step runs. A pending or skipped step
+   * has none. A step with no valid start time gives null.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{status: string, startedAt?: string, completedAt?: string|null}} step
+   * @param {Date|number} now
+   * @returns {Element|null} span.dur, or null for a step with no time
+   */
+  function stepDuration(doc, view, step, now) {
+    if (step.status === 'pending' || step.status === 'skipped') return null;
+    var current = step.status === 'in_progress';
+    var end = step.completedAt || (current ? now : '');
+    var text = step.startedAt && end ? spanText(view, step.startedAt, end) : '';
+    if (!text) return null;
+    var node = el(doc, 'span', 'dur' + (current ? ' current dur-live' : ''), text);
+    if (current) node.setAttribute('data-since', step.startedAt);
+    node.setAttribute('title', current ? 'Time since the step started' : 'Time the step took');
+    return node;
+  }
+
   /**
    * The wait banner of a pipeline: the bar `◈ WAITING ON YOU · <elapsed>`,
    * then the line `<header>: "<text>"`. The line has only the parts that
@@ -115,8 +186,8 @@
 
   /**
    * Rewrites the text of every `.attn-elapsed` node in doc from its
-   * data-asked value and now. A node whose data-asked is unreadable keeps its
-   * text.
+   * data-asked value and now, and the text of every `.dur-live` node from its
+   * data-since value and now. A node whose time is unreadable keeps its text.
    * @param {Document} doc
    * @param {object} view window.sdlcView
    * @param {Date|number} now
@@ -126,6 +197,12 @@
     for (var i = 0; i < nodes.length; i++) {
       var text = elapsedText(view, nodes[i].getAttribute('data-asked'), now);
       if (text) nodes[i].textContent = text;
+    }
+    // The running time of a running pipeline and of the current step.
+    var live = doc.querySelectorAll('.dur-live');
+    for (var j = 0; j < live.length; j++) {
+      var span = spanText(view, live[j].getAttribute('data-since'), now);
+      if (span) live[j].textContent = span;
     }
   }
 
@@ -180,18 +257,22 @@
    */
   function archiveButton(doc, repo, pipeline) {
     if (!pipeline.id || !Object.prototype.hasOwnProperty.call(ARCHIVABLE, pipeline.status)) return null;
-    var button = el(doc, 'button', 'archive-btn', 'Archive');
+    // An icon button: app.css draws the icon, so the name goes in aria-label and title.
+    var button = el(doc, 'button', 'archive-btn');
     button.setAttribute('type', 'button');
     button.setAttribute('data-archive', pipeline.id);
     button.setAttribute('data-repo', repo.root);
     button.setAttribute('data-status', pipeline.status);
+    button.setAttribute('aria-label', 'Archive');
+    button.setAttribute('title', 'Archive this run');
     return button;
   }
 
   /**
-   * Head of a pipeline block: lamp, kind, branch, repo, issue chip (only with
-   * issues), status word, the Archive button (only for a completed, failed,
-   * or stalled pipeline), and the `details N` toggle. A pipeline with an
+   * Head of a pipeline block: lamp, kind, branch, total time, then the side
+   * group: the Archive icon (only for a completed, failed, or stalled
+   * pipeline), repo, issue chip (only with issues), status word, and the
+   * `details N` toggle. A pipeline with an
    * attention has the class `waiting` on its lamp.
    * @param {Document} doc
    * @param {object} view
@@ -199,9 +280,10 @@
    * @param {{kind: string, branch: string, worktree: string, status: string, issues?: Array, attention?: object}} pipeline
    * @param {boolean} collapsed
    * @param {number} tiles the tile count of the block (view.tileCount)
+   * @param {Date|number} now
    * @returns {Element} header.pipe-head
    */
-  function blockHead(doc, view, repo, pipeline, collapsed, tiles) {
+  function blockHead(doc, view, repo, pipeline, collapsed, tiles, now) {
     var head = el(doc, 'header', 'pipe-head');
 
     var lamp = el(doc, 'span', 'lamp ' + pipeline.status + (pipeline.attention ? ' waiting' : ''));
@@ -212,6 +294,10 @@
     branch.setAttribute('title', worktree ? pipeline.branch + ' · worktree ' + worktree : pipeline.branch);
 
     var side = el(doc, 'span', 'pipe-side');
+    // The Archive icon is the first item of the group, far from the details toggle.
+    var archive = archiveButton(doc, repo, pipeline);
+    if (archive) side.appendChild(archive);
+
     var repoName = el(doc, 'span', 'pipe-repo', repo.name);
     repoName.setAttribute('title', repo.root);
     side.appendChild(repoName);
@@ -220,9 +306,6 @@
     if (issues > 0) side.appendChild(el(doc, 'span', 'issue-chip', plural(issues, 'issue', 'issues')));
 
     side.appendChild(el(doc, 'span', 'pipe-status ' + pipeline.status, pipeline.status));
-
-    var archive = archiveButton(doc, repo, pipeline);
-    if (archive) side.appendChild(archive);
 
     var fold = el(doc, 'button', 'fold-btn');
     fold.setAttribute('type', 'button');
@@ -233,7 +316,13 @@
     append(fold, [chev, el(doc, 'span', 'fold-label', 'details'), el(doc, 'span', 'fold-count', tiles)]);
     side.appendChild(fold);
 
-    return append(head, [lamp, el(doc, 'span', 'pipe-kind', view.kindLabel(pipeline.kind)), branch, side]);
+    return append(head, [
+      lamp,
+      el(doc, 'span', 'pipe-kind', view.kindLabel(pipeline.kind)),
+      branch,
+      pipelineDuration(doc, view, pipeline, now),
+      side,
+    ]);
   }
 
   /**
@@ -245,9 +334,10 @@
    * @param {object} view
    * @param {{steps?: Array<{name: string, status: string, detail?: object}>, attention?: object}} pipeline
    * @param {number} selectedIndex index of the marked station
+   * @param {Date|number} now
    * @returns {Element} div.track
    */
-  function stationTrack(doc, view, pipeline, selectedIndex) {
+  function stationTrack(doc, view, pipeline, selectedIndex, now) {
     var steps = (pipeline && pipeline.steps) || [];
     var waiting = !!(pipeline && pipeline.attention);
     var track = el(doc, 'div', 'track');
@@ -275,7 +365,7 @@
       var glyph = el(doc, 'span', 'glyph ' + step.status, glyphText);
       glyph.setAttribute('aria-hidden', 'true');
       var label = el(doc, 'span', step.status === 'in_progress' ? 'label current' : 'label', view.stationLabel(step.name));
-      append(station, [wire, glyph, label]);
+      append(station, [wire, glyph, label, stepDuration(doc, view, step, now)]);
       // A div has no accessible name of its own: the status goes in hidden text.
       if (!section) station.appendChild(el(doc, 'span', 'sr-only', ', ' + statusWords(step.status)));
 
@@ -941,11 +1031,11 @@
 
     var panel = el(doc, 'div', 'track-panel');
     var wrap = append(el(doc, 'div', 'detail-wrap'), [detail]);
-    append(panel, [stationTrack(doc, view, pipeline, selected), wrap]);
+    append(panel, [stationTrack(doc, view, pipeline, selected, now), wrap]);
 
     // The wait banner comes first, so a collapsed block still shows it.
     if (pipeline.attention) append(block, attentionRows(doc, view, pipeline.attention, now));
-    return append(block, [blockHead(doc, view, repo, pipeline, collapsed, view.tileCount(pipeline, session)), panel]);
+    return append(block, [blockHead(doc, view, repo, pipeline, collapsed, view.tileCount(pipeline, session), now), panel]);
   }
 
   /**

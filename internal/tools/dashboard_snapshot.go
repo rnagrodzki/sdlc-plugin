@@ -144,6 +144,7 @@ const (
 	dashboardKindFindings   = "findings"
 	dashboardKindGuardrails = "guardrails" // plan setup station
 	dashboardKindResult     = "result"     // one result line of a ship step
+	dashboardKindFixes      = "fixes"      // received-review station of a ship run
 )
 
 // DashboardStepDetail is what a pipeline did inside one step. Kind tells
@@ -165,6 +166,17 @@ type DashboardStepDetail struct {
 	RepairLimit  bool                      `json:"repairLimit,omitempty"` // kind rounds
 	Outcomes     []DashboardFindingOutcome `json:"outcomes,omitempty"`    // kind rounds
 	ReviewPlan   *DashboardReviewPlan      `json:"reviewPlan,omitempty"`  // kind dimensions
+	Fixes        []DashboardFix            `json:"fixes,omitempty"`       // kind fixes
+}
+
+// DashboardFix is one finding that received-review took. Line 0 means no
+// line.
+type DashboardFix struct {
+	Title    string `json:"title"` // dashboardPreview: redacted, max 120 runes
+	Severity string `json:"severity"`
+	File     string `json:"file"`
+	Line     int    `json:"line,omitempty"`
+	Status   string `json:"status"` // one of healingFixStatuses
 }
 
 // DashboardGuardrailCounts is the guardrail count of a plan setup station.

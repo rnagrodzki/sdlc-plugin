@@ -1914,6 +1914,96 @@ describe('render blockHead', () => {
   });
 });
 
+describe('render blockHead total time', () => {
+  const STARTED = '2026-10-08T14:00:00Z'; // NOW_WAIT is 4m 12s after this
+  const head = (extra, now = NOW_WAIT) =>
+    render.blockHead(fakeDoc(), view, REPO, pipeline(Object.assign({ startedAt: STARTED }, extra)), false, 0, now);
+
+  test('a running pipeline gets a live chip with a lamp, as the next sibling of the branch', () => {
+    const h = head({ status: 'running' });
+    const chip = oneByClass(h, 'pipe-dur');
+    assert.equal(chip.className, 'pipe-dur live');
+    assert.equal(chip.attrs.title, 'Time since the pipeline started');
+    assert.equal(h.children[h.children.indexOf(oneByClass(h, 'pipe-branch')) + 1], chip);
+    assert.equal(h.children.indexOf(chip) + 1, h.children.indexOf(oneByClass(h, 'pipe-side')));
+    assert.deepEqual(chip.children.map((c) => c.className), ['lamp running', 'dur-label', 'dur-live']);
+    assert.equal(chip.children[0].attrs['aria-hidden'], 'true');
+    assert.equal(textOf(chip), 'total4m 12s');
+  });
+
+  test('the value span of a running chip carries data-since for the timer', () => {
+    const value = oneByClass(head({ status: 'running' }), 'dur-live');
+    assert.equal(value.attrs['data-since'], STARTED);
+    assert.equal(value.textContent, '4m 12s');
+  });
+
+  test('now can be a Date', () => {
+    assert.equal(oneByClass(head({ status: 'running' }, new Date(NOW_WAIT)), 'dur-live').textContent, '4m 12s');
+  });
+
+  test('a completed pipeline stops at completedAt: plain chip, no lamp, no timer', () => {
+    const h = head({ status: 'completed', completedAt: '2026-10-08T14:12:30Z' }, NOW_WAIT + 3600000);
+    const chip = oneByClass(h, 'pipe-dur');
+    assert.equal(chip.className, 'pipe-dur');
+    assert.equal(chip.attrs.title, 'Total time of the pipeline');
+    assert.deepEqual(chip.children.map((c) => c.className), ['dur-label', '']);
+    assert.equal(textOf(chip), 'total12m 30s');
+    assert.equal(byClass(h, 'dur-live').length, 0);
+    assert.equal(byClass(h, 'lamp').length, 1);
+    assert.equal(chip.children[1].attrs['data-since'], undefined);
+  });
+
+  test('a stalled or failed pipeline stops at updatedAt: plain chip', () => {
+    for (const status of ['stalled', 'failed']) {
+      const h = head({ status, updatedAt: '2026-10-08T14:02:05Z' }, NOW_WAIT + 3600000);
+      const chip = oneByClass(h, 'pipe-dur');
+      assert.equal(chip.className, 'pipe-dur', status);
+      assert.equal(textOf(chip), 'total2m 5s', status);
+      assert.equal(byClass(h, 'dur-live').length, 0, status);
+      assert.equal(byClass(h, 'lamp').length, 1, status);
+    }
+  });
+
+  test('only a running pipeline gets the live class', () => {
+    for (const status of ['completed', 'failed', 'stalled']) {
+      const h = head({ status, completedAt: '2026-10-08T14:12:30Z', updatedAt: '2026-10-08T14:12:30Z' });
+      assert.ok(!classesOf(oneByClass(h, 'pipe-dur')).includes('live'), status);
+    }
+    assert.ok(classesOf(oneByClass(head({ status: 'running' }), 'pipe-dur')).includes('live'));
+  });
+
+  test('a running pipeline that has completedAt stops there: plain chip', () => {
+    const h = head({ status: 'running', completedAt: '2026-10-08T14:01:00Z' });
+    assert.equal(oneByClass(h, 'pipe-dur').className, 'pipe-dur');
+    assert.equal(textOf(oneByClass(h, 'pipe-dur')), 'total1m 0s');
+    assert.equal(byClass(h, 'dur-live').length, 0);
+  });
+
+  test('a bad or absent startedAt gives no chip', () => {
+    for (const startedAt of [undefined, null, '', 'not a time']) {
+      for (const status of ['running', 'completed', 'failed']) {
+        const h = head({ status, startedAt, completedAt: '2026-10-08T14:12:30Z', updatedAt: '2026-10-08T14:12:30Z' });
+        assert.equal(byClass(h, 'pipe-dur').length, 0, `${status} startedAt ${JSON.stringify(startedAt)}`);
+      }
+    }
+  });
+
+  test('a running pipeline with no now gives no chip, and a stalled one with no updatedAt gives none', () => {
+    const noNow = render.blockHead(fakeDoc(), view, REPO, pipeline({ status: 'running', startedAt: STARTED }), false, 0);
+    assert.equal(byClass(noNow, 'pipe-dur').length, 0);
+    assert.equal(byClass(head({ status: 'stalled', updatedAt: undefined }), 'pipe-dur').length, 0);
+  });
+
+  test('a clock that runs behind the start gives 0s, not a negative time', () => {
+    assert.equal(oneByClass(head({ status: 'running' }, Date.parse(STARTED) - 60000), 'dur-live').textContent, '0s');
+  });
+
+  test('a pipeline with no startedAt keeps the old head: lamp, kind, branch, side', () => {
+    const h = render.blockHead(fakeDoc(), view, REPO, pipeline(), false, 0, NOW_WAIT);
+    assert.deepEqual(h.children.map((c) => c.className), ['lamp running', 'pipe-kind', 'pipe-branch', 'pipe-side']);
+  });
+});
+
 describe('render stationTrack', () => {
   test('a station with a section is a button with aria-label "name, status"', () => {
     const track = render.stationTrack(fakeDoc(), view, pipeline(), 2);
@@ -1969,7 +2059,102 @@ describe('render stationTrack', () => {
   });
 });
 
+describe('render stationTrack step time', () => {
+  const T = (s) => `2026-10-08T14:${s}Z`; // T('00:00') is 4m 12s before NOW_WAIT
+  const stepsOf = (steps) => render.stationTrack(fakeDoc(), view, pipeline({ steps }), 0, NOW_WAIT);
+  const durs = (track) => byClass(track, 'station').map((s) => byClass(s, 'dur'));
+
+  test('the current step counts up to now: span.dur.current.dur-live with data-since, right after the label', () => {
+    const track = stepsOf([{ name: 'review', status: 'in_progress', startedAt: T('02:00') }]);
+    const station = byClass(track, 'station')[0];
+    const dur = oneByClass(station, 'dur');
+    assert.equal(dur.className, 'dur current dur-live');
+    assert.equal(dur.textContent, '2m 12s');
+    assert.equal(dur.attrs['data-since'], T('02:00'));
+    assert.equal(dur.attrs.title, 'Time since the step started');
+    assert.equal(station.children[station.children.indexOf(oneByClass(station, 'label')) + 1], dur);
+  });
+
+  test('a completed step with both times shows the duration: plain span.dur, no timer', () => {
+    const track = stepsOf([{ name: 'execute', status: 'completed', startedAt: T('00:00'), completedAt: T('01:30') }]);
+    const dur = oneByClass(track, 'dur');
+    assert.equal(dur.className, 'dur');
+    assert.equal(dur.textContent, '1m 30s');
+    assert.equal(dur.attrs['data-since'], undefined);
+    assert.equal(dur.attrs.title, 'Time the step took');
+    assert.equal(byClass(track, 'dur-live').length, 0);
+  });
+
+  test('a failed step with both times shows the duration', () => {
+    const track = stepsOf([{ name: 'review', status: 'failed', startedAt: T('00:00'), completedAt: T('00:45') }]);
+    const dur = oneByClass(track, 'dur');
+    assert.equal(dur.className, 'dur');
+    assert.equal(dur.textContent, '45s');
+  });
+
+  test('a failed or completed step with no completedAt has no time', () => {
+    for (const status of ['failed', 'completed']) {
+      const track = stepsOf([{ name: 'review', status, startedAt: T('00:00') }]);
+      assert.equal(byClass(track, 'dur').length, 0, status);
+    }
+  });
+
+  test('a pending or skipped step has no time, even with times set', () => {
+    for (const status of ['pending', 'skipped']) {
+      const track = stepsOf([{ name: 'pr', status, startedAt: T('00:00'), completedAt: T('01:00') }]);
+      assert.equal(byClass(track, 'dur').length, 0, status);
+    }
+  });
+
+  test('a bad or absent startedAt gives no time for a current, completed, or failed step', () => {
+    for (const startedAt of [undefined, null, '', 'not a time']) {
+      for (const status of ['in_progress', 'completed', 'failed']) {
+        const track = stepsOf([{ name: 'review', status, startedAt, completedAt: T('01:00') }]);
+        assert.equal(byClass(track, 'dur').length, 0, `${status} startedAt ${JSON.stringify(startedAt)}`);
+      }
+    }
+  });
+
+  test('a step with no snapshot times draws no span.dur', () => {
+    assert.deepEqual(durs(render.stationTrack(fakeDoc(), view, pipeline(), 2, NOW_WAIT)), [[], [], [], []]);
+  });
+
+  test('with no now, the current step has no time', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline({ steps: [{ name: 'review', status: 'in_progress', startedAt: T('02:00') }] }), 0);
+    assert.equal(byClass(track, 'dur').length, 0);
+  });
+
+  test('each station holds its own time', () => {
+    const track = stepsOf([
+      { name: 'execute', status: 'completed', startedAt: T('00:00'), completedAt: T('01:30') },
+      { name: 'commit', status: 'completed' },
+      { name: 'review', status: 'in_progress', startedAt: T('02:00') },
+      { name: 'pr', status: 'pending' },
+    ]);
+    assert.deepEqual(durs(track).map((d) => d.map((n) => n.textContent)), [['1m 30s'], [], ['2m 12s'], []]);
+  });
+
+  test('a clock that runs behind the start gives 0s, not a negative time', () => {
+    const track = render.stationTrack(fakeDoc(), view, pipeline({ steps: [{ name: 'review', status: 'in_progress', startedAt: T('10:00') }] }), 0, NOW_WAIT);
+    assert.equal(oneByClass(track, 'dur').textContent, '0s');
+  });
+});
+
 describe('render pipelineBlock', () => {
+  test('passes now to the head chip and to the current step, so both count up to the same moment', () => {
+    const p = pipeline({
+      startedAt: '2026-10-08T14:00:00Z',
+      steps: [
+        { name: 'execute', status: 'completed', startedAt: '2026-10-08T14:00:00Z', completedAt: '2026-10-08T14:01:30Z' },
+        { name: 'review', status: 'in_progress', startedAt: '2026-10-08T14:02:00Z' },
+      ],
+    });
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, p, { collapsed: false, selected: 0, now: NOW_WAIT });
+    assert.deepEqual(byClass(block, 'dur-live').map((n) => n.textContent), ['4m 12s', '2m 12s']);
+    assert.equal(textOf(oneByClass(block, 'pipe-dur')), 'total4m 12s');
+    assert.deepEqual(byClass(block, 'dur').map((n) => n.textContent), ['1m 30s', '2m 12s']);
+  });
+
   test('an article with data-key, the head, the track, and one tile for each step with a section', () => {
     const p = pipeline();
     const block = render.pipelineBlock(fakeDoc(), view, REPO, p, { collapsed: false, selected: 0 });
@@ -2168,15 +2353,26 @@ function fakeElapsedNode(askedAt, text) {
   };
 }
 
-// A fake document for tickElapsed: querySelectorAll gives nodes for '.attn-elapsed' and nothing for any
-// other selector; queries records every selector asked.
-function fakeElapsedDoc(nodes) {
+// A fake duration node: only getAttribute and textContent, the two members tickElapsed uses.
+function fakeDurNode(since, text) {
+  return {
+    textContent: text,
+    getAttribute(name) {
+      return name === 'data-since' ? since : null;
+    },
+  };
+}
+
+// A fake document for tickElapsed: querySelectorAll gives nodes for '.attn-elapsed', durNodes for
+// '.dur-live', and nothing for any other selector; queries records every selector asked.
+function fakeElapsedDoc(nodes, durNodes = []) {
   const queries = [];
   return {
     queries,
     querySelectorAll(selector) {
       queries.push(selector);
-      return selector === '.attn-elapsed' ? nodes : [];
+      if (selector === '.attn-elapsed') return nodes;
+      return selector === '.dur-live' ? durNodes : [];
     },
   };
 }
@@ -2190,7 +2386,7 @@ describe('render tickElapsed', () => {
     const doc = fakeElapsedDoc([node]);
     render.tickElapsed(doc, view, ASKED_MS + 252000);
     assert.equal(node.textContent, '4m 12s');
-    assert.deepEqual(doc.queries, ['.attn-elapsed']);
+    assert.deepEqual(doc.queries, ['.attn-elapsed', '.dur-live']);
   });
 
   test('now can be a Date', () => {
@@ -2220,7 +2416,39 @@ describe('render tickElapsed', () => {
   test('a page with no wait banner changes nothing', () => {
     const doc = fakeElapsedDoc([]);
     render.tickElapsed(doc, view, ASKED_MS);
-    assert.deepEqual(doc.queries, ['.attn-elapsed']);
+    assert.deepEqual(doc.queries, ['.attn-elapsed', '.dur-live']);
+  });
+
+  test('a readable data-since rewrites the text of a .dur-live node from now', () => {
+    const chip = fakeDurNode(ASKED, '0s');
+    const step = fakeDurNode('2026-10-08T14:03:00Z', '0s');
+    render.tickElapsed(fakeElapsedDoc([], [chip, step]), view, ASKED_MS + 252000);
+    assert.equal(chip.textContent, '4m 12s');
+    assert.equal(step.textContent, '1m 12s');
+  });
+
+  test('one pass rewrites the wait banner and the duration nodes together', () => {
+    const banner = fakeElapsedNode(ASKED, '0s');
+    const dur = fakeDurNode(ASKED, '0s');
+    render.tickElapsed(fakeElapsedDoc([banner], [dur]), view, new Date(ASKED_MS + 26000));
+    assert.equal(banner.textContent, '26s');
+    assert.equal(dur.textContent, '26s');
+  });
+
+  test('an unreadable data-since keeps the old text, and the next node is still handled', () => {
+    for (const since of ['not a time', '', null]) {
+      const bad = fakeDurNode(since, '4m 12s');
+      const good = fakeDurNode(ASKED, '0s');
+      render.tickElapsed(fakeElapsedDoc([], [bad, good]), view, ASKED_MS + 26000);
+      assert.equal(bad.textContent, '4m 12s', `data-since ${JSON.stringify(since)}`);
+      assert.equal(good.textContent, '26s');
+    }
+  });
+
+  test('a start time after now gives 0s, not a negative time', () => {
+    const node = fakeDurNode(ASKED, '5m 0s');
+    render.tickElapsed(fakeElapsedDoc([], [node]), view, ASKED_MS - 60000);
+    assert.equal(node.textContent, '0s');
   });
 });
 
@@ -3176,8 +3404,15 @@ describe('render Archive button', () => {
     for (const status of ['completed', 'failed', 'stalled']) {
       const button = oneByClass(head({ status }), 'archive-btn');
       assert.equal(button.tagName, 'button');
-      assert.equal(button.textContent, 'Archive');
-      assert.deepEqual(button.attrs, { type: 'button', 'data-archive': 'ship-1', 'data-repo': '/src/app', 'data-status': status });
+      assert.equal(button.textContent, '');
+      assert.deepEqual(button.attrs, {
+        type: 'button',
+        'data-archive': 'ship-1',
+        'data-repo': '/src/app',
+        'data-status': status,
+        'aria-label': 'Archive',
+        title: 'Archive this run',
+      });
     }
   });
 
@@ -3187,9 +3422,9 @@ describe('render Archive button', () => {
     assert.equal(byClass(head({ status: 'completed', id: '' }), 'archive-btn').length, 0);
   });
 
-  test('the button sits after the status and before the details toggle', () => {
+  test('the icon is the first item of the side group, before the repo and far from the details toggle', () => {
     const side = oneByClass(head({ status: 'failed', issues: [{ text: 'a' }] }), 'pipe-side');
-    assert.deepEqual(side.children.map((c) => c.className), ['pipe-repo', 'issue-chip', 'pipe-status failed', 'archive-btn', 'fold-btn']);
+    assert.deepEqual(side.children.map((c) => c.className), ['archive-btn', 'pipe-repo', 'issue-chip', 'pipe-status failed', 'fold-btn']);
   });
 
   test('the button is not a step tile: every child of .step-detail stays a details element', () => {
