@@ -65,11 +65,15 @@ type DashboardSnapshot struct {
 }
 
 // DashboardRepo is one registered repo of a snapshot. Error is set when the
-// repo could not be read; every list is then empty.
+// repo could not be read; every list is then empty. Warnings holds one text
+// for each part of the repo that could not be read while the rest is right;
+// unlike Error it does not block the archive of a run.
 type DashboardRepo struct {
 	Root      string              `json:"root"`
 	Name      string              `json:"name"`
 	Error     string              `json:"error"`
+	Warnings  []string            `json:"warnings"` // [] until filled, never null
+	Preplans  []DashboardPreplan  `json:"preplans"` // [] until filled, never null
 	Pipelines []DashboardPipeline `json:"pipelines"`
 	Sessions  []DashboardSession  `json:"sessions"`
 	Learnings []DashboardLearning `json:"learnings"`
@@ -93,7 +97,10 @@ type DashboardPipeline struct {
 	SessionID   string              `json:"sessionId"`             // "" when unknown
 	CommitWaves *bool               `json:"commitWaves,omitempty"` // execute and ship only; absent elsewhere
 	Attention   *DashboardAttention `json:"attention,omitempty"`   // absent when no wait is open
-	join        dashboardJoinInfo   // not serialized; read by dashboardJoinRuns
+	// PlanStartedAt is the start of the plan run that came before a ship
+	// run, RFC 3339. Ship only; absent when the plan time is unknown.
+	PlanStartedAt string            `json:"planStartedAt,omitempty"`
+	join          dashboardJoinInfo // not serialized; read by dashboardJoinRuns
 }
 
 // DashboardAttention is the open wait of a running pipeline: the run waits
@@ -292,6 +299,23 @@ type DashboardRun struct {
 	StartedAt  string `json:"startedAt"`
 	EndedAt    string `json:"endedAt"`
 	DurationMs int64  `json:"durationMs"`
+	// PlanStartedAt (RFC 3339) and PlanDurationMs describe the plan run
+	// that came before a ship run. Both are absent on a row without a
+	// linked plan.
+	PlanStartedAt  string `json:"planStartedAt,omitempty"`
+	PlanDurationMs int64  `json:"planDurationMs,omitempty"`
+	// TotalMs is the time from the plan start to EndedAt for a ship row with
+	// a linked plan, else DurationMs. 0 means unknown.
+	TotalMs int64 `json:"totalMs"`
+}
+
+// DashboardPreplan is one preplan topic file of a repo.
+type DashboardPreplan struct {
+	Slug      string `json:"slug"`      // file name without .md
+	Topic     string `json:"topic"`     // from "# Preplan: <topic>", else the slug
+	Status    string `json:"status"`    // raw "**Status:**" value, "" when absent
+	Path      string `json:"path"`      // repo-relative: .sdlc-v2/preplan/<slug>.md
+	UpdatedAt string `json:"updatedAt"` // file mtime, RFC 3339 UTC
 }
 
 // dashboardJoinInfo carries join keys between collectors. Never serialized.
@@ -440,6 +464,8 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	repo := DashboardRepo{
 		Root:      root,
 		Name:      filepath.Base(root),
+		Warnings:  []string{},
+		Preplans:  []DashboardPreplan{},
 		Pipelines: []DashboardPipeline{},
 		Sessions:  []DashboardSession{},
 		Learnings: []DashboardLearning{},
@@ -473,6 +499,15 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 			dashboardAttachAttention(&p, recs)
 		}
 		if ok && dashboardFinish(&p, updated, now) {
+			// Inside the shown branch: only a shown ship run reads the
+			// execute state and runs.jsonl. A read problem is a warning,
+			// never repo.Error, because repo.Error blocks the archive of
+			// every run of the repo.
+			if p.Kind == "ship" {
+				if w := dashboardAttachPlanTimes(root, &p, st); w != "" {
+					repo.Warnings = append(repo.Warnings, w)
+				}
+			}
 			repo.Pipelines = append(repo.Pipelines, p)
 		}
 	}
@@ -496,6 +531,12 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	if history != nil {
 		repo.History = history
 	}
+
+	// A preplan read problem is a warning, never repo.Error: repo.Error
+	// blocks the archive of every run of the repo.
+	preplans, warnings := dashboardPreplans(root)
+	repo.Preplans = preplans
+	repo.Warnings = append(repo.Warnings, warnings...)
 	return repo
 }
 

@@ -482,10 +482,11 @@ func TestDeferredReasons_MatchesValidator(t *testing.T) {
 // RunRecord plan-fields tests
 // ---------------------------------------------------------------------------
 
-// TestRunRecord_PlanFieldsRoundTrip verifies PlanFile, StartedAt and
-// LastModifiedAt survive a marshal/unmarshal round trip alongside the
-// pre-existing fields, matching the shape plan.go's appendPlanRunRecord
-// writes for the "done" marker.
+// TestRunRecord_PlanFieldsRoundTrip verifies PlanFile, StartedAt,
+// LastModifiedAt, PlanStartedAt and PlanDurationMs survive a
+// marshal/unmarshal round trip alongside the pre-existing fields. The first
+// three match the shape plan.go's appendPlanRunRecord writes for the "done"
+// marker; the last two are the plan fields of a ship row.
 func TestRunRecord_PlanFieldsRoundTrip(t *testing.T) {
 	want := RunRecord{
 		Timestamp:      "2026-09-30T12:00:00Z",
@@ -496,6 +497,8 @@ func TestRunRecord_PlanFieldsRoundTrip(t *testing.T) {
 		PlanFile:       "/repo/plans/my-plan.md",
 		StartedAt:      "2026-09-30T11:55:00Z",
 		LastModifiedAt: "2026-09-30T12:00:00Z",
+		PlanStartedAt:  "2026-09-30T08:20:00Z",
+		PlanDurationMs: 4800000,
 	}
 	b, err := json.Marshal(want)
 	if err != nil {
@@ -510,9 +513,9 @@ func TestRunRecord_PlanFieldsRoundTrip(t *testing.T) {
 	}
 }
 
-// TestRunRecord_PlanFieldsOmittedWhenEmpty verifies the three new fields are
-// omitempty, so a record that never sets them (every non-plan producer)
-// serializes exactly as it did before the fields existed.
+// TestRunRecord_PlanFieldsOmittedWhenEmpty verifies the five plan fields are
+// omitempty, so a record that never sets them serializes exactly as it did
+// before the fields existed.
 func TestRunRecord_PlanFieldsOmittedWhenEmpty(t *testing.T) {
 	b, err := json.Marshal(RunRecord{
 		Timestamp:  "2026-01-01T00:00:00Z",
@@ -524,7 +527,7 @@ func TestRunRecord_PlanFieldsOmittedWhenEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, key := range []string{"plan_file", "started_at", "last_modified_at"} {
+	for _, key := range []string{"plan_file", "started_at", "last_modified_at", "plan_started_at", "plan_duration_ms"} {
 		if strings.Contains(string(b), `"`+key+`"`) {
 			t.Errorf("marshalled record %s contains empty optional key %q", b, key)
 		}
@@ -547,5 +550,50 @@ func TestRunRecord_LegacyLineWithoutPlanFieldsParses(t *testing.T) {
 	}
 	if got.PlanFile != "" || got.StartedAt != "" || got.LastModifiedAt != "" {
 		t.Errorf("new fields = %q/%q/%q, want all empty", got.PlanFile, got.StartedAt, got.LastModifiedAt)
+	}
+	if got.PlanStartedAt != "" || got.PlanDurationMs != 0 {
+		t.Errorf("ship plan fields = %q/%d, want empty and 0", got.PlanStartedAt, got.PlanDurationMs)
+	}
+}
+
+// TestRunRecord_NoPlanFieldsRoundTripsByteForByte verifies a runs.jsonl line
+// without any plan field parses and serializes back to the same bytes, so an
+// old row is never rewritten with new keys.
+func TestRunRecord_NoPlanFieldsRoundTripsByteForByte(t *testing.T) {
+	line := `{"ts":"2026-10-10T11:00:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":3600000,"version":"0.4.2"}`
+
+	var rec RunRecord
+	if err := json.Unmarshal([]byte(line), &rec); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	b, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if string(b) != line {
+		t.Errorf("round trip =\n %s\nwant\n %s", b, line)
+	}
+}
+
+// TestRunRecord_ShipPlanFieldsKeyOrder verifies the ship row layout: the plan
+// keys follow plan_file and sit before the other optional keys.
+func TestRunRecord_ShipPlanFieldsKeyOrder(t *testing.T) {
+	b, err := json.Marshal(RunRecord{
+		Timestamp:      "2026-10-10T11:00:00Z",
+		Skill:          "ship",
+		Branch:         "feat/x",
+		Outcome:        "success",
+		DurationMs:     3600000,
+		Version:        "0.4.2",
+		PlanFile:       "/plans/x.md",
+		PlanStartedAt:  "2026-10-10T08:20:00Z",
+		PlanDurationMs: 4800000,
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	want := `{"ts":"2026-10-10T11:00:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":3600000,"version":"0.4.2","plan_file":"/plans/x.md","plan_started_at":"2026-10-10T08:20:00Z","plan_duration_ms":4800000}`
+	if string(b) != want {
+		t.Errorf("row =\n %s\nwant\n %s", b, want)
 	}
 }

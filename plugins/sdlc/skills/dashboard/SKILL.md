@@ -9,8 +9,9 @@ model: sonnet
 # Dashboard (SDLC)
 
 The sdlc dashboard is one local web page that shows every registered repo's
-pipeline state, session activity, and issues, without switching sessions or
-terminals. This skill starts it, reports on it, or stops it through the
+pipeline state, session activity, issues, and preplan topic files (Preplans
+tab), without switching sessions or terminals. The page can also delete one
+preplan topic file, deferred item, or learning for good. This skill starts it, reports on it, or stops it through the
 `dashboard` MCP tool, in one step.
 
 **Announce at start:** "I'm using dashboard (sdlc v{sdlc_version})." - extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.

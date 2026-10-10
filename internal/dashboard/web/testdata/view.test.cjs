@@ -183,7 +183,8 @@ describe('page logic exports', () => {
   });
 
   test('view.js exports the request builders and the detail lookup', () => {
-    ['archiveRequest', 'clearRequest', 'learningUrl', 'detailKey', 'detailItem'].forEach((name) => {
+    ['archiveRequest', 'clearRequest', 'learningUrl', 'detailKey', 'detailItem',
+      'deleteRequest', 'deleteResultText', 'deletePrompt', 'deleteKeyFromDataset'].forEach((name) => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
@@ -192,6 +193,205 @@ describe('page logic exports', () => {
     ['severityOrder', 'fixCounts', 'columnCount', 'balanceColumns', 'isWideSection', 'sectionMeta'].forEach((name) => {
       assert.equal(typeof view[name], 'function', name);
     });
+  });
+
+  test('view.js exports the History filter and sort helpers', () => {
+    ['defaultUi', 'historyOutcomeCounts', 'filterHistory', 'nextHistorySort', 'sortHistory', 'historyCells'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
+
+  test('view.js exports the Preplans and priority chip helpers', () => {
+    ['preplanItems', 'preplanStatus', 'preplanStatusCounts', 'priorityCounts', 'dateLabel'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
+});
+
+describe('PREPLAN_STATUSES', () => {
+  test('lists the 3 statuses in chip order', () => {
+    assert.deepEqual(view.PREPLAN_STATUSES, ['in progress', 'ready for plan', 'paused']);
+  });
+});
+
+describe('preplanItems', () => {
+  const repos = [
+    { root: '/a', name: 'a', preplans: [
+      { slug: 'old', topic: 'Old', status: 'paused', path: '.sdlc-v2/preplan/old.md', updatedAt: '2026-10-01T10:00:00Z' },
+      { slug: 'zeta', topic: 'Zeta', status: 'in progress', path: '.sdlc-v2/preplan/zeta.md', updatedAt: '2026-10-08T10:00:00Z' },
+      { slug: 'none', topic: 'None', status: '', path: '.sdlc-v2/preplan/none.md', updatedAt: '' },
+    ] },
+    { root: '/b', name: 'b', preplans: [
+      { slug: 'alpha', topic: 'Alpha', status: 'ready for plan', path: '.sdlc-v2/preplan/alpha.md', updatedAt: '2026-10-08T10:00:00Z' },
+      { slug: 'new', topic: 'New', status: 'archived', path: '.sdlc-v2/preplan/new.md', updatedAt: '2026-10-09T10:00:00Z' },
+    ] },
+  ];
+
+  test('newest first, equal times by slug, no time last; repo is the snapshot repo', () => {
+    const items = view.preplanItems(repos, new Set());
+    assert.deepEqual(items.map((i) => i.slug), ['new', 'alpha', 'zeta', 'old', 'none']);
+    assert.equal(items[0].repo, repos[1]);
+    assert.deepEqual(Object.keys(items[0]).sort(), ['path', 'repo', 'slug', 'status', 'topic', 'updatedAt']);
+  });
+
+  test('the scope keeps the repos in scope only', () => {
+    assert.deepEqual(view.preplanItems(repos, new Set(['/a'])).map((i) => i.slug), ['zeta', 'old', 'none']);
+  });
+
+  test('a repo with no preplans list gives no item', () => {
+    assert.deepEqual(view.preplanItems([{ root: '/c' }], new Set()), []);
+    assert.deepEqual(view.preplanItems(undefined, new Set()), []);
+  });
+});
+
+describe('preplanStatus / preplanStatusCounts', () => {
+  test('a status outside PREPLAN_STATUSES is unknown', () => {
+    assert.equal(view.preplanStatus('paused'), 'paused');
+    assert.equal(view.preplanStatus('archived'), 'unknown');
+    assert.equal(view.preplanStatus(''), 'unknown');
+    assert.equal(view.preplanStatus(undefined), 'unknown');
+  });
+
+  test('counts each status, and every other status as unknown', () => {
+    const items = [{ status: 'paused' }, { status: 'paused' }, { status: 'in progress' }, { status: 'archived' }, { status: '' }];
+    assert.deepEqual(view.preplanStatusCounts(items), { all: 5, 'in progress': 1, 'ready for plan': 0, paused: 2, unknown: 2 });
+  });
+
+  test('no items gives zeros', () => {
+    assert.deepEqual(view.preplanStatusCounts(undefined), { all: 0, 'in progress': 0, 'ready for plan': 0, paused: 0, unknown: 0 });
+  });
+});
+
+describe('priorityCounts', () => {
+  test('counts high, medium, low; another priority counts in all only', () => {
+    const deferred = [{ priority: 'high' }, { priority: 'low' }, { priority: 'low' }, { priority: 'urgent' }];
+    assert.deepEqual(view.priorityCounts(deferred), { all: 4, high: 1, medium: 0, low: 2 });
+  });
+
+  test('no items gives zeros', () => {
+    assert.deepEqual(view.priorityCounts(undefined), { all: 0, high: 0, medium: 0, low: 0 });
+  });
+});
+
+describe('dateLabel', () => {
+  test('gives Mon D HH:MM in the time zone, and empty for a bad time', () => {
+    assert.equal(view.dateLabel('2026-10-08T14:04:12Z', 'UTC'), 'Oct 8 14:04');
+    assert.equal(view.dateLabel('', 'UTC'), '');
+    assert.equal(view.dateLabel('not a time', 'UTC'), '');
+  });
+});
+
+describe('defaultUi', () => {
+  test('gives the all outcome, no sort, and the all chips', () => {
+    assert.deepEqual(view.defaultUi(), { historyOutcome: 'all', historySort: null, preplanStatus: 'all', deferredPriority: 'all' });
+  });
+
+  test('gives a new object on each call', () => {
+    const a = view.defaultUi();
+    a.historyOutcome = 'success';
+    assert.equal(view.defaultUi().historyOutcome, 'all');
+  });
+});
+
+describe('historyOutcomeCounts / filterHistory', () => {
+  const runs = [
+    { outcome: 'success' }, { outcome: 'done' }, { outcome: 'failure' }, { outcome: 'success' }, { outcome: '' }, {},
+  ];
+
+  test('counts all, success, failure, partial, then each other outcome in order of first use', () => {
+    const counts = view.historyOutcomeCounts(runs);
+    assert.deepEqual(Object.keys(counts), ['all', 'success', 'failure', 'partial', 'done']);
+    assert.deepEqual(counts, { all: 6, success: 2, failure: 1, partial: 0, done: 1 });
+  });
+
+  test('no runs gives zero counts for the fixed chips', () => {
+    assert.deepEqual(view.historyOutcomeCounts([]), { all: 0, success: 0, failure: 0, partial: 0 });
+    assert.deepEqual(view.historyOutcomeCounts(undefined), { all: 0, success: 0, failure: 0, partial: 0 });
+  });
+
+  test('filterHistory keeps the runs of one outcome, or every run for all', () => {
+    assert.deepEqual(view.filterHistory(runs, 'success'), [runs[0], runs[3]]);
+    assert.deepEqual(view.filterHistory(runs, 'partial'), []);
+    const every = view.filterHistory(runs, 'all');
+    assert.deepEqual(every, runs);
+    assert.notEqual(every, runs);
+  });
+});
+
+describe('nextHistorySort', () => {
+  // One case for each row of the nextHistorySort truth table.
+  const cases = [
+    [null, 'finished', { key: 'finished', dir: 'desc' }],
+    [null, 'total', { key: 'total', dir: 'desc' }],
+    [{ key: 'finished', dir: 'desc' }, 'finished', { key: 'finished', dir: 'asc' }],
+    [{ key: 'finished', dir: 'asc' }, 'finished', { key: 'finished', dir: 'desc' }],
+    [{ key: 'finished', dir: 'asc' }, 'total', { key: 'total', dir: 'desc' }],
+  ];
+  for (const [before, key, after] of cases) {
+    test(`${JSON.stringify(before)} + ${key} gives ${JSON.stringify(after)}`, () => {
+      assert.deepEqual(view.nextHistorySort(before, key), after);
+    });
+  }
+});
+
+describe('sortHistory', () => {
+  const a = { id: 'a', endedAt: '2026-10-08T10:00:00Z', totalMs: 5000 };
+  const b = { id: 'b', endedAt: '2026-10-08T12:00:00Z', totalMs: 0 };
+  const c = { id: 'c', endedAt: '', totalMs: 9000 };
+  const d = { id: 'd', endedAt: '2026-10-08T11:00:00Z', totalMs: 1000 };
+  const runs = [a, b, c, d];
+  const ids = (list) => list.map((r) => r.id);
+
+  test('null sorts newest first by endedAt, with no endedAt last, in a new array', () => {
+    const out = view.sortHistory(runs, null);
+    assert.deepEqual(ids(out), ['b', 'd', 'a', 'c']);
+    assert.notEqual(out, runs);
+    assert.deepEqual(ids(runs), ['a', 'b', 'c', 'd']);
+  });
+
+  test('the first click on finished sorts newest first', () => {
+    assert.deepEqual(ids(view.sortHistory(runs, view.nextHistorySort(null, 'finished'))), ['b', 'd', 'a', 'c']);
+  });
+
+  test('the first click on total sorts longest first', () => {
+    assert.deepEqual(ids(view.sortHistory(runs, view.nextHistorySort(null, 'total'))), ['c', 'a', 'd', 'b']);
+  });
+
+  test('rows with no value go last in both directions', () => {
+    assert.deepEqual(ids(view.sortHistory(runs, { key: 'finished', dir: 'asc' })), ['a', 'd', 'b', 'c']);
+    assert.deepEqual(ids(view.sortHistory(runs, { key: 'total', dir: 'asc' })), ['d', 'a', 'c', 'b']);
+    // totalMs <= 0 or absent counts as no value.
+    const noTotal = [{ id: 'x', totalMs: -1 }, { id: 'y' }, { id: 'z', totalMs: 10 }];
+    assert.deepEqual(ids(view.sortHistory(noTotal, { key: 'total', dir: 'desc' })), ['z', 'x', 'y']);
+    assert.deepEqual(ids(view.sortHistory(noTotal, { key: 'total', dir: 'asc' })), ['z', 'x', 'y']);
+  });
+});
+
+describe('historyCells', () => {
+  test('a ship row: plan from planDurationMs, ship from durationMs, total from totalMs', () => {
+    assert.deepEqual(view.historyCells({ kind: 'ship', durationMs: 3600000, planDurationMs: 1200000, totalMs: 6000000 }),
+      { planMs: 1200000, shipMs: 3600000, totalMs: 6000000 });
+  });
+
+  test('a ship row with no linked plan has no plan time', () => {
+    assert.deepEqual(view.historyCells({ kind: 'ship', durationMs: 3600000, totalMs: 3600000 }),
+      { planMs: null, shipMs: 3600000, totalMs: 3600000 });
+  });
+
+  test('a plan row: plan from durationMs, no ship time', () => {
+    assert.deepEqual(view.historyCells({ kind: 'plan', durationMs: 26000, totalMs: 26000 }),
+      { planMs: 26000, shipMs: null, totalMs: 26000 });
+  });
+
+  test('any other row: total only', () => {
+    assert.deepEqual(view.historyCells({ kind: 'execute', durationMs: 5000, totalMs: 5000 }),
+      { planMs: null, shipMs: null, totalMs: 5000 });
+  });
+
+  test('a total of 0 or none is no value', () => {
+    for (const totalMs of [0, -5, undefined]) {
+      assert.equal(view.historyCells({ kind: 'review', durationMs: 5000, totalMs }).totalMs, null, String(totalMs));
+    }
   });
 });
 
@@ -691,6 +891,7 @@ describe('scopedCounts / headerCounts', () => {
     {
       root: '/a',
       pipelines: [{ status: 'running' }, { status: 'failed' }],
+      preplans: [{ slug: 'a1' }],
       learnings: [{}, {}],
       deferred: [{}],
       history: [{}],
@@ -698,6 +899,7 @@ describe('scopedCounts / headerCounts', () => {
     {
       root: '/b',
       pipelines: [{ status: 'stalled' }, { status: 'running' }, { status: 'completed' }],
+      preplans: [{ slug: 'b1' }, { slug: 'b2' }],
       learnings: [],
       deferred: [{}, {}],
       history: [{}, {}, {}],
@@ -705,7 +907,7 @@ describe('scopedCounts / headerCounts', () => {
   ];
 
   test('scopedCounts counts every repo with an empty scope', () => {
-    assert.deepEqual(view.scopedCounts(repos, new Set()), { pipelines: 5, activity: 5, history: 4 });
+    assert.deepEqual(view.scopedCounts(repos, new Set()), { pipelines: 5, activity: 5, history: 4, preplans: 3 });
   });
 
   test('scopedCounts counts only the repos in scope; activity is learnings plus deferred', () => {
@@ -713,6 +915,7 @@ describe('scopedCounts / headerCounts', () => {
       pipelines: 2,
       activity: 3,
       history: 1,
+      preplans: 1,
     });
   });
 
@@ -948,6 +1151,12 @@ describe('nextTabIndex', () => {
   test('any other key keeps the index', () => {
     assert.equal(view.nextTabIndex(1, 'Enter', 3), 1);
   });
+
+  test('with 4 tabs ArrowRight goes from History to Preplans and End goes to Preplans', () => {
+    assert.equal(view.nextTabIndex(2, 'ArrowRight', 4), 3);
+    assert.equal(view.nextTabIndex(3, 'ArrowRight', 4), 0);
+    assert.equal(view.nextTabIndex(0, 'End', 4), 3);
+  });
 });
 
 describe('pipelineKey / sectionKey', () => {
@@ -965,13 +1174,17 @@ describe('pipelineKey / sectionKey', () => {
 describe('parseHash', () => {
   const tabs = view.TAB_NAMES;
 
-  test('TAB_NAMES lists the 3 tabs', () => {
-    assert.deepEqual(view.TAB_NAMES, ['pipelines', 'activity', 'history']);
+  test('TAB_NAMES lists the 4 tabs', () => {
+    assert.deepEqual(view.TAB_NAMES, ['pipelines', 'activity', 'history', 'preplans']);
   });
 
   test('a tab name selects the tab', () => {
     assert.deepEqual(view.parseHash('#history', tabs), { tab: 'history' });
     assert.deepEqual(view.parseHash('#activity', tabs), { tab: 'activity' });
+  });
+
+  test('#preplans selects the Preplans tab', () => {
+    assert.deepEqual(view.parseHash('#preplans', tabs), { tab: 'preplans' });
   });
 
   test('a pipeline id and a station number select both', () => {
@@ -1924,7 +2137,7 @@ describe('render blockHead total time', () => {
     const h = head({ status: 'running' });
     const chip = oneByClass(h, 'pipe-dur');
     assert.equal(chip.className, 'pipe-dur live');
-    assert.equal(chip.attrs.title, 'Time since the pipeline started');
+    assert.equal(chip.attrs.title, 'Time since the ship run started (no linked plan)');
     assert.equal(h.children[h.children.indexOf(oneByClass(h, 'pipe-branch')) + 1], chip);
     assert.equal(h.children.indexOf(chip) + 1, h.children.indexOf(oneByClass(h, 'pipe-side')));
     assert.deepEqual(chip.children.map((c) => c.className), ['lamp running', 'dur-label', 'dur-live']);
@@ -1946,7 +2159,7 @@ describe('render blockHead total time', () => {
     const h = head({ status: 'completed', completedAt: '2026-10-08T14:12:30Z' }, NOW_WAIT + 3600000);
     const chip = oneByClass(h, 'pipe-dur');
     assert.equal(chip.className, 'pipe-dur');
-    assert.equal(chip.attrs.title, 'Total time of the pipeline');
+    assert.equal(chip.attrs.title, 'Total time of the ship run (no linked plan)');
     assert.deepEqual(chip.children.map((c) => c.className), ['dur-label', '']);
     assert.equal(textOf(chip), 'total12m 30s');
     assert.equal(byClass(h, 'dur-live').length, 0);
@@ -2002,6 +2215,71 @@ describe('render blockHead total time', () => {
   test('a pipeline with no startedAt keeps the old head: lamp, kind, branch, side', () => {
     const h = render.blockHead(fakeDoc(), view, REPO, pipeline(), false, 0, NOW_WAIT);
     assert.deepEqual(h.children.map((c) => c.className), ['lamp running', 'pipe-kind', 'pipe-branch', 'pipe-side']);
+  });
+});
+
+describe('render durationTitle', () => {
+  // One case for each cell of the durationTitle truth table.
+  const cases = [
+    ['ship', true, true, 'Time since the plan started'],
+    ['ship', true, false, 'Time from the plan start to the ship end'],
+    ['ship', false, true, 'Time since the ship run started (no linked plan)'],
+    ['ship', false, false, 'Total time of the ship run (no linked plan)'],
+    ['execute', false, true, 'Time since the pipeline started'],
+    ['execute', false, false, 'Total time of the pipeline'],
+  ];
+  for (const [kind, fromPlan, running, want] of cases) {
+    test(`durationTitle(${kind}, fromPlan ${fromPlan}, running ${running}) is "${want}"`, () => {
+      assert.equal(render.durationTitle(kind, fromPlan, running), want);
+    });
+  }
+});
+
+describe('render blockHead total time from the plan start', () => {
+  const STARTED = '2026-10-08T14:00:00Z'; // the ship start
+  const PLAN_STARTED = '2026-10-08T12:20:00Z'; // 1h 40m before the ship start
+  const DONE = '2026-10-08T15:00:00Z'; // 1h after the ship start, 2h 40m after the plan start
+  const head = (extra, now = NOW_WAIT) =>
+    render.blockHead(fakeDoc(), view, REPO, pipeline(Object.assign({ startedAt: STARTED }, extra)), false, 0, now);
+
+  // now → after row: ship total chip, linked plan.
+  test('a ship pipeline with planStartedAt counts from the plan start', () => {
+    const chip = oneByClass(head({ status: 'completed', completedAt: DONE, planStartedAt: PLAN_STARTED }), 'pipe-dur');
+    assert.equal(textOf(chip), 'total2h 40m');
+    assert.equal(chip.attrs.title, 'Time from the plan start to the ship end');
+  });
+
+  // now → after row: ship total chip, no linked plan.
+  test('a ship pipeline with no planStartedAt names the missing link', () => {
+    const chip = oneByClass(head({ status: 'completed', completedAt: DONE }), 'pipe-dur');
+    assert.equal(textOf(chip), 'total1h 00m');
+    assert.equal(chip.attrs.title, 'Total time of the ship run (no linked plan)');
+  });
+
+  // now → after row: running ship chip, linked plan.
+  test('a running ship pipeline with planStartedAt counts up from the plan start', () => {
+    const h = head({ status: 'running', planStartedAt: PLAN_STARTED }, Date.parse(DONE));
+    const chip = oneByClass(h, 'pipe-dur');
+    assert.equal(chip.attrs.title, 'Time since the plan started');
+    const value = oneByClass(h, 'dur-live');
+    assert.equal(value.attrs['data-since'], PLAN_STARTED);
+    assert.equal(value.textContent, '2h 40m');
+  });
+
+  // now → after row: running ship chip, no linked plan.
+  test('a running ship pipeline with no planStartedAt counts up from the ship start', () => {
+    const h = head({ status: 'running' });
+    assert.equal(oneByClass(h, 'pipe-dur').attrs.title, 'Time since the ship run started (no linked plan)');
+    assert.equal(oneByClass(h, 'dur-live').attrs['data-since'], STARTED);
+  });
+
+  test('a pipeline of kind execute keeps the pipeline titles', () => {
+    const running = head({ kind: 'execute', status: 'running', planStartedAt: PLAN_STARTED });
+    assert.equal(oneByClass(running, 'pipe-dur').attrs.title, 'Time since the pipeline started');
+    assert.equal(oneByClass(running, 'dur-live').attrs['data-since'], STARTED);
+    const done = head({ kind: 'execute', status: 'completed', completedAt: DONE, planStartedAt: PLAN_STARTED });
+    assert.equal(oneByClass(done, 'pipe-dur').attrs.title, 'Total time of the pipeline');
+    assert.equal(textOf(oneByClass(done, 'pipe-dur')), 'total1h 00m');
   });
 });
 
@@ -2138,6 +2416,22 @@ describe('render stationTrack step time', () => {
   test('a clock that runs behind the start gives 0s, not a negative time', () => {
     const track = render.stationTrack(fakeDoc(), view, pipeline({ steps: [{ name: 'review', status: 'in_progress', startedAt: T('10:00') }] }), 0, NOW_WAIT);
     assert.equal(oneByClass(track, 'dur').textContent, '0s');
+  });
+
+  // now → after row: plan station.
+  test('the plan station with both times shows a time box with the step title', () => {
+    const track = stepsOf([{ name: 'plan', status: 'completed', startedAt: '2026-10-08T11:00:00Z', completedAt: '2026-10-08T12:20:00Z' }]);
+    const dur = oneByClass(byClass(track, 'station')[0], 'dur');
+    assert.equal(dur.textContent, '1h 20m');
+    assert.equal(dur.attrs.title, 'Time the step took');
+    assert.equal(dur.attrs['data-since'], undefined);
+  });
+
+  test('the plan station with one time or none shows no time box', () => {
+    for (const times of [{ startedAt: '2026-10-08T11:00:00Z' }, { completedAt: '2026-10-08T12:20:00Z' }, {}]) {
+      const track = stepsOf([Object.assign({ name: 'plan', status: 'completed' }, times)]);
+      assert.equal(byClass(track, 'dur').length, 0, JSON.stringify(times));
+    }
   });
 });
 
@@ -2567,14 +2861,459 @@ describe('render activityPanel', () => {
   });
 });
 
+describe('render activityPanel priority chips', () => {
+  const repos = [
+    { root: '/a', name: 'a', deferred: [
+      { id: 'd-1', priority: 'high', description: 'fix the cursor' },
+      { id: 'd-2', priority: 'low', description: 'rename a helper' },
+      { id: 'd-3', priority: 'low', description: 'trim a log line' },
+    ], learnings: [] },
+    { root: '/b', name: 'b', deferred: [{ id: 'd-9', priority: 'medium', description: 'other repo' }], learnings: [] },
+  ];
+  const chipsOf = (grid) => oneByClass(grid.children[0], 'act-filter').children;
+  const chipText = (chip) => chip.children.filter((c) => c.className !== 'chip-n').map(textOf).join('');
+
+  test('all, high, medium, low chips with counts over the repos in scope; all is chosen by default', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const bar = oneByClass(grid.children[0], 'act-filter');
+    assert.equal(bar.className, 'act-filter chips');
+    assert.equal(bar.attrs.role, 'group');
+    const chips = chipsOf(grid);
+    assert.deepEqual(chips.map((c) => c.attrs['data-act-priority']), ['all', 'high', 'medium', 'low']);
+    assert.deepEqual(chips.map((c) => oneByClass(c, 'chip-n').textContent), ['4', '1', '1', '2']);
+    assert.deepEqual(chips.map((c) => c.attrs['aria-pressed']), ['true', 'false', 'false', 'false']);
+    assert.deepEqual(chips.map(chipText), ['all', 'high', 'medium', 'low']);
+    assert.equal(byClass(chips[0], 'chip-dot').length, 0);
+    assert.equal(oneByClass(chips[3], 'chip-dot').className, 'chip-dot sev-low');
+  });
+
+  test('a priority chip shows only the deferred rows with that priority; learnings stay', () => {
+    const ui = view.defaultUi();
+    ui.deferredPriority = 'low';
+    const grid = render.activityPanel(fakeDoc(), view, [
+      Object.assign({}, repos[0], { learnings: [{ date: '2026-10-08', heading: 'h', branch: 'main' }] }),
+    ], new Set(), ui);
+    assert.deepEqual(byClass(grid.children[0], 'act-row').map((r) => r.attrs['data-detail']), ['deferred:d-2', 'deferred:d-3']);
+    assert.equal(textOf(oneByClass(grid.children[0], 'list-title')), 'Open deferred (2)');
+    assert.equal(byClass(grid.children[1], 'act-row').length, 1);
+  });
+
+  test('drawn twice with the same ui and new data, the panel keeps the chosen chip', () => {
+    const ui = view.defaultUi();
+    ui.deferredPriority = 'high';
+    render.activityPanel(fakeDoc(), view, repos, new Set(), ui);
+    const fresh = [{ root: '/a', name: 'a', deferred: repos[0].deferred.concat([
+      { id: 'd-4', priority: 'high', description: 'new item' },
+    ]), learnings: [] }];
+    const grid = render.activityPanel(fakeDoc(), view, fresh, new Set(), ui);
+    const active = chipsOf(grid).filter((c) => c.attrs['aria-pressed'] === 'true');
+    assert.deepEqual(active.map((c) => c.attrs['data-act-priority']), ['high']);
+    assert.deepEqual(byClass(grid.children[0], 'act-row').map((r) => r.attrs['data-detail']), ['deferred:d-1', 'deferred:d-4']);
+  });
+
+  test('a chosen chip with no rows left stays chosen with 0 and shows the filter line', () => {
+    const ui = view.defaultUi();
+    ui.deferredPriority = 'medium';
+    const grid = render.activityPanel(fakeDoc(), view, [repos[0]], new Set(), ui);
+    const medium = chipsOf(grid).find((c) => c.attrs['data-act-priority'] === 'medium');
+    assert.equal(medium.attrs['aria-pressed'], 'true');
+    assert.equal(oneByClass(medium, 'chip-n').textContent, '0');
+    const line = oneByClass(grid.children[0], 'generic-line');
+    assert.equal(line.attrs['data-empty'], 'no-deferred-priority');
+    assert.equal(line.textContent, 'No deferred items match this filter');
+    assert.equal(byClass(grid.children[0], 'hint').length, 0);
+  });
+
+  test('with no deferred items the chips are hidden', () => {
+    const ui = view.defaultUi();
+    ui.deferredPriority = 'high';
+    const grid = render.activityPanel(fakeDoc(), view, [{ root: '/c', name: 'c', deferred: [], learnings: [] }], new Set(), ui);
+    assert.equal(byClass(grid, 'act-filter').length, 0);
+    assert.equal(oneByClass(grid.children[0], 'generic-line').textContent, 'No open deferred items.');
+  });
+});
+
+describe('render preplanPanel', () => {
+  const repos = [
+    { root: '/a', name: 'a', warnings: [], preplans: [
+      { slug: 'old', topic: 'Old topic', status: 'paused', path: '.sdlc-v2/preplan/old.md', updatedAt: '2026-10-01T10:00:00Z' },
+      { slug: 'zeta', topic: 'Zeta topic', status: 'in progress', path: '.sdlc-v2/preplan/zeta.md', updatedAt: '2026-10-08T10:00:00Z' },
+    ] },
+    { root: '/b', name: 'b', warnings: [], preplans: [
+      { slug: 'alpha', topic: 'Alpha topic', status: 'ready for plan', path: '.sdlc-v2/preplan/alpha.md', updatedAt: '2026-10-08T10:00:00Z' },
+    ] },
+  ];
+  const rowsOf = (panel) => findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'tbody')[0].children;
+  const chipsOf = (panel) => oneByClass(panel, 'pp-filter').children;
+  const slugsOf = (panel) => rowsOf(panel).map((r) => oneByClass(r, 'pp-path').textContent);
+
+  test('Preplans (n), one row per topic file, newest first, equal times by slug', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    assert.equal(panel.className, 'list-panel hist-panel pp-panel');
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Preplans (3)');
+    assert.deepEqual(findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'th').map(textOf), ['status', 'topic', 'repo', 'updated', '']);
+    assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/alpha.md', '.sdlc-v2/preplan/zeta.md', '.sdlc-v2/preplan/old.md']);
+    const first = rowsOf(panel)[0];
+    assert.equal(oneByClass(first, 'pp-name').textContent, 'Alpha topic');
+    assert.equal(oneByClass(first, 'h-repo').textContent, 'b');
+    assert.equal(oneByClass(first, 'h-repo').attrs.title, '/b');
+    assert.equal(oneByClass(first, 'h-when').attrs.title, '2026-10-08T10:00:00Z');
+    assert.equal(oneByClass(first, 'h-when').textContent, view.dateLabel('2026-10-08T10:00:00Z'));
+    assert.equal(oneByClass(first, 'pp-status').className, 'pp-status pp-ready');
+    assert.equal(textOf(oneByClass(first, 'pp-status')), '●ready for plan');
+  });
+
+  test('status chips: all, then each status with its count; all is chosen by default', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    const chips = chipsOf(panel);
+    assert.equal(oneByClass(panel, 'pp-filter').className, 'pp-filter chips');
+    assert.deepEqual(chips.map((c) => c.attrs['data-pp-status']), ['all', 'in progress', 'ready for plan', 'paused', 'unknown']);
+    assert.deepEqual(chips.map((c) => oneByClass(c, 'chip-n').textContent), ['3', '1', '1', '1', '0']);
+    assert.deepEqual(chips.map((c) => c.attrs['aria-pressed']), ['true', 'false', 'false', 'false', 'false']);
+    assert.equal(byClass(chips[0], 'pp-status').length, 0);
+    assert.equal(oneByClass(chips[3], 'pp-status').className, 'pp-status pp-paused');
+  });
+
+  test('a status chip shows only the rows with that status', () => {
+    const ui = view.defaultUi();
+    ui.preplanStatus = 'paused';
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set(), ui);
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Preplans (1)');
+    assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/old.md']);
+  });
+
+  test('drawn twice with the same ui and new data, the panel keeps the chosen chip', () => {
+    const ui = view.defaultUi();
+    ui.preplanStatus = 'in progress';
+    render.preplanPanel(fakeDoc(), view, repos, new Set(), ui);
+    const fresh = [{ root: '/a', name: 'a', preplans: repos[0].preplans.concat([
+      { slug: 'new', topic: 'New topic', status: 'in progress', path: '.sdlc-v2/preplan/new.md', updatedAt: '2026-10-09T10:00:00Z' },
+    ]) }];
+    const panel = render.preplanPanel(fakeDoc(), view, fresh, new Set(), ui);
+    const active = chipsOf(panel).filter((c) => c.attrs['aria-pressed'] === 'true');
+    assert.deepEqual(active.map((c) => c.attrs['data-pp-status']), ['in progress']);
+    assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/new.md', '.sdlc-v2/preplan/zeta.md']);
+  });
+
+  test('a chosen chip with no rows left stays chosen with 0 and shows the filter line', () => {
+    const ui = view.defaultUi();
+    ui.preplanStatus = 'ready for plan';
+    const panel = render.preplanPanel(fakeDoc(), view, [repos[0]], new Set(), ui);
+    const chip = chipsOf(panel).find((c) => c.attrs['data-pp-status'] === 'ready for plan');
+    assert.equal(chip.attrs['aria-pressed'], 'true');
+    assert.equal(oneByClass(chip, 'chip-n').textContent, '0');
+    assert.equal(byClass(panel, 'pp').length, 0);
+    const line = oneByClass(panel, 'generic-line');
+    assert.equal(line.attrs['data-empty'], 'no-preplans-status');
+    assert.equal(line.textContent, 'No preplans match this filter');
+  });
+
+  test('a status outside PREPLAN_STATUSES renders as unknown, with an unknown chip', () => {
+    const odd = [{ root: '/c', name: 'c', preplans: [
+      { slug: 'odd', topic: 'Odd', status: 'archived', path: '.sdlc-v2/preplan/odd.md', updatedAt: '2026-10-08T10:00:00Z' },
+    ] }];
+    const panel = render.preplanPanel(fakeDoc(), view, odd, new Set());
+    const tag = oneByClass(rowsOf(panel)[0], 'pp-status');
+    assert.equal(tag.className, 'pp-status pp-unknown');
+    assert.equal(textOf(tag), '?unknown');
+    const chips = chipsOf(panel);
+    assert.deepEqual(chips.map((c) => c.attrs['data-pp-status']), ['all', 'in progress', 'ready for plan', 'paused', 'unknown']);
+    assert.equal(oneByClass(chips[4], 'chip-n').textContent, '1');
+    const ui = view.defaultUi();
+    ui.preplanStatus = 'unknown';
+    assert.deepEqual(slugsOf(render.preplanPanel(fakeDoc(), view, odd, new Set(), ui)), ['.sdlc-v2/preplan/odd.md']);
+  });
+
+  test('the unknown chip stays in the row with count 0 when no topic file has an unknown status', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    const unknown = chipsOf(panel).filter((c) => c.attrs['data-pp-status'] === 'unknown');
+    assert.equal(unknown.length, 1);
+    assert.equal(oneByClass(unknown[0], 'chip-n').textContent, '0');
+  });
+
+  test('each repo warning in scope renders one Warning line above the chips', () => {
+    const warned = [
+      Object.assign({}, repos[0], { warnings: ['preplan folder not read: permission denied', 'second warning'] }),
+      Object.assign({}, repos[1], { warnings: ['out of scope'] }),
+    ];
+    const panel = render.preplanPanel(fakeDoc(), view, warned, new Set(['/a']));
+    const lines = byClass(panel, 'generic-line');
+    assert.deepEqual(lines.map((l) => l.attrs['data-empty']), ['repo-warning', 'repo-warning']);
+    assert.deepEqual(lines.map((l) => l.textContent), [
+      'Warning for a: preplan folder not read: permission denied',
+      'Warning for a: second warning',
+    ]);
+    const kids = panel.children;
+    assert.ok(kids.indexOf(lines[1]) < kids.indexOf(oneByClass(panel, 'pp-filter')));
+    assert.equal(byClass(panel, 'pp').length, 1);
+  });
+
+  test('an empty list renders No preplans and no chips; warnings still show', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, [{ root: '/c', name: 'c', warnings: ['folder gone'], preplans: [] }], new Set());
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Preplans (0)');
+    assert.equal(byClass(panel, 'pp-filter').length, 0);
+    assert.deepEqual(byClass(panel, 'generic-line').map((l) => l.textContent), ['Warning for c: folder gone', 'No preplans']);
+    assert.equal(byClass(panel, 'generic-line')[1].attrs['data-empty'], 'no-preplans');
+  });
+});
+
+// --- Delete flows: bin buttons, keys, requests, prompts, and results ------------
+
+// The data-* keys of a bin button, by name without the data- prefix, in order.
+function dataKeys(button) {
+  return Object.keys(button.attrs).filter((k) => k.startsWith('data-')).map((k) => k.slice(5));
+}
+
+// The dataset the browser gives app.js for a bin button of a fake node.
+function datasetOf(button) {
+  const ds = {};
+  for (const k of dataKeys(button)) ds[k] = button.attrs['data-' + k];
+  return ds;
+}
+
+describe('render bin buttons on Activity rows', () => {
+  const repos = [{
+    root: '/a', name: 'a',
+    deferred: [{ id: 'review-deferred-a1', priority: 'high', description: 'fix the cursor' }],
+    learnings: [{ date: '2026-10-08', heading: 'plan: keep maps small', branch: 'main' }],
+  }];
+
+  test('a deferred row is a div.act-item with the row button and one bin: kind, repo, id, label', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const item = oneByClass(grid.children[0], 'act-item');
+    assert.equal(item.tagName, 'div');
+    assert.deepEqual(item.children.map((c) => c.className), ['act-row', 'archive-btn act-del']);
+    const bin = oneByClass(item, 'act-del');
+    assert.equal(bin.tagName, 'button');
+    assert.equal(bin.attrs.type, 'button');
+    assert.equal(bin.attrs['aria-label'], 'Delete deferred item');
+    assert.equal(bin.attrs['data-detail'], undefined);
+    assert.deepEqual(dataKeys(bin), ['kind', 'repo', 'id', 'label']);
+    assert.deepEqual(datasetOf(bin), { kind: 'deferred', repo: '/a', id: 'review-deferred-a1', label: 'review-deferred-a1' });
+  });
+
+  test('a learning row has one bin: kind, repo, date, heading, label', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    const item = oneByClass(grid.children[1], 'act-item');
+    const bin = oneByClass(item, 'act-del');
+    assert.equal(bin.className, 'archive-btn act-del');
+    assert.equal(bin.attrs['aria-label'], 'Delete learning');
+    assert.deepEqual(dataKeys(bin), ['kind', 'repo', 'date', 'heading', 'label']);
+    assert.deepEqual(datasetOf(bin), {
+      kind: 'learning', repo: '/a', date: '2026-10-08', heading: 'plan: keep maps small', label: 'plan: keep maps small',
+    });
+  });
+
+  test('a row with an empty key keeps its act-item and renders no bin', () => {
+    const grid = render.activityPanel(fakeDoc(), view, [{
+      root: '/c', name: 'c',
+      deferred: [{ priority: 'low', description: 'x' }],
+      learnings: [{ heading: 'h', branch: 'main' }, { date: '2026-10-08', heading: '', branch: 'main' }],
+    }], new Set());
+    assert.equal(byClass(grid, 'act-item').length, 3);
+    assert.equal(byClass(grid, 'act-row').length, 3);
+    assert.equal(byClass(grid, 'act-del').length, 0);
+  });
+
+  test('a repo with no root renders no bin', () => {
+    const grid = render.activityPanel(fakeDoc(), view, [{ name: 'x', deferred: [{ id: 'd-1', priority: 'low', description: 'x' }] }], new Set());
+    assert.equal(byClass(grid, 'act-del').length, 0);
+  });
+
+  test('every bin maps back to a delete key', () => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
+    for (const bin of byClass(grid, 'act-del')) assert.ok(view.deleteKeyFromDataset(datasetOf(bin)));
+  });
+});
+
+describe('render bin buttons on Preplans rows', () => {
+  const repos = [{ root: '/a', name: 'a', preplans: [
+    { slug: 'zeta', topic: 'Zeta topic', status: 'in progress', path: '.sdlc-v2/preplan/zeta.md', updatedAt: '2026-10-08T10:00:00Z' },
+    { slug: 'bare', topic: '', status: 'paused', path: '.sdlc-v2/preplan/bare.md', updatedAt: '2026-10-07T10:00:00Z' },
+  ] }];
+  const rowsOf = (panel) => findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'tbody')[0].children;
+
+  test('each row has one bin in its last cell: kind, repo, slug, path, status, label (= topic)', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    const row = rowsOf(panel)[0];
+    const cell = row.children[row.children.length - 1];
+    assert.equal(cell.className, 'pp-act');
+    const bin = oneByClass(cell, 'pp-remove');
+    assert.equal(bin.className, 'archive-btn pp-remove');
+    assert.equal(bin.tagName, 'button');
+    assert.equal(bin.attrs.type, 'button');
+    assert.equal(bin.attrs['aria-label'], 'Delete preplan');
+    assert.deepEqual(dataKeys(bin), ['kind', 'repo', 'slug', 'path', 'status', 'label']);
+    assert.deepEqual(datasetOf(bin), {
+      kind: 'preplan', repo: '/a', slug: 'zeta', path: '.sdlc-v2/preplan/zeta.md', status: 'in progress', label: 'Zeta topic',
+    });
+    assert.equal(byClass(panel, 'pp-remove').length, 2);
+  });
+
+  test('a topic file with no topic uses the slug as the label, as the row shows', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    const bin = oneByClass(rowsOf(panel)[1], 'pp-remove');
+    assert.equal(bin.attrs['data-label'], 'bare');
+  });
+
+  test('a row with an empty slug keeps its cell and renders no bin', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, [{ root: '/a', name: 'a', preplans: [
+      { slug: '', topic: 'No slug', status: 'paused', path: '.sdlc-v2/preplan/x.md', updatedAt: '2026-10-08T10:00:00Z' },
+    ] }], new Set());
+    const row = rowsOf(panel)[0];
+    assert.equal(row.children[row.children.length - 1].className, 'pp-act');
+    assert.equal(byClass(panel, 'pp-remove').length, 0);
+  });
+});
+
+describe('deleteKeyFromDataset', () => {
+  test('maps a deferred, a preplan, and a learning dataset', () => {
+    assert.deepEqual(view.deleteKeyFromDataset({ kind: 'deferred', repo: '/r', id: 'd-1', label: 'd-1' }),
+      { kind: 'deferred', repo: '/r', key: { id: 'd-1' }, label: 'd-1' });
+    assert.deepEqual(
+      view.deleteKeyFromDataset({ kind: 'preplan', repo: '/r', slug: 'a', path: '.sdlc-v2/preplan/a.md', status: 'paused', label: 'a b' }),
+      { kind: 'preplan', repo: '/r', key: { slug: 'a' }, label: 'a b', path: '.sdlc-v2/preplan/a.md', status: 'paused' });
+    assert.deepEqual(
+      view.deleteKeyFromDataset({ kind: 'learning', repo: '/r', date: '2026-10-08', heading: 'h one', label: 'h one' }),
+      { kind: 'learning', repo: '/r', key: { date: '2026-10-08', heading: 'h one' }, label: 'h one' });
+  });
+
+  test('returns null for each bad input', () => {
+    for (const ds of [
+      null,
+      undefined,
+      {},
+      { kind: 'run', repo: '/r', id: 'd-1' },
+      { kind: 'deferred', repo: '', id: 'd-1' },
+      { kind: 'deferred', id: 'd-1' },
+      { kind: 'deferred', repo: '/r', id: '' },
+      { kind: 'preplan', repo: '/r', slug: '' },
+      { kind: 'learning', repo: '/r', date: '', heading: 'h' },
+      { kind: 'learning', repo: '/r', date: '2026-10-08', heading: '' },
+    ]) {
+      assert.equal(view.deleteKeyFromDataset(ds), null, JSON.stringify(ds));
+    }
+  });
+});
+
+describe('deleteRequest', () => {
+  test('builds the URL and body of each kind, with the token header', () => {
+    const cases = [
+      ['preplan', { slug: 'a' }, '/api/preplan-delete', { repo: '/r', slug: 'a' }],
+      ['deferred', { id: 'd-1' }, '/api/deferred-delete', { repo: '/r', id: 'd-1' }],
+      ['learning', { date: '2026-10-08', heading: 'h' }, '/api/learning-delete', { repo: '/r', date: '2026-10-08', heading: 'h' }],
+    ];
+    for (const [kind, key, url, body] of cases) {
+      const req = view.deleteRequest('tok', kind, '/r', key);
+      assert.equal(req.method, 'POST', kind);
+      assert.equal(req.url, url, kind);
+      assert.equal(req.headers['X-Sdlc-Token'], 'tok', kind);
+      assert.equal(req.headers['Content-Type'], 'application/json', kind);
+      assert.deepEqual(JSON.parse(req.body), body, kind);
+    }
+  });
+
+  test('takes the key of a deleteKeyFromDataset target as it is', () => {
+    const t = view.deleteKeyFromDataset({ kind: 'preplan', repo: '/r', slug: 'a', path: 'p', status: 'paused', label: 'A' });
+    assert.deepEqual(JSON.parse(view.deleteRequest('tok', t.kind, t.repo, t.key).body), { repo: '/r', slug: 'a' });
+  });
+
+  test('returns null for an empty key field, an empty token or repo, or an unknown kind', () => {
+    assert.equal(view.deleteRequest('tok', 'preplan', '/r', { slug: '' }), null);
+    assert.equal(view.deleteRequest('tok', 'deferred', '/r', { id: '' }), null);
+    assert.equal(view.deleteRequest('tok', 'learning', '/r', { date: '2026-10-08', heading: '' }), null);
+    assert.equal(view.deleteRequest('tok', 'learning', '/r', { date: '', heading: 'h' }), null);
+    assert.equal(view.deleteRequest('tok', 'deferred', '/r', null), null);
+    assert.equal(view.deleteRequest('', 'deferred', '/r', { id: 'd-1' }), null);
+    assert.equal(view.deleteRequest('tok', 'deferred', '', { id: 'd-1' }), null);
+    assert.equal(view.deleteRequest('tok', 'run', '/r', { id: 'd-1' }), null);
+  });
+});
+
+describe('deleteResultText', () => {
+  test('a 200 with deleted:true is a success', () => {
+    assert.deepEqual(view.deleteResultText(200, { deleted: true }), { ok: true, text: '' });
+  });
+
+  test('a 200 with alreadyGone:true is a success', () => {
+    assert.deepEqual(view.deleteResultText(200, { alreadyGone: true }), { ok: true, text: '' });
+  });
+
+  test('an error shows its message, then its suggestion', () => {
+    const body = { error: {
+      code: 'DELETE_FAILED',
+      message: 'write learnings log: permission denied',
+      suggestion: 'Check write permission on .sdlc-v2/learnings/ and free disk space, then retry.',
+    } };
+    assert.deepEqual(view.deleteResultText(500, body), {
+      ok: false,
+      text: 'write learnings log: permission denied Check write permission on .sdlc-v2/learnings/ and free disk space, then retry.',
+    });
+    assert.deepEqual(view.deleteResultText(400, { error: { code: 'BAD_REQUEST', message: 'bad slug' } }),
+      { ok: false, text: 'bad slug' });
+  });
+
+  test('an error with no body names the HTTP status', () => {
+    assert.deepEqual(view.deleteResultText(502, null), { ok: false, text: 'Delete failed (HTTP 502).' });
+  });
+
+  test('a network failure tells the person to check the dashboard', () => {
+    assert.deepEqual(view.deleteResultText(0, null), {
+      ok: false,
+      text: 'The request did not reach the dashboard. Check that it runs, then retry.',
+    });
+  });
+});
+
+describe('deletePrompt', () => {
+  const preplan = (status) => ({ kind: 'preplan', repo: '/r', key: { slug: 'a' }, label: 'A topic', path: '.sdlc-v2/preplan/a.md', status });
+
+  test('preplan', () => {
+    assert.equal(view.deletePrompt(preplan('paused')),
+      'Delete preplan "A topic"?\nThis deletes the topic file: .sdlc-v2/preplan/a.md\nYou cannot undo this.');
+  });
+
+  test('preplan, status in progress, adds the session line', () => {
+    assert.equal(view.deletePrompt(preplan('in progress')),
+      'Delete preplan "A topic"?\nThis deletes the topic file: .sdlc-v2/preplan/a.md\nYou cannot undo this.' +
+      '\nA preplan session can still use this topic file.');
+  });
+
+  test('only in progress gets the session line', () => {
+    for (const status of ['paused', 'ready for plan', 'archived', '']) {
+      assert.ok(!view.deletePrompt(preplan(status)).includes('session'), status);
+    }
+  });
+
+  test('deferred', () => {
+    assert.equal(view.deletePrompt({ kind: 'deferred', repo: '/r', key: { id: 'd-1' }, label: 'd-1' }),
+      'Delete deferred item d-1?\nThis removes the item for good. It is not resolved, it is gone.\nYou cannot undo this.');
+  });
+
+  test('learning', () => {
+    assert.equal(view.deletePrompt({ kind: 'learning', repo: '/r', key: { date: '2026-10-08', heading: 'h one' }, label: 'h one' }),
+      'Delete learning "h one"?\nThis removes the entry from the learnings log for good.\nYou cannot undo this.');
+  });
+
+  test('a null target or an unknown kind gives an empty text', () => {
+    assert.equal(view.deletePrompt(null), '');
+    assert.equal(view.deletePrompt({ kind: 'run', label: 'x' }), '');
+  });
+});
+
 describe('render emptyState', () => {
   const cases = [
     ['none-in-scope', undefined, 'No pipelines for the selected repos.'],
     ['no-deferred', undefined, 'No open deferred items.'],
     ['no-learnings', undefined, 'No learnings today.'],
     ['no-history', undefined, 'No finished runs for the selected repos.'],
+    ['no-history-outcome', undefined, 'No runs match this filter'],
     ['no-pipelines', view.emptyText({ repos: [] }), view.emptyText({ repos: [] })],
     ['repo-error', { name: 'app', error: 'open state: permission denied' }, 'Cannot read app: open state: permission denied'],
+    ['repo-warning', { name: 'app', warning: 'preplan folder not read: permission denied' }, 'Warning for app: preplan folder not read: permission denied'],
+    ['no-deferred-priority', undefined, 'No deferred items match this filter'],
+    ['no-preplans', undefined, 'No preplans'],
+    ['no-preplans-status', undefined, 'No preplans match this filter'],
   ];
   for (const [kind, detail, want] of cases) {
     test(`${kind} has its own text`, () => {
@@ -3836,33 +4575,119 @@ describe('render execute stations', () => {
 describe('render historyTable', () => {
   const repos = [
     { root: '/a', name: 'a', history: [
-      { kind: 'ship', branch: 'feat/a', outcome: 'success', startedAt: '', endedAt: '2026-10-08T14:00:00Z', durationMs: 2460000 },
-      { kind: 'plan', branch: 'main', outcome: 'failure', startedAt: '', endedAt: '2026-10-08T10:00:00Z', durationMs: 26000 },
+      { kind: 'ship', branch: 'feat/a', outcome: 'success', startedAt: '', endedAt: '2026-10-08T14:00:00Z', durationMs: 2460000,
+        planStartedAt: '2026-10-08T12:00:00Z', planDurationMs: 1320000, totalMs: 7200000 },
+      { kind: 'plan', branch: 'main', outcome: 'failure', startedAt: '', endedAt: '2026-10-08T10:00:00Z', durationMs: 26000, totalMs: 26000 },
     ] },
     { root: '/b', name: 'b', history: [
-      { kind: 'execute', branch: 'fix/b', outcome: 'partial', startedAt: '', endedAt: '2026-10-08T12:00:00Z', durationMs: 3720000 },
+      { kind: 'execute', branch: 'fix/b', outcome: 'partial', startedAt: '', endedAt: '2026-10-08T12:00:00Z', durationMs: 3720000, totalMs: 3720000 },
     ] },
   ];
   const now = Date.parse('2026-10-08T14:30:00Z');
+  // The head names; a sort control adds an arrow glyph after its name.
+  const heads = (table) => findAll(table, (n) => n.tagName === 'th').map((n) => textOf(n).replace(/[↕▲▼]/g, ''));
+  const rowsOf = (panel) => findAll(oneByClass(panel, 'hist'), (n) => n.tagName === 'tbody')[0].children;
+  const chipsOf = (panel) => oneByClass(panel, 'hist-filter').children;
 
+  // now → after row: History head.
   test('Finished runs (n), the column heads, and one row of each outcome, newest first', () => {
     const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC');
     assert.equal(panel.className, 'list-panel hist-panel');
     assert.equal(textOf(oneByClass(panel, 'list-title')), 'Finished runs (3)');
     const table = oneByClass(panel, 'hist');
     assert.equal(table.tagName, 'table');
-    assert.deepEqual(findAll(table, (n) => n.tagName === 'th').map((n) => n.textContent),
-      ['outcome', 'kind', 'branch', 'repo', 'finished', 'duration']);
-    const body = findAll(table, (n) => n.tagName === 'tbody')[0];
-    const rows = body.children;
+    assert.deepEqual(heads(table), ['outcome', 'kind', 'branch', 'repo', 'finished', 'plan', 'ship', 'total']);
+    const rows = rowsOf(panel);
     assert.deepEqual(rows.map((r) => oneByClass(r, 'out').className), ['out success', 'out partial', 'out failure']);
     assert.deepEqual(rows.map((r) => textOf(oneByClass(r, 'out'))), ['✓success', '◐partial', '✕failure']);
     assert.equal(oneByClass(rows[0], 'out').children[0].attrs['aria-hidden'], 'true');
     assert.deepEqual(rows[1].children.slice(1).map((c) => c.textContent), [
-      'execute', 'fix/b', 'b', view.relativeWhen('2026-10-08T12:00:00Z', now, 'UTC'), view.formatDuration(3720000),
+      'execute', 'fix/b', 'b', view.relativeWhen('2026-10-08T12:00:00Z', now, 'UTC'), '—', '—', view.formatDuration(3720000),
     ]);
-    assert.deepEqual(rows[1].children.slice(4).map((c) => c.textContent), ['2h ago', '1h 02m']);
-    assert.deepEqual(rows[0].children.map((c) => c.className), ['', 'h-kind', 'h-branch', 'h-repo', 'h-when', 'h-dur']);
+    assert.deepEqual(rows[1].children.slice(4).map((c) => c.textContent), ['2h ago', '—', '—', '1h 02m']);
+    assert.deepEqual(rows[0].children.map((c) => c.className),
+      ['', 'h-kind', 'h-branch', 'h-repo', 'h-when', 'h-dur', 'h-dur', 'h-dur']);
+  });
+
+  test('the plan, ship and total cells follow the column table', () => {
+    const rows = rowsOf(render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC'));
+    // ship row: plan from planDurationMs, ship from durationMs, total from totalMs.
+    assert.deepEqual(rows[0].children.slice(5).map((c) => c.textContent), ['22m', '41m', '2h 00m']);
+    // plan row: plan from durationMs, no ship time.
+    assert.deepEqual(rows[2].children.slice(5).map((c) => c.textContent), ['26s', '—', '26s']);
+  });
+
+  // now → after row: History controls.
+  test('the controls: outcome chips, then finished and total sort buttons, none active at page load', () => {
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC');
+    const bar = oneByClass(panel, 'hist-filter');
+    assert.equal(bar.attrs.role, 'group');
+    const chips = chipsOf(panel);
+    assert.deepEqual(chips.map((c) => c.attrs['data-hist-outcome']), ['all', 'success', 'failure', 'partial']);
+    assert.deepEqual(chips.map((c) => oneByClass(c, 'chip-n').textContent), ['3', '1', '1', '1']);
+    assert.deepEqual(chips.map((c) => c.attrs['aria-pressed']), ['true', 'false', 'false', 'false']);
+    for (const c of chips) assert.equal(c.attrs.type, 'button');
+    const sorts = byClass(panel, 'sort-btn');
+    assert.deepEqual(sorts.map((b) => b.attrs['data-hist-sort']), ['finished', 'total']);
+    assert.deepEqual(sorts.map((b) => b.className), ['sort-btn', 'sort-btn']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['none', 'none']);
+  });
+
+  test('a chip filters the rows', () => {
+    const ui = Object.assign(view.defaultUi(), { historyOutcome: 'partial' });
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC', ui);
+    assert.deepEqual(rowsOf(panel).map((r) => oneByClass(r, 'out').className), ['out partial']);
+    assert.equal(textOf(oneByClass(panel, 'list-title')), 'Finished runs (1)');
+    assert.deepEqual(chipsOf(panel).map((c) => c.attrs['aria-pressed']), ['false', 'false', 'false', 'true']);
+  });
+
+  test('another outcome gets its own chip after the three known ones', () => {
+    const withDone = [{ root: '/a', name: 'a', history: repos[0].history.concat([
+      { kind: 'plan', branch: 'main', outcome: 'done', endedAt: '2026-10-08T09:00:00Z', durationMs: 1000, totalMs: 1000 },
+    ]) }];
+    const chips = chipsOf(render.historyTable(fakeDoc(), view, withDone, new Set(), now, 'UTC'));
+    assert.deepEqual(chips.map((c) => c.attrs['data-hist-outcome']), ['all', 'success', 'failure', 'partial', 'done']);
+    assert.deepEqual(chips.map((c) => oneByClass(c, 'chip-n').textContent), ['3', '1', '1', '0', '1']);
+  });
+
+  test('a chosen chip with count 0 stays active with the "No runs match this filter" line', () => {
+    for (const outcome of ['partial', 'done']) {
+      const ui = Object.assign(view.defaultUi(), { historyOutcome: outcome });
+      const panel = render.historyTable(fakeDoc(), view, [repos[0]], new Set(), now, 'UTC', ui);
+      const chip = chipsOf(panel).find((c) => c.attrs['data-hist-outcome'] === outcome);
+      assert.ok(chip, outcome);
+      assert.equal(chip.attrs['aria-pressed'], 'true', outcome);
+      assert.equal(oneByClass(chip, 'chip-n').textContent, '0', outcome);
+      assert.equal(byClass(panel, 'hist').length, 0, outcome);
+      const line = oneByClass(panel, 'generic-line');
+      assert.equal(line.attrs['data-empty'], 'no-history-outcome');
+      assert.equal(line.textContent, 'No runs match this filter');
+    }
+  });
+
+  test('an active sort control shows its order', () => {
+    const ui = Object.assign(view.defaultUi(), { historySort: { key: 'total', dir: 'desc' } });
+    const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC', ui);
+    assert.deepEqual(byClass(panel, 'sort-btn').map((b) => b.className), ['sort-btn', 'sort-btn on']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['none', 'descending']);
+    assert.deepEqual(byClass(panel, 'sort-arrow').map((a) => a.textContent), ['↕', '▼']);
+    assert.deepEqual(rowsOf(panel).map((r) => oneByClass(r, 'h-branch').textContent), ['feat/a', 'fix/b', 'main']);
+  });
+
+  test('drawn twice with the same ui and new data, the table keeps the active chip and sort', () => {
+    const ui = view.defaultUi();
+    ui.historyOutcome = 'success';
+    ui.historySort = view.nextHistorySort(ui.historySort, 'finished');
+    ui.historySort = view.nextHistorySort(ui.historySort, 'finished'); // oldest first
+    render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC', ui);
+    const fresh = [{ root: '/a', name: 'a', history: repos[0].history.concat([
+      { kind: 'ship', branch: 'feat/new', outcome: 'success', endedAt: '2026-10-08T14:20:00Z', durationMs: 60000, totalMs: 60000 },
+    ]) }];
+    const panel = render.historyTable(fakeDoc(), view, fresh, new Set(), now, 'UTC', ui);
+    const active = chipsOf(panel).filter((c) => c.attrs['aria-pressed'] === 'true');
+    assert.deepEqual(active.map((c) => c.attrs['data-hist-outcome']), ['success']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['ascending', 'none']);
+    assert.deepEqual(rowsOf(panel).map((r) => oneByClass(r, 'h-branch').textContent), ['feat/a', 'feat/new']);
   });
 
   test('the scope keeps rows of the repos in scope only', () => {
@@ -3915,6 +4740,7 @@ describe('render.js browser global fallback', () => {
       'commandGroupTable',
       'detailBody',
       'dimensionsBody',
+      'durationTitle',
       'el',
       'elapsedText',
       'emptyState',
@@ -3928,6 +4754,7 @@ describe('render.js browser global fallback', () => {
       'issuesTile',
       'packDimensionGrid',
       'pipelineBlock',
+      'preplanPanel',
       'resultBody',
       'roundsBody',
       'scopedTitle',

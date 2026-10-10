@@ -571,10 +571,10 @@ func TestDashboardActivity_History_MapsFields(t *testing.T) {
 
 	got := dashboardRecentRuns(root)
 	want := []DashboardRun{
-		{Kind: "review", Branch: "feat/d", Outcome: "success", StartedAt: "", EndedAt: "not-a-time", DurationMs: 5000},
-		{Kind: "plan", Branch: "feat/c", Outcome: "partial", StartedAt: "", EndedAt: "2026-10-07T11:00:00Z", DurationMs: 0},
-		{Kind: "execute", Branch: "feat/b", Outcome: "failure", StartedAt: "2026-10-07T09:58:30Z", EndedAt: "2026-10-07T10:00:00Z", DurationMs: 90000},
-		{Kind: "ship", Branch: "feat/a", Outcome: "success", StartedAt: "2026-10-07T09:00:00Z", EndedAt: "2026-10-07T09:30:00Z", DurationMs: 60000},
+		{Kind: "review", Branch: "feat/d", Outcome: "success", StartedAt: "", EndedAt: "not-a-time", DurationMs: 5000, TotalMs: 5000},
+		{Kind: "plan", Branch: "feat/c", Outcome: "partial", StartedAt: "", EndedAt: "2026-10-07T11:00:00Z", DurationMs: 0, TotalMs: 0},
+		{Kind: "execute", Branch: "feat/b", Outcome: "failure", StartedAt: "2026-10-07T09:58:30Z", EndedAt: "2026-10-07T10:00:00Z", DurationMs: 90000, TotalMs: 90000},
+		{Kind: "ship", Branch: "feat/a", Outcome: "success", StartedAt: "2026-10-07T09:00:00Z", EndedAt: "2026-10-07T09:30:00Z", DurationMs: 60000, TotalMs: 60000},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("history rows = %d, want %d: %+v", len(got), len(want), got)
@@ -583,6 +583,146 @@ func TestDashboardActivity_History_MapsFields(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("history[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// TestDashboardActivity_History_PlanAndTotalTimes checks the plan fields and
+// totalMs of one history row for each row kind: ship with and without plan
+// fields, plan, execute, and the time edge cases.
+func TestDashboardActivity_History_PlanAndTotalTimes(t *testing.T) {
+	cases := []struct {
+		name string
+		line string
+		want DashboardRun
+	}{
+		{
+			name: "ship with plan fields counts total from the plan start to ts",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":3600000,"plan_started_at":"2026-10-10T08:20:00Z","plan_duration_ms":4800000}`,
+			want: DashboardRun{
+				Kind: "ship", Branch: "feat/a", Outcome: "success",
+				StartedAt: "2026-10-10T08:40:00Z", EndedAt: "2026-10-10T09:40:00Z", DurationMs: 3600000,
+				PlanStartedAt: "2026-10-10T08:20:00Z", PlanDurationMs: 4800000, TotalMs: 4800000,
+			},
+		},
+		{
+			name: "ship without plan fields has total equal to duration",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/b","outcome":"success","duration_ms":3600000}`,
+			want: DashboardRun{
+				Kind: "ship", Branch: "feat/b", Outcome: "success",
+				StartedAt: "2026-10-10T08:40:00Z", EndedAt: "2026-10-10T09:40:00Z", DurationMs: 3600000, TotalMs: 3600000,
+			},
+		},
+		{
+			name: "plan row ignores plan fields",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"plan","branch":"feat/c","outcome":"success","duration_ms":120000,"plan_started_at":"2026-10-10T08:20:00Z","plan_duration_ms":4800000}`,
+			want: DashboardRun{
+				Kind: "plan", Branch: "feat/c", Outcome: "success",
+				StartedAt: "2026-10-10T09:38:00Z", EndedAt: "2026-10-10T09:40:00Z", DurationMs: 120000, TotalMs: 120000,
+			},
+		},
+		{
+			name: "execute row ignores plan fields",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"execute","branch":"feat/d","outcome":"success","duration_ms":900000,"plan_started_at":"2026-10-10T08:20:00Z","plan_duration_ms":4800000}`,
+			want: DashboardRun{
+				Kind: "execute", Branch: "feat/d", Outcome: "success",
+				StartedAt: "2026-10-10T09:25:00Z", EndedAt: "2026-10-10T09:40:00Z", DurationMs: 900000, TotalMs: 900000,
+			},
+		},
+		{
+			name: "plan start equal to ts copies the plan fields with a zero total",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/g","outcome":"success","duration_ms":3600000,"plan_started_at":"2026-10-10T09:40:00Z","plan_duration_ms":0}`,
+			want: DashboardRun{
+				Kind: "ship", Branch: "feat/g", Outcome: "success",
+				StartedAt: "2026-10-10T08:40:00Z", EndedAt: "2026-10-10T09:40:00Z", DurationMs: 3600000,
+				PlanStartedAt: "2026-10-10T09:40:00Z", TotalMs: 0,
+			},
+		},
+		{
+			name: "plan start after ts copies no plan field",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/e","outcome":"success","duration_ms":3600000,"plan_started_at":"2026-10-10T10:00:00Z","plan_duration_ms":4800000}`,
+			want: DashboardRun{
+				Kind: "ship", Branch: "feat/e", Outcome: "success",
+				StartedAt: "2026-10-10T08:40:00Z", EndedAt: "2026-10-10T09:40:00Z", DurationMs: 3600000, TotalMs: 3600000,
+			},
+		},
+		{
+			name: "plan start that does not parse copies no plan field",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/f","outcome":"success","duration_ms":3600000,"plan_started_at":"not-a-time","plan_duration_ms":4800000}`,
+			want: DashboardRun{
+				Kind: "ship", Branch: "feat/f", Outcome: "success",
+				StartedAt: "2026-10-10T08:40:00Z", EndedAt: "2026-10-10T09:40:00Z", DurationMs: 3600000, TotalMs: 3600000,
+			},
+		},
+		{
+			name: "ts that does not parse copies no plan field",
+			line: `{"ts":"not-a-time","skill":"ship","branch":"feat/g","outcome":"success","duration_ms":3600000,"plan_started_at":"2026-10-10T08:20:00Z","plan_duration_ms":4800000}`,
+			want: DashboardRun{
+				Kind: "ship", Branch: "feat/g", Outcome: "success",
+				EndedAt: "not-a-time", DurationMs: 3600000, TotalMs: 3600000,
+			},
+		},
+		{
+			name: "no duration and no plan start gives total 0",
+			line: `{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/h","outcome":"failure","duration_ms":0}`,
+			want: DashboardRun{
+				Kind: "ship", Branch: "feat/h", Outcome: "failure",
+				EndedAt: "2026-10-10T09:40:00Z",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			dashWriteRuns(t, root, tc.line)
+			got := dashboardRecentRuns(root)
+			if len(got) != 1 {
+				t.Fatalf("history rows = %d, want 1: %+v", len(got), got)
+			}
+			if got[0] != tc.want {
+				t.Errorf("history row = %+v, want %+v", got[0], tc.want)
+			}
+		})
+	}
+}
+
+// TestDashboardActivity_History_PlanFieldsEncode checks the JSON of a ship row
+// with plan fields and of a row without them.
+func TestDashboardActivity_History_PlanFieldsEncode(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteRuns(t, root,
+		`{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":3600000,"plan_started_at":"2026-10-10T08:20:00Z","plan_duration_ms":4800000}`,
+		`{"ts":"2026-10-10T10:00:00Z","skill":"plan","branch":"feat/b","outcome":"done","duration_ms":60000}`,
+	)
+	got := dashboardRecentRuns(root)
+	if len(got) != 2 {
+		t.Fatalf("history rows = %d, want 2: %+v", len(got), got)
+	}
+
+	decode := func(run DashboardRun) map[string]any {
+		raw, err := json.Marshal(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		return fields
+	}
+
+	plan := decode(got[0])
+	for _, key := range []string{"planStartedAt", "planDurationMs"} {
+		if _, ok := plan[key]; ok {
+			t.Errorf("plan row has key %q, want it absent: %v", key, plan)
+		}
+	}
+	if plan["totalMs"] != float64(60000) {
+		t.Errorf("plan row totalMs = %v, want 60000", plan["totalMs"])
+	}
+
+	ship := decode(got[1])
+	if ship["planStartedAt"] != "2026-10-10T08:20:00Z" || ship["planDurationMs"] != float64(4800000) || ship["totalMs"] != float64(4800000) {
+		t.Errorf("ship row = %v, want planStartedAt 2026-10-10T08:20:00Z, planDurationMs 4800000, totalMs 4800000", ship)
 	}
 }
 

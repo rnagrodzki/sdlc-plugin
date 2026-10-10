@@ -1261,10 +1261,25 @@ const (
 	preplanCreateSuggestion     = "Check write permission on .sdlc-v2/preplan/, then run the skill again."
 )
 
+// The values of the "**Status:**" line of a preplan topic file. The preplan
+// skill (plugins/sdlc/skills/preplan/SKILL.md, "Topic file status") lists the
+// same values, and TestDashboardPreplans_StatusParity pins the two lists.
+const (
+	preplanStatusInProgress   = "in progress"
+	preplanStatusReadyForPlan = "ready for plan"
+	preplanStatusPaused       = "paused"
+)
+
+// PreplanStatuses is the canonical list of preplan statuses, in order. It is
+// exported for the tests of other packages: TestPreplanStatusParity pins the
+// PREPLAN_STATUSES chips of the dashboard page (view.js) to it, and the
+// end-to-end test writes topic files with its values.
+var PreplanStatuses = []string{preplanStatusInProgress, preplanStatusReadyForPlan, preplanStatusPaused}
+
 // preplanSkeletonTail is the text of a new topic file that follows the
 // "# Preplan: <topic>" heading line.
 const preplanSkeletonTail = `
-**Status:** in progress
+**Status:** ` + preplanStatusInProgress + `
 
 ## Goal
 

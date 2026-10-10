@@ -25,6 +25,7 @@
   --scan-cyan-dim:rgba(85,214,224,0.35);
   --radius:10px;
   --icon-archive:url("data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='4' rx='1'/%3E%3Cpath d='M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4'/%3E%3C/svg%3E");
+  --icon-trash:url("data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3'/%3E%3C/svg%3E");
   --font-sign:"Barlow Semi Condensed","Oswald",system-ui,sans-serif;
   --font-body:system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
@@ -260,7 +261,7 @@ button { font-family: inherit; }
 .gh-link:focus-visible { outline-offset: 3px; border-radius: 4px; }
 .gh-link svg { width: 19px; height: 19px; display: block; }
 
-/* ---------- Tabs in the header: Pipelines, Activity, History ---------- */
+/* ---------- Tabs in the header: Pipelines, Activity, History, Preplans ---------- */
 
 .tabs { display: flex; align-self: stretch; gap: 4px; margin-left: 6px; }
 
@@ -1039,6 +1040,81 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .h-branch { font-family: var(--font-mono); font-size: 12.5px; color: var(--ivory); word-break: break-all; }
 .h-repo { color: var(--rail); }
 .h-when, .h-dur { font-family: var(--font-mono); font-size: 12px; color: var(--rail); white-space: nowrap; }
+
+/* ---------- History tab: outcome filter and sort headers ---------- */
+
+.hist-filter { margin: -4px 0 14px; }
+.hist-filter .chip { display: inline-flex; align-items: center; gap: 6px; }
+.hist-filter .out { font-size: 11px; }
+.hist th.sortable { padding-right: 16px; }
+.sort-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.sort-btn:hover, .sort-btn:focus-visible, .sort-btn.on { color: var(--ivory); }
+.sort-arrow { font-size: 9px; color: var(--rail); }
+.sort-btn.on .sort-arrow { color: var(--scan-cyan); }
+
+/* ---------- Activity tab: priority filter and Delete icons ---------- */
+
+.act-filter { margin: -4px 0 12px; }
+.act-filter .chip { display: inline-flex; align-items: center; gap: 6px; }
+.chip-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--rail); }
+.chip-dot.sev-high, .chip-dot.sev-critical { background: var(--signal-red); }
+.chip-dot.sev-medium { background: var(--signal-amber); }
+.act-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-top: 1px solid rgba(148,178,196,0.08);
+}
+.act-item:first-child { border-top: none; }
+.act-item .act-row { flex: 1; min-width: 0; padding: 10px 0; border-top: none; }
+.act-item:first-child .act-row { padding-top: 0; }
+/* The icon sits on the badge line, dim until the row is under the pointer or has focus. */
+.act-item .act-del { flex: 0 0 auto; margin-top: 6px; color: var(--rail); opacity: 0.6; }
+.act-item:first-child .act-del { margin-top: -4px; }
+.act-item:hover .act-del, .act-item:focus-within .act-del { opacity: 1; }
+/* Keep the red hover of .archive-btn, which the rows above would cover. */
+.act-item .act-del:hover, .act-item .act-del:focus-visible { color: #FFD9D6; opacity: 1; }
+.act-del::before {
+  -webkit-mask-image: var(--icon-trash);
+  mask-image: var(--icon-trash);
+}
+
+/* ---------- Preplans tab ---------- */
+
+.pp-filter { margin: -4px 0 14px; }
+.pp-filter .chip { display: inline-flex; align-items: center; gap: 6px; }
+.pp-filter .pp-status { font-size: 11px; }
+.pp-status { display: inline-flex; gap: 7px; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.pp-progress { color: var(--signal-amber); }
+.pp-ready { color: var(--signal-green); }
+.pp-paused, .pp-unknown { color: var(--rail); }
+/* Every cell starts on the line of the topic name, as the Activity rows do. */
+.pp td { vertical-align: top; }
+.pp .pp-status, .pp .h-repo, .pp .h-when { line-height: 20px; }
+.pp-name { line-height: 20px; }
+.pp-name { font-family: var(--font-sign); font-weight: 600; font-size: 14px; color: var(--ivory); }
+.pp-path { margin-top: 2px; font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); word-break: break-all; }
+.pp-act { width: 30px; padding-right: 0; text-align: right; }
+/* The bin icon of the Activity rows: dim until the row is under the pointer or has focus. */
+.pp .pp-remove { margin-top: -5px; color: var(--rail); opacity: 0.6; }
+.pp tr:hover .pp-remove, .pp tr:focus-within .pp-remove { opacity: 1; }
+.pp .pp-remove:hover, .pp .pp-remove:focus-visible { color: #FFD9D6; opacity: 1; }
+.pp-remove::before {
+  -webkit-mask-image: var(--icon-trash);
+  mask-image: var(--icon-trash);
+}
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }

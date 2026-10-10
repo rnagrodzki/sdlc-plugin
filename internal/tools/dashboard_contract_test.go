@@ -2,10 +2,14 @@ package tools
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // dashboardKinds is the closed set of step detail kinds. Every test of the
@@ -163,5 +167,143 @@ func TestDashboardContract_HistoryIsEmptyList(t *testing.T) {
 		if !strings.Contains(string(b), `"history":[]`) {
 			t.Errorf("%s repo JSON = %s, want history []", name, b)
 		}
+	}
+}
+
+// TestDashboardContract_RepoListsNeverNull checks that a repo entry encodes
+// warnings and preplans as empty lists, never null, for a readable root, an
+// absent root, a root that is a file, and a root whose runs folder cannot be
+// read.
+func TestDashboardContract_RepoListsNeverNull(t *testing.T) {
+	orig := dashboardActivity
+	t.Cleanup(func() { dashboardActivity = orig })
+	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
+		return nil, nil, nil, nil
+	}
+
+	notAFolder := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notAFolder, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	roots := map[string]string{
+		"readable":     dashRoot(t),
+		"absent":       t.TempDir() + "/gone",
+		"not a folder": notAFolder,
+	}
+	if os.Geteuid() != 0 {
+		// A folder that exists but cannot be listed: state.List fails and the
+		// collector sets repo.Error, but the lists stay [].
+		locked := dashRoot(t)
+		runs := filepath.Join(locked, paths.DataDir, paths.RunsSubdir)
+		if err := os.Chmod(runs, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(runs, 0o755) })
+		roots["unreadable runs folder"] = locked
+	}
+
+	for name, root := range roots {
+		repo := collectDashboardRepo(root, dashNow)
+		if name == "unreadable runs folder" && repo.Error == "" {
+			t.Errorf("%s: repo.Error is empty, want a read error", name)
+		}
+		b, err := json.Marshal(repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{`"warnings":[]`, `"preplans":[]`} {
+			if !strings.Contains(string(b), want) {
+				t.Errorf("%s repo JSON = %s, want %s", name, b, want)
+			}
+		}
+	}
+}
+
+// TestDashboardContract_PlanFieldsOmitted checks the encoding of the plan
+// fields. planStartedAt of a pipeline, and planStartedAt and planDurationMs
+// of a history row, are absent when empty. totalMs of a history row is always
+// there, and 0 means unknown.
+func TestDashboardContract_PlanFieldsOmitted(t *testing.T) {
+	b, err := json.Marshal(DashboardPipeline{ID: "ship-feat-x-20261007T090000Z", Kind: "ship"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "planStartedAt") {
+		t.Errorf("empty PlanStartedAt is in the pipeline JSON, want absent: %s", b)
+	}
+	b, err = json.Marshal(DashboardPipeline{Kind: "ship", PlanStartedAt: "2026-10-07T08:00:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"planStartedAt":"2026-10-07T08:00:00Z"`) {
+		t.Errorf("PlanStartedAt is not in the pipeline JSON: %s", b)
+	}
+
+	b, err = json.Marshal(DashboardRun{Kind: "plan", Outcome: "success"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(b)
+	if strings.Contains(s, "planStartedAt") || strings.Contains(s, "planDurationMs") {
+		t.Errorf("empty plan fields are in the history row JSON, want absent: %s", s)
+	}
+	if !strings.Contains(s, `"totalMs":0`) {
+		t.Errorf("history row JSON lacks totalMs 0: %s", s)
+	}
+
+	b, err = json.Marshal(DashboardRun{
+		Kind: "ship", Outcome: "success", DurationMs: 3600000,
+		PlanStartedAt: "2026-10-10T08:20:00Z", PlanDurationMs: 4800000, TotalMs: 9600000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"planStartedAt":"2026-10-10T08:20:00Z"`, `"planDurationMs":4800000`, `"totalMs":9600000`} {
+		if !strings.Contains(string(b), want) {
+			t.Errorf("history row JSON lacks %s: %s", want, b)
+		}
+	}
+}
+
+// TestDashboardContract_FixtureHoldsLifeCycleFields checks that the shared
+// snapshot fixture keeps one sample of each field the page tests rely on: a
+// ship pipeline with plan times, three preplans, and a history row with plan
+// fields.
+func TestDashboardContract_FixtureHoldsLifeCycleFields(t *testing.T) {
+	snap := dashboardFixtureDecode(t, dashboardFixtureRead(t))
+
+	var preplans, shipWithPlanTimes, rowsWithPlan int
+	for _, repo := range snap.Repos {
+		if repo.Warnings == nil || repo.Preplans == nil {
+			t.Errorf("repo %s: warnings or preplans is null, want a list", repo.Name)
+		}
+		preplans += len(repo.Preplans)
+		for _, p := range repo.Pipelines {
+			if p.Kind != "ship" || p.PlanStartedAt == "" {
+				continue
+			}
+			for _, s := range p.Steps {
+				if s.Name == "plan" && s.StartedAt != "" && s.CompletedAt != "" {
+					shipWithPlanTimes++
+				}
+			}
+		}
+		for _, h := range repo.History {
+			if h.PlanStartedAt != "" && h.PlanDurationMs > 0 && h.TotalMs > h.DurationMs {
+				rowsWithPlan++
+			}
+			if h.TotalMs <= 0 {
+				t.Errorf("repo %s: history row %s %s has totalMs %d, want a value", repo.Name, h.Kind, h.Branch, h.TotalMs)
+			}
+		}
+	}
+	if preplans != 3 {
+		t.Errorf("fixture has %d preplans, want 3", preplans)
+	}
+	if shipWithPlanTimes == 0 {
+		t.Error("fixture has no ship pipeline with planStartedAt and a plan step with both times")
+	}
+	if rowsWithPlan == 0 {
+		t.Error("fixture has no history row with plan fields and a total longer than the ship duration")
 	}
 }

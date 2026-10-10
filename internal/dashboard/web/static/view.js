@@ -73,7 +73,10 @@
 
   var TAB_KEY = 'sdlc-dashboard-tab';
   var REPO_FILTER_KEY = 'sdlc-dashboard-repo-filter';
-  var TAB_NAMES = ['pipelines', 'activity', 'history'];
+  var TAB_NAMES = ['pipelines', 'activity', 'history', 'preplans'];
+  // The status values of a preplan topic file, in chip order. Must equal
+  // tools.PreplanStatuses (TestPreplanStatusParity in server_test.go).
+  var PREPLAN_STATUSES = ['in progress', 'ready for plan', 'paused'];
 
   // When true, a completed pipeline block starts collapsed.
   var COLLAPSE_FINISHED = true;
@@ -292,6 +295,122 @@
   function archiveResultText(status, body) {
     if (status === 200) return { ok: true, text: '' };
     return { ok: false, text: errorText(body, 'Archive failed (HTTP ' + status + ').') };
+  }
+
+  // --- Delete of a preplan, a deferred item, or a learning ------------------
+
+  // The route of each delete kind.
+  var DELETE_URLS = {
+    preplan: '/api/preplan-delete',
+    deferred: '/api/deferred-delete',
+    learning: '/api/learning-delete',
+  };
+
+  var DELETE_NETWORK_TEXT = 'The request did not reach the dashboard. Check that it runs, then retry.';
+
+  function nonEmpty(value) {
+    return typeof value === 'string' && value.length > 0;
+  }
+
+  // The body fields of a delete request for the key of one kind, or null when
+  // a key field is empty or the kind is unknown.
+  function deleteKeyFields(kind, key) {
+    if (!key || typeof key !== 'object') return null;
+    if (kind === 'preplan') return nonEmpty(key.slug) ? { slug: key.slug } : null;
+    if (kind === 'deferred') return nonEmpty(key.id) ? { id: key.id } : null;
+    if (kind === 'learning') {
+      return nonEmpty(key.date) && nonEmpty(key.heading) ? { date: key.date, heading: key.heading } : null;
+    }
+    return null;
+  }
+
+  /**
+   * The request that deletes one preplan topic file, deferred item, or
+   * learning. Use it as `fetch(req.url, req)`.
+   * @param {string} token the server's X-Sdlc-Token for this start
+   * @param {string} kind 'preplan' | 'deferred' | 'learning'
+   * @param {string} repo repo root
+   * @param {object} key {slug} | {id} | {date, heading}, as deleteKeyFromDataset gives
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token or repo is '', the kind is unknown, or a key field is ''
+   */
+  function deleteRequest(token, kind, repo, key) {
+    if (!token || !repo) return null;
+    var fields = deleteKeyFields(kind, key);
+    if (!fields) return null;
+    var payload = { repo: repo };
+    Object.keys(fields).forEach(function (name) {
+      payload[name] = fields[name];
+    });
+    return guardedPost(token, DELETE_URLS[kind], payload);
+  }
+
+  /**
+   * The delete target of a clicked bin button: the only map from a row to a
+   * delete key.
+   * @param {object} ds the dataset of the button: kind, repo, label, and the
+   *   key fields of the kind (slug, path, status | id | date, heading)
+   * @returns {{kind: string, repo: string, key: object, label: string,
+   *   path?: string, status?: string}|null} null for an unknown kind, an empty
+   *   repo, or an empty key field
+   */
+  function deleteKeyFromDataset(ds) {
+    if (!ds || !nonEmpty(ds.repo)) return null;
+    var key = deleteKeyFields(ds.kind, ds);
+    if (!key) return null;
+    var label = nonEmpty(ds.label) ? ds.label : '';
+    if (ds.kind === 'preplan') {
+      return {
+        kind: 'preplan',
+        repo: ds.repo,
+        key: key,
+        label: label || key.slug,
+        path: nonEmpty(ds.path) ? ds.path : '',
+        status: nonEmpty(ds.status) ? ds.status : '',
+      };
+    }
+    if (ds.kind === 'deferred') return { kind: 'deferred', repo: ds.repo, key: key, label: label || key.id };
+    return { kind: 'learning', repo: ds.repo, key: key, label: label || key.heading };
+  }
+
+  /**
+   * The question of the confirm dialog before a delete. '\n' is a line break.
+   * @param {{kind: string, label: string, path?: string, status?: string}} target
+   *   the result of deleteKeyFromDataset
+   * @returns {string} '' for a null target or an unknown kind
+   */
+  function deletePrompt(target) {
+    if (!target) return '';
+    if (target.kind === 'preplan') {
+      var text = 'Delete preplan "' + target.label + '"?\nThis deletes the topic file: ' + (target.path || '') +
+        '\nYou cannot undo this.';
+      return target.status === 'in progress' ? text + '\nA preplan session can still use this topic file.' : text;
+    }
+    if (target.kind === 'deferred') {
+      return 'Delete deferred item ' + target.label +
+        '?\nThis removes the item for good. It is not resolved, it is gone.\nYou cannot undo this.';
+    }
+    if (target.kind === 'learning') {
+      return 'Delete learning "' + target.label + '"?\nThis removes the entry from the learnings log for good.' +
+        '\nYou cannot undo this.';
+    }
+    return '';
+  }
+
+  /**
+   * The result of a delete request. A 200 is a success, also when the item
+   * was already gone. An error shows its message and its suggestion.
+   * @param {number} status HTTP status of the delete route, 0 for a network error
+   * @param {*} body the parsed JSON body, or null when the response had none
+   * @returns {{ok: boolean, text: string}} text is '' when ok
+   */
+  function deleteResultText(status, body) {
+    if (status === 200) return { ok: true, text: '' };
+    if (!status) return { ok: false, text: DELETE_NETWORK_TEXT };
+    var err = body && typeof body === 'object' ? body.error : null;
+    var message = err && nonEmpty(err.message) ? err.message : 'Delete failed (HTTP ' + status + ').';
+    var suggestion = err && nonEmpty(err.suggestion) ? err.suggestion : '';
+    return { ok: false, text: suggestion ? message + ' ' + suggestion : message };
   }
 
   /**
@@ -781,15 +900,16 @@
    * deferred items.
    * @param {Array} repos
    * @param {Set<string>} scope
-   * @returns {{pipelines: number, activity: number, history: number}}
+   * @returns {{pipelines: number, activity: number, history: number, preplans: number}}
    */
   function scopedCounts(repos, scope) {
-    var counts = { pipelines: 0, activity: 0, history: 0 };
+    var counts = { pipelines: 0, activity: 0, history: 0, preplans: 0 };
     (repos || []).forEach(function (repo) {
       if (!inScope(scope, repo.root)) return;
       counts.pipelines += (repo.pipelines || []).length;
       counts.activity += (repo.learnings || []).length + (repo.deferred || []).length;
       counts.history += (repo.history || []).length;
+      counts.preplans += (repo.preplans || []).length;
     });
     return counts;
   }
@@ -910,6 +1030,17 @@
     if (diff < 60e3) return 'just now';
     if (diff < 3600e3) return Math.floor(diff / 60e3) + 'm ago';
     if (diff < 86400e3) return Math.floor(diff / 3600e3) + 'h ago';
+    return dateLabel(iso, tz);
+  }
+
+  /**
+   * @param {string} iso timestamp
+   * @param {string} [tz] IANA time zone; the local zone when absent
+   * @returns {string} 'Mon D HH:MM' in tz; '' for a bad timestamp
+   */
+  function dateLabel(iso, tz) {
+    var date = parseTime(iso);
+    if (!date) return '';
     var parts = dateParts(date, tz);
     return MONTHS[Number(parts.month) - 1] + ' ' + parts.day + ' ' + parts.hour + ':' + parts.minute;
   }
@@ -1260,10 +1391,213 @@
     }
   }
 
+  // --- History filter and sort ---------------------------------------------------
+
+  // The outcomes of the History filter that always have a chip, in chip order.
+  var HISTORY_OUTCOMES = ['success', 'failure', 'partial'];
+
+  /**
+   * The filter and sort state of a new page. A data refresh keeps the state;
+   * a page load starts from here again.
+   * @returns {{historyOutcome: string, historySort: null, preplanStatus: string, deferredPriority: string}}
+   */
+  function defaultUi() {
+    return { historyOutcome: 'all', historySort: null, preplanStatus: 'all', deferredPriority: 'all' };
+  }
+
+  /**
+   * The count of each outcome chip of the History tab.
+   * @param {Array<{outcome?: string}>} runs
+   * @returns {Object<string, number>} all, success, failure, partial, then each
+   *   other outcome of the runs in the order of first use
+   */
+  function historyOutcomeCounts(runs) {
+    var list = runs || [];
+    var counts = { all: list.length };
+    HISTORY_OUTCOMES.forEach(function (name) {
+      counts[name] = 0;
+    });
+    list.forEach(function (run) {
+      var outcome = run && run.outcome;
+      if (!outcome || outcome === 'all') return;
+      counts[outcome] = Object.prototype.hasOwnProperty.call(counts, outcome) ? counts[outcome] + 1 : 1;
+    });
+    return counts;
+  }
+
+  /**
+   * @param {Array<{outcome?: string}>} runs
+   * @param {string} outcome an outcome, or 'all'
+   * @returns {Array} a new array: the runs with this outcome, or every run for 'all'
+   */
+  function filterHistory(runs, outcome) {
+    var list = runs || [];
+    if (!outcome || outcome === 'all') return list.slice();
+    return list.filter(function (run) {
+      return run && run.outcome === outcome;
+    });
+  }
+
+  /**
+   * The sort after a click on a sort control. A new control starts with the
+   * largest value first. A click on the active control flips its order.
+   * @param {{key: string, dir: string}|null} sort
+   * @param {string} key finished | total
+   * @returns {{key: string, dir: string}}
+   */
+  function nextHistorySort(sort, key) {
+    if (sort && sort.key === key) return { key: key, dir: sort.dir === 'desc' ? 'asc' : 'desc' };
+    return { key: key, dir: 'desc' };
+  }
+
+  // The sort value of a run by sort key, or null when the run has none.
+  var HISTORY_SORT_VALUES = {
+    finished: function (run) {
+      var t = Date.parse(run && run.endedAt);
+      return isNaN(t) ? null : t;
+    },
+    // Go sends 0 for an unknown duration.
+    total: function (run) {
+      var ms = run && run.totalMs;
+      return typeof ms === 'number' && isFinite(ms) && ms > 0 ? ms : null;
+    },
+  };
+
+  /**
+   * @param {Array} runs
+   * @param {{key: string, dir: string}|null} sort null sorts by endedAt, newest first
+   * @returns {Array} a new array. finished sorts by endedAt, total by totalMs.
+   *   Runs with no value go last in both orders; equal runs keep their order.
+   */
+  function sortHistory(runs, sort) {
+    var key = sort && HISTORY_SORT_VALUES[sort.key] ? sort.key : 'finished';
+    var sign = sort && sort.dir === 'asc' ? 1 : -1;
+    var valueOf = HISTORY_SORT_VALUES[key];
+    // Array.prototype.sort is stable.
+    return (runs || []).slice().sort(function (a, b) {
+      var x = valueOf(a);
+      var y = valueOf(b);
+      if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1;
+      return x === y ? 0 : (x < y ? -1 : 1) * sign;
+    });
+  }
+
+  function positiveMs(ms) {
+    return typeof ms === 'number' && isFinite(ms) && ms > 0 ? ms : null;
+  }
+
+  /**
+   * The plan, ship and total times of one History row. A ship row shows its
+   * own time and the time of its linked plan. A plan row shows its time in
+   * the plan column. Every row shows its total time.
+   * @param {{kind?: string, durationMs?: number, planDurationMs?: number, totalMs?: number}} run
+   * @returns {{planMs: number|null, shipMs: number|null, totalMs: number|null}} null shows as '—'
+   */
+  function historyCells(run) {
+    var r = run || {};
+    var own = typeof r.durationMs === 'number' && isFinite(r.durationMs) && r.durationMs >= 0 ? r.durationMs : null;
+    var total = positiveMs(r.totalMs);
+    if (r.kind === 'ship') return { planMs: positiveMs(r.planDurationMs), shipMs: own, totalMs: total };
+    if (r.kind === 'plan') return { planMs: own, shipMs: null, totalMs: total };
+    return { planMs: null, shipMs: null, totalMs: total };
+  }
+
+  // The time of an item for the newest-first order, or null when it has none.
+  function timeValue(iso) {
+    var t = Date.parse(iso);
+    return isNaN(t) ? null : t;
+  }
+
+  /**
+   * The preplan topic files of the repos in scope, newest change first. Equal
+   * times sort by slug; an item with no valid updatedAt goes last.
+   * @param {Array} repos
+   * @param {Set<string>} scope
+   * @returns {Array<{repo: object, slug: string, topic: string, status: string, path: string, updatedAt: string}>}
+   *   repo is the snapshot repo of the topic file
+   */
+  function preplanItems(repos, scope) {
+    var items = [];
+    (repos || []).forEach(function (repo) {
+      if (!inScope(scope, repo.root)) return;
+      (repo.preplans || []).forEach(function (p) {
+        if (!p) return;
+        items.push({
+          repo: repo,
+          slug: p.slug || '',
+          topic: p.topic || '',
+          status: p.status || '',
+          path: p.path || '',
+          updatedAt: p.updatedAt || '',
+        });
+      });
+    });
+    return items.sort(function (a, b) {
+      var x = timeValue(a.updatedAt);
+      var y = timeValue(b.updatedAt);
+      if (x !== y) {
+        if (x === null) return 1;
+        if (y === null) return -1;
+        return y - x;
+      }
+      return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
+    });
+  }
+
+  /**
+   * @param {string} status the raw status of a topic file
+   * @returns {string} the status when it is in PREPLAN_STATUSES, else 'unknown'
+   */
+  function preplanStatus(status) {
+    return PREPLAN_STATUSES.indexOf(status) !== -1 ? status : 'unknown';
+  }
+
+  /**
+   * The count of each status chip of the Preplans tab. A status outside
+   * PREPLAN_STATUSES counts as unknown.
+   * @param {Array<{status?: string}>} items preplanItems
+   * @returns {{all: number, 'in progress': number, 'ready for plan': number, paused: number, unknown: number}}
+   */
+  function preplanStatusCounts(items) {
+    var list = items || [];
+    var counts = { all: list.length };
+    PREPLAN_STATUSES.forEach(function (name) {
+      counts[name] = 0;
+    });
+    counts.unknown = 0;
+    list.forEach(function (item) {
+      counts[preplanStatus(item && item.status)] += 1;
+    });
+    return counts;
+  }
+
+  // The priorities of the deferred filter, in chip order.
+  var DEFERRED_PRIORITIES = ['high', 'medium', 'low'];
+
+  /**
+   * The count of each priority chip of the Open deferred list. An item with
+   * another priority counts in all only.
+   * @param {Array<{priority?: string}>} deferred
+   * @returns {{all: number, high: number, medium: number, low: number}}
+   */
+  function priorityCounts(deferred) {
+    var list = deferred || [];
+    var counts = { all: list.length };
+    DEFERRED_PRIORITIES.forEach(function (name) {
+      counts[name] = 0;
+    });
+    list.forEach(function (item) {
+      var p = item && item.priority;
+      if (DEFERRED_PRIORITIES.indexOf(p) !== -1) counts[p] += 1;
+    });
+    return counts;
+  }
+
   var view = {
     TAB_KEY: TAB_KEY,
     REPO_FILTER_KEY: REPO_FILTER_KEY,
     TAB_NAMES: TAB_NAMES,
+    PREPLAN_STATUSES: PREPLAN_STATUSES,
     COLLAPSE_FINISHED: COLLAPSE_FINISHED,
     stepGlyph: stepGlyph,
     pipelineTone: pipelineTone,
@@ -1279,6 +1613,10 @@
     closeFocusSelector: closeFocusSelector,
     confirmSteps: confirmSteps,
     archiveResultText: archiveResultText,
+    deleteRequest: deleteRequest,
+    deleteKeyFromDataset: deleteKeyFromDataset,
+    deletePrompt: deletePrompt,
+    deleteResultText: deleteResultText,
     clearResultText: clearResultText,
     detailKey: detailKey,
     detailItem: detailItem,
@@ -1326,6 +1664,17 @@
     saveTab: saveTab,
     loadRepoFilter: loadRepoFilter,
     saveRepoFilter: saveRepoFilter,
+    defaultUi: defaultUi,
+    historyOutcomeCounts: historyOutcomeCounts,
+    filterHistory: filterHistory,
+    nextHistorySort: nextHistorySort,
+    sortHistory: sortHistory,
+    historyCells: historyCells,
+    dateLabel: dateLabel,
+    preplanItems: preplanItems,
+    preplanStatus: preplanStatus,
+    preplanStatusCounts: preplanStatusCounts,
+    priorityCounts: priorityCounts,
   };
 
   if (typeof module === 'object' && module.exports) {

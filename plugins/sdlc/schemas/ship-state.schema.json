@@ -195,6 +195,25 @@
       "type": "string",
       "description": "HEAD sha seen by the first ship_state commit-check call of the run. Later commit-check calls keep it. A clean tree with HEAD equal to it means nothing to commit; a clean tree with HEAD not equal to it means the commit landed."
     },
+    "linkedPlan": {
+      "type": "object",
+      "description": "Plan run linked to this ship run, saved by complete-step (or legacy complete) of execute when the outcome is not a failure. planFile = the execute state planPath, resolved against its worktree and cleaned. startedAt = planIntegrity.skillInvoked, completedAt = planIntegrity.done (absent when the plan run has no valid RFC 3339 done mark). Survives cleanup-pipeline and GC of the plan state.",
+      "additionalProperties": false,
+      "required": ["planFile", "startedAt"],
+      "properties": {
+        "planFile": {
+          "type": "string"
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
     "planExploreSummary": {
       "type": "array",
       "description": "Plan explorer summary copied by cleanup-pipeline before it deletes the linked plan run. One entry for each explorer; top holds at most 5 findings. An empty list means the plan run had no explorer files.",

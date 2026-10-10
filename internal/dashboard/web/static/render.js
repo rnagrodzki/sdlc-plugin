@@ -20,6 +20,10 @@
     'no-deferred': 'No open deferred items.',
     'no-learnings': 'No learnings today.',
     'no-history': 'No finished runs for the selected repos.',
+    'no-history-outcome': 'No runs match this filter',
+    'no-deferred-priority': 'No deferred items match this filter',
+    'no-preplans': 'No preplans',
+    'no-preplans-status': 'No preplans match this filter',
   };
 
   /**
@@ -94,29 +98,47 @@
   }
 
   /**
+   * The title of the total time chip of a pipeline head.
+   * @param {string} kind the pipeline kind
+   * @param {boolean} fromPlan true for a ship run that counts from the start of its linked plan
+   * @param {boolean} running true while the chip counts up to now
+   * @returns {string}
+   */
+  function durationTitle(kind, fromPlan, running) {
+    if (fromPlan) return running ? 'Time since the plan started' : 'Time from the plan start to the ship end';
+    if (kind === 'ship') {
+      return running ? 'Time since the ship run started (no linked plan)' : 'Total time of the ship run (no linked plan)';
+    }
+    return running ? 'Time since the pipeline started' : 'Total time of the pipeline';
+  }
+
+  /**
    * The total time of a pipeline, for its head. A running pipeline counts up
    * to now. A completed one stops at completedAt. A stalled or failed one
-   * stops at its last update. The timer refreshes a running one.
+   * stops at its last update. The timer refreshes a running one. A ship run
+   * with planStartedAt counts from the start of its linked plan.
    * @param {Document} doc
    * @param {object} view
-   * @param {{status: string, startedAt?: string, updatedAt?: string, completedAt?: string|null}} pipeline
+   * @param {{kind?: string, status: string, startedAt?: string, planStartedAt?: string, updatedAt?: string, completedAt?: string|null}} pipeline
    * @param {Date|number} now
-   * @returns {Element|null} span.pipe-dur, or null when startedAt is unreadable
+   * @returns {Element|null} span.pipe-dur, or null when the start time is unreadable
    */
   function pipelineDuration(doc, view, pipeline, now) {
     var running = pipeline.status === 'running' && !pipeline.completedAt;
     var end = pipeline.completedAt || (running ? now : pipeline.updatedAt);
-    var text = spanText(view, pipeline.startedAt, end);
+    var fromPlan = pipeline.kind === 'ship' && !!pipeline.planStartedAt;
+    var start = fromPlan ? pipeline.planStartedAt : pipeline.startedAt;
+    var text = spanText(view, start, end);
     if (!text) return null;
     var value = el(doc, 'span', running ? 'dur-live' : '', text);
-    if (running) value.setAttribute('data-since', pipeline.startedAt);
+    if (running) value.setAttribute('data-since', start);
     // A running chip has a lamp and an amber time, so the reader sees the time is live.
     var chip = append(el(doc, 'span', running ? 'pipe-dur live' : 'pipe-dur'), [
       running ? lamp(doc, 'running') : null,
       el(doc, 'span', 'dur-label', 'total'),
       value,
     ]);
-    chip.setAttribute('title', running ? 'Time since the pipeline started' : 'Total time of the pipeline');
+    chip.setAttribute('title', durationTitle(pipeline.kind, fromPlan, running));
     return chip;
   }
 
@@ -1188,60 +1210,116 @@
     return append(block, [blockHead(doc, view, repo, pipeline, collapsed, view.tileCount(pipeline, session), now), panel]);
   }
 
+  // The columns of the History table, in order. A column with a sort key has a sort control.
+  var HISTORY_COLUMNS = ['outcome', 'kind', 'branch', 'repo', 'finished', 'plan', 'ship', 'total'];
+  var HISTORY_SORTABLE = { finished: true, total: true };
+
+  // One time cell of the History table: '—' when the value is unknown.
+  function historyTime(doc, view, ms) {
+    var text = ms === null ? '' : view.formatDuration(ms);
+    return el(doc, 'td', 'h-dur', text || '—');
+  }
+
   /**
-   * The History tab: `Finished runs (n)` and one table of the runs of the
-   * repos in scope, newest first. Rows do not open.
+   * The History tab: `Finished runs (n)`, a row of outcome chips that filter
+   * the table, and one table of the runs of the repos in scope. The finished
+   * and total controls sort the table: a new control starts with the largest
+   * value first, and a click on the active control flips the order. With no
+   * active control the rows show newest first. Rows do not open.
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos
    * @param {Set<string>} scope
    * @param {Date|number} now
    * @param {string} [tz] IANA time zone; the local zone when absent
+   * @param {{historyOutcome: string, historySort: {key: string, dir: string}|null}} [ui]
+   *   the page state; view.defaultUi() when absent
    * @returns {Element} section.list-panel.hist-panel
    */
-  function historyTable(doc, view, repos, scope, now, tz) {
-    var runs = [];
+  function historyTable(doc, view, repos, scope, now, tz, ui) {
+    ui = ui || view.defaultUi();
+    var outcome = ui.historyOutcome || 'all';
+    var sort = ui.historySort || null;
+    var all = [];
+    var owner = new Map();
     (repos || []).forEach(function (repo) {
       if (!view.inScope(scope, repo.root)) return;
       (repo.history || []).forEach(function (run) {
-        runs.push({ repo: repo, run: run });
+        all.push(run);
+        owner.set(run, repo);
       });
     });
-    // ISO timestamps sort in time order. Array.prototype.sort is stable.
-    runs.sort(function (a, b) {
-      var x = a.run.endedAt || '';
-      var y = b.run.endedAt || '';
-      return x < y ? 1 : x > y ? -1 : 0;
-    });
+    var runs = view.sortHistory(view.filterHistory(all, outcome), sort);
 
     var panel = el(doc, 'section', 'list-panel hist-panel');
     var heading = el(doc, 'h2', 'list-title', 'Finished runs ');
     heading.appendChild(el(doc, 'span', 'n', '(' + runs.length + ')'));
     panel.appendChild(heading);
-    if (runs.length === 0) return append(panel, [emptyState(doc, 'no-history')]);
+    if (all.length === 0) return append(panel, [emptyState(doc, 'no-history')]);
+
+    // The outcome chips: all, success, failure, partial, then any other outcome
+    // of the runs (a plan run ends with 'done'). The chosen chip stays with a
+    // count of 0 when a refresh removes its last run.
+    var counts = view.historyOutcomeCounts(all);
+    if (!Object.prototype.hasOwnProperty.call(counts, outcome)) counts[outcome] = 0;
+    var bar = el(doc, 'div', 'hist-filter chips');
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', 'Filter by outcome');
+    Object.keys(counts).forEach(function (name) {
+      var chip = el(doc, 'button', 'chip');
+      chip.setAttribute('type', 'button');
+      chip.setAttribute('data-hist-outcome', name);
+      chip.setAttribute('aria-pressed', String(name === outcome));
+      if (name !== 'all') {
+        var mark = el(doc, 'span', 'out ' + name, view.outcomeGlyph(name));
+        mark.setAttribute('aria-hidden', 'true');
+        chip.appendChild(mark);
+      }
+      append(chip, [el(doc, 'span', '', name), el(doc, 'span', 'chip-n', counts[name])]);
+      bar.appendChild(chip);
+    });
+    panel.appendChild(bar);
+    if (runs.length === 0) return append(panel, [emptyState(doc, 'no-history-outcome')]);
 
     var headRow = el(doc, 'tr', '');
-    ['outcome', 'kind', 'branch', 'repo', 'finished', 'duration'].forEach(function (name) {
-      headRow.appendChild(el(doc, 'th', '', name));
+    HISTORY_COLUMNS.forEach(function (name) {
+      if (!HISTORY_SORTABLE[name]) {
+        headRow.appendChild(el(doc, 'th', '', name));
+        return;
+      }
+      var on = !!sort && sort.key === name;
+      var th = el(doc, 'th', 'sortable');
+      th.setAttribute('aria-sort', on ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+      var button = el(doc, 'button', 'sort-btn' + (on ? ' on' : ''));
+      button.setAttribute('type', 'button');
+      button.setAttribute('data-hist-sort', name);
+      var arrow = el(doc, 'span', 'sort-arrow', on ? (sort.dir === 'asc' ? '▲' : '▼') : '↕');
+      arrow.setAttribute('aria-hidden', 'true');
+      append(button, [el(doc, 'span', '', name), arrow]);
+      th.appendChild(button);
+      headRow.appendChild(th);
     });
     var body = el(doc, 'tbody', '');
-    runs.forEach(function (item) {
-      var run = item.run;
+    runs.forEach(function (run) {
+      var repo = owner.get(run);
+      var cells = view.historyCells(run);
       var glyph = el(doc, 'span', '', view.outcomeGlyph(run.outcome));
       glyph.setAttribute('aria-hidden', 'true');
-      var outcome = append(el(doc, 'span', 'out ' + run.outcome), [glyph, el(doc, 'span', '', run.outcome)]);
-      var repoCell = el(doc, 'td', 'h-repo', item.repo.name);
-      repoCell.setAttribute('title', item.repo.root);
+      var outcomeTag = append(el(doc, 'span', 'out ' + run.outcome), [glyph, el(doc, 'span', '', run.outcome)]);
+      var repoCell = el(doc, 'td', 'h-repo', repo.name);
+      repoCell.setAttribute('title', repo.root);
       var when = el(doc, 'td', 'h-when', view.relativeWhen(run.endedAt, now, tz));
       when.setAttribute('title', run.endedAt || '');
       body.appendChild(
         append(el(doc, 'tr', ''), [
-          append(el(doc, 'td', ''), [outcome]),
+          append(el(doc, 'td', ''), [outcomeTag]),
           el(doc, 'td', 'h-kind', run.kind),
           el(doc, 'td', 'h-branch', run.branch),
           repoCell,
           when,
-          el(doc, 'td', 'h-dur', view.formatDuration(run.durationMs)),
+          historyTime(doc, view, cells.planMs),
+          historyTime(doc, view, cells.shipMs),
+          historyTime(doc, view, cells.totalMs),
         ])
       );
     });
@@ -1287,6 +1365,49 @@
     return append(detailButton(doc, 'act-row', key), [chip, main]);
   }
 
+  /**
+   * The bin button that deletes one item. Each field of ds becomes a data-*
+   * attribute, in order; the page reads them back with
+   * view.deleteKeyFromDataset.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {string} cls the class of the button, next to `archive-btn`
+   * @param {string} name the accessible name
+   * @param {string} title the tooltip
+   * @param {Object<string, string>} ds kind, repo, the key fields, and label
+   * @returns {Element|null} null when view.deleteKeyFromDataset rejects ds,
+   *   so a row with an empty key has no bin
+   */
+  function deleteButton(doc, view, cls, name, title, ds) {
+    if (!view.deleteKeyFromDataset(ds)) return null;
+    var button = el(doc, 'button', 'archive-btn ' + cls);
+    button.setAttribute('type', 'button');
+    button.setAttribute('aria-label', name);
+    button.setAttribute('title', title);
+    Object.keys(ds).forEach(function (field) {
+      button.setAttribute('data-' + field, ds[field]);
+    });
+    return button;
+  }
+
+  // An Activity row with its bin button. The row is a button that opens the
+  // detail viewer, and a button cannot hold a button, so the bin sits next to
+  // the row in div.act-item. A row with an empty key has no bin.
+  function activityItem(doc, view, row, repo, kind, item) {
+    var ds = kind === 'deferred'
+      ? { kind: 'deferred', repo: repo.root || '', id: item.id || '', label: item.id || '' }
+      : { kind: 'learning', repo: repo.root || '', date: item.date || '', heading: item.heading || '', label: item.heading || '' };
+    var del = deleteButton(
+      doc,
+      view,
+      'act-del',
+      kind === 'deferred' ? 'Delete deferred item' : 'Delete learning',
+      kind === 'deferred' ? 'Delete this deferred item for good' : 'Delete this learning for good',
+      ds
+    );
+    return append(el(doc, 'div', 'act-item'), [row, del]);
+  }
+
   function metaLine(parts) {
     return parts
       .filter(function (part) {
@@ -1296,54 +1417,97 @@
   }
 
   /**
+   * One row of filter chips. The chosen chip stays with a count of 0 when a
+   * refresh removes its last row.
+   * @param {Document} doc
+   * @param {string} cls the class of the row, next to `chips`
+   * @param {string} label the accessible name of the row
+   * @param {string} attr the data attribute that holds the chip name
+   * @param {Object<string, number>} counts chip name -> count, in chip order
+   * @param {string} chosen the chosen chip name
+   * @param {function(string): (Element|null)} mark the mark before the name of a chip
+   * @returns {Element} div.chips
+   */
+  function chipRow(doc, cls, label, attr, counts, chosen, mark) {
+    if (!Object.prototype.hasOwnProperty.call(counts, chosen)) counts[chosen] = 0;
+    var bar = el(doc, 'div', cls + ' chips');
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', label);
+    Object.keys(counts).forEach(function (name) {
+      var chip = el(doc, 'button', 'chip');
+      chip.setAttribute('type', 'button');
+      chip.setAttribute(attr, name);
+      chip.setAttribute('aria-pressed', String(name === chosen));
+      append(chip, [name === 'all' ? null : mark(name), el(doc, 'span', '', name), el(doc, 'span', 'chip-n', counts[name])]);
+      bar.appendChild(chip);
+    });
+    return bar;
+  }
+
+  /**
    * The Activity tab: `Open deferred (n)` first, then `Learnings today (n)`,
-   * both over the repos in scope. Each row is a button with a data-detail
-   * key (view.detailKey) that opens the item in the detail viewer.
+   * both over the repos in scope. A row of priority chips (all, high,
+   * medium, low) filters the deferred list; the row is hidden when no
+   * deferred item is in scope. Each row is a button with a data-detail key
+   * (view.detailKey) that opens the item in the detail viewer, in a
+   * div.act-item next to its bin button (deleteButton).
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos
    * @param {Set<string>} scope
+   * @param {{deferredPriority: string}} [ui] the page state; view.defaultUi() when absent
    * @returns {Element} div.act-grid
    */
-  function activityPanel(doc, view, repos, scope) {
+  function activityPanel(doc, view, repos, scope, ui) {
+    ui = ui || view.defaultUi();
+    var priority = ui.deferredPriority || 'all';
+    var allDeferred = [];
     var deferred = [];
     var learnings = [];
     (repos || []).forEach(function (repo) {
       if (!view.inScope(scope, repo.root)) return;
       (repo.deferred || []).forEach(function (item) {
-        deferred.push(
-          activityRow(
-            doc,
-            view,
-            el(doc, 'span', 'sev sev-' + item.priority, item.priority),
-            item.description,
-            metaLine([repo.name, item.id]),
-            view.detailKey('deferred', item)
-          )
+        allDeferred.push(item);
+        if (priority !== 'all' && item.priority !== priority) return;
+        var deferredRow = activityRow(
+          doc,
+          view,
+          el(doc, 'span', 'sev sev-' + item.priority, item.priority),
+          item.description,
+          metaLine([repo.name, item.id]),
+          view.detailKey('deferred', item)
         );
+        deferred.push(activityItem(doc, view, deferredRow, repo, 'deferred', item));
       });
       (repo.learnings || []).forEach(function (item) {
-        learnings.push(
-          activityRow(
-            doc,
-            view,
-            el(doc, 'span', 'sev', 'learning'),
-            item.heading,
-            metaLine([repo.name, item.branch]),
-            view.detailKey('learning', item)
-          )
+        var learningRow = activityRow(
+          doc,
+          view,
+          el(doc, 'span', 'sev', 'learning'),
+          item.heading,
+          metaLine([repo.name, item.branch]),
+          view.detailKey('learning', item)
         );
+        learnings.push(activityItem(doc, view, learningRow, repo, 'learning', item));
       });
     });
 
     var deferredPanel = listPanel(doc, 'Open deferred', deferred.length);
+    if (allDeferred.length > 0) {
+      deferredPanel.appendChild(
+        chipRow(doc, 'act-filter', 'Filter deferred items by priority', 'data-act-priority',
+          view.priorityCounts(allDeferred), priority, function (name) {
+            return el(doc, 'span', 'chip-dot sev-' + name);
+          })
+      );
+    }
     if (deferred.length > 0) {
       deferredPanel.appendChild(append(el(doc, 'div', 'list'), deferred));
       var hint = el(doc, 'p', 'hint', 'Triage these with ');
       hint.appendChild(el(doc, 'code', '', '/sdlc:deferred'));
       deferredPanel.appendChild(hint);
     } else {
-      deferredPanel.appendChild(emptyState(doc, 'no-deferred'));
+      deferredPanel.appendChild(emptyState(doc, allDeferred.length > 0 ? 'no-deferred-priority' : 'no-deferred'));
     }
 
     var learningsPanel = listPanel(doc, 'Learnings today', learnings.length);
@@ -1352,6 +1516,106 @@
     );
 
     return append(el(doc, 'div', 'act-grid'), [deferredPanel, learningsPanel]);
+  }
+
+  // The class and glyph of each preplan status, and of a status outside
+  // view.PREPLAN_STATUSES (unknown).
+  var PREPLAN_MARKS = {
+    'in progress': { cls: 'pp-progress', glyph: '◐' },
+    'ready for plan': { cls: 'pp-ready', glyph: '●' },
+    paused: { cls: 'pp-paused', glyph: '‖' },
+    unknown: { cls: 'pp-unknown', glyph: '?' },
+  };
+
+  // The status mark of a chip; a chip name outside PREPLAN_MARKS gets the unknown mark.
+  function preplanMark(doc, status) {
+    var m = PREPLAN_MARKS[status] || PREPLAN_MARKS.unknown;
+    var mark = el(doc, 'span', 'pp-status ' + m.cls, m.glyph);
+    mark.setAttribute('aria-hidden', 'true');
+    return mark;
+  }
+
+  /**
+   * The Preplans tab: `Preplans (n)`, one repo-warning line for each warning
+   * of a repo in scope, a row of status chips that filter the table, then one
+   * row for each topic file, newest change first. A status outside
+   * view.PREPLAN_STATUSES shows as unknown. The unknown chip always shows,
+   * even when its count is 0.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {Array} repos
+   * @param {Set<string>} scope
+   * @param {{preplanStatus: string}} [ui] the page state; view.defaultUi() when absent
+   * @returns {Element} section.list-panel.hist-panel.pp-panel
+   */
+  function preplanPanel(doc, view, repos, scope, ui) {
+    ui = ui || view.defaultUi();
+    var status = ui.preplanStatus || 'all';
+    var all = view.preplanItems(repos, scope);
+    var items = all.filter(function (item) {
+      return status === 'all' || view.preplanStatus(item.status) === status;
+    });
+
+    var panel = el(doc, 'section', 'list-panel hist-panel pp-panel');
+    var heading = el(doc, 'h2', 'list-title', 'Preplans ');
+    heading.appendChild(el(doc, 'span', 'n', '(' + items.length + ')'));
+    panel.appendChild(heading);
+    (repos || []).forEach(function (repo) {
+      if (!view.inScope(scope, repo.root)) return;
+      (repo.warnings || []).forEach(function (w) {
+        panel.appendChild(emptyState(doc, 'repo-warning', { name: repo.name, warning: w }));
+      });
+    });
+    if (all.length === 0) return append(panel, [emptyState(doc, 'no-preplans')]);
+
+    var counts = view.preplanStatusCounts(all);
+    panel.appendChild(
+      chipRow(doc, 'pp-filter', 'Filter by status', 'data-pp-status', counts, status, function (name) {
+        return preplanMark(doc, name);
+      })
+    );
+    if (items.length === 0) return append(panel, [emptyState(doc, 'no-preplans-status')]);
+
+    var headRow = el(doc, 'tr', '');
+    // The last column holds the bin button and has no name.
+    ['status', 'topic', 'repo', 'updated', ''].forEach(function (name) {
+      headRow.appendChild(el(doc, 'th', '', name));
+    });
+    var body = el(doc, 'tbody', '');
+    items.forEach(function (item) {
+      var remove = deleteButton(doc, view, 'pp-remove', 'Delete preplan', 'Delete this preplan and its topic file', {
+        kind: 'preplan',
+        repo: item.repo.root || '',
+        slug: item.slug,
+        path: item.path,
+        status: item.status,
+        label: item.topic || item.slug,
+      });
+      var label = view.preplanStatus(item.status);
+      var m = PREPLAN_MARKS[label];
+      var glyph = el(doc, 'span', '', m.glyph);
+      glyph.setAttribute('aria-hidden', 'true');
+      var tag = append(el(doc, 'span', 'pp-status ' + m.cls), [glyph, el(doc, 'span', '', label)]);
+      var topic = append(el(doc, 'td', 'pp-topic'), [
+        el(doc, 'div', 'pp-name', item.topic || item.slug),
+        el(doc, 'div', 'pp-path', item.path),
+      ]);
+      var repoCell = el(doc, 'td', 'h-repo', item.repo.name);
+      repoCell.setAttribute('title', item.repo.root);
+      var when = el(doc, 'td', 'h-when', view.dateLabel(item.updatedAt));
+      when.setAttribute('title', item.updatedAt);
+      body.appendChild(
+        append(el(doc, 'tr', ''), [
+          append(el(doc, 'td', ''), [tag]),
+          topic,
+          repoCell,
+          when,
+          append(el(doc, 'td', 'pp-act'), [remove]),
+        ])
+      );
+    });
+    var table = append(el(doc, 'table', 'hist pp'), [append(el(doc, 'thead', ''), [headRow]), body]);
+    return append(panel, [table]);
   }
 
   /**
@@ -1385,15 +1649,17 @@
   /**
    * One empty-state line.
    * @param {Document} doc
-   * @param {string} kind no-pipelines | none-in-scope | repo-error | no-deferred | no-learnings | no-history
-   * @param {string|{name: string, error: string}} [detail] the text for no-pipelines
-   *   (view.emptyText), the repo for repo-error; other kinds ignore it
+   * @param {string} kind no-pipelines | none-in-scope | repo-error | repo-warning | no-deferred |
+   *   no-deferred-priority | no-learnings | no-history | no-history-outcome | no-preplans | no-preplans-status
+   * @param {string|{name: string, error?: string, warning?: string}} [detail] the text for no-pipelines
+   *   (view.emptyText), the repo for repo-error, {name, warning} for repo-warning; other kinds ignore it
    * @returns {Element} p.generic-line with data-empty set to kind
    */
   function emptyState(doc, kind, detail) {
     var text = EMPTY_TEXTS[kind] || '';
     if (kind === 'no-pipelines') text = detail || '';
     if (kind === 'repo-error') text = 'Cannot read ' + ((detail && detail.name) || '') + ': ' + ((detail && detail.error) || '');
+    if (kind === 'repo-warning') text = 'Warning for ' + ((detail && detail.name) || '') + ': ' + ((detail && detail.warning) || '');
     var line = el(doc, 'p', 'generic-line', text);
     line.setAttribute('data-empty', kind);
     return line;
@@ -1411,6 +1677,7 @@
     pipelineBlock: pipelineBlock,
     headerTotals: headerTotals,
     activityPanel: activityPanel,
+    preplanPanel: preplanPanel,
     emptyState: emptyState,
     TILE_BODIES: TILE_BODIES,
     stepTile: stepTile,
@@ -1429,6 +1696,7 @@
     issuesTile: issuesTile,
     sessionTile: sessionTile,
     historyTable: historyTable,
+    durationTitle: durationTitle,
   };
 
   if (typeof module === 'object' && module.exports) {
