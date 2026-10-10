@@ -56,6 +56,9 @@
     info: 'rail',
   };
 
+  // Rank of a severity, highest first. An unknown severity comes after info.
+  var SEVERITY_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
   var OUTCOME_GLYPHS = { success: '✓', failure: '✕', partial: '◐' };
 
   var EMPTY_TEXT = 'Nothing is running. Start /sdlc:ship in any repo and it shows here.';
@@ -356,6 +359,21 @@
   }
 
   /**
+   * Counts of the fixes of a received-review step, by status.
+   * @param {Array<{status: string}>} [items]
+   * @returns {{total: number, fixed: number, fixing: number, queued: number, failed: number, deferred: number}}
+   */
+  function fixCounts(items) {
+    var counts = { total: 0, fixed: 0, fixing: 0, queued: 0, failed: 0, deferred: 0 };
+    (items || []).forEach(function (item) {
+      if (!item) return;
+      counts.total++;
+      if (Object.prototype.hasOwnProperty.call(counts, item.status)) counts[item.status]++;
+    });
+    return counts;
+  }
+
+  /**
    * One-line summary of a step section. Queued tasks (planned, wave not
    * started) count in the task total; with no wave at all the summary is
    * the queued count. A dimensions section counts done dimensions against
@@ -401,6 +419,10 @@
         var n = (d.findings || []).length;
         return n === 0 ? 'no findings' : plural(n, 'finding', 'findings');
       }
+      case 'fixes': {
+        var fixes = fixCounts(d.fixes);
+        return fixes.fixed + '/' + fixes.total + ' fixed' + (fixes.fixing > 0 ? ' · ' + fixes.fixing + ' fixing' : '');
+      }
       case 'guardrails':
         return plural((d.guardrails && d.guardrails.total) || 0, 'guardrail', 'guardrails');
       case 'result':
@@ -421,7 +443,57 @@
   function isWideSection(detail) {
     if (!detail) return false;
     if (detail.kind === 'waves') return true;
-    return detail.kind === 'explorers' || detail.kind === 'rounds';
+    return detail.kind === 'explorers' || detail.kind === 'rounds' || detail.kind === 'fixes' || detail.kind === 'dimensions';
+  }
+
+  /**
+   * How many columns of at least `minColumn` px fit in `width` px.
+   * @param {number} width
+   * @param {number} minColumn
+   * @param {number} gap
+   * @returns {number} 1 or more
+   */
+  function columnCount(width, minColumn, gap) {
+    if (!(width > 0)) return 1;
+    return Math.max(1, Math.floor((width + gap) / (minColumn + gap)));
+  }
+
+  /**
+   * Splits cards into `count` columns of near equal height: the tallest card
+   * goes first, and each card goes to the shortest column. Inside a column the
+   * cards keep their source order.
+   * @param {Array<number>} heights card heights, gap included
+   * @param {number} count
+   * @returns {Array<Array<number>>} the card indexes of each column
+   */
+  function balanceColumns(heights, count) {
+    var columns = [];
+    var sums = [];
+    for (var c = 0; c < count; c++) {
+      columns.push([]);
+      sums.push(0);
+    }
+    var order = heights
+      .map(function (h, i) {
+        return i;
+      })
+      .sort(function (a, b) {
+        return heights[b] - heights[a] || a - b;
+      });
+    order.forEach(function (i) {
+      var shortest = 0;
+      for (var k = 1; k < count; k++) {
+        if (sums[k] < sums[shortest]) shortest = k;
+      }
+      columns[shortest].push(i);
+      sums[shortest] += heights[i];
+    });
+    columns.forEach(function (column) {
+      column.sort(function (a, b) {
+        return a - b;
+      });
+    });
+    return columns;
   }
 
   function firstIndex(steps, match) {
@@ -620,6 +692,29 @@
    */
   function severityTone(sev) {
     return SEVERITY_TONES[sev] || 'rail';
+  }
+
+  /**
+   * The order to show a list of items with a severity: highest first. Items
+   * with the same severity keep the order of the list. The result holds the
+   * positions in the list, not the items, because the detail key of a row
+   * uses the position in the list.
+   * @param {Array<{severity?: string}>} items
+   * @returns {Array<number>} positions in items, highest severity first
+   */
+  function severityOrder(items) {
+    var list = items || [];
+    var rank = function (i) {
+      var sev = list[i] && list[i].severity;
+      return Object.prototype.hasOwnProperty.call(SEVERITY_RANK, sev) ? SEVERITY_RANK[sev] : 5;
+    };
+    var order = list.map(function (_, i) {
+      return i;
+    });
+    order.sort(function (a, b) {
+      return rank(a) - rank(b) || a - b;
+    });
+    return order;
   }
 
   /**
@@ -1192,6 +1287,8 @@
     sectionKind: sectionKind,
     sectionMeta: sectionMeta,
     isWideSection: isWideSection,
+    columnCount: columnCount,
+    balanceColumns: balanceColumns,
     defaultStationIndex: defaultStationIndex,
     tileCount: tileCount,
     compareStartedDesc: compareStartedDesc,
@@ -1214,6 +1311,8 @@
     issueLocation: issueLocation,
     outcomeGlyph: outcomeGlyph,
     formatDuration: formatDuration,
+    fixCounts: fixCounts,
+    severityOrder: severityOrder,
     formatElapsed: formatElapsed,
     relativeWhen: relativeWhen,
     clockLabel: clockLabel,

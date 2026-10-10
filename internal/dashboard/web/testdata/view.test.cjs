@@ -187,6 +187,127 @@ describe('page logic exports', () => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
+
+  test('view.js exports the card layout, severity order, and fix count helpers', () => {
+    ['severityOrder', 'fixCounts', 'columnCount', 'balanceColumns', 'isWideSection', 'sectionMeta'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+  });
+});
+
+describe('severityOrder', () => {
+  test('puts the highest severity first, and an unknown severity after info', () => {
+    assert.deepEqual(
+      view.severityOrder([{ severity: 'low' }, { severity: 'critical' }, { severity: 'x' }, { severity: 'low' }]),
+      [1, 0, 3, 2]
+    );
+    assert.deepEqual(
+      view.severityOrder([{ severity: 'x' }, { severity: 'info' }, { severity: 'medium' }, { severity: 'high' }]),
+      [3, 2, 1, 0]
+    );
+  });
+
+  test('items with the same severity keep their list order', () => {
+    assert.deepEqual(view.severityOrder([{ severity: 'high' }, { severity: 'high' }, { severity: 'high' }]), [0, 1, 2]);
+  });
+
+  test('an empty or missing list gives an empty order', () => {
+    assert.deepEqual(view.severityOrder([]), []);
+    assert.deepEqual(view.severityOrder(undefined), []);
+    assert.deepEqual(view.severityOrder(null), []);
+  });
+
+  test('a null item or a missing severity ranks as unknown', () => {
+    assert.deepEqual(view.severityOrder([null, {}, { severity: 'info' }]), [2, 0, 1]);
+  });
+});
+
+describe('fixCounts', () => {
+  test('counts each status and the total', () => {
+    assert.deepEqual(view.fixCounts([{ status: 'fixed' }, { status: 'fixing' }, { status: 'queued' }]), {
+      total: 3, fixed: 1, fixing: 1, queued: 1, failed: 0, deferred: 0,
+    });
+    assert.deepEqual(view.fixCounts([{ status: 'failed' }, { status: 'deferred' }, { status: 'fixed' }, { status: 'fixed' }]), {
+      total: 4, fixed: 2, fixing: 0, queued: 0, failed: 1, deferred: 1,
+    });
+  });
+
+  test('an unknown status counts in the total only', () => {
+    assert.deepEqual(view.fixCounts([{ status: 'weird' }, { status: 'fixed' }]), {
+      total: 2, fixed: 1, fixing: 0, queued: 0, failed: 0, deferred: 0,
+    });
+  });
+
+  test('a null item is skipped and does not count', () => {
+    assert.deepEqual(view.fixCounts([null, { status: 'fixed' }, undefined]), {
+      total: 1, fixed: 1, fixing: 0, queued: 0, failed: 0, deferred: 0,
+    });
+  });
+
+  test('an empty or missing list gives all zeros', () => {
+    const zeros = { total: 0, fixed: 0, fixing: 0, queued: 0, failed: 0, deferred: 0 };
+    assert.deepEqual(view.fixCounts([]), zeros);
+    assert.deepEqual(view.fixCounts(undefined), zeros);
+  });
+});
+
+describe('columnCount', () => {
+  test('a zero, negative, or missing width gives 1 column', () => {
+    assert.equal(view.columnCount(0, 360, 12), 1);
+    assert.equal(view.columnCount(-5, 360, 12), 1);
+    assert.equal(view.columnCount(undefined, 360, 12), 1);
+    assert.equal(view.columnCount(NaN, 360, 12), 1);
+  });
+
+  test('gives the number of columns of at least the minimum width that fit', () => {
+    assert.equal(view.columnCount(1104, 360, 12), 3);
+    assert.equal(view.columnCount(732, 360, 12), 2);
+    assert.equal(view.columnCount(731, 360, 12), 1);
+    assert.equal(view.columnCount(200, 360, 12), 1);
+  });
+});
+
+describe('balanceColumns', () => {
+  test('puts the tallest card first and each card in the shortest column', () => {
+    assert.deepEqual(view.balanceColumns([100, 300, 200], 2), [[1], [0, 2]]);
+  });
+
+  test('cards keep their source order inside a column', () => {
+    assert.deepEqual(view.balanceColumns([50, 50, 50, 50], 2), [[0, 2], [1, 3]]);
+    assert.deepEqual(view.balanceColumns([10, 400, 10, 10, 10], 2), [[1], [0, 2, 3, 4]]);
+  });
+
+  test('one column holds every card in source order', () => {
+    assert.deepEqual(view.balanceColumns([30, 10, 20], 1), [[0, 1, 2]]);
+  });
+
+  test('more columns than cards leaves the extra columns empty', () => {
+    assert.deepEqual(view.balanceColumns([10, 20], 3), [[1], [0], []]);
+  });
+
+  test('no cards gives empty columns', () => {
+    assert.deepEqual(view.balanceColumns([], 2), [[], []]);
+  });
+});
+
+describe('fixes tile', () => {
+  test('isWideSection is true for a fixes detail', () => {
+    assert.equal(view.isWideSection({ kind: 'fixes' }), true);
+  });
+
+  test('sectionMeta counts the fixed fixes, and names the fixing ones', () => {
+    const detail = { kind: 'fixes', fixes: [{ status: 'fixed' }, { status: 'fixing' }] };
+    assert.equal(view.sectionMeta({ name: 'received-review', detail }), '1/2 fixed · 1 fixing');
+  });
+
+  test('sectionMeta omits the fixing part when no fix is running', () => {
+    const detail = { kind: 'fixes', fixes: [{ status: 'fixed' }, { status: 'queued' }, { status: 'deferred' }] };
+    assert.equal(view.sectionMeta({ name: 'received-review', detail }), '1/3 fixed');
+  });
+
+  test('sectionMeta of a fixes detail without fixes is 0/0 fixed', () => {
+    assert.equal(view.sectionMeta({ name: 'received-review', detail: { kind: 'fixes' } }), '0/0 fixed');
+  });
 });
 
 describe('defaultCollapsed', () => {
@@ -356,15 +477,15 @@ describe('isWideSection', () => {
     assert.equal(view.isWideSection({ kind: 'waves', waves: [{}, {}, {}] }), true);
   });
 
-  test('explorers and rounds are wide', () => {
+  test('explorers, rounds, and dimensions are wide', () => {
     assert.equal(view.isWideSection({ kind: 'explorers' }), true);
     assert.equal(view.isWideSection({ kind: 'rounds' }), true);
+    assert.equal(view.isWideSection({ kind: 'dimensions' }), true);
   });
 
-  test('a missing detail, dimensions, and findings are not wide', () => {
+  test('a missing detail and findings are not wide', () => {
     assert.equal(view.isWideSection(null), false);
     assert.equal(view.isWideSection(undefined), false);
-    assert.equal(view.isWideSection({ kind: 'dimensions' }), false);
     assert.equal(view.isWideSection({ kind: 'findings' }), false);
     assert.equal(view.isWideSection({ kind: 'guardrails' }), false);
     assert.equal(view.isWideSection({ kind: 'result' }), false);
@@ -2615,7 +2736,7 @@ describe('render stepTile and stepTiles', () => {
     assert.equal(render.stepTile(fakeDoc(), view, pipeline(), one, 0, true, false).className, 'step-sec wide');
     assert.equal(render.stepTile(fakeDoc(), view, pipeline(), two, 0, true, true).className, 'step-sec wide selected');
     const dims = { name: 'review', status: 'completed', detail: { kind: 'dimensions', dimensions: [] } };
-    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), dims, 0, true, false).className, 'step-sec');
+    assert.equal(render.stepTile(fakeDoc(), view, pipeline(), dims, 0, true, false).className, 'step-sec wide');
     const rounds = { name: 'review', status: 'completed', detail: { kind: 'rounds', rounds: [], maxRounds: 5 } };
     assert.equal(render.stepTile(fakeDoc(), view, pipeline(), rounds, 0, true, false).className, 'step-sec wide');
   });

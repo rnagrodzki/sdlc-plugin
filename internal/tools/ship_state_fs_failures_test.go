@@ -70,6 +70,7 @@ func TestShipState_ReadOnlyStateDir_WriteFailures(t *testing.T) {
 		{Action: "decide", Step: "execute", Detail: map[string]any{"text": "go"}},
 		{Action: "defer", Detail: map[string]any{"severity": "low", "file": "a.go", "title": "t"}},
 		{Action: "healing_record", Detail: healingFixedDetail(nil)},
+		{Action: "healing_record", Detail: healingFixProgressDetail(nil)},
 		{Action: "cleanup"},
 		{Action: "cleanup-pipeline"},
 	}

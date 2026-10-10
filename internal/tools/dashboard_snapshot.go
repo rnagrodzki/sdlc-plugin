@@ -116,9 +116,11 @@ type DashboardProgress struct {
 // DashboardStep is one step of a pipeline. Status is one of the Step*
 // constants.
 type DashboardStep struct {
-	Name   string               `json:"name"`
-	Status string               `json:"status"`
-	Detail *DashboardStepDetail `json:"detail,omitempty"`
+	Name        string               `json:"name"`
+	Status      string               `json:"status"`
+	StartedAt   string               `json:"startedAt,omitempty"`   // RFC 3339, copied when it parses
+	CompletedAt string               `json:"completedAt,omitempty"` // absent while the step runs
+	Detail      *DashboardStepDetail `json:"detail,omitempty"`
 }
 
 // DashboardIssue is one problem of a pipeline. Source is "step", "wave",
@@ -635,7 +637,9 @@ func dashboardShip(p *DashboardPipeline, data map[string]any) {
 			continue
 		}
 		name, status := dashboardStr(s["name"]), dashboardStr(s["status"])
-		step := DashboardStep{Name: name, Status: status}
+		step := DashboardStep{Name: name, Status: status,
+			StartedAt:   dashboardStepTime(dashboardStr(s["startedAt"])),
+			CompletedAt: dashboardStepTime(dashboardStr(s["completedAt"]))}
 		result := dashboardStr(s["result"]) // ship_state stores step["result"] on complete-step
 		if name == shipCommitStep && status == StepCompleted && strings.HasPrefix(result, commitNothingPrefix) {
 			step.Detail = &DashboardStepDetail{Kind: dashboardKindResult, Result: result}
@@ -707,7 +711,9 @@ func dashboardExecute(p *DashboardPipeline, st *state.State) time.Time {
 			anyInProgress = true
 			p.Progress.Current = name
 		}
-		p.Steps = append(p.Steps, DashboardStep{Name: name, Status: stepStatus})
+		p.Steps = append(p.Steps, DashboardStep{Name: name, Status: stepStatus,
+			StartedAt:   dashboardStepTime(dashboardStr(w["startedAt"])),
+			CompletedAt: dashboardStepTime(dashboardStr(w["completedAt"]))})
 
 		if runID := dashboardStr(w["runId"]); runID != "" && !seenRuns[runID] {
 			seenRuns[runID] = true
@@ -992,6 +998,15 @@ func dashboardParseTime(s string) (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return t, true
+}
+
+// dashboardStepTime returns s when dashboardParseTime accepts it, else "".
+// The snapshot never carries a step time that the page cannot read.
+func dashboardStepTime(s string) string {
+	if _, ok := dashboardParseTime(s); !ok {
+		return ""
+	}
+	return s
 }
 
 // dashboardFormatTime formats t as RFC 3339 UTC, or "" for the zero time.

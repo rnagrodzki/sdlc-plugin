@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -4677,6 +4679,333 @@ func healingHardenedDetail(overrides map[string]any) map[string]any {
 	return d
 }
 
+func healingFixProgressDetail(overrides map[string]any) map[string]any {
+	d := healingFixedDetail(map[string]any{"kind": "fix-progress", "status": "queued"})
+	for k, v := range overrides {
+		d[k] = v
+	}
+	return d
+}
+
+// fixProgressCall runs one fix-progress healing_record call on branch at the
+// time at and returns the full response.
+func fixProgressCall(t *testing.T, dir, branch string, at time.Time, overrides map[string]any) ShipHealingRecordOut {
+	t.Helper()
+	d := healingFixProgressDetail(overrides)
+	d["branch"] = branch
+	out, err := shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d}, fixedNow(at))
+	if err != nil {
+		t.Fatalf("healing_record fix-progress %v: %v", overrides, err)
+	}
+	n, ok := out.(ShipHealingRecordOut)
+	if !ok {
+		t.Fatalf("healing_record output = %T, want ShipHealingRecordOut", out)
+	}
+	return n
+}
+
+// seedFixProgress sets data.healing.fixProgress in the state file to v.
+func seedFixProgress(t *testing.T, path string, v any) {
+	t.Helper()
+	data := readStateData(t, path)
+	data["healing"] = map[string]any{"fixProgress": v}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// wantFixNext checks the next field of a fix-progress response.
+func wantFixNext(t *testing.T, out ShipHealingRecordOut, instruction string) {
+	t.Helper()
+	if out.Next == nil {
+		t.Fatalf("next = nil, want id %q instruction %q", "continue-fix-pass", instruction)
+	}
+	if out.Next.ID != "continue-fix-pass" || out.Next.Instruction != instruction {
+		t.Errorf("next = %+v, want id %q instruction %q", *out.Next, "continue-fix-pass", instruction)
+	}
+}
+
+// TestShipStateHealingRecord_FixProgressTransitions walks the upsert rows of
+// the fix-progress decisions table: new key, new status, same status, and
+// deferred over failed.
+func TestShipStateHealingRecord_FixProgressTransitions(t *testing.T) {
+	t1 := time.Date(2026, 10, 10, 10, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 10, 10, 10, 2, 13, 0, time.UTC)
+	cases := []struct {
+		name        string
+		stored      string // "" = no stored record
+		incoming    string
+		wantStatus  string
+		wantWritten bool
+		wantNarr    string
+		wantNext    string
+	}{
+		{"new key", "", "fixing", "fixing", true, ": recorded", "Status stored. Continue the fix pass."},
+		{"new status", "queued", "fixing", "fixing", true, ": recorded", "Status stored. Continue the fix pass."},
+		{"same status", "fixing", "fixing", "fixing", false, ": already recorded — no change", "No change needed. Continue the fix pass."},
+		{"deferred over failed", "failed", "deferred", "failed", false, ": kept failed", "The fix keeps status failed. Continue the fix pass."},
+		{"failed over deferred", "deferred", "failed", "failed", true, ": recorded", "Status stored. Continue the fix pass."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "feat/heal-fix-progress"
+			dir, path := deferFixture(t, branch)
+			// A record with another key stays untouched in every case.
+			fixProgressCall(t, dir, branch, t1, map[string]any{"title": "other finding", "status": "queued"})
+			if tc.stored != "" {
+				fixProgressCall(t, dir, branch, t1, map[string]any{"status": tc.stored, "severity": "low"})
+			}
+			out := fixProgressCall(t, dir, branch, t2, map[string]any{"status": tc.incoming})
+			if !strings.HasSuffix(out.Summary, tc.wantNarr) {
+				t.Errorf("summary = %q, want suffix %q", out.Summary, tc.wantNarr)
+			}
+			if out.Kind != "fix-progress" || out.Written != tc.wantWritten {
+				t.Errorf("kind=%q written=%v, want fix-progress/%v", out.Kind, out.Written, tc.wantWritten)
+			}
+			wantFixNext(t, out, tc.wantNext)
+
+			progress, _ := healingData(t, path)["fixProgress"].([]any)
+			if len(progress) != 2 {
+				t.Fatalf("fixProgress has %d records, want 2: %v", len(progress), progress)
+			}
+			other, _ := progress[0].(map[string]any)
+			if other["title"] != "other finding" || other["status"] != "queued" {
+				t.Errorf("unrelated record = %v, want title %q status queued", other, "other finding")
+			}
+			rec, _ := progress[1].(map[string]any)
+			if rec["status"] != tc.wantStatus {
+				t.Errorf("stored status = %v, want %s", rec["status"], tc.wantStatus)
+			}
+			wantFirst, wantUpdated, wantSeverity := t1.Format(time.RFC3339), t2.Format(time.RFC3339), "high"
+			switch {
+			case tc.stored == "":
+				wantFirst = t2.Format(time.RFC3339)
+			case !tc.wantWritten:
+				wantUpdated, wantSeverity = t1.Format(time.RFC3339), "low"
+			}
+			if rec["firstAt"] != wantFirst || rec["updatedAt"] != wantUpdated || rec["severity"] != wantSeverity {
+				t.Errorf("record = %v, want firstAt %s updatedAt %s severity %s", rec, wantFirst, wantUpdated, wantSeverity)
+			}
+			if tc.wantWritten && !reflect.DeepEqual(out.Record, map[string]any{
+				"origin": "local-review", "severity": "high", "file": "a.go", "line": 42,
+				"title": "unchecked error", "status": tc.incoming, "firstAt": wantFirst, "updatedAt": wantUpdated,
+			}) {
+				t.Errorf("echoed record = %#v, want the record as persisted", out.Record)
+			}
+		})
+	}
+}
+
+// TestShipStateHealingRecord_FixProgressCap pins the 200-record cap: a new key
+// is rejected, an existing key still updates, and an entry that is not an
+// object is kept as it is and counts toward the cap.
+func TestShipStateHealingRecord_FixProgressCap(t *testing.T) {
+	branch := "feat/heal-fix-cap"
+	dir, path := deferFixture(t, branch)
+	seeded := []any{"not an object"}
+	for i := 1; len(seeded) < healingFixProgressMax; i++ {
+		seeded = append(seeded, map[string]any{
+			"origin": "local-review", "severity": "low", "file": "a.go", "line": float64(i),
+			"title": "unchecked error", "status": "queued",
+			"firstAt": "2026-10-10T09:00:00Z", "updatedAt": "2026-10-10T09:00:00Z",
+		})
+	}
+	seedFixProgress(t, path, seeded)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := healingFixProgressDetail(map[string]any{"branch": branch, "line": float64(9999)})
+	_, err = shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d}, fixedNow(time.Now()))
+	if !isDomainError(err) {
+		t.Fatalf("error = %v (%T), want DomainError", err, err)
+	}
+	if want := "healing_record: data.healing.fixProgress holds 200 records — the cap for one run"; err.Error() != want {
+		t.Errorf("message = %q, want %q", err.Error(), want)
+	}
+	if want := "Do not retry. Continue the fix pass without more fix-progress calls for this run."; suggestionOf(err) != want {
+		t.Errorf("suggestion = %q, want %q", suggestionOf(err), want)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("state file changed although the call was rejected")
+	}
+
+	// An existing key at the cap still updates.
+	out := fixProgressCall(t, dir, branch, time.Date(2026, 10, 10, 10, 0, 0, 0, time.UTC),
+		map[string]any{"line": float64(1), "status": "fixed"})
+	if !out.Written {
+		t.Fatalf("update at the cap: written = false, want true (%s)", out.Summary)
+	}
+	progress, _ := healingData(t, path)["fixProgress"].([]any)
+	if len(progress) != healingFixProgressMax {
+		t.Fatalf("fixProgress has %d records, want %d", len(progress), healingFixProgressMax)
+	}
+	if progress[0] != "not an object" {
+		t.Errorf("non-object entry = %#v, want it kept unchanged", progress[0])
+	}
+	if rec, _ := progress[1].(map[string]any); rec["status"] != "fixed" || rec["firstAt"] != "2026-10-10T09:00:00Z" {
+		t.Errorf("updated record = %v, want status fixed and the stored firstAt", rec)
+	}
+}
+
+// TestShipStateHealingRecord_FixProgressNotAList pins the DataError for a
+// damaged data.healing.fixProgress: nothing is written.
+func TestShipStateHealingRecord_FixProgressNotAList(t *testing.T) {
+	branch := "feat/heal-fix-damaged"
+	dir, path := deferFixture(t, branch)
+	seedFixProgress(t, path, "oops")
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := healingFixProgressDetail(map[string]any{"branch": branch})
+	_, err = shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d}, fixedNow(time.Now()))
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) {
+		t.Fatalf("error = %v (%T), want DataError", err, err)
+	}
+	if want := "healing_record: data.healing.fixProgress is not a list — the ship state is damaged"; de.Msg != want {
+		t.Errorf("message = %q, want %q", de.Msg, want)
+	}
+	if want := "Do not retry. Continue the fix pass without fix-progress calls. Tell the user that the ship state file is damaged."; de.Suggestion != want {
+		t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("state file changed although the call failed")
+	}
+}
+
+// TestShipStateHealingRecord_FixProgressNull pins that a stored null is not a
+// list either: the call fails with the same DataError and writes nothing.
+func TestShipStateHealingRecord_FixProgressNull(t *testing.T) {
+	branch := "feat/heal-fix-null"
+	dir, path := deferFixture(t, branch)
+	seedFixProgress(t, path, nil)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := healingFixProgressDetail(map[string]any{"branch": branch})
+	_, err = shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d}, fixedNow(time.Now()))
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) {
+		t.Fatalf("error = %v (%T), want DataError", err, err)
+	}
+	if de.Suggestion == "" {
+		t.Error("DataError has no Suggestion")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("state file changed although the call failed")
+	}
+}
+
+// TestShipStateHealingRecord_FixProgressNoLiveRun pins that fix-progress
+// writes nothing without a live run and tells the fix pass to stop calling.
+func TestShipStateHealingRecord_FixProgressNoLiveRun(t *testing.T) {
+	const want = "No live ship run, so the status is not stored. Continue without fix-progress calls."
+
+	t.Run("no ship state", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+		checkoutBranch(t, dir, "feat/heal-fix-none")
+		out := fixProgressCall(t, dir, "feat/heal-fix-none", time.Now(), nil)
+		if out.Written || !strings.HasSuffix(out.Summary, healingNarrNoLiveRun) {
+			t.Errorf("written=%v summary=%q, want false and the no-live-run narration", out.Written, out.Summary)
+		}
+		wantFixNext(t, out, want)
+		if st, err := state.Find(dir, "ship", "feat/heal-fix-none"); err != nil || st != nil {
+			t.Errorf("state.Find = %v, %v — want no ship state created", st, err)
+		}
+	})
+
+	t.Run("pipelineCompletedAt set", func(t *testing.T) {
+		branch := "feat/heal-fix-done"
+		dir, path := deferFixture(t, branch)
+		data := readStateData(t, path)
+		data["pipelineCompletedAt"] = "2026-10-10T00:00:00Z"
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, raw, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		out := fixProgressCall(t, dir, branch, time.Now(), nil)
+		if out.Written {
+			t.Error("written = true, want false for a completed run")
+		}
+		wantFixNext(t, out, want)
+		after, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(raw, after) {
+			t.Error("state file changed — a completed run must not be written")
+		}
+	})
+}
+
+// TestShipStateHealingRecord_FixProgressLeavesFixed pins that fix-progress
+// writes change neither data.healing.fixed nor reportData.reviewLedger.fixed.
+func TestShipStateHealingRecord_FixProgressLeavesFixed(t *testing.T) {
+	branch := "feat/heal-fix-ledger"
+	dir, path := deferFixture(t, branch)
+	healingCall(t, dir, branch, map[string]any{"kind": "review-total", "total": float64(4), "dimensions": float64(2)})
+	healingCall(t, dir, branch, healingFixedDetail(nil))
+	fixedBefore := healingData(t, path)["fixed"]
+
+	at := time.Date(2026, 10, 10, 10, 0, 0, 0, time.UTC)
+	fixProgressCall(t, dir, branch, at, map[string]any{"status": "fixed"})
+	fixProgressCall(t, dir, branch, at, map[string]any{"title": "second", "status": "fixed"})
+	fixProgressCall(t, dir, branch, at, map[string]any{"title": "third", "origin": "pr-comment", "status": "fixed"})
+
+	if after := healingData(t, path)["fixed"]; !reflect.DeepEqual(after, fixedBefore) {
+		t.Errorf("healing.fixed = %v, want it unchanged: %v", after, fixedBefore)
+	}
+	out, err := shipState(dir, dir, ShipStateIn{Action: "read", Detail: map[string]any{"branch": branch}}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	rd, ok := out.(map[string]any)["reportData"].(ShipReportData)
+	if !ok {
+		t.Fatalf("reportData missing or wrong type: %#v", out)
+	}
+	if rd.ReviewLedger == nil || rd.ReviewLedger.Fixed != 1 {
+		t.Errorf("ReviewLedger = %+v, want Fixed 1 (fix-progress records do not count)", rd.ReviewLedger)
+	}
+	if progress, _ := rd.Healing["fixProgress"].([]any); len(progress) != 3 {
+		t.Errorf("Healing.fixProgress = %v, want the 3 records verbatim", rd.Healing["fixProgress"])
+	}
+}
+
+// TestShipStateHealingRecord_FixFinalInStatuses pins that every final fix
+// status is an accepted fix status.
+func TestShipStateHealingRecord_FixFinalInStatuses(t *testing.T) {
+	for _, s := range healingFixFinal {
+		if !slices.Contains(healingFixStatuses, s) {
+			t.Errorf("final status %q is not in healingFixStatuses %v", s, healingFixStatuses)
+		}
+	}
+}
+
 func TestShipStateHealingRecord_ReviewTotalSetsAndReplaces(t *testing.T) {
 	branch := "feat/heal-total"
 	dir, path := deferFixture(t, branch)
@@ -4859,6 +5188,14 @@ func TestShipStateHealingRecord_Rejections(t *testing.T) {
 		},
 		{"hardened missing skipped", healingHardenedDetail(map[string]any{"skipped": nil}), []string{"detail.skipped"}, nil},
 		{"hardened negative skipped", healingHardenedDetail(map[string]any{"skipped": float64(-2)}), []string{"detail.skipped"}, nil},
+
+		{"fix-progress missing status", healingFixProgressDetail(map[string]any{"status": nil}), []string{"detail.status"}, healingFixStatuses},
+		{"fix-progress unknown status", healingFixProgressDetail(map[string]any{"status": "done"}), []string{"detail.status", "done"}, healingFixStatuses},
+		{"fix-progress wrong-typed status", healingFixProgressDetail(map[string]any{"status": float64(1)}), []string{"detail.status"}, healingFixStatuses},
+		{"fix-progress missing origin", healingFixProgressDetail(map[string]any{"origin": nil}), []string{"detail.origin", `"fix-progress"`}, nil},
+		{"fix-progress unknown severity", healingFixProgressDetail(map[string]any{"severity": "blocker"}), []string{"blocker"}, dimensions.ValidSeverities},
+		{"fix-progress missing file", healingFixProgressDetail(map[string]any{"file": nil}), []string{"detail.file"}, nil},
+		{"fix-progress empty title", healingFixProgressDetail(map[string]any{"title": ""}), []string{"detail.title"}, nil},
 	}
 
 	branch := "feat/heal-reject"
@@ -4911,6 +5248,7 @@ func TestShipStateHealingRecord_NoLiveRun(t *testing.T) {
 			{"kind": "review-total", "total": float64(3), "dimensions": float64(2)},
 			healingFixedDetail(nil),
 			healingHardenedDetail(nil),
+			healingFixProgressDetail(nil),
 		} {
 			s := healingCall(t, dir, "feat/heal-none", detail)
 			if !strings.Contains(s, "no live ship run on this branch — healing not recorded") {
@@ -4967,7 +5305,13 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 		applied = append(applied, map[string]any{"surface": id, "action": "add", "targetFile": "/x"})
 	}
 	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{"trigger": "every surface", "applied": applied}))
+	healingCall(t, dir, branch, healingFixProgressDetail(nil))
+	healingCall(t, dir, branch, healingFixProgressDetail(map[string]any{"status": "fixing"}))
+	healingCall(t, dir, branch, healingFixProgressDetail(map[string]any{"line": nil, "origin": "pr-comment", "status": "deferred"}))
 	healing := healingData(t, path)
+	if progress, _ := healing["fixProgress"].([]any); len(progress) != 2 {
+		t.Fatalf("fixProgress = %v, want 2 records", healing["fixProgress"])
+	}
 
 	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
 	if err != nil {
@@ -5019,6 +5363,16 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 							} `json:"properties"`
 						} `json:"items"`
 					} `json:"fixed"`
+					FixProgress struct {
+						MaxItems int `json:"maxItems"`
+						Items    struct {
+							Properties struct {
+								Origin   struct{ Enum []string } `json:"origin"`
+								Severity struct{ Enum []string } `json:"severity"`
+								Status   struct{ Enum []string } `json:"status"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"fixProgress"`
 					Hardened struct {
 						Items struct {
 							Properties struct {
@@ -5041,12 +5395,19 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 		t.Fatal(err)
 	}
 	fp := doc.Properties.Healing.Properties.Fixed.Items.Properties
+	xp := doc.Properties.Healing.Properties.FixProgress.Items.Properties
 	hp := doc.Properties.Healing.Properties.Hardened.Items.Properties
+	if got := doc.Properties.Healing.Properties.FixProgress.MaxItems; got != healingFixProgressMax {
+		t.Errorf("schema fixProgress.maxItems = %d, want %d (healingFixProgressMax)", got, healingFixProgressMax)
+	}
 	for name, pair := range map[string][2][]string{
-		"fixed.origin":    {fp.Origin.Enum, healingOrigins},
-		"fixed.severity":  {fp.Severity.Enum, dimensions.ValidSeverities},
-		"hardened.phase":  {hp.Phase.Enum, healingPhases},
-		"applied.surface": {hp.Applied.Items.Properties.Surface.Enum, healingSurfaceIDs()},
+		"fixed.origin":         {fp.Origin.Enum, healingOrigins},
+		"fixed.severity":       {fp.Severity.Enum, dimensions.ValidSeverities},
+		"fixProgress.origin":   {xp.Origin.Enum, healingOrigins},
+		"fixProgress.severity": {xp.Severity.Enum, dimensions.ValidSeverities},
+		"fixProgress.status":   {xp.Status.Enum, healingFixStatuses},
+		"hardened.phase":       {hp.Phase.Enum, healingPhases},
+		"applied.surface":      {hp.Applied.Items.Properties.Surface.Enum, healingSurfaceIDs()},
 	} {
 		if !reflect.DeepEqual(pair[0], pair[1]) {
 			t.Errorf("schema enum %s = %v, want %v (the Go set the handler checks)", name, pair[0], pair[1])

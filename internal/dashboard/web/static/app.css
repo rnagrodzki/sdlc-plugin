@@ -12,7 +12,7 @@
   --panel:#121A22;
   --glass-fill:rgba(8,7,6,0.46);
   --glass-fill-strong:rgba(8,7,6,0.60);
-  --glass-fill-dialog:rgba(8,7,6,0.78);
+  --glass-fill-dialog:rgba(0,0,0,0.38);
   --glass-border:rgba(148,178,196,0.28);
   --glass-highlight:rgba(210,230,240,0.08);
   --rail:#7C93A3;
@@ -24,6 +24,7 @@
   --scan-cyan:#55D6E0;
   --scan-cyan-dim:rgba(85,214,224,0.35);
   --radius:10px;
+  --icon-archive:url("data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='3' y='4' width='18' height='4' rx='1'/%3E%3Cpath d='M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8M10 12h4'/%3E%3C/svg%3E");
   --font-sign:"Barlow Semi Condensed","Oswald",system-ui,sans-serif;
   --font-body:system-ui,-apple-system,"Segoe UI",sans-serif;
   --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
@@ -226,6 +227,27 @@ button { font-family: inherit; }
 }
 .stop-btn:disabled, .archive-btn:disabled, #clear-btn:disabled { opacity: 0.6; cursor: default; border-color: var(--glass-border); }
 
+/*
+ * Archive is an icon button: a box with a lid, drawn as a mask so it takes the
+ * text colour of the button, and the red hover of the rule above.
+ */
+.archive-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-color: transparent;
+}
+.archive-btn::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: var(--icon-archive) center / contain no-repeat;
+  mask: var(--icon-archive) center / contain no-repeat;
+}
+
 .gh-link {
   flex: 0 0 auto;
   display: flex;
@@ -411,6 +433,25 @@ details[open] > summary .chev { transform: rotate(90deg); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Total time of the pipeline, right after the branch. */
+.pipe-dur {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 1px 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ivory);
+  white-space: nowrap;
+}
+/* A running pipeline: amber time, amber edge, and a breathing lamp. */
+.pipe-dur.live { border-color: rgba(242,169,60,0.45); }
+.pipe-dur.live .dur-live { color: var(--signal-amber); }
+.pipe-dur .lamp { align-self: center; margin-right: -2px; }
+.pipe-dur .dur-label { font-family: var(--font-sign); font-weight: 600; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--rail); }
 .pipe-side { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .pipe-repo { font-family: var(--font-sign); font-weight: 600; font-size: 12.5px; color: var(--rail); }
 .pipe-status { font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); }
@@ -606,6 +647,18 @@ details[open] > summary .chev { transform: rotate(90deg); }
   overflow-wrap: anywhere;
 }
 .station .label.current { color: var(--signal-amber); }
+/* Time of the step under its label. The current step shows its running time in amber. */
+.station .dur {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--rail);
+  white-space: nowrap;
+}
+.station .dur.current { color: var(--signal-amber); }
 
 /* ---------- Block details: a grid of tiles under the track ---------- */
 
@@ -785,6 +838,25 @@ details[open] > summary .chev { transform: rotate(90deg); }
 }
 .dim-find[data-detail], .issue-row[data-detail], .act-row[data-detail] { cursor: pointer; }
 
+/*
+ * Review dimensions: one framed card each. packDimensionGrid puts the cards in
+ * lanes of near equal height, so a short card sits right under the card above
+ * it. A wave heading takes the whole width. Before the script runs, or in a
+ * tile with no width, the cards stack in one lane.
+ */
+.dim-lanes { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+.dim-lane { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+.dim-grid > .dim-card { margin-bottom: 12px; }
+.dim-card {
+  padding: 8px 14px 6px;
+  background: rgba(255,255,255,0.035);
+  border: 1px solid rgba(148,178,196,0.22);
+  border-radius: 6px;
+}
+.dim-card > .dim-row:first-child .dim-name { font-weight: 600; }
+.dim-card .dim-findings { margin-bottom: 0; }
+.dim-wave { margin: 4px 0 10px; }
+
 /* Review dimensions: name and count stay together, so the eye does not cross the block. */
 .dim-row {
   display: flex;
@@ -829,7 +901,53 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .sev-medium { color: var(--signal-amber); background: rgba(242,169,60,0.12); }
 .issue-main { min-width: 0; }
 .issue-text { font-size: 13px; line-height: 1.45; color: var(--ivory); }
+/* An issue and a review finding show 2 lines at most. The detail viewer shows the whole text. */
+.issue-text, .dim-find .dim-name {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
 .issue-path { margin-top: 2px; font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); word-break: break-all; }
+
+/* Fixes of received-review: progress line and bar, then one row for each fix. */
+.fix-progress {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 4px;
+  margin: 0 0 10px;
+  border: 0;
+  border-radius: 2px;
+  overflow: hidden;
+  background: rgba(148,178,196,0.14);
+}
+.fix-progress::-webkit-progress-bar { background: rgba(148,178,196,0.14); }
+.fix-progress::-webkit-progress-value { background: var(--signal-green); border-radius: 2px; }
+.fix-progress::-moz-progress-bar { background: var(--signal-green); border-radius: 2px; }
+/* The fixes fill as many columns of 400 px or more as the tile has room for. */
+.fix-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr));
+  gap: 0 28px;
+}
+.fix-row {
+  display: grid;
+  grid-template-columns: 8px 72px minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: start;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(148,178,196,0.08);
+}
+.fix-row .lamp { margin-top: 6px; }
+.fix-title { font-size: 13px; line-height: 1.45; color: var(--ivory); overflow-wrap: anywhere; }
+.fix-where { margin-top: 2px; font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); overflow-wrap: anywhere; }
+.fix-status { font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); }
+.fix-status.fixed { color: var(--signal-green); }
+.fix-status.fixing { color: var(--signal-amber); }
+.fix-status.failed { color: var(--signal-red); }
 
 /* Session: id beside the name, timeline as time, kind, text. */
 .sec-id { margin-bottom: 6px; font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); }
@@ -929,10 +1047,17 @@ details[open] > summary .chev { transform: rotate(90deg); }
 /* ---------- Dialogs: stop and confirm, and the detail viewer ---------- */
 
 .stop-dialog { max-width: min(28rem, calc(100vw - 32px)); }
+/*
+ * Black glass, as the track panel: a neutral black translucent fill with a
+ * light band at the top edge, a small blur, and no color boost. The scrim has
+ * no blur, so only the area behind the dialog is soft.
+ */
 .stop-dialog, .detail-dialog {
-  background: var(--glass-fill-dialog);
-  backdrop-filter: blur(14px) saturate(160%);
-  -webkit-backdrop-filter: blur(14px) saturate(160%);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.015) 45%, transparent 70%),
+    var(--glass-fill-dialog);
+  backdrop-filter: blur(5px) saturate(100%);
+  -webkit-backdrop-filter: blur(5px) saturate(100%);
   color: var(--ivory);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius);
@@ -940,9 +1065,7 @@ details[open] > summary .chev { transform: rotate(90deg); }
   padding: 18px 20px;
 }
 .stop-dialog::backdrop, .detail-dialog::backdrop {
-  background: rgba(10,8,7,0.7);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  background: rgba(0,0,0,0.42);
 }
 .stop-dialog p { margin: 0 0 16px; }
 
@@ -985,20 +1108,48 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .detail-text { margin-bottom: 18px; font-size: 13px; line-height: 1.5; color: var(--ivory); overflow-wrap: anywhere; }
 
 .dialog-actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
-.dialog-actions button, #detail-close {
+.dialog-actions button {
   appearance: none;
   cursor: pointer;
-  background: transparent;
+  background: var(--glass-fill);
   color: var(--ivory);
   border: 1px solid var(--glass-border);
   border-radius: 7px;
   padding: 8px 14px;
   font-size: 12.5px;
   font-family: var(--font-body);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  transition: border-color 120ms ease, background 120ms ease;
 }
-.dialog-actions button:hover, #detail-close:hover { border-color: var(--scan-cyan-dim); }
+.dialog-actions button:hover { border-color: var(--scan-cyan-dim); background: var(--glass-fill-strong); }
 .dialog-actions .stop-confirm { border-color: var(--signal-red); }
-#detail-close { display: block; margin-left: auto; }
+
+/*
+ * Detail viewer close: a small icon button in its own row at the top left. The
+ * title and the text start below it. The negative left margin puts the glyph,
+ * not the button box, on the text edge.
+ */
+#detail-close {
+  display: grid;
+  margin: -6px 0 10px -8px;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  appearance: none;
+  cursor: pointer;
+  background: transparent;
+  color: var(--rail);
+  border: 1px solid transparent;
+  border-radius: 7px;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+#detail-close svg { width: 14px; height: 14px; }
+#detail-close:hover, #detail-close:focus-visible {
+  color: var(--ivory);
+  border-color: var(--glass-border);
+  background: var(--glass-fill);
+}
 
 /* ---------- Fallbacks ---------- */
 

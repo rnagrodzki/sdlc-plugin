@@ -45,7 +45,7 @@ import (
 type ShipStateIn struct {
 	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=commit-check,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record,enum=harden_clusters,enum=report" jsonschema_description:"Operation to perform: init, begin-step, complete-step, commit-check, start (legacy), complete (legacy), skip, fail, decide, defer, healing_record, harden_clusters, report, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
-	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, phase, trigger, classification, applied, skipped, branch; harden_clusters reads findings, branch; report reads write, format, branch). See the action list for which sub-fields each action reads."`
+	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, status, phase, trigger, classification, applied, skipped, branch; harden_clusters reads findings, branch; report reads write, format, branch). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session."`
 }
 
@@ -1650,21 +1650,38 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 // ---------------------------------------------------------------------------
 
 // healingKinds, healingOrigins and healingPhases are the accepted values for
-// healing_record's detail.kind, detail.origin (kind "fixed") and detail.phase
-// (kind "hardened"). ship-state.schema.json carries the same sets.
+// healing_record's detail.kind, detail.origin (kinds "fixed" and
+// "fix-progress") and detail.phase (kind "hardened"). ship-state.schema.json
+// carries the same sets.
 var (
-	healingKinds   = []string{"review-total", "fixed", "hardened"}
+	healingKinds   = []string{"review-total", "fixed", "hardened", "fix-progress"}
 	healingOrigins = []string{"local-review", "pr-comment"}
 	healingPhases  = []string{"started", "done"}
 )
 
+// healingFixStatuses is the one list of fix statuses that a fix-progress
+// record takes (detail.status). healingFixFinal holds the statuses that end
+// the fix of one finding. ship-state.schema.json carries the same status set.
+var (
+	healingFixStatuses = []string{"queued", "fixing", "fixed", "failed", "deferred"}
+	healingFixFinal    = []string{"fixed", "failed", "deferred"}
+)
+
+// healingFixProgressMax is the most records data.healing.fixProgress holds
+// for one run. A fix-progress call for a new key past it is rejected.
+const healingFixProgressMax = 200
+
 // Narrations returned by healing_record. Callers and tests match on them.
 const (
-	healingNarrRecorded  = "recorded"
-	healingNarrReplaced  = "replaced started record"
-	healingNarrDuplicate = "already recorded — no change"
-	healingNarrNoLiveRun = "no live ship run on this branch — healing not recorded"
+	healingNarrRecorded   = "recorded"
+	healingNarrReplaced   = "replaced started record"
+	healingNarrDuplicate  = "already recorded — no change"
+	healingNarrNoLiveRun  = "no live ship run on this branch — healing not recorded"
+	healingNarrKeptFailed = "kept failed"
 )
+
+// healingFixNextID is the next.id of every fix-progress response.
+const healingFixNextID = "continue-fix-pass"
 
 // healingSurfaceIDs returns the ids of hardensurfaces.List(), the only
 // values an applied[].surface may take.
@@ -1749,7 +1766,7 @@ func healingLineKey(v any) any {
 }
 
 // shipStateHealingRecord records one self-healing change in the live ship
-// run's data.healing. Three kinds exist:
+// run's data.healing. Four kinds exist:
 //
 //   - review-total sets data.healing.reviewTotal, replacing any earlier value.
 //   - fixed appends to data.healing.fixed; a record with the same
@@ -1757,6 +1774,8 @@ func healingLineKey(v any) any {
 //   - hardened upserts data.healing.hardened by trigger: a "done" record
 //     replaces a "started" one in place, and every other repeat is a
 //     duplicate.
+//   - fix-progress upserts data.healing.fixProgress on (origin, file, line,
+//     title): see healingUpsertFix. It never touches data.healing.fixed.
 //
 // Input is validated before the state lookup, so a bad call fails even when
 // no run is live. With no ship state for the branch, or a state stamped
@@ -1791,6 +1810,8 @@ func shipStateHealingRecord(root, workDir string, in ShipStateIn, now func() tim
 		record, err = healingFixed(in.Detail, timestamp)
 	case "hardened":
 		record, err = healingHardened(in.Detail, timestamp)
+	case "fix-progress":
+		record, err = healingFixProgress(in.Detail, timestamp)
 	}
 	if err != nil {
 		return nil, err
@@ -1829,6 +1850,27 @@ func shipStateHealingRecord(root, workDir string, in ShipStateIn, now func() tim
 			return healingNarration(kind, narration, record, false), nil
 		}
 		healing["hardened"] = hardened
+	case "fix-progress":
+		var progress []any
+		if raw, ok := healing["fixProgress"]; ok {
+			list, isList := raw.([]any)
+			if !isList {
+				return nil, &mcpserver.DataError{
+					Msg:        "healing_record: data.healing.fixProgress is not a list — the ship state is damaged",
+					Suggestion: "Do not retry. Continue the fix pass without fix-progress calls. Tell the user that the ship state file is damaged.",
+				}
+			}
+			progress = list
+		}
+		var changed bool
+		progress, narration, changed, err = healingUpsertFix(progress, record)
+		if err != nil {
+			return nil, err
+		}
+		if !changed {
+			return healingNarration(kind, narration, record, false), nil
+		}
+		healing["fixProgress"] = progress
 	}
 	st.Data["healing"] = healing
 	if err := state.Write(st); err != nil {
@@ -1854,9 +1896,11 @@ type ShipHealingRecordOut struct {
 	Record  map[string]any `json:"record"`
 }
 
-// healingNarration builds the response for a healing_record call.
+// healingNarration builds the response for a healing_record call. Only the
+// fix-progress kind sets next: received-review calls it inside its fix pass,
+// so every outcome tells that pass how to go on.
 func healingNarration(kind, narration string, record map[string]any, written bool) ShipHealingRecordOut {
-	return ShipHealingRecordOut{
+	out := ShipHealingRecordOut{
 		Narration: pipeline.Narration{
 			Summary: fmt.Sprintf("healing_record %s: %s", kind, narration),
 		},
@@ -1864,6 +1908,24 @@ func healingNarration(kind, narration string, record map[string]any, written boo
 		Written: written,
 		Record:  record,
 	}
+	if kind == "fix-progress" {
+		out.Next = &pipeline.NextAction{ID: healingFixNextID, Instruction: healingFixNextInstruction(narration)}
+	}
+	return out
+}
+
+// healingFixNextInstruction returns the next.instruction of a fix-progress
+// response for its narration.
+func healingFixNextInstruction(narration string) string {
+	switch narration {
+	case healingNarrNoLiveRun:
+		return "No live ship run, so the status is not stored. Continue without fix-progress calls."
+	case healingNarrDuplicate:
+		return "No change needed. Continue the fix pass."
+	case healingNarrKeptFailed:
+		return "The fix keeps status failed. Continue the fix pass."
+	}
+	return "Status stored. Continue the fix pass."
 }
 
 // healingReviewTotal validates a review-total record and returns it as it
@@ -1883,7 +1945,46 @@ func healingReviewTotal(d map[string]any, timestamp string) (map[string]any, err
 // healingFixed validates a fixed record and returns it as it is persisted.
 // severity is lowercased, as defer does.
 func healingFixed(d map[string]any, timestamp string) (map[string]any, error) {
-	origin, err := healingRequiredString(d, "origin", "fixed")
+	record, err := healingFinding(d, "fixed")
+	if err != nil {
+		return nil, err
+	}
+	record["recordedAt"] = timestamp
+	return record, nil
+}
+
+// healingFixProgress validates a fix-progress record and returns it as it is
+// persisted for a new key: firstAt and updatedAt both hold timestamp. It
+// takes the finding fields of kind "fixed" plus detail.status.
+func healingFixProgress(d map[string]any, timestamp string) (map[string]any, error) {
+	record, err := healingFinding(d, "fix-progress")
+	if err != nil {
+		return nil, err
+	}
+	status, _ := d["status"].(string)
+	if !slices.Contains(healingFixStatuses, status) {
+		accepted := strings.Join(healingFixStatuses, " | ")
+		msg := `healing_record: detail.status is required for kind "fix-progress" — accepted values are ` + accepted
+		if v, ok := d["status"]; ok && v != nil {
+			msg = fmt.Sprintf("healing_record: detail.status %#v is not a recognised fix status — accepted values are %s", v, accepted)
+		}
+		return nil, &mcpserver.DomainError{
+			Msg:        msg,
+			Suggestion: "Pass detail.status as one of " + strings.Join(healingFixStatuses, ", ") + ", then retry ship_state healing_record.",
+		}
+	}
+	record["status"] = status
+	record["firstAt"] = timestamp
+	record["updatedAt"] = timestamp
+	return record, nil
+}
+
+// healingFinding validates the finding fields that kinds "fixed" and
+// "fix-progress" share (origin, severity, file, line, title) and returns
+// them as a record. severity is lowercased, as defer does; an absent line is
+// stored as null.
+func healingFinding(d map[string]any, kind string) (map[string]any, error) {
+	origin, err := healingRequiredString(d, "origin", kind)
 	if err != nil {
 		return nil, err
 	}
@@ -1896,7 +1997,7 @@ func healingFixed(d map[string]any, timestamp string) (map[string]any, error) {
 				" (local-review for a finding from the local review, pr-comment for one from a PR comment), then retry ship_state healing_record.",
 		}
 	}
-	rawSeverity, err := healingRequiredString(d, "severity", "fixed")
+	rawSeverity, err := healingRequiredString(d, "severity", kind)
 	if err != nil {
 		return nil, err
 	}
@@ -1910,11 +2011,11 @@ func healingFixed(d map[string]any, timestamp string) (map[string]any, error) {
 				" (case-insensitive — the lowercase form is what gets recorded), then retry ship_state healing_record.",
 		}
 	}
-	file, err := healingRequiredString(d, "file", "fixed")
+	file, err := healingRequiredString(d, "file", kind)
 	if err != nil {
 		return nil, err
 	}
-	title, err := healingRequiredString(d, "title", "fixed")
+	title, err := healingRequiredString(d, "title", kind)
 	if err != nil {
 		return nil, err
 	}
@@ -1930,12 +2031,11 @@ func healingFixed(d map[string]any, timestamp string) (map[string]any, error) {
 		line = n
 	}
 	return map[string]any{
-		"origin":     origin,
-		"severity":   severity,
-		"file":       file,
-		"line":       line,
-		"title":      title,
-		"recordedAt": timestamp,
+		"origin":   origin,
+		"severity": severity,
+		"file":     file,
+		"line":     line,
+		"title":    title,
 	}, nil
 }
 
@@ -2059,6 +2159,49 @@ func healingUpsertHardened(hardened []any, rec map[string]any) ([]any, string, b
 		return hardened, healingNarrDuplicate, false
 	}
 	return append(hardened, rec), healingNarrRecorded, true
+}
+
+// healingUpsertFix applies rec to list on the key (origin, file, line, title)
+// and returns the new list, the narration, and whether the list changed:
+//
+//	stored     incoming   result
+//	none       any        appended               recorded
+//	status A   status A   unchanged              already recorded — no change
+//	failed     deferred   unchanged              kept failed
+//	status A   status B   status, severity and   recorded
+//	                      updatedAt replaced,
+//	                      firstAt kept
+//
+// On a replace, rec takes the stored firstAt and becomes the stored entry, so
+// the caller echoes the record as persisted. An entry that is not an object
+// never matches a key but counts toward healingFixProgressMax. A new key when
+// the list already holds healingFixProgressMax entries is a DomainError.
+func healingUpsertFix(list []any, rec map[string]any) ([]any, string, bool, error) {
+	for i, entry := range list {
+		m, ok := entry.(map[string]any)
+		if !ok || m["origin"] != rec["origin"] || m["file"] != rec["file"] || m["title"] != rec["title"] ||
+			healingLineKey(m["line"]) != healingLineKey(rec["line"]) {
+			continue
+		}
+		switch {
+		case m["status"] == rec["status"]:
+			return list, healingNarrDuplicate, false, nil
+		case m["status"] == "failed" && rec["status"] == "deferred":
+			return list, healingNarrKeptFailed, false, nil
+		}
+		if firstAt, ok := m["firstAt"].(string); ok && firstAt != "" {
+			rec["firstAt"] = firstAt
+		}
+		list[i] = rec
+		return list, healingNarrRecorded, true, nil
+	}
+	if len(list) >= healingFixProgressMax {
+		return list, "", false, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("healing_record: data.healing.fixProgress holds %d records — the cap for one run", healingFixProgressMax),
+			Suggestion: "Do not retry. Continue the fix pass without more fix-progress calls for this run.",
+		}
+	}
+	return append(list, rec), healingNarrRecorded, true, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -3218,7 +3361,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it. Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`").
-- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns summary, kind, written (true only when this call changed the state file) and record (the validated record as persisted, recordedAt included).
+- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line) | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires detail.origin, detail.severity, detail.file, detail.title, detail.status (`+strings.Join(healingFixStatuses, " | ")+`); Optional detail.line. Upserts data.healing.fixProgress[] on the key (origin, file, line, title), keeps firstAt, sets updatedAt; deferred never replaces failed; max `+fmt.Sprint(healingFixProgressMax)+` records; the response carries next with the instruction for the fix pass). Optional: detail.branch. Duplicates are ignored (narration "already recorded — no change"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing. Returns summary, kind, written (true only when this call changed the state file) and record (the validated record as persisted, recordedAt included).
 - harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction", reason? (one of `+strings.Join(history.DeferredReasons(), " | ")+`)}]. Optional: detail.branch (the ship run whose healing.hardened triggers set alreadyHardened). failureText has every double quote replaced by a single quote and every backslash by a slash, so it is safe inside a quoted --failure-text argument. Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, healing records, this run's execute state (only when the execute step completed) and its linked plan run, the review run ledger of this ship run (for the Review waves section), CLI evidence, user input and learnings, and render it. Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
