@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.4.2] - 2026-10-10
+
+### RC 1
+
+- Dashboard: new Preplans tab lists preplan topic files for each repository.
+- Dashboard: the plan station shows plan time, and total time starts at the plan start when a plan is linked.
+- Dashboard: History tab shows plan, ship, and total time, with outcome chips and sort buttons.
+- Dashboard: Activity tab gets priority chips, and the page can delete a preplan topic, a deferred item, or a learning.
+- Ship state: the execute step saves the linked plan (file, start, end), and history rows copy the plan times.
+- Docs and specs: updated for the new fields, routes, and tabs.
+
 ## [0.4.1] - 2026-10-10
 
 ### RC 1
