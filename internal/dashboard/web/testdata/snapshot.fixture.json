@@ -225,9 +225,9 @@
               "detail": {
                 "kind": "fixes",
                 "fixes": [
-                  { "title": "Token expiry check skips equal times", "severity": "high", "file": "internal/auth/token.go", "line": 42, "status": "fixed" },
-                  { "title": "Error message leaks the user id", "severity": "medium", "file": "internal/api/errors.go", "line": 17, "status": "failed" },
-                  { "title": "Docs miss the new reason field", "severity": "low", "file": "docs/errors.md", "status": "deferred" }
+                  { "title": "Token expiry check skips equal times", "severity": "high", "file": "internal/auth/token.go", "line": 42, "status": "fixed", "origin": "local-review" },
+                  { "title": "Error message leaks the user id", "severity": "medium", "file": "internal/api/errors.go", "line": 17, "status": "failed", "origin": "local-review" },
+                  { "title": "Docs miss the new reason field", "severity": "low", "file": "docs/errors.md", "status": "deferred", "origin": "local-review" }
                 ]
               }
             },
@@ -478,6 +478,7 @@
           "sessionId": "c3d9a7f2-81be-4e65-b0a4-2f7d95e1c608"
         }
       ],
+      "loneWaits": [],
       "sessions": [
         {
           "id": "5b0e8c1a-2f4d-4c7e-9a31-6d8f0b7e4a12",
@@ -644,6 +645,7 @@
           "sessionId": "a8f21d47-0c93-4b5e-8e16-d4c7b9f03a25"
         }
       ],
+      "loneWaits": [],
       "sessions": [
         {
           "id": "a8f21d47-0c93-4b5e-8e16-d4c7b9f03a25",
@@ -1015,6 +1017,7 @@
           "sessionId": ""
         }
       ],
+      "loneWaits": [],
       "sessions": [
         {
           "id": "e47b3d90-5a1c-4f28-b6d3-91c0a8e57f34",

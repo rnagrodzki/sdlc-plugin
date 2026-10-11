@@ -140,6 +140,32 @@ func remove(path string) error {
 	return nil
 }
 
+// Remove deletes the record file of kind for sessionID (and toolUseID for a
+// question). It uses questionFile and permissionFile, so each name goes
+// through safe(). removed is false when no file existed, and then err is nil.
+// A permission record has no tool-use ID: Remove ignores toolUseID for it.
+// Remove returns an error for an unknown kind, an empty session ID, a question
+// with no tool-use ID, and a remove that fails for a reason other than a
+// missing file. Unlike DeleteQuestion, an empty tool-use ID never deletes more
+// than one record.
+func Remove(mainRoot, kind, sessionID, toolUseID string) (removed bool, err error) {
+	if err := validate(Record{Kind: kind, SessionID: sessionID, ToolUseID: toolUseID}); err != nil {
+		return false, err
+	}
+	name := permissionFile(sessionID)
+	if kind == KindQuestion {
+		name = questionFile(sessionID, toolUseID)
+	}
+	path := filepath.Join(Dir(mainRoot), name)
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("attention: remove %s: %w", path, err)
+	}
+	return true, nil
+}
+
 // DeleteQuestion deletes the question record of one tool-use ID. When
 // toolUseID is empty, it deletes every question record of the session.
 // A missing record is not an error.

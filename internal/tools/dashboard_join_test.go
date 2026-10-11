@@ -813,8 +813,8 @@ func TestDashboardReceivedReview_Records(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := `[{"title":"line","severity":"high","file":"internal/x.go","line":42,"status":"fixed"},` +
-			`{"title":"no line","severity":"high","file":"internal/x.go","status":"fixed"}]`
+		want := `[{"title":"line","severity":"high","file":"internal/x.go","line":42,"status":"fixed","origin":""},` +
+			`{"title":"no line","severity":"high","file":"internal/x.go","status":"fixed","origin":""}]`
 		if string(b) != want {
 			t.Errorf("fixes JSON = %s, want %s", b, want)
 		}

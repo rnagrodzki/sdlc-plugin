@@ -383,6 +383,130 @@ func TestShipState_BeginStep_ConditionalPendingDoesNotBlock(t *testing.T) {
 	}
 }
 
+// shipPrepareSeededFixture runs ship_prepare with the built-in default steps
+// (execute, commit, review, archive-openspec, pr, learnings-commit), which
+// seeds the pending received-review entry after review, and returns the state
+// file path.
+func shipPrepareSeededFixture(t *testing.T, dir, branch string) string {
+	t.Helper()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, branch)
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, SessionID: "sess-seed"})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("shipPrepare Errors = %v, want empty", out.Errors)
+	}
+	return out.StateFile
+}
+
+// TestShipState_ReceivedReviewSeed_Lifecycle proves the seeded received-review
+// entry takes begin-step and complete-step with timing stamps, and that a
+// second begin-step on an in_progress or a failed entry resets startedAt
+// with no error.
+func TestShipState_ReceivedReviewSeed_Lifecycle(t *testing.T) {
+	dir := t.TempDir()
+	const branch = "feat/rr-seed-lifecycle"
+	path := shipPrepareSeededFixture(t, dir, branch)
+	for _, name := range []string{"execute", "commit", "review"} {
+		setStepStatus(t, path, name, "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+	}
+
+	at := func(h int) func() time.Time {
+		return fixedNow(time.Date(2026, 1, 2, h, 0, 0, 0, time.UTC))
+	}
+	call := func(action string, h int, detail map[string]any) {
+		t.Helper()
+		detail["branch"] = branch
+		if _, err := shipState(dir, dir, ShipStateIn{Action: action, Step: "received-review", Detail: detail}, at(h)); err != nil {
+			t.Fatalf("%s received-review: %v", action, err)
+		}
+	}
+	startedAt := func() string {
+		t.Helper()
+		s, _ := findStepMap(t, readStateData(t, path), "received-review")["startedAt"].(string)
+		return s
+	}
+
+	call("begin-step", 1, map[string]any{})
+	first := startedAt()
+	if first != "2026-01-02T01:00:00Z" {
+		t.Fatalf("startedAt after first begin-step = %q, want 2026-01-02T01:00:00Z", first)
+	}
+
+	// Second begin-step on an in_progress entry resets startedAt.
+	call("begin-step", 2, map[string]any{})
+	if got := startedAt(); got != "2026-01-02T02:00:00Z" {
+		t.Errorf("startedAt after begin-step on in_progress = %q, want 2026-01-02T02:00:00Z", got)
+	}
+
+	// Second begin-step on a failed entry resets startedAt.
+	call("complete-step", 3, map[string]any{"outcome": "failure", "result": "boom"})
+	if st := findStepMap(t, readStateData(t, path), "received-review")["status"]; st != "failed" {
+		t.Fatalf("status after failure = %v, want failed", st)
+	}
+	call("begin-step", 4, map[string]any{})
+	if got := startedAt(); got != "2026-01-02T04:00:00Z" {
+		t.Errorf("startedAt after begin-step on failed = %q, want 2026-01-02T04:00:00Z", got)
+	}
+
+	call("complete-step", 5, map[string]any{"result": "fixed 2, deferred 1"})
+	rr := findStepMap(t, readStateData(t, path), "received-review")
+	if rr["status"] != "completed" || rr["completedAt"] != "2026-01-02T05:00:00Z" || rr["startedAt"] != "2026-01-02T04:00:00Z" {
+		t.Errorf("received-review = %v, want completed with startedAt 04:00 and completedAt 05:00", rr)
+	}
+}
+
+// TestShipState_ReceivedReviewSeed_PendingDoesNotBlock proves the pending
+// seeded entry blocks none of begin-step pr, next and cleanup-pipeline.
+func TestShipState_ReceivedReviewSeed_PendingDoesNotBlock(t *testing.T) {
+	dir := t.TempDir()
+	const branch = "feat/rr-seed-nonblocking"
+	path := shipPrepareSeededFixture(t, dir, branch)
+	for _, name := range []string{"execute", "commit", "review", "archive-openspec"} {
+		setStepStatus(t, path, name, "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+	}
+	if rr := findStepMap(t, readStateData(t, path), "received-review"); rr["status"] != "pending" {
+		t.Fatalf("received-review status = %v, want pending", rr["status"])
+	}
+
+	nextOut, err := shipState(dir, dir, ShipStateIn{
+		Action: "next",
+		Detail: map[string]any{"branch": branch},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("next: %v", err)
+	}
+	if got := nextOut.(ShipNextOut).Step; got != "pr" {
+		t.Errorf("next Step = %q, want %q (pending received-review must not block)", got, "pr")
+	}
+
+	if _, err := shipState(dir, dir, ShipStateIn{
+		Action: "begin-step",
+		Step:   "pr",
+		Detail: map[string]any{"branch": branch},
+	}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("begin-step pr: %v (pending received-review must not block)", err)
+	}
+
+	for _, name := range []string{"pr", "learnings-commit"} {
+		setStepStatus(t, path, name, "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+	}
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "cleanup-pipeline",
+		Detail: map[string]any{"branch": branch},
+	}, fixedNow(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v (pending received-review must not block)", err)
+	}
+	currentRun, _ := out.(map[string]any)["currentRun"].(map[string]any)
+	if currentRun["cleaned"] != true || currentRun["pipelineStatus"] != "completed" {
+		t.Errorf("currentRun = %#v, want cleaned:true pipelineStatus:completed", currentRun)
+	}
+}
+
 func TestShipState_BeginStep_InProgressPredecessorBlocks(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)

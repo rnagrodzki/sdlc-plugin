@@ -38,7 +38,7 @@ The tool writes the skeleton once: a `# Preplan: <topic>` heading, a `**Status:*
 
 ### Topic file status
 
-Each status change in this skill matches one row of this table. No other status change occurs.
+Each status change in this skill matches one row of this table. The dashboard Preplans tab can also set any of the three statuses.
 
 | From | Event | To |
 |---|---|---|

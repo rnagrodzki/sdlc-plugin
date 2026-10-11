@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -112,11 +113,10 @@ func TestShipPrepare_StateInit(t *testing.T) {
 		t.Errorf("branch = %v, want %q", data["branch"], "feat/my-feature")
 	}
 	// Default steps come from shipmeta.ShipBuiltInDefaults.Steps (6 entries),
-	// not the old fixed 7-step scaffold — the scaffold is now config-driven
-	// (InitialShipStepsFromConfig), one entry per configured step.
+	// plus the received-review entry that ship_prepare seeds after review.
 	steps, ok := data["steps"].([]any)
-	if !ok || len(steps) != 6 {
-		t.Fatalf("steps = %v, want a 6-entry array", data["steps"])
+	if !ok || len(steps) != 7 {
+		t.Fatalf("steps = %v, want a 7-entry array", data["steps"])
 	}
 	first, _ := steps[0].(map[string]any)
 	if first["name"] != "execute" || first["status"] != "pending" || first["kind"] != "tracked" {
@@ -137,7 +137,9 @@ func TestShipPrepare_StateInit(t *testing.T) {
 // exercising all 10 shipmeta.CanonicalSteps names at once (4 tracked, 6
 // inline, harden included; "received-review"/"commit-fixes" are conditional-only and never
 // appear in ship.steps/CanonicalSteps, so they cannot be exercised via
-// config here).
+// config here). The expected list also holds the received-review entry that
+// ship_prepare seeds after review (shipSeedReceivedReview), so the tracked
+// count is 5.
 func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -171,9 +173,10 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 		t.Fatalf("unmarshal state file: %v", err)
 	}
 
+	want := shipSeedReceivedReview(shipmeta.InitialShipStepsFromConfig(shipmeta.CanonicalSteps))
 	steps, ok := data["steps"].([]any)
-	if !ok || len(steps) != len(shipmeta.CanonicalSteps) {
-		t.Fatalf("steps = %v, want a %d-entry array", data["steps"], len(shipmeta.CanonicalSteps))
+	if !ok || len(steps) != len(want) {
+		t.Fatalf("steps = %v, want a %d-entry array", data["steps"], len(want))
 	}
 
 	trackedCount, inlineCount := 0, 0
@@ -182,14 +185,14 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 		if !ok {
 			t.Fatalf("steps[%d] not an object: %v", i, raw)
 		}
-		if sm["name"] != shipmeta.CanonicalSteps[i] {
-			t.Errorf("steps[%d].name = %v, want %q (config order preserved)", i, sm["name"], shipmeta.CanonicalSteps[i])
+		if sm["name"] != want[i].Name {
+			t.Errorf("steps[%d].name = %v, want %q (config order preserved)", i, sm["name"], want[i].Name)
 		}
 		if sm["status"] != "pending" {
 			t.Errorf("steps[%d].status = %v, want %q", i, sm["status"], "pending")
 		}
 		wantKind := "inline"
-		if shipmeta.IsTrackedShipStep(shipmeta.CanonicalSteps[i]) {
+		if shipmeta.IsTrackedShipStep(want[i].Name) {
 			wantKind = "tracked"
 		}
 		if sm["kind"] != wantKind {
@@ -202,11 +205,11 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 			inlineCount++
 		}
 	}
-	if trackedCount != 4 || inlineCount != 6 {
-		t.Errorf("tracked/inline split = %d/%d, want 4/6", trackedCount, inlineCount)
+	if trackedCount != 5 || inlineCount != 6 {
+		t.Errorf("tracked/inline split = %d/%d, want 5/6", trackedCount, inlineCount)
 	}
 
-	wantTable := pipeline.PipelineTable(configStepsFromScaffold(shipmeta.InitialShipStepsFromConfig(shipmeta.CanonicalSteps)))
+	wantTable := pipeline.PipelineTable(configStepsFromScaffold(want))
 	if out.PipelineDisplay != wantTable {
 		t.Errorf("PipelineDisplay = %q, want %q", out.PipelineDisplay, wantTable)
 	}
@@ -215,6 +218,143 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 			t.Errorf("PipelineDisplay missing row for %q:\n%s", name, out.PipelineDisplay)
 		}
 	}
+}
+
+// TestShipSeedReceivedReview pins the pure seed function: one entry right
+// after review, none without review, and the input slice stays untouched.
+func TestShipSeedReceivedReview(t *testing.T) {
+	t.Run("seeds right after review", func(t *testing.T) {
+		in := shipmeta.InitialShipStepsFromConfig([]string{"execute", "review", "pr"})
+		got := shipSeedReceivedReview(in)
+
+		wantNames := []string{"execute", "review", "received-review", "pr"}
+		if len(got) != len(wantNames) {
+			t.Fatalf("len(got) = %d, want %d: %+v", len(got), len(wantNames), got)
+		}
+		for i, name := range wantNames {
+			if got[i].Name != name {
+				t.Errorf("got[%d].Name = %q, want %q", i, got[i].Name, name)
+			}
+		}
+		rr := got[2]
+		if rr.Status != "pending" || rr.Kind != "tracked" || rr.Condition == "" {
+			t.Errorf("received-review = %+v, want status pending, kind tracked and a non-empty condition", rr)
+		}
+		if len(in) != 3 {
+			t.Errorf("input slice len = %d, want 3 (input must stay unchanged)", len(in))
+		}
+	})
+
+	t.Run("no review leaves steps unchanged", func(t *testing.T) {
+		in := shipmeta.InitialShipStepsFromConfig([]string{"execute", "commit", "pr"})
+		got := shipSeedReceivedReview(in)
+		if len(got) != 3 {
+			t.Fatalf("len(got) = %d, want 3: %+v", len(got), got)
+		}
+		for _, s := range got {
+			if s.Name == "received-review" {
+				t.Errorf("got a received-review entry with no review step: %+v", got)
+			}
+		}
+	})
+}
+
+// TestShipPrepare_SeedsReceivedReview proves ship_prepare writes a pending,
+// tracked received-review entry with a condition key right after review, and
+// that the written state validates against ship-state.schema.json. Without a
+// review step the entry is absent. received-review stays outside ValidSteps.
+func TestShipPrepare_SeedsReceivedReview(t *testing.T) {
+	validate := shipStateSchemaValidator(t)
+
+	readSteps := func(t *testing.T, stateFile string) ([]map[string]any, map[string]any) {
+		t.Helper()
+		data := readStateData(t, stateFile)
+		raw, _ := data["steps"].([]any)
+		steps := make([]map[string]any, 0, len(raw))
+		for _, s := range raw {
+			sm, ok := s.(map[string]any)
+			if !ok {
+				t.Fatalf("step not an object: %v", s)
+			}
+			steps = append(steps, sm)
+		}
+		return steps, data
+	}
+
+	t.Run("review in the list", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+		checkoutBranch(t, dir, "feat/seed-received-review")
+
+		out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, SessionID: "sess-seed"})
+		if err != nil {
+			t.Fatalf("shipPrepare: %v", err)
+		}
+		if len(out.Errors) != 0 {
+			t.Fatalf("Errors = %v, want empty", out.Errors)
+		}
+
+		steps, data := readSteps(t, out.StateFile)
+		reviewIdx := -1
+		for i, s := range steps {
+			if s["name"] == "review" {
+				reviewIdx = i
+			}
+		}
+		if reviewIdx < 0 || reviewIdx+1 >= len(steps) {
+			t.Fatalf("review not found with a successor in %v", steps)
+		}
+		rr := steps[reviewIdx+1]
+		if rr["name"] != "received-review" || rr["status"] != "pending" || rr["kind"] != "tracked" {
+			t.Errorf("entry after review = %v, want {name: received-review, status: pending, kind: tracked}", rr)
+		}
+		if cond, _ := rr["condition"].(string); cond == "" {
+			t.Errorf("received-review has no condition: %v", rr)
+		}
+		if !strings.Contains(out.PipelineDisplay, "| received-review |") {
+			t.Errorf("PipelineDisplay missing the received-review row:\n%s", out.PipelineDisplay)
+		}
+		if err := validate(data); err != nil {
+			t.Errorf("seeded state does not validate against ship-state.schema.json: %v", err)
+		}
+	})
+
+	t.Run("no review in the list", func(t *testing.T) {
+		dir := t.TempDir()
+		initGitFixture(t, dir)
+		gitCommit(t, dir, "initial")
+		checkoutBranch(t, dir, "feat/seed-no-review")
+
+		out, err := shipPrepare(dir, dir, ShipPrepareIn{
+			SkipConfigCheck: true,
+			Steps:           []string{"commit", "pr"},
+		})
+		if err != nil {
+			t.Fatalf("shipPrepare: %v", err)
+		}
+		if len(out.Errors) != 0 {
+			t.Fatalf("Errors = %v, want empty", out.Errors)
+		}
+		steps, data := readSteps(t, out.StateFile)
+		if len(steps) != 2 {
+			t.Errorf("steps = %v, want 2 entries (no seed without review)", steps)
+		}
+		for _, s := range steps {
+			if s["name"] == "received-review" {
+				t.Errorf("unexpected received-review entry without review: %v", steps)
+			}
+		}
+		if err := validate(data); err != nil {
+			t.Errorf("state does not validate against ship-state.schema.json: %v", err)
+		}
+	})
+
+	t.Run("received-review stays outside ValidSteps", func(t *testing.T) {
+		if slices.Contains(shipmeta.ValidSteps, "received-review") {
+			t.Errorf("ValidSteps = %v, must not contain received-review", shipmeta.ValidSteps)
+		}
+	})
 }
 
 // TestShipPrepare_NoSessionID verifies that an empty SessionID is stamped as

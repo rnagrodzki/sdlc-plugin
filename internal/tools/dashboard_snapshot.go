@@ -75,10 +75,22 @@ type DashboardRepo struct {
 	Warnings  []string            `json:"warnings"` // [] until filled, never null
 	Preplans  []DashboardPreplan  `json:"preplans"` // [] until filled, never null
 	Pipelines []DashboardPipeline `json:"pipelines"`
+	LoneWaits []DashboardWait     `json:"loneWaits"` // [] until filled, never null
 	Sessions  []DashboardSession  `json:"sessions"`
 	Learnings []DashboardLearning `json:"learnings"`
 	Deferred  []DashboardDeferred `json:"deferred"`
 	History   []DashboardRun      `json:"history"` // [] until filled, never null
+}
+
+// DashboardWait is one open wait that matches no shown pipeline.
+type DashboardWait struct {
+	Kind      string `json:"kind"` // "question" | "permission"
+	SessionID string `json:"sessionId"`
+	ToolUseID string `json:"toolUseId"` // "" for a permission wait
+	Branch    string `json:"branch"`
+	Header    string `json:"header"`
+	Text      string `json:"text"`    // copied from the record: attention.Write redacts it and keeps at most 121 runes (120 plus "…")
+	AskedAt   string `json:"askedAt"` // RFC3339 UTC
 }
 
 // DashboardPipeline is one ship, execute, plan, or review run.
@@ -174,7 +186,39 @@ type DashboardStepDetail struct {
 	Outcomes     []DashboardFindingOutcome `json:"outcomes,omitempty"`    // kind rounds
 	ReviewPlan   *DashboardReviewPlan      `json:"reviewPlan,omitempty"`  // kind dimensions
 	Fixes        []DashboardFix            `json:"fixes,omitempty"`       // kind fixes
+	ReviewQueue  *DashboardReviewQueue     `json:"reviewQueue,omitempty"` // review step of a ship run
 }
+
+// DashboardReviewQueue is the review queue of a ship review step.
+type DashboardReviewQueue struct {
+	Threshold string              `json:"threshold"` // a dimensions.ValidSeverities value
+	Rows      []DashboardQueueRow `json:"rows"`      // [] when empty, never null; max 200
+	Unrouted  int                 `json:"unrouted"`  // findings that no step took yet
+	Reason    string              `json:"reason"`    // "" | dashboardQueueReason* value
+}
+
+// DashboardQueueRow is one finding of the queue.
+type DashboardQueueRow struct {
+	Title     string `json:"title"` // dashboardPreview: redacted, max 120 runes
+	Severity  string `json:"severity"`
+	File      string `json:"file"`
+	Line      string `json:"line"`      // "" when none
+	Status    string `json:"status"`    // dashboardQueueStatus* value, or one of healingFixStatuses
+	Origin    string `json:"origin"`    // local-review | pr-comment
+	Dimension string `json:"dimension"` // "" when unknown
+	Text      string `json:"text"`      // review rationale or deferred description, "" when unknown
+}
+
+// Queue row statuses, queue reasons and the default fix origin. The page
+// uses the same strings. The other five row statuses are the fix statuses of
+// healingFixStatuses: the queue copies them and adds no new string.
+const (
+	dashboardQueueStatusOpen     = "open"
+	dashboardQueueStatusBelow    = "below"
+	dashboardQueueReasonNone     = "no-findings"
+	dashboardQueueReasonAllBelow = "all-below-threshold"
+	dashboardOriginLocal         = "local-review" // healingOrigins[0]
+)
 
 // DashboardFix is one finding that received-review took. Line 0 means no
 // line.
@@ -184,6 +228,7 @@ type DashboardFix struct {
 	File     string `json:"file"`
 	Line     int    `json:"line,omitempty"`
 	Status   string `json:"status"` // one of healingFixStatuses
+	Origin   string `json:"origin"` // one of healingOrigins
 }
 
 // DashboardGuardrailCounts is the guardrail count of a plan setup station.
@@ -304,6 +349,12 @@ type DashboardRun struct {
 	// linked plan.
 	PlanStartedAt  string `json:"planStartedAt,omitempty"`
 	PlanDurationMs int64  `json:"planDurationMs,omitempty"`
+	// PlanPaired is true when the History pairing pass gave this ship row the
+	// plan time of a plan row of the same branch (it has no stored plan
+	// fields). Absent otherwise. PlanEndedAt (RFC 3339) is the end of that
+	// plan row; absent when no plan row was paired.
+	PlanPaired  bool   `json:"planPaired,omitempty"`
+	PlanEndedAt string `json:"planEndedAt,omitempty"`
 	// TotalMs is the time from the plan start to EndedAt for a ship row with
 	// a linked plan, else DurationMs. 0 means unknown.
 	TotalMs int64 `json:"totalMs"`
@@ -467,6 +518,7 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 		Warnings:  []string{},
 		Preplans:  []DashboardPreplan{},
 		Pipelines: []DashboardPipeline{},
+		LoneWaits: []DashboardWait{},
 		Sessions:  []DashboardSession{},
 		Learnings: []DashboardLearning{},
 		Deferred:  []DashboardDeferred{},

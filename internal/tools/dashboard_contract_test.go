@@ -171,7 +171,7 @@ func TestDashboardContract_HistoryIsEmptyList(t *testing.T) {
 }
 
 // TestDashboardContract_RepoListsNeverNull checks that a repo entry encodes
-// warnings and preplans as empty lists, never null, for a readable root, an
+// warnings, preplans and loneWaits as empty lists, never null, for a readable root, an
 // absent root, a root that is a file, and a root whose runs folder cannot be
 // read.
 func TestDashboardContract_RepoListsNeverNull(t *testing.T) {
@@ -211,7 +211,7 @@ func TestDashboardContract_RepoListsNeverNull(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{`"warnings":[]`, `"preplans":[]`} {
+		for _, want := range []string{`"warnings":[]`, `"preplans":[]`, `"loneWaits":[]`} {
 			if !strings.Contains(string(b), want) {
 				t.Errorf("%s repo JSON = %s, want %s", name, b, want)
 			}
@@ -305,5 +305,91 @@ func TestDashboardContract_FixtureHoldsLifeCycleFields(t *testing.T) {
 	}
 	if rowsWithPlan == 0 {
 		t.Error("fixture has no history row with plan fields and a total longer than the ship duration")
+	}
+}
+
+// TestDashboardContract_AttentionFieldsEncoding checks the encoding of the
+// attention and review queue fields: planPaired and planEndedAt of a history
+// row and reviewQueue of a step detail are absent when empty, origin of a fix
+// is always there, and a wait and a queue row encode every key.
+func TestDashboardContract_AttentionFieldsEncoding(t *testing.T) {
+	marshal := func(v any) string {
+		t.Helper()
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+
+	run := marshal(DashboardRun{Kind: "ship"})
+	for _, key := range []string{"planPaired", "planEndedAt"} {
+		if strings.Contains(run, key) {
+			t.Errorf("empty %s is in the run JSON, want absent: %s", key, run)
+		}
+	}
+	run = marshal(DashboardRun{Kind: "ship", PlanPaired: true, PlanEndedAt: "2026-10-07T08:30:00Z"})
+	for _, want := range []string{`"planPaired":true`, `"planEndedAt":"2026-10-07T08:30:00Z"`} {
+		if !strings.Contains(run, want) {
+			t.Errorf("run JSON = %s, want %s", run, want)
+		}
+	}
+
+	detail := marshal(DashboardStepDetail{Kind: dashboardKindDimensions})
+	if strings.Contains(detail, "reviewQueue") {
+		t.Errorf("nil ReviewQueue is in the detail JSON, want absent: %s", detail)
+	}
+	detail = marshal(DashboardStepDetail{
+		Kind: dashboardKindDimensions,
+		ReviewQueue: &DashboardReviewQueue{
+			Threshold: "high",
+			Rows:      []DashboardQueueRow{},
+			Reason:    dashboardQueueReasonNone,
+		},
+	})
+	for _, want := range []string{`"reviewQueue":{`, `"threshold":"high"`, `"rows":[]`, `"unrouted":0`, `"reason":"no-findings"`} {
+		if !strings.Contains(detail, want) {
+			t.Errorf("detail JSON = %s, want %s", detail, want)
+		}
+	}
+
+	if fix := marshal(DashboardFix{Status: "queued"}); !strings.Contains(fix, `"origin":""`) {
+		t.Errorf("fix JSON = %s, want origin always present", fix)
+	}
+
+	for name, v := range map[string]any{"wait": DashboardWait{}, "queue row": DashboardQueueRow{}} {
+		var got map[string]any
+		if err := json.Unmarshal([]byte(marshal(v)), &got); err != nil {
+			t.Fatal(err)
+		}
+		want := map[string][]string{
+			"wait":      {"kind", "sessionId", "toolUseId", "branch", "header", "text", "askedAt"},
+			"queue row": {"title", "severity", "file", "line", "status", "origin", "dimension", "text"},
+		}[name]
+		if len(got) != len(want) {
+			t.Errorf("%s has %d keys, want %d: %v", name, len(got), len(want), got)
+		}
+		for _, k := range want {
+			if _, ok := got[k]; !ok {
+				t.Errorf("%s JSON has no key %q", name, k)
+			}
+		}
+	}
+}
+
+// TestDashboardContract_QueueConstants pins the default fix origin to the
+// first accepted origin of healing_record, and the queue statuses apart from
+// the fix statuses, so the queue adds no string that collides with them.
+func TestDashboardContract_QueueConstants(t *testing.T) {
+	if dashboardOriginLocal != healingOrigins[0] {
+		t.Errorf("dashboardOriginLocal = %q, want healingOrigins[0] = %q", dashboardOriginLocal, healingOrigins[0])
+	}
+	for _, status := range []string{dashboardQueueStatusOpen, dashboardQueueStatusBelow} {
+		if slices.Contains(healingFixStatuses, status) {
+			t.Errorf("queue status %q is also a fix status", status)
+		}
+	}
+	if dashboardQueueReasonNone == dashboardQueueReasonAllBelow {
+		t.Errorf("queue reasons are equal: %q", dashboardQueueReasonNone)
 	}
 }
