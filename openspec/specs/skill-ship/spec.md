@@ -245,7 +245,7 @@ The skill SHALL dispatch each sub-skill as the table says, always with a fixed `
 | `execute` | Agent → `execute` | sonnet | `{flags.executeDispatchArgs} <plan-path>`; never `--branch`, never `--auto` | `begin-step` / `complete-step` |
 | `commit` | Agent → `commit` | haiku | `--auto` (= `flags.auto`) | `begin-step` / `complete-step` |
 | `review` | Agent → `review` | sonnet | none, or `--base <branch>`; never `--committed` | `begin-step` / `complete-step` |
-| `received-review` | Agent → `received-review` | opus | `[--pr <N>] [--auto] [--no-harden]`; payload: collected findings | `decide` only |
+| `received-review` | Agent → `received-review` | opus | `[--pr <N>] [--auto] [--no-harden]`; payload: collected findings | `begin-step` / `complete-step`, or `fail` |
 | `commit-fixes` | Agent → `commit` | haiku | `--auto` | `decide` only |
 | `harden` | `Skill` tool → `harden` (never Agent) | — | see the harden requirement | `begin-step` / `complete-step` or `skip` |
 | `pr` | Agent → `pr` | sonnet | `[--draft] [--base <branch>] --skip-approval [--auto]` | `begin-step` / `complete-step` |
@@ -307,22 +307,35 @@ After `review` completes, the skill SHALL route each `#### [<SEVERITY>] <title>`
 - **AND** the skill never records `bypassed 0`
 
 ### Requirement: received-review and commit-fixes
-The skill SHALL dispatch `received-review` only when at least one finding was collected, SHALL dispatch `commit-fixes` only when `received-review` made changes, and SHALL record both with `decide` only.
+The skill SHALL dispatch `received-review` only when at least one finding was collected, SHALL dispatch `commit-fixes` only when `received-review` made changes, SHALL record `received-review` with `begin-step` and then `complete-step` or `fail`, and SHALL record `commit-fixes` with `decide` only.
 
-- `received-review` and `commit-fixes` have no `steps[]` entry; the skill never calls `begin-step`, `complete-step`, `start`, `complete`, `skip`, or `fail` for them.
-- They are not configurable: `ship_prepare` rejects either name set to `true` in the `[ship.steps]` table, in the `[ship.quick]` table, or in `--steps` with an error, so neither is ever seeded into the state `steps[]`.
+- `ship_prepare` seeds a `received-review` entry right after `review`, with a `condition` key. `commit-fixes` has no `steps[]` entry; the skill never calls `begin-step`, `complete-step`, `start`, `complete`, `skip`, or `fail` for it.
+- They are not configurable: `ship_prepare` rejects either name set to `true` in the `[ship.steps]` table, in the `[ship.quick]` table, or in `--steps` with an error.
+- The skill calls `begin-step received-review` after the count cross-check. When parsed headings are fewer than `M`, it calls `begin-step` only after the user answers.
+- With `K` collected findings, the skill dispatches `received-review`, runs `commit-fixes` when files changed, then calls `complete-step` with result `K finding(s) sent to received-review`.
+- With no collected finding, the skill calls `complete-step` with a result that starts with `0 fixes —` and goes to rebase.
+- A dispatch error, a user stop, a dispatch with no result, or a failed `commit-fixes` gives `fail` with `detail.error` `received-review: <reason>`.
+- On resume, an `in_progress` or `failed` entry runs step 8 again. A `completed` entry goes to rebase, then to the next configured main-loop step. `next` skips a `pending` entry.
 - The `received-review` payload is `Review findings to address (from /review, <K> of <M>):` followed by each collected finding's heading, `**File:**` line, and body verbatim.
 - `received-review` pauses for the user unless `flags.auto`.
 - `commit-fixes` is a separate commit, never squashed into the feature commit.
-- With no collected finding, the skill goes straight to rebase.
 
 #### Scenario: No collected findings
 - **WHEN** every finding is below the threshold
 - **THEN** neither `received-review` nor `commit-fixes` is dispatched
+- **AND** the skill calls `begin-step` and then `complete-step` for `received-review` with a result that starts with `0 fixes —`
 
 #### Scenario: Findings collected before a PR exists
 - **WHEN** findings are collected and no PR exists yet
 - **THEN** the `received-review` prompt has no `--pr` and carries every collected finding
+
+#### Scenario: Dispatch with no result
+- **WHEN** the `received-review` dispatch returns no result
+- **THEN** the skill calls `fail` for `received-review` with `detail.error` that starts with `received-review:`
+
+#### Scenario: Resume after completion
+- **WHEN** the run resumes and the `received-review` entry is `completed`
+- **THEN** the skill makes no `received-review` call and runs rebase
 
 ### Requirement: Rebase
 After `commit-fixes` and before the next configured step among `verify-openspec`, `archive-openspec`, `harden`, `pr`, the skill SHALL run `git fetch origin <base>` and skip the rebase when `git merge-base --is-ancestor origin/<base> HEAD` succeeds, where `<base>` is the resolved base branch.
