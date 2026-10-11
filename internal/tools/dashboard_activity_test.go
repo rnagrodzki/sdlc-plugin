@@ -847,3 +847,292 @@ func TestDashboardActivity_History_ReachesSnapshot(t *testing.T) {
 		t.Errorf("repo.History = %+v, want execute then ship", repo.History)
 	}
 }
+
+// TestDashboardActivity_History_PairsPlanTimes walks the pairing rule on one
+// branch: a failed ship takes the plan row before it, its retry takes
+// nothing, and a later ship takes the later plan row.
+func TestDashboardActivity_History_PairsPlanTimes(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteRuns(t, root,
+		`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/x","outcome":"done","duration_ms":1200000}`,
+		`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/x","outcome":"failure","duration_ms":1800000}`,
+		`{"ts":"2026-10-10T12:10:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":600000}`,
+		`{"ts":"2026-10-10T13:15:00Z","skill":"plan","branch":"feat/x","outcome":"done","duration_ms":900000}`,
+		`{"ts":"2026-10-10T14:20:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":1200000}`,
+	)
+
+	got := dashboardRecentRuns(root)
+	want := []DashboardRun{
+		{
+			Kind: "ship", Branch: "feat/x", Outcome: "success",
+			StartedAt: "2026-10-10T14:00:00Z", EndedAt: "2026-10-10T14:20:00Z", DurationMs: 1200000,
+			PlanStartedAt: "2026-10-10T13:00:00Z", PlanDurationMs: 900000, PlanPaired: true, PlanEndedAt: "2026-10-10T13:15:00Z",
+			TotalMs: 4800000,
+		},
+		{
+			Kind: "plan", Branch: "feat/x", Outcome: "done",
+			StartedAt: "2026-10-10T13:00:00Z", EndedAt: "2026-10-10T13:15:00Z", DurationMs: 900000, TotalMs: 900000,
+		},
+		{
+			Kind: "ship", Branch: "feat/x", Outcome: "success",
+			StartedAt: "2026-10-10T12:00:00Z", EndedAt: "2026-10-10T12:10:00Z", DurationMs: 600000, TotalMs: 600000,
+		},
+		{
+			Kind: "ship", Branch: "feat/x", Outcome: "failure",
+			StartedAt: "2026-10-10T11:00:00Z", EndedAt: "2026-10-10T11:30:00Z", DurationMs: 1800000,
+			PlanStartedAt: "2026-10-10T10:00:00Z", PlanDurationMs: 1200000, PlanPaired: true, PlanEndedAt: "2026-10-10T10:20:00Z",
+			TotalMs: 5400000,
+		},
+		{
+			Kind: "plan", Branch: "feat/x", Outcome: "done",
+			StartedAt: "2026-10-10T10:00:00Z", EndedAt: "2026-10-10T10:20:00Z", DurationMs: 1200000, TotalMs: 1200000,
+		},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("history rows = %d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("history[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+// TestDashboardActivity_History_PairingRules checks which ship rows the
+// pairing pass fills and which it leaves as they are. paired lists the file
+// positions (oldest first) of the ship rows that must get the plan time.
+func TestDashboardActivity_History_PairingRules(t *testing.T) {
+	type pairing struct {
+		planStartedAt string
+		planDuration  int64
+		planEndedAt   string
+		totalMs       int64
+	}
+	cases := []struct {
+		name   string
+		lines  []string
+		paired map[int]pairing
+	}{
+		{
+			name: "plan row of another branch is not used",
+			lines: []string{
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/b","outcome":"success","duration_ms":1800000}`,
+			},
+		},
+		{
+			name: "two branches pair each with its own plan row",
+			lines: []string{
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+				`{"ts":"2026-10-10T10:40:00Z","skill":"plan","branch":"feat/b","outcome":"done","duration_ms":600000}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/b","outcome":"success","duration_ms":1800000}`,
+				`{"ts":"2026-10-10T12:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+			},
+			paired: map[int]pairing{
+				2: {"2026-10-10T10:30:00Z", 600000, "2026-10-10T10:40:00Z", 3600000},
+				3: {"2026-10-10T10:00:00Z", 1200000, "2026-10-10T10:20:00Z", 9000000},
+			},
+		},
+		{
+			name: "newest of two plan rows is used and the older one is dropped",
+			lines: []string{
+				`{"ts":"2026-10-10T09:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+				`{"ts":"2026-10-10T12:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+			},
+			paired: map[int]pairing{
+				2: {"2026-10-10T10:00:00Z", 1200000, "2026-10-10T10:20:00Z", 5400000},
+			},
+		},
+		{
+			name: "file order does not matter, the ts order does: plan appended after the ship but ended before it",
+			lines: []string{
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+			},
+			paired: map[int]pairing{
+				0: {"2026-10-10T10:00:00Z", 1200000, "2026-10-10T10:20:00Z", 5400000},
+			},
+		},
+		{
+			name: "plan row that ended after the ship is not used",
+			lines: []string{
+				`{"ts":"2026-10-10T10:20:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1200000}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+			},
+		},
+		{
+			name: "ship with no branch stays unchanged",
+			lines: []string{
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"","outcome":"done","duration_ms":1200000}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"","outcome":"success","duration_ms":1800000}`,
+			},
+		},
+		{
+			name: "plan row with duration 0 gives no plan time and is used up",
+			lines: []string{
+				`{"ts":"2026-10-10T09:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":0}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+			},
+		},
+		{
+			name: "plan row with a start time that does not parse stays unused",
+			lines: []string{
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000,"started_at":"not-a-time"}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+			},
+		},
+		{
+			name: "plan row with a ts that does not parse stays unused",
+			lines: []string{
+				`{"ts":"not-a-time","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000,"started_at":"2026-10-10T10:00:00Z"}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+			},
+		},
+		{
+			name: "plan start after the ship end fails the window check",
+			lines: []string{
+				`{"ts":"2026-10-10T11:00:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000,"started_at":"2026-10-10T11:45:00Z"}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":600000}`,
+			},
+		},
+		{
+			name: "ship ts that does not parse stays unchanged",
+			lines: []string{
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+				`{"ts":"not-a-time","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+			},
+		},
+		{
+			name: "execute and review rows neither take nor use up a plan row",
+			lines: []string{
+				`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+				`{"ts":"2026-10-10T10:50:00Z","skill":"execute","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+				`{"ts":"2026-10-10T11:10:00Z","skill":"review","branch":"feat/a","outcome":"success","duration_ms":600000}`,
+				`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+			},
+			paired: map[int]pairing{
+				3: {"2026-10-10T10:00:00Z", 1200000, "2026-10-10T10:20:00Z", 5400000},
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			dashWriteRuns(t, root, tc.lines...)
+			got := dashboardRecentRuns(root)
+			if len(got) != len(tc.lines) {
+				t.Fatalf("history rows = %d, want %d: %+v", len(got), len(tc.lines), got)
+			}
+			for pos := range tc.lines {
+				row := got[len(tc.lines)-1-pos]
+				want, isPaired := tc.paired[pos]
+				if !isPaired {
+					if row.PlanPaired || row.PlanEndedAt != "" || row.PlanStartedAt != "" || row.PlanDurationMs != 0 || row.TotalMs != row.DurationMs {
+						t.Errorf("row %d = %+v, want no plan fields and TotalMs = DurationMs", pos, row)
+					}
+					continue
+				}
+				if !row.PlanPaired || row.PlanStartedAt != want.planStartedAt || row.PlanDurationMs != want.planDuration ||
+					row.PlanEndedAt != want.planEndedAt || row.TotalMs != want.totalMs {
+					t.Errorf("row %d = %+v, want paired %+v", pos, row, want)
+				}
+			}
+		})
+	}
+}
+
+// TestDashboardActivity_History_PairingKeepsStoredPlanFields checks that a
+// ship row with stored plan fields keeps them with no planPaired, and still
+// uses up the plan row, so a retry gets no plan time.
+func TestDashboardActivity_History_PairingKeepsStoredPlanFields(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteRuns(t, root,
+		`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+		`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"failure","duration_ms":1800000,"plan_started_at":"2026-10-10T09:00:00Z","plan_duration_ms":7200000}`,
+		`{"ts":"2026-10-10T12:10:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":600000}`,
+	)
+
+	got := dashboardRecentRuns(root)
+	if len(got) != 3 {
+		t.Fatalf("history rows = %d, want 3: %+v", len(got), got)
+	}
+	stored := got[1]
+	if stored.PlanStartedAt != "2026-10-10T09:00:00Z" || stored.PlanDurationMs != 7200000 || stored.TotalMs != 9000000 || stored.PlanPaired || stored.PlanEndedAt != "" {
+		t.Errorf("ship row with stored plan fields = %+v, want the stored fields, TotalMs 9000000, no planPaired", stored)
+	}
+	retry := got[0]
+	if retry.PlanStartedAt != "" || retry.PlanPaired || retry.PlanEndedAt != "" || retry.TotalMs != 600000 {
+		t.Errorf("retry row = %+v, want no plan fields and TotalMs 600000", retry)
+	}
+}
+
+// TestDashboardActivity_History_PairsPlanRowOutsideLimit checks that a plan
+// row outside the newest dashboardHistoryLimit rows still pairs with a ship
+// row inside them.
+func TestDashboardActivity_History_PairsPlanRowOutsideLimit(t *testing.T) {
+	root := dashRoot(t)
+	lines := []string{`{"ts":"2026-10-09T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`}
+	for i := 0; i < dashboardHistoryLimit; i++ {
+		lines = append(lines, fmt.Sprintf(`{"ts":"2026-10-10T09:%02d:00Z","skill":"execute","branch":"other-%03d","outcome":"success","duration_ms":1000}`, i%60, i))
+	}
+	lines = append(lines, `{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`)
+	dashWriteRuns(t, root, lines...)
+
+	got := dashboardRecentRuns(root)
+	if len(got) != dashboardHistoryLimit {
+		t.Fatalf("history rows = %d, want %d", len(got), dashboardHistoryLimit)
+	}
+	for _, row := range got {
+		if row.Kind == "plan" {
+			t.Fatalf("plan row %+v is inside the newest %d rows, want it cut", row, dashboardHistoryLimit)
+		}
+	}
+	ship := got[0]
+	if !ship.PlanPaired || ship.PlanStartedAt != "2026-10-09T10:00:00Z" || ship.PlanEndedAt != "2026-10-09T10:20:00Z" || ship.PlanDurationMs != 1200000 {
+		t.Errorf("ship row = %+v, want paired with the plan row outside the limit", ship)
+	}
+	if want := int64(25*60*60*1000 + 30*60*1000); ship.TotalMs != want {
+		t.Errorf("ship row TotalMs = %d, want %d", ship.TotalMs, want)
+	}
+}
+
+// TestDashboardActivity_History_PairedFieldsEncode checks the JSON of a paired
+// ship row and of a ship row that stays unchanged.
+func TestDashboardActivity_History_PairedFieldsEncode(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteRuns(t, root,
+		`{"ts":"2026-10-10T10:20:00Z","skill":"plan","branch":"feat/a","outcome":"done","duration_ms":1200000}`,
+		`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
+		`{"ts":"2026-10-10T12:10:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":600000}`,
+	)
+	got := dashboardRecentRuns(root)
+	if len(got) != 3 {
+		t.Fatalf("history rows = %d, want 3: %+v", len(got), got)
+	}
+
+	decode := func(run DashboardRun) map[string]any {
+		raw, err := json.Marshal(run)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		return fields
+	}
+
+	paired := decode(got[1])
+	if paired["planPaired"] != true || paired["planEndedAt"] != "2026-10-10T10:20:00Z" || paired["planStartedAt"] != "2026-10-10T10:00:00Z" {
+		t.Errorf("paired ship row = %v, want planPaired true, planEndedAt 2026-10-10T10:20:00Z, planStartedAt 2026-10-10T10:00:00Z", paired)
+	}
+	retry := decode(got[0])
+	for _, key := range []string{"planPaired", "planEndedAt", "planStartedAt", "planDurationMs"} {
+		if _, ok := retry[key]; ok {
+			t.Errorf("retry ship row has key %q, want it absent: %v", key, retry)
+		}
+	}
+}

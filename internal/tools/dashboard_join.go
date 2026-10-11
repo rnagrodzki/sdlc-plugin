@@ -138,13 +138,15 @@ func (sp *dashboardTimeSpan) addLast(s string) {
 // holds no valid record. problem is the text of a state issue: set when the
 // value is not a list (null included), or is a list with records and none
 // of them valid, else empty. A record that is not a map, has no title, or
-// has a status outside healingFixStatuses or a severity outside
-// dimensions.ValidSeverities is skipped: the page puts both values into CSS
-// class names. Each valid record gives one fix row, in list order. The step
-// is in_progress while a record is not in healingFixFinal and the run is
-// live (runCompleted false), else completed. startedAt is the earliest
-// parsable firstAt; completedAt is the latest parsable updatedAt, and is
-// absent while the step runs. A time that does not parse is skipped.
+// has a status outside healingFixStatuses, a severity outside
+// dimensions.ValidSeverities, or an origin outside healingOrigins is
+// skipped: the page puts status and severity into CSS class names. A record
+// with no origin gets dashboardOriginLocal. Each valid record gives one fix
+// row, with its origin, in list order. The step is in_progress while a record
+// is not in healingFixFinal and the run is live (runCompleted false), else
+// completed. startedAt is the earliest parsable firstAt; completedAt is the
+// latest parsable updatedAt, and is absent while the step runs. A time that
+// does not parse is skipped.
 func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) (step *DashboardStep, problem string) {
 	raw, present := healing["fixProgress"]
 	if !present {
@@ -164,7 +166,11 @@ func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) (ste
 		}
 		title := dashboardStr(m["title"])
 		status, severity := dashboardStr(m["status"]), dashboardStr(m["severity"])
-		if title == "" || !slices.Contains(healingFixStatuses, status) || !slices.Contains(dimensions.ValidSeverities, severity) {
+		origin := dashboardStr(m["origin"])
+		if origin == "" {
+			origin = dashboardOriginLocal
+		}
+		if title == "" || !slices.Contains(healingFixStatuses, status) || !slices.Contains(dimensions.ValidSeverities, severity) || !slices.Contains(healingOrigins, origin) {
 			continue
 		}
 		fixes = append(fixes, DashboardFix{
@@ -173,6 +179,7 @@ func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) (ste
 			File:     dashboardStr(m["file"]),
 			Line:     dashboardInt(m["line"]),
 			Status:   status,
+			Origin:   origin,
 		})
 		if !slices.Contains(healingFixFinal, status) {
 			open = true

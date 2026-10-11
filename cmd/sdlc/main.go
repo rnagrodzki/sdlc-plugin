@@ -150,9 +150,12 @@ func dashboardOptions(port int, v string, stop func(), clearCache clearCacheFunc
 		ClearCache: func(root string, now time.Time) (tools.ClearCacheOut, error) {
 			return clearCache(root, logPath, now)
 		},
-		LearningBody:   tools.DashboardLearningBody,
-		DeletePreplan:  tools.DashboardDeletePreplan,
-		DeleteDeferred: tools.DashboardDeleteDeferred,
-		DeleteLearning: tools.DashboardDeleteLearning,
+		LearningBody:     tools.DashboardLearningBody,
+		DeletePreplan:    tools.DashboardDeletePreplan,
+		DeleteDeferred:   tools.DashboardDeleteDeferred,
+		DeleteLearning:   tools.DashboardDeleteLearning,
+		SetPreplanStatus: tools.DashboardSetPreplanStatus,
+		DeleteRuns:       tools.DashboardDeleteRuns,
+		DismissWait:      tools.DashboardDismissWait,
 	}
 }

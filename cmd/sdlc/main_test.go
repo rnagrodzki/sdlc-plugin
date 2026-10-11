@@ -77,8 +77,9 @@ func TestForbidMark3LabsMCPGo(t *testing.T) {
 }
 
 // TestDashboardOptions pins the wiring of "sdlc dashboard serve": the archive,
-// learning and three delete routes call the tools functions, and the cache clear route
-// passes the root, the time and dashboard.LogPath() to the clear function.
+// learning, three delete, preplan status, History delete and wait dismiss
+// routes call the tools functions, and the cache clear route passes the root,
+// the time and dashboard.LogPath() to the clear function.
 func TestDashboardOptions(t *testing.T) {
 	t.Setenv("SDLC_CACHE_DIR", t.TempDir())
 
@@ -108,6 +109,15 @@ func TestDashboardOptions(t *testing.T) {
 	}
 	if o.DeleteLearning == nil || reflect.ValueOf(o.DeleteLearning).Pointer() != reflect.ValueOf(tools.DashboardDeleteLearning).Pointer() {
 		t.Error("DeleteLearning is not tools.DashboardDeleteLearning")
+	}
+	if o.SetPreplanStatus == nil || reflect.ValueOf(o.SetPreplanStatus).Pointer() != reflect.ValueOf(tools.DashboardSetPreplanStatus).Pointer() {
+		t.Error("SetPreplanStatus is not tools.DashboardSetPreplanStatus")
+	}
+	if o.DeleteRuns == nil || reflect.ValueOf(o.DeleteRuns).Pointer() != reflect.ValueOf(tools.DashboardDeleteRuns).Pointer() {
+		t.Error("DeleteRuns is not tools.DashboardDeleteRuns")
+	}
+	if o.DismissWait == nil || reflect.ValueOf(o.DismissWait).Pointer() != reflect.ValueOf(tools.DashboardDismissWait).Pointer() {
+		t.Error("DismissWait is not tools.DashboardDismissWait")
 	}
 	if o.ClearCache == nil {
 		t.Fatal("ClearCache is nil")

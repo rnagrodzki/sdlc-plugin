@@ -540,17 +540,28 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 		repo.Error = err.Error()
 	}
 	// Open waits are best effort: an unreadable record folder shows no
-	// attention and does not fail the snapshot. Unlike a state.List error,
-	// it does not set repo.Error, because the pipelines are still right.
-	// attention.List returns nil records with its error.
-	recs, _ := attention.List(root, now, dashboardHistoryWindow)
+	// attention, adds one warning, and does not fail the snapshot. Unlike a
+	// state.List error, it does not set repo.Error: the pipelines are still
+	// right. attention.List returns nil records with its error.
+	recs, attErr := attention.List(root, now, dashboardHistoryWindow)
+	if attErr != nil {
+		repo.Warnings = append(repo.Warnings, "attention folder unread: "+attErr.Error())
+	}
+	// taken holds the index in recs of every record that belongs to a shown
+	// pipeline. The final pipelines are not a source for it: the join drops
+	// nested blocks and keeps only the newest record of a pipeline.
+	taken := map[int]bool{}
 	for _, st := range list.States {
 		p, updated, ok := dashboardStatePipeline(st, evidence)
+		var matched []int
 		if ok {
 			// Before dashboardFinish: the stalled rule reads p.Attention.
-			dashboardAttachAttention(&p, recs)
+			matched = dashboardAttachAttention(&p, recs)
 		}
 		if ok && dashboardFinish(&p, updated, now) {
+			for _, i := range matched {
+				taken[i] = true
+			}
 			// Inside the shown branch: only a shown ship run reads the
 			// execute state and runs.jsonl. A read problem is a warning,
 			// never repo.Error, because repo.Error blocks the archive of
@@ -569,6 +580,7 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 		}
 	}
 	repo.Pipelines = dashboardJoinRuns(repo.Pipelines)
+	repo.LoneWaits = dashboardLoneWaits(recs, taken)
 
 	sessions, learnings, deferred, history := dashboardActivity(root, now)
 	if sessions != nil {
@@ -599,11 +611,15 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 // Of several matching records the newest askedAt wins; of equal askedAt the
 // later record in recs wins. A record whose askedAt does not parse is skipped.
 // With no matching record p is unchanged.
-func dashboardAttachAttention(p *DashboardPipeline, recs []attention.Record) {
+//
+// It returns the index of every record in recs that belongs to p. Each early
+// return of the body returns nil.
+func dashboardAttachAttention(p *DashboardPipeline, recs []attention.Record) []int {
 	if p.Status != PipelineRunning || p.SessionID == "" {
-		return
+		return nil
 	}
 	slug := state.SlugifyBranch(p.Branch)
+	var matched []int
 	var best *attention.Record
 	var bestAt time.Time
 	for i := range recs {
@@ -611,6 +627,7 @@ func dashboardAttachAttention(p *DashboardPipeline, recs []attention.Record) {
 		if r.SessionID != p.SessionID || state.SlugifyBranch(r.Branch) != slug {
 			continue
 		}
+		matched = append(matched, i)
 		asked, ok := dashboardParseTime(r.AskedAt)
 		if !ok {
 			continue
@@ -620,7 +637,7 @@ func dashboardAttachAttention(p *DashboardPipeline, recs []attention.Record) {
 		}
 	}
 	if best == nil {
-		return
+		return matched
 	}
 	p.Attention = &DashboardAttention{
 		Kind:    best.Kind,
@@ -628,6 +645,56 @@ func dashboardAttachAttention(p *DashboardPipeline, recs []attention.Record) {
 		Header:  best.Header,
 		Text:    best.Text,
 	}
+	return matched
+}
+
+// dashboardLoneWaitLimit is the most waits dashboardLoneWaits returns.
+const dashboardLoneWaitLimit = 50
+
+// dashboardLoneWaits returns the records not in taken, newest askedAt first,
+// at most dashboardLoneWaitLimit. Never nil. taken holds indexes into recs.
+// Header and Text are copied as they are: attention.Write already redacted
+// and cut them. A record whose askedAt does not parse is skipped, because it
+// cannot be put in order; attention.List never returns such a record. Of equal
+// askedAt the later record in recs comes first.
+func dashboardLoneWaits(recs []attention.Record, taken map[int]bool) []DashboardWait {
+	type dated struct {
+		wait DashboardWait
+		at   time.Time
+	}
+	var found []dated
+	// Backwards, so the stable sort puts the later record of equal askedAt first.
+	for i := len(recs) - 1; i >= 0; i-- {
+		if taken[i] {
+			continue
+		}
+		r := recs[i]
+		asked, ok := dashboardParseTime(r.AskedAt)
+		if !ok {
+			continue
+		}
+		found = append(found, dated{
+			wait: DashboardWait{
+				Kind:      r.Kind,
+				SessionID: r.SessionID,
+				ToolUseID: r.ToolUseID,
+				Branch:    r.Branch,
+				Header:    r.Header,
+				Text:      r.Text,
+				AskedAt:   r.AskedAt,
+			},
+			at: asked,
+		})
+	}
+	sort.SliceStable(found, func(i, j int) bool { return found[i].at.After(found[j].at) })
+	if len(found) > dashboardLoneWaitLimit {
+		found = found[:dashboardLoneWaitLimit]
+	}
+	out := make([]DashboardWait, 0, len(found))
+	for _, d := range found {
+		out = append(out, d.wait)
+	}
+	return out
 }
 
 // dashboardFinish stamps updatedAt, applies the stalled rule, and reports

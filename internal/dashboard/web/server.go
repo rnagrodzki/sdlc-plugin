@@ -73,9 +73,10 @@ var (
 )
 
 // Options configures Serve. Every function field is required except Stop,
-// Archive, ClearCache, LearningBody, DeletePreplan, DeleteDeferred and
-// DeleteLearning. A route whose function field is nil answers 500 with a
-// suggestion instead of failing at start.
+// Archive, ClearCache, LearningBody, DeletePreplan, DeleteDeferred,
+// DeleteLearning, SetPreplanStatus, DeleteRuns and DismissWait. A route whose
+// function field is nil answers 500 with a suggestion instead of failing at
+// start.
 type Options struct {
 	Port    int
 	Version string
@@ -114,6 +115,16 @@ type Options struct {
 	// DeleteLearning deletes one learning entry (production:
 	// tools.DashboardDeleteLearning). POST /api/learning-delete calls it.
 	DeleteLearning func(root, date, heading string) (tools.DashboardDeleteOut, error)
+	// SetPreplanStatus sets the Status line of one preplan topic file
+	// (production: tools.DashboardSetPreplanStatus). POST /api/preplan-status
+	// calls it.
+	SetPreplanStatus func(root, slug, status string) (tools.DashboardPreplanStatusOut, error)
+	// DeleteRuns deletes History rows of runs.jsonl (production:
+	// tools.DashboardDeleteRuns). POST /api/history-delete calls it.
+	DeleteRuns func(root string, rows []tools.DashboardRunKey) (tools.DashboardDeleteOut, error)
+	// DismissWait deletes one wait record (production:
+	// tools.DashboardDismissWait). POST /api/wait-dismiss calls it.
+	DismissWait func(root, kind, sessionID, toolUseID string) (tools.DashboardDeleteOut, error)
 }
 
 // NewToken returns a new stop token: 32 bytes from crypto/rand, hex encoded.
@@ -285,6 +296,9 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 	h.mux.HandleFunc("POST /api/preplan-delete", h.servePreplanDelete)
 	h.mux.HandleFunc("POST /api/deferred-delete", h.serveDeferredDelete)
 	h.mux.HandleFunc("POST /api/learning-delete", h.serveLearningDelete)
+	h.mux.HandleFunc("POST /api/preplan-status", h.servePreplanStatus)
+	h.mux.HandleFunc("POST /api/history-delete", h.serveHistoryDelete)
+	h.mux.HandleFunc("POST /api/wait-dismiss", h.serveWaitDismiss)
 	return h
 }
 
@@ -462,9 +476,9 @@ func (h *handler) serveStop(w http.ResponseWriter, r *http.Request) {
 	h.stop()
 }
 
-// Codes of the errors that the archive, clear, learning and delete routes
-// raise themselves. The archive codes of the tools package keep their own
-// constants.
+// Codes of the errors that the archive, clear, learning, delete, status and
+// dismiss routes raise themselves. The archive codes of the tools package keep
+// their own constants.
 const (
 	// codeBadRequest is the code of a body or query that lacks a field.
 	codeBadRequest = "BAD_REQUEST"
@@ -474,15 +488,16 @@ const (
 	codeClearFailed = "CLEAR_FAILED"
 	// codeLearningReadFailed is the code of a failed read of a learning body.
 	codeLearningReadFailed = "LEARNING_READ_FAILED"
-	// codeDeleteFailed is the code of a failed preplan, deferred or learning
-	// delete that is not a bad request.
+	// codeDeleteFailed is the code of a failed write of a preplan, deferred,
+	// learning, History, wait or status route that is not a bad request. The
+	// status route uses it too, so every write route has one error body shape.
 	codeDeleteFailed = "DELETE_FAILED"
 	// codeNotConfigured is the code of a route whose Options function is nil.
 	codeNotConfigured = "NOT_CONFIGURED"
 )
 
-// Suggestions of the errors that the archive, clear, learning and delete
-// routes raise themselves.
+// Suggestions of the errors that the archive, clear, learning, delete, status
+// and dismiss routes raise themselves.
 const (
 	// suggestBadRequest is the suggestion for codeBadRequest.
 	suggestBadRequest = "Send the fields shown in the route example."
@@ -524,6 +539,28 @@ type learningDeleteRequest struct {
 	Repo    string `json:"repo"`
 	Date    string `json:"date"`
 	Heading string `json:"heading"`
+}
+
+// preplanStatusRequest is the JSON body of POST /api/preplan-status.
+type preplanStatusRequest struct {
+	Repo   string `json:"repo"`
+	Slug   string `json:"slug"`
+	Status string `json:"status"`
+}
+
+// historyDeleteRequest is the JSON body of POST /api/history-delete. Rows
+// names the History rows to delete.
+type historyDeleteRequest struct {
+	Repo string                  `json:"repo"`
+	Rows []tools.DashboardRunKey `json:"rows"`
+}
+
+// waitDismissRequest is the JSON body of POST /api/wait-dismiss.
+type waitDismissRequest struct {
+	Repo      string `json:"repo"`
+	Kind      string `json:"kind"`
+	SessionID string `json:"sessionId"`
+	ToolUseID string `json:"toolUseId"`
 }
 
 // serveRunArchive archives one run of a registered repo. The request must
@@ -670,6 +707,92 @@ func (h *handler) serveLearningDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// servePreplanStatus sets the Status line of one preplan topic file of a
+// registered repo. The request must pass guardMutation; the repo must be a
+// display root. The status function is the one check of the slug and the
+// status: its DomainError is a 400 (writeDeleteError, the one error writer of
+// every write route).
+func (h *handler) servePreplanStatus(w http.ResponseWriter, r *http.Request) {
+	if !h.guardMutation(w, r, true) {
+		return
+	}
+	if h.o.SetPreplanStatus == nil {
+		writeNotConfigured(w, "Preplan status")
+		return
+	}
+	var req preplanStatusRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	root, ok := h.displayRoot(w, now(), req.Repo)
+	if !ok {
+		return
+	}
+	out, err := h.o.SetPreplanStatus(root, req.Slug, req.Status)
+	if err != nil {
+		writeDeleteError(w, "preplan status", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// serveHistoryDelete deletes History rows of a registered repo. The request
+// must pass guardMutation; the repo must be a display root. A missing and an
+// empty rows field both reach the delete function, which refuses them: its
+// DomainError is a 400 (writeDeleteError).
+func (h *handler) serveHistoryDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.guardMutation(w, r, true) {
+		return
+	}
+	if h.o.DeleteRuns == nil {
+		writeNotConfigured(w, "History delete")
+		return
+	}
+	var req historyDeleteRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	root, ok := h.displayRoot(w, now(), req.Repo)
+	if !ok {
+		return
+	}
+	out, err := h.o.DeleteRuns(root, req.Rows)
+	if err != nil {
+		writeDeleteError(w, "history delete", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// serveWaitDismiss deletes one wait record of a registered repo. The request
+// must pass guardMutation; the repo must be a display root. A wait that is
+// already gone is a 200 with alreadyGone. The dismiss function is the one
+// check of the kind, the session ID and the tool-use ID: its DomainError is a
+// 400 (writeDeleteError).
+func (h *handler) serveWaitDismiss(w http.ResponseWriter, r *http.Request) {
+	if !h.guardMutation(w, r, true) {
+		return
+	}
+	if h.o.DismissWait == nil {
+		writeNotConfigured(w, "Wait dismiss")
+		return
+	}
+	var req waitDismissRequest
+	if !decodeBody(w, r, &req) {
+		return
+	}
+	root, ok := h.displayRoot(w, now(), req.Repo)
+	if !ok {
+		return
+	}
+	out, err := h.o.DismissWait(root, req.Kind, req.SessionID, req.ToolUseID)
+	if err != nil {
+		writeDeleteError(w, "wait dismiss", err)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 // serveLearning returns the body of one learning entry of a registered repo.
 // It only reads, so it needs no token, like the snapshot route.
 func (h *handler) serveLearning(w http.ResponseWriter, r *http.Request) {
@@ -698,9 +821,10 @@ func (h *handler) serveLearning(w http.ResponseWriter, r *http.Request) {
 
 // displayRoot resolves repo, the path that the page sent, to the display root
 // it names. It is the one check of the repo field of the archive, clear,
-// delete and learning routes: an empty repo writes the 400 error, and a repo that is not
-// a display root writes the 404 error. Both return false, so a mutating route
-// never acts on a path from the page that the dashboard does not show.
+// delete, status, dismiss and learning routes: an empty repo writes the 400
+// error, and a repo that is not a display root writes the 404 error. Both
+// return false, so a mutating route never acts on a path from the page that
+// the dashboard does not show.
 func (h *handler) displayRoot(w http.ResponseWriter, t time.Time, repo string) (string, bool) {
 	if repo == "" {
 		writeBadRequest(w, "The repo field is required")
@@ -772,12 +896,13 @@ func writeArchiveError(w http.ResponseWriter, err error) {
 	writeAPIError(w, status, code, message, suggestion)
 }
 
-// writeDeleteError maps an error of Options.DeletePreplan, DeleteDeferred or
-// DeleteLearning to a status and a code. A DomainError is a 400 with code
-// BAD_REQUEST. A DataError, an InfraError and any other error is a 500 with
-// code DELETE_FAILED; it is also written to the server log, and a missing
-// Suggestion becomes suggestReadLog. An item that is already gone is not an
-// error: the delete function returns it as a result, and the route answers 200.
+// writeDeleteError maps an error of Options.DeletePreplan, DeleteDeferred,
+// DeleteLearning, SetPreplanStatus, DeleteRuns or DismissWait to a status and
+// a code. A DomainError is a 400 with code BAD_REQUEST. A DataError, an
+// InfraError and any other error is a 500 with code DELETE_FAILED; it is also
+// written to the server log, and a missing Suggestion becomes suggestReadLog.
+// An item that is already gone is not an error: the delete function returns it
+// as a result, and the route answers 200.
 func writeDeleteError(w http.ResponseWriter, what string, err error) {
 	var de *mcpserver.DomainError
 	if errors.As(err, &de) {

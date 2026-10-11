@@ -244,14 +244,14 @@ var shipSkillsStepHeaders = map[string]string{
 // the run's steps[] scaffold actually holds an entry for it. ship_prepare
 // builds that scaffold with shipmeta.InitialShipStepsFromConfig(stepsList)
 // — one entry per CONFIGURED step — so the only names that can appear are
-// shipmeta.ValidSteps members. received-review and commit-fixes are not in
-// ValidSteps (they are conditional, hand-sequenced steps, not configurable
-// ones), so no /ship run ever seeds an entry for them and begin-step would
-// fail with `step "received-review" not found in state`. They record their
-// outcome through the generic "decide" action instead, the same as the
-// inline steps with no scaffold entry. shipmeta.InitialShipSteps()'s fixed
-// 6-entry scaffold does name both, but only ship_state action="init" uses
-// it — never the /ship path this skill documents.
+// shipmeta.ValidSteps members. received-review is not in ValidSteps, but
+// ship_prepare seeds its entry after review (shipSeedReceivedReview). Its
+// section therefore routes through begin-step/complete-step. commit-fixes
+// gets no entry and records its outcome through the generic "decide" action,
+// the same as the inline steps with no scaffold entry.
+// shipmeta.InitialShipSteps()'s fixed 6-entry scaffold does name both, but
+// only ship_state action="init" uses it — never the /ship path this skill
+// documents.
 //
 // The terminal "cleanup" step is a shipmeta.ReservedSteps entry driven by
 // the dedicated "cleanup-pipeline" action rather than a per-step one.
@@ -264,7 +264,7 @@ var shipSkillsStepExpectedActions = map[string][]string{
 	"execute":             {"begin-step", "complete-step"},
 	"commit":              {"begin-step", "commit-check", "complete-step"},
 	"review":              {"begin-step", "complete-step"},
-	"received-review":     {"decide"},
+	"received-review":     {"begin-step", "complete-step"},
 	"commit-fixes":        {"decide"},
 	"harden":              {"begin-step", "skip"},
 	"verify-openspec":     {"decide"},

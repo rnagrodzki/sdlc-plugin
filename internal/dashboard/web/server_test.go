@@ -168,6 +168,19 @@ type fakeActions struct {
 	delLearning [][3]string // root, date, heading
 	delOut      tools.DashboardDeleteOut
 	delErr      error
+
+	// The status, History delete and wait dismiss functions share delErr and
+	// delOut (statusOut for the status function) with the delete functions.
+	statusArgs [][3]string // root, slug, status
+	statusOut  tools.DashboardPreplanStatusOut
+	runsArgs   []fakeRunsCall
+	waitArgs   [][4]string // root, kind, sessionID, toolUseID
+}
+
+// fakeRunsCall is one call of the DeleteRuns function of the fake.
+type fakeRunsCall struct {
+	root string
+	rows []tools.DashboardRunKey
 }
 
 // archive is the Archive function of the fake: it records the call.
@@ -210,19 +223,40 @@ func (f *fakeActions) deleteLearning(root, date, heading string) (tools.Dashboar
 	return f.delOut, f.delErr
 }
 
-// calls returns the number of calls to all six functions.
-func (f *fakeActions) calls() int {
-	return len(f.archiveIn) + len(f.clearRoots) + len(f.learnArgs) +
-		len(f.delPreplan) + len(f.delDeferred) + len(f.delLearning)
+// setPreplanStatus is the SetPreplanStatus function of the fake: it records
+// the call.
+func (f *fakeActions) setPreplanStatus(root, slug, status string) (tools.DashboardPreplanStatusOut, error) {
+	f.statusArgs = append(f.statusArgs, [3]string{root, slug, status})
+	return f.statusOut, f.delErr
 }
 
-// newActionHandler builds a request handler whose archive, clear, learning and
-// delete functions are the ones of f. The only registered repo is /repo/a.
+// deleteRuns is the DeleteRuns function of the fake: it records the call.
+func (f *fakeActions) deleteRuns(root string, rows []tools.DashboardRunKey) (tools.DashboardDeleteOut, error) {
+	f.runsArgs = append(f.runsArgs, fakeRunsCall{root: root, rows: rows})
+	return f.delOut, f.delErr
+}
+
+// dismissWait is the DismissWait function of the fake: it records the call.
+func (f *fakeActions) dismissWait(root, kind, sessionID, toolUseID string) (tools.DashboardDeleteOut, error) {
+	f.waitArgs = append(f.waitArgs, [4]string{root, kind, sessionID, toolUseID})
+	return f.delOut, f.delErr
+}
+
+// calls returns the number of calls to all nine functions.
+func (f *fakeActions) calls() int {
+	return len(f.archiveIn) + len(f.clearRoots) + len(f.learnArgs) +
+		len(f.delPreplan) + len(f.delDeferred) + len(f.delLearning) +
+		len(f.statusArgs) + len(f.runsArgs) + len(f.waitArgs)
+}
+
+// newActionHandler builds a request handler whose archive, clear, learning,
+// delete, status and dismiss functions are the ones of f. The only registered repo is /repo/a.
 func newActionHandler(t *testing.T, f *fakeActions) *handler {
 	t.Helper()
 	o := testOptions(t, &fakeCollector{repo: "a"})
 	o.Archive, o.ClearCache, o.LearningBody = f.archive, f.clear, f.learning
 	o.DeletePreplan, o.DeleteDeferred, o.DeleteLearning = f.deletePreplan, f.deleteDeferred, f.deleteLearning
+	o.SetPreplanStatus, o.DeleteRuns, o.DismissWait = f.setPreplanStatus, f.deleteRuns, f.dismissWait
 	return newHandler(context.Background(), o, testToken, 4242, time.Unix(1000, 0).UTC(), func() {})
 }
 
@@ -410,6 +444,9 @@ func TestHandler_HostCheck(t *testing.T) {
 		{"POST", "/api/preplan-delete"},
 		{"POST", "/api/deferred-delete"},
 		{"POST", "/api/learning-delete"},
+		{"POST", "/api/preplan-status"},
+		{"POST", "/api/history-delete"},
+		{"POST", "/api/wait-dismiss"},
 		{"GET", "/api/learning?repo=%2Frepo%2Fa&date=2026-10-08&heading=x"},
 		{"GET", "/nope"},
 	}
@@ -468,6 +505,15 @@ func TestHandler_Routes(t *testing.T) {
 		{"GET", "/api/learning-delete", 405},
 		{"PUT", "/api/learning-delete", 405},
 		{"DELETE", "/api/learning-delete", 405},
+		{"GET", "/api/preplan-status", 405},
+		{"PUT", "/api/preplan-status", 405},
+		{"DELETE", "/api/preplan-status", 405},
+		{"GET", "/api/history-delete", 405},
+		{"PUT", "/api/history-delete", 405},
+		{"DELETE", "/api/history-delete", 405},
+		{"GET", "/api/wait-dismiss", 405},
+		{"PUT", "/api/wait-dismiss", 405},
+		{"DELETE", "/api/wait-dismiss", 405},
 		{"POST", "/api/learning", 405},
 		{"PUT", "/api/learning", 405},
 		{"DELETE", "/api/learning", 405},
@@ -551,6 +597,12 @@ func TestHandler_TokenOnlyInIndex(t *testing.T) {
 		{"POST", "/api/deferred-delete", testHost},
 		{"GET", "/api/learning-delete", testHost},
 		{"POST", "/api/learning-delete", testHost},
+		{"GET", "/api/preplan-status", testHost},
+		{"POST", "/api/preplan-status", testHost},
+		{"GET", "/api/history-delete", testHost},
+		{"POST", "/api/history-delete", testHost},
+		{"GET", "/api/wait-dismiss", testHost},
+		{"POST", "/api/wait-dismiss", testHost},
 		{"GET", "/", "evil.example:7385"},
 	}
 	for _, o := range others {
@@ -584,6 +636,9 @@ func TestHandler_TokenOnlyInIndex(t *testing.T) {
 			"POST /api/preplan-delete":  postJSON(ah, "/api/preplan-delete", `{"repo":"/repo/a","slug":"auth-flow"}`, mutationHeader()),
 			"POST /api/deferred-delete": postJSON(ah, "/api/deferred-delete", `{"repo":"/repo/a","id":"d-1"}`, mutationHeader()),
 			"POST /api/learning-delete": postJSON(ah, "/api/learning-delete", `{"repo":"/repo/a","date":"2026-10-09","heading":"h"}`, mutationHeader()),
+			"POST /api/preplan-status":  postJSON(ah, "/api/preplan-status", `{"repo":"/repo/a","slug":"auth-flow","status":"paused"}`, mutationHeader()),
+			"POST /api/history-delete":  postJSON(ah, "/api/history-delete", `{"repo":"/repo/a","rows":[{"kind":"plan","branch":"feat/x","endedAt":"2026-10-01T10:00:00Z"}]}`, mutationHeader()),
+			"POST /api/wait-dismiss":    postJSON(ah, "/api/wait-dismiss", `{"repo":"/repo/a","kind":"question","sessionId":"s1","toolUseId":"t1"}`, mutationHeader()),
 		}
 		for name, rec := range recs {
 			if strings.Contains(rec.Body.String(), testToken) {
@@ -774,7 +829,7 @@ func TestHandler_GuardMutation(t *testing.T) {
 	})
 }
 
-// TestHandler_ArchiveClearGuards pins the checks of the five routes that
+// TestHandler_ArchiveClearGuards pins the checks of the eight routes that
 // change files: a request without the Origin or the token of the server, or
 // with a wrong body type or size, is refused and calls nothing.
 func TestHandler_ArchiveClearGuards(t *testing.T) {
@@ -784,6 +839,9 @@ func TestHandler_ArchiveClearGuards(t *testing.T) {
 		{"/api/preplan-delete", `{"repo":"/repo/a","slug":"auth-flow"}`},
 		{"/api/deferred-delete", `{"repo":"/repo/a","id":"d-1"}`},
 		{"/api/learning-delete", `{"repo":"/repo/a","date":"2026-10-09","heading":"h"}`},
+		{"/api/preplan-status", `{"repo":"/repo/a","slug":"auth-flow","status":"paused"}`},
+		{"/api/history-delete", `{"repo":"/repo/a","rows":[{"kind":"plan","branch":"feat/x","endedAt":"2026-10-01T10:00:00Z"}]}`},
+		{"/api/wait-dismiss", `{"repo":"/repo/a","kind":"question","sessionId":"s1","toolUseId":"t1"}`},
 	}
 	with := func(k, v string) map[string]string {
 		m := mutationHeader()
@@ -1095,10 +1153,14 @@ type deleteRoute struct {
 	// bodyWithRepo returns okBody with the repo field set to repo.
 	bodyWithRepo func(repo string) string
 	logLabel     string // the label of the server log line of a 500
+	// ownOutput is true for a route whose 200 body is not a
+	// tools.DashboardDeleteOut: the test of the route pins that body itself.
+	ownOutput bool
 }
 
 // runDeleteRouteTests pins the request parse and the status table that the
-// three delete routes share.
+// write routes share: the three delete routes, the History delete route, the
+// wait dismiss route and the preplan status route.
 func runDeleteRouteTests(t *testing.T, rt deleteRoute) {
 	t.Helper()
 	const readLog = "Read server.log, fix the named path, then try again."
@@ -1114,6 +1176,9 @@ func runDeleteRouteTests(t *testing.T, rt deleteRoute) {
 	}
 
 	t.Run("success", func(t *testing.T) {
+		if rt.ownOutput {
+			t.Skip("the test of the route pins its own 200 body")
+		}
 		f := &fakeActions{delOut: okOut}
 		rec, logged := post(t, f, rt.okBody)
 		if rec.Code != 200 {
@@ -1138,6 +1203,9 @@ func runDeleteRouteTests(t *testing.T, rt deleteRoute) {
 	})
 
 	t.Run("already gone is a 200", func(t *testing.T) {
+		if rt.ownOutput {
+			t.Skip("the test of the route pins its own 200 body")
+		}
 		f := &fakeActions{delOut: goneOut}
 		rec, logged := post(t, f, rt.okBody)
 		if rec.Code != 200 {
@@ -1384,8 +1452,184 @@ func TestHandler_LearningDelete(t *testing.T) {
 	})
 }
 
+// runKeyText turns one History row key into the text that the tests of the
+// History delete route compare.
+func runKeyText(k tools.DashboardRunKey) string {
+	return k.Kind + "|" + k.Branch + "|" + k.EndedAt
+}
+
+// TestHandler_PreplanStatus pins POST /api/preplan-status: the shared request
+// parse and status table, then the 200 bodies of the status function.
+func TestHandler_PreplanStatus(t *testing.T) {
+	runDeleteRouteTests(t, deleteRoute{
+		path:     "/api/preplan-status",
+		okBody:   `{"repo":"/repo/a","slug":"auth-flow","status":"paused"}`,
+		wantArgs: []string{"auth-flow", "paused"},
+		emptyKey: map[string]string{
+			"slug missing":   `{"repo":"/repo/a","status":"paused"}`,
+			"slug empty":     `{"repo":"/repo/a","slug":"","status":"paused"}`,
+			"status missing": `{"repo":"/repo/a","slug":"auth-flow"}`,
+			"status empty":   `{"repo":"/repo/a","slug":"auth-flow","status":""}`,
+		},
+		recorded: func(f *fakeActions) [][]string {
+			var out [][]string
+			for _, c := range f.statusArgs {
+				out = append(out, c[:])
+			}
+			return out
+		},
+		bodyWithRepo: func(repo string) string {
+			return fmt.Sprintf(`{"repo":%q,"slug":"auth-flow","status":"paused"}`, repo)
+		},
+		logLabel:  "preplan status",
+		ownOutput: true,
+	})
+
+	body := `{"repo":"/repo/a","slug":"auth-flow","status":"paused"}`
+	for _, tc := range []struct {
+		name string
+		out  tools.DashboardPreplanStatusOut
+		want string
+	}{
+		{"changed", tools.DashboardPreplanStatusOut{Changed: true, Status: "paused", Message: "Status of auth-flow is now paused."},
+			`{"changed":true,"status":"paused","message":"Status of auth-flow is now paused."}`},
+		{"unchanged is a 200", tools.DashboardPreplanStatusOut{Changed: false, Status: "paused", Message: "Status of auth-flow is already paused."},
+			`{"changed":false,"status":"paused","message":"Status of auth-flow is already paused."}`},
+	} {
+		t.Run("success "+tc.name, func(t *testing.T) {
+			f := &fakeActions{statusOut: tc.out}
+			logged := captureStderr(t)
+			rec := postJSON(newActionHandler(t, f), "/api/preplan-status", body, mutationHeader())
+			if rec.Code != 200 {
+				t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+			}
+			if got := strings.TrimSpace(rec.Body.String()); got != tc.want {
+				t.Errorf("body = %q; want %q", got, tc.want)
+			}
+			if want := [][3]string{{"/repo/a", "auth-flow", "paused"}}; !reflect.DeepEqual(f.statusArgs, want) {
+				t.Errorf("calls = %v; want %v", f.statusArgs, want)
+			}
+			if logged.Len() != 0 {
+				t.Errorf("a 200 was logged: %q", logged.String())
+			}
+		})
+	}
+}
+
+// TestHandler_HistoryDelete pins POST /api/history-delete.
+func TestHandler_HistoryDelete(t *testing.T) {
+	const okRow = `{"kind":"plan","branch":"feat/x","endedAt":"2026-10-01T10:00:00Z"}`
+	runDeleteRouteTests(t, deleteRoute{
+		path:     "/api/history-delete",
+		okBody:   `{"repo":"/repo/a","rows":[` + okRow + `]}`,
+		wantArgs: []string{"plan|feat/x|2026-10-01T10:00:00Z"},
+		// The route passes an absent, an empty and a null rows field to the
+		// delete function, which is the one check of the list.
+		emptyKey: map[string]string{
+			"rows missing": `{"repo":"/repo/a"}`,
+			"rows empty":   `{"repo":"/repo/a","rows":[]}`,
+			"rows null":    `{"repo":"/repo/a","rows":null}`,
+		},
+		recorded: func(f *fakeActions) [][]string {
+			var out [][]string
+			for _, c := range f.runsArgs {
+				call := []string{c.root}
+				for _, k := range c.rows {
+					call = append(call, runKeyText(k))
+				}
+				out = append(out, call)
+			}
+			return out
+		},
+		bodyWithRepo: func(repo string) string {
+			return fmt.Sprintf(`{"repo":%q,"rows":[`+okRow+`]}`, repo)
+		},
+		logLabel: "history delete",
+	})
+
+	t.Run("rows keep their order and fields", func(t *testing.T) {
+		f := &fakeActions{delOut: tools.DashboardDeleteOut{Deleted: true, Message: "Deleted 2 History rows."}}
+		body := `{"repo":"/repo/a","rows":[` +
+			`{"kind":"ship","branch":"","endedAt":"2026-10-03T10:00:00Z"},` + okRow + `]}`
+		rec := postJSON(newActionHandler(t, f), "/api/history-delete", body, mutationHeader())
+		if rec.Code != 200 {
+			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		want := []fakeRunsCall{{root: "/repo/a", rows: []tools.DashboardRunKey{
+			{Kind: "ship", Branch: "", EndedAt: "2026-10-03T10:00:00Z"},
+			{Kind: "plan", Branch: "feat/x", EndedAt: "2026-10-01T10:00:00Z"},
+		}}}
+		if !reflect.DeepEqual(f.runsArgs, want) {
+			t.Errorf("calls = %+v; want %+v", f.runsArgs, want)
+		}
+	})
+
+	for name, body := range map[string]string{
+		"rows is a string":    `{"repo":"/repo/a","rows":"plan"}`,
+		"rows holds a string": `{"repo":"/repo/a","rows":["plan"]}`,
+		"endedAt is a number": `{"repo":"/repo/a","rows":[{"kind":"plan","endedAt":7}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeActions{}
+			rec := postJSON(newActionHandler(t, f), "/api/history-delete", body, mutationHeader())
+			wantAPIError(t, rec, 400, codeBadRequest)
+			if f.calls() != 0 {
+				t.Errorf("a refused body made %d calls; want 0", f.calls())
+			}
+		})
+	}
+
+	// A null entry decodes to an empty key; the delete function refuses it.
+	t.Run("rows holds a null entry", func(t *testing.T) {
+		f := &fakeActions{delErr: &mcpserver.DomainError{Msg: "key message"}}
+		rec := postJSON(newActionHandler(t, f), "/api/history-delete", `{"repo":"/repo/a","rows":[null]}`, mutationHeader())
+		wantAPIError(t, rec, 400, codeBadRequest)
+		if want := []fakeRunsCall{{root: "/repo/a", rows: []tools.DashboardRunKey{{}}}}; !reflect.DeepEqual(f.runsArgs, want) {
+			t.Errorf("calls = %+v; want %+v", f.runsArgs, want)
+		}
+	})
+}
+
+// TestHandler_WaitDismiss pins POST /api/wait-dismiss.
+func TestHandler_WaitDismiss(t *testing.T) {
+	runDeleteRouteTests(t, deleteRoute{
+		path:     "/api/wait-dismiss",
+		okBody:   `{"repo":"/repo/a","kind":"question","sessionId":"s1","toolUseId":"t1"}`,
+		wantArgs: []string{"question", "s1", "t1"},
+		emptyKey: map[string]string{
+			"kind missing":      `{"repo":"/repo/a","sessionId":"s1","toolUseId":"t1"}`,
+			"kind empty":        `{"repo":"/repo/a","kind":"","sessionId":"s1","toolUseId":"t1"}`,
+			"sessionId missing": `{"repo":"/repo/a","kind":"question","toolUseId":"t1"}`,
+			"toolUseId missing": `{"repo":"/repo/a","kind":"question","sessionId":"s1"}`,
+		},
+		recorded: func(f *fakeActions) [][]string {
+			var out [][]string
+			for _, c := range f.waitArgs {
+				out = append(out, c[:])
+			}
+			return out
+		},
+		bodyWithRepo: func(repo string) string {
+			return fmt.Sprintf(`{"repo":%q,"kind":"question","sessionId":"s1","toolUseId":"t1"}`, repo)
+		},
+		logLabel: "wait dismiss",
+	})
+
+	t.Run("permission wait has no toolUseId", func(t *testing.T) {
+		f := &fakeActions{delOut: tools.DashboardDeleteOut{Deleted: true, Message: "The wait is dismissed."}}
+		rec := postJSON(newActionHandler(t, f), "/api/wait-dismiss", `{"repo":"/repo/a","kind":"permission","sessionId":"s1"}`, mutationHeader())
+		if rec.Code != 200 {
+			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if want := [][4]string{{"/repo/a", "permission", "s1", ""}}; !reflect.DeepEqual(f.waitArgs, want) {
+			t.Errorf("calls = %v; want %v", f.waitArgs, want)
+		}
+	})
+}
+
 // TestHandler_DeleteDecodesWireShape pins that the delete routes decode the
-// JSON field names of the contract: slug, id, date and heading.
+// JSON field names of the contract: slug, id, date, heading, status, rows,
+// kind, sessionId and toolUseId.
 func TestHandler_DeleteDecodesWireShape(t *testing.T) {
 	f := &fakeActions{delOut: tools.DashboardDeleteOut{Deleted: true, Message: "ok"}}
 	h := newActionHandler(t, f)
@@ -1393,13 +1637,16 @@ func TestHandler_DeleteDecodesWireShape(t *testing.T) {
 		{"/api/preplan-delete", `{"repo":"/repo/a","slug":"auth-flow","extra":1}`},
 		{"/api/deferred-delete", `{"repo":"/repo/a","id":"d-1","extra":1}`},
 		{"/api/learning-delete", `{"repo":"/repo/a","date":"2026-10-09","heading":"h","extra":1}`},
+		{"/api/preplan-status", `{"repo":"/repo/a","slug":"auth-flow","status":"paused","extra":1}`},
+		{"/api/history-delete", `{"repo":"/repo/a","rows":[{"kind":"plan","branch":"b","endedAt":"t","extra":1}],"extra":1}`},
+		{"/api/wait-dismiss", `{"repo":"/repo/a","kind":"question","sessionId":"s1","toolUseId":"t1","extra":1}`},
 	} {
 		if rec := postJSON(h, c.path, c.body, mutationHeader()); rec.Code != 200 {
 			t.Errorf("POST %s = %d; want 200 (body %q)", c.path, rec.Code, rec.Body.String())
 		}
 	}
-	if f.calls() != 3 {
-		t.Errorf("calls = %d; want 3", f.calls())
+	if f.calls() != 6 {
+		t.Errorf("calls = %d; want 6", f.calls())
 	}
 }
 
@@ -1514,6 +1761,9 @@ func TestHandler_NilActionFields(t *testing.T) {
 		{"preplan delete", postJSON(h, "/api/preplan-delete", `{"repo":"/repo/a","slug":"x"}`, mutationHeader()), "Preplan delete is not available on this server"},
 		{"deferred delete", postJSON(h, "/api/deferred-delete", `{"repo":"/repo/a","id":"d-1"}`, mutationHeader()), "Deferred delete is not available on this server"},
 		{"learning delete", postJSON(h, "/api/learning-delete", `{"repo":"/repo/a","date":"d","heading":"h"}`, mutationHeader()), "Learning delete is not available on this server"},
+		{"preplan status", postJSON(h, "/api/preplan-status", `{"repo":"/repo/a","slug":"x","status":"paused"}`, mutationHeader()), "Preplan status is not available on this server"},
+		{"history delete", postJSON(h, "/api/history-delete", `{"repo":"/repo/a","rows":[]}`, mutationHeader()), "History delete is not available on this server"},
+		{"wait dismiss", postJSON(h, "/api/wait-dismiss", `{"repo":"/repo/a","kind":"permission","sessionId":"s1"}`, mutationHeader()), "Wait dismiss is not available on this server"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1530,10 +1780,17 @@ func TestHandler_NilActionFields(t *testing.T) {
 	// The guard runs first: a request without the token never learns that the
 	// function is missing.
 	for _, path := range []string{"/api/run-archive", "/api/cache-clear",
-		"/api/preplan-delete", "/api/deferred-delete", "/api/learning-delete"} {
+		"/api/preplan-delete", "/api/deferred-delete", "/api/learning-delete",
+		"/api/preplan-status", "/api/history-delete", "/api/wait-dismiss"} {
 		header := mutationHeader()
 		delete(header, tokenHeader)
 		wantAPIError(t, postJSON(h, path, `{"repo":"/repo/a","runId":"run-1"}`, header), 403, "FORBIDDEN_TOKEN")
+	}
+
+	// The nil check runs before the body decode: a body that is not JSON still
+	// gets the NOT_CONFIGURED answer from a route without its function.
+	for _, path := range []string{"/api/preplan-status", "/api/history-delete", "/api/wait-dismiss"} {
+		wantAPIError(t, postJSON(h, path, `{"repo":`, mutationHeader()), 500, codeNotConfigured)
 	}
 }
 

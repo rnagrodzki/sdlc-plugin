@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -278,4 +279,197 @@ func e2eSnapshotRepo(t *testing.T, root string) tools.DashboardRepo {
 		t.Fatalf("snapshot repos = %d; want 1", len(snap.Repos))
 	}
 	return snap.Repos[0]
+}
+
+// e2ePost sends one request with the mutation headers, checks the status and
+// decodes the 200 body into out. Any other wantStatus must be a 400 with code
+// BAD_REQUEST; e2ePost then returns the decoded API error and leaves out alone.
+func e2ePost(t *testing.T, h http.Handler, path string, body any, wantStatus int, out any) apiErrorBody {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := postJSON(h, path, string(raw), mutationHeader())
+	if rec.Code != wantStatus {
+		t.Fatalf("POST %s status = %d; want %d (body %q)", path, rec.Code, wantStatus, rec.Body.String())
+	}
+	if wantStatus != http.StatusOK {
+		return wantAPIError(t, rec, wantStatus, codeBadRequest)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), out); err != nil {
+		t.Fatalf("POST %s: decode body %q: %v", path, rec.Body.String(), err)
+	}
+	return apiErrorBody{}
+}
+
+// e2eHasRun reports whether repo lists a History row with kind and endedAt.
+func e2eHasRun(repo tools.DashboardRepo, kind, endedAt string) bool {
+	for _, r := range repo.History {
+		if r.Kind == kind && r.EndedAt == endedAt {
+			return true
+		}
+	}
+	return false
+}
+
+// TestE2E_StatusHistoryAndWaitRoutes runs POST /api/preplan-status,
+// /api/history-delete and /api/wait-dismiss against the real snapshot
+// collector and the real tools functions on a temp repo. It checks that each
+// change shows in the next snapshot or on disk, that the other items stay,
+// and that a repeat call gives the answer of the contract.
+func TestE2E_StatusHistoryAndWaitRoutes(t *testing.T) {
+	oldNow := now
+	now = func() time.Time { return e2eFixedNow }
+	t.Cleanup(func() { now = oldNow })
+
+	repoRoot := t.TempDir()
+	e2eSeedRepo(t, repoRoot)
+
+	const (
+		planTS = "2026-10-10T09:00:00Z"
+		shipTS = "2026-10-10T10:00:00Z"
+	)
+	e2eWriteFile(t, history.NewFileWriter(paths.HistoryDir(repoRoot)).RunsPath(),
+		`{"ts":"`+planTS+`","skill":"plan","branch":"feat/x","outcome":"success","duration_ms":1000}`+"\n"+
+			`{"ts":"`+shipTS+`","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":2000}`+"\n")
+
+	for _, r := range []attention.Record{
+		{Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "t1", Header: "Pick", Text: "Which one?"},
+		{Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "t2", Header: "Pick", Text: "Which other?"},
+		{Kind: attention.KindPermission, SessionID: "s1", Header: "Bash", Text: "Run ls?"},
+	} {
+		if err := attention.Write(repoRoot, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitFile := func(name string) string { return filepath.Join(attention.Dir(repoRoot), name) }
+	exists := func(path string) bool {
+		_, err := os.Stat(path)
+		return err == nil
+	}
+
+	o := testOptions(t, &fakeCollector{})
+	o.Roots = func(time.Time) ([]dashboard.Root, error) {
+		return []dashboard.Root{{Root: repoRoot, LastSeen: e2eFixedNow}}, nil
+	}
+	o.Collect = func(roots []string, at time.Time) tools.DashboardSnapshot {
+		return tools.CollectDashboardSnapshot(roots, at, "test")
+	}
+	o.SetPreplanStatus = tools.DashboardSetPreplanStatus
+	o.DeleteRuns = tools.DashboardDeleteRuns
+	o.DismissWait = tools.DashboardDismissWait
+	h := newHandler(context.Background(), o, testToken, 4242, e2eFixedNow, func() {})
+
+	preplanStatus := func(repo tools.DashboardRepo, slug string) string {
+		for _, p := range repo.Preplans {
+			if p.Slug == slug {
+				return p.Status
+			}
+		}
+		return "<missing>"
+	}
+
+	t.Run("preplan status", func(t *testing.T) {
+		goneStatus, keptStatus := tools.PreplanStatuses[1], tools.PreplanStatuses[2]
+		before := e2eSnapshot(t, h, repoRoot)
+		if got := preplanStatus(before, e2ePreplanGone); got != goneStatus {
+			t.Fatalf("before: status of %s = %q; want %q", e2ePreplanGone, got, goneStatus)
+		}
+
+		want := tools.PreplanStatuses[0]
+		body := map[string]string{"repo": repoRoot, "slug": e2ePreplanGone, "status": want}
+		var out tools.DashboardPreplanStatusOut
+		e2ePost(t, h, "/api/preplan-status", body, http.StatusOK, &out)
+		if !out.Changed || out.Status != want || out.Message == "" {
+			t.Errorf("first call: out = %+v; want changed:true, status %q and a message", out, want)
+		}
+		after := e2eSnapshot(t, h, repoRoot)
+		if got := preplanStatus(after, e2ePreplanGone); got != want {
+			t.Errorf("after: status of %s = %q; want %q", e2ePreplanGone, got, want)
+		}
+		if got := preplanStatus(after, e2ePreplanKept); got != keptStatus {
+			t.Errorf("after: status of %s = %q; want %q (unchanged)", e2ePreplanKept, got, keptStatus)
+		}
+
+		out = tools.DashboardPreplanStatusOut{}
+		e2ePost(t, h, "/api/preplan-status", body, http.StatusOK, &out)
+		if out.Changed || out.Status != want {
+			t.Errorf("second call: out = %+v; want changed:false and status %q", out, want)
+		}
+
+		bad := map[string]string{"repo": repoRoot, "slug": e2ePreplanGone, "status": "done"}
+		got := e2ePost(t, h, "/api/preplan-status", bad, http.StatusBadRequest, nil)
+		if got.Error.Message == "" {
+			t.Error("a status that is not a preplan status gave no message")
+		}
+	})
+
+	t.Run("history delete", func(t *testing.T) {
+		before := e2eSnapshotRepo(t, repoRoot)
+		if !e2eHasRun(before, "plan", planTS) || !e2eHasRun(before, "ship", shipTS) {
+			t.Fatalf("before: history = %+v; want the plan and the ship row", before.History)
+		}
+
+		key := tools.DashboardRunKey{Kind: "plan", Branch: "feat/x", EndedAt: planTS}
+		body := map[string]any{"repo": repoRoot, "rows": []tools.DashboardRunKey{key}}
+		var out tools.DashboardDeleteOut
+		e2ePost(t, h, "/api/history-delete", body, http.StatusOK, &out)
+		if !out.Deleted || out.AlreadyGone || out.Message == "" {
+			t.Errorf("first call: out = %+v; want deleted:true, alreadyGone:false and a message", out)
+		}
+		after := e2eSnapshot(t, h, repoRoot)
+		if e2eHasRun(after, "plan", planTS) || !e2eHasRun(after, "ship", shipTS) {
+			t.Errorf("after: history = %+v; want only the ship row", after.History)
+		}
+
+		// A key that matches no row is a 400 from the tools function.
+		e2ePost(t, h, "/api/history-delete", body, http.StatusBadRequest, nil)
+		// The tools function refuses an absent and an empty rows field.
+		e2ePost(t, h, "/api/history-delete", map[string]any{"repo": repoRoot}, http.StatusBadRequest, nil)
+		e2ePost(t, h, "/api/history-delete", map[string]any{"repo": repoRoot, "rows": []tools.DashboardRunKey{}}, http.StatusBadRequest, nil)
+		if still := e2eSnapshotRepo(t, repoRoot); !e2eHasRun(still, "ship", shipTS) {
+			t.Errorf("a refused delete changed the history: %+v", still.History)
+		}
+	})
+
+	t.Run("wait dismiss", func(t *testing.T) {
+		q1, q2, perm := waitFile("s1-t1.json"), waitFile("s1-t2.json"), waitFile("s1-permission.json")
+		if !exists(q1) || !exists(q2) || !exists(perm) {
+			t.Fatalf("seed: q1 %v, q2 %v, permission %v; want all three", exists(q1), exists(q2), exists(perm))
+		}
+
+		body := map[string]string{"repo": repoRoot, "kind": "question", "sessionId": "s1", "toolUseId": "t1"}
+		var out tools.DashboardDeleteOut
+		e2ePost(t, h, "/api/wait-dismiss", body, http.StatusOK, &out)
+		if !out.Deleted || out.AlreadyGone || out.Message == "" {
+			t.Errorf("first call: out = %+v; want deleted:true, alreadyGone:false and a message", out)
+		}
+		if exists(q1) || !exists(q2) || !exists(perm) {
+			t.Errorf("after: q1 %v, q2 %v, permission %v; want only q1 gone", exists(q1), exists(q2), exists(perm))
+		}
+
+		out = tools.DashboardDeleteOut{}
+		e2ePost(t, h, "/api/wait-dismiss", body, http.StatusOK, &out)
+		if out.Deleted || !out.AlreadyGone {
+			t.Errorf("second call: out = %+v; want deleted:false and alreadyGone:true", out)
+		}
+
+		// A question without its toolUseId is a 400 and deletes no record.
+		noID := map[string]string{"repo": repoRoot, "kind": "question", "sessionId": "s1"}
+		got := e2ePost(t, h, "/api/wait-dismiss", noID, http.StatusBadRequest, nil)
+		if want := "A question wait needs its toolUseId"; got.Error.Message != want {
+			t.Errorf("message = %q; want %q", got.Error.Message, want)
+		}
+		if !exists(q2) || !exists(perm) {
+			t.Errorf("a refused dismiss deleted a record: q2 %v, permission %v", exists(q2), exists(perm))
+		}
+
+		permBody := map[string]string{"repo": repoRoot, "kind": "permission", "sessionId": "s1"}
+		out = tools.DashboardDeleteOut{}
+		e2ePost(t, h, "/api/wait-dismiss", permBody, http.StatusOK, &out)
+		if !out.Deleted || exists(perm) || !exists(q2) {
+			t.Errorf("permission dismiss: out = %+v, permission %v, q2 %v; want only the permission record gone", out, exists(perm), exists(q2))
+		}
+	})
 }

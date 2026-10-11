@@ -31,6 +31,12 @@ timing            {stepSeconds, pipelineSeconds, idleSeconds, human}
 next              {id, instruction, etaSeconds, etaBasis}   // id is the step to resume from
 ```
 
+The seeded `received-review` entry resumes by its status:
+
+- `in_progress` or `failed`: run step 8 again. `begin-step` sets `in_progress` and a new `startedAt`. Fix records dedupe by `healingSameFinding`.
+- `completed`: no received-review call. commit-fixes already ran before `complete-step`. Run rebase, then go to the next configured main-loop step.
+- `pending`: `next` skips the entry, because it has a `condition`. A stop between the review `complete-step` and `begin-step received-review` leaves the findings unrouted.
+
 There is no run to resume in three cases. `read` returns a `DataError` when no ship state file exists for the branch. `read` succeeds with **no** `resumeBriefing` when the only file found is already stamped terminal, or when a state file exists but no step in it ever actually started (nothing was in flight to resume). All three are safe to treat identically. Fall through to the normal fresh-start path (SKILL.md's Step loop, items 3-4) — `ship_prepare`'s own orphan-pruning and `state.Write`'s prune-on-write already remove the stale file as a side effect of writing the new one.
 
 ## --gc handler (R39)

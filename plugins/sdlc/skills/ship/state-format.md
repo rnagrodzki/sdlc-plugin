@@ -78,7 +78,7 @@ There is no `nextPendingStep` field written into the file. The closest equivalen
 
 ## The `steps[]` Scaffold
 
-`ship_prepare` — the real, sole entry point this skill uses to start a run — seeds `steps[]` from `shipmeta.InitialShipStepsFromConfig(stepsList)`, where `stepsList` is the same resolved step list written to `flags.steps`. **This is config-driven: one entry per configured step name, nothing more, nothing less.** A pipeline configured with 6 steps seeds 6 entries; one configured with 10 seeds 10.
+`ship_prepare` — the real, sole entry point this skill uses to start a run — seeds `steps[]` from `shipmeta.InitialShipStepsFromConfig(stepsList)`, where `stepsList` is the same resolved step list written to `flags.steps`. **This is config-driven: one entry per configured step name, nothing more, nothing less.** `ship_prepare` then inserts one more entry, `received-review`, right after `review` when `review` is in `stepsList`. That entry has `kind:"tracked"` and a `condition` key. A pipeline configured with 6 steps seeds 6 entries; one configured with 10 seeds 10.
 
 ```json
 [
@@ -92,13 +92,13 @@ There is no `nextPendingStep` field written into the file. The closest equivalen
 
 (This example reflects `steps: ["execute","commit","review","archive-openspec","pr"]`; substitute the project's actual configured list.)
 
-Every entry carries a `kind`: `"tracked"` for the four step names with a purpose-built dispatch shape in this skill (`execute`, `commit`, `review`, `pr`), `"inline"` for everything else that can appear in `ship.steps` (`verify-openspec`, `archive-openspec`, `harden`, `verify-pipeline`, `await-remote-review`, `learnings-commit`). **`kind` only signals which dispatch style the skill's own prose uses for that step — Agent-dispatched sub-skill for `tracked`, done in this skill's own prose for `inline` — it does NOT mean "no `steps[]` entry" or "no lifecycle."** Both kinds get a real entry and both require the same `begin-step` → `complete-step`/`skip`/`fail` lifecycle calls, or the entry sits at `pending` forever and blocks `next` and the cleanup contract check (see below).
+Every entry carries a `kind`: `"tracked"` for the four configurable step names with a purpose-built dispatch shape in this skill (`execute`, `commit`, `review`, `pr`) and for the seeded `received-review` entry, `"inline"` for everything else that can appear in `ship.steps` (`verify-openspec`, `archive-openspec`, `harden`, `verify-pipeline`, `await-remote-review`, `learnings-commit`). **`kind` only signals which dispatch style the skill's own prose uses for that step — Agent-dispatched sub-skill for `tracked`, done in this skill's own prose for `inline` — it does NOT mean "no `steps[]` entry" or "no lifecycle."** Both kinds get a real entry and both require the same `begin-step` → `complete-step`/`skip`/`fail` lifecycle calls, or the entry sits at `pending` forever and blocks `next` and the cleanup contract check (see below).
 
 > **Known divergence:** the schema's own doc comment for `kind` describes `"inline"` as "recorded via the generic decide action" — this reads as if `decide` replaces the lifecycle calls for inline steps. It does not. `decide` only appends a free-text note to `decisions[]`; it never looks up or mutates a `steps[]` entry (confirmed by reading `shipStateDecide`'s full body — it has no step-lookup at all). An inline step still needs `begin-step`/`complete-step` (or `skip`/`fail`) exactly like a tracked step. Treat the schema comment's phrasing as legacy/misleading, not as the operative contract; this document and `reference.md` describe the actual behavior.
 
-### The two names with no entry at all
+### received-review and commit-fixes
 
-`received-review` and `commit-fixes` are **never** members of `ship.steps` / `flags.steps` — they are conditional sub-steps triggered by review findings at or above `flags.reviewThreshold` (per finding, not by the review's overall Verdict line), not pipeline-composition choices (see `shipmeta.CanonicalSteps`, which excludes both). Because `InitialShipStepsFromConfig` only creates an entry for names present in `stepsList`, these two **never get a `steps[]` entry, under any real `ship_prepare`-driven run.** `begin-step`, `complete-step`, `start`, `complete`, `skip`, and `fail` all look a step up by name (`shipFindStepEntry` — see "Repeated step names" below) and return a `DataError` ("step %q not found in state") for either name. Track their outcome with `ship_state{action:"decide", step:"received-review"|"commit-fixes", detail:{text:"..."}}` instead — `decide` never validates against `steps[]`, so it always succeeds.
+`received-review` and `commit-fixes` are **never** members of `ship.steps` / `flags.steps` — they are conditional sub-steps triggered by review findings at or above `flags.reviewThreshold` (per finding, not by the review's overall Verdict line), not pipeline-composition choices (see `shipmeta.CanonicalSteps`, which excludes both). Because `InitialShipStepsFromConfig` only creates an entry for names present in `stepsList`, it creates neither. `received-review` gets the seeded entry above. `commit-fixes` **never gets a `steps[]` entry**. `begin-step`, `complete-step`, `start`, `complete`, `skip`, and `fail` all look a step up by name (`shipFindStepEntry` — see "Repeated step names" below). The lifecycle actions return a `DataError` ("step %q not found in state") for `commit-fixes`. Track its outcome with `ship_state{action:"decide", step:"commit-fixes", detail:{text:"..."}}` instead — `decide` never validates against `steps[]`, so it always succeeds.
 
 ### A legacy raw scaffold still exists, but this skill never uses it
 
@@ -121,13 +121,13 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 
 | Field | Type | Present when | Description |
 |---|---|---|---|
-| `name` | string | always | One of the configurable step names in `shipmeta.CanonicalSteps` (`harden` included), or — on the legacy raw-`init` scaffold only — `received-review`/`commit-fixes`. |
+| `name` | string | always | One of the configurable step names in `shipmeta.CanonicalSteps` (`harden` included), or `received-review` (seeded after `review`), or — on the legacy raw-`init` scaffold only — `commit-fixes`. |
 | `status` | string | always | See Status Values below. |
 | `kind` | string | `ship_prepare`-driven runs only | `"tracked"` or `"inline"` — dispatch-style hint, not a lifecycle exemption (see above). |
 | `startedAt` | string | status is `in_progress` | Set by `begin-step`. |
 | `completedAt` | string | status is `completed` or `skipped` | Set by `complete-step` / `skip`, and by `commit-check` when it completes the `commit` step. |
 | `result` | any | status is `completed` and `detail.result` was passed, or `commit-check` completed the `commit` step | Free-form value from `detail.result`. On a `commit` step that `commit-check` completed, the result string that `commit-check` returned. |
-| `condition` | string | only on the legacy raw-`init` scaffold's `received-review`/`commit-fixes` entries | Never set by `InitialShipStepsFromConfig` — a real `ship_prepare`-driven run has **no entry that ever carries a `condition` key**. |
+| `condition` | string | on the `received-review` entry that `ship_prepare` seeds after `review`, and on the legacy raw-`init` scaffold's `received-review` and `commit-fixes` entries | `InitialShipStepsFromConfig` never sets it. `shipSeedReceivedReview` sets it. |
 | `reason` | string | status is `skipped` and `detail.reason` was passed | Why the step was skipped. |
 | `error` | any | status is `failed` and `detail.error` was passed | Failure detail from `detail.error`. |
 
@@ -141,7 +141,7 @@ This scaffold's entries carry no `kind` field at all (omitted) and — uniquely 
 | `skipped` | Intentionally bypassed; never blocks. |
 | `failed` | Terminated with an error; always blocks progress (and never trips the cleanup contract check — see below). |
 
-**R-b1 proceed-gate** (`shipStepBlocksProceed`): a `pending` step blocks unless it has a `condition` key present. Under a real `ship_prepare`-driven run this exemption is **effectively dead code** — no entry ever carries `condition`, since `InitialShipStepsFromConfig` never sets it. Every entry must be driven to `completed`/`skipped`/`failed` before `next`/`begin-step`'s prior-step check will move past it. (The exemption only matters for the legacy fixed scaffold's `received-review`/`commit-fixes` entries, which this skill never produces.)
+**R-b1 proceed-gate** (`shipStepBlocksProceed`): a `pending` step blocks unless it has a `condition` key present. The seeded `received-review` entry carries `condition`. A `pending` received-review entry therefore never blocks a later step. Every other entry must be driven to `completed`/`skipped`/`failed` before `next`/`begin-step`'s prior-step check will move past it. (On the legacy fixed scaffold, the `received-review` and `commit-fixes` entries both carry `condition`; this skill never produces that scaffold.)
 
 ### Repeated step names
 
@@ -160,13 +160,13 @@ The proceed-gate keeps an earlier entry from being passed while it is `pending`,
 
 `ship_state{action:"next"}` renders `step` and `automation` as bullet fields: it walks `steps[]` **in the order the entries were scaffolded** (the fixed pipeline order), setting `step` to the name of the first entry where R-b1 says progress is blocked. `step` is declared `omitempty` (`ShipNextOut` in `internal/tools/ship_state.go`), so once every entry is terminal it drops out of the rendered output entirely and only `automation` still renders. An `omitempty` field with an empty value is omitted, never shown as `(none)` — see rule 14 in `docs/mcp-output-contract.md`. `automation` resolves via the project's `automation.mode`/`automation.steps` config (see `config-format.md`), defaulting to `"confirm"` on any config-read failure.
 
-Because `steps[]` is now config-driven (see above), `next` walks **every** configured step in order — `verify-openspec`, `archive-openspec`, `harden`, `verify-pipeline`, `await-remote-review`, and `learnings-commit` are all visible to it when configured, not skipped. The one caveat carried over from the scaffold gap: `received-review` and `commit-fixes` are never in `steps[]` at all, so `next` never names them — they are conditional sub-steps this skill's own prose dispatches directly (based on each finding's severity, not the review verdict), not something to wait on `next` for. A `next` result with no `step` bullet (only `automation`) means every *configured* step is terminal; it does not by itself distinguish "pipeline actually done" from "conditional review-fix loop still pending a verdict" — that judgment stays with the skill's own review-verdict handling.
+Because `steps[]` is now config-driven (see above), `next` walks **every** configured step in order — `verify-openspec`, `archive-openspec`, `harden`, `verify-pipeline`, `await-remote-review`, and `learnings-commit` are all visible to it when configured, not skipped. `commit-fixes` is never in `steps[]`, so `next` never names it. `next` names the seeded `received-review` entry only when it is `in_progress` or `failed`: a `pending` entry with its `condition` does not block. This skill's own prose dispatches both conditional sub-steps directly (based on each finding's severity, not the review verdict), not something to wait on `next` for. A `next` result with no `step` bullet (only `automation`) means every *configured* step is terminal; it does not by itself distinguish "pipeline actually done" from "conditional review-fix loop still pending a verdict" — that judgment stays with the skill's own review-verdict handling.
 
 ---
 
 ## `ship_state{action:"todos"}`
 
-Renders one `todos[N]` section per entry — each with `content`, `activeForm`, and `status` bullets — built from `flags.steps` (plus an always-appended synthetic `"cleanup"` entry) joined with whatever status each name has in `steps[]`. Since every configured name now gets a real `steps[]` entry (see above), a configured inline step (`verify-openspec`, `archive-openspec`, `harden`, `verify-pipeline`, `await-remote-review`, `learnings-commit`) renders its **real, current** status here — not a permanent `"pending"`. The only names that always render `"pending"` regardless of what actually happened are `received-review` and `commit-fixes`, since they never have a `steps[]` entry to join against. Use `todos` for the task-tray checklist; do not use it to gate pipeline logic for `received-review`/`commit-fixes` — check `decisions[]` for those instead.
+Renders one `todos[N]` section per entry — each with `content`, `activeForm`, and `status` bullets — built from `flags.steps` (plus an always-appended synthetic `"cleanup"` entry) joined with whatever status each name has in `steps[]`. Since every configured name now gets a real `steps[]` entry (see above), a configured inline step (`verify-openspec`, `archive-openspec`, `harden`, `verify-pipeline`, `await-remote-review`, `learnings-commit`) renders its **real, current** status here — not a permanent `"pending"`. `received-review` and `commit-fixes` are not in `flags.steps`, so `todos` has no row for either, even though `received-review` has a `steps[]` entry. Use `todos` for the task-tray checklist; do not use it to gate pipeline logic for `received-review`/`commit-fixes` — check the `received-review` entry in `steps[]` and `decisions[]` instead.
 
 ---
 
@@ -370,7 +370,7 @@ Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the sta
   | `explorer summary and review rounds not saved: <err>. Fix the cause and call cleanup-pipeline again.` | The summary read or the ship state write failed. Nothing is deleted. |
   | `remove failed: <err>` | The summary and the review rounds are saved, but the evidence directory or the plan state file was not removed. |
 
-Because contract validation only inspects `steps[]` entries, `received-review`/`commit-fixes` (which never get an entry) can never trip this check either way — their outcome is invisible to `cleanup`/`cleanup-pipeline`, tracked only in `decisions[]`.
+Because contract validation only inspects `steps[]` entries, `commit-fixes` (which never gets an entry) can never trip this check. The seeded `received-review` entry can: an `in_progress` entry trips the check, and a `pending` entry with its `condition` does not.
 
 Note: `ship_state{action:"gc"}` (no `-pipeline` suffix) is a different, narrower action used internally by other lifecycle paths — it is **not** the same report shape as `ship_prepare{gc:true}`, which is what the `--gc` CLI entry-mode calls (see `entry-modes.md`). Do not conflate the three.
 

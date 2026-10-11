@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -980,6 +981,12 @@ func TestDashboardSnapshot_AttentionUnreadableFolder(t *testing.T) {
 	if repo.Pipelines[0].Attention != nil {
 		t.Errorf("attention = %+v, want nil", *repo.Pipelines[0].Attention)
 	}
+	if repo.LoneWaits == nil || len(repo.LoneWaits) != 0 {
+		t.Errorf("loneWaits = %#v, want []", repo.LoneWaits)
+	}
+	if len(repo.Warnings) != 1 || !strings.HasPrefix(repo.Warnings[0], "attention folder unread: ") {
+		t.Errorf("warnings = %q, want one \"attention folder unread: ...\" entry", repo.Warnings)
+	}
 }
 
 // TestDashboardAttachAttention checks the branches of dashboardAttachAttention
@@ -1002,27 +1009,35 @@ func TestDashboardAttachAttention(t *testing.T) {
 		recs     []attention.Record
 		wantText string // "" means attention stays nil
 		wantAsk  string
+		wantIdx  []int // indexes in recs that belong to p
 	}{
-		{"no records", pipeline(PipelineRunning, "s1"), nil, "", ""},
+		{"no records", pipeline(PipelineRunning, "s1"), nil, "", "", nil},
 		{"empty session never matches an empty record session", pipeline(PipelineRunning, ""),
-			[]attention.Record{rec("", "q", "2026-10-07T09:55:00Z")}, "", ""},
+			[]attention.Record{rec("", "q", "2026-10-07T09:55:00Z")}, "", "", nil},
 		{"completed pipeline", pipeline(PipelineCompleted, "s1"),
-			[]attention.Record{rec("s1", "q", "2026-10-07T09:55:00Z")}, "", ""},
+			[]attention.Record{rec("s1", "q", "2026-10-07T09:55:00Z")}, "", "", nil},
 		{"stalled pipeline", pipeline(PipelineStalled, "s1"),
-			[]attention.Record{rec("s1", "q", "2026-10-07T09:55:00Z")}, "", ""},
+			[]attention.Record{rec("s1", "q", "2026-10-07T09:55:00Z")}, "", "", nil},
 		{"record with an unparseable time is skipped", pipeline(PipelineRunning, "s1"),
-			[]attention.Record{rec("s1", "valid", "2026-10-07T09:50:00Z"), rec("s1", "broken", "yesterday")}, "valid", "2026-10-07T09:50:00Z"},
+			[]attention.Record{rec("s1", "valid", "2026-10-07T09:50:00Z"), rec("s1", "broken", "yesterday")}, "valid", "2026-10-07T09:50:00Z", []int{0, 1}},
 		{"equal times: the later record wins", pipeline(PipelineRunning, "s1"),
-			[]attention.Record{rec("s1", "first", "2026-10-07T09:50:00Z"), rec("s1", "second", "2026-10-07T09:50:00Z")}, "second", "2026-10-07T09:50:00Z"},
+			[]attention.Record{rec("s1", "first", "2026-10-07T09:50:00Z"), rec("s1", "second", "2026-10-07T09:50:00Z")}, "second", "2026-10-07T09:50:00Z", []int{0, 1}},
 		{"newest wins whatever the list order", pipeline(PipelineRunning, "s1"),
-			[]attention.Record{rec("s1", "newer", "2026-10-07T09:55:00Z"), rec("s1", "older", "2026-10-07T09:40:00Z")}, "newer", "2026-10-07T09:55:00Z"},
+			[]attention.Record{rec("s1", "newer", "2026-10-07T09:55:00Z"), rec("s1", "older", "2026-10-07T09:40:00Z")}, "newer", "2026-10-07T09:55:00Z", []int{0, 1}},
 		{"askedAt is written in UTC", pipeline(PipelineRunning, "s1"),
-			[]attention.Record{rec("s1", "zoned", "2026-10-07T11:00:00+01:00")}, "zoned", "2026-10-07T10:00:00Z"},
+			[]attention.Record{rec("s1", "zoned", "2026-10-07T11:00:00+01:00")}, "zoned", "2026-10-07T10:00:00Z", []int{0}},
+		{"only the records of the session and branch belong to the pipeline", pipeline(PipelineRunning, "s1"),
+			[]attention.Record{rec("s2", "other session", "2026-10-07T09:55:00Z"), rec("s1", "mine", "2026-10-07T09:50:00Z"),
+				{Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "t-main", Branch: "main", Header: "Approach", Text: "other branch", AskedAt: "2026-10-07T09:56:00Z"}},
+			"mine", "2026-10-07T09:50:00Z", []int{1}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := tc.p
-			dashboardAttachAttention(&p, tc.recs)
+			idx := dashboardAttachAttention(&p, tc.recs)
+			if !reflect.DeepEqual(idx, tc.wantIdx) {
+				t.Errorf("matched indexes = %v, want %v", idx, tc.wantIdx)
+			}
 			if tc.wantText == "" {
 				if p.Attention != nil {
 					t.Errorf("attention = %+v, want nil", *p.Attention)
@@ -1037,6 +1052,193 @@ func TestDashboardAttachAttention(t *testing.T) {
 			}
 		})
 	}
+}
+
+// dashLoneTexts returns the Text of every lone wait of repo, in order.
+func dashLoneTexts(repo DashboardRepo) []string {
+	out := make([]string, 0, len(repo.LoneWaits))
+	for _, w := range repo.LoneWaits {
+		out = append(out, w.Text)
+	}
+	return out
+}
+
+// TestDashboardSnapshot_LoneWaitsJoin checks which records the snapshot lists
+// as lone waits next to a running ship pipeline of session s1 on feat/x. The
+// records of that session and branch are taken by the pipeline, the newest
+// one and the older ones. The other records are lone.
+func TestDashboardSnapshot_LoneWaitsJoin(t *testing.T) {
+	root := dashRoot(t)
+	dashRunningShip(t, root, "s1", dashNow.Add(-time.Minute))
+	at := func(min int) time.Time { return dashNow.Add(-time.Duration(min) * time.Minute) }
+	dashWriteAttention(t, root, dashQuestionRecord("s1", "t-new", "feat/x", "matched newest", at(2)))
+	dashWriteAttention(t, root, dashQuestionRecord("s1", "t-old", "feat/x", "matched older", at(20)))
+	dashWriteAttention(t, root, dashQuestionRecord("s1", "t-slug", "feat-x", "matched by slug", at(30)))
+	dashWriteAttention(t, root, dashQuestionRecord("s1", "t-main", "main", "other branch", at(10)))
+	dashWriteAttention(t, root, dashQuestionRecord("s9", "t-s9", "main", "no run", at(5)))
+
+	repo := dashCollect(t, root)
+	if len(repo.Pipelines) != 1 || repo.Pipelines[0].Attention == nil || repo.Pipelines[0].Attention.Text != "matched newest" {
+		t.Fatalf("pipelines = %+v, want one pipeline with attention %q", repo.Pipelines, "matched newest")
+	}
+	want := []string{"no run", "other branch"}
+	if got := dashLoneTexts(repo); !reflect.DeepEqual(got, want) {
+		t.Errorf("lone wait texts = %v, want %v", got, want)
+	}
+}
+
+// TestDashboardSnapshot_LoneWaitsHiddenPipeline checks that a record of a
+// pipeline that the page does not show is a lone wait: a completed ship older
+// than the history window is hidden, and a completed ship inside the window
+// is shown but takes no record, because only a running pipeline takes one.
+func TestDashboardSnapshot_LoneWaitsHiddenPipeline(t *testing.T) {
+	cases := []struct {
+		name      string
+		completed time.Time
+		wantShown int
+	}{
+		{"hidden completed pipeline", dashNow.Add(-30 * time.Hour), 0},
+		{"shown completed pipeline", dashNow.Add(-time.Hour), 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			dashWriteState(t, root, "ship-feat-x-20261007T090000Z.json", map[string]any{
+				"branch": "feat/x", "sessionId": "s1", "pipelineStatus": "completed",
+				"pipelineCompletedAt": dashFormat(tc.completed), "steps": dashSteps(StepCompleted, StepCompleted),
+			}, tc.completed)
+			dashWriteAttention(t, root, dashQuestionRecord("s1", "t1", "feat/x", "left behind", dashNow.Add(-5*time.Minute)))
+
+			repo := dashCollect(t, root)
+			if len(repo.Pipelines) != tc.wantShown {
+				t.Fatalf("pipelines = %d, want %d", len(repo.Pipelines), tc.wantShown)
+			}
+			if got, want := dashLoneTexts(repo), []string{"left behind"}; !reflect.DeepEqual(got, want) {
+				t.Errorf("lone wait texts = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestDashboardSnapshot_LoneWaitsNestedExecute checks that a record of the
+// session of a nested execute run is not a lone wait. The join drops the
+// nested execute pipeline from the final list, so the take must happen in the
+// attach loop and not from the final pipelines.
+func TestDashboardSnapshot_LoneWaitsNestedExecute(t *testing.T) {
+	root := dashRoot(t)
+	dashWriteState(t, root, dashJoinShipFile, dashJoinShipData(), dashJoinFresh)
+	exec := dashJoinExecData("feat/x", "2026-10-07T08:01:00Z", "a1b2c3d")
+	exec["sessionId"] = "s-exec"
+	dashWriteState(t, root, dashJoinExecFile("20261007T080100Z"), exec, dashJoinFresh)
+	dashWriteAttention(t, root, dashQuestionRecord("s-exec", "t1", "feat/x", "execute question", dashNow.Add(-5*time.Minute)))
+	dashWriteAttention(t, root, dashQuestionRecord("s-ship", "t2", "feat/x", "ship question", dashNow.Add(-4*time.Minute)))
+
+	repo := dashCollect(t, root)
+	if len(repo.Pipelines) != 1 || repo.Pipelines[0].Kind != "ship" {
+		t.Fatalf("pipelines = %v, want the ship only", dashJoinKinds(repo.Pipelines))
+	}
+	if got := dashLoneTexts(repo); len(got) != 0 {
+		t.Errorf("lone wait texts = %v, want none", got)
+	}
+}
+
+// TestDashboardSnapshot_LoneWaitsEmpty checks that a repo with no records has
+// loneWaits [], never null.
+func TestDashboardSnapshot_LoneWaitsEmpty(t *testing.T) {
+	root := dashRoot(t)
+	dashRunningShip(t, root, "s1", dashNow.Add(-time.Minute))
+	repo := dashCollect(t, root)
+	if repo.LoneWaits == nil || len(repo.LoneWaits) != 0 {
+		t.Errorf("loneWaits = %#v, want []", repo.LoneWaits)
+	}
+	data, err := json.Marshal(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"loneWaits":[]`) {
+		t.Errorf("repo JSON has no %q: %s", `"loneWaits":[]`, data)
+	}
+}
+
+// TestDashboardLoneWaits_Mapping checks that each DashboardWait field equals
+// the record field, for a question record (with toolUseId) and a permission
+// record (toolUseId "").
+func TestDashboardLoneWaits_Mapping(t *testing.T) {
+	asked := dashFormat(dashNow.Add(-5 * time.Minute))
+	recs := []attention.Record{
+		{Kind: attention.KindQuestion, SessionID: "s9", ToolUseID: "t1", Branch: "main", Header: "Pick a base", Text: "Which branch?", AskedAt: asked},
+		{Kind: attention.KindPermission, SessionID: "s8", Branch: "feat/x", Header: "Permission", Text: "Bash: go test ./...", AskedAt: asked},
+	}
+	got := dashboardLoneWaits(recs, nil)
+	if len(got) != len(recs) {
+		t.Fatalf("waits = %d, want %d", len(got), len(recs))
+	}
+	for _, r := range recs {
+		want := DashboardWait{
+			Kind: r.Kind, SessionID: r.SessionID, ToolUseID: r.ToolUseID, Branch: r.Branch,
+			Header: r.Header, Text: r.Text, AskedAt: r.AskedAt,
+		}
+		found := false
+		for _, w := range got {
+			if w == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("no wait equals %+v in %+v", want, got)
+		}
+	}
+	for _, w := range got {
+		if w.Kind == attention.KindPermission && w.ToolUseID != "" {
+			t.Errorf("permission wait toolUseId = %q, want empty", w.ToolUseID)
+		}
+	}
+}
+
+// TestDashboardLoneWaits_OrderAndLimit checks the order (newest askedAt first,
+// the later record first on equal askedAt), the taken filter, the skip of an
+// unparseable askedAt, the limit of dashboardLoneWaitLimit, and the empty
+// non-nil result.
+func TestDashboardLoneWaits_OrderAndLimit(t *testing.T) {
+	rec := func(text string, min int) attention.Record {
+		return dashQuestionRecord("s1", "t-"+text, "main", text, dashNow.Add(-time.Duration(min)*time.Minute))
+	}
+
+	t.Run("order and taken", func(t *testing.T) {
+		recs := []attention.Record{rec("a", 30), rec("b", 20), rec("c", 20), rec("d", 10), rec("e", 5)}
+		recs = append(recs, attention.Record{Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "t-bad", Text: "bad", AskedAt: "yesterday"})
+		got := dashLoneTexts(DashboardRepo{LoneWaits: dashboardLoneWaits(recs, map[int]bool{3: true})})
+		want := []string{"e", "c", "b", "a"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("texts = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("limit", func(t *testing.T) {
+		var recs []attention.Record
+		for i := 0; i < dashboardLoneWaitLimit+10; i++ {
+			recs = append(recs, rec(fmt.Sprintf("w%02d", i), 200-i)) // later index = newer
+		}
+		got := dashboardLoneWaits(recs, nil)
+		if len(got) != dashboardLoneWaitLimit {
+			t.Fatalf("waits = %d, want %d", len(got), dashboardLoneWaitLimit)
+		}
+		if got[0].Text != fmt.Sprintf("w%02d", dashboardLoneWaitLimit+9) {
+			t.Errorf("first wait = %q, want the newest", got[0].Text)
+		}
+		if last := got[len(got)-1].Text; last != "w10" {
+			t.Errorf("last wait = %q, want %q (the 10 oldest are cut)", last, "w10")
+		}
+	})
+
+	t.Run("empty is not nil", func(t *testing.T) {
+		for _, recs := range [][]attention.Record{nil, {rec("a", 1)}} {
+			got := dashboardLoneWaits(recs, map[int]bool{0: true})
+			if got == nil || len(got) != 0 {
+				t.Errorf("waits = %#v, want []", got)
+			}
+		}
+	})
 }
 
 // dashPlanMeta returns a review run plan of three dimensions: security and
