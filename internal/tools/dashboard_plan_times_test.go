@@ -442,7 +442,7 @@ func TestDashboardPlanTimes_HiddenShipReadsNoFile(t *testing.T) {
 	dashWriteState(t, root, dashJoinShipFile, map[string]any{
 		"branch": "feat/x", "startedAt": "2026-10-04T08:00:00Z", "pipelineStatus": "completed",
 		"pipelineCompletedAt": "2026-10-04T09:00:00Z", "steps": dashSteps(StepCompleted),
-	}, dashNow.Add(-3*dashboardHistoryWindow))
+	}, dashNow.Add(-3*dashboardPipelineWindow))
 	path := filepath.Join(root, paths.DataDir, paths.RunsSubdir, dashJoinExecFile("20261004T081000Z"))
 	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)

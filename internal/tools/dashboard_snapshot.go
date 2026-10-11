@@ -39,8 +39,12 @@ const (
 	// dashboardStallAfter is the age of updatedAt after which a running
 	// pipeline shows as stalled.
 	dashboardStallAfter = 30 * time.Minute
-	// dashboardHistoryWindow is how long a completed or failed pipeline
-	// stays on the dashboard after its updatedAt.
+	// dashboardPipelineWindow is how long a completed or failed pipeline
+	// stays on the dashboard after its updatedAt. It matches the default
+	// state.gc.ttlDays (7 days), after which the state file is swept.
+	dashboardPipelineWindow = 7 * 24 * time.Hour
+	// dashboardHistoryWindow is how far back the dashboard lists open waits
+	// and learnings log entries.
 	dashboardHistoryWindow = 24 * time.Hour
 	// dashboardReviewPrefix starts the folder name of a review run under
 	// runs/ledger/.
@@ -453,8 +457,9 @@ type DashboardDeferred struct {
 // CollectDashboardSnapshot reads the pipeline state of every repo in roots
 // and returns the dashboard snapshot. Roots that name the same repo (a
 // linked worktree's runs/ folder is a symlink to the main worktree's) give
-// one repo entry under the main root. now decides the stalled and 24 h
-// history rules; version is copied into the snapshot.
+// one repo entry under the main root. now decides the stalled, 7 day
+// pipeline and 24 h wait and learnings rules; version is copied into the
+// snapshot.
 func CollectDashboardSnapshot(roots []string, now time.Time, version string) DashboardSnapshot {
 	snap := DashboardSnapshot{
 		GeneratedAt: now.UTC().Format(time.RFC3339),
@@ -710,7 +715,7 @@ func dashboardLoneWaits(recs []attention.Record, taken map[int]bool) (waits []Da
 
 // dashboardFinish stamps updatedAt, applies the stalled rule, and reports
 // whether the pipeline shows: a completed or failed pipeline shows only when
-// updatedAt is within dashboardHistoryWindow of now. A running pipeline with
+// updatedAt is within dashboardPipelineWindow of now. A running pipeline with
 // attention waits for a person, so it never turns stalled.
 func dashboardFinish(p *DashboardPipeline, updated, now time.Time) bool {
 	p.UpdatedAt = dashboardFormatTime(updated)
@@ -719,7 +724,7 @@ func dashboardFinish(p *DashboardPipeline, updated, now time.Time) bool {
 		dashboardAddStalledIssue(p)
 	}
 	if p.Status == PipelineCompleted || p.Status == PipelineFailed {
-		return !updated.IsZero() && now.Sub(updated) <= dashboardHistoryWindow
+		return !updated.IsZero() && now.Sub(updated) <= dashboardPipelineWindow
 	}
 	return true
 }

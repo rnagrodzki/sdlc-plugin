@@ -518,14 +518,18 @@ func TestDashboardSnapshot_HistoryWindow(t *testing.T) {
 		age   time.Duration
 		shows bool
 	}{
-		{"completed within 24 h shows", "ship-feat-x-20261006T090000Z.json",
-			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, 23 * time.Hour, true},
-		{"completed older than 24 h is hidden", "ship-feat-x-20261006T090000Z.json",
-			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, 25 * time.Hour, false},
-		{"failed older than 24 h is hidden", "ship-feat-x-20261006T090000Z.json",
-			map[string]any{"steps": []any{map[string]any{"name": "pr", "status": StepFailed}}}, 25 * time.Hour, false},
-		{"running older than 24 h shows as stalled", "ship-feat-x-20261006T090000Z.json",
-			map[string]any{"steps": dashSteps(StepInProgress)}, 25 * time.Hour, true},
+		{"completed after 25 h still shows", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, 25 * time.Hour, true},
+		{"completed within 7 d shows", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, 7*24*time.Hour - time.Hour, true},
+		{"completed older than 7 d is hidden", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, 7*24*time.Hour + time.Hour, false},
+		{"failed after 25 h still shows", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"steps": []any{map[string]any{"name": "pr", "status": StepFailed}}}, 25 * time.Hour, true},
+		{"failed older than 7 d is hidden", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"steps": []any{map[string]any{"name": "pr", "status": StepFailed}}}, 7*24*time.Hour + time.Hour, false},
+		{"running older than 7 d shows as stalled", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"steps": dashSteps(StepInProgress)}, 8 * 24 * time.Hour, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1089,7 +1093,7 @@ func TestDashboardSnapshot_LoneWaitsJoin(t *testing.T) {
 
 // TestDashboardSnapshot_LoneWaitsHiddenPipeline checks that a record of a
 // pipeline that the page does not show is a lone wait: a completed ship older
-// than the history window is hidden, and a completed ship inside the window
+// than the pipeline window is hidden, and a completed ship inside the window
 // is shown but takes no record, because only a running pipeline takes one.
 func TestDashboardSnapshot_LoneWaitsHiddenPipeline(t *testing.T) {
 	cases := []struct {
@@ -1097,7 +1101,7 @@ func TestDashboardSnapshot_LoneWaitsHiddenPipeline(t *testing.T) {
 		completed time.Time
 		wantShown int
 	}{
-		{"hidden completed pipeline", dashNow.Add(-30 * time.Hour), 0},
+		{"hidden completed pipeline", dashNow.Add(-8 * 24 * time.Hour), 0},
 		{"shown completed pipeline", dashNow.Add(-time.Hour), 1},
 	}
 	for _, tc := range cases {

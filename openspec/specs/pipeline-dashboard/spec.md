@@ -192,7 +192,7 @@ The snapshot SHALL read runs only from the `.sdlc-v2/runs/` folder of the main w
 - **THEN** the page shows no worktree label for the run
 
 ### Requirement: Pipeline status
-The snapshot SHALL give each ship, execute, plan, and review run one status of `running`, `stalled`, `completed`, or `failed`, and SHALL show a `completed` or `failed` run only when its last update is in the last 24 h. A `running` run with `attention` SHALL not turn `stalled`.
+The snapshot SHALL give each ship, execute, plan, and review run one status of `running`, `stalled`, `completed`, or `failed`, and SHALL show a `completed` or `failed` run only when its last update is in the last 7 days. A `running` run with `attention` SHALL not turn `stalled`.
 
 ```mermaid
 stateDiagram-v2
@@ -201,8 +201,8 @@ stateDiagram-v2
   stalled --> running: new update
   running --> completed
   running --> failed: ship step or execute wave failed
-  completed --> [*]: 24 h after last update
-  failed --> [*]: 24 h after last update
+  completed --> [*]: 7 d after last update
+  failed --> [*]: 7 d after last update
 ```
 
 #### Scenario: Stalled run
@@ -212,8 +212,13 @@ stateDiagram-v2
 
 #### Scenario: Old finished run
 - **WHEN** an execute run has `runStatus:"completed"`
-- **AND** its last update is 25 h old
+- **AND** its last update is 7 d 1 h old
 - **THEN** the run is not in the snapshot
+
+#### Scenario: Recent finished run
+- **WHEN** an execute run has `runStatus:"completed"`
+- **AND** its last update is 25 h old
+- **THEN** the run is in the snapshot
 
 #### Scenario: Waiting run
 - **WHEN** a running pipeline has `attention`

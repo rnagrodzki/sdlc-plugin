@@ -64,7 +64,7 @@ For each registered repo, the page shows:
   the repos of the repo filter. A lone wait is an open wait that no shown running
   pipeline owns (same session ID and branch). It shows as a card with Dismiss at the top of the feed (see
   [Dismiss a wait](#dismiss-a-wait)). A
-  `completed` or `failed` pipeline drops off the page 24 hours after its
+  `completed` or `failed` pipeline drops off the page 7 days after its
   last update. Ship and execute pipelines also carry the worktree path they
   ran in. Some read problems of a repo are warnings: an unread preplan
   folder or topic file, more than 100 topic files, an unread
@@ -220,7 +220,7 @@ What Archive does:
 - Only a top-level pipeline row can be archived. A run nested in a ship
   block, such as its execute run or its review run, has no archive icon. It moves
   with its ship.
-- A `completed` or `failed` run is a row for 24 hours after its last update.
+- A `completed` or `failed` run is a row for 7 days after its last update.
   After that the run is not a row, and its id returns `RUN_NOT_FOUND`.
 - Archive moves the files that hold results. It deletes the working
   folders. Archive does not move them.
@@ -273,7 +273,7 @@ answer has one of five codes:
 | Code | HTTP status | Cause | What to do |
 |---|---|---|---|
 | `BAD_RUN_ID` | 400 | The id is not a bare run name. It has a path part, or it does not start with `ship-`, `execute-`, `plan-`, or `review-`. | Send the id of a pipeline row. |
-| `RUN_NOT_FOUND` | 404 | No pipeline row has this id, or the run has no file on disk. A nested run and a finished run older than 24 hours are not rows. | Reload the page. The run is gone. |
+| `RUN_NOT_FOUND` | 404 | No pipeline row has this id, or the run has no file on disk. A nested run and a finished run older than 7 days are not rows. | Reload the page. The run is gone. |
 | `RUN_ACTIVE` | 409 | The row has the status `running`. | Wait until the run ends or stalls. |
 | `CONFIRM_STALLED` | 409 | The row is `stalled`, and the request has no `confirmStalled: true`. | Confirm. Archive removes the resume point. |
 | `ARCHIVE_FAILED` | 500 | A read, a move, or a delete failed. An unexpected error gets this code too. | Read the message. If the message names a link that points nowhere, do the recovery in the message. See [Linked worktrees](getting-started.md#linked-worktrees). Otherwise, fix the permission of the named file, then archive again. |
@@ -939,8 +939,8 @@ joined plan row. A ship state without
   dimensions. The folder stays until the first execute_state `gc` or
   ship_state `cleanup-pipeline` sweep after 7 days. That sweep removes it.
   7 days is the default of `state.gc.ttlDays`. A completed review leaves the
-  page 24 hours after its last update, but its folder stays on disk until the
-  sweep.
+  page 7 days after its last update. The sweep removes its folder at about the
+  same age.
 - **Ship stores the explorer summary and the review rounds at cleanup.**
   The explorer findings of a plan run live in its `.evidence` directory, and
   `cleanup-pipeline` deletes that directory with the plan state file. Before
