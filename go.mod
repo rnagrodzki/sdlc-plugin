@@ -3,6 +3,7 @@ module github.com/rnagrodzki/sdlc-plugin
 go 1.25.5
 
 require (
+	github.com/chromedp/chromedp v0.21.0
 	github.com/google/jsonschema-go v0.4.3
 	github.com/modelcontextprotocol/go-sdk v1.7.0
 	github.com/pelletier/go-toml/v2 v2.4.3
@@ -12,6 +13,8 @@ require (
 )
 
 require (
+	github.com/chromedp/cdproto v0.157.8 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260213210345-44df1a37e875 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/segmentio/asm v1.1.3 // indirect

@@ -106,8 +106,9 @@ example when `/ship`'s own `harden` step already owns hardening for the run.
 
 In every mode, Step 11 writes the status of each accepted finding (`queued`,
 `fixing`, `fixed`, `failed`, `deferred`) to `healing.fixProgress` of the ship
-state. The [dashboard](../dashboard.md) shows these rows on the
-received-review step. The rows are for display only: the review ledger counts
+state. The [dashboard](../dashboard.md) shows these rows in the review queue of
+the `review` step. It shows them on the received-review step when the run
+has no review queue. The rows are for display only: the review ledger counts
 the separate `fixed` records.
 
 The writes need a live `/ship` run. In a standalone run, the first call

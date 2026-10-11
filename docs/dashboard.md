@@ -46,8 +46,9 @@ For each registered repo, the page shows:
     ship start, and its tooltip says so. Standalone plan and
   review steps show no duration. Each step with detail is a tile: waves and tasks, review
   dimensions as cards in balanced columns, review findings, plan
-  guardrails, plan explorers, plan review rounds, the fixes of the
-  received-review step, or the result of a commit step with nothing to
+  guardrails, plan explorers, plan review rounds, the review queue of a
+  ship run, the fixes of the received-review step when the run has no
+  review queue, or the result of a commit step with nothing to
   commit. Each issue has a severity, a location (the file and line of a
   review finding, else the step, wave, or task it came from), and a
   reason. The issues tile lists issues from critical to info and shows at
@@ -58,8 +59,11 @@ For each registered repo, the page shows:
   pipeline whose state has not changed in 30 minutes shows as `stalled`,
   unless it waits for an answer or a permission. A waiting pipeline shows
   "WAITING ON YOU" and the wait time. The header shows a `waiting` count
-  for all repos. The tab title starts with `(N)`, where N is the number of
-  waiting pipelines in the repos of the repo filter. A
+  for all repos: waiting pipelines plus lone waits. The tab title starts
+  with `(N)`, where N is the number of waiting pipelines and lone waits in
+  the repos of the repo filter. A lone wait is an open wait that no shown running
+  pipeline owns (same session ID and branch). It shows as a card with Dismiss at the top of the feed (see
+  [Dismiss a wait](#dismiss-a-wait)). A
   `completed` or `failed` pipeline drops off the page 24 hours after its
   last update. Ship and execute pipelines also carry the worktree path they
   ran in. Some read problems of a repo are warnings: an unread preplan
@@ -88,14 +92,18 @@ For each registered repo, the page shows:
 - **History tab** — the 50 newest runs of `runs.jsonl`, newest first, failed
   ship runs too. Each row shows the outcome, kind, branch, repo, finish time,
   plan time, ship time and total time. Outcome chips with counts filter the
-  rows. The finished and total headers sort the rows. The first click sorts
-  newest or longest first, and the next click turns the order. A row with no
-  value goes last. A reload resets the chips and the sort.
+  rows. The finished, plan, ship and total headers sort the rows. The first
+  click sorts newest or longest first, and the next click turns the order. A
+  row with no value goes last. A reload resets the chips and the sort. Each
+  row has a checkbox, and Delete selected removes the checked rows (see
+  [Delete History rows](#delete-history-rows)).
 - **Preplans tab** — the newest 100 preplan topic files of the repo, newest
   first, with status, topic, path, and change time. Status chips with counts
   filter the rows: all, `in progress`, `ready for plan`, `paused`, and
-  `unknown` (any other status). Each row has a bin icon (see
-  [Delete an item](#delete-an-item)).
+  `unknown` (any other status). The status of a row is a menu that sets the
+  status of the topic file (see
+  [Change a preplan status](#change-a-preplan-status)). Each row has a bin
+  icon (see [Delete an item](#delete-an-item)).
 
 A link `#<pipeline id>` scrolls to that block. `#<pipeline id>/<n>` also
 opens the block and selects step n of its track, counted from 0. `#activity`,
@@ -304,8 +312,10 @@ Details of each class:
 
 Clear keeps these data: `history/` (with `deferred.json`), `learnings/` (with
 `log.md`), `preplan/`, `timings.json`, `runs/`, `run-archive/`, the live
-evidence files, and `~/.sdlc-cache/bin`. Only [Delete an item](#delete-an-item)
-changes `deferred.json`, `log.md`, and the topic files of `preplan/`.
+evidence files, and `~/.sdlc-cache/bin`. Only [Delete an item](#delete-an-item),
+[Change a preplan status](#change-a-preplan-status), and
+[Delete History rows](#delete-history-rows) change `deferred.json`, `log.md`,
+`runs.jsonl`, and the topic files of `preplan/`.
 
 The button clears every repo that the page lists, one after another. The repo
 filter does not change this. `evidence-rotations` and `orphan-reports` belong
@@ -420,6 +430,141 @@ delete can be lost. The read-to-rename window is short.
 The dashboard does not edit a `deferred.json` or a learnings log larger
 than 8 MiB. The delete answers with an error and a suggestion.
 
+## Change a preplan status, delete History rows, dismiss a wait
+
+Three more controls change a file on disk. The page has no undo for any of
+them.
+
+| Control | Where | Question before the change | Route | The server changes |
+|---|---|---|---|---|
+| Status menu | Each row of the Preplans tab | None | `POST /api/preplan-status` | The `**Status:**` line of `<repo>/.sdlc-v2/preplan/<slug>.md` |
+| Delete selected | The History tab | One confirm | `POST /api/history-delete` | The matching lines of `<repo>/.sdlc-v2/history/runs.jsonl` |
+| Dismiss | The card of a lone wait, at the top of the feed | None | `POST /api/wait-dismiss` | One wait record in `<repo>/.sdlc-v2/evidence/attention/` |
+
+### Change a preplan status
+
+The status of a Preplans row is a menu with the tooltip "Change the status
+of this preplan". The menu lists `in progress`, `ready for plan`, and
+`paused`. A topic file with any other status shows a disabled `unknown`
+entry, so the menu still shows the real value. A choice sends one request
+and asks no question. The row shows the new status with the next snapshot.
+
+What the server does:
+
+- **Slug and status check** — The slug follows the same rules as the slug of
+  a [preplan delete](#delete-an-item). The status must be one of the three
+  values above. Any other value gets `BAD_REQUEST`, and the message lists
+  the values.
+- **Rewrite** — The server finds the first `**Status:**` line in the first
+  4 KiB of the topic file. It replaces this line only. Every other byte of
+  the file stays the same, and a line that ends in CR LF keeps its CR. The
+  server writes a temp file first. Then it renames the temp file over the
+  topic file. The new file has the mode 0600.
+- **Same status** — When the file already has the status, the server writes
+  nothing. The answer is `200` with `changed` set to `false`.
+- **Topic file that the server does not rewrite** — A missing file, a folder,
+  and a symbolic link get `BAD_REQUEST`. The server does not follow a link.
+  A file with no `**Status:**` line in its first 4 KiB, and a file larger
+  than 8 MiB, get `DELETE_FAILED`.
+
+The server answers `200` with `{"changed","status","message"}`. `changed` is
+`true` when this request rewrote the line. No lock exists: the preplan skill
+can write the same file, and the last write wins.
+
+On an error, the dialog shows the message and the suggestion, with a Close
+button. The menu goes back to the status of the last snapshot.
+
+### Delete History rows
+
+Each row of the History tab has a checkbox. The checkbox in the header
+selects every row that the outcome chips show. The tab shows "Select rows to
+delete them" until a row is checked, then the count of checked rows. The
+**Delete selected** button is off while no row is checked.
+
+Delete selected asks one confirm before it changes the file. The dialog asks:
+
+```text
+Delete <N> runs from the history?
+This removes the rows from .sdlc-v2/history/runs.jsonl for good. The History tab and the run times lose them.
+```
+
+For one row, the first line is "Delete 1 run from the history?". The plan
+time of a ship row with no stored plan fields comes from a plan row of the same branch.
+The collector computes it, so it is not stored in the ship row (see `planPaired` in the
+[Snapshot contract](#snapshot-contract)). When a checked plan row gives its
+plan time to a ship row that is not checked, the dialog adds a last line:
+"1 ship row loses its plan time." or "<N> ship rows lose their plan time."
+
+What the page and the server do:
+
+- **Requests** — The page sends one request for each repo of the checked
+  rows, one after another. The first request that fails stops the rest. The
+  dialog then names the repos that were already deleted, and the error.
+- **Key** — A row key is `{kind, branch, endedAt}`. `kind` is the `skill` of
+  the line of `runs.jsonl`. `endedAt` is the `ts` text of the line, exactly
+  as stored. `branch` can be empty. A key removes every line that matches
+  all three fields.
+- **Key check** — The server refuses an empty list, more than 50 keys, a key
+  with an empty `kind` or `endedAt`, two equal keys, and a key that matches
+  no line. It answers `BAD_REQUEST`, and it deletes nothing. The History tab
+  shows at most 50 rows for each repo, so the page cannot send more than 50
+  keys.
+- **Rewrite** — The server reads `runs.jsonl` twice. It writes only when both
+  reads are equal, and it tries again once when they differ. After two
+  tries that differ, the answer is `DELETE_FAILED` and the file keeps its
+  bytes. Every line that stays keeps its bytes, a line that does not parse
+  included. The server writes a temp file first, then renames it over
+  `runs.jsonl`. The new file has the mode 0600.
+- **Size limit** — A `runs.jsonl` of more than 8 MiB gets `DELETE_FAILED`.
+
+The server answers `200` with `{"deleted","alreadyGone","message"}`. The
+`message` is "Deleted <N> History rows.", or "Deleted 1 History row." for one
+row. No lock exists. A session that
+appends a run between the second read and the rename can lose that run.
+
+### Dismiss a wait
+
+An open wait that no shown running pipeline owns (same session ID and
+branch) shows as a card at the top of the feed. The card has a **Dismiss** button with the tooltip "Remove this wait
+from the dashboard". The click asks no question and sends one request. The
+card leaves the page with the next snapshot.
+
+Dismiss removes the record of the wait, and nothing else:
+
+| Wait kind | The page sends | The server removes |
+|---|---|---|
+| `question` | `kind`, `sessionId`, `toolUseId` | `<sessionId>-<toolUseId>.json` |
+| `permission` | `kind`, `sessionId` | `<sessionId>-permission.json` |
+
+The files are in `<repo>/.sdlc-v2/evidence/attention/`. Other records of the
+same session stay. Dismiss does not answer the question or the permission
+prompt in the session. The server refuses a `kind` that is not `question` or
+`permission`, an empty `sessionId`, a question with no `toolUseId`, and a
+permission with a `toolUseId`. It answers `BAD_REQUEST`.
+
+The server answers `200` with `{"deleted","alreadyGone","message"}`. The
+`message` is "The wait is dismissed.", or "The wait is already gone." when
+another session or a hook removed the record first. The second case is a
+success, not an error.
+
+On an error, the dialog shows the message and the suggestion, and the card
+stays.
+
+### Errors of these three controls
+
+An error leaves the row or the card on the page, and the
+menu goes back to the status of the last snapshot. After a failed History
+delete, the checkboxes of the History tab clear. The dialog shows the
+message and the suggestion of the error, with a Close button. The page shows
+"The request did not reach the dashboard. Check that it runs, then retry."
+when the server does not answer. The other errors of the routes are in
+[Security](#security). An error of the change itself has one of two codes:
+
+| Code | HTTP status | Cause | What to do |
+|---|---|---|---|
+| `BAD_REQUEST` | 400 | A field is missing or breaks the rules above. Or the topic file, the History file, or a History line is gone. | Reload the page, then try again. |
+| `DELETE_FAILED` | 500 | A read, a write, or a remove failed. Or a file is larger than 8 MiB. Or a topic file has no `**Status:**` line in its first 4 KiB. Or `runs.jsonl` changed during two tries. | Read the suggestion in the message. It names the permission to check, or the file to edit by hand. |
+
 ## Settings
 
 | key | default | range | file |
@@ -476,14 +621,19 @@ port = 7385         # 1024-65535, loopback only
 | `<repo>/.sdlc-v2/reports/*` | ship, execute | run reports. Clear cache class `orphan-reports` deletes the ones that no run owns |
 | `<repo>/.sdlc-v2/history/deferred.json` | ship_state `defer` and `deferred_add`; server | deferred items. The server rewrites it without one item (see [Delete an item](#delete-an-item)) |
 | `<repo>/.sdlc-v2/learnings/log.md` | `learnings_log`; server | learning entries. The server rewrites it without one entry (see [Delete an item](#delete-an-item)) |
-| `<repo>/.sdlc-v2/preplan/<slug>.md` | plan_support `preplan_context`, preplan skill; server | preplan topic files. The server deletes one file (see [Delete an item](#delete-an-item)) |
+| `<repo>/.sdlc-v2/preplan/<slug>.md` | plan_support `preplan_context`, preplan skill; server | preplan topic files. The server deletes one file (see [Delete an item](#delete-an-item)) or rewrites its `**Status:**` line (see [Change a preplan status](#change-a-preplan-status)) |
+| `<repo>/.sdlc-v2/history/runs.jsonl` | ship_state `history_record` and `fail`; plan_mark `done`; server | run history. The server rewrites it without the checked rows (see [Delete History rows](#delete-history-rows)) |
+| `<repo>/.sdlc-v2/evidence/attention/*.json` | hooks `block-askuserquestion-auto`, `record-permission-wait`; server | one record for each open wait. The server deletes one record (see [Dismiss a wait](#dismiss-a-wait)) |
 
 `~/.sdlc-cache` is `paths.CacheDir()`: `$SDLC_CACHE_DIR` when set, else the
 user's home directory, shared with `sdlc-launcher.sh`. `dashboard.Dir()`
 joins `dashboard` onto that root for the first three paths above. The last
-seven paths do not live under `~/.sdlc-cache/dashboard/`. See
-[Archive a run](#archive-a-run), [Clear cache files](#clear-cache-files), and
-[Delete an item](#delete-an-item) for the rules of the last seven paths.
+nine paths do not live under `~/.sdlc-cache/dashboard/`. See
+[Archive a run](#archive-a-run), [Clear cache files](#clear-cache-files),
+[Delete an item](#delete-an-item),
+[Change a preplan status](#change-a-preplan-status),
+[Delete History rows](#delete-history-rows), and
+[Dismiss a wait](#dismiss-a-wait) for the rules of the last nine paths.
 
 - **`server.json`** is written once the listener binds and is removed when
   the server stops — but only by the process whose own PID still matches
@@ -514,11 +664,12 @@ names pass. On its own, this check does **not** stop a cross-origin `POST`
 from a browser tab open on another site: a page can issue a request that
 correctly targets `127.0.0.1:<port>` and still originate from anywhere.
 
-Six `POST` routes change files: `POST /api/stop`, `POST /api/run-archive`,
-`POST /api/cache-clear`, `POST /api/preplan-delete`, `POST /api/deferred-delete`
-and `POST /api/learning-delete`. Each one checks the Origin and the token. Every
-other route is `GET`, including the read-only `GET /api/learning`. `GET /`
-additionally serves `index.html` with its `{{SDLC_TOKEN}}` placeholder
+Nine `POST` routes change files: `POST /api/stop`, `POST /api/run-archive`,
+`POST /api/cache-clear`, `POST /api/preplan-delete`, `POST /api/deferred-delete`,
+`POST /api/learning-delete`, `POST /api/preplan-status`,
+`POST /api/history-delete` and `POST /api/wait-dismiss`. Each one checks the
+Origin and the token. Every other route is `GET`, including the read-only
+`GET /api/learning`. `GET /` additionally serves `index.html` with its `{{SDLC_TOKEN}}` placeholder
 replaced by this server start's token (`Cache-Control: no-store`, so the
 token is never cached) — only a client that has actually loaded the page has
 ever seen that value.
@@ -539,7 +690,7 @@ automatically to every request, including one a malicious page fires at
 same-origin request forged by something that was never served the page at
 all, such as a `curl` replay run from the same machine.
 
-The archive, clear and delete routes read a JSON body. After the Origin and token
+The archive, clear, delete, status and dismiss routes read a JSON body. After the Origin and token
 checks, they also need the header `Content-Type: application/json` (else
 `415`) and a body of at most 8 KiB (else `413`). The stop route has no body,
 so it skips these two checks.
@@ -552,9 +703,12 @@ so it skips these two checks.
 | `POST /api/preplan-delete` | Deletes one preplan topic file. See [Delete an item](#delete-an-item). | Origin, token, JSON content type, body of 8 KiB or less. The body is `{"repo", "slug"}`. Both are required. |
 | `POST /api/deferred-delete` | Deletes the first deferred item with the id. | Same. The body is `{"repo", "id"}`. Both are required. |
 | `POST /api/learning-delete` | Deletes the newest learning with the date and heading. | Same. The body is `{"repo", "date", "heading"}`. All are required. |
+| `POST /api/preplan-status` | Sets the `**Status:**` line of one preplan topic file. See [Change a preplan status](#change-a-preplan-status). | Same. The body is `{"repo", "slug", "status"}`. All are required. `status` is `in progress`, `ready for plan` or `paused`. |
+| `POST /api/history-delete` | Deletes the `runs.jsonl` lines that match the keys. See [Delete History rows](#delete-history-rows). | Same. The body is `{"repo", "rows"}`. `rows` holds 1 to 50 keys `{"kind", "branch", "endedAt"}`. `repo`, `rows`, and `kind` and `endedAt` of each key are required. |
+| `POST /api/wait-dismiss` | Deletes one wait record. See [Dismiss a wait](#dismiss-a-wait). | Same. The body is `{"repo", "kind", "sessionId", "toolUseId"}`. `repo`, `kind` and `sessionId` are required. `kind` is `question` or `permission`. A question needs `toolUseId`. A permission has none. |
 | `GET /api/learning?repo=…&date=…&heading=…` | Returns the text of one learning. See [Detail viewer](#detail-viewer). | No Origin check and no token: the route only reads, like `GET /api/snapshot`. `repo`, `date` and `heading` are required. The text is redacted and cut at 8000 characters. |
 
-For the archive, clear, delete and learning routes, `repo` must be the path of a
+For the archive, clear, delete, status, dismiss and learning routes, `repo` must be the path of a
 repo that the page shows. The server compares it with the registered repos,
 where a linked worktree counts as its main repo. Any other path gets `404`,
 and the server does no file work.
@@ -565,15 +719,15 @@ with a wrong method (`405`) answer with plain text. The error answers are:
 
 | Status | Code | Cause | Route |
 |---|---|---|---|
-| 403 | `FORBIDDEN_ORIGIN`, `FORBIDDEN_TOKEN` | The Origin or the token check failed | The six `POST` routes |
-| 415 | `BAD_CONTENT_TYPE` | The content type is not `application/json` | Archive, clear, delete |
-| 413 | `BODY_TOO_LARGE` | The body is over 8 KiB | Archive, clear, delete |
-| 400 | `BAD_BODY` | The server could not read the body | Archive, clear, delete |
-| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo` or `slug` is missing, or `slug` is not a file name, or the topic path is a folder (preplan delete). Or `repo` or `id` is missing (deferred delete). Or `repo`, `date` or `heading` is missing (learning delete, or `GET /api/learning`). | Archive, clear, delete, learning |
-| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, delete, learning |
-| 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, delete, learning |
+| 403 | `FORBIDDEN_ORIGIN`, `FORBIDDEN_TOKEN` | The Origin or the token check failed | The nine `POST` routes |
+| 415 | `BAD_CONTENT_TYPE` | The content type is not `application/json` | Archive, clear, delete, status, dismiss |
+| 413 | `BODY_TOO_LARGE` | The body is over 8 KiB | Archive, clear, delete, status, dismiss |
+| 400 | `BAD_BODY` | The server could not read the body | Archive, clear, delete, status, dismiss |
+| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo` or `slug` is missing, or `slug` is not a file name, or the topic path is a folder (preplan delete). Or `repo` or `id` is missing (deferred delete). Or `repo`, `date` or `heading` is missing (learning delete, or `GET /api/learning`). Or the `slug` or the `status` breaks a rule, or the topic file is gone, a folder or a link (preplan status). Or `rows` is empty or holds more than 50 keys, a key is not valid, or a key matches no line (History delete). Or `kind`, `sessionId` or `toolUseId` breaks a rule (wait dismiss). | Archive, clear, delete, status, dismiss, learning |
+| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, delete, status, dismiss, learning |
+| 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, delete, status, dismiss, learning |
 | 500 | `CLEAR_FAILED` | Clear cannot read the repo folder | Clear |
-| 500 | `DELETE_FAILED` | The file could not be read or written. The suggestion names the fix. | Delete |
+| 500 | `DELETE_FAILED` | The file could not be read or written. The suggestion names the fix. | Delete, status, dismiss |
 | 500 | `LEARNING_READ_FAILED` | The server cannot read the learnings log | Learning |
 | 400, 404, 409, 500 | `BAD_RUN_ID`, `RUN_NOT_FOUND`, `RUN_ACTIVE`, `CONFIRM_STALLED`, `ARCHIVE_FAILED` | See [Archive a run](#archive-a-run) | Archive |
 
@@ -665,8 +819,10 @@ collector reads the data, and the tool action that writes it.
 |---|---|---|
 | `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, `findings`, `guardrails`, `result`, or `fixes`. It tells which field of `detail` is filled. | Collector, not stored |
 | `steps[].startedAt`, `steps[].completedAt` | `startedAt` and `completedAt` of a ship step or an execute wave, as RFC 3339 text. No key when the time is absent or does not parse. A running step has no `completedAt`. The `plan` step of a ship block gets its times from `linkedPlan` of the ship state, else from the plan row of `runs.jsonl` (old runs). With neither, it has no times. The steps of a standalone plan or review pipeline have no times. | ship_state step actions; execute_state wave actions; ship_state `complete-step` of `execute` for `linkedPlan` |
-| `steps[].detail.fixes` | `healing.fixProgress[]` of the ship state, in stored order. Each row has `title` (redacted, at most 120 characters), `severity`, `file`, `line` (absent when 0), and `status`: `queued`, `fixing`, `fixed`, `failed`, or `deferred`. A record with an unknown status or severity is skipped. | ship_state `healing_record` kind `fix-progress` |
-| received-review step | Added after the first `review` step of a ship block when `healing.fixProgress[]` holds a valid fix record. A `fixProgress` value that is not a list, or a list with records and no valid fix record, adds a `state` issue. `in_progress` while a row is `queued` or `fixing` on a live run, else `completed`. `startedAt` is the earliest `firstAt`. `completedAt` is the latest `updatedAt`. | Collector, derived |
+| `steps[].detail.fixes` | `healing.fixProgress[]` of the ship state, in stored order. Each row has `title` (redacted, at most 120 characters), `severity`, `file`, `line` (absent when 0), `status`: `queued`, `fixing`, `fixed`, `failed`, or `deferred`, and `origin` (`local-review` or `pr-comment`, `local-review` when the record has none). A record with an unknown status, severity or origin is skipped. | ship_state `healing_record` kind `fix-progress` |
+| `steps[].detail.fixes[].origin` | `origin` of the fix record. `local-review` when absent. | received-review |
+| received-review step | A ship run with a review step has a seeded received-review entry in its ship state, and the step shows from that entry with its stored status and times. An older run gets the step after the first `review` step when `healing.fixProgress[]` holds a valid fix record. A `fixProgress` value that is not a list, or a list with records and no valid fix record, adds a `state` issue. The step of an older run is `in_progress` while a row is `queued` or `fixing` on a live run, else `completed`. Its `startedAt` is the earliest `firstAt`. Its `completedAt` is the latest `updatedAt`. | ship_prepare (seeded entry); Collector, derived |
+| `steps[].detail.reviewQueue` | Set on the `review` step of a ship block that has `reviewTotals`. `rows` holds one row for each fix record, then one row for each deferred finding that has no fix record with the same file, line and title. It has at most 200 rows. A row has `title`, `severity`, `file`, `line` (`""` when none), `status`, `origin`, `dimension` (`""` when unknown) and `text` (`""` when unknown). `status` is a fix status, or `below` for a deferred finding with the reason `below-threshold` or no reason, or `deferred` for a deferred finding with any other reason. When the queue has no row from these two sources, it has one row with the status `open` for each review finding of the joined review run. A row gets its `dimension` from the review finding that has its file and line, only when exactly one finding has them. A row with no text of its own gets its `text` from that finding too. `threshold` is `flags.reviewThreshold`, `info` when absent or not a severity. `unrouted` is `reviewTotals.unaccounted` (at least 0) when the run has a fix record, else 0. `reason` is `no-findings` when the review found 0 and the queue has no row, `all-below-threshold` when every row is `below`, else `""`. | Collector, not stored |
 | `steps[].detail.waves` | `waves[]` of the execute state, with `number`, `status`, `committedSha`, and `tasks[]`. A task name is the name of its task row, else the name in the wave's `planned[]`, else the `plannedTasks` name. | The execute_state wave and task actions: `wave-start`, `wave-done`, `wave-fail`, `task-done`, `task-fail`, `wave-commit`, `wave-committed`, and the others that edit `waves[]` |
 | `steps[].detail.queued` | `plannedTasks` of the execute state that are in no wave and in no planned wave. `plannedTasks` is one `{id, name}` for each `### Task N:` heading of the plan. | execute_state `init`, only when `planPath` is readable |
 | `steps[].detail.dimensions` | One row for each planned dimension in the `run.meta` of a `runs/ledger/review-*/` folder. A row with no worker file is `pending`. A stopped row is `skipped` with a `reason`. A worker file holds `checkinAt`, `checkoutAt`, and `findings`. The collector derives `name` (the dimension name; the file name when `run.meta` plans no dimension), `status` (completed when `checkoutAt` is set), and the `findings` count and `worst` severity of the dimension. The `run.meta` of the folder ties the review to its ship run. A worker file that cannot be read or does not parse is an `in_progress` row with no findings, and it counts as a run dimension. Findings that are not a JSON list count as none. A `run.meta` that exists but cannot be read or does not parse gives the rows of the worker files, as with no `run.meta`. Each of these three cases also adds a `state` issue that names the file. Each dimension row also has `findingItems`: its finding rows (`text`, `severity`, `file`, `line`), the same rows as `steps[].detail.findings`, or `[]` when the dimension has no finding. | execute_state `ledger_checkin`, `ledger_checkout`, `ledger_skip` |
@@ -679,10 +835,12 @@ collector reads the data, and the tool action that writes it.
 | `steps[].detail.rounds`, `.maxRounds` | `reviewRounds` of the plan state. In a ship block: `planReviewRounds` of the ship state, which holds the same rows. `maxRounds` is the review-loop limit of the plan skill, not a stored value. | plan_mark `review-round`; ship_state `cleanup-pipeline` for `planReviewRounds` |
 | `steps[].detail.roundTotals`, `.repairLimit`, `.outcomes` | From `reviewRounds` and `reviewOutcome` of the plan state. `roundTotals` holds `iterations` (the number of stored rounds), `violations`, `fixes`, and `distinct`. When every round has a `findings` list, `violations` and `fixes` count distinct finding IDs across all rounds, a finding counts as fixed when any round fixed it, and `distinct` is `true`. Else they are the sums of the `found` and `fixed` counts of the rounds, and `distinct` is `false`. `repairLimit` is derived, not stored: it is `true` when the last stored round has a number of at least the review-loop limit (5) and its merged status is Issues Found. `outcomes` is one `{id, text, choice, reason}` for each finding of `reviewOutcome.findings`, in stored order. | plan_mark `review-round`, `review-outcome` |
 | `issues[].source`, `.severity`, `.text`, `.file`, `.line`, `.ref` | Failed ship steps, failed or partial waves, failed tasks that have an error, `issues[]` of the state file, review findings, review ledger files that cannot be used and a damaged `healing.fixProgress` (as `state` issues with no `ref`), and the stalled notice. `source` is `step`, `wave`, `review`, `state`, `task`, or `pipeline`. `.file` and `.line` are set for `review` issues only. `ref` is the step, wave, dimension, or task. | Collector, derived. Inputs come from ship_state `fail`, the execute_state wave and task actions, and `ledger_checkout` |
-| `sessionId` | `sessionId` of the ship or execute state; `""` when unknown. A plan state is created with no session ID. A review block has none. | ship_prepare or ship_state `init`; execute_state `init` |
+| `sessionId` | `sessionId` of the ship, execute or plan state; `""` when unknown. A plan state gets its session ID from the `record-mcp-invocation` hook after each `plan_prepare` call. A review block has none. | ship_prepare or ship_state `init`; execute_state `init`; hook `record-mcp-invocation` |
 | `attention` | The newest open wait record of the pipeline session and branch. It holds `kind` (`question` or `permission`), `askedAt`, `header`, and `text`. Only a `running` pipeline with a `sessionId` has it. Absent when no wait is open. | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
+| `repos[].loneWaits[]` | Open waits that no shown running pipeline owns (same session ID and branch), newest first, max 50. `[]` when none. A wait record older than 24 hours is not listed. Each item has `kind` (`question` or `permission`), `sessionId`, `toolUseId` (`""` for a permission), `branch`, `header`, `text` and `askedAt`. See [Dismiss a wait](#dismiss-a-wait). | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
 | `commitWaves` | `commitWaves` of the execute state; an absent key counts as `true`. A ship block gets it from its joined execute run. It is absent on a plan block, a review block, and a ship block with no joined execute run. | execute_state `init` |
 | `repos[].history` | The 50 newest rows of `.sdlc-v2/history/runs.jsonl`, newest first. A row gives `kind` (the row's `skill`), `branch`, `outcome`, `startedAt`, `endedAt`, `durationMs`, and `totalMs`. A ship row with a linked plan also gives `planStartedAt` and `planDurationMs` (from `plan_started_at`, `plan_duration_ms`). `totalMs` is `ts` minus `plan_started_at` for such a row, else `durationMs`. A `plan_started_at` that does not parse or is after `ts` counts as no linked plan. `0` means no value. `startedAt` is `started_at`, else `ts` minus `duration_ms`. A line that does not parse is skipped. | ship_state `history_record` (outcome `success`, `failure`, or `partial`); ship_state `fail` (the first `fail` of a run appends a `failure` row); plan_mark `done` (a `plan` row with outcome `done`). `history_record` with `detail.skill` `ship` and `detail.branch`, and `fail`, copy `plan_file`, `plan_started_at`, and `plan_duration_ms` from the ship state `linkedPlan` |
+| `repos[].history[].planPaired`, `.planEndedAt` | A ship row with no valid stored plan time gets the plan time of the newest plan row of its branch that ended before the ship and after the previous ship of that branch. The plan row needs a start that parses, a `duration_ms` above 0, and a start that is not after the ship end. The ship row then gets `planStartedAt`, `planDurationMs`, a `totalMs` that counts from the plan start, `planPaired` set to `true`, and `planEndedAt`, the `ts` of that plan row. Both keys are absent otherwise. The pairing reads every line of `runs.jsonl`, so a plan row outside the newest 50 rows still pairs with a ship row inside them. | Collector, not stored |
 | `repos[].sessions[].commandGroups` | One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
 | `repos[].deferred[]` | The open items of `.sdlc-v2/history/deferred.json`, high priority first, then oldest first. Each item has `id`, `priority`, `description`, `created`, `source`, `severity`, `file`, `line`, and `reason`. A value that the record lacks is `""`, or `0` for `line`, never `null`. | ship_state `defer` and `deferred_add`; execute_state `issue-draft` |
 | `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times. `[]` when none, never `null`. | Collector, derived |
@@ -711,7 +869,10 @@ collector reads the data, and the tool action that writes it.
   joined plan row of `runs.jsonl` (see
   [How runs join a ship block](#how-runs-join-a-ship-block)), the same row
   that the ship_state `report` action reads (`shipPlanTimingFor`). When the ship state holds a valid fix record, the
-  `received-review` step has `fixes`. On a completed run, the step shows
+  `received-review` step has `fixes`. A `review` step that has `reviewTotals` also has
+  `reviewQueue`: `threshold`, `rows`, `unrouted` and `reason`. When the `review` step has a
+  queue, the page draws the fixes in the queue tile and draws no tile for the
+  `received-review` step. On a completed run, the step shows
   completed. A row keeps its last status. A `queued` or `fixing` row on a
   completed run means that the fix pass stopped.
 

@@ -97,9 +97,56 @@ Conditional steps — triggered automatically, not part of the step list you
 configure:
 
 - `received-review` — Runs when review findings meet or exceed the configured
-  severity threshold. Ship passes it every such finding verbatim.
+  severity threshold. Ship passes it every such finding verbatim. The run
+  records it as a step. With no finding at or above the threshold, the step
+  completes with 0 fixes.
 - `commit-fixes` — Commits the fixes `received-review` made, as a separate
   commit from your feature commit.
+
+### The received-review step
+
+When `review` is a configured step, the saved state of a run has a
+`received-review` step right after `review`. The step starts as `pending`.
+It does not block a later step while it is `pending`.
+
+Ship records the step with two calls. `begin-step` starts it, and
+`complete-step` ends it. On routes 2 to 6 below, ship makes both calls, also
+when nothing needs a fix. A run that fails in this step calls `fail` in
+place of `complete-step`.
+
+Ship counts three numbers from the review output:
+
+- `K` — the findings at or above `flags.reviewThreshold`.
+- `M` — the total of findings in the header of the review output.
+- `P` — the finding headings that ship parsed.
+
+Ship checks the routes in this order. The first route that matches wins.
+
+| Route | When | What ship does | Result of `complete-step` |
+|---|---|---|---|
+| 1 | `M` is known and `P` is less than `M` | Asks whether to run `/review` again. It calls no step action before you answer. Run again: review starts over. Continue: routes 2 to 6 with the parsed findings. | none yet |
+| 2 | `K` is 1 or more | Starts the step, dispatches `/received-review`, runs `commit-fixes` when `/received-review` changed files, then ends the step. | `K finding(s) sent to received-review` |
+| 3 | `K` is 0 and `M` is 0 | Starts the step and ends it. It dispatches nothing. | `0 fixes — no findings` |
+| 4 | `K` is 0 and `M` is unknown | Starts the step and ends it. It dispatches nothing. | `0 fixes — no finding at or above the threshold` |
+| 5 | `K` is 0, `M` is 1 or more, and `P` is `M` or more | Starts the step and ends it. It dispatches nothing. | `0 fixes — all M findings below threshold` |
+| 6 | `K` is 0 and `P` is less than `M` (you chose Continue) | Starts the step and ends it. It dispatches nothing. | `0 fixes — parsed P of M findings, none at or above the threshold` |
+| — | The dispatch fails, you stop it, it returns no result, or `commit-fixes` fails | Calls `fail` with the reason. The step is `failed`, and the issue list of the run shows it. | none |
+
+In the result text, `K`, `M` and `P` stand for the numbers of the run. The
+`await-remote-review` step can dispatch `/received-review` again. That
+dispatch records a decision only. It makes no second `begin-step`. On
+routes 3 to 6, ship dispatches nothing. A finding below the threshold is not
+lost: ship saves it for [/deferred](deferred.md). After the step, ship goes
+on with the rebase.
+
+On `--resume`, the saved status of the step decides what ship does:
+
+- `in_progress` or `failed` — ship runs the routes again. `begin-step` sets a
+  new start time. A fix that an earlier try recorded is not recorded twice.
+- `completed` — ship does not call `/received-review` again. It goes on with
+  the rebase.
+- `pending` — the step has not started. A stop between the end of `review`
+  and the start of this step leaves the findings of the review unrouted.
 
 ## Examples
 

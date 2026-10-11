@@ -2,9 +2,10 @@
 
 Open, check, or stop the local sdlc dashboard: one web page that shows the
 pipelines of every registered repo, their progress, session activity,
-issues, and preplan topic files (Preplans tab). The page can also delete one
-preplan topic file, deferred item, or learning for good. The full command
-name is `/sdlc:dashboard`.
+issues, and preplan topic files (Preplans tab). The page can also change the
+status of a preplan topic file, delete History rows, dismiss a wait that no
+pipeline shows, and delete one preplan topic file, deferred item, or learning
+for good. The full command name is `/sdlc:dashboard`.
 
 ## When to use
 
@@ -19,6 +20,9 @@ name is `/sdlc:dashboard`.
 - You want to delete a preplan topic file (Preplans tab), or a deferred item
   or a learning (Activity tab). The delete is permanent: the page has no
   undo. See [Delete an item](../dashboard.md#delete-an-item).
+- You want to change the status of a preplan topic file, delete History rows,
+  or dismiss a wait that no pipeline shows. See
+  [Change a preplan status, delete History rows, dismiss a wait](../dashboard.md#change-a-preplan-status-delete-history-rows-dismiss-a-wait).
 
 ## Syntax
 
