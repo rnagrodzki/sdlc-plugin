@@ -949,6 +949,29 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .fix-status.fixed { color: var(--signal-green); }
 .fix-status.fixing { color: var(--signal-amber); }
 .fix-status.failed { color: var(--signal-red); }
+/* Review queue: the rows are buttons that open the detail viewer. */
+.review-queue .q-filter { margin: 10px 0 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.review-queue .q-filter + .q-filter { margin-top: 6px; }
+.review-queue .q-filter .chip { padding: 3px 10px; font-size: 12px; }
+.review-queue .fix-list { margin-top: 10px; }
+.q-clean { font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); padding-left: 4px; }
+.q-row {
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid rgba(148,178,196,0.08);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-radius: 0;
+}
+.q-row:hover, .q-row:focus-visible { background: rgba(148,178,196,0.06); outline: none; }
+.q-row:focus-visible { box-shadow: inset 2px 0 0 var(--scan-cyan); }
+.fix-status.open { color: var(--rail); font-style: italic; }
+/* A finding below the review threshold: dim, it does not qualify for a fix. */
+.fix-status.below { color: var(--rail); opacity: 0.75; }
+.q-row:has(.fix-status.below) .fix-title { color: var(--rail); }
 
 /* Session: id beside the name, timeline as time, kind, text. */
 .sec-id { margin-bottom: 6px; font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); }
@@ -1044,6 +1067,13 @@ details[open] > summary .chev { transform: rotate(90deg); }
 /* ---------- History tab: outcome filter and sort headers ---------- */
 
 .hist-filter { margin: -4px 0 14px; }
+/* Row selection and Delete selected of the History tab. */
+.hist-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 10px; }
+.hist-picked { font-family: var(--font-mono); font-size: 12px; color: var(--rail); }
+.hist-picked.on { color: var(--ivory); }
+.hist th.h-pick, .hist td.h-pick { width: 28px; padding-right: 8px; }
+.hist-pick { width: 14px; height: 14px; margin: 0; accent-color: var(--scan-cyan); cursor: pointer; vertical-align: middle; }
+.hist tr.picked td { background: rgba(94,200,229,0.06); }
 .hist-filter .chip { display: inline-flex; align-items: center; gap: 6px; }
 .hist-filter .out { font-size: 11px; }
 .hist th.sortable { padding-right: 16px; }
@@ -1100,6 +1130,33 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .pp-progress { color: var(--signal-amber); }
 .pp-ready { color: var(--signal-green); }
 .pp-paused, .pp-unknown { color: var(--rail); }
+/* The status menu of a row: it looks like the status tag, with a caret and a frame on hover or focus.
+   The caret is drawn with borders: a data URI SVG needs an xmlns URL, and the page loads no URL. */
+.pp-set { position: relative; align-items: center; gap: 4px; }
+.pp-set::after {
+  content: '';
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  margin-top: -2px;
+  border: 4px solid transparent;
+  border-top: 5px solid var(--rail);
+  border-bottom: 0;
+  pointer-events: none;
+}
+.pp-menu {
+  appearance: none;
+  -webkit-appearance: none;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 1px 20px 1px 4px;
+  cursor: pointer;
+}
+.pp-menu:hover, .pp-menu:focus-visible { border-color: var(--rail); outline: none; }
+.pp-menu option { color: var(--ivory); background: var(--panel); }
 /* Every cell starts on the line of the topic name, as the Activity rows do. */
 .pp td { vertical-align: top; }
 .pp .pp-status, .pp .h-repo, .pp .h-when { line-height: 20px; }

@@ -365,6 +365,24 @@ describe('sortHistory', () => {
     assert.deepEqual(ids(view.sortHistory(noTotal, { key: 'total', dir: 'desc' })), ['z', 'x', 'y']);
     assert.deepEqual(ids(view.sortHistory(noTotal, { key: 'total', dir: 'asc' })), ['z', 'x', 'y']);
   });
+
+  test('plan and ship: the first click sorts longest first, the second shortest first, empty rows last', () => {
+    const timed = [
+      { id: 'p1', kind: 'plan', durationMs: 26000, totalMs: 26000 },
+      { id: 's1', kind: 'ship', durationMs: 3600000, planDurationMs: 1200000, totalMs: 6000000 },
+      { id: 'x', kind: 'execute', durationMs: 50000, totalMs: 50000 },
+      { id: 's2', kind: 'ship', durationMs: 60000, totalMs: 60000 },
+    ];
+    const first = view.nextHistorySort(null, 'plan');
+    assert.deepEqual(first, { key: 'plan', dir: 'desc' });
+    assert.deepEqual(ids(view.sortHistory(timed, first)), ['s1', 'p1', 'x', 's2']);
+    const second = view.nextHistorySort(first, 'plan');
+    assert.deepEqual(second, { key: 'plan', dir: 'asc' });
+    assert.deepEqual(ids(view.sortHistory(timed, second)), ['p1', 's1', 'x', 's2']);
+    const ship = view.nextHistorySort(null, 'ship');
+    assert.deepEqual(ids(view.sortHistory(timed, ship)), ['s1', 's2', 'p1', 'x']);
+    assert.deepEqual(ids(view.sortHistory(timed, view.nextHistorySort(ship, 'ship'))), ['s2', 's1', 'p1', 'x']);
+  });
 });
 
 describe('historyCells', () => {
@@ -2959,8 +2977,12 @@ describe('render preplanPanel', () => {
     assert.equal(oneByClass(first, 'h-repo').attrs.title, '/b');
     assert.equal(oneByClass(first, 'h-when').attrs.title, '2026-10-08T10:00:00Z');
     assert.equal(oneByClass(first, 'h-when').textContent, view.dateLabel('2026-10-08T10:00:00Z'));
-    assert.equal(oneByClass(first, 'pp-status').className, 'pp-status pp-ready');
-    assert.equal(textOf(oneByClass(first, 'pp-status')), '●ready for plan');
+    assert.equal(oneByClass(first, 'pp-status').className, 'pp-status pp-set pp-ready');
+    // The tag holds the glyph and a status menu with the status of the file chosen.
+    assert.equal(oneByClass(first, 'pp-glyph').textContent, '●');
+    const menu = oneByClass(first, 'pp-menu');
+    assert.equal(menu.tagName, 'select');
+    assert.deepEqual(menu.children.filter((o) => o.selected).map((o) => o.value), ['ready for plan']);
   });
 
   test('status chips: all, then each status with its count; all is chosen by default', () => {
@@ -3014,8 +3036,11 @@ describe('render preplanPanel', () => {
     ] }];
     const panel = render.preplanPanel(fakeDoc(), view, odd, new Set());
     const tag = oneByClass(rowsOf(panel)[0], 'pp-status');
-    assert.equal(tag.className, 'pp-status pp-unknown');
-    assert.equal(textOf(tag), '?unknown');
+    assert.equal(tag.className, 'pp-status pp-set pp-unknown');
+    assert.equal(oneByClass(tag, 'pp-glyph').textContent, '?');
+    const options = oneByClass(tag, 'pp-menu').children;
+    assert.deepEqual(options.filter((o) => o.selected).map((o) => o.value), ['unknown']);
+    assert.equal(options[0].disabled, true);
     const chips = chipsOf(panel);
     assert.deepEqual(chips.map((c) => c.attrs['data-pp-status']), ['all', 'in progress', 'ready for plan', 'paused', 'unknown']);
     assert.equal(oneByClass(chips[4], 'chip-n').textContent, '1');
@@ -3472,8 +3497,11 @@ describe('render tiles from the shared fixture', () => {
   });
 
   test('a review dimensions tile: totals line above the rows, an amber count above 0', () => {
-    const p = fixturePipeline('sdlc-plugin', SHIP);
-    const t = tileByName(fixtureBlock('sdlc-plugin', SHIP), 'review');
+    // A review step with no review queue draws the dimensions tile.
+    const p = structuredClone(fixturePipeline('sdlc-plugin', SHIP));
+    delete stepOf(p, 'review').detail.reviewQueue;
+    const block = render.pipelineBlock(fakeDoc(), view, fixtureRepo('sdlc-plugin'), p, { collapsed: false, closed: {}, now: FIXTURE_NOW, tz: 'UTC' });
+    const t = tileByName(block, 'review');
     const body = t.children[1];
     assert.equal(body.children[0].className, 'round-sum');
     assert.equal(body.children[0].textContent, view.reviewTotalsText(stepOf(p, 'review').detail.reviewTotals));
@@ -4334,8 +4362,8 @@ describe('render rows and the detail lookup, over the fixture', () => {
     }
   });
 
-  test('the rows cover the four item kinds, and every key is different', () => {
-    assert.deepEqual([...new Set(keys.map((k) => k.split(':')[0]))].sort(), ['deferred', 'finding', 'issue', 'learning']);
+  test('the rows cover the five item kinds, and every key is different', () => {
+    assert.deepEqual([...new Set(keys.map((k) => k.split(':')[0]))].sort(), ['deferred', 'finding', 'issue', 'learning', 'queue-row']);
     assert.equal(new Set(keys).size, keys.length);
   });
 
@@ -4596,29 +4624,30 @@ describe('render historyTable', () => {
     assert.equal(textOf(oneByClass(panel, 'list-title')), 'Finished runs (3)');
     const table = oneByClass(panel, 'hist');
     assert.equal(table.tagName, 'table');
-    assert.deepEqual(heads(table), ['outcome', 'kind', 'branch', 'repo', 'finished', 'plan', 'ship', 'total']);
+    // The first head holds the select-all box and has no name.
+    assert.deepEqual(heads(table), ['', 'outcome', 'kind', 'branch', 'repo', 'finished', 'plan', 'ship', 'total']);
     const rows = rowsOf(panel);
     assert.deepEqual(rows.map((r) => oneByClass(r, 'out').className), ['out success', 'out partial', 'out failure']);
     assert.deepEqual(rows.map((r) => textOf(oneByClass(r, 'out'))), ['✓success', '◐partial', '✕failure']);
     assert.equal(oneByClass(rows[0], 'out').children[0].attrs['aria-hidden'], 'true');
-    assert.deepEqual(rows[1].children.slice(1).map((c) => c.textContent), [
+    assert.deepEqual(rows[1].children.slice(2).map((c) => c.textContent), [
       'execute', 'fix/b', 'b', view.relativeWhen('2026-10-08T12:00:00Z', now, 'UTC'), '—', '—', view.formatDuration(3720000),
     ]);
-    assert.deepEqual(rows[1].children.slice(4).map((c) => c.textContent), ['2h ago', '—', '—', '1h 02m']);
+    assert.deepEqual(rows[1].children.slice(5).map((c) => c.textContent), ['2h ago', '—', '—', '1h 02m']);
     assert.deepEqual(rows[0].children.map((c) => c.className),
-      ['', 'h-kind', 'h-branch', 'h-repo', 'h-when', 'h-dur', 'h-dur', 'h-dur']);
+      ['h-pick', '', 'h-kind', 'h-branch', 'h-repo', 'h-when', 'h-dur', 'h-dur', 'h-dur']);
   });
 
   test('the plan, ship and total cells follow the column table', () => {
     const rows = rowsOf(render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC'));
     // ship row: plan from planDurationMs, ship from durationMs, total from totalMs.
-    assert.deepEqual(rows[0].children.slice(5).map((c) => c.textContent), ['22m', '41m', '2h 00m']);
+    assert.deepEqual(rows[0].children.slice(6).map((c) => c.textContent), ['22m', '41m', '2h 00m']);
     // plan row: plan from durationMs, no ship time.
-    assert.deepEqual(rows[2].children.slice(5).map((c) => c.textContent), ['26s', '—', '26s']);
+    assert.deepEqual(rows[2].children.slice(6).map((c) => c.textContent), ['26s', '—', '26s']);
   });
 
   // now → after row: History controls.
-  test('the controls: outcome chips, then finished and total sort buttons, none active at page load', () => {
+  test('the controls: outcome chips, then finished, plan, ship and total sort buttons, none active at page load', () => {
     const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC');
     const bar = oneByClass(panel, 'hist-filter');
     assert.equal(bar.attrs.role, 'group');
@@ -4628,9 +4657,9 @@ describe('render historyTable', () => {
     assert.deepEqual(chips.map((c) => c.attrs['aria-pressed']), ['true', 'false', 'false', 'false']);
     for (const c of chips) assert.equal(c.attrs.type, 'button');
     const sorts = byClass(panel, 'sort-btn');
-    assert.deepEqual(sorts.map((b) => b.attrs['data-hist-sort']), ['finished', 'total']);
-    assert.deepEqual(sorts.map((b) => b.className), ['sort-btn', 'sort-btn']);
-    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['none', 'none']);
+    assert.deepEqual(sorts.map((b) => b.attrs['data-hist-sort']), ['finished', 'plan', 'ship', 'total']);
+    assert.deepEqual(sorts.map((b) => b.className), ['sort-btn', 'sort-btn', 'sort-btn', 'sort-btn']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['none', 'none', 'none', 'none']);
   });
 
   test('a chip filters the rows', () => {
@@ -4668,9 +4697,9 @@ describe('render historyTable', () => {
   test('an active sort control shows its order', () => {
     const ui = Object.assign(view.defaultUi(), { historySort: { key: 'total', dir: 'desc' } });
     const panel = render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC', ui);
-    assert.deepEqual(byClass(panel, 'sort-btn').map((b) => b.className), ['sort-btn', 'sort-btn on']);
-    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['none', 'descending']);
-    assert.deepEqual(byClass(panel, 'sort-arrow').map((a) => a.textContent), ['↕', '▼']);
+    assert.deepEqual(byClass(panel, 'sort-btn').map((b) => b.className), ['sort-btn', 'sort-btn', 'sort-btn', 'sort-btn on']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['none', 'none', 'none', 'descending']);
+    assert.deepEqual(byClass(panel, 'sort-arrow').map((a) => a.textContent), ['↕', '↕', '↕', '▼']);
     assert.deepEqual(rowsOf(panel).map((r) => oneByClass(r, 'h-branch').textContent), ['feat/a', 'fix/b', 'main']);
   });
 
@@ -4686,7 +4715,7 @@ describe('render historyTable', () => {
     const panel = render.historyTable(fakeDoc(), view, fresh, new Set(), now, 'UTC', ui);
     const active = chipsOf(panel).filter((c) => c.attrs['aria-pressed'] === 'true');
     assert.deepEqual(active.map((c) => c.attrs['data-hist-outcome']), ['success']);
-    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['ascending', 'none']);
+    assert.deepEqual(byClass(panel, 'sortable').map((th) => th.attrs['aria-sort']), ['ascending', 'none', 'none', 'none']);
     assert.deepEqual(rowsOf(panel).map((r) => oneByClass(r, 'h-branch').textContent), ['feat/a', 'feat/new']);
   });
 
@@ -4710,6 +4739,152 @@ describe('render historyTable', () => {
     const outcomes = new Set(byClass(panel, 'out').map((n) => n.className.split(' ')[1]));
     assert.deepEqual([...outcomes].sort(), ['failure', 'partial', 'success']);
     assert.ok(new Set(byClass(panel, 'h-repo').map((n) => n.textContent)).size >= 2);
+  });
+});
+
+describe('render review queue tile', () => {
+  // A copy of the fixture ship run: each test changes its own copy.
+  const shipCopy = () => structuredClone(fixturePipeline('sdlc-plugin', SHIP));
+  const queueTile = (p) => {
+    const review = stepOf(p, 'review');
+    return render.stepTile(fakeDoc(), view, p, review, p.steps.indexOf(review), true, false);
+  };
+  const queueOf = (p) => stepOf(p, 'review').detail.reviewQueue;
+  const rowsOf = (t) => byClass(t, 'q-row');
+  const srcChips = (t) => findAll(t, (n) => 'data-q-src' in n.attrs);
+  const lines = (t) => byClass(t, 'generic-line').map((n) => n.textContent);
+
+  test('the tile reads detail.reviewQueue: threshold line, F of Q fixed, and the progress bar', () => {
+    const t = queueTile(shipCopy());
+    assert.equal(byClass(t, 'review-queue').length, 1);
+    assert.equal(byClass(t, 'dim-cols').length, 0);
+    assert.equal(textOf(oneByClass(t, 'q-threshold')), 'Fix threshold: low · findings below it go to the deferred list');
+    // 8 rows, 1 below the threshold: 7 qualify, 2 fixed.
+    const count = byClass(t, 'round-sum').find((n) => /^\d+ of \d+ fixed/.test(textOf(n)));
+    assert.match(textOf(count), /^2 of 7 fixed · 1 fixing · 1 queued · 1 failed · 1 deferred · 1 with no fix record · 1 below threshold$/);
+    const bar = oneByClass(t, 'fix-progress');
+    assert.equal(bar.attrs.max, '7');
+    assert.equal(bar.attrs.value, '2');
+  });
+
+  test('with a live run, the open rows read waiting for a fix', () => {
+    const p = shipCopy();
+    stepOf(p, 'review').detail.runLive = true;
+    const t = queueTile(p);
+    const count = byClass(t, 'round-sum').find((n) => /^\d+ of \d+ fixed/.test(textOf(n)));
+    assert.match(textOf(count), / · 1 waiting for a fix · /);
+    const open = rowsOf(t).map((r) => oneByClass(r, 'fix-status')).filter((n) => classesOf(n).includes('open'));
+    assert.deepEqual(open.map((n) => n.textContent), ['waiting']);
+  });
+
+  test('the rows follow the rank table, then severity; open and below rows get their status class', () => {
+    const t = queueTile(shipCopy());
+    const statuses = rowsOf(t).map((r) => oneByClass(r, 'fix-status').className);
+    assert.deepEqual(statuses, [
+      'fix-status fixing', 'fix-status queued', 'fix-status failed', 'fix-status open',
+      'fix-status deferred', 'fix-status fixed', 'fix-status fixed', 'fix-status below',
+    ]);
+    assert.deepEqual(rowsOf(t).map((r) => oneByClass(r, 'fix-status').textContent), [
+      'fixing', 'queued', 'failed', 'no record', 'deferred', 'fixed', 'fixed', 'below threshold',
+    ]);
+    // Two fixed rows: high before medium.
+    assert.deepEqual(rowsOf(t).slice(5, 7).map((r) => oneByClass(r, 'sev').textContent), ['high', 'medium']);
+    assert.equal(oneByClass(rowsOf(t)[0], 'fix-title').textContent, 'The snapshot endpoint has no Origin check');
+    const css = fs.readFileSync(path.join(__dirname, '../static/app.css'), 'utf8');
+    assert.match(css, /\.fix-status\.open \{[^}]*font-style: italic/);
+    assert.match(css, /\.q-row:has\(\.fix-status\.below\) \.fix-title \{/);
+  });
+
+  test('the PR comments and local review chips count and filter the rows by origin', () => {
+    const t = queueTile(shipCopy());
+    assert.deepEqual(srcChips(t).map((c) => [c.attrs['data-q-src'], oneByClass(c, 'chip-n').textContent]),
+      [['all', '8'], ['local', '7'], ['pr', '1']]);
+    const pick = (src) => {
+      const p = shipCopy();
+      stepOf(p, 'review').detail.queueFilter = { dim: 'all', src };
+      return queueTile(p);
+    };
+    const pr = pick('pr');
+    assert.deepEqual(rowsOf(pr).map((r) => oneByClass(r, 'fix-title').textContent), ['Test the queue when the review finds nothing']);
+    assert.equal(srcChips(pr).find((c) => c.attrs['data-q-src'] === 'pr').attrs['aria-pressed'], 'true');
+    assert.equal(rowsOf(pick('local')).length, 7);
+  });
+
+  test('the dimension chips count the rows of each dimension and filter by it', () => {
+    const p = shipCopy();
+    stepOf(p, 'review').detail.queueFilter = { dim: 'security', src: 'all' };
+    const t = queueTile(p);
+    const chips = findAll(t, (n) => 'data-q-dim' in n.attrs);
+    assert.deepEqual(chips.map((c) => [c.attrs['data-q-dim'], oneByClass(c, 'chip-n').textContent]),
+      [['all', '8'], ['correctness', '1'], ['security', '2'], ['docs', '1']]);
+    assert.equal(rowsOf(t).length, 2);
+  });
+
+  test('the clean count holds the dimensions with no findings, not the dimensions with no row', () => {
+    const p = shipCopy();
+    const detail = stepOf(p, 'review').detail;
+    const clean = detail.dimensions.filter((d) => !d.findings).length;
+    const label = (t) => byClass(t, 'q-clean').map((n) => n.textContent);
+    assert.deepEqual(label(queueTile(p)), ['+' + clean + ' clean']);
+    // A dimension with findings whose rows carry no dimension name is not clean.
+    detail.reviewQueue.rows.forEach((r) => { if (r.dimension === 'docs') r.dimension = ''; });
+    assert.deepEqual(label(queueTile(p)), ['+' + clean + ' clean']);
+  });
+
+  test('reason no-findings shows "No findings." one time', () => {
+    const p = shipCopy();
+    Object.assign(queueOf(p), { rows: [], unrouted: 0, reason: 'no-findings' });
+    const t = queueTile(p);
+    assert.deepEqual(lines(t).filter((s) => /No findings/.test(s)), ['No findings.']);
+    assert.equal(rowsOf(t).length, 0);
+  });
+
+  test('reason all-below-threshold shows the found count of the review totals', () => {
+    const p = shipCopy();
+    Object.assign(queueOf(p), { unrouted: 0, reason: 'all-below-threshold' });
+    queueOf(p).rows = queueOf(p).rows.map((r) => Object.assign(r, { status: 'below' }));
+    assert.ok(lines(queueTile(p)).includes('All 5 findings below threshold'));
+  });
+
+  test('unrouted above 0 shows the findings not routed yet; 0 shows no line', () => {
+    assert.ok(lines(queueTile(shipCopy())).includes('1 findings not routed yet'));
+    const p = shipCopy();
+    queueOf(p).unrouted = 0;
+    assert.equal(lines(queueTile(p)).filter((s) => /not routed/.test(s)).length, 0);
+  });
+
+  test('a queue row opens the queue-row item, and detailItem finds it again in a new snapshot', () => {
+    const p = shipCopy();
+    const row = rowsOf(queueTile(p))[0];
+    const key = row.attrs['data-detail'];
+    const index = queueOf(p).rows.findIndex((r) => r.status === 'fixing');
+    assert.equal(key, view.detailKey('queue-row', null, { pipeline: p.id, index }));
+    assert.equal(key, 'queue-row:' + p.id + ':' + index);
+    const item = view.detailItem(structuredClone(FIXTURE), key);
+    assert.equal(item.kind, 'queue-row');
+    assert.equal(item.title, 'high: internal/dashboard/web/server.go:201-208');
+    assert.equal(item.text, queueOf(p).rows[index].text);
+    assert.deepEqual(item.meta, [
+      ['Pipeline', p.id],
+      ['Title', 'The snapshot endpoint has no Origin check'],
+      ['Status', 'fixing'],
+      ['Origin', 'local-review'],
+      ['Dimension', 'security'],
+    ]);
+    assert.equal(view.detailKey('queue-row', null, { index: 0 }), '');
+  });
+
+  test('a received-review step with no detail has no tile, no section button, and no tile count', () => {
+    const p = shipCopy();
+    const before = view.tileCount(p, null);
+    // The page drops this detail when the review step has a queue.
+    delete stepOf(p, 'received-review').detail;
+    assert.equal(view.tileCount(p, null), before - 1);
+    const block = render.pipelineBlock(fakeDoc(), view, fixtureRepo('sdlc-plugin'), p, { collapsed: false, closed: {}, now: FIXTURE_NOW, tz: 'UTC' });
+    assert.equal(tileByName(block, 'received-review'), undefined);
+    const station = byClass(block, 'station').find((n) => /^received-review/.test(n.attrs.title || ''));
+    assert.ok(station);
+    assert.equal(station.tagName, 'div');
   });
 });
 

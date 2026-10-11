@@ -1149,13 +1149,14 @@
    *   issue:    'issue:<where.pipeline>:<where.index>'
    *   learning: 'learning:<item.date>:<item.heading>'
    *   finding:  'finding:<where.pipeline>:<where.dimension>:<where.index>'
+   *   queue-row: 'queue-row:<where.pipeline>:<where.index>'
    * A key is built, never parsed: a heading or an id can hold ':'. Use
    * detailItem to find the item of a key.
-   * @param {string} kind 'deferred' | 'issue' | 'learning' | 'finding'
+   * @param {string} kind 'deferred' | 'issue' | 'learning' | 'finding' | 'queue-row'
    * @param {object} [item] the snapshot item (deferred and learning)
    * @param {{pipeline?: string, dimension?: string, index?: number}} [where]
    *   pipeline id, review dimension name, and row index in its list
-   *   (issue and finding). A standalone review step is one dimension, so
+   *   (issue, finding and queue-row). A standalone review step is one dimension, so
    *   its step name is the dimension name.
    * @returns {string} '' for an unknown kind or a missing key field
    */
@@ -1174,6 +1175,8 @@
         return at.pipeline && at.dimension && hasIndex
           ? 'finding:' + at.pipeline + ':' + at.dimension + ':' + at.index
           : '';
+      case 'queue-row':
+        return at.pipeline && hasIndex ? 'queue-row:' + at.pipeline + ':' + at.index : '';
       default:
         return '';
     }
@@ -1257,6 +1260,22 @@
     };
   }
 
+  function queueRowItem(root, pipelineId, row) {
+    return {
+      kind: 'queue-row',
+      repo: root,
+      title: joinTitle(row.severity, issueLocation({ file: row.file, line: row.line }), 'finding'),
+      text: textOf(row.text),
+      meta: metaRows([
+        ['Pipeline', pipelineId],
+        ['Title', row.title],
+        ['Status', row.status],
+        ['Origin', row.origin],
+        ['Dimension', row.dimension],
+      ]),
+    };
+  }
+
   // The finding of `list` whose key is `key`, as a viewer item, else null.
   function matchFinding(root, pipeline, dimension, list, key) {
     var rows = list || [];
@@ -1281,6 +1300,12 @@
       var detail = steps[s] && steps[s].detail;
       if (!detail) continue;
       var hit = null;
+      var queueRows = (detail.reviewQueue && detail.reviewQueue.rows) || [];
+      for (var q = 0; q < queueRows.length && !hit; q++) {
+        if (detailKey('queue-row', null, { pipeline: pipeline.id, index: q }) === key) {
+          hit = queueRowItem(root, pipeline.id, queueRows[q]);
+        }
+      }
       if (detail.kind === 'findings') {
         hit = matchFinding(root, pipeline, steps[s].name, detail.findings, key);
       } else if (detail.kind === 'dimensions') {
@@ -1442,7 +1467,7 @@
    * The sort after a click on a sort control. A new control starts with the
    * largest value first. A click on the active control flips its order.
    * @param {{key: string, dir: string}|null} sort
-   * @param {string} key finished | total
+   * @param {string} key finished | plan | ship | total
    * @returns {{key: string, dir: string}}
    */
   function nextHistorySort(sort, key) {
@@ -1461,12 +1486,20 @@
       var ms = run && run.totalMs;
       return typeof ms === 'number' && isFinite(ms) && ms > 0 ? ms : null;
     },
+    // The plan and ship values are the values of the cells (historyCells).
+    plan: function (run) {
+      return positiveMs(historyCells(run).planMs);
+    },
+    ship: function (run) {
+      return positiveMs(historyCells(run).shipMs);
+    },
   };
 
   /**
    * @param {Array} runs
    * @param {{key: string, dir: string}|null} sort null sorts by endedAt, newest first
-   * @returns {Array} a new array. finished sorts by endedAt, total by totalMs.
+   * @returns {Array} a new array. finished sorts by endedAt, total by totalMs,
+   *   plan and ship by the plan and ship cells of historyCells.
    *   Runs with no value go last in both orders; equal runs keep their order.
    */
   function sortHistory(runs, sort) {

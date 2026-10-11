@@ -147,6 +147,13 @@ function focusKeyOf(node) {
   if (node.hasAttribute('data-hist-sort')) return 'hist-sort\n' + node.getAttribute('data-hist-sort');
   if (node.hasAttribute('data-act-priority')) return 'act-priority\n' + node.getAttribute('data-act-priority');
   if (node.hasAttribute('data-pp-status')) return 'pp-status\n' + node.getAttribute('data-pp-status');
+  if (node.hasAttribute('data-q-pipe')) {
+    return 'q\n' + node.getAttribute('data-q-pipe') + '\n' + (node.getAttribute('data-q-dim') || '') + '\n' + (node.getAttribute('data-q-src') || '');
+  }
+  if (node.hasAttribute('data-hist-pick')) return 'hist-pick\n' + node.getAttribute('data-hist-pick');
+  if (node.hasAttribute('data-hist-pick-all')) return 'hist-pick-all';
+  if (node.hasAttribute('data-hist-delete')) return 'hist-delete';
+  if (node.hasAttribute('data-pp-set')) return 'pp-set\n' + node.getAttribute('data-repo') + '\n' + node.getAttribute('data-pp-set');
   if (node.hasAttribute('data-kind')) {
     return 'delete\n' + node.getAttribute('data-kind') + '\n' + node.getAttribute('data-repo') + '\n' + node.getAttribute('data-label');
   }
@@ -167,7 +174,7 @@ function restoreFocus() {
   if (active && active !== document.body && document.contains(active)) return;
   var candidates = document.querySelectorAll(
     '[data-root], [data-station], .fold-btn, [data-section] > summary, [data-detail], [data-archive], ' +
-      '[data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status], [data-kind]'
+      '[data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status], [data-pp-set], [data-q-pipe], [data-hist-pick], [data-hist-pick-all], [data-hist-delete], [data-kind]'
   );
   for (var i = 0; i < candidates.length; i++) {
     if (focusKeyOf(candidates[i]) === ui.focusKey) {
@@ -280,9 +287,28 @@ function renderFeed(snapshot, repos, scope, now, tz) {
   watchDimensionGrids();
 }
 
+// Puts the queue filter of the user and the live flag into each review
+// queue detail before the draw. When the review step has a queue, the
+// received-review step loses its detail: the queue tile holds the fixes,
+// and a step with no detail has no section, no tile and no section button.
+function attachQueueState(snapshot) {
+  ((snapshot && snapshot.repos) || []).forEach(function (repo) {
+    (repo.pipelines || []).forEach(function (p) {
+      var steps = p.steps || [];
+      var review = steps.filter(function (s) { return s.name === 'review'; })[0];
+      if (!review || !review.detail || !review.detail.reviewQueue) return;
+      review.detail.queueFilter = (ui.queueFilter && ui.queueFilter[p.id]) || { dim: 'all', src: 'all' };
+      review.detail.runLive = p.status === 'running' || p.status === 'stalled';
+      var rr = steps.filter(function (s) { return s.name === 'received-review'; })[0];
+      if (rr) delete rr.detail;
+    });
+  });
+}
+
 // Draws one snapshot: the tab title, the header counts, the filter chips, the
 // tab counts, and the four panels. The scroll and focus survive the rebuild.
 function render(snapshot) {
+  attachQueueState(snapshot);
   ui.lastSnapshot = snapshot || { repos: [] };
   var repos = ui.lastSnapshot.repos || [];
   var scope = activeScope(repos);
@@ -730,6 +756,35 @@ function deleteItem(button) {
   });
 }
 
+// A click on Delete selected in the History tab: one confirm question, then
+// the delete of the selected rows that the table shows. Design preview only
+// (D5): the preview cannot change the history file, so the page hides the rows
+// until the next reload.
+function deleteHistoryRows(button) {
+  var keys = [];
+  tabs.history.panel.querySelectorAll('[data-hist-pick]').forEach(function (box) {
+    if (box.checked) keys.push(box.getAttribute('data-hist-pick'));
+  });
+  if (keys.length === 0) return;
+  var noun = keys.length === 1 ? '1 run' : keys.length + ' runs';
+  confirmAction({
+    prompts: [
+      'Delete ' + noun + ' from the history?\nThis removes the rows from .sdlc-v2/history/runs.jsonl for good. The History tab and the run times lose them.',
+    ],
+    label: 'Delete',
+    returnKey: focusKeyOf(button),
+    run: function () {
+      ui.historyDeleted = ui.historyDeleted || {};
+      ui.historyPicked = {};
+      keys.forEach(function (key) {
+        ui.historyDeleted[key] = true;
+      });
+      render(ui.lastSnapshot);
+      return Promise.resolve(null);
+    },
+  });
+}
+
 // A click on Clear cache. It clears the repos of the last snapshot, one after
 // another, and shows the freed size and the error of each repo that failed.
 function clearCache() {
@@ -826,13 +881,38 @@ function init() {
     var button = event.target.closest('.archive-btn');
     if (button) archiveRun(button);
   });
+  // A chip of the review queue filters the queue of its pipeline.
+  feed.addEventListener('click', function (event) {
+    var chip = event.target.closest('[data-q-pipe]');
+    if (!chip) return;
+    var id = chip.getAttribute('data-q-pipe');
+    ui.queueFilter = ui.queueFilter || {};
+    var filter = ui.queueFilter[id] || { dim: 'all', src: 'all' };
+    if (chip.hasAttribute('data-q-dim')) filter.dim = chip.getAttribute('data-q-dim');
+    if (chip.hasAttribute('data-q-src')) filter.src = chip.getAttribute('data-q-src');
+    ui.queueFilter[id] = filter;
+    render(ui.lastSnapshot);
+  });
   // An outcome chip filters the History table. A sort control sorts it
   // (view.nextHistorySort). saveFocus runs before the redraw, so the clicked
   // control keeps the focus.
   tabs.history.panel.addEventListener('click', function (event) {
     var chip = event.target.closest('[data-hist-outcome]');
     var header = event.target.closest('[data-hist-sort]');
-    if (chip) {
+    var pick = event.target.closest('[data-hist-pick]');
+    var pickAll = event.target.closest('[data-hist-pick-all]');
+    var del = event.target.closest('[data-hist-delete]');
+    if (del) return deleteHistoryRows(del);
+    if (pick || pickAll) {
+      ui.historyPicked = ui.historyPicked || {};
+      if (pick) {
+        ui.historyPicked[pick.getAttribute('data-hist-pick')] = pick.checked;
+      } else {
+        tabs.history.panel.querySelectorAll('[data-hist-pick]').forEach(function (box) {
+          ui.historyPicked[box.getAttribute('data-hist-pick')] = pickAll.checked;
+        });
+      }
+    } else if (chip) {
       ui.historyOutcome = chip.getAttribute('data-hist-outcome');
     } else if (header) {
       ui.historySort = view.nextHistorySort(ui.historySort, header.getAttribute('data-hist-sort'));
@@ -859,6 +939,16 @@ function init() {
     var chip = event.target.closest('[data-pp-status]');
     if (!chip) return;
     ui.preplanStatus = chip.getAttribute('data-pp-status');
+    render(ui.lastSnapshot);
+  });
+  // A status menu sets the status of its preplan. Design preview only (D2):
+  // the preview cannot write the topic file, so the page keeps the new status
+  // in ui.preplanEdits until the next reload.
+  tabs.preplans.panel.addEventListener('change', function (event) {
+    var menu = event.target.closest('[data-pp-set]');
+    if (!menu) return;
+    ui.preplanEdits = ui.preplanEdits || {};
+    ui.preplanEdits[menu.getAttribute('data-repo') + '\n' + menu.getAttribute('data-pp-set')] = menu.value;
     render(ui.lastSnapshot);
   });
 
