@@ -214,7 +214,58 @@
                   },
                   { "name": "tests", "status": "completed", "findings": 0, "worst": "", "findingItems": [] }
                 ],
-                "reviewTotals": { "found": 5, "fixed": 2, "deferred": 2, "unaccounted": 1 }
+                "reviewTotals": { "found": 5, "fixed": 2, "deferred": 2, "unaccounted": 1 },
+                "reviewQueue": {
+                  "threshold": "low",
+                  "unrouted": 1,
+                  "reason": "",
+                  "rows": [
+                    { "title": "Token expiry check skips equal times", "severity": "high", "file": "internal/auth/token.go", "line": "42", "status": "fixed", "origin": "local-review", "dimension": "", "text": "" },
+                    { "title": "Error message leaks the user id", "severity": "medium", "file": "internal/api/errors.go", "line": "17", "status": "failed", "origin": "local-review", "dimension": "", "text": "" },
+                    { "title": "Docs miss the new reason field", "severity": "low", "file": "docs/errors.md", "line": "", "status": "deferred", "origin": "local-review", "dimension": "", "text": "The error doc needs a section for the reason field" },
+                    {
+                      "title": "The stalled rule uses the file time of the state file",
+                      "severity": "medium",
+                      "file": "internal/tools/dashboard_snapshot.go",
+                      "line": "398",
+                      "status": "queued",
+                      "origin": "local-review",
+                      "dimension": "correctness",
+                      "text": "The stalled rule uses the file time of the state file, so a copied state file shows as running"
+                    },
+                    {
+                      "title": "The snapshot endpoint has no Origin check",
+                      "severity": "high",
+                      "file": "internal/dashboard/web/server.go",
+                      "line": "201-208",
+                      "status": "fixing",
+                      "origin": "local-review",
+                      "dimension": "security",
+                      "text": "The snapshot endpoint has no Origin check, so any web page can read local pipeline data"
+                    },
+                    { "title": "Test the queue when the review finds nothing", "severity": "medium", "file": "internal/tools/dashboard_review_queue_test.go", "line": "58", "status": "fixed", "origin": "pr-comment", "dimension": "", "text": "" },
+                    {
+                      "title": "Add the snapshot version to the example output",
+                      "severity": "info",
+                      "file": "docs/skills/dashboard.md",
+                      "line": "",
+                      "status": "below",
+                      "origin": "local-review",
+                      "dimension": "docs",
+                      "text": "Add the snapshot version to the example output"
+                    },
+                    {
+                      "title": "The request path is joined to the static root without cleaning",
+                      "severity": "critical",
+                      "file": "internal/dashboard/web/server.go",
+                      "line": "142",
+                      "status": "open",
+                      "origin": "local-review",
+                      "dimension": "security",
+                      "text": "The request path is joined to the static root without cleaning, so a crafted path can read files outside the embedded folder"
+                    }
+                  ]
+                }
               }
             },
             {
@@ -544,6 +595,28 @@
       "history": [
         {
           "kind": "ship",
+          "branch": "feat/dashboard-polling",
+          "outcome": "success",
+          "startedAt": "2026-10-08T06:41:20Z",
+          "endedAt": "2026-10-08T07:52:00Z",
+          "durationMs": 4240000,
+          "planStartedAt": "2026-10-08T05:50:10Z",
+          "planDurationMs": 2670000,
+          "planPaired": true,
+          "planEndedAt": "2026-10-08T06:34:40Z",
+          "totalMs": 7310000
+        },
+        {
+          "kind": "plan",
+          "branch": "feat/dashboard-polling",
+          "outcome": "success",
+          "startedAt": "2026-10-08T05:50:10Z",
+          "endedAt": "2026-10-08T06:34:40Z",
+          "durationMs": 2670000,
+          "totalMs": 2670000
+        },
+        {
+          "kind": "ship",
           "branch": "feat/user-config-and-pipeline-fixes",
           "outcome": "success",
           "startedAt": "2026-10-07T17:46:00Z",
@@ -643,10 +716,61 @@
             }
           ],
           "sessionId": "a8f21d47-0c93-4b5e-8e16-d4c7b9f03a25"
+        },
+        {
+          "id": "plan-main-20261008T141500Z",
+          "kind": "plan",
+          "branch": "main",
+          "worktree": "",
+          "status": "running",
+          "startedAt": "2026-10-08T14:15:00Z",
+          "updatedAt": "2026-10-08T14:30:55Z",
+          "completedAt": null,
+          "progress": {
+            "done": 2,
+            "total": 5,
+            "current": "draft",
+            "label": "step 3 of 5"
+          },
+          "steps": [
+            {
+              "name": "setup",
+              "status": "completed",
+              "detail": { "kind": "guardrails", "guardrails": { "total": 4, "error": 1, "warning": 3 } }
+            },
+            { "name": "explore", "status": "completed" },
+            { "name": "draft", "status": "in_progress" },
+            { "name": "review", "status": "pending" },
+            { "name": "finalize", "status": "pending" }
+          ],
+          "issues": [],
+          "sessionId": "b6e1d3a9-4c27-4f80-9d52-7a0c8e3f1b64",
+          "attention": {
+            "kind": "question",
+            "askedAt": "2026-10-08T14:30:55Z",
+            "header": "Scope",
+            "text": "Include the retry window change in this plan, or leave it for a follow-up?"
+          }
         }
       ],
       "loneWaits": [],
       "sessions": [
+        {
+          "id": "b6e1d3a9-4c27-4f80-9d52-7a0c8e3f1b64",
+          "active": true,
+          "branch": "main",
+          "firstSeen": "2026-10-08T14:13:48Z",
+          "lastSeen": "2026-10-08T14:30:12Z",
+          "counts": { "prompts": 1, "commands": 1, "mcpCalls": 1 },
+          "timeline": [
+            { "at": "2026-10-08T14:30:12Z", "kind": "mcp", "text": "plan_mark complete" },
+            { "at": "2026-10-08T14:22:31Z", "kind": "command", "text": "go test ./internal/retry/..." },
+            { "at": "2026-10-08T14:13:48Z", "kind": "prompt", "text": "plan the retry window change" }
+          ],
+          "commandGroups": [
+            { "label": "go", "programs": ["go"], "count": 1, "share": 1, "majority": true, "lastAt": "2026-10-08T14:22:31Z" }
+          ]
+        },
         {
           "id": "a8f21d47-0c93-4b5e-8e16-d4c7b9f03a25",
           "active": false,
@@ -1017,7 +1141,26 @@
           "sessionId": ""
         }
       ],
-      "loneWaits": [],
+      "loneWaits": [
+        {
+          "kind": "question",
+          "sessionId": "f19a4c62-7e08-4d35-a1b7-0c6e82d94f53",
+          "toolUseId": "toolu_01QvA9mK3xLw8TnR5yBz2Cde",
+          "branch": "main",
+          "header": "Next step",
+          "text": "Which of the two retry strategies should the new client use?",
+          "askedAt": "2026-10-08T14:26:09Z"
+        },
+        {
+          "kind": "permission",
+          "sessionId": "2c8e5b17-93d0-46fa-8b21-e5a7d04c9f68",
+          "toolUseId": "",
+          "branch": "fix/refund-rounding",
+          "header": "Permission",
+          "text": "Claude needs your permission to use Bash",
+          "askedAt": "2026-10-08T14:18:44Z"
+        }
+      ],
       "sessions": [
         {
           "id": "e47b3d90-5a1c-4f28-b6d3-91c0a8e57f34",

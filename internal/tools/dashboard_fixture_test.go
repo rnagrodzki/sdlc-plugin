@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 )
 
@@ -190,9 +191,10 @@ func TestDashboardFixture_NullAllowed(t *testing.T) {
 }
 
 // TestDashboardFixture_CoversContentTable checks that the shared snapshot
-// fixture holds the repos, runs, detail kinds, issue sources, severities, and
-// session matches that the page tests rely on. It fails when an edit of the
-// fixture drops one of them.
+// fixture holds the repos, runs, detail kinds, issue sources, severities,
+// session matches, lone waits, review queue rows, and paired plan times that
+// the page tests rely on. It fails when an edit of the fixture drops one of
+// them.
 func TestDashboardFixture_CoversContentTable(t *testing.T) {
 	snap := dashboardFixtureDecode(t, dashboardFixtureRead(t))
 
@@ -213,6 +215,17 @@ func TestDashboardFixture_CoversContentTable(t *testing.T) {
 		for _, h := range repo.History {
 			seen["outcome:"+h.Outcome] = true
 		}
+		if dashboardFixturePairedPlan(repo.History) {
+			seen["paired plan time"] = true
+		}
+		for _, w := range repo.LoneWaits {
+			seen["lone wait:"+w.Kind] = true
+			for _, p := range repo.Pipelines {
+				if p.SessionID != "" && p.SessionID == w.SessionID {
+					t.Errorf("%s lone wait %q is in the session of pipeline %s, so it is not a lone wait", repo.Name, w.Text, p.ID)
+				}
+			}
+		}
 		sessionIDs, sessionBranches := map[string]bool{}, map[string]bool{}
 		for _, s := range repo.Sessions {
 			sessionIDs[s.ID] = true
@@ -232,6 +245,9 @@ func TestDashboardFixture_CoversContentTable(t *testing.T) {
 			}
 			if p.Attention != nil && p.Status == PipelineRunning && p.Attention.Text != "" {
 				seen["running pipeline with attention"] = true
+				if p.Kind == "plan" && p.SessionID != "" {
+					seen["running plan with attention"] = true
+				}
 			}
 			for _, is := range p.Issues {
 				seen["source:"+is.Source] = true
@@ -242,6 +258,10 @@ func TestDashboardFixture_CoversContentTable(t *testing.T) {
 			}
 			dashboardFixtureCoverSteps(p, seen)
 		}
+	}
+
+	if seen["lone wait:"+attention.KindQuestion] && seen["lone wait:"+attention.KindPermission] {
+		seen["lone wait of each kind"] = true
 	}
 
 	if want := []string{"sdlc-plugin", "identity-service", "payments-service"}; !slices.Equal(names, want) {
@@ -270,6 +290,7 @@ func TestDashboardFixture_CoversContentTable(t *testing.T) {
 		"step with both times", "step with a start time only",
 		"running pipeline with attention", "guardrail counts", "result line", "round totals", "repair limit",
 		"finding outcome", "review plan", "dimension with a wave", "skipped dimension with a reason",
+		"running plan with attention", "lone wait of each kind", "review queue with every status", "paired plan time",
 	}
 	for _, step := range []string{StepPending, StepInProgress, StepCompleted, StepSkipped, StepFailed} {
 		required = append(required, "step:"+step)
@@ -346,6 +367,10 @@ func dashboardFixtureCoverSteps(p DashboardPipeline, seen map[string]bool) {
 			}
 		}
 
+		if p.Kind == "ship" && s.Name == "review" && dashboardFixtureQueueCovers(d.ReviewQueue) {
+			seen["review queue with every status"] = true
+		}
+
 		switch {
 		case p.Kind == "ship" && s.Name == "plan" && len(d.Explorers) > 0:
 			seen["ship step plan with explorers"] = true
@@ -378,4 +403,53 @@ func dashboardFixtureCoverSteps(p DashboardPipeline, seen map[string]bool) {
 			}
 		}
 	}
+}
+
+// dashboardFixtureQueueCovers reports whether q holds a row of each queue
+// status (open, below, and every fix status), a row of each fix origin, and a
+// threshold that is a severity but not the default one. A nil q covers
+// nothing.
+func dashboardFixtureQueueCovers(q *DashboardReviewQueue) bool {
+	if q == nil {
+		return false
+	}
+	statuses, origins := map[string]bool{}, map[string]bool{}
+	for _, r := range q.Rows {
+		statuses[r.Status] = true
+		origins[r.Origin] = true
+	}
+	for _, want := range append([]string{dashboardQueueStatusOpen, dashboardQueueStatusBelow}, healingFixStatuses...) {
+		if !statuses[want] {
+			return false
+		}
+	}
+	for _, want := range healingOrigins {
+		if !origins[want] {
+			return false
+		}
+	}
+	return slices.Contains(dimensions.ValidSeverities, q.Threshold) && q.Threshold != dashboardQueueThresholdDefault
+}
+
+// dashboardFixturePairedPlan reports whether history holds a ship row with
+// PlanPaired and whether dashboardPairPlans gives every row of history again
+// when the paired fields of those ship rows are cleared. So the fixture holds
+// the paired plan time that the server computes, not a hand-made value.
+func dashboardFixturePairedPlan(history []DashboardRun) bool {
+	cleared := slices.Clone(history)
+	paired := false
+	for i, run := range cleared {
+		if !run.PlanPaired {
+			continue
+		}
+		paired = true
+		cleared[i].PlanStartedAt, cleared[i].PlanDurationMs = "", 0
+		cleared[i].PlanPaired, cleared[i].PlanEndedAt = false, ""
+		cleared[i].TotalMs = run.DurationMs
+	}
+	if !paired {
+		return false
+	}
+	dashboardPairPlans(cleared)
+	return reflect.DeepEqual(history, cleared)
 }
