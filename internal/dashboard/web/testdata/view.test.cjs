@@ -186,7 +186,7 @@ describe('page logic exports', () => {
     ['archiveRequest', 'clearRequest', 'learningUrl', 'detailKey', 'detailItem',
       'deleteRequest', 'deleteResultText', 'deletePrompt', 'deleteKeyFromDataset',
       'preplanStatusRequest', 'historyDeleteRequest', 'historyPicksByRepo', 'pairedShipCount',
-      'historyDeleteQuestion'].forEach((name) => {
+      'historyDeleteQuestion', 'waitDismissRequest'].forEach((name) => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
@@ -952,6 +952,18 @@ describe('scopedCounts / headerCounts', () => {
     assert.deepEqual(view.headerCounts(waitingRepos), { running: 3, stalled: 0, failed: 1, waiting: 2 });
   });
 
+  test('headerCounts waiting adds the lone waits of every repo, also a repo that has no pipeline', () => {
+    const lone = { kind: 'question', sessionId: 's1', toolUseId: 'toolu_1', askedAt: '2026-10-08T10:00:00Z' };
+    const attention = { kind: 'question', askedAt: '2026-10-08T10:00:00Z', header: 'Q', text: 't' };
+    const mixed = [
+      { root: '/a', pipelines: [{ status: 'running', attention }], loneWaits: [lone, lone] },
+      { root: '/b', pipelines: [], loneWaits: [lone] },
+      { root: '/c', pipelines: [{ status: 'failed' }], loneWaits: [] },
+      { root: '/d' },
+    ];
+    assert.deepEqual(view.headerCounts(mixed), { running: 1, stalled: 0, failed: 1, waiting: 4 });
+  });
+
   test('headerCounts ignores a status that is not running, stalled, or failed', () => {
     const odd = [{ root: '/a', pipelines: [{ status: 'waiting' }, { status: 'completed' }, { status: 'constructor' }] }];
     assert.deepEqual(view.headerCounts(odd), { running: 0, stalled: 0, failed: 0, waiting: 0 });
@@ -973,6 +985,18 @@ describe('pageTitle', () => {
 
   test('counts only the repos it is given', () => {
     assert.equal(view.pageTitle('SDLC dashboard', [repoA]), '(1) SDLC dashboard');
+  });
+
+  test('adds the lone waits of the repos it is given to the count', () => {
+    const lone = { kind: 'permission', sessionId: 's1', toolUseId: '', askedAt: '2026-10-08T10:00:00Z' };
+    const repoC = { root: '/c', pipelines: [], loneWaits: [lone, lone] };
+    assert.equal(view.pageTitle('SDLC dashboard', [repoC]), '(2) SDLC dashboard');
+    assert.equal(view.pageTitle('SDLC dashboard', [repoA, repoC]), '(3) SDLC dashboard');
+    assert.equal(view.pageTitle('SDLC dashboard', [repoA]), '(1) SDLC dashboard');
+  });
+
+  test('a repo with an empty loneWaits list adds nothing', () => {
+    assert.equal(view.pageTitle('SDLC dashboard', [{ root: '/e', pipelines: [], loneWaits: [] }]), 'SDLC dashboard');
   });
 
   test('returns the base title when no run waits', () => {
@@ -2623,6 +2647,160 @@ describe('render attentionRows', () => {
   });
 });
 
+describe('render loneWaitCard', () => {
+  const LONE_REPO = { root: '/src/payments', name: 'payments-service' };
+  const QUESTION = {
+    kind: 'question',
+    sessionId: 'sess-1',
+    toolUseId: 'toolu_01',
+    branch: 'main',
+    header: 'Next step',
+    text: 'Which retry strategy?',
+    askedAt: '2026-10-08T14:00:00Z',
+  };
+  const PERMISSION = {
+    kind: 'permission',
+    sessionId: 'sess-2',
+    toolUseId: '',
+    branch: 'fix/refund-rounding',
+    header: 'Permission',
+    text: 'Claude needs your permission to use Bash',
+    askedAt: '2026-10-08T14:00:00Z',
+  };
+  const draw = (wait, now) => render.loneWaitCard(fakeDoc(), view, LONE_REPO, wait, now === undefined ? NOW_WAIT : now);
+
+  test('the card is an article with the classes of a waiting block and data-lone-wait set to sessionId|toolUseId', () => {
+    const card = draw(QUESTION);
+    assert.equal(card.tagName, 'article');
+    assert.deepEqual(classesOf(card), ['pipe-block', 'attn', 'lone-wait']);
+    assert.equal(card.attrs['data-lone-wait'], 'sess-1|toolu_01');
+  });
+
+  test('a permission wait has an empty part after the pipe in data-lone-wait', () => {
+    assert.equal(draw(PERMISSION).attrs['data-lone-wait'], 'sess-2|');
+  });
+
+  test('the banner comes first: the bar with the wait age, then the header and the quoted text', () => {
+    const card = draw(QUESTION);
+    assert.equal(card.children[0].className, 'attn-bar');
+    assert.equal(textOf(card.children[0]), '◈ WAITING ON YOU · 4m 12s');
+    assert.equal(card.children[1].className, 'attn-text');
+    assert.equal(card.children[1].textContent, 'Next step: "Which retry strategy?"');
+    assert.equal(card.children[2].tagName, 'header');
+  });
+
+  test('the age keeps the question time in data-asked, so the timer can refresh it', () => {
+    const elapsed = oneByClass(draw(QUESTION), 'attn-elapsed');
+    assert.equal(elapsed.attrs['data-asked'], '2026-10-08T14:00:00Z');
+    assert.equal(elapsed.textContent, '4m 12s');
+  });
+
+  test('without a now argument the age counts to the current time', () => {
+    const asked = new Date(Date.now() - 5 * 60000).toISOString();
+    const card = render.loneWaitCard(fakeDoc(), view, LONE_REPO, Object.assign({}, QUESTION, { askedAt: asked }));
+    assert.match(oneByClass(card, 'attn-elapsed').textContent, /^5m \d+s$/);
+  });
+
+  test('a bad askedAt gives an empty age and the card still draws', () => {
+    const card = draw(Object.assign({}, QUESTION, { askedAt: 'bad' }));
+    assert.equal(oneByClass(card, 'attn-elapsed').textContent, '');
+    assert.equal(byClass(card, 'wait-dismiss').length, 1);
+  });
+
+  test('the head shows the lamp, the wait kind, the branch, the repo name and the Dismiss button', () => {
+    const head = oneByClass(draw(PERMISSION), 'pipe-head');
+    assert.equal(head.tagName, 'header');
+    assert.deepEqual(classesOf(head.children[0]), ['lamp', 'running', 'waiting']);
+    assert.equal(head.children[0].attrs['aria-hidden'], 'true');
+    assert.equal(head.children[1].className, 'pipe-kind');
+    assert.equal(head.children[1].textContent, 'permission');
+    assert.equal(head.children[2].tagName, 'h2');
+    assert.equal(head.children[2].className, 'pipe-branch');
+    assert.equal(head.children[2].textContent, 'fix/refund-rounding');
+    assert.equal(head.children[2].attrs.title, 'fix/refund-rounding');
+    const side = head.children[3];
+    assert.equal(side.className, 'pipe-side');
+    assert.equal(side.children[0].className, 'pipe-repo');
+    assert.equal(side.children[0].textContent, 'payments-service');
+    assert.equal(side.children[0].attrs.title, '/src/payments');
+    assert.equal(side.children[1].className, 'wait-dismiss');
+  });
+
+  test('a wait with no branch has no branch heading', () => {
+    const card = draw(Object.assign({}, QUESTION, { branch: '' }));
+    assert.equal(byClass(card, 'pipe-branch').length, 0);
+    assert.equal(byClass(card, 'wait-dismiss').length, 1);
+  });
+
+  test('Dismiss is a button with data-wait-dismiss, data-wait-kind and data-repo', () => {
+    const button = oneByClass(draw(QUESTION), 'wait-dismiss');
+    assert.equal(button.tagName, 'button');
+    assert.equal(button.textContent, 'Dismiss');
+    assert.equal(button.attrs.type, 'button');
+    assert.equal(button.attrs['data-wait-dismiss'], 'sess-1|toolu_01');
+    assert.equal(button.attrs['data-wait-kind'], 'question');
+    assert.equal(button.attrs['data-repo'], '/src/payments');
+  });
+
+  test('Dismiss of a permission wait has an empty toolUseId in its key and kind permission', () => {
+    const button = oneByClass(draw(PERMISSION), 'wait-dismiss');
+    assert.equal(button.attrs['data-wait-dismiss'], 'sess-2|');
+    assert.equal(button.attrs['data-wait-kind'], 'permission');
+  });
+
+  test('the key of Dismiss splits back into the sessionId and the toolUseId of the request', () => {
+    [QUESTION, PERMISSION].forEach((wait) => {
+      const key = oneByClass(draw(wait), 'wait-dismiss').attrs['data-wait-dismiss'];
+      const cut = key.indexOf('|');
+      assert.equal(key.slice(0, cut), wait.sessionId);
+      assert.equal(key.slice(cut + 1), wait.toolUseId);
+    });
+  });
+
+  test('the card has one button, and no fold button, station track or Archive button', () => {
+    const card = draw(QUESTION);
+    assert.equal(findAll(card, (n) => n.tagName === 'button').length, 1);
+    assert.equal(byClass(card, 'fold-btn').length, 0);
+    assert.equal(byClass(card, 'track').length, 0);
+    assert.equal(byClass(card, 'archive-btn').length, 0);
+    assert.equal(card.attrs['data-key'], undefined);
+  });
+
+  test('markup in the branch, header and text stays text', () => {
+    const card = draw(Object.assign({}, QUESTION, { branch: '<b>x</b>', header: '<i>h</i>', text: '<script>1</script>' }));
+    assert.equal(card.children[1].textContent, '<i>h</i>: "<script>1</script>"');
+    assert.equal(card.children[1].children.length, 0);
+    assert.equal(oneByClass(card, 'pipe-branch').textContent, '<b>x</b>');
+    assert.equal(oneByClass(card, 'pipe-branch').children.length, 0);
+    findAll(card, () => true).forEach((n) => {
+      ['innerHTML', 'outerHTML', 'insertAdjacentHTML'].forEach((sink) => {
+        assert.equal(sink in n, false, `${n.tagName} has ${sink}`);
+      });
+    });
+  });
+
+  test('the source of loneWaitCard writes no HTML string', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../static/render.js'), 'utf8');
+    const start = source.indexOf('function loneWaitCard(');
+    assert.ok(start > 0, 'render.js has no loneWaitCard');
+    const body = source.slice(start, source.indexOf('\n  }\n', start));
+    for (const sink of ['innerHTML', 'outerHTML', 'insertAdjacentHTML', 'document.write', 'createContextualFragment']) {
+      assert.ok(!body.includes(sink), `loneWaitCard uses ${sink}`);
+    }
+  });
+
+  test('tickElapsed rewrites the age of the card from data-asked', () => {
+    const card = draw(QUESTION);
+    const tickDoc = {
+      querySelectorAll(sel) { return sel === '.attn-elapsed' ? byClass(card, 'attn-elapsed') : []; },
+    };
+    // The fake nodes have no getAttribute; give them one for this check.
+    byClass(card, 'attn-elapsed').forEach((n) => { n.getAttribute = (k) => n.attrs[k]; });
+    render.tickElapsed(tickDoc, view, NOW_WAIT + 60000);
+    assert.equal(oneByClass(card, 'attn-elapsed').textContent, '5m 12s');
+  });
+});
+
 describe('render scopedTitle', () => {
   const BASE = 'SDLC dashboard';
   const waiting = { status: 'running', attention: ATTENTION };
@@ -2655,6 +2833,17 @@ describe('render scopedTitle', () => {
 
   test('no repo gives the base title', () => {
     assert.equal(render.scopedTitle(view, BASE, [], new Set(['/a'])), 'SDLC dashboard');
+  });
+
+  test('the lone waits of a repo outside the scope are not counted', () => {
+    const lone = { kind: 'question', sessionId: 's1', toolUseId: 'toolu_1', askedAt: '2026-10-08T10:00:00Z' };
+    const withLone = [
+      { root: '/a', pipelines: [], loneWaits: [lone, lone] },
+      { root: '/b', pipelines: [], loneWaits: [lone] },
+    ];
+    assert.equal(render.scopedTitle(view, BASE, withLone, new Set(['/a'])), '(2) SDLC dashboard');
+    assert.equal(render.scopedTitle(view, BASE, withLone, new Set(['/b'])), '(1) SDLC dashboard');
+    assert.equal(render.scopedTitle(view, BASE, withLone, new Set()), '(3) SDLC dashboard');
   });
 });
 
@@ -3312,6 +3501,53 @@ describe('preplanStatusRequest', () => {
     assert.equal(view.preplanStatusRequest('tok', '', 'zeta', 'paused'), null);
     assert.equal(view.preplanStatusRequest('tok', '/r', '', 'paused'), null);
     assert.equal(view.preplanStatusRequest('tok', '/r', 'zeta', ''), null);
+  });
+});
+
+describe('waitDismissRequest', () => {
+  const question = { kind: 'question', sessionId: 'sess-1', toolUseId: 'toolu_01', branch: 'main' };
+  const permission = { kind: 'permission', sessionId: 'sess-2', toolUseId: '', branch: 'main' };
+
+  test('builds the POST to /api/wait-dismiss: token header, JSON type, and the four body fields of the server', () => {
+    const req = view.waitDismissRequest('tok', '/r', question);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/api/wait-dismiss');
+    assert.equal(req.headers['X-Sdlc-Token'], 'tok');
+    assert.equal(req.headers['Content-Type'], 'application/json');
+    assert.deepEqual(JSON.parse(req.body), { repo: '/r', kind: 'question', sessionId: 'sess-1', toolUseId: 'toolu_01' });
+  });
+
+  test('a permission wait sends an empty toolUseId', () => {
+    const req = view.waitDismissRequest('tok', '/r', permission);
+    assert.deepEqual(JSON.parse(req.body), { repo: '/r', kind: 'permission', sessionId: 'sess-2', toolUseId: '' });
+  });
+
+  test('a missing toolUseId is sent as an empty string', () => {
+    const req = view.waitDismissRequest('tok', '/r', { kind: 'permission', sessionId: 'sess-2' });
+    assert.equal(JSON.parse(req.body).toolUseId, '');
+  });
+
+  test('sends the four fields and nothing else', () => {
+    const req = view.waitDismissRequest('tok', '/r', Object.assign({ header: 'H', text: 'T', askedAt: 'A' }, question));
+    assert.deepEqual(Object.keys(JSON.parse(req.body)).sort(), ['kind', 'repo', 'sessionId', 'toolUseId']);
+  });
+
+  test('returns null for an empty token or repo, or a wait with no kind or sessionId', () => {
+    assert.equal(view.waitDismissRequest('', '/r', question), null);
+    assert.equal(view.waitDismissRequest('tok', '', question), null);
+    assert.equal(view.waitDismissRequest('tok', '/r', null), null);
+    assert.equal(view.waitDismissRequest('tok', '/r', undefined), null);
+    assert.equal(view.waitDismissRequest('tok', '/r', { kind: '', sessionId: 'sess-1', toolUseId: 'toolu_01' }), null);
+    assert.equal(view.waitDismissRequest('tok', '/r', { kind: 'question', sessionId: '', toolUseId: 'toolu_01' }), null);
+  });
+
+  test('the body field names are the JSON tags of waitDismissRequest in server.go', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../server.go'), 'utf8');
+    const block = source.match(/type waitDismissRequest struct \{([^}]*)\}/);
+    assert.ok(block, 'server.go has no waitDismissRequest struct');
+    const tags = [...block[1].matchAll(/json:"([A-Za-z]+)"/g)].map((m) => m[1]).sort();
+    const req = view.waitDismissRequest('tok', '/r', question);
+    assert.deepEqual(Object.keys(JSON.parse(req.body)).sort(), tags);
   });
 });
 
@@ -5152,6 +5388,77 @@ describe('render review queue tile', () => {
   });
 });
 
+describe('wait display from the shared fixture', () => {
+  const payments = () => fixtureRepo('payments-service');
+
+  test('payments-service has one question wait and one permission wait', () => {
+    assert.deepEqual(payments().loneWaits.map((w) => w.kind), ['question', 'permission']);
+  });
+
+  test('each lone wait draws a card with its kind, header, text, branch and age', () => {
+    payments().loneWaits.forEach((wait) => {
+      const card = render.loneWaitCard(fakeDoc(), view, payments(), wait, FIXTURE_NOW);
+      assert.equal(card.attrs['data-lone-wait'], wait.sessionId + '|' + wait.toolUseId);
+      assert.equal(oneByClass(card, 'pipe-kind').textContent, wait.kind);
+      assert.equal(oneByClass(card, 'pipe-branch').textContent, wait.branch);
+      assert.equal(oneByClass(card, 'attn-text').textContent, wait.header + ': "' + wait.text + '"');
+      const age = render.elapsedText(view, wait.askedAt, FIXTURE_NOW);
+      assert.notEqual(age, '');
+      assert.equal(oneByClass(card, 'attn-elapsed').textContent, age);
+      const button = oneByClass(card, 'wait-dismiss');
+      assert.equal(button.attrs['data-wait-kind'], wait.kind);
+      assert.equal(button.attrs['data-repo'], payments().root);
+    });
+  });
+
+  test('the Dismiss key of a fixture wait builds the request the server reads', () => {
+    payments().loneWaits.forEach((wait) => {
+      const card = render.loneWaitCard(fakeDoc(), view, payments(), wait, FIXTURE_NOW);
+      const button = oneByClass(card, 'wait-dismiss');
+      const key = button.attrs['data-wait-dismiss'];
+      const cut = key.indexOf('|');
+      const req = view.waitDismissRequest('tok', button.attrs['data-repo'], {
+        kind: button.attrs['data-wait-kind'],
+        sessionId: key.slice(0, cut),
+        toolUseId: key.slice(cut + 1),
+      });
+      assert.deepEqual(JSON.parse(req.body), {
+        repo: payments().root,
+        kind: wait.kind,
+        sessionId: wait.sessionId,
+        toolUseId: wait.toolUseId,
+      });
+    });
+  });
+
+  test('the running plan with attention of identity-service shows the wait banner', () => {
+    const block = fixtureBlock('identity-service', (p) => !!p.attention);
+    assert.equal(block.children[0].className, 'attn-bar');
+    assert.ok(classesOf(block).includes('attn'));
+  });
+
+  test('that plan run is first in the feed order of every pipeline', () => {
+    const all = [];
+    FIXTURE.repos.forEach((r) => (r.pipelines || []).forEach((p) => all.push(p)));
+    const first = view.feedOrder(all)[0];
+    assert.equal(first, fixturePipeline('identity-service', (p) => !!p.attention));
+    assert.equal(first.kind, 'plan');
+  });
+
+  test('the header waiting count adds the lone waits to the runs with attention', () => {
+    const runs = FIXTURE.repos.reduce((n, r) => n + (r.pipelines || []).filter((p) => p.attention).length, 0);
+    const lone = FIXTURE.repos.reduce((n, r) => n + (r.loneWaits || []).length, 0);
+    assert.equal(lone, 2);
+    assert.equal(view.headerCounts(FIXTURE.repos).waiting, runs + lone);
+  });
+
+  test('the tab title counts the lone waits only of the repos in scope', () => {
+    const base = 'SDLC dashboard';
+    assert.equal(render.scopedTitle(view, base, FIXTURE.repos, new Set([payments().root])), '(2) ' + base);
+    assert.equal(render.scopedTitle(view, base, FIXTURE.repos, new Set([fixtureRepo('identity-service').root])), '(1) ' + base);
+  });
+});
+
 describe('page scripts ship no preview code', () => {
   for (const name of ['render.js', 'app.js']) {
     test(`${name} has no fixture data and no note box`, () => {
@@ -5191,6 +5498,7 @@ describe('render.js browser global fallback', () => {
       'headerTotals',
       'historyTable',
       'issuesTile',
+      'loneWaitCard',
       'packDimensionGrid',
       'pipelineBlock',
       'preplanPanel',

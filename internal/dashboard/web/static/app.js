@@ -143,6 +143,10 @@ function focusKeyOf(node) {
   if (node.hasAttribute('data-archive')) {
     return 'archive\n' + node.getAttribute('data-repo') + '\n' + node.getAttribute('data-archive');
   }
+  // A Dismiss button of a lone-wait card is rebuilt on each snapshot too.
+  if (node.hasAttribute('data-wait-dismiss')) {
+    return 'wait-dismiss\n' + node.getAttribute('data-repo') + '\n' + node.getAttribute('data-wait-dismiss');
+  }
   if (node.hasAttribute('data-hist-outcome')) return 'hist-outcome\n' + node.getAttribute('data-hist-outcome');
   if (node.hasAttribute('data-hist-sort')) return 'hist-sort\n' + node.getAttribute('data-hist-sort');
   if (node.hasAttribute('data-act-priority')) return 'act-priority\n' + node.getAttribute('data-act-priority');
@@ -174,7 +178,7 @@ function restoreFocus() {
   if (active && active !== document.body && document.contains(active)) return;
   var candidates = document.querySelectorAll(
     '[data-root], [data-station], .fold-btn, [data-section] > summary, [data-detail], [data-archive], ' +
-      '[data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status], [data-pp-set], [data-q-pipe], [data-hist-pick], [data-hist-pick-all], [data-hist-delete], [data-kind]'
+      '[data-wait-dismiss], [data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status], [data-pp-set], [data-q-pipe], [data-hist-pick], [data-hist-pick-all], [data-hist-delete], [data-kind]'
   );
   for (var i = 0; i < candidates.length; i++) {
     if (focusKeyOf(candidates[i]) === ui.focusKey) {
@@ -249,12 +253,17 @@ function watchDimensionGrids() {
 
 function renderFeed(snapshot, repos, scope, now, tz) {
   var nodes = [];
+  var waits = [];
   var pipelines = [];
   var owner = new Map();
   blocks = [];
 
   repos.forEach(function (repo) {
     if (!view.inScope(scope, repo.root)) return;
+    // A lone wait has no pipeline block. Its card goes before every block.
+    (repo.loneWaits || []).forEach(function (wait) {
+      waits.push(draw.loneWaitCard(document, view, repo, wait, now));
+    });
     if (repo.error) nodes.push(draw.emptyState(document, 'repo-error', repo));
     (repo.warnings || []).forEach(function (w) {
       nodes.push(draw.emptyState(document, 'repo-warning', { name: repo.name, warning: w }));
@@ -279,11 +288,11 @@ function renderFeed(snapshot, repos, scope, now, tz) {
     nodes.push(node);
   });
 
-  if (blocks.length === 0) {
+  if (blocks.length === 0 && waits.length === 0) {
     var empty = view.emptyText(snapshot);
     nodes.push(empty ? draw.emptyState(document, 'no-pipelines', empty) : draw.emptyState(document, 'none-in-scope'));
   }
-  replaceChildren(byId('feed'), nodes);
+  replaceChildren(byId('feed'), waits.concat(nodes));
   watchDimensionGrids();
 }
 
@@ -519,7 +528,7 @@ function fetchJSON(url, init) {
 }
 
 // Sends a request of view.archiveRequest, view.clearRequest, view.deleteRequest,
-// view.preplanStatusRequest, or view.historyDeleteRequest. A null request (the
+// view.preplanStatusRequest, view.historyDeleteRequest, or view.waitDismissRequest. A null request (the
 // page has no token) gives the same result as a network error.
 function post(request) {
   return request ? fetchJSON(request.url, request) : Promise.resolve({ status: 0, body: null });
@@ -765,6 +774,24 @@ function showWriteError(text) {
   showConfirmResult(text);
 }
 
+// A click on Dismiss in a lone-wait card. No question, one POST. On success the
+// card goes away with the next snapshot. On an error the dialog shows the
+// message and the suggestion, and the card stays.
+function dismissWait(button) {
+  var key = button.getAttribute('data-wait-dismiss') || '';
+  var sep = key.indexOf('|');
+  var wait = {
+    kind: button.getAttribute('data-wait-kind'),
+    sessionId: sep === -1 ? key : key.slice(0, sep),
+    toolUseId: sep === -1 ? '' : key.slice(sep + 1),
+  };
+  var request = view.waitDismissRequest(pageToken(), button.getAttribute('data-repo'), wait);
+  post(request).then(function (result) {
+    var outcome = view.deleteResultText(result.status, result.body);
+    if (!outcome.ok) showWriteError(outcome.text);
+  });
+}
+
 // A click on Delete selected in the History tab: one confirm question, then
 // one POST for each repo of the selected rows, one after another. The first
 // failed repo stops the chain.
@@ -902,6 +929,11 @@ function init() {
   feed.addEventListener('click', function (event) {
     var button = event.target.closest('.archive-btn');
     if (button) archiveRun(button);
+  });
+  // Dismiss in a lone-wait card removes the wait record.
+  feed.addEventListener('click', function (event) {
+    var button = event.target.closest('[data-wait-dismiss]');
+    if (button) dismissWait(button);
   });
   // A chip of the review queue filters the queue of its pipeline.
   feed.addEventListener('click', function (event) {

@@ -192,13 +192,62 @@
   }
 
   /**
+   * The card of one lone wait: an open wait that no shown pipeline owns. It
+   * has the wait banner of a pipeline (the bar with the wait age, then the
+   * header and the text), then a head with a lamp, the wait kind, the branch,
+   * the repo name and the Dismiss button. The card and the button carry the
+   * key `sessionId|toolUseId`, with an empty toolUseId for a permission wait.
+   * The click handler in app.js reads data-wait-dismiss, data-wait-kind and
+   * data-repo.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{root: string, name: string}} repo
+   * @param {{kind: string, sessionId: string, toolUseId?: string, branch?: string, header?: string, text?: string, askedAt?: string}} wait
+   *   an entry of repo.loneWaits
+   * @param {Date|number} [now] the time for the wait age; defaults to the current time
+   * @returns {Element} article.pipe-block.attn.lone-wait with data-lone-wait
+   */
+  function loneWaitCard(doc, view, repo, wait, now) {
+    var at = now != null ? now : Date.now();
+    var id = (wait.sessionId || '') + '|' + (wait.toolUseId || '');
+    var card = el(doc, 'article', 'pipe-block attn lone-wait');
+    card.setAttribute('data-lone-wait', id);
+
+    var lamp = el(doc, 'span', 'lamp running waiting');
+    lamp.setAttribute('aria-hidden', 'true');
+
+    var branch = wait.branch ? el(doc, 'h2', 'pipe-branch', wait.branch) : null;
+    if (branch) branch.setAttribute('title', wait.branch);
+
+    var repoName = el(doc, 'span', 'pipe-repo', repo.name);
+    repoName.setAttribute('title', repo.root);
+
+    var dismiss = el(doc, 'button', 'wait-dismiss', 'Dismiss');
+    dismiss.setAttribute('type', 'button');
+    dismiss.setAttribute('data-wait-dismiss', id);
+    dismiss.setAttribute('data-wait-kind', wait.kind || '');
+    dismiss.setAttribute('data-repo', repo.root);
+    dismiss.setAttribute('title', 'Remove this wait from the dashboard');
+
+    var head = append(el(doc, 'header', 'pipe-head'), [
+      lamp,
+      el(doc, 'span', 'pipe-kind', wait.kind),
+      branch,
+      append(el(doc, 'span', 'pipe-side'), [repoName, dismiss]),
+    ]);
+    // The banner comes first, as it does in the block of a pipeline.
+    append(card, attentionRows(doc, view, wait, at));
+    return append(card, [head]);
+  }
+
+  /**
    * The browser tab title for the repos in scope: view.pageTitle over the
    * repos that view.inScope accepts.
    * @param {object} view window.sdlcView
    * @param {string} base title without a count
    * @param {Array<{root: string}>} repos every repo of the snapshot
    * @param {Set<string>} scope selected repo roots; empty means every repo
-   * @returns {string} base, or "(N) " and base when N pipelines of the repos in scope wait for a person
+   * @returns {string} base, or "(N) " and base when N pipelines and lone waits of the repos in scope wait for a person
    */
   function scopedTitle(view, base, repos, scope) {
     return view.pageTitle(
@@ -1885,6 +1934,7 @@
     stationTrack: stationTrack,
     elapsedText: elapsedText,
     attentionRows: attentionRows,
+    loneWaitCard: loneWaitCard,
     scopedTitle: scopedTitle,
     tickElapsed: tickElapsed,
     pipelineBlock: pipelineBlock,

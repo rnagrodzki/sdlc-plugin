@@ -468,6 +468,26 @@
   }
 
   /**
+   * The request that dismisses one open wait that no pipeline shows (a lone
+   * wait). Use it as `fetch(req.url, req)`. The click asks no question.
+   * @param {string} token the server's X-Sdlc-Token for this start
+   * @param {string} repo repo root
+   * @param {{kind: string, sessionId: string, toolUseId?: string}} wait an
+   *   entry of repo.loneWaits; toolUseId is '' for a permission wait
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token, repo, wait.kind, or wait.sessionId is ''
+   */
+  function waitDismissRequest(token, repo, wait) {
+    if (!token || !repo || !wait || !wait.kind || !wait.sessionId) return null;
+    return guardedPost(token, '/api/wait-dismiss', {
+      repo: repo,
+      kind: wait.kind,
+      sessionId: wait.sessionId,
+      toolUseId: wait.toolUseId || '',
+    });
+  }
+
+  /**
    * Groups selected History rows by repo.
    * @param {Array<string>} keys the data-hist-pick values
    * @returns {Array<{repo: string, rows: Array<{kind: string, branch: string, endedAt: string}>}>}
@@ -1042,7 +1062,8 @@
   /**
    * Header counts over all repos; the repo filter does not apply. The
    * running, stalled, and failed counts follow the pipeline status. The
-   * waiting count is the number of pipelines that have an attention.
+   * waiting count is the number of pipelines that have an attention plus the
+   * number of lone waits.
    * @param {Array} repos
    * @returns {{running: number, stalled: number, failed: number, waiting: number}}
    */
@@ -1056,13 +1077,15 @@
         }
         if (p.attention) counts.waiting++;
       });
+      counts.waiting += (repo.loneWaits || []).length;
     });
     return counts;
   }
 
   /**
-   * Browser tab title. A leading "(N) " shows the number of pipelines that
-   * wait for a person in the given repos; with none, the title is base.
+   * Browser tab title. A leading "(N) " shows the number of pipelines and
+   * lone waits that wait for a person in the given repos; with none, the
+   * title is base.
    * @param {string} base title without a count
    * @param {Array} repos the repos in scope
    * @returns {string}
@@ -1073,6 +1096,7 @@
       (repo.pipelines || []).forEach(function (p) {
         if (p && p.attention) waiting++;
       });
+      waiting += (repo.loneWaits || []).length;
     });
     return waiting > 0 ? '(' + waiting + ') ' + base : base;
   }
@@ -1777,6 +1801,7 @@
     deleteResultText: deleteResultText,
     preplanStatusRequest: preplanStatusRequest,
     historyDeleteRequest: historyDeleteRequest,
+    waitDismissRequest: waitDismissRequest,
     historyPicksByRepo: historyPicksByRepo,
     pairedShipCount: pairedShipCount,
     historyDeleteQuestion: historyDeleteQuestion,
