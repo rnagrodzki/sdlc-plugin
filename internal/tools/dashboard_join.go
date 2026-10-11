@@ -34,7 +34,8 @@ const dashboardExecuteRefPrefix = "execute:"
 // (dashboardAttachReceivedReview). A fixProgress value that is not a list, or
 // a list with records and none valid, adds a state issue. A review step with
 // review totals also gets detail.reviewQueue from dashboardReviewQueue, built
-// after the received-review station, so the fix records are in it.
+// after the received-review station, so the fix records are in it. The
+// issues of dashboardReviewQueue go to the pipeline issues.
 func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	data := st.Data
 	p.SessionID = dashboardStr(data["sessionId"])
@@ -91,7 +92,9 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 		if rr != nil && rr.Detail != nil {
 			fixes = rr.Detail.Fixes
 		}
-		review.Detail.ReviewQueue = dashboardReviewQueue(data, review.Detail.ReviewTotals, fixes)
+		var queueIssues []DashboardIssue
+		review.Detail.ReviewQueue, queueIssues = dashboardReviewQueue(data, review.Detail.ReviewTotals, fixes)
+		p.Issues = append(p.Issues, queueIssues...)
 	}
 	if problem != "" {
 		p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "medium", Text: problem})
@@ -151,7 +154,7 @@ func (sp *dashboardTimeSpan) addLast(s string) {
 // has a status outside healingFixStatuses, a severity outside
 // dimensions.ValidSeverities, or an origin outside healingOrigins is
 // skipped: the page puts status and severity into CSS class names. A record
-// with no origin gets dashboardOriginLocal. Each valid record gives one fix
+// with no origin gets healingOriginLocal. Each valid record gives one fix
 // row, with its origin, in list order. The step is in_progress while a record
 // is not in healingFixFinal and the run is live (runCompleted false), else
 // completed. startedAt is the earliest parsable firstAt; completedAt is the
@@ -178,7 +181,7 @@ func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) (ste
 		status, severity := dashboardStr(m["status"]), dashboardStr(m["severity"])
 		origin := dashboardStr(m["origin"])
 		if origin == "" {
-			origin = dashboardOriginLocal
+			origin = healingOriginLocal
 		}
 		if title == "" || !slices.Contains(healingFixStatuses, status) || !slices.Contains(dimensions.ValidSeverities, severity) || !slices.Contains(healingOrigins, origin) {
 			continue
@@ -470,12 +473,13 @@ func dashboardNestExecute(ship *DashboardPipeline, exec DashboardPipeline) {
 // rows (FindingItems): the review issues whose Ref is the dimension name, in
 // issue order, the same rows the standalone review lists; a dimension with no
 // finding gets an empty, non-nil list. The plan totals go to the step
-// reviewPlan; with no planned dimension it stays absent. A step that already
-// has a reviewQueue passes the dimensions to dashboardQueueAddFindings, which
-// adds the open rows, and the dimension and text of each row. The review issues go
-// to the ship issues with their Ref unchanged. A review with no rows gives an
-// empty, non-nil dimension list. The review ledger name goes to the ship join
-// members, so an archive of the ship finds the nested run.
+// reviewPlan; with no planned dimension it stays absent. When the step already
+// has a reviewQueue, dashboardQueueAddFindings joins the dimensions into it:
+// it adds open rows to an empty queue, or the dimension and text to the rows
+// of a queue that has rows. The issues it returns go to the ship issues. The
+// review issues go to the ship issues with their Ref unchanged. A review with
+// no rows gives an empty, non-nil dimension list. The review ledger name goes
+// to the ship join members, so an archive of the ship finds the nested run.
 func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
 	ship.join.members = append(ship.join.members, review.ID)
 	dims := make([]DashboardDimension, 0, len(review.join.reviewDims))
@@ -490,7 +494,7 @@ func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
 		step.Detail.Dimensions = dims
 		step.Detail.ReviewPlan = review.join.reviewPlan
 		if step.Detail.ReviewQueue != nil {
-			dashboardQueueAddFindings(step.Detail.ReviewQueue, dims)
+			ship.Issues = append(ship.Issues, dashboardQueueAddFindings(step.Detail.ReviewQueue, dims)...)
 		}
 	}
 	ship.Issues = append(ship.Issues, review.Issues...)

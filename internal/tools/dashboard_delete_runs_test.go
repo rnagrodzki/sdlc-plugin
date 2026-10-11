@@ -344,7 +344,7 @@ func TestDashboardDeleteRuns_EmptyKindOrEndedAtRefused(t *testing.T) {
 			runsDelNoWrite(t)
 
 			out, err := DashboardDeleteRuns(root, tc.keys)
-			dashDelWantErr(t, err, "domain", "Reload the page and try again.")
+			dashDelWantErr(t, err, "domain", "The page sent a malformed request. Report this as a bug of the sdlc dashboard.")
 			if err.Error() != tc.message {
 				t.Errorf("message = %q, want %q", err.Error(), tc.message)
 			}
@@ -363,7 +363,7 @@ func TestDashboardDeleteRuns_DuplicateKeyRefused(t *testing.T) {
 	runsDelNoWrite(t)
 
 	out, err := DashboardDeleteRuns(root, []DashboardRunKey{runsDelKeyPlanFeatX, runsDelKeyShipFeatX, runsDelKeyPlanFeatX})
-	dashDelWantErr(t, err, "domain", "Reload the page and try again.")
+	dashDelWantErr(t, err, "domain", "The page sent a malformed request. Report this as a bug of the sdlc dashboard.")
 	want := `The key {kind "plan", branch "feat/x", endedAt "2026-10-01T10:00:00Z"} appears more than once`
 	if err.Error() != want {
 		t.Errorf("message = %q, want %q", err.Error(), want)
@@ -619,8 +619,8 @@ func TestDashboardDeleteRuns_TwoChangedReadsInARowIsInfra(t *testing.T) {
 	runsDelWant(t, path, []byte(want))
 }
 
-// TestDashboardDeleteRuns_FileGoneBetweenReadsRetries retries when the file goes away between the two reads and gives a DomainError on the retry.
-func TestDashboardDeleteRuns_FileGoneBetweenReadsRetries(t *testing.T) {
+// TestDashboardDeleteRuns_FileGoneBetweenReadsIsDomainError gives the missing-file DomainError, with no retry, when the file goes away between the two reads.
+func TestDashboardDeleteRuns_FileGoneBetweenReadsIsDomainError(t *testing.T) {
 	root := t.TempDir()
 	path, _ := runsDelFile(t, root, runsDelPlanFeatX)
 	calls := 0
@@ -638,6 +638,44 @@ func TestDashboardDeleteRuns_FileGoneBetweenReadsRetries(t *testing.T) {
 	dashDelWantErr(t, err, "domain", "Reload the page and try again.")
 	if err.Error() != "The History file runs.jsonl does not exist" {
 		t.Errorf("message = %q", err.Error())
+	}
+	if calls != 1 {
+		t.Errorf("reads = %d, want 1 (the Stat of the second read finds no file)", calls)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("runs.jsonl exists after the delete: %v", statErr)
+	}
+}
+
+// TestDashboardDeleteRuns_FileGoneOnTheLastSecondReadIsDomainError gives the missing-file DomainError, not the changed-file InfraError, when the file goes away between the two reads of the retry.
+func TestDashboardDeleteRuns_FileGoneOnTheLastSecondReadIsDomainError(t *testing.T) {
+	root := t.TempDir()
+	path, _ := runsDelFile(t, root, runsDelPlanFeatX+runsDelShipFeatX)
+	calls := 0
+	dashDelSeam(t, &dashboardDeleteReadFile, func(p string) ([]byte, error) {
+		calls++
+		if calls == 2 {
+			// Another run appends after the first read, so the first try retries.
+			runsDelAppend(t, p, runsDelPlanLater)
+		}
+		data, err := os.ReadFile(p)
+		if calls == 3 {
+			os.Remove(p) // gone before the second read of the retry
+		}
+		return data, err
+	})
+	runsDelNoWrite(t)
+
+	out, err := DashboardDeleteRuns(root, []DashboardRunKey{runsDelKeyPlanFeatX})
+	dashDelWantErr(t, err, "domain", "Reload the page and try again.")
+	if err.Error() != "The History file runs.jsonl does not exist" {
+		t.Errorf("message = %q", err.Error())
+	}
+	if out != (DashboardDeleteOut{}) {
+		t.Errorf("out = %+v, want zero value", out)
+	}
+	if calls != 3 {
+		t.Errorf("reads = %d, want 3", calls)
 	}
 	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("runs.jsonl exists after the delete: %v", statErr)
@@ -704,4 +742,37 @@ func TestDashboardDeleteRuns_LimitFitsHistoryTable(t *testing.T) {
 	if dashboardHistoryLimit > dashboardDeleteRunsMaxKeys {
 		t.Errorf("dashboardHistoryLimit = %d is more than dashboardDeleteRunsMaxKeys = %d", dashboardHistoryLimit, dashboardDeleteRunsMaxKeys)
 	}
+}
+
+// TestDashboardDeleteRuns_EverySnapshotRowIsDeletable checks that the History
+// snapshot shows no row that the delete cannot name: a null line, {}, and a
+// row with no skill or no ts stay out of the snapshot, and a select-all delete
+// of the shown rows succeeds.
+func TestDashboardDeleteRuns_EverySnapshotRowIsDeletable(t *testing.T) {
+	root := t.TempDir()
+	content := "null\n" +
+		"{}\n" +
+		`{"ts":"2026-10-01T09:00:00Z","branch":"feat/x","outcome":"success"}` + "\n" +
+		`{"skill":"plan","branch":"feat/x","outcome":"success"}` + "\n" +
+		runsDelPlanFeatX + runsDelShipFeatX
+	path, _ := runsDelFile(t, root, content)
+
+	shown := dashboardRecentRuns(root)
+	if len(shown) != 2 {
+		t.Fatalf("snapshot rows = %+v, want only the plan and ship rows", shown)
+	}
+	keys := make([]DashboardRunKey, 0, len(shown))
+	for _, r := range shown {
+		keys = append(keys, DashboardRunKey{Kind: r.Kind, Branch: r.Branch, EndedAt: r.EndedAt})
+	}
+	out, err := DashboardDeleteRuns(root, keys)
+	if err != nil {
+		t.Fatalf("DashboardDeleteRuns of the shown rows: %v", err)
+	}
+	if out.Message != "Deleted 2 History rows." {
+		t.Errorf("message = %q", out.Message)
+	}
+	runsDelWant(t, path, []byte("null\n{}\n"+
+		`{"ts":"2026-10-01T09:00:00Z","branch":"feat/x","outcome":"success"}`+"\n"+
+		`{"skill":"plan","branch":"feat/x","outcome":"success"}`+"\n"))
 }

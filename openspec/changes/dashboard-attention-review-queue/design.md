@@ -174,7 +174,7 @@ No config key changes.
 | Zero-fix status | `completed` | `skipped` | preplan decision 15 |
 | History delete key | kind, branch and raw `ts`; one unknown key rejects all | skip unknown keys | the page must not delete rows that the user did not see |
 | Lost append | read again before the rename, one retry | a file lock | no lock exists; the Clear cache action accepts the same risk |
-| Wait delete | new `attention.Remove` that reports a removed flag | `DeleteQuestion` | an empty `toolUseId` there deletes every question of the session |
+| Wait delete | new `attention.DeleteRecord` that reports a removed flag | `DeleteQuestion` | an empty `toolUseId` there deletes every question of the session |
 | Snapshot fields | one struct task first | each task adds its field | tasks of one execute wave must not share a file |
 | Docs of `docs/dashboard.md` | one doc task after the server tasks | each task edits the doc | six tasks change the same file; one task prevents edit conflicts in a wave |
 | Browser test | chromedp behind the `integration` tag | no browser test | user decision; only a test file imports it |

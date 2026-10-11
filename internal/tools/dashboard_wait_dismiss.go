@@ -13,6 +13,8 @@ const dashboardDismissWaitWriteSuggestion = "Check write permission on .sdlc-v2/
 
 // dashboardDismissWaitInputError returns the DomainError for a request that
 // breaks an input rule of DashboardDismissWait, or nil for a good request.
+// The page never sends such a request, so the Suggestion is
+// dashboardDeleteBugSuggestion: a reload cannot fix it.
 func dashboardDismissWaitInputError(kind, sessionID, toolUseID string) error {
 	var msg string
 	switch {
@@ -27,7 +29,7 @@ func dashboardDismissWaitInputError(kind, sessionID, toolUseID string) error {
 	default:
 		return nil
 	}
-	return &mcpserver.DomainError{Msg: msg, Suggestion: dashboardDeleteReloadSuggestion}
+	return &mcpserver.DomainError{Msg: msg, Suggestion: dashboardDeleteBugSuggestion}
 }
 
 // DashboardDismissWait deletes one wait record of root, from the attention
@@ -47,7 +49,7 @@ func DashboardDismissWait(root, kind, sessionID, toolUseID string) (DashboardDel
 		return DashboardDeleteOut{}, err
 	}
 
-	removed, err := attention.Remove(root, kind, sessionID, toolUseID)
+	removed, err := attention.DeleteRecord(root, kind, sessionID, toolUseID)
 	if err != nil {
 		return DashboardDeleteOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("Could not dismiss the wait: %s", err),

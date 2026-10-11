@@ -107,7 +107,7 @@
           },
           "condition": {
             "type": "string",
-            "description": "Trigger of a step that runs only when the trigger fires. A pending entry with a condition does not block later steps. ship_prepare sets it on the received-review entry that it seeds after review."
+            "description": "Display label of a conditional step. Only the presence of the key matters: a pending entry with a condition key does not block later steps or the cleanup contract check, whatever the text. ship_prepare sets it on the received-review entry that it seeds after review. The legacy ship_state init scaffold sets it on received-review and commit-fixes, with other texts."
           },
           "reason": {
             "type": "string"

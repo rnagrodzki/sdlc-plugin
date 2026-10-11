@@ -14,6 +14,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 )
 
 // dashboardFixturePath is the shared snapshot fixture, relative to this
@@ -428,7 +429,7 @@ func dashboardFixtureQueueCovers(q *DashboardReviewQueue) bool {
 			return false
 		}
 	}
-	return slices.Contains(dimensions.ValidSeverities, q.Threshold) && q.Threshold != dashboardQueueThresholdDefault
+	return slices.Contains(dimensions.ValidSeverities, q.Threshold) && q.Threshold != shipmeta.ShipBuiltInDefaults.ReviewThreshold
 }
 
 // dashboardFixturePairedPlan reports whether history holds a ship row with

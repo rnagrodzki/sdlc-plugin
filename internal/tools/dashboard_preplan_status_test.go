@@ -31,6 +31,14 @@ func setStatusNoWrite(t *testing.T) {
 	})
 }
 
+// setStatusWantMessage checks that err has the message want.
+func setStatusWantMessage(t *testing.T, err error, want string) {
+	t.Helper()
+	if err == nil || err.Error() != want {
+		t.Errorf("error = %v, want the message %q", err, want)
+	}
+}
+
 // setStatusZero checks that out is the zero value.
 func setStatusZero(t *testing.T, out DashboardPreplanStatusOut) {
 	t.Helper()
@@ -54,8 +62,9 @@ func TestDashboardSetPreplanStatus_ReplacesOnlyTheFirstStatusLine(t *testing.T) 
 				if err != nil {
 					t.Fatalf("DashboardSetPreplanStatus: %v", err)
 				}
-				if !out.Changed || out.Status != to || out.Message == "" {
-					t.Errorf("out = %+v, want Changed, Status %q and a message", out, to)
+				want := DashboardPreplanStatusOut{Changed: true, Status: to, Message: "Set the status of the preplan topic topic to " + to + "."}
+				if out != want {
+					t.Errorf("out = %+v, want %+v", out, want)
 				}
 				if got, want := string(dashDelReadFile(t, path)), setStatusBody("**Status:** "+to); got != want {
 					t.Errorf("topic file = %q, want %q", got, want)
@@ -186,8 +195,9 @@ func TestDashboardSetPreplanStatus_SameStatusChangesNothing(t *testing.T) {
 				if err != nil {
 					t.Fatalf("DashboardSetPreplanStatus: %v", err)
 				}
-				if out.Changed || out.Status != status || out.Message == "" {
-					t.Errorf("out = %+v, want not Changed, Status %q and a message", out, status)
+				want := DashboardPreplanStatusOut{Status: status, Message: "The preplan topic topic already has the status " + status + "."}
+				if out != want {
+					t.Errorf("out = %+v, want %+v", out, want)
 				}
 				if got := string(dashDelReadFile(t, path)); got != before {
 					t.Errorf("topic file = %q, want it unchanged", got)
@@ -268,6 +278,9 @@ func TestDashboardSetPreplanStatus_BadStatusRefused(t *testing.T) {
 		t.Run(fmt.Sprintf("%q", status), func(t *testing.T) {
 			out, err := DashboardSetPreplanStatus(root, "topic", status)
 			dashDelWantErr(t, err, "domain", setStatusPickSuggestion)
+			if want := fmt.Sprintf("The status %q is not a preplan status. The values are: in progress, ready for plan, paused", status); err.Error() != want {
+				t.Errorf("message = %q, want %q", err.Error(), want)
+			}
 			for _, v := range PreplanStatuses {
 				if !strings.Contains(err.Error(), v) {
 					t.Errorf("message %q does not name the status %q", err.Error(), v)
@@ -289,6 +302,7 @@ func TestDashboardSetPreplanStatus_MissingTopicFileIsDomainError(t *testing.T) {
 
 		out, err := DashboardSetPreplanStatus(root, "topic", "paused")
 		dashDelWantErr(t, err, "domain", "Reload the page. The topic file is gone.")
+		setStatusWantMessage(t, err, "The preplan topic .sdlc-v2/preplan/topic.md is gone")
 		setStatusZero(t, out)
 		if _, err := os.Lstat(filepath.Join(root, paths.DataDir, paths.PreplanSubdir, "topic.md")); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("tool created the topic file, Lstat err = %v", err)
@@ -300,6 +314,7 @@ func TestDashboardSetPreplanStatus_MissingTopicFileIsDomainError(t *testing.T) {
 
 		out, err := DashboardSetPreplanStatus(root, "topic", "paused")
 		dashDelWantErr(t, err, "domain", "Reload the page. The topic file is gone.")
+		setStatusWantMessage(t, err, "The preplan topic .sdlc-v2/preplan/topic.md is gone")
 		setStatusZero(t, out)
 	})
 	t.Run("file gone before read", func(t *testing.T) {
@@ -312,6 +327,7 @@ func TestDashboardSetPreplanStatus_MissingTopicFileIsDomainError(t *testing.T) {
 
 		out, err := DashboardSetPreplanStatus(root, "topic", "paused")
 		dashDelWantErr(t, err, "domain", "Reload the page. The topic file is gone.")
+		setStatusWantMessage(t, err, "The preplan topic .sdlc-v2/preplan/topic.md is gone")
 		setStatusZero(t, out)
 	})
 }
@@ -331,6 +347,7 @@ func TestDashboardSetPreplanStatus_SymlinkRefusedAndLinkStays(t *testing.T) {
 
 	out, err := DashboardSetPreplanStatus(root, "linked", "paused")
 	dashDelWantErr(t, err, "domain", "Change the status by hand in the target file.")
+	setStatusWantMessage(t, err, "The path .sdlc-v2/preplan/linked.md is a symlink, not a topic file that the dashboard can rewrite")
 	setStatusZero(t, out)
 	info, lerr := os.Lstat(link)
 	if lerr != nil || info.Mode()&fs.ModeSymlink == 0 {
@@ -351,6 +368,7 @@ func TestDashboardSetPreplanStatus_DanglingSymlinkRefused(t *testing.T) {
 
 	out, err := DashboardSetPreplanStatus(root, "dangling", "paused")
 	dashDelWantErr(t, err, "domain", "Change the status by hand in the target file.")
+	setStatusWantMessage(t, err, "The path .sdlc-v2/preplan/dangling.md is a symlink, not a topic file that the dashboard can rewrite")
 	setStatusZero(t, out)
 	if _, err := os.Lstat(link); err != nil {
 		t.Errorf("link is gone: %v", err)
@@ -367,6 +385,7 @@ func TestDashboardSetPreplanStatus_FolderRefused(t *testing.T) {
 
 	out, err := DashboardSetPreplanStatus(root, "topic", "paused")
 	dashDelWantErr(t, err, "domain", "Change the status by hand in the target file.")
+	setStatusWantMessage(t, err, "The path .sdlc-v2/preplan/topic.md is a folder, not a topic file that the dashboard can rewrite")
 	setStatusZero(t, out)
 	if info, serr := os.Stat(folder); serr != nil || !info.IsDir() {
 		t.Errorf("folder is gone, Stat err = %v", serr)
@@ -389,6 +408,7 @@ func TestDashboardSetPreplanStatus_NoStatusLineIsDataError(t *testing.T) {
 
 			out, err := DashboardSetPreplanStatus(root, "topic", "paused")
 			dashDelWantErr(t, err, "data", "Add a **Status:** line near the top of the topic file by hand.")
+			setStatusWantMessage(t, err, "The topic file .sdlc-v2/preplan/topic.md has no **Status:** line in its first 4 KiB")
 			setStatusZero(t, out)
 			if got := string(dashDelReadFile(t, path)); got != content {
 				t.Errorf("topic file changed, length %d, want %d", len(got), len(content))
@@ -452,6 +472,9 @@ func TestDashboardSetPreplanStatus_LstatFailureIsInfra(t *testing.T) {
 
 	out, err := DashboardSetPreplanStatus(root, "topic", "paused")
 	dashDelWantErr(t, err, "infra", "Check read permission on .sdlc-v2/preplan/topic.md and retry.")
+	if !strings.HasPrefix(err.Error(), "Could not read the preplan topic .sdlc-v2/preplan/topic.md: ") {
+		t.Errorf("message = %q, want the Lstat failure of the topic path", err.Error())
+	}
 	setStatusZero(t, out)
 }
 
@@ -465,6 +488,7 @@ func TestDashboardSetPreplanStatus_ReadFailureIsInfra(t *testing.T) {
 
 	out, err := DashboardSetPreplanStatus(root, "my_topic", "paused")
 	dashDelWantErr(t, err, "infra", "Check read permission on .sdlc-v2/preplan/my_topic.md and retry.")
+	setStatusWantMessage(t, err, "Could not read the topic file: injected read failure")
 	if !errors.Is(err, injected) {
 		t.Errorf("error does not wrap the injected failure: %v", err)
 	}
@@ -483,11 +507,40 @@ func TestDashboardSetPreplanStatus_WriteFailureIsInfra(t *testing.T) {
 
 	out, err := DashboardSetPreplanStatus(root, "topic", "paused")
 	dashDelWantErr(t, err, "infra", "Check write permission on .sdlc-v2/preplan/ and free disk space, then retry.")
+	setStatusWantMessage(t, err, "Could not write the preplan topic .sdlc-v2/preplan/topic.md: injected write failure")
 	if !errors.Is(err, injected) {
 		t.Errorf("error does not wrap the injected failure: %v", err)
 	}
 	setStatusZero(t, out)
 	if got := string(dashDelReadFile(t, path)); got != before {
 		t.Errorf("topic file = %q, want it unchanged", got)
+	}
+}
+
+// TestDashboardReplaceStatusLine checks the pure line replace: the first
+// Status line in the head changes, the CR of a CR LF line stays, the old
+// status comes back trimmed, and a head with no Status line gives found false.
+func TestDashboardReplaceStatusLine(t *testing.T) {
+	cases := []struct {
+		name, data, next, current string
+		found                     bool
+	}{
+		{"first line only", "a\n**Status:** paused\n**Status:** x\n", "a\n**Status:** in progress\n**Status:** x\n", "paused", true},
+		{"CR LF", "**Status:**\tready for plan \r\nb\r\n", "**Status:** in progress\r\nb\r\n", "ready for plan", true},
+		{"no line end", "**Status:**", "**Status:** in progress", "", true},
+		{"no Status line", "# Preplan\n", "", "", false},
+		{"Status line past the head", strings.Repeat("a\n", dashboardPreplanHeadMax) + "**Status:** paused\n", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(tc.data)
+			next, current, found := dashboardReplaceStatusLine(data, "in progress")
+			if string(next) != tc.next || current != tc.current || found != tc.found {
+				t.Errorf("got (%q, %q, %v), want (%q, %q, %v)", next, current, found, tc.next, tc.current, tc.found)
+			}
+			if string(data) != tc.data {
+				t.Errorf("data changed to %q", data)
+			}
+		})
 	}
 }

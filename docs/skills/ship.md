@@ -124,29 +124,37 @@ Ship checks the routes in this order. The first route that matches wins.
 
 | Route | When | What ship does | Result of `complete-step` |
 |---|---|---|---|
-| 1 | `M` is known and `P` is less than `M` | Asks whether to run `/review` again. It calls no step action before you answer. Run again: review starts over. Continue: routes 2 to 6 with the parsed findings. | none yet |
+| 1 | `M` is known and `P` is less than `M` | Asks whether to run `/review` again. It calls no step action before you answer. Run again: review starts over. Continue: routes 2 to 6 with the parsed findings. With `--auto`, ship does not ask: it continues. | none yet |
 | 2 | `K` is 1 or more | Starts the step, dispatches `/received-review`, runs `commit-fixes` when `/received-review` changed files, then ends the step. | `K finding(s) sent to received-review` |
 | 3 | `K` is 0 and `M` is 0 | Starts the step and ends it. It dispatches nothing. | `0 fixes — no findings` |
 | 4 | `K` is 0 and `M` is unknown | Starts the step and ends it. It dispatches nothing. | `0 fixes — no finding at or above the threshold` |
 | 5 | `K` is 0, `M` is 1 or more, and `P` is `M` or more | Starts the step and ends it. It dispatches nothing. | `0 fixes — all M findings below threshold` |
 | 6 | `K` is 0 and `P` is less than `M` (you chose Continue) | Starts the step and ends it. It dispatches nothing. | `0 fixes — parsed P of M findings, none at or above the threshold` |
-| — | The dispatch fails, you stop it, it returns no result, or `commit-fixes` fails | Calls `fail` with the reason. The step is `failed`, and the issue list of the run shows it. | none |
+| — | The dispatch fails, you stop it, it returns no result, or `commit-fixes` fails | Stops a worker that can still run with `TaskStop`. When that fails (ship runs nested under another dispatch), records the worker as possibly still running. Then calls `fail` with the reason. The step is `failed`, and the issue list of the run shows it. | none |
 
 In the result text, `K`, `M` and `P` stand for the numbers of the run. The
 `await-remote-review` step can dispatch `/received-review` again. That
-dispatch records a decision only. It makes no second `begin-step`. On
+dispatch records a decision only, with `decide` on `received-review`. It
+makes no second `begin-step`, because that would set the completed step back
+to `in_progress`. On
 routes 3 to 6, ship dispatches nothing. A finding below the threshold is not
 lost: ship saves it for [/deferred](deferred.md). After the step, ship goes
 on with the rebase.
 
 On `--resume`, the saved status of the step decides what ship does:
 
-- `in_progress` or `failed` — ship runs the routes again. `begin-step` sets a
-  new start time. A fix that an earlier try recorded is not recorded twice.
 - `completed` — ship does not call `/received-review` again. It goes on with
   the rebase.
-- `pending` — the step has not started. A stop between the end of `review`
-  and the start of this step leaves the findings of the review unrouted.
+- `pending`, `in_progress` or `failed`, after a completed `review` — ship
+  does not run the routes again. The resumed session no longer has the
+  review output, and a second deferral of a finding makes a duplicate entry.
+  When a fix is still in progress and the tree has uncommitted changes, ship
+  fails the step and stops, so you can check the changes. Otherwise it
+  commits finished fixes, records a decision, and ends the step with
+  `resumed — review output lost`. The findings that have no fix or deferral
+  record show as `UNACCOUNTED` in the summary. Run `/sdlc:review` and then
+  `/sdlc:received-review` to get them back. With `--auto`, ship does the
+  same and asks nothing.
 
 ## Examples
 

@@ -327,7 +327,7 @@ func assertPlanStampStderr(t *testing.T, stderr string) {
 	if len(lines) != 1 {
 		t.Fatalf("stderr has %d lines, want 1: %q", len(lines), stderr)
 	}
-	if !strings.HasPrefix(lines[0], "sdlc hook: plan session stamp: ") {
-		t.Errorf("stderr line = %q, want prefix %q", lines[0], "sdlc hook: plan session stamp: ")
+	if !strings.HasPrefix(lines[0], "[sdlc/hook record-mcp-invocation] plan session stamp: ") {
+		t.Errorf("stderr line = %q, want prefix %q", lines[0], "[sdlc/hook record-mcp-invocation] plan session stamp: ")
 	}
 }

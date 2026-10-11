@@ -146,7 +146,7 @@ func TestDashboardDismissWait_InputErrors(t *testing.T) {
 			dashDismissSeed(t, root, attention.KindPermission, "s1", "")
 
 			out, err := DashboardDismissWait(root, tc.kind, tc.sid, tc.tool)
-			dashDelWantErr(t, err, "domain", dashboardDeleteReloadSuggestion)
+			dashDelWantErr(t, err, "domain", "The page sent a malformed request. Report this as a bug of the sdlc dashboard.")
 			if err != nil && err.Error() != tc.wanted {
 				t.Errorf("message = %q, want %q", err.Error(), tc.wanted)
 			}

@@ -70,6 +70,13 @@ The file has a status line. It shows where the topic stands:
 | `ready for plan` | You finished the dialogue. The file can go to `/plan`. |
 | `paused` | You cancelled. The skill keeps the file. |
 
+The skill sets a status only at these events. You can also set any of the
+three statuses on the Preplans tab of the dashboard, with no dialogue event
+(see [Change a preplan status](../dashboard.md#change-a-preplan-status)).
+For example, a topic can be `paused` with no cancel, or `ready for plan`
+with no finished dialogue. The skill treats such a status the same as its
+own.
+
 The skill never overwrites an existing file. Run `/preplan` again with the
 same topic to continue from the file. The status becomes `in progress`, and
 the skill shows you the open questions.

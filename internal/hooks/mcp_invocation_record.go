@@ -19,13 +19,13 @@ const mcpToolPrefix = "mcp__plugin_sdlc_sdlc__"
 // (PostToolUse, matcher mcp__plugin_sdlc_sdlc__.*), added for Task 10. It
 // appends one evidence line per sdlc MCP tool call to
 // .sdlc-v2/evidence/mcp-invocations.jsonl. Always returns a silent Output:
-// unlike pipeline-continue's advisory nudges, this hook is passive recording
-// only and must never inject additionalContext into every sdlc MCP call.
+// unlike pipeline-continue's advisory nudges, this hook never injects
+// additionalContext into an sdlc MCP call.
 //
-// Side effect: after a plan_prepare call it also stamps ctx.SessionID into the
-// active plan run's state (data.sessionId) through stampPlanSession, so the
-// dashboard can attach waits to the session that drives the run. The stamp
-// never changes the hook result.
+// It has one more write: after a plan_prepare call it stamps ctx.SessionID
+// into the active plan run's state (data.sessionId) through
+// stampPlanSession, so the dashboard can attach waits to the session that
+// drives the run. The stamp never changes the hook result.
 //
 // No durationMs is recorded: a PostToolUse-only hook has no paired
 // PreToolUse timestamp to measure invocation duration against, and pairing
@@ -68,7 +68,7 @@ func recordMCPInvocation(ctx HookCtx, event Event) (Output, error) {
 func stampPlanSession(root, branch, sessionID string) {
 	st, err := state.ActivePlanRun(root, branch)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "sdlc hook: plan session stamp: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[sdlc/hook record-mcp-invocation] plan session stamp: %v\n", err)
 		return
 	}
 	if st == nil {
@@ -78,6 +78,6 @@ func stampPlanSession(root, branch, sessionID string) {
 		return
 	}
 	if err := state.ClaimSession(st, sessionID); err != nil {
-		fmt.Fprintf(os.Stderr, "sdlc hook: plan session stamp: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[sdlc/hook record-mcp-invocation] plan session stamp: %v\n", err)
 	}
 }

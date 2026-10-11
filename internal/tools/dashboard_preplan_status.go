@@ -71,31 +71,9 @@ func DashboardSetPreplanStatus(root, slug, status string) (DashboardPreplanStatu
 		Suggestion: dashboardPreplanStatusGoneSuggestion,
 	}
 
-	info, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return DashboardPreplanStatusOut{}, gone
-		}
-		return DashboardPreplanStatusOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("Could not read the preplan topic %s: %s", rel, err),
-			Suggestion: readSuggestion,
-			Cause:      err,
-		}
+	if err := dashboardPreplanTopicFileError(path, rel, readSuggestion, gone); err != nil {
+		return DashboardPreplanStatusOut{}, err
 	}
-	if !info.Mode().IsRegular() {
-		kind := "not a regular file"
-		switch {
-		case info.Mode()&fs.ModeSymlink != 0:
-			kind = "a symlink"
-		case info.IsDir():
-			kind = "a folder"
-		}
-		return DashboardPreplanStatusOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("The path %s is %s, not a topic file that the dashboard can rewrite", rel, kind),
-			Suggestion: dashboardPreplanStatusLinkSuggestion,
-		}
-	}
-
 	data, missing, err := dashboardReadCapped(path, "the topic file",
 		dashboardPreplanStatusLargeSuggestion, readSuggestion)
 	if err != nil {
@@ -105,42 +83,19 @@ func DashboardSetPreplanStatus(root, slug, status string) (DashboardPreplanStatu
 		return DashboardPreplanStatusOut{}, gone
 	}
 
-	head := data
-	if len(head) > dashboardPreplanHeadMax {
-		head = head[:dashboardPreplanHeadMax]
-	}
-	loc := dashboardPreplanStatusRe.FindIndex(head)
-	if loc == nil {
+	next, current, found := dashboardReplaceStatusLine(data, status)
+	if !found {
 		return DashboardPreplanStatusOut{}, &mcpserver.DataError{
 			Msg:        fmt.Sprintf("The topic file %s has no **Status:** line in its first %d KiB", rel, dashboardPreplanHeadMax>>10),
 			Suggestion: dashboardPreplanStatusNoLineSuggestion,
 		}
 	}
-
-	// The match can stop at the end of head, inside a long line. Take the whole
-	// line from the full data, so no tail of the old line stays.
-	start, end := loc[0], len(data)
-	if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
-		end = start + i
-	}
-	line := data[start:end]
-	cr := bytes.HasSuffix(line, []byte("\r"))
-	current := strings.TrimSpace(strings.TrimPrefix(string(line), dashboardPreplanStatusPrefix))
 	if current == status {
 		return DashboardPreplanStatusOut{
 			Status:  status,
 			Message: fmt.Sprintf("The preplan topic %s already has the status %s.", slug, status),
 		}, nil
 	}
-
-	replacement := dashboardPreplanStatusPrefix + " " + status
-	if cr {
-		replacement += "\r"
-	}
-	next := make([]byte, 0, len(data)-len(line)+len(replacement))
-	next = append(next, data[:start]...)
-	next = append(next, replacement...)
-	next = append(next, data[end:]...)
 
 	if err := dashboardDeleteWriteBytes(path, next); err != nil {
 		return DashboardPreplanStatusOut{}, &mcpserver.InfraError{
@@ -154,4 +109,72 @@ func DashboardSetPreplanStatus(root, slug, status string) (DashboardPreplanStatu
 		Status:  status,
 		Message: fmt.Sprintf("Set the status of the preplan topic %s to %s.", slug, status),
 	}, nil
+}
+
+// dashboardPreplanTopicFileError returns nil when path, named rel in a
+// message, is a regular file. A missing file gives gone. A symlink, a folder
+// or another non-regular file gives a DomainError that names the kind. A
+// failed Lstat gives an InfraError with readSuggestion.
+func dashboardPreplanTopicFileError(path, rel, readSuggestion string, gone error) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return gone
+		}
+		return &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("Could not read the preplan topic %s: %s", rel, err),
+			Suggestion: readSuggestion,
+			Cause:      err,
+		}
+	}
+	if info.Mode().IsRegular() {
+		return nil
+	}
+	kind := "not a regular file"
+	switch {
+	case info.Mode()&fs.ModeSymlink != 0:
+		kind = "a symlink"
+	case info.IsDir():
+		kind = "a folder"
+	}
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("The path %s is %s, not a topic file that the dashboard can rewrite", rel, kind),
+		Suggestion: dashboardPreplanStatusLinkSuggestion,
+	}
+}
+
+// dashboardReplaceStatusLine replaces the first "**Status:**" line in the
+// first dashboardPreplanHeadMax bytes of data with "**Status:** <status>".
+// current is the old status, trimmed. found is false when the head has no
+// Status line; then next and current are empty. The whole old line goes,
+// also when it runs past the head. A line that ends in CR LF keeps its CR.
+// Every other byte stays the same. next is a new slice: data does not change.
+func dashboardReplaceStatusLine(data []byte, status string) (next []byte, current string, found bool) {
+	head := data
+	if len(head) > dashboardPreplanHeadMax {
+		head = head[:dashboardPreplanHeadMax]
+	}
+	loc := dashboardPreplanStatusRe.FindIndex(head)
+	if loc == nil {
+		return nil, "", false
+	}
+
+	// The match can stop at the end of head, inside a long line. Take the whole
+	// line from the full data, so no tail of the old line stays.
+	start, end := loc[0], len(data)
+	if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
+		end = start + i
+	}
+	line := data[start:end]
+	current = strings.TrimSpace(strings.TrimPrefix(string(line), dashboardPreplanStatusPrefix))
+
+	replacement := dashboardPreplanStatusPrefix + " " + status
+	if bytes.HasSuffix(line, []byte("\r")) {
+		replacement += "\r"
+	}
+	next = make([]byte, 0, len(data)-len(line)+len(replacement))
+	next = append(next, data[:start]...)
+	next = append(next, replacement...)
+	next = append(next, data[end:]...)
+	return next, current, true
 }

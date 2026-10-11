@@ -1746,6 +1746,78 @@ func TestHandler_Learning(t *testing.T) {
 	}
 }
 
+// TestWithToolRoutes_SetsEveryRouteFunction pins that WithToolRoutes sets
+// every function field of Options that is not part of the server base, so a
+// new route cannot stay nil in production or in the browser e2e test. It also
+// checks that ClearCache passes dashboard.LogPath() to the clear function, and
+// that the base fields stay.
+func TestWithToolRoutes_SetsEveryRouteFunction(t *testing.T) {
+	t.Setenv("SDLC_CACHE_DIR", t.TempDir())
+	base := map[string]bool{"Stop": true, "Roots": true, "Collect": true, "Listen": true, "Health": true}
+	var gotLog string
+	o := WithToolRoutes(Options{Port: 7385}, func(_, serverLog string, _ time.Time) (tools.ClearCacheOut, error) {
+		gotLog = serverLog
+		return tools.ClearCacheOut{}, nil
+	})
+
+	v := reflect.ValueOf(o)
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Type().Field(i)
+		if f.Type.Kind() != reflect.Func {
+			continue
+		}
+		if base[f.Name] {
+			if !v.Field(i).IsNil() {
+				t.Errorf("%s is set; want WithToolRoutes to leave the base fields alone", f.Name)
+			}
+			continue
+		}
+		if v.Field(i).IsNil() {
+			t.Errorf("%s is nil; want WithToolRoutes to set it", f.Name)
+		}
+	}
+	if o.Port != 7385 {
+		t.Errorf("Port = %d; want 7385 kept", o.Port)
+	}
+	if _, err := o.ClearCache("/repo/a", time.Unix(0, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if gotLog != dashboard.LogPath() {
+		t.Errorf("server log = %q; want %q", gotLog, dashboard.LogPath())
+	}
+}
+
+// TestHandler_WriteRoutesLogTheirName pins the shared skeleton of the
+// delete, status and dismiss routes (serveWrite): a plain error of the route
+// function is a 500 DELETE_FAILED, and the server log line names the route.
+func TestHandler_WriteRoutesLogTheirName(t *testing.T) {
+	cases := []struct {
+		name, path, body string
+	}{
+		{"preplan delete", "/api/preplan-delete", `{"repo":"/repo/a","slug":"x"}`},
+		{"deferred delete", "/api/deferred-delete", `{"repo":"/repo/a","id":"d-1"}`},
+		{"learning delete", "/api/learning-delete", `{"repo":"/repo/a","date":"d","heading":"h"}`},
+		{"preplan status", "/api/preplan-status", `{"repo":"/repo/a","slug":"x","status":"paused"}`},
+		{"history delete", "/api/history-delete", `{"repo":"/repo/a","rows":[{"kind":"plan","endedAt":"t"}]}`},
+		{"wait dismiss", "/api/wait-dismiss", `{"repo":"/repo/a","kind":"permission","sessionId":"s1"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			logged := captureStderr(t)
+			f := &fakeActions{delErr: errors.New("disk on fire")}
+			h := newActionHandler(t, f)
+
+			body := wantAPIError(t, postJSON(h, tc.path, tc.body, mutationHeader()), 500, codeDeleteFailed)
+			if body.Error.Message != "disk on fire" {
+				t.Errorf("message = %q; want the error text", body.Error.Message)
+			}
+			if want := "sdlc dashboard: " + tc.name + ": disk on fire\n"; logged.String() != want {
+				t.Errorf("log = %q; want %q", logged.String(), want)
+			}
+		})
+	}
+}
+
 // TestHandler_NilActionFields pins that a route whose Options function is nil
 // answers 500 with a suggestion, after the guard of the route has passed.
 func TestHandler_NilActionFields(t *testing.T) {

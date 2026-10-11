@@ -31,13 +31,25 @@ timing            {stepSeconds, pipelineSeconds, idleSeconds, human}
 next              {id, instruction, etaSeconds, etaBasis}   // id is the step to resume from
 ```
 
-The seeded `received-review` entry resumes by its status:
-
-- `in_progress` or `failed`: run step 8 again. `begin-step` sets `in_progress` and a new `startedAt`. Fix records dedupe by `healingSameFinding`.
-- `completed`: no received-review call. commit-fixes already ran before `complete-step`. Run rebase, then go to the next configured main-loop step.
-- `pending`: `next` skips the entry, because it has a `condition`. A stop between the review `complete-step` and `begin-step received-review` leaves the findings unrouted.
-
 There is no run to resume in three cases. `read` returns a `DataError` when no ship state file exists for the branch. `read` succeeds with **no** `resumeBriefing` when the only file found is already stamped terminal, or when a state file exists but no step in it ever actually started (nothing was in flight to resume). All three are safe to treat identically. Fall through to the normal fresh-start path (SKILL.md's Step loop, items 3-4) — `ship_prepare`'s own orphan-pruning and `state.Write`'s prune-on-write already remove the stale file as a side effect of writing the new one.
+
+### Received-review recovery
+
+Check the seeded `received-review` entry before you follow `resumeBriefing.next`. `next` skips a `pending` entry, because it has a `condition`. When the `review` entry is not `completed`, this section does not apply: follow `next`.
+
+- `completed`: no received-review call. commit-fixes already ran before `complete-step`. Run rebase, then go to the next configured main-loop step.
+- `pending`, `in_progress` or `failed`: do the recovery below.
+
+Do not run step 8 again, and never dispatch received-review again for these findings. The resumed session no longer holds review's output, so step 8 has no findings to route. A repeated `defer` adds a duplicate entry, and an earlier received-review worker can still run. The recovery is the same under `--auto`, with no question:
+
+1. `in_progress` or `failed` only: run `git status --porcelain -- . ':!.sdlc-v2/'`. Empty output: go to item 2.
+   - Output not empty, and a `reportData.healing.fixProgress` record with `origin:"local-review"` has `status:"fixing"`: a fix can be half done. Call `ship_state({action:"fail", step:"received-review", detail:{error:"received-review: resumed with a fix in progress; check the uncommitted changes, commit or discard them, then run /ship --resume"}})`. Print the resume instruction ([`reference.md`](reference.md)'s Error Recovery) and stop.
+   - Output not empty, no such record: the changes are the finished fixes of the stopped worker. Run commit-fixes as step 8 does: stage, dispatch commit, record `decide` for `commit-fixes`. A failed commit takes the step 8 failure row.
+2. `ship_state({action:"begin-step", step:"received-review"})`.
+3. `ship_state({action:"decide", step:"received-review", detail:{text:"resumed after a stop: review output lost; findings with no fix or deferral record stay unaccounted"}})`.
+4. `ship_state({action:"complete-step", step:"received-review", detail:{outcome:"success", result:"resumed — review output lost"}})`. Apply loop items 7b and 7d to items 2 and 4.
+5. Print one line: `Run /sdlc:review and then /sdlc:received-review to recover findings lost in the stop.` Step 10 names their count as `UNACCOUNTED` when review's total was recorded.
+6. Run rebase, then go to the next configured main-loop step.
 
 ## --gc handler (R39)
 

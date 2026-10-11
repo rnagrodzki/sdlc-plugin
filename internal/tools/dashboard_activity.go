@@ -407,13 +407,18 @@ func dashboardOpenDeferred(root string) []DashboardDeferred {
 // line is skipped and does not count toward the limit. A missing or empty
 // file gives nil. All rows go through dashboardPairPlans before the cut, so
 // a plan row outside the newest dashboardHistoryLimit rows still pairs with
-// a ship row inside them.
+// a ship row inside them. A row with an empty skill or ts (for example a
+// null line or {}) is skipped like a corrupt line: DashboardDeleteRuns cannot
+// name it, so the page must not show it.
 func dashboardRecentRuns(root string) []DashboardRun {
 	path := history.NewFileWriter(paths.HistoryDir(root)).RunsPath()
 	records, _ := readJSONLEntries[history.RunRecord](path, "dashboard run history")
-	runs := make([]DashboardRun, len(records))
-	for i, r := range records {
-		runs[i] = dashboardRunFromRecord(r)
+	runs := make([]DashboardRun, 0, len(records))
+	for _, r := range records {
+		if r.Skill == "" || r.Timestamp == "" {
+			continue
+		}
+		runs = append(runs, dashboardRunFromRecord(r))
 	}
 	dashboardPairPlans(runs)
 	if len(runs) > dashboardHistoryLimit {
@@ -439,13 +444,11 @@ func dashboardRecentRuns(root string) []DashboardRun {
 // stable, so rows with equal EndedAt keep the file order. The slice order of
 // runs does not change.
 //
-// A ship row with a PlanStartedAt already keeps its fields and gets no
-// PlanPaired, but it still uses up the plan row. A ship row stays unchanged
-// when it has no branch, when no plan row of its branch is waiting, when
-// that plan row has a DurationMs of 0 or less or a StartedAt that does not
-// parse, or when the plan window fails planWindowOK for the ship EndedAt. A
-// plan row whose EndedAt does not parse is never a waiting plan row.
-// TotalMs becomes the time from the plan start to the ship end.
+// A ship row with a PlanStartedAt already still uses up the plan row. A ship
+// row stays unchanged when it has no branch or when no plan row of its branch
+// is waiting. A plan row whose EndedAt does not parse is never a waiting plan
+// row. dashboardPairShip makes the pairing decision for a ship row and its
+// waiting plan row.
 func dashboardPairPlans(runs []DashboardRun) {
 	ends := make([]time.Time, len(runs))
 	order := make([]int, len(runs))
@@ -474,21 +477,30 @@ func dashboardPairPlans(runs []DashboardRun) {
 				continue
 			}
 			delete(lastPlan, run.Branch)
-			if run.PlanStartedAt != "" {
-				continue
-			}
-			plan := runs[p]
-			planStart, okStart := dashboardParseTime(plan.StartedAt)
-			if plan.DurationMs <= 0 || !okStart || ends[i].IsZero() || !planWindowOK(planStart, ends[i]) {
-				continue
-			}
-			run.PlanStartedAt = plan.StartedAt
-			run.PlanDurationMs = plan.DurationMs
-			run.TotalMs = ends[i].Sub(planStart).Milliseconds()
-			run.PlanPaired = true
-			run.PlanEndedAt = plan.EndedAt
+			dashboardPairShip(run, runs[p], ends[i])
 		}
 	}
+}
+
+// dashboardPairShip fills PlanStartedAt, PlanDurationMs, TotalMs, PlanPaired
+// and PlanEndedAt of the ship row run, which ends at end, from plan. TotalMs
+// becomes the time from the plan start to end. run stays unchanged when it
+// has a PlanStartedAt already (it then gets no PlanPaired), when plan has a
+// DurationMs of 0 or less or a StartedAt that does not parse, when end is the
+// zero time, or when the plan window fails planWindowOK for end.
+func dashboardPairShip(run *DashboardRun, plan DashboardRun, end time.Time) {
+	if run.PlanStartedAt != "" {
+		return
+	}
+	planStart, okStart := dashboardParseTime(plan.StartedAt)
+	if plan.DurationMs <= 0 || !okStart || end.IsZero() || !planWindowOK(planStart, end) {
+		return
+	}
+	run.PlanStartedAt = plan.StartedAt
+	run.PlanDurationMs = plan.DurationMs
+	run.TotalMs = end.Sub(planStart).Milliseconds()
+	run.PlanPaired = true
+	run.PlanEndedAt = plan.EndedAt
 }
 
 // dashboardRunFromRecord maps one runs.jsonl row to a DashboardRun. EndedAt

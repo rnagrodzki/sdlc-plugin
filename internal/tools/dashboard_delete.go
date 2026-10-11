@@ -37,6 +37,10 @@ const dashboardDeleteReadMax = 8 << 20
 // dashboardDeleteReadMaxText is dashboardDeleteReadMax for a message.
 const dashboardDeleteReadMaxText = "8 MiB"
 
+// dashboardDeleteBugSuggestion is the Suggestion of a request that the page
+// never sends, so a reload cannot fix it.
+const dashboardDeleteBugSuggestion = "The page sent a malformed request. Report this as a bug of the sdlc dashboard."
+
 // Suggestion texts of the delete errors, one for each condition.
 const (
 	dashboardDeleteReloadSuggestion        = "Reload the page and try again."

@@ -132,10 +132,9 @@ type clearCacheFunc func(root, serverLog string, now time.Time) (tools.ClearCach
 // for plugin version v. stop ends the server. clearCache is tools.ClearCache
 // in production; the cache clear route calls it with dashboard.LogPath(), the
 // file that receives the output of this server when it runs in the
-// background.
+// background. web.WithToolRoutes sets the route functions.
 func dashboardOptions(port int, v string, stop func(), clearCache clearCacheFunc) web.Options {
-	logPath := dashboard.LogPath()
-	return web.Options{
+	return web.WithToolRoutes(web.Options{
 		Port:    port,
 		Version: v,
 		Token:   web.NewToken(),
@@ -144,18 +143,7 @@ func dashboardOptions(port int, v string, stop func(), clearCache clearCacheFunc
 		Collect: func(roots []string, now time.Time) tools.DashboardSnapshot {
 			return tools.CollectDashboardSnapshot(roots, now, v)
 		},
-		Listen:  net.Listen,
-		Health:  dashboard.DefaultDeps().Health,
-		Archive: tools.ArchiveRun,
-		ClearCache: func(root string, now time.Time) (tools.ClearCacheOut, error) {
-			return clearCache(root, logPath, now)
-		},
-		LearningBody:     tools.DashboardLearningBody,
-		DeletePreplan:    tools.DashboardDeletePreplan,
-		DeleteDeferred:   tools.DashboardDeleteDeferred,
-		DeleteLearning:   tools.DashboardDeleteLearning,
-		SetPreplanStatus: tools.DashboardSetPreplanStatus,
-		DeleteRuns:       tools.DashboardDeleteRuns,
-		DismissWait:      tools.DashboardDismissWait,
-	}
+		Listen: net.Listen,
+		Health: dashboard.DefaultDeps().Health,
+	}, clearCache)
 }

@@ -137,9 +137,10 @@ func TestShipPrepare_StateInit(t *testing.T) {
 // exercising all 10 shipmeta.CanonicalSteps names at once (4 tracked, 6
 // inline, harden included; "received-review"/"commit-fixes" are conditional-only and never
 // appear in ship.steps/CanonicalSteps, so they cannot be exercised via
-// config here). The expected list also holds the received-review entry that
-// ship_prepare seeds after review (shipSeedReceivedReview), so the tracked
-// count is 5.
+// config here). The state also holds the received-review entry that
+// ship_prepare seeds after review (shipSeedReceivedReview), so the state
+// has 11 entries: 5 tracked, 6 inline. The expected names are a literal
+// list, so a wrong seed position fails here too.
 func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -173,10 +174,15 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 		t.Fatalf("unmarshal state file: %v", err)
 	}
 
+	wantNames := []string{
+		"execute", "commit", "review", "received-review", "verify-openspec",
+		"archive-openspec", "harden", "pr", "verify-pipeline",
+		"await-remote-review", "learnings-commit",
+	}
 	want := shipSeedReceivedReview(shipmeta.InitialShipStepsFromConfig(shipmeta.CanonicalSteps))
 	steps, ok := data["steps"].([]any)
-	if !ok || len(steps) != len(want) {
-		t.Fatalf("steps = %v, want a %d-entry array", data["steps"], len(want))
+	if !ok || len(steps) != len(wantNames) {
+		t.Fatalf("steps = %v, want a %d-entry array", data["steps"], len(wantNames))
 	}
 
 	trackedCount, inlineCount := 0, 0
@@ -185,14 +191,14 @@ func TestShipPrepare_StepScaffold_AllCanonicalSteps(t *testing.T) {
 		if !ok {
 			t.Fatalf("steps[%d] not an object: %v", i, raw)
 		}
-		if sm["name"] != want[i].Name {
-			t.Errorf("steps[%d].name = %v, want %q (config order preserved)", i, sm["name"], want[i].Name)
+		if sm["name"] != wantNames[i] {
+			t.Errorf("steps[%d].name = %v, want %q (config order preserved)", i, sm["name"], wantNames[i])
 		}
 		if sm["status"] != "pending" {
 			t.Errorf("steps[%d].status = %v, want %q", i, sm["status"], "pending")
 		}
 		wantKind := "inline"
-		if shipmeta.IsTrackedShipStep(want[i].Name) {
+		if shipmeta.IsTrackedShipStep(wantNames[i]) {
 			wantKind = "tracked"
 		}
 		if sm["kind"] != wantKind {

@@ -192,8 +192,9 @@ type ShipStateStep struct {
 	// Kind classifies the step as "tracked" (has its own begin-step/
 	// complete-step lifecycle via ship_state — see TrackedShipSteps) or
 	// "inline" (recorded via the generic "decide" action, no dedicated
-	// lifecycle). Only set by InitialShipStepsFromConfig — InitialShipSteps'
-	// fixed 7-entry scaffold leaves this empty (omitempty) to keep its output
+	// lifecycle). Set by InitialShipStepsFromConfig, and on the received-review
+	// entry that ship_prepare seeds after review. InitialShipSteps' fixed
+	// 6-entry scaffold leaves this empty (omitempty) to keep its output
 	// byte-identical for existing callers/tests.
 	Kind string `json:"kind,omitempty"`
 }
@@ -254,7 +255,9 @@ func InitialShipSteps() []ShipStateStep {
 // are rejected with an error from every source).
 // Unlike InitialShipSteps, this scaffold tracks exactly the configured
 // steps — nothing more, nothing less — so a pipeline with N configured
-// steps seeds N entries.
+// steps gives N entries here. ship_prepare then adds a received-review
+// entry after review (shipSeedReceivedReview in internal/tools/ship.go), so
+// its state file holds N+1 entries when review is configured.
 func InitialShipStepsFromConfig(steps []string) []ShipStateStep {
 	out := make([]ShipStateStep, 0, len(steps))
 	for _, name := range steps {

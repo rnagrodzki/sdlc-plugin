@@ -984,8 +984,8 @@ func TestDashboardSnapshot_AttentionUnreadableFolder(t *testing.T) {
 	if repo.LoneWaits == nil || len(repo.LoneWaits) != 0 {
 		t.Errorf("loneWaits = %#v, want []", repo.LoneWaits)
 	}
-	if len(repo.Warnings) != 1 || !strings.HasPrefix(repo.Warnings[0], "attention folder unread: ") {
-		t.Errorf("warnings = %q, want one \"attention folder unread: ...\" entry", repo.Warnings)
+	if len(repo.Warnings) != 1 || !strings.HasPrefix(repo.Warnings[0], "Attention folder unread: ") {
+		t.Errorf("warnings = %q, want one \"Attention folder unread: ...\" entry", repo.Warnings)
 	}
 }
 
@@ -1142,6 +1142,23 @@ func TestDashboardSnapshot_LoneWaitsNestedExecute(t *testing.T) {
 	}
 }
 
+// TestDashboardSnapshot_LoneWaitsCutWarning checks that lone waits past
+// dashboardLoneWaitLimit give one repo warning with the count of the waits
+// not shown.
+func TestDashboardSnapshot_LoneWaitsCutWarning(t *testing.T) {
+	root := dashRoot(t)
+	for i := 0; i < dashboardLoneWaitLimit+3; i++ {
+		dashWriteAttention(t, root, dashQuestionRecord("s-lone", fmt.Sprintf("t%02d", i), "main", fmt.Sprintf("q%02d", i), dashNow.Add(-time.Duration(i+1)*time.Minute)))
+	}
+	repo := dashCollect(t, root)
+	if len(repo.LoneWaits) != dashboardLoneWaitLimit {
+		t.Fatalf("loneWaits = %d, want %d", len(repo.LoneWaits), dashboardLoneWaitLimit)
+	}
+	if want := []string{"3 older open waits not shown"}; !reflect.DeepEqual(repo.Warnings, want) {
+		t.Errorf("warnings = %q, want %q", repo.Warnings, want)
+	}
+}
+
 // TestDashboardSnapshot_LoneWaitsEmpty checks that a repo with no records has
 // loneWaits [], never null.
 func TestDashboardSnapshot_LoneWaitsEmpty(t *testing.T) {
@@ -1169,7 +1186,7 @@ func TestDashboardLoneWaits_Mapping(t *testing.T) {
 		{Kind: attention.KindQuestion, SessionID: "s9", ToolUseID: "t1", Branch: "main", Header: "Pick a base", Text: "Which branch?", AskedAt: asked},
 		{Kind: attention.KindPermission, SessionID: "s8", Branch: "feat/x", Header: "Permission", Text: "Bash: go test ./...", AskedAt: asked},
 	}
-	got := dashboardLoneWaits(recs, nil)
+	got, _ := dashboardLoneWaits(recs, nil)
 	if len(got) != len(recs) {
 		t.Fatalf("waits = %d, want %d", len(got), len(recs))
 	}
@@ -1207,10 +1224,14 @@ func TestDashboardLoneWaits_OrderAndLimit(t *testing.T) {
 	t.Run("order and taken", func(t *testing.T) {
 		recs := []attention.Record{rec("a", 30), rec("b", 20), rec("c", 20), rec("d", 10), rec("e", 5)}
 		recs = append(recs, attention.Record{Kind: attention.KindQuestion, SessionID: "s1", ToolUseID: "t-bad", Text: "bad", AskedAt: "yesterday"})
-		got := dashLoneTexts(DashboardRepo{LoneWaits: dashboardLoneWaits(recs, map[int]bool{3: true})})
+		waits, older := dashboardLoneWaits(recs, map[int]bool{3: true})
+		got := dashLoneTexts(DashboardRepo{LoneWaits: waits})
 		want := []string{"e", "c", "b", "a"}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("texts = %v, want %v", got, want)
+		}
+		if older != 0 {
+			t.Errorf("older = %d, want 0 under the limit", older)
 		}
 	})
 
@@ -1219,9 +1240,12 @@ func TestDashboardLoneWaits_OrderAndLimit(t *testing.T) {
 		for i := 0; i < dashboardLoneWaitLimit+10; i++ {
 			recs = append(recs, rec(fmt.Sprintf("w%02d", i), 200-i)) // later index = newer
 		}
-		got := dashboardLoneWaits(recs, nil)
+		got, older := dashboardLoneWaits(recs, nil)
 		if len(got) != dashboardLoneWaitLimit {
 			t.Fatalf("waits = %d, want %d", len(got), dashboardLoneWaitLimit)
+		}
+		if older != 10 {
+			t.Errorf("older = %d, want 10", older)
 		}
 		if got[0].Text != fmt.Sprintf("w%02d", dashboardLoneWaitLimit+9) {
 			t.Errorf("first wait = %q, want the newest", got[0].Text)
@@ -1233,7 +1257,7 @@ func TestDashboardLoneWaits_OrderAndLimit(t *testing.T) {
 
 	t.Run("empty is not nil", func(t *testing.T) {
 		for _, recs := range [][]attention.Record{nil, {rec("a", 1)}} {
-			got := dashboardLoneWaits(recs, map[int]bool{0: true})
+			got, _ := dashboardLoneWaits(recs, map[int]bool{0: true})
 			if got == nil || len(got) != 0 {
 				t.Errorf("waits = %#v, want []", got)
 			}

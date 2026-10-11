@@ -19,10 +19,10 @@ After each `plan_prepare` tool call with a non-empty session ID, the `record-mcp
 
 #### Scenario: Write error
 - **WHEN** the state folder is read-only
-- **THEN** the hook exits 0 and writes one stderr line that starts with `sdlc hook: plan session stamp:`
+- **THEN** the hook exits 0 and writes one stderr line that starts with `[sdlc/hook record-mcp-invocation] plan session stamp:`
 
 ### Requirement: Lone waits
-Each repo of the snapshot SHALL carry `loneWaits`: every open wait record of the 24-hour window that no shown running pipeline took, newest `askedAt` first, at most 50. The list SHALL be `[]` when it is empty. An unreadable attention folder SHALL give `loneWaits: []` and one repo warning, and SHALL NOT set the repo error.
+Each repo of the snapshot SHALL carry `loneWaits`: every open wait record of the 24-hour window that no shown running pipeline took, newest `askedAt` first, at most 50. A cut list SHALL add one repo warning that names the count of waits not shown. The list SHALL be `[]` when it is empty. An unreadable attention folder SHALL give `loneWaits: []` and one repo warning, and SHALL NOT set the repo error.
 
 #### Scenario: Wait with no run
 - **WHEN** a question record of session `s9` matches no shown running pipeline
@@ -38,7 +38,7 @@ Each repo of the snapshot SHALL carry `loneWaits`: every open wait record of the
 
 #### Scenario: Unreadable folder
 - **WHEN** the attention folder cannot be read
-- **THEN** `loneWaits` is `[]` and `warnings` has one entry that starts with `attention folder unread:`
+- **THEN** `loneWaits` is `[]` and `warnings` has one entry that starts with `Attention folder unread:`
 
 ### Requirement: Lone-wait card
 The Pipelines feed SHALL show one card at the top for each lone wait of a repo in scope, with the kind, header, text, branch, wait age and a Dismiss button. With lone waits and no runs, the feed SHALL show the cards and no empty-feed text.
@@ -151,15 +151,19 @@ Each History row SHALL have a checkbox, with a select-all-shown box and an `N se
 - **AND** no request is sent for repo 3
 
 ### Requirement: Review queue data
-The `review` step of a ship pipeline with a review ledger SHALL carry `detail.reviewQueue` `{threshold, rows, unrouted, reason}`. `threshold` SHALL be `flags.reviewThreshold`, or `info` when it is absent or not a severity. `rows` SHALL hold at most 200 rows and SHALL be `[]` when empty.
+The `review` step of a ship pipeline with a review ledger SHALL carry `detail.reviewQueue` `{threshold, rows, unrouted, reason}`. `threshold` SHALL be `flags.reviewThreshold`, or `info` when it is absent or not a severity. `rows` SHALL hold at most 200 rows and SHALL be `[]` when empty. `unrouted` SHALL be the review findings with no fix record and no deferred entry (at least 0), with or without fix records, and 0 when the rows are the `open` review findings.
 
 #### Scenario: No findings
 - **WHEN** the review total is 0 and the queue has no rows
 - **THEN** `reason` is `no-findings`
 
 #### Scenario: All below threshold
-- **WHEN** every row has status `below`
+- **WHEN** every row has status `below` and `unrouted` is 0
 - **THEN** `reason` is `all-below-threshold`
+
+#### Scenario: Open findings before the first fix record
+- **WHEN** review found 5 findings, 2 are deferred below the threshold, and there is no fix record
+- **THEN** `unrouted` is 3 and `reason` is `""`
 
 #### Scenario: Default threshold
 - **WHEN** the ship state has no `flags.reviewThreshold`

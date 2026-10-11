@@ -209,15 +209,18 @@ type DashboardQueueRow struct {
 	Text      string `json:"text"`      // review rationale or deferred description, "" when unknown
 }
 
-// Queue row statuses, queue reasons and the default fix origin. The page
-// uses the same strings. The other five row statuses are the fix statuses of
-// healingFixStatuses: the queue copies them and adds no new string.
+// Queue row statuses and queue reasons. The page uses the same strings. The
+// other row statuses are the fix statuses of healingFixStatuses: the queue
+// copies them and adds no new string. dashboardQueueStatusDeferred, the
+// status of a deferred finding that is not below the threshold, is also a
+// member of healingFixStatuses. The fix origin of a row is one of
+// healingOrigins; healingOriginLocal is the default.
 const (
 	dashboardQueueStatusOpen     = "open"
 	dashboardQueueStatusBelow    = "below"
+	dashboardQueueStatusDeferred = "deferred"
 	dashboardQueueReasonNone     = "no-findings"
 	dashboardQueueReasonAllBelow = "all-below-threshold"
-	dashboardOriginLocal         = "local-review" // healingOrigins[0]
 )
 
 // DashboardFix is one finding that received-review took. Line 0 means no
@@ -545,7 +548,7 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	// right. attention.List returns nil records with its error.
 	recs, attErr := attention.List(root, now, dashboardHistoryWindow)
 	if attErr != nil {
-		repo.Warnings = append(repo.Warnings, "attention folder unread: "+attErr.Error())
+		repo.Warnings = append(repo.Warnings, "Attention folder unread: "+attErr.Error())
 	}
 	// taken holds the index in recs of every record that belongs to a shown
 	// pipeline. The final pipelines are not a source for it: the join drops
@@ -580,7 +583,11 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 		}
 	}
 	repo.Pipelines = dashboardJoinRuns(repo.Pipelines)
-	repo.LoneWaits = dashboardLoneWaits(recs, taken)
+	var older int
+	repo.LoneWaits, older = dashboardLoneWaits(recs, taken)
+	if older > 0 {
+		repo.Warnings = append(repo.Warnings, fmt.Sprintf("%d older open waits not shown", older))
+	}
 
 	sessions, learnings, deferred, history := dashboardActivity(root, now)
 	if sessions != nil {
@@ -612,8 +619,9 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 // later record in recs wins. A record whose askedAt does not parse is skipped.
 // With no matching record p is unchanged.
 //
-// It returns the index of every record in recs that belongs to p. Each early
-// return of the body returns nil.
+// It returns the index of every record in recs that belongs to p, also when
+// no record has a parsable askedAt and p stays unchanged. It returns nil for
+// a pipeline that is not running or has no session ID.
 func dashboardAttachAttention(p *DashboardPipeline, recs []attention.Record) []int {
 	if p.Status != PipelineRunning || p.SessionID == "" {
 		return nil
@@ -653,11 +661,13 @@ const dashboardLoneWaitLimit = 50
 
 // dashboardLoneWaits returns the records not in taken, newest askedAt first,
 // at most dashboardLoneWaitLimit. Never nil. taken holds indexes into recs.
+// older is the count of waits cut at dashboardLoneWaitLimit, 0 when none;
+// collectDashboardRepo adds a repo warning for it.
 // Header and Text are copied as they are: attention.Write already redacted
 // and cut them. A record whose askedAt does not parse is skipped, because it
 // cannot be put in order; attention.List never returns such a record. Of equal
 // askedAt the later record in recs comes first.
-func dashboardLoneWaits(recs []attention.Record, taken map[int]bool) []DashboardWait {
+func dashboardLoneWaits(recs []attention.Record, taken map[int]bool) (waits []DashboardWait, older int) {
 	type dated struct {
 		wait DashboardWait
 		at   time.Time
@@ -688,13 +698,14 @@ func dashboardLoneWaits(recs []attention.Record, taken map[int]bool) []Dashboard
 	}
 	sort.SliceStable(found, func(i, j int) bool { return found[i].at.After(found[j].at) })
 	if len(found) > dashboardLoneWaitLimit {
+		older = len(found) - dashboardLoneWaitLimit
 		found = found[:dashboardLoneWaitLimit]
 	}
-	out := make([]DashboardWait, 0, len(found))
+	waits = make([]DashboardWait, 0, len(found))
 	for _, d := range found {
-		out = append(out, d.wait)
+		waits = append(waits, d.wait)
 	}
-	return out
+	return waits, older
 }
 
 // dashboardFinish stamps updatedAt, applies the stalled rule, and reports

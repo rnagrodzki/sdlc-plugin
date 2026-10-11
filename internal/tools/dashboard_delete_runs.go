@@ -26,11 +26,15 @@ const dashboardDeleteRunsMaxKeys = 50
 // one retry.
 const dashboardDeleteRunsTries = 2
 
+// dashboardDeleteRunsTooManySuggestion is the Suggestion of a request with
+// more than dashboardDeleteRunsMaxKeys keys.
+var dashboardDeleteRunsTooManySuggestion = fmt.Sprintf("Delete at most %d rows at a time.", dashboardDeleteRunsMaxKeys)
+
 // Suggestion texts of the History delete errors, one for each condition.
-// The input errors that have no text here use dashboardDeleteReloadSuggestion.
+// A key that the page never sends uses dashboardDeleteBugSuggestion. A key
+// that matches no row, and a missing file, use dashboardDeleteReloadSuggestion.
 const (
 	dashboardDeleteRunsEmptySuggestion   = "Select rows, then try again."
-	dashboardDeleteRunsTooManySuggestion = "Delete at most 50 rows at a time."
 	dashboardDeleteRunsLargeSuggestion   = "Remove old rows from .sdlc-v2/history/runs.jsonl by hand until it is smaller than " + dashboardDeleteReadMaxText + ", then retry."
 	dashboardDeleteRunsReadSuggestion    = "Check read permission on .sdlc-v2/history/runs.jsonl and retry."
 	dashboardDeleteRunsWriteSuggestion   = "Check write permission on .sdlc-v2/history/ and free disk space, then retry."
@@ -61,11 +65,11 @@ func dashboardRunKeysError(keys []DashboardRunKey) error {
 	for i, key := range keys {
 		switch {
 		case key.Kind == "":
-			return domain(fmt.Sprintf("The kind field of row %d is required", i+1), dashboardDeleteReloadSuggestion)
+			return domain(fmt.Sprintf("The kind field of row %d is required", i+1), dashboardDeleteBugSuggestion)
 		case key.EndedAt == "":
-			return domain(fmt.Sprintf("The endedAt field of row %d is required", i+1), dashboardDeleteReloadSuggestion)
+			return domain(fmt.Sprintf("The endedAt field of row %d is required", i+1), dashboardDeleteBugSuggestion)
 		case seen[key]:
-			return domain(fmt.Sprintf("The key %s appears more than once", dashboardRunKeyText(key)), dashboardDeleteReloadSuggestion)
+			return domain(fmt.Sprintf("The key %s appears more than once", dashboardRunKeyText(key)), dashboardDeleteBugSuggestion)
 		}
 		seen[key] = true
 	}
@@ -105,7 +109,6 @@ func dashboardDropRuns(data []byte, keys []DashboardRunKey) (kept []byte, remove
 
 	for _, key := range keys {
 		if hits[key] == 0 {
-			key := key
 			return out.Bytes(), removed, &key
 		}
 	}
@@ -144,16 +147,18 @@ func DashboardDeleteRuns(root string, keys []DashboardRunKey) (DashboardDeleteOu
 			dashboardDeleteRunsLargeSuggestion, dashboardDeleteRunsReadSuggestion)
 	}
 
+	gone := &mcpserver.DomainError{
+		Msg:        "The History file runs.jsonl does not exist",
+		Suggestion: dashboardDeleteReloadSuggestion,
+	}
+
 	for try := 0; try < dashboardDeleteRunsTries; try++ {
 		first, missing, err := read()
 		if err != nil {
 			return DashboardDeleteOut{}, err
 		}
 		if missing {
-			return DashboardDeleteOut{}, &mcpserver.DomainError{
-				Msg:        "The History file runs.jsonl does not exist",
-				Suggestion: dashboardDeleteReloadSuggestion,
-			}
+			return DashboardDeleteOut{}, gone
 		}
 
 		kept, removed, unmatched := dashboardDropRuns(first, keys)
@@ -164,13 +169,18 @@ func DashboardDeleteRuns(root string, keys []DashboardRunKey) (DashboardDeleteOu
 			}
 		}
 
-		// A file that went away, or a second read that differs, means a writer
-		// touched the file after the first read. Read and drop again.
+		// A file that went away after the first read gives the same error as a
+		// file that is missing at the first read. A second read that differs
+		// means a writer touched the file after the first read: read and drop
+		// again.
 		second, missing, err := read()
 		if err != nil {
 			return DashboardDeleteOut{}, err
 		}
-		if missing || !bytes.Equal(first, second) {
+		if missing {
+			return DashboardDeleteOut{}, gone
+		}
+		if !bytes.Equal(first, second) {
 			continue
 		}
 

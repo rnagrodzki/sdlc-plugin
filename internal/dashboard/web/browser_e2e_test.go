@@ -158,9 +158,10 @@ func (c *browserCollector) setFrozen(frozen bool) {
 }
 
 // browserOptions wires the server like dashboardOptions in cmd/sdlc/main.go,
-// with a pre-bound listener, two fixed repos and the wrapped collector.
+// with a pre-bound listener, two fixed repos and the wrapped collector. The
+// route functions come from WithToolRoutes, the same wiring as production.
 func browserOptions(ln net.Listener, roots []string, c *browserCollector) Options {
-	return Options{
+	return WithToolRoutes(Options{
 		Port:    ln.Addr().(*net.TCPAddr).Port,
 		Version: testVersion,
 		Token:   NewToken(),
@@ -176,18 +177,7 @@ func browserOptions(ln net.Listener, roots []string, c *browserCollector) Option
 		Health: func(int, time.Duration) (dashboard.Health, error) {
 			return dashboard.Health{}, errors.New("unexpected Health call")
 		},
-		Archive: tools.ArchiveRun,
-		ClearCache: func(root string, at time.Time) (tools.ClearCacheOut, error) {
-			return tools.ClearCache(root, dashboard.LogPath(), at)
-		},
-		LearningBody:     tools.DashboardLearningBody,
-		DeletePreplan:    tools.DashboardDeletePreplan,
-		DeleteDeferred:   tools.DashboardDeleteDeferred,
-		DeleteLearning:   tools.DashboardDeleteLearning,
-		SetPreplanStatus: tools.DashboardSetPreplanStatus,
-		DeleteRuns:       tools.DashboardDeleteRuns,
-		DismissWait:      tools.DashboardDismissWait,
-	}
+	}, tools.ClearCache)
 }
 
 // browserRunsPath is the runs.jsonl file of repo root.

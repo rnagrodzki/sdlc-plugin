@@ -377,12 +377,15 @@ func TestDashboardContract_AttentionFieldsEncoding(t *testing.T) {
 	}
 }
 
-// TestDashboardContract_QueueConstants pins the default fix origin to the
-// first accepted origin of healing_record, and the queue statuses apart from
-// the fix statuses, so the queue adds no string that collides with them.
+// TestDashboardContract_QueueConstants pins the default fix origin to an
+// accepted origin of healing_record, and the queue statuses apart from the
+// fix statuses, so the queue adds no string that collides with them.
 func TestDashboardContract_QueueConstants(t *testing.T) {
-	if dashboardOriginLocal != healingOrigins[0] {
-		t.Errorf("dashboardOriginLocal = %q, want healingOrigins[0] = %q", dashboardOriginLocal, healingOrigins[0])
+	if !slices.Contains(healingOrigins, healingOriginLocal) {
+		t.Errorf("healingOriginLocal = %q, want a member of healingOrigins %v", healingOriginLocal, healingOrigins)
+	}
+	if !slices.Contains(healingFixStatuses, dashboardQueueStatusDeferred) {
+		t.Errorf("dashboardQueueStatusDeferred = %q, want a member of healingFixStatuses", dashboardQueueStatusDeferred)
 	}
 	for _, status := range []string{dashboardQueueStatusOpen, dashboardQueueStatusBelow} {
 		if slices.Contains(healingFixStatuses, status) {

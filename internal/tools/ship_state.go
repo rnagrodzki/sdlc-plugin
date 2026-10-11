@@ -1839,13 +1839,18 @@ func shipStateDefer(root, workDir string, in ShipStateIn, now func() time.Time) 
 // Action: healing_record
 // ---------------------------------------------------------------------------
 
+// healingOriginLocal is the origin of a finding of the local review. It is
+// the one copy of this string in Go code: healingOrigins, the review ledger
+// and the dashboard use it.
+const healingOriginLocal = "local-review"
+
 // healingKinds, healingOrigins and healingPhases are the accepted values for
 // healing_record's detail.kind, detail.origin (kinds "fixed" and
 // "fix-progress") and detail.phase (kind "hardened"). ship-state.schema.json
 // carries the same sets.
 var (
 	healingKinds   = []string{"review-total", "fixed", "hardened", "fix-progress"}
-	healingOrigins = []string{"local-review", "pr-comment"}
+	healingOrigins = []string{healingOriginLocal, "pr-comment"}
 	healingPhases  = []string{"started", "done"}
 )
 

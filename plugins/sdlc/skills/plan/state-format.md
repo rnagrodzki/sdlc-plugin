@@ -44,6 +44,7 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
     "done":                "2026-05-09T14:12:00.000Z"
   },
   "planFilePath": "/Users/dev/.claude/plans/2026-05-09-fix-auth.md",
+  "sessionId": "3f1c9a2e-7b4d-4e8a-9c21-5d6e7f8a9b0c",
   "creationIntent": {
     "userPrompt": "Fix the auth redirect bug",
     "scope": "full",
@@ -93,7 +94,7 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
 | `planIntegrity` | object           | Checkpoint markers; each key's presence means that checkpoint was reached.  |
 | `planFilePath`  | string \| null   | Absolute path to the written plan file. Used by the Stop hook to stat the file for non-empty content verification. `null` until the `planFile` marker is written. |
 | `creationIntent`| object           | The prompt and routing decision that started this run, plus flags needed to resume it. Written once by `plan_prepare` when the run is created; never written by `plan_mark`. See [creationIntent](#creationintent) below. |
-| `sessionId`     | string \| absent | The Claude session ID of the newest session that called `plan_prepare` for this run. Written by the `record-mcp-invocation` hook after each `plan_prepare` call. A resume in a new session replaces it. Read by the dashboard to attach waits. |
+| `sessionId`     | string \| null   | The Claude session ID of the newest session that called `plan_prepare` for this run. `plan_prepare` creates a new run with `sessionId: null`. The `record-mcp-invocation` hook writes the ID after each `plan_prepare` call, so a resume in a new session replaces it. The hook writes nothing when the session ID is empty, the branch has no name (detached `HEAD`), the branch has no active plan run, or the stored ID is the same. Read by the dashboard to attach waits. |
 | `guardrailCounts` | object \| absent | Counts of the plan guardrails that `plan_prepare` loaded: `total`, `error`, `warning`. Written for the dashboard plan setup tile. Absent when the first call's guardrail config read failed (a later successful call without `resume` writes it). Never written for a run with no named branch. See [guardrailCounts](#guardrailcounts) below. |
 | `checkpoint`    | object \| absent | The plan run's current step/iteration/expected-writers, replaced on every `plan_mark({marker: "checkpoint"})` call. Absent until the first checkpoint marker is written. See [checkpoint](#checkpoint) below. |
 | `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`, and an optional `findings`. Upserted by `plan_mark({marker: "review-round"})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
@@ -364,7 +365,7 @@ Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` 
 
 1. On a genuinely new run (no active run for the branch, and not a `resume: true` call), `plan_prepare(...)` writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent: { userPrompt, timestamp }` through `state.Write`, which prunes prior `plan-<branchSlug>-*.json` files for the same branch — **except** a sibling run whose `planIntegrity.done` marker is already set, which is kept (see [Evaluate, Don't Delete](#evaluate-dont-delete) below). It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs the same way (`state.PruneEvidenceDirs`, same done-run exception). When the guardrail config read succeeds, the same call then writes the state file a second time, to add `guardrailCounts` (see [guardrailCounts](#guardrailcounts)).
 2. The first `resolveTemplate: true` call for that run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags). Every `plan_prepare` call without `resume: true` (the first call and the `resolveTemplate` call) also writes `guardrailCounts` again, in a second `state.Write`, when the guardrail config read succeeds.
-3. A `resume: true` call does not create or prune anything, and writes nothing (not even `guardrailCounts`); it reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
+3. A `resume: true` call does not create or prune anything, and `plan_prepare` itself writes nothing (not even `guardrailCounts`). After the call, the `record-mcp-invocation` hook can still write `sessionId` (see the `sessionId` row above). The call reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
 4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically; `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically; `plan_mark({ marker: "review-outcome", data })` replaces `reviewOutcome` in-place, atomically; `plan_mark({ marker: "guardrailResults", data })` and `plan_mark({ marker: "criticalDecisions", data })` append their array payload to their own top-level key (`guardrailResults`, `criticalDecisions`). Before each of these writes, every `plan_mark` call also refreshes `planTiming` and rewrites `planFilePath` as an absolute, cleaned path (`refreshPlanTiming`; skipped when `skillInvoked` or `planFilePath` is missing, or the plan file cannot be read). Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
 
 ### Evaluate, Don't Delete
@@ -402,6 +403,7 @@ All writes use the `internal/state` package's atomic-write helper. No partial-fi
     "done":                "2026-05-09T14:12:40.345Z"
   },
   "planFilePath": "/Users/dev/.claude/plans/2026-05-09-fix-auth.md",
+  "sessionId": "3f1c9a2e-7b4d-4e8a-9c21-5d6e7f8a9b0c",
   "creationIntent": {
     "userPrompt": "Fix the auth redirect bug",
     "scope": "full",

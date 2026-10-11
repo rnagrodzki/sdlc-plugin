@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 )
 
 // dashQueueTotals returns review totals with the given found and unaccounted
@@ -84,7 +86,7 @@ func TestDashboardReviewQueue_StatusMapping(t *testing.T) {
 		for _, status := range healingFixStatuses {
 			t.Run(status, func(t *testing.T) {
 				fixes := []DashboardFix{dashQueueFix("Nil map write", status, "local-review", "a.go", 42)}
-				q := dashboardReviewQueue(map[string]any{}, dashQueueTotals(1, 0), fixes)
+				q, _ := dashboardReviewQueue(map[string]any{}, dashQueueTotals(1, 0), fixes)
 				want := []DashboardQueueRow{{
 					Title: "Nil map write", Severity: "high", File: "a.go", Line: "42",
 					Status: status, Origin: "local-review",
@@ -107,7 +109,7 @@ func TestDashboardReviewQueue_StatusMapping(t *testing.T) {
 		for _, c := range cases {
 			t.Run("reason "+c.reason, func(t *testing.T) {
 				data := map[string]any{"deferredFindings": []any{dashQueueDeferred("Long loop", c.reason, "b.go", 7)}}
-				q := dashboardReviewQueue(data, dashQueueTotals(1, 0), nil)
+				q, _ := dashboardReviewQueue(data, dashQueueTotals(1, 0), nil)
 				if len(q.Rows) != 1 {
 					t.Fatalf("rows = %+v, want 1", q.Rows)
 				}
@@ -143,7 +145,7 @@ func TestDashboardReviewQueue_RowSources(t *testing.T) {
 			dashQueueFix("Nil map write", "fixed", "local-review", "a.go", 42),
 			dashQueueFix("Missing check", "queued", "pr-comment", "c.go", 0),
 		}
-		q := dashboardReviewQueue(data, dashQueueTotals(3, 0), fixes)
+		q, _ := dashboardReviewQueue(data, dashQueueTotals(3, 0), fixes)
 		var titles []string
 		for _, r := range q.Rows {
 			titles = append(titles, r.Title)
@@ -159,10 +161,10 @@ func TestDashboardReviewQueue_RowSources(t *testing.T) {
 	t.Run("deferred finding row", func(t *testing.T) {
 		entry := dashQueueDeferred("Long loop", "wont-fix", "b.go", 7)
 		entry["severity"] = "low"
-		q := dashboardReviewQueue(map[string]any{"deferredFindings": []any{entry}}, dashQueueTotals(1, 0), nil)
+		q, _ := dashboardReviewQueue(map[string]any{"deferredFindings": []any{entry}}, dashQueueTotals(1, 0), nil)
 		want := DashboardQueueRow{
 			Title: "Long loop", Severity: "low", File: "b.go", Line: "7",
-			Status: "deferred", Origin: dashboardOriginLocal, Text: "why Long loop",
+			Status: "deferred", Origin: healingOriginLocal, Text: "why Long loop",
 		}
 		if len(q.Rows) != 1 || q.Rows[0] != want {
 			t.Errorf("rows = %+v, want [%+v]", q.Rows, want)
@@ -172,28 +174,55 @@ func TestDashboardReviewQueue_RowSources(t *testing.T) {
 	t.Run("deferred finding with no line has an empty line", func(t *testing.T) {
 		entry := dashQueueDeferred("Long loop", "wont-fix", "b.go", 0)
 		entry["line"] = nil
-		q := dashboardReviewQueue(map[string]any{"deferredFindings": []any{entry}}, dashQueueTotals(1, 0), nil)
+		q, _ := dashboardReviewQueue(map[string]any{"deferredFindings": []any{entry}}, dashQueueTotals(1, 0), nil)
 		if len(q.Rows) != 1 || q.Rows[0].Line != "" {
 			t.Errorf("rows = %+v, want one row with line empty", q.Rows)
 		}
 	})
 
-	t.Run("deferred finding with a bad entry or no title is skipped", func(t *testing.T) {
+	t.Run("deferred finding with a bad entry or no title is skipped with an issue", func(t *testing.T) {
 		data := map[string]any{"deferredFindings": []any{
 			"not a map",
 			map[string]any{"reason": "wont-fix"},
 			dashQueueDeferred("Long loop", "wont-fix", "b.go", 7),
 		}}
-		q := dashboardReviewQueue(data, dashQueueTotals(3, 0), nil)
+		q, issues := dashboardReviewQueue(data, dashQueueTotals(3, 0), nil)
 		if len(q.Rows) != 1 || q.Rows[0].Title != "Long loop" {
 			t.Errorf("rows = %+v, want only Long loop", q.Rows)
+		}
+		if len(issues) != 1 || issues[0].Source != dashboardSourceState || issues[0].Severity != "medium" ||
+			!strings.Contains(issues[0].Text, "holds 2 entries that are not an object or have no title") {
+			t.Errorf("issues = %+v, want one medium state issue for 2 bad entries", issues)
+		}
+	})
+
+	t.Run("deferredFindings that is not a list gives no row and an issue", func(t *testing.T) {
+		for _, raw := range []any{nil, "corrupt", map[string]any{"title": "x"}} {
+			q, issues := dashboardReviewQueue(map[string]any{"deferredFindings": raw}, dashQueueTotals(1, 0), nil)
+			if len(q.Rows) != 0 {
+				t.Errorf("%#v: rows = %+v, want none", raw, q.Rows)
+			}
+			if len(issues) != 1 || issues[0].Source != dashboardSourceState ||
+				!strings.Contains(issues[0].Text, "data.deferredFindings of the ship state is not a list") {
+				t.Errorf("%#v: issues = %+v, want one not-a-list state issue", raw, issues)
+			}
+		}
+	})
+
+	t.Run("valid deferred findings give no issue", func(t *testing.T) {
+		data := map[string]any{"deferredFindings": []any{dashQueueDeferred("Long loop", "wont-fix", "b.go", 7)}}
+		if _, issues := dashboardReviewQueue(data, dashQueueTotals(1, 0), nil); len(issues) != 0 {
+			t.Errorf("issues = %+v, want none", issues)
+		}
+		if _, issues := dashboardReviewQueue(map[string]any{}, dashQueueTotals(1, 0), nil); len(issues) != 0 {
+			t.Errorf("absent key: issues = %+v, want none", issues)
 		}
 	})
 
 	t.Run("deferred title is redacted and cut", func(t *testing.T) {
 		long := strings.Repeat("x", 200)
 		data := map[string]any{"deferredFindings": []any{dashQueueDeferred(long, "wont-fix", "b.go", 7)}}
-		q := dashboardReviewQueue(data, dashQueueTotals(1, 0), nil)
+		q, _ := dashboardReviewQueue(data, dashQueueTotals(1, 0), nil)
 		if n := len([]rune(q.Rows[0].Title)); n > dashboardPreviewTextMax+1 {
 			t.Errorf("title runes = %d, want <= %d", n, dashboardPreviewTextMax+1)
 		}
@@ -203,7 +232,7 @@ func TestDashboardReviewQueue_RowSources(t *testing.T) {
 		entry := dashQueueDeferred("Leaky log", "wont-fix", "b.go", 7)
 		entry["description"] = "Mail dev@example.com about the leak"
 		data := map[string]any{"deferredFindings": []any{entry}}
-		q := dashboardReviewQueue(data, dashQueueTotals(1, 0), nil)
+		q, _ := dashboardReviewQueue(data, dashQueueTotals(1, 0), nil)
 		if len(q.Rows) != 1 {
 			t.Fatalf("rows = %+v, want 1 row", q.Rows)
 		}
@@ -216,12 +245,35 @@ func TestDashboardReviewQueue_RowSources(t *testing.T) {
 		q := dashQueueOf(t, dashQueueShip(t, 3, nil, nil, nil))
 		// Highest severity first: security high, medium, then low.
 		want := []DashboardQueueRow{
-			{Title: "token check skips expiry", Severity: "high", File: "internal/x.go", Line: "42", Status: "open", Origin: dashboardOriginLocal, Dimension: "security", Text: "token check skips expiry"},
-			{Title: "a", Severity: "medium", File: "internal/a.go", Line: "1", Status: "open", Origin: dashboardOriginLocal, Dimension: "security", Text: "a"},
-			{Title: "b", Severity: "low", File: "internal/b.go", Line: "", Status: "open", Origin: dashboardOriginLocal, Dimension: "security", Text: "b"},
+			{Title: "token check skips expiry", Severity: "high", File: "internal/x.go", Line: "42", Status: "open", Origin: healingOriginLocal, Dimension: "security", Text: "token check skips expiry"},
+			{Title: "a", Severity: "medium", File: "internal/a.go", Line: "1", Status: "open", Origin: healingOriginLocal, Dimension: "security", Text: "a"},
+			{Title: "b", Severity: "low", File: "internal/b.go", Line: "", Status: "open", Origin: healingOriginLocal, Dimension: "security", Text: "b"},
 		}
 		if !reflect.DeepEqual(q.Rows, want) {
 			t.Errorf("rows = %+v, want %+v", q.Rows, want)
+		}
+	})
+
+	t.Run("open rows sort by severity across dimensions, then in dimension order", func(t *testing.T) {
+		q := &DashboardReviewQueue{Rows: []DashboardQueueRow{}}
+		dashboardQueueAddFindings(q, []DashboardDimension{
+			{Name: "docs", FindingItems: []DashboardReviewFinding{
+				{Text: "docs low", Severity: "low", File: "a.go", Line: "1"},
+				{Text: "docs high", Severity: "high", File: "a.go", Line: "2"},
+			}},
+			{Name: "security", FindingItems: []DashboardReviewFinding{
+				{Text: "security critical", Severity: "critical", File: "b.go", Line: "1"},
+				{Text: "security low", Severity: "low", File: "b.go", Line: "2"},
+				{Text: "security high", Severity: "high", File: "b.go", Line: "3"},
+			}},
+		})
+		var got []string
+		for _, r := range q.Rows {
+			got = append(got, r.Title)
+		}
+		want := []string{"security critical", "docs high", "security high", "docs low", "security low"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("titles = %v, want %v", got, want)
 		}
 	})
 
@@ -261,7 +313,7 @@ func TestDashboardReviewQueue_FixTwin(t *testing.T) {
 		dashQueueDeferred("Nil map write", "below-threshold", "z.go", 42),  // other file
 		dashQueueDeferred("Nil map writes", "below-threshold", "a.go", 42), // other title
 	}}
-	q := dashboardReviewQueue(data, dashQueueTotals(5, 0), fixes)
+	q, _ := dashboardReviewQueue(data, dashQueueTotals(5, 0), fixes)
 	if got, want := dashQueueRowStatuses(q), []string{"fixing", "below", "below", "below"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("statuses = %v, want %v", got, want)
 	}
@@ -271,27 +323,47 @@ func TestDashboardReviewQueue_FixTwin(t *testing.T) {
 }
 
 // TestDashboardReviewQueue_Threshold checks that threshold is the
-// reviewThreshold flag, and info when the flag is absent or not a severity.
+// reviewThreshold flag, and the ship default (info) when the flag is absent
+// or not a severity. A present flag that is not a severity, or flags that is
+// not an object, also gives a state issue.
 func TestDashboardReviewQueue_Threshold(t *testing.T) {
 	cases := []struct {
-		name string
-		data map[string]any
-		want string
+		name      string
+		data      map[string]any
+		want      string
+		wantIssue string // "" when no issue
 	}{
-		{"no flags", map[string]any{}, "info"},
-		{"flags without the key", map[string]any{"flags": map[string]any{"auto": true}}, "info"},
-		{"not a severity", map[string]any{"flags": map[string]any{"reviewThreshold": "urgent"}}, "info"},
-		{"not a string", map[string]any{"flags": map[string]any{"reviewThreshold": 3.0}}, "info"},
-		{"high", map[string]any{"flags": map[string]any{"reviewThreshold": "high"}}, "high"},
-		{"medium", map[string]any{"flags": map[string]any{"reviewThreshold": "medium"}}, "medium"},
+		{"no flags", map[string]any{}, "info", ""},
+		{"flags without the key", map[string]any{"flags": map[string]any{"auto": true}}, "info", ""},
+		{"not a severity", map[string]any{"flags": map[string]any{"reviewThreshold": "urgent"}}, "info", "data.flags.reviewThreshold of the ship state is not a severity"},
+		{"not a string", map[string]any{"flags": map[string]any{"reviewThreshold": 3.0}}, "info", "data.flags.reviewThreshold of the ship state is not a severity"},
+		{"flags not an object", map[string]any{"flags": "corrupt"}, "info", "data.flags of the ship state is not an object"},
+		{"high", map[string]any{"flags": map[string]any{"reviewThreshold": "high"}}, "high", ""},
+		{"medium", map[string]any{"flags": map[string]any{"reviewThreshold": "medium"}}, "medium", ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := dashboardReviewQueue(c.data, dashQueueTotals(0, 0), nil).Threshold; got != c.want {
-				t.Errorf("threshold = %q, want %q", got, c.want)
+			q, issues := dashboardReviewQueue(c.data, dashQueueTotals(0, 0), nil)
+			if q.Threshold != c.want {
+				t.Errorf("threshold = %q, want %q", q.Threshold, c.want)
+			}
+			if c.wantIssue == "" {
+				if len(issues) != 0 {
+					t.Errorf("issues = %+v, want none", issues)
+				}
+				return
+			}
+			if len(issues) != 1 || issues[0].Source != dashboardSourceState || !strings.Contains(issues[0].Text, c.wantIssue) {
+				t.Errorf("issues = %+v, want one state issue with %q", issues, c.wantIssue)
 			}
 		})
 	}
+
+	t.Run("default is the ship default", func(t *testing.T) {
+		if q, _ := dashboardReviewQueue(map[string]any{}, dashQueueTotals(0, 0), nil); q.Threshold != shipmeta.ShipBuiltInDefaults.ReviewThreshold {
+			t.Errorf("threshold = %q, want %q", q.Threshold, shipmeta.ShipBuiltInDefaults.ReviewThreshold)
+		}
+	})
 
 	t.Run("read from a ship state", func(t *testing.T) {
 		q := dashQueueOf(t, dashQueueShip(t, 3, nil, nil, map[string]any{"reviewThreshold": "high"}))
@@ -306,21 +378,27 @@ func TestDashboardReviewQueue_Threshold(t *testing.T) {
 func TestDashboardReviewQueue_Reason(t *testing.T) {
 	below := dashQueueDeferred("Long loop", "below-threshold", "b.go", 7)
 	wontFix := dashQueueDeferred("Long loop", "wont-fix", "b.go", 7)
+	below2 := dashQueueDeferred("Short loop", "below-threshold", "b.go", 9)
 	cases := []struct {
-		name     string
-		found    int
-		deferred []any
-		fixes    []DashboardFix
-		want     string
+		name         string
+		found        int
+		unaccounted  int
+		deferred     []any
+		fixes        []DashboardFix
+		want         string
+		wantUnrouted int
 	}{
-		{"no finding, no row", 0, nil, nil, dashboardQueueReasonNone},
-		{"findings, no row yet", 2, nil, nil, ""},
-		{"every row below", 2, []any{below, below}, nil, dashboardQueueReasonAllBelow},
-		{"one row below", 1, []any{below}, nil, dashboardQueueReasonAllBelow},
-		{"below and deferred", 2, []any{below, wontFix}, nil, ""},
-		{"below and a fix", 2, []any{dashQueueDeferred("Other", "below-threshold", "c.go", 1)},
-			[]DashboardFix{dashQueueFix("Nil map write", "fixed", "local-review", "a.go", 42)}, ""},
-		{"total 0 but a row", 0, []any{below}, nil, dashboardQueueReasonAllBelow},
+		{"no finding, no row", 0, 0, nil, nil, dashboardQueueReasonNone, 0},
+		{"findings, no row yet", 2, 2, nil, nil, "", 2},
+		{"every row below", 2, 0, []any{below, below}, nil, dashboardQueueReasonAllBelow, 0},
+		{"one row below", 1, 0, []any{below}, nil, dashboardQueueReasonAllBelow, 0},
+		{"below and deferred", 2, 0, []any{below, wontFix}, nil, "", 0},
+		{"below and a fix", 2, 0, []any{dashQueueDeferred("Other", "below-threshold", "c.go", 1)},
+			[]DashboardFix{dashQueueFix("Nil map write", "fixed", "local-review", "a.go", 42)}, "", 0},
+		{"total 0 but a row", 0, 0, []any{below}, nil, dashboardQueueReasonAllBelow, 0},
+		// 5 found, 2 deferred below the threshold, no fix record yet: the 3
+		// open findings count as unrouted, so not every finding is below.
+		{"below rows and open findings, no fix record", 5, 3, []any{below, below2}, nil, "", 3},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -328,9 +406,12 @@ func TestDashboardReviewQueue_Reason(t *testing.T) {
 			if c.deferred != nil {
 				data["deferredFindings"] = c.deferred
 			}
-			q := dashboardReviewQueue(data, dashQueueTotals(c.found, 0), c.fixes)
+			q, _ := dashboardReviewQueue(data, dashQueueTotals(c.found, c.unaccounted), c.fixes)
 			if q.Reason != c.want {
 				t.Errorf("reason = %q, want %q", q.Reason, c.want)
+			}
+			if q.Unrouted != c.wantUnrouted {
+				t.Errorf("unrouted = %d, want %d", q.Unrouted, c.wantUnrouted)
 			}
 			if q.Reason == dashboardQueueReasonNone && len(q.Rows) != 0 {
 				t.Errorf("reason %q with %d rows", q.Reason, len(q.Rows))
@@ -342,7 +423,7 @@ func TestDashboardReviewQueue_Reason(t *testing.T) {
 	}
 
 	t.Run("open rows clear the no-findings reason", func(t *testing.T) {
-		q := dashboardReviewQueue(map[string]any{}, dashQueueTotals(0, 0), nil)
+		q, _ := dashboardReviewQueue(map[string]any{}, dashQueueTotals(0, 0), nil)
 		dashboardQueueAddFindings(q, []DashboardDimension{{
 			Name:         "docs",
 			FindingItems: []DashboardReviewFinding{{Text: "a", Severity: "low", File: "a.go", Line: "1"}},
@@ -353,7 +434,7 @@ func TestDashboardReviewQueue_Reason(t *testing.T) {
 	})
 
 	t.Run("no open row keeps the reason", func(t *testing.T) {
-		q := dashboardReviewQueue(map[string]any{}, dashQueueTotals(0, 0), nil)
+		q, _ := dashboardReviewQueue(map[string]any{}, dashQueueTotals(0, 0), nil)
 		dashboardQueueAddFindings(q, []DashboardDimension{{Name: "docs", FindingItems: []DashboardReviewFinding{}}})
 		if q.Reason != dashboardQueueReasonNone || len(q.Rows) != 0 {
 			t.Errorf("queue = %+v, want no row and reason %q", q, dashboardQueueReasonNone)
@@ -365,7 +446,7 @@ func TestDashboardReviewQueue_Reason(t *testing.T) {
 // and holds at most 200 rows.
 func TestDashboardReviewQueue_RowsListAndCap(t *testing.T) {
 	t.Run("empty rows encode as []", func(t *testing.T) {
-		q := dashboardReviewQueue(map[string]any{}, dashQueueTotals(0, 0), nil)
+		q, _ := dashboardReviewQueue(map[string]any{}, dashQueueTotals(0, 0), nil)
 		if q.Rows == nil {
 			t.Fatal("rows = nil, want an empty list")
 		}
@@ -384,12 +465,26 @@ func TestDashboardReviewQueue_RowsListAndCap(t *testing.T) {
 		for i := 0; i < 250; i++ {
 			deferred = append(deferred, dashQueueDeferred(fmt.Sprintf("finding %d", i), "wont-fix", "a.go", i+1))
 		}
-		q := dashboardReviewQueue(map[string]any{"deferredFindings": deferred}, dashQueueTotals(250, 0), nil)
+		q, issues := dashboardReviewQueue(map[string]any{"deferredFindings": deferred}, dashQueueTotals(250, 0), nil)
 		if len(q.Rows) != 200 {
 			t.Fatalf("rows = %d, want 200", len(q.Rows))
 		}
 		if q.Rows[0].Title != "finding 0" || q.Rows[199].Title != "finding 199" {
 			t.Errorf("rows kept %q .. %q, want the first 200", q.Rows[0].Title, q.Rows[199].Title)
+		}
+		want := []DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: "50 review queue rows not shown: the queue shows the first 200 of 250"}}
+		if !reflect.DeepEqual(issues, want) {
+			t.Errorf("issues = %+v, want %+v", issues, want)
+		}
+	})
+
+	t.Run("200 rows give no cut issue", func(t *testing.T) {
+		var deferred []any
+		for i := 0; i < 200; i++ {
+			deferred = append(deferred, dashQueueDeferred(fmt.Sprintf("finding %d", i), "wont-fix", "a.go", i+1))
+		}
+		if _, issues := dashboardReviewQueue(map[string]any{"deferredFindings": deferred}, dashQueueTotals(200, 0), nil); len(issues) != 0 {
+			t.Errorf("issues = %+v, want none", issues)
 		}
 	})
 
@@ -399,7 +494,7 @@ func TestDashboardReviewQueue_RowsListAndCap(t *testing.T) {
 			deferred = append(deferred, dashQueueDeferred(fmt.Sprintf("finding %d", i), "wont-fix", "a.go", i+1))
 		}
 		fixes := []DashboardFix{dashQueueFix("Nil map write", "fixed", "local-review", "z.go", 1)}
-		q := dashboardReviewQueue(map[string]any{"deferredFindings": deferred}, dashQueueTotals(251, 0), fixes)
+		q, _ := dashboardReviewQueue(map[string]any{"deferredFindings": deferred}, dashQueueTotals(251, 0), fixes)
 		if len(q.Rows) != 200 || q.Rows[0].Title != "Nil map write" {
 			t.Errorf("rows = %d, first %q, want 200 with the fix first", len(q.Rows), q.Rows[0].Title)
 		}
@@ -411,15 +506,20 @@ func TestDashboardReviewQueue_RowsListAndCap(t *testing.T) {
 			items = append(items, DashboardReviewFinding{Text: fmt.Sprintf("finding %d", i), Severity: "low", File: "a.go", Line: fmt.Sprint(i + 1)})
 		}
 		q := &DashboardReviewQueue{Rows: []DashboardQueueRow{}}
-		dashboardQueueAddFindings(q, []DashboardDimension{{Name: "docs", FindingItems: items}})
+		issues := dashboardQueueAddFindings(q, []DashboardDimension{{Name: "docs", FindingItems: items}})
 		if len(q.Rows) != 200 {
 			t.Errorf("rows = %d, want 200", len(q.Rows))
 		}
+		if len(issues) != 1 || issues[0].Text != "50 review queue rows not shown: the queue shows the first 200 of 250" {
+			t.Errorf("issues = %+v, want the cut issue", issues)
+		}
 	})
+
 }
 
 // TestDashboardReviewQueue_Unrouted checks that unrouted is the unaccounted
-// count when fix rows exist, else 0.
+// count (never below 0), with or without fix rows, and 0 after open rows give
+// every review finding a row.
 func TestDashboardReviewQueue_Unrouted(t *testing.T) {
 	fixes := []DashboardFix{dashQueueFix("Nil map write", "fixed", "local-review", "a.go", 42)}
 	cases := []struct {
@@ -429,18 +529,37 @@ func TestDashboardReviewQueue_Unrouted(t *testing.T) {
 		want        int
 	}{
 		{"fix rows", fixes, 2, 2},
-		{"no fix rows", nil, 2, 0},
+		{"no fix rows", nil, 2, 2},
 		{"fix rows, nothing unaccounted", fixes, 0, 0},
 		{"fix rows, records disagree", fixes, -1, 0},
+		{"no fix rows, records disagree", nil, -1, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			q := dashboardReviewQueue(map[string]any{}, dashQueueTotals(3, c.unaccounted), c.fixes)
+			q, _ := dashboardReviewQueue(map[string]any{}, dashQueueTotals(3, c.unaccounted), c.fixes)
 			if q.Unrouted != c.want {
 				t.Errorf("unrouted = %d, want %d", q.Unrouted, c.want)
 			}
 		})
 	}
+
+	t.Run("open rows set unrouted to 0", func(t *testing.T) {
+		q := dashQueueOf(t, dashQueueShip(t, 3, nil, nil, nil))
+		if len(q.Rows) != 3 || q.Unrouted != 0 {
+			t.Errorf("rows = %d, unrouted = %d, want 3 open rows and 0", len(q.Rows), q.Unrouted)
+		}
+	})
+
+	t.Run("below rows and open findings with no fix record", func(t *testing.T) {
+		deferred := []any{
+			dashQueueDeferred("Long loop", "below-threshold", "b.go", 7),
+			dashQueueDeferred("Short loop", "below-threshold", "b.go", 9),
+		}
+		q := dashQueueOf(t, dashQueueShip(t, 5, nil, deferred, nil))
+		if q.Unrouted != 3 || q.Reason != "" {
+			t.Errorf("unrouted = %d, reason = %q, want 3 and no reason", q.Unrouted, q.Reason)
+		}
+	})
 }
 
 // TestDashboardReviewQueue_FindingMatch checks that a row gets dimension and
@@ -468,7 +587,7 @@ func TestDashboardReviewQueue_FindingMatch(t *testing.T) {
 		row("g.go", 5),  // no finding
 		row("", 0),      // no file
 	}
-	q := dashboardReviewQueue(map[string]any{}, dashQueueTotals(6, 0), fixes)
+	q, _ := dashboardReviewQueue(map[string]any{}, dashQueueTotals(6, 0), fixes)
 	dashboardQueueAddFindings(q, dims)
 
 	type dimText struct{ dimension, text string }
@@ -493,7 +612,7 @@ func TestDashboardReviewQueue_FindingMatch(t *testing.T) {
 			{Text: "one", Severity: "low", File: "d.go", Line: "9"},
 			{Text: "two", Severity: "low", File: "d.go", Line: "9"},
 		}}}
-		q := dashboardReviewQueue(map[string]any{}, dashQueueTotals(1, 0), []DashboardFix{row("d.go", 9)})
+		q, _ := dashboardReviewQueue(map[string]any{}, dashQueueTotals(1, 0), []DashboardFix{row("d.go", 9)})
 		dashboardQueueAddFindings(q, twice)
 		if r := q.Rows[0]; r.Dimension != "" || r.Text != "" {
 			t.Errorf("row = %+v, want no dimension and no text", r)
@@ -502,7 +621,7 @@ func TestDashboardReviewQueue_FindingMatch(t *testing.T) {
 
 	t.Run("a deferred row keeps its description", func(t *testing.T) {
 		entry := dashQueueDeferred("Long loop", "wont-fix", "a.go", 42)
-		q := dashboardReviewQueue(map[string]any{"deferredFindings": []any{entry}}, dashQueueTotals(1, 0), nil)
+		q, _ := dashboardReviewQueue(map[string]any{"deferredFindings": []any{entry}}, dashQueueTotals(1, 0), nil)
 		dashboardQueueAddFindings(q, dims)
 		if r := q.Rows[0]; r.Dimension != "security" || r.Text != "why Long loop" {
 			t.Errorf("row = %+v, want dimension security and the deferred description", r)
@@ -552,8 +671,22 @@ func TestDashboardReviewQueue_Join(t *testing.T) {
 		if got, want := dashQueueRowStatuses(q), []string{"deferred"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("statuses = %v, want %v", got, want)
 		}
-		if q.Unrouted != 0 {
-			t.Errorf("unrouted = %d, want 0 with no fix row", q.Unrouted)
+		// 2 found, 1 deferred, no fix: 1 finding is not routed yet.
+		if q.Unrouted != 1 {
+			t.Errorf("unrouted = %d, want 1", q.Unrouted)
+		}
+	})
+
+	t.Run("queue issues go to the ship issues", func(t *testing.T) {
+		ship := dashQueueShip(t, 2, nil, nil, map[string]any{"reviewThreshold": "urgent"})
+		found := false
+		for _, is := range ship.Issues {
+			if is.Source == dashboardSourceState && strings.Contains(is.Text, "data.flags.reviewThreshold of the ship state is not a severity") {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("issues = %+v, want the reviewThreshold state issue", ship.Issues)
 		}
 	})
 
