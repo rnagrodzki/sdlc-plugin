@@ -695,3 +695,13 @@ func TestDashboardDropRuns(t *testing.T) {
 		})
 	}
 }
+
+// TestDashboardDeleteRuns_LimitFitsHistoryTable checks that one repo can show
+// no more History rows than one delete request can name. The page sends one
+// request for each repo, with every shown row of that repo selected. A larger
+// History limit makes "select all shown" fail with a 400 answer.
+func TestDashboardDeleteRuns_LimitFitsHistoryTable(t *testing.T) {
+	if dashboardHistoryLimit > dashboardDeleteRunsMaxKeys {
+		t.Errorf("dashboardHistoryLimit = %d is more than dashboardDeleteRunsMaxKeys = %d", dashboardHistoryLimit, dashboardDeleteRunsMaxKeys)
+	}
+}

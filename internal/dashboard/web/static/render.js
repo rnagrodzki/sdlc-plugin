@@ -1398,8 +1398,6 @@
     (repos || []).forEach(function (repo) {
       if (!view.inScope(scope, repo.root)) return;
       (repo.history || []).forEach(function (run) {
-        // Design preview only (D5): a row deleted in this page stays hidden until reload.
-        if (ui.historyDeleted && ui.historyDeleted[historyKey(repo, run)]) return;
         all.push(run);
         owner.set(run, repo);
       });
@@ -1730,7 +1728,7 @@
    * entry, so the menu still shows the real value.
    * @param {Document} doc
    * @param {object} view
-   * @param {{repo: {root: string}, slug: string, topic?: string, status: string, edited?: boolean}} item
+   * @param {{repo: {root: string}, slug: string, topic?: string, status: string}} item
    * @returns {Element} span.pp-status with the glyph and select.pp-menu
    */
   function preplanStatusMenu(doc, view, item) {
@@ -1770,15 +1768,7 @@
   function preplanPanel(doc, view, repos, scope, ui) {
     ui = ui || view.defaultUi();
     var status = ui.preplanStatus || 'all';
-    // Design preview only (D2): a status set in the menu replaces the status of the file.
-    var edits = ui.preplanEdits || {};
-    var all = view.preplanItems(repos, scope).map(function (item) {
-      var edit = edits[(item.repo.root || '') + '\n' + item.slug];
-      if (!edit) return item;
-      var copy = Object.assign({}, item, { status: edit });
-      copy.edited = true;
-      return copy;
-    });
+    var all = view.preplanItems(repos, scope);
     var items = all.filter(function (item) {
       return status === 'all' || view.preplanStatus(item.status) === status;
     });

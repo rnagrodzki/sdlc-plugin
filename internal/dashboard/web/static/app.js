@@ -518,8 +518,9 @@ function fetchJSON(url, init) {
     });
 }
 
-// Sends a request of view.archiveRequest, view.clearRequest, or view.deleteRequest. A null request
-// (the page has no token) gives the same result as a network error.
+// Sends a request of view.archiveRequest, view.clearRequest, view.deleteRequest,
+// view.preplanStatusRequest, or view.historyDeleteRequest. A null request (the
+// page has no token) gives the same result as a network error.
 function post(request) {
   return request ? fetchJSON(request.url, request) : Promise.resolve({ status: 0, body: null });
 }
@@ -756,31 +757,52 @@ function deleteItem(button) {
   });
 }
 
+// Shows the error of a write that asks no question, such as a status change.
+// The dialog has the text and the Close button.
+function showWriteError(text) {
+  var dialog = byId('confirm-dialog');
+  if (!dialog.open) dialog.showModal();
+  showConfirmResult(text);
+}
+
 // A click on Delete selected in the History tab: one confirm question, then
-// the delete of the selected rows that the table shows. Design preview only
-// (D5): the preview cannot change the history file, so the page hides the rows
-// until the next reload.
+// one POST for each repo of the selected rows, one after another. The first
+// failed repo stops the chain.
 function deleteHistoryRows(button) {
   var keys = [];
   tabs.history.panel.querySelectorAll('[data-hist-pick]').forEach(function (box) {
     if (box.checked) keys.push(box.getAttribute('data-hist-pick'));
   });
   if (keys.length === 0) return;
-  var noun = keys.length === 1 ? '1 run' : keys.length + ' runs';
   confirmAction({
-    prompts: [
-      'Delete ' + noun + ' from the history?\nThis removes the rows from .sdlc-v2/history/runs.jsonl for good. The History tab and the run times lose them.',
-    ],
+    prompts: [view.historyDeleteQuestion(keys.length, view.pairedShipCount(ui.lastSnapshot, keys))],
     label: 'Delete',
     returnKey: focusKeyOf(button),
     run: function () {
-      ui.historyDeleted = ui.historyDeleted || {};
+      var token = pageToken();
+      var done = [];
       ui.historyPicked = {};
-      keys.forEach(function (key) {
-        ui.historyDeleted[key] = true;
-      });
-      render(ui.lastSnapshot);
-      return Promise.resolve(null);
+      return view
+        .historyPicksByRepo(keys)
+        .reduce(function (chain, group) {
+          return chain.then(function (failed) {
+            if (failed !== null) return failed;
+            return post(view.historyDeleteRequest(token, group.repo, group.rows)).then(function (result) {
+              var outcome = view.deleteResultText(result.status, result.body);
+              if (outcome.ok) {
+                done.push(group.repo);
+                return null;
+              }
+              var prefix = done.length ? 'Deleted the selected rows of ' + done.join(', ') + '. ' : '';
+              return prefix + group.repo + ': ' + outcome.text;
+            });
+          });
+        }, Promise.resolve(null))
+        .then(function (text) {
+          // The checkboxes clear at once, also when no file changed.
+          render(ui.lastSnapshot);
+          return text;
+        });
     },
   });
 }
@@ -941,15 +963,19 @@ function init() {
     ui.preplanStatus = chip.getAttribute('data-pp-status');
     render(ui.lastSnapshot);
   });
-  // A status menu sets the status of its preplan. Design preview only (D2):
-  // the preview cannot write the topic file, so the page keeps the new status
-  // in ui.preplanEdits until the next reload.
+  // A status menu sets the status of its preplan with one POST. The next
+  // snapshot shows the new status. On an error, the dialog shows the error
+  // and the menu goes back to the status of the last snapshot.
   tabs.preplans.panel.addEventListener('change', function (event) {
     var menu = event.target.closest('[data-pp-set]');
     if (!menu) return;
-    ui.preplanEdits = ui.preplanEdits || {};
-    ui.preplanEdits[menu.getAttribute('data-repo') + '\n' + menu.getAttribute('data-pp-set')] = menu.value;
-    render(ui.lastSnapshot);
+    var request = view.preplanStatusRequest(pageToken(), menu.getAttribute('data-repo'), menu.getAttribute('data-pp-set'), menu.value);
+    post(request).then(function (result) {
+      var outcome = view.deleteResultText(result.status, result.body);
+      if (outcome.ok) return;
+      showWriteError(outcome.text);
+      render(ui.lastSnapshot);
+    });
   });
 
   window.addEventListener('hashchange', function () {

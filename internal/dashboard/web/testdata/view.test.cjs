@@ -184,7 +184,9 @@ describe('page logic exports', () => {
 
   test('view.js exports the request builders and the detail lookup', () => {
     ['archiveRequest', 'clearRequest', 'learningUrl', 'detailKey', 'detailItem',
-      'deleteRequest', 'deleteResultText', 'deletePrompt', 'deleteKeyFromDataset'].forEach((name) => {
+      'deleteRequest', 'deleteResultText', 'deletePrompt', 'deleteKeyFromDataset',
+      'preplanStatusRequest', 'historyDeleteRequest', 'historyPicksByRepo', 'pairedShipCount',
+      'historyDeleteQuestion'].forEach((name) => {
       assert.equal(typeof view[name], 'function', name);
     });
   });
@@ -3287,6 +3289,268 @@ describe('deleteResultText', () => {
       ok: false,
       text: 'The request did not reach the dashboard. Check that it runs, then retry.',
     });
+  });
+});
+
+// --- Status menu and History delete: requests, grouping, pairing, and question ---
+
+// The data-hist-pick key of a History row: repo root, kind, branch and end time.
+const histKey = (repo, kind, branch, endedAt) => [repo, kind, branch, endedAt].join('\n');
+
+describe('preplanStatusRequest', () => {
+  test('builds the POST to /api/preplan-status: token header, JSON type, and the repo, slug and status', () => {
+    const req = view.preplanStatusRequest('tok', '/r', 'zeta', 'paused');
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/api/preplan-status');
+    assert.equal(req.headers['X-Sdlc-Token'], 'tok');
+    assert.equal(req.headers['Content-Type'], 'application/json');
+    assert.deepEqual(JSON.parse(req.body), { repo: '/r', slug: 'zeta', status: 'paused' });
+  });
+
+  test('returns null for an empty token, repo, slug, or status', () => {
+    assert.equal(view.preplanStatusRequest('', '/r', 'zeta', 'paused'), null);
+    assert.equal(view.preplanStatusRequest('tok', '', 'zeta', 'paused'), null);
+    assert.equal(view.preplanStatusRequest('tok', '/r', '', 'paused'), null);
+    assert.equal(view.preplanStatusRequest('tok', '/r', 'zeta', ''), null);
+  });
+});
+
+describe('historyDeleteRequest', () => {
+  test('builds the POST to /api/history-delete: token header, JSON type, the repo, and the rows', () => {
+    const rows = [
+      { kind: 'ship', branch: 'feat/a', endedAt: '2026-10-08T14:00:00Z' },
+      { kind: 'plan', branch: '', endedAt: '2026-10-08T10:00:00Z' },
+    ];
+    const req = view.historyDeleteRequest('tok', '/a', rows);
+    assert.equal(req.method, 'POST');
+    assert.equal(req.url, '/api/history-delete');
+    assert.equal(req.headers['X-Sdlc-Token'], 'tok');
+    assert.equal(req.headers['Content-Type'], 'application/json');
+    assert.deepEqual(JSON.parse(req.body), { repo: '/a', rows });
+  });
+
+  test('sends the three key fields of a row and nothing else', () => {
+    const req = view.historyDeleteRequest('tok', '/a', [{ kind: 'ship', branch: 'b', endedAt: 'T', repo: '/a', extra: 1 }]);
+    assert.deepEqual(JSON.parse(req.body).rows, [{ kind: 'ship', branch: 'b', endedAt: 'T' }]);
+  });
+
+  test('returns null for an empty token or repo, or for no rows', () => {
+    const rows = [{ kind: 'ship', branch: 'b', endedAt: 'T' }];
+    assert.equal(view.historyDeleteRequest('', '/a', rows), null);
+    assert.equal(view.historyDeleteRequest('tok', '', rows), null);
+    assert.equal(view.historyDeleteRequest('tok', '/a', []), null);
+    assert.equal(view.historyDeleteRequest('tok', '/a', null), null);
+  });
+});
+
+describe('historyPicksByRepo', () => {
+  test('gives one entry for each repo, in key order, with the rows of that repo', () => {
+    const keys = [
+      histKey('/a', 'ship', 'feat/a', 'T1'),
+      histKey('/b', 'execute', 'fix/b', 'T2'),
+      histKey('/a', 'plan', 'main', 'T3'),
+    ];
+    assert.deepEqual(view.historyPicksByRepo(keys), [
+      { repo: '/a', rows: [{ kind: 'ship', branch: 'feat/a', endedAt: 'T1' }, { kind: 'plan', branch: 'main', endedAt: 'T3' }] },
+      { repo: '/b', rows: [{ kind: 'execute', branch: 'fix/b', endedAt: 'T2' }] },
+    ]);
+  });
+
+  test('a repeated key adds one row', () => {
+    const key = histKey('/a', 'ship', 'feat/a', 'T1');
+    assert.deepEqual(view.historyPicksByRepo([key, key]), [{ repo: '/a', rows: [{ kind: 'ship', branch: 'feat/a', endedAt: 'T1' }] }]);
+  });
+
+  test('an empty branch stays an empty string', () => {
+    assert.deepEqual(view.historyPicksByRepo([histKey('/a', 'plan', '', 'T1')]),
+      [{ repo: '/a', rows: [{ kind: 'plan', branch: '', endedAt: 'T1' }] }]);
+  });
+
+  test('a key with no four parts adds nothing; no keys give no entry', () => {
+    assert.deepEqual(view.historyPicksByRepo(['/a\nship\nT1', '', null, 5]), []);
+    assert.deepEqual(view.historyPicksByRepo([]), []);
+    assert.deepEqual(view.historyPicksByRepo(null), []);
+  });
+});
+
+describe('pairedShipCount', () => {
+  const T_PLAN = '2026-10-08T10:00:00Z';
+  const T_SHIP = '2026-10-08T14:00:00Z';
+  const snapshot = { repos: [
+    { root: '/a', name: 'a', history: [
+      { kind: 'plan', branch: 'feat/a', endedAt: T_PLAN },
+      { kind: 'ship', branch: 'feat/a', endedAt: T_SHIP, planPaired: true, planEndedAt: T_PLAN },
+      // The same branch and plan time in another repo is another plan row.
+      { kind: 'plan', branch: 'feat/c', endedAt: '2026-10-07T10:00:00Z' },
+      { kind: 'ship', branch: 'feat/c', endedAt: '2026-10-07T12:00:00Z', planPaired: true, planEndedAt: '2026-10-07T10:00:00Z' },
+      { kind: 'ship', branch: 'other', endedAt: T_SHIP, planPaired: true, planEndedAt: T_PLAN },
+      { kind: 'ship', branch: 'feat/a', endedAt: '2026-10-09T14:00:00Z', planStartedAt: T_PLAN },
+    ] },
+    { root: '/b', name: 'b', history: [
+      { kind: 'ship', branch: 'feat/a', endedAt: T_SHIP, planPaired: true, planEndedAt: T_PLAN },
+    ] },
+  ] };
+  const planKey = histKey('/a', 'plan', 'feat/a', T_PLAN);
+  const shipKey = histKey('/a', 'ship', 'feat/a', T_SHIP);
+
+  test('a selected plan row counts the planPaired ship rows of its repo and branch with its end time', () => {
+    assert.equal(view.pairedShipCount(snapshot, [planKey]), 1);
+  });
+
+  test('a ship row that is selected too does not count', () => {
+    assert.equal(view.pairedShipCount(snapshot, [planKey, shipKey]), 0);
+  });
+
+  test('a selected ship row alone, and a row of another kind with the same branch and time, count nothing', () => {
+    assert.equal(view.pairedShipCount(snapshot, [shipKey]), 0);
+    assert.equal(view.pairedShipCount(snapshot, [histKey('/a', 'execute', 'feat/a', T_PLAN)]), 0);
+  });
+
+  test('two selected plan rows count the ship row of each', () => {
+    assert.equal(view.pairedShipCount(snapshot, [planKey, histKey('/a', 'plan', 'feat/c', '2026-10-07T10:00:00Z')]), 2);
+  });
+
+  test('a snapshot with no repos or history, and an empty selection, count 0', () => {
+    assert.equal(view.pairedShipCount(null, [planKey]), 0);
+    assert.equal(view.pairedShipCount({ repos: [{ root: '/a' }] }, [planKey]), 0);
+    assert.equal(view.pairedShipCount(snapshot, []), 0);
+  });
+});
+
+describe('historyDeleteQuestion', () => {
+  const ONE = 'Delete 1 run from the history?\nThis removes the rows from .sdlc-v2/history/runs.jsonl for good. The History tab and the run times lose them.';
+  const THREE = 'Delete 3 runs from the history?\nThis removes the rows from .sdlc-v2/history/runs.jsonl for good. The History tab and the run times lose them.';
+
+  test('1 run, no paired ship row: the draft text', () => {
+    assert.equal(view.historyDeleteQuestion(1, 0), ONE);
+  });
+
+  test('3 runs, no paired ship row: the draft text with the plural noun', () => {
+    assert.equal(view.historyDeleteQuestion(3, 0), THREE);
+  });
+
+  test('3 runs, 1 paired ship row: one more last line in the singular', () => {
+    assert.equal(view.historyDeleteQuestion(3, 1), THREE + '\n1 ship row loses its plan time.');
+  });
+
+  test('3 runs, 2 paired ship rows: one more last line in the plural', () => {
+    assert.equal(view.historyDeleteQuestion(3, 2), THREE + '\n2 ship rows lose their plan time.');
+  });
+});
+
+describe('render status menu and History pick controls', () => {
+  const T_PLAN = '2026-10-08T10:00:00Z';
+  const repos = [
+    { root: '/a', name: 'a', history: [
+      { kind: 'ship', branch: 'feat/a', outcome: 'success', endedAt: '2026-10-08T14:00:00Z', durationMs: 2460000,
+        planStartedAt: '2026-10-08T09:00:00Z', planDurationMs: 3600000, totalMs: 18000000, planPaired: true, planEndedAt: T_PLAN },
+      { kind: 'plan', branch: 'feat/a', outcome: 'done', endedAt: T_PLAN, durationMs: 3600000, totalMs: 3600000 },
+    ] },
+    { root: '/b', name: 'b', history: [
+      { kind: 'execute', branch: '', outcome: 'partial', endedAt: '2026-10-08T12:00:00Z', durationMs: 3720000, totalMs: 3720000 },
+    ] },
+  ];
+  const now = Date.parse('2026-10-08T14:30:00Z');
+  const rowsOf = (panel) => findAll(oneByClass(panel, 'hist'), (n) => n.tagName === 'tbody')[0].children;
+  const picksOf = (panel) => findAll(panel, (n) => 'data-hist-pick' in n.attrs);
+  const history = (ui) => render.historyTable(fakeDoc(), view, repos, new Set(), now, 'UTC', ui);
+
+  test('each History row has a checkbox whose data-hist-pick is the key: repo root, kind, branch, end time', () => {
+    const panel = history();
+    const boxes = picksOf(panel);
+    assert.deepEqual(boxes.map((b) => b.attrs['data-hist-pick']), [
+      histKey('/a', 'ship', 'feat/a', '2026-10-08T14:00:00Z'),
+      histKey('/b', 'execute', '', '2026-10-08T12:00:00Z'),
+      histKey('/a', 'plan', 'feat/a', T_PLAN),
+    ]);
+    for (const b of boxes) {
+      assert.equal(b.tagName, 'input');
+      assert.equal(b.attrs.type, 'checkbox');
+      assert.equal(b.className, 'hist-pick');
+    }
+  });
+
+  test('every key of a checkbox maps back to its row through historyPicksByRepo', () => {
+    const keys = picksOf(history()).map((b) => b.attrs['data-hist-pick']);
+    assert.deepEqual(view.historyPicksByRepo(keys), [
+      { repo: '/a', rows: [
+        { kind: 'ship', branch: 'feat/a', endedAt: '2026-10-08T14:00:00Z' },
+        { kind: 'plan', branch: 'feat/a', endedAt: T_PLAN },
+      ] },
+      { repo: '/b', rows: [{ kind: 'execute', branch: '', endedAt: '2026-10-08T12:00:00Z' }] },
+    ]);
+  });
+
+  test('the head holds the select-all box; with nothing picked the count text asks for rows and Delete is off', () => {
+    const panel = history();
+    const all = findAll(panel, (n) => 'data-hist-pick-all' in n.attrs);
+    assert.equal(all.length, 1);
+    assert.equal(all[0].className, 'hist-pick');
+    assert.equal(all[0].checked, false);
+    assert.equal(all[0].indeterminate, false);
+    assert.equal(textOf(oneByClass(panel, 'hist-picked')), 'Select rows to delete them');
+    const del = oneByClass(panel, 'hist-delete');
+    assert.equal(del.tagName, 'button');
+    assert.ok('data-hist-delete' in del.attrs);
+    assert.equal(del.disabled, true);
+  });
+
+  test('a picked row is checked and counted; select-all shows the middle state, then the full state', () => {
+    const ui = Object.assign(view.defaultUi(), { historyPicked: { [histKey('/a', 'plan', 'feat/a', T_PLAN)]: true } });
+    const panel = history(ui);
+    assert.deepEqual(picksOf(panel).map((b) => b.checked), [false, false, true]);
+    assert.equal(textOf(oneByClass(panel, 'hist-picked')), '1 selected');
+    assert.ok(!oneByClass(panel, 'hist-delete').disabled);
+    const all = findAll(panel, (n) => 'data-hist-pick-all' in n.attrs)[0];
+    assert.equal(all.checked, false);
+    assert.equal(all.indeterminate, true);
+    assert.deepEqual(rowsOf(panel).map((r) => r.className), ['', '', 'picked']);
+
+    const everyKey = picksOf(panel).map((b) => b.attrs['data-hist-pick']);
+    const full = history(Object.assign(view.defaultUi(), { historyPicked: Object.fromEntries(everyKey.map((k) => [k, true])) }));
+    const fullAll = findAll(full, (n) => 'data-hist-pick-all' in n.attrs)[0];
+    assert.equal(textOf(oneByClass(full, 'hist-picked')), '3 selected');
+    assert.equal(fullAll.checked, true);
+    assert.equal(fullAll.indeterminate, false);
+  });
+
+  test('ui.historyDeleted hides no row: the rows follow the snapshot', () => {
+    const ui = Object.assign(view.defaultUi(), {
+      historyDeleted: { [histKey('/a', 'plan', 'feat/a', T_PLAN)]: true },
+    });
+    assert.equal(rowsOf(history(ui)).length, 3);
+  });
+
+  const ppRepos = [{ root: '/a', name: 'a', preplans: [
+    { slug: 'zeta', topic: 'Zeta topic', status: 'in progress', path: '.sdlc-v2/preplan/zeta.md', updatedAt: '2026-10-08T10:00:00Z' },
+  ] }];
+
+  test('the status menu names its topic in data-pp-set and its repo in data-repo', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, ppRepos, new Set());
+    const menu = oneByClass(panel, 'pp-menu');
+    assert.equal(menu.tagName, 'select');
+    assert.equal(menu.attrs['data-pp-set'], 'zeta');
+    assert.equal(menu.attrs['data-repo'], '/a');
+    assert.deepEqual(menu.children.map((o) => o.value), view.PREPLAN_STATUSES);
+  });
+
+  test('ui.preplanEdits changes no status: the menu shows the status of the snapshot', () => {
+    const ui = Object.assign(view.defaultUi(), { preplanEdits: { '/a\nzeta': 'paused' } });
+    const panel = render.preplanPanel(fakeDoc(), view, ppRepos, new Set(), ui);
+    const menu = oneByClass(panel, 'pp-menu');
+    assert.deepEqual(menu.children.filter((o) => o.selected).map((o) => o.value), ['in progress']);
+    const row = findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'tbody')[0].children[0];
+    assert.equal(oneByClass(row, 'pp-status').className, 'pp-status pp-set pp-progress');
+  });
+});
+
+describe('static files', () => {
+  test('no design-preview marker is left in the page files', () => {
+    const dir = path.join(__dirname, '../static');
+    for (const name of fs.readdirSync(dir).filter((n) => /\.(js|css|html)$/.test(n))) {
+      const text = fs.readFileSync(path.join(dir, name), 'utf8');
+      assert.doesNotMatch(text, /design preview|\(D[0-9]\)/i, name);
+    }
   });
 });
 

@@ -413,6 +413,131 @@
     return { ok: false, text: suggestion ? message + ' ' + suggestion : message };
   }
 
+  // --- Status menu and History delete ---------------------------------------
+
+  // The parts of a History row key (render.js historyKey): repo root, kind,
+  // branch and end time, joined by this separator.
+  var HISTORY_KEY_SEP = '\n';
+
+  // The key of a History row for the selection. render.js historyKey makes the same key.
+  function historyRowKey(root, run) {
+    return [root || '', run.kind || '', run.branch || '', run.endedAt || ''].join(HISTORY_KEY_SEP);
+  }
+
+  // The parts of a History row key, or null when the key has not four parts.
+  function splitHistoryKey(key) {
+    if (typeof key !== 'string') return null;
+    var parts = key.split(HISTORY_KEY_SEP);
+    if (parts.length !== 4) return null;
+    return { repo: parts[0], kind: parts[1], branch: parts[2], endedAt: parts[3] };
+  }
+
+  /**
+   * The request that sets the status of one preplan topic file. Use it as
+   * `fetch(req.url, req)`.
+   * @param {string} token the server's X-Sdlc-Token for this start
+   * @param {string} repo repo root
+   * @param {string} slug the topic slug
+   * @param {string} status one of PREPLAN_STATUSES
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token, repo, slug, or status is ''
+   */
+  function preplanStatusRequest(token, repo, slug, status) {
+    if (!token || !repo || !slug || !status) return null;
+    return guardedPost(token, '/api/preplan-status', { repo: repo, slug: slug, status: status });
+  }
+
+  /**
+   * The request that deletes History rows of one repo. Use it as
+   * `fetch(req.url, req)`.
+   * @param {string} token the server's X-Sdlc-Token for this start
+   * @param {string} repo repo root
+   * @param {Array<{kind: string, branch: string, endedAt: string}>} rows the
+   *   rows of this repo, one entry for each unique key
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token or repo is '' or rows is empty
+   */
+  function historyDeleteRequest(token, repo, rows) {
+    if (!token || !repo || !Array.isArray(rows) || rows.length === 0) return null;
+    return guardedPost(token, '/api/history-delete', {
+      repo: repo,
+      rows: rows.map(function (row) {
+        return { kind: row.kind, branch: row.branch || '', endedAt: row.endedAt };
+      }),
+    });
+  }
+
+  /**
+   * Groups selected History rows by repo.
+   * @param {Array<string>} keys the data-hist-pick values
+   * @returns {Array<{repo: string, rows: Array<{kind: string, branch: string, endedAt: string}>}>}
+   *   one entry for each repo in key order; a repeated key adds one row; a
+   *   key with no four parts adds none
+   */
+  function historyPicksByRepo(keys) {
+    var groups = [];
+    var byRepo = new Map();
+    var seen = new Set();
+    (keys || []).forEach(function (key) {
+      var parts = splitHistoryKey(key);
+      if (!parts || seen.has(key)) return;
+      seen.add(key);
+      var group = byRepo.get(parts.repo);
+      if (!group) {
+        group = { repo: parts.repo, rows: [] };
+        byRepo.set(parts.repo, group);
+        groups.push(group);
+      }
+      group.rows.push({ kind: parts.kind, branch: parts.branch, endedAt: parts.endedAt });
+    });
+    return groups;
+  }
+
+  /**
+   * The count of ship rows that lose their plan time in a delete: the
+   * planPaired ship rows whose repo, branch and planEndedAt match a selected
+   * plan row, and that are not selected themselves.
+   * @param {{repos?: Array}} snapshot
+   * @param {Array<string>} keys the data-hist-pick values of the selection
+   * @returns {number}
+   */
+  function pairedShipCount(snapshot, keys) {
+    var selected = new Set(keys || []);
+    var plans = new Set();
+    selected.forEach(function (key) {
+      var parts = splitHistoryKey(key);
+      if (parts && parts.kind === 'plan') plans.add(historyRowKey(parts.repo, parts));
+    });
+    if (plans.size === 0) return 0;
+    var count = 0;
+    ((snapshot && snapshot.repos) || []).forEach(function (repo) {
+      ((repo && repo.history) || []).forEach(function (run) {
+        if (!run || run.kind !== 'ship' || !run.planPaired || !run.planEndedAt) return;
+        // The plan row has kind 'plan' and the end time that the ship row names.
+        var planKey = historyRowKey(repo.root, { kind: 'plan', branch: run.branch, endedAt: run.planEndedAt });
+        if (plans.has(planKey) && !selected.has(historyRowKey(repo.root, run))) count++;
+      });
+    });
+    return count;
+  }
+
+  /**
+   * The question of the confirm dialog before a History delete. '\n' is a
+   * line break.
+   * @param {number} count the selected rows
+   * @param {number} paired the result of pairedShipCount
+   * @returns {string} a last line names the ship rows that lose their plan time, when paired > 0
+   */
+  function historyDeleteQuestion(count, paired) {
+    var noun = count === 1 ? '1 run' : count + ' runs';
+    var text = 'Delete ' + noun + ' from the history?\n' +
+      'This removes the rows from .sdlc-v2/history/runs.jsonl for good. The History tab and the run times lose them.';
+    if (paired > 0) {
+      text += '\n' + (paired === 1 ? '1 ship row loses its plan time.' : paired + ' ship rows lose their plan time.');
+    }
+    return text;
+  }
+
   /**
    * The result text of a clear over several repos: the freed size of the
    * requests that returned 200, then one line for each other request.
@@ -1650,6 +1775,11 @@
     deleteKeyFromDataset: deleteKeyFromDataset,
     deletePrompt: deletePrompt,
     deleteResultText: deleteResultText,
+    preplanStatusRequest: preplanStatusRequest,
+    historyDeleteRequest: historyDeleteRequest,
+    historyPicksByRepo: historyPicksByRepo,
+    pairedShipCount: pairedShipCount,
+    historyDeleteQuestion: historyDeleteQuestion,
     clearResultText: clearResultText,
     detailKey: detailKey,
     detailItem: detailItem,
