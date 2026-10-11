@@ -5344,10 +5344,15 @@ describe('render review queue tile', () => {
     Object.assign(queueOf(p), { unrouted: 0, reason: 'all-below-threshold' });
     queueOf(p).rows = queueOf(p).rows.map((r) => Object.assign(r, { status: 'below' }));
     assert.ok(lines(queueTile(p)).includes('All 5 findings below threshold'));
+    stepOf(p, 'review').detail.reviewTotals.found = 1;
+    assert.ok(lines(queueTile(p)).includes('All 1 finding below threshold'));
   });
 
   test('unrouted above 0 shows the findings not routed yet; 0 shows no line', () => {
-    assert.ok(lines(queueTile(shipCopy())).includes('1 findings not routed yet'));
+    assert.ok(lines(queueTile(shipCopy())).includes('1 finding not routed yet'));
+    const many = shipCopy();
+    queueOf(many).unrouted = 3;
+    assert.ok(lines(queueTile(many)).includes('3 findings not routed yet'));
     const p = shipCopy();
     queueOf(p).unrouted = 0;
     assert.equal(lines(queueTile(p)).filter((s) => /not routed/.test(s)).length, 0);

@@ -598,6 +598,28 @@ func TestBrowserE2E(t *testing.T) {
 		return err == nil && strings.Contains(string(b), "**Status:** "+paused)
 	})
 
+	// Step 1b: a status that the server refuses. The dialog shows the error,
+	// the file keeps its status, and the menu goes back to that status.
+	t.Log("step 1b: refused preplan status")
+	page.listenClose("confirm-dialog")
+	browserMust[bool](page, "set a status that the server refuses", `(function () {
+		var menu = document.querySelector(`+browserJSON(menu)+`);
+		var option = document.createElement('option');
+		option.value = 'bogus';
+		option.textContent = 'bogus';
+		menu.appendChild(option);
+		menu.value = 'bogus';
+		menu.dispatchEvent(new Event('change', { bubbles: true }));
+		return menu.value === 'bogus';
+	})()`)
+	page.wait("the status error in the dialog", `document.getElementById('confirm-dialog').open && document.getElementById('confirm-text').textContent.indexOf('is not a preplan status') !== -1`)
+	page.click("Close", "#confirm-cancel")
+	page.waitClosed("confirm-dialog")
+	page.wait("the menu to show the status of the file again", `document.querySelector(`+browserJSON(menu)+`).value === `+browserJSON(paused))
+	if b, err := os.ReadFile(topic); err != nil || !strings.Contains(string(b), "**Status:** "+paused) || strings.Contains(string(b), "bogus") {
+		t.Errorf("topic file after the refused status = %q (err %v); want the status %q", b, err, paused)
+	}
+
 	// Step 2: History.
 	t.Log("step 2: history delete")
 	page.click("the History tab", "#tab-history")

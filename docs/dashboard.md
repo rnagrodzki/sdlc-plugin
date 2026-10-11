@@ -67,8 +67,9 @@ For each registered repo, the page shows:
   `completed` or `failed` pipeline drops off the page 24 hours after its
   last update. Ship and execute pipelines also carry the worktree path they
   ran in. Some read problems of a repo are warnings: an unread preplan
-  folder or topic file, more than 100 topic files, and an unread
-  `runs.jsonl` or execute state for plan times. A warning shows before the
+  folder or topic file, more than 100 topic files, an unread
+  `runs.jsonl` or execute state for plan times, and an unread attention
+  folder. A warning shows before the
   pipeline blocks as the line "Warning for `<repo>`: `<text>`", and the
   archive of the runs of the repo still works. Any other read problem of a
   repo is `repos[].error`, which blocks the archive of every run of the repo
@@ -843,7 +844,7 @@ collector reads the data, and the tool action that writes it.
 | `repos[].history[].planPaired`, `.planEndedAt` | A ship row with no valid stored plan time gets the plan time of the newest plan row of its branch that ended before the ship and after the previous ship of that branch. The plan row needs a start that parses, a `duration_ms` above 0, and a start that is not after the ship end. The ship row then gets `planStartedAt`, `planDurationMs`, a `totalMs` that counts from the plan start, `planPaired` set to `true`, and `planEndedAt`, the `ts` of that plan row. Both keys are absent otherwise. The pairing reads every line of `runs.jsonl`, so a plan row outside the newest 50 rows still pairs with a ship row inside them. | Collector, not stored |
 | `repos[].sessions[].commandGroups` | One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
 | `repos[].deferred[]` | The open items of `.sdlc-v2/history/deferred.json`, high priority first, then oldest first. Each item has `id`, `priority`, `description`, `created`, `source`, `severity`, `file`, `line`, and `reason`. A value that the record lacks is `""`, or `0` for `line`, never `null`. | ship_state `defer` and `deferred_add`; execute_state `issue-draft` |
-| `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times. `[]` when none, never `null`. | Collector, derived |
+| `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times, an unread attention folder (`attention folder unread: ...`). `[]` when none, never `null`. | Collector, derived |
 | `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, and `updatedAt` (the change time of the file). The collector reads the first 4 KiB of each file. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `[]` when none, never `null`. | plan_support `preplan_context` (skeleton), then the preplan skill |
 | `pipelines[].planStartedAt` | Ship blocks only: `linkedPlan.startedAt` of the ship state, else the `started_at` of the joined plan row (see [How runs join a ship block](#how-runs-join-a-ship-block)). Absent when no plan is linked. | ship_state `complete-step` of `execute` (`linkedPlan`); plan_mark `done` (the plan row) |
 

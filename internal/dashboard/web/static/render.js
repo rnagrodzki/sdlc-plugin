@@ -1128,11 +1128,11 @@
     append(out, [line, bar]);
     var queue = detail.reviewQueue;
     if (queue.unrouted > 0) {
-      out.appendChild(el(doc, 'p', 'generic-line', queue.unrouted + ' findings not routed yet'));
+      out.appendChild(el(doc, 'p', 'generic-line', queue.unrouted + (queue.unrouted === 1 ? ' finding' : ' findings') + ' not routed yet'));
     }
     if (queue.reason === 'all-below-threshold') {
       var found = (detail.reviewTotals && detail.reviewTotals.found) || rows.length;
-      out.appendChild(el(doc, 'p', 'generic-line', 'All ' + found + ' findings below threshold'));
+      out.appendChild(el(doc, 'p', 'generic-line', 'All ' + found + (found === 1 ? ' finding' : ' findings') + ' below threshold'));
     }
 
     var id = (pipeline && pipeline.id) || '';
