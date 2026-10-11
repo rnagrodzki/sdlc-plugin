@@ -32,7 +32,9 @@ const dashboardExecuteRefPrefix = "execute:"
 // does not decode gives no plan step. A data.healing.fixProgress list with a
 // valid record gives the received-review station
 // (dashboardAttachReceivedReview). A fixProgress value that is not a list, or
-// a list with records and none valid, adds a state issue.
+// a list with records and none valid, adds a state issue. A review step with
+// review totals also gets detail.reviewQueue from dashboardReviewQueue, built
+// after the received-review station, so the fix records are in it.
 func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	data := st.Data
 	p.SessionID = dashboardStr(data["sessionId"])
@@ -82,6 +84,14 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	rr, problem := dashboardReceivedReviewStep(healing, runCompleted)
 	if rr != nil {
 		dashboardAttachReceivedReview(p, rr)
+	}
+	// The queue needs the review ledger: no ledger, no ReviewTotals, no queue.
+	if review := dashboardStepNamed(p, dashboardShipStepReview); review != nil && review.Detail != nil && review.Detail.ReviewTotals != nil {
+		var fixes []DashboardFix
+		if rr != nil && rr.Detail != nil {
+			fixes = rr.Detail.Fixes
+		}
+		review.Detail.ReviewQueue = dashboardReviewQueue(data, review.Detail.ReviewTotals, fixes)
 	}
 	if problem != "" {
 		p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "medium", Text: problem})
@@ -460,7 +470,9 @@ func dashboardNestExecute(ship *DashboardPipeline, exec DashboardPipeline) {
 // rows (FindingItems): the review issues whose Ref is the dimension name, in
 // issue order, the same rows the standalone review lists; a dimension with no
 // finding gets an empty, non-nil list. The plan totals go to the step
-// reviewPlan; with no planned dimension it stays absent. The review issues go
+// reviewPlan; with no planned dimension it stays absent. A step that already
+// has a reviewQueue passes the dimensions to dashboardQueueAddFindings, which
+// adds the open rows, and the dimension and text of each row. The review issues go
 // to the ship issues with their Ref unchanged. A review with no rows gives an
 // empty, non-nil dimension list. The review ledger name goes to the ship join
 // members, so an archive of the ship finds the nested run.
@@ -477,6 +489,9 @@ func dashboardNestReview(ship *DashboardPipeline, review DashboardPipeline) {
 		}
 		step.Detail.Dimensions = dims
 		step.Detail.ReviewPlan = review.join.reviewPlan
+		if step.Detail.ReviewQueue != nil {
+			dashboardQueueAddFindings(step.Detail.ReviewQueue, dims)
+		}
 	}
 	ship.Issues = append(ship.Issues, review.Issues...)
 }
