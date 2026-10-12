@@ -101,6 +101,10 @@ When no PR number is available at all, locate feedback from one of:
 - Findings already in conversation context (e.g. passed in from `/review`)
 - User paste
 
+A dispatch-prompt finding can carry a `**Deferred-id:** <id>` line under its `**File:**` line.
+The line means the finding is already a deferred item with that id. Keep the id with the
+finding through every later step.
+
 Parse each comment into a structured list:
 
 ```
@@ -151,9 +155,10 @@ it the Step 4 disposition `needs-direction` and record it now with Step 4's
 `ship_state({action:"defer", ...})` call (or its `deferred_add` fallback), using
 `reason: "needs-direction"` and `description: "unclear: <what is ambiguous>"` — unlike Step 4's
 own needs-direction rule, this description does not need two candidate approaches: the item was
-never evaluated far enough to have any, so describing the ambiguity itself is enough. Then
-exclude the item from Steps 3-11 entirely: no verification, no evaluation, no fix attempt, and
-no second record in Step 11 (this record is final — the item never reaches Step 11's unfixed
+never evaluated far enough to have any, so describing the ambiguity itself is enough. An unclear
+item with a `**Deferred-id:**` line is already deferred: make no `defer` call for it, and it
+stays deferred as that id. Then exclude the item from Steps 3-11 entirely: no verification, no
+evaluation, no fix attempt, and no second record in Step 11 (this record is final — the item never reaches Step 11's unfixed
 pass). Continue with the remaining, clear items.
 
 Only proceed to Step 3, for whichever items remain, after this branch has been applied.
@@ -207,7 +212,9 @@ The `reason` column and the disposition are different things, on purpose: the di
 
 **The ≥2-approaches rule.** `needs-direction` is valid only when the record names **two or more** candidate approaches plus a one-line statement of the trade-off between them. One obvious approach is not a direction question: make the fix instead. Under `--auto`, a choice between viable approaches is the only judgment that may leave a finding unfixed. Two branches record `needs-direction` without approaches, because no approach was ever weighed: a Step 2 unclear item (`description: "unclear: ..."`) and a Step 11 fix that failed its own verification (`description: "fix failed: ..."`). Their descriptions state what happened instead of a trade-off.
 
-**Every finding that ends unfixed must be recorded — in either mode.** Do not make the call here.
+**Every finding that ends unfixed must be recorded — in either mode.** A finding with a
+`**Deferred-id:**` line (Step 1b) is the one case that needs no new record: it is already a
+deferred item, so it gets no `defer` call in any step. Do not make the call here.
 Verdicts can still change in Step 6 and Step 11, and `deferred.json` is append-only (this skill
 never calls `deferred_resolve`), so a record written now for a finding that is fixed later stays
 `open` forever and is counted twice in the Step 12 ledger. Step 11 makes the call, once verdicts
@@ -481,7 +488,8 @@ Do NOT batch changes across items.
 `reason: "needs-direction"` and `description: "fix failed:
 <error, truncated to 200 chars>"`, and let the recording pass at the end of this step make the
 one `ship_state({action:"defer", ...})` call for it (or the `deferred_add` fallback), exactly
-like every other unfixed finding — a second call here would double-record it. Never retry a
+like every other unfixed finding — a second call here would double-record it. A finding with a
+`**Deferred-id:**` line gets no `defer` call there: it stays deferred as that id. Never retry a
 different approach unattended; leave the decision to a human. In manual mode, also tell the user
 which fix failed and why, in the Step 12 summary; the reason and the record are the same as
 under `--auto`.
@@ -514,22 +522,55 @@ ship_state({action:"healing_record", step:"received-review", detail:{
   file:     "<path>",
   line:     <line number, when known>,
   title:    "<one line>",
+  deferredId: "<the finding's **Deferred-id:** value — only when the finding has that line>",
 }})
 ```
 `origin` has the same meaning as in the `fix-progress` calls above. On failure, print one
 warning (`WARNING: could not record healing for <file>:<line> — <error>`) and continue; do not
-retry, and never let it block the rest of this step.
+retry (the one retry that the next two paragraphs allow for a finding with a `**Deferred-id:**`
+line is the only exception), and never let it block the rest of this step.
 
-For each finding still **unfixed**, make the `ship_state({action:"defer", ...})` call defined
-in Step 4, once per finding, and handle a `WARNING: could not persist` narration exactly as
-Step 4 says (one `deferred_add` fallback; UNACCOUNTED only if that fails too).
+A finding with a `**Deferred-id:** <id>` line is already a deferred item: it was recorded
+before this run. Pass that `<id>` as `deferredId` on its `kind:"fixed"` call. Leave
+`deferredId` out for every other finding. On a live `/ship` run, the call also resolves the
+deferred item `<id>` and marks the item as fixed in this run. Its `next` line reads
+`deferred item <id> resolved. Continue the fix pass.` A repeat call for an item that is already
+resolved is not an error: its `next` line reads
+`deferred item <id> was already resolved. Continue the fix pass.` Either `next` line never
+changes the order of the Step 11 work. With no live `/ship` run, the call records nothing and
+resolves nothing.
+
+When the call fails for such a finding, read the code in the heading of the error
+(`error (infra)`, `error (data)` or `error (domain)`):
+- `infra` (a `deferred.json` read or write failure, or a ship state write failure): retry the
+  same call once, with the same detail. A retry is safe. The tool resolves the `deferred.json`
+  row before it writes the ship state, so a failed state write leaves the row resolved with
+  `fixedInRun` unset, and the retry finds the row resolved and sets the flag. When the retry
+  succeeds, the finding is fixed and nothing else changes.
+- `data` (a damaged ship state, or a `deferred.json` that needs a repair by hand) and `domain`
+  (a rejected input, such as an id that is missing from `deferredFindings` or from
+  `deferred.json`): do not retry.
+
+The Suggestion of the error may say to retry. For a `data` or `domain` error, and for an `infra`
+error after its one retry, this rule wins over that wording: do not retry again. Add the error's
+Suggestion to the `WARNING` line above and count the finding as **unfixed**: the unfixed rule
+below applies to it.
+
+For each finding still **unfixed** and without a `**Deferred-id:**` line, make the
+`ship_state({action:"defer", ...})` call defined in Step 4, once per finding, and handle a
+`WARNING: could not persist` narration exactly as Step 4 says (one `deferred_add` fallback;
+UNACCOUNTED only if that fails too). A finding with a `**Deferred-id:**` line is already
+deferred: make no `defer` call, and say "stays deferred as <id>" in the Step 12 summary (it has
+no reply body; Step 12 lists it below the ledger block). For such a finding, its deferral counts
+as the successful `defer` in the `fix-progress` rule below.
 Then make the `fix-progress` call with `status:"deferred"` only when all three are true:
 - The finding got a `queued` call.
 - Its fix did not fail. A finding with `status:"failed"` keeps that status and gets no `deferred` call.
 - Its record succeeded: `defer` with no persist warning, or the `deferred_add` fallback.
 
 A finding with no `queued` call gets no `fix-progress` call with `status:"deferred"`. It still
-gets its `defer` record. Track per finding whether its record (`defer` or `deferred_add`)
+gets its `defer` record, except a finding with a `**Deferred-id:**` line, which keeps its
+existing deferred item. Track per finding whether its record (`defer` or `deferred_add`)
 succeeded — Step 11.6, Step 12's ledger and Step 12's reply bodies all read that result. An unfixed finding with no record is the exact
 failure this step exists to prevent.
 
@@ -657,7 +698,8 @@ Omit the last line when P is 0.
 Then one ledger line that accounts for **every** finding this run touched — the total from
 Step 4 plus any Step 2 `--auto` unclear items, the count fixed in Step 11, and the deferred
 records grouped by the `reason` each was written with. The only reasons this skill writes are `wont-fix | disagree | needs-direction`;
-`below-threshold` comes from `/ship`'s own routing and never passes through here:
+`below-threshold` comes from `/ship`'s own routing. It reaches this line only through a finding
+that stays deferred as its `**Deferred-id:**` (see below):
 
 ```
 Review findings: 14 total = 9 fixed + 5 deferred
@@ -675,10 +717,15 @@ swallowing it:
 Review findings: 14 total = 9 fixed + 3 deferred — 2 UNACCOUNTED. Names: <file:line>, <file:line>.
 ```
 
-A finding counts as **deferred** only when a Step 11 record actually reached
-`.sdlc-v2/history/deferred.json` — either `defer` with no persist warning, or the `deferred_add`
-fallback returning `{ok, id}`. A finding where both failed counts as UNACCOUNTED and is named
+Except for the Deferred-id case below, a finding counts as **deferred** only when a Step 11
+record actually reached `.sdlc-v2/history/deferred.json` — either `defer` with no persist
+warning, or the `deferred_add` fallback returning `{ok, id}`. A finding where both failed counts as UNACCOUNTED and is named
 here. Never adjust the total to make the line balance.
+
+A finding with a `**Deferred-id:**` line that stays deferred also counts as **deferred**: its
+existing deferred item is its record, and the ledger groups it under `below-threshold`. For each
+such finding, add one `- ` line below the block: `<file:line> stays deferred as <id>`. A finding
+with that line that was fixed, and whose `healing_record` call succeeded, counts as fixed.
 
 Step 11.6 notes (harden dispatch skipped, failed, suppressed clusters, singleton `disagree`
 findings that formed no cluster, `Auto-accepted` lines) are added below this block as extra
@@ -795,7 +842,8 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 - Express gratitude — let the code changes speak
 - Display output from internal critique steps (Steps 5-6, 8-9) to the user
 - End a finding under `--auto` with `agree-won't-fix`, `disagree`, or "cannot verify" — under `--auto` each one becomes `needs-direction` and is recorded; only `agree-will-fix` ends a finding
-- Leave any unfixed finding without a durable record at the end of Step 11 — `ship_state({action:"defer", ...})`, or the `deferred_add` fallback when that one did not persist — in either mode
+- Leave any unfixed finding without a durable record at the end of Step 11 — `ship_state({action:"defer", ...})`, or the `deferred_add` fallback when that one did not persist — in either mode (a finding with a `**Deferred-id:**` line already has its record)
+- Make a `defer` call for a finding with a `**Deferred-id:**` line — it is already deferred, and a second call adds a second deferred item
 - Write a defer record before Step 11 — an earlier verdict can still change, and `deferred.json` is append-only (the one exception: Step 2's `--auto` unclear-item record, which is final the moment it's written, since that item leaves the run there and never reaches Step 11)
 - Claim in a PR reply that a finding is tracked as a deferred follow-up when its record failed
 - Mark a finding `needs-direction` when only one approach exists — that is a fix, not a question (the two exceptions record what happened instead: a Step 2 `--auto` unclear item, and a Step 11 fix that failed its own verification)
@@ -818,6 +866,7 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 | Comment references file/line that no longer exists | Note the discrepancy; verify against current HEAD diff | No — expected with rebased PRs |
 | Cannot verify reviewer's claim (no runtime data/external context) | State limitation explicitly; ask user for direction, or under `--auto` give it the `needs-direction` verdict (Step 4) and record it in Step 11 | No — expected limitation |
 | `ship_state({action:"defer"})` narration contains `WARNING: could not persist this item` | The finding was not written to `deferred.json`. Do not retry `defer`; call the `deferred_add` fallback from Step 4 once. Only if that also fails, name the finding as UNACCOUNTED in the Step 12 ledger and drop the tracking sentence from its reply | No — best-effort write, disclosed |
+| `ship_state({action:"healing_record"})` with `deferredId` returns an error (the id is missing from `deferredFindings` or from `deferred.json`, or a store or state file is damaged or not writable) | For an `infra` error (a `deferred.json` read or write failure, or a ship state write failure), retry the same call once: the tool resolves the row before it writes the state, so a retry is safe. If the retry succeeds, the finding is fixed. For a `data` or `domain` error, and when the retry fails, print the error and its Suggestion in the Step 11 warning and do not retry again; this rule wins over a Suggestion that says to retry. Count the finding as unfixed: make no `defer` call, and say "stays deferred as <id>" in the Step 12 summary and ledger | No — state issue, disclosed in the warning |
 | `gh api` 5xx or unexpected server error when posting reply | Retry once; if still failing, show the drafted response for manual posting | Yes if second attempt also fails |
 | `links_validate` reports a violation | Surface the violation list; do not post; do not retry without user input | No — expected hard gate behavior |
 

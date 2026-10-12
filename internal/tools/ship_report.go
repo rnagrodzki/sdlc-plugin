@@ -267,7 +267,7 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 		out.Issues = append(out.Issues, raw...)
 	}
 	if raw, ok := data["deferredFindings"].([]any); ok {
-		out.Deferred = append(out.Deferred, raw...)
+		out.Deferred = append(out.Deferred, openDeferred(raw)...)
 	}
 	if step := shipFindStepEntry(data, "harden"); step != nil && step["status"] == "completed" {
 		out.HardenCommit, _ = step["result"].(string)

@@ -289,7 +289,7 @@ For each candidate entry, in order:
    ```
    Agent({
      subagent_type: "sdlc:harden-orchestrator",
-     model: "haiku",
+     model: "sonnet",
      run_in_background: false,
      prompt: "MANIFEST_FILE: <manifestPath>\nPROJECT_ROOT: <contentRoot>",
    }) → RESULT
@@ -428,7 +428,7 @@ below to read directly from `manifestPath`.
 Use the `Agent` tool with:
 
 - `subagent_type`: `sdlc:harden-orchestrator`
-- `model`: `haiku`
+- `model`: `sonnet`
 - `run_in_background`: `false` (the next step waits on the result)
 - `prompt` (exactly two lines, no other content):
 

@@ -1603,8 +1603,8 @@ func buildExecutionReport(root, branch string, st *state.State, format, runID st
 	// fields unset rather than failing this read-only report.
 	shipSt, _ := state.Find(root, "ship", branch)
 	if shipSt != nil {
-		if raw, ok := shipSt.Data["deferredFindings"].([]any); ok && len(raw) > 0 {
-			out.DeferredFindings = raw
+		if raw, ok := shipSt.Data["deferredFindings"].([]any); ok && len(openDeferred(raw)) > 0 {
+			out.DeferredFindings = openDeferred(raw)
 		}
 		out.StepTimings = extractStepTimings(shipSt.Data)
 	}

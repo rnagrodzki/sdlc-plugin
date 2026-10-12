@@ -2594,6 +2594,234 @@ func TestShipBuildReportData_ReviewLedger(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// deferredFindings entries with fixedInRun: the ledger, the report count and
+// the report lists skip them
+// ---------------------------------------------------------------------------
+
+// shipFixedInRunFindings returns three data.deferredFindings entries for the
+// skip-rule tests: the first has fixedInRun true, the second has fixedInRun
+// false and the third has no fixedInRun key.
+func shipFixedInRunFindings() []any {
+	return []any{
+		map[string]any{"severity": "low", "file": "a.go", "line": float64(1), "title": "fixed by the fix pass", "reason": "below-threshold", "deferredId": "d-1", "fixedInRun": true},
+		map[string]any{"severity": "medium", "file": "b.go", "line": float64(2), "title": "open with flag false", "reason": "wont-fix", "deferredId": "d-2", "fixedInRun": false},
+		map[string]any{"severity": "low", "file": "c.go", "line": float64(3), "title": "open without flag", "reason": "needs-direction", "deferredId": "d-3"},
+	}
+}
+
+// shipFixedInRunHealing returns a data.healing map for a review of three
+// findings, where the fix pass fixed the first of them.
+func shipFixedInRunHealing() map[string]any {
+	return map[string]any{
+		"reviewTotal": map[string]any{"total": float64(3), "dimensions": float64(2)},
+		"fixed": []any{
+			map[string]any{"origin": "local-review", "severity": "low", "file": "a.go", "line": float64(1), "title": "fixed by the fix pass", "deferredId": "d-1"},
+		},
+	}
+}
+
+// shipFindingTitles returns the title of each object in a deferredFindings
+// list, in order.
+func shipFindingTitles(list []any) []string {
+	titles := make([]string, 0, len(list))
+	for _, e := range list {
+		m, _ := e.(map[string]any)
+		title, _ := m["title"].(string)
+		titles = append(titles, title)
+	}
+	return titles
+}
+
+// TestDeferredFixedInRun pins the skip rule: only a boolean true counts. A
+// false, a missing key, a nil map and a non-boolean value all mean "open".
+func TestDeferredFixedInRun(t *testing.T) {
+	tests := []struct {
+		name string
+		m    map[string]any
+		want bool
+	}{
+		{"true", map[string]any{"fixedInRun": true}, true},
+		{"false", map[string]any{"fixedInRun": false}, false},
+		{"absent", map[string]any{"title": "t"}, false},
+		{"nil map", nil, false},
+		{"string true", map[string]any{"fixedInRun": "true"}, false},
+		{"null", map[string]any{"fixedInRun": nil}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deferredFixedInRun(tt.m); got != tt.want {
+				t.Errorf("deferredFixedInRun(%v) = %v, want %v", tt.m, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestOpenDeferred pins the filter that the report count and the report lists
+// share: it drops an entry with fixedInRun true, keeps every other entry (an
+// entry that is not an object included) in its order, and never returns nil.
+func TestOpenDeferred(t *testing.T) {
+	t.Run("true, false and absent", func(t *testing.T) {
+		got := openDeferred(shipFixedInRunFindings())
+		want := []string{"open with flag false", "open without flag"}
+		if titles := shipFindingTitles(got); fmt.Sprint(titles) != fmt.Sprint(want) {
+			t.Errorf("titles = %v, want %v", titles, want)
+		}
+	})
+	t.Run("non-object entry is kept", func(t *testing.T) {
+		raw := []any{"stray", map[string]any{"title": "x", "fixedInRun": true}, map[string]any{"title": "y"}}
+		got := openDeferred(raw)
+		if len(got) != 2 || got[0] != "stray" || shipFindingTitles(got[1:])[0] != "y" {
+			t.Errorf("openDeferred = %v, want the stray entry and y", got)
+		}
+	})
+	t.Run("nil and all fixed give an empty non-nil list", func(t *testing.T) {
+		for name, raw := range map[string][]any{
+			"nil":       nil,
+			"empty":     {},
+			"all fixed": {map[string]any{"title": "x", "fixedInRun": true}},
+		} {
+			got := openDeferred(raw)
+			if got == nil || len(got) != 0 {
+				t.Errorf("%s: openDeferred = %#v, want an empty non-nil list", name, got)
+			}
+		}
+	})
+}
+
+// TestShipBuildReportData_SkipsFixedInRun pins the ledger and the report
+// count: a finding that the fix pass fixed is counted once, under fixed, and
+// not again under deferred.
+func TestShipBuildReportData_SkipsFixedInRun(t *testing.T) {
+	now := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+
+	t.Run("1 of 3 fixed gives fixed 1, deferred 2, unaccounted 0", func(t *testing.T) {
+		rd := shipBuildReportData(map[string]any{
+			"healing":          shipFixedInRunHealing(),
+			"deferredFindings": shipFixedInRunFindings(),
+		}, now)
+		want := &ShipReviewLedger{
+			Total: 3, Fixed: 1,
+			DeferredByReason: map[string]int{"wont-fix": 1, "needs-direction": 1},
+			Unaccounted:      0,
+		}
+		if rd.ReviewLedger == nil || rd.ReviewLedger.Total != want.Total || rd.ReviewLedger.Fixed != want.Fixed ||
+			rd.ReviewLedger.Unaccounted != want.Unaccounted || fmt.Sprint(rd.ReviewLedger.DeferredByReason) != fmt.Sprint(want.DeferredByReason) {
+			t.Errorf("ReviewLedger = %+v, want %+v", rd.ReviewLedger, want)
+		}
+		if rd.DeferredFindings != 2 {
+			t.Errorf("DeferredFindings = %d, want 2", rd.DeferredFindings)
+		}
+	})
+
+	t.Run("every entry fixed leaves nothing deferred", func(t *testing.T) {
+		rd := shipBuildReportData(map[string]any{
+			"healing": shipFixedInRunHealing(),
+			"deferredFindings": []any{
+				map[string]any{"title": "a", "reason": "below-threshold", "fixedInRun": true},
+				map[string]any{"title": "b", "reason": "below-threshold", "fixedInRun": true},
+				map[string]any{"title": "c", "reason": "below-threshold", "fixedInRun": true},
+			},
+		}, now)
+		if rd.DeferredFindings != 0 {
+			t.Errorf("DeferredFindings = %d, want 0", rd.DeferredFindings)
+		}
+		if rd.ReviewLedger == nil || len(rd.ReviewLedger.DeferredByReason) != 0 || rd.ReviewLedger.Unaccounted != 2 {
+			t.Errorf("ReviewLedger = %+v, want no deferred reason and unaccounted 2 (3 total - 1 fixed record)", rd.ReviewLedger)
+		}
+	})
+
+	t.Run("no fixedInRun anywhere counts every entry", func(t *testing.T) {
+		rd := shipBuildReportData(map[string]any{
+			"healing": map[string]any{"reviewTotal": map[string]any{"total": float64(2)}},
+			"deferredFindings": []any{
+				map[string]any{"title": "a", "reason": "wont-fix"},
+				map[string]any{"title": "b", "reason": "wont-fix", "fixedInRun": false},
+			},
+		}, now)
+		if rd.DeferredFindings != 2 || rd.ReviewLedger == nil || rd.ReviewLedger.DeferredByReason["wont-fix"] != 2 || rd.ReviewLedger.Unaccounted != 0 {
+			t.Errorf("DeferredFindings = %d, ReviewLedger = %+v, want 2 and wont-fix 2", rd.DeferredFindings, rd.ReviewLedger)
+		}
+	})
+}
+
+// TestShipStateReport_DeferredSkipsFixedInRun pins the ship report: its
+// Deferred list, its Display and its ledger row leave out the entry with
+// fixedInRun true.
+func TestShipStateReport_DeferredSkipsFixedInRun(t *testing.T) {
+	root := shipReportRoot(t)
+	createShipReportState(t, root, map[string]any{
+		"healing":          shipFixedInRunHealing(),
+		"deferredFindings": shipFixedInRunFindings(),
+	})
+
+	out := runShipReport(t, root, nil)
+	want := []string{"open with flag false", "open without flag"}
+	if titles := shipFindingTitles(out.Deferred); fmt.Sprint(titles) != fmt.Sprint(want) {
+		t.Errorf("Deferred titles = %v, want %v", titles, want)
+	}
+	_, afterDeferred, _ := strings.Cut(out.Display, "## Deferred\n")
+	deferredSection, _, _ := strings.Cut(afterDeferred, "\n## ")
+	if strings.Contains(deferredSection, "fixed by the fix pass") || !strings.Contains(deferredSection, "open with flag false") || !strings.Contains(deferredSection, "open without flag") {
+		t.Errorf("Deferred section = %q, want the two open findings and not the fixed one", deferredSection)
+	}
+	for _, line := range []string{"total 3 · fixed 1 · deferred 2 · unaccounted 0", "| Deferred | 2 |"} {
+		if !strings.Contains(out.Display, line) {
+			t.Errorf("Display missing %q:\n%s", line, out.Display)
+		}
+	}
+	if out.ReviewLedger == nil || out.ReviewLedger.Unaccounted != 0 {
+		t.Errorf("ReviewLedger = %+v, want unaccounted 0", out.ReviewLedger)
+	}
+
+	t.Run("all fixed gives an empty list", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, map[string]any{
+			"deferredFindings": []any{map[string]any{"title": "only", "fixedInRun": true}},
+		})
+		out := runShipReport(t, root, nil)
+		if len(out.Deferred) != 0 {
+			t.Errorf("Deferred = %#v, want an empty list", out.Deferred)
+		}
+		if !strings.Contains(out.Display, "_No findings deferred._") {
+			t.Errorf("Display missing the no-findings line:\n%s", out.Display)
+		}
+	})
+}
+
+// TestExecState_Report_DeferredFindingsSkipFixedInRun pins the execute report:
+// the DeferredFindings list that it reads from the ship state leaves out the
+// entry with fixedInRun true, and is empty when every entry is fixed.
+func TestExecState_Report_DeferredFindingsSkipFixedInRun(t *testing.T) {
+	const branch = "feat/report-fixed"
+	run := func(t *testing.T, findings []any) ExecutionReportOut {
+		t.Helper()
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		createExecState(t, root, branch, map[string]any{"branch": branch})
+		createShipState(t, root, branch, map[string]any{"branch": branch, "deferredFindings": findings})
+		result, err := executeState(root, root, ExecuteStateIn{Action: "report", Branch: branch}, fixedClock(testNow))
+		if err != nil {
+			t.Fatalf("report: %v", err)
+		}
+		return result.(ExecutionReportOut)
+	}
+
+	t.Run("true, false and absent", func(t *testing.T) {
+		out := run(t, shipFixedInRunFindings())
+		want := []string{"open with flag false", "open without flag"}
+		if titles := shipFindingTitles(out.DeferredFindings); fmt.Sprint(titles) != fmt.Sprint(want) {
+			t.Errorf("DeferredFindings titles = %v, want %v", titles, want)
+		}
+	})
+	t.Run("all fixed leaves the list empty", func(t *testing.T) {
+		out := run(t, []any{map[string]any{"title": "only", "fixedInRun": true}})
+		if len(out.DeferredFindings) != 0 {
+			t.Errorf("DeferredFindings = %v, want an empty list", out.DeferredFindings)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
 // ship_prepare: openspec change from the plan, and materialize
 //
 // These reuse execute_state_test.go's materialize fixtures

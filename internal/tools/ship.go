@@ -1437,9 +1437,10 @@ type ShipReportData struct {
 // ShipReviewLedger is the review-finding account built from data.healing
 // and data.deferredFindings. Fixed counts only data.healing.fixed records
 // with origin "local-review", because PR-comment fixes are not part of the
-// review's total. Deferred counts every data.deferredFindings entry, grouped
-// by reason. Unaccounted is Total - Fixed - deferred and is never clamped:
-// a negative value is reported as is, since it means records disagree.
+// review's total. Deferred counts every data.deferredFindings entry that
+// deferredFixedInRun does not skip, grouped by reason. Unaccounted is
+// Total - Fixed - deferred and is never clamped: a negative value is
+// reported as is, since it means records disagree.
 type ShipReviewLedger struct {
 	Total            int            `json:"total"`
 	Fixed            int            `json:"fixed"`
@@ -1449,6 +1450,33 @@ type ShipReviewLedger struct {
 
 // shipReviewLedgerNote explains a null reviewLedger in reportData.
 const shipReviewLedgerNote = "review did not run or its total was not recorded"
+
+// deferredFixedInRun reports whether a data.deferredFindings entry carries
+// fixedInRun:true, which healing_record sets when the fix pass fixed the
+// finding. The fix is counted under data.healing.fixed, so the review ledger,
+// the report count, the ship report list and the execute report list skip
+// such an entry (through this function and openDeferred). The read response
+// array and the dashboard review queue do not use it. A missing or non-bool
+// fixedInRun is false.
+func deferredFixedInRun(m map[string]any) bool {
+	fixed, _ := m["fixedInRun"].(bool)
+	return fixed
+}
+
+// openDeferred returns the entries of a data.deferredFindings list that
+// deferredFixedInRun does not skip, in their original order. An entry that is
+// not an object is kept, because only an object can carry fixedInRun. The
+// result is never nil.
+func openDeferred(raw []any) []any {
+	open := make([]any, 0, len(raw))
+	for _, entry := range raw {
+		if m, ok := entry.(map[string]any); ok && deferredFixedInRun(m) {
+			continue
+		}
+		open = append(open, entry)
+	}
+	return open
+}
 
 // shipBuildReviewLedger computes the review ledger from a ship state's Data
 // map. It returns nil when data.healing.reviewTotal holds no integer total.
@@ -1473,6 +1501,9 @@ func shipBuildReviewLedger(healing map[string]any, deferredFindings []any) *Ship
 		m, ok := entry.(map[string]any)
 		if !ok {
 			continue
+		}
+		if deferredFixedInRun(m) {
+			continue // counted under fixed by its healing_record
 		}
 		reason, _ := m["reason"].(string)
 		if reason == "" {
@@ -1583,7 +1614,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 		StepsFailed:      failed,
 		Duration:         duration,
 		Decisions:        decisions,
-		DeferredFindings: len(deferredFindings),
+		DeferredFindings: len(openDeferred(deferredFindings)),
 		BinaryVersion:    binaryVersion,
 		ReviewLedger:     ledger,
 		ReviewLedgerNote: ledgerNote,

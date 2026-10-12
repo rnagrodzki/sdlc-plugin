@@ -51,6 +51,22 @@ func hcFindingReason(file, severity, title, body, verdict, reason string) map[st
 	return m
 }
 
+// hcFindingWith builds a valid detail.findings entry for a.go with one extra
+// key set to value, for tests that feed one field a value of the wrong type.
+func hcFindingWith(key string, value any) map[string]any {
+	m := hcFinding("a.go", "high", "t", "b", "agree-will-fix")
+	m[key] = value
+	return m
+}
+
+// hcFindingDeferred builds one detail.findings entry with a reason and the
+// id of the deferred row the finding is stored in.
+func hcFindingDeferred(file, severity, title, body, verdict, reason, deferredID string) map[string]any {
+	m := hcFindingReason(file, severity, title, body, verdict, reason)
+	m["deferredId"] = deferredID
+	return m
+}
+
 // hardenClustersCall runs one harden_clusters call and returns its typed
 // output.
 func hardenClustersCall(t *testing.T, dir, branch string, findings []any) (HardenClustersOut, error) {
@@ -103,35 +119,160 @@ func TestShipStateHardenClusters_GroupsByFile(t *testing.T) {
 	}
 }
 
-func TestShipStateHardenClusters_BelowThresholdIgnoredEntirely(t *testing.T) {
+// TestShipStateHardenClusters_BelowThresholdFixNow checks that a file with
+// only a below-threshold finding forms no cluster, that the finding is
+// reported in fixNow, and that the same finding joins the cluster of its
+// file when the file has another finding that is not below-threshold.
+func TestShipStateHardenClusters_BelowThresholdFixNow(t *testing.T) {
 	stubCleanSurfaceStatus(t)
 	dir, _ := hardenClustersFixture(t, "feat/hc-below")
 
 	hc, err := hardenClustersCall(t, dir, "feat/hc-below", []any{
-		hcFindingReason("only.go", "info", "minor nit", "body", "agree-will-fix", history.ReasonBelowThreshold),
+		hcFindingDeferred("only.go", "info", "minor nit", "body", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-1"),
 	})
 	if err != nil {
 		t.Fatalf("harden_clusters: %v", err)
 	}
-	if len(hc.Clusters) != 0 || len(hc.Suppressed) != 0 || len(hc.LoneDisagree) != 0 {
-		t.Fatalf("a below-threshold-only finding must vanish entirely, got clusters=%v suppressed=%v loneDisagree=%v",
-			hc.Clusters, hc.Suppressed, hc.LoneDisagree)
+	if len(hc.Clusters) != 0 || len(hc.FixNow) != 1 {
+		t.Fatalf("a below-threshold-only file must form no cluster and list one fixNow finding, got clusters=%v fixNow=%v",
+			hc.Clusters, hc.FixNow)
 	}
-	if hc.Next != "no clusters — skip" {
-		t.Errorf("next = %q, want %q", hc.Next, "no clusters — skip")
+	if len(hc.Suppressed) != 0 || len(hc.LoneDisagree) != 0 {
+		t.Errorf("suppressed/loneDisagree = %v/%v, want both empty", hc.Suppressed, hc.LoneDisagree)
+	}
+	if want := "no clusters to harden. Run one fix pass for 1 fix-now finding(s)"; hc.Next != want {
+		t.Errorf("next = %q, want %q", hc.Next, want)
 	}
 
-	// Mixed with a surviving finding on the same file: only the
-	// below-threshold one is dropped, the file still clusters on the rest.
+	// Mixed with another finding on the same file: the below-threshold
+	// finding joins the cluster and is listed in fixNow too.
 	hc, err = hardenClustersCall(t, dir, "feat/hc-below", []any{
-		hcFindingReason("mixed.go", "info", "minor nit", "body", "agree-will-fix", history.ReasonBelowThreshold),
+		hcFindingDeferred("mixed.go", "info", "minor nit", "body", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-2"),
 		hcFinding("mixed.go", "high", "real issue", "body2", "agree-will-fix"),
 	})
 	if err != nil {
 		t.Fatalf("harden_clusters: %v", err)
 	}
-	if len(hc.Clusters) != 1 || len(hc.Clusters[0].Findings) != 1 {
-		t.Fatalf("clusters = %+v, want exactly 1 cluster with 1 surviving finding", hc.Clusters)
+	if len(hc.Clusters) != 1 || len(hc.Clusters[0].Findings) != 2 {
+		t.Fatalf("clusters = %+v, want exactly 1 cluster with 2 findings", hc.Clusters)
+	}
+	if hc.Clusters[0].Findings[0].DeferredID != "review-deferred-x-2" || hc.Clusters[0].Findings[1].Title != "real issue" {
+		t.Errorf("cluster findings = %+v, want the below-threshold finding first, then the real issue", hc.Clusters[0].Findings)
+	}
+	if len(hc.FixNow) != 1 || hc.FixNow[0].DeferredID != "review-deferred-x-2" {
+		t.Errorf("fixNow = %+v, want the one below-threshold finding", hc.FixNow)
+	}
+}
+
+// TestShipStateHardenClusters_BelowThresholdOnlyFileAmongOthers checks the
+// per-file rule of the cluster build: a file with only below-threshold
+// findings forms no cluster while another file in the same call still does.
+func TestShipStateHardenClusters_BelowThresholdOnlyFileAmongOthers(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-below-mixed-files")
+
+	hc, err := hardenClustersCall(t, dir, "feat/hc-below-mixed-files", []any{
+		hcFindingDeferred("small.go", "info", "nit", "b", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-1"),
+		hcFinding("big.go", "high", "real", "b", "agree-will-fix"),
+		hcFindingDeferred("big.go", "info", "nit 2", "b", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-2"),
+	})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	if len(hc.Clusters) != 1 || hc.Clusters[0].Key != "big.go" || len(hc.Clusters[0].Findings) != 2 {
+		t.Fatalf("clusters = %+v, want one big.go cluster with 2 findings", hc.Clusters)
+	}
+	if len(hc.FixNow) != 2 {
+		t.Errorf("fixNow = %+v, want both below-threshold findings", hc.FixNow)
+	}
+	if want := "dispatch 1 cluster(s), then run one fix pass for 2 fix-now finding(s)"; hc.Next != want {
+		t.Errorf("next = %q, want %q", hc.Next, want)
+	}
+}
+
+// TestShipStateHardenClusters_DisagreeWithBelowThresholdClusters checks that a
+// below-threshold finding joins the cluster of a file whose other finding is
+// a disagree finding, in either input order. The two findings make a cluster
+// of two, so the file is not a lone-disagree file. The disagree finding is
+// listed in evidenceOnly and the below-threshold finding without a deferredId
+// in staysDeferred.
+func TestShipStateHardenClusters_DisagreeWithBelowThresholdClusters(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-disagree-below")
+
+	disagree := hcFinding("x.go", "high", "disputed", "b1", "disagree")
+	below := hcFindingReason("x.go", "info", "nit", "b2", "not-evaluated", history.ReasonBelowThreshold)
+
+	for _, tc := range []struct {
+		name  string
+		input []any
+		first string
+	}{
+		{"disagree first", []any{disagree, below}, "disputed"},
+		{"below-threshold first", []any{below, disagree}, "nit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			hc, err := hardenClustersCall(t, dir, "feat/hc-disagree-below", tc.input)
+			if err != nil {
+				t.Fatalf("harden_clusters: %v", err)
+			}
+			if len(hc.Clusters) != 1 || hc.Clusters[0].Key != "x.go" || len(hc.Clusters[0].Findings) != 2 {
+				t.Fatalf("clusters = %+v, want one x.go cluster with 2 findings", hc.Clusters)
+			}
+			if got := hc.Clusters[0].Findings[0].Title; got != tc.first {
+				t.Errorf("first cluster finding = %q, want %q (input order)", got, tc.first)
+			}
+			if len(hc.LoneDisagree) != 0 || len(hc.Suppressed) != 0 {
+				t.Errorf("loneDisagree/suppressed = %v/%v, want both empty", hc.LoneDisagree, hc.Suppressed)
+			}
+			if len(hc.EvidenceOnly) != 1 || hc.EvidenceOnly[0].Title != "disputed" {
+				t.Errorf("evidenceOnly = %+v, want the disagree finding", hc.EvidenceOnly)
+			}
+			if len(hc.StaysDeferred) != 1 || hc.StaysDeferred[0].Title != "nit" {
+				t.Errorf("staysDeferred = %+v, want the below-threshold finding", hc.StaysDeferred)
+			}
+			if len(hc.FixNow) != 0 {
+				t.Errorf("fixNow = %+v, want none", hc.FixNow)
+			}
+			if want := "dispatch 1 cluster(s) with alreadyHardened:false, one at a time"; hc.Next != want {
+				t.Errorf("next = %q, want %q", hc.Next, want)
+			}
+		})
+	}
+}
+
+// TestShipStateHardenClusters_TwoBelowThresholdNoCluster checks that a file
+// whose findings are all below-threshold forms no cluster, however many there
+// are, and is not a lone-disagree file. With a deferredId the finding goes to
+// fixNow, and without one to staysDeferred.
+func TestShipStateHardenClusters_TwoBelowThresholdNoCluster(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-two-below")
+
+	hc, err := hardenClustersCall(t, dir, "feat/hc-two-below", []any{
+		hcFindingDeferred("y.go", "info", "nit 1", "b1", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-y-1"),
+		hcFindingReason("y.go", "info", "nit 2", "b2", "not-evaluated", history.ReasonBelowThreshold),
+	})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	if len(hc.Clusters) != 0 {
+		t.Fatalf("clusters = %+v, want none: two below-threshold findings must not form a cluster", hc.Clusters)
+	}
+	if len(hc.LoneDisagree) != 0 || len(hc.Suppressed) != 0 {
+		t.Errorf("loneDisagree/suppressed = %v/%v, want both empty", hc.LoneDisagree, hc.Suppressed)
+	}
+	if len(hc.FixNow) != 1 || hc.FixNow[0].Title != "nit 1" {
+		t.Errorf("fixNow = %+v, want the finding with a deferredId", hc.FixNow)
+	}
+	if len(hc.StaysDeferred) != 1 || hc.StaysDeferred[0].Title != "nit 2" {
+		t.Errorf("staysDeferred = %+v, want the finding without a deferredId", hc.StaysDeferred)
+	}
+	if len(hc.EvidenceOnly) != 0 {
+		t.Errorf("evidenceOnly = %+v, want none", hc.EvidenceOnly)
+	}
+	if want := "no clusters to harden. Run one fix pass for 1 fix-now finding(s)"; hc.Next != want {
+		t.Errorf("next = %q, want %q", hc.Next, want)
 	}
 }
 
@@ -472,6 +613,400 @@ func TestShipStateHardenClusters_Next(t *testing.T) {
 			t.Errorf("next = %q, want all-already-hardened message", hc.Next)
 		}
 	})
+
+	t.Run("clusters to run and fix-now findings", func(t *testing.T) {
+		stubCleanSurfaceStatus(t)
+		dir, _ := hardenClustersFixture(t, "feat/hc-next-pending-fixnow")
+		hc, err := hardenClustersCall(t, dir, "feat/hc-next-pending-fixnow", []any{
+			hcFinding("a.go", "high", "t", "b", "agree-will-fix"),
+			hcFinding("b.go", "high", "t", "b", "agree-will-fix"),
+			hcFindingDeferred("c.go", "info", "nit", "b", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-1"),
+		})
+		if err != nil {
+			t.Fatalf("harden_clusters: %v", err)
+		}
+		if want := "dispatch 2 cluster(s), then run one fix pass for 1 fix-now finding(s)"; hc.Next != want {
+			t.Errorf("next = %q, want %q", hc.Next, want)
+		}
+	})
+
+	t.Run("no clusters and fix-now findings", func(t *testing.T) {
+		stubCleanSurfaceStatus(t)
+		dir, _ := hardenClustersFixture(t, "feat/hc-next-none-fixnow")
+		hc, err := hardenClustersCall(t, dir, "feat/hc-next-none-fixnow", []any{
+			hcFindingDeferred("a.go", "info", "nit", "b", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-1"),
+			hcFindingDeferred("b.go", "info", "nit", "b", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-2"),
+		})
+		if err != nil {
+			t.Fatalf("harden_clusters: %v", err)
+		}
+		if want := "no clusters to harden. Run one fix pass for 2 fix-now finding(s)"; hc.Next != want {
+			t.Errorf("next = %q, want %q", hc.Next, want)
+		}
+	})
+
+	t.Run("no clusters and only stays-deferred findings", func(t *testing.T) {
+		stubCleanSurfaceStatus(t)
+		dir, _ := hardenClustersFixture(t, "feat/hc-next-none-deferred")
+		hc, err := hardenClustersCall(t, dir, "feat/hc-next-none-deferred", []any{
+			hcFindingReason("a.go", "info", "nit", "b", "not-evaluated", history.ReasonBelowThreshold),
+		})
+		if err != nil {
+			t.Fatalf("harden_clusters: %v", err)
+		}
+		if hc.Next != "no clusters — skip" {
+			t.Errorf("next = %q, want %q", hc.Next, "no clusters — skip")
+		}
+	})
+
+	t.Run("all already hardened and fix-now findings", func(t *testing.T) {
+		stubCleanSurfaceStatus(t)
+		branch := "feat/hc-next-allhardened-fixnow"
+		dir, _ := hardenClustersFixture(t, branch)
+		trigger := "[high] t — agree-will-fix\nb"
+		healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+			"phase": "done", "trigger": trigger, "applied": []any{}, "skipped": float64(0),
+		}))
+		hc, err := hardenClustersCall(t, dir, branch, []any{
+			hcFinding("hardened.go", "high", "t", "b", "agree-will-fix"),
+			hcFindingDeferred("other.go", "info", "nit", "b", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-1"),
+		})
+		if err != nil {
+			t.Fatalf("harden_clusters: %v", err)
+		}
+		want := "all clusters already hardened — commit leftover edits, then run one fix pass for 1 fix-now finding(s)"
+		if hc.Next != want {
+			t.Errorf("next = %q, want %q", hc.Next, want)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// fixNow, staysDeferred and evidenceOnly
+// ---------------------------------------------------------------------------
+
+// TestShipStateHardenClusters_ListAssignment checks which output list each
+// kind of finding lands in: exactly one of fixNow, staysDeferred or
+// evidenceOnly, or none. The reason of a finding decides; with no reason the
+// verdict decides.
+func TestShipStateHardenClusters_ListAssignment(t *testing.T) {
+	deferred := func(verdict, reason string, fixed bool) map[string]any {
+		m := hcFindingDeferred("a.go", "info", "t", "b", verdict, reason, "review-deferred-x-1")
+		m["fixedInRun"] = fixed
+		return m
+	}
+	noID := func(verdict, reason string, fixed bool) map[string]any {
+		m := hcFindingReason("a.go", "info", "t", "b", verdict, reason)
+		m["fixedInRun"] = fixed
+		return m
+	}
+
+	const (
+		none          = ""
+		fixNow        = "fixNow"
+		staysDeferred = "staysDeferred"
+		evidenceOnly  = "evidenceOnly"
+	)
+	cases := []struct {
+		name    string
+		finding map[string]any
+		want    string
+	}{
+		{"below-threshold with deferredId, not fixed", deferred("not-evaluated", history.ReasonBelowThreshold, false), fixNow},
+		{"below-threshold with deferredId, fixed in run", deferred("not-evaluated", history.ReasonBelowThreshold, true), none},
+		{"below-threshold without deferredId, not fixed", noID("not-evaluated", history.ReasonBelowThreshold, false), staysDeferred},
+		{"below-threshold without deferredId, fixed in run", noID("not-evaluated", history.ReasonBelowThreshold, true), staysDeferred},
+		{"reason below-threshold wins over verdict disagree", deferred("disagree", history.ReasonBelowThreshold, false), fixNow},
+		{"reason needs-direction", noID("needs-direction", history.ReasonNeedsDirection, false), staysDeferred},
+		{"reason needs-direction with deferredId", deferred("needs-direction", history.ReasonNeedsDirection, false), staysDeferred},
+		{"reason needs-direction wins over verdict agree-will-fix", noID("agree-will-fix", history.ReasonNeedsDirection, false), staysDeferred},
+		{"verdict needs-direction without reason", hcFinding("a.go", "info", "t", "b", "needs-direction"), staysDeferred},
+		{"reason disagree", noID("agree-will-fix", history.ReasonDisagree, false), evidenceOnly},
+		{"reason wont-fix", noID("agree-will-fix", history.ReasonWontFix, false), evidenceOnly},
+		{"reason wont-fix with deferredId, fixed in run", deferred("agree-will-fix", history.ReasonWontFix, true), evidenceOnly},
+		{"verdict disagree without reason", hcFinding("a.go", "info", "t", "b", "disagree"), evidenceOnly},
+		{"verdict agree-won't-fix without reason", hcFinding("a.go", "info", "t", "b", "agree-won't-fix"), evidenceOnly},
+		{"verdict agree-will-fix without reason", hcFinding("a.go", "info", "t", "b", "agree-will-fix"), none},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubCleanSurfaceStatus(t)
+			dir, _ := hardenClustersFixture(t, "feat/hc-lists")
+
+			hc, err := hardenClustersCall(t, dir, "feat/hc-lists", []any{tc.finding})
+			if err != nil {
+				t.Fatalf("harden_clusters: %v", err)
+			}
+			got := map[string]int{
+				fixNow:        len(hc.FixNow),
+				staysDeferred: len(hc.StaysDeferred),
+				evidenceOnly:  len(hc.EvidenceOnly),
+			}
+			for list, n := range got {
+				want := 0
+				if list == tc.want {
+					want = 1
+				}
+				if n != want {
+					t.Errorf("%s has %d finding(s), want %d (all lists: %v)", list, n, want, got)
+				}
+			}
+		})
+	}
+}
+
+// TestShipStateHardenClusters_ListsKeepInputOrderAndFields checks that each
+// list holds the full finding, including the optional fields, in input order.
+func TestShipStateHardenClusters_ListsKeepInputOrderAndFields(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-list-fields")
+
+	first := hcFindingDeferred("a.go", "info", "first", "b1", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-1")
+	first["line"] = float64(12)
+	second := hcFindingDeferred("b.go", "info", "second", "b2", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-2")
+	second["line"] = 40
+
+	hc, err := hardenClustersCall(t, dir, "feat/hc-list-fields", []any{first, second})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	if len(hc.FixNow) != 2 {
+		t.Fatalf("fixNow = %+v, want 2 findings", hc.FixNow)
+	}
+	want := []HardenClusterFinding{
+		{File: "a.go", Severity: "info", Title: "first", Body: "b1", Verdict: "not-evaluated", Reason: history.ReasonBelowThreshold, Line: 12, DeferredID: "review-deferred-x-1"},
+		{File: "b.go", Severity: "info", Title: "second", Body: "b2", Verdict: "not-evaluated", Reason: history.ReasonBelowThreshold, Line: 40, DeferredID: "review-deferred-x-2"},
+	}
+	for i := range want {
+		if hc.FixNow[i] != want[i] {
+			t.Errorf("fixNow[%d] = %+v, want %+v", i, hc.FixNow[i], want[i])
+		}
+	}
+}
+
+// TestShipStateHardenClusters_ListsDoNotChangeClusters checks that a finding
+// in evidenceOnly or staysDeferred still counts as a member of its cluster,
+// so the lists add information without changing the clusters.
+func TestShipStateHardenClusters_ListsDoNotChangeClusters(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-lists-clusters")
+
+	hc, err := hardenClustersCall(t, dir, "feat/hc-lists-clusters", []any{
+		hcFinding("a.go", "high", "real", "b", "agree-will-fix"),
+		hcFindingReason("a.go", "medium", "wrong", "b", "agree-will-fix", history.ReasonWontFix),
+		hcFindingReason("a.go", "medium", "unclear", "b", "agree-will-fix", history.ReasonNeedsDirection),
+	})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	if len(hc.Clusters) != 1 || len(hc.Clusters[0].Findings) != 3 {
+		t.Fatalf("clusters = %+v, want one a.go cluster with 3 findings", hc.Clusters)
+	}
+	if len(hc.EvidenceOnly) != 1 || len(hc.StaysDeferred) != 1 || len(hc.FixNow) != 0 {
+		t.Errorf("lists = evidenceOnly %d, staysDeferred %d, fixNow %d, want 1, 1, 0",
+			len(hc.EvidenceOnly), len(hc.StaysDeferred), len(hc.FixNow))
+	}
+}
+
+// TestShipStateHardenClusters_FailureTextSameAfterFixPass checks that a fix
+// pass does not change the cluster text. The same input with fixedInRun false
+// and then true gives the same failureText, so a cluster that harden already
+// ran on keeps its alreadyHardened mark on a resumed run.
+func TestShipStateHardenClusters_FailureTextSameAfterFixPass(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	branch := "feat/hc-resume"
+	dir, _ := hardenClustersFixture(t, branch)
+
+	input := func(fixed bool) []any {
+		nit := hcFindingDeferred("mixed.go", "info", "nit", "nit body", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-1")
+		nit["fixedInRun"] = fixed
+		return []any{nit, hcFinding("mixed.go", "high", "real", "real body", "agree-will-fix")}
+	}
+
+	before, err := hardenClustersCall(t, dir, branch, input(false))
+	if err != nil {
+		t.Fatalf("harden_clusters before the fix pass: %v", err)
+	}
+	if len(before.Clusters) != 1 || before.Clusters[0].AlreadyHardened {
+		t.Fatalf("clusters = %+v, want one cluster that is not yet hardened", before.Clusters)
+	}
+	if len(before.FixNow) != 1 {
+		t.Fatalf("fixNow before the fix pass = %+v, want 1 finding", before.FixNow)
+	}
+
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+		"phase": "done", "trigger": before.Clusters[0].FailureText, "applied": []any{}, "skipped": float64(0),
+	}))
+
+	after, err := hardenClustersCall(t, dir, branch, input(true))
+	if err != nil {
+		t.Fatalf("harden_clusters after the fix pass: %v", err)
+	}
+	if len(after.Clusters) != 1 {
+		t.Fatalf("clusters after the fix pass = %+v, want 1", after.Clusters)
+	}
+	if after.Clusters[0].FailureText != before.Clusters[0].FailureText {
+		t.Errorf("failureText changed after the fix pass:\nbefore %q\nafter  %q", before.Clusters[0].FailureText, after.Clusters[0].FailureText)
+	}
+	if !after.Clusters[0].AlreadyHardened {
+		t.Error("alreadyHardened = false after the fix pass, want true")
+	}
+	if len(after.FixNow) != 0 {
+		t.Errorf("fixNow after the fix pass = %+v, want none", after.FixNow)
+	}
+	if after.Next != "all clusters already hardened — commit leftover edits" {
+		t.Errorf("next after the fix pass = %q, want the all-already-hardened message", after.Next)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Optional finding fields and the not-evaluated verdict
+// ---------------------------------------------------------------------------
+
+// TestShipStateHardenClusters_NotEvaluatedAccepted checks that the verdict
+// not-evaluated is accepted with the reason below-threshold and that the
+// verdict is kept on the finding.
+func TestShipStateHardenClusters_NotEvaluatedAccepted(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-notevaluated")
+
+	hc, err := hardenClustersCall(t, dir, "feat/hc-notevaluated", []any{
+		hcFinding("a.go", "high", "real", "b", "agree-will-fix"),
+		hcFindingReason("a.go", "info", "nit", "b", "not-evaluated", history.ReasonBelowThreshold),
+	})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	if len(hc.Clusters) != 1 || len(hc.Clusters[0].Findings) != 2 || hc.Clusters[0].Findings[1].Verdict != "not-evaluated" {
+		t.Fatalf("clusters = %+v, want one cluster whose second finding has the verdict not-evaluated", hc.Clusters)
+	}
+	wantText := "[high] real — agree-will-fix\nb\n\n[info] nit — not-evaluated\nb"
+	if hc.Clusters[0].FailureText != wantText {
+		t.Errorf("failureText = %q, want %q", hc.Clusters[0].FailureText, wantText)
+	}
+}
+
+// TestShipStateHardenClusters_OptionalFieldsParsed checks the accepted forms
+// of line, deferredId and fixedInRun: a JSON number, a Go int, a whole
+// float, an absent key and an explicit null.
+func TestShipStateHardenClusters_OptionalFieldsParsed(t *testing.T) {
+	cases := []struct {
+		name      string
+		extra     map[string]any
+		wantLine  int
+		wantDefID string
+		wantFixed bool
+	}{
+		{name: "absent", extra: map[string]any{}},
+		{name: "null values", extra: map[string]any{"line": nil, "deferredId": nil, "fixedInRun": nil}},
+		{name: "line as float64", extra: map[string]any{"line": float64(12)}, wantLine: 12},
+		{name: "line as int", extra: map[string]any{"line": 7}, wantLine: 7},
+		{name: "line as whole float with zero fraction", extra: map[string]any{"line": 2.0}, wantLine: 2},
+		{name: "line zero", extra: map[string]any{"line": float64(0)}, wantLine: 0},
+		{name: "deferredId", extra: map[string]any{"deferredId": "review-deferred-x-1"}, wantDefID: "review-deferred-x-1"},
+		{name: "deferredId empty string", extra: map[string]any{"deferredId": ""}},
+		{name: "fixedInRun true", extra: map[string]any{"fixedInRun": true}, wantFixed: true},
+		{name: "fixedInRun false", extra: map[string]any{"fixedInRun": false}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stubCleanSurfaceStatus(t)
+			dir, _ := hardenClustersFixture(t, "feat/hc-optional")
+
+			f := hcFinding("a.go", "high", "t", "b", "agree-will-fix")
+			for k, v := range tc.extra {
+				f[k] = v
+			}
+			hc, err := hardenClustersCall(t, dir, "feat/hc-optional", []any{f})
+			if err != nil {
+				t.Fatalf("harden_clusters: %v", err)
+			}
+			if len(hc.Clusters) != 1 || len(hc.Clusters[0].Findings) != 1 {
+				t.Fatalf("clusters = %+v, want one cluster with one finding", hc.Clusters)
+			}
+			got := hc.Clusters[0].Findings[0]
+			if got.Line != tc.wantLine || got.DeferredID != tc.wantDefID || got.FixedInRun != tc.wantFixed {
+				t.Errorf("finding line/deferredId/fixedInRun = %d/%q/%v, want %d/%q/%v",
+					got.Line, got.DeferredID, got.FixedInRun, tc.wantLine, tc.wantDefID, tc.wantFixed)
+			}
+		})
+	}
+}
+
+// TestShipStateHardenClusters_NewFieldErrorsHaveRecoverySuggestion checks the
+// exact Suggestion text of the error for a not-evaluated verdict with the
+// wrong reason and for a wrong type in line, deferredId and fixedInRun.
+func TestShipStateHardenClusters_NewFieldErrorsHaveRecoverySuggestion(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-suggestion")
+
+	cases := []struct {
+		name       string
+		finding    map[string]any
+		wantMsg    string
+		wantAdvice string
+	}{
+		{
+			name:       "not-evaluated without below-threshold",
+			finding:    hcFindingReason("a.go", "info", "t", "b", "not-evaluated", history.ReasonWontFix),
+			wantMsg:    `harden_clusters: detail.findings[0].verdict not-evaluated needs reason below-threshold, got "wont-fix"`,
+			wantAdvice: "use not-evaluated only for a below-threshold finding, then retry ship_state harden_clusters",
+		},
+		{
+			name:       "line",
+			finding:    hcFindingWith("line", "12"),
+			wantMsg:    "harden_clusters: detail.findings[0].line must be a whole number, got string",
+			wantAdvice: "Set detail.findings[0].line to a whole number, or omit it, then retry ship_state harden_clusters.",
+		},
+		{
+			name:       "deferredId",
+			finding:    hcFindingWith("deferredId", true),
+			wantMsg:    "harden_clusters: detail.findings[0].deferredId must be a string, got bool",
+			wantAdvice: "Set detail.findings[0].deferredId to a string, or omit it, then retry ship_state harden_clusters.",
+		},
+		{
+			name:       "fixedInRun",
+			finding:    hcFindingWith("fixedInRun", float64(1)),
+			wantMsg:    "harden_clusters: detail.findings[0].fixedInRun must be a boolean, got float64",
+			wantAdvice: "Set detail.findings[0].fixedInRun to a boolean, or omit it, then retry ship_state harden_clusters.",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := hardenClustersCall(t, dir, "feat/hc-suggestion", []any{tc.finding})
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if got := errorClassOf(err); got != "domain" {
+				t.Errorf("error class = %q, want domain", got)
+			}
+			if err.Error() != tc.wantMsg {
+				t.Errorf("error = %q, want %q", err.Error(), tc.wantMsg)
+			}
+			if got := suggestionOf(err); got != tc.wantAdvice {
+				t.Errorf("suggestion = %q, want %q", got, tc.wantAdvice)
+			}
+		})
+	}
+}
+
+// TestShipStateHardenClusters_WrongTypeNamesFindingIndex checks that the
+// error for a wrong type names the position of the bad finding in the array.
+func TestShipStateHardenClusters_WrongTypeNamesFindingIndex(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-index")
+
+	_, err := hardenClustersCall(t, dir, "feat/hc-index", []any{
+		hcFinding("a.go", "high", "t", "b", "agree-will-fix"),
+		hcFindingWith("line", "x"),
+	})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), "detail.findings[1].line") {
+		t.Errorf("error = %q, want it to name detail.findings[1].line", err.Error())
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +1108,7 @@ func TestShipStateHardenClusters_NeverNullArrays(t *testing.T) {
 	if err := json.Unmarshal(raw, &decoded); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, key := range []string{"clusters", "suppressed", "loneDisagree", "dirtySurfaces"} {
+	for _, key := range []string{"clusters", "suppressed", "loneDisagree", "dirtySurfaces", "fixNow", "staysDeferred", "evidenceOnly"} {
 		if decoded[key] == nil {
 			t.Errorf("%s serialized as null, want []", key)
 		}
@@ -638,6 +1173,46 @@ func TestShipStateHardenClusters_Rejections(t *testing.T) {
 				}(),
 			}},
 			wantMsg: "reason must be a string",
+		},
+		{
+			name:    "not-evaluated without reason",
+			detail:  map[string]any{"findings": []any{hcFinding("a.go", "info", "t", "b", "not-evaluated")}},
+			wantMsg: "verdict not-evaluated needs reason below-threshold, got \"\"",
+		},
+		{
+			name:    "not-evaluated with needs-direction",
+			detail:  map[string]any{"findings": []any{hcFindingReason("a.go", "info", "t", "b", "not-evaluated", history.ReasonNeedsDirection)}},
+			wantMsg: "verdict not-evaluated needs reason below-threshold, got \"needs-direction\"",
+		},
+		{
+			name:    "not-evaluated with disagree",
+			detail:  map[string]any{"findings": []any{hcFindingReason("a.go", "info", "t", "b", "not-evaluated", history.ReasonDisagree)}},
+			wantMsg: "verdict not-evaluated needs reason below-threshold, got \"disagree\"",
+		},
+		{
+			name:    "not-evaluated with wont-fix",
+			detail:  map[string]any{"findings": []any{hcFindingReason("a.go", "info", "t", "b", "not-evaluated", history.ReasonWontFix)}},
+			wantMsg: "verdict not-evaluated needs reason below-threshold, got \"wont-fix\"",
+		},
+		{
+			name:    "line wrong type",
+			detail:  map[string]any{"findings": []any{hcFindingWith("line", "12")}},
+			wantMsg: "detail.findings[0].line must be a whole number, got string",
+		},
+		{
+			name:    "line fractional",
+			detail:  map[string]any{"findings": []any{hcFindingWith("line", 12.5)}},
+			wantMsg: "detail.findings[0].line must be a whole number, got float64",
+		},
+		{
+			name:    "deferredId wrong type",
+			detail:  map[string]any{"findings": []any{hcFindingWith("deferredId", 7)}},
+			wantMsg: "detail.findings[0].deferredId must be a string, got int",
+		},
+		{
+			name:    "fixedInRun wrong type",
+			detail:  map[string]any{"findings": []any{hcFindingWith("fixedInRun", "true")}},
+			wantMsg: "detail.findings[0].fixedInRun must be a boolean, got string",
 		},
 	}
 

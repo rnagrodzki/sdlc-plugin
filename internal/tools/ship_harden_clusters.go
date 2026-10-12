@@ -20,14 +20,20 @@ import (
 // HardenClusterFinding is one review finding fed into harden_clusters via
 // detail.findings. Verdict is the reviewing agent's own judgment on the
 // finding (received-review's vocabulary); Reason, when present, is one of
-// history.DeferredReasons() — the same field shipStateDefer records.
+// history.DeferredReasons() — the same field shipStateDefer records. Line,
+// DeferredID and FixedInRun are optional: DeferredID names the row the
+// finding has in .sdlc-v2/history/deferred.json, and FixedInRun is true when
+// a fix pass of the current ship run already fixed it.
 type HardenClusterFinding struct {
-	File     string `json:"file"`
-	Severity string `json:"severity"`
-	Title    string `json:"title"`
-	Body     string `json:"body"`
-	Verdict  string `json:"verdict"`          // agree-will-fix | agree-won't-fix | disagree | needs-direction
-	Reason   string `json:"reason,omitempty"` // history.DeferredReasons()
+	File       string `json:"file"`
+	Severity   string `json:"severity"`
+	Title      string `json:"title"`
+	Body       string `json:"body"`
+	Verdict    string `json:"verdict"`          // agree-will-fix | agree-won't-fix | disagree | needs-direction | not-evaluated
+	Reason     string `json:"reason,omitempty"` // history.DeferredReasons()
+	Line       int    `json:"line,omitempty"`
+	DeferredID string `json:"deferredId,omitempty"`
+	FixedInRun bool   `json:"fixedInRun,omitempty"`
 }
 
 // HardenCluster groups every surviving finding for one file. FailureText is
@@ -42,17 +48,27 @@ type HardenCluster struct {
 }
 
 // HardenClustersOut is the output of ship_state's harden_clusters action.
+// FixNow, StaysDeferred and EvidenceOnly split the input findings by what
+// happens to each one next; they never change which findings sit in a
+// cluster.
 type HardenClustersOut struct {
-	Clusters      []HardenCluster `json:"clusters"`      // never null
-	Suppressed    []string        `json:"suppressed"`    // file paths, never null
-	LoneDisagree  []string        `json:"loneDisagree"`  // file paths, never null
-	DirtySurfaces []string        `json:"dirtySurfaces"` // never null
-	Narration     string          `json:"narration"`
-	Next          string          `json:"next"` // e.g. "dispatch 2 cluster(s) with alreadyHardened:false, one at a time" | "no clusters — skip"
+	Clusters      []HardenCluster        `json:"clusters"`      // never null
+	Suppressed    []string               `json:"suppressed"`    // file paths, never null
+	LoneDisagree  []string               `json:"loneDisagree"`  // file paths, never null
+	DirtySurfaces []string               `json:"dirtySurfaces"` // never null
+	FixNow        []HardenClusterFinding `json:"fixNow"`        // never null
+	StaysDeferred []HardenClusterFinding `json:"staysDeferred"` // never null
+	EvidenceOnly  []HardenClusterFinding `json:"evidenceOnly"`  // never null
+	Narration     string                 `json:"narration"`
+	Next          string                 `json:"next"` // e.g. "dispatch 2 cluster(s) with alreadyHardened:false, one at a time" | "no clusters — skip"
 }
 
+// hardenVerdictNotEvaluated is the verdict for a finding that received-review
+// never evaluated. It is valid only together with history.ReasonBelowThreshold.
+const hardenVerdictNotEvaluated = "not-evaluated"
+
 // hardenVerdicts are the accepted values for a finding's verdict field.
-var hardenVerdicts = []string{"agree-will-fix", "agree-won't-fix", "disagree", "needs-direction"}
+var hardenVerdicts = []string{"agree-will-fix", "agree-won't-fix", "disagree", "needs-direction", hardenVerdictNotEvaluated}
 
 // hardenMaxClusters caps how many clusters one harden_clusters call reports
 // — the harden pipeline dispatches clusters one at a time, and a run with
@@ -83,6 +99,7 @@ func shipStateHardenClusters(root, workDir string, in ShipStateIn) (any, error) 
 	}
 
 	clusters, suppressed, loneDisagree := hardenBuildClusters(findings)
+	fixNow, staysDeferred, evidenceOnly := hardenSplitFindings(findings)
 
 	triggers, err := hardenLiveTriggers(root, workDir, detailStr(in.Detail, "branch"))
 	if err != nil {
@@ -102,10 +119,13 @@ func shipStateHardenClusters(root, workDir string, in ShipStateIn) (any, error) 
 		Suppressed:    suppressed,
 		LoneDisagree:  loneDisagree,
 		DirtySurfaces: dirty,
+		FixNow:        fixNow,
+		StaysDeferred: staysDeferred,
+		EvidenceOnly:  evidenceOnly,
 		Narration: fmt.Sprintf(
 			"harden_clusters: %d cluster(s), %d suppressed, %d lone-disagree file(s), %d dirty surface(s).",
 			len(clusters), len(suppressed), len(loneDisagree), len(dirty)),
-		Next: hardenClustersNext(clusters),
+		Next: hardenClustersNext(clusters, len(fixNow)),
 	}, nil
 }
 
@@ -113,9 +133,11 @@ func shipStateHardenClusters(root, workDir string, in ShipStateIn) (any, error) 
 // finding needs a non-empty file, a severity from dimensions.ValidSeverities
 // (case-insensitive, stored lowercase — mirrors shipStateDefer), and a
 // verdict from hardenVerdicts; an optional reason must be one of
-// history.DeferredReasons() when present.
+// history.DeferredReasons() when present. The verdict not-evaluated needs
+// the reason below-threshold. The optional line, deferredId and fixedInRun
+// are read by hardenOptionalFields.
 func hardenParseFindings(d map[string]any) ([]HardenClusterFinding, error) {
-	const usage = "Pass detail.findings as a JSON array of {file, severity, title, body, verdict, reason?} objects, then retry ship_state harden_clusters."
+	const usage = "Pass detail.findings as a JSON array of {file, severity, title, body, verdict, reason?, line?, deferredId?, fixedInRun?} objects, then retry ship_state harden_clusters."
 
 	raw, ok := d["findings"]
 	if !ok || raw == nil {
@@ -192,13 +214,71 @@ func hardenParseFindings(d map[string]any) ([]HardenClusterFinding, error) {
 			}
 		}
 
+		if verdict == hardenVerdictNotEvaluated && reason != history.ReasonBelowThreshold {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("harden_clusters: detail.findings[%d].verdict not-evaluated needs reason below-threshold, got %q", i, reason),
+				Suggestion: "use not-evaluated only for a below-threshold finding, then retry ship_state harden_clusters",
+			}
+		}
+
+		line, deferredID, fixedInRun, err := hardenOptionalFields(m, i)
+		if err != nil {
+			return nil, err
+		}
+
 		title, _ := m["title"].(string)
 		body, _ := m["body"].(string)
 		findings = append(findings, HardenClusterFinding{
 			File: file, Severity: severity, Title: title, Body: body, Verdict: verdict, Reason: reason,
+			Line: line, DeferredID: deferredID, FixedInRun: fixedInRun,
 		})
 	}
 	return findings, nil
+}
+
+// hardenOptionalFields reads the optional line (a whole number), deferredId
+// (a string) and fixedInRun (a bool) of detail.findings[i]. A key that is
+// absent or null gives the zero value. A value of another type is a
+// DomainError that names the field and the type it needs.
+//
+// The string and bool checks repeat the type checks of shipDetailString and
+// shipDetailBool on purpose. Those helpers read a key of the top-level detail
+// map, so their messages say detail.<key>. A wrong value here sits inside one
+// finding of the array, and the message must say detail.findings[i].<key> so
+// the caller can see which finding to fix (hardenFieldTypeError).
+func hardenOptionalFields(m map[string]any, i int) (line int, deferredID string, fixedInRun bool, err error) {
+	if v, ok := m["line"]; ok && v != nil {
+		n, isInt := healingInt(v)
+		if !isInt {
+			return 0, "", false, hardenFieldTypeError(i, "line", "whole number", v)
+		}
+		line = n
+	}
+	if v, ok := m["deferredId"]; ok && v != nil {
+		s, isStr := v.(string)
+		if !isStr {
+			return 0, "", false, hardenFieldTypeError(i, "deferredId", "string", v)
+		}
+		deferredID = s
+	}
+	if v, ok := m["fixedInRun"]; ok && v != nil {
+		b, isBool := v.(bool)
+		if !isBool {
+			return 0, "", false, hardenFieldTypeError(i, "fixedInRun", "boolean", v)
+		}
+		fixedInRun = b
+	}
+	return line, deferredID, fixedInRun, nil
+}
+
+// hardenFieldTypeError builds the DomainError for an optional field of
+// detail.findings[i] whose value has the wrong type. typeName is the type
+// the field needs, in plain words; got is the value that was passed.
+func hardenFieldTypeError(i int, field, typeName string, got any) error {
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("harden_clusters: detail.findings[%d].%s must be a %s, got %T", i, field, typeName, got),
+		Suggestion: fmt.Sprintf("Set detail.findings[%d].%s to a %s, or omit it, then retry ship_state harden_clusters.", i, field, typeName),
+	}
 }
 
 // hardenIsDisagree reports whether a finding counts as "disagree" for the
@@ -208,12 +288,15 @@ func hardenIsDisagree(f HardenClusterFinding) bool {
 	return f.Verdict == "disagree" || f.Reason == history.ReasonDisagree
 }
 
-// hardenBuildClusters groups findings by file (below-threshold findings are
-// dropped outright — they were already routed out of the fix loop by
-// severity, so harden should never see them). A file whose lone finding is
-// a disagree is set aside in loneDisagree instead of becoming a
-// single-finding cluster nobody asked to fix; a file with two or more
-// disagree findings still clusters normally. When more than
+// hardenBuildClusters groups findings by file. A below-threshold finding
+// joins the cluster of its file when the file has another finding that is
+// not below-threshold; a file with only below-threshold findings forms no
+// cluster, and those findings are reported through hardenSplitFindings
+// instead. A below-threshold finding stays in its cluster even after a fix
+// pass fixed it, so the cluster text is the same on a resumed run. A file
+// whose lone finding is a disagree is set aside in loneDisagree instead of
+// becoming a single-finding cluster nobody asked to fix; a file with two or
+// more disagree findings still clusters normally. When more than
 // hardenMaxClusters files remain, the ones with the fewest findings (ties
 // broken alphabetically) are moved to suppressed instead of dropped
 // silently.
@@ -221,11 +304,18 @@ func hardenBuildClusters(findings []HardenClusterFinding) (clusters []HardenClus
 	suppressed = []string{}
 	loneDisagree = []string{}
 
+	hasMain := map[string]bool{}
+	for _, f := range findings {
+		if f.Reason != history.ReasonBelowThreshold {
+			hasMain[f.File] = true
+		}
+	}
+
 	order := make([]string, 0, len(findings))
 	byFile := map[string][]HardenClusterFinding{}
 	for _, f := range findings {
-		if f.Reason == history.ReasonBelowThreshold {
-			continue
+		if f.Reason == history.ReasonBelowThreshold && !hasMain[f.File] {
+			continue // reported in fixNow or staysDeferred only
 		}
 		if _, seen := byFile[f.File]; !seen {
 			order = append(order, f.File)
@@ -346,9 +436,54 @@ func hardenLiveTriggers(root, workDir, branchIn string) (map[string]bool, error)
 	return triggers, nil
 }
 
+// hardenSplitFindings sorts every finding into fixNow, staysDeferred or
+// evidenceOnly, in input order. All three results are non-nil. The reason
+// of a finding decides its list; when the reason is empty, the verdict
+// decides:
+//
+//	below-threshold with a deferredId, fixedInRun false  -> fixNow
+//	below-threshold with a deferredId, fixedInRun true   -> none (a fix pass fixed it)
+//	below-threshold without a deferredId                 -> staysDeferred
+//	needs-direction                                      -> staysDeferred
+//	disagree, wont-fix, agree-won't-fix                  -> evidenceOnly
+//	agree-will-fix                                       -> none (already fixed)
+//
+// The split does not change which findings sit in a cluster.
+func hardenSplitFindings(findings []HardenClusterFinding) (fixNow, staysDeferred, evidenceOnly []HardenClusterFinding) {
+	fixNow = []HardenClusterFinding{}
+	staysDeferred = []HardenClusterFinding{}
+	evidenceOnly = []HardenClusterFinding{}
+	for _, f := range findings {
+		key := f.Reason
+		if key == "" {
+			key = f.Verdict
+		}
+		switch key {
+		case history.ReasonBelowThreshold:
+			switch {
+			case f.DeferredID == "":
+				staysDeferred = append(staysDeferred, f)
+			case !f.FixedInRun:
+				fixNow = append(fixNow, f)
+			}
+		case history.ReasonNeedsDirection:
+			staysDeferred = append(staysDeferred, f)
+		case history.ReasonDisagree, history.ReasonWontFix, "agree-won't-fix":
+			evidenceOnly = append(evidenceOnly, f)
+		}
+	}
+	return fixNow, staysDeferred, evidenceOnly
+}
+
 // hardenClustersNext renders the dispatch instruction for HardenClustersOut.
-func hardenClustersNext(clusters []HardenCluster) string {
+// fixNow is the number of findings in the fixNow list: when it is above
+// zero, the instruction also asks for one fix pass for them, whether or not
+// there are clusters to run.
+func hardenClustersNext(clusters []HardenCluster, fixNow int) string {
 	if len(clusters) == 0 {
+		if fixNow > 0 {
+			return fmt.Sprintf("no clusters to harden. Run one fix pass for %d fix-now finding(s)", fixNow)
+		}
 		return "no clusters — skip"
 	}
 	pending := 0
@@ -358,7 +493,13 @@ func hardenClustersNext(clusters []HardenCluster) string {
 		}
 	}
 	if pending == 0 {
+		if fixNow > 0 {
+			return fmt.Sprintf("all clusters already hardened — commit leftover edits, then run one fix pass for %d fix-now finding(s)", fixNow)
+		}
 		return "all clusters already hardened — commit leftover edits"
+	}
+	if fixNow > 0 {
+		return fmt.Sprintf("dispatch %d cluster(s), then run one fix pass for %d fix-now finding(s)", pending, fixNow)
 	}
 	return fmt.Sprintf("dispatch %d cluster(s) with alreadyHardened:false, one at a time", pending)
 }

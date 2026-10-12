@@ -14,6 +14,7 @@ package skillcheck
 import (
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +37,13 @@ func hardenSkillsProseFlags(body string) map[string]bool {
 	return set
 }
 
+// hardenSkillsHaikuPinRe matches a model pin that names haiku, in the Agent
+// call form (model: "haiku") and in the bullet form (`model`: `haiku`).
+var hardenSkillsHaikuPinRe = regexp.MustCompile(`model\W{1,6}haiku`)
+
+// TestHardenSkillParity checks the harden skill against the MCP registry,
+// against its own flag lists and against the orchestrator agent file it
+// dispatches.
 func TestHardenSkillParity(t *testing.T) {
 	t.Run("tools_and_actions_resolve", func(t *testing.T) {
 		flagParityAssertToolsResolve(t, "harden",
@@ -72,6 +80,42 @@ func TestHardenSkillParity(t *testing.T) {
 		}
 		if !flagParityTableFlags(body)["--auto"] {
 			t.Error("harden Step 0 flag table has no --auto row, which received-review dispatches to it")
+		}
+	})
+
+	// The agent file is the contract for the proposal JSON that the harden
+	// skill dispatches the orchestrator for. The agent file must keep the model
+	// pin, the full action set, the skipped.drafts list and the failureClass
+	// field of the proposal shape. The harden skill must pin the same model in
+	// both of its Agent dispatches.
+	t.Run("orchestrator_contract", func(t *testing.T) {
+		agent := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "agents", "harden-orchestrator.md"))
+		for _, want := range []string{
+			"model: sonnet",
+			"repair | remove | merge",
+			`"drafts"`,
+			// The proposal-shape row. The bare field name occurs in several
+			// other places, so it cannot pin the shape.
+			`"failureClass": "one sentence`,
+		} {
+			if !strings.Contains(agent, want) {
+				t.Errorf("harden-orchestrator.md lacks %q", want)
+			}
+		}
+
+		skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "harden", "SKILL.md"))
+		for _, want := range []string{
+			// The Agent({...}) call in the triage loop.
+			`model: "sonnet",`,
+			// The model bullet of the single-failure dispatch.
+			"- `model`: `sonnet`",
+		} {
+			if !strings.Contains(skill, want) {
+				t.Errorf("harden/SKILL.md lacks the orchestrator model pin %q", want)
+			}
+		}
+		if m := hardenSkillsHaikuPinRe.FindString(skill); m != "" {
+			t.Errorf("harden/SKILL.md still pins the orchestrator to haiku: %q", m)
 		}
 	})
 }
