@@ -732,7 +732,7 @@ The `preplan_context` action SHALL return the plan guardrails and the topic file
 
 #### Scenario: Folder that cannot be listed
 - **WHEN** a regular file is at the `.sdlc-v2/preplan` path
-- **THEN** the tool returns an `InfraError` whose message starts with `preplan_context: list `
+- **THEN** the tool returns an `InfraError` whose message starts with `preplan_context: list: `
 - **AND** the Suggestion starts with `Make <dir> a folder that you can read`
 - **AND** no file is written
 
