@@ -2568,6 +2568,14 @@ describe('render pipelineBlock', () => {
     });
     assert.equal(oneByClass(block, 'attn-elapsed').textContent, '4m 12s');
   });
+
+  test('a pipeline with a wait keeps the repo name in the right group and has no Dismiss button', () => {
+    const attention = { kind: 'question', askedAt: '2026-10-08T10:00:00Z', header: 'Q', text: 't' };
+    const block = render.pipelineBlock(fakeDoc(), view, REPO, pipeline({ attention }), { collapsed: false, selected: 0, now: NOW_WAIT });
+    const head = oneByClass(block, 'pipe-head');
+    assert.equal(byClass(oneByClass(head, 'pipe-side'), 'pipe-repo').length, 1);
+    assert.equal(byClass(oneByClass(block, 'attn-bar'), 'wait-dismiss').length, 0);
+  });
 });
 
 describe('render elapsedText', () => {
@@ -2680,10 +2688,10 @@ describe('render loneWaitCard', () => {
     assert.equal(draw(PERMISSION).attrs['data-lone-wait'], 'sess-2|');
   });
 
-  test('the banner comes first: the bar with the wait age, then the header and the quoted text', () => {
+  test('the banner comes first: the bar with the wait age and Dismiss, then the header and the quoted text', () => {
     const card = draw(QUESTION);
     assert.equal(card.children[0].className, 'attn-bar');
-    assert.equal(textOf(card.children[0]), '◈ WAITING ON YOU · 4m 12s');
+    assert.equal(textOf(card.children[0]), '◈ WAITING ON YOU · 4m 12sDismiss');
     assert.equal(card.children[1].className, 'attn-text');
     assert.equal(card.children[1].textContent, 'Next step: "Which retry strategy?"');
     assert.equal(card.children[2].tagName, 'header');
@@ -2707,7 +2715,7 @@ describe('render loneWaitCard', () => {
     assert.equal(byClass(card, 'wait-dismiss').length, 1);
   });
 
-  test('the head shows the lamp, the wait kind, the branch, the repo name and the Dismiss button', () => {
+  test('the head shows the lamp, the wait kind, the branch and the repo name', () => {
     const head = oneByClass(draw(PERMISSION), 'pipe-head');
     assert.equal(head.tagName, 'header');
     assert.deepEqual(classesOf(head.children[0]), ['lamp', 'running', 'waiting']);
@@ -2718,12 +2726,20 @@ describe('render loneWaitCard', () => {
     assert.equal(head.children[2].className, 'pipe-branch');
     assert.equal(head.children[2].textContent, 'fix/refund-rounding');
     assert.equal(head.children[2].attrs.title, 'fix/refund-rounding');
-    const side = head.children[3];
-    assert.equal(side.className, 'pipe-side');
-    assert.equal(side.children[0].className, 'pipe-repo');
-    assert.equal(side.children[0].textContent, 'payments-service');
-    assert.equal(side.children[0].attrs.title, '/src/payments');
-    assert.equal(side.children[1].className, 'wait-dismiss');
+    assert.equal(head.children.length, 4);
+    assert.equal(head.children[3].className, 'pipe-repo near');
+    assert.equal(head.children[3].textContent, 'payments-service');
+    assert.equal(head.children[3].attrs.title, '/src/payments');
+    assert.equal(byClass(head, 'wait-dismiss').length, 0);
+  });
+
+  test('the Dismiss button is the last child of the banner bar, after the wait age', () => {
+    const bar = oneByClass(draw(PERMISSION), 'attn-bar');
+    const last = bar.children[bar.children.length - 1];
+    assert.equal(last.className, 'wait-dismiss');
+    assert.equal(bar.children[bar.children.length - 2].className, 'attn-elapsed');
+    assert.equal(last.attrs['data-wait-kind'], 'permission');
+    assert.equal(last.attrs['data-repo'], '/src/payments');
   });
 
   test('a wait with no branch has no branch heading', () => {

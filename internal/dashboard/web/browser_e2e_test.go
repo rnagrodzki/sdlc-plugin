@@ -491,8 +491,9 @@ func browserSnapshotOf(t *testing.T, base string) tools.DashboardSnapshot {
 //  2. History: a delete of a row that is already gone shows the server
 //     message and changes no file; a delete of a row removes it.
 //  3. Pipelines: lone waits come before the ship block, a repo scope that has
-//     only a lone wait shows the card and no empty text, and Dismiss removes
-//     the record file.
+//     only a lone wait shows the card and no empty text, the card has Dismiss
+//     in its banner bar and the repo name near the branch, and Dismiss
+//     removes the record file.
 //  4. Review queue: the ship run has a review tile and no received-review tile
 //     or section button, a row opens in the detail viewer, and the source
 //     filter stays after a new snapshot.
@@ -685,6 +686,13 @@ func TestBrowserE2E(t *testing.T) {
 			waits[0].querySelector('[data-wait-dismiss]').getAttribute('data-repo') === `+browserJSON(repoB)+` &&
 			feed.querySelectorAll('[data-key]').length === 0 &&
 			feed.querySelectorAll('[data-empty]').length === 0;
+	})()`)
+	page.wait("Dismiss in the banner bar and the repo name near the branch", `(function () {
+		var card = document.querySelector('#feed [data-lone-wait]');
+		var button = card.querySelector('[data-wait-dismiss]');
+		var branch = card.querySelector('.pipe-branch').getBoundingClientRect();
+		var repo = card.querySelector('.pipe-head .pipe-repo').getBoundingClientRect();
+		return !!button.closest('.attn-bar') && repo.left - branch.right < 40;
 	})()`)
 	page.click("Dismiss of the wait of repo B", `#feed [data-wait-dismiss=`+browserJSON(browserWaitB.key())+`]`)
 	page.waitFor("the record file of repo B to go", func() bool {

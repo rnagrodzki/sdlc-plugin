@@ -455,6 +455,8 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .pipe-dur .dur-label { font-family: var(--font-sign); font-weight: 600; font-size: 10.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--rail); }
 .pipe-side { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .pipe-repo { font-family: var(--font-sign); font-weight: 600; font-size: 12.5px; color: var(--rail); }
+/* In a lone-wait card the repo name follows the branch, close to the banner. */
+.pipe-repo.near { flex: 0 0 auto; }
 /* A lone-wait card is a .pipe-block.attn with a head and no tiles. Dismiss is a plain text button. */
 .wait-dismiss {
   appearance: none;
@@ -470,6 +472,8 @@ details[open] > summary .chev { transform: rotate(90deg); }
 }
 .wait-dismiss:hover,
 .wait-dismiss:focus-visible { color: var(--ivory); border-color: var(--scan-cyan-dim); }
+/* In the banner bar the button sits right after the wait age. */
+.attn-bar .wait-dismiss { margin-left: 12px; padding: 1px 8px; vertical-align: middle; letter-spacing: 0; }
 .pipe-status { font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); }
 .pipe-status.running { color: var(--signal-amber); }
 .pipe-status.failed { color: var(--signal-red); }

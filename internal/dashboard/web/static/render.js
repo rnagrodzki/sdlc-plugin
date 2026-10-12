@@ -194,8 +194,8 @@
   /**
    * The card of one lone wait: an open wait that no shown pipeline owns. It
    * has the wait banner of a pipeline (the bar with the wait age, then the
-   * header and the text), then a head with a lamp, the wait kind, the branch,
-   * the repo name and the Dismiss button. The card and the button carry the
+   * header and the text), then a head with a lamp, the wait kind, the branch
+   * and the repo name. The Dismiss button sits in the bar. The card and the button carry the
    * key `sessionId|toolUseId`, with an empty toolUseId for a permission wait.
    * The click handler in app.js reads data-wait-dismiss, data-wait-kind and
    * data-repo.
@@ -219,7 +219,7 @@
     var branch = wait.branch ? el(doc, 'h2', 'pipe-branch', wait.branch) : null;
     if (branch) branch.setAttribute('title', wait.branch);
 
-    var repoName = el(doc, 'span', 'pipe-repo', repo.name);
+    var repoName = el(doc, 'span', 'pipe-repo near', repo.name);
     repoName.setAttribute('title', repo.root);
 
     var dismiss = el(doc, 'button', 'wait-dismiss', 'Dismiss');
@@ -233,10 +233,13 @@
       lamp,
       el(doc, 'span', 'pipe-kind', wait.kind),
       branch,
-      append(el(doc, 'span', 'pipe-side'), [repoName, dismiss]),
+      repoName,
     ]);
-    // The banner comes first, as it does in the block of a pipeline.
-    append(card, attentionRows(doc, view, wait, at));
+    // The banner comes first, as it does in the block of a pipeline. The
+    // Dismiss button sits in the bar, right after the wait age.
+    var rows = attentionRows(doc, view, wait, at);
+    rows[0].appendChild(dismiss);
+    append(card, rows);
     return append(card, [head]);
   }
 
