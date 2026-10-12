@@ -449,7 +449,7 @@ func TestPlanSkillsNoOrchestratorReferences(t *testing.T) {
 // point. A deliberate future change to any of these files (e.g. a real
 // content fix) must update its pinned hash here in the same commit.
 var planSkillsReferenceFileHashes = map[string]string{
-	"skills/plan/g17-dimension-coverage-prompt.md":    "d70ec0452c98aa899231c7dace16c1cc643e6bf534df7b89b34b8c85e202e88c",
+	"skills/plan/g17-dimension-coverage-prompt.md":    "5e5ce6093275c3b5e82c943fa3f6ed43c074cfababb3ebde287b8db3da599872",
 	"skills/plan/intake-verify-prompt.md":             "eeae004f3a04a9382988fbf160b9e15d038300c50abb9c60ff2d168b6906b724",
 	"skills/plan/lane-content-coverage-prompt.md":     "3cdb91f357683fd5519e6c5f937a2bbacc6d357639f19239d0e31ad472cb5ae8",
 	"skills/plan/lane-file-existence-prompt.md":       "b3b761ebd1c9a1b20c1228a317fb074d769dccaa0ef0ed6034ceb3eb77a56c9d",

@@ -209,16 +209,16 @@ orchestrator uses this as additional evidence — e.g. if the same guardrail hit
 appears in 3+ recent runs, proposal severity should escalate.
 
 The manifest's `surfaces.skillRecommendations` array (the `skill-recommendation`
-surface) is additional evidence in the same spirit as `history`, not an
-edit-proposal surface: it sources `learnings_log`'s `stats` action for
+surface) is additional evidence in the same spirit as `history`. It is never a
+proposal surface. It sources `learnings_log`'s `stats` action for
 recurring mined "Rule: ..." lessons (patterns seen 3+ times) and surfaces each
 as `{suggested, reason, patternCount, priority}`, where `priority` is
 `high`/`medium`/`low` based on how often the pattern recurs. It has no
-`targetFile` to edit — like `surfaces.errorReportSkillPath`, it is context for
-the orchestrator's rationale (e.g. "this recurring pattern suggests a new
-skill or guardrail, not just a one-off config edit"), never something Step 5
-applies via Edit/Write. When no learnings exist yet, this array is empty and
-the rest of the manifest is unaffected.
+`targetFile` to edit, so Step 5 never applies an entry of this array. The
+entries feed proposals. The orchestrator turns an entry with no covering rule
+into a proposal with `evidence: "learning"` on one of the four real surfaces.
+Step 5 applies that proposal like any other proposal. When no learnings exist
+yet, this array is empty and the rest of the manifest is unaffected.
 
 **Do NOT read the full manifest file contents into the main context yet.**
 Step 2 needs only the classification preview (a small subset), and Step 3 hands
@@ -800,12 +800,12 @@ When the user selects **apply** (or `--auto` treats the proposal as applied):
    proposal.
 
 `surface == "skill-recommendation"` is advisory-only manifest data (see
-Step 1), not an edit-proposal surface — the orchestrator's Step 2 only
-iterates the four user-side surfaces above and never reads
-`surfaces.skillRecommendations`, so this case is not expected to occur. If a
-proposal with this `surface` value ever arrives anyway, skip it without
-applying (do not Edit/Write, do not validate, do not check) and continue to
-the next proposal: there is no `targetFile` to safely resolve for it.
+Step 1), not an edit-proposal surface. It has no `targetFile`. Its entries feed
+proposals with `evidence: "learning"`, and those proposals name one of the four
+surfaces above. So this case is not expected to occur. If a proposal with this
+`surface` value ever arrives anyway, skip it without applying (do not
+Edit/Write, do not validate, do not check) and continue to the next proposal:
+there is no `targetFile` to safely resolve for it.
 
 **For `surface == "plan-guardrails"` or `"execute-guardrails"`** — `validate`'s
 `guardrails` action accepts `candidatesJson`, so these two surfaces are checked

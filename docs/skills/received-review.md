@@ -95,12 +95,24 @@ is the finding named `UNACCOUNTED` in the ledger. It is never silently dropped.
 are no review threads to reply to. The reply-posting and reply-verification
 steps are skipped outright; only the run's summary and ledger are shown.
 
+**A finding that is already deferred.** A finding can arrive with a
+`**Deferred-id:**` line. The line means the finding is already a deferred item.
+`/ship` sends such findings in the fix pass of its [`harden` step](ship.md).
+This skill fixes the finding or leaves it deferred under the same id. It never
+defers the finding a second time, so the backlog gets no duplicate. On a live
+`/ship` run, a fix resolves the deferred item. The summary lists each finding
+that stays deferred as `<file:line> stays deferred as <id>`.
+
 **It also reaches `/harden`.** Step 11.6 clusters the findings by file and
 dispatches [`/harden --auto`](harden.md) for each cluster (capped at 5), which
-applies strengthen-only guardrail and review-dimension edits to your project
-without a confirmation prompt. Each edit is listed under "Auto-accepted" in the
-summary this skill relays back. Pass `--no-harden` to skip this dispatch — for
-example when `/ship`'s own `harden` step already owns hardening for the run.
+applies guardrail and review-dimension edits (add, tighten, repair, and removal
+of a rule with a dead reference) to your project without a confirmation prompt.
+Merges and other removals wait as pending deferred items, as
+[`/harden`](harden.md#auto-mode-and-pending-edits) describes. Each applied edit
+is listed under "Auto-accepted", and each pending edit under "Pending", in the
+summary this skill relays back. Pass
+`--no-harden` to skip this dispatch — for example when `/ship`'s own `harden`
+step already owns hardening for the run.
 
 ## Fix progress on the dashboard
 

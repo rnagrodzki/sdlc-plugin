@@ -641,9 +641,13 @@ List `suppressed[]` and `loneDisagree[]` verbatim in the Step 12 summary.
    `--auto` — see [`../harden/review-clusters.md`](../harden/review-clusters.md) `## Dispatch`.
 2. On dispatch failure: note it in the Step 12 summary (`harden dispatch failed — file=<key>`)
    and continue to the next cluster. Do NOT abort Step 11.7 or Step 12.
-3. When `--auto` was passed, harden auto-accepts its proposals and lists them under
-   `Auto-accepted` in its own output. Copy those lines into the Step 12 summary, so the
-   hardening edits made without a prompt are visible to the user.
+3. When `--auto` was passed, harden applies only the edits that its Step 5 `--auto` table
+   allows. It stores the other proposals as pending deferred items. In its own output, it
+   lists the applied edits under `Auto-accepted` and the stored proposals under
+   `Pending (needs a person …)`. Copy the `Auto-accepted` lines and the
+   `Pending (needs a person …)` lines into the Step 12 summary. Copy the
+   `Pending (NOT stored — copy them by hand)` lines too, when they appear. Then the user
+   sees the edits made without a prompt and the edits that still wait.
 
 ---
 

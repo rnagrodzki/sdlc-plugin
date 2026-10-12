@@ -204,6 +204,37 @@ func TestHardenSkillParity(t *testing.T) {
 			t.Error("harden/SKILL.md still says strengthen-only, but harden now removes rules in two cases")
 		}
 	})
+
+	// The skill-recommendation entries are not a proposal surface, but the
+	// orchestrator turns them into proposals with evidence "learning" on one
+	// of the four real surfaces, and Step 5 applies those proposals. The
+	// pins run on the text with whitespace folded, because the sentences wrap
+	// across lines in SKILL.md. Each pin occurs once.
+	t.Run("skill_recommendation_contract", func(t *testing.T) {
+		skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "harden", "SKILL.md"))
+		flat := strings.Join(strings.Fields(skill), " ")
+		for _, want := range []string{
+			// Step 1: the array is context that feeds proposals.
+			"It is never a proposal surface.",
+			"`targetFile` to edit, so Step 5 never applies an entry of this array.",
+			"into a proposal with `evidence: \"learning\"` on one of the four real surfaces. Step 5 applies that proposal like any other proposal.",
+			// Step 5a: a proposal with the advisory surface is still skipped.
+			"Its entries feed proposals with `evidence: \"learning\"`, and those proposals name one of the four surfaces above.",
+			"skip it without applying (do not Edit/Write, do not validate, do not check)",
+		} {
+			hardenSkillsAssertOnce(t, "harden/SKILL.md", flat, want)
+		}
+		if strings.Contains(flat, "never reads `surfaces.skillRecommendations`") {
+			t.Error("harden/SKILL.md says the orchestrator never reads surfaces.skillRecommendations, but it drafts learning proposals from it")
+		}
+		agent := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "agents", "harden-orchestrator.md"))
+		for _, want := range []string{
+			"becomes a proposal with `evidence: \"learning\"`",
+			"When no rule covers the pattern, draft a proposal with `evidence: \"learning\"`.",
+		} {
+			hardenSkillsAssertOnce(t, "harden-orchestrator.md", agent, want)
+		}
+	})
 }
 
 // hardenSkillsAssertOnce reports an error unless text holds want exactly

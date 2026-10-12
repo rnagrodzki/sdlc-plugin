@@ -229,4 +229,34 @@ func TestReceivedReviewSkillParity(t *testing.T) {
 			}
 		}
 	})
+
+	// Under --auto, harden applies only the edits of its --auto table and
+	// stores the rest as pending deferred items. Step 11.6 must copy the
+	// Auto-accepted lines and the Pending lines of the harden output into the
+	// Step 12 summary, and the Pending headings must exist in harden's 5d
+	// summary. The pins run on the text with whitespace folded, because the
+	// sentences wrap across lines. Each pin occurs once.
+	t.Run("harden_pending_lines_are_relayed", func(t *testing.T) {
+		skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "received-review", "SKILL.md"))
+		flat := strings.Join(strings.Fields(skill), " ")
+		for _, want := range []string{
+			"harden applies only the edits that its Step 5 `--auto` table allows. It stores the other proposals as pending deferred items.",
+			"Copy the `Auto-accepted` lines and the `Pending (needs a person …)` lines into the Step 12 summary.",
+			"Copy the `Pending (NOT stored — copy them by hand)` lines too, when they appear.",
+		} {
+			hardenSkillsAssertOnce(t, "received-review/SKILL.md", flat, want)
+		}
+		if strings.Contains(flat, "harden auto-accepts its proposals") {
+			t.Error("received-review/SKILL.md says harden auto-accepts its proposals, but harden holds back some edits as pending deferred items under --auto")
+		}
+
+		harden := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "harden", "SKILL.md"))
+		for _, want := range []string{
+			"Auto-accepted:\n",
+			"Pending (needs a person — stored as deferred item {id}):\n",
+			"Pending (NOT stored — copy them by hand):\n",
+		} {
+			hardenSkillsAssertOnce(t, "harden/SKILL.md 5d block", harden, want)
+		}
+	})
 }

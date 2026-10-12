@@ -395,7 +395,7 @@
     },
     "harden": {
       "type": "object",
-      "description": "Settings for the harden skill. Its keys guide how harden drafts its proposals. No setting relaxes harden's strengthen-only rule.",
+      "description": "Settings for the harden skill. Its keys guide how harden drafts its proposals. No setting lets harden relax a rule or remove a rule outside its two removal cases.",
       "properties": {
         "instructions": {
           "type": "object",

@@ -81,13 +81,56 @@ them via `--steps`):
   default branch, and run `/ship --plan <plan-file>` again.
 - `harden` — Groups the review findings into clusters and runs `/harden` on
   each one. It commits the guardrail, review-dimension, and Copilot-instruction
-  edits as a separate commit before the PR. It runs after `archive-openspec`.
-  Outside `--auto`, it asks before
+  edits as a separate commit before the PR. Then it runs one fix pass for the
+  deferred findings that are below the review threshold, with its own commit.
+  The fix pass sends those findings to [/received-review](received-review.md),
+  which fixes each one or leaves it deferred. A fix pass that changes nothing
+  ends as `Fix pass: 0 changes`, with no commit. The fix pass does not run
+  when the working tree has uncommitted changes outside `.sdlc-v2/` and
+  `openspec/`, so its commit holds only its own edits. A failed fix pass ends
+  in one of four ways:
+  - The pass fails, you stop it, or it returns no result, and it changed no
+    file. The findings stay deferred, and the step completes.
+  - The pass fails after it changed files. `/ship` commits those files as the
+    fix-pass commit. The findings that the pass did not fix stay deferred.
+  - The `git status` check of the working tree fails. The step fails, and
+    `/ship` dispatches nothing more.
+  - The staging or the commit of the fix-pass edits fails. The step fails. The
+    findings that the pass already fixed stay fixed, and the edits stay in your
+    working tree.
+
+  The step runs after `archive-openspec`. Outside `--auto`, it asks before
   each cluster. It skips when there are no review findings, when no cluster
-  qualifies, or when the harden files already have uncommitted edits before
-  the step starts. On `--resume`, a cluster already hardened is not run
-  again. When `harden` is configured,
+  qualifies and no deferred finding is left to fix, or when the harden files
+  already have uncommitted edits before the step starts. On `--resume`, a
+  cluster already hardened is not run again, and a fix pass that has its commit
+  is not run again. If a resume finds uncommitted fix-pass edits, `/ship` asks
+  whether to commit them. With `--auto` it fails the step instead. When
+  `harden` is configured,
   `received-review` gets `--no-harden`, so hardening runs only once.
+
+  ```mermaid
+  flowchart LR
+    subgraph Before
+      B1[Review and review fix step] --> B2[Below-threshold deferred]
+      B2 --> B3[Clusters omit below-threshold]
+      B3 --> B4[Harden per cluster]
+      B4 --> B5[Harden commit]
+      B5 --> B6[PR]
+    end
+    subgraph After
+      A1[Review and review fix step] --> A2[Below-threshold deferred with body]:::changed
+      A2 --> A3[Clusters keep them, split fix-now]:::changed
+      A3 --> A4[Harden per cluster]
+      A4 --> A5[Harden commit]
+      A5 --> A6[One fix pass for fix-now]:::new
+      A6 --> A7[Fix-pass commit]:::new
+      A7 --> A8[PR]
+    end
+    classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px
+    classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
+  ```
+
 - `verify-pipeline` — Polls CI after the PR is created and analyzes or fixes
   failures.
 - `await-remote-review` — Waits for an automated reviewer (e.g. Copilot) to
@@ -138,8 +181,9 @@ dispatch records a decision only, with `decide` on `received-review`. It
 makes no second `begin-step`, because that would set the completed step back
 to `in_progress`. On
 routes 3 to 6, ship dispatches nothing. A finding below the threshold is not
-lost: ship saves it for [/deferred](deferred.md). After the step, ship goes
-on with the rebase.
+lost: ship saves it for [/deferred](deferred.md). When the `harden` step is
+configured, it tries to fix these findings first. After the step, ship goes on
+with the rebase.
 
 On `--resume`, the saved status of the step decides what ship does:
 
@@ -251,7 +295,8 @@ deferred findings. Three parts of that summary are worth knowing about:
 
       UNACCOUNTED: 2 finding(s) have no fix or deferral record
 
-  An unbalanced ledger is a reporting bug worth seeing.
+  An unbalanced ledger is a reporting bug worth seeing. A deferred finding that
+  the `harden` fix pass fixes counts as fixed, not as deferred.
 
 - **Review gaps.** When the review skips a dimension (the worker stalled twice
   or never checked in) or names a worker that may still be running, `/ship`
@@ -263,7 +308,9 @@ deferred findings. Three parts of that summary are worth knowing about:
   than fixed, plus any issue drafts the execute step raised. If there are
   none, nothing is printed. If there are, it offers the same triage flow
   [/deferred](deferred.md) runs: file GitHub issues for the ones worth
-  filing, resolve the rest, or leave them for later. With `--auto`, the open
+  filing, resolve the rest, or leave them for later. A `harden-pending` item
+  (rule edits that `/harden --auto` held back) is offered as a harden run, not
+  as an issue. With `--auto`, the open
   items are still listed but the triage question is not asked — they stay
   open for a later run. The execute-step issue drafts are the exception: they
   are offered even under `--auto`, because creating a GitHub issue always
@@ -280,7 +327,8 @@ summary into ship state, then deletes the linked plan run that the report still 
 per-wave task outcomes, step timings, CLI evidence, drift/error/warning
 counts, guardrail hits, any deferred findings or pending issue drafts, the
 review ledger, a Review waves table, self-healing changes (fixes and hardening this run recorded,
-plus the harden step's own commit when it ran), and the linked plan's
+plus the result of the harden step, with its own commit and the fix-pass
+commit when they ran), and the linked plan's
 planning time (start to its last edit — this ends at the last time the plan
 file was modified, not at the moment the plan was accepted, so it reflects
 time actually spent on the plan). The Review waves table has one row for each
@@ -314,6 +362,8 @@ step silently — nothing is written.
 - [/review](review.md) — Review step.
 - [/harden](harden.md) — Opt-in `harden` step: turns clustered review
   findings into guardrail, review-dimension and Copilot-instruction edits.
+  It then runs one fix pass for the deferred findings below the review
+  threshold.
 - [/pr](pr.md) — PR creation step.
 - [/verify-pipeline](verify-pipeline.md) — Optional post-PR CI verification.
 - [/deferred](deferred.md) — Triage the findings and issue drafts a run left

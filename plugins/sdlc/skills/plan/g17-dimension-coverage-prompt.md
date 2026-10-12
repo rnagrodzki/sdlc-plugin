@@ -180,7 +180,7 @@ Task tool (general-purpose):
     ## DO NOT
 
     - Execute the Copilot transform inline — reference `setup/setup-dimensions.md` Step 8 by path only.
-    - Propose REMOVING any checklist item from an existing dimension (strengthen-only invariant).
+    - Propose REMOVING any checklist item from an existing dimension (G17 proposes additions only. /sdlc:harden handles removals).
     - Emit absolute GitHub blob URLs in action lines (use relative paths or slash commands only).
     - Block plan finalization — this gate is advisory; absent proposals are not failures.
     - Re-derive `{GITHUB_HOSTING_DETECTED}` — consume the value as provided (`flag-resolution-single-source`).
