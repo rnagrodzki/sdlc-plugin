@@ -91,7 +91,10 @@ If `deferred_resolve` fails after the issue was created, say so, print the issue
 
 ### 4. Option 2: resolve without filing
 
-For each picked item, call `ship_state({action:"deferred_resolve", detail:{id:"<id>"}})`. Make no draft and no `gh` call. The pick in step 2 is the user's decision, so ask nothing more.
+Take the picked items one at a time. For each item:
+
+- **Pending rule edits.** If the item's `source` is `harden-pending`, do not call `deferred_resolve`. Resolving it closes the item and loses the rule edits. Print the same two lines as item 0 of section 3. The second line tells the user to resolve the item after the harden run. Leave the item open and go to the next item.
+- **Any other item.** Call `ship_state({action:"deferred_resolve", detail:{id:"<id>"}})`. Make no draft and no `gh` call. The pick in step 2 is the user's decision, so ask nothing more.
 
 ### 5. Close out
 

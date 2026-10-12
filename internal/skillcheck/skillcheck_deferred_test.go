@@ -133,6 +133,31 @@ func TestDeferredSkillParity(t *testing.T) {
 			t.Errorf("deferred/reference.md: the harden-pending branch (offset %d) must come before the Draft item (offset %d)", b, d)
 		}
 
+		// Option 2 must not close a harden-pending item, because resolving it
+		// loses the rule edits. The branch sits in the option 2 section, ahead
+		// of the generic resolve call, and points at the two lines of item 0.
+		// It prints no copy of them, so the once-only pins above still hold.
+		optionStart := strings.Index(reference, "### 4. Option 2")
+		optionEnd := strings.Index(reference, "### 5. Close out")
+		if optionStart < 0 || optionEnd < optionStart {
+			t.Fatalf("deferred/reference.md: cannot find the option 2 section (start %d, end %d)", optionStart, optionEnd)
+		}
+		option2 := reference[optionStart:optionEnd]
+		pendingBranch := "If the item's `source` is `harden-pending`, do not call `deferred_resolve`."
+		genericResolve := "Call `ship_state({action:\"deferred_resolve\", detail:{id:\"<id>\"}})`."
+		for _, want := range []string{
+			pendingBranch,
+			"Resolving it closes the item and loses the rule edits.",
+			"Print the same two lines as item 0 of section 3.",
+			"The second line tells the user to resolve the item after the harden run. Leave the item open and go to the next item.",
+			genericResolve,
+		} {
+			hardenSkillsAssertOnce(t, "deferred/reference.md option 2", option2, want)
+		}
+		if b, g := strings.Index(option2, pendingBranch), strings.Index(option2, genericResolve); b < 0 || g < 0 || b > g {
+			t.Errorf("deferred/reference.md option 2: the harden-pending branch (offset %d) must come before the generic resolve call (offset %d)", b, g)
+		}
+
 		// The harden skill prints the same command at both of its sites.
 		hardenSkillsAssertOnce(t, "harden/SKILL.md", hardenFlat, "Deferred triage prints the command: `"+cmd+"`.")
 		hardenSkillsAssertOnce(t, "harden/SKILL.md", hardenFlat, "A person replays the item later with `"+cmd+"`,")
@@ -151,6 +176,18 @@ func TestDeferredSkillParity(t *testing.T) {
 		}
 
 		hardenSkillsAssertOnce(t, "docs/skills/deferred.md", docs, "**Pending rule edits are not filed.**")
+
+		// The docs say that resolving without filing also leaves such an item
+		// open, in the same bullet. The bullet wraps, so compare on collapsed
+		// whitespace.
+		docsFlat := strings.Join(strings.Fields(docs), " ")
+		resolveSentence := "The choice to resolve without filing also leaves such an item open and prints the same command."
+		hardenSkillsAssertOnce(t, "docs/skills/deferred.md", docsFlat, resolveSentence)
+		bullet := strings.Index(docsFlat, "**Pending rule edits are not filed.**")
+		next := strings.Index(docsFlat, "**The durable write is best-effort.**")
+		if s := strings.Index(docsFlat, resolveSentence); bullet < 0 || next < 0 || s < bullet || s > next {
+			t.Errorf("docs/skills/deferred.md: the resolve-without-filing sentence (offset %d) must sit in the pending-edits bullet (offsets %d to %d)", s, bullet, next)
+		}
 	})
 
 	t.Run("issue_title_is_first_line", func(t *testing.T) {

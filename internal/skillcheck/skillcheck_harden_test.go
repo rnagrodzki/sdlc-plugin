@@ -147,6 +147,7 @@ func TestHardenSkillParity(t *testing.T) {
 			"| (b) | `RESULT.classification == \"plugin-defect\"` | **Step 6 — PLUGIN-DEFECT ROUTE**. Skip Step 5: no other surface edit is right for a plugin defect |",
 			"| (c) | `RESULT.proposals` is not empty | Step 5 |",
 			"| (d) | any other result (`user-code` or `ambiguous` with no proposal) |",
+			"Report `No actionable hardening proposals — the failure signal does not point at any of the loaded surfaces.`",
 			// Step 5: skips before the approval gate.
 			"it under `Skipped` in the 5d summary as `malformed merge`.",
 			"in the 5d summary as `_common.md is not a dimension`.",
@@ -233,6 +234,37 @@ func TestHardenSkillParity(t *testing.T) {
 			"When no rule covers the pattern, draft a proposal with `evidence: \"learning\"`.",
 		} {
 			hardenSkillsAssertOnce(t, "harden-orchestrator.md", agent, want)
+		}
+	})
+
+	// The orchestrator drafts repair, remove, merge and replay proposals in
+	// Step 3a to Step 3d, and the skill applies them as they come. Each pin
+	// states one rule of those steps and occurs once in the agent file, so the
+	// deletion of one sentence cannot pass because a copy stays elsewhere. The
+	// pins run on the text with whitespace folded.
+	t.Run("orchestrator_step3_contract", func(t *testing.T) {
+		agent := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "agents", "harden-orchestrator.md"))
+		flat := strings.Join(strings.Fields(agent), " ")
+		for _, want := range []string{
+			// Step 2 and Step 3a: one repair for each pre-flight finding, first.
+			"list all `repair` proposals for `preflightFindings` first, in the order of `preflightFindings`.",
+			"Draft one `repair` proposal for each entry of `preflightFindings`. Do this for every classification, `plugin-defect` included.",
+			// Step 3b: a remove names only listed dead tokens, and the two
+			// covered-by cases.
+			"Name only tokens that appear in `surfaces.deadReferences`. Never remove a rule for a token that is not in the list.",
+			"When another rule covers the whole class, draft a `remove` with `removalReason: \"covered-by\"`. Name the covering rule in `rationale` and in `extends`.",
+			"When another rule covers most of the class, draft a `merge`. `mergedInto` is the id that stays. `removalReason` is `covered-by`. `removeIds` names exactly one removed id. The `patch` and `guardrails[]` hold the new text of the id that stays.",
+			// The oldText row of a merge: the removed rule, not the kept one.
+			"For a `merge`, it is the full old text of the rule in `removeIds`, not of the rule that keeps the text.",
+			// Step 3c: the replay of a pending item.
+			"find the item with that `id` in `history.openDeferred`. Draft again each edit that its `description` lists.",
+			"When no item has that `id`, draft nothing for it and say so in `classificationRationale`.",
+			// Step 3d: the generic-rule gate.
+			"Apply the gate to each draft from Step 3c. The gate does not apply to Step 3a or Step 3b proposals.",
+			"When a draft matches the class of an existing rule, it becomes a `consolidate` (guardrail surfaces) or a `strengthen` (other surfaces). Set `extends` to that rule's id or file.",
+			"When no class can be found, drop the draft. Add one entry to `skipped.drafts`: `{\"failureClass\": \"...\", \"reason\": \"...\"}`. The `reason` says why the draft failed the gate.",
+		} {
+			hardenSkillsAssertOnce(t, "harden-orchestrator.md", flat, want)
 		}
 	})
 }

@@ -74,7 +74,9 @@ was already resolved, it says so and changes nothing.
   need a person as items with source `harden-pending`, one item for each rule
   section. Triage never files such an item as a GitHub issue. It prints the
   `/harden` command that applies the edits with your approval. The item stays
-  open until you resolve it with `/deferred --resolve <id>`.
+  open until you resolve it with `/deferred --resolve <id>`. The choice to
+  resolve without filing also leaves such an item open and prints the same
+  command.
 - **The durable write is best-effort.** If it fails, the recording tool prints a
   warning and keeps going instead of failing the call. That item then lives only
   on the run-scoped state file and is lost when that file is cleaned up, so it
