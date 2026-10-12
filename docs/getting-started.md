@@ -180,7 +180,7 @@ does these steps for each state link:
 Two operations stop at a broken link:
 
 - An archive from the dashboard stops with `ARCHIVE_FAILED` when `.sdlc-v2/run-archive`, or a folder above it, is a broken link. See [Archive a run](dashboard.md#archive-a-run).
-- `/sdlc:preplan` stops in the `plan_support` action `preplan_context` when `.sdlc-v2/preplan`, or a folder above it, is a broken link. It also stops when the topic file `<slug>.md` is a broken link.
+- `/sdlc:preplan` stops in the `plan_support` action `preplan_context` when `.sdlc-v2/preplan`, or a folder above it, is a broken link. It also stops when the topic file (`YYYY-MM-DD-<slug>.md`, or `<slug>.md` for a file from before dated names) is a broken link.
 
 For a broken folder link, the error says:
 `<link> is a link to <target>, which does not exist. Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>`

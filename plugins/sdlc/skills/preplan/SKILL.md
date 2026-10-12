@@ -25,7 +25,7 @@ absolute path as `preplanFile`.
 
 ## Topic file
 
-The tool writes the skeleton once: a `# Preplan: <topic>` heading, a `**Status:** in progress` line, and the sections below in this order. The skill never writes the skeleton and never creates the file.
+The tool writes the skeleton once: a `# Preplan: <topic>` heading, a `**Status:** in progress` line, a `**Started:** <UTC time>` line, and the sections below in this order. The skill never writes the skeleton, never creates the file, and never changes the Started line.
 
 | Section | Content |
 |---|---|
@@ -76,7 +76,7 @@ Every exit state names its next instruction:
 
 ## Step 0: Announce and take the topic
 
-Print the announce line. When the argument holds a topic, use it as the topic. When the argument is empty, ask one AskUserQuestion: "What is the short name of the topic? It becomes the topic file name." Offer a cancel option.
+Print the announce line. When the argument holds a topic, use it as the topic. When the argument is empty, ask one AskUserQuestion: "What is the short name of the topic? It becomes part of the topic file name." Offer a cancel option.
 
 - The user gives a topic: go to Step 1.
 - The user cancels: end. No file exists yet, so nothing changes.
@@ -94,7 +94,7 @@ Never call `plan_prepare`. It starts a plan run and prunes other runs.
 | Result | Next |
 |---|---|
 | success | keep `guardrails`, `preplanFile`, `preplanCreated` and `summary`. Go to Step 2 |
-| tool error (bad topic or failed create) | print the error's `## Do this` text as it is, then stop. Make no other call |
+| tool error (bad topic, two topic files that match, or failed create) | print the error's `## Do this` text as it is, then stop. Make no other call |
 
 When the `summary` holds `Warning: <warning>.`, the guardrails are unavailable. Keep `<warning>`. The dialogue continues. Step 4 records the warning.
 

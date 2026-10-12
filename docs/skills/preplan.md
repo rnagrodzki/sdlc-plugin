@@ -28,7 +28,7 @@ With no topic, the skill asks you for one.
 
 | Flag | Meaning |
 |---|---|
-| `[topic]` | short topic name. It becomes the topic file name |
+| `[topic]` | short topic name. It becomes part of the topic file name |
 
 The topic must be on one line. It must have 1 to 50 characters and at least
 one ASCII letter or digit. If the topic is not valid, the skill prints the
@@ -37,7 +37,8 @@ error and stops. It creates no file.
 ## Topic file
 
 The skill keeps all its state in one Markdown file:
-`.sdlc-v2/preplan/<name>.md`. The name comes from the topic in four steps:
+`.sdlc-v2/preplan/<date>-<name>.md`. `<date>` is the UTC date of the first
+run, as `YYYY-MM-DD`. The name comes from the topic in four steps:
 
 1. The skill changes the topic to lowercase.
 2. The skill keeps only the ASCII letters `a-z` and the digits `0-9`. It
@@ -46,9 +47,23 @@ The skill keeps all its state in one Markdown file:
 3. Each run of hyphens becomes one hyphen.
 4. The skill removes the hyphens at the start and at the end.
 
-The topic `Auth flow` gives `.sdlc-v2/preplan/auth-flow.md`. The topic
-`Café login` gives `.sdlc-v2/preplan/caf-login.md`. The file is in the main
-worktree, so every worktree of the repo sees the same file.
+On 2026-10-12 the topic `Auth flow` gives `.sdlc-v2/preplan/2026-10-12-auth-flow.md`.
+The topic `Café login` gives `.sdlc-v2/preplan/2026-10-12-caf-login.md`.
+
+A later run with the same topic continues the file named exactly
+`<name>.md` or `YYYY-MM-DD-<name>.md`. A file with no date, from before
+this rule, keeps its name. If two files match, the skill stops and names
+them. Rename or delete one of them, then run the skill again. If the
+folder holds more than 10000 names, the skill stops. Move old topic files
+out of the folder, then run the skill again.
+
+A new topic file has a `**Started:**` line after the `**Status:**` line.
+It holds the UTC time of the first run. The dashboard shows the time from
+this line to the last change of the file as the duration. A file with no
+Started line shows a dash.
+
+The topic file is in the main worktree, so every worktree of the repo sees
+the same file.
 
 The skill asks the `plan_support` tool to create the file once, with these
 sections in this order:
@@ -145,7 +160,7 @@ again.
 
     /preplan auth flow
 
-Creates `.sdlc-v2/preplan/auth-flow.md` and asks the first question. Each
+Creates `.sdlc-v2/preplan/2026-10-12-auth-flow.md` (on 2026-10-12, UTC) and asks the first question. Each
 answer goes into the file before the next question.
 
 **Start without a topic:**
@@ -159,12 +174,12 @@ file is created.
 
     /preplan auth flow
 
-The file `auth-flow.md` already exists, so the skill keeps it as it is and
+The file `2026-10-12-auth-flow.md` already exists, so the skill keeps it as it is and
 lists its open questions. Then the dialogue goes on from there.
 
 **Plan from a topic file without the handoff:**
 
-    /plan .sdlc-v2/preplan/auth-flow.md
+    /plan .sdlc-v2/preplan/2026-10-12-auth-flow.md
 
 Use this after you chose "Stop" at the handoff, or when the plan skill
 stopped with an error.

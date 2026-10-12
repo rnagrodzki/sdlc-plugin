@@ -54,7 +54,8 @@ const (
 	ScratchSubdir          = "scratch"
 	BackupsSubdir          = "backups"
 	// PreplanSubdir is the subdirectory (under DataDir) that holds the preplan
-	// files, one <slug>.md file for each topic. A linked worktree links it to
+	// files, one YYYY-MM-DD-<slug>.md file for each topic (or <slug>.md from
+	// before dated names). A linked worktree links it to
 	// the main worktree through LinkedStateEntries.
 	PreplanSubdir = "preplan"
 	// RunArchiveSubdir is the subdirectory (under DataDir) that holds archived
