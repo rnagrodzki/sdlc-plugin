@@ -153,7 +153,7 @@ Each proposal has this shape:
 | `failureClass` | The class of failure the rule catches, in one sentence. The condition is a class, never one file or one tool name. A name may appear only as an example |
 | `extends` | The id (guardrail) or the file (dimension, instruction) of the existing rule that the proposal changes. For a `merge`, it equals `mergedInto`. For a `remove` with `removalReason: "covered-by"`, it is the id or file of the covering rule. `null` for an `add` |
 | `evidence` | `failure` (from `failure.text` or a pending rule edit), `learning` (from `surfaces.skillRecommendations`), `preflight` (from `preflightFindings`), or `dead-reference` (from `surfaces.deadReferences`) |
-| `oldText` | The full old text of the rule, unchanged. Required for `repair`, `remove` and `merge`. `null` for the other actions |
+| `oldText` | The full old text of the rule, unchanged. Required for `repair`, `remove` and `merge`. For a `merge`, it is the full old text of the rule in `removeIds`, not of the rule that keeps the text. `null` for the other actions |
 | `removalReason` | `dead-reference`, `covered-by` or `preflight-finding` when the proposal deletes a rule id. A `remove` for a dead reference uses `dead-reference`. A `remove` or a `merge` for a covering rule uses `covered-by`. A `repair` that splits an oversize rule uses `preflight-finding`. `null` otherwise |
 | `removeIds` | The ids the proposal deletes. `[]` when it deletes none |
 | `mergedInto` | For a `merge`, the id that keeps the merged text. `null` otherwise |

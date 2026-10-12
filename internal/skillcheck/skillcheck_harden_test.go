@@ -51,6 +51,8 @@ func TestHardenSkillParity(t *testing.T) {
 			"learnings_log:read", "learnings_log:append", "learnings_log:remove",
 			"validate:guardrails", "validate:dimensions",
 			"dimensions_render_instructions",
+			"setup_write_sections",
+			"ship_state:deferred_add",
 		)
 	})
 
@@ -85,8 +87,8 @@ func TestHardenSkillParity(t *testing.T) {
 
 	// The agent file is the contract for the proposal JSON that the harden
 	// skill dispatches the orchestrator for. The agent file must keep the model
-	// pin, the full action set, the skipped.drafts list and the failureClass
-	// field of the proposal shape. The harden skill must pin the same model in
+	// pin, the full action set, the skipped.drafts list, the failureClass
+	// field of the proposal shape and the oldText rule of a merge. The harden skill must pin the same model in
 	// both of its Agent dispatches.
 	t.Run("orchestrator_contract", func(t *testing.T) {
 		agent := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "agents", "harden-orchestrator.md"))
@@ -97,6 +99,9 @@ func TestHardenSkillParity(t *testing.T) {
 			// The proposal-shape row. The bare field name occurs in several
 			// other places, so it cannot pin the shape.
 			`"failureClass": "one sentence`,
+			// The skill compares the oldText of a merge with the removed
+			// rule, so the agent must draft it from that rule.
+			"For a `merge`, it is the full old text of the rule in `removeIds`",
 		} {
 			if !strings.Contains(agent, want) {
 				t.Errorf("harden-orchestrator.md lacks %q", want)
@@ -118,4 +123,99 @@ func TestHardenSkillParity(t *testing.T) {
 			t.Errorf("harden/SKILL.md still pins the orchestrator to haiku: %q", m)
 		}
 	})
+
+	// The harden skill repairs pre-flight findings, deletes rules with a JSON
+	// null in setup_write_sections, and under --auto stores the edits that
+	// need a person as one deferred item for each section. The deferred
+	// triage skill replays such an item with the failure text
+	// "Pending rule edits: <id>". This subtest reads SKILL.md only. Each pin
+	// is a full line or a phrase that occurs once in SKILL.md, and the subtest
+	// asserts that count, so the deletion of one site cannot pass because a
+	// copy of the same text stays elsewhere.
+	t.Run("repair_remove_pending_contract", func(t *testing.T) {
+		skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "harden", "SKILL.md"))
+		for _, want := range []string{
+			// Step 0 and Step 5: the replay command of a pending item.
+			"`/sdlc:harden --failure-text \"Pending rule edits: <id>\" --skill deferred`.",
+			"`/sdlc:harden --failure-text \"Pending rule edits: <id>\" --skill deferred`,",
+			// Step 1: the pre-flight print line.
+			"Pre-flight findings: <preflightFindingCount> (repair proposals come first)",
+			// Step 3: the foreground dispatch needs no TaskStop.
+			"agent ends with its result, so no `TaskStop` is needed.",
+			// Step 4: the four ordered routes.
+			"| (a) | `RESULT.proposals` holds at least one `repair` proposal | Step 5. For `plugin-defect`, Step 5 holds only the repairs, and Step 6 runs after 5e |",
+			"| (b) | `RESULT.classification == \"plugin-defect\"` | **Step 6 — PLUGIN-DEFECT ROUTE**. Skip Step 5: no other surface edit is right for a plugin defect |",
+			"| (c) | `RESULT.proposals` is not empty | Step 5 |",
+			"| (d) | any other result (`user-code` or `ambiguous` with no proposal) |",
+			// Step 5: skips before the approval gate.
+			"it under `Skipped` in the 5d summary as `malformed merge`.",
+			"in the 5d summary as `_common.md is not a dimension`.",
+			"summary as `not repairable: no rule id`.",
+			"5d summary as `stale oldText`.",
+			// Step 5: the --auto table rows that wait for a person.
+			"| remove, `removalReason: \"covered-by\"` | ask | pending |",
+			"| merge | ask | pending |",
+			// Step 5: the preview shows the old text in full.
+			"{oldText, in full}",
+			// Step 5: the pending item ids, one for each section, the write
+			// call with its source and merge flag, and the returned id.
+			"| `plan-guardrails` | `plan guardrails` | `harden-pending-plan` |",
+			"| `execute-guardrails` | `execute guardrails` | `harden-pending-execute` |",
+			"| `review-dimensions` | `review dimensions` | `harden-pending-dimensions` |",
+			"| `copilot-instructions` | `copilot instructions` | `harden-pending-copilot` |",
+			`ship_state({action:"deferred_add", detail:{id:"harden-pending-plan", source:"harden-pending", merge:true,`,
+			"Use the returned `id` as `<id>` in the 5d",
+			// 5a guardrail path: scoped checks, remove candidates and null deletes.
+			"| add, strengthen, consolidate, repair | `validate guardrails`, `candidatesJson:[<entries>]` | `setup_write_sections`, `{\"<section>.guardrails.<id>\": {...}}` | `validate guardrails`, `scopeIds:[<ids>]` |",
+			"| split (repair of an oversize rule) | `candidatesJson:[<id>-1, <id>-2, {\"id\":\"<id>\",\"remove\":true}]` | `{\"…<id>-1\": {...}, \"…<id>-2\": {...}, \"…<id>\": null}` | `scopeIds:[\"<id>-1\",\"<id>-2\"]` |",
+			"| remove | `candidatesJson:[{\"id\":\"<id>\",\"remove\":true}]` | `{\"…<id>\": null}` | none: no id is left to check |",
+			"| merge | `candidatesJson:[<merged entry>, {\"id\":\"<old>\",\"remove\":true}]` | `{\"…<merged>\": {...}, \"…<old>\": null}` | `scopeIds:[\"<merged>\"]` |",
+			`"<section>.guardrails.<removed-id>": null,`,
+			// 5a dimension and Copilot path: the three action rows.
+			"| add, repair, strengthen, consolidate | none | Edit `targetFile` with `patch` | `validate` action `dimensions` with `file`. On a finding, revert |",
+			"| remove a whole file | none: nothing is written | delete `targetFile` | `validate` action `dimensions`. On a finding, write `oldText` back to `targetFile` |",
+			"| merge | Edit `mergedInto` with `patch`. Then `validate` action `dimensions` with `file: mergedInto`. On a finding, revert `mergedInto` and delete nothing | delete the one file in `removeIds` | `validate` action `dimensions`. On a finding, write `oldText` back to the deleted file |",
+			// 5a dimension and Copilot path: the five failure rows.
+			"| Edit of `mergedInto` fails | delete nothing | unchanged | `skipped (write failed): <error>` |",
+			"| check of `mergedInto` has a finding | revert `mergedInto`. Delete nothing | unchanged | `reverted: <finding>` |",
+			"| delete fails | revert `mergedInto` (merge only) | unchanged | `reverted: could not delete <file>: <error>` |",
+			"| check after the delete has a finding | write `oldText` back to the deleted file. Revert `mergedInto` (merge only) | unchanged | `reverted: <finding>` |",
+			"| write-back of `oldText` fails | stop the loop (the 5b halt). Print `oldText` in full | the file is gone | `NOT restored: <file> — copy the text above back by hand` |",
+			// 5b: the mirror name check and the four mirror rows.
+			"`Copilot mirror skipped: unsafe name <name>`.",
+			"| add | render the mirror (`dimensions_render_instructions`) |",
+			"| repair, strengthen, consolidate | render the mirror again when `.github/instructions/<name>.instructions.md` exists. Otherwise do nothing |",
+			"| remove, or the removed file of a merge |",
+			"| mirror render or delete fails | the halt in step 2 below, for each row |",
+			// 5d summary.
+			"harden --auto: {A} auto-accepted, {R} reverted, {S} skipped, {P} pending, {U} not processed",
+			"Pending (needs a person — stored as deferred item {id}):",
+			"Pending (NOT stored — copy them by hand):",
+			// Step 7: the removed ids and the close command of a replay run.
+			"Removed: <comma-separated rule ids and file names deleted>",
+			"`Every pending rule edit of <id> is applied or rejected. Close the item with /sdlc:deferred --resolve <id>.`",
+			// The no-relax wording that replaced strengthen-only.
+			"Never relaxes a rule. Removes a rule only for a dead reference or a covering rule.",
+			"Propose relaxing a rule, or removing a rule outside the two removal cases.",
+		} {
+			hardenSkillsAssertOnce(t, "harden/SKILL.md", skill, want)
+		}
+		if strings.Contains(strings.ToLower(skill), "strengthen-only") {
+			t.Error("harden/SKILL.md still says strengthen-only, but harden now removes rules in two cases")
+		}
+	})
+}
+
+// hardenSkillsAssertOnce reports an error unless text holds want exactly
+// once. A missing pin means its site was deleted. A pin found more than once
+// is reported too, because one copy could then hide the deletion of another.
+func hardenSkillsAssertOnce(t *testing.T, label, text, want string) {
+	t.Helper()
+	switch n := strings.Count(text, want); n {
+	case 1:
+	case 0:
+		t.Errorf("%s lacks %q", label, want)
+	default:
+		t.Errorf("%s holds %q %d times, want exactly once", label, want, n)
+	}
 }
