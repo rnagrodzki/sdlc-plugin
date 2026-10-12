@@ -10,6 +10,7 @@ package integration
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -45,7 +46,6 @@ func TestMCPStdio_PreplanContext(t *testing.T) {
 	dir := realPath(t, t.TempDir())
 	runGit(t, dir, "init", "-q")
 	preplanDir := filepath.Join(dir, ".sdlc-v2", "preplan")
-	file := filepath.Join(preplanDir, "auth-flow.md")
 
 	c := connectStdioClient(t, dir)
 	args := map[string]any{"action": "preplan_context", "topic": "auth flow"}
@@ -55,6 +55,13 @@ func TestMCPStdio_PreplanContext(t *testing.T) {
 	if !env.OK {
 		t.Fatalf("preplan_context: not ok: code=%s body=%s", env.Code, env.Body)
 	}
+	// The server dates the name with its own clock: read the name from the folder.
+	names := preplanDirEntries(t, preplanDir)
+	if len(names) != 1 || !regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}-auth-flow\.md$`).MatchString(names[0]) {
+		t.Fatalf("preplan dir entries = %v, want one YYYY-MM-DD-auth-flow.md", names)
+	}
+	name := names[0]
+	file := filepath.Join(preplanDir, name)
 	got, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatalf("topic file %s was not created: %v", file, err)
@@ -65,7 +72,7 @@ func TestMCPStdio_PreplanContext(t *testing.T) {
 	for _, want := range []string{
 		"- preplanCreated: true",
 		"- preplanFile: " + file,
-		"Created topic file auth-flow.md.",
+		"Created topic file " + name + ".",
 	} {
 		if !strings.Contains(env.Body, want) {
 			t.Errorf("first call: want %q in body, got:\n%s", want, env.Body)
@@ -91,7 +98,7 @@ func TestMCPStdio_PreplanContext(t *testing.T) {
 	for _, want := range []string{
 		"- preplanCreated: false",
 		"- preplanFile: " + file,
-		"Topic file auth-flow.md exists.",
+		"Topic file " + name + " exists.",
 	} {
 		if !strings.Contains(env.Body, want) {
 			t.Errorf("second call: want %q in body, got:\n%s", want, env.Body)
@@ -109,7 +116,7 @@ func TestMCPStdio_PreplanContext(t *testing.T) {
 	if want := "## Do this\n" + preplanWordsSuggestion; !strings.Contains(env.Body, want) {
 		t.Errorf("want the Suggestion %q in body, got:\n%s", preplanWordsSuggestion, env.Body)
 	}
-	if names := preplanDirEntries(t, preplanDir); len(names) != 1 || names[0] != "auth-flow.md" {
-		t.Errorf("preplan dir entries = %v, want only [auth-flow.md]", names)
+	if names := preplanDirEntries(t, preplanDir); len(names) != 1 || names[0] != name {
+		t.Errorf("preplan dir entries = %v, want only [%s]", names, name)
 	}
 }

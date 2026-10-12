@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/branch"
@@ -75,7 +77,7 @@ type PlanSupportIn struct {
 	StatusOnly      bool           `json:"statusOnly,omitempty" jsonschema_description:"Boolean. evidence_digest only: true returns only the writers section (poll mode). Example: true in the Step 1 POLL loop."`
 
 	// preplan_context
-	Topic string `json:"topic,omitempty" jsonschema_description:"preplan_context only (required): plain-text topic name, one line, 1-50 characters after outer spaces are trimmed, with at least one ASCII letter or digit (a-z, A-Z, 0-9). The file name is the topic lowercased, with each run of other characters turned into one hyphen, so two topics can share one file (\"Auth flow\" and \"auth-flow\" both give auth-flow.md). Example: auth flow"`
+	Topic string `json:"topic,omitempty" jsonschema_description:"preplan_context only (required): plain-text topic name, one line, 1-50 characters after outer spaces are trimmed, with at least one ASCII letter or digit (a-z, A-Z, 0-9). The file name is the topic lowercased, with each run of other characters turned into one hyphen, so two topics can share one file (\"Auth flow\" and \"auth-flow\" both give the slug auth-flow, so the file is auth-flow.md or 2026-10-12-auth-flow.md). Example: auth flow"`
 }
 
 // EvidenceItem is one evidence entry of a writer, stored in
@@ -179,7 +181,7 @@ type PlanSupportOut struct {
 	// preplan_context (Guardrails above is also set by this action).
 	// PreplanCreated is a pointer so false still renders for preplan_context
 	// while every other action omits it.
-	PreplanFile    string `json:"preplanFile,omitempty"`    // absolute <mainRoot>/.sdlc-v2/preplan/<slug>.md
+	PreplanFile    string `json:"preplanFile,omitempty"`    // absolute <mainRoot>/.sdlc-v2/preplan/<slug>.md or YYYY-MM-DD-<slug>.md
 	PreplanCreated *bool  `json:"preplanCreated,omitempty"` // true only when this call created the file
 }
 
@@ -287,7 +289,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
-- preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. The topic file is <main-worktree>/.sdlc-v2/preplan/<slug>.md. Creates it with a skeleton when it is absent, never overwrites it. Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), summary, next. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Both carry a Suggestion. A dangling symlink on the path to the topic file returns InfraError that names the link and its missing target; nothing is written. Its Suggestion for a folder link is "Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>"; for a topic-file link it is "Remove the link, then try again: rm <link>".`,
+- preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. It lists the names in <main-worktree>/.sdlc-v2/preplan/ (at most 10000) and uses the one file named exactly <slug>.md or YYYY-MM-DD-<slug>.md. With no such file it creates YYYY-MM-DD-<slug>.md (the UTC date of today) with a skeleton that holds a **Started:** line (UTC, RFC 3339); it never overwrites a file. Two or more such files return DataError that names them; nothing is written. A folder that cannot be listed (not a missing folder), or that holds more than 10000 names, returns InfraError. Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), summary, next. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Both carry a Suggestion. A dangling symlink on the path to the topic file returns InfraError that names the link and its missing target; nothing is written. Its Suggestion for a folder link is "Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>"; for a topic-file link it is "Remove the link, then try again: rm <link>".`,
 		mcpserver.Annotations{
 			Title:      "Plan support and evidence store",
 			ReadOnly:   true,
@@ -1277,10 +1279,8 @@ const (
 var PreplanStatuses = []string{preplanStatusInProgress, preplanStatusReadyForPlan, preplanStatusPaused}
 
 // preplanSkeletonTail is the text of a new topic file that follows the
-// "# Preplan: <topic>" heading line.
+// "**Started:**" line (see preplanSkeleton).
 const preplanSkeletonTail = `
-**Status:** ` + preplanStatusInProgress + `
-
 ## Goal
 
 ## Users and effect
@@ -1299,6 +1299,58 @@ const preplanSkeletonTail = `
 | Proposal | Guardrail | Severity | Result |
 |---|---|---|---|
 `
+
+// preplanNow is the clock of preplan_context; tests replace it to fix the
+// date of a new topic file and its Started line.
+var preplanNow = time.Now
+
+// preplanDirMax is the most names findPreplanFile reads from the preplan
+// folder. It is a variable so a test can lower it.
+var preplanDirMax = 10000
+
+// errPreplanDirFull reports a preplan folder with more than preplanDirMax names.
+var errPreplanDirFull = errors.New("the folder holds too many names")
+
+// preplanDatedRe matches the date prefix YYYY-MM-DD- of a topic file name.
+var preplanDatedRe = regexp.MustCompile(`^[0-9]{4}-[0-9]{2}-[0-9]{2}-`)
+
+// findPreplanFile returns the names in dir that are the topic file of slug:
+// exactly <slug>.md, or exactly YYYY-MM-DD-<slug>.md. The names are in name
+// order. A missing dir gives no names and no error. It reads at most
+// preplanDirMax+1 names; more than preplanDirMax gives errPreplanDirFull.
+func findPreplanFile(dir, slug string) ([]string, error) {
+	d, err := os.Open(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer d.Close()
+	all, err := d.Readdirnames(preplanDirMax + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if len(all) > preplanDirMax {
+		return nil, errPreplanDirFull
+	}
+	want := slug + ".md"
+	var names []string
+	for _, n := range all {
+		if n == want || (len(n) == 11+len(want) && preplanDatedRe.MatchString(n) && n[11:] == want) {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+// preplanSkeleton returns the text of a new topic file: the heading, the
+// status line, the Started line (UTC, RFC 3339) and the empty sections.
+func preplanSkeleton(topic string, started time.Time) string {
+	return "# Preplan: " + topic + "\n\n**Status:** " + preplanStatusInProgress +
+		"\n\n**Started:** " + started.UTC().Format(time.RFC3339) + "\n" + preplanSkeletonTail
+}
 
 // preplanSlug rejects a topic that cannot name a file and returns branch.Slug
 // of the topic. It expects a topic the caller already trimmed with
@@ -1331,11 +1383,15 @@ func preplanSlug(topic string) (string, error) {
 }
 
 // planPreplanContext returns the plan guardrails and the topic file path for
-// topic. It creates <mainRoot>/.sdlc-v2/preplan/<slug>.md with the skeleton
-// when the file is absent and never overwrites an existing file (O_EXCL). It
-// starts no plan run and writes no state. A bad topic returns a DomainError
-// and writes nothing; a failed create returns an InfraError. The topic is
-// trimmed once here, before preplanSlug and the file heading use it.
+// topic. It lists <mainRoot>/.sdlc-v2/preplan/ and uses the one file named
+// exactly <slug>.md or YYYY-MM-DD-<slug>.md (findPreplanFile). With no such
+// file it creates YYYY-MM-DD-<slug>.md (UTC date of preplanNow) with the
+// skeleton and its Started line; it never overwrites a file (O_EXCL). Two or
+// more such files return a DataError; a folder that cannot be listed, or
+// that holds more than preplanDirMax names, returns an InfraError.
+// It starts no plan run and writes no state. A bad topic returns a
+// DomainError and writes nothing; a failed create returns an InfraError. The
+// topic is trimmed once here, before preplanSlug and the file heading use it.
 func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 	const action = "preplan_context"
 	topic = strings.TrimSpace(topic)
@@ -1345,8 +1401,35 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 	}
 	guardrails, warning := loadGuardrails(mainRoot)
 
-	file := filepath.Join(mainRoot, paths.DataDir, paths.PreplanSubdir, slug+".md")
-	created, err := createPreplanFile(file, "# Preplan: "+topic+"\n"+preplanSkeletonTail)
+	dir := filepath.Join(mainRoot, paths.DataDir, paths.PreplanSubdir)
+	names, err := findPreplanFile(dir, slug)
+	if err != nil {
+		suggestion := fmt.Sprintf("Make %s a folder that you can read: remove or rename the file or link at that path, or give your user read permission. Then run /sdlc:preplan again.", dir)
+		if errors.Is(err, errPreplanDirFull) {
+			suggestion = fmt.Sprintf("Move old topic files out of %s. Then run /sdlc:preplan again.", dir)
+		}
+		return PlanSupportOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("%s: list %s: %v", action, dir, err),
+			Suggestion: suggestion,
+			Cause:      err,
+		}
+	}
+	now := preplanNow().UTC()
+	var name string
+	switch len(names) {
+	case 0:
+		name = now.Format("2006-01-02") + "-" + slug + ".md"
+	case 1:
+		name = names[0]
+	default:
+		list := strings.Join(names, ", ")
+		return PlanSupportOut{}, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("%s: topic %q matches %d topic files in %s: %s", action, topic, len(names), dir, list),
+			Suggestion: fmt.Sprintf("Rename or delete one of: %s. Then run /sdlc:preplan again.", list),
+		}
+	}
+	file := filepath.Join(dir, name)
+	created, err := createPreplanFile(file, preplanSkeleton(topic, now))
 	if err != nil {
 		cause := err.Error()
 		var dl *fsx.DanglingLinkError
@@ -1373,9 +1456,9 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 	}
 	next := "Read preplanFile, then ask the first question."
 	if created {
-		summary += fmt.Sprintf("Created topic file %s.md.", slug)
+		summary += fmt.Sprintf("Created topic file %s.", name)
 	} else {
-		summary += fmt.Sprintf("Topic file %s.md exists.", slug)
+		summary += fmt.Sprintf("Topic file %s exists.", name)
 		next = "Read preplanFile, then continue with its open questions."
 	}
 	if warning != "" {

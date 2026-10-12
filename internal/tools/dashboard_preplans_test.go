@@ -410,12 +410,18 @@ func TestDashboardPreplans_TopicIsTruncated(t *testing.T) {
 }
 
 // TestDashboardPreplans_ListsFileThatPreplanContextWrites checks that the
-// skeleton that preplan_context writes shows in the list with the topic and
-// the status "in progress".
+// skeleton that preplan_context writes shows in the list with the dated slug,
+// the topic, the status "in progress" and the duration from its Started line.
 func TestDashboardPreplans_ListsFileThatPreplanContextWrites(t *testing.T) {
+	setPreplanNow(t, time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC))
 	root := newOpenspecStageFixture(t, "")
 	if _, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"}); err != nil {
 		t.Fatalf("preplan_context: %v", err)
+	}
+	file := filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md")
+	changed := time.Date(2026, 10, 12, 13, 20, 0, 0, time.UTC)
+	if err := os.Chtimes(file, changed, changed); err != nil {
+		t.Fatalf("set the change time: %v", err)
 	}
 	list, warnings := dashboardPreplans(root)
 	if len(warnings) != 0 {
@@ -424,8 +430,11 @@ func TestDashboardPreplans_ListsFileThatPreplanContextWrites(t *testing.T) {
 	if len(list) != 1 {
 		t.Fatalf("rows = %v, want 1", list)
 	}
-	if list[0].Slug != "auth-flow" || list[0].Topic != "auth flow" || list[0].Status != preplanStatusInProgress {
-		t.Errorf("row = %+v, want slug auth-flow, topic \"auth flow\", status %q", list[0], preplanStatusInProgress)
+	if list[0].Slug != "2026-10-12-auth-flow" || list[0].Topic != "auth flow" || list[0].Status != preplanStatusInProgress {
+		t.Errorf("row = %+v, want slug 2026-10-12-auth-flow, topic \"auth flow\", status %q", list[0], preplanStatusInProgress)
+	}
+	if list[0].DurationMs != 4800000 {
+		t.Errorf("DurationMs = %d, want 4800000 (Started 12:00, changed 13:20)", list[0].DurationMs)
 	}
 }
 

@@ -44,7 +44,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one O_EXCL create of gitignored .sdlc-v2/preplan/<slug>.md (slug from branch.Slug, checked before the join) for preplan_context",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -491,10 +491,11 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				}
 				// preplan_context really writes the topic file: check the
 				// write stays untracked.
+				setPreplanNow(t, time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC))
 				if _, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"}); err != nil {
 					t.Fatalf("preplan_context: %v", err)
 				}
-				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")); err != nil {
+				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md")); err != nil {
 					t.Fatalf("preplan_context did not write the topic file: %v", err)
 				}
 			case "verify_pipeline_classify":
