@@ -487,7 +487,8 @@ func browserSnapshotOf(t *testing.T, base string) tools.DashboardSnapshot {
 // reads the result from disk, or reads it from the page.
 //
 // Steps:
-//  1. Preplans: the status menu writes the new **Status:** line.
+//  1. Preplans: the status menu writes the new **Status:** line, and the
+//     repo header sorts the table A to Z and keeps the focus.
 //  2. History: a delete of a row that is already gone shows the server
 //     message and changes no file; a delete of a row removes it.
 //  3. Pipelines: lone waits come before the ship block, a repo scope that has
@@ -610,6 +611,13 @@ func TestBrowserE2E(t *testing.T) {
 	if b, err := os.ReadFile(topic); err != nil || !strings.Contains(string(b), "**Status:** "+paused) || strings.Contains(string(b), "bogus") {
 		t.Errorf("topic file after the refused status = %q (err %v); want the status %q", b, err, paused)
 	}
+
+	// Step 1c: a click on the repo header sorts the Preplans table A to Z,
+	// and the focus stays on the header after the redraw.
+	t.Log("step 1c: preplan repo sort")
+	page.click("the repo sort header", `button[data-pp-sort="repo"]`)
+	page.wait("the repo sort", `document.querySelector('button[data-pp-sort="repo"]').closest('th').getAttribute('aria-sort') === 'ascending'`)
+	page.wait("the focus on the repo header", `document.activeElement && document.activeElement.getAttribute('data-pp-sort') === 'repo'`)
 
 	// Step 2: History.
 	t.Log("step 2: history delete")

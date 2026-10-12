@@ -1573,10 +1573,10 @@
   /**
    * The filter and sort state of a new page. A data refresh keeps the state;
    * a page load starts from here again.
-   * @returns {{historyOutcome: string, historySort: null, preplanStatus: string, deferredPriority: string}}
+   * @returns {{historyOutcome: string, historySort: null, preplanStatus: string, preplanSort: null, deferredPriority: string}}
    */
   function defaultUi() {
-    return { historyOutcome: 'all', historySort: null, preplanStatus: 'all', deferredPriority: 'all' };
+    return { historyOutcome: 'all', historySort: null, preplanStatus: 'all', preplanSort: null, deferredPriority: 'all' };
   }
 
   /**
@@ -1612,16 +1612,21 @@
     });
   }
 
+  // The first direction of a new Preplans sort control. A key that is not here starts with 'desc'.
+  var PREPLAN_SORT_FIRST = { repo: 'asc' };
+
   /**
    * The sort after a click on a sort control. A new control starts with the
-   * largest value first. A click on the active control flips its order.
+   * direction in firstDirs, else with the largest value first. A click on the
+   * active control flips its order.
    * @param {{key: string, dir: string}|null} sort
-   * @param {string} key finished | plan | ship | total
+   * @param {string} key finished | plan | ship | total, or a Preplans key
+   * @param {Object<string,string>} [firstDirs] first direction by key; 'desc' for a key that is not in it
    * @returns {{key: string, dir: string}}
    */
-  function nextHistorySort(sort, key) {
+  function nextHistorySort(sort, key, firstDirs) {
     if (sort && sort.key === key) return { key: key, dir: sort.dir === 'desc' ? 'asc' : 'desc' };
-    return { key: key, dir: 'desc' };
+    return { key: key, dir: (firstDirs && firstDirs[key]) || 'desc' };
   }
 
   // The sort value of a run by sort key, or null when the run has none.
@@ -1645,6 +1650,27 @@
   };
 
   /**
+   * @param {Array} list
+   * @param {{key: string, dir: string}|null} sort
+   * @param {Object<string, function(*): (number|string|null)>} values the sort value by key; null goes last in both orders
+   * @param {string|null} defaultKey the key when sort is null or unknown; null keeps the list order
+   * @returns {Array} a new array; equal items keep their order (Array.prototype.sort is stable)
+   */
+  function sortBy(list, sort, values, defaultKey) {
+    var key = sort && values[sort.key] ? sort.key : defaultKey;
+    if (!key) return (list || []).slice();
+    var sign = sort && sort.dir === 'asc' ? 1 : -1;
+    var valueOf = values[key];
+    // Array.prototype.sort is stable.
+    return (list || []).slice().sort(function (a, b) {
+      var x = valueOf(a);
+      var y = valueOf(b);
+      if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1;
+      return x === y ? 0 : (x < y ? -1 : 1) * sign;
+    });
+  }
+
+  /**
    * @param {Array} runs
    * @param {{key: string, dir: string}|null} sort null sorts by endedAt, newest first
    * @returns {Array} a new array. finished sorts by endedAt, total by totalMs,
@@ -1652,16 +1678,7 @@
    *   Runs with no value go last in both orders; equal runs keep their order.
    */
   function sortHistory(runs, sort) {
-    var key = sort && HISTORY_SORT_VALUES[sort.key] ? sort.key : 'finished';
-    var sign = sort && sort.dir === 'asc' ? 1 : -1;
-    var valueOf = HISTORY_SORT_VALUES[key];
-    // Array.prototype.sort is stable.
-    return (runs || []).slice().sort(function (a, b) {
-      var x = valueOf(a);
-      var y = valueOf(b);
-      if (x === null || y === null) return x === y ? 0 : x === null ? 1 : -1;
-      return x === y ? 0 : (x < y ? -1 : 1) * sign;
-    });
+    return sortBy(runs, sort, HISTORY_SORT_VALUES, 'finished');
   }
 
   function positiveMs(ms) {
@@ -1695,7 +1712,7 @@
    * times sort by slug; an item with no valid updatedAt goes last.
    * @param {Array} repos
    * @param {Set<string>} scope
-   * @returns {Array<{repo: object, slug: string, topic: string, status: string, path: string, updatedAt: string}>}
+   * @returns {Array<{repo: object, slug: string, topic: string, status: string, path: string, updatedAt: string, durationMs: number}>}
    *   repo is the snapshot repo of the topic file
    */
   function preplanItems(repos, scope) {
@@ -1711,6 +1728,8 @@
           status: p.status || '',
           path: p.path || '',
           updatedAt: p.updatedAt || '',
+          // Go sends 0 for an unknown duration.
+          durationMs: typeof p.durationMs === 'number' && isFinite(p.durationMs) ? p.durationMs : 0,
         });
       });
     });
@@ -1724,6 +1743,30 @@
       }
       return a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0;
     });
+  }
+
+  // The sort value of a preplan item by sort key, or null when the item has none.
+  var PREPLAN_SORT_VALUES = {
+    updated: function (item) {
+      return timeValue(item.updatedAt);
+    },
+    duration: function (item) {
+      return positiveMs(item.durationMs);
+    },
+    repo: function (item) {
+      return String((item.repo && item.repo.name) || '').toLowerCase();
+    },
+  };
+
+  /**
+   * @param {Array} items preplan items, newest change first (preplanItems)
+   * @param {{key: string, dir: string}|null} sort null keeps the item order
+   * @returns {Array} a new array. updated sorts by updatedAt, duration by
+   *   durationMs, repo by the repo name. Items with no value go last in both
+   *   orders; equal items keep their order.
+   */
+  function sortPreplans(items, sort) {
+    return sortBy(items, sort, PREPLAN_SORT_VALUES, null);
   }
 
   /**
@@ -1860,6 +1903,8 @@
     historyCells: historyCells,
     dateLabel: dateLabel,
     preplanItems: preplanItems,
+    sortPreplans: sortPreplans,
+    PREPLAN_SORT_FIRST: PREPLAN_SORT_FIRST,
     preplanStatus: preplanStatus,
     preplanStatusCounts: preplanStatusCounts,
     priorityCounts: priorityCounts,

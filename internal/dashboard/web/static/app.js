@@ -151,6 +151,7 @@ function focusKeyOf(node) {
   if (node.hasAttribute('data-hist-sort')) return 'hist-sort\n' + node.getAttribute('data-hist-sort');
   if (node.hasAttribute('data-act-priority')) return 'act-priority\n' + node.getAttribute('data-act-priority');
   if (node.hasAttribute('data-pp-status')) return 'pp-status\n' + node.getAttribute('data-pp-status');
+  if (node.hasAttribute('data-pp-sort')) return 'pp-sort\n' + node.getAttribute('data-pp-sort');
   if (node.hasAttribute('data-q-pipe')) {
     return 'q\n' + node.getAttribute('data-q-pipe') + '\n' + (node.getAttribute('data-q-dim') || '') + '\n' + (node.getAttribute('data-q-src') || '');
   }
@@ -178,7 +179,7 @@ function restoreFocus() {
   if (active && active !== document.body && document.contains(active)) return;
   var candidates = document.querySelectorAll(
     '[data-root], [data-station], .fold-btn, [data-section] > summary, [data-detail], [data-archive], ' +
-      '[data-wait-dismiss], [data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status], [data-pp-set], [data-q-pipe], [data-hist-pick], [data-hist-pick-all], [data-hist-delete], [data-kind]'
+      '[data-wait-dismiss], [data-hist-outcome], [data-hist-sort], [data-act-priority], [data-pp-status], [data-pp-sort], [data-pp-set], [data-q-pipe], [data-hist-pick], [data-hist-pick-all], [data-hist-delete], [data-kind]'
   );
   for (var i = 0; i < candidates.length; i++) {
     if (focusKeyOf(candidates[i]) === ui.focusKey) {
@@ -986,10 +987,16 @@ function init() {
     ui.deferredPriority = chip.getAttribute('data-act-priority');
     render(ui.lastSnapshot);
   });
-  // A status chip filters the Preplans table.
+  // A status chip filters the Preplans table. A sort header sorts it
+  // (view.nextHistorySort with view.PREPLAN_SORT_FIRST).
   tabs.preplans.panel.addEventListener('click', function (event) {
     var del = event.target.closest('[data-kind]');
     if (del) return deleteItem(del);
+    var header = event.target.closest('[data-pp-sort]');
+    if (header) {
+      ui.preplanSort = view.nextHistorySort(ui.preplanSort, header.getAttribute('data-pp-sort'), view.PREPLAN_SORT_FIRST);
+      return render(ui.lastSnapshot);
+    }
     var chip = event.target.closest('[data-pp-status]');
     if (!chip) return;
     ui.preplanStatus = chip.getAttribute('data-pp-status');
