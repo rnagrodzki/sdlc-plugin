@@ -231,8 +231,8 @@ func TestIntegration_ShipStateDeferred_UnusableStore(t *testing.T) {
 	}
 	for _, want := range []string{
 		"WARNING: could not persist this item",
-		dashboardDeleteDeferredParseSuggestion + " After that, recover it with ship_state action=deferred_add",
-		"deferred item not written. " + dashboardDeleteDeferredParseSuggestion + " After that, add it with deferred_add, then continue.",
+		deferredParseFixStep + " After that, recover it with ship_state action=deferred_add",
+		"deferred item not written. " + deferredParseFixStep + " After that, add it with deferred_add, then continue.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("defer output missing %q:\n%s", want, text)

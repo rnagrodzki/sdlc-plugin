@@ -1647,8 +1647,17 @@ func TestSetupWriteSections_NullDeletesGuardrail(t *testing.T) {
 		if res.IsError {
 			t.Fatalf("expected success, got tool error:\n%s", text)
 		}
-		if !strings.Contains(text, "- ok: true") || !strings.Contains(text, "  - plan.guardrails.dry-old") {
-			t.Errorf("result does not report plan.guardrails.dry-old as written:\n%s", text)
+		// The id is reported as deleted, with the removed data, and not
+		// as written.
+		for _, want := range []string{
+			"- ok: true",
+			"- written: (none)",
+			"## deleted[0]\n- id: plan.guardrails.dry-old\n",
+			"### deleted[0].table\n- description: Do not repeat code.\n- severity: warning\n",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("result missing %q:\n%s", want, text)
+			}
 		}
 		got, err := os.ReadFile(path)
 		if err != nil {
@@ -1698,6 +1707,39 @@ func TestSetupWriteSections_NullDeletesGuardrail(t *testing.T) {
 		}
 		if strings.Contains(string(got), "dry-old") {
 			t.Errorf("plan.guardrails.dry-old survived the delete:\n%s", got)
+		}
+		for _, want := range []string{"- written:\n  - plan.guardrails.dry\n- root:", "## deleted[0]\n- id: plan.guardrails.dry-old\n"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("result missing %q:\n%s", want, text)
+			}
+		}
+	})
+	// A layout the in-place delete cannot edit, in a file with no comment
+	// line, is rewritten whole: the delete reports the id as deleted and
+	// warns about the rewrite, as a write does.
+	t.Run("rewrite fallback warns", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeSDLCFile(t, dir, "config.toml",
+			"[plan.guardrails]\nx = { severity = \"error\" }\ny = { severity = \"warning\" }\n")
+
+		out, err := setupWriteSections(dir, dir, SetupWriteSectionsIn{SectionsJSON: `{"plan.guardrails.x":null}`})
+		if err != nil {
+			t.Fatalf("setupWriteSections: %v", err)
+		}
+		if !out.OK || len(out.Written) != 0 || len(out.Deleted) != 1 || out.Deleted[0].ID != "plan.guardrails.x" ||
+			out.Deleted[0].Table["severity"] != "error" {
+			t.Errorf("out = %+v, want ok, nothing written, and plan.guardrails.x deleted with its data", out)
+		}
+		wantWarning := "Section plan.guardrails.x: could not edit .sdlc-v2/config.toml in place; the file had no comments, so it was rewritten and template tips were added"
+		if !slices.Contains(out.Warnings, wantWarning) {
+			t.Errorf("warnings = %q, want %q", out.Warnings, wantWarning)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(got), "x = ") || !strings.Contains(string(got), "warning") {
+			t.Errorf("rewritten file must hold y and not x:\n%s", got)
 		}
 	})
 }
@@ -1832,6 +1874,27 @@ func TestSetupWriteSections_NullGuardrailTargetUserRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 	if string(got) != guardrailsFile {
+		t.Errorf("config.toml changed:\n%s", got)
+	}
+	if _, err := os.Stat(userPath); !os.IsNotExist(err) {
+		t.Errorf("user config file was written (stat err: %v); want no write", err)
+	}
+
+	// Several null guardrail ids, from both sections: the message lists
+	// every one, in sorted order.
+	content := guardrailsFile + "\n[execute.guardrails.b]\nseverity = \"warning\"\n"
+	path = writeSDLCFile(t, dir, "config.toml", content)
+	res, text = callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"plan.guardrails.dry-old":null,"plan.guardrails.dry":null,"execute.guardrails.b":null,"style":{"foo":"bar"}}`,
+		"target":       "user",
+	})
+	if !res.IsError {
+		t.Fatalf("expected a tool error, got success:\n%s", text)
+	}
+	if want := "[execute.guardrails.b plan.guardrails.dry plan.guardrails.dry-old] cannot be deleted"; !strings.Contains(text, want) {
+		t.Errorf("missing %q:\n%s", want, text)
+	}
+	if got, _ := os.ReadFile(path); string(got) != content {
 		t.Errorf("config.toml changed:\n%s", got)
 	}
 	if _, err := os.Stat(userPath); !os.IsNotExist(err) {

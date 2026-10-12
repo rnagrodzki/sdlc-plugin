@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -716,6 +717,11 @@ func TestShipStateHardenClusters_ListAssignment(t *testing.T) {
 		{"below-threshold with deferredId, fixed in run", deferred("not-evaluated", history.ReasonBelowThreshold, true), none},
 		{"below-threshold without deferredId, not fixed", noID("not-evaluated", history.ReasonBelowThreshold, false), staysDeferred},
 		{"below-threshold without deferredId, fixed in run", noID("not-evaluated", history.ReasonBelowThreshold, true), staysDeferred},
+		{"below-threshold with a whitespace deferredId, not fixed", func() map[string]any {
+			m := noID("not-evaluated", history.ReasonBelowThreshold, false)
+			m["deferredId"] = "   "
+			return m
+		}(), staysDeferred},
 		{"reason below-threshold wins over verdict disagree", deferred("disagree", history.ReasonBelowThreshold, false), fixNow},
 		{"reason needs-direction", noID("needs-direction", history.ReasonNeedsDirection, false), staysDeferred},
 		{"reason needs-direction with deferredId", deferred("needs-direction", history.ReasonNeedsDirection, false), staysDeferred},
@@ -753,6 +759,31 @@ func TestShipStateHardenClusters_ListAssignment(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestShipStateHardenClusters_NarrationCountsLists checks that the narration
+// gives the counts of fixNow, staysDeferred and evidenceOnly.
+func TestShipStateHardenClusters_NarrationCountsLists(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	dir, _ := hardenClustersFixture(t, "feat/hc-narration")
+
+	hc, err := hardenClustersCall(t, dir, "feat/hc-narration", []any{
+		hcFindingDeferred("a.go", "info", "t", "b", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-1"),
+		hcFindingDeferred("b.go", "info", "t", "b", "not-evaluated", history.ReasonBelowThreshold, "review-deferred-x-2"),
+		hcFindingReason("c.go", "info", "t", "b", "needs-direction", history.ReasonNeedsDirection),
+		hcFinding("d.go", "info", "t", "b", "agree-won't-fix"),
+		hcFinding("e.go", "info", "t", "b", "agree-won't-fix"),
+		hcFinding("f.go", "info", "t", "b", "agree-won't-fix"),
+	})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	want := fmt.Sprintf(
+		"harden_clusters: %d cluster(s), %d suppressed, %d lone-disagree file(s), %d dirty surface(s), 2 fix-now, 1 stays-deferred, 3 evidence-only finding(s).",
+		len(hc.Clusters), len(hc.Suppressed), len(hc.LoneDisagree), len(hc.DirtySurfaces))
+	if hc.Narration != want {
+		t.Errorf("narration = %q, want %q", hc.Narration, want)
 	}
 }
 
@@ -906,6 +937,8 @@ func TestShipStateHardenClusters_OptionalFieldsParsed(t *testing.T) {
 		{name: "line zero", extra: map[string]any{"line": float64(0)}, wantLine: 0},
 		{name: "deferredId", extra: map[string]any{"deferredId": "review-deferred-x-1"}, wantDefID: "review-deferred-x-1"},
 		{name: "deferredId empty string", extra: map[string]any{"deferredId": ""}},
+		{name: "deferredId whitespace is no id", extra: map[string]any{"deferredId": "  \t"}},
+		{name: "deferredId is trimmed", extra: map[string]any{"deferredId": " review-deferred-x-1 "}, wantDefID: "review-deferred-x-1"},
 		{name: "fixedInRun true", extra: map[string]any{"fixedInRun": true}, wantFixed: true},
 		{name: "fixedInRun false", extra: map[string]any{"fixedInRun": false}},
 	}

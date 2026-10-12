@@ -138,8 +138,10 @@ func TestHardenSkillParity(t *testing.T) {
 			// Step 0 and Step 5: the replay command of a pending item.
 			"`/sdlc:harden --failure-text \"Pending rule edits: <id>\" --skill deferred`.",
 			"`/sdlc:harden --failure-text \"Pending rule edits: <id>\" --skill deferred`,",
-			// Step 1: the pre-flight print line.
+			// Step 1: the pre-flight print line. Step 2: the line of the
+			// plugin-defect hint path, where no orchestrator drafts repairs.
 			"Pre-flight findings: <preflightFindingCount> (repair proposals come first)",
+			"Pre-flight findings not repaired: the plugin-defect hint skips the orchestrator.",
 			// Step 3: the foreground dispatch needs no TaskStop.
 			"agent ends with its result, so no `TaskStop` is needed.",
 			// Step 4: the four ordered routes.
@@ -156,6 +158,12 @@ func TestHardenSkillParity(t *testing.T) {
 			// Step 5: the --auto table rows that wait for a person.
 			"| remove, `removalReason: \"covered-by\"` | ask | pending |",
 			"| merge | ask | pending |",
+			// Step 5: an --auto repair or removal applies only when the
+			// manifest proves its evidence for the same rule.
+			"| repair, `evidence: \"preflight\"` | ask | apply only when it matches a pre-flight finding, else pending |",
+			"| remove, `removalReason: \"dead-reference\"` | ask | apply only when each token is proven for its rule, else pending |",
+			// Step 5: a pending line with an unsafe id is not stored.
+			"with the reason `unsafe id: <value>`.",
 			// Step 5: the preview shows the old text in full.
 			"{oldText, in full}",
 			// Step 5: the pending item ids, one for each section, the write
@@ -195,14 +203,18 @@ func TestHardenSkillParity(t *testing.T) {
 			// Step 7: the removed ids and the close command of a replay run.
 			"Removed: <comma-separated rule ids and file names deleted>",
 			"`Every pending rule edit of <id> is applied or rejected. Close the item with /sdlc:deferred --resolve <id>.`",
+			"`Deferred item <id>: no rule edit was drafted. Check the id with /sdlc:deferred --list.`",
 			// The no-relax wording that replaced strengthen-only.
-			"Never relaxes a rule. Removes a rule only for a dead reference or a covering rule.",
-			"Propose relaxing a rule, or removing a rule outside the two removal cases.",
+			"Never relaxes a rule. Removes a rule only in three cases: a dead reference, a covering rule, or the split of an oversize rule.",
+			"Propose relaxing a rule, or removing a rule outside the three removal cases (Step 0).",
 		} {
 			hardenSkillsAssertOnce(t, "harden/SKILL.md", skill, want)
 		}
 		if strings.Contains(strings.ToLower(skill), "strengthen-only") {
-			t.Error("harden/SKILL.md still says strengthen-only, but harden now removes rules in two cases")
+			t.Error("harden/SKILL.md still says strengthen-only, but harden now removes rules in three cases")
+		}
+		if strings.Contains(skill, "two removal cases") {
+			t.Error("harden/SKILL.md still says two removal cases, but a pre-flight split repair is the third case")
 		}
 	})
 
@@ -259,6 +271,7 @@ func TestHardenSkillParity(t *testing.T) {
 			// Step 3c: the replay of a pending item.
 			"find the item with that `id` in `history.openDeferred`. Draft again each edit that its `description` lists.",
 			"When no item has that `id`, draft nothing for it and say so in `classificationRationale`.",
+			"When `history.readErrors` is set, say that the deferred store could not be read, not that no item has that `id`.",
 			// Step 3d: the generic-rule gate.
 			"Apply the gate to each draft from Step 3c. The gate does not apply to Step 3a or Step 3b proposals.",
 			"When a draft matches the class of an existing rule, it becomes a `consolidate` (guardrail surfaces) or a `strengthen` (other surfaces). Set `extends` to that rule's id or file.",

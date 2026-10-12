@@ -11,8 +11,8 @@ import (
 // TestIntegration_SetupWriteSections_NullDeletesGuardrail calls the registered
 // setup_write_sections tool with a JSON null on a plan guardrail id and on an
 // execute guardrail id. Each call must remove that table from config.toml and
-// leave every other byte of the file as it was. The output lists the id as
-// written.
+// leave every other byte of the file as it was. The output lists the id
+// under deleted, with the removed data, and not under written.
 func TestIntegration_SetupWriteSections_NullDeletesGuardrail(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -46,7 +46,7 @@ func TestIntegration_SetupWriteSections_NullDeletesGuardrail(t *testing.T) {
 			if res.IsError {
 				t.Fatalf("expected success, got tool error:\n%s", text)
 			}
-			for _, want := range []string{"- ok: true", "  - " + tt.written} {
+			for _, want := range []string{"- ok: true", "- written: (none)", "## deleted[0]\n- id: " + tt.written + "\n"} {
 				if !strings.Contains(text, want) {
 					t.Errorf("output missing %q:\n%s", want, text)
 				}

@@ -6,12 +6,13 @@ The cluster rules are computed by `ship_state({action:"harden_clusters"})`. Do n
 ## Input
 
 Call `ship_state({action:"harden_clusters", detail:{findings:[...]}})`. `detail.findings` is one
-record per finding: `file`, `severity`, `title`, `body`, `verdict`, optional `reason`, `line`,
-`deferredId`, `fixedInRun`.
+record per finding: `file`, `severity`, `title`, `body`, `verdict`, optional `reason`.
+Ship also passes the optional `line`, `deferredId` and `fixedInRun` (see Ship mapping).
 
-`verdict` is received-review's own: `agree-will-fix | agree-won't-fix | disagree | needs-direction`, or `not-evaluated` for a below-threshold finding.
+`verdict` is received-review's own: `agree-will-fix | agree-won't-fix | disagree | needs-direction`.
+Ship only: `not-evaluated` for a below-threshold finding.
 `reason` is a deferral reason from `ship_state defer`: `wont-fix | disagree | needs-direction | below-threshold`.
-Do not pass `cannot-verify` findings. Pass a below-threshold finding with verdict `not-evaluated`.
+Do not pass `cannot-verify` findings.
 
 ## Ship mapping
 

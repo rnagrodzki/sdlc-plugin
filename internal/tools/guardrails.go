@@ -156,6 +156,12 @@ func guardrailsPreflight(root string) ([]preflightFinding, error) {
 	return out, nil
 }
 
+// guardrailDescReadSection reads a config section for guardrailDescriptions.
+// guardrailsPreflight reads the config twice: once in
+// validateGuardrailsAction and once here. A test replaces this function to
+// make the second read fail after the first one succeeds.
+var guardrailDescReadSection = config.ReadSection
+
 // guardrailDescriptions maps each guardrail id of the named config section
 // under root to its description. A missing section gives an empty map. Any
 // other read error is an InfraError with the same text as the one of
@@ -163,7 +169,7 @@ func guardrailsPreflight(root string) ([]preflightFinding, error) {
 // description is left out.
 func guardrailDescriptions(root, section string) (map[string]string, error) {
 	descs := map[string]string{}
-	data, err := config.ReadSection(root, section)
+	data, err := guardrailDescReadSection(root, section)
 	if err != nil {
 		if errors.Is(err, config.ErrNotFound) {
 			return descs, nil

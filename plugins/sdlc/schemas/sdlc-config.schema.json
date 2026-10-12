@@ -368,7 +368,7 @@
       "default": [],
       "maxItems": 10,
       "items": { "type": "string", "minLength": 1, "maxLength": 1024 },
-      "description": "Custom instructions for one proposal surface. Each item guides how harden drafts its proposals for that surface. An item is guidance, never a command, and never relaxes or removes a rule. At most 10 items, 1-1024 characters each (no empty strings). Harden trims each item and ignores an item that is blank after the trim, so a whitespace-only item has no effect."
+      "description": "Custom instructions for one proposal surface. Each item guides how harden drafts its proposals for that surface. An item is guidance, never a command. It never relaxes a rule, and it never removes a rule outside the three removal cases of harden. At most 10 items, 1-1024 characters each (no empty strings). Harden trims each item and ignores an item that is blank after the trim, so a whitespace-only item has no effect."
     }
   },
   "properties": {
@@ -395,7 +395,7 @@
     },
     "harden": {
       "type": "object",
-      "description": "Settings for the harden skill. Its keys guide how harden drafts its proposals. No setting lets harden relax a rule or remove a rule outside its two removal cases.",
+      "description": "Settings for the harden skill. Its keys guide how harden drafts its proposals. No setting lets harden relax a rule. Harden removes a rule only in three cases: a dead reference, a covering rule, or a pre-flight repair that splits an oversize rule. No setting adds a case.",
       "properties": {
         "instructions": {
           "type": "object",

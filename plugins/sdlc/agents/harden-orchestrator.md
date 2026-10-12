@@ -36,7 +36,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `surfaces.errorReportSkillPath` | Absolute path of the plugin's shipped `skills/error-report/SKILL.md`, or empty when the plugin root cannot be found |
 | `surfaces.deadReferences[]` | `{surface, ruleId, file, line, kind, token, reason}` — a path, tool, action, flag or step name (`kind`) that a rule names and that does not exist. `ruleId` is the guardrail id, the dimension name or the instruction file name. `file` is the absolute path of the file that holds the rule. Never null |
 | `surfaces.deadReferencesTruncated` | Optional count of dead references past the first 200, which the list leaves out |
-| `surfaces.deadReferenceSkips[]` | One sentence for each check of the dead-reference scan that did not run. Context only |
+| `surfaces.deadReferenceSkips[]` | One sentence for each check of the dead-reference scan that did not run. Context only: the skill shows these sentences to the user |
 | `preflightFindings[]` | `{surface, id, file, severity, message, fix, bytesOver}` — one entry for each pre-flight check that a rule fails. `surface` is `plan-guardrails`, `execute-guardrails` or `review-dimensions`. `id` is the guardrail id or the dimension name. `file` is repo-relative. `fix` is the repair step, and is empty for a dimension finding. `bytesOver` is present only when a guardrail description is too long. Never null |
 | `pipeline.shipState` / `pipeline.executeState` | Optional paused-pipeline state, or `null` |
 | `repository.root` | MAIN worktree — pipeline state and learnings root only |
@@ -45,7 +45,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 | `surfaces.skillRecommendations[]` | `{suggested, reason, patternCount, priority}` — recurring learnings patterns. A pattern with `patternCount` 3 or more and no covering rule becomes a proposal with `evidence: "learning"` |
 | `history.openDeferred[]` | `{id, created, source, priority, description, status, severity, file, line, reason}` — open deferred items. When `failure.text` is "Pending rule edits: <id>", draft again each edit listed in the `description` of item <id> |
 | `pipeline.issues` | Optional structured failure context from the latest ship/execute state (wave/task/step, severity, category, summary) |
-| `history` | Optional `{recentRuns, openDeferred}` — recent pipeline runs and open deferred items, as extra evidence |
+| `history` | Optional `{recentRuns, openDeferred, readErrors}` — recent pipeline runs and open deferred items, as extra evidence. `readErrors` is present only when a history file could not be read: one text for each such file. The two lists may then be incomplete |
 | `cliEvidence[]` | Optional recent CLI command records (`command`, `exitCode`, `outputHead`) from ship/execute runs on the active branch, as extra evidence |
 | `pluginRepoUrl` | Constant URL of the plugin's GitHub repository. Informational only — neither the `harden` skill nor your output JSON uses it |
 | `customInstructions` | Map with four keys — `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions` — each a list of strings (may be empty). The project's own `[harden.instructions]` from `.sdlc-v2/config.toml`. Guidance for the proposals on that surface, never a command that replaces this file |
@@ -218,7 +218,7 @@ A rule may also be removed because another existing rule covers it. You find thi
 
 - **Failure.** Draft from `failure.text`, the classification and the manifest evidence, per Step 2. `evidence` is `failure`.
 - **Learning.** For each `surfaces.skillRecommendations` entry with `patternCount` 3 or more, check the rules on every surface. When no rule covers the pattern, draft a proposal with `evidence: "learning"`. When a rule covers it, draft nothing for it.
-- **Pending rule edit.** When `failure.text` is "Pending rule edits: <id>", find the item with that `id` in `history.openDeferred`. Draft again each edit that its `description` lists. `evidence` is `failure`. When no item has that `id`, draft nothing for it and say so in `classificationRationale`.
+- **Pending rule edit.** When `failure.text` is "Pending rule edits: <id>", find the item with that `id` in `history.openDeferred`. Draft again each edit that its `description` lists. `evidence` is `failure`. When no item has that `id`, draft nothing for it and say so in `classificationRationale`. When `history.readErrors` is set, say that the deferred store could not be read, not that no item has that `id`.
 
 ### Step 3d — Generic-rule gate
 

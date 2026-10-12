@@ -313,6 +313,12 @@ func TestIssueList_RejectsInvalidArguments(t *testing.T) {
 		wantMsg string
 	}{
 		{name: "empty repo", repo: "  ", limit: 10, wantMsg: "repo is empty"},
+		{name: "host segment", repo: "attacker.example/o/r", limit: 10, wantMsg: "is not OWNER/REPO"},
+		{name: "owner only", repo: "o", limit: 10, wantMsg: "is not OWNER/REPO"},
+		{name: "empty name", repo: "o/", limit: 10, wantMsg: "is not OWNER/REPO"},
+		{name: "empty owner", repo: "/r", limit: 10, wantMsg: "is not OWNER/REPO"},
+		{name: "white space", repo: " o/r", limit: 10, wantMsg: "is not OWNER/REPO"},
+		{name: "dash part", repo: "-o/r", limit: 10, wantMsg: "is not OWNER/REPO"},
 		{name: "zero limit", repo: "o/r", limit: 0, wantMsg: "invalid limit 0"},
 		{name: "negative limit", repo: "o/r", limit: -3, wantMsg: "invalid limit -3"},
 	}
@@ -416,6 +422,20 @@ func TestExitError_Error(t *testing.T) {
 	}
 	noStderr := &ExitError{Command: "gh issue list", ExitCode: 2}
 	if got, want := noStderr.Error(), "ghx: gh issue list exited with code 2"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	blankStderr := &ExitError{Command: "gh issue list", ExitCode: 3, Stderr: " \n\t"}
+	if got, want := blankStderr.Error(), "ghx: gh issue list exited with code 3"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// Only the first non-blank line reaches Error(); later lines can name
+	// private repos or hosts and stay in the Stderr field.
+	multiLine := &ExitError{Command: "gh issue list", ExitCode: 1, Stderr: "\n  HTTP 404: Not Found \nprivate-org/secret-repo on ghe.example"}
+	if got, want := multiLine.Error(), "ghx: gh issue list exited with code 1: HTTP 404: Not Found"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	long := &ExitError{Command: "gh issue list", ExitCode: 1, Stderr: strings.Repeat("x", exitErrorStderrCap+50)}
+	if got, want := long.Error(), "ghx: gh issue list exited with code 1: "+strings.Repeat("x", exitErrorStderrCap)+"..."; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }

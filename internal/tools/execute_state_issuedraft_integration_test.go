@@ -149,7 +149,7 @@ func TestIntegration_ExecuteStateIssueDraft_UnusableStore(t *testing.T) {
 	for _, want := range []string{
 		"- added: true",
 		"WARNING: could not persist this item",
-		dashboardDeleteDeferredParseSuggestion + " After that, record it durably with ship_state action=deferred_add",
+		deferredParseFixStep + " After that, record it durably with ship_state action=deferred_add",
 		"Do NOT retry issue-draft",
 	} {
 		if !strings.Contains(text, want) {

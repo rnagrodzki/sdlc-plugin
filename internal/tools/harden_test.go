@@ -527,6 +527,15 @@ func TestHardenOutToPrepareOut(t *testing.T) {
 			t.Errorf("unexpected output: %+v", got)
 		}
 	})
+
+	t.Run("dead-reference skips", func(t *testing.T) {
+		skips := []string{"tool and action checks skipped: no tool catalog", "path check skipped: git ls-files failed: boom"}
+		got := hardenOutToPrepareOut(HardenPrepareOut{ManifestPath: "/m.json", DeadReferenceSkips: skips}, "harden")
+		wantNext := prepareNextHarden + " Dead-reference check skipped: tool and action checks skipped: no tool catalog; path check skipped: git ls-files failed: boom."
+		if got.Next != wantNext {
+			t.Errorf("Next = %q, want %q", got.Next, wantNext)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------

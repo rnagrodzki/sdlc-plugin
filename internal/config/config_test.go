@@ -2482,6 +2482,14 @@ func TestDeleteSectionReport_Layouts(t *testing.T) {
 			deleted: true,
 		},
 		{
+			name:    "empty table",
+			file:    paths.ConfigFile,
+			content: dry + "\n[plan.guardrails.empty]\n",
+			section: "plan.guardrails.empty",
+			want:    dry,
+			deleted: true,
+		},
+		{
 			name:    "prefix id is not matched",
 			file:    paths.ConfigFile,
 			content: dry,
@@ -2539,12 +2547,19 @@ func TestDeleteSectionReport_Layouts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root, path := seedDeleteFile(t, tt.file, tt.content)
-			deleted, err := DeleteSectionReport(root, tt.section)
+			rep, err := DeleteSectionReport(root, tt.section)
+			deleted := rep.Deleted
 			if err != nil {
 				t.Fatalf("DeleteSectionReport: %v", err)
 			}
 			if deleted != tt.deleted {
 				t.Errorf("deleted = %v, want %v", deleted, tt.deleted)
+			}
+			if rep.Rewrote {
+				t.Errorf("Rewrote = true, want false: the in-place delete works for this layout")
+			}
+			if tt.deleted != (rep.Table != nil) {
+				t.Errorf("Table = %v, want the removed table only when deleted", rep.Table)
 			}
 			got, err := os.ReadFile(path)
 			if err != nil {
@@ -2561,7 +2576,8 @@ func TestDeleteSectionReport_Layouts(t *testing.T) {
 // data directory returns (false, nil) and does not create the directory.
 func TestDeleteSectionReport_MissingFile(t *testing.T) {
 	root := t.TempDir()
-	deleted, err := DeleteSectionReport(root, "plan.guardrails.x")
+	rep, err := DeleteSectionReport(root, "plan.guardrails.x")
+	deleted := rep.Deleted
 	if err != nil || deleted {
 		t.Fatalf("DeleteSectionReport = (%v, %v), want (false, nil)", deleted, err)
 	}
@@ -2587,7 +2603,8 @@ func TestDeleteSectionReport_ReadAndParseErrors(t *testing.T) {
 	t.Run("file not valid TOML", func(t *testing.T) {
 		const bad = "[plan.guardrails.x\nseverity = \n"
 		root, path := seedDeleteFile(t, paths.ConfigFile, bad)
-		deleted, err := DeleteSectionReport(root, "plan.guardrails.x")
+		rep, err := DeleteSectionReport(root, "plan.guardrails.x")
+		deleted := rep.Deleted
 		if err == nil || deleted {
 			t.Fatalf("DeleteSectionReport = (%v, %v), want (false, error)", deleted, err)
 		}
@@ -2607,7 +2624,8 @@ func TestDeleteSectionReport_ReadAndParseErrors(t *testing.T) {
 		if err := os.Mkdir(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
-		deleted, err := DeleteSectionReport(root, "plan.guardrails.x")
+		rep, err := DeleteSectionReport(root, "plan.guardrails.x")
+		deleted := rep.Deleted
 		if err == nil || deleted {
 			t.Fatalf("DeleteSectionReport = (%v, %v), want (false, error)", deleted, err)
 		}
@@ -2635,7 +2653,8 @@ func TestDeleteSectionReport_CommentRefusal(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			content := tt.content + "\n[plan.guardrails.y]\nseverity = \"warning\"\n"
 			root, path := seedDeleteFile(t, paths.ConfigFile, content)
-			deleted, err := DeleteSectionReport(root, "plan.guardrails.x")
+			rep, err := DeleteSectionReport(root, "plan.guardrails.x")
+			deleted := rep.Deleted
 			if !errors.Is(err, ErrWouldDropComments) || deleted {
 				t.Fatalf("DeleteSectionReport = (%v, %v), want (false, ErrWouldDropComments)", deleted, err)
 			}
@@ -2656,7 +2675,8 @@ func TestDeleteSectionReport_UnspliceableLayout(t *testing.T) {
 	t.Run("file with a comment is refused", func(t *testing.T) {
 		content := "# kept\n" + inline
 		root, path := seedDeleteFile(t, paths.ConfigFile, content)
-		deleted, err := DeleteSectionReport(root, "plan.guardrails.x")
+		rep, err := DeleteSectionReport(root, "plan.guardrails.x")
+		deleted := rep.Deleted
 		if !errors.Is(err, ErrWouldDropComments) || deleted {
 			t.Fatalf("DeleteSectionReport = (%v, %v), want (false, ErrWouldDropComments)", deleted, err)
 		}
@@ -2666,9 +2686,12 @@ func TestDeleteSectionReport_UnspliceableLayout(t *testing.T) {
 	})
 	t.Run("file without a comment is rewritten", func(t *testing.T) {
 		root, path := seedDeleteFile(t, paths.ConfigFile, inline+"\n[jira]\nretries = 3\n")
-		deleted, err := DeleteSectionReport(root, "plan.guardrails.x")
-		if err != nil || !deleted {
-			t.Fatalf("DeleteSectionReport = (%v, %v), want (true, nil)", deleted, err)
+		rep, err := DeleteSectionReport(root, "plan.guardrails.x")
+		if err != nil || !rep.Deleted || !rep.Rewrote {
+			t.Fatalf("DeleteSectionReport = (%+v, %v), want Deleted and Rewrote true, nil", rep, err)
+		}
+		if rep.Table["severity"] != "error" {
+			t.Errorf("Table = %v, want the removed table {severity = error}", rep.Table)
 		}
 		raw := map[string]any{}
 		data, _ := os.ReadFile(path)
@@ -2691,6 +2714,22 @@ func TestDeleteSectionReport_UnspliceableLayout(t *testing.T) {
 		}
 		if got, _ := os.ReadFile(path); string(got) != content {
 			t.Errorf("file changed despite the refusal:\n%s", got)
+		}
+	})
+	// The table is not in the file and the layout cannot be spliced: the
+	// parsed data has no such key, so the call changes nothing, also in a
+	// file with a comment line.
+	t.Run("missing table under an array of tables in a file with a comment", func(t *testing.T) {
+		content := "# c\n[[plan.guardrails]]\nk = 1\n"
+		root, path := seedDeleteFile(t, paths.ConfigFile, content)
+		// The key is not in the parsed data, so nothing changes and no
+		// comment is at risk: no refusal.
+		rep, err := DeleteSectionReport(root, "plan.guardrails.zzz")
+		if err != nil || rep.Deleted || rep.Rewrote || rep.Table != nil {
+			t.Fatalf("DeleteSectionReport = (%+v, %v), want (zero, nil)", rep, err)
+		}
+		if got, _ := os.ReadFile(path); string(got) != content {
+			t.Errorf("file changed for a missing key:\n%s", got)
 		}
 	})
 }
@@ -2716,7 +2755,8 @@ func TestDeleteSectionReport_UnspliceableLayoutAbsentID(t *testing.T) {
 				t.Fatalf("deleteTable err = %v, want errNoSplice: the case must reach the rewrite path", err)
 			}
 
-			deleted, err := DeleteSectionReport(root, tt.id)
+			rep, err := DeleteSectionReport(root, tt.id)
+			deleted := rep.Deleted
 			if err != nil || deleted {
 				t.Fatalf("DeleteSectionReport = (%v, %v), want (false, nil)", deleted, err)
 			}
@@ -2752,6 +2792,28 @@ func TestDeleteTable_Errors(t *testing.T) {
 		out, found, err := deleteTable(in, path)
 		if err != nil || found || string(out) != string(in) {
 			t.Errorf("deleteTable = (%q, %v, %v), want (input, false, nil)", out, found, err)
+		}
+	})
+	// The scan and the decode of the old text are the only error exits a
+	// caller can reach without going through DeleteSectionReport, which
+	// decodes the file first. The other exits are not reachable by
+	// construction: commentLines runs the same parser as scanTOML on the same
+	// bytes (comments are checked in both), removing whole tables from valid
+	// TOML leaves valid TOML, and the removed lines hold every line of each
+	// table at or below path, so the result always decodes to the old data
+	// without that table (errSpliceMismatch is a safety net for a splicer bug).
+	t.Run("text the scanner rejects", func(t *testing.T) {
+		out, found, err := deleteTable([]byte("[plan.guardrails.x\n"), path)
+		if err == nil || found || out != nil {
+			t.Errorf("deleteTable = (%q, %v, %v), want (nil, false, error)", out, found, err)
+		}
+	})
+	t.Run("old text the decoder rejects", func(t *testing.T) {
+		// The scanner does not check for a duplicate key; the decoder does.
+		in := []byte("[plan.guardrails.x]\nk = 1\n\n[jira]\na = 1\na = 2\n")
+		out, found, err := deleteTable(in, path)
+		if err == nil || !strings.Contains(err.Error(), "already defined") || found || out != nil {
+			t.Errorf("deleteTable = (%q, %v, %v), want (nil, false, duplicate key error)", out, found, err)
 		}
 	})
 }

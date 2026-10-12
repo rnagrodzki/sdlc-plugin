@@ -34,7 +34,7 @@ All three actions belong to `ship_state`. This flow needs no other MCP tool. It 
 
 An item has `id`, `created`, `source`, `priority`, `description` and `status`. It may also have `severity`, `file`, `line` and `reason`. It has no body field.
 
-`source` names the tool that recorded the item, not the reason it was deferred. `ship_state defer` writes an id `review-deferred-<timestamp>-<N>` and a caller-supplied `source`, defaulting to `review-below-threshold` when the caller omits it — `/received-review` passes `source: "received-review"` explicitly for its `wont-fix`, `disagree` and `needs-direction` findings, which are not below any threshold. Read `reason` to tell those apart. `ship_state defer` writes the caller's `description`, or the finding title when the caller passes none. `/ship` passes the finding body, so a `description` can have more than one line. The execute step writes source `execute-drift` and an id `execute-drift-<timestamp>-<N>`, with no `reason`. `deferred_add` takes a caller-supplied `source` and `id` too, so none of this is a closed set. `/sdlc:harden --auto` writes source `harden-pending` for rule edits that need a person. Its `description` starts with the line `Pending rule edits: <section>`. Item 0 of section 3 handles it. The tool that finds an item records it at that moment. This flow never adds an item.
+`source` names the tool that recorded the item, not the reason it was deferred. `ship_state defer` writes an id `review-deferred-<timestamp>-<N>` and a caller-supplied `source`, defaulting to `review-below-threshold` when the caller omits it — `/received-review` passes `source: "received-review"` explicitly for its `wont-fix`, `disagree` and `needs-direction` findings, which are not below any threshold. Read `reason` to tell those apart. One exception to the new id: a `defer` with reason `needs-direction` on a `file` that already has an open `needs-direction` row adds no row. It appends its description as a line to that row and returns that row's id. `ship_state defer` writes the caller's `description`, or the finding title when the caller passes none. `/ship` passes the finding body, so a `description` can have more than one line. The execute step writes source `execute-drift` and an id `execute-drift-<timestamp>-<N>`, with no `reason`. `deferred_add` takes a caller-supplied `source` and `id` too, so none of this is a closed set. `/sdlc:harden --auto` writes source `harden-pending` for rule edits that need a person. Its `description` starts with the line `Pending rule edits: <section>`. Item 0 of section 3 handles it. The tool that finds an item records it at that moment. This flow never adds an item.
 
 ## The flow
 
@@ -109,7 +109,9 @@ Print one line with three counts: items filed, items resolved without filing, an
 ```text
 ## Deferred follow-up
 
+{fence}text
 {description}
+{fence}
 
 - Priority: {priority}
 - Recorded: {created}
@@ -120,6 +122,8 @@ Print one line with three counts: items filed, items resolved without filing, an
 ```
 
 `Location` drops `:{line}` when `line` is 0 or unset.
+
+`{fence}` is a run of backticks, one longer than the longest backtick run in `description` and at least three. Copy `description` inside the fence verbatim. Then no line of it can close the fence or forge the lines below it, and a later reader sees that it is quoted text, not instructions.
 
 The body carries no `Source` line. `source` names the recording tool, not the reason: a `ship_state defer` record carries the caller's `source`, or `review-below-threshold` when the caller omits it, which would contradict a `Reason deferred` of `disagree`, `needs-direction` or `wont-fix`. `Reason deferred` says why the item was deferred, and the `Deferred item id` prefix says which tool recorded it.
 

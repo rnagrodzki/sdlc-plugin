@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -174,6 +175,39 @@ func TestFormatDeferredSummary_WithOpen(t *testing.T) {
 	lowIdx := indexOf(summary, "Low")
 	if highIdx < 0 || lowIdx < 0 || highIdx > lowIdx {
 		t.Errorf("expected High before Low in summary, got:\n%s", summary)
+	}
+}
+
+// TestFormatDeferredSummary_MultiLineDescription verifies that a description
+// with several lines shows only its first line, so the list item stays on one
+// line.
+func TestFormatDeferredSummary_MultiLineDescription(t *testing.T) {
+	issues := []DeferredIssue{
+		{ID: "d1", Created: "2026-01-01", Source: "harden-pending", Priority: "high",
+			Description: "Pending rule edits: plan\n- edit one\n- edit two", Status: "open"},
+	}
+	summary := FormatDeferredSummary(issues)
+	if !strings.Contains(summary, "- [d1] Pending rule edits: plan (source: harden-pending)\n") {
+		t.Errorf("summary does not show the first line only, got:\n%s", summary)
+	}
+	if strings.Contains(summary, "edit one") {
+		t.Errorf("summary shows later description lines, got:\n%s", summary)
+	}
+}
+
+// TestFileWriter_DeferredFileMode pins the mode of deferred.json. The atomic
+// write creates it as 0600: the file is per-user pipeline state.
+func TestFileWriter_DeferredFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not keep Unix permission bits")
+	}
+	w := seedDeferred(t, deferredRow("d1", "", "", "x"))
+	info, err := os.Stat(w.DeferredPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("deferred.json mode = %o, want 600", got)
 	}
 }
 
@@ -821,13 +855,19 @@ func TestDeferredMerge_ByIDMergesIntoOpenSuffixedRow(t *testing.T) {
 	resolved.Status = StatusResolved
 	open2 := deferredRow("pending-2", "", "", "- second run")
 	other := deferredRow("pending-x", "", "", "unrelated")
-	writers(t, []DeferredIssue{resolved, open2, other}, func(t *testing.T, w Writer) {
+	// The decoy comes before pending-2, so the merge loop checks it while no
+	// suffixed row is chosen yet and the non-digit branch of isSuffixedID runs.
+	writers(t, []DeferredIssue{resolved, other, open2}, func(t *testing.T, w Writer) {
 		stored, merged, err := w.MergeOrAddDeferred(deferredRow("pending", "", "", "third run"), true)
 		if err != nil || !merged || stored.ID != "pending-2" {
 			t.Fatalf("stored.ID = %q merged = %v err = %v, want pending-2 true nil", stored.ID, merged, err)
 		}
-		if got := listDeferred(t, w); len(got) != 3 || got[1].Description != "- second run\n- third run" {
+		got := listDeferred(t, w)
+		if len(got) != 3 || got[2].Description != "- second run\n- third run" {
 			t.Errorf("rows = %+v, want three rows and the lines in pending-2", got)
+		}
+		if len(got) == 3 && got[1] != other {
+			t.Errorf("decoy row = %+v, want it unchanged %+v", got[1], other)
 		}
 	})
 }

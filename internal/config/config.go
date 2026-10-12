@@ -1009,21 +1009,42 @@ func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, 
 	return writeSectionFile(filepath.Join(sdlcDir, paths.LocalConfigFile), name, v, nil)
 }
 
+// DeleteReport is the result of DeleteSectionReport.
+type DeleteReport struct {
+	// Deleted is true when the table was removed from the file.
+	Deleted bool
+	// Rewrote is true when the in-place edit failed and the file, which had
+	// no comment line, was rewritten whole from parsed data.
+	Rewrote bool
+	// Table is the data of the removed table (whole numbers as int64). It is
+	// nil when nothing was deleted.
+	Table map[string]any
+}
+
 // DeleteSectionReport deletes the table at the dotted path name. It routes
 // like WriteSectionReport: a project section's file is config.toml, any other
 // is local.toml. It reads the file, calls deleteTable, and writes the result
 // with fsx.AtomicWriteBytes, so a failed write keeps the old file. A missing
-// file or table returns deleted=false and err=nil, and writes nothing.
+// file returns a zero DeleteReport and err=nil, and writes nothing.
 //
-// The edit removes only the lines of the table, so every other byte of the
-// file stays. A comment line in the table returns ErrWouldDropComments and
-// writes nothing. When the table's layout cannot be edited in place
-// (an inline table, a dotted key, an array of tables), a file with a comment
-// line is refused the same way, and a file with no comment line is rewritten
-// whole from parsed data, as WriteSectionReport does.
-func DeleteSectionReport(mainRoot, name string) (deleted bool, err error) {
+// The in-place edit removes the lines of the table and one blank line next
+// to it (see deleteTable). Every other byte of the file stays. A table that
+// is not in a file deleteTable can edit returns a zero DeleteReport and
+// err=nil, and writes nothing. A comment line in the table returns
+// ErrWouldDropComments and writes nothing.
+//
+// When deleteTable cannot edit the file in place (an inline table, a dotted
+// key, or an array of tables at, above or below the path), or its result
+// fails the safety check, the parsed data decides. When it has no such key,
+// the result is a zero DeleteReport and err=nil, and nothing is written, also
+// in a file with a comment line (e.g. "# c\n[[plan.guardrails]]\nk = 1\n"
+// with name plan.guardrails.zzz). Otherwise a file with a comment line is
+// refused with ErrWouldDropComments. A file with no comment line is
+// rewritten whole from parsed data with the template tips added back, as
+// WriteSectionReport does, and Rewrote is true.
+func DeleteSectionReport(mainRoot, name string) (DeleteReport, error) {
 	if err := validateSectionName(name); err != nil {
-		return false, err
+		return DeleteReport{}, err
 	}
 	top, _, _ := strings.Cut(name, ".")
 	file := paths.LocalConfigFile
@@ -1034,37 +1055,56 @@ func DeleteSectionReport(mainRoot, name string) (deleted bool, err error) {
 
 	orig, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return DeleteReport{}, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("config: read %s: %w", path, err)
+		return DeleteReport{}, fmt.Errorf("config: read %s: %w", path, err)
 	}
 	existing := make(map[string]any)
 	if err := fsx.DecodeTOML(orig, &existing); err != nil {
-		return false, fmt.Errorf("config: %s: %w", path, err)
+		return DeleteReport{}, fmt.Errorf("config: %s: %w", path, err)
 	}
 	traceRead(path, "write")
+
+	// Copy the table's data before deleteSectionPath changes existing.
+	var table map[string]any
+	if t := extractSectionPath(existing, name); t != nil {
+		table = WholeNumbersToInt(t).(map[string]any)
+	}
 
 	parts := strings.Split(name, ".")
 	out, found, spliceErr := deleteTable(orig, parts)
 	if spliceErr == nil {
 		if !found {
-			return false, nil
+			return DeleteReport{}, nil
 		}
-		return true, fsx.AtomicWriteBytes(path, out)
+		if err := fsx.AtomicWriteBytes(path, out); err != nil {
+			return DeleteReport{}, err
+		}
+		return DeleteReport{Deleted: true, Table: table}, nil
 	}
-	if errors.Is(spliceErr, errBlockHasComment) || hasCommentLine(orig) {
-		return false, refuseCommentDrop(name, path, spliceErr)
+	if errors.Is(spliceErr, errBlockHasComment) {
+		return DeleteReport{}, refuseCommentDrop(name, path, spliceErr)
 	}
-	if !deleteSectionPath(existing, parts) {
-		return false, nil
+	// A key the parsed data does not hold changes nothing, so there is no
+	// comment to drop: check it before the comment refusal.
+	if !hasSectionPath(existing, parts) {
+		return DeleteReport{}, nil
 	}
+	if hasCommentLine(orig) {
+		return DeleteReport{}, refuseCommentDrop(name, path, spliceErr)
+	}
+	deleteSectionPath(existing, parts)
 	// fsx.DecodeTOML decodes every number as float64: see writeSectionFile.
 	full, err := toml.Marshal(WholeNumbersToInt(existing))
 	if err != nil {
-		return false, fmt.Errorf("config: marshal %s: %w", path, err)
+		return DeleteReport{}, fmt.Errorf("config: marshal %s: %w", path, err)
 	}
-	return true, fsx.AtomicWriteBytes(path, full)
+	// nil section: the rewrite dropped the tips of the whole file.
+	if err := fsx.AtomicWriteBytes(path, restoreSectionTips(full, sectionTemplate(path), nil)); err != nil {
+		return DeleteReport{}, err
+	}
+	return DeleteReport{Deleted: true, Rewrote: true, Table: table}, nil
 }
 
 // WriteFileSection writes section name into the TOML file at path, which is

@@ -123,8 +123,8 @@ func shipStateHardenClusters(root, workDir string, in ShipStateIn) (any, error) 
 		StaysDeferred: staysDeferred,
 		EvidenceOnly:  evidenceOnly,
 		Narration: fmt.Sprintf(
-			"harden_clusters: %d cluster(s), %d suppressed, %d lone-disagree file(s), %d dirty surface(s).",
-			len(clusters), len(suppressed), len(loneDisagree), len(dirty)),
+			"harden_clusters: %d cluster(s), %d suppressed, %d lone-disagree file(s), %d dirty surface(s), %d fix-now, %d stays-deferred, %d evidence-only finding(s).",
+			len(clusters), len(suppressed), len(loneDisagree), len(dirty), len(fixNow), len(staysDeferred), len(evidenceOnly)),
 		Next: hardenClustersNext(clusters, len(fixNow)),
 	}, nil
 }
@@ -237,8 +237,9 @@ func hardenParseFindings(d map[string]any) ([]HardenClusterFinding, error) {
 }
 
 // hardenOptionalFields reads the optional line (a whole number), deferredId
-// (a string) and fixedInRun (a bool) of detail.findings[i]. A key that is
-// absent or null gives the zero value. A value of another type is a
+// (a string, trimmed: a blank value is no id) and fixedInRun (a bool) of
+// detail.findings[i]. A key that is absent or null gives the zero value. A
+// value of another type is a
 // DomainError that names the field and the type it needs.
 //
 // The string and bool checks repeat the type checks of shipDetailString and
@@ -259,7 +260,8 @@ func hardenOptionalFields(m map[string]any, i int) (line int, deferredID string,
 		if !isStr {
 			return 0, "", false, hardenFieldTypeError(i, "deferredId", "string", v)
 		}
-		deferredID = s
+		// A blank or whitespace id means no id, as in healingDeferredID.
+		deferredID = strings.TrimSpace(s)
 	}
 	if v, ok := m["fixedInRun"]; ok && v != nil {
 		b, isBool := v.(bool)

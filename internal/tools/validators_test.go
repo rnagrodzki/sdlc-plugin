@@ -1118,7 +1118,14 @@ func TestValidateGuardrailsCandidates_MalformedJSON(t *testing.T) {
 	if domErr.Suggestion == "" {
 		t.Error("DomainError must carry a Suggestion")
 	}
+	if !strings.HasPrefix(domErr.Msg, guardrailCandidatesParseMsg) {
+		t.Errorf("Msg = %q, want prefix %q", domErr.Msg, guardrailCandidatesParseMsg)
+	}
 }
+
+// guardrailCandidatesParseMsg is the start of the DomainError message of
+// parseGuardrailCandidates. The LLM caller reads it, so the tests pin it.
+const guardrailCandidatesParseMsg = "guardrails: candidatesJson is not a JSON array of objects: "
 
 func TestValidateGuardrailsCandidates_NotArrayOfObjects(t *testing.T) {
 	root := t.TempDir()
@@ -1128,6 +1135,27 @@ func TestValidateGuardrailsCandidates_NotArrayOfObjects(t *testing.T) {
 		if !errors.As(err, &domErr) {
 			t.Fatalf("candidatesJson=%q: want *mcpserver.DomainError, got %T: %v", bad, err, err)
 		}
+		if !strings.HasPrefix(domErr.Msg, guardrailCandidatesParseMsg) {
+			t.Errorf("candidatesJson=%q: Msg = %q, want prefix %q", bad, domErr.Msg, guardrailCandidatesParseMsg)
+		}
+	}
+}
+
+// TestMergeGuardrailCandidates_MalformedJSON calls mergeGuardrailCandidates
+// directly. On the action path guardrailScope parses the same JSON first, so
+// only a direct call reaches the parse error of the merge.
+func TestMergeGuardrailCandidates_MalformedJSON(t *testing.T) {
+	raw := []any{map[string]any{"id": "a", "description": "A rule.", "severity": "error"}}
+	merged, reps, err := mergeGuardrailCandidates(raw, `[{"id":`)
+	var domErr *mcpserver.DomainError
+	if !errors.As(err, &domErr) {
+		t.Fatalf("want *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(domErr.Msg, guardrailCandidatesParseMsg) {
+		t.Errorf("Msg = %q, want prefix %q", domErr.Msg, guardrailCandidatesParseMsg)
+	}
+	if merged != nil || reps != nil {
+		t.Errorf("merged = %v, reps = %v, want nil for both", merged, reps)
 	}
 }
 

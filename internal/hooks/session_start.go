@@ -429,11 +429,13 @@ func binarySkewPhase() []string {
 // execute_state.go write deferred.json under worktree.MainRoot(), so a session
 // started inside a linked worktree must read the same file.
 //
-// Every failure path returns nil (no line, no error): unresolvable root, a
-// missing or empty file, a corrupt file, and a store with no open items.
-// There is deliberately no "0 deferred" line — silence means nothing to
-// triage. The cost is one local git process (shared with the other phases'
-// own root lookups) and one file read; no network, no gh.
+// An unresolvable root, a missing or empty file, and a store with no open
+// items return nil (no line). There is deliberately no "0 deferred" line —
+// silence means nothing to triage. A store that cannot be read (a corrupt
+// file, or one over history.DeferredFileMax) returns one warning line, never
+// an error: silence there would hide every open item. The cost is one local
+// git process (shared with the other phases' own root lookups) and one file
+// read; no network, no gh.
 func deferredBacklogPhase() []string {
 	root, err := mainRootFunc()
 	if err != nil || root == "" {
@@ -441,7 +443,7 @@ func deferredBacklogPhase() []string {
 	}
 	issues, err := history.NewFileWriter(paths.HistoryDir(root)).ListDeferred()
 	if err != nil {
-		return nil
+		return []string{fmt.Sprintf("sdlc: deferred items cannot be read (%s) — open items are not shown", err.Error())}
 	}
 	n := len(history.OpenDeferred(issues))
 	if n == 0 {

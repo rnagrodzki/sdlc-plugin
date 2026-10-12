@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 )
@@ -177,20 +178,38 @@ var ErrNotJSON = errors.New("ghx: gh output is not JSON")
 // ExitError is returned when gh started and exited with a non-zero code.
 // Stderr is the trimmed stderr text of the process, which may span several
 // lines. execx.RunAllowExit returns the stderr text and the exit code apart
-// from its error, so ExitError keeps both as separate fields and callers that
-// must show the reason of a gh failure read Stderr here.
+// from its error, so ExitError keeps both as separate fields.
+//
+// The full stderr text can name private repos, accounts and hosts, so Error()
+// carries only its first non-blank line, cut to exitErrorStderrCap bytes. A
+// caller that needs more reads the Stderr field and decides itself what is
+// safe to show.
 type ExitError struct {
 	Command  string
 	ExitCode int
 	Stderr   string
 }
 
-// Error describes the failed command, its exit code and its stderr text.
+// exitErrorStderrCap is the maximum number of stderr bytes that
+// ExitError.Error() carries.
+const exitErrorStderrCap = 200
+
+// Error describes the failed command, its exit code and the first non-blank
+// line of its stderr text, cut to exitErrorStderrCap bytes.
 func (e *ExitError) Error() string {
-	if e.Stderr == "" {
+	reason := ""
+	for _, line := range strings.Split(e.Stderr, "\n") {
+		if reason = strings.TrimSpace(line); reason != "" {
+			break
+		}
+	}
+	if reason == "" {
 		return fmt.Sprintf("ghx: %s exited with code %d", e.Command, e.ExitCode)
 	}
-	return fmt.Sprintf("ghx: %s exited with code %d: %s", e.Command, e.ExitCode, e.Stderr)
+	if len(reason) > exitErrorStderrCap {
+		reason = strings.ToValidUTF8(reason[:exitErrorStderrCap], "") + "..."
+	}
+	return fmt.Sprintf("ghx: %s exited with code %d: %s", e.Command, e.ExitCode, reason)
 }
 
 // IssueList returns the open issues of repo that carry every label in labels,
@@ -200,7 +219,9 @@ func (e *ExitError) Error() string {
 // of `[]` or `null` yields an empty slice and a nil error.
 //
 // Errors:
-//   - limit below 1 or an empty repo: a plain error, gh is not run.
+//   - limit below 1, or a repo that is not exactly OWNER/REPO: a plain error,
+//     gh is not run. --repo also accepts HOST/OWNER/REPO, so a host segment
+//     is refused: it would send the request to that host.
 //   - gh missing from PATH: wraps ErrGHNotFound.
 //   - gh exits non-zero (no auth, no network, rate limit): *ExitError with
 //     the stderr text of gh.
@@ -213,6 +234,9 @@ func (e *ExitError) Error() string {
 func IssueList(dir, repo string, labels []string, limit int) ([]Issue, error) {
 	if strings.TrimSpace(repo) == "" {
 		return nil, fmt.Errorf("ghx: IssueList: repo is empty")
+	}
+	if !isOwnerRepo(repo) {
+		return nil, fmt.Errorf("ghx: IssueList: repo %q is not OWNER/REPO", repo)
 	}
 	if limit < 1 {
 		return nil, fmt.Errorf("ghx: IssueList: invalid limit %d", limit)
@@ -242,6 +266,19 @@ func IssueList(dir, repo string, labels []string, limit int) ([]Issue, error) {
 		issues = []Issue{}
 	}
 	return issues, nil
+}
+
+// isOwnerRepo reports whether repo is exactly OWNER/REPO: two non-empty parts
+// split by one "/", with no white space and no part that starts with "-".
+func isOwnerRepo(repo string) bool {
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return false
+	}
+	if strings.HasPrefix(owner, "-") || strings.HasPrefix(name, "-") {
+		return false
+	}
+	return !strings.ContainsFunc(repo, unicode.IsSpace)
 }
 
 // AuthStatus returns the output of `gh auth status` run inside dir.

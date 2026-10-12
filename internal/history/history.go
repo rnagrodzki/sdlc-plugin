@@ -600,6 +600,7 @@ func OpenDeferred(issues []DeferredIssue) []DeferredIssue {
 
 // FormatDeferredSummary produces a markdown summary of open deferred issues
 // grouped by priority, suitable for display in the ship pipeline summary.
+// Each issue shows only the first line of its description.
 func FormatDeferredSummary(issues []DeferredIssue) string {
 	open := OpenDeferred(issues)
 	if len(open) == 0 {
@@ -617,7 +618,10 @@ func FormatDeferredSummary(issues []DeferredIssue) string {
 		sort.Slice(items, func(i, j int) bool { return items[i].Created < items[j].Created })
 		fmt.Fprintf(&sb, "**%s:**\n", cases.Title(language.English).String(prio))
 		for _, item := range items {
-			fmt.Fprintf(&sb, "- [%s] %s (source: %s)\n", item.ID, item.Description, item.Source)
+			// A description can span several lines; only its first line fits
+			// one list item.
+			first, _, _ := strings.Cut(strings.TrimSpace(item.Description), "\n")
+			fmt.Fprintf(&sb, "- [%s] %s (source: %s)\n", item.ID, strings.TrimSpace(first), item.Source)
 		}
 		sb.WriteString("\n")
 	}

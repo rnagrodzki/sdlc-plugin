@@ -57,7 +57,8 @@ type SetupWriteSectionsIn struct {
 // SetupWriteSectionsOut is the output for the setup_write_sections tool.
 type SetupWriteSectionsOut struct {
 	OK       bool                 `json:"ok"`
-	Written  []string             `json:"written"`
+	Written  []string             `json:"written" jsonschema_description:"Section ids written with data. A deleted guardrail id is not listed here: see deleted."`
+	Deleted  []DeletedSection     `json:"deleted,omitempty" jsonschema_description:"Guardrail ids whose table a JSON null deleted from config.toml, each with the data of the removed table."`
 	Root     string               `json:"root" jsonschema_description:"Absolute path of the active git worktree that config.toml and scaffolded CI files were written under."`
 	Errors   []string             `json:"errors,omitempty"`
 	Scaffold []ScaffoldFileReport `json:"scaffold,omitempty"`
@@ -65,10 +66,23 @@ type SetupWriteSectionsOut struct {
 	Next     string               `json:"next,omitempty" jsonschema_description:"Plain text. Recovery step when a section could not be written without deleting comments, or a note when a null on a guardrail id found no table to delete. Example: Edit section ship in .sdlc-v2/local.toml by hand, then run setup again for that section."`
 }
 
+// DeletedSection is one guardrail table that a JSON null deleted.
+type DeletedSection struct {
+	ID    string         `json:"id" jsonschema_description:"Plain text. The deleted guardrail id. Example: plan.guardrails.dry-old"`
+	Table map[string]any `json:"table" jsonschema_description:"The data of the removed table, as it was in config.toml before the delete."`
+}
+
+// rewroteWarning is the warning for a section whose file could not be
+// edited in place and was rewritten whole from parsed data. file names the
+// file, as sectionFile returns it.
+func rewroteWarning(id, file string) string {
+	return fmt.Sprintf("Section %s: could not edit %s in place; the file had no comments, so it was rewritten and template tips were added", id, file)
+}
+
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. Missing template tips are added back above their keys. A flag-set field (ship.steps, ship.quick) sent as an array of step names is stored as a table of every step set to true or false, and an old list line for that key is replaced. An unknown step name or a non-boolean value returns an error and nothing is written. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written.",
+		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table from config.toml instead: the lines of the table and one blank line next to it go, and deleted lists the id with the removed data. A null on a missing guardrail id changes nothing and adds a warning. A guardrail table that holds a comment line is not deleted: errors gets the comment refusal. A null guardrail id with target \"user\" is rejected and nothing is written. Missing template tips are added back above their keys. A flag-set field (ship.steps, ship.quick) sent as an array of step names is stored as a table of every step set to true or false, and an old list line for that key is replaced. An unknown step name or a non-boolean value returns an error and nothing is written. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written.",
 		mcpserver.Annotations{
 			Title:       "Write SDLC config sections",
 			ReadOnly:    false,
@@ -398,6 +412,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 	}
 
 	var written []string
+	var deleted []DeletedSection
 	var errs []string
 	var warnings []string
 	var refused []string // one "Edit section <id> in <file> by hand" per ErrWouldDropComments section
@@ -405,7 +420,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 	for _, id := range ids {
 		value := sections[id]
 		if value == nil && isGuardrailID(id) {
-			deleted, err := config.DeleteSectionReport(sectionRoot(contentRoot, stateRoot, id), id)
+			rep, err := config.DeleteSectionReport(sectionRoot(contentRoot, stateRoot, id), id)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 				if errors.Is(err, config.ErrWouldDropComments) {
@@ -413,12 +428,15 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 				}
 				continue
 			}
-			if !deleted {
+			if !rep.Deleted {
 				absent = append(absent, id)
 				warnings = append(warnings, fmt.Sprintf("%s: not present, nothing deleted", id))
 				continue
 			}
-			written = append(written, id)
+			if rep.Rewrote {
+				warnings = append(warnings, rewroteWarning(id, sectionFile(id, in.Target, userPath)))
+			}
+			deleted = append(deleted, DeletedSection{ID: id, Table: rep.Table})
 			continue
 		}
 		if value == nil {
@@ -444,9 +462,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 			continue
 		}
 		if rewrote {
-			warnings = append(warnings, fmt.Sprintf(
-				"Section %s: could not edit %s in place; the file had no comments, so it was rewritten and template tips were added",
-				id, sectionFile(id, in.Target, userPath)))
+			warnings = append(warnings, rewroteWarning(id, sectionFile(id, in.Target, userPath)))
 		}
 		written = append(written, id)
 	}
@@ -467,7 +483,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		next = note
 	}
 
-	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Root: contentRoot, Warnings: warnings, Next: next}
+	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Deleted: deleted, Root: contentRoot, Warnings: warnings, Next: next}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}

@@ -11,6 +11,11 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
+// deferredParseFixStep is dashboardDeleteDeferredParseSuggestion without its
+// closing "then retry": the persist warnings and next texts splice it in
+// before the deferred_add call (deferredHandFixStep).
+const deferredParseFixStep = "Fix the JSON syntax in .sdlc-v2/history/deferred.json by hand."
+
 // ---------------------------------------------------------------------------
 // issue-draft action
 // ---------------------------------------------------------------------------
@@ -393,10 +398,10 @@ func TestExecState_IssueDraft_UnparsableStoreGivesNoDeferredID(t *testing.T) {
 	}
 	// deferred_add fails on the same file, so both texts name the hand edit
 	// before the deferred_add call.
-	if len(out.Warnings) == 1 && !strings.Contains(out.Warnings[0], dashboardDeleteDeferredParseSuggestion+" After that, recover it with ship_state action=deferred_add") {
+	if len(out.Warnings) == 1 && !strings.Contains(out.Warnings[0], deferredParseFixStep+" After that, recover it with ship_state action=deferred_add") {
 		t.Errorf("Warnings[0] = %q, want the hand edit before the deferred_add call", out.Warnings[0])
 	}
-	for _, want := range []string{dashboardDeleteDeferredParseSuggestion + " After that, record it durably with ship_state action=deferred_add", "Do NOT retry issue-draft"} {
+	for _, want := range []string{deferredParseFixStep + " After that, record it durably with ship_state action=deferred_add", "Do NOT retry issue-draft"} {
 		if !strings.Contains(out.Next, want) {
 			t.Errorf("Next = %q, want it to contain %q", out.Next, want)
 		}

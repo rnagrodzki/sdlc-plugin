@@ -167,7 +167,8 @@ of build/vet/test commands."""
 
 # ─── Harden instructions ─────────────────────────────────────────
 # Custom instructions for the harden skill. Each item guides how harden
-# drafts its proposals for one surface. An item never relaxes or removes a rule.
+# drafts its proposals for one surface. An item never relaxes a rule, and it
+# never removes a rule outside the three removal cases of harden.
 # One list for each proposal surface. The four lists are independent.
 # Harden trims each item and ignores an item that is blank after the trim.
 

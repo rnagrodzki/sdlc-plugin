@@ -164,6 +164,10 @@ func newDeadRefScanner(contentRoot string, cat toolCatalog, skips *[]string) *de
 
 	files, err := hardenGitLsFiles(contentRoot)
 	switch {
+	case errors.Is(err, execx.ErrOutputCap):
+		// The list of tracked paths is over the output cap of execx: far more
+		// files than deadRefMaxTrackedFiles. Say that, not "git failed".
+		*skips = append(*skips, fmt.Sprintf("path check skipped: more than %d tracked files (git ls-files output is over the output cap)", deadRefMaxTrackedFiles))
 	case err != nil:
 		*skips = append(*skips, fmt.Sprintf("path check skipped: git ls-files failed: %s", err.Error()))
 	case len(files) > deadRefMaxTrackedFiles:

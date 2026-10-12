@@ -61,7 +61,7 @@ On either failure `ship_prepare` creates no state; the skill prints the error ve
 }
 ```
 
-`verify-pipeline` and `await-remote-review` are opt-in: set them to `true` in `[ship.steps]`. Set them only when you want post-PR CI verification or to await an automated reviewer's verdict. `verify-openspec` is an OpenSpec-gated opt-in — set it to `true` when you want the pipeline to validate implementation completeness against the spec before archiving. `harden` is an opt-in too — set it to `true` when you want review findings turned into guardrail/dimension edits committed before the PR. The plugin runs `harden` after `archive-openspec`. With it configured, `received-review` gets `--no-harden` so hardening runs once.
+`verify-pipeline` and `await-remote-review` are opt-in: set them to `true` in `[ship.steps]`. Set them only when you want post-PR CI verification or to await an automated reviewer's verdict. `verify-openspec` is an OpenSpec-gated opt-in — set it to `true` when you want the pipeline to validate implementation completeness against the spec before archiving. `harden` is an opt-in too — set it to `true` when you want review findings turned into guardrail/dimension edits committed before the PR. Then one fix pass for the below-threshold findings may add a second separate commit, the fix-pass commit, of the source files it changed. The plugin runs `harden` after `archive-openspec`. With it configured, `received-review` gets `--no-harden` so hardening runs once.
 
 ---
 

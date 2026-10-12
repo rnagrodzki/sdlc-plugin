@@ -145,12 +145,13 @@ prepare_orchestrator({
   similarIssues,           // open issues that may cover the same error: [{ number, title, url }]
                             // always present; empty (shown as (none)) when nothing matches or the search was skipped
   similarIssuesNote,       // only when the duplicate search was skipped; says why
+  preflightFindingCount,   // a harden-mode field; always 0 in this mode — ignore it
 }
 ```
 
 The input fields `skill`, `step`, `operation`, and `errorText` are required; the
 rest may be empty strings — the tool tolerates empty optional fields. The return
-value contains `manifestPath`, `mode`, `next`, `similarIssues` and, when the duplicate search was skipped, `similarIssuesNote`.
+value contains `manifestPath`, `mode`, `next`, `similarIssues`, `preflightFindingCount` (always 0 here) and, when the duplicate search was skipped, `similarIssuesNote`.
 Keep `similarIssues` and `similarIssuesNote` for Step 6b.
 The orchestrator reads all other fields from the manifest file at `manifestPath`.
 
@@ -245,7 +246,7 @@ error handling. Do not create anything.
 
 **On `yes`:** Continue to Step 6b.
 
-## Step 6b — Duplicate Issue Search (main context)
+## Step 6b — Similar Open Issues (main context)
 
 The search already ran in Step 4. Do not search again.
 
@@ -377,7 +378,7 @@ replaces the calling skill's own error output or stop behavior.
 - Run `gh issue create` inside the orchestrator agent. The agent has no `Bash`
   tool. Posting MUST run in the main context.
 - Create a GitHub issue without both consent gates passing.
-- Create a GitHub issue or comment without completing Step 6b (duplicate search).
+- Create a GitHub issue or comment without completing Step 6b (the similar open issues that the Step 4 search returned).
 - Retry a failed `gh issue create` call a second time.
 - Leave `{placeholder}` text in the issue description.
 - Append an AI-tool attribution line ("Generated with Claude Code" or similar) to the

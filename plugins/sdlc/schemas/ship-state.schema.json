@@ -174,7 +174,7 @@
             "description": "The deferring agent's own reasoning (detail.description; defaults to title). Written by defer since the harden step started reading it; absent on older entries, so not required."
           },
           "deferredId": { "type": "string", "description": "id of the deferred.json row that defer wrote or merged into" },
-          "fixedInRun": { "type": "boolean", "default": false, "description": "true after a fix-pass fix; every reader skips the entry" }
+          "fixedInRun": { "type": "boolean", "default": false, "description": "true after healing_record kind fixed with this deferredId (a fix-pass fix). The review ledger, the reportData.deferredFindings count, the ship report list and the execute report list skip the entry. The ship_state read response array and the dashboard review queue keep it." }
         },
         "required": ["severity", "file", "title"]
       }
@@ -459,7 +459,7 @@
                 "type": "string",
                 "format": "date-time"
               },
-              "deferredId": { "type": "string", "description": "the run entry that this fix resolves" }
+              "deferredId": { "type": "string", "description": "id of the deferred.json row that this fix resolves. healing_record also sets fixedInRun:true on the deferredFindings entries with this deferredId." }
             },
             "required": ["origin", "severity", "file", "title", "recordedAt"],
             "additionalProperties": false

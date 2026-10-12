@@ -1870,6 +1870,118 @@ func TestShipState_Defer_ReadFailureNamedInNarration(t *testing.T) {
 	}
 }
 
+// TestShipState_Defer_RealStoreReadFailure runs a stateful defer against the
+// real file store with a deferred.json that cannot be read (a directory at its
+// path) or does not parse. The call succeeds, the run entry is written with no
+// deferredId, and the summary carries the persist warning. For the parse case
+// the hand-fix is spliced in without its "then retry" (the warning forbids a
+// repeat of the call) and is followed by the deferred_add recovery.
+func TestShipState_Defer_RealStoreReadFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T, root string)
+		wantErr string
+		wantFix string
+	}{
+		{
+			name: "unreadable",
+			setup: func(t *testing.T, root string) {
+				if err := os.MkdirAll(filepath.Join(historyDir(root), "deferred.json"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantErr: "is a directory",
+		},
+		{
+			name: "does not parse",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(historyDir(root), "deferred.json"), "{garbage")
+			},
+			wantFix: "Fix the JSON syntax in .sdlc-v2/history/deferred.json by hand. After that, recover it with ship_state action=deferred_add",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			branch := "feat/defer-real-read-fail"
+			dir, path := deferFixture(t, branch)
+			tt.setup(t, dir)
+
+			n := deferOnce(t, dir, branch, "internal/foo.go", "unchecked error", "", time.Now())
+			for _, want := range []string{"Deferred finding recorded", "WARNING: could not persist this item", "deferred.json", "deferred_add", tt.wantErr, tt.wantFix} {
+				if !strings.Contains(n.Summary, want) {
+					t.Errorf("summary = %q, want it to contain %q", n.Summary, want)
+				}
+			}
+			if strings.Contains(n.Summary, "then retry") || (n.Next != nil && strings.Contains(n.Next.Instruction, "then retry")) {
+				t.Errorf("summary = %q, next = %+v, want no \"then retry\" next to the no-repeat rule", n.Summary, n.Next)
+			}
+			if findings, _ := readStateData(t, path)["deferredFindings"].([]any); len(findings) != 1 {
+				t.Fatalf("deferredFindings = %v, want 1 entry", findings)
+			}
+			if id, has := deferredStateEntry(t, path, 0)["deferredId"]; has {
+				t.Errorf("deferredFindings[0].deferredId = %v, want absent after a failed deferred.json read", id)
+			}
+		})
+	}
+}
+
+// TestShipState_Defer_StatelessPersistFailureSaysStoredNowhere pins the
+// summary of a defer with no ship state file whose deferred.json write fails:
+// no store holds the item, so the summary must not claim a record on a state
+// file. The received-review match substring stays in it.
+func TestShipState_Defer_StatelessPersistFailureSaysStoredNowhere(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	branch := "feat/defer-stateless-fail"
+	checkoutBranch(t, dir, branch)
+	useFailingHistory(t)
+
+	n := deferOnce(t, dir, branch, "internal/foo.go", "unchecked error", "", time.Now())
+	for _, want := range []string{"Deferred finding not stored", "WARNING: could not persist this item", "stored nowhere", "deferred_add"} {
+		if !strings.Contains(n.Summary, want) {
+			t.Errorf("summary = %q, want it to contain %q", n.Summary, want)
+		}
+	}
+	for _, bad := range []string{"Deferred finding recorded", "run-scoped state file"} {
+		if strings.Contains(n.Summary, bad) {
+			t.Errorf("summary = %q, want no %q: no state file exists", n.Summary, bad)
+		}
+	}
+}
+
+// TestShipState_Defer_BothWritesFailNamesBoth pins the error of a defer whose
+// deferred.json write and ship state write both fail: the message names both
+// failures, and the suggestion says nothing was stored and gives the
+// deferred.json hand-fix before the retry.
+func TestShipState_Defer_BothWritesFailNamesBoth(t *testing.T) {
+	shipErrSkipAsRoot(t)
+	branch := "feat/defer-both-fail"
+	dir, path := deferFixture(t, branch)
+	writeFile(t, filepath.Join(historyDir(dir), "deferred.json"), "{garbage")
+	before := shipErrReadFile(t, path)
+	shipErrChmod(t, filepath.Dir(path), 0o555)
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "defer",
+		Detail: map[string]any{"branch": branch, "severity": "medium", "file": "a.go", "title": "t"},
+	}, fixedNow(time.Now()))
+	text, _ := requireShipErr(t, err, shipErrInfra)
+	for _, want := range []string{
+		"write ship state to",
+		"deferred.json also failed",
+		"This call stored the finding nowhere.",
+		"Before the retry: Fix the JSON syntax in .sdlc-v2/history/deferred.json by hand.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("error text = %q, want it to contain %q", text, want)
+		}
+	}
+	if !bytes.Equal(before, shipErrReadFile(t, path)) {
+		t.Error("state file changed although the write failed")
+	}
+}
+
 // TestPersistDeferred_SkipsDuplicateID verifies that persistDeferred without
 // merge by id stores one row for an id sent three times.
 func TestPersistDeferred_SkipsDuplicateID(t *testing.T) {
@@ -2053,6 +2165,33 @@ func TestShipStateDeferredAdd_MergeAppendsOnlyNewLines(t *testing.T) {
 	if want := "plan A is pending\n- plan B is pending"; rows[0].Description != want {
 		t.Errorf("description = %q, want %q", rows[0].Description, want)
 	}
+	// Each response echoes the row as stored after the call: the merge and
+	// the repeat both return the merged description, not the input text.
+	for name, got := range map[string]map[string]any{"second": second, "repeat": repeat} {
+		if got["description"] != rows[0].Description || got["created"] != rows[0].Created ||
+			got["priority"] != rows[0].Priority || got["source"] != rows[0].Source {
+			t.Errorf("%s call = %v, want it to echo the stored row %+v", name, got, rows[0])
+		}
+	}
+}
+
+// TestShipStateDeferredAdd_EchoesStoredRow verifies that deferred_add without
+// merge echoes created, priority, source and description, with the defaults
+// it filled in, and keeps next a string.
+func TestShipStateDeferredAdd_EchoesStoredRow(t *testing.T) {
+	root := t.TempDir()
+	got := deferredAddOnce(t, root, map[string]any{"id": "e1", "description": "later", "source": "harden-pending"})
+	rows := storedDeferred(t, root)
+	if len(rows) != 1 {
+		t.Fatalf("deferred.json rows = %+v, want 1", rows)
+	}
+	if got["created"] != rows[0].Created || rows[0].Created == "" ||
+		got["priority"] != history.PriorityMedium || got["source"] != "harden-pending" || got["description"] != "later" {
+		t.Errorf("call = %v, want it to echo the stored row %+v", got, rows[0])
+	}
+	if _, isStr := got["next"].(string); !isStr {
+		t.Errorf("next = %#v, want a string", got["next"])
+	}
 }
 
 // TestShipStateDeferredAdd_MergeOnResolvedRowAddsSuffixedRow verifies that
@@ -2185,8 +2324,8 @@ func TestShipStateDeferredAdd_StoreFailures(t *testing.T) {
 	for _, tt := range tests {
 		for _, merge := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s merge=%v", tt.name, merge), func(t *testing.T) {
-				if tt.skipAsRoot && os.Geteuid() == 0 {
-					t.Skip("a root user can write into a read-only directory")
+				if tt.skipAsRoot {
+					shipErrSkipAsRoot(t)
 				}
 				root := t.TempDir()
 				tt.setup(t, root)
@@ -2291,11 +2430,20 @@ func TestShipStateDefer_UnusableStoreNamesHandFixBeforeDeferredAdd(t *testing.T)
 
 			n := deferOnce(t, dir, "feat/defer-unusable", "a.go", "unchecked error", "", time.Now())
 
-			wantNext := "deferred item not written. " + tt.wantSugg + " After that, add it with deferred_add, then continue."
+			// The hand-fix comes without its "then retry": the text forbids
+			// a repeat of the original call and names deferred_add instead.
+			fix := strings.TrimSuffix(tt.wantSugg, ", then retry.") + "."
+			if fix == tt.wantSugg+"." {
+				t.Fatalf("suggestion %q does not end with \", then retry.\"", tt.wantSugg)
+			}
+			wantNext := "deferred item not written. " + fix + " After that, add it with deferred_add, then continue."
 			if n.Next == nil || n.Next.Instruction != wantNext {
 				t.Errorf("next = %+v, want %q", n.Next, wantNext)
 			}
-			for _, want := range []string{tt.wantSugg + " After that, recover it with ship_state action=deferred_add", "second entry"} {
+			if strings.Contains(n.Summary, "then retry") {
+				t.Errorf("summary = %q, want no \"then retry\" next to the no-repeat rule", n.Summary)
+			}
+			for _, want := range []string{fix + " After that, recover it with ship_state action=deferred_add", "second entry"} {
 				if !strings.Contains(n.Summary, want) {
 					t.Errorf("summary = %q, want it to contain %q", n.Summary, want)
 				}
@@ -2382,9 +2530,7 @@ func TestShipStateDeferredReaders_StoreFailureSuggestion(t *testing.T) {
 // of deferred_resolve: the history directory is read-only, so the atomic write
 // fails and the row stays open. The Suggestion names the write recovery.
 func TestShipStateDeferredResolve_WriteFailureSuggestion(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("a root user can write into a read-only directory")
-	}
+	shipErrSkipAsRoot(t)
 	root := t.TempDir()
 	deferredAddOnce(t, root, map[string]any{"id": "d1", "description": "later"})
 	dir := historyDir(root)
@@ -8145,9 +8291,50 @@ func TestShipStateHealingRecord_FixedDeferredIDNotAString(t *testing.T) {
 	requireShipErr(t, err, shipErrDomain)
 }
 
+// TestShipStateHealingRecord_SchemaAcceptsDeferFixFlow validates the ship
+// state that the real defer then healing_record kind fixed with deferredId
+// write against ship-state.schema.json: the deferredFindings entry with
+// deferredId and fixedInRun, and the healing.fixed record with deferredId.
+// It also pins that the schema rejects a deferredId that is not a string in
+// either place.
+func TestShipStateHealingRecord_SchemaAcceptsDeferFixFlow(t *testing.T) {
+	branch := "feat/heal-deferred-schema"
+	dir, path, id := deferredFixedFixture(t, branch)
+	if out := healingFixedOut(t, dir, branch, id, nil); !out.Written || !out.FixedInRun {
+		t.Fatalf("healing_record = %+v, want written and fixedInRun", out)
+	}
+	validate := shipStateSchemaValidator(t)
+	data := readStateData(t, path)
+	if got := deferredStateEntry(t, path, 0)["fixedInRun"]; got != true {
+		t.Fatalf("deferredFindings[0].fixedInRun = %v, want true", got)
+	}
+	if err := validate(data); err != nil {
+		t.Fatalf("schema rejected the state written by defer then healing_record: %v", err)
+	}
+
+	for name, edit := range map[string]func(d map[string]any){
+		"deferredFindings[0].deferredId": func(d map[string]any) {
+			d["deferredFindings"].([]any)[0].(map[string]any)["deferredId"] = float64(7)
+		},
+		"healing.fixed[0].deferredId": func(d map[string]any) {
+			d["healing"].(map[string]any)["fixed"].([]any)[0].(map[string]any)["deferredId"] = float64(7)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := readStateData(t, path)
+			edit(d)
+			if err := validate(d); err == nil {
+				t.Errorf("%s = 7: want schema rejection, got nil", name)
+			}
+		})
+	}
+}
+
 // TestShipStateHealingRecord_FixedDeferredIDNoLiveRun pins that a fixed record
 // with a deferredId on a run that already completed returns the no-live-run
-// narration, writes nothing, and leaves the deferred.json row open.
+// narration, writes nothing, and leaves the deferred.json row open. Its next
+// names the row and says it stays open, so the caller does not count it as
+// resolved.
 func TestShipStateHealingRecord_FixedDeferredIDNoLiveRun(t *testing.T) {
 	branch := "feat/heal-deferred-done"
 	dir, path, id := deferredFixedFixture(t, branch)
@@ -8163,14 +8350,38 @@ func TestShipStateHealingRecord_FixedDeferredIDNoLiveRun(t *testing.T) {
 	storeBefore := shipErrReadFile(t, filepath.Join(historyDir(dir), "deferred.json"))
 
 	out := healingFixedOut(t, dir, branch, id, nil)
-	if out.Written || !strings.HasSuffix(out.Summary, healingNarrNoLiveRun) || out.Next != nil || out.FixedInRun {
-		t.Errorf("out = %+v, want written false, the no-live-run narration, no next and no fixedInRun", out)
+	if out.Written || !strings.HasSuffix(out.Summary, healingNarrNoLiveRun) || out.FixedInRun || out.DeferredID != "" {
+		t.Errorf("out = %+v, want written false, the no-live-run narration, no fixedInRun and no deferredId echo", out)
+	}
+	if out.Next == nil || out.Next.ID != healingFixNextID ||
+		!strings.Contains(out.Next.Instruction, "deferred item "+id+" is not resolved and stays open") ||
+		!strings.Contains(out.Next.Instruction, "deferred_resolve") {
+		t.Errorf("next = %+v, want %s naming %s as not resolved, with the deferred_resolve recovery", out.Next, healingFixNextID, id)
 	}
 	if after := shipErrReadFile(t, path); !bytes.Equal(after, raw) {
 		t.Error("ship state of a completed run changed")
 	}
 	if after := shipErrReadFile(t, filepath.Join(historyDir(dir), "deferred.json")); !bytes.Equal(after, storeBefore) {
 		t.Error("deferred.json changed without a live run")
+	}
+}
+
+// TestShipStateHealingRecord_FixedDeferredIDNoStateFile pins the other
+// no-live-run form: the branch has no ship state file. The call records
+// nothing, and its next says the deferred item stays open.
+func TestShipStateHealingRecord_FixedDeferredIDNoStateFile(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	branch := "feat/heal-deferred-no-state"
+	checkoutBranch(t, dir, branch)
+
+	out := healingFixedOut(t, dir, branch, "review-deferred-x-1", nil)
+	if out.Written || !strings.HasSuffix(out.Summary, healingNarrNoLiveRun) || out.FixedInRun {
+		t.Errorf("out = %+v, want written false, the no-live-run narration and no fixedInRun", out)
+	}
+	if out.Next == nil || !strings.Contains(out.Next.Instruction, "deferred item review-deferred-x-1 is not resolved and stays open") {
+		t.Errorf("next = %+v, want it to say the deferred item stays open", out.Next)
 	}
 }
 
@@ -8335,6 +8546,9 @@ func TestShipStateHealingRecord_FixedDeferredIDStateWriteFails(t *testing.T) {
 	text, _ := requireShipErr(t, err, shipErrInfra)
 	if !strings.Contains(text, "retry ship_state healing_record.") {
 		t.Errorf("error text = %q, want the state-write recovery", text)
+	}
+	if want := "Deferred item " + id + " is already resolved in deferred.json"; !strings.Contains(text, want) {
+		t.Errorf("error text = %q, want it to name the resolved row: %q", text, want)
 	}
 	if rows := storedDeferred(t, dir); len(rows) != 1 || rows[0].Status != history.StatusResolved {
 		t.Errorf("deferred.json rows = %+v, want the row resolved", rows)

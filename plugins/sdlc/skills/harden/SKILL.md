@@ -1,6 +1,6 @@
 ---
 name: harden
-description: "Use this skill after an SDLC pipeline failure to analyze hardening surfaces (plan and execute guardrails, review dimensions, copilot instructions) and propose user-approved edits that would prevent the same class of failure next time. Alternatively, use --from-learnings to batch-triage all non-harden learnings entries through the orchestrator. Never relaxes a rule. It removes a rule only for a dead reference or a covering rule, after approval. Required arguments: --failure-text <string> --skill <caller-name> (or --from-issue <num> --skill <name>, or --from-learnings alone). Optional: --step, --operation, --exit-code, --error-type, --user-intent, --args-string, --auto (no prompts: applies add, strengthen, consolidate and proven repairs and removals, and stores the other items as pending deferred items; for a subagent without AskUserQuestion, or a caller running unattended because its own user passed --auto, e.g. ship's harden step; not valid with --from-learnings). Triggers on: harden, strengthen guardrails, prevent this failure, learn from this failure, after pipeline failure, triage learnings."
+description: "Use this skill after an SDLC pipeline failure to analyze hardening surfaces (plan and execute guardrails, review dimensions, copilot instructions) and propose user-approved edits that would prevent the same class of failure next time. Alternatively, use --from-learnings to batch-triage all non-harden learnings entries through the orchestrator. Never relaxes a rule. It removes a rule only for a dead reference, a covering rule, or a pre-flight repair that splits an oversize rule. Required arguments: --failure-text <string> --skill <caller-name> (or --from-issue <num> --skill <name>, or --from-learnings alone). Optional: --step, --operation, --exit-code, --error-type, --user-intent, --args-string, --auto (no prompts: applies add, strengthen, consolidate and proven repairs and removals, and stores the other items as pending deferred items; for a subagent without AskUserQuestion, or a caller running unattended because its own user passed --auto, e.g. ship's harden step; not valid with --from-learnings). Triggers on: harden, strengthen guardrails, prevent this failure, learn from this failure, after pipeline failure, triage learnings."
 user-invocable: true
 argument-hint: "--failure-text <text> --skill <name> [--step <s>] [--operation <op>] [--auto] | --from-learnings"
 model: sonnet
@@ -11,7 +11,7 @@ model: sonnet
 This skill runs after an SDLC pipeline failure to propose user-approved edits to
 the project's hardening surfaces (plan guardrails, execute guardrails, review
 dimensions, copilot instructions) so the same class of failure is caught earlier
-next time. Never relaxes a rule. Removes a rule only for a dead reference or a covering rule.
+next time. Never relaxes a rule. Removes a rule only in three cases: a dead reference, a covering rule, or the split of an oversize rule.
 
 **Announce at start:** "I'm using harden (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
@@ -40,8 +40,10 @@ rather than left implicit:
   content) on failure.
 - **Pre-flight findings do not stop harden.** Step 1's pre-flight (inside
   `prepare_orchestrator`, mode `"harden"`) writes its findings to the manifest
-  and returns their count as `preflightFindingCount`. The orchestrator drafts
-  one `repair` proposal for each finding, first in `proposals[]`. The on-disk
+  and returns their count as `preflightFindingCount`. When the orchestrator
+  runs, it drafts one `repair` proposal for each finding, first in
+  `proposals[]`. On the Step 2 `plugin-defect` hint path no orchestrator
+  runs, so the findings get no repair in that run. The on-disk
   files can therefore hold old findings while Step 5 runs. A 5a check is
   scoped to the ids or the file of the current proposal, so an old finding of
   another rule does not fail it. The one exception is the check after a
@@ -97,9 +99,9 @@ proposed.
   prompt, the 5c upstream-report offer, and the Step 6 dispatch prompt.
 - It prints the Step 1 custom instruction block like any other run. The
   instructions apply in `--auto` runs, and the 5d summary names their count.
-- It never relaxes a rule. It removes a rule only in the two removal cases
-  (a dead reference, or a covering rule), and only as the Step 5 `--auto`
-  table allows. The orchestrator's severity vocabulary stays fixed, and 5a's
+- It never relaxes a rule. It removes a rule only in the three removal cases
+  (a dead reference, a covering rule, or a pre-flight repair that splits an
+  oversize rule), and only as the Step 5 `--auto` table allows. The orchestrator's severity vocabulary stays fixed, and 5a's
   check-repair-write-revalidate flow (guardrails) or write-then-validate-then-revert
   flow (dimensions/Copilot) still runs on every auto-accepted proposal.
 - It is not valid with `--from-learnings`: bulk triage deletes learnings entries
@@ -149,15 +151,23 @@ Empty values for optional fields are tolerated.
 
 `preflightFindingCount` is the number of pre-flight findings on the existing
 guardrails and dimension files. A finding does not stop the call: the tool
-writes the findings to the manifest, and the orchestrator drafts one `repair`
-proposal for each one (Step 3). After the custom instruction block below,
-print one line:
+writes the findings to the manifest. When the orchestrator runs (Step 3), it
+drafts one `repair` proposal for each finding. After the custom instruction
+block below, print one line:
 
 ```text
 Pre-flight findings: <preflightFindingCount> (repair proposals come first)
 ```
 
-Print `Pre-flight findings: 0` when the count is 0.
+Print `Pre-flight findings: 0` when the count is 0. On the Step 2
+`plugin-defect` hint path no orchestrator runs, so Step 2 prints a second
+line that says the findings get no repair.
+
+`next` can also carry a sentence that starts with `Dead-reference check skipped:`
+(a check of the dead-reference scan did not run, so a dead reference can go
+unseen), or a history note (`History was not added to the manifest: ...`, or a
+sentence that names `history.readErrors`). Print each such sentence verbatim,
+one line each, after the `Pre-flight findings:` line.
 
 `customInstructions` is a map with four keys — `plan-guardrails`,
 `execute-guardrails`, `review-dimensions`, `copilot-instructions` — each a list
@@ -204,7 +214,9 @@ Step 3 does not run when Step 2 builds `RESULT` from a `plugin-defect` hint.
 
 The manifest now includes a `history` section (when `.sdlc-v2/history/` exists)
 with `recentRuns` (last 10 pipeline run records from `runs.jsonl`) and
-`openDeferred` (unresolved deferred issues from `deferred.json`). The
+`openDeferred` (unresolved deferred issues from `deferred.json`). The section
+also appears when a history read failed: `readErrors` then holds one text for
+each history file that could not be read, and the lists may be incomplete. The
 orchestrator uses this as additional evidence — e.g. if the same guardrail hit
 appears in 3+ recent runs, proposal severity should escalate.
 
@@ -223,8 +235,9 @@ yet, this array is empty and the rest of the manifest is unaffected.
 **Do NOT read the full manifest file contents into the main context yet.**
 Step 2 needs only the classification preview (a small subset), and Step 3 hands
 the full manifest path to the orchestrator agent. The one other read is the
-`--auto` dead-reference check in Step 5: it reads the `surface` and `token`
-fields of `surfaces.deadReferences`, and nothing else.
+`--auto` evidence check in Step 5: it reads the `surface`, `ruleId`, `file`
+and `token` fields of `surfaces.deadReferences`, and the `surface`, `id` and
+`file` fields of `preflightFindings`, and nothing else.
 
 There is no bash trap spanning this run — `manifestPath` is a plain return
 value from the tool. Clean it up explicitly with `rm -f "<manifestPath>"` at
@@ -374,6 +387,9 @@ Present each such proposal once, with the first entry that holds it. Drop
 the copies (same `surface`, same `extends`, same `removeIds`, `evidence`
 `preflight` or `dead-reference`) from later entries.
 
+Before the proposals of each entry, print the `RESULT.skipped` lines of
+Step 4 for that entry.
+
 Track which entries had at least one proposal receive an `apply` answer — these
 are **addressed** entries.
 
@@ -454,7 +470,12 @@ already read for the preview:
 Then go to Step 4, which routes to Step 6 (PLUGIN-DEFECT ROUTE) by its
 condition (b). This `RESULT` has no `repair` proposal, so condition (a) does
 not match: no orchestrator drafted repairs for the pre-flight findings on
-this path.
+this path. When `preflightFindingCount` is above 0, print this line before
+you go to Step 4:
+
+```text
+Pre-flight findings not repaired: the plugin-defect hint skips the orchestrator.
+```
 
 The orchestrator (Step 3) is responsible for the authoritative classification
 in all other cases. Continue to Step 3.
@@ -553,6 +574,16 @@ Classification: {RESULT.classification}
 Rationale:      {RESULT.classificationRationale}
 ```
 
+Then show what the orchestrator did not propose, from `RESULT.skipped`. Print
+each line only when its field is set and not empty:
+
+```text
+Review dimensions: no proposal — {skipped.reviewDimensions.rationale}
+Dropped draft: {failureClass} — {reason}   (one line for each skipped.drafts entry)
+```
+
+The 5d summary lists the same dropped drafts under `Dropped drafts`.
+
 Then apply the routes below in order. The first condition that matches
 applies, and only that one:
 
@@ -562,6 +593,10 @@ applies, and only that one:
 | (b) | `RESULT.classification == "plugin-defect"` | **Step 6 — PLUGIN-DEFECT ROUTE**. Skip Step 5: no other surface edit is right for a plugin defect |
 | (c) | `RESULT.proposals` is not empty | Step 5 |
 | (d) | any other result (`user-code` or `ambiguous` with no proposal) | Report `No actionable hardening proposals — the failure signal does not point at any of the loaded surfaces.` Emit the 5d summary (when `--auto` is set) and the 5e record (when its gate holds). Then go to Step 7 |
+
+On route (d), when `skipped.drafts` is not empty, also print `{n} draft(s)
+failed the generic-rule gate: see the Dropped draft lines above.` A dropped
+draft is a draft that the orchestrator could not generalize to a class.
 
 ## Step 5 — PRESENT and APPLY (R7, R8, R10, R12, C9, C10, R-iteration-write)
 
@@ -588,7 +623,9 @@ that splits a rule delete rule ids: on a guardrail surface they write JSON
 - Confine each of these files with the 5a step 0 table before you read it.
   A file that fails the table takes the step 0 rejection.
 - `_common.md` in the dimensions directory is not a dimension. It holds the
-  common review text and has no `name`, so it has no Copilot mirror. When
+  common review text and has no `name`. The dimension loader skips
+  `_common.md`, so `validate` (action `dimensions`) does not check it and
+  `dimensions_render_instructions` renders no Copilot mirror for it. When
   `targetFile`, the `removeIds` file or the `mergedInto` file of a `remove`
   or a `merge` is `_common.md`, do not write. Without `--auto`, show it to
   the user and treat it as **skip**. With `--auto`, list it under `Skipped`
@@ -631,20 +668,34 @@ in this table:
 | Action | Interactive | `--auto` |
 |---|---|---|
 | add, strengthen, consolidate | ask | apply |
-| repair, `evidence: "preflight"` | ask | apply |
-| repair, `evidence: "dead-reference"` (rewrite) | ask | apply only when each token is in `deadReferences`, else pending |
-| remove, `removalReason: "dead-reference"` | ask | apply only when each token is in `deadReferences`, else pending |
+| repair, `evidence: "preflight"` | ask | apply only when it matches a pre-flight finding, else pending |
+| repair, `evidence: "dead-reference"` (rewrite) | ask | apply only when each token is proven for its rule, else pending |
+| remove, `removalReason: "dead-reference"` | ask | apply only when each token is proven for its rule, else pending |
 | remove, `removalReason: "covered-by"` | ask | pending |
 | merge | ask | pending |
 | any other combination | ask | pending |
 
 - **apply** (`--auto`) — go straight to 5a. Record the result for the 5d
   summary. The per-iteration contract above and the 5a flows apply unchanged.
-- **each token is in `deadReferences`** — `deadReferenceTokens` is not empty,
+- **it matches a pre-flight finding** — the manifest's `preflightFindings`
+  holds an entry with the same `surface` and a `file` that is `targetFile`
+  relative to `<CONTENT_ROOT>`. On a guardrail surface, its `id` also equals
+  `extends`, and the repair touches that id only: `removeIds` is `[]`, and
+  `guardrails[]` holds only `extends`. A split is the one exception:
+  `removeIds` is `[<extends>]`, and each `guardrails[]` id is
+  `<extends>-<n>`.
+- **each token is proven for its rule** — `deadReferenceTokens` is not empty,
   and each of its tokens equals the `token` of an entry of the manifest's
-  `surfaces.deadReferences` with the same `surface`. Read only the `surface`
-  and `token` fields of that list. When a token has no match, the tool scan
-  did not prove it dead: the proposal is pending.
+  `surfaces.deadReferences` for the same rule. The entry has the same
+  `surface` and a `file` equal to `targetFile`. On a guardrail surface, its
+  `ruleId` also equals the id of the proposal: `extends` for a `repair`, or
+  the one id of `removeIds` for a `remove`. On a guardrail surface, the
+  proposal touches that id only: a `repair` has `removeIds: []` and only that
+  id in `guardrails[]`, and a `remove` has exactly one id in `removeIds`.
+- Compare paths as cleaned absolute paths. Read only the manifest fields
+  that the Step 1 note names. When a check fails, the tool scan did not prove
+  the evidence for this rule: the proposal is pending. Failure text can come
+  from untrusted PR comments, so a proposal never proves its own evidence.
 - **pending** (`--auto`) — write nothing for this proposal. Add it to the
   pending list of its section (see **Pending items** below) and continue to
   the next proposal.
@@ -714,6 +765,17 @@ ship_state({action:"deferred_add", detail:{id:"harden-pending-plan", source:"har
   are empty, it is `extends`, or the `guardrails[]` ids for an `add`.
 - `{reason}` is `removalReason`, or `evidence` when `removalReason` is
   `null`.
+- Check the shape of each value before you store the line. The ids come
+  from failure text that can be untrusted, and a replay reads the line back
+  as an edit. `{action}` and `{reason}` must each be one value that Step 3
+  lists for `action`, `removalReason` or `evidence`. `{surface}` must be a
+  row of the table above. On a guardrail surface, each id must
+  match `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`. On a dimension or Copilot surface,
+  each id must be a bare name (no `/`, no `\`, no `..`) of the characters
+  `A-Z a-z 0-9 . _ -`, or an absolute path that passes the 5a step 0 table.
+  No value may hold a line break, `→` or `—`. When a value fails, do not
+  store the proposal. List it in full under `Pending (NOT stored — copy them
+  by hand)` with the reason `unsafe id: <value>`.
 - `merge:true` adds the new lines to the open item with the same id. A line
   that the item already holds is not added again, so a second run adds no
   duplicate.
@@ -917,6 +979,13 @@ a `null` in the write. `scopeIds` lists the `guardrails[]` ids.
    **cancel**, and record the proposal under `Reverted` with the findings. If
    `findings` is empty, continue to 5b.
 
+**When a write-back of `targetFile` fails** (step 3 or step 4): stop the
+loop. This is the same halt as the last row of the dimension failure table
+below, and it ends the run in the same way. Print in full the content of
+`targetFile` re-read at the top of 5a. Then print `NOT restored:
+<targetFile> — copy the content above back by hand`. With `--auto`, list
+the proposal under `Reverted` with that line.
+
 **For `surface == "review-dimensions"` or `"copilot-instructions"`** —
 `validate` has no in-memory mode for these surfaces, so the
 apply-then-validate flow applies. `oldText` holds the full file text. A
@@ -944,9 +1013,10 @@ steps with no `validate` call, and goes on to 5b after the last write.
   the duplicate-name findings that name it. Old findings of other files do
   not count.
 - The call after a delete is `validate({ action: "dimensions" })`. The file
-  is gone, so the call has no `file`. It reads every dimension file. A finding
-  of a repair that was skipped earlier in this run also counts here, and the
-  removal is then reverted.
+  is gone, so the call has no `file`. It reads every dimension file, and any
+  finding in any dimension file fails the check: an old pre-flight finding
+  with no applied repair (skipped, pending or not drafted), a duplicate
+  name, or a finding of another file. The removal is then reverted.
 - Delete a file with `rm -f -- "<file>"`.
 
 Steps for an Edit (add, repair, strengthen, consolidate):
@@ -980,8 +1050,8 @@ under `Reverted` (or `Skipped` for the first row) with that line.
 | check after the delete has a finding | write `oldText` back to the deleted file. Revert `mergedInto` (merge only) | unchanged | `reverted: <finding>` |
 | write-back of `oldText` fails | stop the loop (the 5b halt). Print `oldText` in full | the file is gone | `NOT restored: <file> — copy the text above back by hand` |
 
-The last row is the one case that ends the run. It is the same halt as the
-5b halt. Do not revert `mergedInto` (merge only): it keeps the merged text,
+In this table, the last row is the one case that ends the run. It is the
+same halt as the 5b halt. Do not revert `mergedInto` (merge only): it keeps the merged text,
 which covers the class of the file that is gone. Print `oldText` in full.
 With `--auto` the halt is the same (no prompt is involved): stop the loop.
 List this proposal under `Reverted` with its 5d line, and every remaining
@@ -1162,7 +1232,12 @@ Not processed (halt):
   [{i}] {action} on {surface} → {targetFile}
 Not filed (needs a human — invoke error-report manually):
   {RESULT.errorReportPayload, one line}
+Dropped drafts (failed the generic-rule gate, not proposed):
+  {failureClass} — {reason}
 ```
+
+`Dropped drafts` lists each `RESULT.skipped.drafts` entry. It is not a
+proposal, so no count of the header line includes it.
 
 `Pending (needs a person …)` lists the proposals that the Step 5 `--auto`
 table holds back, under the deferred item id of their section (one heading
@@ -1170,9 +1245,9 @@ for each section). `{id}` is the `id` that the `deferred_add` call of the
 section returned: `harden-pending-<section>`, or
 `harden-pending-<section>-<n>` (see **Pending items** in Step 5). `{ids}` and `{removalReason}` follow the description lines
 of the pending item (`{removalReason}` is `evidence` when `removalReason` is
-`null`). When the `deferred_add` call of a section failed, its proposals go
-under `Pending (NOT stored — copy them by hand)` instead, in full. `{P}`
-counts both lists.
+`null`). When the `deferred_add` call of a section failed, or a proposal
+failed the id shape check, its proposals go under `Pending (NOT stored —
+copy them by hand)` instead, in full. `{P}` counts both lists.
 
 `Not filed` lists `RESULT.errorReportPayload` when it is not `null` and the
 classification is `ambiguous` (5c) or `plugin-defect` (Step 6). Under
@@ -1299,11 +1374,14 @@ The `Removed:` line names every rule id and file that an applied `remove`,
 Omit the line when nothing was deleted. `Applied:` counts each applied
 `repair`, `remove` and `merge` too.
 
-The `Dimensions:` line MUST be included **only when `<surface-list>` includes
-`review-dimensions`** (i.e., at least one review-dimension file was created or
-modified during this hardening run). When `review-dimensions` is NOT in the
-surface-list, the `Dimensions:` line MUST be omitted entirely — do not emit it
-with an empty value.
+The `Dimensions:` line MUST be included **only when at least one
+review-dimension file was created or modified** during this hardening run: by
+an applied `add`, `repair`, `strengthen` or `consolidate`, or as the
+`mergedInto` file of an applied `merge`. A deleted dimension file (a `remove`,
+or the `removeIds` file of a `merge`) goes on the `Removed:` line only, never
+on the `Dimensions:` line. When no dimension file was created or modified
+(for example, the only dimension change was a `remove`), omit the
+`Dimensions:` line entirely — do not emit it with an empty value.
 
 This line exists so that plan's dimension-coverage gate can
 deterministically suppress duplicate dimension proposals on subsequent runs
@@ -1334,10 +1412,18 @@ filesystem step is needed here.
 run replays the deferred item `<id>` that follows the prefix (Step 0). This
 skill does not close the item. After the learnings entry, print one line:
 
-- When no proposal of this run went to a pending item, and none was
-  reverted:
+The replayed edits are the proposals with `evidence: "failure"`. A pre-flight
+repair or a dead-reference proposal of the same run is not one of them.
+
+- When at least one replayed edit exists, and each one was applied or got a
+  **skip** answer from the person:
   `Every pending rule edit of <id> is applied or rejected. Close the item with /sdlc:deferred --resolve <id>.`
+- When no replayed edit exists (the id is wrong or the item is closed):
+  `Deferred item <id>: no rule edit was drafted. Check the id with /sdlc:deferred --list.`
 - Otherwise: `Deferred item <id> stays open: some rule edits still need a person.`
+  This includes an edit that went to a pending item, was reverted, or was
+  skipped by a check and not by the person (for example `stale oldText`,
+  `check error`, `write failed` or `severity downgrade`).
 
 `rm -f "<manifestPath>"` here if it has not already been removed by an earlier
 step (it should have been — this is a defensive final check, not a new
@@ -1366,10 +1452,11 @@ cleanup path).
 - Accumulate approved changes across multiple proposals and write them together
   — each approved proposal MUST be written to disk immediately before advancing
   to the next proposal (R-iteration-write).
-- Propose relaxing a rule, or removing a rule outside the two removal cases.
-- Apply a `merge` or a `covered-by` removal under `--auto`, or a
-  dead-reference `repair` or `remove` whose tokens are not all in
-  `surfaces.deadReferences` — store it as a pending item (Step 5).
+- Propose relaxing a rule, or removing a rule outside the three removal cases (Step 0).
+- Apply a `merge` or a `covered-by` removal under `--auto`, a dead-reference
+  `repair` or `remove` whose tokens are not all proven for its own rule in
+  `surfaces.deadReferences`, or a pre-flight `repair` that matches no
+  `preflightFindings` entry — store it as a pending item (Step 5).
 - Without `--auto`, delete a rule or a file before its preview showed
   `oldText` in full.
 - With `--auto`, delete a rule or a file outside the Step 5 `--auto` table.
@@ -1380,8 +1467,9 @@ cleanup path).
   route there.
 - Read the full manifest contents into the main context — Step 2 reads only
   `failure.*` and `classification_hint`, and the Step 5 `--auto` check reads
-  only the `surface` and `token` fields of `surfaces.deadReferences`; the
-  orchestrator owns the rest.
+  only the fields that the Step 1 note names (`surface`, `ruleId`, `file`
+  and `token` of `surfaces.deadReferences`; `surface`, `id` and `file` of
+  `preflightFindings`); the orchestrator owns the rest.
 - Auto-dispatch this skill from a caller skill without explicit user selection
   in the caller's failure-handling menu. The one exception: a caller the user
   itself invoked with `--auto`, which forwards `--auto` to this skill

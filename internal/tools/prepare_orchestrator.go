@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -132,6 +133,9 @@ func hardenOutToPrepareOut(out HardenPrepareOut, mode string) PrepareOrchestrato
 	if out.PreflightFindingCount > 0 {
 		next += fmt.Sprintf(" %d pre-flight findings: the harden orchestrator drafts repair proposals for them first.", out.PreflightFindingCount)
 	}
+	if len(out.DeadReferenceSkips) > 0 {
+		next += " Dead-reference check skipped: " + strings.Join(out.DeadReferenceSkips, "; ") + "."
+	}
 	return PrepareOrchestratorOut{
 		ManifestPath:          out.ManifestPath,
 		Mode:                  mode,
@@ -248,13 +252,12 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 		if histPath == "" {
 			histPath = paths.HistoryDir(root)
 		}
-		if err := injectHardenHistory(out.ManifestPath, histPath); err != nil {
-			// Non-fatal — history is supplementary evidence; log as
-			// manifest error but don't block the harden run.
-			_ = err
-		}
-
-		return hardenOutToPrepareOut(out, in.Mode), nil
+		// Non-fatal: history is extra evidence, so a failure does not block
+		// the harden run. It is never silent: Next says what went wrong.
+		po := hardenOutToPrepareOut(out, in.Mode)
+		readErrs, err := injectHardenHistory(out.ManifestPath, histPath)
+		po.Next += hardenHistoryNote(readErrs, err)
+		return po, nil
 
 	case "error_report":
 		root, err := worktree.MainRoot()
@@ -283,28 +286,54 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 // History injection for harden manifests
 // ---------------------------------------------------------------------------
 
+// hardenHistoryNote is the text that prepare_orchestrator adds to Next for
+// the result of injectHardenHistory. It is "" when the history was added
+// with no read error.
+func hardenHistoryNote(readErrs []string, err error) string {
+	if err != nil {
+		return fmt.Sprintf(" History was not added to the manifest: %s.", err.Error())
+	}
+	if len(readErrs) > 0 {
+		return fmt.Sprintf(" The history store could not be read, so the manifest's history section may miss runs or open deferred items (history.readErrors): %s.", strings.Join(readErrs, "; "))
+	}
+	return ""
+}
+
 // injectHardenHistory reads the persistent history store at histPath and
 // patches the manifest JSON at manifestPath with a "history" section
 // containing recent run records and open deferred issues.
-func injectHardenHistory(manifestPath, histPath string) error {
+//
+// A read error of runs.jsonl or deferred.json (for example a deferred.json
+// that does not parse, or one over history.DeferredFileMax) does not stop
+// the patch: its text goes into history.readErrors and is returned in
+// readErrs, so a store that cannot be read never looks like an empty one.
+// err is set only when the manifest itself cannot be read, parsed or
+// written. The write is atomic, so on error the manifest is unchanged.
+func injectHardenHistory(manifestPath, histPath string) (readErrs []string, err error) {
 	w := history.NewFileWriter(histPath)
 
-	runs, _ := w.ReadRecentRuns(10)
-	deferred, _ := w.ListDeferred()
+	runs, runsErr := w.ReadRecentRuns(10)
+	if runsErr != nil {
+		readErrs = append(readErrs, runsErr.Error())
+	}
+	deferred, deferredErr := w.ListDeferred()
+	if deferredErr != nil {
+		readErrs = append(readErrs, deferredErr.Error())
+	}
 	openDeferred := history.OpenDeferred(deferred)
 
-	if len(runs) == 0 && len(openDeferred) == 0 {
-		return nil // nothing to inject
+	if len(runs) == 0 && len(openDeferred) == 0 && len(readErrs) == 0 {
+		return nil, nil // nothing to inject
 	}
 
 	data, err := os.ReadFile(manifestPath)
 	if err != nil {
-		return err
+		return readErrs, err
 	}
 
 	var manifest map[string]any
 	if err := json.Unmarshal(data, &manifest); err != nil {
-		return err
+		return readErrs, err
 	}
 
 	histSection := map[string]any{}
@@ -314,13 +343,12 @@ func injectHardenHistory(manifestPath, histPath string) error {
 	if len(openDeferred) > 0 {
 		histSection["openDeferred"] = openDeferred
 	}
+	if len(readErrs) > 0 {
+		histSection["readErrors"] = readErrs
+	}
 	manifest["history"] = histSection
 
-	out, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(manifestPath, out, 0o644)
+	return readErrs, fsx.AtomicWriteJSON(manifestPath, manifest)
 }
 
 // ---------------------------------------------------------------------------

@@ -2,12 +2,15 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
@@ -242,7 +245,7 @@ func TestPrepareOrchestrator_HardenReturnsInstructionsAndNext(t *testing.T) {
 	if !reflect.DeepEqual(out.CustomInstructions, want) {
 		t.Errorf("CustomInstructions = %#v, want %#v", out.CustomInstructions, want)
 	}
-	if out.Next != prepareNextHarden {
+	if nextWithoutDeadRefSkips(out.Next) != prepareNextHarden {
 		t.Errorf("Next = %q, want %q", out.Next, prepareNextHarden)
 	}
 
@@ -250,7 +253,7 @@ func TestPrepareOrchestrator_HardenReturnsInstructionsAndNext(t *testing.T) {
 	if _, ok := wire["customInstructions"].(map[string]any); !ok {
 		t.Errorf("wire customInstructions is not an object: %T", wire["customInstructions"])
 	}
-	if wire["next"] != prepareNextHarden {
+	if nextWithoutDeadRefSkips(wire["next"].(string)) != prepareNextHarden {
 		t.Errorf("wire next = %v, want %q", wire["next"], prepareNextHarden)
 	}
 
@@ -389,7 +392,7 @@ func TestPrepareOrchestrator_HardenReportsPreflightFindings(t *testing.T) {
 			if wire["preflightFindingCount"] != float64(tc.wantCount) {
 				t.Errorf("wire preflightFindingCount = %v, want %d", wire["preflightFindingCount"], tc.wantCount)
 			}
-			if wire["next"] != tc.wantNext {
+			if nextWithoutDeadRefSkips(wire["next"].(string)) != tc.wantNext {
 				t.Errorf("wire next = %v, want %q", wire["next"], tc.wantNext)
 			}
 			if got := len(manifestPreflightFindings(t, out.ManifestPath)); got != tc.wantCount {
@@ -397,4 +400,164 @@ func TestPrepareOrchestrator_HardenReportsPreflightFindings(t *testing.T) {
 			}
 		})
 	}
+}
+
+// writeHistoryManifest writes a small harden manifest and returns its path.
+func writeHistoryManifest(t *testing.T) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(p, []byte(`{"mode":"harden"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// readHistorySection returns the history section of the manifest at p, or nil
+// when the manifest has none.
+func readHistorySection(t *testing.T, p string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("manifest does not parse: %v", err)
+	}
+	if m["mode"] != "harden" {
+		t.Errorf("manifest mode = %v, want harden (other keys must stay)", m["mode"])
+	}
+	h, _ := m["history"].(map[string]any)
+	return h
+}
+
+// TestInjectHardenHistory_UnreadableDeferredIsReported pins that a
+// deferred.json that cannot be read is never read as "no open items": the
+// error goes into history.readErrors and is returned.
+func TestInjectHardenHistory_UnreadableDeferredIsReported(t *testing.T) {
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T, path string)
+		wantErr string
+	}{
+		{"does not parse", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "does not parse"},
+		{"over the size limit", func(t *testing.T, path string) {
+			f, err := os.Create(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer f.Close()
+			if err := f.Truncate(history.DeferredFileMax + 1); err != nil {
+				t.Fatal(err)
+			}
+		}, "larger than 8 MiB"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			histDir := t.TempDir()
+			tc.setup(t, history.NewFileWriter(histDir).DeferredPath())
+			manifest := writeHistoryManifest(t)
+
+			readErrs, err := injectHardenHistory(manifest, histDir)
+			if err != nil {
+				t.Fatalf("injectHardenHistory: %v", err)
+			}
+			if len(readErrs) != 1 || !strings.Contains(readErrs[0], tc.wantErr) {
+				t.Fatalf("readErrs = %q, want one entry with %q", readErrs, tc.wantErr)
+			}
+			h := readHistorySection(t, manifest)
+			got, _ := h["readErrors"].([]any)
+			if len(got) != 1 || got[0] != readErrs[0] {
+				t.Errorf("history.readErrors = %v, want %q", h["readErrors"], readErrs)
+			}
+			if _, ok := h["openDeferred"]; ok {
+				t.Errorf("history.openDeferred = %v, want no key", h["openDeferred"])
+			}
+		})
+	}
+}
+
+// TestInjectHardenHistory_EmptyStoreLeavesManifest pins that an empty store
+// with no read error adds no history section.
+func TestInjectHardenHistory_EmptyStoreLeavesManifest(t *testing.T) {
+	manifest := writeHistoryManifest(t)
+	readErrs, err := injectHardenHistory(manifest, t.TempDir())
+	if err != nil || readErrs != nil {
+		t.Fatalf("injectHardenHistory = %q, %v, want nil, nil", readErrs, err)
+	}
+	if h := readHistorySection(t, manifest); h != nil {
+		t.Errorf("history = %v, want none", h)
+	}
+}
+
+// TestInjectHardenHistory_OpenDeferredAdded pins the normal path: an open
+// item is in history.openDeferred and there is no readErrors key.
+func TestInjectHardenHistory_OpenDeferredAdded(t *testing.T) {
+	histDir := t.TempDir()
+	if err := history.NewFileWriter(histDir).AddDeferred(history.DeferredIssue{
+		ID: "harden-pending-1", Description: "edit x", Status: history.StatusOpen, Priority: history.PriorityLow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	manifest := writeHistoryManifest(t)
+
+	readErrs, err := injectHardenHistory(manifest, histDir)
+	if err != nil || readErrs != nil {
+		t.Fatalf("injectHardenHistory = %q, %v, want nil, nil", readErrs, err)
+	}
+	h := readHistorySection(t, manifest)
+	open, _ := h["openDeferred"].([]any)
+	if len(open) != 1 {
+		t.Fatalf("history.openDeferred = %v, want one item", h["openDeferred"])
+	}
+	if _, ok := h["readErrors"]; ok {
+		t.Errorf("history.readErrors = %v, want no key", h["readErrors"])
+	}
+}
+
+// TestInjectHardenHistory_ManifestErrorReturned pins that a manifest that
+// does not parse is an error, not a silent success, and is left unchanged.
+func TestInjectHardenHistory_ManifestErrorReturned(t *testing.T) {
+	histDir := t.TempDir()
+	if err := os.WriteFile(history.NewFileWriter(histDir).DeferredPath(), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := filepath.Join(t.TempDir(), "manifest.json")
+	if err := os.WriteFile(manifest, []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := injectHardenHistory(manifest, histDir); err == nil {
+		t.Fatal("injectHardenHistory: want an error for a manifest that does not parse")
+	}
+	if data, _ := os.ReadFile(manifest); string(data) != "not json" {
+		t.Errorf("manifest = %q, want it unchanged", data)
+	}
+}
+
+// TestHardenHistoryNote pins the text that prepare_orchestrator adds to Next
+// for each result of injectHardenHistory.
+func TestHardenHistoryNote(t *testing.T) {
+	if got := hardenHistoryNote(nil, nil); got != "" {
+		t.Errorf("no error: note = %q, want empty", got)
+	}
+	if got, want := hardenHistoryNote([]string{"a", "b"}, nil),
+		" The history store could not be read, so the manifest's history section may miss runs or open deferred items (history.readErrors): a; b."; got != want {
+		t.Errorf("read errors: note = %q, want %q", got, want)
+	}
+	if got, want := hardenHistoryNote([]string{"a"}, errors.New("disk full")),
+		" History was not added to the manifest: disk full."; got != want {
+		t.Errorf("manifest error: note = %q, want %q", got, want)
+	}
+}
+
+// nextWithoutDeadRefSkips cuts the dead-reference skip sentence off a harden
+// Next. A temp test repo has no tool catalog and no plugin root, so the scan
+// always skips checks there; TestHardenOutToPrepareOut pins that sentence.
+func nextWithoutDeadRefSkips(next string) string {
+	before, _, _ := strings.Cut(next, " Dead-reference check skipped: ")
+	return before
 }

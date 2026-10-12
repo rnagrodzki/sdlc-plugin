@@ -31,10 +31,12 @@ import (
 // section lives inside an inline table or an array of tables.
 var errNoSplice = errors.New("config: section cannot be spliced")
 
-// ErrWouldDropComments reports that the in-place edit of a config file
-// failed and the file has a comment line, so the write was refused instead
-// of rewriting the whole file (a full rewrite deletes every comment).
-var ErrWouldDropComments = errors.New("config: in-place edit failed and a full rewrite would delete comments")
+// ErrWouldDropComments reports that a write or delete was refused because it
+// would delete a comment. There are two causes: the in-place edit of the
+// file failed and the file has a comment line (a full rewrite deletes every
+// comment), or the table to delete holds a comment line (the in-place
+// delete would remove it).
+var ErrWouldDropComments = errors.New("config: the edit would delete comments")
 
 // errBlockHasComment reports that a table to delete holds a comment line, in
 // its header, its key/values, or a trailing comment on one of those lines.
@@ -239,9 +241,11 @@ func spliceFile(orig []byte, name string, v, merged map[string]any) ([]byte, err
 }
 
 // refuseCommentDrop returns the ErrWouldDropComments error for section name
-// in the file at path, after the in-place edit failed with cause. The
-// message names the real cause: a layout the splicer does not handle
-// (errNoSplice), or an internal splice failure.
+// in the file at path, after the in-place edit or delete stopped with cause.
+// The message names the real cause: a table to delete that holds a comment
+// line (errBlockHasComment, where the in-place delete itself works), a
+// layout the splicer does not handle (errNoSplice), or an internal splice
+// failure.
 func refuseCommentDrop(name, path string, cause error) error {
 	if errors.Is(cause, errBlockHasComment) {
 		return fmt.Errorf("%w: section %q in %s holds a comment line, and the delete would remove it. Edit that section by hand, then run setup again", ErrWouldDropComments, name, path)
@@ -602,6 +606,19 @@ func commentLines(data []byte) (map[int]bool, error) {
 // deleteSectionPath removes the table at path from the decoded data m and
 // reports whether it was there.
 func deleteSectionPath(m map[string]any, path []string) bool {
+	if !hasSectionPath(m, path) {
+		return false
+	}
+	for _, part := range path[:len(path)-1] {
+		m = m[part].(map[string]any)
+	}
+	delete(m, path[len(path)-1])
+	return true
+}
+
+// hasSectionPath reports whether m holds a key at path, under tables only
+// (the same walk as deleteSectionPath, with no change to m).
+func hasSectionPath(m map[string]any, path []string) bool {
 	for _, part := range path[:len(path)-1] {
 		next, ok := m[part].(map[string]any)
 		if !ok {
@@ -609,12 +626,8 @@ func deleteSectionPath(m map[string]any, path []string) bool {
 		}
 		m = next
 	}
-	last := path[len(path)-1]
-	if _, ok := m[last]; !ok {
-		return false
-	}
-	delete(m, last)
-	return true
+	_, ok := m[path[len(path)-1]]
+	return ok
 }
 
 // pruneEmptyTables removes every empty table from m, children first. A

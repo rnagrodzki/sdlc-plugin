@@ -8,8 +8,10 @@ command name is `/sdlc:deferred`.
 
 - A `/ship` run ended and its summary said deferred items are still open.
 - You want to see the backlog: review findings that fell below the review
-  threshold, issue drafts raised while a plan was executing, and findings
-  `/received-review` left unfixed (`wont-fix`, `disagree`, `needs-direction`).
+  threshold, issue drafts raised while a plan was executing, findings
+  `/received-review` left unfixed (`wont-fix`, `disagree`, `needs-direction`),
+  and rule edits `/harden --auto` held back for a person (source
+  `harden-pending`).
 - You want to turn a deferred item into a tracked GitHub issue.
 - You decided an item is not worth tracking and want to close it.
 
@@ -63,12 +65,15 @@ was already resolved, it says so and changes nothing.
 - [/received-review](received-review.md) — Findings it does not fix are recorded
   as deferred items, with a `reason` of `wont-fix`, `disagree` or
   `needs-direction`.
+- [/harden](harden.md) — Under `--auto`, rule edits that need a person are
+  recorded as deferred items with source `harden-pending`. Triage prints the
+  `/harden` command that applies them.
 
 ## Tips and gotchas
 
 - **Items are recorded when they are found.** They are stored in the project's
-  deferred-items file as soon as a review, execute or received-review step
-  creates them, so they normally survive an early exit from a pipeline run.
+  deferred-items file as soon as a review, execute, received-review or harden
+  step creates them, so they normally survive an early exit from a pipeline run.
   `/deferred` only reads and closes them. It never adds one.
 - **Pending rule edits are not filed.** `/harden --auto` stores rule edits that
   need a person as items with source `harden-pending`, one item for each rule
@@ -102,7 +107,8 @@ was already resolved, it says so and changes nothing.
 - **The issue body is as detailed as the recorded item.** Run from `/ship`'s
   last step, an execute draft is filed with its full body. Run later on its own,
   the body is built from the recorded fields: description, priority, time, and
-  file, severity and reason when they were set. The body has no `Source` line —
+  file, severity and reason when they were set. The description sits in a code
+  fence, so its text cannot pass for the metadata lines below it. The body has no `Source` line —
   see the `source` note above — but it carries the deferred item id, whose
   prefix shows which step recorded it.
 - **Triage always asks.** `/deferred` has no automatic mode. `/ship` in its

@@ -3,10 +3,10 @@
 Analyze a pipeline failure and propose user-approved edits to the project's
 hardening surfaces — plan/execute guardrails, review dimensions, or Copilot
 instructions — so the same class of failure is caught earlier next time.
-Harden adds, tightens and repairs rules. It never relaxes a rule. It removes or
-merges a rule only for a dead reference or a covering rule, and only after
-approval. The one exception is `--auto`: see
-[What harden can remove](#what-harden-can-remove).
+Harden adds, tightens and repairs rules. It never relaxes a rule. It removes a
+rule only in three cases: a dead reference, a covering rule, or a pre-flight
+repair that splits an oversize rule. Each removal needs approval, except under
+`--auto`: see [What harden can remove](#what-harden-can-remove).
 
 ## When to use
 
@@ -20,21 +20,24 @@ approval. The one exception is `--auto`: see
 ## Syntax
 
     /harden --failure-text <text> --skill <name> [options]
+    /harden --from-issue <num> --skill <name> [options]
+    /harden --from-learnings
 
 ## Flags
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `--failure-text <string>` | The failure to analyze, as free text. Required unless `--from-issue` is used; mutually exclusive with it. | — |
-| `--from-issue <num>` | Analyze a GitHub issue instead of inline text. Mutually exclusive with `--failure-text`. | — |
-| `--skill <name>` | Name of the skill that failed. Always required. | — |
+| `--failure-text <string>` | The failure to analyze, as free text. Required unless `--from-issue` or `--from-learnings` is used; mutually exclusive with both. The special value `Pending rule edits: <id>` replays the rule edits of the deferred item `<id>` (see [Auto mode and pending edits](#auto-mode-and-pending-edits)). | — |
+| `--from-issue <num>` | Analyze a GitHub issue instead of inline text. Mutually exclusive with `--failure-text` and `--from-learnings`. | — |
+| `--from-learnings` | Triage every learnings entry that `/harden` did not write itself, one orchestrator pass for each entry (see [Learnings triage](#learnings-triage)). Mutually exclusive with `--failure-text` and `--from-issue`. Not valid with `--auto`. | off |
+| `--skill <name>` | Name of the skill that failed. Required with `--failure-text` and `--from-issue`. Ignored with `--from-learnings`: `/harden` reads the skill name from the header of each entry. | — |
 | `--step <s>` | Step name within the failing skill, if known. | — |
 | `--operation <op>` | Operation being performed when the failure occurred. | — |
 | `--exit-code <code>` | Exit code or HTTP status from the failure, if any. | — |
 | `--error-type <type>` | Category of error, if known. | — |
 | `--user-intent <text>` | What the user was trying to accomplish. | — |
 | `--args-string <text>` | The invocation arguments that led to the failure. | — |
-| `--auto` | Run without prompts, and list each applied proposal under "Auto-accepted" in the output. Two callers pass it: [`/received-review --auto`](received-review.md), when its Step 11.6 dispatches `/harden` (subagent dispatch, where `AskUserQuestion` is not available), and [`/ship --auto`](ship.md)'s own `harden` step, which forwards the flag because the run is unattended. Applies add, strengthen, consolidate, repair and dead-reference removal. Merges and covered-by removals wait as one deferred item for each rule section (see [Auto mode and pending edits](#auto-mode-and-pending-edits)). Each edit is still validated, and `/harden` reverts it on failure. Custom instructions still apply (see [Custom instructions](#custom-instructions)). Never files an `error-report` issue. Not valid with `--from-learnings`. | off |
+| `--auto` | Run without prompts, and list each applied proposal under "Auto-accepted" in the output. Two callers pass it: [`/received-review --auto`](received-review.md), when its Step 11.6 dispatches `/harden` (subagent dispatch, where `AskUserQuestion` is not available), and [`/ship --auto`](ship.md)'s own `harden` step, which forwards the flag because the run is unattended. Applies add, strengthen and consolidate, and the repairs and dead-reference removals that the plugin's own checks prove. Merges, covered-by removals and unproven repairs or removals wait as one deferred item for each rule section (see [Auto mode and pending edits](#auto-mode-and-pending-edits)). Each edit is still validated, and `/harden` reverts it on failure. Custom instructions still apply (see [Custom instructions](#custom-instructions)). Never files an `error-report` issue. Not valid with `--from-learnings`. | off |
 
 ## Custom instructions
 
@@ -75,7 +78,8 @@ prints the block once, after the first entry that loads.
 **Rules that custom instructions never change:**
 
 - No relaxing. An instruction cannot make `/harden` relax a rule, or remove a
-  rule outside the two removal cases.
+  rule outside the three removal cases (see
+  [What harden can remove](#what-harden-can-remove)).
 - Approval prompts. An instruction cannot add or skip an approval prompt.
 - `--auto`. An instruction cannot turn `--auto` on or off. In an `--auto` run
   the instructions still apply, and the summary shows
@@ -130,20 +134,27 @@ The repair proposals come first in the list. The proposals for the failure
 follow. When the orchestrator classifies the failure as a plugin-defect,
 `/harden` still runs the repairs before it routes the failure to
 `error-report`. A `--from-issue` run for an issue labeled `mcp-failure` skips
-the orchestrator, so it drafts no repair.
+the orchestrator, so it drafts no repair. When that run has findings, it
+prints a second line:
+
+    Pre-flight findings not repaired: the plugin-defect hint skips the orchestrator.
 
 ## What harden can remove
+
+`/harden` removes a rule in three cases only:
 
 - A rule with a dead reference (a path, tool, action, flag or step that no
   longer exists).
 - A rule that a broader rule covers. `/harden` removes it, or merges it into
   the covering rule.
+- A guardrail that is over 1024 bytes. A repair of this pre-flight finding
+  splits it into smaller rules, and the old id goes.
 
-Each removal shows the full old text and needs approval. Under `--auto`, only
-dead-reference removals apply, and only when the plugin's own scan lists each
-dead token. A covering-rule removal or a merge waits as a pending item. A
-repair of a pre-flight finding can also delete an id: it splits a rule that is
-over 1024 bytes into smaller rules.
+Each removal shows the full old text and needs approval. Under `--auto`, a
+dead-reference removal applies only when the plugin's own scan lists each
+dead token for that same rule (same file and, for a guardrail, same id). A
+split applies only when the pre-flight check reported that rule. A
+covering-rule removal or a merge waits as a pending item.
 
 ## Auto mode and pending edits
 
@@ -153,8 +164,8 @@ happens:
 | Proposal | Without `--auto` | With `--auto` |
 |----------|------------------|---------------|
 | add, strengthen, consolidate | ask | apply |
-| repair of a pre-flight finding | ask | apply |
-| repair or removal for a dead reference | ask | apply when the plugin's scan lists each dead token, else pending |
+| repair of a pre-flight finding | ask | apply when the pre-flight check reported that rule, else pending |
+| repair or removal for a dead reference | ask | apply when the plugin's scan lists each dead token for that same rule, else pending |
 | removal for a covering rule | ask | pending |
 | merge | ask | pending |
 | any other proposal | ask | pending |
@@ -176,15 +187,55 @@ lists them under the id of their item:
       [3] merge on plan-guardrails → dry, kiss — covered-by
 
 When `/harden` cannot store an item, it lists the proposals in full under
-`Pending (NOT stored — copy them by hand)`.
+`Pending (NOT stored — copy them by hand)`. It does the same for a proposal
+with an id that fails the shape check (for example, an id with a line break),
+with the reason `unsafe id: <value>`. The ids come from failure text that can
+be untrusted, and a replay reads each stored line back as an edit.
+
+The summary also lists, under `Dropped drafts`, each draft that the
+orchestrator dropped because it named one case and not a class of failure.
 
 To apply the pending edits, run the replay command (see
 [Examples](#examples)). The edits go through the normal approval prompt. The
-replay run does not close the item. After it, `/harden` prints one line. The
-line tells you to close the item with `/sdlc:deferred --resolve <id>` when
-every edit is applied or rejected. Otherwise it says that the item stays open.
+replay run does not close the item. After it, `/harden` prints one line:
+
+- Close the item with `/sdlc:deferred --resolve <id>`: at least one edit was
+  replayed, and you applied or skipped each one.
+- No rule edit was drafted: the id is wrong or the item is closed. Check the
+  id with `/sdlc:deferred --list`.
+- The item stays open: an edit is pending again, was reverted, or was skipped
+  by a check (for example, the rule changed after the edit was drafted).
 [`/deferred`](deferred.md) lists the item and prints the replay command. It
 never files the item as a GitHub issue.
+
+## Learnings triage
+
+    /harden --from-learnings
+
+`/harden` reads `.sdlc-v2/learnings/log.md` and triages each entry that it
+did not write itself (entries with the header `## YYYY-MM-DD — harden:` are
+skipped). It needs no `--skill`: it reads the skill name from the header of
+each entry. It is not valid with `--auto`, because it deletes learnings
+entries and needs a person.
+
+- **One orchestrator pass for each entry.** `/harden` loads each entry as a
+  failure and classifies it. Then it presents the proposals of each entry
+  with the normal approval prompt: user-code entries first, then ambiguous,
+  then plugin-defect.
+- **The custom instructions and the `Pre-flight findings:` line print once**,
+  after the first entry that loads. Every entry reads the same config.
+- **A pre-flight repair or a dead-reference proposal shows once.** Each entry
+  drafts the same proposals for them, so `/harden` shows each one with the
+  first entry only.
+- **Applied entries are removed.** An entry with at least one applied
+  proposal is removed from the log, in one call at the end. A pre-flight
+  repair or a dead-reference proposal does not count, because it does not
+  fix the entry.
+- **Cancel removes nothing.** A **cancel** answer ends the run. No learnings
+  entry is removed, and `/harden` writes no learnings entry of its own.
+- **A config error stops the whole run.** An invalid `[harden.instructions]`
+  table, a config version error, or a `config.toml` that cannot be read stops
+  the triage at the first entry. No entry is removed.
 
 ## Structured output
 
@@ -247,10 +298,10 @@ evidence for a proposal on one of those four surfaces.
   invalid `[harden.instructions]` table stops the run here. A
   [pre-flight finding](#pre-flight-findings) does not stop the run: `/harden`
   prints the count, and it repairs the findings first.
-- **Two removal cases.** `/harden` never relaxes a rule. It removes a rule for
-  a dead reference or a covering rule. A split repair is the one other case in
-  which a rule id goes: it replaces an oversize rule with smaller rules. Each
-  preview shows the full old text. Custom instructions do not change this.
+- **Three removal cases.** `/harden` never relaxes a rule. It removes a rule
+  for a dead reference or a covering rule, or in a split repair, which
+  replaces an oversize rule with smaller rules. Each preview shows the full
+  old text. Custom instructions do not change this.
 - **New rules name a class of failure.** A proposal that names one file or one
   tool as its condition is generalized to a class. When an existing rule
   already covers the class, `/harden` tightens that rule instead of adding a
@@ -263,7 +314,12 @@ evidence for a proposal on one of those four surfaces.
   shortening the text, or splitting it into independent guardrails like
   `<id>-1`, `<id>-2` — and checks again, up to 2 repair rounds. Only a clean
   check is written to `config.toml`. The check on disk is a final safety net.
-  A removal has no id left to check on disk, so it has no third step. One
+  A removal has no id left to check on disk, so it has no third step. A
+  removal, a merge and a split delete a guardrail with a JSON `null` in
+  `setup_write_sections`. The tool refuses that delete when the guardrail
+  table in `config.toml` holds a comment line. `/harden` then restores
+  `config.toml` and skips the proposal (`write failed: <error>` under
+  `--auto`). Delete the comment line by hand, then run `/harden` again. One
   finding gets a different repair: when a proposal lowers the severity of a
   guardrail that is already on disk (`severity lowered from error to
   warning`), `/harden` sets the old severity back once and checks again. If
@@ -335,12 +391,20 @@ evidence for a proposal on one of those four surfaces.
   Without `--auto`, `/harden` tells you about the skip. With `--auto`, the
   summary lists the proposal under `Skipped` as `_common.md is not a
   dimension`, `malformed merge` or `not repairable: no rule id`.
+
+  Two more skips come after approval, in the guardrail check and write. The
+  check tool can reject the input (for example, a removed id that is not in
+  `config.toml`): the summary line is `check error: <error>`. The write can
+  fail (for example, the comment-line refusal above): `/harden` restores
+  `config.toml`, and the summary line is `write failed: <first error>`.
 - **A failed restore stops the run.** When `/harden` deletes a review-dimension
   file and a later check finds a problem, it writes the old text back. If that
   write fails too, `/harden` prints the old text in full and the line `NOT
   restored: <file> — copy the text above back by hand`. Copy the printed text
   back into the file yourself. `/harden` processes no later proposal. With
-  `--auto`, the summary lists them under `Not processed`. A failed update of a
+  `--auto`, the summary lists them under `Not processed`. A guardrail write
+  that fails and then cannot be undone stops the run in the same way:
+  `/harden` prints the old `config.toml` in full. A failed update of a
   Copilot mirror stops the run in the same way: the dimension file stays
   written and validated, and `/harden` asks you to fix the mirror by hand.
 - **An unreadable review-dimensions directory stops the run.** `/harden` reads

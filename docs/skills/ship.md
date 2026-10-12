@@ -84,7 +84,8 @@ them via `--steps`):
   edits as a separate commit before the PR. Then it runs one fix pass for the
   deferred findings that are below the review threshold, with its own commit.
   The fix pass sends those findings to [/received-review](received-review.md),
-  which fixes each one or leaves it deferred. A fix pass that changes nothing
+  which fixes each one or leaves it deferred. Outside `--auto`, the fix pass
+  pauses for you, as the received-review step does. A fix pass that changes nothing
   ends as `Fix pass: 0 changes`, with no commit. The fix pass does not run
   when the working tree has uncommitted changes outside `.sdlc-v2/` and
   `openspec/`, so its commit holds only its own edits. A failed fix pass ends
@@ -111,24 +112,13 @@ them via `--steps`):
 
   ```mermaid
   flowchart LR
-    subgraph Before
-      B1[Review and review fix step] --> B2[Below-threshold deferred]
-      B2 --> B3[Clusters omit below-threshold]
-      B3 --> B4[Harden per cluster]
-      B4 --> B5[Harden commit]
-      B5 --> B6[PR]
-    end
-    subgraph After
-      A1[Review and review fix step] --> A2[Below-threshold deferred with body]:::changed
-      A2 --> A3[Clusters keep them, split fix-now]:::changed
-      A3 --> A4[Harden per cluster]
-      A4 --> A5[Harden commit]
-      A5 --> A6[One fix pass for fix-now]:::new
-      A6 --> A7[Fix-pass commit]:::new
-      A7 --> A8[PR]
-    end
-    classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px
-    classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
+    A1[Review and review fix step] --> A2[Below-threshold findings deferred]
+    A2 --> A3[Clusters and fix-now list]
+    A3 --> A4[Harden per cluster]
+    A4 --> A5[Harden commit]
+    A5 --> A6[One fix pass for fix-now]
+    A6 --> A7[Fix-pass commit]
+    A7 --> A8[PR]
   ```
 
 - `verify-pipeline` — Polls CI after the PR is created and analyzes or fixes
@@ -309,8 +299,10 @@ deferred findings. Three parts of that summary are worth knowing about:
   none, nothing is printed. If there are, it offers the same triage flow
   [/deferred](deferred.md) runs: file GitHub issues for the ones worth
   filing, resolve the rest, or leave them for later. A `harden-pending` item
-  (rule edits that `/harden --auto` held back) is offered as a harden run, not
-  as an issue. With `--auto`, the open
+  (rule edits that `/harden --auto` held back) is not filed and not resolved.
+  For it, `/ship` prints the `/sdlc:harden` command that runs the rule edits
+  and the `/sdlc:deferred --resolve <id>` command to run after it. The item
+  stays open. With `--auto`, the open
   items are still listed but the triage question is not asked — they stay
   open for a later run. The execute-step issue drafts are the exception: they
   are offered even under `--auto`, because creating a GitHub issue always

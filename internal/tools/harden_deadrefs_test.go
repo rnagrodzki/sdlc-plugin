@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -348,6 +349,23 @@ func TestHardenDeadRefs_TooManyTrackedFiles(t *testing.T) {
 		t.Errorf("refs = %+v, want none", refs)
 	}
 	want := []string{"path check skipped: more than 100000 tracked files"}
+	if !slices.Equal(skips, want) {
+		t.Errorf("skips = %v, want %v", skips, want)
+	}
+}
+
+// TestHardenDeadRefs_GitLsFilesOutputCap checks that a git ls-files output
+// over the execx cap (wrapped execx.ErrOutputCap) gives the too-many-files
+// skip note, not the "git ls-files failed" note, and reports no path.
+func TestHardenDeadRefs_GitLsFilesOutputCap(t *testing.T) {
+	stubGitLsFiles(t, nil, fmt.Errorf("run git: %w", execx.ErrOutputCap))
+	newDeadRefPlugin(t, map[string]string{"ship": deadRefShipSkill})
+
+	refs, _, skips := scanGuardrailText(t, "See `internal/gone.go`.")
+	if len(refs) != 0 {
+		t.Errorf("refs = %+v, want none", refs)
+	}
+	want := []string{"path check skipped: more than 100000 tracked files (git ls-files output is over the output cap)"}
 	if !slices.Equal(skips, want) {
 		t.Errorf("skips = %v, want %v", skips, want)
 	}

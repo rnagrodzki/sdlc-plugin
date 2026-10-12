@@ -1034,12 +1034,6 @@ func TestDeferredBacklogPhase_SilentWhenNothingToTriage(t *testing.T) {
 		{"empty file", func(t *testing.T, dir string) {
 			mustWriteFile(t, filepath.Join(dir, "deferred.json"), "")
 		}},
-		{"corrupt file", func(t *testing.T, dir string) {
-			mustWriteFile(t, filepath.Join(dir, "deferred.json"), "{not valid json")
-		}},
-		{"wrong JSON shape", func(t *testing.T, dir string) {
-			mustWriteFile(t, filepath.Join(dir, "deferred.json"), `{"open": 3}`)
-		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1052,6 +1046,49 @@ func TestDeferredBacklogPhase_SilentWhenNothingToTriage(t *testing.T) {
 			}
 			if got := deferredBacklogPhase(); got != nil {
 				t.Errorf("deferredBacklogPhase() = %q, want no lines", got)
+			}
+		})
+	}
+}
+
+// TestDeferredBacklogPhase_UnreadableStoreWarns pins that a deferred store
+// that cannot be read gives one warning line, not silence: silence would
+// read as "no open items" and hide every item.
+func TestDeferredBacklogPhase_UnreadableStoreWarns(t *testing.T) {
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T, path string)
+		wantErr string
+	}{
+		{"corrupt file", func(t *testing.T, path string) {
+			mustWriteFile(t, path, "{not valid json")
+		}, "does not parse"},
+		{"wrong JSON shape", func(t *testing.T, path string) {
+			mustWriteFile(t, path, `{"open": 3}`)
+		}, "does not parse"},
+		{"over the size limit", func(t *testing.T, path string) {
+			mustWriteFile(t, path, "")
+			if err := os.Truncate(path, history.DeferredFileMax+1); err != nil {
+				t.Fatal(err)
+			}
+		}, "larger than 8 MiB"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := realPath(t, t.TempDir())
+			withMainRoot(t, root)
+			dir := paths.HistoryDir(root)
+			mustMkdirAll(t, dir)
+			tc.setup(t, filepath.Join(dir, "deferred.json"))
+
+			got := deferredBacklogPhase()
+			if len(got) != 1 {
+				t.Fatalf("deferredBacklogPhase() = %q, want one warning line", got)
+			}
+			if !strings.HasPrefix(got[0], "sdlc: deferred items cannot be read (") ||
+				!strings.HasSuffix(got[0], ") — open items are not shown") ||
+				!strings.Contains(got[0], tc.wantErr) {
+				t.Errorf("line = %q, want the cannot-be-read warning with %q", got[0], tc.wantErr)
 			}
 		})
 	}

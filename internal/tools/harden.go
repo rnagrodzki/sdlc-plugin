@@ -105,6 +105,10 @@ type HardenPrepareOut struct {
 	// themselves are not mirrored here — the orchestrator reads the full list
 	// from manifestPath's preflightFindings.
 	PreflightFindingCount int `json:"preflightFindingCount"`
+	// DeadReferenceSkips mirrors surfaces.deadReferenceSkips. It is not on
+	// the wire: prepare_orchestrator adds it to Next, so the skill can show
+	// the user which dead-reference checks did not run.
+	DeadReferenceSkips []string `json:"-"`
 
 	// Branch mirrors hardenManifest.Repository.Branch verbatim.
 	Branch string `json:"branch"`
@@ -963,6 +967,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		DimensionCount:           dimensionCount,
 		SkillRecommendationCount: len(skillRecommendations),
 		PreflightFindingCount:    len(preflight),
+		DeadReferenceSkips:       deadSkips,
 		Branch:                   manifest.Repository.Branch,
 		CustomInstructions:       manifest.CustomInstructions,
 		Summary:                  summary,
