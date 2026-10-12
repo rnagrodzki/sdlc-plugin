@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -168,7 +169,12 @@ func TestHardenPrepare_MissingRequiredFields(t *testing.T) {
 // R16 pre-flight
 // ---------------------------------------------------------------------------
 
-func TestHardenPrepare_PreflightGuardrailFailureAbortsNoManifest(t *testing.T) {
+// TestHardenPrepare_PreflightGuardrailFindingInManifest pins that an invalid
+// guardrail id does not stop the run: hardenPrepare returns ok, writes the
+// manifest, and lists the finding with its surface, id, file, severity and
+// fix. The description is short, so bytesOver is absent.
+func TestHardenPrepare_PreflightGuardrailFindingInManifest(t *testing.T) {
+	redirectTempDir(t)
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
 		"[plan.guardrails.Bad_ID]\n"+
@@ -179,27 +185,37 @@ func TestHardenPrepare_PreflightGuardrailFailureAbortsNoManifest(t *testing.T) {
 		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
-	if err == nil {
-		t.Fatal("expected a pre-flight validation error, got nil")
+	if err != nil {
+		t.Fatalf("pre-flight finding must not abort: %v", err)
 	}
-	var domainErr *mcpserver.DomainError
-	if !errorsAsDomainError(err, &domainErr) {
-		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	if out.PreflightFindingCount != 1 || out.ManifestPath == "" {
+		t.Fatalf("want 1 finding and a manifest, got %d, %q", out.PreflightFindingCount, out.ManifestPath)
 	}
-	if !containsSubstr(domainErr.Msg, "existing-plan-guardrails") {
-		t.Fatalf("expected existing-plan-guardrails prefix in message, got: %s", domainErr.Msg)
+
+	findings := manifestPreflightFindings(t, out.ManifestPath)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 manifest finding, got %+v", findings)
 	}
-	if out.ManifestPath != "" {
-		t.Fatalf("expected no manifest path on pre-flight abort, got %q", out.ManifestPath)
+	f := findings[0]
+	if f["surface"] != "plan-guardrails" || f["id"] != "Bad_ID" || f["severity"] != "error" ||
+		f["file"] != ".sdlc-v2/config.toml" || f["fix"] != guardrailIDFormatFix {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+	if msg, _ := f["message"].(string); !containsSubstr(msg, "kebab-case") {
+		t.Errorf("message = %q, want the kebab-case validator message", msg)
+	}
+	if _, present := f["bytesOver"]; present {
+		t.Errorf("bytesOver must be omitted for a short description, got %+v", f["bytesOver"])
 	}
 }
 
-// TestHardenPrepare_PreflightUsesContentRoot pins Task 1's contract: the R16
-// guardrail pre-flight (guardrailsPreflight) reads from contentRoot (the
-// active worktree), not root (the main worktree). An invalid guardrail that
-// exists only in root must NOT abort the run; the same invalid guardrail
-// placed in contentRoot instead must.
+// TestHardenPrepare_PreflightUsesContentRoot pins that the guardrail
+// pre-flight (guardrailsPreflight) reads from contentRoot (the active
+// worktree), not root (the main worktree). An invalid guardrail that exists
+// only in root gives no finding; the same invalid guardrail placed in
+// contentRoot gives one finding, and neither case stops the run.
 func TestHardenPrepare_PreflightUsesContentRoot(t *testing.T) {
+	redirectTempDir(t)
 	badConfig := "" +
 		"[plan.guardrails.Bad_ID]\n" +
 		"description = \"desc\"\n"
@@ -209,7 +225,7 @@ func TestHardenPrepare_PreflightUsesContentRoot(t *testing.T) {
 		contentRoot := t.TempDir()
 		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), badConfig)
 
-		_, err := hardenPrepare(root, contentRoot, HardenPrepareIn{
+		out, err := hardenPrepare(root, contentRoot, HardenPrepareIn{
 			FailureText:     "boom",
 			Skill:           "ship",
 			SkipConfigCheck: true,
@@ -217,50 +233,300 @@ func TestHardenPrepare_PreflightUsesContentRoot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("expected no pre-flight error for a root-only invalid guardrail, got: %v", err)
 		}
+		if out.PreflightFindingCount != 0 {
+			t.Fatalf("want 0 findings for a root-only invalid guardrail, got %d", out.PreflightFindingCount)
+		}
 	})
 
-	t.Run("invalid guardrail in contentRoot aborts", func(t *testing.T) {
+	t.Run("same invalid guardrail in contentRoot", func(t *testing.T) {
 		root := t.TempDir()
 		contentRoot := t.TempDir()
 		writeFile(t, filepath.Join(contentRoot, paths.DataDir, "config.toml"), badConfig)
 
-		_, err := hardenPrepare(root, contentRoot, HardenPrepareIn{
+		out, err := hardenPrepare(root, contentRoot, HardenPrepareIn{
 			FailureText:     "boom",
 			Skill:           "ship",
 			SkipConfigCheck: true,
 		})
-		if err == nil {
-			t.Fatal("expected a pre-flight validation error for a contentRoot invalid guardrail, got nil")
+		if err != nil {
+			t.Fatalf("pre-flight finding must not abort: %v", err)
 		}
-		var domainErr *mcpserver.DomainError
-		if !errorsAsDomainError(err, &domainErr) {
-			t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
-		}
-		if !containsSubstr(domainErr.Msg, "existing-plan-guardrails") {
-			t.Fatalf("expected existing-plan-guardrails prefix in message, got: %s", domainErr.Msg)
+		if out.PreflightFindingCount != 1 {
+			t.Fatalf("want 1 finding from contentRoot, got %d", out.PreflightFindingCount)
 		}
 	})
 }
 
-func TestHardenPrepare_PreflightDimensionFailureAbortsNoManifest(t *testing.T) {
+// TestHardenPrepare_PreflightDimensionFindingInManifest pins that a
+// review-dimension file with no frontmatter does not stop the run: it is one
+// finding with severity error, the file name as id and an empty fix.
+func TestHardenPrepare_PreflightDimensionFindingInManifest(t *testing.T) {
+	redirectTempDir(t)
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "bad.md"), "no frontmatter here\n")
 
-	_, err := hardenPrepare(root, root, HardenPrepareIn{
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
 		FailureText:     "boom",
 		Skill:           "ship",
 		SkipConfigCheck: true,
 	})
-	if err == nil {
-		t.Fatal("expected a pre-flight validation error, got nil")
+	if err != nil || out.PreflightFindingCount != 1 {
+		t.Fatalf("want 1 dimension finding and no error, got %d, %v", out.PreflightFindingCount, err)
 	}
-	var domainErr *mcpserver.DomainError
-	if !errorsAsDomainError(err, &domainErr) {
-		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+
+	findings := manifestPreflightFindings(t, out.ManifestPath)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 manifest finding, got %+v", findings)
 	}
-	if !containsSubstr(domainErr.Msg, "existing-review-dimension bad.md") {
-		t.Fatalf("expected existing-review-dimension bad.md prefix in message, got: %s", domainErr.Msg)
+	f := findings[0]
+	if f["surface"] != "review-dimensions" || f["id"] != "bad" || f["severity"] != "error" ||
+		f["file"] != ".sdlc-v2/review-dimensions/bad.md" || f["fix"] != "" ||
+		f["message"] != "Missing YAML frontmatter block (--- delimiters)" {
+		t.Errorf("unexpected finding: %+v", f)
 	}
+}
+
+// TestHardenPrepare_PreflightDimensionWarningInManifest pins that a dimension
+// warning goes into the same list as the errors, with severity warning and the
+// frontmatter name as id.
+func TestHardenPrepare_PreflightDimensionWarningInManifest(t *testing.T) {
+	redirectTempDir(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "sec.md"),
+		"---\n"+
+			"name: security-review\n"+
+			"severity: bogus\n"+
+			"description: Check for security issues in the diff.\n"+
+			"triggers:\n"+
+			"  - \"**/*.go\"\n"+
+			"---\n"+
+			"# Security\n\nLook for injection and secrets in the diff.\n")
+	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "bad.md"), "no frontmatter here\n")
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("pre-flight finding must not abort: %v", err)
+	}
+	if out.PreflightFindingCount != 2 {
+		t.Fatalf("want 2 findings (1 error, 1 warning), got %d", out.PreflightFindingCount)
+	}
+
+	bySeverity := map[string]map[string]any{}
+	for _, f := range manifestPreflightFindings(t, out.ManifestPath) {
+		bySeverity[f["severity"].(string)] = f
+	}
+	w, ok := bySeverity["warning"]
+	if !ok {
+		t.Fatalf("want one warning finding, got %+v", bySeverity)
+	}
+	if w["id"] != "security-review" || w["surface"] != "review-dimensions" || w["file"] != ".sdlc-v2/review-dimensions/sec.md" {
+		t.Errorf("unexpected warning finding: %+v", w)
+	}
+	if e, ok := bySeverity["error"]; !ok || e["id"] != "bad" {
+		t.Errorf("want one error finding with id bad, got %+v", bySeverity["error"])
+	}
+}
+
+// TestHardenPrepare_PreflightLongDescriptionBytesOver pins that a
+// 1474-byte guardrail description gives ok, a written manifest, and one
+// finding with bytesOver 450 and the split fix text.
+func TestHardenPrepare_PreflightLongDescriptionBytesOver(t *testing.T) {
+	redirectTempDir(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[execute.guardrails.long-rule]\n"+
+		"description = \""+strings.Repeat("a", 1474)+"\"\n")
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("pre-flight finding must not abort: %v", err)
+	}
+	if out.PreflightFindingCount != 1 || out.ManifestPath == "" {
+		t.Fatalf("want 1 finding and a manifest, got %d, %q", out.PreflightFindingCount, out.ManifestPath)
+	}
+
+	findings := manifestPreflightFindings(t, out.ManifestPath)
+	if len(findings) != 1 {
+		t.Fatalf("want 1 manifest finding, got %+v", findings)
+	}
+	f := findings[0]
+	if f["surface"] != "execute-guardrails" || f["id"] != "long-rule" || f["fix"] != guardrailDescLengthFix("long-rule") {
+		t.Errorf("unexpected finding: %+v", f)
+	}
+	if f["bytesOver"] != float64(450) {
+		t.Errorf("bytesOver = %v, want 450", f["bytesOver"])
+	}
+}
+
+// TestHardenPrepare_PreflightCleanConfigEmptyList pins that clean rules give
+// preflightFindings as an empty JSON array (never null) and a count of 0.
+func TestHardenPrepare_PreflightCleanConfigEmptyList(t *testing.T) {
+	redirectTempDir(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.good-rule]\n"+
+		"description = \"Every task names its files.\"\n")
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.PreflightFindingCount != 0 {
+		t.Fatalf("want 0 findings, got %d", out.PreflightFindingCount)
+	}
+	raw, present := readHardenManifest(t, out.ManifestPath)["preflightFindings"]
+	if !present {
+		t.Fatal("manifest has no preflightFindings key")
+	}
+	list, ok := raw.([]any)
+	if !ok || len(list) != 0 {
+		t.Fatalf("preflightFindings = %#v, want an empty array (not null)", raw)
+	}
+}
+
+// TestHardenPrepare_PreflightInvalidTOMLStops pins that a config that does not
+// parse stops the run and writes no manifest: hardenPrepare returns the
+// InfraError of validateGuardrailsAction and creates no manifest directory.
+func TestHardenPrepare_PreflightInvalidTOMLStops(t *testing.T) {
+	tmpDir := redirectTempDir(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[plan\nthis is = = not toml\n")
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	var infraErr *mcpserver.InfraError
+	if !errorsAsInfraError(err, &infraErr) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !containsSubstr(infraErr.Suggestion, "is valid TOML and readable, then retry.") {
+		t.Errorf("unexpected suggestion: %s", infraErr.Suggestion)
+	}
+	if infraErr.Cause == nil {
+		t.Error("InfraError must carry the wrapped Cause")
+	}
+	if out.ManifestPath != "" {
+		t.Fatalf("expected no manifest path when the config does not parse, got %q", out.ManifestPath)
+	}
+	assertNoHardenManifestDir(t, tmpDir)
+}
+
+// TestHardenPrepare_PreflightUnreadableDimensionsDirStops pins that an
+// unreadable review-dimensions directory stops the run: hardenPrepare returns
+// an InfraError that names the recovery and creates no manifest directory.
+func TestHardenPrepare_PreflightUnreadableDimensionsDirStops(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads a 0o000 directory, so the permission error cannot happen")
+	}
+	tmpDir := redirectTempDir(t)
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	writeFile(t, filepath.Join(dir, "sec.md"), "no frontmatter here\n")
+	if err := os.Chmod(dir, 0o000); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Errorf("restore dir mode: %v", err)
+		}
+	})
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	var infraErr *mcpserver.InfraError
+	if !errorsAsInfraError(err, &infraErr) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if infraErr.Suggestion != "Check read permission on .sdlc-v2/review-dimensions/, then retry prepare_orchestrator with mode harden." {
+		t.Errorf("unexpected suggestion: %s", infraErr.Suggestion)
+	}
+	if infraErr.Cause == nil {
+		t.Error("InfraError must carry the wrapped Cause")
+	}
+	if out.ManifestPath != "" {
+		t.Fatalf("expected no manifest path when the directory cannot be read, got %q", out.ManifestPath)
+	}
+	assertNoHardenManifestDir(t, tmpDir)
+}
+
+// TestHardenPrepare_PreflightOneGuardrailManyFindingsShareBytesOver pins that
+// every finding of one guardrail carries the bytesOver of that guardrail's
+// description. The fixture has an id that breaks the kebab-case rule and a
+// 1474-byte description, so it yields two findings with the same bytesOver of
+// 450.
+func TestHardenPrepare_PreflightOneGuardrailManyFindingsShareBytesOver(t *testing.T) {
+	redirectTempDir(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.Bad_ID]\n"+
+		"description = \""+strings.Repeat("a", 1474)+"\"\n")
+
+	out, err := hardenPrepare(root, root, HardenPrepareIn{
+		FailureText:     "boom",
+		Skill:           "ship",
+		SkipConfigCheck: true,
+	})
+	if err != nil {
+		t.Fatalf("pre-flight finding must not abort: %v", err)
+	}
+	if out.PreflightFindingCount != 2 {
+		t.Fatalf("want 2 findings (id format, description length), got %d", out.PreflightFindingCount)
+	}
+
+	fixes := map[string]bool{}
+	for _, f := range manifestPreflightFindings(t, out.ManifestPath) {
+		if f["id"] != "Bad_ID" || f["bytesOver"] != float64(450) {
+			t.Errorf("finding = %+v, want id Bad_ID and bytesOver 450", f)
+		}
+		fixes[f["fix"].(string)] = true
+	}
+	if !fixes[guardrailIDFormatFix] || !fixes[guardrailDescLengthFix("Bad_ID")] {
+		t.Errorf("want one finding for the id format and one for the length, got fixes %v", fixes)
+	}
+}
+
+// TestHardenOutToPrepareOut pins that the prepare_orchestrator output copies
+// the harden fields a skill reads, and that next starts with
+// prepareNextHarden and adds the findings sentence only when the count is
+// above 0.
+func TestHardenOutToPrepareOut(t *testing.T) {
+	ci := map[string][]string{"plan-guardrails": {"keep ids short"}}
+
+	t.Run("no findings", func(t *testing.T) {
+		got := hardenOutToPrepareOut(HardenPrepareOut{ManifestPath: "/m.json", CustomInstructions: ci}, "harden")
+		want := PrepareOrchestratorOut{ManifestPath: "/m.json", Mode: "harden", CustomInstructions: ci, PreflightFindingCount: 0, Next: prepareNextHarden}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("two findings", func(t *testing.T) {
+		got := hardenOutToPrepareOut(HardenPrepareOut{ManifestPath: "/m.json", CustomInstructions: ci, PreflightFindingCount: 2}, "harden")
+		wantNext := prepareNextHarden + " 2 pre-flight findings: the harden orchestrator drafts repair proposals for them first."
+		if got.Next != wantNext {
+			t.Errorf("Next = %q, want %q", got.Next, wantNext)
+		}
+		if got.PreflightFindingCount != 2 || got.ManifestPath != "/m.json" || got.Mode != "harden" || !reflect.DeepEqual(got.CustomInstructions, ci) {
+			t.Errorf("unexpected output: %+v", got)
+		}
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,17 +1318,142 @@ func TestAnySliceToStrings(t *testing.T) {
 	}
 }
 
+// TestGuardrailsPreflight_PassesWithNoConfig pins that no config.toml gives
+// no findings and no error.
 func TestGuardrailsPreflight_PassesWithNoConfig(t *testing.T) {
 	root := t.TempDir()
-	if errs := guardrailsPreflight(root); len(errs) != 0 {
-		t.Errorf("expected no pre-flight errors with no config, got %+v", errs)
+	if findings, err := guardrailsPreflight(root); err != nil || len(findings) != 0 {
+		t.Errorf("expected no findings and no error with no config, got %+v, %v", findings, err)
 	}
 }
 
+// TestDimensionsPreflight_PassesWithNoDir pins that a missing
+// review-dimensions directory gives no findings and no error.
 func TestDimensionsPreflight_PassesWithNoDir(t *testing.T) {
 	root := t.TempDir()
-	if errs := dimensionsPreflight(root); len(errs) != 0 {
-		t.Errorf("expected no pre-flight errors with no dimensions dir, got %+v", errs)
+	if findings, err := dimensionsPreflight(root); err != nil || len(findings) != 0 {
+		t.Errorf("expected no findings and no error with no dimensions dir, got %+v, %v", findings, err)
+	}
+}
+
+// TestDimensionsPreflight_IDFallsBackToFileStem pins the id of a dimension
+// finding: it is the frontmatter name when that is a non-empty string, and the
+// file name without ".md" when the name is empty or not a string.
+func TestDimensionsPreflight_IDFallsBackToFileStem(t *testing.T) {
+	dimFile := func(nameLine string) string {
+		return "---\n" +
+			nameLine +
+			"severity: bogus\n" +
+			"description: Check for security issues in the diff.\n" +
+			"triggers:\n" +
+			"  - \"**/*.go\"\n" +
+			"---\n" +
+			"# Dimension\n\nLook for injection and secrets in the diff.\n"
+	}
+	cases := []struct {
+		name     string
+		nameLine string
+		wantID   string
+	}{
+		{"named", "name: security-review\n", "security-review"},
+		{"empty name", "name:\n", "stem"},
+		{"empty string name", "name: \"\"\n", "stem"},
+		{"name is not a string", "name: 42\n", "stem"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "stem.md"), dimFile(tc.nameLine))
+
+			findings, err := dimensionsPreflight(root)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(findings) == 0 {
+				t.Fatal("want at least one finding for the bogus severity, got none")
+			}
+			for _, f := range findings {
+				if f.ID != tc.wantID {
+					t.Errorf("finding id = %q, want %q (finding %+v)", f.ID, tc.wantID, f)
+				}
+			}
+		})
+	}
+}
+
+// TestGuardrailDescriptions pins each branch of guardrailDescriptions: a
+// missing section or a section with no guardrails key gives an empty map,
+// entries that are not objects or have no string id or description are left
+// out, and a config that does not parse is an InfraError with a Cause.
+func TestGuardrailDescriptions(t *testing.T) {
+	t.Run("missing section", func(t *testing.T) {
+		root := t.TempDir()
+		got, err := guardrailDescriptions(root, "plan")
+		if err != nil || got == nil || len(got) != 0 {
+			t.Fatalf("want an empty non-nil map and no error, got %#v, %v", got, err)
+		}
+	})
+
+	t.Run("section without a guardrails key", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[plan]\nother = 1\n")
+		got, err := guardrailDescriptions(root, "plan")
+		if err != nil || got == nil || len(got) != 0 {
+			t.Fatalf("want an empty non-nil map and no error, got %#v, %v", got, err)
+		}
+	})
+
+	t.Run("array form skips entries that are not objects or have no string id", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+			"[plan]\n"+
+			"guardrails = [1, {description = \"x\"}, {id = 7, description = \"y\"}, {id = \"ok\", description = \"d\"}]\n")
+		got, err := guardrailDescriptions(root, "plan")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(got, map[string]string{"ok": "d"}) {
+			t.Errorf("got %+v, want only ok", got)
+		}
+	})
+
+	t.Run("maps id to description", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+			"[plan.guardrails.rule-a]\n"+
+			"description = \"first\"\n\n"+
+			"[plan.guardrails.rule-b]\n"+
+			"description = 42\n")
+		got, err := guardrailDescriptions(root, "plan")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !reflect.DeepEqual(got, map[string]string{"rule-a": "first"}) {
+			t.Errorf("got %+v, want only rule-a", got)
+		}
+	})
+
+	t.Run("config does not parse", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[plan\nthis is = = not toml\n")
+		_, err := guardrailDescriptions(root, "plan")
+		var infraErr *mcpserver.InfraError
+		if !errorsAsInfraError(err, &infraErr) {
+			t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+		}
+		if infraErr.Cause == nil || !containsSubstr(infraErr.Suggestion, "[plan] section is valid TOML") {
+			t.Errorf("unexpected InfraError: %+v", infraErr)
+		}
+	})
+}
+
+// TestBytesOver pins bytesOver at, below and above guardrailDescMaxBytes.
+func TestBytesOver(t *testing.T) {
+	cases := map[int]int{0: 0, guardrailDescMaxBytes - 1: 0, guardrailDescMaxBytes: 0, guardrailDescMaxBytes + 1: 1, 1474: 450}
+	for n, want := range cases {
+		if got := bytesOver(strings.Repeat("a", n)); got != want {
+			t.Errorf("bytesOver(%d bytes) = %d, want %d", n, got, want)
+		}
 	}
 }
 
@@ -1138,6 +1529,62 @@ func errorsAsDomainError(err error, target **mcpserver.DomainError) bool {
 	}
 	*target = de
 	return true
+}
+
+// errorsAsInfraError reports whether err is a *mcpserver.InfraError and, when
+// it is, stores it in target.
+func errorsAsInfraError(err error, target **mcpserver.InfraError) bool {
+	ie, ok := err.(*mcpserver.InfraError)
+	if !ok {
+		return false
+	}
+	*target = ie
+	return true
+}
+
+// redirectTempDir points the OS temporary directory (TMPDIR) at a fresh
+// directory under t.TempDir for the rest of the test and returns that
+// directory. A call that writes a manifest through os.MkdirTemp("", ...)
+// then writes inside the test directory, which the test framework removes.
+func redirectTempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("TMPDIR", dir)
+	return dir
+}
+
+// assertNoHardenManifestDir fails the test when tmpDir holds a directory that
+// hardenPrepare creates for a manifest (sdlc-harden-*). It proves that a run
+// which stops with an error wrote no manifest.
+func assertNoHardenManifestDir(t *testing.T, tmpDir string) {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(tmpDir, "sdlc-harden-*"))
+	if err != nil {
+		t.Fatalf("glob manifest dirs: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Errorf("a stopped run must write no manifest, found %v", matches)
+	}
+}
+
+// manifestPreflightFindings reads the manifest at path and returns its
+// preflightFindings entries as decoded JSON objects. It fails the test when
+// the key is missing or is not an array of objects.
+func manifestPreflightFindings(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	raw, ok := readHardenManifest(t, path)["preflightFindings"].([]any)
+	if !ok {
+		t.Fatal("manifest preflightFindings is missing or not an array")
+	}
+	out := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		m, ok := item.(map[string]any)
+		if !ok {
+			t.Fatalf("preflightFindings entry is not an object: %#v", item)
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func containsSubstr(s, substr string) bool {

@@ -3,8 +3,11 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"path"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -97,36 +100,100 @@ func stringOrDefault(v any, def string) string {
 // R16 guardrail pre-flight (harden-prepare.js lines 246-251, guardrails half)
 // ---------------------------------------------------------------------------
 
-// guardrailsPreflight runs validateGuardrailsAction (Task 36,
-// internal/tools/validators.go, unexported, called directly in-process
-// since this file shares its package) against the "plan" and "execute"
-// guardrail sections and formats every resulting finding as a
-// manifest-ready error string prefixed "existing-<section>-guardrails: ",
-// mirroring source's R16 pre-flight loop:
-//
-//	for (const section of ['plan', 'execute']) {
-//	  const result = validateGuardrailsConfig(projectRoot, section);
-//	  for (const err of result.errors) {
-//	    preflightErrors.push(`existing-${section}-guardrails: ${err}`);
-//	  }
-//	}
-//
-// validateGuardrailsAction returns structured findings rather than
-// throwing, so both a real read failure (the Go equivalent of source's
-// catch) and a non-empty findings slice are folded into the same
-// prefixed-string shape here — the adaptation called out in this task's
-// fact sheet dependency note.
-func guardrailsPreflight(root string) []string {
-	var errs []string
+// preflightFinding is one pre-flight check result that the harden manifest
+// carries under preflightFindings. A finding does not stop the harden run:
+// the harden orchestrator drafts a repair proposal for it.
+type preflightFinding struct {
+	// Surface is plan-guardrails, execute-guardrails or review-dimensions.
+	Surface string `json:"surface"`
+	// ID is the guardrail id, or the dimension name.
+	ID string `json:"id"`
+	// File is the repo-relative path of the file that holds the rule.
+	File string `json:"file"`
+	// Severity is error or warning.
+	Severity string `json:"severity"`
+	// Message is the validator message, unchanged.
+	Message string `json:"message"`
+	// Fix is the repair step. It is "" for dimension findings.
+	Fix string `json:"fix"`
+	// BytesOver is how many bytes the guardrail description is above
+	// guardrailDescMaxBytes. Omitted when the description is not too long.
+	BytesOver int `json:"bytesOver,omitempty"`
+}
+
+// guardrailsPreflight runs validateGuardrailsAction against the "plan" and
+// "execute" guardrail sections under root and returns each finding as one
+// preflightFinding. A guardrail finding does not stop the run. Only a config
+// read or parse error stops it: the InfraError of validateGuardrailsAction
+// (or of guardrailDescriptions) is returned unchanged, because no repair is
+// possible without a parsed rule set.
+func guardrailsPreflight(root string) ([]preflightFinding, error) {
+	var out []preflightFinding
 	for _, section := range []string{"plan", "execute"} {
 		findings, err := validateGuardrailsAction(root, ValidateIn{Action: "guardrails", Section: section})
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("existing-%s-guardrails: %s", section, err.Error()))
+			return nil, err
+		}
+		if len(findings) == 0 {
 			continue
 		}
+		descs, err := guardrailDescriptions(root, section)
+		if err != nil {
+			return nil, err
+		}
 		for _, f := range findings {
-			errs = append(errs, fmt.Sprintf("existing-%s-guardrails: %s", section, f.Message))
+			out = append(out, preflightFinding{
+				Surface:   section + "-guardrails",
+				ID:        f.ID,
+				File:      path.Join(paths.DataDir, paths.ConfigFile),
+				Severity:  f.Severity,
+				Message:   f.Message,
+				Fix:       f.Fix,
+				BytesOver: bytesOver(descs[f.ID]),
+			})
 		}
 	}
-	return errs
+	return out, nil
+}
+
+// guardrailDescriptions maps each guardrail id of the named config section
+// under root to its description. A missing section gives an empty map. Any
+// other read error is an InfraError with the same text as the one of
+// validateGuardrailsAction. An entry with no string id or no string
+// description is left out.
+func guardrailDescriptions(root, section string) (map[string]string, error) {
+	descs := map[string]string{}
+	data, err := config.ReadSection(root, section)
+	if err != nil {
+		if errors.Is(err, config.ErrNotFound) {
+			return descs, nil
+		}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read %s guardrails section: %s", section, err.Error()),
+			Suggestion: fmt.Sprintf("Check that config.toml's [%s] section is valid TOML and readable, then retry.", section),
+			Cause:      err,
+		}
+	}
+	raw, _ := data["guardrails"].([]any)
+	for _, item := range raw {
+		g, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, idOK := g["id"].(string)
+		desc, descOK := g["description"].(string)
+		if idOK && descOK {
+			descs[id] = desc
+		}
+	}
+	return descs, nil
+}
+
+// bytesOver returns how many bytes desc is above guardrailDescMaxBytes, or 0
+// when desc is not longer than the limit.
+func bytesOver(desc string) int {
+	if over := len(desc) - guardrailDescMaxBytes; over > 0 {
+		return over
+	}
+	return 0
 }

@@ -337,3 +337,58 @@ func TestPrepareOrchestrator_HardenInvalidInstructionsReturnsError(t *testing.T)
 		t.Errorf("expected zero-value output on error, got %#v", out)
 	}
 }
+
+// TestPrepareOrchestrator_HardenReportsPreflightFindings asserts that harden
+// mode reports the pre-flight finding count on the wire and adds the findings
+// sentence to next. A config with one invalid guardrail id gives count 1 and
+// the sentence. A clean config gives count 0 and the plain next text. The
+// call runs prepareOrchestrator itself, so a dispatcher that drops the count
+// or the sentence fails here.
+func TestPrepareOrchestrator_HardenReportsPreflightFindings(t *testing.T) {
+	cases := []struct {
+		name      string
+		config    string
+		wantCount int
+		wantNext  string
+	}{
+		{
+			name:      "one finding",
+			config:    "[plan.guardrails.Bad_ID]\ndescription = \"desc\"\n",
+			wantCount: 1,
+			wantNext:  prepareNextHarden + " 1 pre-flight findings: the harden orchestrator drafts repair proposals for them first.",
+		},
+		{
+			name:      "clean config",
+			config:    "[plan.guardrails.good-rule]\ndescription = \"Every task names its files.\"\n",
+			wantCount: 0,
+			wantNext:  prepareNextHarden,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			redirectTempDir(t)
+			newOrchestratorRepo(t, tc.config)
+
+			out, err := prepareOrchestrator(PrepareOrchestratorIn{
+				Mode:            "harden",
+				Skill:           "ship",
+				FailureText:     "boom",
+				SkipConfigCheck: true,
+			})
+			if err != nil {
+				t.Fatalf("prepareOrchestrator: %v", err)
+			}
+
+			wire := orchestratorOutputJSON(t, out)
+			if wire["preflightFindingCount"] != float64(tc.wantCount) {
+				t.Errorf("wire preflightFindingCount = %v, want %d", wire["preflightFindingCount"], tc.wantCount)
+			}
+			if wire["next"] != tc.wantNext {
+				t.Errorf("wire next = %v, want %q", wire["next"], tc.wantNext)
+			}
+			if got := len(manifestPreflightFindings(t, out.ManifestPath)); got != tc.wantCount {
+				t.Errorf("manifest holds %d preflightFindings, want %d", got, tc.wantCount)
+			}
+		})
+	}
+}

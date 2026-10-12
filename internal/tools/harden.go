@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -95,6 +96,10 @@ type HardenPrepareOut struct {
 	// only" rule as the rest of this struct's doc comment) — the orchestrator
 	// reads the full list from manifestPath's surfaces.skillRecommendations.
 	SkillRecommendationCount int `json:"skillRecommendationCount"`
+	// PreflightFindingCount is len(preflightFindings). The findings
+	// themselves are not mirrored here — the orchestrator reads the full list
+	// from manifestPath's preflightFindings.
+	PreflightFindingCount int `json:"preflightFindingCount"`
 
 	// Branch mirrors hardenManifest.Repository.Branch verbatim.
 	Branch string `json:"branch"`
@@ -209,6 +214,9 @@ type hardenHistory struct {
 	OpenDeferred []history.DeferredIssue `json:"openDeferred,omitempty"`
 }
 
+// hardenManifest is the JSON manifest that hardenPrepare writes for the
+// harden orchestrator. It carries the failure, the hardening surfaces, the
+// pipeline state, the repository context and the pre-flight findings.
 type hardenManifest struct {
 	Failure hardenFailure `json:"failure"`
 	// classification_hint is deliberately snake_case (matches source
@@ -223,6 +231,9 @@ type hardenManifest struct {
 	PluginRepoURL      string              `json:"pluginRepoUrl"`
 	Timestamp          string              `json:"timestamp"`
 	Errors             []surfaceLoadError  `json:"errors"`
+	// PreflightFindings lists every guardrail and review-dimension pre-flight
+	// finding. Never null: an empty list when the rules are clean.
+	PreflightFindings []preflightFinding `json:"preflightFindings"`
 }
 
 // ---------------------------------------------------------------------------
@@ -511,25 +522,42 @@ func anySliceToStrings(v any) []string {
 // ---------------------------------------------------------------------------
 
 // dimensionsPreflight validates every review-dimension file under
-// <contentRoot>/.sdlc-v2/review-dimensions using dimensions.Load/Validate,
-// formatting each finding as "existing-review-dimension
-// <file>: <msg>" to match source's preflightErrors.push(...) format
-// exactly. dimensions.Load's own (nil, nil)-on-missing-directory
-// convention already mirrors source's `if (fs.existsSync(dimDir))` guard,
-// so a missing directory yields no errors here, matching source.
-func dimensionsPreflight(contentRoot string) []string {
+// <contentRoot>/.sdlc-v2/review-dimensions using dimensions.Load/Validate and
+// returns each message as one preflightFinding with surface
+// review-dimensions and the severity of classifyDimensionMessage. A file
+// that does not parse is a finding too, not an error. The finding id is the
+// frontmatter name. It falls back to the file name without ".md" when the
+// name is missing or an empty string. A missing directory gives no findings.
+// A directory that cannot be read is an InfraError.
+func dimensionsPreflight(contentRoot string) ([]preflightFinding, error) {
 	dir := filepath.Join(contentRoot, paths.DataDir, paths.ReviewDimensionsSubdir)
 	dims, err := dimensions.Load(dir)
 	if err != nil {
-		return []string{fmt.Sprintf("review-dimensions: readdir failed: %s", err.Error())}
-	}
-	var errs []string
-	for _, d := range dims {
-		for _, msg := range dimensions.Validate(d) {
-			errs = append(errs, fmt.Sprintf("existing-review-dimension %s: %s", d.File, msg))
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("read review dimensions: %s", err.Error()),
+			Suggestion: "Check read permission on .sdlc-v2/review-dimensions/, then retry prepare_orchestrator with mode harden.",
+			Cause:      err,
 		}
 	}
-	return errs
+	var out []preflightFinding
+	for _, d := range dims {
+		id := strings.TrimSuffix(d.File, ".md")
+		if name, ok := d.Meta["name"].(string); ok && name != "" {
+			id = name
+		}
+		for _, msg := range dimensions.Validate(d) {
+			_, sev := classifyDimensionMessage(msg)
+			out = append(out, preflightFinding{
+				Surface:  "review-dimensions",
+				ID:       id,
+				File:     path.Join(paths.DataDir, paths.ReviewDimensionsSubdir, d.File),
+				Severity: sev,
+				Message:  msg,
+				Fix:      "",
+			})
+		}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -760,16 +788,21 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		}
 	}
 
-	// R16 — pre-flight validation. Any error aborts before the manifest is
-	// ever assembled; no manifest file is written.
-	var preflightErrors []string
-	preflightErrors = append(preflightErrors, guardrailsPreflight(contentRoot)...)
-	preflightErrors = append(preflightErrors, dimensionsPreflight(contentRoot)...)
-	if len(preflightErrors) > 0 {
-		return HardenPrepareOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("pre-flight validation failed: %s", strings.Join(preflightErrors, "; ")),
-			Suggestion: "Fix the guardrail or review-dimension file named in each error above under .sdlc-v2, then retry prepare_orchestrator with mode harden.",
-		}
+	// R16 — pre-flight findings go into the manifest. Only a read or parse
+	// error of the config, or a review-dimensions directory that cannot be
+	// read, stops the run (no repair without a parsed rule set). No manifest
+	// file is written in that case.
+	preflight, err := guardrailsPreflight(contentRoot)
+	if err != nil {
+		return HardenPrepareOut{}, err
+	}
+	dims, err := dimensionsPreflight(contentRoot)
+	if err != nil {
+		return HardenPrepareOut{}, err
+	}
+	preflight = append(preflight, dims...)
+	if preflight == nil {
+		preflight = []preflightFinding{}
 	}
 
 	// The loader runs after the config-version gate and after pre-flight, which reads the
@@ -855,6 +888,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		PluginRepoURL:      hardenPluginRepoURL,
 		Timestamp:          time.Now().UTC().Format(time.RFC3339),
 		Errors:             loadErrs,
+		PreflightFindings:  preflight,
 	}
 
 	tmpDir, err := os.MkdirTemp("", "sdlc-harden-")
@@ -909,6 +943,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		GuardrailCount:           guardrailCount,
 		DimensionCount:           dimensionCount,
 		SkillRecommendationCount: len(skillRecommendations),
+		PreflightFindingCount:    len(preflight),
 		Branch:                   manifest.Repository.Branch,
 		CustomInstructions:       manifest.CustomInstructions,
 		Summary:                  summary,

@@ -90,13 +90,15 @@ type PrepareOrchestratorIn struct {
 // tools already did), plus the Mode that was actually run.
 //
 // CustomInstructions is set in harden mode only. It is the same map that the
-// manifest file carries under customInstructions. Next is the step after the
-// call, in both modes.
+// manifest file carries under customInstructions. PreflightFindingCount is the
+// number of pre-flight findings in the harden manifest (0 in error_report
+// mode). Next is the step after the call, in both modes.
 type PrepareOrchestratorOut struct {
-	ManifestPath       string              `json:"manifestPath"`
-	Mode               string              `json:"mode"`
-	CustomInstructions map[string][]string `json:"customInstructions,omitempty"` // harden mode only
-	Next               string              `json:"next"`                         // no omitempty: guardrail mcp-output-drives-behavior
+	ManifestPath          string              `json:"manifestPath"`
+	Mode                  string              `json:"mode"`
+	CustomInstructions    map[string][]string `json:"customInstructions,omitempty"` // harden mode only
+	PreflightFindingCount int                 `json:"preflightFindingCount"`        // harden mode only; 0 in error_report mode
+	Next                  string              `json:"next"`                         // no omitempty: guardrail mcp-output-drives-behavior
 }
 
 // prepareNextHarden is the Next text that prepare_orchestrator returns in
@@ -106,6 +108,24 @@ const prepareNextHarden = "Print customInstructions as the harden instruction bl
 // prepareNextErrorReport is the Next text that prepare_orchestrator returns in
 // error_report mode.
 const prepareNextErrorReport = "Dispatch sdlc:error-report-orchestrator with manifestPath."
+
+// hardenOutToPrepareOut copies every HardenPrepareOut field that a skill reads
+// into the prepare_orchestrator output. When the manifest holds pre-flight
+// findings, Next also says that the harden orchestrator drafts their repair
+// proposals first.
+func hardenOutToPrepareOut(out HardenPrepareOut, mode string) PrepareOrchestratorOut {
+	next := prepareNextHarden
+	if out.PreflightFindingCount > 0 {
+		next += fmt.Sprintf(" %d pre-flight findings: the harden orchestrator drafts repair proposals for them first.", out.PreflightFindingCount)
+	}
+	return PrepareOrchestratorOut{
+		ManifestPath:          out.ManifestPath,
+		Mode:                  mode,
+		CustomInstructions:    out.CustomInstructions,
+		PreflightFindingCount: out.PreflightFindingCount,
+		Next:                  next,
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Field mapping (pure, unit-testable in isolation from worktree/filesystem
@@ -189,12 +209,7 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 			_ = err
 		}
 
-		return PrepareOrchestratorOut{
-			ManifestPath:       out.ManifestPath,
-			Mode:               in.Mode,
-			CustomInstructions: out.CustomInstructions,
-			Next:               prepareNextHarden,
-		}, nil
+		return hardenOutToPrepareOut(out, in.Mode), nil
 
 	case "error_report":
 		root, err := worktree.MainRoot()
@@ -271,7 +286,7 @@ func injectHardenHistory(manifestPath, histPath string) error {
 // the former standalone harden_prepare and error_report_prepare tools.
 func RegisterPrepareOrchestratorTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "prepare_orchestrator",
-		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path. harden mode also returns customInstructions: the [harden.instructions] lists from config.toml, one list for each proposal surface. An invalid list fails with a DomainError that names the key. Both modes return next: the step after the call.",
+		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path. harden mode also returns customInstructions: the [harden.instructions] lists from config.toml, one list for each proposal surface. An invalid list fails with a DomainError that names the key. harden mode also returns preflightFindingCount. A pre-flight finding does not stop the call: the findings are written to the manifest. Only a config read or parse error, or a review-dimensions directory that cannot be read, stops the call. Both modes return next: the step after the call.",
 		mcpserver.Annotations{
 			Title:       "Write orchestrator manifest",
 			ReadOnly:    false,
