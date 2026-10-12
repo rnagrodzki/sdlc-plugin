@@ -49,7 +49,7 @@ Before any prompt, the skill SHALL run `gh auth status` and `git remote get-url 
 - **THEN** the skill asks nothing and returns to the caller's error handling
 
 ### Requirement: Main flow ordering
-The skill SHALL run classify, pre-flight, consent gate 1, `prepare_orchestrator`, orchestrator dispatch, consent gate 2, duplicate search, then issue creation, with both gates and all `gh` calls in the main context.
+The skill SHALL run classify, pre-flight, consent gate 1, `prepare_orchestrator`, orchestrator dispatch, consent gate 2, duplicate search, then issue creation, with both gates and all `gh` writes in the main context.
 
 Main flow when no duplicate issue exists:
 
@@ -66,13 +66,11 @@ sequenceDiagram
     Skill->>User: Create one? yes or no
     User-->>Skill: yes
     Skill->>PO: mode error_report, error fields
-    PO-->>Skill: manifestPath, mode
+    PO-->>Skill: manifestPath, mode, similarIssues empty
     Skill->>Orch: MANIFEST_FILE and PROJECT_ROOT
     Orch-->>Skill: title and body JSON
     Skill->>User: show proposal, yes or edit or cancel
     User-->>Skill: yes
-    Skill->>gh: gh issue list, labels tooling-error and skill
-    gh-->>Skill: no matching titles
     Skill->>gh: gh issue create
     gh-->>Skill: issue URL
     Skill->>User: GitHub issue created
@@ -150,16 +148,22 @@ The skill SHALL show the title, labels (`tooling-error`, `<skill>`) and body, th
 - **THEN** the skill shows the updated proposal and asks again
 
 ### Requirement: Duplicate issue search
-After gate 2 **yes**, the skill SHALL list open issues with `gh issue list --repo "rnagrodzki/sdlc-plugin" --label "tooling-error" --label "<skill>" --state open --limit 10 --json number,title,url` and keep those whose title starts with `[<skill>]`.
+After gate 2 **yes**, the skill SHALL read `similarIssues` and `similarIssuesNote` from the `prepare_orchestrator` result, and SHALL NOT run `gh issue list` itself.
 
+- `similarIssuesNote` set: print it, then go to issue creation without a prompt.
 - No match: go to issue creation without a prompt.
 - Matches: ask **comment**, **new** or **cancel**.
 - **comment**: user picks an issue, approves the body `Additional occurrence reported by error-report:` plus the proposal body, then the skill runs `gh issue comment <number> --repo "rnagrodzki/sdlc-plugin" --body ...` and prints `Comment added to #<number> — <url>`.
 - **cancel** at any point: remove the manifest, create nothing.
 
 #### Scenario: Similar issue exists
-- **WHEN** an open issue titled `[plan] Gate A dispatch timeout` exists and the skill is `plan`
+- **WHEN** `similarIssues` holds an open issue titled `[plan] Gate A dispatch timeout` and the skill is `plan`
 - **THEN** the skill offers **comment**, **new** and **cancel**
+
+#### Scenario: Search failed
+- **WHEN** `similarIssuesNote` is `duplicate search skipped: gh not found`
+- **THEN** the skill prints the note
+- **AND** it goes to issue creation without a prompt
 
 ### Requirement: Issue creation
 The skill SHALL create the issue with `gh issue create --repo "rnagrodzki/sdlc-plugin" --title ... --body ... --label "tooling-error" --label "<skill>"` and SHALL retry at most once.

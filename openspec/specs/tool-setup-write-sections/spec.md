@@ -88,7 +88,10 @@ The tool SHALL route each section key by its first dotted segment and SHALL reje
 ### Requirement: Wholesale write at the named key
 The tool SHALL replace the table at the named key wholesale and SHALL leave every other key in the file unchanged. For a dotted key it SHALL replace only the leaf table, keep siblings under the same parent, and create missing parent tables.
 
-- A `null` value writes an empty table at that key, which clears it.
+- A `null` value on `plan.guardrails.<id>` or `execute.guardrails.<id>` deletes that table. A missing table changes nothing, and the summary says `<id>: not present, nothing deleted`.
+- A guardrail table that holds a comment line is not deleted: the call returns the comment refusal.
+- A `null` guardrail id with `target: "user"` returns a DomainError `guardrail ids live in config.toml`.
+- A `null` value on any other key writes an empty table at that key, which clears it.
 - Callers pass the complete object for the key; the tool does not patch individual fields.
 - A key with an empty dotted segment (e.g. `plan.`, `.guardrails`, `plan..tasks`) fails with `config: invalid section name "<key>"` in `errors`.
 
@@ -106,6 +109,12 @@ The tool SHALL replace the table at the named key wholesale and SHALL leave ever
 #### Scenario: Null clears a leaf
 - **WHEN** the call writes `{"plan.tasks":null}`
 - **THEN** `plan.tasks` becomes an empty table
+
+#### Scenario: Null deletes a guardrail
+- **WHEN** `config.toml` has `[plan.guardrails.dry]` and `[plan.guardrails.dry-old]`
+- **AND** the call writes `{"plan.guardrails.dry-old":null}`
+- **THEN** the `[plan.guardrails.dry-old]` block is gone
+- **AND** the `[plan.guardrails.dry]` block is byte-identical
 
 ### Requirement: File text kept outside the written section
 The tool SHALL change only the lines of changed keys in the written section and SHALL keep every comment line, blank line and other section of the target file unchanged, except for the commented example and header lines that a new key or section takes over and the tip lines that tip restore adds.
