@@ -265,19 +265,42 @@ func TestDashboardContract_PlanFieldsOmitted(t *testing.T) {
 	}
 }
 
+// TestDashboardContract_PreplanDurationEncoding checks that durationMs of a
+// preplan is always in the JSON: 0 means unknown and encodes as 0, never absent.
+func TestDashboardContract_PreplanDurationEncoding(t *testing.T) {
+	b, err := json.Marshal(DashboardPreplan{Slug: "auth-flow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"durationMs":0`) {
+		t.Errorf("preplan JSON lacks durationMs 0: %s", b)
+	}
+	b, err = json.Marshal(DashboardPreplan{Slug: "auth-flow", DurationMs: 4800000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"durationMs":4800000`) {
+		t.Errorf("preplan JSON lacks durationMs 4800000: %s", b)
+	}
+}
+
 // TestDashboardContract_FixtureHoldsLifeCycleFields checks that the shared
 // snapshot fixture keeps one sample of each field the page tests rely on: a
-// ship pipeline with plan times, three preplans, and a history row with plan
-// fields.
+// ship pipeline with plan times, three preplans (with the durations 4800000, 0
+// and 1500000), and a history row with plan fields.
 func TestDashboardContract_FixtureHoldsLifeCycleFields(t *testing.T) {
 	snap := dashboardFixtureDecode(t, dashboardFixtureRead(t))
 
 	var preplans, shipWithPlanTimes, rowsWithPlan int
+	var preplanDurations []int64
 	for _, repo := range snap.Repos {
 		if repo.Warnings == nil || repo.Preplans == nil {
 			t.Errorf("repo %s: warnings or preplans is null, want a list", repo.Name)
 		}
 		preplans += len(repo.Preplans)
+		for _, p := range repo.Preplans {
+			preplanDurations = append(preplanDurations, p.DurationMs)
+		}
 		for _, p := range repo.Pipelines {
 			if p.Kind != "ship" || p.PlanStartedAt == "" {
 				continue
@@ -299,6 +322,9 @@ func TestDashboardContract_FixtureHoldsLifeCycleFields(t *testing.T) {
 	}
 	if preplans != 3 {
 		t.Errorf("fixture has %d preplans, want 3", preplans)
+	}
+	if want := []int64{4800000, 0, 1500000}; !slices.Equal(preplanDurations, want) {
+		t.Errorf("fixture preplan durationMs = %v, want %v", preplanDurations, want)
 	}
 	if shipWithPlanTimes == 0 {
 		t.Error("fixture has no ship pipeline with planStartedAt and a plan step with both times")

@@ -62,14 +62,18 @@ For each registered repo, the page shows:
   for all repos: waiting pipelines plus lone waits. The tab title starts
   with `(N)`, where N is the number of waiting pipelines and lone waits in
   the repos of the repo filter. A lone wait is an open wait that no shown running
-  pipeline owns (same session ID and branch). It shows as a card with Dismiss at the top of the feed (see
-  [Dismiss a wait](#dismiss-a-wait)). A
+  pipeline owns (same session ID and branch). It shows as a card at the top
+  of the feed. The **Dismiss** button is in the banner bar, right after the
+  wait age. The card head shows the repo name right after the branch (see
+  [Dismiss a wait](#dismiss-a-wait)). The head of a pipeline with a wait
+  keeps the repo name in its right group, and its banner bar has no Dismiss
+  button. A
   `completed` or `failed` pipeline drops off the page 7 days after its
   last update. Ship and execute pipelines also carry the worktree path they
   ran in. Some read problems of a repo are warnings: an unread preplan
-  folder or topic file, more than 100 topic files, an unread
-  `runs.jsonl` or execute state for plan times, an unread attention
-  folder, and more than 50 lone waits. A warning shows before the
+  folder or topic file, a Started line that does not parse, more than 100
+  topic files, an unread `runs.jsonl` or execute state for plan times, an
+  unread attention folder, and more than 50 lone waits. A warning shows before the
   pipeline blocks as the line "Warning for `<repo>`: `<text>`", and the
   archive of the runs of the repo still works. Any other read problem of a
   repo is `repos[].error`, which blocks the archive of every run of the repo
@@ -99,12 +103,20 @@ For each registered repo, the page shows:
   row has a checkbox, and Delete selected removes the checked rows (see
   [Delete History rows](#delete-history-rows)).
 - **Preplans tab** — the newest 100 preplan topic files of the repo, newest
-  first, with status, topic, path, and change time. Status chips with counts
-  filter the rows: all, `in progress`, `ready for plan`, `paused`, and
-  `unknown` (any other status). The status of a row is a menu that sets the
-  status of the topic file (see
+  first, with status, topic, path, repo, change time, and duration. Status
+  chips with counts filter the rows: all, `in progress`, `ready for plan`,
+  `paused`, and `unknown` (any other status). The status of a row is a menu
+  that sets the status of the topic file (see
   [Change a preplan status](#change-a-preplan-status)). Each row has a bin
-  icon (see [Delete an item](#delete-an-item)).
+  icon (see [Delete an item](#delete-an-item)). The repo, updated and
+  duration headers sort the rows, like the headers of the History tab. The
+  first click on repo sorts A to Z. The first click on updated or duration
+  sorts the largest value first. The next click turns the order. The
+  sorted header has `aria-sort`, and the focus stays on it after the
+  redraw. With no click the rows stay newest first. The duration cell shows
+  the time from the `**Started:**` line to the last change, for example
+  `1h 20m`. A row with no duration shows `—` and goes last in both duration
+  orders. See `durationMs` in the [Snapshot contract](#snapshot-contract).
 
 A link `#<pipeline id>` scrolls to that block. `#<pipeline id>/<n>` also
 opens the block and selects step n of its track, counted from 0. `#activity`,
@@ -440,7 +452,7 @@ them.
 |---|---|---|---|---|
 | Status menu | Each row of the Preplans tab | None | `POST /api/preplan-status` | The `**Status:**` line of `<repo>/.sdlc-v2/preplan/<slug>.md` |
 | Delete selected | The History tab | One confirm | `POST /api/history-delete` | The matching lines of `<repo>/.sdlc-v2/history/runs.jsonl` |
-| Dismiss | The card of a lone wait, at the top of the feed | None | `POST /api/wait-dismiss` | One wait record in `<repo>/.sdlc-v2/evidence/attention/` |
+| Dismiss | The banner bar of the card of a lone wait, at the top of the feed | None | `POST /api/wait-dismiss` | One wait record in `<repo>/.sdlc-v2/evidence/attention/` |
 
 ### Change a preplan status
 
@@ -532,8 +544,11 @@ appends a run between the second read and the rename can lose that run.
 ### Dismiss a wait
 
 An open wait that no shown running pipeline owns (same session ID and
-branch) shows as a card at the top of the feed. The card has a **Dismiss** button with the tooltip "Remove this wait
-from the dashboard". The click asks no question and sends one request. The
+branch) shows as a card at the top of the feed. The banner bar of the card
+has a **Dismiss** button with the tooltip "Remove this wait from the
+dashboard". The button is the last element of the bar, right after the wait
+age. The card head has no Dismiss button. The head shows the repo name right
+after the branch. The click asks no question and sends one request. The
 card leaves the page with the next snapshot.
 
 Dismiss removes the record of the wait, and nothing else:
@@ -850,8 +865,8 @@ collector reads the data, and the tool action that writes it.
 | `repos[].history[].planPaired`, `.planEndedAt` | A ship row with no valid stored plan time gets the plan time of the newest plan row of its branch that ended before the ship and after the previous ship of that branch. The plan row needs a start that parses, a `duration_ms` above 0, and a start that is not after the ship end. The ship row then gets `planStartedAt`, `planDurationMs`, a `totalMs` that counts from the plan start, `planPaired` set to `true`, and `planEndedAt`, the `ts` of that plan row. Both keys are absent otherwise. The pairing reads every line of `runs.jsonl`, so a plan row outside the newest 50 rows still pairs with a ship row inside them. | Collector, not stored |
 | `repos[].sessions[].commandGroups` | One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
 | `repos[].deferred[]` | The open items of `.sdlc-v2/history/deferred.json`, high priority first, then oldest first. Each item has `id`, `priority`, `description`, `created`, `source`, `severity`, `file`, `line`, and `reason`. A value that the record lacks is `""`, or `0` for `line`, never `null`. | ship_state `defer` and `deferred_add`; execute_state `issue-draft` |
-| `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times, an unread attention folder (`Attention folder unread: ...`), a count of open waits older than the newest 50 lone waits (`N older open waits not shown`). `[]` when none, never `null`. | Collector, derived |
-| `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, and `updatedAt` (the change time of the file). The collector reads the first 4 KiB of each file. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `[]` when none, never `null`. | plan_support `preplan_context` (skeleton), then the preplan skill |
+| `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a `**Started:**` line that does not parse, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times, an unread attention folder (`Attention folder unread: ...`), a count of open waits older than the newest 50 lone waits (`N older open waits not shown`). `[]` when none, never `null`. | Collector, derived |
+| `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, `updatedAt` (the change time of the file), and `durationMs`. The collector reads the first 4 KiB of each file. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `durationMs` is a number of milliseconds, always present: the change time of the file minus the UTC RFC 3339 time on the `**Started:**` line. It is `0` when the file has no Started line, when the line does not parse, or when the start is equal to or later than the change time. A line that does not parse also adds the warning `Preplan <slug> start time not read: "<text>"`. A missing line adds no warning. `[]` when none, never `null`. | plan_support `preplan_context` (skeleton and Started line), then the preplan skill |
 | `pipelines[].planStartedAt` | Ship blocks only: `linkedPlan.startedAt` of the ship state, else the `started_at` of the joined plan row (see [How runs join a ship block](#how-runs-join-a-ship-block)). Absent when no plan is linked. | ship_state `complete-step` of `execute` (`linkedPlan`); plan_mark `done` (the plan row) |
 
 **Deferred findings that the fix pass fixed.** `healing_record` kind `fixed`

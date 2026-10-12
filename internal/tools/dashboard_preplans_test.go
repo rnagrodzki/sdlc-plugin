@@ -225,7 +225,7 @@ func TestDashboardPreplans_NoStatusLine(t *testing.T) {
 func TestDashboardPreplans_MapsFieldsNewestFirst(t *testing.T) {
 	root := t.TempDir()
 	same := time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC)
-	preplanWrite(t, root, "auth-flow", preplanTopicFile("auth flow", preplanStatusInProgress), same)
+	preplanWrite(t, root, "auth-flow", preplanTopicFile("auth flow", preplanStatusInProgress)+"\n**Started:** 2026-10-10T07:40:00Z\n", same)
 	preplanWrite(t, root, "zeta", preplanTopicFile("zeta", preplanStatusReadyForPlan), same.Add(-time.Hour))
 	preplanWrite(t, root, "beta", preplanTopicFile("beta", preplanStatusPaused), same)
 	preplanWrite(t, root, "alpha", preplanTopicFile("alpha", preplanStatusPaused), same)
@@ -239,17 +239,86 @@ func TestDashboardPreplans_MapsFieldsNewestFirst(t *testing.T) {
 		t.Fatalf("order = %v, want %v", got, want)
 	}
 	want := DashboardPreplan{
-		Slug:      "auth-flow",
-		Topic:     "auth flow",
-		Status:    "in progress",
-		Path:      ".sdlc-v2/preplan/auth-flow.md",
-		UpdatedAt: "2026-10-10T09:00:00Z",
+		Slug:       "auth-flow",
+		Topic:      "auth flow",
+		Status:     "in progress",
+		Path:       ".sdlc-v2/preplan/auth-flow.md",
+		UpdatedAt:  "2026-10-10T09:00:00Z",
+		DurationMs: 4800000,
 	}
 	if list[2] != want {
 		t.Errorf("auth-flow row = %+v, want %+v", list[2], want)
 	}
 	if list[0].Status != "other words" {
 		t.Errorf("newest status = %q, want the raw text %q", list[0].Status, "other words")
+	}
+	for _, p := range list {
+		if p.Slug != "auth-flow" && p.DurationMs != 0 {
+			t.Errorf("%s DurationMs = %d, want 0 for a file with no Started line", p.Slug, p.DurationMs)
+		}
+	}
+}
+
+// TestDashboardPreplans_DurationFromStartedLine checks the duration of a topic
+// file for each kind of Started line: a start before the change time gives the
+// difference in milliseconds, a start at or after the change time and a missing
+// line give 0 and no warning, a text that is not RFC 3339 gives 0 and one
+// warning that quotes the text, and a line past the head read gives 0.
+func TestDashboardPreplans_DurationFromStartedLine(t *testing.T) {
+	mod := time.Date(2026, 10, 10, 9, 0, 0, 0, time.UTC)
+	head := preplanTopicFile("auth flow", preplanStatusInProgress)
+	tests := []struct {
+		name         string
+		content      string
+		wantDuration int64
+		wantWarnings []string
+	}{
+		{"start before change", head + "\n**Started:** 2026-10-10T07:40:00Z\n", 4800000, nil},
+		{"start with an offset", head + "\n**Started:** 2026-10-10T09:40:00+02:00\n", 4800000, nil},
+		{"start with fraction", head + "\n**Started:** 2026-10-10T08:59:59.5Z\n", 500, nil},
+		{"start equals change", head + "\n**Started:** 2026-10-10T09:00:00Z\n", 0, nil},
+		{"start after change", head + "\n**Started:** 2026-10-10T10:00:00Z\n", 0, nil},
+		{"no Started line", head, 0, nil},
+		{"CR LF line ends", strings.ReplaceAll(head+"\n**Started:** 2026-10-10T07:40:00Z\n", "\n", "\r\n"), 4800000, nil},
+		{"text that is not a time", head + "\n**Started:** yesterday\n", 0, []string{`Preplan auth-flow start time not read: "yesterday"`}},
+		{"empty value", head + "\n**Started:**\n", 0, []string{`Preplan auth-flow start time not read: ""`}},
+		{"date with no time", head + "\n**Started:** 2026-10-10\n", 0, []string{`Preplan auth-flow start time not read: "2026-10-10"`}},
+		{"line past the head read", head + strings.Repeat("x", dashboardPreplanHeadMax) + "\n**Started:** 2026-10-10T07:40:00Z\n", 0, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			preplanWrite(t, root, "auth-flow", tc.content, mod)
+			list, warnings := dashboardPreplans(root)
+			if len(list) != 1 {
+				t.Fatalf("rows = %v, want 1 (a bad Started line keeps the row)", list)
+			}
+			if list[0].DurationMs != tc.wantDuration {
+				t.Errorf("DurationMs = %d, want %d", list[0].DurationMs, tc.wantDuration)
+			}
+			if !reflect.DeepEqual(warnings, tc.wantWarnings) {
+				t.Errorf("warnings = %v, want %v", warnings, tc.wantWarnings)
+			}
+		})
+	}
+}
+
+// TestDashboardPreplans_StartedWarningIsRedacted checks that a text that the
+// redactor covers (an email address has no space, so the one-word Started
+// value holds it whole) never reaches the warning text of a bad Started line.
+func TestDashboardPreplans_StartedWarningIsRedacted(t *testing.T) {
+	root := t.TempDir()
+	const secret = "alice@example.com"
+	preplanWrite(t, root, "leak", preplanTopicFile("leak", preplanStatusPaused)+"\n**Started:** "+secret+"\n", dashNow)
+	list, warnings := dashboardPreplans(root)
+	if len(list) != 1 {
+		t.Fatalf("rows = %d, want 1", len(list))
+	}
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "Preplan leak start time not read: ") {
+		t.Fatalf("warnings = %v, want one \"Preplan leak start time not read: ...\"", warnings)
+	}
+	if strings.Contains(warnings[0], secret) {
+		t.Errorf("warning = %q, want the secret redacted", warnings[0])
 	}
 }
 

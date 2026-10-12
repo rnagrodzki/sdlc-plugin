@@ -33,6 +33,10 @@ var dashboardPreplanTopicRe = regexp.MustCompile(`(?m)^# Preplan:[ \t]*(.*)$`)
 // file, capturing the status text.
 var dashboardPreplanStatusRe = regexp.MustCompile(`(?m)^\*\*Status:\*\*[ \t]*(.*)$`)
 
+// dashboardPreplanStartedRe matches the "**Started:** <time>" line of a topic
+// file, capturing the time text. preplan_context writes the time in RFC 3339.
+var dashboardPreplanStartedRe = regexp.MustCompile(`(?m)^\*\*Started:\*\*[ \t]*(\S*)`)
+
 // dashboardPreplanFile is one topic file that passed the Stat check.
 type dashboardPreplanFile struct {
 	slug string
@@ -115,12 +119,27 @@ func dashboardPreplans(root string) (list []DashboardPreplan, warnings []string)
 		if m := dashboardPreplanStatusRe.FindStringSubmatch(head); m != nil {
 			status = dashboardPreview(strings.TrimSpace(m[1]))
 		}
+		// A missing Started line gives 0 with no warning: every topic file
+		// from before the line existed has none. A time that does not parse
+		// gives 0 and one warning. A start at or after the change time gives
+		// 0, like an unknown duration in History.
+		var durationMs int64
+		if m := dashboardPreplanStartedRe.FindStringSubmatch(head); m != nil {
+			started, err := time.Parse(time.RFC3339, m[1])
+			switch {
+			case err != nil:
+				warnings = append(warnings, fmt.Sprintf("Preplan %s start time not read: %q", f.slug, dashboardPreview(m[1])))
+			case f.mod.After(started):
+				durationMs = f.mod.Sub(started).Milliseconds()
+			}
+		}
 		list = append(list, DashboardPreplan{
-			Slug:      f.slug,
-			Topic:     topic,
-			Status:    status,
-			Path:      path.Join(paths.DataDir, paths.PreplanSubdir, f.slug+".md"),
-			UpdatedAt: dashboardFormatTime(f.mod),
+			Slug:       f.slug,
+			Topic:      topic,
+			Status:     status,
+			Path:       path.Join(paths.DataDir, paths.PreplanSubdir, f.slug+".md"),
+			UpdatedAt:  dashboardFormatTime(f.mod),
+			DurationMs: durationMs,
 		})
 	}
 	if older > 0 {
