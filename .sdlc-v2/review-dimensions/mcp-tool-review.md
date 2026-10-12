@@ -32,6 +32,10 @@ those same guardrails:
 - Errors returned by a tool are actionable — they say what went wrong and
   what the caller should do next, not just "failed" or a raw Go error
   string with no context.
+- An error caused by a limit or cap (a count of entries, a size bound, a retry
+  count) MUST state the limit and the value that exceeded it. 'Too many files'
+  without the limit is a finding. This extends the actionable-errors bullet
+  above.
 - A tool that changes its input/output shape also updates the
   corresponding JSON schema under `plugins/sdlc/schemas/*.schema.json`, and
   any skill `.md` that documents the tool's call signature.
@@ -115,8 +119,11 @@ those same guardrails:
   empty array when entries are required, duplicate IDs, partial coverage of
   the set it references) in its `jsonschema_description`. The handler MUST
   reject each one with a `DomainError` that names the broken rule.
-- Every write action (record, append, set, skip) MUST echo the values it wrote
-  in its output. An output that holds only `ok` and `next` is a finding.
+- Every write action (record, append, set, skip, create) MUST echo the values
+  it wrote in its output. This includes each value the handler generated and
+  the caller did not supply, such as a timestamp, an ID, a file name or a
+  slug. An output that holds only `ok` and `next`, or that omits a generated
+  value, is a finding.
 - A no-op or already-done shortcut MUST check the real filesystem or git state
   it claims, not a marker in a header or input file. Example: the
   `openspec_save` 'already' path trusted the plan header.
@@ -140,6 +147,12 @@ those same guardrails:
   description MUST state which write wins on read. A later write MUST NOT drop
   an earlier stop reason, or change the status a route reads, unless the
   description names that rule.
+- A warning that reports a skipped, ignored or replaced input (for example an
+  unreadable timestamp or an unknown key) MUST name the value or field, the
+  expected format with one example, and the effect on the result, such as the
+  value used instead, a row left out or a field shown blank. A warning that
+  only says the input was invalid is a finding. This extends the
+  actionable-errors bullet above to warnings.
 
 ## Cross-references
 

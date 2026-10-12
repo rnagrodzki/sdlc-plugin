@@ -114,19 +114,7 @@ abstractions, premature generalization, or unused parameters."""
 
 [plan.guardrails.dry]
 severity = "warning"
-description = """
-Tasks must not duplicate logic that exists elsewhere — reuse existing \
-functions or extract shared utilities. Enum-like literal value lists (e.g. \
-phase names, status codes) must be defined once and referenced from a \
-single canonical source, not re-typed as free-text literals across \
-multiple files or templates. When a codebase contains two or more \
-near-identical code paths (e.g. two polling loops, two error-classification \
-switches), a fix applied to one path must either be mirrored to the other \
-immediately or the paths must be consolidated — a divergent fix is worse \
-than not fixing at all. For the copy-pasted CI payloads \
-(internal/tools/payloads/*.cjs), grep every sibling that shares the same push \
-helper, workflow input or error classifier before scoping a cross-cutting \
-change, and list each sibling in the task's file scope."""
+description = "Tasks must not duplicate logic that exists elsewhere — reuse existing functions or extract shared utilities. Enum-like literal value lists (e.g. phase names, status codes) must be defined once and referenced from a single canonical source, not re-typed as free-text literals across multiple files or templates. A value derived from a format, such as a prefix length, must be defined once as a named constant. When a codebase contains two or more near-identical code paths (e.g. two polling loops, two error-classification switches), a fix applied to one path must either be mirrored to the other immediately or the paths must be consolidated — a divergent fix is worse than not fixing at all. For the copy-pasted CI payloads (internal/tools/payloads/*.cjs), grep every sibling that shares the same push helper, workflow input or error classifier before scoping a cross-cutting change, and list each sibling in the task's file scope."
 
 [plan.guardrails.kiss]
 severity = "warning"
@@ -229,14 +217,7 @@ has no custom template -- shipped default will be used'} lets the LLM act."""
 
 [plan.guardrails.mcp-error-actionable]
 severity = "error"
-description = """
-MCP tool errors must tell the LLM what went wrong AND what to do about it. \
-Not a stack trace -- a diagnosis + recovery instruction. Example: instead of \
-'ENOENT: .sdlc-v2/config.json', return 'Config file .sdlc-v2/config.json not \
-found. Run setup_init to create it, or pass skipConfigCheck: true to proceed \
-without config.' The LLM cannot debug infrastructure errors -- it needs \
-actionable alternatives.
-Every new MCP error return path where recovery is possible must populate the Suggestion field on DomainError, InfraError, or DataError. A no-op or empty outcome (for example 'nothing to promote') counts as a recoverable path, so its error return must populate Suggestion too. The Suggestion must name a recovery action that can clear this specific error. Naming a tool or action that cannot accept the failing input is a plan defect."""
+description = "MCP tool errors must tell the LLM what went wrong AND what to do about it. Not a stack trace -- a diagnosis + recovery instruction. Example: instead of 'ENOENT: .sdlc-v2/config.json', return 'Config file .sdlc-v2/config.json not found. Run setup_init to create it, or pass skipConfigCheck: true to proceed without config.' The LLM cannot debug infrastructure errors -- it needs actionable alternatives.\nEvery new MCP error return path where recovery is possible must populate the Suggestion field on DomainError, InfraError, or DataError. A no-op or empty outcome (for example 'nothing to promote') counts as a recoverable path, so its error return must populate Suggestion too. The Suggestion must name a recovery action that can clear this specific error. Naming a tool or action that cannot accept the failing input is a plan defect. An error for an exceeded limit or cap must state the limit and the value that exceeded it."
 
 [plan.guardrails.handler-data-contracts]
 severity = "error"
@@ -319,25 +300,6 @@ be cross-checked with a second independent method (e.g. a broader wildcard \
 grep across all file extensions, or LSP findReferences) to catch call sites \
 the primary search terms miss."""
 
-[plan.guardrails.schema-change-secondary-readers]
-severity = "error"
-description = """
-When a plan changes a config or data schema structure, identify all readers, \
-writers, migrators, codegen, test fixtures, AND template files \
-(plugins/sdlc/templates/*.toml) that consume the schema -- do not assume the \
-declared-files list captures the scope. Also identify CI workflow files \
-(.github/workflows/*.yml) and documentation (docs/, README) that reference \
-schema fields or examples. When the schema change introduces a new numeric \
-limit, threshold, or cap field, verify that user-facing documentation \
-(docs/, skill prose, README) explains the key, default value, valid range, \
-and adjustment procedure; schema descriptions do not count as user \
-documentation. Template examples and comments must validate against the \
-schema; the Verification section must explicitly check template-schema \
-conformance (e.g. by reading templates and confirming all enums/constraints \
-match the schema) before marking the task done. Use grep, package-import \
-analysis, and full-module testing before marking the plan done.
-When a task modifies an MCP tool's input or output structs, a Go config struct (internal/config/), or an enum field serialized to JSON or TOML, the JSON schema under plugins/sdlc/schemas/ and the config template at plugins/sdlc/templates/*.toml must both be updated in the same task. Schemas, code, and templates must not drift. Check that description prose (permissions, defaults) matches the code, and that each prose default is a structured schema default keyword."""
-
 [plan.guardrails.refactoring-includes-doc-sweep]
 severity = "warning"
 description = """
@@ -382,25 +344,6 @@ When a task's files list includes a file that appears as a key in a \
 pinned-hash map (e.g. planSkillsReferenceFileHashes) or other cross-file \
 guard, the task's acceptance criteria must explicitly document the coupling \
 and required guard-update step."""
-
-[plan.guardrails.skill-flow-soundness]
-severity = "error"
-description = """
-When a plan task modifies a SKILL.md, the plan must narrate the skill's \
-full step flow end-to-end (entry to every exit state) and verify it is \
-logically sound before the task is marked done: every step is reachable \
-under some valid input, every terminal state (success, cancel, error, \
-stall) has an explicit next instruction, gating conditions do not \
-contradict each other across steps, every flag in the Arguments table is \
-referenced in Workflow and vice versa, and step-number cross-references \
-(within the file and in companion sub-flows) are updated after any \
-reordering. If the skill dispatches background workers or sub-agents, \
-every worker must have explicit cleanup (TaskStop, agent termination, or \
-documented self-termination) in the stall handler and all error-recovery \
-paths. A flow that reads correctly line-by-line but contains an \
-unreachable branch, a dead end, or abandoned workers is still a plan \
-defect.
-Routing bullets keyed on the same input must be mutually exclusive: walk the boundary states (last round, CRITICAL gate result, single-item batch) against every bullet, and exactly one bullet must match. A state that matches no bullet is a dead end. Each loop or sub-flow must name exactly one return step; a loop with two return targets is a plan defect. When two or more routes write the same persisted record, every route must derive each field from the same named source, or the prose must name the route that wins on conflict. One call described in two places must carry the same arguments in both. A count that routes the flow must include every source, such as findings with no id. A route must not advance on a flag the fixer set about its own work without an independent re-check. When a skill dispatches background workers or sub-agents, the results or final output step must disclose each worker that was missing (dispatch sent, never reported in) or unterminated (stall, error, interrupt, or failed stop with incomplete cleanup), by name or task ID, and the output template must hold a literal slot for each disclosed category. When a plan adds or changes a SKILL.md jump, skip, or go-to route, the plan must list each route with its source step and target step. For each step that a config key or flag can enable, every route into that step must reach it whenever the enabling condition holds; a route that jumps past an enabled step is a plan defect. A step that defers to a tool's returned next string is a route: list each next value with its target step. An offer that hands off to another skill or tool must restate that target's precondition and be skipped when the precondition fails. When a plan task modifies a SKILL.md, the plan must name each Steps overview or header entry the change affects, with its new step number, name, and action, and must update that entry in the same edit as the body step it names. An overview entry left stale after a body edit is a plan defect."""
 
 [plan.guardrails.skill-resume-safety]
 severity = "error"
@@ -448,17 +391,7 @@ round trip between harness and model slows execution and fragments feedback."""
 
 [execute.guardrails.no-real-fs-git-in-tests]
 severity = "error"
-description = """
-Tests must not write outside t.TempDir, call real gh, or reach the network. \
-Real filesystem operations inside t.TempDir (os.WriteFile, os.MkdirTemp) \
-are allowed. Real git commands are allowed in a temporary repository \
-created under t.TempDir. Reason: a temp dir is isolated and removed \
-automatically, and a fake git can pass while real git use is broken. Use \
-dependency injection with fakes for gh, for the network, and for a failure \
-a real filesystem cannot produce on demand (a full disk, a permission error \
-in the middle of a write). Add the injectable seam before writing the test \
-that needs it; do not defer it. Do not add a seam only to avoid a temp \
-dir."""
+description = 'Tests must not write outside t.TempDir, call real gh, or reach the network. Real filesystem operations inside t.TempDir (os.WriteFile, os.MkdirTemp) are allowed. Real git commands are allowed in a temporary repository created under t.TempDir. Reason: a temp dir is isolated and removed automatically, and a fake git can pass while real git use is broken. Use dependency injection with fakes for gh, for the network, and for a failure a real filesystem cannot produce on demand (a full disk, a permission error in the middle of a write). Add the injectable seam before writing the test that needs it; do not defer it. Do not add a seam only to avoid a temp dir. A permission test that uses chmod and skips when the process runs as root does not count as coverage: reach the failure through an injectable seam, or through a condition that root cannot bypass, such as a regular file where a directory is required.'
 
 [execute.guardrails.mcp-schema-tags-required]
 severity = "error"
@@ -515,10 +448,6 @@ distinguished from actual read/write errors in both the error type and \
 the caller's output so the caller can choose recovery; (3) the cross-tool \
 side effect and its error contract must be documented in the tool's \
 description at registration time."""
-
-[execute.guardrails.skill-prose-source-verification]
-severity = "warning"
-description = "Before marking a task done that modifies a SKILL.md file, independently verify that all prose claims about tool behavior, dispatch scaffolds/resources, and schema validation are accurate by direct source-reading against the Go implementation and, where the prose describes a CI payload script, against that script (for example internal/tools/payloads/*.cjs). When prose asserts that a dispatch references a resource or scaffold, grep the tool's handler to confirm it exists; when prose claims conditional behavior (e.g. \"write is best-effort\"), verify the condition in the actual handler code; when prose lists or references enum values, verify each is in the actual schema; when a behavior or routing is described in multiple skill sections, confirm consistency across all sections and against current source. The same checks apply to state-format.md, config-format.md and docs/skills/*.md. Also check these claim kinds against source: (a) when prose enumerates a struct's fields, confirm every exported field of the Go struct appears in the prose; (b) when prose states a count or tier number, count the Go values and confirm the number matches; (c) when prose makes an exclusivity claim (only, sole) or an unconditional claim (always, every path), read the full field-access set or all code paths; (d) when prose claims absence, grep to confirm it; (e) when a doc describes a persisted row written by several code paths, enumerate every writer and state per-writer field differences; (f) for a precedence claim between two keys or flags, confirm the prose states the rule the validator enforces, and document a pair the code rejects as rejected; (g) confirm each example block follows the rules the doc states; (h) confirm each named git ref is the ref the code reads for that step. Do not rely on build/test success as evidence of prose accuracy."
 
 [execute.guardrails.independent-completion-reverification]
 severity = "error"
@@ -665,11 +594,6 @@ safe, verify the reason against an actual call-graph/reference search of \
 the handler -- a plausible-sounding reason string is not evidence the \
 annotation is correct."""
 
-[execute.guardrails.nested-dispatch-cleanup-declared]
-severity = "error"
-description = """
-When a skill runs as a nested dispatch inside another skill (e.g. /ship invoking execute or review) and dispatches background workers or sub-agents, verify these points in the skill text and dispatch code. (1) Each worker has a stop path in the stall handler (Step 3 or equivalent) and in every error-recovery path. (2) The normal-completion cleanup step (Step 9 or equivalent) re-checks every worker, ends any worker still running, and retries a stop that an earlier step failed. (3) When a stop still fails, a named fallback exists and is reachable with the dispatch as written: each dispatch passes the name or ID the fallback needs, such as the name parameter SendMessage requires. The failed worker is listed in the output and still counts toward any wave cap. (4) The results step names each worker that never reported in and each worker that cleanup could not end. (5) Every entry point and workflow variant that dispatches the same workers carries the nested-dispatch TaskStop note and the same stall, missing-worker, and cleanup rules. (6) Each Agent dispatch records the task ID it returns; a dispatch with no task ID is listed as a worker that cleanup cannot end. (7) A step that receives a report listing missing, unterminated, or unstopped workers reads that list and acts on each entry (stop it, retry through the named fallback, or disclose it), and the task names the report field the step reads. No worker should be abandoned."""
-
 [execute.guardrails.nested-dispatch-runtime-stop]
 severity = "warning"
 description = """
@@ -730,23 +654,6 @@ scope, defaults) matches what the code needs, and each prose default is a \
 structured default keyword. A doc comment stating a template default, \
 anywhere in repo, must match the real value; a passing test is not proof."""
 
-[execute.guardrails.mcp-error-suggestion-coverage]
-severity = "error"
-description = """
-Before marking a task done that modifies error-returning handlers in \
-internal/tools/ or internal/mcpserver/, audit all DomainError/InfraError/ \
-DataError instantiations. Run: `grep -n 'DomainError{\\|InfraError{\\| \
-DataError{' internal/tools/MODIFIED.go internal/mcpserver/MODIFIED.go \
-2>/dev/null` and verify every match sets a Suggestion field to a non-empty \
-string expression (a literal, a fmt.Sprintf, or a concatenation). Do not \
-leave the field empty and rely on the default: when Suggestion is empty the \
-renderer fills `## Do this` with generic text for the error class, which \
-does not tell the caller how to recover from this specific error. Suggestion \
-must encode a recovery instruction for the caller, not a generic message. Scope the grep to the entire modified \
-handler function, including branches not touched by this task's diff -- a \
-gap can pre-exist in code adjacent to the change. Document the grep result \
-and verified instances in task verification section before marking done. Also check every return statement in the modified handler function, including success branches. Each untyped error return (errors.New, fmt.Errorf) must be wrapped in a DomainError, InfraError or DataError with a non-empty Suggestion. Each no-op success return (for example 'nothing to promote') must set the Next field to an outcome-specific instruction. Record each return path checked in the task verification section."""
-
 [execute.guardrails.gh-error-enrichment-parity]
 severity = "error"
 description = """
@@ -761,10 +668,6 @@ When adding a new `gh` call site, trace how existing call sites handle \
 permission errors and use the same enrichment routine. Document each call \
 site and the enrichment routing in the task verification before marking \
 done."""
-
-[execute.guardrails.skill-flow-soundness]
-severity = "error"
-description = "Before marking done a task that modifies a SKILL.md, independently walk the skill's step flow end-to-end from the current file, not from the plan's narration, which may predate the edit. Verify: every step is reachable under some valid input; every terminal state (success, cancel, error, stall, interrupt) has an explicit next instruction, and its own row when the skill has a routes table; no two gating conditions across steps contradict each other; every Arguments-table flag is referenced in Workflow and vice versa; step-number cross-references (in this file and in companion sub-flows it dispatches) match the post-edit numbering. If the skill dispatches background workers, every exit path (success, stall, error, interrupt, cancel) must end each started worker via TaskStop or equivalent, or document why the worker ends itself, and must record its outcome in the run state (for example ledger_skip), whether or not the skill runs nested. Each loop or sub-flow must name exactly one return step. Also check these points: (a) routing bullets keyed on the same input are mutually exclusive: walk the boundary states (last round, CRITICAL gate result, single-item batch) against every bullet; exactly one must match; a state that matches no bullet is a dead end; (b) each route that writes the same persisted record derives each field from the same named source, or the prose names the route that wins on conflict; one call described in two places carries the same arguments in both; (c) a count that routes the flow includes every source, such as findings with no id; a route does not advance on a flag the fixer set about its own work without an independent re-check; (d) every explicit jump (go to, next, skip to, proceed to) reaches its target whenever that target's enabling condition holds; a route that jumps past an enabled step fails the task; each value a tool can return in its next string has a target step; (e) an offer that hands off to another skill or tool restates that target's precondition and is skipped when the precondition fails; (f) each Steps overview or header entry matches its body step's current number, name, action and tool call, and entries follow run order."
 
 [execute.guardrails.mcp-handler-error-propagation]
 severity = "error"
@@ -840,11 +743,11 @@ description = 'Before marking a task done that adds or changes an MCP handler ac
 severity = 'error'
 
 [execute.guardrails.mcp-write-action-echoes-record]
-description = 'Before marking a task done that adds or changes an MCP handler action that writes a record (record, append, set, skip, or similar), check each success return of that action. The output must echo the values it wrote, such as IDs, the reason, run and worker IDs, and any prior value it replaced. An output that holds only ok and next fails the task. Record the checked return paths in task verification.'
+description = 'Before marking a task done that adds or changes an MCP handler action that writes a record (record, append, set, skip, create, or similar), check each success return of that action. The output must echo the values it wrote, such as IDs, the reason, run and worker IDs, and any prior value it replaced. It must also echo each value the handler generated that the caller did not supply, such as a timestamp, a file name or a slug. An output that holds only ok and next, or that omits a generated value, fails the task. Record the checked return paths in task verification.'
 severity = 'error'
 
 [plan.guardrails.persisted-io-failure-fallback]
-description = 'Plans that add a read or write of a persisted file or state must name, for each read and each write, its failure fallback: propagate the error, or use a stated non-silent default. Each read of content that can grow must name a size bound and the behavior when the bound is exceeded. Name the error class for each failure: DomainError for bad caller input, InfraError for filesystem, network, or process failures, and DataError for parse or schema failures. A write that replaces a user-owned file must write a temp file and rename it, or the plan must state why an in-place write is safe. A plan that leaves any one of these implicit is a plan defect.'
+description = 'Plans that add a read or write of a persisted file or state must name, for each read and each write, its failure fallback: propagate the error, or use a stated non-silent default. Each read of content that can grow must name a size bound and the behavior when the bound is exceeded. Name the error class for each failure: DomainError for bad caller input, InfraError for filesystem, network, or process failures, and DataError for parse or schema failures and for stored data that breaks an invariant (for example two files for one key). A write that replaces a user-owned file must write a temp file and rename it, or the plan must state why an in-place write is safe. A plan that leaves any one of these implicit is a plan defect.'
 severity = 'error'
 
 [plan.guardrails.handler-state-change-safety]
@@ -856,9 +759,97 @@ description = "Before marking a task done that adds or changes a git staging or 
 severity = 'error'
 
 [execute.guardrails.reuse-existing-go-helpers]
-description = 'Before marking a task done that adds a Go function, grep the package and the module for an existing function with the same behavior, even under another name, and call that function instead. Two functions with the same body are a defect, for example shortSHA and shipShortSHA. Before hand-writing logic in a handler, grep for a shared core helper that already does the work, for example shipCompleteStepCore for step completion, and call it. Record each grep and the helper reused in task verification.'
-severity = 'warning'
+description = 'Before marking a task done that adds a Go function, grep the package and the module for an existing function with the same behavior, even under another name, and call that function instead. Two functions with the same body are a defect, for example shortSHA and shipShortSHA. Before hand-writing logic in a handler, grep for a shared core helper that already does the work, for example shipCompleteStepCore for step completion, and call it. The same check covers inline code, not only a new function: before hand-writing a parse, format or normalization of a stored or derived value (a timestamp layout passed to time.Parse, a split of a stored line, a name or path builder), grep for the helper that already reads or writes that value and call it. Record each grep and the helper reused in task verification.'
+severity = 'error'
 
 [plan.guardrails.exit-path-state-record]
 description = 'Plans that add or change a SKILL.md exit path (success, cancel, error, interrupt, stall) must name, for each exit path, the state write made for each dispatched worker and for the run, such as a ledger_skip reason. The plan must list each exit path as a row in the routes table with its next step. An exit path that stops workers without recording their outcome in the state the run reads is a plan defect.'
 severity = 'error'
+
+[plan.guardrails.schema-change-secondary-readers-1]
+description = 'When a plan changes a config or data schema structure, identify all readers, writers, migrators, codegen, test fixtures, AND template files (plugins/sdlc/templates/*.toml) that consume the schema -- do not assume the declared-files list captures the scope. Also identify CI workflow files (.github/workflows/*.yml) and documentation (docs/, README) that reference schema fields or examples. When the schema change introduces a new numeric limit, threshold, or cap field, verify that user-facing documentation (docs/, skill prose, README) explains the key, default value, valid range, and adjustment procedure; schema descriptions do not count as user documentation. Use grep, package-import analysis, and full-module testing before marking the plan done.'
+severity = 'error'
+
+[plan.guardrails.schema-change-secondary-readers-2]
+description = "When a plan changes a config or data schema structure, template examples and comments must validate against the schema; the Verification section must explicitly check template-schema conformance (e.g. by reading templates and confirming all enums/constraints match the schema) before marking the task done. When a task modifies an MCP tool's input or output structs, a Go config struct (internal/config/), or an enum field serialized to JSON or TOML, the JSON schema under plugins/sdlc/schemas/ and the config template at plugins/sdlc/templates/*.toml must both be updated in the same task. Schemas, code, and templates must not drift. Check that description prose (permissions, defaults) matches the code, and that each prose default is a structured schema default keyword."
+severity = 'error'
+
+[plan.guardrails.skill-flow-soundness-1]
+description = "When a plan task modifies a SKILL.md, the plan must narrate the skill's full step flow end-to-end (entry to every exit state) and verify it is logically sound before the task is marked done: every step is reachable under some valid input, every terminal state (success, cancel, error, stall) has an explicit next instruction, gating conditions do not contradict each other across steps, every flag in the Arguments table is referenced in Workflow and vice versa, and step-number cross-references (within the file and in companion sub-flows) are updated after any reordering. A flow that reads correctly line-by-line but contains an unreachable branch, a dead end, or abandoned workers is still a plan defect."
+severity = 'error'
+
+[plan.guardrails.skill-flow-soundness-2]
+description = 'When a plan task modifies a SKILL.md that dispatches background workers or sub-agents, every worker must have explicit cleanup (TaskStop, agent termination, or documented self-termination) in the stall handler and all error-recovery paths. When a skill dispatches background workers or sub-agents, the results or final output step must disclose each worker that was missing (dispatch sent, never reported in) or unterminated (stall, error, interrupt, or failed stop with incomplete cleanup), by name or task ID, and the output template must hold a literal slot for each disclosed category.'
+severity = 'error'
+
+[plan.guardrails.skill-flow-soundness-3]
+description = 'When a plan task modifies a SKILL.md, routing bullets keyed on the same input must be mutually exclusive: walk the boundary states (last round, CRITICAL gate result, single-item batch) against every bullet, and exactly one bullet must match. A state that matches no bullet is a dead end. Each loop or sub-flow must name exactly one return step; a loop with two return targets is a plan defect. When two or more routes write the same persisted record, every route must derive each field from the same named source, or the prose must name the route that wins on conflict. One call described in two places must carry the same arguments in both. A count that routes the flow must include every source, such as findings with no id. A route must not advance on a flag the fixer set about its own work without an independent re-check.'
+severity = 'error'
+
+[plan.guardrails.skill-flow-soundness-4]
+description = "When a plan adds or changes a SKILL.md jump, skip, or go-to route, the plan must list each route with its source step and target step. For each step that a config key or flag can enable, every route into that step must reach it whenever the enabling condition holds; a route that jumps past an enabled step is a plan defect. A step that defers to a tool's returned next string is a route: list each next value with its target step. An offer that hands off to another skill or tool must restate that target's precondition and be skipped when the precondition fails. When a plan task modifies a SKILL.md, the plan must name each Steps overview or header entry the change affects, with its new step number, name, and action, and must update that entry in the same edit as the body step it names. An overview entry left stale after a body edit is a plan defect."
+severity = 'error'
+
+[execute.guardrails.mcp-error-suggestion-coverage-1]
+description = "Before marking a task done that modifies error-returning handlers in internal/tools/ or internal/mcpserver/, audit all DomainError/InfraError/ DataError instantiations. Run: `grep -n 'DomainError{\\|InfraError{\\| DataError{' internal/tools/MODIFIED.go internal/mcpserver/MODIFIED.go 2>/dev/null` and verify every match sets a Suggestion field to a non-empty string expression (a literal, a fmt.Sprintf, or a concatenation). Do not leave the field empty and rely on the default: when Suggestion is empty the renderer fills `## Do this` with generic text for the error class, which does not tell the caller how to recover from this specific error. Suggestion must encode a recovery instruction for the caller, not a generic message. Document the grep result and verified instances in task verification section before marking done."
+severity = 'error'
+
+[execute.guardrails.mcp-error-suggestion-coverage-2]
+description = "Before marking a task done that modifies error-returning handlers in internal/tools/ or internal/mcpserver/, scope the check of every DomainError, InfraError and DataError instantiation to the entire modified handler function, including branches not touched by this task's diff -- a gap can pre-exist in code adjacent to the change. Also check every return statement in the modified handler function, including success branches. Each untyped error return (errors.New, fmt.Errorf) must be wrapped in a DomainError, InfraError or DataError with a non-empty Suggestion. Each no-op success return (for example 'nothing to promote') must set the Next field to an outcome-specific instruction. Record each return path checked in the task verification section."
+severity = 'error'
+
+[execute.guardrails.nested-dispatch-cleanup-declared-1]
+description = 'When a skill runs as a nested dispatch inside another skill (e.g. /ship invoking execute or review) and dispatches background workers or sub-agents, verify these points in the skill text and dispatch code. (1) Each worker has a stop path in the stall handler (Step 3 or equivalent) and in every error-recovery path. (2) The normal-completion cleanup step (Step 9 or equivalent) re-checks every worker, ends any worker still running, and retries a stop that an earlier step failed. (3) When a stop still fails, a named fallback exists and is reachable with the dispatch as written: each dispatch passes the name or ID the fallback needs, such as the name parameter SendMessage requires. The failed worker is listed in the output and still counts toward any wave cap.'
+severity = 'error'
+
+[execute.guardrails.nested-dispatch-cleanup-declared-2]
+description = 'When a skill runs as a nested dispatch inside another skill (e.g. /ship invoking execute or review) and dispatches background workers or sub-agents, verify these points in the skill text and dispatch code. (1) The results step names each worker that never reported in and each worker that cleanup could not end. (2) Every entry point and workflow variant that dispatches the same workers carries the nested-dispatch TaskStop note and the same stall, missing-worker, and cleanup rules. (3) Each Agent dispatch records the task ID it returns; a dispatch with no task ID is listed as a worker that cleanup cannot end. (4) A step that receives a report listing missing, unterminated, or unstopped workers reads that list and acts on each entry (stop it, retry through the fallback the skill names, or disclose it), and the task names the report field the step reads. No worker should be abandoned.'
+severity = 'error'
+
+[execute.guardrails.skill-flow-soundness-1]
+description = "Before marking done a task that modifies a SKILL.md, independently walk the skill's step flow end-to-end from the current file, not from the plan's narration, which may predate the edit. Verify: every step is reachable under some valid input; every terminal state (success, cancel, error, stall, interrupt) has an explicit next instruction, and its own row when the skill has a routes table; no two gating conditions across steps contradict each other; every Arguments-table flag is referenced in Workflow and vice versa; step-number cross-references (in this file and in companion sub-flows it dispatches) match the post-edit numbering. Each loop or sub-flow must name exactly one return step."
+severity = 'error'
+
+[execute.guardrails.skill-flow-soundness-2]
+description = 'Before marking done a task that modifies a SKILL.md that dispatches background workers, every exit path (success, stall, error, interrupt, cancel) must end each started worker via TaskStop or equivalent, or document why the worker ends itself, and must record its outcome in the run state (for example ledger_skip), whether or not the skill runs nested.'
+severity = 'error'
+
+[execute.guardrails.skill-flow-soundness-3]
+description = 'Before marking done a task that modifies a SKILL.md, check these points: (a) routing bullets keyed on the same input are mutually exclusive: walk the boundary states (last round, CRITICAL gate result, single-item batch) against every bullet; exactly one must match; a state that matches no bullet is a dead end; (b) each route that writes the same persisted record derives each field from the same named source, or the prose names the route that wins on conflict; one call described in two places carries the same arguments in both; (c) a count that routes the flow includes every source, such as findings with no id; a route does not advance on a flag the fixer set about its own work without an independent re-check.'
+severity = 'error'
+
+[execute.guardrails.skill-flow-soundness-4]
+description = "Before marking done a task that modifies a SKILL.md, check these points: (a) every explicit jump (go to, next, skip to, proceed to) reaches its target whenever that target's enabling condition holds; a route that jumps past an enabled step fails the task; each value a tool can return in its next string has a target step; (b) an offer that hands off to another skill or tool restates that target's precondition and is skipped when the precondition fails; (c) each Steps overview or header entry matches its body step's current number, name, action and tool call, and entries follow run order."
+severity = 'error'
+
+[execute.guardrails.skill-prose-source-verification-1]
+description = "Before marking a task done that modifies a SKILL.md file, independently verify that all prose claims about tool behavior, dispatch scaffolds/resources, and schema validation are accurate by direct source-reading against the Go implementation and, where the prose describes a CI payload script, against that script (for example internal/tools/payloads/*.cjs). When prose asserts that a dispatch references a resource or scaffold, grep the tool's handler to confirm it exists; when prose claims conditional behavior (e.g. \"write is best-effort\"), verify the condition in the actual handler code; when prose lists or references enum values, verify each is in the actual schema; when a behavior or routing is described in multiple skill sections, confirm consistency across all sections and against current source. The same checks apply to state-format.md, config-format.md and docs/skills/*.md."
+severity = 'warning'
+
+[execute.guardrails.skill-prose-source-verification-2]
+description = "Before marking a task done that modifies a SKILL.md file, check these claim kinds against source: (a) when prose enumerates a struct's fields, confirm every exported field of the Go struct appears in the prose; (b) when prose states a count or tier number, count the Go values and confirm the number matches; (c) when prose makes an exclusivity claim (only, sole) or an unconditional claim (always, every path), read the full field-access set or all code paths; (d) when prose claims absence, grep to confirm it. Do not rely on build/test success as evidence of prose accuracy."
+severity = 'warning'
+
+[execute.guardrails.skill-prose-source-verification-3]
+description = 'Before marking a task done that modifies a SKILL.md file, check these claim kinds against source: (a) when a doc describes a persisted row written by several code paths, enumerate every writer and state per-writer field differences; (b) for a precedence claim between two keys or flags, confirm the prose states the rule the validator enforces, and document a pair the code rejects as rejected; (c) confirm each example block follows the rules the doc states; (d) confirm each named git ref is the ref the code reads for that step. Do not rely on build/test success as evidence of prose accuracy.'
+severity = 'warning'
+
+[plan.guardrails.derived-name-collision-stated]
+description = "When a plan adds or changes how a file name, key, slug or ID is derived (a date prefix, a counter, a normalized form of user input), the plan must state how a new name cannot collide with a name made by the old scheme or typed by the user. Name the input that maps to an existing name, the side that wins, and the check that finds the clash, such as comparing a stored heading with the input. A derived name that can equal another entry's name with no check is a plan defect. The plan must also name a test that drives each clash with the clashing input, and must run each error-path test of the derived name with both the old and the new name form."
+severity = 'error'
+
+[execute.guardrails.mcp-description-claims-reverified]
+description = "Before marking a task done that changes the behavior of an MCP tool action (an input rule, an error, an output field, a file name or layout), re-read every text that states that behavior: the registered tool and action description, each *In and *Out jsonschema_description, the error Msg and Suggestion, the SKILL.md step and the docs. Check each claim, for example 'both carry a Suggestion', a limit, a name pattern or a default, against the changed code, and update all of them in the same task. A behavior stated in one place and left stale in another fails the task. Record each text checked in task verification. Where the SKILL.md step and the docs page each list a set, such as stop causes or exit states, compare the two lists item by item. When the docs page names a value the action generates, such as a file name or a timestamp line, it gives the exact format with one sample, and each example states what sets every derived part, such as which run a date comes from."
+severity = 'error'
+
+[execute.guardrails.mcp-warning-states-format-and-effect]
+description = 'Before marking a task done that adds or changes a warning in an MCP handler (an entry in a Warnings field, or a warning sentence in a summary or Next text) for an input the handler skipped, ignored or replaced, read the warning text. It must name the value or field affected, the expected format with one example, and the effect on the result, such as the value used instead, a row left out or a field shown blank. A warning that only says an input was invalid fails the task. Record each warning text checked in task verification.'
+severity = 'warning'
+
+[execute.guardrails.changed-function-size-checked]
+description = "Before marking a task done that adds code to a Go function, count the lines and the return statements of each changed function after the change. Use grep -n '^func ' on the file to find where each function starts. When a function is over about 100 lines or about 10 returns, or the task grew it to about 80 lines or about 8 returns, move the new block into a named helper, or state in task verification why the function stays whole. Record the counts for each changed function in task verification."
+severity = 'warning'
+
+[execute.guardrails.stated-limit-names-its-scope]
+description = "Before marking a task done that adds or changes text that names a numeric limit (a docs page, a SKILL.md step, a tool or action description, an error, a warning or a UI label), read the code that enforces the limit. Check that the text states the set the limit counts (which items, in which folder, per call or in total), the unit, and what happens at the limit (rejected, truncated or ignored). A bare number such as 'at most 100 files' with no counted set fails the task. Check that every other text that names the same limit gives the same scope. Record the limit, the counted set and each text checked in task verification."
+severity = 'warning'

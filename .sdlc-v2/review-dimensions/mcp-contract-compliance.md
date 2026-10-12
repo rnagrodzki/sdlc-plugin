@@ -86,6 +86,13 @@ and `mcp-output-drives-behavior` guardrails.
   tool or action MUST accept the input that failed and MUST be able to change
   the failing condition. A `Suggestion` that sends the caller to a tool that
   cannot fix the error is a finding.
+- The error class MUST match the cause. `DomainError` means the caller's input
+  is wrong. `InfraError` means a filesystem, network or process operation
+  failed. `DataError` means stored data is wrong: it fails to parse, fails its
+  schema, or breaks an invariant (for example two files for one key). Check
+  the class against `docs/mcp-output-contract.md`. A class that does not match
+  the cause is a finding, because the renderer picks the default recovery text
+  from the class.
 
 Every error result MUST render a non-empty `## Do this` section. When a typed
 error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered

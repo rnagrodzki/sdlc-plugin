@@ -42,3 +42,18 @@ This project keeps contributor documentation in `docs/`
   that skill's steps by name or order; grep the skill name and check each
   table for the moved phase name and its tool calls at the relocated
   position. Incomplete updates leave contributors following stale order.
+- Every limit, threshold, or cap that a doc states, including a hardcoded one
+  with no config key, names the set it counts (which items, in which folder,
+  per call or in total), the unit, and what happens at the limit (rejected,
+  truncated, or ignored). A bare number such as 'at most 100 files' with no
+  counted set is a finding. Check the counted set against the code that
+  enforces the limit, and check that every other page that states the same
+  limit gives the same scope. This extends the config-controlled limit bullet
+  above.
+- A name or label that a doc gives to a value the code derives (a duration, a
+  count, an age, a total) states what the code computes. A span names its start
+  point, its end point and its unit, and says what it leaves out. A count names
+  what it counts. Read the code that computes the value and compare it with the
+  label. A label that names a nearby quantity is a finding. Example: a
+  'Duration' column that holds the span from a start stamp to the last file
+  change shows elapsed time between two stamps, not time spent.

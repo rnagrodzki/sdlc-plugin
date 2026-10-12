@@ -136,3 +136,35 @@ new changes to that same bar:
   resolver or factory function alone does not prove the default reaches a
   specific phase like `plan_critique`; the boundary test must verify
   end-to-end propagation from default value to the consumer.
+- A negative or decoy test (an input that must be rejected, skipped or
+  ignored) differs from a valid input only in the property under test and
+  satisfies every other condition of the check, so that condition alone
+  decides the outcome. Confirm the test fails when that condition is
+  removed: a decoy that an earlier condition already rejects does not cover
+  the later one. Example: a decoy name meant to fail a date check that also
+  fails the suffix check.
+- A limit, cap or maximum count is tested on both sides of its boundary: one
+  case exactly at the limit (accepted) and one case at limit+1 (rejected,
+  and the error text names the limit and the value). Derive both inputs
+  from the limit constant or variable, not from a hand-typed number, so a
+  changed limit cannot leave the test passing. When the real limit is too
+  costly to reach, lower it through an injectable seam. A test far from the
+  boundary (an empty input, or many times the limit) does not pin it.
+- A test checks the error of every call it uses to inspect state (for
+  example `os.ReadDir` or `os.ReadFile`). A discarded error makes a failed
+  inspection read as an empty result, and the assertion passes for the
+  wrong reason. When the code under test wraps a lower-level error (a
+  typed error with a `Cause`, or `%w`), the test asserts the cause with
+  `errors.Is` or `errors.As`, not only the message text.
+- A failure test that needs an operating-system condition (for example a
+  `chmod` that denies access) and skips when the process runs as root
+  (`os.Geteuid() == 0`) gives no coverage in a root container, because it
+  never runs there. Reach the same failure through an injectable seam or
+  through a condition that root cannot bypass, such as a regular file where
+  a directory is required. This extends the `t.Skip()` rule above.
+- When a change adds a new accepted form of an input next to a form that
+  stays supported (a new file-name scheme beside the legacy name, a new key
+  beside the old key), each error-path and edge-case test of that input
+  runs with both forms, or the test states why one form cannot reach the
+  branch. Tests updated for the happy path only leave the failure branches
+  of the new form unexercised.

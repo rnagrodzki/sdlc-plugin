@@ -3,7 +3,7 @@ applyTo: "docs/skills/**,plugins/sdlc/skills/**/*.md"
 ---
 # skill-doc-drift — Review Instructions
 
-Detect drift between docs/skills/*.md and SKILL.md source of truth
+Detect drift between docs/skills/*.md, skill reference docs, and SKILL.md source of truth
 
 Default severity: medium
 
@@ -19,3 +19,7 @@ Default severity: medium
 - When a SKILL.md introduces or modifies a blocking gate (e.g. a verdict classification that halts execution, prevents decomposition, or requires manual override), the corresponding `docs/skills/<skill>.md` must document: (1) what the gate blocks, (2) what conditions trigger it, (3) whether a bypass flag or option exists (`--auto`, `--force`) and what it does, or explicitly state that no bypass exists. The absence of a bypass is a fact to document, not an omission.
 - When a SKILL.md change applies the same behavior (fail-fast condition, skip condition, blocking gate) to two or more steps, enumerate every step it touches by grepping SKILL.md, and confirm `docs/skills/<skill>.md` documents that behavior for each step. A documentation update covering only one sibling (e.g. documenting `verify-openspec` fail-fast-on-missing-disk but not `archive-openspec`) is a finding.
 - When a SKILL.md reorders steps or relocates a phase, check every table, walkthrough, and lifecycle section in `docs/*-architecture.md` that lists that skill's steps by name or number; grep the skill name and verify each table shows the step at the new position and lists its correct tool calls. A table left behind with old step order is a finding.
+- A claim in a skill reference doc (`plugins/sdlc/skills/**/*reference.md`, `state-format.md`, `config-format.md`) about what another step or skill does (for example, which step runs the test suite, or which step writes state) matches that skill's SKILL.md step text. Cite the reference doc line and the SKILL.md step. A stale claim is a finding.
+- When a SKILL.md step and `docs/skills/<skill>.md` each list a closed set (stop causes, error cases, exit states, outcomes, allowed values), the two lists have the same members. Compare them item by item: an item in one list and not in the other, or an item with a different condition, is a finding. Matching surrounding prose does not make the lists match.
+- When a SKILL.md or tool change adds a value or line with a stated format (a timestamp line, a file-name pattern, an ID form), the matching `docs/skills/<skill>.md` page states that format with one literal sample. A page that names the value but omits its format is a finding.
+- Each worked example in `docs/skills/<skill>.md` follows the rules the page and SKILL.md state, and shows what sets each derived part of a value. An example that hides which run sets a value, such as a date written once at creation and kept on a later continue, is a finding.

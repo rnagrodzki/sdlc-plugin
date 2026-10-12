@@ -30,10 +30,22 @@ Review Go source changes for baseline code quality in this module
   about 10 return statements, must split into named helpers, or the review
   must state why it stays whole. Example: `openspecSave` was about 160 lines
   with about 20 return paths.
+- A change that grows a function to about 80 lines or more, or to about 8 return
+  statements or more, is a finding too, even when the function stays under the
+  limit above. Put the new block in a named helper instead of adding to the
+  function, or state why the function stays whole. This extends the limit rule
+  above. Example: `dashboardPreplans`, flagged as near the limit after a change
+  added to it.
 - Package-scope regexes, constants, and helpers must not repeat an existing
   package-scope pattern. Before adding one, grep the package for the same
   literal and reuse the existing identifier. Example: `openspecStagingLineRe`
   duplicates `stagingHeaderRe`.
+- A number or string derived from a format (the length of a date prefix, a
+  separator width, a layout) is defined once, as a named constant or computed
+  from the format. The same literal in two or more places drifts when the
+  format changes. Grep the package for the literal before adding it; a
+  repeated format-derived literal is a finding. This extends the package-scope
+  pattern rule above.
 - Naming is consistent with sibling files in the same package — check for
   drift before introducing a second convention.
 - Documentation strings/doc comments citing paths (`.sdlc`, `.sdlc-v2`) or
@@ -152,6 +164,19 @@ Review Go source changes for baseline code quality in this module
   `shipShortSHA` and `shortSHA`), and reuse it. A handler that hand-writes
   logic a shared core helper already performs (for example step completion
   instead of `shipCompleteStepCore`) is a finding.
+- A parse, format or normalization of a value that the project stores in a known
+  layout (a timestamp line, a dated file name, a stored heading) must call the
+  helper that already reads or writes that layout. Before writing `time.Parse`,
+  `strconv` or a regexp for such a value, grep the package and the module for
+  the layout constant and for the helper that uses it. A hand-written parse
+  beside an existing helper is a finding. This extends the helper-duplication
+  rule above.
 - Zero-argument clock reads (for example `now()`) count as the same inputs
   for the redundant-recomputation rule. Read the clock once per handler and
   reuse the value, so one record carries one timestamp.
+- A file name, key or slug built from user input plus a generated part (a date
+  prefix, a counter, a normalized form) must not collide with a name made by
+  an older scheme or typed by the user. Check that input which already looks
+  like the generated form (for example a topic that starts with a date) is
+  rejected or told apart from a generated name. A name that can equal another
+  entry's name with no check is a finding.
