@@ -83,6 +83,11 @@ type PrepareOrchestratorIn struct {
 	// includes recent run records and open deferred issues as additional
 	// evidence for hardening proposals.
 	HistoryPath string `json:"historyPath,omitempty" jsonschema_description:"Harden mode only. Path to .sdlc-v2/history/. When set, the manifest includes recent run records and open deferred issues as additional evidence for hardening proposals."`
+
+	// catalog lists the registered MCP tools. It is unexported, so it is not
+	// in the input schema; the handler sets it to the server at call time, and
+	// toHardenPrepareIn copies it for the dead-reference scan.
+	catalog toolCatalog
 }
 
 // PrepareOrchestratorOut is prepare_orchestrator's output: the path to the
@@ -146,6 +151,7 @@ func toHardenPrepareIn(in PrepareOrchestratorIn) HardenPrepareIn {
 		ArgsString:      in.ArgsString,
 		FromIssue:       in.FromIssue,
 		SkipConfigCheck: in.SkipConfigCheck,
+		catalog:         in.catalog,
 	}
 }
 
@@ -286,7 +292,7 @@ func injectHardenHistory(manifestPath, histPath string) error {
 // the former standalone harden_prepare and error_report_prepare tools.
 func RegisterPrepareOrchestratorTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "prepare_orchestrator",
-		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path. harden mode also returns customInstructions: the [harden.instructions] lists from config.toml, one list for each proposal surface. An invalid list fails with a DomainError that names the key. harden mode also returns preflightFindingCount. A pre-flight finding does not stop the call: the findings are written to the manifest. Only a config read or parse error, or a review-dimensions directory that cannot be read, stops the call. Both modes return next: the step after the call.",
+		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path. harden mode also returns customInstructions: the [harden.instructions] lists from config.toml, one list for each proposal surface. An invalid list fails with a DomainError that names the key. harden mode also returns preflightFindingCount. A pre-flight finding does not stop the call: the findings are written to the manifest. Only a config read or parse error, or a review-dimensions directory that cannot be read, stops the call. mode harden also runs `git ls-files` and reads skill SKILL.md files to list dead references in rules. The manifest lists them in surfaces.deadReferences. Both modes return next: the step after the call.",
 		mcpserver.Annotations{
 			Title:       "Write orchestrator manifest",
 			ReadOnly:    false,
@@ -295,6 +301,7 @@ func RegisterPrepareOrchestratorTools(s *mcpserver.Server) {
 			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in PrepareOrchestratorIn) (PrepareOrchestratorOut, error) {
+			in.catalog = s
 			return prepareOrchestrator(in)
 		},
 	)

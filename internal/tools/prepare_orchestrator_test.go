@@ -41,8 +41,15 @@ func TestToHardenPrepareIn_AllFieldsMapped(t *testing.T) {
 		SuggestedInvestigation: "should not leak",
 	}
 
+	fake := &fakeToolCatalog{}
+	in.catalog = fake
+
 	got := toHardenPrepareIn(in)
+	if got.catalog != fake {
+		t.Errorf("catalog not copied")
+	}
 	want := HardenPrepareIn{
+		catalog:         fake,
 		FailureText:     "boom",
 		Skill:           "ship",
 		Step:            "verify",

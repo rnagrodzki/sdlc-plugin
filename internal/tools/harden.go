@@ -63,6 +63,11 @@ type HardenPrepareIn struct {
 	// SkipConfigCheck skips the config-version gate (configmigrate.Verify). Source:
 	// ensureConfigVersion(cwdForVerify, { skip: skipConfigCheck, ... }).
 	SkipConfigCheck bool `json:"skipConfigCheck,omitempty"`
+
+	// catalog lists the registered MCP tools for the dead-reference scan. It
+	// is unexported, so it is not in the input schema; the prepare_orchestrator
+	// handler sets it. A nil catalog skips the tool and action checks.
+	catalog toolCatalog
 }
 
 // HardenPrepareOut is hardenPrepare's result: the path to the written
@@ -156,6 +161,15 @@ type hardenSurfaces struct {
 	// orchestrator can use the same way it already uses history.recentRuns —
 	// see computeSkillRecommendations.
 	SkillRecommendations []SkillRecommendation `json:"skillRecommendations"`
+	// DeadReferences lists the path, tool, action, flag and step names in the
+	// rules that do not exist (see scanDeadReferences). Never null.
+	DeadReferences []deadReference `json:"deadReferences"`
+	// DeadReferencesTruncated is the count of dead references past the first
+	// 200, which the list leaves out.
+	DeadReferencesTruncated int `json:"deadReferencesTruncated,omitempty"`
+	// DeadReferenceSkips holds one sentence for each check of the scan that
+	// did not run. Never null.
+	DeadReferenceSkips []string `json:"deadReferenceSkips"`
 }
 
 // SkillRecommendation describes one candidate new skill or agent, mined from
@@ -821,6 +835,8 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	copilotInstructions := loadCopilotInstructions(contentRoot, &loadErrs)
 	errorReportSkillPath := resolveErrorReportSkill(&loadErrs)
 	skillRecommendations := computeSkillRecommendations(root, &loadErrs)
+	deadRefs, deadTrunc, deadSkips := scanDeadReferences(contentRoot, hardenSurfaces{PlanGuardrails: planGuardrails,
+		ExecuteGuardrails: executeGuardrails, ReviewDimensions: reviewDimensions, CopilotInstructions: copilotInstructions}, in.catalog)
 
 	shipState, executeState, pipelineIssues := readHardenPipelineState(root)
 
@@ -865,12 +881,15 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		},
 		ClassificationHint: classificationHint,
 		Surfaces: hardenSurfaces{
-			PlanGuardrails:       planGuardrails,
-			ExecuteGuardrails:    executeGuardrails,
-			ReviewDimensions:     reviewDimensions,
-			CopilotInstructions:  copilotInstructions,
-			ErrorReportSkillPath: errorReportSkillPath,
-			SkillRecommendations: skillRecommendations,
+			PlanGuardrails:          planGuardrails,
+			ExecuteGuardrails:       executeGuardrails,
+			ReviewDimensions:        reviewDimensions,
+			CopilotInstructions:     copilotInstructions,
+			ErrorReportSkillPath:    errorReportSkillPath,
+			SkillRecommendations:    skillRecommendations,
+			DeadReferences:          deadRefs,
+			DeadReferencesTruncated: deadTrunc,
+			DeadReferenceSkips:      deadSkips,
 		},
 		Pipeline: hardenPipeline{
 			ShipState:    shipState,
