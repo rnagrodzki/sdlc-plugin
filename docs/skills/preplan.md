@@ -58,7 +58,8 @@ folder holds more than 10000 names, the skill stops. Move old topic files
 out of the folder, then run the skill again.
 
 A new topic file has a `**Started:**` line after the `**Status:**` line.
-It holds the UTC time of the first run. The dashboard shows the time from
+It holds the UTC time of the first run in RFC 3339 form, for example
+`**Started:** 2026-10-12T21:30:00Z`. The dashboard shows the time from
 this line to the last change of the file as the duration. A file with no
 Started line shows a dash.
 
@@ -174,8 +175,10 @@ file is created.
 
     /preplan auth flow
 
-The file `2026-10-12-auth-flow.md` already exists, so the skill keeps it as it is and
-lists its open questions. Then the dialogue goes on from there.
+The file `2026-10-12-auth-flow.md` already exists. It was created on an
+earlier day: the date in the name is the day of the first run. A run on
+2026-10-13 continues this file. The skill keeps it as it is and lists its
+open questions. Then the dialogue goes on from there.
 
 **Plan from a topic file without the handoff:**
 

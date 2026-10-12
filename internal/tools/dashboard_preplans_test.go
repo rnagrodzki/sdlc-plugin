@@ -280,9 +280,9 @@ func TestDashboardPreplans_DurationFromStartedLine(t *testing.T) {
 		{"start after change", head + "\n**Started:** 2026-10-10T10:00:00Z\n", 0, nil},
 		{"no Started line", head, 0, nil},
 		{"CR LF line ends", strings.ReplaceAll(head+"\n**Started:** 2026-10-10T07:40:00Z\n", "\n", "\r\n"), 4800000, nil},
-		{"text that is not a time", head + "\n**Started:** yesterday\n", 0, []string{`Preplan auth-flow start time not read: "yesterday"`}},
-		{"empty value", head + "\n**Started:**\n", 0, []string{`Preplan auth-flow start time not read: ""`}},
-		{"date with no time", head + "\n**Started:** 2026-10-10\n", 0, []string{`Preplan auth-flow start time not read: "2026-10-10"`}},
+		{"text that is not a time", head + "\n**Started:** yesterday\n", 0, []string{`Preplan auth-flow start time not read: "yesterday" (expected RFC 3339; duration shown as 0)`}},
+		{"empty value", head + "\n**Started:**\n", 0, []string{`Preplan auth-flow start time not read: "" (expected RFC 3339; duration shown as 0)`}},
+		{"date with no time", head + "\n**Started:** 2026-10-10\n", 0, []string{`Preplan auth-flow start time not read: "2026-10-10" (expected RFC 3339; duration shown as 0)`}},
 		{"line past the head read", head + strings.Repeat("x", dashboardPreplanHeadMax) + "\n**Started:** 2026-10-10T07:40:00Z\n", 0, nil},
 	}
 	for _, tc := range tests {

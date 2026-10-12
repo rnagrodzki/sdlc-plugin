@@ -369,7 +369,10 @@ type DashboardRun struct {
 
 // DashboardPreplan is one preplan topic file of a repo.
 type DashboardPreplan struct {
-	Slug      string `json:"slug"`      // file name without .md
+	// Slug is the file name without .md, so a dated file gives
+	// YYYY-MM-DD-<slug>. It is not the bare slug of plan_support
+	// (preplanSlug), which has no date.
+	Slug      string `json:"slug"`
 	Topic     string `json:"topic"`     // from "# Preplan: <topic>", else the slug
 	Status    string `json:"status"`    // raw "**Status:**" value, "" when absent
 	Path      string `json:"path"`      // repo-relative: .sdlc-v2/preplan/<slug>.md

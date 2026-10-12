@@ -94,7 +94,7 @@ Never call `plan_prepare`. It starts a plan run and prunes other runs.
 | Result | Next |
 |---|---|
 | success | keep `guardrails`, `preplanFile`, `preplanCreated` and `summary`. Go to Step 2 |
-| tool error (bad topic, two topic files that match, or failed create) | print the error's `## Do this` text as it is, then stop. Make no other call |
+| tool error (bad topic, two topic files that match, a folder that cannot be listed or holds too many names, or failed create) | print the error's `## Do this` text as it is, then stop. Make no other call |
 
 When the `summary` holds `Warning: <warning>.`, the guardrails are unavailable. Keep `<warning>`. The dialogue continues. Step 4 records the warning.
 

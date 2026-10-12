@@ -102,7 +102,7 @@ For each registered repo, the page shows:
   row with no value goes last. A reload resets the chips and the sort. Each
   row has a checkbox, and Delete selected removes the checked rows (see
   [Delete History rows](#delete-history-rows)).
-- **Preplans tab** — the newest 100 preplan topic files of the repo, newest
+- **Preplans tab** — the newest 100 preplan topic files of each repo, newest
   first, with status, topic, path, repo, change time, and duration. Status
   chips with counts filter the rows: all, `in progress`, `ready for plan`,
   `paused`, and `unknown` (any other status). The status of a row is a menu
@@ -115,8 +115,9 @@ For each registered repo, the page shows:
   sorted header has `aria-sort`, and the focus stays on it after the
   redraw. With no click the rows stay newest first. The duration cell shows
   the time from the `**Started:**` line to the last change, for example
-  `1h 20m`. A row with no duration shows `—` and goes last in both duration
-  orders. See `durationMs` in the [Snapshot contract](#snapshot-contract).
+  `1h 20m`. A status change or any other edit of the file is a change, so
+  the duration grows with each one. It is not the time spent on the topic.
+  A row with no duration shows `—` and goes last in both duration orders. See `durationMs` in the [Snapshot contract](#snapshot-contract).
 
 A link `#<pipeline id>` scrolls to that block. `#<pipeline id>/<n>` also
 opens the block and selects step n of its track, counted from 0. `#activity`,
@@ -866,7 +867,7 @@ collector reads the data, and the tool action that writes it.
 | `repos[].sessions[].commandGroups` | One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
 | `repos[].deferred[]` | The open items of `.sdlc-v2/history/deferred.json`, high priority first, then oldest first. Each item has `id`, `priority`, `description`, `created`, `source`, `severity`, `file`, `line`, and `reason`. A value that the record lacks is `""`, or `0` for `line`, never `null`. | ship_state `defer` and `deferred_add`; execute_state `issue-draft` |
 | `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a `**Started:**` line that does not parse, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times, an unread attention folder (`Attention folder unread: ...`), a count of open waits older than the newest 50 lone waits (`N older open waits not shown`). `[]` when none, never `null`. | Collector, derived |
-| `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, `updatedAt` (the change time of the file), and `durationMs`. The collector reads the first 4 KiB of each file. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `durationMs` is a number of milliseconds, always present: the change time of the file minus the UTC RFC 3339 time on the `**Started:**` line. It is `0` when the file has no Started line, when the line does not parse, or when the start is equal to or later than the change time. A line that does not parse also adds the warning `Preplan <slug> start time not read: "<text>"`. A missing line adds no warning. `[]` when none, never `null`. | plan_support `preplan_context` (skeleton and Started line), then the preplan skill |
+| `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, `updatedAt` (the change time of the file), and `durationMs`. The collector reads the first 4 KiB of each file. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `durationMs` is a number of milliseconds, always present: the change time of the file minus the UTC RFC 3339 time on the `**Started:**` line. A status change or any other edit moves the change time, so the value grows with each change; it is not the time spent on the topic. It is `0` when the file has no Started line, when the line does not parse, or when the start is equal to or later than the change time. A line that does not parse also adds the warning `Preplan <slug> start time not read: "<text>" (expected RFC 3339; duration shown as 0)`. A missing line adds no warning. `[]` when none, never `null`. | plan_support `preplan_context` (skeleton and Started line), then the preplan skill |
 | `pipelines[].planStartedAt` | Ship blocks only: `linkedPlan.startedAt` of the ship state, else the `started_at` of the joined plan row (see [How runs join a ship block](#how-runs-join-a-ship-block)). Absent when no plan is linked. | ship_state `complete-step` of `execute` (`linkedPlan`); plan_mark `done` (the plan row) |
 
 **Deferred findings that the fix pass fixed.** `healing_record` kind `fixed`
