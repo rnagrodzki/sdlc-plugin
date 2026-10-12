@@ -2,6 +2,7 @@ package history
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -595,5 +596,447 @@ func TestRunRecord_ShipPlanFieldsKeyOrder(t *testing.T) {
 	want := `{"ts":"2026-10-10T11:00:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":3600000,"version":"0.4.2","plan_file":"/plans/x.md","plan_started_at":"2026-10-10T08:20:00Z","plan_duration_ms":4800000}`
 	if string(b) != want {
 		t.Errorf("row =\n %s\nwant\n %s", b, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// MergeOrAddDeferred
+// ---------------------------------------------------------------------------
+
+// deferredRow builds an open row for the merge tests.
+func deferredRow(id, file, reason, description string) DeferredIssue {
+	return DeferredIssue{
+		ID: id, Created: "2026-01-01T00:00:00Z", Source: SourceReceivedReview,
+		Priority: PriorityMedium, Description: description, Status: StatusOpen,
+		File: file, Reason: reason,
+	}
+}
+
+// seedDeferred writes rows to a new store and returns the writer.
+func seedDeferred(t *testing.T, rows ...DeferredIssue) *FileWriter {
+	t.Helper()
+	w := NewFileWriter(filepath.Join(t.TempDir(), "history"))
+	for _, r := range rows {
+		if err := w.AddDeferred(r); err != nil {
+			t.Fatalf("seed AddDeferred %s: %v", r.ID, err)
+		}
+	}
+	return w
+}
+
+// listDeferred returns the rows of w and fails the test on an error.
+func listDeferred(t *testing.T, w Writer) []DeferredIssue {
+	t.Helper()
+	rows, err := w.ListDeferred()
+	if err != nil {
+		t.Fatalf("ListDeferred: %v", err)
+	}
+	return rows
+}
+
+// writers runs fn once for the file store and once for the in-memory store,
+// so both implementations keep the same merge rules.
+func writers(t *testing.T, rows []DeferredIssue, fn func(t *testing.T, w Writer)) {
+	t.Helper()
+	t.Run("file", func(t *testing.T) { fn(t, seedDeferred(t, rows...)) })
+	t.Run("mem", func(t *testing.T) {
+		m := &MemWriter{}
+		for _, r := range rows {
+			if err := m.AddDeferred(r); err != nil {
+				t.Fatalf("seed AddDeferred %s: %v", r.ID, err)
+			}
+		}
+		fn(t, m)
+	})
+}
+
+// TestDeferredMerge_NeedsDirectionSameFileMerges verifies that a needs-direction
+// row for a file with an open needs-direction row of that file appends its
+// text to that row, for the file store and the in-memory store.
+func TestDeferredMerge_NeedsDirectionSameFileMerges(t *testing.T) {
+	writers(t, []DeferredIssue{deferredRow("review-deferred-A", "a.go", ReasonNeedsDirection, "- x")}, func(t *testing.T, w Writer) {
+		in := deferredRow("review-deferred-B", "a.go", ReasonNeedsDirection, "y")
+		stored, merged, err := w.MergeOrAddDeferred(in, false)
+		if err != nil {
+			t.Fatalf("MergeOrAddDeferred: %v", err)
+		}
+		if !merged || stored.ID != "review-deferred-A" {
+			t.Errorf("stored.ID = %q merged = %v, want review-deferred-A true", stored.ID, merged)
+		}
+		want := []DeferredIssue{deferredRow("review-deferred-A", "a.go", ReasonNeedsDirection, "- x\n- y")}
+		if got := listDeferred(t, w); !reflect.DeepEqual(got, want) {
+			t.Errorf("rows =\n %+v\nwant\n %+v", got, want)
+		}
+	})
+}
+
+// TestDeferredMerge_NeedsDirectionOtherFileOrReasonAddsRow verifies that a row
+// with another file, another reason or no file is added as its own row.
+func TestDeferredMerge_NeedsDirectionOtherFileOrReasonAddsRow(t *testing.T) {
+	existing := deferredRow("review-deferred-A", "a.go", ReasonNeedsDirection, "- x")
+	tests := []struct {
+		name string
+		in   DeferredIssue
+	}{
+		{"other file", deferredRow("review-deferred-B", "b.go", ReasonNeedsDirection, "y")},
+		{"other reason", deferredRow("review-deferred-B", "a.go", ReasonDisagree, "y")},
+		{"no file", deferredRow("review-deferred-B", "", ReasonNeedsDirection, "y")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writers(t, []DeferredIssue{existing}, func(t *testing.T, w Writer) {
+				stored, merged, err := w.MergeOrAddDeferred(tt.in, false)
+				if err != nil {
+					t.Fatalf("MergeOrAddDeferred: %v", err)
+				}
+				if merged || stored.ID != "review-deferred-B" {
+					t.Errorf("stored.ID = %q merged = %v, want review-deferred-B false", stored.ID, merged)
+				}
+				want := []DeferredIssue{existing, tt.in}
+				if got := listDeferred(t, w); !reflect.DeepEqual(got, want) {
+					t.Errorf("rows =\n %+v\nwant\n %+v", got, want)
+				}
+			})
+		})
+	}
+}
+
+// TestDeferredMerge_NeedsDirectionIgnoresResolvedRow verifies that a resolved
+// row of the same file and reason does not receive the text; a new row is added.
+func TestDeferredMerge_NeedsDirectionIgnoresResolvedRow(t *testing.T) {
+	resolved := deferredRow("review-deferred-A", "a.go", ReasonNeedsDirection, "- x")
+	resolved.Status = StatusResolved
+	writers(t, []DeferredIssue{resolved}, func(t *testing.T, w Writer) {
+		in := deferredRow("review-deferred-B", "a.go", ReasonNeedsDirection, "y")
+		if _, merged, err := w.MergeOrAddDeferred(in, false); err != nil || merged {
+			t.Fatalf("MergeOrAddDeferred merged = %v err = %v, want a new row", merged, err)
+		}
+		if got := listDeferred(t, w); len(got) != 2 || got[0].Description != "- x" {
+			t.Errorf("rows = %+v, want the resolved row unchanged and a second row", got)
+		}
+	})
+}
+
+// TestDeferredMerge_BelowThresholdSameFileStaysSeparate verifies that two
+// below-threshold rows for one file stay two rows.
+func TestDeferredMerge_BelowThresholdSameFileStaysSeparate(t *testing.T) {
+	a := deferredRow("review-deferred-A", "a.go", ReasonBelowThreshold, "nit one")
+	writers(t, []DeferredIssue{a}, func(t *testing.T, w Writer) {
+		b := deferredRow("review-deferred-B", "a.go", ReasonBelowThreshold, "nit two")
+		stored, merged, err := w.MergeOrAddDeferred(b, false)
+		if err != nil || merged || stored.ID != "review-deferred-B" {
+			t.Fatalf("stored.ID = %q merged = %v err = %v, want review-deferred-B false nil", stored.ID, merged, err)
+		}
+		if got, want := listDeferred(t, w), []DeferredIssue{a, b}; !reflect.DeepEqual(got, want) {
+			t.Errorf("rows =\n %+v\nwant\n %+v", got, want)
+		}
+	})
+}
+
+// TestDeferredMerge_ByIDAppendsOnlyNewLines verifies that a merge by id into an
+// open row appends only the lines the row does not hold, and that a repeat
+// call adds nothing.
+func TestDeferredMerge_ByIDAppendsOnlyNewLines(t *testing.T) {
+	writers(t, []DeferredIssue{deferredRow("pending", "", "", "- keep")}, func(t *testing.T, w Writer) {
+		in := deferredRow("pending", "", "", "keep\nnew one\n\n- new two")
+		stored, merged, err := w.MergeOrAddDeferred(in, true)
+		if err != nil || !merged {
+			t.Fatalf("first call merged = %v err = %v, want true nil", merged, err)
+		}
+		if want := "- keep\n- new one\n- new two"; stored.Description != want {
+			t.Errorf("description = %q, want %q", stored.Description, want)
+		}
+
+		// A repeat call holds the same text: nothing is added.
+		stored, merged, err = w.MergeOrAddDeferred(in, true)
+		if err != nil || merged {
+			t.Fatalf("repeat call merged = %v err = %v, want false nil", merged, err)
+		}
+		if stored.ID != "pending" || stored.Description != "- keep\n- new one\n- new two" {
+			t.Errorf("repeat stored = %+v, want the unchanged row", stored)
+		}
+		if got := listDeferred(t, w); len(got) != 1 || got[0].Description != "- keep\n- new one\n- new two" {
+			t.Errorf("rows = %+v, want one row with three lines", got)
+		}
+	})
+}
+
+// TestDeferredMerge_ByIDWithNoMatchAddsRow verifies that a merge by id with no
+// row of that id adds the row as it is.
+func TestDeferredMerge_ByIDWithNoMatchAddsRow(t *testing.T) {
+	writers(t, nil, func(t *testing.T, w Writer) {
+		in := deferredRow("pending", "", "", "first")
+		stored, merged, err := w.MergeOrAddDeferred(in, true)
+		if err != nil || merged || stored != in {
+			t.Fatalf("stored = %+v merged = %v err = %v, want the new row, false, nil", stored, merged, err)
+		}
+		if got := listDeferred(t, w); !reflect.DeepEqual(got, []DeferredIssue{in}) {
+			t.Errorf("rows = %+v, want the new row", got)
+		}
+	})
+}
+
+// TestDeferredMerge_ByIDResolvedOnlyAddsNextFreeSuffix verifies that a merge by
+// id, when only resolved rows have the id, adds a row with the next free
+// <id>-<n> suffix, counting from 2.
+func TestDeferredMerge_ByIDResolvedOnlyAddsNextFreeSuffix(t *testing.T) {
+	resolved := func(id string) DeferredIssue {
+		r := deferredRow(id, "", "", "old")
+		r.Status = StatusResolved
+		return r
+	}
+	tests := []struct {
+		name string
+		rows []DeferredIssue
+		want string
+	}{
+		{"id resolved", []DeferredIssue{resolved("pending")}, "pending-2"},
+		{"id and -2 resolved", []DeferredIssue{resolved("pending"), resolved("pending-2")}, "pending-3"},
+		{"id, -2 and -3 resolved", []DeferredIssue{resolved("pending"), resolved("pending-2"), resolved("pending-3")}, "pending-4"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writers(t, tt.rows, func(t *testing.T, w Writer) {
+				in := deferredRow("pending", "", "", "fresh")
+				stored, merged, err := w.MergeOrAddDeferred(in, true)
+				if err != nil || merged {
+					t.Fatalf("merged = %v err = %v, want false nil", merged, err)
+				}
+				if stored.ID != tt.want || stored.Description != "fresh" || stored.Status != StatusOpen {
+					t.Errorf("stored = %+v, want an open row %q with the new text", stored, tt.want)
+				}
+				if got := listDeferred(t, w); len(got) != len(tt.rows)+1 || got[len(got)-1].ID != tt.want {
+					t.Errorf("rows = %+v, want one more row %q", got, tt.want)
+				}
+			})
+		})
+	}
+}
+
+// TestDeferredMerge_ByIDMergesIntoOpenSuffixedRow verifies that a merge by id
+// appends to an open <id>-<n> row when the plain id is resolved, and does not
+// touch a row whose id only starts with the same letters.
+func TestDeferredMerge_ByIDMergesIntoOpenSuffixedRow(t *testing.T) {
+	resolved := deferredRow("pending", "", "", "old")
+	resolved.Status = StatusResolved
+	open2 := deferredRow("pending-2", "", "", "- second run")
+	other := deferredRow("pending-x", "", "", "unrelated")
+	writers(t, []DeferredIssue{resolved, open2, other}, func(t *testing.T, w Writer) {
+		stored, merged, err := w.MergeOrAddDeferred(deferredRow("pending", "", "", "third run"), true)
+		if err != nil || !merged || stored.ID != "pending-2" {
+			t.Fatalf("stored.ID = %q merged = %v err = %v, want pending-2 true nil", stored.ID, merged, err)
+		}
+		if got := listDeferred(t, w); len(got) != 3 || got[1].Description != "- second run\n- third run" {
+			t.Errorf("rows = %+v, want three rows and the lines in pending-2", got)
+		}
+	})
+}
+
+// TestDeferredMerge_SameIDWithoutMergeChangesNothing verifies that a call
+// without merge by id, with the id of an existing open or resolved row,
+// returns that row and changes nothing.
+func TestDeferredMerge_SameIDWithoutMergeChangesNothing(t *testing.T) {
+	resolved := deferredRow("review-deferred-A", "a.go", ReasonNeedsDirection, "- x")
+	resolved.Status = StatusResolved
+	for name, existing := range map[string]DeferredIssue{
+		"open":     deferredRow("review-deferred-A", "a.go", ReasonNeedsDirection, "- x"),
+		"resolved": resolved,
+	} {
+		t.Run(name, func(t *testing.T) {
+			writers(t, []DeferredIssue{existing}, func(t *testing.T, w Writer) {
+				in := deferredRow("review-deferred-A", "a.go", ReasonNeedsDirection, "something else")
+				for i := 0; i < 3; i++ {
+					stored, merged, err := w.MergeOrAddDeferred(in, false)
+					if err != nil || merged || stored != existing {
+						t.Fatalf("call %d: stored = %+v merged = %v err = %v, want the existing row, false, nil", i, stored, merged, err)
+					}
+				}
+				if got := listDeferred(t, w); !reflect.DeepEqual(got, []DeferredIssue{existing}) {
+					t.Errorf("rows = %+v, want the existing row only", got)
+				}
+			})
+		})
+	}
+}
+
+// TestDeferredMerge_UnchangedCallLeavesFileBytes verifies that a call that adds
+// no line does not rewrite deferred.json.
+func TestDeferredMerge_UnchangedCallLeavesFileBytes(t *testing.T) {
+	w := seedDeferred(t, deferredRow("pending", "", "", "- keep"))
+	before, err := os.ReadFile(w.DeferredPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w.MergeOrAddDeferred(deferredRow("pending", "", "", "keep"), true); err != nil {
+		t.Fatalf("MergeOrAddDeferred: %v", err)
+	}
+	after, err := os.ReadFile(w.DeferredPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("file changed by a call that adds nothing:\nbefore %q\nafter  %q", before, after)
+	}
+}
+
+// TestDeferredMerge_CreatesStoreWhenMissing verifies that a merge into a store
+// with no history directory creates it and stores the row.
+func TestDeferredMerge_CreatesStoreWhenMissing(t *testing.T) {
+	w := NewFileWriter(filepath.Join(t.TempDir(), "history"))
+	in := deferredRow("pending", "", "", "first")
+	if _, _, err := w.MergeOrAddDeferred(in, true); err != nil {
+		t.Fatalf("MergeOrAddDeferred: %v", err)
+	}
+	if got := listDeferred(t, w); !reflect.DeepEqual(got, []DeferredIssue{in}) {
+		t.Errorf("rows = %+v, want the new row", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// deferred.json failure modes: size bound, parse error, read error, write error
+// ---------------------------------------------------------------------------
+
+// writeDeferredFile writes raw content to a store and returns the writer.
+func writeDeferredFile(t *testing.T, content []byte) *FileWriter {
+	t.Helper()
+	w := NewFileWriter(filepath.Join(t.TempDir(), "history"))
+	if err := os.MkdirAll(w.root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(w.DeferredPath(), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+// paddedEmptyList returns a valid empty JSON list that is exactly size bytes.
+func paddedEmptyList(size int) []byte {
+	b := make([]byte, size)
+	for i := range b {
+		b[i] = ' '
+	}
+	copy(b, "[]")
+	return b
+}
+
+// TestDeferredFile_SizeBound verifies that a file of exactly DeferredFileMax
+// bytes is read and that a file of one byte more is refused with
+// ErrDeferredTooLarge and left unchanged.
+func TestDeferredFile_SizeBound(t *testing.T) {
+	t.Run("exactly 8 MiB is read", func(t *testing.T) {
+		w := writeDeferredFile(t, paddedEmptyList(DeferredFileMax))
+		if rows, err := w.ListDeferred(); err != nil || len(rows) != 0 {
+			t.Fatalf("ListDeferred rows = %v err = %v, want none, nil", rows, err)
+		}
+		if _, _, err := w.MergeOrAddDeferred(deferredRow("pending", "", "", "x"), true); err != nil {
+			t.Fatalf("MergeOrAddDeferred on a file of exactly 8 MiB: %v", err)
+		}
+	})
+	t.Run("8 MiB plus 1 byte is refused", func(t *testing.T) {
+		content := paddedEmptyList(DeferredFileMax + 1)
+		w := writeDeferredFile(t, content)
+		_, _, err := w.MergeOrAddDeferred(deferredRow("pending", "", "", "x"), true)
+		if !errors.Is(err, ErrDeferredTooLarge) {
+			t.Fatalf("MergeOrAddDeferred error = %v, want ErrDeferredTooLarge", err)
+		}
+		if _, err := w.ListDeferred(); !errors.Is(err, ErrDeferredTooLarge) {
+			t.Errorf("ListDeferred error = %v, want ErrDeferredTooLarge", err)
+		}
+		if err := w.AddDeferred(deferredRow("pending", "", "", "x")); !errors.Is(err, ErrDeferredTooLarge) {
+			t.Errorf("AddDeferred error = %v, want ErrDeferredTooLarge", err)
+		}
+		if info, err := os.Stat(w.DeferredPath()); err != nil || info.Size() != int64(len(content)) {
+			t.Errorf("file size after refusal = %v err = %v, want %d unchanged", info, err, len(content))
+		}
+	})
+}
+
+// TestDeferredFile_ParseFailure verifies that a file that does not parse fails
+// with ErrDeferredParse only, and that the file is left unchanged.
+func TestDeferredFile_ParseFailure(t *testing.T) {
+	content := []byte("{garbage")
+	w := writeDeferredFile(t, content)
+	_, _, err := w.MergeOrAddDeferred(deferredRow("pending", "", "", "x"), true)
+	if !errors.Is(err, ErrDeferredParse) {
+		t.Fatalf("MergeOrAddDeferred error = %v, want ErrDeferredParse", err)
+	}
+	if errors.Is(err, ErrDeferredTooLarge) || errors.Is(err, ErrDeferredWrite) {
+		t.Errorf("error %v also matches another cause", err)
+	}
+	if got, _ := os.ReadFile(w.DeferredPath()); string(got) != string(content) {
+		t.Errorf("file after a parse failure = %q, want %q", got, content)
+	}
+}
+
+// TestDeferredFile_ReadFailure verifies that a failed read, with a directory at
+// the file path, returns an error that matches none of the store sentinels.
+func TestDeferredFile_ReadFailure(t *testing.T) {
+	// A directory at the file path: the size check passes, the read fails.
+	w := NewFileWriter(filepath.Join(t.TempDir(), "history"))
+	if err := os.MkdirAll(w.DeferredPath(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := w.MergeOrAddDeferred(deferredRow("pending", "", "", "x"), true)
+	if err == nil {
+		t.Fatal("MergeOrAddDeferred on an unreadable store: want an error, got nil")
+	}
+	for _, cause := range []error{ErrDeferredParse, ErrDeferredTooLarge, ErrDeferredWrite} {
+		if errors.Is(err, cause) {
+			t.Errorf("read failure %v matches %v, want no sentinel", err, cause)
+		}
+	}
+	if info, statErr := os.Stat(w.DeferredPath()); statErr != nil || !info.IsDir() {
+		t.Errorf("store path after a read failure = %v err = %v, want the directory untouched", info, statErr)
+	}
+}
+
+// TestDeferredFile_WriteFailureLeavesFileUnchanged verifies that a failed write,
+// with a read-only history directory, returns ErrDeferredWrite and keeps the
+// old file.
+func TestDeferredFile_WriteFailureLeavesFileUnchanged(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a root user can write into a read-only directory")
+	}
+	w := seedDeferred(t, deferredRow("pending", "", "", "- keep"))
+	before, err := os.ReadFile(w.DeferredPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(w.root, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(w.root, 0o755) })
+
+	_, _, err = w.MergeOrAddDeferred(deferredRow("pending", "", "", "new line"), true)
+	if !errors.Is(err, ErrDeferredWrite) {
+		t.Fatalf("MergeOrAddDeferred error = %v, want ErrDeferredWrite", err)
+	}
+	after, readErr := os.ReadFile(w.DeferredPath())
+	if readErr != nil || string(after) != string(before) {
+		t.Errorf("file after a write failure = %q err = %v, want %q", after, readErr, before)
+	}
+	entries, _ := os.ReadDir(w.root)
+	for _, e := range entries {
+		if e.Name() != "deferred.json" {
+			t.Errorf("stray file %q left in the store directory", e.Name())
+		}
+	}
+}
+
+// TestDeferredFile_CreateDirFailureIsWriteError verifies that a history path
+// that cannot be made into a directory gives ErrDeferredWrite for a merge and
+// for an add.
+func TestDeferredFile_CreateDirFailureIsWriteError(t *testing.T) {
+	// The history path is a regular file, so the directory cannot be made.
+	blocker := filepath.Join(t.TempDir(), "history")
+	if err := os.WriteFile(blocker, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	w := NewFileWriter(blocker)
+	if _, _, err := w.MergeOrAddDeferred(deferredRow("pending", "", "", "x"), true); !errors.Is(err, ErrDeferredWrite) {
+		t.Errorf("MergeOrAddDeferred error = %v, want ErrDeferredWrite", err)
+	}
+	if err := w.AddDeferred(deferredRow("pending", "", "", "x")); !errors.Is(err, ErrDeferredWrite) {
+		t.Errorf("AddDeferred error = %v, want ErrDeferredWrite", err)
 	}
 }

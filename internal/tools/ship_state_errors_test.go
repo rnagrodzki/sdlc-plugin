@@ -307,25 +307,32 @@ func TestShipState_Next_SkipsNonMapSteps(t *testing.T) {
 // history_record / deferred_*: storage failures that need no permission bits
 // ---------------------------------------------------------------------------
 
+// TestShipState_HistoryStorageFailures verifies the error type of each
+// history_record and deferred_* action when the history path is a regular file,
+// and when deferred.json is corrupt (a DataError, because only a hand edit of
+// the file fixes it).
 func TestShipState_HistoryStorageFailures(t *testing.T) {
 	const (
 		historyIsFile   = "history path is a regular file"
 		corruptDeferred = "deferred.json is corrupt"
 	)
 	tests := []struct {
-		name  string
-		setup string
-		in    ShipStateIn
+		name     string
+		setup    string
+		in       ShipStateIn
+		wantKind shipErrKind
 	}{
-		{"history_record", historyIsFile, ShipStateIn{Action: "history_record", Detail: map[string]any{"skill": "ship", "outcome": "success"}}},
-		{"deferred_add", historyIsFile, ShipStateIn{Action: "deferred_add", Detail: map[string]any{"id": "d1", "description": "later"}}},
-		{"deferred_list", historyIsFile, ShipStateIn{Action: "deferred_list"}},
-		{"deferred_propose_followups", historyIsFile, ShipStateIn{Action: "deferred_propose_followups"}},
-		{"deferred_resolve", historyIsFile, ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": "d1"}}},
-		{"deferred_add on corrupt file", corruptDeferred, ShipStateIn{Action: "deferred_add", Detail: map[string]any{"id": "d1", "description": "later"}}},
-		{"deferred_list on corrupt file", corruptDeferred, ShipStateIn{Action: "deferred_list"}},
-		{"deferred_propose_followups on corrupt file", corruptDeferred, ShipStateIn{Action: "deferred_propose_followups"}},
-		{"deferred_resolve on corrupt file", corruptDeferred, ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": "d1"}}},
+		{"history_record", historyIsFile, ShipStateIn{Action: "history_record", Detail: map[string]any{"skill": "ship", "outcome": "success"}}, shipErrInfra},
+		{"deferred_add", historyIsFile, ShipStateIn{Action: "deferred_add", Detail: map[string]any{"id": "d1", "description": "later"}}, shipErrInfra},
+		{"deferred_list", historyIsFile, ShipStateIn{Action: "deferred_list"}, shipErrInfra},
+		{"deferred_propose_followups", historyIsFile, ShipStateIn{Action: "deferred_propose_followups"}, shipErrInfra},
+		{"deferred_resolve", historyIsFile, ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": "d1"}}, shipErrInfra},
+		// A corrupt deferred.json is a DataError for every deferred_* action,
+		// as for deferred_add (see TestShipStateDeferredAdd_StoreFailures in
+		// ship_state_test.go): only a hand edit of the file fixes it.
+		{"deferred_list on corrupt file", corruptDeferred, ShipStateIn{Action: "deferred_list"}, shipErrData},
+		{"deferred_propose_followups on corrupt file", corruptDeferred, ShipStateIn{Action: "deferred_propose_followups"}, shipErrData},
+		{"deferred_resolve on corrupt file", corruptDeferred, ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": "d1"}}, shipErrData},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -337,7 +344,7 @@ func TestShipState_HistoryStorageFailures(t *testing.T) {
 				writeFile(t, filepath.Join(historyDir(root), "deferred.json"), "{garbage")
 			}
 			_, err := shipState(root, root, tt.in, shipErrNow)
-			requireShipErr(t, err, shipErrInfra)
+			requireShipErr(t, err, tt.wantKind)
 		})
 	}
 }

@@ -83,8 +83,9 @@ type ValidateIn struct {
 	// ci_script_drift | worktree_anchoring.
 	Action string `json:"action" jsonschema:"enum=plan_format,enum=plan_style,enum=discovery,enum=pr_template,enum=cost_tiers,enum=guardrails,enum=dimensions,enum=pr_body,enum=ci_script_drift,enum=worktree_anchoring" jsonschema_description:"Which validator to run: plan_format, plan_style, discovery, pr_template, cost_tiers, guardrails, dimensions, pr_body, ci_script_drift, or worktree_anchoring. Example: plan_style"`
 	// File is the plan file for plan_format and plan_style (links_validate
-	// lives in links.go).
-	File string `json:"file,omitempty" jsonschema_description:"Plan file to validate. Used by the plan_format and plan_style actions. Example: ~/.claude/plans/x.md"`
+	// lives in links.go). For the dimensions action it names one dimension
+	// file: only its base name is matched.
+	File string `json:"file,omitempty" jsonschema_description:"Plan file to validate. Used by the plan_format and plan_style actions. The dimensions action uses it as the path of one review-dimension file: only the base name is matched, and the findings are those of that file plus the duplicate-name findings that name it. Example: ~/.claude/plans/x.md"`
 	// Final requests the stricter plan_format checks (PF9/PF10), matching
 	// the JS --final flag.
 	Final bool `json:"final,omitempty" jsonschema_description:"Requests the stricter plan_format checks (PF9/PF10). Used by the plan_format action."`
@@ -110,9 +111,15 @@ type ValidateIn struct {
 	// entry's id replaces that entry for the check; a candidate with a new id
 	// is added and all entries are checked. A candidate that lowers the
 	// severity of the disk entry it replaces (error to warning) is an error
-	// finding: harden is strengthen-only. Nothing is ever written. Without
-	// it, only the disk entries are checked.
-	CandidatesJSON string `json:"candidatesJson,omitempty" jsonschema_description:"guardrails action only: JSON array of proposed guardrail entries, e.g. [{\"id\":\"no-ci-bypass\",\"description\":\"Plans must not skip CI.\",\"severity\":\"error\"}]. Checked together with the section on disk, in memory — a candidate's id matching a disk entry replaces it for the check, a new id is added. A candidate that lowers the severity of the disk entry it replaces (error to warning) returns an error finding. Nothing is written."`
+	// finding: harden never lowers a severity. Nothing is ever written. A
+	// candidate {"id":"x","remove":true} drops the disk entry x for the check.
+	// Findings are reported for the candidate ids only (see ScopeIDs). Without
+	// candidatesJson, every disk entry is checked.
+	CandidatesJSON string `json:"candidatesJson,omitempty" jsonschema_description:"guardrails action only: JSON array of proposed guardrail entries, e.g. [{\"id\":\"no-ci-bypass\",\"description\":\"Plans must not skip CI.\",\"severity\":\"error\"}]. Checked together with the section on disk, in memory — a candidate's id matching a disk entry replaces it for the check, a new id is added. A candidate that lowers the severity of the disk entry it replaces (error to warning) returns an error finding. Nothing is written. An entry {\"id\":\"x\",\"remove\":true} drops entry x in memory. It sets no other field, and entry x must exist on disk. Each id appears once. An empty array checks no candidate."`
+	// ScopeIDs limits the guardrails findings to the listed ids. It has
+	// priority over the candidate ids. Severity-downgrade findings of
+	// candidates are always reported.
+	ScopeIDs []string `json:"scopeIds,omitempty" jsonschema_description:"guardrails action only: JSON array of guardrail ids. Report only findings whose id is in this list. Omitted: the candidate ids when candidatesJson is set, else every id. An empty array, a repeated id, or an id that is neither on disk nor in candidatesJson is rejected with a DomainError. Example: [\"dry\",\"kiss\"]"`
 	// Body is the PR body text to validate for the pr_body action, matching
 	// the former standalone pr_validate_body tool's input.
 	Body string `json:"body,omitempty" jsonschema_description:"PR body text to validate. Used by the pr_body action."`
@@ -158,8 +165,8 @@ validate only reports; the calling skill step decides the next action from findi
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
 - pr_template: Check the PR template file itself (V1-V5) at its canonical or legacy path. No inputs.
 - cost_tiers: Compare skill/agent model tiers against the cost-tier doc tables in docs/cost-tiers.md. Optional: strict (true reports the INHERITED finding kind as severity "error" instead of "warning"). When docs/cost-tiers.md does not exist, the check is skipped and one NO_COST_DOC warning is returned.
-- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity; every finding carries a fix (the repair step). Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback), candidatesJson (JSON array of proposed guardrail entries checked together with the section on disk, in memory, replacing same-id disk entries; nothing is written). A candidate that lowers the severity of a disk entry with the same id returns an error finding. A section that does not exist returns no findings; candidatesJson entries are still checked.
-- dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike most other actions (ci_script_drift also reads the active worktree). No inputs.
+- guardrails: Check the guardrails list in a config section for per-guardrail id/description/severity; every finding carries a fix (the repair step). Optional: section (defaults to "plan"), activeWorktree (true reads the active worktree instead of the main worktree; an unresolvable active worktree is an infrastructure error, never a silent fallback), candidatesJson (JSON array of proposed guardrail entries checked together with the section on disk, in memory, replacing same-id disk entries; an entry {"id":"x","remove":true} drops disk entry x; nothing is written), scopeIds (JSON array of guardrail ids: report only the findings of these ids; omitted, the candidate ids when candidatesJson is set, else every id). A candidate that lowers the severity of a disk entry with the same id returns an error finding, whatever the scope. A section that does not exist returns no findings; candidatesJson entries are still checked.
+- dimensions: Check the review-dimension files, including a cross-file duplicate-name check (D10). Reads the ACTIVE worktree, unlike most other actions (ci_script_drift also reads the active worktree). Optional: file (path of one dimension file: report that file's findings plus the D10 findings that name it; a file that matches no dimension file is an error).
 - pr_body: Check a PR body against the PR template's required sections. Requires body — an empty body is not rejected, it simply reports every required section as missing.
 - ci_script_drift: Check the generated CI scripts against their current sources. Reads the ACTIVE worktree (falls back to main when it cannot be resolved), since scaffold_ci now writes there too. No inputs.
 - worktree_anchoring: Check which worktree the .sdlc-v2/ state directory is anchored to. No inputs. Also returns worktreeAnchoring{}.`,
@@ -236,7 +243,7 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 	case "guardrails":
 		findings, err = validateGuardrailsAction(root, in)
 	case "dimensions":
-		findings, err = validateDimensionsAction(root)
+		findings, err = validateDimensionsAction(root, in.File)
 	case "pr_body":
 		findings, err = validatePRBody(root, in)
 	case "ci_script_drift":
@@ -1967,11 +1974,15 @@ const (
 	guardrailSeverityFix    = `Set severity to error or warning.`
 )
 
+// guardrailDescMaxBytes is the longest guardrail description, in bytes.
+// Used by validateOneGuardrail and guardrailDescLengthFix.
+const guardrailDescMaxBytes = 1024
+
 // guardrailDescLengthFix is the PF-style fix for an over-length description:
 // it names the id-based split the author is expected to make, e.g. for id
 // "x": "ids x-1, x-2".
 func guardrailDescLengthFix(id string) string {
-	return fmt.Sprintf("Shorten the description to 1024 bytes or less, or split it into independent guardrails with ids %s-1, %s-2, each a complete rule.", id, id)
+	return fmt.Sprintf("Shorten the description to %d bytes or less, or split it into independent guardrails with ids %s-1, %s-2, each a complete rule.", guardrailDescMaxBytes, id, id)
 }
 
 // validateOneGuardrail ports validateGuardrail. All findings from this
@@ -1983,7 +1994,7 @@ func validateOneGuardrail(g map[string]any, seenIDs map[string]bool) []discovery
 
 	rawID := g["id"]
 	idStr, idIsString := rawID.(string)
-	displayID := "(missing)"
+	displayID := guardrailMissingID
 	if idIsString && idStr != "" {
 		displayID = idStr
 	}
@@ -2015,9 +2026,9 @@ func validateOneGuardrail(g map[string]any, seenIDs map[string]bool) []discovery
 	} else if strings.TrimSpace(descStr) == "" {
 		add("description cannot be empty", guardrailDescEmptyFix)
 	}
-	if !jsFalsyLocal(descVal) && descIsString && len(descStr) > 1024 {
-		over := len(descStr) - 1024
-		add(fmt.Sprintf("description exceeds 1024 bytes (%d bytes, %d over)", len(descStr), over), guardrailDescLengthFix(displayID))
+	if !jsFalsyLocal(descVal) && descIsString && len(descStr) > guardrailDescMaxBytes {
+		over := len(descStr) - guardrailDescMaxBytes
+		add(fmt.Sprintf("description exceeds %d bytes (%d bytes, %d over)", guardrailDescMaxBytes, len(descStr), over), guardrailDescLengthFix(displayID))
 	}
 
 	if sevVal, present := g["severity"]; present && sevVal != nil {
@@ -2064,6 +2075,12 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 		raw, _ = data["guardrails"].([]any)
 	}
 
+	// The scope checks run before the merge, so a bad scopeIds input checks
+	// nothing.
+	scope, err := guardrailScope(in.ScopeIDs, raw, in.CandidatesJSON, section) // nil = every id
+	if err != nil {
+		return nil, err
+	}
 	entries, reps, err := mergeGuardrailCandidates(raw, in.CandidatesJSON)
 	if err != nil {
 		return nil, err
@@ -2077,8 +2094,94 @@ func validateGuardrailsAction(root string, in ValidateIn) ([]discovery.Finding, 
 	for _, g := range entries {
 		findings = append(findings, validateOneGuardrail(g, seen)...)
 	}
+	findings = filterFindingsByID(findings, scope)
+	// Severity downgrades are always reported, whatever the scope.
 	findings = append(findings, guardrailSeverityDowngrades(reps)...)
 	return findings, nil
+}
+
+// guardrailMissingID is the id validateOneGuardrail gives a finding for an
+// entry with no usable id.
+const guardrailMissingID = "(missing)"
+
+// guardrailScope returns the guardrail ids a check reports findings for, or
+// nil for every id. scopeIDs has priority; else the candidate ids when
+// candidatesJSON holds at least one candidate; else nil. A candidate with no
+// usable id adds guardrailMissingID, so its findings are not filtered out.
+// Each scopeIDs input error is a DomainError and nothing is checked: an empty
+// list, a repeated id, or an id that is neither on disk (raw) nor in the
+// candidates.
+func guardrailScope(scopeIDs []string, raw []any, candidatesJSON, section string) ([]string, error) {
+	candidates, err := parseGuardrailCandidates(candidatesJSON)
+	if err != nil {
+		return nil, err
+	}
+
+	if scopeIDs != nil {
+		if len(scopeIDs) == 0 {
+			return nil, &mcpserver.DomainError{
+				Msg:        "scopeIds is empty",
+				Suggestion: "omit scopeIds to check every id, or pass at least one id",
+			}
+		}
+		known := map[string]bool{}
+		for _, item := range raw {
+			if g, ok := item.(map[string]any); ok {
+				if id, _ := g["id"].(string); id != "" {
+					known[id] = true
+				}
+			}
+		}
+		for _, c := range candidates {
+			if id, _ := c["id"].(string); id != "" {
+				known[id] = true
+			}
+		}
+		seen := map[string]bool{}
+		for _, id := range scopeIDs {
+			if seen[id] {
+				return nil, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("scopeIds repeats %s", id),
+					Suggestion: "send each id once",
+				}
+			}
+			seen[id] = true
+			if !known[id] {
+				return nil, &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("scopeIds names %s, which is not in section %s", id, section),
+					Suggestion: "fix the id, or drop it from scopeIds",
+				}
+			}
+		}
+		return scopeIDs, nil
+	}
+
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(candidates))
+	for _, c := range candidates {
+		id, _ := c["id"].(string)
+		if id == "" {
+			id = guardrailMissingID
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+// filterFindingsByID keeps a finding when scope is nil or holds its ID.
+func filterFindingsByID(findings []discovery.Finding, scope []string) []discovery.Finding {
+	if scope == nil {
+		return findings
+	}
+	var kept []discovery.Finding
+	for _, f := range findings {
+		if containsStr(scope, f.ID) {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 // guardrailReplacement pairs a disk guardrail with the candidate that
@@ -2096,7 +2199,7 @@ func guardrailIsWarning(g map[string]any) bool {
 }
 
 // guardrailSeverityDowngrades returns one finding per replacement that lowers
-// severity. harden is strengthen-only, so a candidate may not weaken a disk
+// severity. harden never lowers a severity, so a candidate may not weaken a disk
 // entry that has the same id. A disk entry with no severity counts as error.
 // Every finding is an error and carries a fix, mirroring validateOneGuardrail.
 func guardrailSeverityDowngrades(reps []guardrailReplacement) []discovery.Finding {
@@ -2109,7 +2212,7 @@ func guardrailSeverityDowngrades(reps []guardrailReplacement) []discovery.Findin
 		findings = append(findings, discovery.Finding{
 			ID:       id,
 			Severity: "error",
-			Message:  fmt.Sprintf("%s: severity lowered from error to warning (harden is strengthen-only)", id),
+			Message:  fmt.Sprintf("%s: severity lowered from error to warning (harden never lowers a severity)", id),
 			Path:     "",
 			Fix:      guardrailSeverityDowngradeFix,
 		})
@@ -2127,6 +2230,12 @@ func guardrailSeverityDowngrades(reps []guardrailReplacement) []discovery.Findin
 // DomainError; no entry is checked. The second return value lists each
 // (disk, candidate) pair the merge replaced, in disk order, for
 // guardrailSeverityDowngrades.
+//
+// A remove candidate {"id":"x","remove":true} drops the disk entry x instead
+// of replacing it: the entry is left out of the merged list and no
+// replacement pair is recorded. Each candidate id may appear once; a remove
+// candidate sets no field besides id and remove, and its id must be on disk.
+// Each violation is a DomainError; no entry is checked.
 func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]any, []guardrailReplacement, error) {
 	disk := make([]map[string]any, 0, len(raw))
 	for _, item := range raw {
@@ -2134,17 +2243,15 @@ func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]an
 			disk = append(disk, g)
 		}
 	}
-	if candidatesJSON == "" {
+	candidates, err := parseGuardrailCandidates(candidatesJSON)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(candidates) == 0 {
 		return disk, nil, nil
 	}
-
-	var candidates []map[string]any
-	if err := json.Unmarshal([]byte(candidatesJSON), &candidates); err != nil {
-		return nil, nil, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("guardrails: candidatesJson is not a JSON array of objects: %s", err.Error()),
-			Suggestion: `Pass candidatesJson as a JSON array of guardrail objects, e.g. [{"id":"no-ci-bypass","description":"Plans must not skip CI.","severity":"error"}].`,
-			Cause:      err,
-		}
+	if err := checkGuardrailCandidates(candidates, disk); err != nil {
+		return nil, nil, err
 	}
 
 	used := make([]bool, len(candidates))
@@ -2164,20 +2271,103 @@ func mergeGuardrailCandidates(raw []any, candidatesJSON string) ([]map[string]an
 				}
 			}
 		}
-		if replacement >= 0 {
+		switch {
+		case replacement >= 0 && guardrailIsRemoval(candidates[replacement]):
+			used[replacement] = true
+		case replacement >= 0:
 			merged = append(merged, candidates[replacement])
 			reps = append(reps, guardrailReplacement{Disk: entry, Candidate: candidates[replacement]})
 			used[replacement] = true
-		} else {
+		default:
 			merged = append(merged, entry)
 		}
 	}
 	for i, c := range candidates {
-		if !used[i] {
+		if !used[i] && !guardrailIsRemoval(c) {
 			merged = append(merged, c)
 		}
 	}
 	return merged, reps, nil
+}
+
+// parseGuardrailCandidates decodes candidatesJSON into guardrail candidate
+// objects. An empty string gives no candidates. A value that is not a JSON
+// array of objects is a DomainError.
+func parseGuardrailCandidates(candidatesJSON string) ([]map[string]any, error) {
+	if candidatesJSON == "" {
+		return nil, nil
+	}
+	var candidates []map[string]any
+	if err := json.Unmarshal([]byte(candidatesJSON), &candidates); err != nil {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("guardrails: candidatesJson is not a JSON array of objects: %s", err.Error()),
+			Suggestion: `Pass candidatesJson as a JSON array of guardrail objects, e.g. [{"id":"no-ci-bypass","description":"Plans must not skip CI.","severity":"error"}].`,
+			Cause:      err,
+		}
+	}
+	return candidates, nil
+}
+
+// guardrailIsRemoval reports whether a candidate carries remove:true. Run
+// checkGuardrailCandidates first: it rejects any other value of remove.
+func guardrailIsRemoval(c map[string]any) bool {
+	v, _ := c["remove"].(bool)
+	return v
+}
+
+// checkGuardrailCandidates rejects a candidate list the merge cannot apply:
+// a repeated id, a remove value that is not true, a remove candidate that
+// also sets description or severity, and a remove candidate whose id has no
+// entry on disk. Each is a DomainError.
+func checkGuardrailCandidates(candidates, disk []map[string]any) error {
+	onDisk := map[string]bool{}
+	for _, g := range disk {
+		if id, _ := g["id"].(string); id != "" {
+			onDisk[id] = true
+		}
+	}
+	seen := map[string]bool{}
+	for _, c := range candidates {
+		id, _ := c["id"].(string)
+		if id != "" {
+			if seen[id] {
+				return &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("candidatesJson repeats %s", id),
+					Suggestion: "send one entry for each id",
+				}
+			}
+			seen[id] = true
+		}
+		rm, has := c["remove"]
+		if !has {
+			continue
+		}
+		label := id
+		if label == "" {
+			label = guardrailMissingID
+		}
+		if b, _ := rm.(bool); !b {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("remove candidate %s: remove must be true", label),
+				Suggestion: "send remove:true, or drop the key",
+			}
+		}
+		for _, field := range []string{"description", "severity"} {
+			if _, set := c[field]; set {
+				return &mcpserver.DomainError{
+					Msg:        fmt.Sprintf("remove candidate %s also sets %s", label, field),
+					Suggestion: "send only id and remove:true",
+				}
+			}
+		}
+		if !onDisk[id] {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("remove candidate %s has no entry on disk", label),
+				Suggestion: "remove the candidate or fix its id",
+			}
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -2249,10 +2439,15 @@ func ValidatePRTemplate(root string) ([]discovery.Finding, error) {
 
 // ValidateDimensionsAction delegates to validateDimensionsAction for internal/hooks.
 func ValidateDimensionsAction(root string) ([]discovery.Finding, error) {
-	return validateDimensionsAction(root)
+	return validateDimensionsAction(root, "")
 }
 
-func validateDimensionsAction(root string) ([]discovery.Finding, error) {
+// validateDimensionsAction checks the review-dimension files under root. A
+// non-empty file limits the findings to the dimension file whose name equals
+// filepath.Base(file), plus the cross-file duplicate-name findings (D10) that
+// name it, either as the duplicate or as the first holder of the name. A file
+// that matches no dimension file is a DomainError.
+func validateDimensionsAction(root, file string) ([]discovery.Finding, error) {
 	dir := filepath.Join(root, paths.DataDir, paths.ReviewDimensionsSubdir)
 	dims, err := dimensions.Load(dir)
 	if err != nil {
@@ -2262,26 +2457,44 @@ func validateDimensionsAction(root string) ([]discovery.Finding, error) {
 	var findings []discovery.Finding
 	seenNames := map[string]string{}
 
+	scopeFile := ""
+	if file != "" {
+		scopeFile = filepath.Base(file)
+	}
+	matched := scopeFile == ""
+
 	for _, d := range dims {
-		for _, msg := range dimensions.Validate(d) {
-			id, sev := classifyDimensionMessage(msg)
-			findings = append(findings, discovery.Finding{ID: id, Severity: sev, Message: msg, Path: d.File})
+		inScope := scopeFile == "" || d.File == scopeFile
+		if inScope {
+			matched = true
+			for _, msg := range dimensions.Validate(d) {
+				id, sev := classifyDimensionMessage(msg)
+				findings = append(findings, discovery.Finding{ID: id, Severity: sev, Message: msg, Path: d.File})
+			}
 		}
 
 		if name, ok := d.Meta["name"].(string); ok && name != "" {
 			if firstFile, dup := seenNames[name]; dup {
-				findings = append(findings, discovery.Finding{
-					ID:       "D10",
-					Severity: "error",
-					Message:  fmt.Sprintf("Duplicate dimension name %q — also used in %s", name, filepath.Base(firstFile)),
-					Path:     d.File,
-				})
+				if inScope || filepath.Base(firstFile) == scopeFile {
+					findings = append(findings, discovery.Finding{
+						ID:       "D10",
+						Severity: "error",
+						Message:  fmt.Sprintf("Duplicate dimension name %q — also used in %s", name, filepath.Base(firstFile)),
+						Path:     d.File,
+					})
+				}
 			} else {
 				seenNames[name] = d.File
 			}
 		}
 	}
 
+	if !matched {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("file %s matches no review-dimension file", scopeFile),
+			Suggestion: "pass the path of an existing dimension file, or omit file to check every dimension",
+		}
+	}
 	return findings, nil
 }
 

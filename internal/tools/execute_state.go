@@ -1327,17 +1327,24 @@ func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() ti
 	out := IssueDraftOut{
 		Added:       true,
 		TotalDrafts: total,
-		DeferredID:  issue.ID,
 		Next:        "The draft is recorded durably in " + paths.DataDir + "/history/deferred.json. Nothing more is needed for this draft.",
 	}
-	if persistErr := persistDeferred(root, issue); persistErr != nil {
+	stored, _, persistErr := persistDeferred(root, issue, false)
+	if persistErr == nil {
+		out.DeferredID = stored.ID
+	} else {
 		// The durable copy was lost, so the echoed id points at nothing.
 		out.DeferredID = ""
 		out.Warnings = append(out.Warnings, deferredPersistWarning(persistErr, issue.ID, issue.Description))
+		recordStep := "Record it durably with ship_state action=deferred_add"
+		if fix := deferredHandFix(persistErr); fix != "" {
+			// deferred_add fails with the same error until the file is fixed.
+			recordStep = fix + " After that, record it durably with ship_state action=deferred_add"
+		}
 		out.Next = fmt.Sprintf(
-			"The draft is on the run state file only. Record it durably with ship_state action=deferred_add (detail.id=%s, detail.description=%s)."+
+			"The draft is on the run state file only. %s (detail.id=%s, detail.description=%s)."+
 				" Do NOT retry issue-draft: it appends a duplicate draft with a new id.",
-			issue.ID, issue.Description)
+			recordStep, issue.ID, issue.Description)
 	}
 	return out, nil
 }

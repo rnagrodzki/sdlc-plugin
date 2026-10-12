@@ -48,17 +48,19 @@ func useMemHistory(t *testing.T) *history.MemWriter {
 	return mem
 }
 
-// failingHistoryWriter fails every AddDeferred while leaving ListDeferred
-// working, so the best-effort persistence path can be exercised without the
-// dedupe read failing first.
+// failingHistoryWriter fails every MergeOrAddDeferred with a write error
+// while leaving ListDeferred working, so the best-effort persistence path
+// can be exercised without the read failing first.
 type failingHistoryWriter struct{ history.MemWriter }
 
-func (f *failingHistoryWriter) AddDeferred(history.DeferredIssue) error {
-	return errors.New("no space left on device")
+// MergeOrAddDeferred fails with a write error and stores nothing.
+func (f *failingHistoryWriter) MergeOrAddDeferred(history.DeferredIssue, bool) (history.DeferredIssue, bool, error) {
+	return history.DeferredIssue{}, false, errors.New("no space left on device")
 }
 
-// useFailingHistory points historyWriter at a writer whose AddDeferred
-// always fails, for the "persist failure is surfaced, not swallowed" cases.
+// useFailingHistory points historyWriter at a writer whose
+// MergeOrAddDeferred always fails, for the "persist failure is surfaced, not
+// swallowed" cases.
 func useFailingHistory(t *testing.T) {
 	t.Helper()
 	prev := historyWriter
@@ -66,13 +68,19 @@ func useFailingHistory(t *testing.T) {
 	t.Cleanup(func() { historyWriter = prev })
 }
 
-// listFailingHistoryWriter fails ListDeferred — an unreadable or corrupt
-// deferred.json. persistDeferred returns before AddDeferred in that case,
-// so this covers the earlier of its two failure exits.
+// listFailingHistoryWriter fails ListDeferred and MergeOrAddDeferred with a
+// read error — an unreadable or corrupt deferred.json. A stateless defer
+// reads the list before it merges, so this covers the earlier of its two
+// failure exits.
 type listFailingHistoryWriter struct{ history.MemWriter }
 
 func (f *listFailingHistoryWriter) ListDeferred() ([]history.DeferredIssue, error) {
 	return nil, errors.New("deferred.json is not readable")
+}
+
+// MergeOrAddDeferred fails with a read error and stores nothing.
+func (f *listFailingHistoryWriter) MergeOrAddDeferred(history.DeferredIssue, bool) (history.DeferredIssue, bool, error) {
+	return history.DeferredIssue{}, false, errors.New("deferred.json is not readable")
 }
 
 // useListFailingHistory points historyWriter at a writer whose ListDeferred
@@ -1825,10 +1833,10 @@ func TestShipState_Defer_PersistFailureNamedInNarration(t *testing.T) {
 	}
 }
 
-// TestShipState_Defer_ReadFailureNamedInNarration covers persistDeferred's
-// earlier exit: the dedupe read of deferred.json fails, so AddDeferred is
-// never reached. The call must still succeed and still surface the loss —
-// the same contract as the write-failure case above.
+// TestShipState_Defer_ReadFailureNamedInNarration covers the read failure of
+// persistDeferred: deferred.json is unreadable, so nothing is merged or
+// added. The call must still succeed and still surface the loss — the same
+// contract as the write-failure case above.
 func TestShipState_Defer_ReadFailureNamedInNarration(t *testing.T) {
 	dir, path := deferFixture(t, "feat/defer-read-fail")
 	useListFailingHistory(t)
@@ -1858,17 +1866,541 @@ func TestShipState_Defer_ReadFailureNamedInNarration(t *testing.T) {
 	}
 }
 
+// TestPersistDeferred_SkipsDuplicateID verifies that persistDeferred without
+// merge by id stores one row for an id sent three times.
 func TestPersistDeferred_SkipsDuplicateID(t *testing.T) {
 	mem := useMemHistory(t)
 	issue := history.DeferredIssue{ID: "review-deferred-x-1", Description: "same", Status: "open"}
 
 	for i := 0; i < 3; i++ {
-		if err := persistDeferred(t.TempDir(), issue); err != nil {
+		if _, _, err := persistDeferred(t.TempDir(), issue, false); err != nil {
 			t.Fatalf("persistDeferred call %d: %v", i, err)
 		}
 	}
 	if len(mem.Deferred) != 1 {
 		t.Errorf("entries for a re-entered write = %d, want 1", len(mem.Deferred))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// defer / deferred_add: merge into an open row, store failures
+//
+// These tests use the real FileWriter on a temp directory, so they pin what
+// reaches deferred.json and not a stub of it.
+// ---------------------------------------------------------------------------
+
+// deferOnce runs one defer call and returns its narration.
+func deferOnce(t *testing.T, dir, branch, file, title, reason string, now time.Time) ShipStepNarrationOut {
+	t.Helper()
+	detail := map[string]any{"branch": branch, "severity": "medium", "file": file, "title": title}
+	if reason != "" {
+		detail["reason"] = reason
+	}
+	out, err := shipState(dir, dir, ShipStateIn{Action: "defer", Detail: detail}, fixedNow(now))
+	if err != nil {
+		t.Fatalf("defer %q: %v", title, err)
+	}
+	n, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("defer output = %#v, want ShipStepNarrationOut", out)
+	}
+	return n
+}
+
+// storedDeferred reads the rows of deferred.json under root with the file store.
+func storedDeferred(t *testing.T, root string) []history.DeferredIssue {
+	t.Helper()
+	rows, err := history.NewFileWriter(historyDir(root)).ListDeferred()
+	if err != nil {
+		t.Fatalf("read deferred.json: %v", err)
+	}
+	return rows
+}
+
+// TestShipStateDefer_NeedsDirectionSameFileMergesIntoOneRow verifies that a
+// second needs-direction defer for one file merges into the first row, and
+// that the summary and next text name the row each time.
+func TestShipStateDefer_NeedsDirectionSameFileMergesIntoOneRow(t *testing.T) {
+	dir, _ := deferFixture(t, "feat/defer-merge")
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	first := deferOnce(t, dir, "feat/defer-merge", "a.go", "choose A or B", history.ReasonNeedsDirection, now)
+	second := deferOnce(t, dir, "feat/defer-merge", "a.go", "also choose C or D", history.ReasonNeedsDirection, now)
+
+	rows := storedDeferred(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("deferred.json rows = %+v, want 1", rows)
+	}
+	if rows[0].Status != history.StatusOpen || rows[0].File != "a.go" || rows[0].Reason != history.ReasonNeedsDirection {
+		t.Errorf("row = %+v, want an open needs-direction row for a.go", rows[0])
+	}
+	if want := "choose A or B\n- also choose C or D"; rows[0].Description != want {
+		t.Errorf("description = %q, want %q", rows[0].Description, want)
+	}
+	if !strings.Contains(first.Summary, "Deferred finding recorded") {
+		t.Errorf("first summary = %q, want the add text", first.Summary)
+	}
+	if first.Next == nil || first.Next.Instruction != "added deferred item "+rows[0].ID+". Continue." {
+		t.Errorf("first next = %+v, want the added text naming %s", first.Next, rows[0].ID)
+	}
+	// The narration names the row the call merged into, not the id it minted.
+	if want := "Merged into deferred item " + rows[0].ID + "."; second.Summary != want {
+		t.Errorf("second summary = %q, want %q", second.Summary, want)
+	}
+	if second.Next == nil || second.Next.Instruction != "merged into deferred item "+rows[0].ID+". Continue." {
+		t.Errorf("second next = %+v, want the merged text naming %s", second.Next, rows[0].ID)
+	}
+}
+
+// TestShipStateDefer_RepeatedTextNamesTheRowThatHoldsIt verifies that a defer
+// with text a row already holds changes nothing and names that row.
+func TestShipStateDefer_RepeatedTextNamesTheRowThatHoldsIt(t *testing.T) {
+	dir, _ := deferFixture(t, "feat/defer-repeat")
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	deferOnce(t, dir, "feat/defer-repeat", "a.go", "choose A or B", history.ReasonNeedsDirection, now)
+	again := deferOnce(t, dir, "feat/defer-repeat", "a.go", "choose A or B", history.ReasonNeedsDirection, now)
+
+	rows := storedDeferred(t, dir)
+	if len(rows) != 1 || rows[0].Description != "choose A or B" {
+		t.Fatalf("deferred.json rows = %+v, want 1 row that holds the text once", rows)
+	}
+	want := "deferred item " + rows[0].ID + " already holds this text. Continue."
+	if again.Summary != want || again.Next == nil || again.Next.Instruction != want {
+		t.Errorf("summary = %q next = %+v, want %q in both", again.Summary, again.Next, want)
+	}
+}
+
+// TestShipStateDefer_BelowThresholdSameFileGivesTwoRows verifies that two
+// below-threshold defers for one file give two rows.
+func TestShipStateDefer_BelowThresholdSameFileGivesTwoRows(t *testing.T) {
+	dir, _ := deferFixture(t, "feat/defer-below")
+	now := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
+
+	deferOnce(t, dir, "feat/defer-below", "a.go", "nit one", history.ReasonBelowThreshold, now)
+	deferOnce(t, dir, "feat/defer-below", "a.go", "nit two", "", now) // an omitted reason is below-threshold
+
+	rows := storedDeferred(t, dir)
+	if len(rows) != 2 {
+		t.Fatalf("deferred.json rows = %+v, want 2", rows)
+	}
+	if rows[0].Description != "nit one" || rows[1].Description != "nit two" || rows[0].ID == rows[1].ID {
+		t.Errorf("rows = %+v, want two separate rows with their own text and id", rows)
+	}
+}
+
+// TestShipStateDefer_WriteFailureNextNamesRecovery verifies the next text of a
+// defer whose write failed for a cause that needs no hand edit of the file.
+func TestShipStateDefer_WriteFailureNextNamesRecovery(t *testing.T) {
+	dir, _ := deferFixture(t, "feat/defer-next-fail")
+	useFailingHistory(t)
+
+	n := deferOnce(t, dir, "feat/defer-next-fail", "a.go", "unchecked error", "", time.Now())
+	want := "deferred item not written. Add it with deferred_add, then continue."
+	if n.Next == nil || n.Next.Instruction != want {
+		t.Errorf("next = %+v, want %q", n.Next, want)
+	}
+}
+
+// deferredAddOnce runs one deferred_add call and returns its output map.
+func deferredAddOnce(t *testing.T, root string, detail map[string]any) map[string]any {
+	t.Helper()
+	out, err := shipState(root, root, ShipStateIn{Action: "deferred_add", Detail: detail}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("deferred_add %v: %v", detail, err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("deferred_add output = %#v, want map[string]any", out)
+	}
+	return m
+}
+
+// TestShipStateDeferredAdd_MergeAppendsOnlyNewLines verifies deferred_add with
+// merge: a new row, a merge of only the new line, and a repeat that changes
+// nothing, each with its output.
+func TestShipStateDeferredAdd_MergeAppendsOnlyNewLines(t *testing.T) {
+	root := t.TempDir()
+	detail := func(desc string) map[string]any {
+		return map[string]any{"id": "harden-pending-plan", "description": desc, "merge": true}
+	}
+
+	first := deferredAddOnce(t, root, detail("plan A is pending"))
+	if first["merged"] != false || first["id"] != "harden-pending-plan" ||
+		first["next"] != "added deferred item harden-pending-plan. Continue." {
+		t.Errorf("first call = %v, want a new row", first)
+	}
+
+	second := deferredAddOnce(t, root, detail("plan A is pending\nplan B is pending"))
+	if second["merged"] != true || second["next"] != "merged into deferred item harden-pending-plan. Continue." {
+		t.Errorf("second call = %v, want a merge", second)
+	}
+
+	repeat := deferredAddOnce(t, root, detail("plan A is pending\nplan B is pending"))
+	if repeat["merged"] != false || repeat["id"] != "harden-pending-plan" ||
+		repeat["next"] != "deferred item harden-pending-plan already holds this text. Continue." {
+		t.Errorf("repeat call = %v, want nothing added", repeat)
+	}
+
+	rows := storedDeferred(t, root)
+	if len(rows) != 1 {
+		t.Fatalf("deferred.json rows = %+v, want 1", rows)
+	}
+	if want := "plan A is pending\n- plan B is pending"; rows[0].Description != want {
+		t.Errorf("description = %q, want %q", rows[0].Description, want)
+	}
+}
+
+// TestShipStateDeferredAdd_MergeOnResolvedRowAddsSuffixedRow verifies that
+// deferred_add with merge, when only a resolved row has the id, adds the row
+// <id>-2, and that a repeat call adds nothing.
+func TestShipStateDeferredAdd_MergeOnResolvedRowAddsSuffixedRow(t *testing.T) {
+	root := t.TempDir()
+	deferredAddOnce(t, root, map[string]any{"id": "harden-pending-plan", "description": "old plan"})
+	if _, err := shipState(root, root, ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": "harden-pending-plan"}}, fixedNow(time.Now())); err != nil {
+		t.Fatalf("deferred_resolve: %v", err)
+	}
+
+	got := deferredAddOnce(t, root, map[string]any{"id": "harden-pending-plan", "description": "new plan", "merge": true})
+	if got["id"] != "harden-pending-plan-2" || got["merged"] != false ||
+		got["next"] != "added deferred item harden-pending-plan-2. Continue." {
+		t.Errorf("call = %v, want a new row harden-pending-plan-2", got)
+	}
+	rows := storedDeferred(t, root)
+	if len(rows) != 2 || rows[0].Status != history.StatusResolved || rows[1].ID != "harden-pending-plan-2" || rows[1].Status != history.StatusOpen {
+		t.Errorf("rows = %+v, want the resolved row and an open harden-pending-plan-2", rows)
+	}
+
+	// A repeat call finds the open suffixed row and adds nothing.
+	repeat := deferredAddOnce(t, root, map[string]any{"id": "harden-pending-plan", "description": "new plan", "merge": true})
+	if repeat["id"] != "harden-pending-plan-2" || repeat["merged"] != false ||
+		repeat["next"] != "deferred item harden-pending-plan-2 already holds this text. Continue." {
+		t.Errorf("repeat call = %v, want nothing added", repeat)
+	}
+	if rows := storedDeferred(t, root); len(rows) != 2 {
+		t.Errorf("rows after the repeat call = %+v, want 2", rows)
+	}
+}
+
+// TestShipStateDeferredAdd_WithoutMergeKeepsAppendOnly verifies that
+// deferred_add without merge adds a row for each call, also for one id.
+func TestShipStateDeferredAdd_WithoutMergeKeepsAppendOnly(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 2; i++ {
+		got := deferredAddOnce(t, root, map[string]any{"id": "dup", "description": "same"})
+		if got["merged"] != false || got["next"] != "added deferred item dup. Continue." {
+			t.Errorf("call %d = %v, want an added row", i, got)
+		}
+	}
+	if rows := storedDeferred(t, root); len(rows) != 2 {
+		t.Errorf("rows = %+v, want 2: without detail.merge the store stays append-only", rows)
+	}
+}
+
+// TestShipStateDeferredAdd_MergeMustBeBoolean verifies that a detail.merge that
+// is not a boolean returns a DomainError and writes nothing.
+func TestShipStateDeferredAdd_MergeMustBeBoolean(t *testing.T) {
+	for _, bad := range []any{"true", float64(1), []any{true}} {
+		t.Run(fmt.Sprintf("%T", bad), func(t *testing.T) {
+			root := t.TempDir()
+			_, err := shipState(root, root, ShipStateIn{
+				Action: "deferred_add",
+				Detail: map[string]any{"id": "x", "description": "y", "merge": bad},
+			}, fixedNow(time.Now()))
+			text, _ := requireShipErr(t, err, shipErrDomain)
+			for _, want := range []string{
+				"deferred_add: detail.merge must be true or false",
+				"send merge:true to merge into an open item with the same id, or omit it",
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("error text = %q, want it to contain %q", text, want)
+				}
+			}
+			if _, statErr := os.Stat(filepath.Join(historyDir(root), "deferred.json")); !os.IsNotExist(statErr) {
+				t.Errorf("deferred.json after a rejected call: stat err = %v, want it absent", statErr)
+			}
+		})
+	}
+}
+
+// TestShipStateDeferredAdd_StoreFailures verifies the error type and the
+// suggestion of deferred_add for each failure of deferred.json, with and
+// without merge, and that a failed call leaves the file as it was.
+func TestShipStateDeferredAdd_StoreFailures(t *testing.T) {
+	const store = "deferred.json"
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, root string) // leaves the store in the failing state
+		wantKind   shipErrKind
+		wantSugg   string
+		skipAsRoot bool
+	}{
+		{
+			name: "read fails",
+			setup: func(t *testing.T, root string) {
+				if err := os.MkdirAll(filepath.Join(historyDir(root), store), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantKind: shipErrInfra,
+			wantSugg: dashboardDeleteDeferredReadSuggestion,
+		},
+		{
+			name: "parse fails",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(historyDir(root), store), "{garbage")
+			},
+			wantKind: shipErrData,
+			wantSugg: dashboardDeleteDeferredParseSuggestion,
+		},
+		{
+			name: "file over 8 MiB",
+			setup: func(t *testing.T, root string) {
+				big := bytes.Repeat([]byte(" "), history.DeferredFileMax+1)
+				copy(big, "[]")
+				writeFile(t, filepath.Join(historyDir(root), store), string(big))
+			},
+			wantKind: shipErrData,
+			wantSugg: dashboardDeleteDeferredLargeSuggestion,
+		},
+		{
+			name: "write fails",
+			setup: func(t *testing.T, root string) {
+				dir := historyDir(root)
+				writeFile(t, filepath.Join(dir, store), "[]\n")
+				if err := os.Chmod(dir, 0o555); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+			},
+			wantKind:   shipErrInfra,
+			wantSugg:   dashboardDeleteDeferredWriteSuggestion,
+			skipAsRoot: true,
+		},
+	}
+	for _, tt := range tests {
+		for _, merge := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s merge=%v", tt.name, merge), func(t *testing.T) {
+				if tt.skipAsRoot && os.Geteuid() == 0 {
+					t.Skip("a root user can write into a read-only directory")
+				}
+				root := t.TempDir()
+				tt.setup(t, root)
+				path := filepath.Join(historyDir(root), store)
+				before, beforeErr := os.ReadFile(path)
+
+				_, err := shipState(root, root, ShipStateIn{
+					Action: "deferred_add",
+					Detail: map[string]any{"id": "x", "description": "y", "merge": merge},
+				}, fixedNow(time.Now()))
+				text, _ := requireShipErr(t, err, tt.wantKind)
+				if !strings.Contains(text, tt.wantSugg) {
+					t.Errorf("error text = %q, want it to contain the suggestion %q", text, tt.wantSugg)
+				}
+				if after, afterErr := os.ReadFile(path); string(after) != string(before) || (beforeErr == nil) != (afterErr == nil) {
+					t.Errorf("deferred.json changed by a failed call")
+				}
+			})
+		}
+	}
+}
+
+// deferredStoreDamages lists the states of deferred.json that make a read or
+// a write fail. wantKind is the error type each state gives and wantSugg is
+// the recovery that the Suggestion names. The "read fails" state puts a
+// directory where the file belongs.
+var deferredStoreDamages = []struct {
+	name     string
+	setup    func(t *testing.T, root string)
+	wantKind shipErrKind
+	wantSugg string
+}{
+	{
+		name: "read fails",
+		setup: func(t *testing.T, root string) {
+			if err := os.MkdirAll(filepath.Join(historyDir(root), "deferred.json"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		wantKind: shipErrInfra,
+		wantSugg: dashboardDeleteDeferredReadSuggestion,
+	},
+	{
+		name: "parse fails",
+		setup: func(t *testing.T, root string) {
+			writeFile(t, filepath.Join(historyDir(root), "deferred.json"), "{garbage")
+		},
+		wantKind: shipErrData,
+		wantSugg: dashboardDeleteDeferredParseSuggestion,
+	},
+	{
+		name: "file over 8 MiB",
+		setup: func(t *testing.T, root string) {
+			big := bytes.Repeat([]byte(" "), history.DeferredFileMax+1)
+			copy(big, "[]")
+			writeFile(t, filepath.Join(historyDir(root), "deferred.json"), string(big))
+		},
+		wantKind: shipErrData,
+		wantSugg: dashboardDeleteDeferredLargeSuggestion,
+	},
+}
+
+// TestDeferredHandFix pins which failures need a hand edit of deferred.json:
+// a file that does not parse and a file over the size limit, also when the
+// store wraps the error. Every other failure, and no failure, needs none.
+func TestDeferredHandFix(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"too large", fmt.Errorf("%w (9000000 bytes)", history.ErrDeferredTooLarge), dashboardDeleteDeferredLargeSuggestion},
+		{"parse", fmt.Errorf("%w: %w", history.ErrDeferredParse, errors.New("bad json")), dashboardDeleteDeferredParseSuggestion},
+		{"write", fmt.Errorf("%w: %w", history.ErrDeferredWrite, errors.New("disk full")), ""},
+		{"other", errors.New("no space left on device"), ""},
+		{"nil", nil, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := deferredHandFix(tt.err); got != tt.want {
+				t.Errorf("deferredHandFix(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestShipStateDefer_UnusableStoreNamesHandFixBeforeDeferredAdd pins the
+// recovery text of a defer whose write failed because deferred.json does not
+// parse or is too large. deferred_add fails with the same error, so the
+// summary and the next text name the hand edit first. The file stays as it
+// was and the run-scoped record is still written.
+func TestShipStateDefer_UnusableStoreNamesHandFixBeforeDeferredAdd(t *testing.T) {
+	for _, tt := range deferredStoreDamages {
+		if tt.wantKind != shipErrData {
+			continue
+		}
+		t.Run(tt.name, func(t *testing.T) {
+			dir, statePath := deferFixture(t, "feat/defer-unusable")
+			tt.setup(t, dir)
+			storePath := filepath.Join(historyDir(dir), "deferred.json")
+			before := shipErrReadFile(t, storePath)
+
+			n := deferOnce(t, dir, "feat/defer-unusable", "a.go", "unchecked error", "", time.Now())
+
+			wantNext := "deferred item not written. " + tt.wantSugg + " After that, add it with deferred_add, then continue."
+			if n.Next == nil || n.Next.Instruction != wantNext {
+				t.Errorf("next = %+v, want %q", n.Next, wantNext)
+			}
+			for _, want := range []string{tt.wantSugg + " After that, recover it with ship_state action=deferred_add", "second entry"} {
+				if !strings.Contains(n.Summary, want) {
+					t.Errorf("summary = %q, want it to contain %q", n.Summary, want)
+				}
+			}
+			if after := shipErrReadFile(t, storePath); !bytes.Equal(after, before) {
+				t.Error("deferred.json changed by a failed defer")
+			}
+			if findings, _ := readStateData(t, statePath)["deferredFindings"].([]any); len(findings) != 1 {
+				t.Errorf("deferredFindings = %v, want 1 entry", findings)
+			}
+		})
+	}
+}
+
+// TestShipStateDefer_StatelessStoreFailureSuggestion covers the first failure
+// exit of a defer with no ship state: the read of deferred.json. Each damage
+// gives the error type and the recovery of its cause.
+func TestShipStateDefer_StatelessStoreFailureSuggestion(t *testing.T) {
+	for _, tt := range deferredStoreDamages {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/defer-stateless-damaged")
+			tt.setup(t, dir)
+
+			_, err := shipState(dir, dir, ShipStateIn{
+				Action: "defer",
+				Detail: map[string]any{
+					"branch": "feat/defer-stateless-damaged", "severity": "medium",
+					"file": "internal/foo.go", "title": "unchecked error",
+				},
+			}, fixedNow(time.Now()))
+			text, _ := requireShipErr(t, err, tt.wantKind)
+			for _, want := range []string{"list deferred issues", tt.wantSugg, "This call changed nothing in deferred.json."} {
+				if !strings.Contains(text, want) {
+					t.Errorf("error text = %q, want it to contain %q", text, want)
+				}
+			}
+			if strings.Contains(text, "read/write permission") {
+				t.Errorf("error text = %q, must not send the caller to a permission check for this cause", text)
+			}
+		})
+	}
+}
+
+// TestShipStateDeferredReaders_StoreFailureSuggestion covers the store failure
+// of deferred_list, deferred_propose_followups and deferred_resolve. Each
+// damage of deferred.json gives the error type and the recovery of its cause,
+// and the file stays as it was.
+func TestShipStateDeferredReaders_StoreFailureSuggestion(t *testing.T) {
+	actions := []ShipStateIn{
+		{Action: "deferred_list"},
+		{Action: "deferred_propose_followups"},
+		{Action: "deferred_resolve", Detail: map[string]any{"id": "d1"}},
+	}
+	for _, in := range actions {
+		for _, tt := range deferredStoreDamages {
+			t.Run(in.Action+" "+tt.name, func(t *testing.T) {
+				root := t.TempDir()
+				tt.setup(t, root)
+				storePath := filepath.Join(historyDir(root), "deferred.json")
+				before, beforeErr := os.ReadFile(storePath)
+
+				_, err := shipState(root, root, in, shipErrNow)
+				text, _ := requireShipErr(t, err, tt.wantKind)
+				for _, want := range []string{tt.wantSugg, "This call changed nothing in deferred.json."} {
+					if !strings.Contains(text, want) {
+						t.Errorf("error text = %q, want it to contain %q", text, want)
+					}
+				}
+				if strings.Contains(text, "not corrupted") || strings.Contains(text, "write permission on .sdlc-v2/history/deferred.json") {
+					t.Errorf("error text = %q, must not carry the old generic permission advice", text)
+				}
+				if after, afterErr := os.ReadFile(storePath); !bytes.Equal(after, before) || (beforeErr == nil) != (afterErr == nil) {
+					t.Error("deferred.json changed by a failed call")
+				}
+			})
+		}
+	}
+}
+
+// TestShipStateDeferredResolve_WriteFailureSuggestion covers the write failure
+// of deferred_resolve: the history directory is read-only, so the atomic write
+// fails and the row stays open. The Suggestion names the write recovery.
+func TestShipStateDeferredResolve_WriteFailureSuggestion(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("a root user can write into a read-only directory")
+	}
+	root := t.TempDir()
+	deferredAddOnce(t, root, map[string]any{"id": "d1", "description": "later"})
+	dir := historyDir(root)
+	storePath := filepath.Join(dir, "deferred.json")
+	before := shipErrReadFile(t, storePath)
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	_, err := shipState(root, root, ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": "d1"}}, shipErrNow)
+	text, _ := requireShipErr(t, err, shipErrInfra)
+	if want := dashboardDeleteDeferredWriteSuggestion; !strings.Contains(text, want) {
+		t.Errorf("error text = %q, want it to contain %q", text, want)
+	}
+	if after := shipErrReadFile(t, storePath); !bytes.Equal(after, before) {
+		t.Error("deferred.json changed by a failed resolve")
+	}
+	if rows := storedDeferred(t, root); len(rows) != 1 || rows[0].Status != history.StatusOpen {
+		t.Errorf("rows = %+v, want the one row still open", rows)
 	}
 }
 

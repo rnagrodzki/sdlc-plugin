@@ -1603,3 +1603,442 @@ func TestNormalizeFlagSetFields(t *testing.T) {
 		}
 	})
 }
+
+// guardrailsFile is a config.toml with two plan guardrails and a jira
+// section, used by the guardrail delete tests.
+const guardrailsFile = "[plan.guardrails.dry]\ndescription = \"No duplicate logic.\"\nseverity = \"warning\"\n\n" +
+	"[plan.guardrails.dry-old]\ndescription = \"Do not repeat code.\"\nseverity = \"warning\"\n\n" +
+	"[jira]\ndefaultProject = \"P\"\n"
+
+// TestIsGuardrailID verifies which ids isGuardrailID accepts: only
+// plan.guardrails.<id> and execute.guardrails.<id> with one id part.
+func TestIsGuardrailID(t *testing.T) {
+	for id, want := range map[string]bool{
+		"plan.guardrails.dry":      true,
+		"execute.guardrails.a-b":   true,
+		"plan.guardrails":          false,
+		"plan.guardrails.":         false,
+		"plan.guardrails.a.b":      false,
+		"plan.tasks.dry":           false,
+		"review.guardrails.dry":    false,
+		"execute.guardrails":       false,
+		"guardrails.dry":           false,
+		"":                         false,
+		"plan.Guardrails.dry":      false,
+		"harden.guardrails.dry":    false,
+		"plan.guardrails.dry.more": false,
+	} {
+		if got := isGuardrailID(id); got != want {
+			t.Errorf("isGuardrailID(%q) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+// TestSetupWriteSections_NullDeletesGuardrail verifies that a JSON null on
+// plan.guardrails.<id> or execute.guardrails.<id> removes that table block
+// and leaves every other block byte-identical. The file is read back after
+// each delete.
+func TestSetupWriteSections_NullDeletesGuardrail(t *testing.T) {
+	t.Run("plan guardrail", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeSDLCFile(t, dir, "config.toml", guardrailsFile)
+
+		res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.guardrails.dry-old":null}`)
+		if res.IsError {
+			t.Fatalf("expected success, got tool error:\n%s", text)
+		}
+		if !strings.Contains(text, "- ok: true") || !strings.Contains(text, "  - plan.guardrails.dry-old") {
+			t.Errorf("result does not report plan.guardrails.dry-old as written:\n%s", text)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "[plan.guardrails.dry]\ndescription = \"No duplicate logic.\"\nseverity = \"warning\"\n\n" +
+			"[jira]\ndefaultProject = \"P\"\n"
+		if string(got) != want {
+			t.Errorf("unexpected file.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+		}
+	})
+	t.Run("execute guardrail", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeSDLCFile(t, dir, "config.toml",
+			"[execute.guardrails.a]\nseverity = \"error\"\n\n[execute.guardrails.b]\nseverity = \"warning\"\n")
+
+		res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"execute.guardrails.a":null}`)
+		if res.IsError {
+			t.Fatalf("expected success, got tool error:\n%s", text)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := "[execute.guardrails.b]\nseverity = \"warning\"\n"; string(got) != want {
+			t.Errorf("unexpected file.\n--- got ---\n%s\n--- want ---\n%s", got, want)
+		}
+	})
+	t.Run("write and delete in one call", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeSDLCFile(t, dir, "config.toml", guardrailsFile)
+
+		res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+			`{"plan.guardrails.dry":{"description":"No duplicate logic.","severity":"error"},"plan.guardrails.dry-old":null}`)
+		if res.IsError {
+			t.Fatalf("expected success, got tool error:\n%s", text)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The write of plan.guardrails.dry restores the shipped jira tip
+		// (whole-file tip restore), so pin the guardrail blocks only.
+		want := "[plan.guardrails.dry]\ndescription = \"No duplicate logic.\"\nseverity = 'error'\n\n[jira]\n"
+		if !strings.HasPrefix(string(got), want) {
+			t.Errorf("unexpected file start.\n--- got ---\n%s\n--- want prefix ---\n%s", got, want)
+		}
+		if strings.Contains(string(got), "dry-old") {
+			t.Errorf("plan.guardrails.dry-old survived the delete:\n%s", got)
+		}
+	})
+}
+
+// TestSetupWriteSections_NullOnNonGuardrailStillClears pins that the delete
+// is limited to guardrail ids: a null on plan.guardrails itself (not a
+// guardrail id) still writes an empty table, as before.
+func TestSetupWriteSections_NullOnNonGuardrailStillClears(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "config.toml", "[plan.guardrails.a]\nseverity = \"error\"\n\n[jira]\ndefaultProject = \"P\"\n")
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.guardrails":null}`)
+	if res.IsError {
+		t.Fatalf("expected success, got tool error:\n%s", text)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), "plan.guardrails.a") {
+		t.Errorf("plan.guardrails.a survived a null on plan.guardrails:\n%s", got)
+	}
+	if !strings.Contains(string(got), "[plan.guardrails]") {
+		t.Errorf("plan.guardrails was deleted, want an empty table:\n%s", got)
+	}
+}
+
+// TestSetupWriteSections_NullOnMissingGuardrail verifies that a delete with
+// nothing to delete returns ok, names the id in the warnings, sets next, and
+// leaves the file unchanged (or missing).
+func TestSetupWriteSections_NullOnMissingGuardrail(t *testing.T) {
+	t.Run("table not in the file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeSDLCFile(t, dir, "config.toml", guardrailsFile)
+
+		res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.guardrails.x":null}`)
+		if res.IsError {
+			t.Fatalf("expected success, got tool error:\n%s", text)
+		}
+		for _, want := range []string{
+			"- ok: true",
+			"plan.guardrails.x: not present, nothing deleted",
+			"**Next:**",
+			"Nothing was deleted for plan.guardrails.x",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("missing %q:\n%s", want, text)
+			}
+		}
+		if strings.Contains(text, "  - plan.guardrails.x") {
+			t.Errorf("plan.guardrails.x is listed as written:\n%s", text)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != guardrailsFile {
+			t.Errorf("file changed:\n%s", got)
+		}
+	})
+	t.Run("no config file", func(t *testing.T) {
+		res, text, dir := callRegisteredSetupWriteSections(t, `{"execute.guardrails.x":null}`)
+		if res.IsError {
+			t.Fatalf("expected success, got tool error:\n%s", text)
+		}
+		if !strings.Contains(text, "execute.guardrails.x: not present, nothing deleted") || !strings.Contains(text, "- ok: true") {
+			t.Errorf("unexpected result:\n%s", text)
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", "config.toml")); !os.IsNotExist(err) {
+			t.Errorf("config.toml was created (stat err: %v)", err)
+		}
+	})
+}
+
+// TestSetupWriteSections_NullGuardrailWithComment verifies that a guardrail
+// table that holds a comment line is not deleted: the call reports the
+// comment refusal and next names the hand-edit instruction. The file is unchanged.
+func TestSetupWriteSections_NullGuardrailWithComment(t *testing.T) {
+	dir := t.TempDir()
+	content := "[plan.guardrails.dry]\n# keep this note\nseverity = \"warning\"\n\n[jira]\ndefaultProject = \"P\"\n"
+	path := writeSDLCFile(t, dir, "config.toml", content)
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.guardrails.dry":null}`)
+	if res.IsError {
+		t.Fatalf("expected a tool success carrying a per-section error, got tool error:\n%s", text)
+	}
+	for _, want := range []string{
+		"- ok: false",
+		"section plan.guardrails.dry:",
+		"Edit section plan.guardrails.dry in .sdlc-v2/config.toml by hand, then run setup again for that section.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("file changed despite the refusal:\n%s", got)
+	}
+}
+
+// TestSetupWriteSections_NullGuardrailTargetUserRejected verifies that a
+// null guardrail id with target "user" returns a DomainError, writes nothing
+// (not even the other sections of the call), and leaves config.toml intact.
+func TestSetupWriteSections_NullGuardrailTargetUserRejected(t *testing.T) {
+	dir := t.TempDir()
+	path := writeSDLCFile(t, dir, "config.toml", guardrailsFile)
+	userPath := filepath.Join(t.TempDir(), "user-local.toml")
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	res, text := callRegisteredSetupWriteSectionsInArgs(t, dir, map[string]any{
+		"sectionsJson": `{"plan.guardrails.dry-old":null,"style":{"foo":"bar"}}`,
+		"target":       "user",
+	})
+	if !res.IsError {
+		t.Fatalf("expected a tool error, got success:\n%s", text)
+	}
+	for _, want := range []string{
+		"guardrail ids live in config.toml",
+		"plan.guardrails.dry-old",
+		"send the null with target project",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q:\n%s", want, text)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != guardrailsFile {
+		t.Errorf("config.toml changed:\n%s", got)
+	}
+	if _, err := os.Stat(userPath); !os.IsNotExist(err) {
+		t.Errorf("user config file was written (stat err: %v); want no write", err)
+	}
+}
+
+// nextLine returns the "**Next:**" line of a rendered tool result, or "" when
+// the result has none.
+func nextLine(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(line, "**Next:**") {
+			return line
+		}
+	}
+	return ""
+}
+
+// commentedGuardrailBlock is a plan guardrail block that holds a comment
+// line, so a delete of it is refused.
+const commentedGuardrailBlock = "[plan.guardrails.dry]\n# keep this note\nseverity = \"warning\"\n"
+
+// TestSetupWriteSections_RefusedGuardrailDeleteAmongWrites pins what a call
+// leaves behind when the delete of a commented guardrail fails after, before
+// or between writes of other sections. Ids run in sorted order, so the ids
+// below place the delete first, last and in the middle. In each case the call
+// reports ok false, the refused block stays in config.toml byte for byte,
+// every other section is written, and next ends with the sentence that says
+// other sections were written.
+func TestSetupWriteSections_RefusedGuardrailDeleteAmongWrites(t *testing.T) {
+	const deleteID = "plan.guardrails.dry"
+	const wantNextSuffix = "then run setup again for that section. Other sections were written."
+	tests := []struct {
+		name        string
+		sections    string
+		wantWritten []string // other sections of the call, listed as written
+		wantInTOML  []string // text config.toml must hold afterwards
+		wantInLocal []string // text local.toml must hold afterwards
+	}{
+		{
+			name:        "delete sorted first, write after it",
+			sections:    `{"plan.guardrails.dry":null,"style":{"foo":"bar"}}`,
+			wantWritten: []string{"style"},
+			wantInLocal: []string{"foo"},
+		},
+		{
+			name:        "delete sorted last, write before it",
+			sections:    `{"commit":{"style":"conventional"},"plan.guardrails.dry":null}`,
+			wantWritten: []string{"commit"},
+			wantInTOML:  []string{"style = 'conventional'"},
+		},
+		{
+			name:        "delete between two writes",
+			sections:    `{"commit":{"style":"conventional"},"plan.guardrails.dry":null,"style":{"foo":"bar"}}`,
+			wantWritten: []string{"commit", "style"},
+			wantInTOML:  []string{"style = 'conventional'"},
+			wantInLocal: []string{"foo"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			content := commentedGuardrailBlock + "\n[jira]\ndefaultProject = \"P\"\n"
+			path := writeSDLCFile(t, dir, "config.toml", content)
+
+			res, text := callRegisteredSetupWriteSectionsIn(t, dir, tt.sections)
+			if res.IsError {
+				t.Fatalf("expected a tool success carrying a per-section error, got tool error:\n%s", text)
+			}
+			for _, want := range []string{"- ok: false", "section " + deleteID + ":", "holds a comment line"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("output missing %q:\n%s", want, text)
+				}
+			}
+			for _, id := range tt.wantWritten {
+				if !strings.Contains(text, "  - "+id+"\n") {
+					t.Errorf("output does not list %s as written:\n%s", id, text)
+				}
+			}
+			if strings.Contains(text, "  - "+deleteID+"\n") {
+				t.Errorf("output lists the refused %s as written:\n%s", deleteID, text)
+			}
+			if next := nextLine(text); !strings.HasPrefix(next, "**Next:** Edit section "+deleteID+" in .sdlc-v2/config.toml by hand, ") || !strings.HasSuffix(next, wantNextSuffix) {
+				t.Errorf("next line = %q, want it to start with the hand-edit step and end with %q", next, wantNextSuffix)
+			}
+
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), commentedGuardrailBlock) {
+				t.Errorf("the commented guardrail block did not survive:\n%s", got)
+			}
+			if len(tt.wantInTOML) == 0 && string(got) != content {
+				t.Errorf("config.toml changed although no project section was written:\n%s", got)
+			}
+			for _, want := range tt.wantInTOML {
+				if !strings.Contains(string(got), want) {
+					t.Errorf("config.toml missing %q:\n%s", want, got)
+				}
+			}
+			for _, want := range tt.wantInLocal {
+				local, err := os.ReadFile(filepath.Join(dir, ".sdlc-v2", "local.toml"))
+				if err != nil {
+					t.Fatalf("read local.toml: %v", err)
+				}
+				if !strings.Contains(string(local), want) {
+					t.Errorf("local.toml missing %q:\n%s", want, local)
+				}
+			}
+		})
+	}
+}
+
+// TestSetupWriteSections_RefusedAndMissingGuardrailShareNext verifies that a
+// refused delete and a delete of a missing table in one call both reach the
+// output: the refusal in errors, the missing id in warnings, and one next that
+// holds the hand-edit instruction followed by the note on the missing id. A call with
+// two missing ids joins them in one note.
+func TestSetupWriteSections_RefusedAndMissingGuardrailShareNext(t *testing.T) {
+	t.Run("refused and missing", func(t *testing.T) {
+		dir := t.TempDir()
+		content := commentedGuardrailBlock + "\n[jira]\ndefaultProject = \"P\"\n"
+		path := writeSDLCFile(t, dir, "config.toml", content)
+
+		res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.guardrails.dry":null,"plan.guardrails.zz":null}`)
+		if res.IsError {
+			t.Fatalf("expected a tool success carrying a per-section error, got tool error:\n%s", text)
+		}
+		for _, want := range []string{
+			"- ok: false",
+			"section plan.guardrails.dry:",
+			"plan.guardrails.zz: not present, nothing deleted",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("output missing %q:\n%s", want, text)
+			}
+		}
+		wantNext := "**Next:** Edit section plan.guardrails.dry in .sdlc-v2/config.toml by hand, then run setup again for that section. Other sections were written." +
+			" Nothing was deleted for plan.guardrails.zz: no such guardrail table. Check the id if you expected a change."
+		if next := nextLine(text); next != wantNext {
+			t.Errorf("next line = %q, want %q", next, wantNext)
+		}
+		if got, _ := os.ReadFile(path); string(got) != content {
+			t.Errorf("config.toml changed:\n%s", got)
+		}
+	})
+	t.Run("two missing ids", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeSDLCFile(t, dir, "config.toml", guardrailsFile)
+
+		res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.guardrails.x":null,"execute.guardrails.y":null}`)
+		if res.IsError {
+			t.Fatalf("expected success, got tool error:\n%s", text)
+		}
+		for _, want := range []string{
+			"- ok: true",
+			"execute.guardrails.y: not present, nothing deleted",
+			"plan.guardrails.x: not present, nothing deleted",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("output missing %q:\n%s", want, text)
+			}
+		}
+		wantNext := "**Next:** Nothing was deleted for execute.guardrails.y, plan.guardrails.x: no such guardrail table. Check the id if you expected a change."
+		if next := nextLine(text); next != wantNext {
+			t.Errorf("next line = %q, want %q", next, wantNext)
+		}
+		if got, _ := os.ReadFile(path); string(got) != guardrailsFile {
+			t.Errorf("config.toml changed:\n%s", got)
+		}
+	})
+}
+
+// TestSetupWriteSections_NullGuardrailDeleteErrorWithoutCommentRefusal covers
+// a delete that fails for a reason other than a comment: config.toml does not
+// parse. The error is reported for the id, next carries no hand-edit instruction
+// because the failure is not a comment refusal, another section of the call is
+// still written, and config.toml is not changed.
+func TestSetupWriteSections_NullGuardrailDeleteErrorWithoutCommentRefusal(t *testing.T) {
+	dir := t.TempDir()
+	content := "[plan.guardrails.dry\nseverity = \"warning\"\n"
+	path := writeSDLCFile(t, dir, "config.toml", content)
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"plan.guardrails.dry":null,"style":{"foo":"bar"}}`)
+	if res.IsError {
+		t.Fatalf("expected a tool success carrying a per-section error, got tool error:\n%s", text)
+	}
+	for _, want := range []string{"- ok: false", "section plan.guardrails.dry:", "config.toml", "  - style\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "holds a comment line") {
+		t.Errorf("output reports a comment refusal for a parse error:\n%s", text)
+	}
+	if strings.Contains(text, "  - plan.guardrails.dry\n") {
+		t.Errorf("output lists the failed delete as written:\n%s", text)
+	}
+	if next := nextLine(text); next != "" {
+		t.Errorf("next line = %q, want none: a parse error is not a comment refusal", next)
+	}
+	if got, _ := os.ReadFile(path); string(got) != content {
+		t.Errorf("config.toml changed:\n%s", got)
+	}
+	local, err := os.ReadFile(filepath.Join(dir, ".sdlc-v2", "local.toml"))
+	if err != nil || !strings.Contains(string(local), "foo") {
+		t.Errorf("local.toml = %q (err %v), want the style section written", local, err)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -58,6 +59,26 @@ func (a Annotations) apply(t *mcp.Tool) {
 	}
 }
 
+// actionEnum returns the string values of the enum of the "action" property of
+// an input schema, in schema order. It returns an empty slice when the schema
+// has no "action" property or the property has no enum.
+func actionEnum(schema *jsonschema.Schema) []string {
+	actions := []string{}
+	if schema == nil {
+		return actions
+	}
+	prop, ok := schema.Properties["action"]
+	if !ok || prop == nil {
+		return actions
+	}
+	for _, v := range prop.Enum {
+		if str, ok := v.(string); ok {
+			actions = append(actions, str)
+		}
+	}
+	return actions
+}
+
 // Register adds a typed tool to the server. TIn defines the JSON schema for
 // the tool's input (derived from struct tags). The handler receives a
 // deserialized TIn and returns TOut, which is rendered to Markdown by
@@ -95,6 +116,7 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 	}
 
 	a.apply(tool)
+	s.recordTool(name, actionEnum(inSchema))
 
 	handler := func(_ context.Context, req *mcp.CallToolRequest) (result *mcp.CallToolResult, _ error) {
 		// Fresh per-call warning dedup.

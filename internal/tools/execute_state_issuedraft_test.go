@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -297,6 +298,111 @@ func TestExecState_IssueDraft_PersistFailureWarnsButSucceeds(t *testing.T) {
 	data := readExecState(t, root, "feat/drafts")
 	if drafts, _ := data["pendingIssueDrafts"].([]any); len(drafts) != 1 {
 		t.Errorf("pendingIssueDrafts = %v, want 1 entry", drafts)
+	}
+}
+
+// renamingHistoryWriter stores every row under another id than the one it was
+// sent, as the merge does when it adds a row <id>-<n> or merges into an older
+// row. It proves that issue-draft echoes the id the store returns.
+type renamingHistoryWriter struct{ history.MemWriter }
+
+// MergeOrAddDeferred stores issue under the id "stored-" plus its id and
+// returns the stored row.
+func (r *renamingHistoryWriter) MergeOrAddDeferred(issue history.DeferredIssue, _ bool) (history.DeferredIssue, bool, error) {
+	issue.ID = "stored-" + issue.ID
+	if err := r.AddDeferred(issue); err != nil {
+		return history.DeferredIssue{}, false, err
+	}
+	return issue, false, nil
+}
+
+// TestExecState_IssueDraft_DeferredIDIsTheStoredID verifies that issue-draft
+// echoes the id of the row the store returns, not the id it sent.
+func TestExecState_IssueDraft_DeferredIDIsTheStoredID(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/drafts", map[string]any{"branch": "feat/drafts"})
+	prev := historyWriter
+	historyWriter = func(string) history.Writer { return &renamingHistoryWriter{} }
+	t.Cleanup(func() { historyWriter = prev })
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:          "issue-draft",
+		Branch:          "feat/drafts",
+		IssueDraftTitle: "Fix flaky test",
+		IssueDraftBody:  "The test fails intermittently.",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("issue-draft: %v", err)
+	}
+	out := result.(IssueDraftOut)
+	wantID := "stored-execute-drift-" + testNow.UTC().Format("2006-01-02T15:04:05Z07:00") + "-1"
+	if out.DeferredID != wantID {
+		t.Errorf("DeferredID = %q, want the id the store returned, %q", out.DeferredID, wantID)
+	}
+}
+
+// With the real store, the echoed id names the row on disk.
+func TestExecState_IssueDraft_DeferredIDNamesRowInFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/drafts", map[string]any{"branch": "feat/drafts"})
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:          "issue-draft",
+		Branch:          "feat/drafts",
+		IssueDraftTitle: "Fix flaky test",
+		IssueDraftBody:  "The test fails intermittently.",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("issue-draft: %v", err)
+	}
+	out := result.(IssueDraftOut)
+	rows, err := history.NewFileWriter(historyDir(root)).ListDeferred()
+	if err != nil {
+		t.Fatalf("read deferred.json: %v", err)
+	}
+	if len(rows) != 1 || out.DeferredID == "" || rows[0].ID != out.DeferredID {
+		t.Errorf("DeferredID = %q, rows = %+v, want one row with that id", out.DeferredID, rows)
+	}
+}
+
+// A deferred.json that does not parse loses the durable copy: no id is echoed.
+func TestExecState_IssueDraft_UnparsableStoreGivesNoDeferredID(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, "feat/drafts", map[string]any{"branch": "feat/drafts"})
+	storePath := filepath.Join(historyDir(root), "deferred.json")
+	writeFile(t, storePath, "{garbage")
+
+	result, err := executeState(root, root, ExecuteStateIn{
+		Action:          "issue-draft",
+		Branch:          "feat/drafts",
+		IssueDraftTitle: "Fix flaky test",
+		IssueDraftBody:  "The test fails intermittently.",
+	}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("issue-draft must not fail when deferred.json does not parse: %v", err)
+	}
+	out := result.(IssueDraftOut)
+	if out.DeferredID != "" {
+		t.Errorf("DeferredID = %q, want empty when the store could not be read", out.DeferredID)
+	}
+	if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "does not parse") {
+		t.Errorf("Warnings = %v, want one that names the parse failure", out.Warnings)
+	}
+	// deferred_add fails on the same file, so both texts name the hand edit
+	// before the deferred_add call.
+	if len(out.Warnings) == 1 && !strings.Contains(out.Warnings[0], dashboardDeleteDeferredParseSuggestion+" After that, recover it with ship_state action=deferred_add") {
+		t.Errorf("Warnings[0] = %q, want the hand edit before the deferred_add call", out.Warnings[0])
+	}
+	for _, want := range []string{dashboardDeleteDeferredParseSuggestion + " After that, record it durably with ship_state action=deferred_add", "Do NOT retry issue-draft"} {
+		if !strings.Contains(out.Next, want) {
+			t.Errorf("Next = %q, want it to contain %q", out.Next, want)
+		}
+	}
+	if got, _ := os.ReadFile(storePath); string(got) != "{garbage" {
+		t.Errorf("deferred.json = %q, want it unchanged", got)
 	}
 }
 

@@ -1151,7 +1151,7 @@ func TestValidateGuardrailsCandidates_WithoutCandidatesJSON_UnaffectedByFlag(t *
 }
 
 // ---------------------------------------------------------------------------
-// guardrails: severity downgrade check (harden is strengthen-only)
+// guardrails: severity downgrade check (harden never lowers a severity)
 // ---------------------------------------------------------------------------
 
 // guardrailDowngradeFix is the Fix text that the severity downgrade finding
@@ -1200,7 +1200,7 @@ func TestValidateGuardrailsCandidates_SeverityDowngrade(t *testing.T) {
 			if f.ID != "dry" || f.Severity != "error" {
 				t.Errorf("finding id/severity = %q/%q, want dry/error", f.ID, f.Severity)
 			}
-			wantMsg := "dry: severity lowered from error to warning (harden is strengthen-only)"
+			wantMsg := "dry: severity lowered from error to warning (harden never lowers a severity)"
 			if f.Message != wantMsg {
 				t.Errorf("message = %q, want %q", f.Message, wantMsg)
 			}
@@ -1303,7 +1303,7 @@ func TestGuardrailSeverityDowngrades_TwoIDs(t *testing.T) {
 	}
 	for i, id := range wantIDs {
 		f := findings[i]
-		wantMsg := id + ": severity lowered from error to warning (harden is strengthen-only)"
+		wantMsg := id + ": severity lowered from error to warning (harden never lowers a severity)"
 		if f.ID != id || f.Message != wantMsg || f.Severity != "error" || f.Fix != guardrailDowngradeFix {
 			t.Errorf("finding %d = %+v, want id %q, message %q, severity error", i, f, id, wantMsg)
 		}
@@ -1367,6 +1367,398 @@ func TestMergeGuardrailCandidates_ReturnsReplacedPairs(t *testing.T) {
 	}
 	if len(noReps) != 0 {
 		t.Errorf("reps without candidatesJson = %+v, want none", noReps)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// guardrails: candidate scope, scopeIds and remove candidates
+// ---------------------------------------------------------------------------
+
+// scopeTestConfig writes a [plan.guardrails] config with these entries:
+//   - old:  description over guardrailDescMaxBytes (one finding)
+//   - bad:  empty description (one finding)
+//   - keep: clean, severity error
+func scopeTestConfig(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.old]\ndescription = \""+strings.Repeat("a", guardrailDescMaxBytes+1)+"\"\n\n"+
+		"[plan.guardrails.bad]\ndescription = \"\"\n\n"+
+		"[plan.guardrails.keep]\ndescription = \"Keep this rule.\"\nseverity = \"error\"\n")
+	return root
+}
+
+// findingIDs returns the id of each finding, in order.
+func findingIDs(findings []discovery.Finding) []string {
+	ids := []string{}
+	for _, f := range findings {
+		ids = append(ids, f.ID)
+	}
+	return ids
+}
+
+// TestValidateGuardrailsDescMaxBytes pins the size boundary and the message
+// text the constant builds.
+func TestValidateGuardrailsDescMaxBytes(t *testing.T) {
+	if guardrailDescMaxBytes != 1024 {
+		t.Fatalf("guardrailDescMaxBytes = %d, want 1024", guardrailDescMaxBytes)
+	}
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
+		"[plan.guardrails.at-limit]\ndescription = \""+strings.Repeat("a", guardrailDescMaxBytes)+"\"\n\n"+
+		"[plan.guardrails.over-limit]\ndescription = \""+strings.Repeat("a", guardrailDescMaxBytes+1)+"\"\n")
+	out, err := validate(root, ValidateIn{Action: "guardrails"})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.Findings) != 1 {
+		t.Fatalf("findings = %+v, want exactly 1 (over-limit)", out.Findings)
+	}
+	f := out.Findings[0]
+	if f.Message != "over-limit: description exceeds 1024 bytes (1025 bytes, 1 over)" {
+		t.Errorf("message = %q", f.Message)
+	}
+	if !strings.Contains(f.Fix, "Shorten the description to 1024 bytes or less") {
+		t.Errorf("fix = %q, want the 1024 bytes wording", f.Fix)
+	}
+}
+
+// TestValidateGuardrailsCandidateScope verifies which ids a guardrails check
+// reports for each form of candidatesJson: with candidates, only the ids of the
+// candidates; without, every id.
+func TestValidateGuardrailsCandidateScope(t *testing.T) {
+	cleanNew := `{"id":"new-rule","description":"A clean new rule.","severity":"error"}`
+	badNew := `{"id":"new-rule","description":"","severity":"error"}`
+	noID := `{"description":"No id here.","severity":"error"}`
+
+	cases := []struct {
+		name       string
+		candidates string
+		want       []string
+	}{
+		{"no candidates: every id", "", []string{"bad", "old"}},
+		{"empty array is the same as no candidates", "[]", []string{"bad", "old"}},
+		{"old findings outside the candidates are not reported", "[" + cleanNew + "]", []string{}},
+		{"a bad candidate is reported alone", "[" + badNew + "]", []string{"new-rule"}},
+		{"a candidate that fixes old reports nothing", `[{"id":"old","description":"Short now.","severity":"error"}]`, []string{}},
+		{"a candidate without an id is still reported", "[" + noID + "]", []string{"(missing)"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := scopeTestConfig(t)
+			out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: tc.candidates})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if got := findingIDs(out.Findings); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("finding ids = %v, want %v (findings %+v)", got, tc.want, out.Findings)
+			}
+		})
+	}
+}
+
+// TestValidateGuardrailsScopeIDs verifies that scopeIds sets the ids a
+// guardrails check reports, whatever the candidates name.
+func TestValidateGuardrailsScopeIDs(t *testing.T) {
+	cases := []struct {
+		name    string
+		scope   []string
+		cands   string
+		section string
+		want    []string
+	}{
+		{"one id", []string{"old"}, "", "", []string{"old"}},
+		{"two ids in disk order", []string{"old", "bad"}, "", "", []string{"bad", "old"}},
+		{"clean id gives no finding", []string{"keep"}, "", "", []string{}},
+		{
+			"scopeIds beat the candidate ids, downgrades are still reported",
+			[]string{"old"},
+			`[{"id":"keep","description":"Keep this rule.","severity":"warning"},{"id":"new-rule","description":""}]`,
+			"",
+			[]string{"old", "keep"},
+		},
+		{
+			"scopeIds may name a candidate id",
+			[]string{"new-rule"},
+			`[{"id":"new-rule","description":""}]`,
+			"",
+			[]string{"new-rule"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := scopeTestConfig(t)
+			out, err := validate(root, ValidateIn{Action: "guardrails", ScopeIDs: tc.scope, CandidatesJSON: tc.cands, Section: tc.section})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if got := findingIDs(out.Findings); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("finding ids = %v, want %v (findings %+v)", got, tc.want, out.Findings)
+			}
+		})
+	}
+}
+
+// assertDomainError fails unless err is a *mcpserver.DomainError with this
+// exact message and suggestion.
+func assertDomainError(t *testing.T, err error, wantMsg, wantSuggestion string) {
+	t.Helper()
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("want *mcpserver.DomainError %q, got %T: %v", wantMsg, err, err)
+	}
+	if de.Msg != wantMsg {
+		t.Errorf("Msg = %q, want %q", de.Msg, wantMsg)
+	}
+	if de.Suggestion != wantSuggestion {
+		t.Errorf("Suggestion = %q, want %q", de.Suggestion, wantSuggestion)
+	}
+}
+
+// TestValidateGuardrailsScopeIDs_InputErrors verifies the message and the
+// suggestion of each invalid scopeIds input.
+func TestValidateGuardrailsScopeIDs_InputErrors(t *testing.T) {
+	cases := []struct {
+		name           string
+		in             ValidateIn
+		wantMsg        string
+		wantSuggestion string
+	}{
+		{
+			"empty list",
+			ValidateIn{ScopeIDs: []string{}},
+			"scopeIds is empty",
+			"omit scopeIds to check every id, or pass at least one id",
+		},
+		{
+			"repeated id",
+			ValidateIn{ScopeIDs: []string{"old", "bad", "old"}},
+			"scopeIds repeats old",
+			"send each id once",
+		},
+		{
+			"unknown id",
+			ValidateIn{ScopeIDs: []string{"old", "ghost"}},
+			"scopeIds names ghost, which is not in section plan",
+			"fix the id, or drop it from scopeIds",
+		},
+		{
+			"unknown id in a custom section",
+			ValidateIn{ScopeIDs: []string{"old"}, Section: "execute"},
+			"scopeIds names old, which is not in section execute",
+			"fix the id, or drop it from scopeIds",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := scopeTestConfig(t)
+			tc.in.Action = "guardrails"
+			out, err := validate(root, tc.in)
+			assertDomainError(t, err, tc.wantMsg, tc.wantSuggestion)
+			if len(out.Findings) != 0 {
+				t.Errorf("a bad scopeIds input must check nothing, got %+v", out.Findings)
+			}
+		})
+	}
+}
+
+// TestValidateGuardrailsRemoveCandidate verifies that a remove candidate takes
+// its entry out of the check, also next to a bad new candidate.
+func TestValidateGuardrailsRemoveCandidate(t *testing.T) {
+	cases := []struct {
+		name       string
+		candidates string
+		want       []string
+	}{
+		{"remove an oversize entry", `[{"id":"old","remove":true}]`, []string{}},
+		{"remove an entry with an empty description", `[{"id":"bad","remove":true}]`, []string{}},
+		{
+			"remove next to a bad new candidate",
+			`[{"id":"old","remove":true},{"id":"new-rule","description":""}]`,
+			[]string{"new-rule"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := scopeTestConfig(t)
+			out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: tc.candidates})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			if got := findingIDs(out.Findings); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("finding ids = %v, want %v (findings %+v)", got, tc.want, out.Findings)
+			}
+		})
+	}
+
+	t.Run("the entry is dropped from the merge and gives no replacement pair", func(t *testing.T) {
+		raw := []any{
+			map[string]any{"id": "a", "severity": "error"},
+			map[string]any{"id": "b", "severity": "error"},
+		}
+		merged, reps, err := mergeGuardrailCandidates(raw, `[{"id":"a","remove":true}]`)
+		if err != nil {
+			t.Fatalf("mergeGuardrailCandidates: %v", err)
+		}
+		if len(merged) != 1 || merged[0]["id"] != "b" {
+			t.Errorf("merged = %+v, want only b", merged)
+		}
+		if len(reps) != 0 {
+			t.Errorf("reps = %+v, want none", reps)
+		}
+	})
+
+	t.Run("the remove check does not write the config", func(t *testing.T) {
+		root := scopeTestConfig(t)
+		cfg := filepath.Join(root, paths.DataDir, "config.toml")
+		before, err := os.ReadFile(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: `[{"id":"old","remove":true}]`}); err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		after, err := os.ReadFile(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Error("validate wrote the config file")
+		}
+	})
+}
+
+// TestValidateGuardrailsRemoveCandidate_InputErrors verifies the message and the
+// suggestion of each invalid remove candidate.
+func TestValidateGuardrailsRemoveCandidate_InputErrors(t *testing.T) {
+	cases := []struct {
+		name           string
+		candidates     string
+		wantMsg        string
+		wantSuggestion string
+	}{
+		{
+			"no entry on disk",
+			`[{"id":"ghost","remove":true}]`,
+			"remove candidate ghost has no entry on disk",
+			"remove the candidate or fix its id",
+		},
+		{
+			"remove without an id",
+			`[{"remove":true}]`,
+			"remove candidate (missing) has no entry on disk",
+			"remove the candidate or fix its id",
+		},
+		{
+			"remove with a description",
+			`[{"id":"old","remove":true,"description":"x"}]`,
+			"remove candidate old also sets description",
+			"send only id and remove:true",
+		},
+		{
+			"remove with a severity",
+			`[{"id":"old","remove":true,"severity":"error"}]`,
+			"remove candidate old also sets severity",
+			"send only id and remove:true",
+		},
+		{
+			"one id twice",
+			`[{"id":"old","remove":true},{"id":"old","description":"x"}]`,
+			"candidatesJson repeats old",
+			"send one entry for each id",
+		},
+		{
+			"two replacements of one id",
+			`[{"id":"keep","description":"a"},{"id":"keep","description":"b"}]`,
+			"candidatesJson repeats keep",
+			"send one entry for each id",
+		},
+		{
+			"remove false",
+			`[{"id":"old","remove":false}]`,
+			"remove candidate old: remove must be true",
+			"send remove:true, or drop the key",
+		},
+		{
+			"remove is a string",
+			`[{"id":"old","remove":"yes"}]`,
+			"remove candidate old: remove must be true",
+			"send remove:true, or drop the key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := scopeTestConfig(t)
+			out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: tc.candidates})
+			assertDomainError(t, err, tc.wantMsg, tc.wantSuggestion)
+			if len(out.Findings) != 0 {
+				t.Errorf("a bad candidate list must check nothing, got %+v", out.Findings)
+			}
+		})
+	}
+}
+
+// A removal is not a severity downgrade.
+func TestValidateGuardrailsRemoveCandidate_NoDowngradeFinding(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"),
+		"[plan.guardrails.dry]\ndescription = \"Reuse existing helpers.\"\nseverity = \"error\"\n")
+	out, err := validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: `[{"id":"dry","remove":true}]`})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if len(out.Findings) != 0 {
+		t.Fatalf("findings = %+v, want none", out.Findings)
+	}
+}
+
+// validator-error-propagation-complete: the config read errors of the
+// guardrails action keep their structured error with the new inputs.
+func TestValidateGuardrailsScope_ConfigNotFound(t *testing.T) {
+	root := t.TempDir() // no config file: zero disk entries, no error
+
+	out, err := validate(root, ValidateIn{
+		Action:         "guardrails",
+		ScopeIDs:       []string{"new-rule"},
+		CandidatesJSON: `[{"id":"new-rule","description":""}]`,
+	})
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if got := findingIDs(out.Findings); !reflect.DeepEqual(got, []string{"new-rule"}) {
+		t.Fatalf("finding ids = %v, want [new-rule]", got)
+	}
+
+	_, err = validate(root, ValidateIn{Action: "guardrails", ScopeIDs: []string{"ghost"}})
+	assertDomainError(t, err, "scopeIds names ghost, which is not in section plan", "fix the id, or drop it from scopeIds")
+
+	_, err = validate(root, ValidateIn{Action: "guardrails", CandidatesJSON: `[{"id":"ghost","remove":true}]`})
+	assertDomainError(t, err, "remove candidate ghost has no entry on disk", "remove the candidate or fix its id")
+}
+
+// TestValidateGuardrailsScope_ConfigParseError verifies that a config.toml that
+// does not parse gives an InfraError with a suggestion for scopeIds, remove
+// candidates and both together.
+func TestValidateGuardrailsScope_ConfigParseError(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[[[not toml\n")
+
+	for _, in := range []ValidateIn{
+		{Action: "guardrails", ScopeIDs: []string{"old"}},
+		{Action: "guardrails", CandidatesJSON: `[{"id":"old","remove":true}]`},
+		{Action: "guardrails", ScopeIDs: []string{"old"}, CandidatesJSON: `[{"id":"old","description":"x"}]`},
+	} {
+		_, err := validate(root, in)
+		var infra *mcpserver.InfraError
+		if !errors.As(err, &infra) {
+			t.Fatalf("input %+v: want *mcpserver.InfraError, got %T: %v", in, err, err)
+		}
+		if !strings.HasPrefix(infra.Msg, "read plan guardrails section:") {
+			t.Errorf("InfraError.Msg = %q, want prefix %q", infra.Msg, "read plan guardrails section:")
+		}
+		if infra.Suggestion == "" {
+			t.Error("InfraError must carry a Suggestion")
+		}
 	}
 }
 
@@ -1468,6 +1860,129 @@ func TestValidateDimensionsD10DuplicateName(t *testing.T) {
 	}
 	if d10[0].Path != "b-dim.md" {
 		t.Errorf("D10 path = %q, want b-dim.md", d10[0].Path)
+	}
+}
+
+// dimensionFileBody returns a dimension file with this frontmatter name. A
+// missing description gives the file one D3 finding when withDescription is
+// false.
+func dimensionFileBody(name string, withDescription bool) string {
+	desc := ""
+	if withDescription {
+		desc = "description: Check for issues in the diff.\n"
+	}
+	return "---\n" +
+		"name: " + name + "\n" +
+		desc +
+		"triggers:\n" +
+		"  - \"**/*.go\"\n" +
+		"---\n" +
+		"This dimension reviews code for vulnerabilities and unsafe patterns.\n"
+}
+
+// TestValidateDimensionsFileScope verifies that the file input limits the
+// dimensions check to one file, and what a missing or an unknown file gives.
+func TestValidateDimensionsFileScope(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	writeFile(t, filepath.Join(dir, "a.md"), dimensionFileBody("alpha", true))
+	writeFile(t, filepath.Join(dir, "b.md"), dimensionFileBody("beta", false))
+
+	t.Run("no file: every dimension file", func(t *testing.T) {
+		out, err := validate(root, ValidateIn{Action: "dimensions"})
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		if len(out.Findings) != 1 || out.Findings[0].Path != "b.md" {
+			t.Fatalf("findings = %+v, want one D3 finding for b.md", out.Findings)
+		}
+	})
+	t.Run("clean file: no finding for the other file", func(t *testing.T) {
+		out, err := validate(root, ValidateIn{Action: "dimensions", File: filepath.Join(paths.DataDir, "review-dimensions", "a.md")})
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		if len(out.Findings) != 0 {
+			t.Fatalf("findings = %+v, want none for a.md", out.Findings)
+		}
+	})
+	t.Run("bad file: its findings", func(t *testing.T) {
+		out, err := validate(root, ValidateIn{Action: "dimensions", File: "b.md"})
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		if len(out.Findings) != 1 || out.Findings[0].ID != "D3" || out.Findings[0].Path != "b.md" {
+			t.Fatalf("findings = %+v, want one D3 finding for b.md", out.Findings)
+		}
+	})
+	t.Run("no match: DomainError", func(t *testing.T) {
+		for _, file := range []string{"missing.md", filepath.Join(dir, "missing.md")} {
+			_, err := validate(root, ValidateIn{Action: "dimensions", File: file})
+			assertDomainError(t, err, "file missing.md matches no review-dimension file",
+				"pass the path of an existing dimension file, or omit file to check every dimension")
+		}
+	})
+	t.Run("no dimension directory: DomainError", func(t *testing.T) {
+		_, err := validate(t.TempDir(), ValidateIn{Action: "dimensions", File: "a.md"})
+		assertDomainError(t, err, "file a.md matches no review-dimension file",
+			"pass the path of an existing dimension file, or omit file to check every dimension")
+	})
+	t.Run("no dimension directory and no file: no finding", func(t *testing.T) {
+		out, err := validate(t.TempDir(), ValidateIn{Action: "dimensions"})
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		if len(out.Findings) != 0 {
+			t.Fatalf("findings = %+v, want none", out.Findings)
+		}
+	})
+}
+
+// TestValidateDimensionsFileScope_D10NamesTheFile verifies that a D10 finding
+// for a shared dimension name is reported for each file that holds the name,
+// and not for an unrelated file.
+func TestValidateDimensionsFileScope_D10NamesTheFile(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
+	writeFile(t, filepath.Join(dir, "a.md"), dimensionFileBody("shared", true))
+	writeFile(t, filepath.Join(dir, "b.md"), dimensionFileBody("shared", true))
+	writeFile(t, filepath.Join(dir, "c.md"), dimensionFileBody("gamma", false))
+
+	cases := []struct {
+		file      string
+		wantD10   int
+		wantOther []string // paths of the non-D10 findings
+	}{
+		{"b.md", 1, nil},              // the duplicate
+		{"a.md", 1, nil},              // the first holder of the name
+		{"c.md", 0, []string{"c.md"}}, // unrelated: its own finding only
+	}
+	for _, tc := range cases {
+		t.Run(tc.file, func(t *testing.T) {
+			out, err := validate(root, ValidateIn{Action: "dimensions", File: tc.file})
+			if err != nil {
+				t.Fatalf("validate: %v", err)
+			}
+			d10 := findingsByID(out.Findings, "D10")
+			if len(d10) != tc.wantD10 {
+				t.Fatalf("D10 findings = %+v, want %d", d10, tc.wantD10)
+			}
+			if tc.wantD10 == 1 {
+				want := `Duplicate dimension name "shared" — also used in a.md`
+				if d10[0].Message != want || d10[0].Path != "b.md" {
+					t.Errorf("D10 = %+v, want message %q on b.md", d10[0], want)
+				}
+			}
+			var other []string
+			for _, f := range out.Findings {
+				if f.ID != "D10" {
+					other = append(other, f.Path)
+				}
+			}
+			if !reflect.DeepEqual(other, tc.wantOther) {
+				t.Errorf("other finding paths = %v, want %v (findings %+v)", other, tc.wantOther, out.Findings)
+			}
+		})
 	}
 }
 

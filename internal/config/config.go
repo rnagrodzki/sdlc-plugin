@@ -1009,6 +1009,64 @@ func WriteSectionReport(mainRoot, name string, v map[string]any) (rewrote bool, 
 	return writeSectionFile(filepath.Join(sdlcDir, paths.LocalConfigFile), name, v, nil)
 }
 
+// DeleteSectionReport deletes the table at the dotted path name. It routes
+// like WriteSectionReport: a project section's file is config.toml, any other
+// is local.toml. It reads the file, calls deleteTable, and writes the result
+// with fsx.AtomicWriteBytes, so a failed write keeps the old file. A missing
+// file or table returns deleted=false and err=nil, and writes nothing.
+//
+// The edit removes only the lines of the table, so every other byte of the
+// file stays. A comment line in the table returns ErrWouldDropComments and
+// writes nothing. When the table's layout cannot be edited in place
+// (an inline table, a dotted key, an array of tables), a file with a comment
+// line is refused the same way, and a file with no comment line is rewritten
+// whole from parsed data, as WriteSectionReport does.
+func DeleteSectionReport(mainRoot, name string) (deleted bool, err error) {
+	if err := validateSectionName(name); err != nil {
+		return false, err
+	}
+	top, _, _ := strings.Cut(name, ".")
+	file := paths.LocalConfigFile
+	if ProjectSections[top] {
+		file = paths.ConfigFile
+	}
+	path := filepath.Join(mainRoot, paths.DataDir, file)
+
+	orig, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	existing := make(map[string]any)
+	if err := fsx.DecodeTOML(orig, &existing); err != nil {
+		return false, fmt.Errorf("config: %s: %w", path, err)
+	}
+	traceRead(path, "write")
+
+	parts := strings.Split(name, ".")
+	out, found, spliceErr := deleteTable(orig, parts)
+	if spliceErr == nil {
+		if !found {
+			return false, nil
+		}
+		return true, fsx.AtomicWriteBytes(path, out)
+	}
+	if errors.Is(spliceErr, errBlockHasComment) || hasCommentLine(orig) {
+		return false, refuseCommentDrop(name, path, spliceErr)
+	}
+	if !deleteSectionPath(existing, parts) {
+		return false, nil
+	}
+	// fsx.DecodeTOML decodes every number as float64: see writeSectionFile.
+	full, err := toml.Marshal(WholeNumbersToInt(existing))
+	if err != nil {
+		return false, fmt.Errorf("config: marshal %s: %w", path, err)
+	}
+	return true, fsx.AtomicWriteBytes(path, full)
+}
+
 // WriteFileSection writes section name into the TOML file at path, which is
 // created with its directory if needed. It works like WriteSectionReport but
 // does not route by section name and does not validate top-level keys, so a

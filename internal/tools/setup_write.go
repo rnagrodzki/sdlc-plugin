@@ -41,8 +41,10 @@ type SetupWriteSectionsIn struct {
 	// to the nested table at that LEAF path — siblings under the same
 	// top-level key are preserved, and only the leaf is replaced wholesale.
 	// Either way, callers must pass the complete object for the id they
-	// name, not a partial patch of it.
-	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. A plain top-level id REPLACES that section wholesale. A dotted id (e.g. \"plan.guardrails\") merges at that nested leaf instead, preserving sibling keys under the same top-level section — the leaf itself is still replaced wholesale, not patched. Pass the complete object for the id you name."`
+	// name, not a partial patch of it. A JSON null on a guardrail id
+	// (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table
+	// instead (see isGuardrailID).
+	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. A plain top-level id REPLACES that section wholesale. A dotted id (e.g. \"plan.guardrails\") merges at that nested leaf instead, preserving sibling keys under the same top-level section — the leaf itself is still replaced wholesale, not patched. Pass the complete object for the id you name. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table. A null on a missing guardrail id changes nothing. A null on any other id clears it to an empty table, as before. A guardrail table that holds a comment line is not deleted: the call returns the comment refusal."`
 
 	// Target selects which file a local section is written to: the
 	// project's own .sdlc-v2/local.toml (default) or the user-level file
@@ -60,7 +62,7 @@ type SetupWriteSectionsOut struct {
 	Errors   []string             `json:"errors,omitempty"`
 	Scaffold []ScaffoldFileReport `json:"scaffold,omitempty"`
 	Warnings []string             `json:"warnings,omitempty"`
-	Next     string               `json:"next,omitempty" jsonschema_description:"Plain text. Recovery step when a section could not be written without deleting comments. Example: Edit section ship in .sdlc-v2/local.toml by hand, then run setup again for that section."`
+	Next     string               `json:"next,omitempty" jsonschema_description:"Plain text. Recovery step when a section could not be written without deleting comments, or a note when a null on a guardrail id found no table to delete. Example: Edit section ship in .sdlc-v2/local.toml by hand, then run setup again for that section."`
 }
 
 // RegisterSetupWriteTools registers setup_write_sections on the server.
@@ -237,6 +239,14 @@ func flagSetTypeName(v any) string {
 	}
 }
 
+// isGuardrailID reports whether id is plan.guardrails.<id> or
+// execute.guardrails.<id>: the ids where a JSON null deletes the table.
+func isGuardrailID(id string) bool {
+	parts := strings.Split(id, ".")
+	return len(parts) == 3 && (parts[0] == "plan" || parts[0] == "execute") &&
+		parts[1] == "guardrails" && parts[2] != ""
+}
+
 // sectionFile names, for use in messages, the config file a section id is
 // written to. target and userPath mirror the tool input and the resolved
 // config.UserConfigPath (empty when target != "user"): a project section
@@ -343,6 +353,19 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 	// project ones — so a caller never gets a partial, surprising write.
 	var userPath string
 	if in.Target == "user" {
+		var guardrailIDs []string
+		for _, id := range ids {
+			if sections[id] == nil && isGuardrailID(id) {
+				guardrailIDs = append(guardrailIDs, id)
+			}
+		}
+		if len(guardrailIDs) > 0 {
+			return SetupWriteSectionsOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("setup_write_sections: guardrail ids live in config.toml: %v cannot be deleted with target \"user\"", guardrailIDs),
+				Suggestion: "send the null with target project. Nothing was written.",
+			}
+		}
+
 		var projectIDs []string
 		for _, id := range ids {
 			top, _, _ := strings.Cut(id, ".")
@@ -376,10 +399,28 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 
 	var written []string
 	var errs []string
-	var rewroteWarnings []string
+	var warnings []string
 	var refused []string // one "Edit section <id> in <file> by hand" per ErrWouldDropComments section
+	var absent []string  // guardrail ids whose null found no table to delete
 	for _, id := range ids {
 		value := sections[id]
+		if value == nil && isGuardrailID(id) {
+			deleted, err := config.DeleteSectionReport(sectionRoot(contentRoot, stateRoot, id), id)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
+				if errors.Is(err, config.ErrWouldDropComments) {
+					refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id, in.Target, userPath)))
+				}
+				continue
+			}
+			if !deleted {
+				absent = append(absent, id)
+				warnings = append(warnings, fmt.Sprintf("%s: not present, nothing deleted", id))
+				continue
+			}
+			written = append(written, id)
+			continue
+		}
 		if value == nil {
 			value = map[string]any{}
 		}
@@ -403,7 +444,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 			continue
 		}
 		if rewrote {
-			rewroteWarnings = append(rewroteWarnings, fmt.Sprintf(
+			warnings = append(warnings, fmt.Sprintf(
 				"Section %s: could not edit %s in place; the file had no comments, so it was rewritten and template tips were added",
 				id, sectionFile(id, in.Target, userPath)))
 		}
@@ -418,8 +459,15 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 	default:
 		next = strings.Join(refused, "; ") + ", then run setup again for those sections. Other sections were written."
 	}
+	if len(absent) > 0 {
+		note := fmt.Sprintf("Nothing was deleted for %s: no such guardrail table. Check the id if you expected a change.", strings.Join(absent, ", "))
+		if next != "" {
+			note = next + " " + note
+		}
+		next = note
+	}
 
-	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Root: contentRoot, Warnings: rewroteWarnings, Next: next}
+	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Root: contentRoot, Warnings: warnings, Next: next}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}

@@ -36,6 +36,10 @@ var errNoSplice = errors.New("config: section cannot be spliced")
 // of rewriting the whole file (a full rewrite deletes every comment).
 var ErrWouldDropComments = errors.New("config: in-place edit failed and a full rewrite would delete comments")
 
+// errBlockHasComment reports that a table to delete holds a comment line, in
+// its header, its key/values, or a trailing comment on one of those lines.
+var errBlockHasComment = errors.New("config: table holds a comment line")
+
 // tomlItem is one top-level TOML expression: a table header or a key/value.
 type tomlItem struct {
 	header   bool     // [table] or [[array table]] header
@@ -239,6 +243,9 @@ func spliceFile(orig []byte, name string, v, merged map[string]any) ([]byte, err
 // message names the real cause: a layout the splicer does not handle
 // (errNoSplice), or an internal splice failure.
 func refuseCommentDrop(name, path string, cause error) error {
+	if errors.Is(cause, errBlockHasComment) {
+		return fmt.Errorf("%w: section %q in %s holds a comment line, and the delete would remove it. Edit that section by hand, then run setup again", ErrWouldDropComments, name, path)
+	}
 	if errors.Is(cause, errNoSplice) {
 		return fmt.Errorf("%w: section %q in %s (array of tables, inline table, or a dotted key defines it). Edit that section by hand, then run setup again", ErrWouldDropComments, name, path)
 	}
@@ -479,6 +486,148 @@ func spliceKeys(data []byte, path []string, v map[string]any) ([]byte, error) {
 	s.placeNewTables()
 	s.removeUnkept()
 	return s.render(), nil
+}
+
+// deleteTable returns orig, the text of a TOML file, without the table at
+// path: the header line, the key/value lines, and the tables below it, each
+// up to the next header, plus one blank line after each table (or, for a
+// table at the end of the file, one blank line before it). Every other byte
+// stays. found is false, and out is orig, when the file has no such table.
+//
+// A comment line in a removed table (header, key/value lines, or a trailing
+// comment on them) returns errBlockHasComment: the caller must not drop it.
+// Returns errNoSplice for an array of tables at, below or above path, and for
+// an inline table or dotted key that defines the table or one of its parents.
+// Returns errSpliceMismatch when the result does not decode to the old data
+// without that table.
+func deleteTable(orig []byte, path []string) (out []byte, found bool, err error) {
+	items, err := scanTOML(orig)
+	if err != nil {
+		return nil, false, err
+	}
+	type span struct{ first, last int }
+	var spans []span
+	cur := -1
+	for _, it := range items {
+		if it.header {
+			cur = -1
+			if it.array && (hasPathPrefix(it.path, path) || isStrictPathPrefix(it.path, path)) {
+				return nil, false, errNoSplice
+			}
+			if hasPathPrefix(it.path, path) {
+				spans = append(spans, span{first: it.first, last: it.last})
+				cur = len(spans) - 1
+			}
+			continue
+		}
+		switch {
+		case cur >= 0:
+			spans[cur].last = it.last
+		case hasPathPrefix(it.path, path), isStrictPathPrefix(it.path, path):
+			return nil, false, errNoSplice
+		}
+	}
+	if len(spans) == 0 {
+		return orig, false, nil
+	}
+
+	comments, err := commentLines(orig)
+	if err != nil {
+		return nil, false, err
+	}
+	lines := bytes.SplitAfter(orig, []byte("\n"))
+	remove := make([]bool, len(lines))
+	for _, sp := range spans {
+		for l := sp.first; l <= sp.last; l++ {
+			if comments[l] {
+				return nil, false, errBlockHasComment
+			}
+			remove[l] = true
+		}
+		if n := sp.last + 1; n < len(lines) && len(lines[n]) > 0 && isBlankLine(lines[n]) {
+			remove[n] = true
+		} else if n >= len(lines) || len(lines[n]) == 0 {
+			if p := sp.first - 1; p >= 0 && !remove[p] && isBlankLine(lines[p]) {
+				remove[p] = true
+			}
+		}
+	}
+	var buf bytes.Buffer
+	for i, l := range lines {
+		if !remove[i] {
+			buf.Write(l)
+		}
+	}
+	out = buf.Bytes()
+
+	var old, got map[string]any
+	if err := fsx.DecodeTOML(orig, &old); err != nil {
+		return nil, false, err
+	}
+	if err := fsx.DecodeTOML(out, &got); err != nil {
+		return nil, false, err
+	}
+	deleteSectionPath(old, path)
+	pruneEmptyTables(old)
+	pruneEmptyTables(got)
+	if !reflect.DeepEqual(old, got) {
+		return nil, false, errSpliceMismatch
+	}
+	return out, true, nil
+}
+
+// commentLines returns the 0-based line indexes of every comment in data,
+// whole-line comments and trailing comments alike. A "#" inside a string is
+// not a comment.
+func commentLines(data []byte) (map[int]bool, error) {
+	var p unstable.Parser
+	p.KeepComments = true
+	p.Reset(data)
+	lines := map[int]bool{}
+	var walk func(n *unstable.Node)
+	walk = func(n *unstable.Node) {
+		for ; n.Valid(); n = n.Next() {
+			if n.Kind == unstable.Comment {
+				lines[lineOf(data, int(n.Raw.Offset))] = true
+			}
+			walk(n.Child())
+		}
+	}
+	for p.NextExpression() {
+		walk(p.Expression())
+	}
+	return lines, p.Error()
+}
+
+// deleteSectionPath removes the table at path from the decoded data m and
+// reports whether it was there.
+func deleteSectionPath(m map[string]any, path []string) bool {
+	for _, part := range path[:len(path)-1] {
+		next, ok := m[part].(map[string]any)
+		if !ok {
+			return false
+		}
+		m = next
+	}
+	last := path[len(path)-1]
+	if _, ok := m[last]; !ok {
+		return false
+	}
+	delete(m, last)
+	return true
+}
+
+// pruneEmptyTables removes every empty table from m, children first. A
+// parent table that only a deleted sub-table implied is not data.
+func pruneEmptyTables(m map[string]any) {
+	for k, v := range m {
+		if sub, ok := v.(map[string]any); ok {
+			pruneEmptyTables(sub)
+			if len(sub) == 0 {
+				delete(m, k)
+			}
+		}
+	}
 }
 
 // appendSection writes the section when the file has no owned table for

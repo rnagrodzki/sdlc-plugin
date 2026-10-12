@@ -5,6 +5,7 @@ package history
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,6 +15,8 @@ import (
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 )
 
 // ---------------------------------------------------------------------------
@@ -141,6 +144,23 @@ func ValidDeferredReason(reason string) bool {
 	return false
 }
 
+// DeferredFileMax is the size limit, in bytes, of deferred.json. A bigger
+// file is refused before it is read. The bound lives here because the
+// package tools imports this package: dashboardDeleteReadMax in
+// internal/tools takes its value from this constant.
+const DeferredFileMax = 8 << 20
+
+// Errors of the deferred.json store. A caller maps them with errors.Is.
+var (
+	// ErrDeferredTooLarge — deferred.json is larger than DeferredFileMax.
+	ErrDeferredTooLarge = errors.New("history: deferred.json is larger than 8 MiB")
+	// ErrDeferredParse — deferred.json is not valid JSON for a list of items.
+	ErrDeferredParse = errors.New("history: deferred.json does not parse")
+	// ErrDeferredWrite — the history directory or deferred.json could not be
+	// written. deferred.json is unchanged: the write is atomic.
+	ErrDeferredWrite = errors.New("history: write deferred.json failed")
+)
+
 // ---------------------------------------------------------------------------
 // Writer interface
 // ---------------------------------------------------------------------------
@@ -151,6 +171,12 @@ type Writer interface {
 	AddDeferred(issue DeferredIssue) error
 	ListDeferred() ([]DeferredIssue, error)
 	ResolveDeferred(id string) error
+	// MergeOrAddDeferred stores issue, merging it into an open row when a
+	// merge key matches. See mergeDeferred for the keys. stored is the row
+	// that holds the text after the call. merged is true when an existing
+	// open row received at least one new line. A call that changes nothing
+	// writes nothing.
+	MergeOrAddDeferred(issue DeferredIssue, mergeByID bool) (stored DeferredIssue, merged bool, err error)
 }
 
 // ---------------------------------------------------------------------------
@@ -208,7 +234,7 @@ func (w *FileWriter) AppendRun(record RunRecord) error {
 // AddDeferred adds a deferred issue to deferred.json.
 func (w *FileWriter) AddDeferred(issue DeferredIssue) error {
 	if err := w.ensureDir(); err != nil {
-		return fmt.Errorf("history: create dir: %w", err)
+		return fmt.Errorf("history: create dir: %w: %w", ErrDeferredWrite, err)
 	}
 	issues, err := w.readDeferred()
 	if err != nil {
@@ -216,6 +242,27 @@ func (w *FileWriter) AddDeferred(issue DeferredIssue) error {
 	}
 	issues = append(issues, issue)
 	return w.writeDeferred(issues)
+}
+
+// MergeOrAddDeferred stores issue in deferred.json. It reads the whole file,
+// applies mergeDeferred and, when the result differs, writes the file back
+// atomically. A read, parse or size failure leaves the file as it was.
+func (w *FileWriter) MergeOrAddDeferred(issue DeferredIssue, mergeByID bool) (DeferredIssue, bool, error) {
+	if err := w.ensureDir(); err != nil {
+		return DeferredIssue{}, false, fmt.Errorf("history: create dir: %w: %w", ErrDeferredWrite, err)
+	}
+	issues, err := w.readDeferred()
+	if err != nil {
+		return DeferredIssue{}, false, fmt.Errorf("history: read before merge: %w", err)
+	}
+	updated, stored, merged, changed := mergeDeferred(issues, issue, mergeByID)
+	if !changed {
+		return stored, false, nil
+	}
+	if err := w.writeDeferred(updated); err != nil {
+		return DeferredIssue{}, false, err
+	}
+	return stored, merged, nil
 }
 
 // ListDeferred returns all deferred issues.
@@ -243,7 +290,20 @@ func (w *FileWriter) ResolveDeferred(id string) error {
 	return w.writeDeferred(issues)
 }
 
+// readDeferred reads deferred.json. A missing or blank file is an empty
+// list. A file over DeferredFileMax fails with ErrDeferredTooLarge before
+// any byte is read. A file that does not parse fails with ErrDeferredParse.
 func (w *FileWriter) readDeferred() ([]DeferredIssue, error) {
+	info, err := os.Stat(w.DeferredPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("history: read deferred.json: %w", err)
+	}
+	if info.Size() > DeferredFileMax {
+		return nil, fmt.Errorf("%w (%d bytes)", ErrDeferredTooLarge, info.Size())
+	}
 	data, err := os.ReadFile(w.DeferredPath())
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -256,7 +316,7 @@ func (w *FileWriter) readDeferred() ([]DeferredIssue, error) {
 	}
 	var issues []DeferredIssue
 	if err := json.Unmarshal(data, &issues); err != nil {
-		return nil, fmt.Errorf("history: parse deferred.json: %w", err)
+		return nil, fmt.Errorf("%w: %w", ErrDeferredParse, err)
 	}
 	return issues, nil
 }
@@ -267,7 +327,10 @@ func (w *FileWriter) writeDeferred(issues []DeferredIssue) error {
 		return fmt.Errorf("history: marshal deferred.json: %w", err)
 	}
 	data = append(data, '\n')
-	return os.WriteFile(w.DeferredPath(), data, 0o644)
+	if err := fsx.AtomicWriteBytes(w.DeferredPath(), data); err != nil {
+		return fmt.Errorf("%w: %w", ErrDeferredWrite, err)
+	}
+	return nil
 }
 
 // ReadRecentRuns reads the last n RunRecords from runs.jsonl.
@@ -333,6 +396,18 @@ func (m *MemWriter) AddDeferred(issue DeferredIssue) error {
 	return nil
 }
 
+// MergeOrAddDeferred stores issue in the in-memory slice with the same rules
+// as FileWriter.MergeOrAddDeferred.
+func (m *MemWriter) MergeOrAddDeferred(issue DeferredIssue, mergeByID bool) (DeferredIssue, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	updated, stored, merged, changed := mergeDeferred(m.Deferred, issue, mergeByID)
+	if changed {
+		m.Deferred = updated
+	}
+	return stored, merged, nil
+}
+
 // ListDeferred returns a copy of all deferred issues.
 func (m *MemWriter) ListDeferred() ([]DeferredIssue, error) {
 	m.mu.Lock()
@@ -353,6 +428,147 @@ func (m *MemWriter) ResolveDeferred(id string) error {
 		}
 	}
 	return fmt.Errorf("history: deferred issue %q not found", id)
+}
+
+// ---------------------------------------------------------------------------
+// Merge of a deferred issue into the stored rows
+// ---------------------------------------------------------------------------
+
+// mergeDeferred applies issue to rows and returns the new rows. The input
+// slice is not changed. stored is the row that holds the text of issue
+// afterwards. merged is true when an existing open row received at least one
+// new line. changed is true when the new rows differ from rows. The first
+// rule that matches wins:
+//
+//	mergeByID false, a row has the same id (any status): no change. stored is that row.
+//	mergeByID true, an open row has the same id:         append the new lines to it.
+//	mergeByID true, an open row has id <id>-<n>:         append the new lines to it.
+//	reason needs-direction, file set, an open row has
+//	  the same file and the same reason:                 append the new lines to it.
+//	mergeByID true, only resolved rows have the same id: add a row with id <id>-<n>, n from 2.
+//	any other case:                                      add issue as a new row.
+//
+// The <id>-<n> rule keeps a repeat call from adding one more row each time
+// after the first row of an id was resolved. A below-threshold finding never
+// matches a file: each one stays its own row, because the fix pass resolves
+// one row at a time.
+func mergeDeferred(rows []DeferredIssue, issue DeferredIssue, mergeByID bool) (updated []DeferredIssue, stored DeferredIssue, merged, changed bool) {
+	idSeen := false
+	openByID, openBySuffix, openByFile := -1, -1, -1
+	for i, r := range rows {
+		switch {
+		case r.ID == issue.ID:
+			idSeen = true
+			if r.Status == StatusOpen && openByID < 0 {
+				openByID = i
+			}
+		case r.Status == StatusOpen && openBySuffix < 0 && isSuffixedID(r.ID, issue.ID):
+			openBySuffix = i
+		}
+		if openByFile < 0 && r.Status == StatusOpen && issue.Reason == ReasonNeedsDirection &&
+			issue.File != "" && r.File == issue.File && r.Reason == ReasonNeedsDirection {
+			openByFile = i
+		}
+	}
+
+	if !mergeByID && idSeen {
+		for _, r := range rows {
+			if r.ID == issue.ID {
+				return rows, r, false, false
+			}
+		}
+	}
+
+	target := -1
+	switch {
+	case mergeByID && openByID >= 0:
+		target = openByID
+	case mergeByID && openBySuffix >= 0:
+		target = openBySuffix
+	case openByFile >= 0:
+		target = openByFile
+	}
+	if target >= 0 {
+		desc, added := appendNewLines(rows[target].Description, issue.Description)
+		if !added {
+			return rows, rows[target], false, false
+		}
+		updated = append([]DeferredIssue(nil), rows...)
+		updated[target].Description = desc
+		return updated, updated[target], true, true
+	}
+
+	if mergeByID && idSeen {
+		issue.ID = nextFreeDeferredID(rows, issue.ID)
+	}
+	updated = append(append([]DeferredIssue(nil), rows...), issue)
+	return updated, issue, false, true
+}
+
+// isSuffixedID reports whether id is base followed by "-" and digits, the
+// form that nextFreeDeferredID gives to the second and later rows of base.
+func isSuffixedID(id, base string) bool {
+	rest, ok := strings.CutPrefix(id, base+"-")
+	if !ok || rest == "" {
+		return false
+	}
+	for _, c := range rest {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// nextFreeDeferredID returns <id>-<n> for the smallest n >= 2 that no row
+// uses as an id.
+func nextFreeDeferredID(rows []DeferredIssue, id string) string {
+	used := make(map[string]bool, len(rows))
+	for _, r := range rows {
+		used[r.ID] = true
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", id, n)
+		if !used[candidate] {
+			return candidate
+		}
+	}
+}
+
+// appendNewLines adds each non-blank line of incoming to existing as a
+// "- <line>" line, unless a line of existing already holds that text. A
+// leading "- " is ignored on both sides of the comparison. added is false
+// when every line was already there; desc is then existing, unchanged.
+func appendNewLines(existing, incoming string) (desc string, added bool) {
+	held := map[string]bool{}
+	for _, l := range strings.Split(existing, "\n") {
+		held[lineText(l)] = true
+	}
+	var sb strings.Builder
+	sb.WriteString(existing)
+	for _, l := range strings.Split(incoming, "\n") {
+		text := lineText(l)
+		if text == "" || held[text] {
+			continue
+		}
+		held[text] = true
+		if sb.Len() > 0 {
+			sb.WriteString("\n")
+		}
+		sb.WriteString("- " + text)
+		added = true
+	}
+	if !added {
+		return existing, false
+	}
+	return sb.String(), true
+}
+
+// lineText trims a description line and drops one leading "- " list marker.
+func lineText(line string) string {
+	t := strings.TrimSpace(line)
+	t = strings.TrimPrefix(t, "- ")
+	return strings.TrimSpace(t)
 }
 
 // ---------------------------------------------------------------------------

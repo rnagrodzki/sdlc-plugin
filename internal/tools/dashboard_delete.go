@@ -31,8 +31,10 @@ var (
 )
 
 // dashboardDeleteReadMax is the size limit, in bytes, of a store file that a
-// dashboard delete reads. A bigger file is refused before it is read.
-const dashboardDeleteReadMax = 8 << 20
+// dashboard delete reads. A bigger file is refused before it is read. The
+// value is history.DeferredFileMax, so the limit of deferred.json has one
+// source.
+const dashboardDeleteReadMax = history.DeferredFileMax
 
 // dashboardDeleteReadMaxText is dashboardDeleteReadMax for a message.
 const dashboardDeleteReadMaxText = "8 MiB"
