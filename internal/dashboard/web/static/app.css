@@ -1178,7 +1178,7 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .pp-menu option { color: var(--ivory); background: var(--panel); }
 /* Every cell starts on the line of the topic name, as the Activity rows do. */
 .pp td { vertical-align: top; }
-.pp .pp-status, .pp .h-repo, .pp .h-when { line-height: 20px; }
+.pp .pp-status, .pp .h-repo, .pp .h-when, .pp .h-dur { line-height: 20px; }
 .pp-name { line-height: 20px; }
 .pp-name { font-family: var(--font-sign); font-weight: 600; font-size: 14px; color: var(--ivory); }
 .pp-path { margin-top: 2px; font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); word-break: break-all; }

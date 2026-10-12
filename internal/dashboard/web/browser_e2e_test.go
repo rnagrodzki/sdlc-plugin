@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -321,6 +322,16 @@ func browserSeedRepoA(t *testing.T, root string, now time.Time) *browserShip {
 	topic := filepath.Join(root, paths.DataDir, paths.PreplanSubdir, browserPlanSlug+".md")
 	// PreplanStatuses[1] is "ready for plan"; the test changes it to the last status.
 	e2eWriteFile(t, topic, "# Preplan: Browser topic\n\n**Status:** "+tools.PreplanStatuses[1]+"\n")
+	// browser-long started 2 hours before now and changes now, so it has a
+	// duration. browser-none has no Started line, so its duration is a dash.
+	started := map[string]string{
+		"browser-long": "\n**Started:** " + now.Add(-2*time.Hour).Format(time.RFC3339) + "\n",
+		"browser-none": "",
+	}
+	for slug, line := range started {
+		p := filepath.Join(root, paths.DataDir, paths.PreplanSubdir, slug+".md")
+		e2eWriteFile(t, p, "# Preplan: "+slug+"\n\n**Status:** "+tools.PreplanStatuses[1]+"\n"+line)
+	}
 
 	browserWriteRuns(t, root, []history.RunRecord{
 		{Timestamp: browserTS(now.Add(-70 * time.Minute)), Skill: "plan", Branch: browserBranch, Outcome: "done", DurationMs: 600000, StartedAt: browserTS(now.Add(-80 * time.Minute))},
@@ -488,7 +499,8 @@ func browserSnapshotOf(t *testing.T, base string) tools.DashboardSnapshot {
 //
 // Steps:
 //  1. Preplans: the status menu writes the new **Status:** line, and the
-//     repo header sorts the table A to Z and keeps the focus.
+//     repo header sorts the table A to Z and keeps the focus. A duration
+//     cell shows a time or a dash, and the duration header sorts.
 //  2. History: a delete of a row that is already gone shows the server
 //     message and changes no file; a delete of a row removes it.
 //  3. Pipelines: lone waits come before the ship block, a repo scope that has
@@ -618,6 +630,21 @@ func TestBrowserE2E(t *testing.T) {
 	page.click("the repo sort header", `button[data-pp-sort="repo"]`)
 	page.wait("the repo sort", `document.querySelector('button[data-pp-sort="repo"]').closest('th').getAttribute('aria-sort') === 'ascending'`)
 	page.wait("the focus on the repo header", `document.activeElement && document.activeElement.getAttribute('data-pp-sort') === 'repo'`)
+
+	// Step 1d: the duration cells and the duration sort.
+	t.Log("step 1d: preplan duration")
+	row := func(slug string) string {
+		return `document.querySelector('select[data-pp-set="` + slug + `"]').closest('tr')`
+	}
+	if got := browserMust[string](page, "the long duration", row("browser-long")+`.querySelector('td.h-dur').textContent`); !regexp.MustCompile(`^\d+h \d{2}m$`).MatchString(got) {
+		t.Fatalf("long duration = %q; want <h>h <mm>m from the Started line", got)
+	}
+	if got := browserMust[string](page, "the empty duration", row("browser-none")+`.querySelector('td.h-dur').textContent`); got != "—" {
+		t.Fatalf("empty duration = %q; want —", got)
+	}
+	page.click("the duration sort header", `button[data-pp-sort="duration"]`)
+	page.wait("the longest row first", `document.querySelector('.pp tbody tr select[data-pp-set]').getAttribute('data-pp-set') === 'browser-long'`)
+	page.wait("the duration sort", `document.querySelector('button[data-pp-sort="duration"]').closest('th').getAttribute('aria-sort') === 'descending'`)
 
 	// Step 2: History.
 	t.Log("step 2: history delete")

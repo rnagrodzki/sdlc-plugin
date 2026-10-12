@@ -3245,7 +3245,7 @@ describe('render preplanPanel', () => {
     const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
     assert.equal(panel.className, 'list-panel hist-panel pp-panel');
     assert.equal(textOf(oneByClass(panel, 'list-title')), 'Preplans (3)');
-    assert.deepEqual(findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'th').map(textOf), ['status', 'topic', 'repo↕', 'updated↕', '']);
+    assert.deepEqual(findAll(oneByClass(panel, 'pp'), (n) => n.tagName === 'th').map(textOf), ['status', 'topic', 'repo↕', 'updated↕', 'duration↕', '']);
     assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/alpha.md', '.sdlc-v2/preplan/zeta.md', '.sdlc-v2/preplan/old.md']);
     const first = rowsOf(panel)[0];
     assert.equal(oneByClass(first, 'pp-name').textContent, 'Alpha topic');
@@ -3272,15 +3272,53 @@ describe('render preplanPanel', () => {
     assert.equal(oneByClass(chips[3], 'pp-status').className, 'pp-status pp-paused');
   });
 
-  test('the repo and updated headers are sort buttons; no sort marks none', () => {
+  test('the repo, updated and duration headers are sort buttons; no sort marks none', () => {
     const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
     const sortable = byClass(oneByClass(panel, 'pp'), 'sortable');
-    assert.deepEqual(sortable.map((th) => th.tagName), ['th', 'th']);
-    assert.deepEqual(sortable.map((th) => th.attrs['aria-sort']), ['none', 'none']);
+    assert.deepEqual(sortable.map((th) => th.tagName), ['th', 'th', 'th']);
+    assert.deepEqual(sortable.map((th) => th.attrs['aria-sort']), ['none', 'none', 'none']);
     const buttons = sortable.map((th) => th.children[0]);
-    assert.deepEqual(buttons.map((b) => b.tagName), ['button', 'button']);
-    assert.deepEqual(buttons.map((b) => b.attrs['data-pp-sort']), ['repo', 'updated']);
-    assert.deepEqual(buttons.map((b) => b.className), ['sort-btn', 'sort-btn']);
+    assert.deepEqual(buttons.map((b) => b.tagName), ['button', 'button', 'button']);
+    assert.deepEqual(buttons.map((b) => b.attrs['data-pp-sort']), ['repo', 'updated', 'duration']);
+    assert.deepEqual(buttons.map((b) => b.className), ['sort-btn', 'sort-btn', 'sort-btn']);
+  });
+
+  test('the duration cell: h-dur with a title, a time for a positive durationMs, a dash for 0', () => {
+    const timed = [{ root: '/a', name: 'a', preplans: [
+      { slug: 'long', topic: 'Long', status: 'paused', path: '.sdlc-v2/preplan/long.md', updatedAt: '2026-10-08T10:00:00Z', durationMs: 4800000 },
+      { slug: 'short', topic: 'Short', status: 'paused', path: '.sdlc-v2/preplan/short.md', updatedAt: '2026-10-07T10:00:00Z', durationMs: 26000 },
+      { slug: 'none', topic: 'None', status: 'paused', path: '.sdlc-v2/preplan/none.md', updatedAt: '2026-10-06T10:00:00Z', durationMs: 0 },
+    ] }];
+    const panel = render.preplanPanel(fakeDoc(), view, timed, new Set());
+    const cells = rowsOf(panel).map((r) => oneByClass(r, 'h-dur'));
+    assert.deepEqual(cells.map((c) => c.tagName), ['td', 'td', 'td']);
+    assert.deepEqual(cells.map(textOf), ['1h 20m', '26s', '—']);
+    assert.deepEqual(cells.map((c) => c.attrs.title), Array(3).fill('Time from the start of the preplan to its last change'));
+    // The duration cell sits after the updated cell and before the bin cell.
+    const row = rowsOf(panel)[0];
+    assert.deepEqual(row.children.map((c) => c.className), ['', 'pp-topic', 'h-repo', 'h-when', 'h-dur', 'pp-act']);
+  });
+
+  test('a preplan with no durationMs field shows a dash', () => {
+    const panel = render.preplanPanel(fakeDoc(), view, repos, new Set());
+    assert.deepEqual(rowsOf(panel).map((r) => textOf(oneByClass(r, 'h-dur'))), ['—', '—', '—']);
+  });
+
+  test('the duration header sorts the longest first; a row with no duration is last', () => {
+    const timed = [{ root: '/a', name: 'a', preplans: [
+      { slug: 'none', topic: 'None', status: 'paused', path: '.sdlc-v2/preplan/none.md', updatedAt: '2026-10-09T10:00:00Z', durationMs: 0 },
+      { slug: 'short', topic: 'Short', status: 'paused', path: '.sdlc-v2/preplan/short.md', updatedAt: '2026-10-08T10:00:00Z', durationMs: 26000 },
+      { slug: 'long', topic: 'Long', status: 'paused', path: '.sdlc-v2/preplan/long.md', updatedAt: '2026-10-07T10:00:00Z', durationMs: 4800000 },
+    ] }];
+    const ui = view.defaultUi();
+    ui.preplanSort = view.nextHistorySort(null, 'duration', view.PREPLAN_SORT_FIRST);
+    const panel = render.preplanPanel(fakeDoc(), view, timed, new Set(), ui);
+    const sortable = byClass(oneByClass(panel, 'pp'), 'sortable');
+    assert.deepEqual(sortable.map((th) => th.attrs['aria-sort']), ['none', 'none', 'descending']);
+    assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/long.md', '.sdlc-v2/preplan/short.md', '.sdlc-v2/preplan/none.md']);
+    ui.preplanSort = view.nextHistorySort(ui.preplanSort, 'duration', view.PREPLAN_SORT_FIRST);
+    const flipped = render.preplanPanel(fakeDoc(), view, timed, new Set(), ui);
+    assert.deepEqual(slugsOf(flipped), ['.sdlc-v2/preplan/short.md', '.sdlc-v2/preplan/long.md', '.sdlc-v2/preplan/none.md']);
   });
 
   test('the active sort header has aria-sort and the class on, and the rows follow the sort', () => {
@@ -3288,16 +3326,16 @@ describe('render preplanPanel', () => {
     ui.preplanSort = view.nextHistorySort(null, 'repo', view.PREPLAN_SORT_FIRST);
     let panel = render.preplanPanel(fakeDoc(), view, repos, new Set(), ui);
     let sortable = byClass(oneByClass(panel, 'pp'), 'sortable');
-    assert.deepEqual(sortable.map((th) => th.attrs['aria-sort']), ['ascending', 'none']);
-    assert.deepEqual(sortable.map((th) => th.children[0].className), ['sort-btn on', 'sort-btn']);
-    assert.deepEqual(sortable.map(textOf), ['repo▲', 'updated↕']);
+    assert.deepEqual(sortable.map((th) => th.attrs['aria-sort']), ['ascending', 'none', 'none']);
+    assert.deepEqual(sortable.map((th) => th.children[0].className), ['sort-btn on', 'sort-btn', 'sort-btn']);
+    assert.deepEqual(sortable.map(textOf), ['repo▲', 'updated↕', 'duration↕']);
     // Repo a first; inside a, the newest change first.
     assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/zeta.md', '.sdlc-v2/preplan/old.md', '.sdlc-v2/preplan/alpha.md']);
 
     ui.preplanSort = { key: 'updated', dir: 'asc' };
     panel = render.preplanPanel(fakeDoc(), view, repos, new Set(), ui);
     sortable = byClass(oneByClass(panel, 'pp'), 'sortable');
-    assert.deepEqual(sortable.map((th) => th.attrs['aria-sort']), ['none', 'ascending']);
+    assert.deepEqual(sortable.map((th) => th.attrs['aria-sort']), ['none', 'ascending', 'none']);
     assert.deepEqual(slugsOf(panel), ['.sdlc-v2/preplan/old.md', '.sdlc-v2/preplan/alpha.md', '.sdlc-v2/preplan/zeta.md']);
   });
 

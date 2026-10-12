@@ -1817,14 +1817,14 @@
   }
 
   // The columns of the Preplans table, in order. The last column holds the bin button and has no name.
-  var PREPLAN_COLUMNS = ['status', 'topic', 'repo', 'updated', ''];
-  var PREPLAN_SORTABLE = { repo: true, updated: true };
+  var PREPLAN_COLUMNS = ['status', 'topic', 'repo', 'updated', 'duration', ''];
+  var PREPLAN_SORTABLE = { repo: true, updated: true, duration: true };
 
   /**
    * The Preplans tab: `Preplans (n)`, one repo-warning line for each warning
    * of a repo in scope, a row of status chips that filter the table, then one
-   * row for each topic file, newest change first. The repo and updated
-   * controls sort the table (view.sortPreplans). A status outside
+   * row for each topic file, newest change first. The repo, updated and
+   * duration controls sort the table (view.sortPreplans). A status outside
    * view.PREPLAN_STATUSES shows as unknown. The unknown chip always shows,
    * even when its count is 0.
    * @param {Document} doc
@@ -1890,12 +1890,16 @@
       repoCell.setAttribute('title', item.repo.root);
       var when = el(doc, 'td', 'h-when', view.dateLabel(item.updatedAt));
       when.setAttribute('title', item.updatedAt);
+      // historyTime shows '—' for null. positiveMs turns the unknown value 0 into null.
+      var duration = historyTime(doc, view, view.positiveMs(item.durationMs));
+      duration.setAttribute('title', 'Time from the start of the preplan to its last change');
       body.appendChild(
         append(el(doc, 'tr', ''), [
           append(el(doc, 'td', ''), [tag]),
           topic,
           repoCell,
           when,
+          duration,
           append(el(doc, 'td', 'pp-act'), [remove]),
         ])
       );
