@@ -3,6 +3,7 @@ package ghx
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -179,6 +180,243 @@ func TestIssueView(t *testing.T) {
 	}
 	if out != "Issue PROJ-99 details" {
 		t.Errorf("got %q, want %q", out, "Issue PROJ-99 details")
+	}
+}
+
+// TestIssueList_PassesArgsAndParsesIssues checks that IssueList runs gh with
+// the exact argument list (one --label flag for each label, state open, the
+// limit and the JSON field list) and decodes the JSON array into Issue values
+// in the order gh printed them.
+func TestIssueList_PassesArgsAndParsesIssues(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args.txt")
+	cleanup := stubGH(t, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\n"+
+		"printf '%%s' '[{\"number\":91,\"title\":\"[harden] pre-flight stop\",\"url\":\"https://example.test/91\"},"+
+		"{\"number\":7,\"title\":\"[plan] other\",\"url\":\"https://example.test/7\"}]'\n", argsFile))
+	defer cleanup()
+
+	got, err := IssueList(".", "rnagrodzki/sdlc-plugin", []string{"tooling-error", "harden"}, 10)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []Issue{
+		{Number: 91, Title: "[harden] pre-flight stop", URL: "https://example.test/91"},
+		{Number: 7, Title: "[plan] other", URL: "https://example.test/7"},
+	}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+
+	raw, readErr := os.ReadFile(argsFile)
+	if readErr != nil {
+		t.Fatalf("read recorded args: %v", readErr)
+	}
+	gotArgs := strings.Join(strings.Split(strings.TrimSpace(string(raw)), "\n"), " ")
+	wantArgs := "issue list --repo rnagrodzki/sdlc-plugin --label tooling-error --label harden --state open --limit 10 --json number,title,url"
+	if gotArgs != wantArgs {
+		t.Errorf("gh args = %q, want %q", gotArgs, wantArgs)
+	}
+}
+
+// TestIssueList_EmptyResultIsEmptySlice checks that an empty JSON array and a
+// JSON null both yield a non-nil empty slice and a nil error, so callers can
+// range over the result and encode it as [] without a nil check.
+func TestIssueList_EmptyResultIsEmptySlice(t *testing.T) {
+	for _, output := range []string{"[]", "null"} {
+		t.Run(output, func(t *testing.T) {
+			cleanup := stubGH(t, "#!/bin/sh\nprintf '%s' '"+output+"'\n")
+			defer cleanup()
+
+			got, err := IssueList(".", "o/r", []string{"x"}, 5)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got == nil || len(got) != 0 {
+				t.Errorf("got %#v, want a non-nil empty slice", got)
+			}
+		})
+	}
+}
+
+// TestIssueList_NonZeroExitReturnsExitError checks that a gh exit with a
+// non-zero code yields an *ExitError that keeps the exit code and the whole
+// stderr text, and that it is not mistaken for a missing binary.
+func TestIssueList_NonZeroExitReturnsExitError(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf 'HTTP 403: API rate limit exceeded\\nsecond line\\n' >&2\nexit 4\n")
+	defer cleanup()
+
+	got, err := IssueList(".", "o/r", []string{"x"}, 10)
+	if got != nil {
+		t.Errorf("got %+v, want nil issues on failure", got)
+	}
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("expected *ExitError in chain, got: %v", err)
+	}
+	if exitErr.ExitCode != 4 {
+		t.Errorf("ExitCode = %d, want 4", exitErr.ExitCode)
+	}
+	if exitErr.Stderr != "HTTP 403: API rate limit exceeded\nsecond line" {
+		t.Errorf("Stderr = %q, want the whole trimmed stderr text", exitErr.Stderr)
+	}
+	if errors.Is(err, ErrGHNotFound) || errors.Is(err, ErrNotJSON) {
+		t.Errorf("a non-zero exit must not match ErrGHNotFound or ErrNotJSON: %v", err)
+	}
+}
+
+// TestIssueList_NotJSONOutput checks that exit 0 with output that is not a
+// JSON array (plain text, blank output, a JSON object) wraps ErrNotJSON.
+func TestIssueList_NotJSONOutput(t *testing.T) {
+	for name, script := range map[string]string{
+		"plain text":  "#!/bin/sh\necho 'hello'\n",
+		"blank":       "#!/bin/sh\nexit 0\n",
+		"json object": "#!/bin/sh\necho '{\"number\":1}'\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			cleanup := stubGH(t, script)
+			defer cleanup()
+
+			got, err := IssueList(".", "o/r", []string{"x"}, 10)
+			if got != nil {
+				t.Errorf("got %+v, want nil issues on failure", got)
+			}
+			if !errors.Is(err, ErrNotJSON) {
+				t.Errorf("expected ErrNotJSON in chain, got: %v", err)
+			}
+			var exitErr *ExitError
+			if errors.As(err, &exitErr) {
+				t.Errorf("a parse failure must not be an *ExitError: %v", err)
+			}
+		})
+	}
+}
+
+// TestIssueList_MissingGH checks that a missing gh binary wraps ErrGHNotFound.
+func TestIssueList_MissingGH(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := IssueList(".", "o/r", []string{"x"}, 10)
+	if !errors.Is(err, ErrGHNotFound) {
+		t.Errorf("expected ErrGHNotFound in chain, got: %v", err)
+	}
+}
+
+// TestIssueList_RejectsInvalidArguments checks that an empty repo and a limit
+// below 1 fail before gh runs: with an empty PATH a gh run would give
+// ErrGHNotFound, so the test also asserts that error does not appear.
+func TestIssueList_RejectsInvalidArguments(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	tests := []struct {
+		name    string
+		repo    string
+		limit   int
+		wantMsg string
+	}{
+		{name: "empty repo", repo: "  ", limit: 10, wantMsg: "repo is empty"},
+		{name: "zero limit", repo: "o/r", limit: 0, wantMsg: "invalid limit 0"},
+		{name: "negative limit", repo: "o/r", limit: -3, wantMsg: "invalid limit -3"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := IssueList(".", tc.repo, []string{"x"}, tc.limit)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if errors.Is(err, ErrGHNotFound) {
+				t.Errorf("gh must not run for invalid arguments: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantMsg) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantMsg)
+			}
+		})
+	}
+}
+
+// TestIssueList_StartFailureWrapsError checks that a gh start failure that is
+// neither a missing binary nor a non-zero exit (here a dir that does not
+// exist) returns a plain error that names IssueList and keeps the start error
+// in its chain, and that it matches none of ErrGHNotFound, ErrNotJSON and
+// *ExitError.
+func TestIssueList_StartFailureWrapsError(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf '[]'\n")
+	defer cleanup()
+
+	missingDir := filepath.Join(t.TempDir(), "no-such-dir")
+	got, err := IssueList(missingDir, "o/r", []string{"x"}, 10)
+	if got != nil {
+		t.Errorf("got %+v, want nil issues on failure", got)
+	}
+	if err == nil {
+		t.Fatal("expected an error for a dir that does not exist")
+	}
+	if !strings.HasPrefix(err.Error(), "ghx: IssueList: ") {
+		t.Errorf("error %q does not start with the IssueList prefix", err.Error())
+	}
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Errorf("expected the start error (*fs.PathError) in the chain, got: %v", err)
+	}
+	var exitErr *ExitError
+	if errors.Is(err, ErrGHNotFound) || errors.Is(err, ErrNotJSON) || errors.As(err, &exitErr) {
+		t.Errorf("a start failure must not match ErrGHNotFound, ErrNotJSON or *ExitError: %v", err)
+	}
+}
+
+// TestIssueList_LimitBoundary checks the edge of the limit check: a limit of
+// 1 runs gh and passes "--limit 1", and a limit of 0 fails before gh runs, so
+// the stub leaves no marker file behind.
+func TestIssueList_LimitBoundary(t *testing.T) {
+	t.Run("limit 1 runs gh", func(t *testing.T) {
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		cleanup := stubGH(t, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf '[]'\n", argsFile))
+		defer cleanup()
+
+		got, err := IssueList(".", "o/r", []string{"x"}, 1)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got == nil || len(got) != 0 {
+			t.Errorf("got %#v, want a non-nil empty slice", got)
+		}
+		raw, readErr := os.ReadFile(argsFile)
+		if readErr != nil {
+			t.Fatalf("gh did not run for limit 1: %v", readErr)
+		}
+		gotArgs := strings.Join(strings.Split(strings.TrimSpace(string(raw)), "\n"), " ")
+		wantArgs := "issue list --repo o/r --label x --state open --limit 1 --json number,title,url"
+		if gotArgs != wantArgs {
+			t.Errorf("gh args = %q, want %q", gotArgs, wantArgs)
+		}
+	})
+
+	t.Run("limit 0 does not run gh", func(t *testing.T) {
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		cleanup := stubGH(t, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf '[]'\n", argsFile))
+		defer cleanup()
+
+		got, err := IssueList(".", "o/r", []string{"x"}, 0)
+		if got != nil {
+			t.Errorf("got %+v, want nil issues for limit 0", got)
+		}
+		if err == nil || !strings.Contains(err.Error(), "invalid limit 0") {
+			t.Errorf("expected an invalid limit error, got: %v", err)
+		}
+		if _, statErr := os.Stat(argsFile); !errors.Is(statErr, fs.ErrNotExist) {
+			t.Errorf("gh ran for limit 0 (args file state: %v)", statErr)
+		}
+	})
+}
+
+// TestExitError_Error checks the message of ExitError with and without stderr
+// text.
+func TestExitError_Error(t *testing.T) {
+	withStderr := &ExitError{Command: "gh issue list", ExitCode: 1, Stderr: "no auth"}
+	if got, want := withStderr.Error(), "ghx: gh issue list exited with code 1: no auth"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	noStderr := &ExitError{Command: "gh issue list", ExitCode: 2}
+	if got, want := noStderr.Error(), "ghx: gh issue list exited with code 2"; got != want {
+		t.Errorf("got %q, want %q", got, want)
 	}
 }
 

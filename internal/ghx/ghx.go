@@ -161,6 +161,89 @@ func IssueView(dir string, key string) (string, error) {
 	return run(dir, "issue", "view", key)
 }
 
+// Issue is one entry of the JSON array that `gh issue list --json
+// number,title,url` prints.
+type Issue struct {
+	Number int    `json:"number"`
+	Title  string `json:"title"`
+	URL    string `json:"url"`
+}
+
+// ErrNotJSON is returned (wrapped) when gh exits 0 but its stdout is not the
+// JSON that the caller asked for. Callers can use errors.Is(err, ErrNotJSON)
+// to tell a malformed gh answer from a gh failure.
+var ErrNotJSON = errors.New("ghx: gh output is not JSON")
+
+// ExitError is returned when gh started and exited with a non-zero code.
+// Stderr is the trimmed stderr text of the process, which may span several
+// lines. execx.RunAllowExit returns the stderr text and the exit code apart
+// from its error, so ExitError keeps both as separate fields and callers that
+// must show the reason of a gh failure read Stderr here.
+type ExitError struct {
+	Command  string
+	ExitCode int
+	Stderr   string
+}
+
+// Error describes the failed command, its exit code and its stderr text.
+func (e *ExitError) Error() string {
+	if e.Stderr == "" {
+		return fmt.Sprintf("ghx: %s exited with code %d", e.Command, e.ExitCode)
+	}
+	return fmt.Sprintf("ghx: %s exited with code %d: %s", e.Command, e.ExitCode, e.Stderr)
+}
+
+// IssueList returns the open issues of repo that carry every label in labels,
+// via `gh issue list --repo <repo> --label <l> ... --state open --limit
+// <limit> --json number,title,url` run inside dir. The label filter runs in
+// gh; any further filter, such as a title prefix, is the caller's job. Output
+// of `[]` or `null` yields an empty slice and a nil error.
+//
+// Errors:
+//   - limit below 1 or an empty repo: a plain error, gh is not run.
+//   - gh missing from PATH: wraps ErrGHNotFound.
+//   - gh exits non-zero (no auth, no network, rate limit): *ExitError with
+//     the stderr text of gh.
+//   - gh cannot start for another reason, such as a missing dir: a plain error
+//     that wraps the start error.
+//   - exit 0 with output that is not a JSON array or `null`: wraps ErrNotJSON.
+//
+// repo and labels are values of flags, not positional arguments, so gh reads
+// a value that starts with "-" as a value and not as a flag.
+func IssueList(dir, repo string, labels []string, limit int) ([]Issue, error) {
+	if strings.TrimSpace(repo) == "" {
+		return nil, fmt.Errorf("ghx: IssueList: repo is empty")
+	}
+	if limit < 1 {
+		return nil, fmt.Errorf("ghx: IssueList: invalid limit %d", limit)
+	}
+	args := []string{"issue", "list", "--repo", repo}
+	for _, label := range labels {
+		args = append(args, "--label", label)
+	}
+	args = append(args, "--state", "open", "--limit", strconv.Itoa(limit), "--json", "number,title,url")
+
+	stdout, stderr, exitCode, err := execx.RunAllowExit(ghCmd, args, execx.Options{Dir: dir})
+	if err != nil {
+		if isBinaryNotFound(err) {
+			return nil, fmt.Errorf("%w: %w", ErrGHNotFound, err)
+		}
+		return nil, fmt.Errorf("ghx: IssueList: %w", err)
+	}
+	if exitCode != 0 {
+		return nil, &ExitError{Command: "gh " + strings.Join(args[:2], " "), ExitCode: exitCode, Stderr: stderr}
+	}
+
+	var issues []Issue
+	if jsonErr := json.Unmarshal([]byte(stdout), &issues); jsonErr != nil {
+		return nil, fmt.Errorf("ghx: IssueList: parse gh issue list output: %w: %w", ErrNotJSON, jsonErr)
+	}
+	if issues == nil {
+		issues = []Issue{}
+	}
+	return issues, nil
+}
+
 // AuthStatus returns the output of `gh auth status` run inside dir.
 func AuthStatus(dir string) (string, error) {
 	return run(dir, "auth", "status")

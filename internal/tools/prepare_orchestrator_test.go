@@ -264,6 +264,7 @@ func TestPrepareOrchestrator_HardenReturnsInstructionsAndNext(t *testing.T) {
 // error_report mode returns next and leaves customInstructions out of the
 // output.
 func TestPrepareOrchestrator_ErrorReportOmitsInstructions(t *testing.T) {
+	redirectTempDir(t)
 	newOrchestratorRepo(t, hardenInstructionsConfig)
 
 	out, err := prepareOrchestrator(PrepareOrchestratorIn{
@@ -276,7 +277,6 @@ func TestPrepareOrchestrator_ErrorReportOmitsInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareOrchestrator: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(out.ManifestPath)) })
 
 	if out.CustomInstructions != nil {
 		t.Errorf("CustomInstructions = %#v, want nil in error_report mode", out.CustomInstructions)
@@ -293,6 +293,7 @@ func TestPrepareOrchestrator_ErrorReportOmitsInstructions(t *testing.T) {
 // TestPrepareOrchestrator_ErrorReportWritesFreshManifestPerCall asserts that
 // two error_report calls with the same input return different manifest paths.
 func TestPrepareOrchestrator_ErrorReportWritesFreshManifestPerCall(t *testing.T) {
+	redirectTempDir(t)
 	newOrchestratorRepo(t, hardenInstructionsConfig)
 	in := PrepareOrchestratorIn{
 		Mode:      "error_report",
@@ -306,12 +307,10 @@ func TestPrepareOrchestrator_ErrorReportWritesFreshManifestPerCall(t *testing.T)
 	if err != nil {
 		t.Fatalf("first prepareOrchestrator: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(first.ManifestPath)) })
 	second, err := prepareOrchestrator(in)
 	if err != nil {
 		t.Fatalf("second prepareOrchestrator: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(second.ManifestPath)) })
 
 	if first.ManifestPath == second.ManifestPath {
 		t.Errorf("both calls returned manifestPath %q, want different paths", first.ManifestPath)

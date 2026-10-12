@@ -172,7 +172,9 @@
           "description": {
             "type": "string",
             "description": "The deferring agent's own reasoning (detail.description; defaults to title). Written by defer since the harden step started reading it; absent on older entries, so not required."
-          }
+          },
+          "deferredId": { "type": "string", "description": "id of the deferred.json row that defer wrote or merged into" },
+          "fixedInRun": { "type": "boolean", "default": false, "description": "true after a fix-pass fix; every reader skips the entry" }
         },
         "required": ["severity", "file", "title"]
       }
@@ -456,7 +458,8 @@
               "recordedAt": {
                 "type": "string",
                 "format": "date-time"
-              }
+              },
+              "deferredId": { "type": "string", "description": "the run entry that this fix resolves" }
             },
             "required": ["origin", "severity", "file", "title", "recordedAt"],
             "additionalProperties": false

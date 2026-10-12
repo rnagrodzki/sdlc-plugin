@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -98,11 +100,18 @@ type PrepareOrchestratorIn struct {
 // manifest file carries under customInstructions. PreflightFindingCount is the
 // number of pre-flight findings in the harden manifest (0 in error_report
 // mode). Next is the step after the call, in both modes.
+//
+// SimilarIssues is set in error_report mode only. It holds the open issues
+// whose title starts with "[<skill>]": a pointer to an empty slice when no
+// issue matches or the search was skipped, and nil (so the key is absent) in
+// harden mode. SimilarIssuesNote says why the search was skipped.
 type PrepareOrchestratorOut struct {
 	ManifestPath          string              `json:"manifestPath"`
 	Mode                  string              `json:"mode"`
 	CustomInstructions    map[string][]string `json:"customInstructions,omitempty"` // harden mode only
 	PreflightFindingCount int                 `json:"preflightFindingCount"`        // harden mode only; 0 in error_report mode
+	SimilarIssues         *[]ghx.Issue        `json:"similarIssues,omitempty"`      // error_report mode only; [] when no match
+	SimilarIssuesNote     string              `json:"similarIssuesNote,omitempty"`  // error_report mode only; set when the search was skipped
 	Next                  string              `json:"next"`                         // no omitempty: guardrail mcp-output-drives-behavior
 }
 
@@ -129,6 +138,36 @@ func hardenOutToPrepareOut(out HardenPrepareOut, mode string) PrepareOrchestrato
 		CustomInstructions:    out.CustomInstructions,
 		PreflightFindingCount: out.PreflightFindingCount,
 		Next:                  next,
+	}
+}
+
+// errorReportOutToPrepareOut copies every ErrorReportPrepareOut field that a
+// skill reads into the prepare_orchestrator output. SimilarIssues is always
+// set (to [] when nothing matches or when the search was skipped). Next keeps
+// the base text for a search that ran and found nothing. When SimilarIssues
+// holds issues, Next also says that the error-report skill offers them before
+// a new issue. When the search was skipped, Next ends with the skip note, so a
+// skipped search does not read as "no match".
+func errorReportOutToPrepareOut(out ErrorReportPrepareOut, mode string) PrepareOrchestratorOut {
+	similar := out.SimilarIssues
+	if similar == nil {
+		similar = []ghx.Issue{}
+	}
+	next := prepareNextErrorReport
+	if len(similar) > 0 {
+		next += fmt.Sprintf(" After Step 6, Step 6b offers the %d similar open issue(s) before a new issue.", len(similar))
+	}
+	if note := out.SimilarIssuesNote; note != "" {
+		// The note starts with a lowercase word; the sentence in Next starts
+		// with a capital letter.
+		next += " " + strings.ToUpper(note[:1]) + note[1:]
+	}
+	return PrepareOrchestratorOut{
+		ManifestPath:      out.ManifestPath,
+		Mode:              mode,
+		SimilarIssues:     &similar,
+		SimilarIssuesNote: out.SimilarIssuesNote,
+		Next:              next,
 	}
 }
 
@@ -230,7 +269,7 @@ func prepareOrchestrator(in PrepareOrchestratorIn) (PrepareOrchestratorOut, erro
 		if err != nil {
 			return PrepareOrchestratorOut{}, err
 		}
-		return PrepareOrchestratorOut{ManifestPath: out.ManifestPath, Mode: in.Mode, Next: prepareNextErrorReport}, nil
+		return errorReportOutToPrepareOut(out, in.Mode), nil
 
 	default:
 		return PrepareOrchestratorOut{}, &mcpserver.DomainError{
@@ -292,7 +331,7 @@ func injectHardenHistory(manifestPath, histPath string) error {
 // the former standalone harden_prepare and error_report_prepare tools.
 func RegisterPrepareOrchestratorTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "prepare_orchestrator",
-		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path. harden mode also returns customInstructions: the [harden.instructions] lists from config.toml, one list for each proposal surface. An invalid list fails with a DomainError that names the key. harden mode also returns preflightFindingCount. A pre-flight finding does not stop the call: the findings are written to the manifest. Only a config read or parse error, or a review-dimensions directory that cannot be read, stops the call. mode harden also runs `git ls-files` and reads skill SKILL.md files to list dead references in rules. The manifest lists them in surfaces.deadReferences. Both modes return next: the step after the call.",
+		"INTERNAL — called by sdlc skills only. Pre-compute either the harden-orchestrator or error-report-orchestrator manifest, selected via mode (\"harden\" or \"error_report\"). harden mode covers failure details, guardrail/dimension/copilot surfaces, pipeline state, and repository context after an SDLC pipeline failure. error_report mode covers calling-skill error context plus repository/branch environment fields for a tooling-error report. Writes the manifest to a temp file and returns its path. harden mode also returns customInstructions: the [harden.instructions] lists from config.toml, one list for each proposal surface. An invalid list fails with a DomainError that names the key. harden mode also returns preflightFindingCount. A pre-flight finding does not stop the call: the findings are written to the manifest. Only a config read or parse error, or a review-dimensions directory that cannot be read, stops the call. mode harden also runs `git ls-files` and reads skill SKILL.md files to list dead references in rules. The manifest lists them in surfaces.deadReferences. error_report mode also runs gh issue list once (labels tooling-error and the skill, open issues, limit 10) and returns similarIssues: the issues whose title starts with [<skill>]. A gh failure does not fail the call: similarIssues is [] and similarIssuesNote says why. When the search was skipped, next ends with that note. Both modes return next: the step after the call.",
 		mcpserver.Annotations{
 			Title:       "Write orchestrator manifest",
 			ReadOnly:    false,

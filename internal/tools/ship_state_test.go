@@ -1831,6 +1831,10 @@ func TestShipState_Defer_PersistFailureNamedInNarration(t *testing.T) {
 	if findings, _ := data["deferredFindings"].([]any); len(findings) != 1 {
 		t.Errorf("deferredFindings = %v, want 1 entry", findings)
 	}
+	// No deferred.json row holds the text, so the entry names none.
+	if id, has := deferredStateEntry(t, path, 0)["deferredId"]; has {
+		t.Errorf("deferredFindings[0].deferredId = %v, want absent after a failed deferred.json write", id)
+	}
 }
 
 // TestShipState_Defer_ReadFailureNamedInNarration covers the read failure of
@@ -2480,6 +2484,16 @@ func TestShipStateSchema_DeferredFindingsEntry(t *testing.T) {
 	}
 	if err := validate(t, entry(map[string]any{"reason": "because-i-said-so"})); err == nil {
 		t.Error(`reason "because-i-said-so": want schema rejection, got nil`)
+	}
+	// defer writes deferredId and healing_record writes fixedInRun.
+	if err := validate(t, entry(map[string]any{"deferredId": "review-deferred-x-1", "fixedInRun": true})); err != nil {
+		t.Errorf("entry with deferredId and fixedInRun: want accepted, got %v", err)
+	}
+	if err := validate(t, entry(map[string]any{"fixedInRun": "yes"})); err == nil {
+		t.Error(`fixedInRun "yes": want schema rejection, got nil`)
+	}
+	if err := validate(t, entry(map[string]any{"deferredId": float64(1)})); err == nil {
+		t.Error("deferredId 1: want schema rejection, got nil")
 	}
 }
 
@@ -6500,6 +6514,13 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 	if err := validate(bad); err == nil {
 		t.Error(`origin "ci": want schema rejection, got nil`)
 	}
+	withID := map[string]any{"fixed": []any{map[string]any{
+		"origin": "local-review", "severity": "high", "file": "a.go", "title": "t",
+		"recordedAt": "2026-09-30T01:02:03Z", "deferredId": "review-deferred-x-1",
+	}}}
+	if err := validate(withID); err != nil {
+		t.Errorf("fixed record with deferredId: want accepted, got %v", err)
+	}
 	goodFix := func() map[string]any {
 		return map[string]any{
 			"origin": "local-review", "severity": "high", "file": "a.go", "line": float64(4), "title": "t",
@@ -7851,5 +7872,628 @@ func TestShipStateSchema_LinkedPlan(t *testing.T) {
 		if err := validate(doc(linked)); err == nil {
 			t.Errorf("%s: want schema rejection, got nil", name)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// defer deferredId and healing_record fixed with deferredId
+// ---------------------------------------------------------------------------
+
+// TestShipStateDefer_RunEntryCarriesStoredDeferredID pins that the run entry
+// names the deferred.json row that holds its text: the new row for an add,
+// and the first row for a needs-direction defer that merged into it.
+func TestShipStateDefer_RunEntryCarriesStoredDeferredID(t *testing.T) {
+	branch := "feat/defer-id"
+	dir, path := deferFixture(t, branch)
+	now := time.Date(2026, 10, 12, 3, 0, 0, 0, time.UTC)
+
+	deferOnce(t, dir, branch, "a.go", "choose A or B", history.ReasonNeedsDirection, now)
+	deferOnce(t, dir, branch, "a.go", "also choose C or D", history.ReasonNeedsDirection, now)
+
+	rows := storedDeferred(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("deferred.json rows = %+v, want 1", rows)
+	}
+	const wantID = "review-deferred-2026-10-12T03:00:00Z-1"
+	if rows[0].ID != wantID {
+		t.Fatalf("row id = %q, want %q (the id counts the entry being added)", rows[0].ID, wantID)
+	}
+	for i := 0; i < 2; i++ {
+		if got := deferredStateEntry(t, path, i)["deferredId"]; got != wantID {
+			t.Errorf("deferredFindings[%d].deferredId = %v, want %q", i, got, wantID)
+		}
+	}
+}
+
+// TestShipStateDefer_StateWriteFailsAfterDeferredWrite pins the failure of
+// the state write that follows a good deferred.json write: the call fails
+// with an InfraError that names the written row, deferred.json keeps that
+// row, and the state file is unchanged.
+func TestShipStateDefer_StateWriteFailsAfterDeferredWrite(t *testing.T) {
+	shipErrSkipAsRoot(t)
+	branch := "feat/defer-state-fail"
+	dir, path := deferFixture(t, branch)
+	before := shipErrReadFile(t, path)
+	shipErrChmod(t, filepath.Dir(path), 0o555)
+
+	_, err := shipState(dir, dir, ShipStateIn{Action: "defer", Detail: map[string]any{
+		"branch": branch, "severity": "low", "file": "a.go", "title": "nit",
+	}}, fixedNow(time.Date(2026, 10, 12, 3, 0, 0, 0, time.UTC)))
+	text, _ := requireShipErr(t, err, shipErrInfra)
+	const id = "review-deferred-2026-10-12T03:00:00Z-1"
+	for _, want := range []string{
+		"retry ship_state defer.",
+		"Deferred item " + id + " is written. If you retry, run deferred_resolve on it first: a retry in a later second adds a second row. Retry without it only when you accept the second row.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("error text = %q, want it to contain %q", text, want)
+		}
+	}
+	if rows := storedDeferred(t, dir); len(rows) != 1 || rows[0].ID != id || rows[0].Status != history.StatusOpen {
+		t.Errorf("deferred.json rows = %+v, want the one open row %s", rows, id)
+	}
+	if after := shipErrReadFile(t, path); !bytes.Equal(after, before) {
+		t.Error("ship state changed by a failed state write")
+	}
+}
+
+// TestShipStateDefer_BothWritesFail pins that a failed state write after a
+// failed deferred.json write does not claim a written row: no row exists.
+func TestShipStateDefer_BothWritesFail(t *testing.T) {
+	shipErrSkipAsRoot(t)
+	branch := "feat/defer-both-fail"
+	dir, path := deferFixture(t, branch)
+	useFailingHistory(t)
+	shipErrChmod(t, filepath.Dir(path), 0o555)
+
+	_, err := shipState(dir, dir, ShipStateIn{Action: "defer", Detail: map[string]any{
+		"branch": branch, "severity": "low", "file": "a.go", "title": "nit",
+	}}, fixedNow(time.Now()))
+	text, _ := requireShipErr(t, err, shipErrInfra)
+	if !strings.Contains(text, "retry ship_state defer.") {
+		t.Errorf("error text = %q, want the state-write recovery", text)
+	}
+	if strings.Contains(text, "is written") {
+		t.Errorf("error text = %q, must not name a written row when the deferred.json write failed", text)
+	}
+}
+
+// deferredFixedFixture runs a ship state on branch with one deferred finding
+// (title "unchecked error" in a.go) written by defer through the real file
+// store. It returns the repo dir, the state path and the deferredId of the
+// run entry.
+func deferredFixedFixture(t *testing.T, branch string) (dir, path, id string) {
+	t.Helper()
+	dir, path = deferFixture(t, branch)
+	deferOnce(t, dir, branch, "a.go", "unchecked error", "", time.Date(2026, 10, 12, 3, 0, 0, 0, time.UTC))
+	id, _ = deferredStateEntry(t, path, 0)["deferredId"].(string)
+	if id == "" {
+		t.Fatalf("deferredFindings[0] = %v, want a deferredId", deferredStateEntry(t, path, 0))
+	}
+	return dir, path, id
+}
+
+// healingFixedWithID runs one healing_record kind fixed call on branch with
+// the given deferredId value (and overrides of the finding fields) and returns
+// the raw result.
+func healingFixedWithID(dir, branch string, deferredID any, overrides map[string]any) (any, error) {
+	d := healingFixedDetail(overrides)
+	d["branch"] = branch
+	d["deferredId"] = deferredID
+	return shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d},
+		fixedNow(time.Date(2026, 10, 12, 4, 0, 0, 0, time.UTC)))
+}
+
+// healingFixedOut runs healingFixedWithID, checks that the call succeeded and
+// returns its response.
+func healingFixedOut(t *testing.T, dir, branch string, deferredID any, overrides map[string]any) ShipHealingRecordOut {
+	t.Helper()
+	out, err := healingFixedWithID(dir, branch, deferredID, overrides)
+	if err != nil {
+		t.Fatalf("healing_record: %v", err)
+	}
+	n, ok := out.(ShipHealingRecordOut)
+	if !ok {
+		t.Fatalf("healing_record output = %T, want ShipHealingRecordOut", out)
+	}
+	return n
+}
+
+// TestShipStateHealingRecord_FixedDeferredIDResolvesRow pins the main path:
+// the deferred.json row is resolved, the run entry gets fixedInRun:true, the
+// fixed record stores the deferredId, and the response echoes it with the
+// resolved next.
+func TestShipStateHealingRecord_FixedDeferredIDResolvesRow(t *testing.T) {
+	branch := "feat/heal-deferred"
+	dir, path, id := deferredFixedFixture(t, branch)
+
+	out := healingFixedOut(t, dir, branch, id, nil)
+	if !out.Written || out.DeferredID != id || !out.FixedInRun {
+		t.Errorf("written=%v deferredId=%q fixedInRun=%v, want true/%q/true", out.Written, out.DeferredID, out.FixedInRun, id)
+	}
+	if out.Record["deferredId"] != id {
+		t.Errorf("record = %v, want deferredId %q", out.Record, id)
+	}
+	wantFixNext(t, out, "deferred item "+id+" resolved. Continue the fix pass.")
+	if rows := storedDeferred(t, dir); len(rows) != 1 || rows[0].Status != history.StatusResolved {
+		t.Errorf("deferred.json rows = %+v, want the row resolved", rows)
+	}
+	if got := deferredStateEntry(t, path, 0)["fixedInRun"]; got != true {
+		t.Errorf("deferredFindings[0].fixedInRun = %v, want true", got)
+	}
+	fixed, _ := healingData(t, path)["fixed"].([]any)
+	if len(fixed) != 1 {
+		t.Fatalf("healing.fixed = %v, want 1 record", fixed)
+	}
+	if rec, _ := fixed[0].(map[string]any); rec["deferredId"] != id {
+		t.Errorf("stored fixed record = %v, want deferredId %q", rec, id)
+	}
+}
+
+// TestShipStateHealingRecord_FixedDeferredIDAlreadyResolved pins that a row
+// resolved before the call is left as it is: deferred.json is byte-equal,
+// the flag is still set, and next says the row was already resolved. A
+// repeat of the same call then changes nothing.
+func TestShipStateHealingRecord_FixedDeferredIDAlreadyResolved(t *testing.T) {
+	branch := "feat/heal-deferred-resolved"
+	dir, path, id := deferredFixedFixture(t, branch)
+	if _, err := shipState(dir, dir, ShipStateIn{Action: "deferred_resolve", Detail: map[string]any{"id": id}}, shipErrNow); err != nil {
+		t.Fatalf("deferred_resolve: %v", err)
+	}
+	storePath := filepath.Join(historyDir(dir), "deferred.json")
+	before := shipErrReadFile(t, storePath)
+
+	out := healingFixedOut(t, dir, branch, id, nil)
+	if !out.Written || !out.FixedInRun {
+		t.Errorf("written=%v fixedInRun=%v, want true/true", out.Written, out.FixedInRun)
+	}
+	wantFixNext(t, out, "deferred item "+id+" was already resolved. Continue the fix pass.")
+	if after := shipErrReadFile(t, storePath); !bytes.Equal(after, before) {
+		t.Error("deferred.json changed although the row was already resolved")
+	}
+	if got := deferredStateEntry(t, path, 0)["fixedInRun"]; got != true {
+		t.Errorf("deferredFindings[0].fixedInRun = %v, want true", got)
+	}
+
+	stateBefore := shipErrReadFile(t, path)
+	again := healingFixedOut(t, dir, branch, id, nil)
+	if again.Written {
+		t.Error("repeat call written = true, want false")
+	}
+	wantFixNext(t, again, "deferred item "+id+" was already resolved. Continue the fix pass.")
+	if after := shipErrReadFile(t, path); !bytes.Equal(after, stateBefore) {
+		t.Error("ship state changed by a repeat call that has nothing to change")
+	}
+}
+
+// TestShipStateHealingRecord_FixedDuplicateStillSetsFlag pins that a fixed
+// record that is a duplicate of a stored one still writes the state when the
+// deferredId sets fixedInRun for the first time.
+func TestShipStateHealingRecord_FixedDuplicateStillSetsFlag(t *testing.T) {
+	branch := "feat/heal-deferred-dup"
+	dir, path, id := deferredFixedFixture(t, branch)
+	healingCall(t, dir, branch, healingFixedDetail(nil))
+
+	out := healingFixedOut(t, dir, branch, id, nil)
+	if !out.Written || !strings.HasSuffix(out.Summary, healingNarrDuplicate) {
+		t.Errorf("written=%v summary=%q, want true and the duplicate narration", out.Written, out.Summary)
+	}
+	if got := deferredStateEntry(t, path, 0)["fixedInRun"]; got != true {
+		t.Errorf("deferredFindings[0].fixedInRun = %v, want true", got)
+	}
+	if fixed, _ := healingData(t, path)["fixed"].([]any); len(fixed) != 1 {
+		t.Errorf("healing.fixed = %v, want the one stored record", fixed)
+	}
+}
+
+// TestShipStateHealingRecord_FixedWithoutDeferredIDKeepsNext pins that a
+// fixed record with no deferredId (absent, null, empty or blank) keeps next
+// nil and echoes no deferred field.
+func TestShipStateHealingRecord_FixedWithoutDeferredIDKeepsNext(t *testing.T) {
+	branch := "feat/heal-deferred-none"
+	dir, path, _ := deferredFixedFixture(t, branch)
+	for _, v := range []any{nil, "", "  "} {
+		out := healingFixedOut(t, dir, branch, v, map[string]any{"title": fmt.Sprintf("t %q", v)})
+		if out.Next != nil || out.DeferredID != "" || out.FixedInRun {
+			t.Errorf("deferredId %#v: next=%+v deferredId=%q fixedInRun=%v, want nil/empty/false", v, out.Next, out.DeferredID, out.FixedInRun)
+		}
+		if _, has := out.Record["deferredId"]; has {
+			t.Errorf("deferredId %#v: record = %v, want no deferredId", v, out.Record)
+		}
+	}
+	if _, has := deferredStateEntry(t, path, 0)["fixedInRun"]; has {
+		t.Error("fixedInRun set although no call named the deferredId")
+	}
+	if rows := storedDeferred(t, dir); rows[0].Status != history.StatusOpen {
+		t.Errorf("row status = %q, want open", rows[0].Status)
+	}
+}
+
+// TestShipStateHealingRecord_FixedDeferredIDNotAString pins the input error:
+// a deferredId that is not a string is a DomainError with the pinned text,
+// with or without a live run, and nothing is written.
+func TestShipStateHealingRecord_FixedDeferredIDNotAString(t *testing.T) {
+	branch := "feat/heal-deferred-type"
+	dir, path, _ := deferredFixedFixture(t, branch)
+	stateBefore := shipErrReadFile(t, path)
+	storeBefore := shipErrReadFile(t, filepath.Join(historyDir(dir), "deferred.json"))
+
+	for _, v := range []any{float64(7), true, []any{"x"}} {
+		_, err := healingFixedWithID(dir, branch, v, nil)
+		text, _ := requireShipErr(t, err, shipErrDomain)
+		for _, want := range []string{
+			"healing_record: detail.deferredId must be a string",
+			"pass the deferredId string from the finding's **Deferred-id:** line, or omit it",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("deferredId %#v: error text = %q, want %q", v, text, want)
+			}
+		}
+	}
+	if after := shipErrReadFile(t, path); !bytes.Equal(after, stateBefore) {
+		t.Error("ship state changed by a rejected call")
+	}
+	if after := shipErrReadFile(t, filepath.Join(historyDir(dir), "deferred.json")); !bytes.Equal(after, storeBefore) {
+		t.Error("deferred.json changed by a rejected call")
+	}
+
+	noRun := t.TempDir()
+	initGitFixture(t, noRun)
+	gitCommit(t, noRun, "initial")
+	checkoutBranch(t, noRun, "feat/heal-deferred-type-none")
+	_, err := healingFixedWithID(noRun, "feat/heal-deferred-type-none", float64(7), nil)
+	requireShipErr(t, err, shipErrDomain)
+}
+
+// TestShipStateHealingRecord_FixedDeferredIDNoLiveRun pins that a fixed record
+// with a deferredId on a run that already completed returns the no-live-run
+// narration, writes nothing, and leaves the deferred.json row open.
+func TestShipStateHealingRecord_FixedDeferredIDNoLiveRun(t *testing.T) {
+	branch := "feat/heal-deferred-done"
+	dir, path, id := deferredFixedFixture(t, branch)
+	data := readStateData(t, path)
+	data["pipelineCompletedAt"] = "2026-10-12T05:00:00Z"
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storeBefore := shipErrReadFile(t, filepath.Join(historyDir(dir), "deferred.json"))
+
+	out := healingFixedOut(t, dir, branch, id, nil)
+	if out.Written || !strings.HasSuffix(out.Summary, healingNarrNoLiveRun) || out.Next != nil || out.FixedInRun {
+		t.Errorf("out = %+v, want written false, the no-live-run narration, no next and no fixedInRun", out)
+	}
+	if after := shipErrReadFile(t, path); !bytes.Equal(after, raw) {
+		t.Error("ship state of a completed run changed")
+	}
+	if after := shipErrReadFile(t, filepath.Join(historyDir(dir), "deferred.json")); !bytes.Equal(after, storeBefore) {
+		t.Error("deferred.json changed without a live run")
+	}
+}
+
+// TestShipStateHealingRecord_FixedDeferredIDUnknown pins the unknown
+// deferredId error in both of its forms: an id that no deferredFindings entry
+// carries, and an id that the entry carries but deferred.json does not hold.
+// Each is a DomainError whose suggestion offers the recovery that works for
+// that form (omit detail.deferredId), and each changes neither store.
+func TestShipStateHealingRecord_FixedDeferredIDUnknown(t *testing.T) {
+	t.Run("not in deferredFindings", func(t *testing.T) {
+		branch := "feat/heal-deferred-unknown"
+		dir, path, _ := deferredFixedFixture(t, branch)
+		stateBefore := shipErrReadFile(t, path)
+		storeBefore := shipErrReadFile(t, filepath.Join(historyDir(dir), "deferred.json"))
+
+		_, err := healingFixedWithID(dir, branch, "review-deferred-ghost-9", nil)
+		text, _ := requireShipErr(t, err, shipErrDomain)
+		for _, want := range []string{
+			"is not in deferredFindings",
+			"Pass a deferredId from ship_state read deferredFindings",
+			"omit detail.deferredId to record the fix without resolving a deferred row",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("error text = %q, want %q", text, want)
+			}
+		}
+		if after := shipErrReadFile(t, path); !bytes.Equal(after, stateBefore) {
+			t.Error("ship state changed by a rejected call")
+		}
+		if after := shipErrReadFile(t, filepath.Join(historyDir(dir), "deferred.json")); !bytes.Equal(after, storeBefore) {
+			t.Error("deferred.json changed by a rejected call")
+		}
+	})
+	t.Run("not in deferred.json", func(t *testing.T) {
+		branch := "feat/heal-deferred-missing-row"
+		dir, path, id := deferredFixedFixture(t, branch)
+		storePath := filepath.Join(historyDir(dir), "deferred.json")
+		writeFile(t, storePath, "[]\n")
+		stateBefore := shipErrReadFile(t, path)
+
+		_, err := healingFixedWithID(dir, branch, id, nil)
+		text, _ := requireShipErr(t, err, shipErrDomain)
+		for _, want := range []string{
+			"is not in " + storePath,
+			"Omit detail.deferredId to record the fix without resolving the row",
+			"run ship_state deferred_list to check the row ids",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("error text = %q, want %q", text, want)
+			}
+		}
+		if after := shipErrReadFile(t, path); !bytes.Equal(after, stateBefore) {
+			t.Error("ship state changed by a rejected call")
+		}
+		if after := shipErrReadFile(t, storePath); string(after) != "[]\n" {
+			t.Errorf("deferred.json = %q, want it unchanged", after)
+		}
+	})
+}
+
+// healingStoreRetryText is the sentence that every healing_record error from
+// a deferred.json failure ends with: it names the call that retries.
+const healingStoreRetryText = "Retry by calling ship_state healing_record again with the same detail."
+
+// TestShipStateHealingRecord_FixedDeferredIDStoreFailures pins the errors of
+// a fixed record with a deferredId when deferred.json cannot be used: a read
+// failure, a file that does not parse, a file over 8 MiB, and a failed write.
+// Each gives its error type and recovery, and neither store changes.
+func TestShipStateHealingRecord_FixedDeferredIDStoreFailures(t *testing.T) {
+	tests := []struct {
+		name       string
+		setup      func(t *testing.T, root string)
+		wantKind   shipErrKind
+		wantSugg   string
+		skipAsRoot bool
+	}{
+		{
+			name: "read fails",
+			setup: func(t *testing.T, root string) {
+				store := filepath.Join(historyDir(root), "deferred.json")
+				if err := os.Remove(store); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Mkdir(store, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantKind: shipErrInfra,
+			wantSugg: dashboardDeleteDeferredReadSuggestion,
+		},
+		{
+			name: "parse fails",
+			setup: func(t *testing.T, root string) {
+				writeFile(t, filepath.Join(historyDir(root), "deferred.json"), "{garbage")
+			},
+			wantKind: shipErrData,
+			wantSugg: dashboardDeleteDeferredParseSuggestion,
+		},
+		{
+			name: "file over 8 MiB",
+			setup: func(t *testing.T, root string) {
+				big := bytes.Repeat([]byte(" "), history.DeferredFileMax+1)
+				copy(big, "[]")
+				writeFile(t, filepath.Join(historyDir(root), "deferred.json"), string(big))
+			},
+			wantKind: shipErrData,
+			wantSugg: dashboardDeleteDeferredLargeSuggestion,
+		},
+		{
+			name:       "write fails",
+			setup:      func(t *testing.T, root string) { shipErrChmod(t, historyDir(root), 0o555) },
+			wantKind:   shipErrInfra,
+			wantSugg:   dashboardDeleteDeferredWriteSuggestion,
+			skipAsRoot: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.skipAsRoot {
+				shipErrSkipAsRoot(t)
+			}
+			branch := "feat/heal-deferred-store"
+			dir, path, id := deferredFixedFixture(t, branch)
+			tt.setup(t, dir)
+			storePath := filepath.Join(historyDir(dir), "deferred.json")
+			storeBefore, storeErr := os.ReadFile(storePath)
+			stateBefore := shipErrReadFile(t, path)
+
+			_, err := healingFixedWithID(dir, branch, id, nil)
+			text, cause := requireShipErr(t, err, tt.wantKind)
+			for _, want := range []string{tt.wantSugg, healingStoreRetryText} {
+				if !strings.Contains(text, want) {
+					t.Errorf("error text = %q, want it to contain %q", text, want)
+				}
+			}
+			if cause == nil {
+				t.Error("error has no Cause")
+			}
+			if after, afterErr := os.ReadFile(storePath); !bytes.Equal(after, storeBefore) || (storeErr == nil) != (afterErr == nil) {
+				t.Error("deferred.json changed by a failed call")
+			}
+			if after := shipErrReadFile(t, path); !bytes.Equal(after, stateBefore) {
+				t.Error("ship state changed by a failed call")
+			}
+		})
+	}
+}
+
+// TestShipStateHealingRecord_FixedDeferredIDStateWriteFails pins the failure
+// of the state write that follows the resolve of the row: the row stays
+// resolved, the flag is not set, and a retry finds the row resolved and sets
+// the flag.
+func TestShipStateHealingRecord_FixedDeferredIDStateWriteFails(t *testing.T) {
+	shipErrSkipAsRoot(t)
+	branch := "feat/heal-deferred-state-fail"
+	dir, path, id := deferredFixedFixture(t, branch)
+	stateBefore := shipErrReadFile(t, path)
+	stateDir := filepath.Dir(path)
+	shipErrChmod(t, stateDir, 0o555)
+
+	_, err := healingFixedWithID(dir, branch, id, nil)
+	text, _ := requireShipErr(t, err, shipErrInfra)
+	if !strings.Contains(text, "retry ship_state healing_record.") {
+		t.Errorf("error text = %q, want the state-write recovery", text)
+	}
+	if rows := storedDeferred(t, dir); len(rows) != 1 || rows[0].Status != history.StatusResolved {
+		t.Errorf("deferred.json rows = %+v, want the row resolved", rows)
+	}
+	if after := shipErrReadFile(t, path); !bytes.Equal(after, stateBefore) {
+		t.Error("ship state changed by a failed state write")
+	}
+
+	if err := os.Chmod(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out := healingFixedOut(t, dir, branch, id, nil)
+	if !out.Written || !out.FixedInRun {
+		t.Errorf("retry written=%v fixedInRun=%v, want true/true", out.Written, out.FixedInRun)
+	}
+	wantFixNext(t, out, "deferred item "+id+" was already resolved. Continue the fix pass.")
+	if got := deferredStateEntry(t, path, 0)["fixedInRun"]; got != true {
+		t.Errorf("deferredFindings[0].fixedInRun after the retry = %v, want true", got)
+	}
+}
+
+// TestHealingResolveDeferred_SetsEveryEntryWithTheID pins that every run
+// entry with the deferredId gets the flag (two defers merged into one row),
+// entries with another id or of another type are left as they are, and a
+// second call reports no flag change.
+func TestHealingResolveDeferred_SetsEveryEntryWithTheID(t *testing.T) {
+	mem := useMemHistory(t)
+	mem.Deferred = []history.DeferredIssue{{ID: "d1", Status: history.StatusOpen}}
+	other := map[string]any{"deferredId": "d2"}
+	a, b := map[string]any{"deferredId": "d1"}, map[string]any{"deferredId": "d1"}
+	st := &state.State{Path: "ship.json", Data: map[string]any{"deferredFindings": []any{a, "not an object", other, b}}}
+
+	already, changed, err := healingResolveDeferred(t.TempDir(), st, "d1")
+	if err != nil || already || !changed {
+		t.Fatalf("first call = %v, %v, %v, want false, true, nil", already, changed, err)
+	}
+	if a["fixedInRun"] != true || b["fixedInRun"] != true {
+		t.Errorf("entries = %v / %v, want both fixedInRun:true", a, b)
+	}
+	if _, has := other["fixedInRun"]; has {
+		t.Errorf("entry with another id = %v, want it unchanged", other)
+	}
+	if mem.Deferred[0].Status != history.StatusResolved {
+		t.Errorf("row status = %q, want resolved", mem.Deferred[0].Status)
+	}
+	already, changed, err = healingResolveDeferred(t.TempDir(), st, "d1")
+	if err != nil || !already || changed {
+		t.Errorf("second call = %v, %v, %v, want true, false, nil", already, changed, err)
+	}
+}
+
+// TestHealingResolveDeferred_DeferredFindingsNotAList pins how a damaged
+// deferredFindings key is told from a missing one: a key that exists and is
+// not a list (a string, an object, a number) is a DataError that names the
+// state path and the recovery, and a key that is absent or null is the
+// unknown-id DomainError. The deferred.json row stays open in every case.
+func TestHealingResolveDeferred_DeferredFindingsNotAList(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     map[string]any
+		wantKind shipErrKind
+		wantText string
+	}{
+		{"string", map[string]any{"deferredFindings": "oops"}, shipErrData, "data.deferredFindings in ship.json is not a list"},
+		{"object", map[string]any{"deferredFindings": map[string]any{"deferredId": "d1"}}, shipErrData, "data.deferredFindings in ship.json is not a list"},
+		{"number", map[string]any{"deferredFindings": float64(3)}, shipErrData, "data.deferredFindings in ship.json is not a list"},
+		{"null", map[string]any{"deferredFindings": nil}, shipErrDomain, "is not in deferredFindings"},
+		{"absent", map[string]any{}, shipErrDomain, "is not in deferredFindings"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mem := useMemHistory(t)
+			mem.Deferred = []history.DeferredIssue{{ID: "d1", Status: history.StatusOpen}}
+			st := &state.State{Path: "ship.json", Data: tt.data}
+
+			_, _, err := healingResolveDeferred(t.TempDir(), st, "d1")
+			text, _ := requireShipErr(t, err, tt.wantKind)
+			if !strings.Contains(text, tt.wantText) {
+				t.Errorf("error text = %q, want it to contain %q", text, tt.wantText)
+			}
+			if tt.wantKind == shipErrData && !strings.Contains(text, "Call healing_record again without it, and resolve the row with ship_state deferred_resolve") {
+				t.Errorf("error text = %q, want the recovery that omits detail.deferredId", text)
+			}
+			if mem.Deferred[0].Status != history.StatusOpen {
+				t.Errorf("row status = %q, want open", mem.Deferred[0].Status)
+			}
+		})
+	}
+}
+
+// TestShipStateHealingRecord_FixedDeferredIDDamagedFindings pins the damaged
+// deferredFindings key through the handler with the real file store: the
+// call fails with a DataError that names the state file, neither store
+// changes, and the recovery in the suggestion (the same record without
+// detail.deferredId) succeeds and leaves the deferred.json row open.
+func TestShipStateHealingRecord_FixedDeferredIDDamagedFindings(t *testing.T) {
+	branch := "feat/heal-deferred-damaged"
+	dir, path, id := deferredFixedFixture(t, branch)
+	data := readStateData(t, path)
+	data["deferredFindings"] = "oops"
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(historyDir(dir), "deferred.json")
+	storeBefore := shipErrReadFile(t, storePath)
+
+	_, err = healingFixedWithID(dir, branch, id, nil)
+	text, _ := requireShipErr(t, err, shipErrData)
+	for _, want := range []string{"data.deferredFindings in " + path + " is not a list", "set data.deferredFindings to a list or remove the key"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("error text = %q, want it to contain %q", text, want)
+		}
+	}
+	if after := shipErrReadFile(t, path); !bytes.Equal(after, raw) {
+		t.Error("ship state changed by a rejected call")
+	}
+	if after := shipErrReadFile(t, storePath); !bytes.Equal(after, storeBefore) {
+		t.Error("deferred.json changed by a rejected call")
+	}
+
+	healingCall(t, dir, branch, healingFixedDetail(nil))
+	if fixed, _ := healingData(t, path)["fixed"].([]any); len(fixed) != 1 {
+		t.Errorf("healing.fixed = %v, want the one record from the recovery call", fixed)
+	}
+	if rows := storedDeferred(t, dir); len(rows) != 1 || rows[0].Status != history.StatusOpen {
+		t.Errorf("deferred.json rows = %+v, want the one open row", rows)
+	}
+}
+
+// TestHealingDeferredStoreError pins the error type and recovery for each
+// class of store failure, also when the store wraps the error, and that each
+// keeps the cause.
+func TestHealingDeferredStoreError(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantKind shipErrKind
+		wantSugg string
+	}{
+		{"too large", fmt.Errorf("%w (9000000 bytes)", history.ErrDeferredTooLarge), shipErrData, dashboardDeleteDeferredLargeSuggestion},
+		{"parse", fmt.Errorf("%w: %w", history.ErrDeferredParse, errors.New("bad json")), shipErrData, dashboardDeleteDeferredParseSuggestion},
+		{"write", fmt.Errorf("%w: %w", history.ErrDeferredWrite, errors.New("disk full")), shipErrInfra, dashboardDeleteDeferredWriteSuggestion},
+		{"read", errors.New("permission denied"), shipErrInfra, dashboardDeleteDeferredReadSuggestion},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			text, cause := requireShipErr(t, healingDeferredStoreError("/x/deferred.json", "d1", tt.err), tt.wantKind)
+			for _, want := range []string{tt.wantSugg, healingStoreRetryText, "This call changed nothing in deferred.json.", `"d1"`, "/x/deferred.json"} {
+				if !strings.Contains(text, want) {
+					t.Errorf("error text = %q, want it to contain %q", text, want)
+				}
+			}
+			if !errors.Is(cause, tt.err) {
+				t.Errorf("cause = %v, want %v", cause, tt.err)
+			}
+		})
 	}
 }
