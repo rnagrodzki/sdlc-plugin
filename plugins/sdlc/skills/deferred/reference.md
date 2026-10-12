@@ -34,7 +34,7 @@ All three actions belong to `ship_state`. This flow needs no other MCP tool. It 
 
 An item has `id`, `created`, `source`, `priority`, `description` and `status`. It may also have `severity`, `file`, `line` and `reason`. It has no body field.
 
-`source` names the tool that recorded the item, not the reason it was deferred. `ship_state defer` writes an id `review-deferred-<timestamp>-<N>` and a caller-supplied `source`, defaulting to `review-below-threshold` when the caller omits it — `/received-review` passes `source: "received-review"` explicitly for its `wont-fix`, `disagree` and `needs-direction` findings, which are not below any threshold. Read `reason` to tell those apart. The execute step writes source `execute-drift` and an id `execute-drift-<timestamp>-<N>`, with no `reason`. `deferred_add` takes a caller-supplied `source` and `id` too, so none of this is a closed set. The tool that finds an item records it at that moment. This flow never adds an item.
+`source` names the tool that recorded the item, not the reason it was deferred. `ship_state defer` writes an id `review-deferred-<timestamp>-<N>` and a caller-supplied `source`, defaulting to `review-below-threshold` when the caller omits it — `/received-review` passes `source: "received-review"` explicitly for its `wont-fix`, `disagree` and `needs-direction` findings, which are not below any threshold. Read `reason` to tell those apart. `ship_state defer` writes the caller's `description`, or the finding title when the caller passes none. `/ship` passes the finding body, so a `description` can have more than one line. The execute step writes source `execute-drift` and an id `execute-drift-<timestamp>-<N>`, with no `reason`. `deferred_add` takes a caller-supplied `source` and `id` too, so none of this is a closed set. `/sdlc:harden --auto` writes source `harden-pending` for rule edits that need a person. Its `description` starts with the line `Pending rule edits: <section>`. Item 0 of section 3 handles it. The tool that finds an item records it at that moment. This flow never adds an item.
 
 ## The flow
 
@@ -53,7 +53,7 @@ Option 3 ends the flow. Nothing changes. Every item stays open.
 
 ### 2. Pick the items
 
-For option 1 or 2, ask which items to act on. Use one multi-select `AskUserQuestion` with one option per open item, labelled `[<id>] <description>`.
+For option 1 or 2, ask which items to act on. Use one multi-select `AskUserQuestion` with one option per open item, labelled `[<id>] <first line of description>`.
 
 - If exactly one item is open, it is the pick. Do not ask.
 - `AskUserQuestion` lists only a few options. If more items are open than it can list, print the ids in chat and ask the user to reply with the ids to act on, or with `all`.
@@ -62,6 +62,14 @@ For option 1 or 2, ask which items to act on. Use one multi-select `AskUserQuest
 
 Take the picked items one at a time. For each item:
 
+0. **Pending rule edits.** If the item's `source` is `harden-pending`, do not draft an issue. Do not run `gh issue create`. A person must approve rule edits in a harden run. Set `<id>` to the item's `id`, such as `harden-pending-plan` or `harden-pending-plan-2`. Print these two lines:
+
+   ```text
+   <id> holds rule edits that need a person. Run: /sdlc:harden --failure-text "Pending rule edits: <id>" --skill deferred
+   Then resolve it: /sdlc:deferred --resolve <id>
+   ```
+
+   Count the item as still open. Do not call `deferred_resolve`. Go to the next item.
 1. **Draft.** Build the issue title and body as described in "The issue text" below.
 2. **Show.** Print the title and the complete body in chat, in a fenced block, exactly as they will be filed. A summary or a shortened version does not count.
 3. **Get approval.** Ask one `AskUserQuestion`: file as shown, change the text, or skip this item. On "change the text", take the user's edits, show the full text again, and ask again. On "skip", leave the item open and go to the next item.
@@ -91,7 +99,7 @@ Print one line with three counts: items filed, items resolved without filing, an
 
 ## The issue text
 
-**Title:** the item's `description`.
+**Title:** the first line of the item's `description`. The body still carries the whole `description`.
 
 **Body:** built from the item's fields. Leave out any line whose field is empty.
 

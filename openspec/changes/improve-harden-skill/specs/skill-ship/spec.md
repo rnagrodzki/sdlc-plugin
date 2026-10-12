@@ -51,7 +51,7 @@ When `harden` is in `flags.steps`, the skill SHALL turn review findings into clu
 | `dirtySurfaces` empty, resumed, no cluster with `alreadyHardened:false` | Run the fix pass when `fixNow` is not empty, else `complete-step` with the last commit on the harden surfaces since the run start, or `"harden made no changes"` |
 | `dirtySurfaces` empty, at least one cluster with `alreadyHardened:false` | Continue to consent |
 
-- "Resumed" means `reportData.healing.hardened` is non-empty.
+- "Resumed" means `reportData.healing.hardened` is non-empty, or `decisions[]` has an entry with step `harden` whose `decision` starts with `fix pass started`.
 - `suppressed[]` and `loneDisagree[]` are listed in the final summary.
 
 #### Scenario: Dirty surfaces before the step

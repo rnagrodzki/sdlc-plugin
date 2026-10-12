@@ -8,7 +8,7 @@ On-demand companion for `ship/SKILL.md` (implements R-progressive-disclosure). R
 
 | Error | Recovery | Invoke error-report? |
 |-------|----------|---------------------------|
-| Sub-skill Agent dispatch fails | Show the error from the sub-skill's result, stop the pipeline, save state for `--resume` | Delegated — the sub-skill handles its own error reporting |
+| Sub-skill Agent dispatch fails | Show the error from the sub-skill's result, stop the pipeline, save state for `--resume`. One exception: a failed received-review dispatch of the `harden` fix pass (step 8) does not stop the pipeline. Its findings stay deferred and the step completes with a note. A failed fix-pass staging or commit (step 9) fails the step | Delegated — the sub-skill handles its own error reporting |
 | `gh auth status` fails | Stop at Step loop item 5. Tell the user to run `gh auth login` | No — user setup |
 | `git add -A -- ':!.sdlc-v2/'` fails, or `ship_state` `commit-check` returns an error | Show the error. For `commit-check`, `fail` the commit step with the error text (step loop item 7e). Stop the pipeline | No — user action needed |
 | `gh`/network error during an inline step (verify-pipeline, await-remote-review, archive) | `poll_await({target:"pipeline"|"remote_review", ...})` returns a stepper `error` status when a `gh` probe fails before the deadline. `ext.retryable: true` (`network`, `rate-limit`, `unknown`): log it and re-probe with `state_file`. Otherwise (`auth`, `forbidden`, `not-found`, `gh-missing`, `output-cap`, `unexpected-exit`): stop polling, `fail` the step with `detail.error` naming `ext.error_class`, and stop the pipeline with the resume instruction below | Transient: no. Non-retryable: no — user action needed (for example `gh auth login`) |
@@ -51,6 +51,20 @@ Review findings to address (from /review, <K> of <M>):
 ...
 ```
 
+**Fix pass** (step 8 of the `### harden` entry) uses the same dispatch with no `--pr`. Each finding has a
+`**Deferred-id:**` line under its `**File:**` line. Write `<SEVERITY>` in capitals. Leave out `:<line>` when the finding has no line:
+
+```text
+/sdlc:received-review [--auto] --no-harden
+
+Fix pass: these findings are below the review threshold. Fix each one, or leave it deferred.
+#### [<SEVERITY>] <title>
+**File:** <path>:<line>
+**Deferred-id:** <deferredId>
+<body>
+...
+```
+
 Before a PR exists, this payload is the only place received-review can find the findings (its Step 1b "Findings passed in the dispatch prompt"). A dispatch with an empty payload leaves every finding unaccounted.
 
 ## DO NOT (R-progressive-disclosure)
@@ -84,7 +98,7 @@ Before a PR exists, this payload is the only place received-review can find the 
 
 **received-review supports `--auto` and `--no-harden`.** `--no-harden` (forwarded when `harden` is in `flags.steps`) skips its Step 11.6 harden dispatch, so hardening runs once, in ship's own `harden` step. When `--auto` is forwarded, both its consent prompt and its reply/resolve prompt are skipped. "Will fix" items are auto-implemented and their threads auto-resolved via in-thread replies. Every other outcome ("won't fix", "disagree", "cannot verify", "needs direction") becomes `needs-direction`: it is displayed, not auto-implemented, recorded through `ship_state{action:"defer"}`, and its thread is replied to but left open for the reviewer. Critique gates and verification still run. Without `--auto`, the pipeline pauses for human approval at both gates.
 
-**Double commit is intentional.** The feature commit (step 2) and the review-fix commit (step 5) are separate `commit_apply` calls. This keeps feature work and review fixes distinct in git history. Do not squash them. The `harden` step's commit (guardrail, review-dimension and Copilot-instruction edits only) is a third, separate commit for the same reason.
+**Double commit is intentional.** The feature commit (step 2) and the review-fix commit (step 5) are separate `commit_apply` calls. This keeps feature work and review fixes distinct in git history. Do not squash them. The `harden` step's commit (guardrail, review-dimension and Copilot-instruction edits only) is a third, separate commit for the same reason. When the harden fix pass changes source files, it adds one more separate commit, the fix-pass commit, after the harden commit.
 
 **No standalone version step, and no tool in this pipeline ever creates or pushes a tag, or bumps the version file, or writes the changelog.** ship resolves release intent itself — step 6b reads `flags.bump`/`sources.bump` (already resolved by `ship_prepare`: cli > config > `version.preRelease` override > built-in default `"patch"`) and, under interactive mode, confirms or lets the user override it — then the `### pr` step translates that into `releaseLevel`/`releasePreRelease` and forwards it, plus a freshly drafted `releaseNotes`, to the pr step's own `pr_apply` call. The real version bump, tag, and CHANGELOG write happen post-merge, driven by CI (`release-on-main.yml` computes and applies the bump; `verify-release-intent.yml` and `promote-release.yml` handle RC promotion) — not by this pipeline at all. This is a deliberate architecture change from an earlier version of this port, which ran a dedicated version step and paused for the user to create and push a tag by hand — see the main skill's Decisions & gates, "Release-intent enforcement."
 
@@ -102,7 +116,7 @@ Before a PR exists, this payload is the only place received-review can find the 
 
 **No Agent SDK worktrees.** ship isolates the `execute` step with a plain `git checkout -b <branch>` run by this skill itself, then dispatches `execute` without `--branch` so its own Step 1 sees a non-default current branch and yields `continue`. There is no `EnterWorktree`/`ExitWorktree` tool use anywhere in this pipeline, and no `isolation: "worktree"` on any Agent dispatch.
 
-**Rebase happens after the feature and review-fix commits, before the next configured main-loop step** (`verify-openspec` / `archive-openspec` / `harden` / `pr`). Every later commit, including the archive commit and the `harden` commit, comes after rebase. These commits land on the rebased branch and need no second rebase. This ensures the branch (and, once merged and tagged post-merge by CI, the eventual release) is built on a commit that can merge cleanly. If rebase conflicts, the pipeline pauses — the user resolves in place and resumes.
+**Rebase happens after the feature and review-fix commits, before the next configured main-loop step** (`verify-openspec` / `archive-openspec` / `harden` / `pr`). Every later commit, including the archive commit, the `harden` commit and the fix-pass commit, comes after rebase. These commits land on the rebased branch and need no second rebase. This ensures the branch (and, once merged and tagged post-merge by CI, the eventual release) is built on a commit that can merge cleanly. If rebase conflicts, the pipeline pauses — the user resolves in place and resumes.
 
 **Rebase targets the base branch** (`[git] baseBranch`, else the repository default branch) and **is skipped when `origin/<base>` is already an ancestor.** `git merge-base --is-ancestor` is a fast check; no fetch/rebase overhead when the branch is already up to date.
 
