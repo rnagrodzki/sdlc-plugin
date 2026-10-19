@@ -229,6 +229,7 @@ func TestShipState_Init_PrunesOrphans(t *testing.T) {
 	}{
 		{"live sibling without sessionId", `{"sessionId": null}`, "", true},
 		{"completed sibling", `{"pipelineStatus": "completed"}`, "", false},
+		{"completed dry-run sibling", `{"pipelineStatus": "completed", "flags": {"dryRun": true}}`, "", true},
 		{"live sibling of another session", `{"sessionId": "s1"}`, "s2", false},
 		{"live sibling with sessionId, caller without", `{"sessionId": "s1"}`, "", true},
 	}
