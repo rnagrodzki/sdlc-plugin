@@ -187,12 +187,13 @@ func dashboardReceivedReviewStep(healing map[string]any, runCompleted bool) (ste
 			continue
 		}
 		fixes = append(fixes, DashboardFix{
-			Title:    dashboardPreview(title),
-			Severity: severity,
-			File:     dashboardStr(m["file"]),
-			Line:     dashboardInt(m["line"]),
-			Status:   status,
-			Origin:   origin,
+			Title:      dashboardPreview(title),
+			Severity:   severity,
+			File:       dashboardStr(m["file"]),
+			Line:       dashboardInt(m["line"]),
+			Status:     status,
+			Origin:     origin,
+			DeferredID: dashboardStr(m["deferredId"]),
 		})
 		if !slices.Contains(healingFixFinal, status) {
 			open = true

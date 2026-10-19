@@ -16,8 +16,10 @@
 package state
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -420,23 +422,46 @@ func List(root string) (ListResult, error) {
 // Write (prune-on-write)
 // ---------------------------------------------------------------------------
 
-// Write writes st.Data to st.Path atomically, after pruning all pre-existing
-// state files for the same prefix+branchSlug (except st.Path itself).
+// Write writes st.Data to st.Path atomically, after it deletes the
+// pre-existing state files that PruneTargets returns for the same
+// prefix+branchSlug (never st.Path itself).
 //
-// Pruning uses parseStateFilename for exact slug equality, the same rule
-// Find uses. One exception: a sibling "plan" run whose planIntegrity.done
-// marker is set (isDonePlanRun) is kept rather than pruned, so a finished
-// plan run survives a later /sdlc:plan on the same branch long enough for
-// ship's report to read it. It is removed later by ship's cleanup-pipeline
-// step or by GC's TTL sweep — Write and PruneEvidenceDirs no longer own its
-// deletion. exec-* and ship-* siblings are unaffected.
+// keepSibling decides which siblings stay: a done plan run, a completed ship
+// run that is not a dry-run, a completed execute run, and a ship or execute
+// run whose non-empty sessionId differs from the writer's non-empty
+// sessionId. ship's cleanup-pipeline step deletes a kept done plan run.
+// GC's TTL sweep deletes the other kept files later.
 func Write(st *State) error {
-	dir := stateDir(st.Root)
+	session, _ := st.Data["sessionId"].(string)
+	targets, err := PruneTargets(st.Root, st.Prefix, st.BranchSlug, st.Path, session)
+	if err != nil {
+		return err
+	}
+	for _, fp := range targets {
+		_ = os.Remove(fp) // best-effort
+	}
 
-	// Prune pre-existing files for the same prefix+slug.
+	return fsx.AtomicWriteJSON(st.Path, st.Data)
+}
+
+// PruneTargets returns the absolute paths of the <prefix>-<branchSlug>-*.json
+// files in runs/ that Write deletes for a writer at selfPath with sessionID.
+// selfPath "" (before Init) excludes nothing. The result is never nil
+// ([]string{} when nothing matches or runs/ is missing).
+// A readdir failure returns "state: readdir for prune <dir>: <err>".
+//
+// Matching uses parseStateFilename for exact slug equality, the same rule
+// Find uses. keepSibling removes the siblings that Write keeps.
+func PruneTargets(root, prefix, branchSlug, selfPath, sessionID string) ([]string, error) {
+	dir := stateDir(root)
+	targets := []string{}
+
 	entries, err := os.ReadDir(dir)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("state: readdir for prune %s: %w", dir, err)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return targets, nil
+		}
+		return nil, fmt.Errorf("state: readdir for prune %s: %w", dir, err)
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -447,23 +472,105 @@ func Write(st *State) error {
 		if parsed == nil {
 			continue
 		}
-		if parsed.Prefix != st.Prefix {
+		if parsed.Prefix != prefix {
 			continue
 		}
-		if parsed.Slug != st.BranchSlug {
+		if parsed.Slug != branchSlug {
 			continue
 		}
 		fp := filepath.Join(dir, name)
-		if fp == st.Path {
-			continue // don't prune ourselves
+		if fp == selfPath {
+			continue // never prune the writer's own file
 		}
-		if parsed.Prefix == "plan" && isDonePlanRun(fp) {
-			continue // kept for the ship report; cleanup-pipeline or GC removes it
+		if keepSibling(parsed.Prefix, fp, sessionID) {
+			continue
 		}
-		_ = os.Remove(fp) // best-effort
+		targets = append(targets, fp)
+	}
+	return targets, nil
+}
+
+// siblingReadMax bounds how many bytes keepSibling reads from a ship or
+// execute sibling. A larger file is treated as unreadable and is pruned.
+const siblingReadMax = 8 << 20 // 8 MiB
+
+// siblingMeta holds the only keys keepSibling reads. JSON null decodes to "".
+type siblingMeta struct {
+	SessionID      string `json:"sessionId"`
+	PipelineStatus string `json:"pipelineStatus"` // ship (internal/tools/ship_state.go:2958)
+	RunStatus      string `json:"runStatus"`      // execute (internal/tools/execute_state.go:4841)
+	Flags          struct {
+		DryRun bool `json:"dryRun"` // ship (internal/tools/ship.go:929)
+	} `json:"flags"`
+}
+
+// keepSibling reports whether a sibling state file is kept. The first
+// matching rule applies:
+//
+//  1. plan: a done plan run (isDonePlanRun) is kept.
+//  2. ship: a dry-run (flags.dryRun == true) is not kept.
+//  3. ship: pipelineStatus "completed" is kept.
+//  4. execute: runStatus "completed" is kept.
+//  5. ship, execute: a sibling whose non-empty sessionId differs from the
+//     writer's non-empty sessionId is kept.
+//  6. A read error, a JSON syntax error or a file over siblingReadMax is
+//     not kept.
+//  7. Anything else is not kept.
+//
+// A field with an unexpected type (json.UnmarshalTypeError) reads as its
+// zero value; the other fields still apply.
+func keepSibling(prefix, path, writerSession string) bool {
+	switch prefix {
+	case "plan":
+		return isDonePlanRun(path)
+	case "ship", "execute":
+	default:
+		return false
 	}
 
-	return fsx.AtomicWriteJSON(st.Path, st.Data)
+	meta, ok := readSiblingMeta(path)
+	if !ok {
+		return false
+	}
+	if prefix == "ship" {
+		if meta.Flags.DryRun {
+			return false
+		}
+		if meta.PipelineStatus == "completed" {
+			return true
+		}
+	}
+	if prefix == "execute" && meta.RunStatus == "completed" {
+		return true
+	}
+	if meta.SessionID != "" && writerSession != "" && meta.SessionID != writerSession {
+		return true
+	}
+	return false
+}
+
+// readSiblingMeta reads at most siblingReadMax+1 bytes of path and decodes
+// siblingMeta. It returns false on a read error, a file over siblingReadMax
+// or a JSON error other than *json.UnmarshalTypeError.
+func readSiblingMeta(path string) (siblingMeta, bool) {
+	var meta siblingMeta
+	f, err := os.Open(path)
+	if err != nil {
+		return meta, false
+	}
+	defer f.Close()
+
+	raw, err := io.ReadAll(io.LimitReader(f, siblingReadMax+1))
+	if err != nil || len(raw) > siblingReadMax {
+		return meta, false
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		var typeErr *json.UnmarshalTypeError
+		if !errors.As(err, &typeErr) {
+			return meta, false
+		}
+	}
+	return meta, true
 }
 
 // isDonePlanRun reports whether the state file at path is a "plan" run whose

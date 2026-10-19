@@ -679,6 +679,55 @@ func dashRRStepJSON(t *testing.T, p DashboardPipeline, name string) string {
 	return string(b)
 }
 
+// TestDashboardJoin_FixCarriesDeferredID checks that the join copies the
+// deferredId of a fixProgress row into DashboardFix.DeferredID, and that a row
+// with no deferredId gives an empty DeferredID.
+func TestDashboardJoin_FixCarriesDeferredID(t *testing.T) {
+	linked := dashRRFix("linked", "deferred", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")
+	linked["deferredId"] = "d-7f3a"
+	plain := dashRRFix("plain", "fixed", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")
+	ship := dashRRShip(t, []any{linked, plain}, nil)
+
+	got := map[string]string{}
+	for _, f := range dashJoinStep(t, ship, "received-review").Detail.Fixes {
+		got[f.Title] = f.DeferredID
+	}
+	want := map[string]string{"linked": "d-7f3a", "plain": ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("deferredId by title = %v, want %v", got, want)
+	}
+}
+
+// TestDashboardFix_DeferredIDNotInJSON checks that the snapshot JSON of a fix
+// has no DeferredID key and no deferredId key.
+func TestDashboardFix_DeferredIDNotInJSON(t *testing.T) {
+	b, err := json.Marshal(DashboardFix{Title: "t", Severity: "high", Status: "fixed", Origin: "local-review", DeferredID: "d-7f3a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys map[string]any
+	if err := json.Unmarshal(b, &keys); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"DeferredID", "deferredId"} {
+		if _, found := keys[k]; found {
+			t.Errorf("fix JSON %s has key %q, want none", b, k)
+		}
+	}
+	if strings.Contains(string(b), "d-7f3a") {
+		t.Errorf("fix JSON %s holds the deferred id value", b)
+	}
+
+	ship := dashRRShip(t, []any{func() map[string]any {
+		f := dashRRFix("linked", "deferred", "2026-10-07T08:40:00Z", "2026-10-07T08:41:00Z")
+		f["deferredId"] = "d-7f3a"
+		return f
+	}()}, nil)
+	if js := dashRRStepJSON(t, ship, "received-review"); strings.Contains(js, "d-7f3a") || strings.Contains(strings.ToLower(js), "deferredid") {
+		t.Errorf("received-review step JSON = %s, want no deferred id", js)
+	}
+}
+
 // TestDashboardReceivedReview_StepStatus checks the step status table: no
 // list gives no step; an open fix in a live run gives in_progress with no
 // completedAt; all fixes final, or a completed run, give completed with the

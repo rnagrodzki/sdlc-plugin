@@ -228,14 +228,17 @@ const (
 )
 
 // DashboardFix is one finding that received-review took. Line 0 means no
-// line.
+// line. DeferredID is the deferredId of the fixProgress row; it is not in the
+// JSON and serves only to pair the row with a deferred finding in the review
+// queue.
 type DashboardFix struct {
-	Title    string `json:"title"` // dashboardPreview: redacted, max 120 runes
-	Severity string `json:"severity"`
-	File     string `json:"file"`
-	Line     int    `json:"line,omitempty"`
-	Status   string `json:"status"` // one of healingFixStatuses
-	Origin   string `json:"origin"` // one of healingOrigins
+	Title      string `json:"title"` // dashboardPreview: redacted, max 120 runes
+	Severity   string `json:"severity"`
+	File       string `json:"file"`
+	Line       int    `json:"line,omitempty"`
+	Status     string `json:"status"` // one of healingFixStatuses
+	Origin     string `json:"origin"` // one of healingOrigins
+	DeferredID string `json:"-"`
 }
 
 // DashboardGuardrailCounts is the guardrail count of a plan setup station.

@@ -26,11 +26,14 @@ const dashboardQueueRowsMax = 200
 // finding gives one row with status "below" (reason "below-threshold" or no
 // reason) or "deferred" (any other reason), origin healingOriginLocal, and
 // its description as text. A deferred finding with the same file, line and
-// title as a fix record gives no row: the fix record stands for it. The rows
-// stop at dashboardQueueRowsMax. Unrouted is totals.Unaccounted, never below
-// 0: the findings that have no fix record and no deferred entry. Reason comes
-// from dashboardQueueReason. The rows of review findings join later, in
-// dashboardQueueAddFindings.
+// title as a fix record gives no row: the fix record stands for it. So does a
+// deferred finding with the deferredId of a fix record, and a deferred finding
+// on a file and line that hold exactly one fix record, whatever its title. A
+// deferred finding with no line pairs the same way with the only fix record
+// with no line on its file. The rows stop at dashboardQueueRowsMax. Unrouted
+// is totals.Unaccounted, never below 0: the findings that have no fix record
+// and no deferred entry. Reason comes from dashboardQueueReason. The rows of
+// review findings join later, in dashboardQueueAddFindings.
 //
 // issues holds one state issue for each problem of the ship state that the
 // queue cannot show: a deferredFindings value that is not a list, deferred
@@ -50,9 +53,15 @@ func dashboardReviewQueue(data map[string]any, totals *DashboardReviewTotals, fi
 	}
 
 	fixKeys := map[string]bool{}
+	fixIDs := map[string]bool{}
+	fixLines := map[string]int{}
 	for _, f := range fixes {
 		line := dashboardQueueLine(f.Line)
 		fixKeys[dashboardQueueKey(f.File, line, f.Title)] = true
+		if f.DeferredID != "" {
+			fixIDs[f.DeferredID] = true
+		}
+		fixLines[f.File+"\x00"+line]++
 		q.Rows = append(q.Rows, DashboardQueueRow{
 			Title:    f.Title,
 			Severity: f.Severity,
@@ -80,7 +89,8 @@ func dashboardReviewQueue(data map[string]any, totals *DashboardReviewTotals, fi
 			continue
 		}
 		file, line := dashboardStr(m["file"]), dashboardQueueLine(dashboardInt(m["line"]))
-		if fixKeys[dashboardQueueKey(file, line, title)] {
+		if fixIDs[dashboardStr(m["deferredId"])] || fixKeys[dashboardQueueKey(file, line, title)] ||
+			fixLines[file+"\x00"+line] == 1 {
 			continue
 		}
 		status := dashboardQueueStatusBelow
