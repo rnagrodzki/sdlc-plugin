@@ -71,7 +71,9 @@ func TestIntegration_ShipStateFixedSetsFixRow(t *testing.T) {
 	if got := shipStateFixRowStatus(t, dir, branch); got != "fixed" {
 		t.Errorf("fix row status after the fixed call = %q, want fixed", got)
 	}
-	for _, want := range []string{"continue-fix-pass", "Fix recorded. Continue the fix pass."} {
+	for _, want := range []string{"continue-fix-pass",
+		"Fix recorded. Fix-progress row set to fixed (was queued). Continue the fix pass.",
+		"## fixRow", "- prior: queued", "- status: fixed"} {
 		if !strings.Contains(first, want) {
 			t.Errorf("fixed output missing %q:\n%s", want, first)
 		}

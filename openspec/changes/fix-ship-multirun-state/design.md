@@ -138,7 +138,8 @@ No config key changes.
 | Keep rule location | `state.Write`; GC applies the TTL | TTL check in the write | the state package reads no config |
 | Keep rule order | first matching row of the keep table | a score over all rows | a dry-run is always deleted |
 | Delete list | one `state.PruneTargets` for the write and `prunedOrphans` | two lists | two lists can disagree |
-| Damaged healing data | fixed call returns the `DataError`; defer adds a warning to summary and next and succeeds | one rule for both | defer already wrote `deferred.json` before the record update |
+| Damaged healing data | a damaged `fixProgress` gives a warning in summary and next, and the call succeeds, for both the fixed call and defer; a `healing` that is not an object stays a `DataError` for the fixed call | the fixed call returns the `DataError` | `fixProgress` is display-only; a damaged value must not block the durable `fixed` record or the `deferred.json` resolve |
+| Defer and a failed `deferred.json` write | the record stays as it is | set the record to `deferred` with no `deferredId` | received-review sets the row only after its record succeeded (`defer` or the `deferred_add` fallback) |
 | `next` of `healing_record` | every kind returns `next` | fixed only; no change | guardrail `mcp-output-drives-behavior`; user decision D5 |
 
 ## Risks / Trade-offs
@@ -146,7 +147,7 @@ No config key changes.
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Two live runs on one branch with different sessions | `state.Find` returns the newest file by mtime | the ship skill passes no `sessionId`, so a ship start still deletes a live run |
-| A second finding on the same file and line as a deferred finding | that finding loses its own queue row | the `deferredId` pairs new runs exactly |
+| A second finding on the same file and line as a deferred finding | a deferred finding with no `deferredId` loses its own queue row | the file-and-line fallback applies only to a deferred finding with no `deferredId`; `defer` copies the `deferredId` onto the fix record that it matched, so new runs pair exactly |
 | A sibling field with a wrong JSON type | the field reads as its zero value | other fields still apply; a test pins each case |
 | Each write reads each sibling, at most 8 MiB | slower writes on a branch with many files | GC deletes old files |
 

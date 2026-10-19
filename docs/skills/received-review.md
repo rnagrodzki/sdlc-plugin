@@ -118,8 +118,16 @@ step already owns hardening for the run.
 
 In every mode, Step 11 writes the status of each accepted finding (`queued`,
 `fixing`, `fixed`, `failed`, `deferred`) to `healing.fixProgress` of the ship
-state. The `fixed` call and the `defer` call also set the matching row to
-`fixed` or `deferred`. A skipped status call does not leave a row `queued`.
+state. Two other calls also set the matching row:
+
+- `ship_state` `healing_record` with `kind:"fixed"` sets the row to `fixed`.
+- `ship_state` action `defer` sets the row to `deferred` and copies the
+  deferred id onto it. It does this only when its `deferred.json` write
+  succeeded. A `failed` row stays `failed`.
+
+Each of these calls changes a row only when exactly one row matches the
+finding. It never creates a row. So when the skill skips a `fix-progress`
+call, the row still moves on at the `fixed` or `defer` call.
 The [dashboard](../dashboard.md) shows these rows in the review queue of
 the `review` step. It shows them on the received-review step when the run
 has no review queue. The rows are for display only: the review ledger counts
@@ -130,9 +138,11 @@ reports that no run is live, and the skill makes no more status writes.
 
 One run stores at most 200 fix records. No setting changes this cap. At the
 cap, the tool rejects a new finding with an error that says "Do not retry".
-The skill then makes no more status writes in the run, so the rows already
-stored keep their last status. The same stop applies to a damaged ship state.
-The fixes, the records and the replies continue.
+The skill then makes no more `fix-progress` calls in the run. The same stop
+applies to a damaged ship state. The fixes, the records and the replies
+continue. The `fixed` and `defer` calls still set the rows that are already
+stored, so a stored row can still move to `fixed` or `deferred` after the
+stop.
 
 ## Related skills
 

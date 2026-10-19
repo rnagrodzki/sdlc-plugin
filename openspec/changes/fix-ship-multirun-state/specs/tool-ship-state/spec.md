@@ -8,9 +8,9 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 | `detail.kind` | Required fields | Write rule |
 |---|---|---|
 | `review-total` | `total`, `dimensions` (non-negative integers) | Replaces `healing.reviewTotal`. |
-| `fixed` | `origin` (`local-review` \| `pr-comment`), `severity` (review severity, stored lowercase), `file`, `title`; optional integer `line` (>= 1) | Appends to `healing.fixed`; a record with the same `(origin, file, line, title)` is a duplicate. Also sets the matching `healing.fixProgress` record to `fixed`, also on a duplicate. Match: the same `(origin, file, line, title)`, else the only record with the same file, line and title, else the only `queued` or `fixing` record with the same file and line. It adds no `fixProgress` record. |
+| `fixed` | `origin` (`local-review` \| `pr-comment`), `severity` (review severity, stored lowercase), `file`, `title`; optional integer `line` (>= 1) | Appends to `healing.fixed`; a record with the same `(origin, file, line, title)` is a duplicate. Also sets the matching `healing.fixProgress` record to `fixed`, also on a duplicate. Match: the same `(origin, file, line, title)`, else the only record with the same file, line and title, else the only `queued` or `fixing` record with the same file and line. It adds no `fixProgress` record. A `fixProgress` value that is not a list does not fail the call: the `fixed` record is written, no `fixProgress` record changes, and the response carries a warning. |
 | `hardened` | `phase` (`started` \| `done`), `trigger`, `classification`, `applied` (array of `{surface, action, targetFile}`, may be empty), `skipped` (non-negative integer) | Upserts `healing.hardened` by `trigger`: `done` replaces a stored `started`; any other repeat is a duplicate. |
-| `fix-progress` | The `fixed` fields plus `status` (`queued` \| `fixing` \| `fixed` \| `failed` \| `deferred`) | Upserts `healing.fixProgress` on `(origin, file, line, title)`: the same status changes nothing; a stored final status (`fixed`, `failed`, `deferred`) is kept against `queued` or `fixing`; a `deferred` status keeps a stored `failed`; any other change replaces the record, keeps `firstAt`, and sets `updatedAt`; at most 200 records. |
+| `fix-progress` | The `fixed` fields plus `status` (`queued` \| `fixing` \| `fixed` \| `failed` \| `deferred`) | Upserts `healing.fixProgress` on `(origin, file, line, title)`: the same status changes nothing; a stored final status (`fixed`, `failed`, `deferred`) is kept against `queued` or `fixing`; a `deferred` status keeps a stored `failed`; any other change replaces the record, keeps `firstAt` and `deferredId`, and sets `updatedAt`; at most 200 records. |
 
 - `applied[].surface` is one of `plan-guardrails`, `execute-guardrails`, `review-dimensions`, `copilot-instructions`, `error-report-skill`, `skill-recommendation`.
 - Each `review-total`, `fixed`, and `hardened` record gets `recordedAt`. A `fix-progress` record gets `firstAt` and `updatedAt`.
@@ -24,8 +24,10 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 | `summary` | `healing_record <kind>: <narration>`; narration is `recorded`, `replaced started record`, `already recorded — no change`, `fix-progress row set to fixed`, `kept <status>`, or `no live ship run on this branch — healing not recorded`. |
 | `kind` | The kind. |
 | `written` | `true` only when this call changed the state file. |
-| `record` | The record as stored after the call: `recordedAt` for `review-total`, `fixed` and `hardened`; `status`, `firstAt` and `updatedAt` for `fix-progress`. On a no-op call it is the stored entry. On a repeat `fixed` call that sets its `fixProgress` row, it is the incoming record: its `recordedAt` is the `updatedAt` that the call wrote to the row. With no live run it is the validated incoming record. |
-| `next` | Every kind returns it. Kinds `fix-progress` and `fixed` use id `continue-fix-pass`; with `detail.deferredId`, the instruction of kind `fixed` names the deferred item. Kind `review-total` uses id `continue-after-review-total`. Kind `hardened` uses id `continue-harden`. |
+| `record` | The record as stored after the call: `recordedAt` for `review-total`, `fixed` and `hardened`; `status`, `firstAt` and `updatedAt` for `fix-progress`. On a no-op call, and on a repeat `fixed` call that only sets its `fixProgress` row, it is the stored entry. With no live run it is the validated incoming record. |
+| `fixRow` | Kind `fixed` only, when the call changed the status of a `fixProgress` record: `{status, prior, updatedAt}`. |
+| `warnings` | Kind `fixed` only, when `healing.fixProgress` is not a list: one warning that names the state file. The warning is also at the end of `summary` and `next`. |
+| `next` | Every kind returns it. Kinds `fix-progress` and `fixed` use id `continue-fix-pass`; with `detail.deferredId`, the instruction of kind `fixed` names the deferred item; when kind `fixed` changed a row, the instruction names the prior status. Kind `review-total` uses id `continue-after-review-total`. Kind `hardened` uses id `continue-harden`: phase `started` asks for the `done` record, and phase `done` ends the harden run. |
 
 | Condition | Class | Message (short) |
 |---|---|---|
@@ -36,7 +38,7 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 | Integer field negative or fractional | `DomainError` | `healing_record: detail.<field> must be a non-negative integer, got ...` |
 | New `fix-progress` key when 200 records exist | `DomainError` | `healing_record: data.healing.fixProgress holds 200 records — the cap for one run` |
 | `line` below 1 | `DomainError` | `healing_record: detail.line must be >= 1, got <n>` |
-| Stored `healing.fixed`, `healing.hardened` or `healing.fixProgress` is not a list, or `healing` is not an object | `DataError` | `healing_record: data.healing.<key> in <state file> is not a list — the ship state is damaged` |
+| Stored `healing.fixed`, `healing.hardened` or `healing.fixProgress` is not a list, or `healing` is not an object (except `healing.fixProgress` on kind `fixed`, which gives a warning) | `DataError` | `healing_record: data.healing.<key> in <state file> is not a list — the ship state is damaged` |
 
 #### Scenario: Fixed duplicate
 - **WHEN** the same `fixed` record is sent twice
@@ -88,20 +90,30 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 - **WHEN** `healing.fixed` already holds the `fixed` record and its `fix-progress` record has status `queued`
 - **AND** the same `fixed` record is sent again
 - **THEN** the response has `written:true` and narration `fix-progress row set to fixed`
+- **AND** `record` is the stored `fixed` record
+- **AND** `fixRow` is `{status:"fixed", prior:"queued", updatedAt:<call time>}`
+
+#### Scenario: Fixed call with a damaged fix-progress list
+- **WHEN** `healing.fixProgress` is not a list
+- **AND** a `fixed` record is sent, with or without `deferredId`
+- **THEN** the call succeeds and writes the `fixed` record
+- **AND** `healing.fixProgress` is unchanged
+- **AND** `summary`, `next` and `warnings` hold `Fix-progress row not updated: data.healing.fixProgress in <path> is not a list — the ship state is damaged. Tell the user to repair the ship state file <path> (set the damaged key to {} or [], or remove it).`
+- **AND** with `deferredId` the `deferred.json` row is resolved
 
 #### Scenario: Next for each kind
 - **WHEN** a `review-total` record is stored
 - **THEN** the response has `next` id `continue-after-review-total`
-- **AND** a stored `hardened` record gives `next` id `continue-harden`
+- **AND** a stored `hardened` record gives `next` id `continue-harden`, with an instruction that differs for phase `started` and phase `done`
 - **AND** a stored `fixed` record with no `deferredId` gives `next` id `continue-fix-pass`
 
 ### Requirement: init (legacy)
-The `init` action SHALL create a new ship state file with the fixed legacy scaffold and delete the other ship state files for the same branch slug that are in flight, dry-run runs, or unreadable. It SHALL keep a completed run that is not a dry-run, and an in-flight run whose non-empty `sessionId` differs from the non-empty `sessionId` of the call.
+The `init` action SHALL create a new ship state file with the fixed legacy scaffold and delete the other ship state files for the same branch slug that are not kept. It SHALL keep a completed run that is not a dry-run, and a run that is not a dry-run whose non-empty `sessionId` differs from the non-empty `sessionId` of the call.
 
 - Seeded: `version:1`, `startedAt`, `branch`, `worktree`, `sessionId`, `flags` (`detail.flags` or `{}`), `decisions:[]`, `deferredFindings:[]`.
 - `steps`: `execute`, `commit`, `review`, `received-review` (`condition:"if critical/high findings"`), `commit-fixes` (`condition:"if received-review made changes"`), `pr`; all `pending`, no `kind`.
 - Output: `{filePath, prunedOrphans, worktree}`.
-- `prunedOrphans` lists exactly the files that the write deletes. GC deletes a kept file later.
+- `prunedOrphans` lists exactly the files that the write deleted; a failed delete is not listed. GC deletes a kept file later.
 
 #### Scenario: Legacy scaffold
 - **WHEN** the call passes `action:"init"` with `detail.branch:"feat/x"`
@@ -116,7 +128,7 @@ The `init` action SHALL create a new ship state file with the fixed legacy scaff
 ## ADDED Requirements
 
 ### Requirement: defer sets the fix-progress record
-The `defer` action SHALL set the matching `healing.fixProgress` record of the live run to `deferred` and SHALL copy the `deferredId` of the run entry onto it. Match: the only record with the same file, line and title, else the only `queued` or `fixing` record with the same file and line. A stored `failed` record keeps status `failed`.
+After a good `deferred.json` write, the `defer` action SHALL set the matching `healing.fixProgress` record of the live run to `deferred` and SHALL copy the `deferredId` of the run entry onto it. When the `deferred.json` write fails, it SHALL NOT change the record. Match: the only record with the same file, line and title, else the only `queued` or `fixing` record with the same file and line. A stored `failed` record keeps status `failed`.
 
 #### Scenario: Defer sets the record
 - **WHEN** a `queued` `fix-progress` record exists on `internal/foo.go` line 12 with title `unchecked error`
@@ -139,7 +151,8 @@ The `defer` action SHALL set the matching `healing.fixProgress` record of the li
 
 #### Scenario: Failed deferred.json write
 - **WHEN** the `deferred.json` write fails
-- **THEN** the matching record has status `deferred` and no `deferredId`
+- **THEN** the matching record is unchanged
+- **AND** `summary` and `next` hold no `Fix-progress row` note
 
 ### Requirement: defer reports the fix-progress change
 The `defer` action SHALL add one note to the end of `summary` and of `next` when the call changes a `fix-progress` record.
@@ -175,9 +188,9 @@ The `defer` action SHALL NOT fail for a damaged `healing` object. It SHALL leave
 #### Scenario: Healing is not an object
 - **WHEN** `data.healing` is not an object
 - **THEN** the `defer` call succeeds
-- **AND** `summary` and `next` hold `fix-progress row not updated — data.healing in <path> is not an object. Tell the user to remove the data.healing key or set it to {}.`
+- **AND** `summary` and `next` hold `Fix-progress row not updated: data.healing in <path> is not an object — the ship state is damaged. Tell the user to repair the ship state file <path> (set the damaged key to {} or [], or remove it).`
 
 #### Scenario: Fix-progress list is damaged
 - **WHEN** `data.healing.fixProgress` is not a list
 - **THEN** the `defer` call succeeds
-- **AND** `summary` and `next` hold `fix-progress row not updated — data.healing.fixProgress in <path> is not a list. Tell the user to set data.healing.fixProgress to [].`
+- **AND** `summary` and `next` hold `Fix-progress row not updated: data.healing.fixProgress in <path> is not a list — the ship state is damaged. Tell the user to repair the ship state file <path> (set the damaged key to {} or [], or remove it).`

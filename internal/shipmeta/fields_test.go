@@ -328,8 +328,8 @@ func TestShipStepNameEnum_CoversCanonicalSteps(t *testing.T) {
 
 // TestShipStateFlags_MatchPersistedKeys pins ship-state.schema.json's flags
 // object to keys ship_prepare actually persists (quick, steps, rebase,
-// openspecChange — see mergeShipFlags and resolveShipOpenspecChange in
-// internal/tools/ship.go) and keeps the hard-removed legacy skip/preset
+// openspecChange, dryRun — see mergeShipFlags and resolveShipOpenspecChange
+// in internal/tools/ship.go; state.keepSibling reads dryRun) and keeps the hard-removed legacy skip/preset
 // keys out of it.
 func TestShipStateFlags_MatchPersistedKeys(t *testing.T) {
 	doc := readSchema(t, "ship-state.schema.json")
@@ -339,7 +339,7 @@ func TestShipStateFlags_MatchPersistedKeys(t *testing.T) {
 	if flagProps == nil {
 		t.Fatal("could not locate properties.flags.properties in ship-state.schema.json")
 	}
-	for _, key := range []string{"quick", "steps", "rebase", "openspecChange"} {
+	for _, key := range []string{"quick", "steps", "rebase", "openspecChange", "dryRun"} {
 		if _, ok := flagProps[key]; !ok {
 			t.Errorf("ship-state.schema.json flags is missing persisted key %q", key)
 		}

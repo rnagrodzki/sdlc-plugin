@@ -27,7 +27,8 @@ stateDiagram-v2
 - A new wave entry is `{number, status: "in_progress", startedAt, tasks: []}`.
 - `wave-done`, `wave-fail`, `task-done`, `task-fail`, and `wave-split` create the wave as `in_progress` first when its number is not recorded.
 - `wave-commit` and `wave-committed` record `committedSha` on a `completed` wave; the status stays `completed`.
-- Every state write deletes the older execute state files for the same branch slug that are in flight or unreadable, so a second `init` supersedes an earlier in-flight run.
+- Every state write deletes the older execute state files for the same branch slug that are not kept, so a second `init` supersedes an earlier in-flight run.
+- `init` returns `prunedOrphans`: the files that its state write deleted (`[]` when none; a failed delete is not listed).
 - A state write keeps an older run with `runStatus` `completed`, and an older in-flight run whose non-empty `sessionId` differs from the non-empty `sessionId` of the writer. GC deletes a kept file later.
 
 #### Scenario: Restarting an existing wave
@@ -48,3 +49,4 @@ stateDiagram-v2
 - **WHEN** an older `execute-<same-slug>-*.json` file has no `runStatus` `completed` and the same or no `sessionId`
 - **AND** `init` creates a new run on the same branch
 - **THEN** the older file is deleted
+- **AND** `prunedOrphans` lists it

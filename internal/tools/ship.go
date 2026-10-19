@@ -95,7 +95,7 @@ type ShipPrepareIn struct {
 
 	// SessionID is stamped into the initialized state's sessionId field
 	// (matching lib/state.js's initState CLAUDE_CODE_SESSION_ID stamp).
-	SessionID string `json:"sessionId" jsonschema_description:"Session identifier stamped into the initialized ship state's sessionId field, for correlating this run with the calling session."`
+	SessionID string `json:"sessionId" jsonschema_description:"Session identifier stamped into the initialized ship state's sessionId field, for correlating this run with the calling session. It also decides which older ship runs of the branch the state write keeps: a run that is not a dry-run and whose non-empty sessionId differs from this non-empty value is kept. When either value is empty, a sibling run that is not completed is deleted."`
 }
 
 // ShipGCBucket holds the deleted/kept paths for one state-file prefix (or
@@ -160,10 +160,11 @@ type ShipPrepareOut struct {
 	StateFile string `json:"stateFile,omitempty"`
 
 	// PrunedOrphans lists the pre-existing ship-<slug>-*.json state files that
-	// the new run's first write deletes (state.PruneTargets): in-flight runs,
-	// dry-run runs and unreadable files. A completed run, and an in-flight run
+	// the new run's state write deleted (state.PruneTargets, filtered by
+	// state.Removed, so a failed delete is not listed). The keep rule is
+	// state.keepSibling: a dry-run run is deleted; a completed run, and a run
 	// whose non-empty sessionId differs from the caller's non-empty sessionId,
-	// are kept.
+	// are kept; every other sibling is deleted.
 	PrunedOrphans []string `json:"prunedOrphans"`
 
 	// PipelineDisplay is a pipeline.PipelineTable render of the seeded step
@@ -537,7 +538,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	}
 
 	branchSlug := state.SlugifyBranch(currentBranch)
-	pruned, err := state.PruneTargets(cfgRoot, "ship", branchSlug, "", in.SessionID)
+	pruned, err := state.PruneTargets(state.PruneQuery{Root: cfgRoot, Prefix: "ship", BranchSlug: branchSlug, SessionID: in.SessionID})
 	if err != nil {
 		return ShipPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("scan existing ship state files: %s", err.Error()),
@@ -577,7 +578,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	}
 
 	out.StateFile = st.Path
-	out.PrunedOrphans = pruned
+	out.PrunedOrphans = state.Removed(pruned)
 	out.PipelineDisplay = pipeline.PipelineTable(configStepsFromScaffold(scaffold))
 	out.Next = shipPrepareNext(out)
 	return out, nil
@@ -1597,7 +1598,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 // tools.
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
-		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. The first state write deletes each older ship-<branch-slug>-*.json file of the branch that is in flight, a dry-run run, or unreadable; prunedOrphans lists them. It keeps a completed run, and an in-flight run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later.",
+		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later.",
 		mcpserver.Annotations{
 			Title:       "Prepare ship pipeline run",
 			ReadOnly:    false,

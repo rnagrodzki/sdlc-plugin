@@ -11,7 +11,7 @@
 | Area | Before | After |
 |---|---|---|
 | `ship_state` `healing_record` kind `fixed` | appends to `healing.fixed` only | also sets the matching `healing.fixProgress` record to `fixed` |
-| `ship_state` `defer` | writes `deferredFindings` only | also sets the matching `healing.fixProgress` record to `deferred` and copies `deferredId` onto it |
+| `ship_state` `defer` | writes `deferredFindings` only | after a good `deferred.json` write, also sets the matching `healing.fixProgress` record to `deferred` and copies `deferredId` onto it |
 | `ship_state` `healing_record` `next` | only kind `fix-progress`, and kind `fixed` with `deferredId` | every kind returns `next` |
 | Dashboard review queue | a deferred finding pairs with a fix record on the exact file, line and title | pairs on the same `deferredId`, else the exact file, line and title, else the only fix record on that file and line |
 | State write of ship and execute runs | deletes every same-branch sibling, except a done plan run | also keeps a completed run that is not a dry-run, and a live run of another non-empty session id |

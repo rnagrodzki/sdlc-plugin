@@ -49,6 +49,10 @@
           "type": "string",
           "description": "Rebase policy for this run (e.g. auto or skip): CLI value, else config (a bool becomes auto/skip), else auto."
         },
+        "dryRun": {
+          "type": "boolean",
+          "description": "True when ship_prepare was called with dryRun. The state write of a later ship run on the branch always deletes a dry-run state file, also a completed one."
+        },
         "openspecChange": {
           "oneOf": [
             {
@@ -467,7 +471,7 @@
         },
         "fixProgress": {
           "type": "array",
-          "description": "Fix status of each finding that received-review Step 11 takes. Upserted on (origin, file, line, title). A repeat of the stored status changes nothing. A stored final status (fixed, failed, deferred) is kept when the incoming status is queued or fixing, and a deferred status never replaces a failed status. Any other status change replaces the whole record. firstAt keeps its first value; updatedAt is the time of the last status change. At most 200 records. healing_record kind fixed also sets the matching record to fixed. ship_state defer also sets it to deferred and adds deferredId.",
+          "description": "Fix status of each finding that received-review Step 11 takes. A healing_record kind fix-progress call upserts a record on (origin, file, line, title). A repeat of the stored status changes nothing. A stored final status (fixed, failed, deferred) is kept when the incoming status is queued or fixing, and a deferred status never replaces a failed status. Any other status change replaces the whole record and keeps firstAt and deferredId. updatedAt is the time of the last status change. At most 200 records. Two other calls change an existing record in place, and never create one: healing_record kind fixed sets it to fixed, and ship_state defer sets it to deferred after a good deferred.json write. They do not use the upsert key. They match a record in this order: (1) kind fixed only: the same (origin, file, line, title); (2) the only record with the same file, line and title; (3) the only queued or fixing record with the same file and line. With 0 or 2+ records at a step, the next step applies; with no match, no record changes. They change only status and updatedAt (and defer also deferredId), and keep the other fields.",
           "maxItems": 200,
           "items": {
             "type": "object",
@@ -510,7 +514,7 @@
               },
               "deferredId": {
                 "type": "string",
-                "description": "Id of the deferred.json row of this finding. Set by ship_state defer when it moves the record to deferred."
+                "description": "Id of the deferred.json row of this finding. ship_state defer copies it onto the matching record after a good deferred.json write, also when the record keeps status failed. A later defer call replaces it. A fix-progress status change keeps it. Absent when no defer call matched the record, or when the deferred.json write of that call failed."
               }
             },
             "required": ["origin", "severity", "file", "title", "status", "firstAt", "updatedAt"],

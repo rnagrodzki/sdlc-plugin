@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -508,8 +510,11 @@ func TestShipPrepare_PrunedOrphans(t *testing.T) {
 				if len(out.PrunedOrphans) != 1 || out.PrunedOrphans[0] != orphan {
 					t.Errorf("PrunedOrphans = %v, want [%s]", out.PrunedOrphans, orphan)
 				}
-			} else if len(out.PrunedOrphans) != 0 {
-				t.Errorf("PrunedOrphans = %v, want empty", out.PrunedOrphans)
+			} else {
+				if out.PrunedOrphans == nil || len(out.PrunedOrphans) != 0 {
+					t.Errorf("PrunedOrphans = %#v, want a non-nil empty list", out.PrunedOrphans)
+				}
+				assertJSONEmptyList(t, out, "prunedOrphans")
 			}
 			_, statErr := os.Stat(orphan)
 			if tt.wantOnDisk && statErr != nil {
@@ -544,6 +549,39 @@ func TestShipPrepare_PruneScanError(t *testing.T) {
 	}
 	if !strings.Contains(infra.Suggestion, "retry ship_prepare") {
 		t.Errorf("InfraError.Suggestion = %q, want a retry hint", infra.Suggestion)
+	}
+	assertInfraReaddirCause(t, infra)
+}
+
+// assertInfraReaddirCause checks that infra.Cause wraps the *fs.PathError of
+// the failed runs/ ReadDir, with cause syscall.ENOTDIR (runs/ is a regular
+// file in the test setup).
+func assertInfraReaddirCause(t *testing.T, infra *mcpserver.InfraError) {
+	t.Helper()
+	var pathErr *fs.PathError
+	if !errors.As(infra.Cause, &pathErr) {
+		t.Fatalf("InfraError.Cause = %v, want it to wrap *fs.PathError", infra.Cause)
+	}
+	if !errors.Is(infra.Cause, syscall.ENOTDIR) {
+		t.Fatalf("InfraError.Cause = %v, want it to wrap syscall.ENOTDIR", infra.Cause)
+	}
+}
+
+// assertJSONEmptyList checks that v serializes key as the JSON list [] and
+// not as null or a missing key.
+func assertJSONEmptyList(t *testing.T, v any, key string) {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("json.Unmarshal: %v", err)
+	}
+	got, ok := m[key]
+	if !ok || string(got) != "[]" {
+		t.Fatalf("JSON %s = %s (present %v), want []", key, got, ok)
 	}
 }
 

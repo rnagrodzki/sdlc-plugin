@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -572,25 +574,72 @@ func TestKeepSibling_WrongTypedField(t *testing.T) {
 	}
 }
 
-func TestFind_LiveRunWinsOverKeptRun(t *testing.T) {
-	root := t.TempDir()
-	dir := keepRuleRunsDir(t, root)
-	run1 := writeSibling(t, dir, "ship-main-20261019T100000Z.json",
-		`{"sessionId":"s1","pipelineStatus":"completed"}`)
-	old := time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC)
-	if err := os.Chtimes(run1, old, old); err != nil {
-		t.Fatalf("Chtimes: %v", err)
-	}
+// TestFind_NewestMtimeWins pins that Find returns the file with the newest
+// mtime. Find has no liveness rule: a kept completed run of another session
+// that is newer than the live run is the one Find returns.
+func TestFind_NewestMtimeWins(t *testing.T) {
+	t.Run("live run is newer than a kept run", func(t *testing.T) {
+		root := t.TempDir()
+		dir := keepRuleRunsDir(t, root)
+		run1 := writeSibling(t, dir, "ship-main-20261019T100000Z.json",
+			`{"sessionId":"s1","pipelineStatus":"completed"}`)
+		old := time.Date(2026, 10, 19, 10, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(run1, old, old); err != nil {
+			t.Fatalf("Chtimes: %v", err)
+		}
 
-	run2 := writeAsWriter(t, root, dir, "ship", "s1")
-	assertExists(t, run1, true)
+		run2 := writeAsWriter(t, root, dir, "ship", "s1")
+		assertExists(t, run1, true)
 
-	found, err := Find(root, "ship", "main")
-	if err != nil {
-		t.Fatalf("Find: %v", err)
+		found, err := Find(root, "ship", "main")
+		if err != nil {
+			t.Fatalf("Find: %v", err)
+		}
+		if found == nil || found.Path != run2.Path {
+			t.Fatalf("Find = %+v, want %s", found, run2.Path)
+		}
+	})
+
+	t.Run("kept run of another session is newer than the live run", func(t *testing.T) {
+		root := t.TempDir()
+		dir := keepRuleRunsDir(t, root)
+		live := writeAsWriter(t, root, dir, "ship", "s1")
+		liveTime := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+		if err := os.Chtimes(live.Path, liveTime, liveTime); err != nil {
+			t.Fatalf("Chtimes live: %v", err)
+		}
+		kept := writeSibling(t, dir, "ship-main-20261019T130000Z.json",
+			`{"sessionId":"s9","pipelineStatus":"completed"}`)
+		newer := liveTime.Add(time.Hour)
+		if err := os.Chtimes(kept, newer, newer); err != nil {
+			t.Fatalf("Chtimes kept: %v", err)
+		}
+
+		found, err := Find(root, "ship", "main")
+		if err != nil {
+			t.Fatalf("Find: %v", err)
+		}
+		if found == nil || found.Path != kept {
+			t.Fatalf("Find = %+v, want the newer kept run %s", found, kept)
+		}
+	})
+}
+
+// TestRemoved checks that Removed returns only the paths that no longer
+// exist, and a non-nil empty slice for no input.
+func TestRemoved(t *testing.T) {
+	dir := t.TempDir()
+	present := writeSibling(t, dir, "ship-main-20261019T100000Z.json", `{}`)
+	missing := filepath.Join(dir, "ship-main-20261019T110000Z.json")
+
+	got := Removed([]string{present, missing})
+	if len(got) != 1 || got[0] != missing {
+		t.Fatalf("Removed = %v, want [%s]", got, missing)
 	}
-	if found == nil || found.Path != run2.Path {
-		t.Fatalf("Find = %+v, want %s", found, run2.Path)
+	for _, in := range [][]string{nil, {}} {
+		if got := Removed(in); got == nil || len(got) != 0 {
+			t.Fatalf("Removed(%#v) = %#v, want []string{}", in, got)
+		}
 	}
 }
 
@@ -598,7 +647,7 @@ func TestPruneTargets_MatchesWrite(t *testing.T) {
 	root := t.TempDir()
 
 	// runs/ missing: a non-nil empty slice.
-	got, err := PruneTargets(root, "ship", "main", "", "s1")
+	got, err := PruneTargets(PruneQuery{Root: root, Prefix: "ship", BranchSlug: "main", SessionID: "s1"})
 	if err != nil {
 		t.Fatalf("PruneTargets (no runs/): %v", err)
 	}
@@ -618,7 +667,7 @@ func TestPruneTargets_MatchesWrite(t *testing.T) {
 	writeSibling(t, dir, "notes.json", `{}`) // not a state file name
 
 	// selfPath "" excludes nothing.
-	all, err := PruneTargets(root, "ship", "main", "", "s1")
+	all, err := PruneTargets(PruneQuery{Root: root, Prefix: "ship", BranchSlug: "main", SessionID: "s1"})
 	if err != nil {
 		t.Fatalf("PruneTargets (no self): %v", err)
 	}
@@ -627,13 +676,16 @@ func TestPruneTargets_MatchesWrite(t *testing.T) {
 	}
 
 	selfPath := filepath.Join(dir, selfName)
-	targets, err := PruneTargets(root, "ship", "main", selfPath, "s1")
+	targets, err := PruneTargets(PruneQuery{Root: root, Prefix: "ship", BranchSlug: "main", SelfPath: selfPath, SessionID: "s1"})
 	if err != nil {
 		t.Fatalf("PruneTargets: %v", err)
 	}
 
 	before := map[string]bool{}
-	entries, _ := os.ReadDir(dir)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir %s: %v", dir, err)
+	}
 	for _, e := range entries {
 		before[filepath.Join(dir, e.Name())] = true
 	}
@@ -674,12 +726,26 @@ func TestPruneTargets_ReaddirError(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
-	got, err := PruneTargets(root, "ship", "main", "", "")
+	got, err := PruneTargets(PruneQuery{Root: root, Prefix: "ship", BranchSlug: "main"})
 	if err == nil {
 		t.Fatalf("PruneTargets: expected readdir error, got nil (targets=%v)", got)
 	}
 	if !strings.Contains(err.Error(), "state: readdir for prune ") {
 		t.Fatalf("PruneTargets error = %q, want prefix %q", err, "state: readdir for prune ")
+	}
+	assertReaddirCause(t, err)
+}
+
+// assertReaddirCause checks that err wraps the *fs.PathError of the failed
+// ReadDir, with cause syscall.ENOTDIR (runs/ is a regular file).
+func assertReaddirCause(t *testing.T, err error) {
+	t.Helper()
+	var pathErr *fs.PathError
+	if !errors.As(err, &pathErr) {
+		t.Fatalf("error %q does not wrap *fs.PathError", err)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Fatalf("error %q does not wrap syscall.ENOTDIR (PathError.Err = %v)", err, pathErr.Err)
 	}
 }
 
@@ -710,6 +776,7 @@ func TestWrite_ReaddirErrorWritesNothing(t *testing.T) {
 	if !strings.Contains(err.Error(), "state: readdir for prune ") {
 		t.Fatalf("Write error = %q, want prefix %q", err, "state: readdir for prune ")
 	}
+	assertReaddirCause(t, err)
 	if _, statErr := os.Stat(st.Path); statErr == nil {
 		t.Fatalf("Write created %s after the readdir error", st.Path)
 	}
@@ -732,6 +799,66 @@ func TestKeepSibling_OtherPrefixAndUnreadable(t *testing.T) {
 	}
 	if keepSibling("execute", missing, "s2") {
 		t.Error("keepSibling(execute, missing file) = true, want false")
+	}
+
+	// A directory named like a state file opens, then io.ReadAll fails
+	// (EISDIR): readSiblingMeta reports it unreadable.
+	asDir := filepath.Join(dir, "ship-main-20261019T120000Z.json")
+	if err := os.Mkdir(asDir, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+	if _, ok := readSiblingMeta(asDir); ok {
+		t.Error("readSiblingMeta(directory) ok = true, want false")
+	}
+	for _, prefix := range []string{"ship", "execute"} {
+		if keepSibling(prefix, asDir, "s2") {
+			t.Errorf("keepSibling(%s, directory) = true, want false", prefix)
+		}
+	}
+}
+
+// TestKeepSibling_StatusFieldPerPrefix checks that each prefix reads only its
+// own status field: runStatus does not keep a ship run, and pipelineStatus
+// does not keep an execute run.
+func TestKeepSibling_StatusFieldPerPrefix(t *testing.T) {
+	dir := t.TempDir()
+	ship := writeSibling(t, dir, "ship-main-20261019T100000Z.json", `{"runStatus":"completed"}`)
+	if keepSibling("ship", ship, "") {
+		t.Error("keepSibling(ship, runStatus completed) = true, want false")
+	}
+	exec := writeSibling(t, dir, "execute-main-20261019T100000Z.json", `{"pipelineStatus":"completed"}`)
+	if keepSibling("execute", exec, "") {
+		t.Error("keepSibling(execute, pipelineStatus completed) = true, want false")
+	}
+}
+
+// TestKeepSibling_SizeLimit checks both sides of siblingReadMax: a file of
+// exactly siblingReadMax bytes is read (and kept, as a completed run), and a
+// file of siblingReadMax+1 bytes is treated as unreadable (not kept).
+func TestKeepSibling_SizeLimit(t *testing.T) {
+	sized := func(n int) string {
+		const head = `{"pipelineStatus":"completed"}`
+		return head + strings.Repeat(" ", n-len(head))
+	}
+	cases := []struct {
+		name string
+		size int
+		want bool
+	}{
+		{"at the limit", siblingReadMax, true},
+		{"one byte over the limit", siblingReadMax + 1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fp := writeSibling(t, dir, "ship-main-20261019T100000Z.json", sized(tc.size))
+			if info, err := os.Stat(fp); err != nil || info.Size() != int64(tc.size) {
+				t.Fatalf("file size = %v (err %v), want %d", info, err, tc.size)
+			}
+			if got := keepSibling("ship", fp, ""); got != tc.want {
+				t.Fatalf("keepSibling(ship, %d bytes) = %v, want %v", tc.size, got, tc.want)
+			}
+		})
 	}
 }
 

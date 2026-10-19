@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -151,13 +152,29 @@ func TestExecState_Init_SiblingKeepRule(t *testing.T) {
 				"execute-"+state.SlugifyBranch("feat/test")+"-20200101T000000Z.json")
 			writeFile(t, sibling, tt.sibling)
 
-			if _, err := executeState(root, root, ExecuteStateIn{
+			res, err := executeState(root, root, ExecuteStateIn{
 				Action:    "init",
 				Branch:    "feat/test",
-				Quality:   "standard",
+				Quality:   "balanced",
 				SessionID: tt.callerSess,
-			}, fixedClock(testNow)); err != nil {
+			}, fixedClock(testNow))
+			if err != nil {
 				t.Fatalf("init: %v", err)
+			}
+			m, ok := res.(map[string]any)
+			if !ok {
+				t.Fatalf("init result is %T, want map[string]any", res)
+			}
+			pruned, ok := m["prunedOrphans"].([]string)
+			if !ok || pruned == nil {
+				t.Fatalf("prunedOrphans = %#v, want a non-nil []string", m["prunedOrphans"])
+			}
+			wantPruned := []string{}
+			if !tt.wantOnDisk {
+				wantPruned = []string{sibling}
+			}
+			if !slices.Equal(pruned, wantPruned) {
+				t.Errorf("prunedOrphans = %v, want %v", pruned, wantPruned)
 			}
 
 			_, statErr := os.Stat(sibling)

@@ -360,9 +360,41 @@ func TestDashboardReviewQueue_DeferredIDTwin(t *testing.T) {
 	})
 }
 
+// TestDashboardReviewQueue_LineFallbackNeedsNoDeferredID checks that the file
+// and line fallback pairs only a deferred finding with no deferredId. A
+// finding with a deferredId that no fix record carries keeps its own row.
+func TestDashboardReviewQueue_LineFallbackNeedsNoDeferredID(t *testing.T) {
+	tests := []struct {
+		name       string
+		fixID      string
+		deferredID string
+		want       []string
+	}{
+		{"other non-empty deferredId on the only fix record keeps the row", "d-1", "d-2", []string{"fixed", "deferred"}},
+		{"deferredId and a fix record with no deferredId keep the row", "", "d-2", []string{"fixed", "deferred"}},
+		{"no deferredId pairs with the only fix record on the line", "", "", []string{"fixed"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fix := dashQueueFix("Lint: unused var", "fixed", "local-review", "a.go", 42)
+			fix.DeferredID = tt.fixID
+			entry := dashQueueDeferred("Pick a retry policy", "needs-direction", "a.go", 42)
+			if tt.deferredID != "" {
+				entry["deferredId"] = tt.deferredID
+			}
+			data := map[string]any{"deferredFindings": []any{entry}}
+			q, _ := dashboardReviewQueue(data, dashQueueTotals(2, 0), []DashboardFix{fix})
+			if got := dashQueueRowStatuses(q); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("statuses = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // TestDashboardReviewQueue_SameLineTwoFixes checks the file and line fallback:
-// a deferred finding with another title pairs with the fix record only when
-// exactly one fix record, of any status, is on its file and line. Two fix
+// a deferred finding with no deferredId and another title pairs with the fix
+// record only when exactly one fix record, of any status, is on its file and
+// line. Two fix
 // records on the line give no pairing. A finding with no line pairs with the
 // only fix record with no line on its file.
 func TestDashboardReviewQueue_SameLineTwoFixes(t *testing.T) {

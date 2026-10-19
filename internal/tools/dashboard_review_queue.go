@@ -25,14 +25,10 @@ const dashboardQueueRowsMax = 200
 // A fix record gives one row with its own status and origin. A deferred
 // finding gives one row with status "below" (reason "below-threshold" or no
 // reason) or "deferred" (any other reason), origin healingOriginLocal, and
-// its description as text. A deferred finding with the same file, line and
-// title as a fix record gives no row: the fix record stands for it. So does a
-// deferred finding with the deferredId of a fix record, and a deferred finding
-// on a file and line that hold exactly one fix record, whatever its title. A
-// deferred finding with no line pairs the same way with the only fix record
-// with no line on its file. The rows stop at dashboardQueueRowsMax. Unrouted
-// is totals.Unaccounted, never below 0: the findings that have no fix record
-// and no deferred entry. Reason comes from dashboardQueueReason. The rows of
+// its description as text. A deferred finding that dashboardQueuePairs.covers
+// gives no row: the fix record stands for it. The rows stop at
+// dashboardQueueRowsMax. Unrouted is totals.Unaccounted, never below 0: the
+// findings that have no fix record and no deferred entry. Reason comes from dashboardQueueReason. The rows of
 // review findings join later, in dashboardQueueAddFindings.
 //
 // issues holds one state issue for each problem of the ship state that the
@@ -52,16 +48,10 @@ func dashboardReviewQueue(data map[string]any, totals *DashboardReviewTotals, fi
 		Rows:      []DashboardQueueRow{},
 	}
 
-	fixKeys := map[string]bool{}
-	fixIDs := map[string]bool{}
-	fixLines := map[string]int{}
+	pairs := newDashboardQueuePairs()
 	for _, f := range fixes {
 		line := dashboardQueueLine(f.Line)
-		fixKeys[dashboardQueueKey(f.File, line, f.Title)] = true
-		if f.DeferredID != "" {
-			fixIDs[f.DeferredID] = true
-		}
-		fixLines[f.File+"\x00"+line]++
+		pairs.add(f)
 		q.Rows = append(q.Rows, DashboardQueueRow{
 			Title:    f.Title,
 			Severity: f.Severity,
@@ -89,8 +79,7 @@ func dashboardReviewQueue(data map[string]any, totals *DashboardReviewTotals, fi
 			continue
 		}
 		file, line := dashboardStr(m["file"]), dashboardQueueLine(dashboardInt(m["line"]))
-		if fixIDs[dashboardStr(m["deferredId"])] || fixKeys[dashboardQueueKey(file, line, title)] ||
-			fixLines[file+"\x00"+line] == 1 {
+		if pairs.covers(file, line, title, dashboardStr(m["deferredId"])) {
 			continue
 		}
 		status := dashboardQueueStatusBelow
@@ -118,6 +107,50 @@ func dashboardReviewQueue(data map[string]any, totals *DashboardReviewTotals, fi
 	q.Unrouted = max(totals.Unaccounted, 0)
 	q.Reason = dashboardQueueReason(q.Rows, totals.Found, q.Unrouted)
 	return q, issues
+}
+
+// dashboardQueuePairs holds the fix records of a ship run in the three forms
+// that pair a deferred finding with a fix record.
+type dashboardQueuePairs struct {
+	keys  map[string]bool // dashboardQueueKey(file, line, title)
+	ids   map[string]bool // non-empty deferredId
+	lines map[string]int  // dashboardQueueKey(file, line, ""): fix records on it
+}
+
+// newDashboardQueuePairs returns an empty dashboardQueuePairs.
+func newDashboardQueuePairs() *dashboardQueuePairs {
+	return &dashboardQueuePairs{keys: map[string]bool{}, ids: map[string]bool{}, lines: map[string]int{}}
+}
+
+// add records the fix record f.
+func (p *dashboardQueuePairs) add(f DashboardFix) {
+	line := dashboardQueueLine(f.Line)
+	p.keys[dashboardQueueKey(f.File, line, f.Title)] = true
+	if f.DeferredID != "" {
+		p.ids[f.DeferredID] = true
+	}
+	p.lines[dashboardQueueKey(f.File, line, "")]++
+}
+
+// covers reports whether a fix record stands for the deferred finding with
+// file, line text, title and deferredID. Rules, in order:
+//  1. A fix record has the same non-empty deferredId.
+//  2. A fix record has the same file, line and title.
+//  3. The finding has no deferredId, and exactly one fix record is on its
+//     file and line, whatever its title. A finding with no line pairs the
+//     same way with the only fix record with no line on its file.
+//
+// Rule 3 does not apply to a finding with a deferredId. ship_state defer runs
+// the same healingMatchFix steps on the fix records and copies its deferredId
+// onto the record it matched. So a finding with a deferredId that no fix
+// record carries matched no fix record, and it gets its own queue row. Rule 3
+// stays as the fallback for a finding with no deferredId: an old state file,
+// or a defer call whose deferred.json write failed.
+func (p *dashboardQueuePairs) covers(file, line, title, deferredID string) bool {
+	if deferredID != "" {
+		return p.ids[deferredID] || p.keys[dashboardQueueKey(file, line, title)]
+	}
+	return p.keys[dashboardQueueKey(file, line, title)] || p.lines[dashboardQueueKey(file, line, "")] == 1
 }
 
 // dashboardQueueDeferredList returns the data.deferredFindings list. problem
@@ -298,7 +331,8 @@ func dashboardQueueLine(line int) string {
 }
 
 // dashboardQueueKey is the key that tells whether a deferred finding and a
-// fix record are the same finding: file, line text and title.
+// fix record are the same finding: file, line text and title. With title ""
+// it is the key of a file and line.
 func dashboardQueueKey(file, line, title string) string {
 	return file + "\x00" + line + "\x00" + title
 }

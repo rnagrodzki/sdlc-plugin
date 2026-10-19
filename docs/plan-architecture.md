@@ -989,7 +989,16 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | ship `cleanup-pipeline` | deleted when the report file exists, after the explorer summary and the review rounds are copied to ship state (`planExploreSummary`, `planReviewRounds`) |
 | GC (TTL, default 7 days) | deleted |
 
-`state.Write`'s prune-on-write (and `state.PruneEvidenceDirs`) both special-case a `done` plan run: a sibling state file for the same branch is pruned on every write *unless* it is itself a finished (`done`) plan run, in which case it is left alone. `state.Write` also keeps a ship sibling with `pipelineStatus:"completed"` that is not a dry-run, an execute sibling with `runStatus:"completed"`, and a ship or execute sibling whose non-empty `sessionId` differs from the non-empty `sessionId` of the writer. The first matching rule applies. `state.PruneTargets` returns the delete set, and ship's `prunedOrphans` uses the same list. The `done` exception is what lets the file survive from Step 7's `done` marker through the Stop hook (which only reads it) to the point ship's `report` step reads `planIntegrity`/`planTiming` from it. Actual removal then comes from whichever happens first: `ship_state({action: "cleanup-pipeline"})` removing it once the ship report has been written (the table's third row), or the standalone TTL/branch-liveness sweep (`ship --gc` / `execute --gc`, `state.GC`) once it is both past the TTL and no longer the newest file for its branch — a gone branch's files are removed regardless of age.
+`state.Write` deletes sibling state files of the same prefix and branch on every write (prune-on-write). `state.keepSibling` decides which siblings stay. The first matching rule applies:
+
+1. plan: a finished (`done`) plan run is kept. `state.PruneEvidenceDirs` keeps its evidence directory by the same rule.
+2. ship: a dry-run run (`flags.dryRun:true`) is deleted, also when it is completed or has another `sessionId`.
+3. ship: a run with `pipelineStatus:"completed"` is kept.
+4. execute: a run with `runStatus:"completed"` is kept.
+5. ship, execute: a run whose non-empty `sessionId` differs from the non-empty `sessionId` of the writer is kept. The ship skill passes no `sessionId`, so this rule does not apply to ship runs that the skill starts.
+6. Every other sibling is deleted: an unreadable file, a file over 8 MiB, and every other run.
+
+`state.PruneTargets` returns the delete set. ship's `prunedOrphans` (and `execute_state` `init`'s `prunedOrphans`) list the files of that set that are gone after the write (`state.Removed`): a delete is best-effort, and a failed delete is not listed. The `done` exception is what lets the file survive from Step 7's `done` marker through the Stop hook (which only reads it) to the point ship's `report` step reads `planIntegrity`/`planTiming` from it. Actual removal then comes from whichever happens first: `ship_state({action: "cleanup-pipeline"})` removing it once the ship report has been written (the table's third row), or the standalone TTL/branch-liveness sweep (`ship --gc` / `execute --gc`, `state.GC`) once it is both past the TTL and no longer the newest file for its branch — a gone branch's files are removed regardless of age.
 
 ---
 

@@ -3,14 +3,14 @@
 ## MODIFIED Requirements
 
 ### Requirement: State initialization
-On a clean validation the tool SHALL write a new ship state file at `.sdlc-v2/runs/ship-<branch-slug>-<YYYYMMDDTHHMMSSZ>.json` under the main worktree root, and SHALL delete each other ship state file with the same branch slug that is in flight, a dry-run run, or unreadable. It SHALL keep a completed run that is not a dry-run, and an in-flight run whose non-empty `sessionId` differs from the non-empty `sessionId` of the call.
+On a clean validation the tool SHALL write a new ship state file at `.sdlc-v2/runs/ship-<branch-slug>-<YYYYMMDDTHHMMSSZ>.json` under the main worktree root, and SHALL delete each other ship state file with the same branch slug that is not kept. It SHALL keep a completed run that is not a dry-run, and a run that is not a dry-run whose non-empty `sessionId` differs from the non-empty `sessionId` of the call.
 
 - Seeded keys: `version:1`, `startedAt`, `branch`, `worktree`, `sessionId`, `flags`, `sources`, `versionCfg`, `binaryVersion`, `steps`, `decisions:[]`, `deferredFindings:[]`.
 - `sideEffects` and `healing` are not seeded.
 - `steps` has one `{name, status:"pending", kind}` entry per resolved step, in order.
 - When `review` is a resolved step, `steps` also has one `{name:"received-review", status:"pending", kind:"tracked", condition}` entry right after `review`.
 - `kind` is `"tracked"` for `execute`, `commit`, `review`, `pr` and the seeded `received-review`; `"inline"` for every other name. `commit-fixes` is never seeded. Pipeline validation rejects `received-review` and `commit-fixes` in the step list.
-- Deleted files are listed in `prunedOrphans`; files of other branch slugs are kept. `prunedOrphans` lists exactly the files that the write deletes.
+- Deleted files are listed in `prunedOrphans`; files of other branch slugs are kept. `prunedOrphans` lists exactly the files that the write deleted; a failed delete is not listed, and `prunedOrphans` is `[]`, never `null`, when nothing was deleted.
 - A kept file stays until GC (`state.gc.ttlDays`) deletes it.
 - `pipelineDisplay` renders the seeded steps as a table with one description per step.
 
