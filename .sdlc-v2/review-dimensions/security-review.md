@@ -38,5 +38,5 @@ Check:
   downgrade `execx.ErrOutputCap` — the package doc is explicit that
   output-cap overflow must never be silently downgraded to a soft failure.
 - Any new environment variable or config field that carries a credential is
-  excluded from `.sdlc-v2/config.json` (which is typically committed) and
-  lives only in `.sdlc-v2/local.json` or the OS environment.
+  excluded from `.sdlc-v2/config.toml` (which is typically committed) and
+  lives only in the local, uncommitted config file or the OS environment.

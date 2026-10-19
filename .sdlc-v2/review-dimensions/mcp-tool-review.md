@@ -63,6 +63,15 @@ those same guardrails:
   field the Go struct writes must be accepted by the schema). Schema-code
   drift — schemas rejecting fields that code writes, or vice versa —
   breaks downstream tool consumption.
+- Every key that a handler writes to a persisted state file, and every key
+  that a later action reads from that file to decide an action (for example a
+  flag that a prune or resume step tests), MUST be declared in the schema or
+  tool input description that covers the file and in the format doc that
+  describes it. A diff that touches only Go can leave the schema and the doc
+  stale, so grep the readers of the file for the keys they read and compare
+  that set with the declared set. A key that drives a decision and is not
+  declared is a finding. This extends the JSON-schema bullet above, which
+  covers input and output shape only.
 - Multi-step APIs (append, log entries, stateful updates) that split on a
   field separator (e.g. `learningsRemove` splits entries on `"\n\n"`) must
   validate at entry time that inputs don't contain the separator, and
@@ -147,6 +156,13 @@ those same guardrails:
   description MUST state which write wins on read. A later write MUST NOT drop
   an earlier stop reason, or change the status a route reads, unless the
   description names that rule.
+- A later write to a record MUST keep every field that an earlier write set,
+  unless the description names the rule that drops it. A status-only update
+  that rebuilds the row from its own inputs loses linked fields such as a
+  stored ID. Compare the fields the update copies from the old row with the
+  fields the row can hold, and flag each field that the update drops. This
+  generalizes the terminal-write precedence bullet above, which names only the
+  stop reason.
 - A warning that reports a skipped, ignored or replaced input (for example an
   unreadable timestamp or an unknown key) MUST name the value or field, the
   expected format with one example, and the effect on the result, such as the

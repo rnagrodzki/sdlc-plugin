@@ -8,7 +8,7 @@ severity: medium
 ---
 
 This repository already has 56 `_test.go` files plus `tests/integration/`
-and `tests/acceptance/` suites, and `.sdlc-v2/config.json`'s own
+and `tests/acceptance/` suites, and `.sdlc-v2/config.toml`'s own
 `plan.guardrails` states explicitly: "Every task that creates or modifies
 source code must include corresponding test cases" (severity: error). Hold
 new changes to that same bar:
@@ -49,13 +49,17 @@ new changes to that same bar:
   task's file list. Plan Verification for such tasks must include
   `go test ./internal/skillcheck/...` (or full `go test ./...`), not just
   the modified package's unit tests.
-- JS/Node test files (`*.test.js`, run via `node --test`) must be wired
+- JS/Node test files (run via `node --test`) must be wired
   into CI (`.github/workflows/*.yml`), not just present locally — verify
   against the actual workflow file, not assumed.
 - A test must actually exercise the code path it claims to cover; an empty
   body or an assertion the code never reaches does not count as coverage —
   verify by reading the test body, not by the presence of a `_test.go` or
-  `.test.js` file alone.
+  `.test.js` file alone. The claim includes the test name and comment: a
+  name such as `LiveRunWinsOverKeptRun` needs a fixture in which the two
+  sides differ and an assertion that fails when the other side wins. A name
+  or comment that claims more than the assertions pin is a finding: narrow
+  the name or add the assertion.
 - A passing read-only preflight check does not prove a subsequent write
   operation will succeed (permission requirements can differ). Tests that
   validate preflight behavior must be distinguished from tests that
@@ -87,7 +91,12 @@ new changes to that same bar:
   case. A test exercising only one leg of a bool parameter or one value of
   an enum/intent discriminator is partial coverage; verify each combination
   named by the function's branch structure is invoked and its output state
-  asserted.
+  asserted. The discriminating inputs may come from two producers, for
+  example the status field a ship run writes and the status field an
+  execute run writes, which one reader merges into one result. Then at
+  least one test case sets both fields in the same fixture and asserts the
+  merged result; tests that set one field at a time do not show how the two
+  interact.
 - Every rejection branch of an input check needs its own test: a test for
   a nil `wave` does not cover the separate `wave < 1` branch. For an
   error-classification switch (e.g. a helper mapping sentinel errors to
@@ -168,3 +177,9 @@ new changes to that same bar:
   runs with both forms, or the test states why one form cannot reach the
   branch. Tests updated for the happy path only leave the failure branches
   of the new form unexercised.
+- A write that updates an existing row or record (a status change, an upsert
+  that matches an existing key) needs a test that seeds the row with a field
+  the update does not supply, such as a linked ID, runs the update, and
+  asserts the field is still there. A test that starts from an empty row, or
+  that asserts only the field the update sets, passes when the update drops
+  the other fields.

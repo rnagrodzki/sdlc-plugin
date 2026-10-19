@@ -51,6 +51,15 @@ Review Go source changes for baseline code quality in this module
 - Documentation strings/doc comments citing paths (`.sdlc`, `.sdlc-v2`) or
   filenames must stay synchronized with the actual
   `paths.DataDir`/`paths.LegacyDataDir` constants and file-loading code.
+- A comment must not locate other code by line number. A comment that cites a
+  line number, or a `file:line` position, in another file or package goes
+  stale on the next edit with no compile error, and a wrong number misleads
+  the reader. Name the symbol and its package instead. When a comment must
+  cite a position, open the cited code and confirm that it says what the
+  comment claims. A citation that is wrong, or that points into another
+  package, is a finding. This extends the path-citation rule above. Example:
+  `siblingMeta` comments that cite line numbers in another package, where two
+  of the numbers were wrong.
 - No exported identifiers with zero callers module-wide (verified via
   `grep -r`), no commented-out blocks, no debug `fmt.Println`/`log.Printf`
   outside intentional CLI output paths. Exported identifiers that compile
@@ -119,6 +128,12 @@ Review Go source changes for baseline code quality in this module
 - Records passed as parameters or returned should use named structs, not
   positional tuples via arrays (`[2]string`). Positional syntax is fragile
   and does not scale when the record gains a fifth field.
+- A function with about four or more parameters of the same type next to each
+  other (for example five `string` parameters) is a finding: a caller can swap
+  two arguments and the code still compiles. Pass a named options struct
+  instead, or state in the review why the argument order cannot be swapped by
+  mistake. This extends the named-struct rule above. Example: `PruneTargets`
+  took five adjacent `string` parameters.
 - Doc comments must be complete, not only accurate: when the code handles a
   case the doc comment does not mention (a second action that returns the
   same type with extra status values, a field populated on more paths than
@@ -171,6 +186,14 @@ Review Go source changes for baseline code quality in this module
   the layout constant and for the helper that uses it. A hand-written parse
   beside an existing helper is a finding. This extends the helper-duplication
   rule above.
+- A new read or decode of a stored file (a JSON state file, a meta file, a
+  history record) must call or extend the function that already reads that
+  kind of file. Before hand-writing `os.ReadFile` plus `json.Unmarshal`, grep
+  the package for the file name or path constant and for the function that
+  opens it. A second hand-rolled read beside the existing one is a finding:
+  the two copies drift on a missing file, an empty file and a parse error.
+  This extends the stored-layout rule above. Example: `readSiblingMeta`
+  hand-rolls a JSON read next to `isDonePlanRun`.
 - Zero-argument clock reads (for example `now()`) count as the same inputs
   for the redundant-recomputation rule. Read the clock once per handler and
   reuse the value, so one record carries one timestamp.
@@ -180,3 +203,13 @@ Review Go source changes for baseline code quality in this module
   like the generated form (for example a topic that starts with a date) is
   rejected or told apart from a generated name. A name that can equal another
   entry's name with no check is a finding.
+- A map, set or dedup key built from fields of several records (for example a
+  key made of file, a separator and line) must include every field that tells
+  the records it indexes apart. When two distinct records can share the key,
+  the code must keep both, merge them by a stated rule, or report the dropped
+  one; a record dropped or overwritten with no signal is a finding. Build the
+  key in one named helper that every site calls, even when the separator is a
+  named constant; two inline joins of the same fields are a finding. This
+  extends the generated-name rule above. Example: a review queue that keyed
+  deferred findings by file and line dropped one that shared both with a fix
+  record, and built the key by hand at two sites.

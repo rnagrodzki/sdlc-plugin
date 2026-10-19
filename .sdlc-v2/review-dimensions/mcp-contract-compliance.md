@@ -47,15 +47,18 @@ and `mcp-output-drives-behavior` guardrails.
   key as the label, so the output shape is visible in the result itself.
   Verify: `grep -rn 'OutputSchema' internal/ --include='*.go'` returns no
   non-test hit.
-- Handler signatures SHOULD return a concrete `*Out` type. Three tools
+- Handler signatures SHOULD return a concrete `*Out` type. At least three tools
   return `any` across dozens of actions: `execute_state`
   (`internal/tools/execute_state.go`), `ship_state`
   (`internal/tools/ship_state.go`) and `jira` (`internal/tools/jira.go`).
   The reflection renderer walks those too, so `any` is a readability cost,
   not a contract violation. A new tool with a single output shape has no
   reason to use it. (`poll_await` is NOT one of them — it returns a
-  concrete `stepper.Envelope`.) Verify — expect exactly 3 hits:
-  `grep -rn 'mcpserver.Ctx, in [A-Za-z]*) (any, error)' internal/tools/*.go`
+  concrete `stepper.Envelope`.) Verify with
+  `grep -rn 'mcpserver.Ctx, in [A-Za-z]*) (any, error)' internal/tools/*.go`.
+  Do not expect a fixed hit count: the grep also lists handlers that the diff
+  does not touch. Compare each hit with the tools above, and flag a hit that
+  the diff adds for a tool with a single output shape.
 - A nil or empty collection must render as `(none)`. The renderer does
   this at the dispatcher level (`renderNone` in
   `internal/mcpserver/render.go`), so handlers do not have to
@@ -96,8 +99,9 @@ and `mcp-output-drives-behavior` guardrails.
 
 Every error result MUST render a non-empty `## Do this` section. When a typed
 error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered
-error with an empty or missing `## Do this` section is a defect. Both live in
-`internal/mcpserver/envelope.go` (`defaultRecovery`, called from `renderError`).
+error with an empty or missing `## Do this` section is a defect.
+`defaultRecovery` is called from `renderError`; locate both with
+`grep -rn 'defaultRecovery' internal/`.
 
 ## Handler input validation
 
@@ -153,6 +157,17 @@ error with an empty or missing `## Do this` section is a defect. Both live in
   (2) any SKILL.md or sibling tool that gates behavior on the label
      (`if sources.X == "config"`) is checked to confirm the new behavior is
      semantically compatible with the gate.
+- A description that says an action sets, links, clears or updates another
+  record (a progress row, a status field, a stored ID) MUST state when it
+  does so: for which outcome or kind, for which rows, and what happens when
+  the other write fails or no row matches. A description that states the
+  change as unconditional while the code skips it in one case (a failed
+  write, a missing row, a different kind) overstates the behavior and is a
+  finding. Trace each claimed side effect to the handler branch that
+  performs it, and check both the `jsonschema_description` tags and the
+  registered tool and action description. This extends the stale-description
+  bullets above: those catch a description that omits new behavior, this
+  catches one that claims more than the code does.
 
 ## Review procedure for closed-set enum tags and error-field coverage
 

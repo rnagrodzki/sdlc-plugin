@@ -13,3 +13,4 @@ Default severity: high
 - Precedence or conflict claims between two keys or flags (for example `steps` wins over `quick`) match the validator branch that handles the pair; a pair the code rejects together is documented as rejected, not as a winner.
 - Example blocks (config snippets, step lists, flag lines) follow the rules the same doc states and list exactly the canonical set in the Go source.
 - Named git refs (default branch, base branch, target branch) match the ref the code reads for that step.
+- A reference doc that says a write upserts or replaces a row names the key fields the code compares and the result when no row or several rows match; every statement of the key names the same fields.

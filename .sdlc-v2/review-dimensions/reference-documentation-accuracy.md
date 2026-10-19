@@ -64,6 +64,13 @@ severity: high
   sites that write the row/record and cross-check the prose against each
   writer's field set. A documented row with fields omitted by some writers but
   not others, without explicit per-writer field enumeration, is a finding.
+- When a reference document or spec says a write upserts or replaces a row by
+  a key, it MUST define the matching record: which fields identify the row,
+  and the result when no row, one row or several rows match. Every statement
+  of the key (prose, table, example, tool description) MUST name the same
+  fields. Compare the text with the match loop in the Go source part by part.
+  An undefined match, or two statements that name different keys, is a
+  finding.
 - When a reference document has a lifecycle rule that says when a state file
   is created, updated, or deleted, the rule must name every action and every
   marker that writes the file. Grep the callers of the write function and

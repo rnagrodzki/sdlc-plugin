@@ -435,19 +435,7 @@ strings."""
 
 [execute.guardrails.no-silent-fs-state-discard]
 severity = "error"
-description = """
-Do not silently discard errors returned from file-system operations \
-(os.WriteFile, os.Remove, os.MkdirTemp, t.TempDir) or state-persistence \
-operations (state.Write, storage reads) when the next line reports success \
-to the caller. Propagate the error, explicitly handle it with a non-silent \
-fallback, or explicitly document why it is safe to ignore. When a handler \
-action writes a state file owned by another tool: (1) errors from the \
-write must surface in the handler's output field, not be dropped; (2) a \
-not-found condition (the side-effect state file does not exist) must be \
-distinguished from actual read/write errors in both the error type and \
-the caller's output so the caller can choose recovery; (3) the cross-tool \
-side effect and its error contract must be documented in the tool's \
-description at registration time."""
+description = "Do not silently discard errors returned from file-system operations (os.WriteFile, os.Remove, os.MkdirTemp, t.TempDir) or state-persistence operations (state.Write, storage reads) when the next line reports success to the caller. Propagate the error, explicitly handle it with a non-silent fallback, or explicitly document why it is safe to ignore. When a handler action writes a state file owned by another tool: (1) errors from the write must surface in the handler's output field, not be dropped; (2) a not-found condition (the side-effect state file does not exist) must be distinguished from actual read/write errors in both the error type and the caller's output so the caller can choose recovery; (3) the cross-tool side effect and its error contract must be documented in the tool's description at registration time. In test code, check the error of every call that inspects state (os.ReadDir, os.ReadFile); a discarded error reads as an empty result, so the check passes wrongly."
 
 [execute.guardrails.independent-completion-reverification]
 severity = "error"
@@ -739,19 +727,19 @@ description = 'Before marking a task done that adds or changes a DomainError, In
 severity = 'error'
 
 [execute.guardrails.mcp-side-effect-real-boundary-test]
-description = 'Before marking a task done that adds or changes an MCP handler action with a filesystem or git side effect, add a test that calls the real handler entry point. Use real state files under t.TempDir, and real git in a temporary repository for git checks. Assert the persisted state and the returned output. Tag the test with the integration build tag (-tags integration), which the CI workflow runs. A test that calls only an internal helper, or fakes the state store, does not cover the side effect. Record the test name in task verification.'
+description = 'Before marking a task done that adds or changes an MCP handler action with a filesystem or git side effect, add a test that calls the real handler entry point. Use real state files under t.TempDir, and real git in a temporary repository for git checks. Assert the persisted state and the returned output. Tag the test with the integration build tag (-tags integration), which the CI workflow runs. A test that calls only an internal helper, or fakes the state store, does not cover the side effect. When one write sets a status or progress row that depends on another write, add a test where the other write fails, and assert that the row is unchanged and the output reports the failure. When a write updates an existing row, add a test that seeds a field that the update does not supply, such as a linked ID, and assert that the field is kept. Record the test name in task verification.'
 severity = 'error'
 
 [execute.guardrails.mcp-write-action-echoes-record]
-description = 'Before marking a task done that adds or changes an MCP handler action that writes a record (record, append, set, skip, create, or similar), check each success return of that action. The output must echo the values it wrote, such as IDs, the reason, run and worker IDs, and any prior value it replaced. It must also echo each value the handler generated that the caller did not supply, such as a timestamp, a file name or a slug. An output that holds only ok and next, or that omits a generated value, fails the task. Record the checked return paths in task verification.'
+description = 'Before marking a task done that adds or changes an MCP handler action that writes a record (record, append, set, skip, create, or similar), check each success return of that action. The output must echo the values it wrote, such as IDs, the reason, run and worker IDs, and any prior value it replaced. It must also echo each value the handler generated that the caller did not supply, such as a timestamp, a file name or a slug. An output that holds only ok and next, or that omits a generated value, fails the task. The echo covers each other record the action changes as a side effect, such as a progress or status row. A text that describes that side effect states when it happens and claims no change that the code skips. Each echoed value must match what the write did: a list of deleted files names only files that were deleted, not files that were planned for deletion. Record the checked return paths in task verification.'
 severity = 'error'
 
 [plan.guardrails.persisted-io-failure-fallback]
-description = 'Plans that add a read or write of a persisted file or state must name, for each read and each write, its failure fallback: propagate the error, or use a stated non-silent default. Each read of content that can grow must name a size bound and the behavior when the bound is exceeded. Name the error class for each failure: DomainError for bad caller input, InfraError for filesystem, network, or process failures, and DataError for parse or schema failures and for stored data that breaks an invariant (for example two files for one key). A write that replaces a user-owned file must write a temp file and rename it, or the plan must state why an in-place write is safe. A plan that leaves any one of these implicit is a plan defect.'
+description = 'Plans that add a read or write of a persisted file or state must name, for each read and each write, its failure fallback: propagate the error, or use a stated non-silent default. Each read of content that can grow must name a size bound and the behavior when the bound is exceeded. Name the error class for each failure: DomainError for bad caller input, InfraError for filesystem, network, or process failures, and DataError for parse or schema failures and for stored data that breaks an invariant (for example two files for one key). A write that replaces a user-owned file must write a temp file and rename it, or the plan must state why an in-place write is safe. For a stored key of the wrong type (for example a list that holds a string), state whether the call fails before any write or writes the primary record and warns. A plan that leaves any one of these implicit is a plan defect.'
 severity = 'error'
 
 [plan.guardrails.handler-state-change-safety]
-description = "Plans that add a handler step which changes git branch or working-tree state must place that change after every step that can fail, or name the restore step for each later failure. Plans that add a no-op or already-done shortcut must state the filesystem or git check that confirms the shortcut's premise, not a marker read from a header or input. A plan that stages or commits must name the exact paths it stages; git add -A, git add ., git add -u and git commit -a are not allowed."
+description = "Plans that add a handler step which changes git branch or working-tree state must place that change after every step that can fail, or name the restore step for each later failure. Plans that add a no-op or already-done shortcut must state the filesystem or git check that confirms the shortcut's premise, not a marker read from a header or input. A plan that stages or commits must name the exact paths it stages; git add -A, git add ., git add -u and git commit -a are not allowed. A plan that adds a status or progress row that records the outcome of another write must place the row update after that write and state the row's value when that write fails. A plan that adds an upsert or an update of an existing row must name the match key and the result when no row, one row or several rows match. It must also name the fields the update keeps from the old row. Each spec, doc and tool description that states the key gives the same key."
 severity = 'error'
 
 [execute.guardrails.explicit-git-staging-paths]
@@ -759,7 +747,7 @@ description = "Before marking a task done that adds or changes a git staging or 
 severity = 'error'
 
 [execute.guardrails.reuse-existing-go-helpers]
-description = 'Before marking a task done that adds a Go function, grep the package and the module for an existing function with the same behavior, even under another name, and call that function instead. Two functions with the same body are a defect, for example shortSHA and shipShortSHA. Before hand-writing logic in a handler, grep for a shared core helper that already does the work, for example shipCompleteStepCore for step completion, and call it. The same check covers inline code, not only a new function: before hand-writing a parse, format or normalization of a stored or derived value (a timestamp layout passed to time.Parse, a split of a stored line, a name or path builder), grep for the helper that already reads or writes that value and call it. Record each grep and the helper reused in task verification.'
+description = 'Before marking a task done that adds a Go function, grep the package and the module for an existing function with the same behavior, even under another name, and call that function instead. Two functions with the same body are a defect, for example shortSHA and shipShortSHA. Before hand-writing logic in a handler, grep for a shared core helper that already does the work, for example shipCompleteStepCore for step completion, and call it. The same check covers inline code, not only a new function: before hand-writing a parse, format or normalization of a stored or derived value (a timestamp layout passed to time.Parse, a split of a stored line, a name or path builder), grep for the helper that already reads or writes that value and call it. A new read of a stored file that a nearby function already reads must reuse or extend that function, not hand-roll another (for example a JSON read next to isDonePlanRun). Record each grep and the helper reused in task verification.'
 severity = 'error'
 
 [plan.guardrails.exit-path-state-record]
@@ -795,7 +783,7 @@ description = "Before marking a task done that modifies error-returning handlers
 severity = 'error'
 
 [execute.guardrails.mcp-error-suggestion-coverage-2]
-description = "Before marking a task done that modifies error-returning handlers in internal/tools/ or internal/mcpserver/, scope the check of every DomainError, InfraError and DataError instantiation to the entire modified handler function, including branches not touched by this task's diff -- a gap can pre-exist in code adjacent to the change. Also check every return statement in the modified handler function, including success branches. Each untyped error return (errors.New, fmt.Errorf) must be wrapped in a DomainError, InfraError or DataError with a non-empty Suggestion. Each no-op success return (for example 'nothing to promote') must set the Next field to an outcome-specific instruction. Record each return path checked in the task verification section."
+description = "Before marking a task done that modifies error-returning handlers in internal/tools/ or internal/mcpserver/, scope the check of every DomainError, InfraError and DataError instantiation to the entire modified handler function, including branches not touched by this task's diff -- a gap can pre-exist in code adjacent to the change. Also check every return statement in the modified handler function, including success branches. Each untyped error return (errors.New, fmt.Errorf) must be wrapped in a DomainError, InfraError or DataError with a non-empty Suggestion. Each no-op success return (for example 'nothing to promote') must set the Next field to an outcome-specific instruction. Two outcomes that need different follow-up calls, such as phase started and phase done, must not share one Next text. Record each return path checked in the task verification section."
 severity = 'error'
 
 [execute.guardrails.nested-dispatch-cleanup-declared-1]
@@ -835,7 +823,7 @@ description = 'Before marking a task done that modifies a SKILL.md file, check t
 severity = 'warning'
 
 [plan.guardrails.derived-name-collision-stated]
-description = "When a plan adds or changes how a file name, key, slug or ID is derived (a date prefix, a counter, a normalized form of user input), the plan must state how a new name cannot collide with a name made by the old scheme or typed by the user. Name the input that maps to an existing name, the side that wins, and the check that finds the clash, such as comparing a stored heading with the input. A derived name that can equal another entry's name with no check is a plan defect. The plan must also name a test that drives each clash with the clashing input, and must run each error-path test of the derived name with both the old and the new name form."
+description = "When a plan adds or changes how a file name, key, slug or ID is derived (a date prefix, a counter, a normalized form of user input), the plan must state how a new name cannot collide with a name made by the old scheme or typed by the user. Name the input that maps to an existing name, the side that wins, and the check that finds the clash, such as comparing a stored heading with the input. A derived name that can equal another entry's name with no check is a plan defect. The plan must also name a test that drives each clash with the clashing input, and must run each error-path test of the derived name with both the old and the new name form. When a plan builds a key from fields of several records to look up, merge or drop duplicates, the plan must state the result when two records share the key: kept, merged, or dropped with a warning. It must name a test with two records that share the key. A record dropped with no signal is a plan defect."
 severity = 'error'
 
 [execute.guardrails.mcp-description-claims-reverified]
@@ -843,13 +831,25 @@ description = "Before marking a task done that changes the behavior of an MCP to
 severity = 'error'
 
 [execute.guardrails.mcp-warning-states-format-and-effect]
-description = 'Before marking a task done that adds or changes a warning in an MCP handler (an entry in a Warnings field, or a warning sentence in a summary or Next text) for an input the handler skipped, ignored or replaced, read the warning text. It must name the value or field affected, the expected format with one example, and the effect on the result, such as the value used instead, a row left out or a field shown blank. A warning that only says an input was invalid fails the task. Record each warning text checked in task verification.'
+description = 'Before marking a task done that adds or changes a warning in an MCP handler (an entry in a Warnings field, or a warning sentence in a summary or Next text) for an input the handler skipped, ignored or replaced, read the warning text. It must name the value or field affected, the expected format with one example, and the effect on the result, such as the value used instead, a row left out or a field shown blank. A warning that only says an input was invalid fails the task. Each warning, Next and Suggestion text that reaches the user starts with a capital letter and ends with a period, as the sibling strings in the package do. A Go error value from errors.New or fmt.Errorf stays lowercase. Record each warning text checked in task verification.'
 severity = 'warning'
 
 [execute.guardrails.changed-function-size-checked]
-description = "Before marking a task done that adds code to a Go function, count the lines and the return statements of each changed function after the change. Use grep -n '^func ' on the file to find where each function starts. When a function is over about 100 lines or about 10 returns, or the task grew it to about 80 lines or about 8 returns, move the new block into a named helper, or state in task verification why the function stays whole. Record the counts for each changed function in task verification."
-severity = 'warning'
+description = "Before marking a task done that adds code to a Go function, count the lines and the return statements of each changed function after the change. Use grep -n '^func ' on the file to find where each function starts. When a function is over about 100 lines or about 10 returns, or the task grew it to about 80 lines or about 8 returns, move the new block into a named helper, or state in task verification why the function stays whole. Record the counts before and after the change for each changed function in task verification."
+severity = 'error'
 
 [execute.guardrails.stated-limit-names-its-scope]
 description = "Before marking a task done that adds or changes text that names a numeric limit (a docs page, a SKILL.md step, a tool or action description, an error, a warning or a UI label), read the code that enforces the limit. Check that the text states the set the limit counts (which items, in which folder, per call or in total), the unit, and what happens at the limit (rejected, truncated or ignored). A bare number such as 'at most 100 files' with no counted set fails the task. Check that every other text that names the same limit gives the same scope. Record the limit, the counted set and each text checked in task verification."
 severity = 'warning'
+
+[execute.guardrails.adjacent-same-type-parameters-limited]
+description = 'Before marking a task done that adds or changes a Go function signature, count the parameters of each new or changed function and note any run of parameters of the same type. When about four or more parameters of the same type sit next to each other (for example five string parameters), a caller can swap two arguments and the code still compiles. Pass a named options struct instead, or state in task verification why the argument order cannot be swapped by mistake. Record the parameter counts and any run found in task verification.'
+severity = 'warning'
+
+[execute.guardrails.persisted-decision-key-declared]
+description = 'Before marking a task done that adds or changes code that reads a key from a persisted file to decide an action (for example a flag that a prune or resume step tests), grep the readers of that file for the keys they read. Confirm that each such key is declared in the JSON schema or tool input description that covers the file, and in the format doc that describes it. A key that drives a decision and is missing from either place fails the task. Record the keys checked and where each is declared in task verification.'
+severity = 'error'
+
+[execute.guardrails.composite-key-distinguishes-records]
+description = 'Before marking a task done that adds or changes code that builds a map key, set key or dedup key from fields of several records (for example a key made of file and line), list the fields that tell the records apart and compare them with the fields in the key. When two distinct records can share the key, the code must keep both, merge them by a stated rule, or report the dropped record in the output. Build the key in one named helper that every site calls, not inline at each site. Add a test with two records that share the key, and assert the output. A record that is dropped or overwritten with no signal fails the task. Record the key, the helper and the test name in task verification.'
+severity = 'error'
