@@ -9343,3 +9343,307 @@ func TestHealingDeferredStoreError(t *testing.T) {
 		})
 	}
 }
+
+// deferFixRowCall runs one defer call on branch at the time at for the
+// finding of fixRowSeed (a.go:42, "unchecked error"), with the detail
+// overrides applied, and returns the narration.
+func deferFixRowCall(t *testing.T, dir, branch string, at time.Time, overrides map[string]any) ShipStepNarrationOut {
+	t.Helper()
+	detail := map[string]any{
+		"branch": branch, "severity": "high", "file": "a.go", "line": float64(42), "title": "unchecked error",
+	}
+	maps.Copy(detail, overrides)
+	out, err := shipState(dir, dir, ShipStateIn{Action: "defer", Detail: detail}, fixedNow(at))
+	if err != nil {
+		t.Fatalf("defer: %v", err)
+	}
+	n, ok := out.(ShipStepNarrationOut)
+	if !ok {
+		t.Fatalf("defer output = %T, want ShipStepNarrationOut", out)
+	}
+	return n
+}
+
+// wantDeferNote checks that the summary and next.instruction of a defer
+// response both end with note, and that next keeps its id.
+func wantDeferNote(t *testing.T, n ShipStepNarrationOut, note string) {
+	t.Helper()
+	if !strings.HasSuffix(n.Summary, " "+note) {
+		t.Errorf("summary = %q, want suffix %q", n.Summary, " "+note)
+	}
+	if n.Next == nil || n.Next.ID != deferredNextID || !strings.HasSuffix(n.Next.Instruction, " "+note) {
+		t.Errorf("next = %+v, want id %s and an instruction with suffix %q", n.Next, deferredNextID, " "+note)
+	}
+}
+
+// seedHealingValue sets data.healing in the state file to v, which may be a
+// damaged (not an object) value.
+func seedHealingValue(t *testing.T, path string, v any) {
+	t.Helper()
+	data := readStateData(t, path)
+	data["healing"] = v
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// deferFixRows reads data.healing.fixProgress back from the state file.
+func deferFixRows(t *testing.T, path string) []any {
+	t.Helper()
+	rows, _ := healingData(t, path)["fixProgress"].([]any)
+	return rows
+}
+
+// TestShipState_Defer_SetsFixRow pins the row update of a defer call for a
+// queued and a fixing row: the row becomes deferred, updatedAt is the call
+// time, firstAt and the other fields stay, and deferredId is the id of the
+// deferred.json row. The summary and next end with the note that echoes the
+// write and the prior status. The state on disk validates against the schema.
+func TestShipState_Defer_SetsFixRow(t *testing.T) {
+	const stamp = "2026-10-13T10:05:00Z"
+	const wantID = "review-deferred-" + stamp + "-1"
+	at := time.Date(2026, 10, 13, 10, 5, 0, 0, time.UTC)
+	for _, status := range []string{"queued", "fixing"} {
+		t.Run(status, func(t *testing.T) {
+			branch := "feat/defer-row-set"
+			dir, path := deferFixture(t, branch)
+			useMemHistory(t)
+			seedFixProgress(t, path, []any{fixRowSeed(status, nil)})
+
+			n := deferFixRowCall(t, dir, branch, at, nil)
+			wantDeferNote(t, n, "Fix-progress row set to deferred (was "+status+").")
+
+			want := []any{fixRowSeed("deferred", map[string]any{"updatedAt": stamp, "deferredId": wantID})}
+			if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, want) {
+				t.Errorf("fixProgress = %#v, want %#v", rows, want)
+			}
+			if got := deferredStateEntry(t, path, 0)["deferredId"]; got != wantID {
+				t.Errorf("deferredFindings[0].deferredId = %v, want %s", got, wantID)
+			}
+			if err := shipStateSchemaValidator(t)(readStateData(t, path)); err != nil {
+				t.Errorf("schema rejected the state written by defer: %v", err)
+			}
+		})
+	}
+}
+
+// TestShipState_Defer_TitleFallback pins that a defer call with another title
+// than the stored row matches the only open row on the same file and line.
+// The row keeps its title.
+func TestShipState_Defer_TitleFallback(t *testing.T) {
+	const stamp = "2026-10-13T10:05:00Z"
+	branch := "feat/defer-row-title"
+	dir, path := deferFixture(t, branch)
+	useMemHistory(t)
+	seedFixProgress(t, path, []any{fixRowSeed("queued", map[string]any{"title": "reworded title"})})
+
+	n := deferFixRowCall(t, dir, branch, time.Date(2026, 10, 13, 10, 5, 0, 0, time.UTC), nil)
+	wantDeferNote(t, n, "Fix-progress row set to deferred (was queued).")
+
+	want := []any{fixRowSeed("deferred", map[string]any{
+		"title": "reworded title", "updatedAt": stamp, "deferredId": "review-deferred-" + stamp + "-1",
+	})}
+	if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, want) {
+		t.Errorf("fixProgress = %#v, want %#v", rows, want)
+	}
+}
+
+// TestShipState_Defer_KeepsFailed pins the three kept outcomes: a failed row
+// stays failed with its updatedAt and gets the deferredId; a deferred row that
+// a second defer call reaches gets the new deferredId; a failed row stays
+// as it is, with no note, when the deferred.json write failed and the entry
+// has no deferredId.
+func TestShipState_Defer_KeepsFailed(t *testing.T) {
+	const old = "2026-10-10T10:00:00Z"
+	at := time.Date(2026, 10, 13, 10, 5, 0, 0, time.UTC)
+
+	t.Run("failed row gets the id", func(t *testing.T) {
+		branch := "feat/defer-row-failed"
+		dir, path := deferFixture(t, branch)
+		useMemHistory(t)
+		seedFixProgress(t, path, []any{fixRowSeed("failed", nil)})
+
+		n := deferFixRowCall(t, dir, branch, at, nil)
+		wantDeferNote(t, n, "Fix-progress row kept failed and got the deferred id.")
+		want := []any{fixRowSeed("failed", map[string]any{
+			"updatedAt": old, "deferredId": "review-deferred-2026-10-13T10:05:00Z-1",
+		})}
+		if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, want) {
+			t.Errorf("fixProgress = %#v, want %#v", rows, want)
+		}
+	})
+
+	t.Run("second defer on a deferred row", func(t *testing.T) {
+		branch := "feat/defer-row-twice"
+		dir, path := deferFixture(t, branch)
+		useMemHistory(t)
+		seedFixProgress(t, path, []any{fixRowSeed("queued", nil)})
+
+		deferFixRowCall(t, dir, branch, at, nil)
+		later := at.Add(time.Minute)
+		n := deferFixRowCall(t, dir, branch, later, nil)
+		wantDeferNote(t, n, "Fix-progress row kept deferred and got the deferred id.")
+		want := []any{fixRowSeed("deferred", map[string]any{
+			"updatedAt": "2026-10-13T10:05:00Z", "deferredId": "review-deferred-2026-10-13T10:06:00Z-2",
+		})}
+		if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, want) {
+			t.Errorf("fixProgress = %#v, want %#v", rows, want)
+		}
+	})
+
+	t.Run("failed row, deferred.json write failed", func(t *testing.T) {
+		branch := "feat/defer-row-failed-nostore"
+		dir, path := deferFixture(t, branch)
+		useFailingHistory(t)
+		seedFixProgress(t, path, []any{fixRowSeed("failed", nil)})
+
+		n := deferFixRowCall(t, dir, branch, at, nil)
+		if strings.Contains(n.Summary, "Fix-progress row") || strings.Contains(n.Next.Instruction, "Fix-progress row") {
+			t.Errorf("summary = %q, next = %q, want no row note when the row does not change", n.Summary, n.Next.Instruction)
+		}
+		want := []any{fixRowSeed("failed", nil)}
+		if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, want) {
+			t.Errorf("fixProgress = %#v, want %#v", rows, want)
+		}
+	})
+}
+
+// TestShipState_Defer_FixedRowToDeferred pins the rule that a finding that
+// was fixed earlier moves to deferred when it is deferred.
+func TestShipState_Defer_FixedRowToDeferred(t *testing.T) {
+	const stamp = "2026-10-13T10:05:00Z"
+	branch := "feat/defer-row-fixed"
+	dir, path := deferFixture(t, branch)
+	useMemHistory(t)
+	seedFixProgress(t, path, []any{fixRowSeed("fixed", nil)})
+
+	n := deferFixRowCall(t, dir, branch, time.Date(2026, 10, 13, 10, 5, 0, 0, time.UTC), nil)
+	wantDeferNote(t, n, "Fix-progress row set to deferred (was fixed).")
+	want := []any{fixRowSeed("deferred", map[string]any{"updatedAt": stamp, "deferredId": "review-deferred-" + stamp + "-1"})}
+	if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, want) {
+		t.Errorf("fixProgress = %#v, want %#v", rows, want)
+	}
+}
+
+// TestShipState_Defer_DamagedHealing pins that a damaged data.healing does not
+// fail the defer call: the finding is recorded, the summary and next end with
+// the warning and the repair step, and the healing value stays as it was.
+func TestShipState_Defer_DamagedHealing(t *testing.T) {
+	notObject := func(path string) string {
+		return "fix-progress row not updated — data.healing in " + path + " is not an object. Tell the user to remove the data.healing key or set it to {}."
+	}
+	notList := func(path string) string {
+		return "fix-progress row not updated — data.healing.fixProgress in " + path + " is not a list. Tell the user to set data.healing.fixProgress to []."
+	}
+	cases := []struct {
+		name    string
+		healing any
+		warning func(path string) string
+	}{
+		{"healing is a string", "oops", notObject},
+		{"healing is a list", []any{}, notObject},
+		{"fixProgress is a string", map[string]any{"fixProgress": "oops"}, notList},
+		{"fixProgress is null", map[string]any{"fixProgress": nil}, notList},
+		{"fixProgress is an object", map[string]any{"fixProgress": map[string]any{}}, notList},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "feat/defer-row-damaged"
+			dir, path := deferFixture(t, branch)
+			useMemHistory(t)
+			seedHealingValue(t, path, tc.healing)
+
+			n := deferFixRowCall(t, dir, branch, time.Date(2026, 10, 13, 10, 5, 0, 0, time.UTC), nil)
+			wantDeferNote(t, n, tc.warning(path))
+			if got := readStateData(t, path)["healing"]; !reflect.DeepEqual(got, tc.healing) {
+				t.Errorf("data.healing = %#v, want it unchanged: %#v", got, tc.healing)
+			}
+			if findings, _ := readStateData(t, path)["deferredFindings"].([]any); len(findings) != 1 {
+				t.Errorf("deferredFindings = %v, want 1 entry", findings)
+			}
+		})
+	}
+}
+
+// TestShipState_Defer_NoRow pins that a defer call with no healing key, no
+// fixProgress key, an empty list, a row of another file or an ambiguous match
+// changes no row and returns the same summary and next as a defer call
+// without healing data.
+func TestShipState_Defer_NoRow(t *testing.T) {
+	const stamp = "2026-10-13T10:05:00Z"
+	const id = "review-deferred-" + stamp + "-1"
+	cases := []struct {
+		name string
+		seed func(t *testing.T, path string)
+		rows []any // fixProgress after the call; nil when the key is absent
+	}{
+		{"no healing key", func(*testing.T, string) {}, nil},
+		{"healing is null", func(t *testing.T, path string) { seedHealingValue(t, path, nil) }, nil},
+		{"no fixProgress key", func(t *testing.T, path string) { seedHealing(t, path, map[string]any{}) }, nil},
+		{"empty fixProgress", func(t *testing.T, path string) { seedFixProgress(t, path, []any{}) }, []any{}},
+		{"row of another file", func(t *testing.T, path string) {
+			seedFixProgress(t, path, []any{fixRowSeed("queued", map[string]any{"file": "b.go"})})
+		}, []any{fixRowSeed("queued", map[string]any{"file": "b.go"})}},
+		{"two open rows on the line", func(t *testing.T, path string) {
+			seedFixProgress(t, path, []any{
+				fixRowSeed("queued", map[string]any{"title": "other one"}),
+				fixRowSeed("fixing", map[string]any{"title": "other two"}),
+			})
+		}, []any{
+			fixRowSeed("queued", map[string]any{"title": "other one"}),
+			fixRowSeed("fixing", map[string]any{"title": "other two"}),
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "feat/defer-row-none"
+			dir, path := deferFixture(t, branch)
+			useMemHistory(t)
+			tc.seed(t, path)
+			beforeHealing, beforePresent := readStateData(t, path)["healing"]
+
+			n := deferFixRowCall(t, dir, branch, time.Date(2026, 10, 13, 10, 5, 0, 0, time.UTC), nil)
+			afterHealing, afterPresent := readStateData(t, path)["healing"]
+			if beforePresent != afterPresent || !reflect.DeepEqual(beforeHealing, afterHealing) {
+				t.Errorf("data.healing = %#v (present %v), want %#v (present %v): the call must not create or change it",
+					afterHealing, afterPresent, beforeHealing, beforePresent)
+			}
+			wantSummary := "Deferred finding recorded: unchecked error (id " + id + "). Written to " +
+				history.NewFileWriter(historyDir(dir)).DeferredPath() + "."
+			if n.Summary != wantSummary {
+				t.Errorf("summary = %q, want %q", n.Summary, wantSummary)
+			}
+			if want := deferredNext(id, false, false); n.Next == nil || n.Next.Instruction != want {
+				t.Errorf("next = %+v, want instruction %q", n.Next, want)
+			}
+			if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, tc.rows) {
+				t.Errorf("fixProgress = %#v, want %#v", rows, tc.rows)
+			}
+		})
+	}
+}
+
+// TestShipState_Defer_PersistFailureSetsRow pins that a failed deferred.json
+// write still moves the fix row to deferred, with no deferredId, and that the
+// note follows the persist warning in the summary.
+func TestShipState_Defer_PersistFailureSetsRow(t *testing.T) {
+	const stamp = "2026-10-13T10:05:00Z"
+	branch := "feat/defer-row-persist-fail"
+	dir, path := deferFixture(t, branch)
+	useFailingHistory(t)
+	seedFixProgress(t, path, []any{fixRowSeed("queued", nil)})
+
+	n := deferFixRowCall(t, dir, branch, time.Date(2026, 10, 13, 10, 5, 0, 0, time.UTC), nil)
+	wantDeferNote(t, n, "Fix-progress row set to deferred (was queued).")
+	if !strings.Contains(n.Summary, "no space left on device") {
+		t.Errorf("summary = %q, want it to keep the deferred.json write failure", n.Summary)
+	}
+	want := []any{fixRowSeed("deferred", map[string]any{"updatedAt": stamp})}
+	if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, want) {
+		t.Errorf("fixProgress = %#v, want %#v (no deferredId)", rows, want)
+	}
+}

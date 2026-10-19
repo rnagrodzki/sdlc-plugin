@@ -116,18 +116,33 @@ The `init` action SHALL create a new ship state file with the fixed legacy scaff
 ## ADDED Requirements
 
 ### Requirement: defer sets the fix-progress record
-The `defer` action SHALL set the matching `healing.fixProgress` record of the live run to `deferred` and SHALL copy the `deferredId` of the run entry onto it. Match: the only record with the same file, line and title, else the only `queued` or `fixing` record with the same file and line. A stored `failed` record keeps status `failed`.
+The `defer` action SHALL set the matching `healing.fixProgress` record of the live run to `deferred` and SHALL copy the `deferredId` of the run entry onto it. Match: the only record with the same file, line and title, else the only `queued` or `fixing` record with the same file and line. A stored `failed` record keeps status `failed`. When the call changes a record, it SHALL add one note to the end of `summary` and of `next`:
+
+| Change | Note |
+|---|---|
+| The status changed from `<status>` to `deferred` | `Fix-progress row set to deferred (was <status>).` |
+| The status stayed `<status>` and the record only got the `deferredId` | `Fix-progress row kept <status> and got the deferred id.` |
+| No record matched, or the call changed nothing | No note. |
 
 #### Scenario: Defer sets the record
 - **WHEN** a `queued` `fix-progress` record exists on `internal/foo.go` line 12 with title `unchecked error`
 - **AND** `defer` is called for the same file, line and title
 - **THEN** that record has status `deferred` and `updatedAt` set to the call time
 - **AND** that record has the `deferredId` of the new run entry
+- **AND** `summary` and `next` end with `Fix-progress row set to deferred (was queued).`
 
 #### Scenario: Defer keeps failed
 - **WHEN** a `failed` `fix-progress` record matches the deferred finding
 - **THEN** that record keeps status `failed` and its `updatedAt`
 - **AND** that record gets the `deferredId`
+- **AND** `summary` and `next` end with `Fix-progress row kept failed and got the deferred id.`
+
+#### Scenario: Second defer reaches a deferred record
+- **WHEN** a `deferred` `fix-progress` record matches the deferred finding
+- **AND** the call gives it another `deferredId`
+- **THEN** that record keeps status `deferred` and its `updatedAt`
+- **AND** that record gets the new `deferredId`
+- **AND** `summary` and `next` end with `Fix-progress row kept deferred and got the deferred id.`
 
 #### Scenario: Defer after a fixed record
 - **WHEN** a `fixed` `fix-progress` record matches the deferred finding
