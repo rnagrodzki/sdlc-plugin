@@ -159,9 +159,11 @@ type ShipPrepareOut struct {
 	Worktree  string `json:"worktree"`
 	StateFile string `json:"stateFile,omitempty"`
 
-	// PrunedOrphans lists pre-existing ship-<slug>-*.json state files removed
-	// as a side effect of initializing the new one, mirroring cmdInit's
-	// prunedOrphans in scripts/state/ship.js.
+	// PrunedOrphans lists the pre-existing ship-<slug>-*.json state files that
+	// the new run's first write deletes (state.PruneTargets): in-flight runs,
+	// dry-run runs and unreadable files. A completed run, and an in-flight run
+	// whose non-empty sessionId differs from the caller's non-empty sessionId,
+	// are kept.
 	PrunedOrphans []string `json:"prunedOrphans"`
 
 	// PipelineDisplay is a pipeline.PipelineTable render of the seeded step
@@ -535,7 +537,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	}
 
 	branchSlug := state.SlugifyBranch(currentBranch)
-	pruned, err := existingShipStateFiles(cfgRoot, branchSlug)
+	pruned, err := state.PruneTargets(cfgRoot, "ship", branchSlug, "", in.SessionID)
 	if err != nil {
 		return ShipPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("scan existing ship state files: %s", err.Error()),
@@ -1014,41 +1016,6 @@ func sliceContainsStr(ss []string, s string) bool {
 		}
 	}
 	return false
-}
-
-// shipStateFileRe matches a ship-prefixed state file basename, mirroring
-// state.go's unexported parseStateFilename grammar
-// (^(ship|execute|plan|commit)-(.+)-(\d{8}T\d{6}Z)\.json$) narrowed to the
-// "ship" prefix. The greedy (.+) capture must match parseStateFilename's
-// exactly, so that the "about to be pruned" set computed here coincides with
-// the set state.Write actually prunes (exact slug equality, not a loose
-// prefix match — a loose match would over-report files whose slug merely
-// starts with branchSlug, e.g. "feat-x-2" when branchSlug is "feat-x").
-var shipStateFileRe = regexp.MustCompile(`^ship-(.+)-\d{8}T\d{6}Z\.json$`)
-
-// existingShipStateFiles lists the absolute paths of pre-existing
-// ship-<slug>-*.json state files for the given branch slug, matching the set
-// that state.Write is about to prune. Must be called before state.Init
-// creates the new file, so its own path is never included.
-func existingShipStateFiles(root, branchSlug string) ([]string, error) {
-	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []string{}, nil
-		}
-		return nil, err
-	}
-
-	out := []string{}
-	for _, e := range entries {
-		name := e.Name()
-		m := shipStateFileRe.FindStringSubmatch(name)
-		if m != nil && m[1] == branchSlug {
-			out = append(out, filepath.Join(dir, name))
-		}
-	}
-	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1630,7 +1597,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 // tools.
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
-		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix.",
+		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. The first state write deletes each older ship-<branch-slug>-*.json file of the branch that is in flight, a dry-run run, or unreadable; prunedOrphans lists them. It keeps a completed run, and an in-flight run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later.",
 		mcpserver.Annotations{
 			Title:       "Prepare ship pipeline run",
 			ReadOnly:    false,

@@ -700,13 +700,14 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 // Action: init
 // ---------------------------------------------------------------------------
 
-// shipStateInit ports cmdInit: prune any existing ship state for this
-// branch's slug, then create a fresh state file scaffolded with
-// shipmeta.InitialShipSteps(). Unlike shipPrepare's own init sequence (which
-// hard-requires --branch as part of a much larger flag-merge/validation
-// flow), this mirrors cmdInit's simpler shape and auto-detects the current
-// branch via execResolveBranch when Detail["branch"] is absent, consistent
-// with every other action in this file.
+// shipStateInit ports cmdInit: list the ship state files of this branch's
+// slug that the first write deletes (state.PruneTargets), then create a fresh
+// state file scaffolded with shipmeta.InitialShipSteps(). Unlike
+// shipPrepare's own init sequence (which hard-requires --branch as part of a
+// much larger flag-merge/validation flow), this mirrors cmdInit's simpler
+// shape and auto-detects the current branch via execResolveBranch when
+// Detail["branch"] is absent, consistent with every other action in this
+// file.
 func shipStateInit(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
 	branch, err := execResolveBranch(detailStr(in.Detail, "branch"), workDir)
 	if err != nil {
@@ -719,7 +720,7 @@ func shipStateInit(root, workDir string, in ShipStateIn, now func() time.Time) (
 	}
 
 	branchSlug := state.SlugifyBranch(branch)
-	pruned, err := existingShipStateFiles(root, branchSlug)
+	pruned, err := state.PruneTargets(root, "ship", branchSlug, "", in.SessionID)
 	if err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("scan existing ship state files for branch slug %q: %s", branchSlug, err.Error()),
@@ -3993,7 +3994,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 
 Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide, defer) return a narrated response: summary (short text), display (markdown progress block), timing (step/pipeline/idle durations when computable), next (the following pipeline step when one exists), and for begin-step/complete-step: todos, issueCount, issueHighlights. Pass detail.detail="concise" to omit the progress block on non-boundary actions (skip, fail, decide, defer); "full" (the default) always includes it. Step durations are recorded under key "ship:<step>" in the timings store; human-wait steps (await-remote-review) are never recorded.
 
-- init: Create ship state. Optional: detail.branch, detail.flags, sessionId.
+- init: Create ship state. Optional: detail.branch, detail.flags, sessionId. The first state write deletes each older ship-<branch-slug>-*.json file of the branch that is in flight, a dry-run run, or unreadable; prunedOrphans lists them. It keeps a completed run, and an in-flight run whose sessionId differs from the sessionId of this call when both are non-empty. GC deletes a kept file later.
 - begin-step: Begin execution of a step (preferred over start). Requires step. Returns narration with progress, ETA, dispatch instruction, todos, and alreadyDone (true when ship_verify_side_effect already recorded this step's side effect in the sideEffects journal — a resumed pipeline can skip redoing it). Optional: detail.branch, detail.stateFile, detail.detail.
 - complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, issue summary, warnings, and linkedPlan. Side effect: complete-step of execute (outcome not failure) reads the execute state planPath and the plan state it names, then saves linkedPlan {planFile, startedAt, completedAt} once; a later call keeps the first object. linkedPlan in the output is the value that the ship state holds after the call (saved or kept), and is absent when no linked plan run was found. A failed lookup, a plan run with no valid start time (nothing saved), and a done mark that is not RFC 3339 (completedAt left out) each add one warnings entry and never fail the step. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
 - commit-check: Decide the commit step from the working tree. Requires: (none). Optional: detail.branch. Side effects: staging (git add -A -- ':!.sdlc-v2/' in the active worktree stages every change, untracked files that are not gitignored included; then git diff --cached --name-only counts the staged paths); the first call of a run stores HEAD in state key commitBaseHead, and later calls keep it. Dirty tree: returns {clean:false, stagedCount} and changes no step. Clean tree with HEAD equal to commitBaseHead: appends one decide entry and does what complete-step does for the commit step, with result "`+commitNothingPrefix+`: execute committed N wave commit(s)" (N = non-empty waves[].committedSha of this branch's execute state) or "`+commitNothingPrefix+`: the working tree is clean" (N = 0). Clean tree with HEAD not equal to commitBaseHead: records HEAD in the side-effect journal (sideEffects, kind sha) and does what complete-step does for the commit step, with result "committed <short sha>". Returns clean, stagedCount, waveCommits, stepCompleted, result, todos and display (when stepCompleted), warnings, next. Errors: a failed git call is a git InfraError; a commit step that is not in_progress is a step-state DomainError; a pipeline with no commit step, or a commitBaseHead that is not a string, is a DataError.

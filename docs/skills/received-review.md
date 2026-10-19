@@ -118,7 +118,9 @@ step already owns hardening for the run.
 
 In every mode, Step 11 writes the status of each accepted finding (`queued`,
 `fixing`, `fixed`, `failed`, `deferred`) to `healing.fixProgress` of the ship
-state. The [dashboard](../dashboard.md) shows these rows in the review queue of
+state. The `fixed` call and the `defer` call also set the matching row to
+`fixed` or `deferred`. A skipped status call does not leave a row `queued`.
+The [dashboard](../dashboard.md) shows these rows in the review queue of
 the `review` step. It shows them on the received-review step when the run
 has no review queue. The rows are for display only: the review ledger counts
 the separate `fixed` records.

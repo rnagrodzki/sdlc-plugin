@@ -217,30 +217,84 @@ func TestShipState_Init(t *testing.T) {
 	}
 }
 
+// TestShipState_Init_PrunesOrphans verifies that prunedOrphans lists exactly
+// the files that state.Write deletes: a live sibling, and not a completed one
+// or a live one of another session.
 func TestShipState_Init_PrunesOrphans(t *testing.T) {
+	tests := []struct {
+		name       string
+		sibling    string
+		callerSess string
+		wantPruned bool
+	}{
+		{"live sibling without sessionId", `{"sessionId": null}`, "", true},
+		{"completed sibling", `{"pipelineStatus": "completed"}`, "", false},
+		{"live sibling of another session", `{"sessionId": "s1"}`, "s2", false},
+		{"live sibling with sessionId, caller without", `{"sessionId": "s1"}`, "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/prune-me")
+
+			slug := state.SlugifyBranch("feat/prune-me")
+			orphan := filepath.Join(dir, paths.DataDir, paths.RunsSubdir, fmt.Sprintf("ship-%s-20200101T000000Z.json", slug))
+			writeFile(t, orphan, tt.sibling)
+
+			out, err := shipState(dir, dir, ShipStateIn{
+				Action:    "init",
+				SessionID: tt.callerSess,
+				Detail:    map[string]any{"branch": "feat/prune-me"},
+			}, fixedNow(time.Now()))
+			if err != nil {
+				t.Fatalf("init: %v", err)
+			}
+			m := out.(map[string]any)
+			pruned, _ := m["prunedOrphans"].([]string)
+			_, statErr := os.Stat(orphan)
+			if tt.wantPruned {
+				if len(pruned) != 1 || pruned[0] != orphan {
+					t.Errorf("prunedOrphans = %v, want [%s]", pruned, orphan)
+				}
+				if !os.IsNotExist(statErr) {
+					t.Errorf("sibling %s still exists after prune, stat err = %v, want os.IsNotExist", orphan, statErr)
+				}
+				return
+			}
+			if len(pruned) != 0 {
+				t.Errorf("prunedOrphans = %v, want empty", pruned)
+			}
+			if statErr != nil {
+				t.Errorf("sibling %s should still exist, got stat error: %v", orphan, statErr)
+			}
+		})
+	}
+}
+
+// TestShipState_Init_PruneScanError verifies that a regular file at runs/
+// makes the prune scan fail with an InfraError that carries a Suggestion.
+func TestShipState_Init_PruneScanError(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
-	checkoutBranch(t, dir, "feat/prune-me")
+	checkoutBranch(t, dir, "feat/scan-error")
+	writeFile(t, filepath.Join(dir, paths.DataDir, paths.RunsSubdir), "not a directory")
 
-	slug := state.SlugifyBranch("feat/prune-me")
-	orphan := filepath.Join(dir, paths.DataDir, paths.RunsSubdir, fmt.Sprintf("ship-%s-20200101T000000Z.json", slug))
-	writeFile(t, orphan, `{"sessionId": null}`)
-
-	out, err := shipState(dir, dir, ShipStateIn{
+	_, err := shipState(dir, dir, ShipStateIn{
 		Action: "init",
-		Detail: map[string]any{"branch": "feat/prune-me"},
+		Detail: map[string]any{"branch": "feat/scan-error"},
 	}, fixedNow(time.Now()))
-	if err != nil {
-		t.Fatalf("init: %v", err)
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v, want *mcpserver.InfraError", err)
 	}
-	m := out.(map[string]any)
-	pruned, _ := m["prunedOrphans"].([]string)
-	if len(pruned) != 1 || pruned[0] != orphan {
-		t.Errorf("prunedOrphans = %v, want [%s]", pruned, orphan)
+	if !strings.Contains(infra.Msg, "scan existing ship state files") || !strings.Contains(infra.Msg, "state: readdir for prune") {
+		t.Errorf("InfraError.Msg = %q, want the scan failure with the readdir error", infra.Msg)
 	}
-	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
-		t.Errorf("orphan file %s still exists after prune, stat err = %v, want os.IsNotExist", orphan, err)
+	if !strings.Contains(infra.Suggestion, "retry ship_state init") {
+		t.Errorf("InfraError.Suggestion = %q, want a retry hint", infra.Suggestion)
 	}
 }
 

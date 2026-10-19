@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -463,39 +464,85 @@ rebase = 42
 	}
 }
 
-// TestShipPrepare_PrunedOrphans verifies that pre-existing ship-<slug>-*.json
-// state files for the same branch are reported in PrunedOrphans and actually
-// removed from disk.
+// TestShipPrepare_PrunedOrphans verifies that PrunedOrphans lists exactly the
+// pre-existing ship-<slug>-*.json files that state.Write deletes: a live
+// sibling, and not a completed one or a live one of another session.
 func TestShipPrepare_PrunedOrphans(t *testing.T) {
+	tests := []struct {
+		name       string
+		sibling    string
+		callerSess string
+		wantPruned bool
+		wantOnDisk bool
+	}{
+		{"live sibling without sessionId", `{"sessionId": null}`, "", true, false},
+		{"completed sibling", `{"pipelineStatus": "completed"}`, "", false, true},
+		{"live sibling of another session", `{"sessionId": "s1"}`, "s2", false, true},
+		{"live sibling with sessionId, caller without", `{"sessionId": "s1"}`, "", true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/orphans")
+
+			execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
+			orphan := filepath.Join(execDir, "ship-feat-orphans-20200101T000000Z.json")
+			writeFile(t, orphan, tt.sibling)
+			// Decoy: a different (longer) slug that merely starts with the same
+			// prefix. Must NOT be reported or pruned — only exact slug matches
+			// ("feat-orphans", not "feat-orphans-x") are in state.Write's prune set.
+			decoy := filepath.Join(execDir, "ship-feat-orphans-x-20200101T000000Z.json")
+			writeFile(t, decoy, `{"sessionId": null}`)
+
+			out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, SessionID: tt.callerSess})
+			if err != nil {
+				t.Fatalf("shipPrepare: %v", err)
+			}
+			if len(out.Errors) != 0 {
+				t.Fatalf("Errors = %v, want empty", out.Errors)
+			}
+			if tt.wantPruned {
+				if len(out.PrunedOrphans) != 1 || out.PrunedOrphans[0] != orphan {
+					t.Errorf("PrunedOrphans = %v, want [%s]", out.PrunedOrphans, orphan)
+				}
+			} else if len(out.PrunedOrphans) != 0 {
+				t.Errorf("PrunedOrphans = %v, want empty", out.PrunedOrphans)
+			}
+			_, statErr := os.Stat(orphan)
+			if tt.wantOnDisk && statErr != nil {
+				t.Errorf("sibling %s should still exist, got stat error: %v", orphan, statErr)
+			}
+			if !tt.wantOnDisk && !os.IsNotExist(statErr) {
+				t.Errorf("sibling %s still exists, want removed (stat err = %v)", orphan, statErr)
+			}
+			if _, err := os.Stat(decoy); err != nil {
+				t.Errorf("decoy file %s should still exist, got stat error: %v", decoy, err)
+			}
+		})
+	}
+}
+
+// TestShipPrepare_PruneScanError verifies that a regular file at runs/ makes
+// the prune scan fail with an InfraError that carries a Suggestion.
+func TestShipPrepare_PruneScanError(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
-	checkoutBranch(t, dir, "feat/orphans")
+	checkoutBranch(t, dir, "feat/scan-error")
+	writeFile(t, filepath.Join(dir, paths.DataDir, paths.RunsSubdir), "not a directory")
 
-	execDir := filepath.Join(dir, paths.DataDir, paths.RunsSubdir)
-	orphan := filepath.Join(execDir, "ship-feat-orphans-20200101T000000Z.json")
-	writeFile(t, orphan, `{"sessionId": null}`)
-	// Decoy: a different (longer) slug that merely starts with the same
-	// prefix. Must NOT be reported or pruned — only exact slug matches
-	// ("feat-orphans", not "feat-orphans-x") are in state.Write's prune set.
-	decoy := filepath.Join(execDir, "ship-feat-orphans-x-20200101T000000Z.json")
-	writeFile(t, decoy, `{"sessionId": null}`)
-
-	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
-	if err != nil {
-		t.Fatalf("shipPrepare: %v", err)
+	_, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("err = %v, want *mcpserver.InfraError", err)
 	}
-	if len(out.Errors) != 0 {
-		t.Fatalf("Errors = %v, want empty", out.Errors)
+	if !strings.Contains(infra.Msg, "scan existing ship state files") || !strings.Contains(infra.Msg, "state: readdir for prune") {
+		t.Errorf("InfraError.Msg = %q, want the scan failure with the readdir error", infra.Msg)
 	}
-	if len(out.PrunedOrphans) != 1 || out.PrunedOrphans[0] != orphan {
-		t.Errorf("PrunedOrphans = %v, want [%s]", out.PrunedOrphans, orphan)
-	}
-	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
-		t.Errorf("orphan file %s still exists, want removed", orphan)
-	}
-	if _, err := os.Stat(decoy); err != nil {
-		t.Errorf("decoy file %s should still exist, got stat error: %v", decoy, err)
+	if !strings.Contains(infra.Suggestion, "retry ship_prepare") {
+		t.Errorf("InfraError.Suggestion = %q, want a retry hint", infra.Suggestion)
 	}
 }
 
