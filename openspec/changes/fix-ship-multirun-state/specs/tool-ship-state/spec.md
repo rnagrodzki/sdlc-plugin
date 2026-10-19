@@ -24,7 +24,7 @@ The `healing_record` action SHALL validate one record of `detail.kind` `review-t
 | `summary` | `healing_record <kind>: <narration>`; narration is `recorded`, `replaced started record`, `already recorded — no change`, `fix-progress row set to fixed`, `kept <status>`, or `no live ship run on this branch — healing not recorded`. |
 | `kind` | The kind. |
 | `written` | `true` only when this call changed the state file. |
-| `record` | The record as stored after the call: `recordedAt` for `review-total`, `fixed` and `hardened`; `status`, `firstAt` and `updatedAt` for `fix-progress`. On a no-op call it is the stored entry. With no live run it is the validated incoming record. |
+| `record` | The record as stored after the call: `recordedAt` for `review-total`, `fixed` and `hardened`; `status`, `firstAt` and `updatedAt` for `fix-progress`. On a no-op call it is the stored entry. On a repeat `fixed` call that sets its `fixProgress` row, it is the incoming record: its `recordedAt` is the `updatedAt` that the call wrote to the row. With no live run it is the validated incoming record. |
 | `next` | Every kind returns it. Kinds `fix-progress` and `fixed` use id `continue-fix-pass`; with `detail.deferredId`, the instruction of kind `fixed` names the deferred item. Kind `review-total` uses id `continue-after-review-total`. Kind `hardened` uses id `continue-harden`. |
 
 | Condition | Class | Message (short) |

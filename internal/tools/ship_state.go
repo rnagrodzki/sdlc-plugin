@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"sort"
@@ -1919,14 +1920,25 @@ const (
 	healingNarrRecorded  = "recorded"
 	healingNarrReplaced  = "replaced started record"
 	healingNarrDuplicate = "already recorded — no change"
+	// healingNarrRowFixed is the narration of a repeat fixed call that still
+	// set its fixProgress row to fixed.
+	healingNarrRowFixed  = "fix-progress row set to fixed"
 	healingNarrNoLiveRun = "no live ship run on this branch — healing not recorded"
 	// healingNarrKept starts the narration of a fix-progress call that keeps
 	// the stored status: "kept " + the stored status, for example "kept failed".
 	healingNarrKept = "kept "
 )
 
-// healingFixNextID is the next.id of every fix-progress response.
+// healingFixNextID is the next.id of every fix-progress response and of
+// every fixed response.
 const healingFixNextID = "continue-fix-pass"
+
+// healingReviewTotalNextID and healingHardenedNextID are the next.id of a
+// review-total and a hardened response.
+const (
+	healingReviewTotalNextID = "continue-after-review-total"
+	healingHardenedNextID    = "continue-harden"
+)
 
 // healingSurfaceIDs returns the ids of hardensurfaces.List(), the only
 // values an applied[].surface may take.
@@ -2016,6 +2028,8 @@ func healingLineKey(v any) any {
 //   - review-total sets data.healing.reviewTotal, replacing any earlier value.
 //   - fixed appends to data.healing.fixed; a record with the same
 //     (origin, file, line, title) is a duplicate and is not written again.
+//     It also sets the matching data.healing.fixProgress row to fixed
+//     (healingSetFixStatus), also on a duplicate.
 //     With detail.deferredId it first resolves that deferred.json row (a
 //     resolved row is left as it is), then sets fixedInRun:true on the
 //     deferredFindings entries with that deferredId (healingResolveDeferred).
@@ -2283,7 +2297,16 @@ func healingApply(healing map[string]any, kind string, record map[string]any, pa
 		if err != nil {
 			return "", nil, false, err
 		}
+		rowChanged, err := healingSetFixStatus(healing, record, true, "fixed", record["recordedAt"].(string), nil, path)
+		if err != nil {
+			return "", nil, false, err
+		}
 		if stored := healingFindFinding(fixed, record); stored != nil {
+			if rowChanged {
+				// The call wrote the row, not the fixed record. It echoes the
+				// incoming record: its recordedAt is the updatedAt of the row.
+				return healingNarrRowFixed, record, true, nil
+			}
 			return healingNarrDuplicate, stored, false, nil
 		}
 		healing["fixed"] = append(fixed, record)
@@ -2323,17 +2346,19 @@ func healingApplyFixProgress(healing, record map[string]any, path string) (strin
 // the record as it is stored after the call, so a caller can match it
 // against a later read's data.healing. Its fields depend on the kind:
 // review-total, fixed and hardened records carry recordedAt; a fix-progress
-// record carries status, firstAt and updatedAt instead. When the call
-// changes nothing (a duplicate, or a fix-progress call that keeps the stored
-// status), Record is the stored entry, not the incoming one. With no live
-// run nothing is stored, and Record is the validated incoming record.
+// record carries status, firstAt and updatedAt instead. When the call adds
+// no record (a duplicate, or a fix-progress call that keeps the stored
+// status), Record is the stored entry, not the incoming one. One exception:
+// a repeat fixed call that sets its fixProgress row echoes the incoming
+// record, because its recordedAt is the updatedAt that the call wrote to the
+// row. With no live run nothing is stored, and Record is the validated
+// incoming record.
 // Written is true only when this call changed the state file. Next is set
-// for kind fix-progress (healingNarration) and for kind fixed with a
-// deferredId on a live run (healingWithDeferred); the other calls are
-// terminal and leave it nil. DeferredID and FixedInRun are set only for kind
-// fixed with a deferredId on a live run: they echo the deferred item that
-// the call resolved (or found resolved) and the fixedInRun flag that its run
-// entries carry.
+// for every kind (healingNarration). With a deferredId,
+// healingWithDeferred or healingNoLiveRun sets the next of kind fixed.
+// DeferredID and FixedInRun are set only for kind fixed with a deferredId on
+// a live run: they echo the deferred item that the call resolved (or found
+// resolved) and the fixedInRun flag that its run entries carry.
 type ShipHealingRecordOut struct {
 	pipeline.Narration
 	Kind       string         `json:"kind"`
@@ -2343,9 +2368,8 @@ type ShipHealingRecordOut struct {
 	FixedInRun bool           `json:"fixedInRun,omitempty"`
 }
 
-// healingNarration builds the response for a healing_record call. Only the
-// fix-progress kind sets next: received-review calls it inside its fix pass,
-// so every outcome tells that pass how to go on.
+// healingNarration builds the response for a healing_record call. Every
+// kind sets next. The instruction tells the calling step how to go on.
 func healingNarration(kind, narration string, record map[string]any, written bool) ShipHealingRecordOut {
 	out := ShipHealingRecordOut{
 		Narration: pipeline.Narration{
@@ -2355,8 +2379,15 @@ func healingNarration(kind, narration string, record map[string]any, written boo
 		Written: written,
 		Record:  record,
 	}
-	if kind == "fix-progress" {
+	switch kind {
+	case "fix-progress":
 		out.Next = &pipeline.NextAction{ID: healingFixNextID, Instruction: healingFixNextInstruction(narration)}
+	case "fixed":
+		out.Next = &pipeline.NextAction{ID: healingFixNextID, Instruction: healingFixedNextInstruction(narration)}
+	case "review-total":
+		out.Next = &pipeline.NextAction{ID: healingReviewTotalNextID, Instruction: healingReviewTotalNextInstruction(narration)}
+	case "hardened":
+		out.Next = &pipeline.NextAction{ID: healingHardenedNextID, Instruction: healingHardenedNextInstruction(narration)}
 	}
 	return out
 }
@@ -2374,6 +2405,42 @@ func healingFixNextInstruction(narration string) string {
 		return "The fix keeps status " + kept + ". Continue the fix pass."
 	}
 	return "Status stored. Continue the fix pass."
+}
+
+// healingFixedNextInstruction returns the next.instruction of a fixed
+// response for its narration. healingWithDeferred and healingNoLiveRun
+// still replace it when the call carries a deferredId.
+func healingFixedNextInstruction(narration string) string {
+	switch narration {
+	case healingNarrNoLiveRun:
+		return "No live ship run, so the fix is not stored. Continue the fix pass."
+	case healingNarrDuplicate:
+		return "Fix already recorded. Continue the fix pass."
+	case healingNarrRowFixed:
+		return "Fix-progress row set to fixed. Continue the fix pass."
+	}
+	return "Fix recorded. Continue the fix pass."
+}
+
+// healingReviewTotalNextInstruction returns the next.instruction of a
+// review-total response for its narration.
+func healingReviewTotalNextInstruction(narration string) string {
+	if narration == healingNarrNoLiveRun {
+		return "No live ship run, so the review total is not stored. Run the per-finding review routing."
+	}
+	return "Review total stored. Run the per-finding review routing."
+}
+
+// healingHardenedNextInstruction returns the next.instruction of a
+// hardened response for its narration.
+func healingHardenedNextInstruction(narration string) string {
+	switch narration {
+	case healingNarrNoLiveRun:
+		return "No live ship run, so the harden record is not stored. Continue the harden run."
+	case healingNarrDuplicate:
+		return "Harden record already stored. Continue the harden run."
+	}
+	return "Harden record stored. Continue the harden run."
 }
 
 // healingReviewTotal validates a review-total record and returns it as it
@@ -2658,12 +2725,13 @@ func healingUpsertHardened(hardened []any, rec map[string]any) ([]any, string, m
 //	status A        other status B    whole record replaced,  recorded
 //	                                  firstAt kept
 //
-// The final statuses are healingFixFinal. A same-status repeat changes
-// nothing, a new severity included. On a replace, rec takes the stored
-// firstAt (when it is a non-empty string) and becomes the stored entry. When
-// nothing changes, the stored entry is returned, so the caller echoes what
-// is stored. An entry that is not an object never matches a key but counts
-// toward healingFixProgressMax. A new key when the list already holds
+// The final statuses are healingFixFinal; healingFixTransition holds the
+// table of the unchanged rows. A same-status repeat changes nothing, a new
+// severity included. On a replace, rec takes the stored firstAt (when it is
+// a non-empty string) and becomes the stored entry. When nothing changes,
+// the stored entry is returned, so the caller echoes what is stored. An
+// entry that is not an object never matches a key but counts toward
+// healingFixProgressMax. A new key when the list already holds
 // healingFixProgressMax entries is a DomainError.
 func healingUpsertFix(list []any, rec map[string]any) ([]any, string, map[string]any, bool, error) {
 	for i, entry := range list {
@@ -2673,12 +2741,8 @@ func healingUpsertFix(list []any, rec map[string]any) ([]any, string, map[string
 		}
 		stored, _ := m["status"].(string)
 		incoming, _ := rec["status"].(string)
-		switch {
-		case stored == incoming:
-			return list, healingNarrDuplicate, m, false, nil
-		case slices.Contains(healingFixFinal, stored) && !slices.Contains(healingFixFinal, incoming),
-			stored == "failed" && incoming == "deferred":
-			return list, healingNarrKept + stored, m, false, nil
+		if keep, narration := healingFixTransition(stored, incoming); keep {
+			return list, narration, m, false, nil
 		}
 		if firstAt, ok := m["firstAt"].(string); ok && firstAt != "" {
 			rec["firstAt"] = firstAt
@@ -2693,6 +2757,93 @@ func healingUpsertFix(list []any, rec map[string]any) ([]any, string, map[string
 		}
 	}
 	return append(list, rec), healingNarrRecorded, rec, true, nil
+}
+
+// healingFixTransition is the transition table of healingUpsertFix:
+// keep is true when stored wins (same status, final vs queued|fixing,
+// failed vs deferred); narration is then healingNarrDuplicate or
+// healingNarrKept+stored. keep false gives narration "" (the caller uses
+// healingNarrRecorded).
+func healingFixTransition(stored, incoming string) (keep bool, narration string) {
+	switch {
+	case stored == incoming:
+		return true, healingNarrDuplicate
+	case slices.Contains(healingFixFinal, stored) && !slices.Contains(healingFixFinal, incoming),
+		stored == "failed" && incoming == "deferred":
+		return true, healingNarrKept + stored
+	}
+	return false, ""
+}
+
+// healingMatchFix returns the index of the fixProgress row that rec names,
+// or -1. Steps: (1) useOrigin and the same (origin, file, line, title);
+// (2) the only row with the same file, line and title; (3) the only row
+// with the same file and line whose status is queued or fixing.
+// 0 or 2+ candidates at a step go to the next step. Non-object entries never match.
+// A record with no line matches a row with no line (healingLineKey gives nil
+// for both).
+func healingMatchFix(list []any, rec map[string]any, useOrigin bool) int {
+	steps := []func(m map[string]any) bool{
+		func(m map[string]any) bool {
+			return useOrigin && healingSameFinding(m, rec)
+		},
+		func(m map[string]any) bool {
+			return m["file"] == rec["file"] && m["title"] == rec["title"] &&
+				healingLineKey(m["line"]) == healingLineKey(rec["line"])
+		},
+		func(m map[string]any) bool {
+			status, _ := m["status"].(string)
+			return (status == "queued" || status == "fixing") && m["file"] == rec["file"] &&
+				healingLineKey(m["line"]) == healingLineKey(rec["line"])
+		},
+	}
+	for _, matches := range steps {
+		found, count := -1, 0
+		for i, entry := range list {
+			if m, ok := entry.(map[string]any); ok && matches(m) {
+				found = i
+				count++
+			}
+		}
+		if count == 1 {
+			return found
+		}
+	}
+	return -1
+}
+
+// healingSetFixStatus sets status and updatedAt (= timestamp) on the row
+// that rec names, when healingFixTransition allows it. It keeps firstAt,
+// title, severity and the other fields. extra fields (deferredId) are copied
+// onto the matched row also when the status is kept; updatedAt then stays.
+// It returns whether the row changed.
+// fixProgress absent: false, nil. Not a list: the DataError of
+// healingList(healing, "fixProgress", status, path), so the Suggestion names
+// the kind of the call ("fixed" for a fixed call).
+func healingSetFixStatus(healing, rec map[string]any, useOrigin bool, status, timestamp string, extra map[string]any, path string) (bool, error) {
+	list, err := healingList(healing, "fixProgress", status, path)
+	if err != nil {
+		return false, err
+	}
+	i := healingMatchFix(list, rec, useOrigin)
+	if i < 0 {
+		return false, nil
+	}
+	row := list[i].(map[string]any)
+	changed := false
+	stored, _ := row["status"].(string)
+	if keep, _ := healingFixTransition(stored, status); !keep {
+		row["status"] = status
+		row["updatedAt"] = timestamp
+		changed = true
+	}
+	for key, value := range extra {
+		if !reflect.DeepEqual(row[key], value) {
+			row[key] = value
+			changed = true
+		}
+	}
+	return changed, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -4004,7 +4155,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. The failure row carries the same plan fields from linkedPlan as history_record; a linkedPlan that is not an object or has a bad time adds a warnings entry. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it (with no ship state file the summary says the item is stored nowhere). Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`"). defer and deferred_add read .sdlc-v2/history/deferred.json to merge into an open row: a defer with reason `+history.ReasonNeedsDirection+` on a file that has an open `+history.ReasonNeedsDirection+` row appends its description as a line to that row instead of adding a row. The response names the row id it merged into, and its next field says whether the call merged, added a row, or found the text already there. The run-scoped entry is written after deferred.json and carries deferredId, the id of the deferred.json row that holds the text (absent when the deferred.json write failed); a failed state write after a good deferred.json write names that row: run deferred_resolve on it before a retry (a retry in a later second adds a second row), or retry only when a second row is acceptable.
-- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1); a repeat with the same (origin, file, line, title) is a duplicate; Optional detail.deferredId (string, the id from the finding's Deferred-id line): healing_record kind fixed with deferredId also resolves that row in .sdlc-v2/history/deferred.json. The row is resolved first (a resolved row is left as it is), then fixedInRun:true is set on every deferredFindings entry with that deferredId: entries that share one merged deferred.json row are all flagged by one call, and the whole row is resolved; an id missing from either store (deferredFindings or deferred.json) is a DomainError, and the response echoes deferredId and fixedInRun with next "deferred item <id> resolved. Continue the fix pass." or "deferred item <id> was already resolved. Continue the fix pass.") | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires the finding fields of "fixed" — detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1) — plus detail.status (one of `+strings.Join(healingFixStatuses, " | ")+`). Upserts data.healing.fixProgress[] on the key (origin, file, line, title): a new key appends a record with firstAt and updatedAt; a repeat of the stored status changes nothing (a new severity included); a stored final status (`+strings.Join(healingFixFinal, " | ")+`) is kept when the incoming status is queued or fixing, and a stored failed is kept when the incoming status is deferred (narration "kept <status>"); any other status change replaces the whole record and keeps firstAt. At most `+fmt.Sprint(healingFixProgressMax)+` records: a new key past the cap is a DomainError, while a stored key still updates. Never writes data.healing.fixed). Optional: detail.branch. A no-op call returns narration "already recorded — no change" (or "kept <status>"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing; a fixed record with detail.deferredId then resolves nothing, and its next says that the deferred item stays open. A damaged data.healing (not an object, or a list key that is not a list) is a DataError that names the state file. Returns summary, kind, written (true only when this call changed the state file), record (the record as stored after the call: recordedAt for review-total, fixed and hardened; status, firstAt and updatedAt for fix-progress; on a no-op call the stored entry, not the incoming one; with no live run the validated incoming record), and next (id "continue-fix-pass" with the instruction for the fix pass: kind fix-progress always returns it, and kind fixed returns it when the call carries detail.deferredId; every other call is terminal and returns no next).
+- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1); a repeat with the same (origin, file, line, title) is a duplicate; kind fixed also sets the matching data.healing.fixProgress row to fixed (match: the exact key, else the only row with the same file, line and title, else the only queued or fixing row with the same file and line; it creates no row; a duplicate fixed call still repairs the row, with narration "fix-progress row set to fixed" and written true; a fixProgress value that is not a list is a DataError, as for the other healing lists); Optional detail.deferredId (string, the id from the finding's Deferred-id line): healing_record kind fixed with deferredId also resolves that row in .sdlc-v2/history/deferred.json. The row is resolved first (a resolved row is left as it is), then fixedInRun:true is set on every deferredFindings entry with that deferredId: entries that share one merged deferred.json row are all flagged by one call, and the whole row is resolved; an id missing from either store (deferredFindings or deferred.json) is a DomainError, and the response echoes deferredId and fixedInRun with next "deferred item <id> resolved. Continue the fix pass." or "deferred item <id> was already resolved. Continue the fix pass.") | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires the finding fields of "fixed" — detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1) — plus detail.status (one of `+strings.Join(healingFixStatuses, " | ")+`). Upserts data.healing.fixProgress[] on the key (origin, file, line, title): a new key appends a record with firstAt and updatedAt; a repeat of the stored status changes nothing (a new severity included); a stored final status (`+strings.Join(healingFixFinal, " | ")+`) is kept when the incoming status is queued or fixing, and a stored failed is kept when the incoming status is deferred (narration "kept <status>"); any other status change replaces the whole record and keeps firstAt. At most `+fmt.Sprint(healingFixProgressMax)+` records: a new key past the cap is a DomainError, while a stored key still updates. Never writes data.healing.fixed). Optional: detail.branch. A no-op call returns narration "already recorded — no change" (or "kept <status>"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing; a fixed record with detail.deferredId then resolves nothing, and its next says that the deferred item stays open. A damaged data.healing (not an object, or a list key that is not a list) is a DataError that names the state file. Returns summary, kind, written (true only when this call changed the state file), record (the record as stored after the call: recordedAt for review-total, fixed and hardened; status, firstAt and updatedAt for fix-progress; on a no-op call the stored entry, not the incoming one; on a repeat fixed call that sets its fixProgress row, the incoming record, whose recordedAt is the updatedAt written to the row; with no live run the validated incoming record), and next (id "continue-fix-pass" with the instruction for the fix pass: kind fix-progress and kind fixed return it (with detail.deferredId, the instruction of kind fixed names the deferred item); kind review-total returns next id "continue-after-review-total" and kind hardened returns next id "continue-harden", each with the instruction for the calling step).
 - harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction"|"not-evaluated" (only with reason below-threshold), reason? (one of `+strings.Join(history.DeferredReasons(), " | ")+`), line?, deferredId?, fixedInRun?}]. Optional: detail.branch (the ship run whose healing.hardened triggers set alreadyHardened). failureText has every double quote replaced by a single quote and every backslash by a slash, so it is safe inside a quoted --failure-text argument. A below-threshold finding joins the cluster of its file when that file has another finding that is not below-threshold; a file with only below-threshold findings forms no cluster. Each finding also lands in at most one of three lists, which never change the clusters. The reason of a finding picks its list; the verdict picks it only when the reason is empty. fixNow holds a below-threshold finding with a deferredId and fixedInRun false. staysDeferred holds a below-threshold finding without a deferredId and a needs-direction finding. evidenceOnly holds a disagree or wont-fix finding (the verdict agree-won't-fix counts as wont-fix). Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, fixNow, staysDeferred, evidenceOnly (each [] when empty), and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. reviewLedger and reportData.deferredFindings (a count) skip each deferredFindings entry with fixedInRun:true; the state's own data.deferredFindings array in the same response is not filtered and keeps those entries. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, healing records, this run's execute state (only when the execute step completed) and its linked plan run, the review run ledger of this ship run (for the Review waves section), CLI evidence, user input and learnings, and render it. Its deferredFindings list leaves out each entry with fixedInRun:true (the fix is counted under healing.fixed). Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
