@@ -51,6 +51,7 @@ and `mcp-output-drives-behavior` guardrails.
   return `any` across dozens of actions: `execute_state`
   (`internal/tools/execute_state.go`), `ship_state`
   (`internal/tools/ship_state.go`) and `jira` (`internal/tools/jira.go`).
+  `setup_prepare` (`internal/tools/setup.go`) also returns `any`.
   The reflection renderer walks those too, so `any` is a readability cost,
   not a contract violation. A new tool with a single output shape has no
   reason to use it. (`poll_await` is NOT one of them — it returns a
