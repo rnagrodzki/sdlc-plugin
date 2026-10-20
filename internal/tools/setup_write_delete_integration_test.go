@@ -131,3 +131,51 @@ func TestIntegration_SetupWriteSections_NullOnMissingGuardrail(t *testing.T) {
 		t.Errorf("file changed:\n%s", got)
 	}
 }
+
+// TestIntegration_SetupWriteSections_WholeTableDropRefused calls the registered
+// setup_write_sections tool with a whole-table key that drops a guardrail id
+// that config.toml holds. The call is refused with a Do this section, and
+// config.toml stays as it was. The one-id key for the same table then
+// succeeds and keeps the other id.
+func TestIntegration_SetupWriteSections_WholeTableDropRefused(t *testing.T) {
+	dir := t.TempDir()
+	const before = "[execute.guardrails.a]\nseverity = \"error\"\n\n[execute.guardrails.b]\nseverity = \"warning\"\n"
+	path := writeSDLCFile(t, dir, "config.toml", before)
+
+	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"execute.guardrails":{"a":{"severity":"error","description":"d"}}}`)
+	if !res.IsError {
+		t.Fatalf("expected a tool error, got success:\n%s", text)
+	}
+	for _, want := range []string{
+		`key "execute.guardrails" would remove guardrails [b] from execute.guardrails`,
+		"## Do this",
+		"<section>.guardrails.<id>",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("refusal missing %q:\n%s", want, text)
+		}
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != before {
+		t.Errorf("config.toml changed after a refusal:\n%s", got)
+	}
+
+	res, text = callRegisteredSetupWriteSectionsIn(t, dir,
+		`{"execute.guardrails.a":{"severity":"warning","description":"d"}}`)
+	if res.IsError {
+		t.Fatalf("expected success for the one-id key, got tool error:\n%s", text)
+	}
+	got, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"[execute.guardrails.a]", "description = 'd'", "[execute.guardrails.b]\nseverity = \"warning\"\n"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("config.toml missing %q after the one-id write:\n%s", want, got)
+		}
+	}
+}
