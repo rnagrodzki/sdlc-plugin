@@ -73,13 +73,13 @@ field that does not exist. Deviations, one line each:
   exist. All real field values collected in Step 3 are written via the additive
   `setup_write_sections` tool instead (see "Writing config files").
 - **`setup_write_sections` keys can be dotted section paths, not just top-level keys.**
-  `config.WriteSection` walks a dotted key (e.g. `plan.guardrails`, `execute.guardrails`,
+  `config.WriteSection` walks a dotted key (e.g. `plan.guardrails.<id>`, `execute.guardrails.<id>`,
   `pr.labels`, `plan.tasks`) to the addressed leaf, replaces only that leaf, and leaves
   every sibling untouched. Use `section.configPath` itself as the write key whenever the
   value at that path is a JSON object/table — every section below qualifies except `pr`'s
   own scalar fields: e.g. `received-review`'s `configPath` is `receivedReview` → write under
-  key `receivedReview`; `plan-guardrails`'s `configPath` is `plan.guardrails` → write under
-  key `plan.guardrails` directly (not `plan`). A leaf value must itself be a JSON object —
+  key `receivedReview`; `plan-tasks`'s `configPath` is `plan.tasks` → write under
+  key `plan.tasks` directly (not `plan`). A leaf value must itself be a JSON object —
   `config.WriteSection` cannot address a single scalar field this way (see the `pr`
   exception below). Never use `section.id` verbatim as the write key.
 - **`pr` wholesale-write hazard (one-directional now).** `pr-labels`
@@ -849,8 +849,8 @@ After collecting all answers AND confirming the diff preview above:
    Note: `pr-labels`, `plan-guardrails`, and `execution-guardrails` are configured by their
    own companion sub-flows (`setup-pr-labels.md`, `setup-guardrails.md`,
    `setup-execution-guardrails.md`), which each call `setup_write_sections` themselves with
-   their own dotted leaves (`pr.labels`, `plan.guardrails`/`plan.guardrails.<id>`,
-   `execute.guardrails`/`execute.guardrails.<id>`) — do not re-write those keys here.
+   their own dotted leaves (`pr.labels`, `plan.guardrails.<id>`,
+   `execute.guardrails.<id>`) — do not re-write those keys here.
 
 2. **`pr` merge-preserve (genuinely still needed).** `pr`'s fields
    (`titlePattern`/`allowedTypes`/`allowedScopes`/etc.) are scalars, not
@@ -981,7 +981,7 @@ This skill is safe to re-run. Already-configured sections show `[set]` in Step 1
 skipped when the user replies `not-set` to the menu. `--force` skips the menu and selects
 every section, including `[set]` ones. `setup_write_sections` /
 `config.WriteSection` replace a section wholesale per key — writing a dotted leaf (e.g.
-`plan.guardrails`, `plan.tasks`, `pr.labels`) replaces only that leaf and preserves siblings
+`plan.guardrails.<id>`, `plan.tasks`, `pr.labels`) replaces only that leaf and preserves siblings
 automatically, no read-merge needed. `pr`'s own scalar fields are the one exception: `pr`
 must still be written as its top-level key wholesale, so "Writing config files" explicitly
 re-reads and merges in any existing `pr.labels` before that write.
@@ -1010,7 +1010,7 @@ the same way produces the same files.
 - Write the `pr` config key without first checking for and preserving an existing
   `pr.labels` sibling (see "Writing config files") — this is the one remaining wholesale-key
   write in this file.
-- Write `plan.guardrails`, `plan.tasks`, `execute.guardrails`, or `pr.labels` as anything
+- Write `plan.guardrails.<id>`, `plan.tasks`, `execute.guardrails.<id>`, or `pr.labels` as anything
   other than a dotted leaf — writing the `plan`/`execute`/`pr` top-level key instead would
   clobber whichever sibling value wasn't just configured.
 - Skip Step 2b's save-target question when any id in `selectedIds` is a local.toml
@@ -1036,16 +1036,19 @@ detected in Step 0, default to `mode: "file"`. When none was found, default to
 which file a given run saves to.
 
 **`setup_write_sections` is wholesale-per-leaf, not merge, at whatever key you name.** Each
-call replaces exactly the keys it names — but a key can be a dotted path (`plan.guardrails`,
-`plan.tasks`, `execute.guardrails`, `pr.labels`), and a dotted-path write replaces only that
-leaf, leaving siblings under the parent table untouched with no read needed first. `pr`'s own
-fields are the one exception: they are scalars, not a table, so they cannot be addressed as a
+call replaces exactly the keys it names — but a key can be a dotted path (`plan.guardrails.<id>`,
+`plan.tasks`, `execute.guardrails.<id>`, `pr.labels`), and a dotted-path write replaces only that
+leaf, leaving siblings under the parent table untouched with no read needed first. One
+exception holds for guardrails: a key that replaces a whole guardrails table (`plan`,
+`plan.guardrails`, `execute`, `execute.guardrails`) must keep every guardrail id already in
+`config.toml`, or the call fails with `would remove guardrails` and writes nothing. `pr`'s own
+fields are the one other exception: they are scalars, not a table, so they cannot be addressed as a
 dotted leaf (`pr.titlePattern` would try to write a table where a string belongs, and fails)
 — 3.pr must write the `pr` top-level key wholesale, which is why "Writing config files" still
 explicitly re-reads and merges in any existing `pr.labels` before that one write. The
 `setup-pr-labels.md`, `setup-guardrails.md`, and `setup-execution-guardrails.md` companion
-sub-flows write their own dotted leaves (`pr.labels`, `plan.guardrails`/
-`plan.guardrails.<id>`, `execute.guardrails`/`execute.guardrails.<id>`) independently and need
+sub-flows write their own dotted leaves (`pr.labels`, `plan.guardrails.<id>`,
+`execute.guardrails.<id>`) independently and need
 no merge step of their own.
 
 **Legacy per-section files are not migrated.** No tool reads or ingests `.claude/sdlc.json`,

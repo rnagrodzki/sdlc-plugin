@@ -1,7 +1,8 @@
 // Package skillcheck pins the way the two guardrail sub-flows write to
 // config.toml: one "<section>.guardrails.<id>" key for each selected id, never
-// a whole-table key. The one declared Test function is
-// TestSetupSkillsGuardrailSubflowsWritePerID.
+// a whole-table key. The declared Test functions are
+// TestSetupSkillsGuardrailSubflowsWritePerID and
+// TestSetupSkillNamesGuardrailRefusal.
 package skillcheck
 
 import (
@@ -46,5 +47,26 @@ func TestSetupSkillsGuardrailSubflowsWritePerID(t *testing.T) {
 				t.Errorf("%s lacks %q", tc.rel, want)
 			}
 		}
+	}
+}
+
+// TestSetupSkillNamesGuardrailRefusal pins that setup/SKILL.md names the
+// refusal of a whole-table guardrail write, and no longer gives
+// plan-guardrails as an example of a whole-table write. The refusal text is
+// pinned against the Go source in TestSetupSkillsGuardrailSubflowsWritePerID.
+func TestSetupSkillNamesGuardrailRefusal(t *testing.T) {
+	root := setupSkillsRepoRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "skills", "setup", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	const refusal = "would remove guardrails"
+	if !strings.Contains(text, refusal) {
+		t.Errorf("setup/SKILL.md lacks %q", refusal)
+	}
+	const old = "`plan-guardrails`'s `configPath` is `plan.guardrails`"
+	if strings.Contains(text, old) {
+		t.Errorf("setup/SKILL.md still holds %q", old)
 	}
 }

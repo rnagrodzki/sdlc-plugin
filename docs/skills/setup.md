@@ -29,7 +29,7 @@ templates, plan templates, guardrails, and more.
 | `--plan-template` | Jump to plan template setup. | off |
 | `--openspec-enrich` | Jump to OpenSpec config enrichment. | off |
 | `--remove-openspec` | Remove the managed block from `openspec/config.yaml` (use with `--openspec-enrich`). | off |
-| `--add` | Add new items instead of reconfiguring all (for dimensions, guardrails). | off |
+| `--add` | Add new items instead of reconfiguring all (for dimensions, guardrails). Neither mode removes a guardrail. | off |
 | `--no-copilot` | Skip copilot instructions section. | off |
 
 ### Section IDs
