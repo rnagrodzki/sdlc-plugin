@@ -187,11 +187,11 @@ var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
 		contains: "Write` to a `.sdlc-v2/` path",
 		reason:   `sentence wraps across 2 lines -- the qualifying "no bare" is on the line above this one`,
 	},
-	"skills/setup/setup-execution-guardrails.md:146": {
+	"skills/setup/setup-execution-guardrails.md:147": {
 		contains: "Read `.sdlc-v2/config.toml` (bare Read, Glob, or Bash)",
 		reason:   `bullet under a "## Do Not" heading -- the negation is the heading two lines above, not on this bullet's own line`,
 	},
-	"skills/setup/setup-guardrails.md:205": {
+	"skills/setup/setup-guardrails.md:203": {
 		contains: "Read `.sdlc-v2/config.toml` (bare Read, Glob, or Bash)",
 		reason:   `bullet under a "## Do Not" heading -- the negation is the heading above, not on this bullet's own line`,
 	},

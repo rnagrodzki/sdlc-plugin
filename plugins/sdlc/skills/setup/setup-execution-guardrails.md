@@ -11,10 +11,10 @@ then lets the user review and select. Writes guardrails to
 > (shared table, not duplicated here — this file supplies the execute-target
 > description column only). `validate-guardrails.js --section execute` →
 > `validate({ action: "guardrails", section: "execute" })`. Config writes go
-> through `setup_write_sections` using the dotted leaf `execute.guardrails`
-> (replace mode) or per-id `execute.guardrails.<id>` leaves (`--add` mode) —
-> never the `execute` top-level key. There is no MCP tool that returns the
-> current `execute.guardrails` table's contents, so `--add` mode cannot
+> through `setup_write_sections` using per-id `execute.guardrails.<id>` leaves
+> in both modes — never the `execute` top-level key or a whole-table
+> `execute.guardrails` write. There is no MCP tool that returns the
+> current `execute.guardrails` table's contents, so neither mode can
 > detect which ids are already configured — see Gotchas.
 
 ## Arguments
@@ -96,27 +96,16 @@ On **custom**: collect id (validate kebab-case pattern
 `^[a-z][a-z0-9]*(-[a-z0-9]+)*$`), description, severity (default: error).
 Allow multiple custom entries.
 
-In `--add` mode, warn before this prompt: "This project's current execution
+In both modes, warn before this prompt: "This project's current execution
 guardrails can't be listed automatically — if any proposal below is already
 configured, selecting it will overwrite its description/severity with the
 catalog's values."
 
 ### Step 3 (WRITE) — Write Config
 
-Replace mode (no `--add`) writes the whole `execute.guardrails` leaf:
-
-```
-setup_write_sections({
-  sectionsJson: JSON.stringify({
-    "execute.guardrails": <FULL_GUARDRAILS_TABLE>
-  })
-}) → { ok, written, errors }
-```
-
-`<FULL_GUARDRAILS_TABLE>` is the selected guardrails from Step 2.
-
-`--add` mode writes one dotted leaf per selected id, in a single call, so
-only those ids are touched:
+Both modes write one dotted leaf per selected id, in a single call, so only
+those ids are touched. Setup never removes a guardrail: every id that is
+already in `config.toml` and not selected stays as it is.
 
 ```
 setup_write_sections({
@@ -126,6 +115,18 @@ setup_write_sections({
   })
 }) → { ok, written, errors }
 ```
+
+| Result of the call | Next step |
+|---|---|
+| `ok` is true | Step 4 |
+| `ok` is false | Show each entry of `errors` and the `next` text to the user. Skip Step 4. Stop. Do not edit `config.toml` by hand |
+| The call returns the error `would remove guardrails` | Show the error. Skip Step 4. Stop. Do not edit `config.toml` by hand |
+| The call returns another tool error: invalid TOML, an unreadable file, or a file over 1 MiB | Show the error and its Suggestion to the user. Skip Step 4. Stop |
+
+To remove one guardrail, send `null` on
+`"execute.guardrails.<id>"`. After an interrupted call, run this sub-flow
+again. A write that stopped part way leaves some ids written. Each id write
+replaces only that id, so a second run gives the same result.
 
 ### Step 4 (VALIDATE)
 
@@ -146,11 +147,13 @@ show the findings and offer to fix them.
 - Read `.sdlc-v2/config.toml` (bare Read, Glob, or Bash) to inspect the
   current `execute.guardrails` table — no such read is available; see Step 0
   and Gotchas.
+- Send a whole-table `execute.guardrails` key. setup_write_sections refuses a
+  write that drops an id. On that error, edit no file by hand.
 
 ## Gotchas
 
 - **The Guardrail Catalog (`setup-guardrails.md`) is the source of truth for scanning.** Do not invent guardrails outside it except through the custom-guardrail path.
-- **`--add` mode cannot detect already-configured ids.** No MCP tool exposes
+- **Neither mode can detect already-configured ids.** No MCP tool exposes
   the current `execute.guardrails` table's contents (`setup_write_sections`
   only writes; `validate({action:"guardrails", section:"execute"})` returns
   pass/fail findings, not raw guardrail data), and a bare Read of
