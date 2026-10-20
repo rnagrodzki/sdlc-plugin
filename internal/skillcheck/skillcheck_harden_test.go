@@ -195,7 +195,7 @@ func TestHardenSkillParity(t *testing.T) {
 			"| add | render the mirror (`dimensions_render_instructions`) |",
 			"| repair, strengthen, consolidate | render the mirror again when `.github/instructions/<name>.instructions.md` exists. Otherwise do nothing |",
 			"| remove, or the removed file of a merge |",
-			"| mirror render or delete fails | the halt in step 2 below, for each row |",
+			"| mirror render fails with any other error, or mirror delete fails | the halt in step 2 below, for each row |",
 			// 5d summary.
 			"harden --auto: {A} auto-accepted, {R} reverted, {S} skipped, {P} pending, {U} not processed",
 			"Pending (needs a person — stored as deferred item {id}):",

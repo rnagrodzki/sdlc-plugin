@@ -251,13 +251,24 @@ Tighten broad `applyTo` patterns.
 dimensions_render_instructions({
   file: ".sdlc-v2/review-dimensions/<name>.md",
   commonFile: ".sdlc-v2/review-dimensions/_common.md",
+  overwrite: true, // only for a mirror that the user confirmed
 }) → { ok, path }
 ```
 
 Omit `commonFile` if `_common.md` does not exist — the tool tolerates a
-missing common file and omits the Common Review Instructions section. If the
-call errors (unparseable dimension), display the error and skip this
-dimension.
+missing common file and omits the Common Review Instructions section. Omit
+`overwrite` unless the user confirmed the overwrite of this mirror in the check
+above.
+
+| Result for one mirror | Next step |
+|---|---|
+| No mirror file exists | Call without `overwrite`. The tool writes the mirror |
+| The mirror exists and the user confirmed the overwrite | Call with `overwrite: true`. The tool replaces the mirror |
+| The mirror exists and the user declined | Skip this dimension. Do not call the tool |
+| `--add` mode regenerates a mirror and the user did not confirm an overwrite of it | Call without `overwrite`. The tool replaces a mirror with a valid marker line. It refuses any other mirror |
+| The call succeeds | Go to the next dimension |
+| The error says `has hand-written content` | Show the error. Skip this mirror. Tell the user to move the hand-written rows into the dimension file, then run `/setup --dimensions` and confirm the overwrite |
+| Any other error, for example an unparseable dimension | Show the error. Skip this dimension |
 
 Confirm each file with its returned `path`. Print a final summary listing all
 generated files.

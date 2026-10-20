@@ -370,8 +370,17 @@ evidence for a proposal on one of those four surfaces.
   - A new dimension gets a mirror. Existing dimensions are not retroactively
     mirrored.
   - A repair, a strengthen or a consolidate renders the mirror again, but only
-    when the mirror exists. The render overwrites the file, so rows that you
-    added to a mirror by hand are lost.
+    when the mirror exists. Each render ends the mirror with a marker line,
+    `<!-- sdlc:generated sha256=<hash> -->`. The render replaces a mirror only
+    when the hash still matches the text above it.
+  - A mirror with no marker line, or with text changed by hand, is refused and
+    left as it is. `/harden` prints `Copilot mirror skipped: hand-written
+    content in <path>` and continues with the next proposal. To adopt such a
+    mirror, move its hand-written rows into the dimension file, then call
+    `dimensions_render_instructions` with `overwrite: true`.
+  - A mirror that `/harden` edits itself (the `copilot-instructions` surface)
+    has no valid marker line after the edit. The next render of that mirror is
+    refused until you adopt it with `overwrite: true`.
   - A removal, or the removed file of a merge, deletes the mirror when it
     exists. A merge also renders the mirror of the file that stays, when it
     exists.
@@ -407,6 +416,8 @@ evidence for a proposal on one of those four surfaces.
   `/harden` prints the old `config.toml` in full. A failed update of a
   Copilot mirror stops the run in the same way: the dimension file stays
   written and validated, and `/harden` asks you to fix the mirror by hand.
+  A refused mirror update is not a failed update. It does not stop the run
+  (see the Copilot mirror bullet above).
 - **An unreadable review-dimensions directory stops the run.** `/harden` reads
   that directory in its pre-flight check. When it cannot read it, the run stops
   with an error. `/harden` does not offer `error-report`, because the cause is
