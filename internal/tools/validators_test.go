@@ -925,6 +925,65 @@ func TestValidateGuardrailsCustomSection(t *testing.T) {
 	}
 }
 
+// TestValidateGuardrailsAction_BothSections pins the exported wrapper that the
+// edit hook calls: it checks the plan section and the execute section, puts
+// the section in each message, and puts the config path in each finding.
+func TestValidateGuardrailsAction_BothSections(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, paths.DataDir, paths.ConfigFile)
+
+	t.Run("one invalid guardrail in each section", func(t *testing.T) {
+		writeFile(t, configPath, ""+
+			"[plan.guardrails.plan-bad]\n"+
+			"severity = \"error\"\n"+
+			"\n"+
+			"[execute.guardrails.exec-bad]\n"+
+			"severity = \"error\"\n")
+		findings, err := ValidateGuardrailsAction(root)
+		if err != nil {
+			t.Fatalf("ValidateGuardrailsAction: %v", err)
+		}
+		if len(findings) != 2 {
+			t.Fatalf("expected 2 findings, got %+v", findings)
+		}
+		wantPrefixes := []string{"[plan.guardrails] plan-bad:", "[execute.guardrails] exec-bad:"}
+		for i, f := range findings {
+			if !strings.HasPrefix(f.Message, wantPrefixes[i]) {
+				t.Errorf("finding %d message = %q, want prefix %q", i, f.Message, wantPrefixes[i])
+			}
+			if f.Path != configPath {
+				t.Errorf("finding %d Path = %q, want %q", i, f.Path, configPath)
+			}
+		}
+	})
+
+	t.Run("valid config gives no finding", func(t *testing.T) {
+		writeFile(t, configPath, ""+
+			"[plan.guardrails.plan-ok]\n"+
+			"description = \"A valid plan guardrail.\"\n"+
+			"\n"+
+			"[execute.guardrails.exec-ok]\n"+
+			"description = \"A valid execute guardrail.\"\n")
+		findings, err := ValidateGuardrailsAction(root)
+		if err != nil {
+			t.Fatalf("ValidateGuardrailsAction: %v", err)
+		}
+		if len(findings) != 0 {
+			t.Fatalf("expected 0 findings, got %+v", findings)
+		}
+	})
+
+	t.Run("absent config gives no finding", func(t *testing.T) {
+		findings, err := ValidateGuardrailsAction(t.TempDir())
+		if err != nil {
+			t.Fatalf("ValidateGuardrailsAction: %v", err)
+		}
+		if len(findings) != 0 {
+			t.Fatalf("expected 0 findings, got %+v", findings)
+		}
+	})
+}
+
 func TestValidateGuardrailsMalformedConfig_InfraErrorWithAndWithoutCandidates(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[[[not toml\n")

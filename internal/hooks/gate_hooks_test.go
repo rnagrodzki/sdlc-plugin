@@ -803,10 +803,19 @@ func TestPostToolValidateRegexes(t *testing.T) {
 		path string
 		want bool
 	}{
-		{"dimension canonical .sdlc", postToolValidateDimensionRe, "/repo/.sdlc/review-dimensions/security.yaml", true},
-		{"dimension legacy .claude", postToolValidateDimensionRe, "/repo/.claude/review-dimensions/security.yml", true},
-		{"dimension wrong dir", postToolValidateDimensionRe, "/repo/.sdlc/other-dir/security.yaml", false},
-		{"dimension wrong extension", postToolValidateDimensionRe, "/repo/.sdlc/review-dimensions/security.md", false},
+		{"dimension canonical .sdlc", postToolValidateDimensionRe, "/repo/.sdlc/review-dimensions/security.md", true},
+		{"dimension legacy .claude", postToolValidateDimensionRe, "/repo/.claude/review-dimensions/security.md", true},
+		{"dimension wrong dir", postToolValidateDimensionRe, "/repo/.sdlc/other-dir/security.md", false},
+		{"dimension yaml no longer matches", postToolValidateDimensionRe, "/repo/.sdlc/review-dimensions/security.yaml", false},
+		{"dimension yml no longer matches", postToolValidateDimensionRe, "/repo/.sdlc/review-dimensions/security.yml", false},
+
+		{"config canonical", postToolValidateConfigRe, "/repo/.sdlc-v2/config.toml", true},
+		{"config local.toml", postToolValidateConfigRe, "/repo/.sdlc-v2/local.toml", false},
+		{"config wrong dir", postToolValidateConfigRe, "/repo/config.toml", false},
+
+		{"mirror match", postToolValidateMirrorRe, "/repo/.github/instructions/security.instructions.md", true},
+		{"mirror plain md", postToolValidateMirrorRe, "/repo/.github/instructions/security.md", false},
+		{"mirror wrong dir", postToolValidateMirrorRe, "/repo/.github/other/security.instructions.md", false},
 
 		{"pr-template canonical .sdlc", postToolValidatePRTemplateRe, "/repo/.sdlc/pr-template.md", true},
 		{"pr-template legacy .claude", postToolValidatePRTemplateRe, "/repo/.claude/pr-template.md", true},
@@ -878,7 +887,7 @@ func TestPostToolValidate_Dimensions_ZeroFindings_Silent(t *testing.T) {
 
 	// No .sdlc/review-dimensions directory at all: dimensions.Load yields
 	// zero dimensions, so validateDimensionsAction produces zero findings.
-	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(dir, paths.DataDir, "review-dimensions", "security.yaml")))
+	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(dir, paths.DataDir, "review-dimensions", "security.md")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -896,7 +905,7 @@ func TestPostToolValidate_Dimensions_Findings_Blocks(t *testing.T) {
 	// Trigger via the legacy .claude/ alternation: the validator always
 	// scans .sdlc/review-dimensions regardless of which alternation matched
 	// the edited path (no file argument is passed either way).
-	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(dir, ".claude", "review-dimensions", "security.yaml")))
+	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(dir, ".claude", "review-dimensions", "security.md")))
 	mustBlock(t, out, err, "D1")
 }
 
@@ -920,7 +929,7 @@ func TestPostToolValidate_Dimensions_UsesActiveWorktreeRoot_NotRawCwd(t *testing
 	mustMkdirAll(t, nested)
 	chdir(t, nested)
 
-	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(nested, paths.DataDir, "review-dimensions", "security.yaml")))
+	out, err := postToolValidate(HookCtx{}, triggerEvent(filepath.Join(nested, paths.DataDir, "review-dimensions", "security.md")))
 	mustBlock(t, out, err, "D1")
 }
 

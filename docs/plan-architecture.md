@@ -106,7 +106,7 @@ rules:
 | Hook | Trigger | Handler | Effect |
 |------|---------|---------|--------|
 | `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 5 planIntegrity markers were written. Gates on `done` marker before evaluating; never deletes the state file (see [Plan run lifetime](#plan-run-lifetime)). Falls back to transcript scanning (last 64KB for "Plan mode is active") when no state file found. Always ExitCode 0 (advisory). |
-| `post-tool-validate` | `PostToolUse` on `Edit\|Write` | `internal/hooks/post_tool_validate.go` | Runs format validation after edits to plan files |
+| `post-tool-validate` | `PostToolUse` on `Edit\|Write` | `internal/hooks/post_tool_validate.go` | Runs a validator after edits to plan files, `pr-template.md`, dimension files (`.md`), and `.sdlc-v2/config.toml` (guardrails of `plan` and `execute`). A finding blocks the edit. After an edit of a Copilot mirror that has no valid marker line, the hook adds a note and does not block. |
 | `pipeline-continue` | `PostToolUse` on `Bash\|TodoWrite` | `internal/hooks/pipeline_continue.go` | Signals pipeline-aware hooks that a tool completed during an active pipeline |
 | `stop-pipeline-continue` | `Stop` | `internal/hooks/stop_hooks.go` | Counterpart to `pipeline-continue`; fires on session stop during an active pipeline |
 | `session-start` | `SessionStart` | `internal/hooks/session_start.go` | OpenSpec detection, version banner (`sdlc: v1.0.0`), skill count |

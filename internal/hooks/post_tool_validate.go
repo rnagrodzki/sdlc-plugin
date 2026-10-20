@@ -3,29 +3,36 @@ package hooks
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
-// Path-trigger regexes, ported verbatim from post-tool-validate.js
-// (including the legacy .claude/ alternation alongside the canonical
-// .sdlc-v2/ location for dimensions and pr-template).
+// Path-trigger regexes, ported from post-tool-validate.js (including the
+// legacy .claude/ alternation alongside the canonical .sdlc-v2/ location for
+// dimensions and pr-template). The dimension regex matches .md files because
+// dimensions.Load reads nothing else. The config and mirror regexes are new.
 var (
-	postToolValidateDimensionRe  = regexp.MustCompile(`[/\\]\.(?:claude|sdlc-v2|sdlc)[/\\]review-dimensions[/\\][^/\\]+\.ya?ml$`)
+	postToolValidateDimensionRe  = regexp.MustCompile(`[/\\]\.(?:claude|sdlc-v2|sdlc)[/\\]review-dimensions[/\\][^/\\]+\.md$`)
 	postToolValidatePRTemplateRe = regexp.MustCompile(`[/\\]\.(?:claude|sdlc-v2|sdlc)[/\\]pr-template\.md$`)
 	postToolValidatePlanRe       = regexp.MustCompile(`[/\\]plans[/\\][^/\\]+\.md$`)
+	postToolValidateConfigRe     = regexp.MustCompile(`[/\\]\.sdlc-v2[/\\]config\.toml$`)
+	postToolValidateMirrorRe     = regexp.MustCompile(`[/\\]\.github[/\\]instructions[/\\][^/\\]+\.instructions\.md$`)
 )
 
 // postToolValidate is the "post-tool-validate" hook handler (PostToolUse,
 // matcher Edit|Write), ported from hooks/post-tool-validate.js. It tests the
-// edited/written file's path against three regexes and, on a match, runs the
+// edited/written file's path against five regexes and, on a match, runs the
 // corresponding validator in-process against the whole project tree (or, for
-// plan files, against that one file). No match, or a match producing zero
-// findings, is silent (exit-equivalent to the source's exit 0).
+// plan files, against that one file). A mirror match adds a note and never
+// blocks. No match, or a match producing zero findings, is silent
+// (exit-equivalent to the source's exit 0).
 func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 	silent := Output{ExitCode: 0}
 
@@ -76,6 +83,14 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 		// No file arg: the pr-template validator resolves the template
 		// itself rather than validating the edited path directly.
 		findings, verr = tools.ValidatePRTemplate(root)
+	case postToolValidateConfigRe.MatchString(filePath):
+		// The edited file names its own project root, two folders up. The
+		// process folder and the active worktree can differ from it.
+		findings, verr = tools.ValidateGuardrailsAction(filepath.Dir(filepath.Dir(filePath)))
+	case postToolValidateMirrorRe.MatchString(filePath):
+		// A mirror with no valid marker line is a valid state (/harden edits
+		// one on purpose), so this branch adds a note and never blocks.
+		return mirrorNote(filePath), nil
 	case postToolValidatePlanRe.MatchString(filePath):
 		// PF9/PF10 only block at --final, so they never make this hook block
 		// on their own. ValidatePlanFormatForHook returns them separately, and
@@ -107,6 +122,26 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 		"decision": "block",
 		"reason":   reason,
 	}, ExitCode: 0}, nil
+}
+
+// mirrorNote returns a non-blocking note when filePath is the mirror of a
+// dimension file and does not end with a valid marker line. Every other case,
+// including a read error, is silent.
+func mirrorNote(filePath string) Output {
+	silent := Output{ExitCode: 0}
+	content, err := os.ReadFile(filePath)
+	if err != nil || dimensions.CheckMirror(content) == dimensions.MirrorGenerated {
+		return silent
+	}
+	name := strings.TrimSuffix(filepath.Base(filePath), ".instructions.md")
+	root := filepath.Dir(filepath.Dir(filepath.Dir(filePath)))
+	dimFile := filepath.Join(root, paths.DataDir, paths.ReviewDimensionsSubdir, name+".md")
+	if _, err := os.Stat(dimFile); err != nil {
+		return silent
+	}
+	return pipelineContinueOutput(fmt.Sprintf(
+		"The mirror %s has no valid sdlc:generated marker line. dimensions_render_instructions refuses to replace it. To adopt it, move its hand-written rows into %s, then call dimensions_render_instructions with overwrite: true.",
+		filePath, dimFile))
 }
 
 // editedText returns the new text an Edit, MultiEdit, or Write call puts in
@@ -147,8 +182,8 @@ const fixIndent = "        "
 
 // joinValidationFindings renders each finding as its own block, blocks
 // separated by a blank line, for the "reason" string carried in
-// postToolValidate's blocking payload. It is shared by all three hook
-// branches (dimensions, pr-template, plan):
+// postToolValidate's blocking payload. It is shared by all four blocking
+// hook branches (dimensions, pr-template, config, plan):
 //
 //	PF7: Missing **Contract:** block: Task 3, Task 5
 //	  file: /path/to/plan.md
