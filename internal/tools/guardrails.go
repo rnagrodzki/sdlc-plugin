@@ -129,7 +129,7 @@ type preflightFinding struct {
 // possible without a parsed rule set.
 func guardrailsPreflight(root string) ([]preflightFinding, error) {
 	var out []preflightFinding
-	for _, section := range []string{"plan", "execute"} {
+	for _, section := range config.GuardrailSections {
 		findings, err := validateGuardrailsAction(root, ValidateIn{Action: "guardrails", Section: section})
 		if err != nil {
 			return nil, err

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 )
 
 // fsseam.go centralizes the three filesystem primitives used to move large
@@ -21,6 +23,25 @@ var writeFileFunc = os.WriteFile
 
 // readFileFunc matches os.ReadFile's signature.
 var readFileFunc = os.ReadFile
+
+// maxCheckedFileBytes bounds the read of a file that a tool checks before it
+// writes: config.toml for the guardrail check of setup_write_sections, and the
+// current mirror for dimensions_render_instructions. A real file of either
+// kind holds a few KiB.
+const maxCheckedFileBytes = 1 << 20
+
+// maxCheckedFileText is maxCheckedFileBytes as text for tool descriptions.
+const maxCheckedFileText = "1 MiB"
+
+// readFileError wraps a failed stat or read of path, done before any write, in
+// an InfraError. what starts the message, for example "read mirror".
+func readFileError(what, path string, cause error) error {
+	return &mcpserver.InfraError{
+		Msg:        fmt.Sprintf("%s %s: %s", what, path, cause.Error()),
+		Suggestion: fmt.Sprintf("Check that %s is a readable file, then retry. Nothing was written.", path),
+		Cause:      cause,
+	}
+}
 
 // writeTempJSON creates a fresh temp dir with the given prefix, marshals
 // payload(path) to JSON and writes it to <dir>/<what>.json, returning that

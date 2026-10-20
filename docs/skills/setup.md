@@ -29,8 +29,8 @@ templates, plan templates, guardrails, and more.
 | `--plan-template` | Jump to plan template setup. | off |
 | `--openspec-enrich` | Jump to OpenSpec config enrichment. | off |
 | `--remove-openspec` | Remove the managed block from `openspec/config.yaml` (use with `--openspec-enrich`). | off |
-| `--add` | Add new items instead of reconfiguring all (for dimensions, guardrails). Neither mode removes a guardrail. | off |
-| `--no-copilot` | Skip copilot instructions section. | off |
+| `--add` | Add new items instead of reconfiguring all (for dimensions). In the guardrail sub-flows (`--guardrails`, `--execution-guardrails`), `--add` and the default mode behave the same. The guardrail sub-flows write one id at a time and never remove a guardrail. They do not check which ids are already configured, so a reselected id overwrites its description and severity. When the tool refuses a write (the guardrails section is an array of tables, `[[plan.guardrails]]`), the sub-flow stops. There is no bypass. To remove a guardrail on purpose, send JSON null on `<section>.guardrails.<id>` with `setup_write_sections`. | off |
+| `--no-copilot` | Skip copilot instructions section (Step 8 of the dimensions setup). Without this flag, Step 8 writes one Copilot mirror per dimension. Each mirror ends with an `<!-- sdlc:generated sha256=<hash> -->` marker line. Setup passes `overwrite: true` only for a mirror whose overwrite you confirmed. Without `overwrite`, the tool refuses a mirror with no valid marker (`has hand-written content`), and setup skips that mirror. To recover, move the hand-written rows into the dimension file, then call `dimensions_render_instructions` for that dimension with `overwrite: true`. | off |
 
 ### Section IDs
 
@@ -68,7 +68,7 @@ Shows a menu of all sections with their status. Pick which to configure.
 
     /setup --dimensions
 
-**Add new guardrails to existing ones:**
+**Add plan guardrails (here `--add` behaves the same as the default mode; no configured guardrail is removed):**
 
     /setup --guardrails --add
 

@@ -3,8 +3,30 @@ package dimensions
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"path/filepath"
 	"strings"
 )
+
+// MirrorSuffix ends the file name of every Copilot mirror:
+// .github/instructions/<name>.instructions.md.
+const MirrorSuffix = ".instructions.md"
+
+// MirrorDir returns the folder of the Copilot mirrors under the project root.
+func MirrorDir(root string) string {
+	return filepath.Join(root, ".github", "instructions")
+}
+
+// MirrorPath returns the path of the Copilot mirror of the dimension name under
+// the project root.
+func MirrorPath(root, name string) string {
+	return filepath.Join(MirrorDir(root), name+MirrorSuffix)
+}
+
+// MirrorRoot returns the project root of the mirror at mirrorPath: the folder
+// that holds .github/instructions.
+func MirrorRoot(mirrorPath string) string {
+	return filepath.Dir(filepath.Dir(filepath.Dir(mirrorPath)))
+}
 
 // Mirror marker line. Render mode ends every Copilot mirror it writes with
 //
@@ -29,7 +51,8 @@ const (
 	// not end with a marker line.
 	MirrorNoMarker
 	// MirrorEdited: a marker line is present, but its hash differs from the
-	// hash of the text above it, or is not 64 lowercase hex characters.
+	// hash of the text above it, or is not a lowercase hex SHA-256 sum
+	// (64 characters).
 	MirrorEdited
 )
 
@@ -61,7 +84,7 @@ func CheckMirror(content []byte) MirrorState {
 		return MirrorNoMarker
 	}
 	hash := line[len(MirrorMarkerPrefix) : len(line)-len(MirrorMarkerSuffix)]
-	if !isLowerHex64(hash) || hash != mirrorHash(text[:lineStart]) {
+	if !isMirrorHash(hash) || hash != mirrorHash(text[:lineStart]) {
 		return MirrorEdited
 	}
 	return MirrorGenerated
@@ -73,9 +96,10 @@ func mirrorHash(text string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// isLowerHex64 reports whether s is exactly 64 lowercase hex characters.
-func isLowerHex64(s string) bool {
-	if len(s) != 64 {
+// isMirrorHash reports whether s has the form of a mirrorHash result: the
+// lowercase hex form of a SHA-256 sum.
+func isMirrorHash(s string) bool {
+	if len(s) != hex.EncodedLen(sha256.Size) {
 		return false
 	}
 	for i := 0; i < len(s); i++ {

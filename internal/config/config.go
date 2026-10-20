@@ -789,6 +789,10 @@ func mergeLocal(base, over map[string]any) map[string]any {
 	return out
 }
 
+// GuardrailSections lists the config.toml sections that hold a guardrails
+// table, in the order the guardrail checks run them.
+var GuardrailSections = []string{"plan", "execute"}
+
 // normalizeGuardrailTables converts TOML named tables under
 // plan.guardrails and execute.guardrails from map[string]any (the TOML
 // named-table form [plan.guardrails.<id>]) into []any with each element's
@@ -797,7 +801,7 @@ func mergeLocal(base, over map[string]any) map[string]any {
 // unchanged. The array-of-tables form [[plan.guardrails]] already decodes
 // to []any (each entry carries its own "id") and passes through as is.
 func normalizeGuardrailTables(raw map[string]any) {
-	for _, section := range []string{"plan", "execute"} {
+	for _, section := range GuardrailSections {
 		sec, ok := raw[section].(map[string]any)
 		if !ok {
 			continue

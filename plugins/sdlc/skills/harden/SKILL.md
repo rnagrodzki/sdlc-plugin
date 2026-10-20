@@ -1135,12 +1135,25 @@ With these rows, no mirror keeps a dead token, except a mirror that the render r
    render, or `Removed mirror → {path}` after a delete.
 
 **Existing mirror already present:** each render ends the mirror with a marker line
-`<!-- sdlc:generated sha256=<hash> -->`. The tool replaces a mirror only when
-this hash still matches the text above it. A mirror with no marker line, or
-with text changed by hand, is refused and not written (the row above). To
-adopt such a mirror, move its hand-written rows into the dimension file, then
-call dimensions_render_instructions with overwrite: true. /harden never
-passes overwrite: true.
+`<!-- sdlc:generated sha256=<hash> -->`. `<hash>` is the lowercase hex
+SHA-256 (64 characters) of all text above the marker line, with each `\r\n`
+read as `\n`. The tool replaces a mirror only when this hash still matches
+the text above it. The tool refuses the render and writes nothing (the row
+above) in these cases:
+
+- The mirror has no marker line at the end. The text is hand-written, or an
+  older sdlc version wrote the mirror before the marker existed.
+- The marker hash does not match the text above it, or the hash is not 64
+  lowercase hex characters. The text was changed by hand.
+- The mirror is over 1 MiB. The tool does not read it.
+
+A folder or other special file at the mirror path is not a refusal. The
+render fails with an InfraError ("Remove the folder or special file at
+<path>"), and step 2 above halts the loop. To adopt a refused mirror, move
+its hand-written rows into the dimension file, then call
+dimensions_render_instructions for that dimension with overwrite: true. For
+a mirror that an older sdlc version wrote and nobody edited, call with
+overwrite: true directly. /harden never passes overwrite: true.
 
 Severity vocabulary per surface is canonical in `internal/dimensions`
 (`ValidSeverities`, guardrail severities); see spec R10 + R17. The orchestrator
@@ -1259,6 +1272,8 @@ proposal that was reverted appears under `Reverted` and never under
 proposal, append `; Copilot mirror failed: {error}` to its line. When 5b
 skipped the mirror because the render refused it, append
 `; Copilot mirror skipped: hand-written content in {path}` to its line.
+When 5b skipped the mirror because of an unsafe name, append
+`; Copilot mirror skipped: unsafe name <name>` to its line.
 
 `Repaired` lists every guardrail entry that needed at least one repair round
 (5a step 2 on the `plan-guardrails`/`execute-guardrails` path, including

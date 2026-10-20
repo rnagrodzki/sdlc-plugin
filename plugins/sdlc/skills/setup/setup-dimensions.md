@@ -251,23 +251,35 @@ Tighten broad `applyTo` patterns.
 dimensions_render_instructions({
   file: ".sdlc-v2/review-dimensions/<name>.md",
   commonFile: ".sdlc-v2/review-dimensions/_common.md",
-  overwrite: true, // only for a mirror that the user confirmed
-}) → { ok, path }
+}) → { ok, path, replaced, marker }
+```
+
+For a mirror whose overwrite the user confirmed in the check above, add
+`overwrite: true`:
+
+```
+dimensions_render_instructions({
+  file: ".sdlc-v2/review-dimensions/<name>.md",
+  commonFile: ".sdlc-v2/review-dimensions/_common.md",
+  overwrite: true,
+}) → { ok, path, replaced, marker }
 ```
 
 Omit `commonFile` if `_common.md` does not exist — the tool tolerates a
 missing common file and omits the Common Review Instructions section. Omit
 `overwrite` unless the user confirmed the overwrite of this mirror in the check
-above.
+above. Each mirror ends with the marker line
+`<!-- sdlc:generated sha256=<hash> -->`. `marker` is the marker line that
+the tool wrote.
 
 | Result for one mirror | Next step |
 |---|---|
 | No mirror file exists | Call without `overwrite`. The tool writes the mirror |
 | The mirror exists and the user confirmed the overwrite | Call with `overwrite: true`. The tool replaces the mirror |
 | The mirror exists and the user declined | Skip this dimension. Do not call the tool |
-| `--add` mode regenerates a mirror and the user did not confirm an overwrite of it | Call without `overwrite`. The tool replaces a mirror with a valid marker line. It refuses any other mirror |
+| `--add` mode regenerates all existing mirrors and the user was not asked about this mirror | Call without `overwrite`. The tool writes an absent mirror. It replaces a mirror only when its marker hash matches the text above the marker. It refuses every other mirror (`has hand-written content`) |
 | The call succeeds | Go to the next dimension |
-| The error says `has hand-written content` | Show the error. Skip this mirror. Tell the user to move the hand-written rows into the dimension file, then run `/setup --dimensions` and confirm the overwrite |
+| The error says `has hand-written content` | Show the error. Skip this mirror. Tell the user the recovery: move the hand-written rows into the dimension file, then call `dimensions_render_instructions` for that dimension with `overwrite: true`. When an older sdlc version wrote the mirror and nobody edited it, call with `overwrite: true` directly |
 | Any other error, for example an unparseable dimension | Show the error. Skip this dimension |
 
 Confirm each file with its returned `path`. Print a final summary listing all

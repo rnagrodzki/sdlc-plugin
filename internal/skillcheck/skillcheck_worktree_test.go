@@ -146,7 +146,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 		contains: "pipeline-continue",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook writing CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
-	"skills/setup/SKILL.md:172": {
+	"skills/setup/SKILL.md:178": {
 		contains: "all exist before any read below",
 		reason:   `describes what step 2's setup_init({}) call already ensured -- the actual (disclosed-gap) Read is on a later line, not this one`,
 	},
@@ -187,15 +187,15 @@ var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
 		contains: "Write` to a `.sdlc-v2/` path",
 		reason:   `sentence wraps across 2 lines -- the qualifying "no bare" is on the line above this one`,
 	},
-	"skills/setup/setup-execution-guardrails.md:147": {
+	"skills/setup/setup-execution-guardrails.md:154": {
 		contains: "Read `.sdlc-v2/config.toml` (bare Read, Glob, or Bash)",
 		reason:   `bullet under a "## Do Not" heading -- the negation is the heading two lines above, not on this bullet's own line`,
 	},
-	"skills/setup/setup-guardrails.md:203": {
+	"skills/setup/setup-guardrails.md:210": {
 		contains: "Read `.sdlc-v2/config.toml` (bare Read, Glob, or Bash)",
 		reason:   `bullet under a "## Do Not" heading -- the negation is the heading above, not on this bullet's own line`,
 	},
-	"skills/setup/setup-guardrails.md:215": {
+	"skills/setup/setup-guardrails.md:225": {
 		contains: "a bare Read of `.sdlc-v2/config.toml` is not",
 		reason:   `negation word is "not" ("... is not available to this sub-flow" on the next line), which is not in the (do not|don't|never|no) alternation`,
 	},
@@ -213,15 +213,15 @@ var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
 // exception (a real, intentional bare Read, not a missed prohibition).
 // Keyed by "relative/path:line".
 var worktreeSkillsDisclosedGapExceptions = map[string]worktreeSkillsException{
-	"skills/setup/SKILL.md:178": {
+	"skills/setup/SKILL.md:184": {
 		contains: "projectConfig",
 		reason:   `Read of config.toml; lines below carry an explicit "Disclosed gap: setup_prepare returns the merged local values (localValues), but not the contents of the project config file" comment -- local.toml itself is no longer bare-Read here, it comes from setup_prepare's localValues instead (Task 16)`,
 	},
-	"skills/setup/SKILL.md:859": {
+	"skills/setup/SKILL.md:869": {
 		contains: "Read the current",
 		reason:   `Read of config.toml; the line immediately below reads "No MCP tool returns this value, so this Read is a deliberate, disclosed exception"`,
 	},
-	"skills/setup/SKILL.md:930": {
+	"skills/setup/SKILL.md:940": {
 		contains: "re-Read `.sdlc-v2/config.toml` only",
 		reason:   `re-Read of config.toml only (local.toml values come from setup_prepare's localValues, Task 16); the line itself reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},

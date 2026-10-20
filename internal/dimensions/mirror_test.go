@@ -3,6 +3,7 @@ package dimensions
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -45,6 +46,11 @@ func TestStampMirror(t *testing.T) {
 			name:    "hash is the SHA-256 of the text above the marker line",
 			content: "a\n",
 			want:    "a\n" + testMarker("87428fc522803d31065e7bce3cf03fe475096631e5e07bbd7a0fde60c4cf25c7") + "\n",
+		},
+		{
+			name:    "empty content gets a newline and the marker line",
+			content: "",
+			want:    "\n" + testMarker(testSHA256("\n")) + "\n",
 		},
 	}
 	for _, tt := range tests {
@@ -104,6 +110,11 @@ func TestCheckMirror(t *testing.T) {
 			want:    MirrorNoMarker,
 		},
 		{
+			name:    "marker line followed by a blank line has no marker",
+			content: stamped + "\n",
+			want:    MirrorNoMarker,
+		},
+		{
 			name:    "marker line cut short has no marker",
 			content: body + "<!-- sdlc:generated sha256=" + rightHash + "\n",
 			want:    MirrorNoMarker,
@@ -145,5 +156,18 @@ func TestCheckMirror(t *testing.T) {
 				t.Errorf("CheckMirror(%q) = %d, want %d", tt.content, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestMirrorPath checks the mirror path helpers against the fixed layout
+// .github/instructions/<name>.instructions.md.
+func TestMirrorPath(t *testing.T) {
+	root := filepath.Join("work", "repo")
+	want := filepath.Join(root, ".github", "instructions", "security.instructions.md")
+	if got := MirrorPath(root, "security"); got != want {
+		t.Errorf("MirrorPath = %q, want %q", got, want)
+	}
+	if got := MirrorRoot(want); got != root {
+		t.Errorf("MirrorRoot = %q, want %q", got, root)
 	}
 }

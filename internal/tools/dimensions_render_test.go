@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
@@ -135,8 +138,8 @@ func TestDimensionsRender_RenderWritesMirrorContent(t *testing.T) {
 			if out.Path != mirror {
 				t.Errorf("Path = %q, want %q", out.Path, mirror)
 			}
-			if want := "Rendered to " + mirror + "."; out.Next != want {
-				t.Errorf("Next = %q, want %q", out.Next, want)
+			if want := "Rendered to " + mirror + ". The mirror that was there is replaced."; out.Next != want || !out.Replaced {
+				t.Errorf("Next = %q (replaced %v), want %q and replaced true", out.Next, out.Replaced, want)
 			}
 			got, err := os.ReadFile(mirror)
 			if err != nil {
@@ -442,23 +445,29 @@ func TestDimensionsRender_GeneratedMirror_IsReplaced(t *testing.T) {
 }
 
 // mirrorGuardRefusalStates returns an existing mirror in each state that
-// render mode refuses, with the reason text the refusal must carry.
+// render mode refuses, with the text the refusal message must carry.
 func mirrorGuardRefusalStates() []struct {
 	name    string
 	content string
 	reason  string
 } {
 	generated := dimensions.StampMirror("hand-checked text\n")
+	const noMarker = "has hand-written content, or an sdlc version older than the marker wrote it (no sdlc:generated marker line at the end of the file), and was not replaced"
+	const edited = "has hand-written content (text changed after the last render) and was not replaced"
 	return []struct {
 		name    string
 		content string
 		reason  string
 	}{
-		{"no marker line", "hand-written rows\n", "no sdlc:generated marker line at the end of the file"},
-		{"empty file", "", "no sdlc:generated marker line at the end of the file"},
-		{"edited text", strings.Replace(generated, "hand-checked", "hand-edited", 1), "text changed after the last render"},
-		{"bad hash", dimensions.MirrorMarkerPrefix + "XYZ" + dimensions.MirrorMarkerSuffix + "\n", "text changed after the last render"},
-		{"over 1 MiB", strings.Repeat("x", maxMirrorBytes+1), "1048577 bytes, over the 1048576 byte limit"},
+		{"no marker line", "hand-written rows\n", noMarker},
+		{"empty file", "", noMarker},
+		{"edited text", strings.Replace(generated, "hand-checked", "hand-edited", 1), edited},
+		{"bad hash", dimensions.MirrorMarkerPrefix + "XYZ" + dimensions.MirrorMarkerSuffix + "\n", edited},
+		// At the limit the mirror is still read, so the refusal names the
+		// missing marker and not the size.
+		{"at the size limit", strings.Repeat("x", maxCheckedFileBytes), noMarker},
+		{"over the size limit", strings.Repeat("x", maxCheckedFileBytes+1),
+			fmt.Sprintf("is %d bytes, over the %d byte limit, so it was not read; the tool treats it as a mirror that has hand-written content and did not replace it", maxCheckedFileBytes+1, maxCheckedFileBytes)},
 	}
 }
 
@@ -476,9 +485,8 @@ func TestDimensionsRender_HandWrittenMirror_IsRefused(t *testing.T) {
 			if !errors.As(err, &de) {
 				t.Fatalf("err = %v, want *mcpserver.DomainError", err)
 			}
-			wantMsg := "has hand-written content (" + tc.reason + ") and was not replaced"
-			if !strings.Contains(de.Msg, wantMsg) || !strings.Contains(de.Msg, mirror) {
-				t.Errorf("Msg = %q, want it to name %q and contain %q", de.Msg, mirror, wantMsg)
+			if !strings.Contains(de.Msg, tc.reason) || !strings.Contains(de.Msg, mirror) {
+				t.Errorf("Msg = %q, want it to name %q and contain %q", de.Msg, mirror, tc.reason)
 			}
 			if !strings.Contains(de.Suggestion, filepath.Join(root, "dim.md")) || !strings.Contains(de.Suggestion, "overwrite: true") {
 				t.Errorf("Suggestion = %q, want it to name the dimension file and overwrite: true", de.Suggestion)
@@ -494,17 +502,21 @@ func TestDimensionsRender_HandWrittenMirror_IsRefused(t *testing.T) {
 	}
 }
 
-// TestDimensionsRender_Overwrite_ReplacesMirrorInEveryState pins that
-// overwrite:true replaces a mirror in each refusal state.
-func TestDimensionsRender_Overwrite_ReplacesMirrorInEveryState(t *testing.T) {
+// TestDimensionsRender_Overwrite_ReplacesMirrorInEveryRefusalState pins that
+// overwrite:true replaces a mirror file in each refusal state and reports it.
+func TestDimensionsRender_Overwrite_ReplacesMirrorInEveryRefusalState(t *testing.T) {
 	want := mirrorGuardWant(t)
 	for _, tc := range mirrorGuardRefusalStates() {
 		t.Run(tc.name, func(t *testing.T) {
 			root, mirror := mirrorGuardRoot(t)
 			writeFile(t, mirror, tc.content)
 
-			if _, err := mirrorGuardRender(root, true); err != nil {
+			out, err := mirrorGuardRender(root, true)
+			if err != nil {
 				t.Fatalf("render with overwrite: %v", err)
+			}
+			if !out.Replaced {
+				t.Errorf("replaced = false, want true for an existing mirror")
 			}
 			got, err := os.ReadFile(mirror)
 			if err != nil {
@@ -572,10 +584,11 @@ func TestToolErrorSites_DimensionsRenderMirrorCheck(t *testing.T) {
 				root, mirror := mirrorGuardRoot(t)
 				toolErrSiteDir(t, mirror)
 				_, err := mirrorGuardRender(root, false)
-				if err != nil && !strings.HasPrefix(err.Error(), "read mirror ") {
-					t.Errorf("Msg = %q, want a prefix of \"read mirror \"", err.Error())
+				if err != nil && !strings.Contains(err.Error(), "is not a regular file") {
+					t.Errorf("Msg = %q, want it to say the path is not a regular file", err.Error())
 				}
-				return []string{mirror, "Nothing was written"}, err
+				assertEmptyFolder(t, mirror)
+				return []string{"Remove the folder or special file at " + mirror, "Nothing was written"}, err
 			},
 		},
 		{
@@ -583,20 +596,125 @@ func TestToolErrorSites_DimensionsRenderMirrorCheck(t *testing.T) {
 			class: toolErrInfra,
 			run: func(t *testing.T) ([]string, error) {
 				root, mirror := mirrorGuardRoot(t)
-				toolErrSiteBlock(t, filepath.Join(root, ".github"))
+				blocker := filepath.Join(root, ".github")
+				toolErrSiteBlock(t, blocker)
 				_, err := mirrorGuardRender(root, false)
+				if !errors.Is(err, syscall.ENOTDIR) {
+					t.Errorf("err = %v, want a Cause of ENOTDIR", err)
+				}
+				if got, readErr := os.ReadFile(blocker); readErr != nil || string(got) != "blocker" {
+					t.Errorf("the file at %s changed (read err %v): %q", blocker, readErr, got)
+				}
+				return []string{mirror, "Nothing was written"}, err
+			},
+		},
+		{
+			name:  "mirror read fails",
+			class: toolErrInfra,
+			run: func(t *testing.T) ([]string, error) {
+				root, mirror := mirrorGuardRoot(t)
+				writeFile(t, mirror, "hand-written rows\n")
+				readErr := errors.New("injected read failure")
+				stubReadFile(t, func(string) ([]byte, error) { return nil, readErr })
+				_, err := mirrorGuardRender(root, false)
+				if !errors.Is(err, readErr) {
+					t.Errorf("err = %v, want a Cause of the read error", err)
+				}
+				if got, _ := os.ReadFile(mirror); string(got) != "hand-written rows\n" {
+					t.Errorf("the mirror changed: %q", got)
+				}
+				if err != nil && !strings.HasPrefix(err.Error(), "read mirror "+mirror) {
+					t.Errorf("Msg = %q, want a prefix of \"read mirror %s\"", err.Error(), mirror)
+				}
 				return []string{mirror, "Nothing was written"}, err
 			},
 		},
 	})
 
-	t.Run("overwrite skips the read of a folder", func(t *testing.T) {
+	t.Run("overwrite does not replace a folder", func(t *testing.T) {
 		root, mirror := mirrorGuardRoot(t)
 		toolErrSiteDir(t, mirror)
 		_, err := mirrorGuardRender(root, true)
 		var infra *mcpserver.InfraError
-		if !errors.As(err, &infra) || !strings.HasPrefix(infra.Msg, "write ") {
-			t.Fatalf("err = %v, want the *mcpserver.InfraError of the write", err)
+		if !errors.As(err, &infra) || !strings.Contains(infra.Msg, "is not a regular file") {
+			t.Fatalf("err = %v, want the *mcpserver.InfraError of a path that is not a regular file", err)
+		}
+		assertEmptyFolder(t, mirror)
+	})
+
+	t.Run("mirror removed between the stat and the read is written", func(t *testing.T) {
+		root, mirror := mirrorGuardRoot(t)
+		writeFile(t, mirror, "hand-written rows\n")
+		stubReadFile(t, func(path string) ([]byte, error) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			return os.ReadFile(path)
+		})
+		if _, err := mirrorGuardRender(root, false); err != nil {
+			t.Fatalf("render: %v", err)
+		}
+		if got, err := os.ReadFile(mirror); err != nil || dimensions.CheckMirror(got) != dimensions.MirrorGenerated {
+			t.Errorf("mirror = %q (err %v), want a generated mirror", got, err)
 		}
 	})
+}
+
+// stubReadFile replaces readFileFunc for the test.
+func stubReadFile(t *testing.T, fn func(string) ([]byte, error)) {
+	t.Helper()
+	prev := readFileFunc
+	readFileFunc = fn
+	t.Cleanup(func() { readFileFunc = prev })
+}
+
+// assertEmptyFolder fails the test unless path is still an empty folder.
+func assertEmptyFolder(t *testing.T, path string) {
+	t.Helper()
+	entries, err := os.ReadDir(path)
+	if err != nil || len(entries) != 0 {
+		t.Errorf("%s is no longer an empty folder (err %v, %d entries)", path, err, len(entries))
+	}
+}
+
+// TestDimensionsRender_ReportsReplacedAndMarker pins the replaced flag and the
+// marker line of the render output.
+func TestDimensionsRender_ReportsReplacedAndMarker(t *testing.T) {
+	root, mirror := mirrorGuardRoot(t)
+
+	out, err := mirrorGuardRender(root, false)
+	if err != nil {
+		t.Fatalf("first render: %v", err)
+	}
+	if out.Replaced {
+		t.Errorf("replaced = true for an absent mirror, want false")
+	}
+	got, err := os.ReadFile(mirror)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(got), "\n"), "\n")
+	if out.Marker != lines[len(lines)-1] || !strings.HasPrefix(out.Marker, dimensions.MirrorMarkerPrefix) {
+		t.Errorf("marker = %q, want the last line of the mirror %q", out.Marker, lines[len(lines)-1])
+	}
+
+	out, err = mirrorGuardRender(root, false)
+	if err != nil {
+		t.Fatalf("second render: %v", err)
+	}
+	if !out.Replaced || !strings.Contains(out.Next, "replaced") {
+		t.Errorf("out = %+v, want replaced true and a next that says so", out)
+	}
+}
+
+// TestMaxCheckedFileText pins that the size text of the tool descriptions
+// follows maxCheckedFileBytes.
+func TestMaxCheckedFileText(t *testing.T) {
+	if want := fmt.Sprintf("%d MiB", maxCheckedFileBytes>>20); maxCheckedFileText != want || maxCheckedFileBytes%(1<<20) != 0 {
+		t.Errorf("maxCheckedFileText = %q, want %q for %d bytes", maxCheckedFileText, want, maxCheckedFileBytes)
+	}
+	field, _ := reflect.TypeOf(DimensionsRenderInstructionsIn{}).FieldByName("Overwrite")
+	if !strings.Contains(field.Tag.Get("jsonschema_description"), maxCheckedFileText) {
+		t.Errorf("the overwrite description does not give the size limit %q", maxCheckedFileText)
+	}
 }

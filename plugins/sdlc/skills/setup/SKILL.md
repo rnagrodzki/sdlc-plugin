@@ -76,12 +76,18 @@ field that does not exist. Deviations, one line each:
   `config.WriteSection` walks a dotted key (e.g. `plan.guardrails.<id>`, `execute.guardrails.<id>`,
   `pr.labels`, `plan.tasks`) to the addressed leaf, replaces only that leaf, and leaves
   every sibling untouched. Use `section.configPath` itself as the write key whenever the
-  value at that path is a JSON object/table — every section below qualifies except `pr`'s
-  own scalar fields: e.g. `received-review`'s `configPath` is `receivedReview` → write under
+  value at that path is a JSON object/table — every section below qualifies except two:
+  `pr`'s own scalar fields, and the guardrail sections. e.g. `received-review`'s
+  `configPath` is `receivedReview` → write under
   key `receivedReview`; `plan-tasks`'s `configPath` is `plan.tasks` → write under
-  key `plan.tasks` directly (not `plan`). A leaf value must itself be a JSON object —
-  `config.WriteSection` cannot address a single scalar field this way (see the `pr`
-  exception below). Never use `section.id` verbatim as the write key.
+  key `plan.tasks` directly (not `plan`). `plan-guardrails` and `execution-guardrails` have
+  the `configPath` `plan.guardrails` and `execute.guardrails`. For them the write key is
+  `<configPath>.<id>`, one key per guardrail id. A whole-table write fails with
+  `would remove guardrails` unless it keeps every id. A leaf value must itself be a JSON
+  object — `config.WriteSection` cannot address a single scalar field this way (see the `pr`
+  exception below). The one other leaf value is JSON null on `plan.guardrails.<id>` or
+  `execute.guardrails.<id>`: it deletes that guardrail table. Never use `section.id`
+  verbatim as the write key.
 - **`pr` wholesale-write hazard (one-directional now).** `pr-labels`
   (`setup-pr-labels.md`) writes the dotted leaf `pr.labels` directly and is no longer part of
   this hazard. This file's own 3.pr write is the one exception to the dotted-leaf rule above:
@@ -128,7 +134,7 @@ field that does not exist. Deviations, one line each:
 | `--openspec-enrich` | Jump directly to openspec config enrichment sub-flow | off |
 | `--remove-openspec` | Remove the managed block from openspec/config.yaml (with --openspec-enrich) | off |
 | `--plan-template` | Jump directly to plan template sub-flow (alias for `--only plan-template`) | off |
-| `--add` | Expansion mode (with --dimensions or --guardrails or --execution-guardrails; the PR template sub-flow takes no arguments) | off |
+| `--add` | Expansion mode (with --dimensions or --guardrails or --execution-guardrails; the PR template sub-flow takes no arguments). In the guardrail sub-flows, `--add` and the default mode behave the same: no dedupe against configured ids, and a reselected id overwrites its description and severity | off |
 | `--no-copilot` | Skip GitHub Copilot instructions (with --dimensions) | off |
 
 ---
@@ -761,10 +767,14 @@ Before invoking `setup-dimensions` or `setup-pr-template`, run the project signa
   `**/playwright.config.*`.
 - **Existing review dimensions:** reuse the Step 0 snapshot's `listDimensions` result (count
   and names) — no fresh call needed.
-- **Existing guardrails:** not available here. There is no MCP tool that returns
-  `plan.guardrails`'s current contents, and `setup-guardrails.md`'s own Step 0 does not read
-  `.sdlc-v2/config.toml` either — its `--add` mode proposal list is not deduplicated against
-  existing ids (see its Gotchas).
+- **Existing guardrails:** Step 0 reads `.sdlc-v2/config.toml` into `projectConfig`, so
+  `projectConfig` holds `plan.guardrails` and `execute.guardrails`. `plan_prepare`
+  (`guardrails`) and `prepare_orchestrator` in harden mode (`planGuardrails`,
+  `executeGuardrails`) return them too. The guardrail sub-flows use none of these: they do
+  not use `projectConfig`, and they call no tool that returns the guardrails. So in those
+  sub-flows `--add` and the default mode behave the same: the
+  proposal list is not deduplicated against existing ids, and a reselected id overwrites its
+  description and severity (see the Gotchas of `setup-guardrails.md`).
 - **GitHub hosting detection:** Bash for `git remote -v` and `gh repo view` (safe). Glob for
   `.github/`.
 - **CLAUDE.md / AGENTS.md:** Read `CLAUDE.md`, `AGENTS.md`, `.claude/CLAUDE.md` if present.
@@ -1041,7 +1051,10 @@ call replaces exactly the keys it names — but a key can be a dotted path (`pla
 leaf, leaving siblings under the parent table untouched with no read needed first. One
 exception holds for guardrails: a key that replaces a whole guardrails table (`plan`,
 `plan.guardrails`, `execute`, `execute.guardrails`) must keep every guardrail id already in
-`config.toml`, or the call fails with `would remove guardrails` and writes nothing. `pr`'s own
+`config.toml`, or the call fails with `would remove guardrails` and writes nothing. To remove
+one guardrail, send JSON null on `plan.guardrails.<id>` or `execute.guardrails.<id>`. When
+`config.toml` holds a guardrails section as an array of tables (`[[plan.guardrails]]`), the
+tool refuses every key inside that section and writes nothing. `pr`'s own
 fields are the one other exception: they are scalars, not a table, so they cannot be addressed as a
 dotted leaf (`pr.titlePattern` would try to write a table where a string belongs, and fails)
 — 3.pr must write the `pr` top-level key wholesale, which is why "Writing config files" still

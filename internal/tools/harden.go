@@ -316,7 +316,7 @@ func loadReviewDimensions(contentRoot string, errs *[]surfaceLoadError) []review
 // block here is NOT an error — source defaults to an empty frontmatter map
 // (`fmRaw ? parseSimpleYaml(fmRaw) : {}`) and still emits the entry.
 func loadCopilotInstructions(contentRoot string, errs *[]surfaceLoadError) []copilotInstruction {
-	dir := filepath.Join(contentRoot, ".github", "instructions")
+	dir := dimensions.MirrorDir(contentRoot)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -332,7 +332,7 @@ func loadCopilotInstructions(contentRoot string, errs *[]surfaceLoadError) []cop
 	out := make([]copilotInstruction, 0, len(entries))
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasSuffix(name, ".instructions.md") {
+		if !strings.HasSuffix(name, dimensions.MirrorSuffix) {
 			continue
 		}
 		filePath := filepath.Join(dir, name)
@@ -357,7 +357,7 @@ func loadCopilotInstructions(contentRoot string, errs *[]surfaceLoadError) []cop
 		}
 		out = append(out, copilotInstruction{
 			ApplyTo: stringOrDefault(meta["applyTo"], ""),
-			Name:    strings.TrimSuffix(name, ".instructions.md"),
+			Name:    strings.TrimSuffix(name, dimensions.MirrorSuffix),
 			Path:    filePath,
 		})
 	}

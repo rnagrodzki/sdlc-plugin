@@ -63,22 +63,7 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 	)
 	switch {
 	case postToolValidateDimensionRe.MatchString(filePath):
-		// No file arg: the dimensions validator scans .sdlc-v2/review-dimensions
-		// itself rather than validating one file.
-		//
-		// Deviation from the raw-cwd root ruling above (KEEP: hook entry
-		// point — do not change to resolveSdlcRoot()), for this branch only: dimension
-		// files are git-tracked content, so per the root rule they must be
-		// read from the ACTIVE worktree, not the raw process cwd -- otherwise
-		// this hook and the validate/dimensions and review_prepare tools would
-		// disagree about which dimension files exist inside a linked
-		// worktree. Fail open to root (cwd) so a resolution error here never
-		// silently disables this hook.
-		dimRoot := root
-		if activeRoot, aerr := worktree.ActiveRoot(); aerr == nil {
-			dimRoot = activeRoot
-		}
-		findings, verr = tools.ValidateDimensionsAction(dimRoot)
+		findings, verr = dimensionFindings(root)
 	case postToolValidatePRTemplateRe.MatchString(filePath):
 		// No file arg: the pr-template validator resolves the template
 		// itself rather than validating the edited path directly.
@@ -124,6 +109,25 @@ func postToolValidate(ctx HookCtx, event Event) (Output, error) {
 	}, ExitCode: 0}, nil
 }
 
+// dimensionFindings runs the dimensions validator. It takes no file: the
+// validator scans .sdlc-v2/review-dimensions itself rather than validating one
+// file.
+//
+// Deviation from the raw-cwd root ruling of postToolValidate (KEEP: hook entry
+// point — do not change to resolveSdlcRoot()), for this branch only: dimension
+// files are git-tracked content, so per the root rule they must be read from
+// the ACTIVE worktree, not the raw process cwd -- otherwise this hook and the
+// validate/dimensions and review_prepare tools would disagree about which
+// dimension files exist inside a linked worktree. Fail open to root (cwd) so a
+// resolution error here never silently disables this hook.
+func dimensionFindings(root string) ([]discovery.Finding, error) {
+	dimRoot := root
+	if activeRoot, aerr := worktree.ActiveRoot(); aerr == nil {
+		dimRoot = activeRoot
+	}
+	return tools.ValidateDimensionsAction(dimRoot)
+}
+
 // mirrorNote returns a non-blocking note when filePath is the mirror of a
 // dimension file and does not end with a valid marker line. Every other case,
 // including a read error, is silent.
@@ -133,14 +137,13 @@ func mirrorNote(filePath string) Output {
 	if err != nil || dimensions.CheckMirror(content) == dimensions.MirrorGenerated {
 		return silent
 	}
-	name := strings.TrimSuffix(filepath.Base(filePath), ".instructions.md")
-	root := filepath.Dir(filepath.Dir(filepath.Dir(filePath)))
-	dimFile := filepath.Join(root, paths.DataDir, paths.ReviewDimensionsSubdir, name+".md")
+	name := strings.TrimSuffix(filepath.Base(filePath), dimensions.MirrorSuffix)
+	dimFile := filepath.Join(dimensions.MirrorRoot(filePath), paths.DataDir, paths.ReviewDimensionsSubdir, name+".md")
 	if _, err := os.Stat(dimFile); err != nil {
 		return silent
 	}
 	return pipelineContinueOutput(fmt.Sprintf(
-		"The mirror %s has no valid sdlc:generated marker line. dimensions_render_instructions refuses to replace it. To adopt it, move its hand-written rows into %s, then call dimensions_render_instructions with overwrite: true.",
+		"The mirror %s has no valid sdlc:generated marker line. dimensions_render_instructions refuses to replace it. To adopt it, move its hand-written rows into %s, then call dimensions_render_instructions with overwrite: true. If an older sdlc version wrote the mirror and nobody edited it, call with overwrite: true directly.",
 		filePath, dimFile))
 }
 

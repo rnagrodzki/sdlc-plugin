@@ -2423,8 +2423,10 @@ func classifyDimensionMessage(msg string) (id, severity string) {
 // Exported wrappers (Task 38) -- internal/hooks needs to call these
 // validators directly (post-tool-validate.js's in-process port), but Go
 // visibility makes the unexported functions above uncallable cross-package.
-// Each wrapper is a pure one-line delegate; the unexported functions and the
-// validate dispatcher above are unchanged.
+// ValidatePRTemplate and ValidateDimensionsAction are one-line delegates.
+// ValidateGuardrailsAction also runs each guardrail section and adds the
+// section and the config file to each finding. The unexported functions and
+// the validate dispatcher above are unchanged.
 //
 // Three wrappers live here, all called from internal/hooks/post_tool_validate.go.
 // The hook's plan_format entry point is NOT one of them: it is
@@ -2450,7 +2452,7 @@ func ValidateDimensionsAction(root string) ([]discovery.Finding, error) {
 func ValidateGuardrailsAction(root string) ([]discovery.Finding, error) {
 	configPath := filepath.Join(root, paths.DataDir, paths.ConfigFile)
 	var all []discovery.Finding
-	for _, section := range []string{"plan", "execute"} {
+	for _, section := range config.GuardrailSections {
 		findings, err := validateGuardrailsAction(root, ValidateIn{Section: section})
 		if err != nil {
 			return nil, err

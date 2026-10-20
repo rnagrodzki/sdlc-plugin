@@ -113,8 +113,9 @@ In render mode the tool SHALL fail without writing the mirror when `file` is mis
 | Frontmatter cannot be parsed | `DomainError` | `dimensions_render_instructions: <path>: <cause>` / fix the `---` frontmatter block, or run validate with action `dimensions` |
 | No usable `name` or no string in `triggers` | `DomainError` | `dimensions_render_instructions: <path> lacks a usable name or a non-empty triggers list; cannot render` / add name and a trigger |
 | Trimmed `name` contains `/`, `\`, or `..` | `DomainError` | `dimensions_render_instructions: <path>: invalid name "<name>": must not contain a path separator or ".."` / set name to a bare stem such as `security` |
-| Existing mirror is refused (see "Refusal to replace a hand-written mirror") | `DomainError` | `dimensions_render_instructions: mirror <path> has hand-written content (<reason>) and was not replaced` / move the hand-written rows into the dimension file, then call again with `overwrite: true` |
-| Existing mirror cannot be statted or read, and `overwrite` is not `true` | `InfraError` | `read mirror <path>: <cause>` / check that the path is a readable file; nothing was written |
+| Existing mirror is refused (see "Refusal to replace a hand-written mirror") | `DomainError` | `dimensions_render_instructions: mirror <path> ...` with the phrase `has hand-written content` / move the hand-written rows into the dimension file, then call again with `overwrite: true` |
+| A folder or other special file is at the mirror path, with or without `overwrite` | `InfraError` | `mirror path <path> is not a regular file` / remove the folder or special file at the path; nothing was written |
+| Existing mirror cannot be statted, or cannot be read when `overwrite` is not `true` | `InfraError` | `read mirror <path>: <cause>` / check that the path is a readable file; nothing was written |
 | `.github/instructions/` cannot be created | `InfraError` | `create <dir>: <cause>` / check write permission |
 | Mirror file cannot be written | `InfraError` | `write <path>: <cause>` / check write permission and disk space |
 
@@ -188,7 +189,8 @@ In render mode the tool SHALL NOT replace an existing mirror in state `NoMarker`
 #### Scenario: Mirror with no marker line
 - **WHEN** `.github/instructions/security.instructions.md` exists with no marker line
 - **AND** `overwrite` is not `true`
-- **THEN** the tool returns `DomainError` containing `has hand-written content (no sdlc:generated marker line at the end of the file)`
+- **THEN** the tool returns `DomainError` containing `has hand-written content, or an sdlc version older than the marker wrote it (no sdlc:generated marker line at the end of the file)`
+- **AND** the Suggestion says that a mirror from an older sdlc version that nobody edited can be replaced with `overwrite: true`
 - **AND** the file bytes are unchanged
 
 #### Scenario: Edited mirror
@@ -200,7 +202,7 @@ In render mode the tool SHALL NOT replace an existing mirror in state `NoMarker`
 #### Scenario: Mirror larger than 1 MiB
 - **WHEN** the existing mirror is 1048577 bytes
 - **AND** `overwrite` is not `true`
-- **THEN** the tool returns `DomainError` containing `over the 1048576 byte limit`
+- **THEN** the tool returns `DomainError` containing `over the 1048576 byte limit, so it was not read` and `has hand-written content`
 - **AND** the file bytes are unchanged
 
 #### Scenario: Suggestion names the way out
@@ -208,7 +210,9 @@ In render mode the tool SHALL NOT replace an existing mirror in state `NoMarker`
 - **THEN** the Suggestion names the dimension file and `overwrite: true`
 
 ### Requirement: Overwrite input
-In render mode with `overwrite: true` the tool SHALL replace an existing mirror in every state, without reading the current mirror.
+In render mode with `overwrite: true` the tool SHALL replace an existing mirror file in each refusal state, without reading the current mirror. A folder or other special file at the mirror path is not replaced.
+
+The render result SHALL report `replaced` (true when a mirror file was at the path) and `marker` (the marker line written).
 
 #### Scenario: Adopt an unmarked mirror
 - **WHEN** `.github/instructions/security.instructions.md` exists with no marker line

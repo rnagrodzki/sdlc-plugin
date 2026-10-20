@@ -150,6 +150,23 @@ func TestPostToolValidate_Mirror_NoteWhenNoMarkerLine(t *testing.T) {
 	assertNote(t, out, "overwrite: true")
 }
 
+// TestPostToolValidate_Mirror_UsesRootOfEditedFile finds the dimension file
+// under the root of the edited mirror, not under the process folder.
+func TestPostToolValidate_Mirror_UsesRootOfEditedFile(t *testing.T) {
+	project := realPath(t, t.TempDir())
+	dimFile, mirror := writeMirrorFixture(t, project, "security", "Check the security rules.\n")
+
+	// The process folder holds no dimension file of that name.
+	other := realPath(t, t.TempDir())
+	chdir(t, other)
+
+	out, err := postToolValidate(HookCtx{}, triggerEvent(mirror))
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNote(t, out, dimFile)
+}
+
 // TestPostToolValidate_Mirror_Silent stays silent for a mirror with a valid marker line, a mirror with no dimension file, and an unreadable path.
 func TestPostToolValidate_Mirror_Silent(t *testing.T) {
 	t.Run("valid marker line", func(t *testing.T) {

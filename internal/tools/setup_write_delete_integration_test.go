@@ -150,7 +150,8 @@ func TestIntegration_SetupWriteSections_WholeTableDropRefused(t *testing.T) {
 	for _, want := range []string{
 		`key "execute.guardrails" would remove guardrails [b] from execute.guardrails`,
 		"## Do this",
-		"<section>.guardrails.<id>",
+		`Put guardrail ids [b] back into the value of key "execute.guardrails".`,
+		`"execute.guardrails.b"`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("refusal missing %q:\n%s", want, text)

@@ -203,8 +203,13 @@ The tool SHALL change only the lines of changed keys in the written section and 
 The tool SHALL refuse a call, before it writes any key, when a key `plan`, `plan.guardrails`, `execute` or `execute.guardrails` would remove a guardrail id that `config.toml` holds in that section.
 
 - A covered key counts with an object value and with `null`.
-- A one-id key (`<section>.guardrails.<id>`) is not covered and needs no read.
-- The tool reads `config.toml` once, only when the call holds a covered key.
+- The new value keeps an id only when the id holds a table.
+- The tool reads `config.toml` once, only when the call holds a guardrail key.
+
+#### Scenario: Null id in the new value
+- **WHEN** `config.toml` has `[plan.guardrails.a]` and `[plan.guardrails.b]`
+- **AND** the call writes `{"plan.guardrails":{"a":{"severity":"error"},"b":null}}`
+- **THEN** the tool returns a `DomainError` containing `would remove guardrails [b]`
 
 #### Scenario: Whole table drops an id
 - **WHEN** `config.toml` has `[execute.guardrails.a]` and `[execute.guardrails.b]`
@@ -261,6 +266,16 @@ The tool SHALL refuse a call, before it writes any key, when a key `plan`, `plan
 
 #### Scenario: Invalid TOML
 - **WHEN** `config.toml` is not valid TOML
-- **AND** the call holds a covered key
+- **AND** the call holds a guardrail key
 - **THEN** the tool returns a `DataError` containing `is not valid TOML`
 - **AND** nothing is written
+
+### Requirement: Keys inside an array-of-tables guardrails section are refused
+The tool SHALL refuse a call, before it writes any key, when a key inside a guardrails table (`<section>.guardrails.<...>`, with a value or `null`) targets a section that `config.toml` holds as a non-empty array of tables (`[[<section>.guardrails]]`). The write would replace the whole array and remove its other entries.
+
+#### Scenario: One-id key on the array form
+- **WHEN** `config.toml` holds `[[plan.guardrails]]` entries with the ids `a` and `b` and no comment line
+- **AND** the call writes `{"plan.guardrails.c":{"severity":"warning","description":"d"}}`
+- **THEN** the tool returns a `DomainError` containing `holds as an array of tables ([[plan.guardrails]])`
+- **AND** the Suggestion tells the user to convert each entry to a named table `[plan.guardrails.<id>]`
+- **AND** `config.toml` is byte-identical

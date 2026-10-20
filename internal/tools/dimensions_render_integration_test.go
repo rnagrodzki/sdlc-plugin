@@ -100,7 +100,7 @@ func TestIntegration_DimensionsRender_RefusesHandWrittenMirror(t *testing.T) {
 	for _, want := range []string{
 		"error (domain)",
 		mirror,
-		"has hand-written content (no sdlc:generated marker line at the end of the file) and was not replaced",
+		"has hand-written content, or an sdlc version older than the marker wrote it (no sdlc:generated marker line at the end of the file), and was not replaced",
 		"overwrite: true",
 	} {
 		if !strings.Contains(text, want) {

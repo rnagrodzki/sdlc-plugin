@@ -47,9 +47,10 @@ type SetupWriteSectionsIn struct {
 	// name, not a partial patch of it. A JSON null on a guardrail id
 	// (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table
 	// instead (see isGuardrailID). A key that replaces a whole guardrails table
-	// (see guardedGuardrailKeys) must keep every guardrail id that config.toml
-	// holds, or the call fails before any write (see droppedGuardrails).
-	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. A plain top-level id REPLACES that section wholesale. A dotted id (e.g. \"plan.guardrails\") merges at that nested leaf instead, preserving sibling keys under the same top-level section — the leaf itself is still replaced wholesale, not patched. Pass the complete object for the id you name. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table. A null on a missing guardrail id changes nothing. A null on any other id clears it to an empty table, as before, unless that id is a whole guardrails table that holds guardrail ids (see the next sentence). A key that replaces a whole guardrails table (plan, plan.guardrails, execute, execute.guardrails), with a value or a null, must keep every guardrail id that config.toml holds: a key that drops one fails with a DomainError and nothing is written. Add or change one guardrail with \"<section>.guardrails.<id>\", and remove one with a null on that key. A guardrail table that holds a comment line is not deleted: the call returns the comment refusal."`
+	// must keep every guardrail id that config.toml holds, and a key inside a
+	// guardrails table that config.toml holds as an array of tables is refused.
+	// Both refusals happen before any write (see checkGuardrailWrites).
+	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. A plain top-level id REPLACES that section wholesale. A dotted id (e.g. \"plan.guardrails\") merges at that nested leaf instead, preserving sibling keys under the same top-level section — the leaf itself is still replaced wholesale, not patched. Pass the complete object for the id you name. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table. A null on a missing guardrail id changes nothing. A null on any other id clears it to an empty table, as before, unless that id is a whole guardrails table that holds guardrail ids (see the next sentence). A key that replaces a whole guardrails table (plan, plan.guardrails, execute, execute.guardrails), with a value or a null, must keep every guardrail id that config.toml holds: a key that drops one fails with a DomainError and nothing is written. Add or change one guardrail with \"<section>.guardrails.<id>\", and remove one with a null on that key. A key inside a guardrails table that config.toml holds as an array of tables ([[plan.guardrails]]) fails with a DomainError and nothing is written: the user must first convert the entries to named tables. A guardrail table that holds a comment line is not deleted: the call returns the comment refusal."`
 
 	// Target selects which file a local section is written to: the
 	// project's own .sdlc-v2/local.toml (default) or the user-level file
@@ -87,7 +88,7 @@ func rewroteWarning(id, file string) string {
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table from config.toml instead: the lines of the table and one blank line next to it go, and deleted lists the id with the removed data. A null on a missing guardrail id changes nothing and adds a warning. A guardrail table that holds a comment line is not deleted: errors gets the comment refusal. A null guardrail id with target \"user\" is rejected and nothing is written. Missing template tips are added back above their keys. A flag-set field (ship.steps, ship.quick) sent as an array of step names is stored as a table of every step set to true or false, and an old list line for that key is replaced. An unknown step name or a non-boolean value returns an error and nothing is written. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written. A key that replaces a whole guardrails table (plan, plan.guardrails, execute, execute.guardrails), with a value or a null, makes the tool read config.toml first. If that key drops a guardrail id that config.toml holds, the call fails with a DomainError that names the key and the ids, and nothing is written. If config.toml cannot be read, is not valid TOML, or is over 1 MiB, the call also fails before any write. A one-id key such as plan.guardrails.<id> needs no read.",
+		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table from config.toml instead: the lines of the table and one blank line next to it go, and deleted lists the id with the removed data. A null on a missing guardrail id changes nothing and adds a warning. A guardrail table that holds a comment line is not deleted: errors gets the comment refusal. A null guardrail id with target \"user\" is rejected and nothing is written. Missing template tips are added back above their keys. A flag-set field (ship.steps, ship.quick) sent as an array of step names is stored as a table of every step set to true or false, and an old list line for that key is replaced. An unknown step name or a non-boolean value returns an error and nothing is written. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written. A key that writes guardrails (plan, execute, or any key that starts with plan.guardrails or execute.guardrails), with a value or a null, makes the tool read config.toml first. If a key that replaces a whole guardrails table (plan, plan.guardrails, execute, execute.guardrails) drops a guardrail id that config.toml holds, the call fails with a DomainError that names the key and the ids, and nothing is written. If config.toml holds the guardrails of a section as an array of tables ([[plan.guardrails]]), a key inside that table, such as plan.guardrails.<id>, fails with a DomainError and nothing is written, because the write would replace the whole array. If config.toml cannot be read, is not valid TOML, or is over "+maxCheckedFileText+", the call also fails before any write.",
 		mcpserver.Annotations{
 			Title:       "Write SDLC config sections",
 			ReadOnly:    false,
@@ -266,47 +267,98 @@ func isGuardrailID(id string) bool {
 		parts[1] == "guardrails" && parts[2] != ""
 }
 
-// guardedGuardrailKeys maps each key that replaces a whole guardrails table
-// to its section. plan and execute are included because a write at the
-// section key replaces the guardrails table under it.
-var guardedGuardrailKeys = map[string]string{
-	"plan":               "plan",
-	"plan.guardrails":    "plan",
-	"execute":            "execute",
-	"execute.guardrails": "execute",
-}
-
-// maxGuardrailCheckBytes bounds the config.toml read of the guardrail check.
-// A real config.toml holds a few KiB.
-const maxGuardrailCheckBytes = 1 << 20
-
-// droppedGuardrails returns, for each guarded key in ids, the sorted guardrail
-// ids that config.toml (under contentRoot) holds in that key's section and
-// that the key's new value does not hold. It reads config.toml only when a
-// guarded key is present. An absent file, or a value that is not a table of
-// guardrails, holds no ids.
-func droppedGuardrails(contentRoot string, ids []string, sections map[string]map[string]any) (map[string][]string, error) {
-	var guarded []string
-	for _, id := range ids {
-		if _, ok := guardedGuardrailKeys[id]; ok {
-			guarded = append(guarded, id)
+// guardrailKey reports whether the key id writes guardrails. section is the
+// guardrail section of the key. wholeTable is true for a key that replaces the
+// whole guardrails table of the section (<section> or <section>.guardrails),
+// and false for a key inside that table (<section>.guardrails.<...>).
+func guardrailKey(id string) (section string, wholeTable, ok bool) {
+	for _, s := range config.GuardrailSections {
+		switch {
+		case id == s || id == s+".guardrails":
+			return s, true, true
+		case strings.HasPrefix(id, s+".guardrails."):
+			return s, false, true
 		}
 	}
-	if len(guarded) == 0 {
-		return nil, nil
+	return "", false, false
+}
+
+// checkGuardrailWrites refuses, before any write, a call that would lose a
+// guardrail that config.toml under contentRoot holds. It reads config.toml
+// only when a key of ids writes guardrails (see guardrailKey). It refuses:
+//
+//   - a key inside a guardrails table that config.toml holds as an array of
+//     tables ([[<section>.guardrails]]). config.WriteSection replaces a parent
+//     value that is not a table, so the write replaces the whole array.
+//   - a whole-table key whose new value does not hold every guardrail id that
+//     config.toml holds in that section.
+//
+// An absent config.toml holds no guardrails.
+func checkGuardrailWrites(contentRoot string, ids []string, sections map[string]map[string]any) error {
+	var keys []string
+	for _, id := range ids {
+		if _, _, ok := guardrailKey(id); ok {
+			keys = append(keys, id)
+		}
+	}
+	if len(keys) == 0 {
+		return nil
 	}
 	path := filepath.Join(contentRoot, paths.DataDir, paths.ConfigFile)
+	raw, err := readGuardrailCheckFile(path)
+	if err != nil || raw == nil {
+		return err
+	}
+
+	inArray := map[string][]string{} // section -> keys inside its array of tables
+	var dropped []droppedIDs
+	for _, id := range keys {
+		section, wholeTable, _ := guardrailKey(id)
+		onDisk := sectionGuardrails(raw, section)
+		if !wholeTable {
+			if entries, isArray := onDisk.([]any); isArray && len(entries) > 0 {
+				inArray[section] = append(inArray[section], id)
+			}
+			continue
+		}
+		kept := newGuardrailIDs(id, sections[id])
+		var gone []string
+		for _, diskID := range guardrailIDsOf(onDisk) {
+			if !slices.Contains(kept, diskID) {
+				gone = append(gone, diskID)
+			}
+		}
+		if len(gone) > 0 {
+			_, isArray := onDisk.([]any)
+			dropped = append(dropped, droppedIDs{key: id, section: section, ids: gone, arrayForm: isArray})
+		}
+	}
+	if len(inArray) > 0 {
+		return guardrailArrayFormError(path, inArray)
+	}
+	if len(dropped) > 0 {
+		return guardrailDropError(path, dropped)
+	}
+	return nil
+}
+
+// readGuardrailCheckFile reads and decodes config.toml at path for
+// checkGuardrailWrites. An absent file returns nil and no error. It decodes
+// the raw file, as config.WriteSection does, and not through config.ReadSection:
+// ReadSection changes the named-table form of a guardrails table to a list, so
+// the check could no longer see the array-of-tables form that it refuses.
+func readGuardrailCheckFile(path string) (map[string]any, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, guardReadError(path, err)
+		return nil, readFileError("setup_write_sections: read", path, err)
 	}
-	if info.Size() > maxGuardrailCheckBytes {
+	if info.Size() > maxCheckedFileBytes {
 		return nil, &mcpserver.DataError{
-			Msg:        fmt.Sprintf("setup_write_sections: %s is %d bytes, over the %d byte limit of the guardrail check", path, info.Size(), maxGuardrailCheckBytes),
-			Suggestion: fmt.Sprintf("Write one guardrail at a time with \"<section>.guardrails.<id>\", which needs no check, or reduce %s below %d bytes, then retry. Nothing was written.", path, maxGuardrailCheckBytes),
+			Msg:        fmt.Sprintf("setup_write_sections: %s is %d bytes, over the %d byte limit of the guardrail check", path, info.Size(), maxCheckedFileBytes),
+			Suggestion: fmt.Sprintf("Reduce %s to %d bytes or less, then retry. Nothing was written.", path, maxCheckedFileBytes),
 		}
 	}
 	var raw map[string]any
@@ -318,44 +370,41 @@ func droppedGuardrails(contentRoot string, ids []string, sections map[string]map
 				Cause:      err,
 			}
 		}
-		return nil, guardReadError(path, err)
+		return nil, readFileError("setup_write_sections: read", path, err)
 	}
-	dropped := map[string][]string{}
-	for _, id := range guarded {
-		kept := newGuardrailIDs(id, sections[id])
-		var gone []string
-		for _, disk := range diskGuardrailIDs(raw, guardedGuardrailKeys[id]) {
-			if !slices.Contains(kept, disk) {
-				gone = append(gone, disk)
-			}
-		}
-		if len(gone) > 0 {
-			dropped[id] = gone
-		}
+	if raw == nil {
+		raw = map[string]any{}
 	}
-	return dropped, nil
+	return raw, nil
 }
 
-// diskGuardrailIDs returns the sorted, unique guardrail ids under
-// <section>.guardrails in raw: the keys of the named-table form whose value
-// is a table, or the "id" fields of the array-of-tables form. The result
-// equals the ids that normalizeGuardrailTables gives
-// (internal/config/config.go:799-809). Any other value holds no ids.
-func diskGuardrailIDs(raw map[string]any, section string) []string {
+// sectionGuardrails returns the value of <section>.guardrails in raw, or nil.
+func sectionGuardrails(raw map[string]any, section string) any {
 	sec, _ := raw[section].(map[string]any)
+	return sec["guardrails"]
+}
+
+// guardrailIDsOf returns the sorted, unique guardrail ids that a guardrails
+// value holds. For the named-table form (a map), the ids are the keys whose
+// value is a table: the entries that guardrailsTableToSlice keeps. For the
+// array-of-tables form (a list), the ids are the non-empty string "id" fields
+// of the table entries. normalizeGuardrailTables passes a list through as
+// written, so an entry with no id, or an entry that is not a table, gives no
+// id here. Any other value holds no ids. The check uses this one function for
+// the ids on disk and for the ids of a new value.
+func guardrailIDsOf(v any) []string {
 	seen := map[string]bool{}
-	switch g := sec["guardrails"].(type) {
+	switch g := v.(type) {
 	case map[string]any:
-		for id, v := range g {
-			if _, ok := v.(map[string]any); !ok {
-				continue
+		for id, entry := range g {
+			if _, isTable := entry.(map[string]any); isTable {
+				seen[id] = true
 			}
-			seen[id] = true
 		}
 	case []any:
 		for _, entry := range g {
-			if m, ok := entry.(map[string]any); ok {
-				if id, ok := m["id"].(string); ok && id != "" {
+			if m, isTable := entry.(map[string]any); isTable {
+				if id, isString := m["id"].(string); isString && id != "" {
 					seen[id] = true
 				}
 			}
@@ -369,43 +418,63 @@ func diskGuardrailIDs(raw map[string]any, section string) []string {
 	return ids
 }
 
-// newGuardrailIDs returns the guardrail ids that the new value of a guarded
-// key holds. A nil value (JSON null) holds none. For "plan" and "execute"
-// the ids are the keys of the value's "guardrails" table.
+// newGuardrailIDs returns the guardrail ids that the new value of a
+// whole-table key holds (see guardrailIDsOf). A nil value (JSON null) holds
+// none. For a section key (plan, execute) the ids come from the "guardrails"
+// member of the value. Dotted keys in the value are expanded first, as the
+// write does.
 func newGuardrailIDs(key string, value map[string]any) []string {
-	table := expandDottedKeys(value)
-	if !strings.HasSuffix(key, ".guardrails") {
-		table, _ = table["guardrails"].(map[string]any)
+	expanded := expandDottedKeys(value)
+	if strings.HasSuffix(key, ".guardrails") {
+		return guardrailIDsOf(expanded)
 	}
-	ids := make([]string, 0, len(table))
-	for id := range table {
-		ids = append(ids, id)
-	}
-	return ids
+	return guardrailIDsOf(expanded["guardrails"])
 }
 
-// guardReadError wraps a failure to stat or read config.toml in the
-// InfraError of the guardrail check.
-func guardReadError(path string, err error) error {
-	return &mcpserver.InfraError{
-		Msg:        fmt.Sprintf("setup_write_sections: read %s: %s", path, err.Error()),
-		Suggestion: fmt.Sprintf("Check that %s is a readable file, then retry. Nothing was written.", path),
-		Cause:      err,
+// droppedIDs is one whole-table key that would remove guardrail ids.
+type droppedIDs struct {
+	key       string
+	section   string
+	ids       []string
+	arrayForm bool // config.toml holds the section's guardrails as an array of tables
+}
+
+// guardrailArrayFormError is the refusal for keys inside a guardrails table
+// that config.toml holds as an array of tables. inArray maps each section to
+// its keys.
+func guardrailArrayFormError(path string, inArray map[string][]string) error {
+	sections := make([]string, 0, len(inArray))
+	for section := range inArray {
+		sections = append(sections, section)
+	}
+	sort.Strings(sections)
+	var msgs, steps []string
+	for _, section := range sections {
+		msgs = append(msgs, fmt.Sprintf("keys %q write inside %s.guardrails, which %s holds as an array of tables ([[%s.guardrails]]), so the write would replace the whole array", inArray[section], section, path, section))
+		steps = append(steps, fmt.Sprintf("convert each [[%s.guardrails]] entry to a named table [%s.guardrails.<id>], where <id> is the id field of the entry", section, section))
+	}
+	return &mcpserver.DomainError{
+		Msg:        "setup_write_sections: " + strings.Join(msgs, " and ") + ". Nothing was written.",
+		Suggestion: fmt.Sprintf("Ask the user to edit %s by hand: %s. Then retry the same call.", path, strings.Join(steps, ", and ")),
 	}
 }
 
-// guardrailDropError builds the refusal for the keys in dropped, in the
-// sorted order of ids.
-func guardrailDropError(ids []string, dropped map[string][]string) error {
-	var parts []string
-	for _, id := range ids {
-		if gone, ok := dropped[id]; ok {
-			parts = append(parts, fmt.Sprintf("key %q would remove guardrails %v from %s.guardrails", id, gone, guardedGuardrailKeys[id]))
+// guardrailDropError is the refusal for whole-table keys that would remove
+// guardrail ids. The Suggestion names each key and its ids.
+func guardrailDropError(path string, dropped []droppedIDs) error {
+	var msgs, steps []string
+	for _, d := range dropped {
+		msgs = append(msgs, fmt.Sprintf("key %q would remove guardrails %v from %s.guardrails", d.key, d.ids, d.section))
+		steps = append(steps, fmt.Sprintf("Put guardrail ids %v back into the value of key %q.", d.ids, d.key))
+		if d.arrayForm {
+			steps = append(steps, fmt.Sprintf("%s holds %s.guardrails as an array of tables ([[%s.guardrails]]), so a key such as %q is refused too: to remove one of these guardrails, the user must first convert each entry to a named table [%s.guardrails.<id>] by hand.", path, d.section, d.section, d.section+".guardrails."+d.ids[0], d.section))
+		} else {
+			steps = append(steps, fmt.Sprintf("To remove one of them on purpose, send null on its own key, for example %q.", d.section+".guardrails."+d.ids[0]))
 		}
 	}
 	return &mcpserver.DomainError{
-		Msg:        "setup_write_sections: " + strings.Join(parts, " and ") + ". Nothing was written.",
-		Suggestion: "Write each guardrail as its own key, for example \"<section>.guardrails.<id>\". To remove a guardrail on purpose, send null on \"<section>.guardrails.<id>\". If config.toml holds the guardrails as an array of tables ([[<section>.guardrails]]), a one-id write can fail with an error or drop the other entries. In that case the user must first convert the array to named tables ([<section>.guardrails.<id>]) by hand. Nothing was written.",
+		Msg:        "setup_write_sections: " + strings.Join(msgs, " and ") + ". Nothing was written.",
+		Suggestion: strings.Join(steps, " "),
 	}
 }
 
@@ -559,13 +628,9 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		}
 	}
 
-	// Refuse a whole-table guardrail write that drops an id before any write.
-	dropped, err := droppedGuardrails(contentRoot, ids, sections)
-	if err != nil {
+	// Refuse a guardrail write that would lose a guardrail, before any write.
+	if err := checkGuardrailWrites(contentRoot, ids, sections); err != nil {
 		return SetupWriteSectionsOut{}, err
-	}
-	if len(dropped) > 0 {
-		return SetupWriteSectionsOut{}, guardrailDropError(ids, dropped)
 	}
 
 	var written []string
