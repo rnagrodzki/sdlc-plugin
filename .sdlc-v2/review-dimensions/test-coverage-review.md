@@ -183,3 +183,23 @@ new changes to that same bar:
   asserts the field is still there. A test that starts from an empty row, or
   that asserts only the field the update sets, passes when the update drops
   the other fields.
+- A write that replaces a whole table or section (a guardrail table, a settings
+  block) needs a test that seeds what the write does not name: a comment line,
+  an entry that stays, and the id of each kept entry. The test runs the write
+  and asserts that each seeded item is unchanged. A test that starts from an
+  empty table passes when the write drops them. This extends the row-update
+  bullet above from one row to a whole-table rewrite.
+- Code that reads or writes a target chosen from more than one candidate (the
+  main root or the active worktree, a user file or a project file) needs a test
+  in which the candidates differ, such as two directories with different
+  content. The test asserts that the chosen candidate is read or changed and
+  that the other one is left alone. A test with one candidate, or with equal
+  candidates, passes whichever one the code reads.
+- A test set for a guard (a check that decides whether a write, a delete or a
+  rewrite goes ahead) covers every key the guard protects, a key nested or
+  dotted inside a guarded value, and the empty and wrong-type forms of each.
+  When a parity test compares the guard with a reference decoder, it includes
+  each shape the reference special-cases (an array-of-tables form, a missing
+  key, a comment-only file). A parity test that skips one of those shapes does
+  not show that the two agree. This extends the static-table bullet above to
+  guards, nested forms and parity tests.

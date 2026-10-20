@@ -90,6 +90,25 @@ and `mcp-output-drives-behavior` guardrails.
   tool or action MUST accept the input that failed and MUST be able to change
   the failing condition. A `Suggestion` that sends the caller to a tool that
   cannot fix the error is a finding.
+- For each error branch, list every input state that reaches it (for example a
+  missing path, a directory, a symlink, an unreadable file, a file over a size
+  cap) and check the `Msg`, the `Suggestion` and each registered description of
+  the branch against every state. A retry or overwrite `Suggestion` for a
+  state that a retry cannot change, a universal claim such as 'every state' or
+  'always' that one state breaks, and a `Msg` that names one cause for a
+  branch that several causes reach (for example 'hand-written' for a
+  marker-less legacy file and an oversize file) are findings. Split the branch
+  by cause, or word the text for the whole set. This extends the
+  recovery-action bullet above, which checks only that the named tool accepts
+  the failing input.
+- The first step of a `Suggestion` MUST NOT repeat or cause the harm that the
+  error reports. When the failing call can discard stored data (a rewrite that
+  drops entries, an overwrite, a delete), the first step reads or backs up that
+  data, or names a call that cannot discard it, and any retry of the same call
+  comes after that step. A `Suggestion` that sends the caller to retry the
+  write that discarded data is a finding. This extends the recovery-action
+  bullet above, which checks that the named tool can change the failing
+  condition but not that the step is safe to run.
 - The error class MUST match the cause. `DomainError` means the caller's input
   is wrong. `InfraError` means a filesystem, network or process operation
   failed. `DataError` means stored data is wrong: it fails to parse, fails its

@@ -22,6 +22,7 @@ severity: medium
 - When a SKILL.md step and `docs/skills/<skill>.md` each list a closed set (stop causes, error cases, exit states, outcomes, allowed values), the two lists have the same members. Compare them item by item: an item in one list and not in the other, or an item with a different condition, is a finding. Matching surrounding prose does not make the lists match.
 - When a SKILL.md or tool change adds a value or line with a stated format (a timestamp line, a file-name pattern, an ID form), the matching `docs/skills/<skill>.md` page states that format with one literal sample. A page that names the value but omits its format is a finding.
 - Each worked example in `docs/skills/<skill>.md` follows the rules the page and SKILL.md state, and shows what sets each derived part of a value. An example that hides which run sets a value, such as a date written once at creation and kept on a later continue, is a finding.
+- When a change removes a mode, flag or value, or makes two of them behave the same (for example a flag whose two modes now write the same way), grep `SKILL.md`, `docs/skills/<skill>.md`, the `argument-hint` and the tool and `jsonschema_description` text for the old name. Also grep for wording that still describes a difference between the modes. Each hit is a finding, because a reader acts on a difference that no longer exists. This extends the rename and migration bullet above to a mode that stays in the code but no longer differs.
 
 ## What NOT to flag
 

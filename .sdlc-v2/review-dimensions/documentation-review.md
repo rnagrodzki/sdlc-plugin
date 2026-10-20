@@ -57,3 +57,4 @@ This project keeps contributor documentation in `docs/`
   label. A label that names a nearby quantity is a finding. Example: a
   'Duration' column that holds the span from a start stamp to the last file
   change shows elapsed time between two stamps, not time spent.
+- A page under `docs/` that states what a tool or skill does, never does, keeps, removes or exposes (for example 'the tool never removes an entry', 'no tool returns the stored table') is checked against the Go handler, not only against SKILL.md. Walk each mode and input form that the handler accepts, and each tool that is registered. A case that breaks the claim is a finding. This applies the negative-claim check of `skill-prose-accuracy` to docs pages. The `skill-doc-drift` check compares docs with SKILL.md only, so a claim that both texts repeat and the code breaks passes it.

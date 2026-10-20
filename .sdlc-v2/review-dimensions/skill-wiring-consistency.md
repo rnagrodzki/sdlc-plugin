@@ -49,7 +49,8 @@ struct's `json:"..."` tag.
 
 ## What NOT to flag
 
-- Parameter values (this dimension checks names, not values)
+- Parameter values (this dimension checks names, not values), except a literal
+  value for a guard-overriding argument (see Dispatch args notation clarity)
 - Skill prose that mentions a parameter name in explanatory text rather
   than in a dispatch instruction
 - Parameters documented with `omitempty` that are intentionally absent in
@@ -95,6 +96,13 @@ When a SKILL.md documents a tool dispatch with flag arguments, verify the
 notation is unambiguous — show a concrete filled example or explicitly
 document shorthand/interpolation, rather than bare flags a reader could
 take literally.
+
+A dispatch block must also not hard-code a literal value for an argument that
+overrides a guard (for example `overwrite: true` or `force: true`) on the
+default path that every run takes. The default block must omit the argument or
+pass false. A block that passes true must sit under the flag, mode or user
+choice that the prose names as its condition. This is the one exception to the
+'Parameter values' exclusion in What NOT to flag.
 
 ### wave-start / task-done field name and encoding wiring
 

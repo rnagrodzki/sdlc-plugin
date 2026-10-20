@@ -46,6 +46,16 @@ Review Go source changes for baseline code quality in this module
   format changes. Grep the package for the literal before adding it; a
   repeated format-derived literal is a finding. This extends the package-scope
   pattern rule above.
+- A size, count or retry limit (a read cap such as `1 << 20`, a maximum entry
+  count) is defined once as a named constant, never as an inline literal, and
+  a limit with the same meaning reuses the existing constant. Text that states
+  the limit (a tool or action description, an error or warning, a doc comment)
+  builds the number from that constant, so a changed limit cannot leave a
+  stale text. Grep the package and the tool descriptions for the literal
+  (`1048576`, `1 << 20`) before adding it; two inline copies of one limit, or
+  a hard-coded number in a description, is a finding. This extends the
+  format-derived literal rule above, which names only values derived from a
+  format.
 - Naming is consistent with sibling files in the same package — check for
   drift before introducing a second convention.
 - Documentation strings/doc comments citing paths (`.sdlc`, `.sdlc-v2`) or
@@ -178,7 +188,11 @@ Review Go source changes for baseline code quality in this module
   that does the same work, even under another name (for example
   `shipShortSHA` and `shortSHA`), and reuse it. A handler that hand-writes
   logic a shared core helper already performs (for example step completion
-  instead of `shipCompleteStepCore`) is a finding.
+  instead of `shipCompleteStepCore`) is a finding. The check also covers
+  helpers that the same change adds: two new helpers with the same body, or
+  that differ only in a name or a message string, are a finding. Merge them
+  into one helper with a parameter. This extends the existing-function check
+  above. Example: `guardReadError` and `mirrorReadError`, added in one diff.
 - A parse, format or normalization of a value that the project stores in a known
   layout (a timestamp line, a dated file name, a stored heading) must call the
   helper that already reads or writes that layout. Before writing `time.Parse`,

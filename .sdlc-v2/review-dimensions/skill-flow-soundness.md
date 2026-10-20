@@ -15,7 +15,7 @@ severity: high
   (success, cancel, error, stall, interrupt) must have an explicit next
   instruction. When the skill has a routes table, each terminal state needs
   its own row. A state the flow can enter but never says how to leave is
-  incomplete.
+  incomplete. A recovery step in a refusal or error row must change the failing condition for every input state that reaches that row. Read the tool or flag that the step names, and list the states that reach the row (for example a new file and an existing file). A step that works for only some of these states leaves the others stuck, and it is a finding.
 - **Gate consistency.** A condition gating one step must not be
   contradicted by another step in the same file assuming the opposite
   (e.g. one step skips work "if `--force` was NOT passed" while a later
@@ -65,14 +65,7 @@ severity: high
   must also record that worker's outcome in the run state (for example a
   `ledger_skip` reason). A path that stops the worker but writes no outcome
   is a finding.
-- **Routing-bullet exclusivity.** When one step lists several routing
-  bullets keyed on the same input (a round number, a verdict, a gate
-  result), exactly one bullet must match any given input state. Walk the
-  boundary states, such as the last round, a CRITICAL gate result, or a
-  single-item batch, against every bullet. A state that matches two
-  bullets with different outcomes is a finding, even when each bullet
-  reads correctly on its own. A state that matches no bullet is a dead end,
-  and it is a finding.
+- **Routing-bullet exclusivity.** When one step lists several routing bullets, or one outcome or routes table lists several rows, keyed on the same input (a round number, a verdict, a gate result, a tool result), exactly one bullet or row must match any given input state. Walk the boundary states, such as the last round, a CRITICAL gate result, or a single-item batch, against every bullet and row. A state that matches two bullets or rows with different outcomes is a finding, even when each reads correctly on its own. A state that matches none is a dead end, and it is a finding.
 - **Shared-record field parity.** When two or more routes write the same
   persisted record (a round record, a history row, a state snapshot),
   every route must derive each field from the same named source, or the

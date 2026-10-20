@@ -128,11 +128,31 @@ those same guardrails:
   empty array when entries are required, duplicate IDs, partial coverage of
   the set it references) in its `jsonschema_description`. The handler MUST
   reject each one with a `DomainError` that names the broken rule.
+- A guard that decides whether a write may go ahead (a data-loss check, a
+  refusal of an unsafe file shape, a check of the ids a write would drop) MUST
+  fail closed. A value of an unexpected type or shape (a non-object id, an
+  array where a table is expected) MUST refuse the write with a `DomainError`
+  when the caller's input is wrong, or a `DataError` when the stored file is
+  wrong. The error names the value and the rule it breaks. A guard that reads
+  such a value as empty or as 'nothing to protect', through a type assertion
+  that drops `ok`, a default branch or a zero value, is a finding, because the
+  write then goes ahead and can discard stored data. A test drives each shape
+  and asserts that the write is refused and that the file is unchanged. This
+  extends the bullets above that reject bad input before a write: they cover
+  caller input, not the unknown-shape branch of a safety check.
 - Every write action (record, append, set, skip, create) MUST echo the values
   it wrote in its output. This includes each value the handler generated and
   the caller did not supply, such as a timestamp, an ID, a file name or a
   slug. An output that holds only `ok` and `next`, or that omits a generated
   value, is a finding.
+- A write action that creates or replaces a file (for example render, write
+  or overwrite) is a write action under the echo bullet above, even when it
+  names no record. Its output states whether the file was created, replaced or
+  left unchanged, and echoes each marker or header line the handler wrote into
+  the file. An output that gives only the path and a count, or that does not
+  say whether an existing file was replaced, is a finding. This extends the
+  write-action echo bullet above, whose verb list names record, append, set,
+  skip and create only.
 - A no-op or already-done shortcut MUST check the real filesystem or git state
   it claims, not a marker in a header or input file. Example: the
   `openspec_save` 'already' path trusted the plan header.
