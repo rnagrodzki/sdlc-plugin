@@ -28,13 +28,20 @@
 // already excludes the shared _common.md common-prompt file and tolerates a
 // missing directory.
 //
+// Render mode ends every mirror with a marker line (dimensions.StampMirror)
+// and, before it writes, reads the current mirror (dimensions.CheckMirror).
+// It refuses to replace a mirror that has hand-written content, unless the
+// caller passes Overwrite.
+//
 // All three modes default their root to worktree.ActiveRoot(), since
 // dimension files are git-tracked content that must follow the active
 // worktree (root rule), not the main one.
 package tools
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +104,10 @@ type DimensionsRenderInstructionsIn struct {
 	// steps discover installed dimensions through an MCP tool instead of a
 	// bare Glob on a .sdlc-v2/ path.
 	ListDimensions bool `json:"listDimensions,omitempty" jsonschema_description:"Selects list mode: return the names of dimension files already installed under .sdlc-v2/review-dimensions/ under projectRoot. When true, file/commonFile/name/content are ignored."`
+	// Overwrite is render mode only. It replaces an existing mirror that the
+	// tool would refuse, and it skips the read of the current mirror. Write
+	// and list modes ignore it.
+	Overwrite bool `json:"overwrite,omitempty" jsonschema_description:"Render mode only. Without it, the tool refuses to replace an existing mirror that has no valid sdlc:generated marker line, whose text changed after the last render, or that is larger than 1048576 bytes. With true, the tool replaces the mirror in every state and does not read it. To replace a refused mirror, move its hand-written content into the dimension file, then call again with overwrite true. Ignored in write and list modes."`
 }
 
 // DimensionsRenderInstructionsOut is the output for the
@@ -124,7 +135,13 @@ type DimensionsRenderInstructionsOut struct {
 // the server.
 func RegisterDimensionsRenderTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "dimensions_render_instructions",
-		"Renders one review-dimension Markdown file to its GitHub Copilot instructions-mirror at .github/instructions/<name>.instructions.md (R-copilot-mirror; port of scripts/lib/dimension-to-instructions.js's CLI entrypoint), or, with writeDimension:true, writes a new/updated dimension file to .sdlc-v2/review-dimensions/<name>.md, or, with listDimensions:true, lists the dimension file names already installed under .sdlc-v2/review-dimensions/.",
+		"Runs one of three modes per call; setting writeDimension and listDimensions both true is an error. "+
+			"Render mode (default; R-copilot-mirror; port of scripts/lib/dimension-to-instructions.js's CLI entrypoint): renders one review-dimension Markdown file to its GitHub Copilot instructions-mirror at .github/instructions/<name>.instructions.md. Requires file. Optional: commonFile, projectRoot, overwrite. "+
+			"Every mirror ends with the marker line <!-- sdlc:generated sha256=<hash> -->; the hash covers the text above that line. "+
+			"Before it writes, render mode reads the current mirror. It refuses with a DomainError, and writes no byte, when the mirror has no valid marker line at the end, when its text changed after the last render, or when it is larger than 1048576 bytes. An absent mirror and an unedited generated mirror are replaced. "+
+			"overwrite:true replaces the mirror in every state and does not read it; move the hand-written content into the dimension file first. "+
+			"Write mode (writeDimension:true): writes a new or updated dimension file to .sdlc-v2/review-dimensions/<name>.md. Requires name, content. Optional: projectRoot. Ignores file, commonFile, overwrite. "+
+			"List mode (listDimensions:true): lists the dimension file names already installed under .sdlc-v2/review-dimensions/. Optional: projectRoot. Ignores file, commonFile, name, content, overwrite.",
 		mcpserver.Annotations{
 			Title:       "Render review dimension files",
 			ReadOnly:    false,
@@ -223,6 +240,13 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 	}
 	outPath := filepath.Join(root, ".github", "instructions", name+".instructions.md")
 
+	if !in.Overwrite {
+		if err := refuseHandWrittenMirror(outPath, filePath); err != nil {
+			return DimensionsRenderInstructionsOut{}, err
+		}
+	}
+	rendered = dimensions.StampMirror(rendered)
+
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return DimensionsRenderInstructionsOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create %s: %s", filepath.Dir(outPath), err.Error()),
@@ -244,6 +268,64 @@ func dimensionsRenderInstructions(root string, in DimensionsRenderInstructionsIn
 		Dimensions: []string{},
 		Next:       fmt.Sprintf("Rendered to %s.", outPath),
 	}, nil
+}
+
+// maxMirrorBytes is the largest existing mirror that render mode reads. A
+// real mirror holds a few KiB; a larger file is not one the tool wrote.
+const maxMirrorBytes = 1 << 20
+
+// refuseHandWrittenMirror reads the current mirror at mirrorPath and returns
+// a DomainError when render mode must not replace it: the mirror has no valid
+// marker line, its text changed after the last render, or it is larger than
+// maxMirrorBytes. An absent mirror returns nil. A stat or read error other
+// than not-exist returns an InfraError. It writes nothing.
+func refuseHandWrittenMirror(mirrorPath, dimensionFile string) error {
+	info, err := os.Stat(mirrorPath)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return mirrorReadError(mirrorPath, err)
+	}
+	if !info.Mode().IsRegular() {
+		return mirrorReadError(mirrorPath, errors.New("not a regular file"))
+	}
+	if info.Size() > maxMirrorBytes {
+		return handWrittenMirrorError(mirrorPath, dimensionFile,
+			fmt.Sprintf("%d bytes, over the %d byte limit", info.Size(), maxMirrorBytes))
+	}
+	current, err := os.ReadFile(mirrorPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return mirrorReadError(mirrorPath, err)
+	}
+	switch dimensions.CheckMirror(current) {
+	case dimensions.MirrorNoMarker:
+		return handWrittenMirrorError(mirrorPath, dimensionFile, "no sdlc:generated marker line at the end of the file")
+	case dimensions.MirrorEdited:
+		return handWrittenMirrorError(mirrorPath, dimensionFile, "text changed after the last render")
+	}
+	return nil
+}
+
+// mirrorReadError wraps a stat or read failure of the current mirror.
+func mirrorReadError(mirrorPath string, cause error) error {
+	return &mcpserver.InfraError{
+		Msg:        fmt.Sprintf("read mirror %s: %s", mirrorPath, cause.Error()),
+		Suggestion: fmt.Sprintf("Check that %s is a readable file, then retry. Nothing was written.", mirrorPath),
+		Cause:      cause,
+	}
+}
+
+// handWrittenMirrorError is the refusal for a mirror that render mode must
+// not replace. The Suggestion names the dimension file and overwrite.
+func handWrittenMirrorError(mirrorPath, dimensionFile, reason string) error {
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("dimensions_render_instructions: mirror %s has hand-written content (%s) and was not replaced", mirrorPath, reason),
+		Suggestion: fmt.Sprintf("Move the hand-written content of %s into the dimension file %s, then call dimensions_render_instructions again with overwrite: true.", mirrorPath, dimensionFile),
+	}
 }
 
 // listDimensionFiles is list mode's core logic: enumerate the dimension
