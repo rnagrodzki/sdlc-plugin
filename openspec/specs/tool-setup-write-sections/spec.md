@@ -10,7 +10,7 @@ The tool SHALL accept two input fields: `sectionsJson`, holding a JSON object wh
 
 | Field | Type | Required | Encoding | Meaning |
 |---|---|---|---|---|
-| `sectionsJson` | string | yes | JSON object, e.g. `{"version":{"mode":"file","versionFile":"package.json"}}` | Section key → complete field-value object. A key may be dotted, e.g. `plan.guardrails`. |
+| `sectionsJson` | string | yes | JSON object, e.g. `{"version":{"mode":"file","versionFile":"package.json"}}` | Section key → complete field-value object. A key may be dotted, e.g. `plan.tasks`. A key that replaces a whole guardrails table must keep every guardrail id of the file (see "Whole guardrails table keeps every id"). |
 | `target` | string (enum `project`, `user`) | no | plain text, e.g. `user`; default `project` | Where local sections go: `project` (`.sdlc-v2/local.toml`) or `user` (the user file, see "Save target for local sections"). |
 
 | Condition | Class | Message / Suggestion (short) |
@@ -19,6 +19,10 @@ The tool SHALL accept two input fields: `sectionsJson`, holding a JSON object wh
 | Not valid JSON, or a value is not an object or `null` | `DomainError` | `setup_write_sections: invalid sectionsJson: <parse error>` / fix the JSON syntax |
 | Object has no keys | `DomainError` | `setup_write_sections: sectionsJson must contain at least one section` / pick a section id from `setup_prepare` |
 | `target` is not empty, `project` or `user` | `DomainError` | Suggestion `Set target to project or user, or leave it empty.`; nothing is written |
+| A key `plan`, `plan.guardrails`, `execute` or `execute.guardrails` removes one or more guardrail ids of `config.toml` | `DomainError` | `setup_write_sections: key "<key>" would remove guardrails [<ids>] from <section>.guardrails. Nothing was written.` / write each guardrail as `<section>.guardrails.<id>`; send `null` on one id to remove it; for the array-of-tables form, convert it to named tables by hand |
+| The call holds such a key and `config.toml` is not valid TOML | `DataError` | `setup_write_sections: <path> is not valid TOML: <cause>` / fix the TOML syntax, then retry; nothing was written |
+| The call holds such a key and `config.toml` is larger than 1048576 bytes | `DataError` | `setup_write_sections: <path> is <n> bytes, over the 1048576 byte limit of the guardrail check` / write one guardrail at a time, or reduce the file; nothing was written |
+| The call holds such a key and `config.toml` cannot be statted or read | `InfraError` | `setup_write_sections: read <path>: <cause>` / check that the path is a readable file; nothing was written |
 
 #### Scenario: Scalar section value
 - **WHEN** `sectionsJson` is `{"version":"x"}`
@@ -86,12 +90,12 @@ The tool SHALL route each section key by its first dotted segment and SHALL reje
 - **AND** neither `.sdlc-v2/config.toml` nor `.sdlc-v2/local.toml` is written
 
 ### Requirement: Wholesale write at the named key
-The tool SHALL replace the table at the named key wholesale and SHALL leave every other key in the file unchanged. For a dotted key it SHALL replace only the leaf table, keep siblings under the same parent, and create missing parent tables.
+The tool SHALL replace the table at the named key wholesale and SHALL leave every other key in the file unchanged, except that a key which replaces a whole guardrails table SHALL keep every guardrail id of the file (see "Whole guardrails table keeps every id"). For a dotted key it SHALL replace only the leaf table, keep siblings under the same parent, and create missing parent tables.
 
 - A `null` value on `plan.guardrails.<id>` or `execute.guardrails.<id>` deletes that table. A missing table changes nothing, and the summary says `<id>: not present, nothing deleted`.
 - A guardrail table that holds a comment line is not deleted: the call returns the comment refusal.
 - A `null` guardrail id with `target: "user"` returns a DomainError `guardrail ids live in config.toml`.
-- A `null` value on any other key writes an empty table at that key, which clears it.
+- A `null` value on any other key writes an empty table at that key, which clears it. The exception is a `null` on `plan`, `plan.guardrails`, `execute` or `execute.guardrails` while `config.toml` holds a guardrail id in that section: the call is refused.
 - Callers pass the complete object for the key; the tool does not patch individual fields.
 - A key with an empty dotted segment (e.g. `plan.`, `.guardrails`, `plan..tasks`) fails with `config: invalid section name "<key>"` in `errors`.
 
@@ -115,6 +119,11 @@ The tool SHALL replace the table at the named key wholesale and SHALL leave ever
 - **AND** the call writes `{"plan.guardrails.dry-old":null}`
 - **THEN** the `[plan.guardrails.dry-old]` block is gone
 - **AND** the `[plan.guardrails.dry]` block is byte-identical
+
+#### Scenario: Null on a guardrails table with no ids
+- **WHEN** `config.toml` has an empty `[plan.guardrails]` table
+- **AND** the call writes `{"plan.guardrails":null}`
+- **THEN** `plan.guardrails` stays an empty table
 
 ### Requirement: File text kept outside the written section
 The tool SHALL change only the lines of changed keys in the written section and SHALL keep every comment line, blank line and other section of the target file unchanged, except for the commented example and header lines that a new key or section takes over and the tip lines that tip restore adds.
@@ -193,9 +202,9 @@ The tool SHALL change only the lines of changed keys in the written section and 
 
 #### Scenario: Sub-tables replaced as one unit
 - **WHEN** `config.toml` has `[plan.guardrails.a]` and `[plan.guardrails.b]`, with a `[jira]` table between them
-- **AND** the call writes `{"plan.guardrails":{"c":{"severity":"error"}}}`
-- **THEN** `[plan.guardrails.c]` goes where `[plan.guardrails.a]` was
-- **AND** the header and key/value lines of `[plan.guardrails.a]` and `[plan.guardrails.b]` are deleted
+- **AND** the call writes `{"plan.guardrails":{"a":{"severity":"error"},"b":{"severity":"error"},"c":{"severity":"error"}}}`
+- **THEN** `[plan.guardrails.a]`, `[plan.guardrails.b]` and `[plan.guardrails.c]` are written at the place of the old `[plan.guardrails.a]` block
+- **AND** the old header and key/value lines of `[plan.guardrails.a]` and `[plan.guardrails.b]` are replaced by the new text
 - **AND** the comment lines above both old tables stay
 - **AND** the `[jira]` table and its comments are unchanged
 
@@ -450,3 +459,84 @@ Before it writes any section, the tool SHALL convert each `flag-set` field answe
 - **WHEN** `local.toml` has `steps = ["execute"]` under `[ship]`
 - **AND** the call writes a `steps` array answer
 - **THEN** no `steps = [` line remains in the file
+
+### Requirement: Whole guardrails table keeps every id
+The tool SHALL refuse a call, before it writes any key, when a key `plan`, `plan.guardrails`, `execute` or `execute.guardrails` would remove a guardrail id that `config.toml` holds in that section.
+
+- A covered key counts with an object value and with `null`.
+- The new value keeps an id only when the id holds a table.
+- The tool reads `config.toml` once, only when the call holds a guardrail key.
+
+#### Scenario: Null id in the new value
+- **WHEN** `config.toml` has `[plan.guardrails.a]` and `[plan.guardrails.b]`
+- **AND** the call writes `{"plan.guardrails":{"a":{"severity":"error"},"b":null}}`
+- **THEN** the tool returns a `DomainError` containing `would remove guardrails [b]`
+
+#### Scenario: Whole table drops an id
+- **WHEN** `config.toml` has `[execute.guardrails.a]` and `[execute.guardrails.b]`
+- **AND** the call writes `{"execute.guardrails":{"a":{"severity":"error","description":"d"}}}`
+- **THEN** the tool returns a `DomainError` containing `would remove guardrails [b]`
+- **AND** `config.toml` is byte-identical
+
+#### Scenario: Null on a table that holds ids
+- **WHEN** `config.toml` has `[plan.guardrails.a]`
+- **AND** the call writes `{"plan.guardrails":null}`
+- **THEN** the tool returns a `DomainError` containing `would remove guardrails [a]`
+- **AND** `config.toml` is byte-identical
+
+#### Scenario: Section key without guardrails
+- **WHEN** `config.toml` has `[plan.guardrails.a]`
+- **AND** the call writes `{"plan":{"tasks":{}}}`
+- **THEN** the tool returns a `DomainError` containing `would remove guardrails [a]`
+
+#### Scenario: Whole table keeps every id
+- **WHEN** `config.toml` has `[execute.guardrails.a]` and `[execute.guardrails.b]`
+- **AND** the call writes `execute.guardrails` with the ids `a`, `b` and `c`
+- **THEN** the tool writes the three tables
+
+#### Scenario: Array-of-tables form
+- **WHEN** `config.toml` holds `[[plan.guardrails]]` entries with the ids `a` and `b`, and one more entry with the id `a`
+- **AND** the call writes `plan.guardrails` with only the id `a`
+- **THEN** the tool returns a `DomainError` containing `would remove guardrails [b]`
+- **AND** the id `a` is not listed twice
+
+#### Scenario: One-id key keeps the others
+- **WHEN** `config.toml` has `[execute.guardrails.a]` and `[execute.guardrails.b]`
+- **AND** the call writes `{"execute.guardrails.a":{"severity":"warning","description":"d"}}`
+- **THEN** `[execute.guardrails.b]` is unchanged
+
+#### Scenario: Two refused keys
+- **WHEN** `plan.guardrails` and `execute.guardrails` each drop an id
+- **THEN** the tool returns one `DomainError` that names both keys in sorted order
+
+#### Scenario: Refused key stops the whole call
+- **WHEN** one key of the call is a one-id key
+- **AND** another key would remove a guardrail id
+- **THEN** the tool returns the `DomainError`
+- **AND** no key of the call is written
+
+#### Scenario: Absent config file
+- **WHEN** `.sdlc-v2/config.toml` does not exist
+- **AND** the call writes `{"execute.guardrails":{"a":{"severity":"error","description":"d"}}}`
+- **THEN** the tool writes the file
+
+#### Scenario: Guardrails value is not a table
+- **WHEN** `config.toml` holds `plan.guardrails = "x"`
+- **AND** the call writes `plan.guardrails` with the id `a`
+- **THEN** the tool replaces the value, because a value that is not a table holds no ids
+
+#### Scenario: Invalid TOML
+- **WHEN** `config.toml` is not valid TOML
+- **AND** the call holds a guardrail key
+- **THEN** the tool returns a `DataError` containing `is not valid TOML`
+- **AND** nothing is written
+
+### Requirement: Keys inside an array-of-tables guardrails section are refused
+The tool SHALL refuse a call, before it writes any key, when a key inside a guardrails table (`<section>.guardrails.<...>`, with a value or `null`) targets a section that `config.toml` holds as a non-empty array of tables (`[[<section>.guardrails]]`). The write would replace the whole array and remove its other entries.
+
+#### Scenario: One-id key on the array form
+- **WHEN** `config.toml` holds `[[plan.guardrails]]` entries with the ids `a` and `b` and no comment line
+- **AND** the call writes `{"plan.guardrails.c":{"severity":"warning","description":"d"}}`
+- **THEN** the tool returns a `DomainError` containing `holds as an array of tables ([[plan.guardrails]])`
+- **AND** the Suggestion tells the user to convert each entry to a named table `[plan.guardrails.<id>]`
+- **AND** `config.toml` is byte-identical
