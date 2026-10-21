@@ -271,9 +271,9 @@ Call `plan_mark({ marker: "checkpoint", path: "", data: { step: "0", iteration: 
 
 **Preplan topic file:** the requirements file is a preplan topic file when its path is under `<main-worktree>/.sdlc-v2/preplan/` or its first line starts with `# Preplan:`. `/sdlc:preplan` writes it. Use its sections this way:
 - `## Goal`, `## Users and effect`, `## Flows` — the requirements context.
-- `## Decisions` — each row is one requirement. Skip each row whose `Decision` cell starts with `Dropped:`: a guardrail removed that proposal.
-- `**Guardrail check:**` line — the check record of preplan. It is not a requirement, so do not copy it into the plan. Step 3 (lane 3) checks the plan against the guardrails again. A Reason cell that ends with `Kept with warning: <ids>.` tells you that the user kept that proposal with a `warning` conflict. An older topic file can hold a `## Guardrail check` section instead. Treat it the same way: a `kept — <ids>` row there has the same meaning.
-- `## Open questions` — present only when a question has no answer. Each bullet is a scope question with no answer. Ask it in **Structured discovery** below. Under `--auto`, use the **`--auto` suppression** rule there.
+- `## Decisions` — each row is one requirement. Skip each row whose `Decision` cell starts with `Dropped:`: a guardrail removed that proposal, and a `Dropped by: <ids>.` note at the end of its Reason cell names the guardrails. Skip each row whose `Decision` cell starts with `Moved:`: the user deferred that proposal, and its `## Open questions` bullet carries it. A Reason cell that ends with `Kept with warning: <ids>.` tells you that the user kept that proposal with a `warning` conflict.
+- `**Guardrail check:**` line — the check record of preplan. It is not a requirement, so do not copy it into the plan. Step 3 (lane 3) checks the plan against the guardrails again. An older topic file can hold a `## Guardrail check` section instead. Treat it the same way: a `kept — <ids>` row there means the same as a `Kept with warning: <ids>.` note.
+- `## Open questions` — present only when a question has no answer. An older topic file can hold an empty section: it has no question to ask. Each bullet is a scope question with no answer. Ask it in **Structured discovery** below. Under `--auto`, use the **`--auto` suppression** rule there.
 - The `**Status:**` line is the state of preplan. It is not a requirement.
 
 **Discovery dispatch (full pipeline only, implements R24–R28):**

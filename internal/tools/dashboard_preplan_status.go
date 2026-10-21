@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -130,31 +131,55 @@ func dashboardPreplanTopicFileError(path, rel, readSuggestion string, gone error
 	if info.Mode().IsRegular() {
 		return nil
 	}
-	kind := "not a regular file"
-	switch {
-	case info.Mode()&fs.ModeSymlink != 0:
-		kind = "a symlink"
-	case info.IsDir():
-		kind = "a folder"
-	}
 	return &mcpserver.DomainError{
-		Msg:        fmt.Sprintf("The path %s is %s, not a topic file that the dashboard can rewrite", rel, kind),
+		Msg:        fmt.Sprintf("The path %s is %s, not a topic file that the dashboard can rewrite", rel, preplanFileKind(info.Mode())),
 		Suggestion: dashboardPreplanStatusLinkSuggestion,
 	}
+}
+
+// preplanFileKind names the kind of a topic file path that is not a regular
+// file: "a symlink", "a folder", or "not a regular file" for any other mode.
+// The dashboard and preplan_check use it, so both name a kind the same way.
+func preplanFileKind(mode fs.FileMode) string {
+	switch {
+	case mode&fs.ModeSymlink != 0:
+		return "a symlink"
+	case mode.IsDir():
+		return "a folder"
+	}
+	return "not a regular file"
 }
 
 // dashboardReplaceStatusLine replaces the first "**Status:**" line in the
 // first dashboardPreplanHeadMax bytes of data with "**Status:** <status>".
 // current is the old status, trimmed. found is false when the head has no
-// Status line; then next and current are empty. The whole old line goes,
+// Status line; then next and current are empty. See replacePreplanHeadLine.
+func dashboardReplaceStatusLine(data []byte, status string) (next []byte, current string, found bool) {
+	next, old, found := replacePreplanHeadLine(data, dashboardPreplanStatusRe, dashboardPreplanStatusPrefix+" "+status)
+	if !found {
+		return nil, "", false
+	}
+	return next, strings.TrimSpace(strings.TrimPrefix(old, dashboardPreplanStatusPrefix)), true
+}
+
+// preplanHead returns the first dashboardPreplanHeadMax bytes of data, the
+// part of a topic file where its anchor lines are searched.
+func preplanHead(data []byte) []byte {
+	if len(data) > dashboardPreplanHeadMax {
+		return data[:dashboardPreplanHeadMax]
+	}
+	return data
+}
+
+// replacePreplanHeadLine replaces the first line that re matches in the first
+// dashboardPreplanHeadMax bytes of data with replacement, a line with no line
+// end. old is the replaced line with no line end. found is false when the
+// head has no match; then next and old are empty. The whole old line goes,
 // also when it runs past the head. A line that ends in CR LF keeps its CR.
 // Every other byte stays the same. next is a new slice: data does not change.
-func dashboardReplaceStatusLine(data []byte, status string) (next []byte, current string, found bool) {
-	head := data
-	if len(head) > dashboardPreplanHeadMax {
-		head = head[:dashboardPreplanHeadMax]
-	}
-	loc := dashboardPreplanStatusRe.FindIndex(head)
+// re must match at the start of a line.
+func replacePreplanHeadLine(data []byte, re *regexp.Regexp, replacement string) (next []byte, old string, found bool) {
+	loc := re.FindIndex(preplanHead(data))
 	if loc == nil {
 		return nil, "", false
 	}
@@ -166,15 +191,13 @@ func dashboardReplaceStatusLine(data []byte, status string) (next []byte, curren
 		end = start + i
 	}
 	line := data[start:end]
-	current = strings.TrimSpace(strings.TrimPrefix(string(line), dashboardPreplanStatusPrefix))
-
-	replacement := dashboardPreplanStatusPrefix + " " + status
 	if bytes.HasSuffix(line, []byte("\r")) {
 		replacement += "\r"
+		line = line[:len(line)-1]
 	}
-	next = make([]byte, 0, len(data)-len(line)+len(replacement))
+	next = make([]byte, 0, len(data)-(end-start)+len(replacement))
 	next = append(next, data[:start]...)
 	next = append(next, replacement...)
 	next = append(next, data[end:]...)
-	return next, current, true
+	return next, string(line), true
 }

@@ -2560,6 +2560,27 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		}
 	})
 
+	t.Run("an existing file and a malformed config give the warning and the continue hint", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, ".sdlc-v2", "config.toml"), "[plan\nguardrails = [\n")
+		file := writePreplanTopic(t, root, "2026-10-01-auth-flow.md", "# Preplan: auth flow\n")
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		if out.PreplanFile != file || out.PreplanCreated == nil || *out.PreplanCreated {
+			t.Errorf("PreplanFile = %q, PreplanCreated = %v, want %q and false", out.PreplanFile, out.PreplanCreated, file)
+		}
+		if !strings.HasPrefix(out.Summary, "0 guardrail(s) loaded. Warning: Failed to read plan config: ") ||
+			!strings.HasSuffix(out.Summary, ". Topic file 2026-10-01-auth-flow.md exists.") {
+			t.Errorf("Summary = %q, want the read warning and the existing file", out.Summary)
+		}
+		if want := "Read preplanFile, then continue with its open questions, if any. preplan_check writes the warning into the Guardrail check line at Step 4."; out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+		wantPreplanBytes(t, file, "# Preplan: auth flow\n")
+	})
+
 	t.Run("served over MCP", func(t *testing.T) {
 		root := newOpenspecStageFixture(t, guardrailsToml)
 		text := evidenceRender(t, root, map[string]any{"action": "preplan_context", "topic": "auth flow"})
@@ -3218,6 +3239,17 @@ func TestCreatePreplanFileOpenFailure(t *testing.T) {
 // setPreplanNow.
 var preplanCheckTestNow = time.Date(2026, 10, 21, 17, 5, 0, 0, time.UTC)
 
+// preplanFakeInfo is an fs.FileInfo with a chosen mode, for the Lstat seam
+// of preplan_check.
+type preplanFakeInfo struct{ mode fs.FileMode }
+
+func (f preplanFakeInfo) Name() string       { return "auth-flow.md" }
+func (f preplanFakeInfo) Size() int64        { return 0 }
+func (f preplanFakeInfo) Mode() fs.FileMode  { return f.mode }
+func (f preplanFakeInfo) ModTime() time.Time { return time.Time{} }
+func (f preplanFakeInfo) IsDir() bool        { return f.mode.IsDir() }
+func (f preplanFakeInfo) Sys() any           { return nil }
+
 // preplanCheckIn returns a preplan_check input for topic with the three
 // counts set.
 func preplanCheckIn(topic string, pass, kept, dropped int) PlanSupportIn {
@@ -3278,72 +3310,98 @@ func preplanFiller(n int) string {
 }
 
 // TestSetGuardrailCheckLine covers each case of setGuardrailCheckLine: a
-// replace keeps every other byte, an insert goes after the Started line, else
-// after the Status line, and only the first 4096 bytes are searched.
+// replace keeps every other byte and returns the old line, an insert goes
+// after the Started line, else after the Status line, and only the first
+// dashboardPreplanHeadMax bytes are searched for each anchor.
 func TestSetGuardrailCheckLine(t *testing.T) {
 	const line = "**Guardrail check:** L"
 	const top = "**Started:** T\n"
 	const old = "**Guardrail check:** old"
+	const status = "**Status:** s\n"
+	const startedPrefix = "**Started:**"
 	endsAt4096 := preplanFiller(dashboardPreplanHeadMax - len(top) - len(old))
 	startsAt4000 := preplanFiller(4000 - len(top))
 	longOld := "**Guardrail check:** " + strings.Repeat("o", 200)
 	startsAt4096 := preplanFiller(dashboardPreplanHeadMax - len(top))
+	// The Started prefix ends at byte 4096, or starts there, after a Status
+	// line at the top.
+	startedEndsAt4096 := preplanFiller(dashboardPreplanHeadMax - len(status) - len(startedPrefix))
+	startedStartsAt4096 := preplanFiller(dashboardPreplanHeadMax - len(status))
 
 	for _, tc := range []struct {
 		name   string
 		before string
 		after  string
+		prior  string
 		ok     bool
 	}{
 		{"no check line, Started line",
 			"**Started:** T\n\n## Goal",
-			"**Started:** T\n\n**Guardrail check:** L\n\n## Goal", true},
+			"**Started:** T\n\n**Guardrail check:** L\n\n## Goal", "", true},
 		{"no check line, Started line, CR LF file",
 			"**Started:** T\r\n\r\n## Goal",
-			"**Started:** T\r\n\r\n**Guardrail check:** L\r\n\r\n## Goal", true},
+			"**Started:** T\r\n\r\n**Guardrail check:** L\r\n\r\n## Goal", "", true},
 		{"no check line, no Started line",
 			"**Status:** s\n\n## Goal",
-			"**Status:** s\n\n**Guardrail check:** L\n\n## Goal", true},
+			"**Status:** s\n\n**Guardrail check:** L\n\n## Goal", "", true},
+		{"no check line, no Started line, CR LF file",
+			"**Status:** s\r\n\r\n## Goal",
+			"**Status:** s\r\n\r\n**Guardrail check:** L\r\n\r\n## Goal", "", true},
+		{"no check line, Status line is the last line with no line end",
+			"**Status:** s",
+			"**Status:** s\n\n**Guardrail check:** L\n", "", true},
 		{"no check line, Started line after the Status line",
 			"# Preplan: x\n\n**Status:** s\n\n**Started:** T\n\n## Goal\n",
-			"# Preplan: x\n\n**Status:** s\n\n**Started:** T\n\n**Guardrail check:** L\n\n## Goal\n", true},
+			"# Preplan: x\n\n**Status:** s\n\n**Started:** T\n\n**Guardrail check:** L\n\n## Goal\n", "", true},
 		{"no check line, Started line is the last line with no line end",
 			"**Started:** T",
-			"**Started:** T\n\n**Guardrail check:** L\n", true},
+			"**Started:** T\n\n**Guardrail check:** L\n", "", true},
+		{"Started prefix ends at byte 4096 exactly",
+			status + startedEndsAt4096 + "**Started:** T\n## Goal\n",
+			status + startedEndsAt4096 + "**Started:** T\n\n" + line + "\n## Goal\n", "", true},
+		{"Started line starts at byte 4096, Status line in the head",
+			status + startedStartsAt4096 + "**Started:** T\n",
+			status + "\n" + line + "\n" + startedStartsAt4096 + "**Started:** T\n", "", true},
 		{"check line exists",
 			"**Guardrail check:** old\n",
-			"**Guardrail check:** L\n", true},
+			"**Guardrail check:** L\n", old, true},
 		{"check line exists, no Status line",
 			"# Preplan: x\n\n**Guardrail check:** old\n",
-			"# Preplan: x\n\n**Guardrail check:** L\n", true},
+			"# Preplan: x\n\n**Guardrail check:** L\n", old, true},
 		{"check line exists, CR LF file",
 			"**Status:** s\r\n\r\n**Guardrail check:** old\r\n\r\n## Goal\r\n",
-			"**Status:** s\r\n\r\n**Guardrail check:** L\r\n\r\n## Goal\r\n", true},
+			"**Status:** s\r\n\r\n**Guardrail check:** L\r\n\r\n## Goal\r\n", old, true},
+		{"check line is the last line with no line end",
+			"**Status:** s\n\n**Guardrail check:** old",
+			"**Status:** s\n\n**Guardrail check:** L", old, true},
 		{"two check lines in the head",
 			"**Status:** s\n\n**Guardrail check:** one\n**Guardrail check:** two\n",
-			"**Status:** s\n\n**Guardrail check:** L\n**Guardrail check:** two\n", true},
+			"**Status:** s\n\n**Guardrail check:** L\n**Guardrail check:** two\n", "**Guardrail check:** one", true},
 		{"check line ends at byte 4096 exactly",
 			top + endsAt4096 + old + "\n## Goal\n",
-			top + endsAt4096 + line + "\n## Goal\n", true},
+			top + endsAt4096 + line + "\n## Goal\n", old, true},
 		{"check line starts before byte 4096 and ends after it",
 			top + startsAt4000 + longOld + "\n## Goal\n",
-			top + startsAt4000 + line + "\n## Goal\n", true},
+			top + startsAt4000 + line + "\n## Goal\n", longOld, true},
 		{"check line starts at byte 4096",
 			top + startsAt4096 + old + "\n",
-			top + "\n" + line + "\n" + startsAt4096 + old + "\n", true},
+			top + "\n" + line + "\n" + startsAt4096 + old + "\n", "", true},
 		{"no check line, no Started line, no Status line",
-			"# Preplan: x\n\n## Goal\n", "", false},
+			"# Preplan: x\n\n## Goal\n", "", "", false},
 		{"Status line starts after the head",
-			"# Preplan: x\n" + preplanFiller(dashboardPreplanHeadMax) + "**Status:** s\n", "", false},
+			"# Preplan: x\n" + preplanFiller(dashboardPreplanHeadMax) + "**Status:** s\n", "", "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			data := []byte(tc.before)
-			next, ok := setGuardrailCheckLine(data, line)
+			next, prior, ok := setGuardrailCheckLine(data, line)
 			if ok != tc.ok {
 				t.Fatalf("ok = %v, want %v", ok, tc.ok)
 			}
 			if string(next) != tc.after {
 				t.Errorf("next =\n%q\nwant\n%q", next, tc.after)
+			}
+			if prior != tc.prior {
+				t.Errorf("prior = %q, want %q", prior, tc.prior)
 			}
 			if string(data) != tc.before {
 				t.Errorf("setGuardrailCheckLine changed its input")
@@ -3357,6 +3415,12 @@ func TestSetGuardrailCheckLine(t *testing.T) {
 	}
 	if n := len(top + startsAt4096); n != dashboardPreplanHeadMax {
 		t.Errorf("the late check line starts at byte %d, want %d", n, dashboardPreplanHeadMax)
+	}
+	if n := len(status + startedEndsAt4096 + startedPrefix); n != dashboardPreplanHeadMax {
+		t.Errorf("the Started prefix ends at byte %d, want %d", n, dashboardPreplanHeadMax)
+	}
+	if n := len(status + startedStartsAt4096); n != dashboardPreplanHeadMax {
+		t.Errorf("the late Started line starts at byte %d, want %d", n, dashboardPreplanHeadMax)
 	}
 }
 
@@ -3385,7 +3449,7 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		if out.PreplanFile != file {
 			t.Errorf("PreplanFile = %q, want %q", out.PreplanFile, file)
 		}
-		if want := "Wrote the Guardrail check line of 2026-10-12-auth-flow.md."; out.Summary != want {
+		if want := "Added the Guardrail check line to 2026-10-12-auth-flow.md."; out.Summary != want {
 			t.Errorf("Summary = %q, want %q", out.Summary, want)
 		}
 		if want := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."; out.Next != want {
@@ -3403,6 +3467,9 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		const second = "**Guardrail check:** 53 guardrails, 3 proposals: 2 pass, 0 kept, 1 dropped. Last check: 2026-10-21T17:05:00Z."
 		if out.GuardrailCheckLine != second {
 			t.Errorf("second GuardrailCheckLine = %q, want %q", out.GuardrailCheckLine, second)
+		}
+		if want := "Replaced the Guardrail check line of 2026-10-12-auth-flow.md. Old line: " + want; out.Summary != want {
+			t.Errorf("second Summary = %q, want %q", out.Summary, want)
 		}
 		wantPreplanBytes(t, file, withLine(second))
 	})
@@ -3444,6 +3511,9 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		}
 		if strings.ContainsAny(out.GuardrailCheckLine, "\r\n") || strings.HasSuffix(out.GuardrailCheckLine, "..") {
 			t.Errorf("GuardrailCheckLine = %q, want one line with one final period", out.GuardrailCheckLine)
+		}
+		if want := "Added the Guardrail check line to 2026-10-12-auth-flow.md. Guardrails unavailable: " + w + "."; out.Summary != want {
+			t.Errorf("Summary = %q, want %q", out.Summary, want)
 		}
 		wantPreplanBytes(t, file, withLine(want))
 	})
@@ -3512,7 +3582,11 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		if _, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0)); err != nil {
 			t.Fatalf("preplan_check: %v", err)
 		}
-		if got, _ := os.ReadFile(file); !strings.Contains(string(got), "**Guardrail check:** ") {
+		got, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if !strings.Contains(string(got), "**Guardrail check:** ") {
 			t.Errorf("topic file =\n%s\nwant a check line", got)
 		}
 	})
@@ -3525,10 +3599,41 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		if err != nil {
 			t.Fatalf("preplan_check: %v", err)
 		}
-		got, _ := os.ReadFile(file)
-		if want := head + "\n" + out.GuardrailCheckLine + "\n"; !strings.HasPrefix(string(got), want) {
-			t.Errorf("topic file starts with %q, want %q", got[:len(want)], want)
+		got, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
 		}
+		if want := head + "\n" + out.GuardrailCheckLine + "\n"; !strings.HasPrefix(string(got), want) {
+			t.Errorf("topic file starts with %q, want %q", got[:min(len(got), len(want))], want)
+		}
+	})
+
+	t.Run("the largest counts are accepted", func(t *testing.T) {
+		root := t.TempDir()
+		writePreplanTopic(t, root, "auth-flow.md", preplanSkeletonFor("auth flow"))
+		out, err := planSupportCore(root, root, preplanCheckIn("auth flow", preplanCountMax, preplanCountMax, preplanCountMax))
+		if err != nil {
+			t.Fatalf("preplan_check: %v", err)
+		}
+		if want := " 30000 proposals: 10000 pass, 10000 kept, 10000 dropped."; !strings.Contains(out.GuardrailCheckLine, want) {
+			t.Errorf("GuardrailCheckLine = %q, want it to hold %q", out.GuardrailCheckLine, want)
+		}
+	})
+
+	t.Run("other check lines that stay in the file are counted", func(t *testing.T) {
+		root := t.TempDir()
+		const late = "**Guardrail check:** late\n"
+		content := withLine("**Guardrail check:** old") + preplanFiller(dashboardPreplanHeadMax) + late + late
+		file := writePreplanTopic(t, root, "auth-flow.md", content)
+		out, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
+		if err != nil {
+			t.Fatalf("preplan_check: %v", err)
+		}
+		want := "Replaced the Guardrail check line of auth-flow.md. Old line: **Guardrail check:** old 2 more Guardrail check line(s) stay in the file: delete them by hand."
+		if out.Summary != want {
+			t.Errorf("Summary = %q, want %q", out.Summary, want)
+		}
+		wantPreplanBytes(t, file, strings.Replace(content, "**Guardrail check:** old", out.GuardrailCheckLine, 1))
 	})
 }
 
@@ -3561,7 +3666,7 @@ func TestPreplanWarningText(t *testing.T) {
 func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 	setPreplanNow(t, preplanCheckTestNow)
 	skeleton := preplanSkeletonFor("auth flow")
-	const countSuggestion = "Pass passCount, keptCount and droppedCount as whole numbers 0 or more, counted from the ## Decisions table."
+	const countSuggestion = "Pass passCount, keptCount and droppedCount as whole numbers from 0 to 10000, counted from the ## Decisions table."
 
 	// wantErr checks the class, the message and the Suggestion of err.
 	wantErr := func(t *testing.T, err error, class, msg, suggestion string) {
@@ -3582,6 +3687,7 @@ func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 
 	one := 1
 	minus := -1
+	over := preplanCountMax + 1
 	for _, tc := range []struct {
 		name    string
 		in      PlanSupportIn
@@ -3590,9 +3696,12 @@ func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 		{"passCount absent", PlanSupportIn{KeptCount: &one, DroppedCount: &one}, "preplan_check: passCount is required"},
 		{"keptCount absent", PlanSupportIn{PassCount: &one, DroppedCount: &one}, "preplan_check: keptCount is required"},
 		{"droppedCount absent", PlanSupportIn{PassCount: &one, KeptCount: &one}, "preplan_check: droppedCount is required"},
-		{"passCount -1", PlanSupportIn{PassCount: &minus, KeptCount: &one, DroppedCount: &one}, "preplan_check: passCount is -1, must be 0 or more"},
-		{"keptCount -1", PlanSupportIn{PassCount: &one, KeptCount: &minus, DroppedCount: &one}, "preplan_check: keptCount is -1, must be 0 or more"},
-		{"droppedCount -1", PlanSupportIn{PassCount: &one, KeptCount: &one, DroppedCount: &minus}, "preplan_check: droppedCount is -1, must be 0 or more"},
+		{"passCount -1", PlanSupportIn{PassCount: &minus, KeptCount: &one, DroppedCount: &one}, "preplan_check: passCount is -1, must be 0 to 10000"},
+		{"keptCount -1", PlanSupportIn{PassCount: &one, KeptCount: &minus, DroppedCount: &one}, "preplan_check: keptCount is -1, must be 0 to 10000"},
+		{"droppedCount -1", PlanSupportIn{PassCount: &one, KeptCount: &one, DroppedCount: &minus}, "preplan_check: droppedCount is -1, must be 0 to 10000"},
+		{"passCount 10001", PlanSupportIn{PassCount: &over, KeptCount: &one, DroppedCount: &one}, "preplan_check: passCount is 10001, must be 0 to 10000"},
+		{"keptCount 10001", PlanSupportIn{PassCount: &one, KeptCount: &over, DroppedCount: &one}, "preplan_check: keptCount is 10001, must be 0 to 10000"},
+		{"droppedCount 10001", PlanSupportIn{PassCount: &one, KeptCount: &one, DroppedCount: &over}, "preplan_check: droppedCount is 10001, must be 0 to 10000"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			noPreplanCheckWrite(t)
@@ -3670,6 +3779,10 @@ func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 		if msg := err.Error(); !strings.HasPrefix(msg, "preplan_check: list: ") {
 			t.Errorf("err.Error() = %q, want prefix %q", msg, "preplan_check: list: ")
 		}
+		var pathErr *fs.PathError
+		if !errors.As(err, &pathErr) {
+			t.Errorf("err = %v, want it to wrap the list error (*fs.PathError)", err)
+		}
 		wantPreplanBytes(t, blocker, "not a directory\n")
 	})
 
@@ -3696,7 +3809,7 @@ func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 		const content = "# Preplan: auth flow\n\n## Goal\n"
 		file := writePreplanTopic(t, root, "auth-flow.md", content)
 		_, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
-		wantErr(t, err, "data", file+" has no **Started:** line and no **Status:** line in its first 4096 bytes",
+		wantErr(t, err, "data", "preplan_check: "+file+" has no **Started:** line and no **Status:** line in its first 4096 bytes",
 			"Add a **Status:** line near the top of the topic file by hand, then call preplan_check again.")
 		wantPreplanBytes(t, file, content)
 	})
@@ -3713,33 +3826,51 @@ func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 		file := writePreplanTopic(t, root, "auth-flow.md", content)
 		_, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
 		wantErr(t, err, "data",
-			fmt.Sprintf("%s is %d bytes, more than the %d bytes (8 MiB) that preplan_check reads", file, dashboardDeleteReadMax+1, dashboardDeleteReadMax),
+			fmt.Sprintf("preplan_check: %s is %d bytes, more than the %d bytes (8 MiB) that preplan_check reads", file, dashboardDeleteReadMax+1, dashboardDeleteReadMax),
 			"Make the topic file smaller than 8 MiB by hand, then call preplan_check again.")
 		if info, err := os.Stat(file); err != nil || info.Size() != int64(len(content)) {
 			t.Errorf("topic file size changed (stat %v, err %v)", info, err)
 		}
 	})
 
+	const rerun = ", then run /sdlc:preplan again. preplan_context then creates a new topic file."
+	// Each setup makes the topic path at file and returns the message and the
+	// Suggestion that the call must give.
 	notRegular := []struct {
 		name  string
-		setup func(t *testing.T, file string)
+		setup func(t *testing.T, file string) (msg, suggestion string)
 	}{
-		{"a symlink to a regular file", func(t *testing.T, file string) {
+		{"a symlink to a regular file", func(t *testing.T, file string) (string, string) {
 			target := filepath.Join(t.TempDir(), "target.md")
 			writeFile(t, target, skeleton)
 			if err := os.Symlink(target, file); err != nil {
 				t.Fatal(err)
 			}
+			return "preplan_check: " + file + " is a symlink, not a regular file",
+				"Replace the link " + file + " with a copy of the file it points to, then call preplan_check again."
 		}},
-		{"a dangling symlink", func(t *testing.T, file string) {
-			if err := os.Symlink(filepath.Join(t.TempDir(), "gone.md"), file); err != nil {
+		{"a dangling symlink", func(t *testing.T, file string) (string, string) {
+			target := filepath.Join(t.TempDir(), "gone.md")
+			if err := os.Symlink(target, file); err != nil {
 				t.Fatal(err)
 			}
+			return "preplan_check: " + file + " is a link to " + target + ", which does not exist.",
+				"Remove the link with rm " + file + rerun
 		}},
-		{"a folder", func(t *testing.T, file string) {
+		{"a folder", func(t *testing.T, file string) (string, string) {
 			if err := os.Mkdir(file, 0o755); err != nil {
 				t.Fatal(err)
 			}
+			return "preplan_check: " + file + " is a folder, not a regular file", "Remove or rename " + file + rerun
+		}},
+		{"a named pipe", func(t *testing.T, file string) (string, string) {
+			// The Lstat seam reports a pipe, so the case needs no Mkfifo and
+			// runs on every platform. The file on disk stays regular.
+			writeFile(t, file, skeleton)
+			swapPreplanSeam(t, &preplanLstat, func(string) (fs.FileInfo, error) {
+				return preplanFakeInfo{mode: fs.ModeNamedPipe | 0o644}, nil
+			})
+			return "preplan_check: " + file + " is not a regular file", "Remove or rename " + file + rerun
 		}},
 	}
 	for _, tc := range notRegular {
@@ -3751,15 +3882,11 @@ func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 				t.Fatal(err)
 			}
 			file := filepath.Join(dir, "auth-flow.md")
-			tc.setup(t, file)
+			wantMsg, wantSuggestion := tc.setup(t, file)
 			before, _ := os.Lstat(file)
 
 			_, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
-			wantErr(t, err, "domain", "",
-				"Make "+file+" a regular file (replace the link with the file it points to), then call preplan_check again.")
-			if msg := err.Error(); !strings.HasPrefix(msg, "preplan_check: "+file+" is ") {
-				t.Errorf("err.Error() = %q, want it to name %s", msg, file)
-			}
+			wantErr(t, err, "domain", wantMsg, wantSuggestion)
 			after, _ := os.Lstat(file)
 			if before == nil || after == nil || before.Mode() != after.Mode() {
 				t.Errorf("topic path mode = %v, want %v unchanged", after, before)
@@ -3785,33 +3912,47 @@ func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 		wantPreplanBytes(t, target, skeleton)
 	})
 
-	t.Run("an Lstat failure", func(t *testing.T) {
-		noPreplanCheckWrite(t)
-		swapPreplanSeam(t, &preplanLstat, func(string) (fs.FileInfo, error) { return nil, errInjectedPreplan })
-		root := t.TempDir()
-		file := writePreplanTopic(t, root, "auth-flow.md", skeleton)
-		_, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
-		wantErr(t, err, "infra", "preplan_check: "+errInjectedPreplan.Error(),
-			"Check read permission on "+file+", then call preplan_check again.")
-		if !errors.Is(err, errInjectedPreplan) {
-			t.Errorf("err = %v, want it to wrap the Lstat error", err)
+	// An Lstat or a read failure gets a Suggestion that fits its error.
+	errPermission := fmt.Errorf("%w: injected", fs.ErrPermission)
+	errNotExist := fmt.Errorf("%w: injected", fs.ErrNotExist)
+	for _, op := range []string{"Lstat", "read"} {
+		for _, tc := range []struct {
+			name           string
+			err            error
+			class          string
+			wantSuggestion func(file string) string
+		}{
+			{"an opaque error", errInjectedPreplan, "infra", func(string) string {
+				return "Fix the cause that the message names, then call preplan_check again."
+			}},
+			{"a permission error", errPermission, "infra", func(file string) string {
+				if op == "read" {
+					return "Give your user read permission on " + file + ", then call preplan_check again."
+				}
+				return "Give your user search permission on " + filepath.Dir(file) + ", then call preplan_check again."
+			}},
+			{"a file that is gone", errNotExist, "domain", func(string) string {
+				return "Run plan_support with action preplan_context and this topic first."
+			}},
+		} {
+			t.Run(op+" failure: "+tc.name, func(t *testing.T) {
+				noPreplanCheckWrite(t)
+				if op == "read" {
+					swapPreplanSeam(t, &preplanReadFile, func(string) ([]byte, error) { return nil, tc.err })
+				} else {
+					swapPreplanSeam(t, &preplanLstat, func(string) (fs.FileInfo, error) { return nil, tc.err })
+				}
+				root := t.TempDir()
+				file := writePreplanTopic(t, root, "auth-flow.md", skeleton)
+				_, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
+				wantErr(t, err, tc.class, "preplan_check: "+tc.err.Error(), tc.wantSuggestion(file))
+				if !errors.Is(err, tc.err) {
+					t.Errorf("err = %v, want it to wrap the %s error", err, op)
+				}
+				wantPreplanBytes(t, file, skeleton)
+			})
 		}
-		wantPreplanBytes(t, file, skeleton)
-	})
-
-	t.Run("a read failure", func(t *testing.T) {
-		noPreplanCheckWrite(t)
-		swapPreplanSeam(t, &preplanReadFile, func(string) ([]byte, error) { return nil, errInjectedPreplan })
-		root := t.TempDir()
-		file := writePreplanTopic(t, root, "auth-flow.md", skeleton)
-		_, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
-		wantErr(t, err, "infra", "preplan_check: "+errInjectedPreplan.Error(),
-			"Check read permission on "+file+", then call preplan_check again.")
-		if !errors.Is(err, errInjectedPreplan) {
-			t.Errorf("err = %v, want it to wrap the read error", err)
-		}
-		wantPreplanBytes(t, file, skeleton)
-	})
+	}
 
 	t.Run("a write failure", func(t *testing.T) {
 		swapPreplanSeam(t, &preplanWriteBytes, func(string, []byte) error { return errInjectedPreplan })

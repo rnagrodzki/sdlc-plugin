@@ -88,7 +88,7 @@ The file has a status line. It shows where the topic stands:
 |---|---|
 | `in progress` | The dialogue is running. This is the status of a new file. |
 | `ready for plan` | You finished the dialogue. The file can go to `/plan`. |
-| `paused` | You cancelled. The skill keeps the file. |
+| `paused` | You cancelled, or the guardrail check stopped with an error (see [Guardrail check](#guardrail-check)). The skill keeps the file. |
 
 The skill sets a status only at these events. You can also set any of the
 three statuses on the Preplans tab of the dashboard, with no dialogue event
@@ -128,12 +128,25 @@ Started line records it:
 If the skill could not read the guardrails, the line ends with
 `Guardrails unavailable: <reason>.` A proposal with a kept note counts as kept. A dropped proposal counts as dropped. A moved proposal counts nowhere. Each other proposal counts as a pass.
 
+The check can stop the dialogue with an error. The skill prints the error,
+then goes to the cancel step, which sets the status to `paused`. The check
+stops in these cases:
+
+- The topic file is a link, a folder, or another file that is not a regular
+  file. A link to a regular file passes the first step of the skill, so the
+  stop comes only at the first check. Replace the link with a copy of the
+  file that it points to, then run the skill again.
+- The topic file is larger than 8 MiB.
+- The first 4096 bytes of the topic file hold no `**Started:**` line and no
+  `**Status:**` line.
+- A read or a write of the topic file fails.
+
 Two results also leave a short note at the end of the `Reason` cell in the
 `Decisions` table:
 
 | Note | Meaning |
 |---|---|
-| `Kept with warning: <ids>.` | The proposal breaks only `warning` guardrails, and you chose to keep it. A later check does not ask again. |
+| `Kept with warning: <ids>.` | The proposal breaks only `warning` guardrails, and you chose to keep it. A later check does not ask again while the note lists every `warning` guardrail that the proposal breaks. If you change the proposal, or it breaks a new `warning` guardrail, the skill asks again. |
 | `Dropped by: <ids>.` | The proposal breaks an `error` guardrail, and it still did after one rework. |
 
 What the skill does when a proposal breaks a guardrail:

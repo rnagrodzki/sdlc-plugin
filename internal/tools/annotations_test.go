@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -44,7 +45,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context, plus one temp-and-rename rewrite of an existing regular .sdlc-v2/preplan/*.md file for preplan_check",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context, plus one temp-and-rename rewrite of an existing regular .sdlc-v2/preplan/*.md file for preplan_check (each call writes a new Last check time, so two calls give two files; idempotent:true stays because the plan-tools exception of docs/mcp-tool-annotations.md keeps readOnly:true, under which idempotent has no meaning)",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -504,6 +505,14 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				if _, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_check", Topic: "auth flow",
 					PassCount: &pass, KeptCount: &kept, DroppedCount: &dropped}); err != nil {
 					t.Fatalf("preplan_check: %v", err)
+				}
+				topic, err := os.ReadFile(filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md"))
+				if err != nil {
+					t.Fatalf("read the topic file after preplan_check: %v", err)
+				}
+				if !strings.Contains(string(topic), "\n**Guardrail check:** ") ||
+					!strings.Contains(string(topic), " guardrails, 1 proposals: 1 pass, 0 kept, 0 dropped. ") {
+					t.Fatalf("preplan_check did not write the check line:\n%s", topic)
 				}
 			case "verify_pipeline_classify":
 				_ = ClassifyLogs("error: build failed")

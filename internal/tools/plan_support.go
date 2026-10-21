@@ -81,9 +81,9 @@ type PlanSupportIn struct {
 	Topic string `json:"topic,omitempty" jsonschema_description:"preplan_context and preplan_check (required): plain-text topic name, one line, 1-50 characters after outer spaces are trimmed, with at least one ASCII letter or digit (a-z, A-Z, 0-9). The slug is the topic lowercased, with each run of other characters turned into one hyphen, so two topics can share one slug (\"Auth flow\" and \"auth-flow\" both give auth-flow). An existing file named <slug>.md or YYYY-MM-DD-<slug>.md is reused, whatever its date. With no such file, preplan_context creates YYYY-MM-DD-<slug>.md with the UTC date of today. preplan_check never creates a file: a topic with no file is an error. Two such files return an error and write nothing. Example: auth flow"`
 
 	// preplan_check
-	PassCount    *int `json:"passCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 or more. Live proposals (Decisions rows that start with neither Dropped: nor Moved:) whose Reason holds no Kept with warning: note. Each live proposal is in passCount or keptCount, never both. Absent or negative is rejected. Example: 6"`
-	KeptCount    *int `json:"keptCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 or more. Live proposals whose Reason holds a Kept with warning: note after the check. Absent or negative is rejected. Example: 1"`
-	DroppedCount *int `json:"droppedCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 or more. Decisions rows whose Decision cell starts with Dropped:. Absent or negative is rejected. Example: 0"`
+	PassCount    *int `json:"passCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 to 10000. Live proposals (Decisions rows that start with neither Dropped: nor Moved:) whose Reason holds no Kept with warning: note. Each live proposal is in passCount or keptCount, never both. Absent, negative or more than 10000 is rejected. Example: 6"`
+	KeptCount    *int `json:"keptCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 to 10000. Live proposals whose Reason holds a Kept with warning: note after the check. Absent, negative or more than 10000 is rejected. Example: 1"`
+	DroppedCount *int `json:"droppedCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 to 10000. Decisions rows whose Decision cell starts with Dropped:. Absent, negative or more than 10000 is rejected. Example: 0"`
 }
 
 // EvidenceItem is one evidence entry of a writer, stored in
@@ -299,7 +299,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. It lists the names in <main-worktree>/.sdlc-v2/preplan/ (at most 10000) and uses the one file named exactly <slug>.md or YYYY-MM-DD-<slug>.md. With no such file it creates YYYY-MM-DD-<slug>.md (the UTC date of today) with a skeleton that holds a **Started:** line (UTC, RFC 3339); it never overwrites a file. Two or more such files return DataError that names them; nothing is written. A folder that cannot be listed (not a missing folder), or that holds more than 10000 names, returns InfraError. Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), summary, next. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Every error carries a Suggestion. A dangling symlink on the path to the topic file returns InfraError that names the link and its missing target; nothing is written. Its Suggestion for a folder link is "Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>"; for a topic-file link it is "Remove the link, then try again: rm <link>".
-- preplan_check: Write the guardrail check line of an existing topic file. Call it once at the end of each preplan Step 4, after the skill counts the proposals. Requires topic, passCount, keptCount, droppedCount. No optional fields. It finds the file as preplan_context does, never creates one, and refuses a file that is not a regular file. It reads at most 8 MiB, loads the plan guardrails for the count, and replaces the first **Guardrail check:** line in the first 4096 bytes, else adds one after the **Started:** line, else after the **Status:** line. It writes a temp file and renames it. Returns preplanFile, guardrailCheckLine, summary, next. A bad count or topic, a missing file or a file that is not regular returns DomainError and writes nothing; two matching files, a file over 8 MiB or no place for the line returns DataError; a list, read or write failure returns InfraError and leaves the file as it was.`,
+`+"- preplan_check: Write the guardrail check line of an existing topic file. Call it once at the end of each preplan Step 4, after the skill counts the proposals. Requires topic, passCount, keptCount, droppedCount (each a whole number from 0 to "+strconv.Itoa(preplanCountMax)+"). No optional fields. It finds the file as preplan_context does, never creates one, and refuses a file that is not a regular file. It reads at most "+dashboardDeleteReadMaxText+", loads the plan guardrails for the count, and replaces the first **Guardrail check:** line in the first "+strconv.Itoa(dashboardPreplanHeadMax)+" bytes, else adds one after the **Started:** line, else after the **Status:** line. The line is \"**Guardrail check:** <guardrails> guardrails, <sum> proposals: <passCount> pass, <keptCount> kept, <droppedCount> dropped. Last check: <UTC time, RFC 3339>.\" When the plan config cannot be read, the call still succeeds: the line ends with \" Guardrails unavailable: <warning>.\" and summary names the warning. It writes a temp file and renames it. Returns preplanFile, guardrailCheckLine, summary (added or replaced, the old line, and the count of other check lines that stay in the file), next. A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over "+dashboardDeleteReadMaxText+" or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was.",
 		mcpserver.Annotations{
 			Title:      "Plan support and evidence store",
 			ReadOnly:   true,
@@ -1359,11 +1359,17 @@ func findPreplanFiles(dir, slug string) ([]string, error) {
 	return names, nil
 }
 
-// preplanMatches lists dir and returns the 0 or 1 topic file names for slug.
-// A list error or a full folder returns InfraError, two or more matches
-// return DataError. Each message starts with action + ":".
-func preplanMatches(action, dir, topic, slug string) ([]string, error) {
-	names, err := findPreplanFiles(dir, slug)
+// preplanTopic is a trimmed topic and the slug that preplanSlug made from it.
+type preplanTopic struct {
+	name string
+	slug string
+}
+
+// preplanMatches lists dir and returns the 0 or 1 topic file names for
+// topic.slug. A list error or a full folder returns InfraError, two or more
+// matches return DataError. Each message starts with action + ":".
+func preplanMatches(action, dir string, topic preplanTopic) ([]string, error) {
+	names, err := findPreplanFiles(dir, topic.slug)
 	if err != nil {
 		// An open or list error of the os package already names the folder,
 		// so the message does not repeat it. errPreplanDirFull does not name
@@ -1379,7 +1385,7 @@ func preplanMatches(action, dir, topic, slug string) ([]string, error) {
 	if len(names) > 1 {
 		list := strings.Join(names, ", ")
 		return nil, &mcpserver.DataError{
-			Msg:        fmt.Sprintf("%s: topic %q matches %d topic files in %s: %s", action, topic, len(names), dir, list),
+			Msg:        fmt.Sprintf("%s: topic %q matches %d topic files in %s: %s", action, topic.name, len(names), dir, list),
 			Suggestion: fmt.Sprintf("Rename or delete one of: %s. Then run /sdlc:preplan again.", list),
 		}
 	}
@@ -1443,16 +1449,13 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 	guardrails, warning := loadGuardrails(mainRoot)
 
 	dir := filepath.Join(mainRoot, paths.DataDir, paths.PreplanSubdir)
-	names, err := preplanMatches(action, dir, topic, slug)
+	names, err := preplanMatches(action, dir, preplanTopic{name: topic, slug: slug})
 	if err != nil {
 		return PlanSupportOut{}, err
 	}
 	now := preplanNow().UTC()
-	var name string
-	switch len(names) {
-	case 0:
-		name = now.Format(preplanDateLayout) + "-" + slug + ".md"
-	default:
+	name := now.Format(preplanDateLayout) + "-" + slug + ".md"
+	if len(names) > 0 {
 		name = names[0]
 	}
 	file := filepath.Join(dir, name)
@@ -1567,12 +1570,17 @@ func createPreplanFile(file, content string) (bool, error) {
 // ---------------------------------------------------------------------------
 
 // Seams of preplan_check. Tests replace them to force an Lstat, read or write
-// failure without a broken filesystem.
+// failure, or a file mode, without a broken filesystem.
 var (
 	preplanLstat      = os.Lstat
 	preplanReadFile   = os.ReadFile
 	preplanWriteBytes = fsx.AtomicWriteBytes
 )
+
+// preplanCountMax is the largest value that preplan_check accepts for each of
+// passCount, keptCount and droppedCount. The sum of the three stays far from
+// an int overflow.
+const preplanCountMax = 10000
 
 // preplanGuardrailCheckPrefix is the text that starts the Guardrail check line
 // of a topic file.
@@ -1582,25 +1590,87 @@ const preplanGuardrailCheckPrefix = "**Guardrail check:**"
 // capturing the text after the prefix.
 var preplanGuardrailCheckRe = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(preplanGuardrailCheckPrefix) + `[ \t]*(.*)$`)
 
+// preplanCheckAgain ends each preplan_check Suggestion that a second call
+// can fix.
+const preplanCheckAgain = ", then call preplan_check again."
+
+// preplanNoFileSuggestion is the Suggestion of a preplan_check call that
+// finds no topic file.
+const preplanNoFileSuggestion = "Run plan_support with action preplan_context and this topic first."
+
 // planPreplanCheck writes the guardrail check line of the existing topic
 // file for in.Topic. The steps run in this order, and no step before the
-// last one writes:
+// last one writes. Every error message starts with "preplan_check:".
 //
-//  1. Each count is set and is 0 or more (DomainError).
+//  1. preplanCheckCounts: each count is set, and is 0 to preplanCountMax
+//     (DomainError).
 //  2. The trimmed topic gives a slug (preplanSlug, DomainError).
 //  3. preplanMatches finds exactly one topic file under mainRoot (no file:
 //     DomainError; list errors, a full folder, two files: see preplanMatches).
-//  4. preplanLstat: the file is a regular file (DomainError; a failed Lstat is
-//     an InfraError).
-//  5. The file is at most dashboardDeleteReadMax bytes (DataError).
-//  6. preplanReadFile reads it (InfraError).
-//  7. loadGuardrails counts the guardrails, and setGuardrailCheckLine puts the
+//  4. readPreplanTopic checks the file and reads it (see readPreplanTopic).
+//  5. loadGuardrails counts the guardrails, and setGuardrailCheckLine puts the
 //     check line in the head (no place for the line: DataError).
-//  8. preplanWriteBytes writes a temp file and renames it over the topic file
+//  6. preplanWriteBytes writes a temp file and renames it over the topic file
 //     (InfraError; the old file stays as it was).
 func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	const action = "preplan_check"
-	const countSuggestion = "Pass passCount, keptCount and droppedCount as whole numbers 0 or more, counted from the ## Decisions table."
+	pass, kept, dropped, err := preplanCheckCounts(action, in)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
+	topic := strings.TrimSpace(in.Topic)
+	slug, err := preplanSlug(action, topic)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
+
+	dir := filepath.Join(mainRoot, paths.DataDir, paths.PreplanSubdir)
+	names, err := preplanMatches(action, dir, preplanTopic{name: topic, slug: slug})
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
+	if len(names) == 0 {
+		return PlanSupportOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("%s: no topic file for topic %q in %s", action, topic, dir),
+			Suggestion: preplanNoFileSuggestion,
+		}
+	}
+	name := names[0]
+	file := filepath.Join(dir, name)
+	data, err := readPreplanTopic(action, file)
+	if err != nil {
+		return PlanSupportOut{}, err
+	}
+
+	guardrails, warning := loadGuardrails(mainRoot)
+	line := preplanCheckLine(len(guardrails), pass, kept, dropped, warning)
+	next, prior, ok := setGuardrailCheckLine(data, line)
+	if !ok {
+		return PlanSupportOut{}, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("%s: %s has no **Started:** line and no **Status:** line in its first %d bytes", action, file, dashboardPreplanHeadMax),
+			Suggestion: "Add a **Status:** line near the top of the topic file by hand" + preplanCheckAgain,
+		}
+	}
+	if err := preplanWriteBytes(file, next); err != nil {
+		return PlanSupportOut{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("%s: %v", action, err),
+			Suggestion: "Check write permission on " + dir + " and free disk space" + preplanCheckAgain,
+			Cause:      err,
+		}
+	}
+	return PlanSupportOut{
+		Summary:            preplanCheckSummary(name, prior, warning, next),
+		Next:               "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table.",
+		PreplanFile:        file,
+		GuardrailCheckLine: line,
+	}, nil
+}
+
+// preplanCheckCounts returns the three counts of a preplan_check call. A
+// count that is absent, negative or more than preplanCountMax returns a
+// DomainError whose message starts with action + ":".
+func preplanCheckCounts(action string, in PlanSupportIn) (pass, kept, dropped int, err error) {
+	suggestion := fmt.Sprintf("Pass passCount, keptCount and droppedCount as whole numbers from 0 to %d, counted from the ## Decisions table.", preplanCountMax)
 	for _, c := range []struct {
 		name  string
 		value *int
@@ -1610,106 +1680,132 @@ func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 		{"droppedCount", in.DroppedCount},
 	} {
 		if c.value == nil {
-			return PlanSupportOut{}, &mcpserver.DomainError{
+			return 0, 0, 0, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("%s: %s is required", action, c.name),
-				Suggestion: countSuggestion,
+				Suggestion: suggestion,
 			}
 		}
-		if *c.value < 0 {
-			return PlanSupportOut{}, &mcpserver.DomainError{
-				Msg:        fmt.Sprintf("%s: %s is %d, must be 0 or more", action, c.name, *c.value),
-				Suggestion: countSuggestion,
+		if *c.value < 0 || *c.value > preplanCountMax {
+			return 0, 0, 0, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("%s: %s is %d, must be 0 to %d", action, c.name, *c.value, preplanCountMax),
+				Suggestion: suggestion,
 			}
 		}
 	}
-	pass, kept, dropped := *in.PassCount, *in.KeptCount, *in.DroppedCount
+	return *in.PassCount, *in.KeptCount, *in.DroppedCount, nil
+}
 
-	topic := strings.TrimSpace(in.Topic)
-	slug, err := preplanSlug(action, topic)
-	if err != nil {
-		return PlanSupportOut{}, err
-	}
-
-	dir := filepath.Join(mainRoot, paths.DataDir, paths.PreplanSubdir)
-	names, err := preplanMatches(action, dir, topic, slug)
-	if err != nil {
-		return PlanSupportOut{}, err
-	}
-	if len(names) == 0 {
-		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("%s: no topic file for topic %q in %s", action, topic, dir),
-			Suggestion: "Run plan_support with action preplan_context and this topic first.",
-		}
-	}
-	name := names[0]
-	file := filepath.Join(dir, name)
-	readSuggestion := fmt.Sprintf("Check read permission on %s, then call preplan_check again.", file)
-
+// readPreplanTopic checks that file is a regular file of at most
+// dashboardDeleteReadMax bytes, then reads it. Each message starts with
+// action + ":".
+//
+//   - A file that is gone at the Lstat or the read: DomainError with
+//     preplanNoFileSuggestion.
+//   - A symlink, a folder or another file that is not regular: DomainError
+//     (preplanNotRegularError).
+//   - A file over the size limit: DataError.
+//   - Any other Lstat or read failure: InfraError (preplanIOError).
+func readPreplanTopic(action, file string) ([]byte, error) {
 	info, err := preplanLstat(file)
 	if err != nil {
-		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("%s: %v", action, err),
-			Suggestion: readSuggestion,
-			Cause:      err,
-		}
+		return nil, preplanIOError(action, file, false, err)
 	}
 	if !info.Mode().IsRegular() {
-		kind := "not a regular file"
-		switch {
-		case info.Mode()&fs.ModeSymlink != 0:
-			kind = "a symlink, not a regular file"
-		case info.IsDir():
-			kind = "a folder, not a regular file"
-		}
-		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("%s: %s is %s", action, file, kind),
-			Suggestion: fmt.Sprintf("Make %s a regular file (replace the link with the file it points to), then call preplan_check again.", file),
-		}
+		return nil, preplanNotRegularError(action, file, info.Mode())
 	}
 	if info.Size() > dashboardDeleteReadMax {
-		return PlanSupportOut{}, &mcpserver.DataError{
-			Msg: fmt.Sprintf("%s is %d bytes, more than the %d bytes (%s) that preplan_check reads",
-				file, info.Size(), dashboardDeleteReadMax, dashboardDeleteReadMaxText),
-			Suggestion: "Make the topic file smaller than " + dashboardDeleteReadMaxText + " by hand, then call preplan_check again.",
+		return nil, &mcpserver.DataError{
+			Msg: fmt.Sprintf("%s: %s is %d bytes, more than the %d bytes (%s) that preplan_check reads",
+				action, file, info.Size(), dashboardDeleteReadMax, dashboardDeleteReadMaxText),
+			Suggestion: "Make the topic file smaller than " + dashboardDeleteReadMaxText + " by hand" + preplanCheckAgain,
 		}
 	}
 	data, err := preplanReadFile(file)
 	if err != nil {
-		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("%s: %v", action, err),
-			Suggestion: readSuggestion,
-			Cause:      err,
+		return nil, preplanIOError(action, file, true, err)
+	}
+	return data, nil
+}
+
+// preplanIOError returns the error of a failed Lstat (read false) or read
+// (read true) of the topic file. The os error names the operation and the
+// path, so the message adds only the action. fs.ErrNotExist gives a
+// DomainError: the file went away after the folder listing. Any other error
+// gives an InfraError whose Suggestion fits the error: fs.ErrPermission
+// points at the permission that the operation needs.
+func preplanIOError(action, file string, read bool, err error) error {
+	msg := fmt.Sprintf("%s: %v", action, err)
+	if errors.Is(err, fs.ErrNotExist) {
+		return &mcpserver.DomainError{Msg: msg, Suggestion: preplanNoFileSuggestion, Cause: err}
+	}
+	suggestion := "Fix the cause that the message names" + preplanCheckAgain
+	if errors.Is(err, fs.ErrPermission) {
+		if read {
+			suggestion = "Give your user read permission on " + file + preplanCheckAgain
+		} else {
+			suggestion = "Give your user search permission on " + filepath.Dir(file) + preplanCheckAgain
 		}
 	}
+	return &mcpserver.InfraError{Msg: msg, Suggestion: suggestion, Cause: err}
+}
 
-	guardrails, warning := loadGuardrails(mainRoot)
+// preplanNotRegularError returns the DomainError for a topic file path whose
+// mode is not regular. The Suggestion fits the kind: a link to a file that
+// exists can become a copy of that file; a dangling link, a folder or another
+// file goes away, and the next /sdlc:preplan run creates a new topic file.
+func preplanNotRegularError(action, file string, mode fs.FileMode) error {
+	const rerun = ", then run /sdlc:preplan again. preplan_context then creates a new topic file."
+	kind := preplanFileKind(mode)
+	if mode&fs.ModeSymlink == 0 {
+		msg := fmt.Sprintf("%s: %s is %s", action, file, kind)
+		if mode.IsDir() {
+			msg += ", not a regular file"
+		}
+		return &mcpserver.DomainError{Msg: msg, Suggestion: "Remove or rename " + file + rerun}
+	}
+	if _, err := os.Stat(file); errors.Is(err, fs.ErrNotExist) {
+		msg := fmt.Sprintf("%s: %s is a symlink to a missing file", action, file)
+		if last, target, ok := fsx.FindDanglingLink(file); ok {
+			dl := &fsx.DanglingLinkError{Link: file, Target: target, Remove: true, Chain: last != file}
+			msg = action + ": " + dl.Problem()
+		}
+		return &mcpserver.DomainError{Msg: msg, Suggestion: "Remove the link with rm " + file + rerun}
+	}
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("%s: %s is %s, not a regular file", action, file, kind),
+		Suggestion: "Replace the link " + file + " with a copy of the file it points to" + preplanCheckAgain,
+	}
+}
+
+// preplanCheckLine returns the Guardrail check line, with no line end, for
+// the given guardrail count and proposal counts. A guardrail warning adds
+// " Guardrails unavailable: <warning>." at the end.
+func preplanCheckLine(guardrails, pass, kept, dropped int, warning string) string {
 	line := fmt.Sprintf("%s %d guardrails, %d proposals: %d pass, %d kept, %d dropped. Last check: %s.",
-		preplanGuardrailCheckPrefix, len(guardrails), pass+kept+dropped, pass, kept, dropped,
+		preplanGuardrailCheckPrefix, guardrails, pass+kept+dropped, pass, kept, dropped,
 		preplanNow().UTC().Format(time.RFC3339))
 	if warning != "" {
 		line += " Guardrails unavailable: " + preplanWarningText(warning) + "."
 	}
-	next, ok := setGuardrailCheckLine(data, line)
-	if !ok {
-		return PlanSupportOut{}, &mcpserver.DataError{
-			Msg:        fmt.Sprintf("%s has no **Started:** line and no **Status:** line in its first %d bytes", file, dashboardPreplanHeadMax),
-			Suggestion: "Add a **Status:** line near the top of the topic file by hand, then call preplan_check again.",
-		}
-	}
+	return line
+}
 
-	if err := preplanWriteBytes(file, next); err != nil {
-		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("%s: %v", action, err),
-			Suggestion: fmt.Sprintf("Check write permission on %s and free disk space, then call preplan_check again.", dir),
-			Cause:      err,
-		}
+// preplanCheckSummary returns the Summary of a successful preplan_check call.
+// It says whether the line was added or replaced, and echoes the replaced
+// line. It names the guardrail warning, if any, and the number of other
+// Guardrail check lines in next that stay in the file.
+func preplanCheckSummary(name, prior, warning string, next []byte) string {
+	summary := fmt.Sprintf("Added the Guardrail check line to %s.", name)
+	if prior != "" {
+		summary = fmt.Sprintf("Replaced the Guardrail check line of %s. Old line: %s", name, prior)
 	}
-	return PlanSupportOut{
-		Summary:            fmt.Sprintf("Wrote the Guardrail check line of %s.", name),
-		Next:               "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table.",
-		PreplanFile:        file,
-		GuardrailCheckLine: line,
-	}, nil
+	if warning != "" {
+		summary += " Guardrails unavailable: " + preplanWarningText(warning) + "."
+	}
+	if stale := len(preplanGuardrailCheckRe.FindAllIndex(next, -1)) - 1; stale > 0 {
+		summary += fmt.Sprintf(" %d more Guardrail check line(s) stay in the file: delete them by hand.", stale)
+	}
+	return summary
 }
 
 // preplanWarningText makes the guardrail warning fit on the check line: one
@@ -1721,45 +1817,24 @@ func preplanWarningText(warning string) string {
 
 // setGuardrailCheckLine puts line, the full Guardrail check line with no line
 // end, in data. Each anchor is found only in the first dashboardPreplanHeadMax
-// bytes. When the head has a Guardrail check line, the first one is replaced
-// whole, also when it runs past the head; a line that ends in CR LF keeps its
-// CR. Else the line goes after the Started line, else after the Status line,
-// with one blank line before it and the anchor's line end after it. ok is
-// false when the head has none of the three lines. Every other byte stays the
-// same, and next is a new slice: data does not change.
-//
-// The head bound and the line-end logic copy dashboardReplaceStatusLine. A fix
-// to one of the two functions must also change the other.
-func setGuardrailCheckLine(data []byte, line string) (next []byte, ok bool) {
-	head := data
-	if len(head) > dashboardPreplanHeadMax {
-		head = head[:dashboardPreplanHeadMax]
+// bytes. When the head has a Guardrail check line, replacePreplanHeadLine
+// replaces the first one, and prior is that old line with no line end. Else
+// the line goes after the Started line, else after the Status line, with one
+// blank line before it and the anchor's line end after it, and prior is
+// empty. ok is false when the head has none of the three lines. Every other
+// byte stays the same, and next is a new slice: data does not change.
+func setGuardrailCheckLine(data []byte, line string) (next []byte, prior string, ok bool) {
+	if next, prior, found := replacePreplanHeadLine(data, preplanGuardrailCheckRe, line); found {
+		return next, prior, true
 	}
 
-	if loc := preplanGuardrailCheckRe.FindIndex(head); loc != nil {
-		// The match can stop at the end of head, inside a long line. Take the
-		// whole line from the full data, so no tail of the old line stays.
-		start, end := loc[0], len(data)
-		if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
-			end = start + i
-		}
-		replacement := line
-		if bytes.HasSuffix(data[start:end], []byte("\r")) {
-			replacement += "\r"
-		}
-		next = make([]byte, 0, len(data)-(end-start)+len(replacement))
-		next = append(next, data[:start]...)
-		next = append(next, replacement...)
-		next = append(next, data[end:]...)
-		return next, true
-	}
-
+	head := preplanHead(data)
 	loc := dashboardPreplanStartedRe.FindIndex(head)
 	if loc == nil {
 		loc = dashboardPreplanStatusRe.FindIndex(head)
 	}
 	if loc == nil {
-		return nil, false
+		return nil, "", false
 	}
 	start := loc[0]
 	var insert string
@@ -1779,7 +1854,7 @@ func setGuardrailCheckLine(data []byte, line string) (next []byte, ok bool) {
 	next = append(next, data[:at]...)
 	next = append(next, insert...)
 	next = append(next, data[at:]...)
-	return next, true
+	return next, "", true
 }
 
 // extractLeadParagraph returns the first non-empty, non-heading paragraph from

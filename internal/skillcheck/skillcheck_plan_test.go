@@ -30,11 +30,13 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
-// planSkillsFiles lists the Task 45 deliverable skill files, relative to the
-// repository root, that this test cross-checks against the registry.
+// planSkillsFiles lists the skill files (the Task 45 deliverables and the
+// preplan skill), relative to the repository root, that this test
+// cross-checks against the registry.
 var planSkillsFiles = []string{
 	"skills/plan/SKILL.md",
 	"skills/execute/SKILL.md",
+	"skills/preplan/SKILL.md",
 }
 
 // planSkillsCallRe matches this repo's documented tool-call pseudocode
