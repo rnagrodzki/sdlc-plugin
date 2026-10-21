@@ -2353,14 +2353,7 @@ func preplanSkeletonFor(topic string) string {
 		"## Decisions\n" +
 		"\n" +
 		"| # | Decision | Reason |\n" +
-		"|---|---|---|\n" +
-		"\n" +
-		"## Open questions\n" +
-		"\n" +
-		"## Guardrail check\n" +
-		"\n" +
-		"| Proposal | Guardrail | Severity | Result |\n" +
-		"|---|---|---|---|\n"
+		"|---|---|---|\n"
 }
 
 // dataDirEntries lists the names directly under root/.sdlc-v2.
@@ -2468,7 +2461,7 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if want := "2 guardrail(s) loaded. Topic file auth-flow.md exists."; out.Summary != want {
 			t.Errorf("Summary = %q, want %q", out.Summary, want)
 		}
-		if want := "Read preplanFile, then continue with its open questions."; out.Next != want {
+		if want := "Read preplanFile, then continue with its open questions, if any."; out.Next != want {
 			t.Errorf("Next = %q, want %q", out.Next, want)
 		}
 	})
@@ -2562,7 +2555,7 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 			!strings.HasSuffix(out.Summary, ". Created topic file 2026-10-12-auth-flow.md.") {
 			t.Errorf("Summary = %q, want the read warning between the count and the file state", out.Summary)
 		}
-		if want := "Read preplanFile, then ask the first question. Record the warning in the Guardrail check section."; out.Next != want {
+		if want := "Read preplanFile, then ask the first question. preplan_check writes the warning into the Guardrail check line at Step 4."; out.Next != want {
 			t.Errorf("Next = %q, want %q", out.Next, want)
 		}
 	})

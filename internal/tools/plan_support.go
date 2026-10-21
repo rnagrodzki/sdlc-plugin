@@ -1291,13 +1291,6 @@ const preplanSkeletonTail = `
 
 | # | Decision | Reason |
 |---|---|---|
-
-## Open questions
-
-## Guardrail check
-
-| Proposal | Guardrail | Severity | Result |
-|---|---|---|---|
 `
 
 // preplanNow is the clock of preplan_context; tests replace it to fix the
@@ -1472,10 +1465,10 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 		summary += fmt.Sprintf("Created topic file %s.", name)
 	} else {
 		summary += fmt.Sprintf("Topic file %s exists.", name)
-		next = "Read preplanFile, then continue with its open questions."
+		next = "Read preplanFile, then continue with its open questions, if any."
 	}
 	if warning != "" {
-		next += " Record the warning in the Guardrail check section."
+		next += " preplan_check writes the warning into the Guardrail check line at Step 4."
 	}
 	return PlanSupportOut{
 		Summary:        summary,
