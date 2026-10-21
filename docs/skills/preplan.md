@@ -67,7 +67,8 @@ The topic file is in the main worktree, so every worktree of the repo sees
 the same file.
 
 The skill asks the `plan_support` tool to create the file once, with these
-sections in this order:
+sections in this order. The tool leaves out `Open questions`. The skill adds
+that section when a question is open:
 
 | Section | Content |
 |---|---|
@@ -119,13 +120,13 @@ accepted. Set the guardrails with `/setup --guardrails`. Each guardrail has a
 severity: `error`, or `warning`. A guardrail with no severity counts as
 `error`.
 
-Each check looks at every proposal again. After the check, one line under the
+Each check looks at every proposal again, except a dropped or moved one. After the check, one line under the
 Started line records it:
 
     **Guardrail check:** 53 guardrails, 7 proposals: 6 pass, 1 kept, 0 dropped. Last check: 2026-10-21T17:05:00Z.
 
 If the skill could not read the guardrails, the line ends with
-`Guardrails unavailable: <reason>.` A proposal with a kept note counts as kept. Each other proposal counts as a pass.
+`Guardrails unavailable: <reason>.` A proposal with a kept note counts as kept. A dropped proposal counts as dropped. A moved proposal counts nowhere. Each other proposal counts as a pass.
 
 Two results also leave a short note at the end of the `Reason` cell in the
 `Decisions` table:
@@ -188,8 +189,9 @@ file is created.
 
 The file `2026-10-12-auth-flow.md` already exists. It was created on an
 earlier day: the date in the name is the day of the first run. A run on
-2026-10-13 continues this file. The skill keeps it as it is and lists its
-open questions. Then the dialogue goes on from there.
+2026-10-13 continues this file. The skill keeps it, converts an older file to
+the new form, and lists its open questions, if any. Then the dialogue goes on
+from there.
 
 **Plan from a topic file without the handoff:**
 
