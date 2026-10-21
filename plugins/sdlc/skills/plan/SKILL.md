@@ -272,8 +272,8 @@ Call `plan_mark({ marker: "checkpoint", path: "", data: { step: "0", iteration: 
 **Preplan topic file:** the requirements file is a preplan topic file when its path is under `<main-worktree>/.sdlc-v2/preplan/` or its first line starts with `# Preplan:`. `/sdlc:preplan` writes it. Use its sections this way:
 - `## Goal`, `## Users and effect`, `## Flows` — the requirements context.
 - `## Decisions` — each row is one requirement. Skip each row whose `Decision` cell starts with `Dropped:`: a guardrail removed that proposal.
-- `## Guardrail check` — the check record of preplan. It is not a requirement, so do not copy it into the plan. Step 3 (lane 3) checks the plan against the guardrails again. A `kept — <ids>` row tells you that the user kept that proposal with a `warning` conflict.
-- `## Open questions` — each bullet is a scope question with no answer. Ask it in **Structured discovery** below. Under `--auto`, use the **`--auto` suppression** rule there.
+- `**Guardrail check:**` line — the check record of preplan. It is not a requirement, so do not copy it into the plan. Step 3 (lane 3) checks the plan against the guardrails again. A Reason cell that ends with `Kept with warning: <ids>.` tells you that the user kept that proposal with a `warning` conflict. An older topic file can hold a `## Guardrail check` section instead. Treat it the same way: a `kept — <ids>` row there has the same meaning.
+- `## Open questions` — present only when a question has no answer. Each bullet is a scope question with no answer. Ask it in **Structured discovery** below. Under `--auto`, use the **`--auto` suppression** rule there.
 - The `**Status:**` line is the state of preplan. It is not a requirement.
 
 **Discovery dispatch (full pipeline only, implements R24–R28):**
