@@ -644,7 +644,7 @@ port = 7385         # 1024-65535, loopback only
 | `<repo>/.sdlc-v2/reports/*` | ship, execute | run reports. Clear cache class `orphan-reports` deletes the ones that no run owns |
 | `<repo>/.sdlc-v2/history/deferred.json` | ship_state `defer` and `deferred_add`; server | deferred items. The server rewrites it without one item (see [Delete an item](#delete-an-item)) |
 | `<repo>/.sdlc-v2/learnings/log.md` | `learnings_log`; server | learning entries. The server rewrites it without one entry (see [Delete an item](#delete-an-item)) |
-| `<repo>/.sdlc-v2/preplan/<slug>.md` | plan_support `preplan_context`, preplan skill; server | preplan topic files. The server deletes one file (see [Delete an item](#delete-an-item)) or rewrites its `**Status:**` line (see [Change a preplan status](#change-a-preplan-status)) |
+| `<repo>/.sdlc-v2/preplan/<slug>.md` | plan_support `preplan_context` and `preplan_check`, preplan skill; server | preplan topic files. The server deletes one file (see [Delete an item](#delete-an-item)) or rewrites its `**Status:**` line (see [Change a preplan status](#change-a-preplan-status)) |
 | `<repo>/.sdlc-v2/history/runs.jsonl` | ship_state `history_record` and `fail`; plan_mark `done`; server | run history. The server rewrites it without the checked rows (see [Delete History rows](#delete-history-rows)) |
 | `<repo>/.sdlc-v2/evidence/attention/*.json` | hooks `block-askuserquestion-auto`, `record-permission-wait`; server | one record for each open wait. The server deletes one record (see [Dismiss a wait](#dismiss-a-wait)) |
 
