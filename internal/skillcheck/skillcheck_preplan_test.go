@@ -112,6 +112,6 @@ func TestPreplanSkillParity(t *testing.T) {
 	})
 
 	t.Run("tools_and_actions_resolve", func(t *testing.T) {
-		flagParityAssertToolsResolve(t, "preplan", "plan_support:preplan_context")
+		flagParityAssertToolsResolve(t, "preplan", "plan_support:preplan_context", "plan_support:preplan_check")
 	})
 }

@@ -25,16 +25,17 @@ absolute path as `preplanFile`.
 
 ## Topic file
 
-The tool writes the skeleton once: a `# Preplan: <topic>` heading, a `**Status:** in progress` line, a `**Started:** <UTC time>` line, and the sections below in this order. The skill never writes the skeleton, never creates the file, and never changes the Started line.
+The tool writes the skeleton once: a `# Preplan: <topic>` heading, a `**Status:** in progress` line, a `**Started:** <UTC time>` line, and the sections below in this order, except `## Open questions`. The skill adds that section only when a question is open. The skill never writes the skeleton, never creates the file, and never changes the Started line.
+
+After each Step 4, `preplan_check` writes one `**Guardrail check:**` line under the Started line. It shows the guardrail count, the proposal counts and the UTC time of the check. The skill never writes that line.
 
 | Section | Content |
 |---|---|
 | `## Goal` | one or two sentences: the result the user wants |
 | `## Users and effect` | who uses the change, what changes for them, what fails today |
 | `## Flows` | one before/after Mermaid diagram with its text twin for each flow that a proposal changes, or the line `No flow change.` |
-| `## Decisions` | a table with the columns `#`, `Decision` and `Reason`, one row for each proposal. A proposal is one row of this table, except a row whose `Decision` cell starts with `Moved:` (see Step 4). The `#` value of a row never changes and is never used again. The skill never deletes a row, so the next unused `#` value is one more than the highest `#` in the table |
-| `## Open questions` | one bullet for each question that has no answer yet |
-| `## Guardrail check` | a table with the columns `Proposal`, `Guardrail`, `Severity` and `Result`, one Step 4 result in each row. `Proposal` holds the `#` value of the proposal. `Guardrail` holds the `id` values that the row is about. A `pass` result holds its basis (see Step 4) |
+| `## Decisions` | a table with the columns `#`, `Decision` and `Reason`, one row for each proposal. A proposal is one row of this table, except a row whose `Decision` cell starts with `Moved:` (see Step 4). The `#` value of a row never changes and is never used again. The skill never deletes a row, so the next unused `#` value is one more than the highest `#` in the table. A Reason cell can end with `Kept with warning: <ids>.` or `Dropped by: <ids>.` (see Step 4). No other check text goes in the file |
+| `## Open questions` | only when at least one question has no answer: one bullet for each question. The skill adds the section after `## Decisions` with the first bullet. It deletes the whole section with the last bullet |
 
 ### Topic file status
 
@@ -55,9 +56,9 @@ Each status change in this skill matches one row of this table. The skill makes 
 |---|---|---|
 | 0 | Announce. Take the topic from the argument, or ask one question for it | Step 1. On cancel: end. No file exists yet, so nothing changes |
 | 1 | Call `plan_support({ action: "preplan_context", topic })` | Step 2. On a tool error: print it, then stop |
-| 2 | Read `preplanFile`. If `preplanCreated` is false, set status `in progress` and list the open questions | Step 3 |
+| 2 | Read `preplanFile`. If `preplanCreated` is false, set status `in progress`, convert an old-form file, and list the open questions, if any | Step 3 |
 | 3 | Ask one question with AskUserQuestion. Challenge a vague answer with one follow-up question. Edit the topic file. If a proposal changes a flow, write a before/after Mermaid diagram and its text twin under `## Flows` | Step 3 route table |
-| 4 | Check each proposal with no check row against each guardrail. Record one result row for each proposal in `## Guardrail check` | Step 4 route table |
+| 4 | Check every live proposal against each guardrail. Write the kept and drop notes. Call `preplan_check` with the counts, then read `preplanFile` again | Step 4 route table |
 | 5 | Set status `ready for plan`. Ask with AskUserQuestion: start `/sdlc:plan <preplanFile>` now, or stop | Step 5 route table |
 | cancel | Set status `paused`. Keep the file | end |
 
@@ -67,6 +68,7 @@ Every exit state names its next instruction:
 |---|---|---|
 | cancelled before the file exists | Step 0 | end. Make no tool call |
 | tool error | Step 1 | print the error's `## Do this` text as it is, then stop. Do not retry |
+| tool error | Step 4 | print the error's `## Do this` text as it is, then go to the cancel step |
 | cancelled during the dialogue | Step 3 or Step 4 | go to the cancel step: set status `paused`, keep the file, end |
 | user stops at the handoff | Step 5 | end. Status stays `ready for plan` |
 | plan skill ends | Step 5 | end |
@@ -96,7 +98,7 @@ Never call `plan_prepare`. It starts a plan run and prunes other runs.
 | success | keep `guardrails`, `preplanFile`, `preplanCreated` and `summary`. Go to Step 2 |
 | tool error (bad topic, two topic files that match, a folder that cannot be listed or holds too many names, or failed create) | print the error's `## Do this` text as it is, then stop. Make no other call |
 
-When the `summary` holds `Warning: <warning>.`, the guardrails are unavailable. Keep `<warning>`. The dialogue continues. Step 4 records the warning.
+When the `summary` holds `Warning: <warning>.`, the guardrails are unavailable. Keep `<warning>`. The dialogue continues. At Step 4, `preplan_check` writes the warning into the check line.
 
 ## Step 2: Read the topic file
 
@@ -105,7 +107,15 @@ Read `preplanFile`. The topic file is the only state of this skill, so a new run
 | `preplanCreated` | Action |
 |---|---|
 | `true` | the file holds the skeleton. Status is `in progress`. Go to Step 3 |
-| `false` | set status `in progress` (status table row 4 when the status is `paused` or `ready for plan`; no change when it is `in progress`). Print the `## Open questions` bullets to the user. Go to Step 3 |
+| `false` | set status `in progress` (status table row 4 when the status is `paused` or `ready for plan`; no change when it is `in progress`). Convert an old-form file (see below). If `## Open questions` exists, print its bullets to the user. Otherwise print `No open questions.` Go to Step 3 |
+
+Old-form file conversion. Do these edits in this order:
+
+1. If the file has a `## Guardrail check` section, read its rows. The `Proposal` cell holds the `#` value of a `## Decisions` row.
+2. For each `kept — <ids>` row, end the Reason cell of that Decisions row with `Kept with warning: <ids>.` Skip it when the Reason cell already holds that note.
+3. For each `dropped — <ids>` row, end the Reason cell of that Decisions row with `Dropped by: <ids>.` Skip it when the Reason cell already holds that note.
+4. Delete the whole `## Guardrail check` section.
+5. If `## Open questions` has no bullet, delete the section.
 
 ## Step 3: Ask one question
 
@@ -120,13 +130,13 @@ Dialogue rules:
 After each answer, edit the topic file before the next question:
 
 - Write the answer into the section that it fills.
-- Add a new question to `## Open questions`. Remove a bullet when an answer closes it.
+- Add a new question as a bullet to `## Open questions`. If the section does not exist, add it after `## Decisions`. Remove a bullet when an answer closes it. When the last bullet goes, delete the section.
 - Add a proposal as a new row of `## Decisions`, with the next unused `#` value.
 - When a proposal changes a flow, write a before/after diagram and its text twin under `## Flows` (see **Mermaid rule**). When the user confirms that no flow changes, write the line `No flow change.` under `## Flows`.
 
 Do not show a new proposal to the user as accepted before Step 4 checks it.
 
-When an answer changes a proposal that already has a row in `## Guardrail check`, delete that row. Step 4 then checks the changed proposal again.
+When an answer changes a proposal, delete the `Kept with warning:` note in its Reason cell. Step 4 then checks the changed proposal again.
 
 Step 3 routes (one row matches each answer):
 
@@ -140,33 +150,46 @@ Step 3 routes (one row matches each answer):
 
 ## Step 4: Check the proposals against the guardrails
 
-Check each proposal that has no row in `## Guardrail check`. Check it against each guardrail in `guardrails`. Each guardrail has an `id`, a `description` (the rule) and a `severity` (`error` or `warning`). A guardrail with no `severity` is `error`. Do this before the user sees the proposal as accepted.
+Check every live proposal against each guardrail in `guardrails`. A live proposal is a `## Decisions` row whose `Decision` cell starts with neither `Dropped:` nor `Moved:`. Check all live proposals each time, because the file stores no result for a pass. Each guardrail has an `id`, a `description` (the rule) and a `severity` (`error` or `warning`). A guardrail with no `severity` is `error`. Do this before the user sees the proposal as accepted.
 
 Guardrail check rules:
 
-| Conflict | Action | Result row |
+| Conflict | Action | Topic file record |
 |---|---|---|
-| breaks one or more `error` guardrails | rework the proposal once, then check it again. If it still breaks an `error` guardrail, drop it | `dropped — <ids>`. After a rework that clears every `error` conflict: the row that matches the new check |
-| breaks only `warning` guardrails | show the reason for each, ask the user once: keep or rework | keep: `kept — <ids>`. rework: no row. The proposal goes to `## Open questions` |
-| no conflict | none | `pass — <basis>` |
-| guardrails unavailable | continue | `unavailable — <warning>`. Step 4 counts it as `pass` |
+| breaks one or more `error` guardrails | rework the proposal once, then check it again. If it still breaks an `error` guardrail, drop it | drop: `Dropped:` at the start of the Decision cell, `Dropped by: <ids>.` at the end of the Reason cell |
+| breaks only `warning` guardrails, and the Reason cell holds `Kept with warning:` with every conflicting `id` | keep the proposal. Ask no question | none |
+| breaks only `warning` guardrails, other cases | show the reason for each, ask the user once: keep, rework or cancel | keep: `Kept with warning: <ids>.` at the end of the Reason cell. rework: the `Moved:` rule below. cancel: the cancel step |
+| guardrails loaded (the list can be empty), no conflict | none | if the Reason cell holds a `Kept with warning:` note, delete the note. The proposal counts in `passCount` |
+| guardrails unavailable | continue. Keep each kept note as it is | none. A proposal with a kept note counts in `keptCount`. `preplan_check` writes the warning |
 
-How to write the rows:
+How to write the notes:
 
-- Write one row for each proposal. If the proposal breaks one guardrail, put its `id` in `Guardrail` and its severity in `Severity`. If it breaks more than one, list every `id` in `Guardrail`, separated by commas, and put the highest severity (`error` over `warning`) in `Severity`. The `Result` follows the highest severity. In the `Result` cell, `<ids>` is the same list of `id` values as in `Guardrail`.
-- A proposal with no conflict gets one row: `Guardrail` lists every guardrail `id` that the skill checked, separated by commas. `Severity` is `—`. `Result` is `pass — <basis>`. `<basis>` gives, for each `id`, the fact of the proposal that clears that guardrail, in one short clause (for example `pass — G1: no new public API; G4: the change has a test`). A bare `pass` with no basis is not a valid row.
-- When `guardrails` is empty, a proposal gets one row: `Guardrail` is `—`, `Severity` is `—`, `Result` is `pass — no guardrail configured`.
-- When the guardrails are unavailable, give each proposal one row: `Guardrail` is `—`, `Severity` is `—`, `Result` is `unavailable — <warning>`.
+- `<ids>` lists the `id` of each guardrail that the proposal breaks, separated by commas.
+- Write no other check text into the topic file: no basis, no pass list, no table.
+- When the guardrails loaded and `guardrails` is empty, every live proposal is a pass. Delete each kept note.
 - Rework: edit the `## Decisions` row so that it no longer breaks the guardrail. Tell the user in one line what changed and which guardrails caused it.
-- Drop: keep the `## Decisions` row, so the check row still points to it. Start its `Decision` cell with `Dropped:`. Tell the user which guardrails caused the drop.
-- Warning conflict: ask with AskUserQuestion. Restate the proposal, each guardrail `id`, and its `description`. Options: keep the proposal as it is, rework it later, or cancel. On rework, keep the row in `## Decisions` and start its `Decision` cell with `Moved:`. Add the proposal as a bullet to `## Open questions`. Write no check row. A `Moved:` row is not a proposal: Step 4 does not check it, and the Step 3 and Step 4 routes do not count it. When an answer brings the proposal back, add it as a new row with the next unused `#` value. On cancel, go to the cancel step.
+- Drop: keep the `## Decisions` row. Start its `Decision` cell with `Dropped:`. End its Reason cell with `Dropped by: <ids>.` Tell the user which guardrails caused the drop.
+- Warning conflict: ask with AskUserQuestion. Restate the proposal, each guardrail `id`, and its `description`. Options: keep the proposal as it is, rework it later, or cancel. On keep, end the Reason cell with `Kept with warning: <ids>.` On rework, keep the row in `## Decisions` and start its `Decision` cell with `Moved:`. Add the proposal as a bullet to `## Open questions`. If the section does not exist, add it after `## Decisions`. A `Moved:` row is not a proposal: Step 4 does not check it, and the Step 3 and Step 4 routes do not count it. When an answer brings the proposal back, add it as a new row with the next unused `#` value. On cancel, go to the cancel step.
+
+After the check, count the rows and make one call:
+
+- `keptCount`: live proposals whose Reason cell holds a kept note after the check.
+- `passCount`: the other live proposals. Each live proposal is in one count only.
+- `droppedCount`: rows whose `Decision` cell starts with `Dropped:`, from this check and earlier checks.
+
+```
+plan_support({ action: "preplan_check", topic: "<topic>", passCount: <n>, keptCount: <n>, droppedCount: <n> })
+```
+
+Then read `preplanFile` again. The tool changed the file.
 
 Step 4 routes (one row matches each result):
 
 | Step 4 result | Next |
 |---|---|
-| `final` set, every proposal has a row with `pass`, `kept` or `dropped`, at least one proposal is `pass` or `kept`, and `## Flows` has a diagram or the line `No flow change.` | Step 5 |
-| any other result, including every proposal `dropped` | Step 3 |
+| `preplan_check` returns an error | print the error's `## Do this` text as it is, then go to the cancel step |
+| `final` set, the call succeeded, `passCount + keptCount` is 1 or more, and `## Flows` has a diagram or the line `No flow change.` | Step 5 |
+| none of the rows above, for example every proposal dropped | Step 3 |
 
 When Step 4 goes back to Step 3 with `final` set, tell the user what is missing: a proposal that is not dropped, or a `## Flows` entry. Then ask about it.
 
@@ -237,6 +260,8 @@ After:
 - Write and edit only the file at `preplanFile`. Never write a topic file under a `plans/` directory: after each write there, the plan format hook checks the file as a plan and reports plan format findings, because a topic file is not a plan.
 - Edit the topic file after each answer, before the next question.
 - Check each proposal against the guardrails before the user sees it as accepted.
+- Never write the `**Guardrail check:**` line by hand. Only `preplan_check` writes it.
+- After each `preplan_check` call, read `preplanFile` again before the next edit.
 - Ask one question at a time, about function and effect, not about code.
 - This skill starts no sub-agents.
 - Never paraphrase a tool error's `## Do this` text. Print it exactly as it is.
