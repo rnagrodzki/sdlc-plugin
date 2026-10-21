@@ -44,7 +44,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context, plus one temp-and-rename rewrite of an existing regular .sdlc-v2/preplan/*.md file for preplan_check",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -497,6 +497,13 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				}
 				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md")); err != nil {
 					t.Fatalf("preplan_context did not write the topic file: %v", err)
+				}
+				// preplan_check rewrites the topic file: check the write
+				// stays untracked.
+				pass, kept, dropped := 1, 0, 0
+				if _, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_check", Topic: "auth flow",
+					PassCount: &pass, KeptCount: &kept, DroppedCount: &dropped}); err != nil {
+					t.Fatalf("preplan_check: %v", err)
 				}
 			case "verify_pipeline_classify":
 				_ = ClassifyLogs("error: build failed")
