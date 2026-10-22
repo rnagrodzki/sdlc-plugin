@@ -126,7 +126,7 @@ tasks:
       # .sdlc-v2/local.toml holds personal sdlc preferences (gitignored, not shared) —
       # worktrees don't inherit it, so seed it from the source repo if present.
       # .envrc holds the per-user shell environment (gitignored, may hold a token) —
-      # same reason; the worktree still needs its own `direnv allow`.
+      # same reason; stage 2b runs `direnv allow` for the copy.
       WT_SEED_FILES: |
         .sdlc-v2/local.toml
         .envrc
@@ -161,6 +161,12 @@ tasks:
               printf "{{.GREEN}}Copied $f{{.NC}}\n"
             fi
           done
+      # stage 2b — trust the seeded .envrc (direnv blocks it until approved).
+      # Skipped when direnv is missing or no .envrc was seeded.
+      - cmd: |
+          if [ -f "{{.DIR}}/.envrc" ] && command -v direnv >/dev/null 2>&1; then
+            direnv allow "{{.DIR}}/.envrc" && printf "{{.GREEN}}direnv allowed .envrc{{.NC}}\n"
+          fi
       # stage 3 — report path
       - printf "{{.GREEN}}Worktree ready{{.COLON}} {{.DIR}}{{.NC}}\n"
       # stage 4 — open in selectable editor (WT_EDITOR=none skips)
