@@ -125,8 +125,11 @@ tasks:
       # Each entry is a repo-root-relative path; parent directories are created as needed.
       # .sdlc-v2/local.toml holds personal sdlc preferences (gitignored, not shared) —
       # worktrees don't inherit it, so seed it from the source repo if present.
+      # .envrc holds the per-user shell environment (gitignored, may hold a token) —
+      # same reason; the worktree still needs its own `direnv allow`.
       WT_SEED_FILES: |
         .sdlc-v2/local.toml
+        .envrc
     cmds:
       # stage 1 — create the worktree (new vs existing branch decision)
       - cmd: |
