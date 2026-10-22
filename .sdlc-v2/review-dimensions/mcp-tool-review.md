@@ -86,6 +86,17 @@ those same guardrails:
   response so the caller can verify what was recorded; (3) the JSON schema
   is updated to document all new `*In` fields with `jsonschema_description`
   tags and closed-set enums where applicable.
+- A new action that reads or writes a resource that another action of the
+  same tool, or a sibling tool, already handles (a stored file, a linked
+  folder, a config section) MUST apply the same input policy as that action.
+  Compare how each action treats a missing path, a directory, a symlink, a
+  file over the size cap and a value of the wrong shape, and compare the
+  error class (`DomainError`, `InfraError`, `DataError`) that each state
+  returns. A state that one action accepts and the other refuses, or two
+  error classes for one state, is a finding unless the description of the new
+  action names the difference and the reason. This extends the new-action
+  bullet above, which checks the new fields and not the policy shared with a
+  sibling action.
 - When a handler action writes a state file owned by another tool (a
   cross-tool side effect), verify: (1) the action's description in the
   tool registration names the side effect and its recovery contract; (2)
@@ -122,7 +133,13 @@ those same guardrails:
   and ±Inf for floats, overflow and underflow for integers, and
   below-minimum semantics (e.g. `maxParallelDimensions` must be >= 1). Each
   validation must reject the invalid value with a `DomainError` that names
-  the value, the rule it breaks, and the acceptable range or constraint.
+  the value, the rule it breaks, and the acceptable range or constraint. A
+  count or size input needs a maximum as well as a minimum when the handler
+  writes the value into a file or uses it to size a loop, a read or an
+  allocation. The handler rejects a value above one named maximum constant
+  with a `DomainError` that states the maximum and the value, and the
+  description of the input builds its number from that constant. An input
+  with a minimum and no maximum is a finding.
 - A JSON-encoded collection input (for example `plannedWavesJson`) MUST
   document its omitted-field behavior and each input the handler rejects (an
   empty array when entries are required, duplicate IDs, partial coverage of
@@ -162,7 +179,13 @@ those same guardrails:
   branch before Materialize and left the tree on the new branch.
 - A zero count caused by an absent optional input (for example a missing
   `tasks.md`) MUST come with a warning that names the file. Example: a
-  missing `tasks.md` reported `refsStamped 0` with no warning.
+  missing `tasks.md` reported `refsStamped 0` with no warning. The same holds
+  for a zero or short count caused by a wrong-shaped input that a loader the
+  handler calls drops with no error (for example a list that holds a
+  non-table element). Read the loader and list what it returns for a missing
+  key, a wrong type and a wrong-typed element. The handler MUST surface a
+  warning or an error that names the key and the shape. A count reported as a
+  real result when the loader defaulted it is a finding.
 - A handler that replaces a user-owned file MUST write a temp file and rename
   it, or the review MUST confirm that an in-place write is safe. Example:
   `openspec_save` rewrote the plan file in place.

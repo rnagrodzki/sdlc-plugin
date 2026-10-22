@@ -573,12 +573,7 @@ same permission class as the operation it precedes."""
 
 [execute.guardrails.mcp-tool-annotation-reason-call-graph-verified]
 severity = "warning"
-description = """
-Before marking done a task that adds or changes an MCP tool annotation \
-(e.g. read-only, idempotent) with a reason string explaining why it is \
-safe, verify the reason against an actual call-graph/reference search of \
-the handler -- a plausible-sounding reason string is not evidence the \
-annotation is correct."""
+description = 'Before marking done a task that adds or changes an MCP tool annotation (e.g. read-only, idempotent) with a reason string explaining why it is safe, verify the reason against an actual call-graph/reference search of the handler -- a plausible-sounding reason string is not evidence the annotation is correct. A tool annotation covers every action of the tool: when the task adds an action to an annotated tool, run the same search for the new action and check each side effect it has (a file write, a rename, a delete). An annotation that fits the old actions but not the new one fails the task, unless docs/mcp-tool-annotations.md names an exception that covers the action.'
 
 [execute.guardrails.nested-dispatch-runtime-stop]
 severity = "warning"
@@ -665,19 +660,7 @@ description = 'When a task modifies a handler or helper function that performs m
 
 [execute.guardrails.skill-step-behavior-doc-coverage]
 severity = "error"
-description = """
-Before marking a task done that modifies a SKILL.md step's behavior \
-(fail-fast condition, skip condition, blocking gate), step order, or phase \
-placement, grep the corresponding `docs/skills/<skill>.md` file for every \
-step whose behavior is changed and confirm that behavior is documented for \
-each step. For a step reorder or phase relocation, also check every table \
-and walkthrough in `docs/*-architecture.md` that lists that skill's steps, \
-and confirm the moved step appears at its new position with its current \
-tool calls. When the same behavior \
-change applies to sibling steps (e.g. both verify-openspec and \
-archive-openspec gaining fail-fast-on-missing), both steps must be \
-documented; a doc update covering only the first sibling is a verification \
-gap."""
+description = "Before marking a task done that modifies a SKILL.md step's behavior (fail-fast condition, skip condition, blocking gate, stop or error exit), step order, or phase placement, grep the corresponding `docs/skills/<skill>.md` file for every step whose behavior is changed and confirm that behavior is documented for each step. When the change adds a stop or exit, the page must name it and its trigger. Each status value the exit sets (for example `paused`) must list the new cause; grep SKILL.md and the Go code for every writer of the value. For a step reorder or phase relocation, also check every table and walkthrough in `docs/*-architecture.md` that lists that skill's steps, and confirm the moved step appears at its new position with its current tool calls. When the same behavior change applies to sibling steps (e.g. both verify-openspec and archive-openspec gaining fail-fast-on-missing), both steps must be documented; a doc update covering only the first sibling is a verification gap."
 
 [execute.guardrails.validator-duplication-check]
 severity = "warning"
@@ -717,7 +700,7 @@ description = "Before marking a task done that adds or changes a key in plugins/
 severity = 'warning'
 
 [plan.guardrails.handler-input-semantic-invariants]
-description = "Plans that add or change a handler input that is a list, array, or map must state the omitted-field behavior and the semantic invariants of that input, both in the plan and in the field's jsonschema_description. Name whether an empty value is rejected, whether IDs must be unique, and whether the list must cover every item of the set it references. Each invariant must map to a rejection path that returns a DomainError with a Suggestion and names the broken rule. Type and required-field checks do not cover these invariants. A plan that leaves them implicit is a plan defect."
+description = "Plans that add or change a handler input that is a list, array, or map must state the omitted-field behavior and the semantic invariants of that input, both in the plan and in the field's jsonschema_description. Name whether an empty value is rejected, whether IDs must be unique, and whether the list must cover every item of the set it references. Each invariant must map to a rejection path that returns a DomainError with a Suggestion and names the broken rule. Type and required-field checks do not cover these invariants. A plan that leaves them implicit is a plan defect. A numeric input (a count, a size or a limit) needs the same statement: its minimum, its maximum, the named constant that holds the maximum, and the rejection for a value outside the range. A number with a minimum and no maximum is accepted at any size and is a plan defect."
 severity = 'error'
 
 [execute.guardrails.mcp-suggestion-names-working-recovery]
@@ -749,7 +732,7 @@ description = 'Before marking a task done that adds a Go function, grep the pack
 severity = 'error'
 
 [plan.guardrails.exit-path-state-record]
-description = 'Plans that add or change a SKILL.md exit path (success, cancel, error, interrupt, stall) must name, for each exit path, the state write made for each dispatched worker and for the run, such as a ledger_skip reason. The plan must list each exit path as a row in the routes table with its next step. An exit path that stops workers without recording their outcome in the state the run reads is a plan defect.'
+description = 'Plans that add or change a SKILL.md exit path (success, cancel, error, interrupt, stall) must name, for each exit path, the state write made for each dispatched worker and for the run, such as a ledger_skip reason. The plan must list each exit path as a row in the routes table with its next step. The plan must also name the section of docs/skills/<skill>.md that describes each exit path, and every cause of each status value the exit sets, so the page can list them all. An exit path that stops workers without recording their outcome in the state the run reads is a plan defect.'
 severity = 'error'
 
 [plan.guardrails.schema-change-secondary-readers-1]
@@ -801,7 +784,7 @@ description = 'Before marking done a task that modifies a SKILL.md that dispatch
 severity = 'error'
 
 [execute.guardrails.skill-flow-soundness-3]
-description = 'Before marking done a task that modifies a SKILL.md, check these points: (a) routing bullets and the rows of an outcome or routes table keyed on the same input are mutually exclusive: walk the boundary states (last round, CRITICAL gate result, single-item batch) against every bullet and row; exactly one must match; a state that matches no bullet or row is a dead end, and two matches with different outcomes are a finding; (b) each route that writes the same persisted record derives each field from the same named source, or the prose names the route that wins on conflict; one call described in two places carries the same arguments in both; (c) a count that routes the flow includes every source, such as findings with no id; a route does not advance on a flag the fixer set about its own work without an independent re-check.'
+description = 'Before marking done a task that modifies a SKILL.md, check these points: (a) routing bullets and the rows of an outcome or routes table keyed on the same input are mutually exclusive: walk the boundary states (last round, CRITICAL gate result, single-item batch) against every bullet and row; exactly one must match; a state that matches no bullet or row is a dead end, and two matches with different outcomes are a finding; (b) each route that writes the same persisted record derives each field from the same named source, or the prose names the route that wins on conflict; one call described in two places carries the same arguments in both; a write to a field that already holds a value has a stated outcome: replace, append or refuse; (c) a count that routes the flow includes every source, such as findings with no id; an item that was not checked is never counted as a pass; a route does not advance on a flag the fixer set about its own work without an independent re-check.'
 severity = 'error'
 
 [execute.guardrails.skill-flow-soundness-4]
@@ -813,11 +796,11 @@ description = "Before marking a task done that modifies a SKILL.md file, indepen
 severity = 'warning'
 
 [execute.guardrails.skill-prose-source-verification-2]
-description = "Before marking a task done that modifies a SKILL.md file, check these claim kinds against source: (a) when prose enumerates a struct's fields, confirm every exported field of the Go struct appears in the prose, and when it lists the results or errors of a call, confirm the handler can return each item for the input the step sends and that no returnable item is missing; (b) when prose states a count or tier number, count the Go values and confirm the number matches; (c) when prose makes an exclusivity claim (only, sole), an unconditional claim (always, every path) or a negative claim (never, does not, no tool), read the full field-access set or all code paths, and walk each mode, input form and stored-file shape the write path accepts; (d) when prose claims absence, grep to confirm it, across every registered tool and action, not only the tool the prose names. Do not rely on build/test success as evidence of prose accuracy."
+description = "Before marking a task done that modifies a SKILL.md file or a docs/skills page, check these claim kinds against source: (a) when prose enumerates a struct's fields, confirm every exported field of the Go struct appears in the prose, and when it lists the results or errors of a call, confirm the handler can return each item for the input the step sends and that no returnable item is missing; (b) when prose states a count or tier number, count the Go values and confirm the number matches; (c) when prose makes an exclusivity claim (only, sole), an unconditional claim (always, every path, after each, again) or a negative claim (never, does not, no tool), read the full field-access set or all code paths, and walk each mode, input form and stored-file shape the write path accepts, and each error and skip exit; (d) when prose claims absence, grep to confirm it, across every registered tool and action, not only the tool the prose names. Do not rely on build/test success as evidence of prose accuracy."
 severity = 'error'
 
 [execute.guardrails.skill-prose-source-verification-3]
-description = 'Before marking a task done that modifies a SKILL.md file, check these claim kinds against source: (a) when a doc describes a persisted row written by several code paths, enumerate every writer and state per-writer field differences; (b) for a precedence claim between two keys or flags, confirm the prose states the rule the validator enforces, and document a pair the code rejects as rejected; (c) confirm each example block follows the rules the doc states; (d) confirm each named git ref is the ref the code reads for that step; (e) when the change removes a mode, flag or value, or makes two of them behave the same, grep SKILL.md, docs/skills and the tool descriptions for the old name and for wording that still describes a difference; (f) when a step forbids or requires an action for the caller, confirm that the Next and Suggestion text of the tool it calls does not say the opposite. Do not rely on build/test success as evidence of prose accuracy.'
+description = 'Before marking a task done that modifies a SKILL.md file, check these claim kinds against source: (a) when a doc describes a persisted row written by several code paths, enumerate every writer and state per-writer field differences; (b) for a precedence claim between two keys or flags, confirm the prose states the rule the validator enforces, and document a pair the code rejects as rejected; (c) confirm each example block follows the rules the doc states; (d) confirm each named git ref is the ref the code reads for that step; (e) when the change removes or renames a mode, flag, value or term, or makes two of them behave the same, grep SKILL.md, docs/skills and the tool descriptions for the old name and for wording that still describes a difference; (f) when a step forbids or requires an action for the caller, confirm that the Next and Suggestion text of the tool it calls does not say the opposite. Do not rely on build/test success as evidence of prose accuracy.'
 severity = 'warning'
 
 [plan.guardrails.derived-name-collision-stated]
@@ -857,9 +840,33 @@ description = 'Before marking a task done that adds or changes a guard (a check 
 severity = 'error'
 
 [plan.guardrails.guard-test-cases-enumerated]
-description = 'When a plan adds or changes a guard (a check that decides whether a write, a delete or a rewrite may go ahead) or a limit, the plan must list the cases that its tests cover: each key the guard protects, each form that spells the same key (a dotted key, an inline table, a nested table), each shape that the reference decoder in a parity test special-cases, both sides of each limit, and, when the target comes from one of several candidate roots, a case where the roots differ. A plan that leaves out a case that applies is a plan defect.'
+description = 'When a plan adds or changes a guard (a check that decides whether a write, a delete or a rewrite may go ahead) or a limit, or code that finds text in a stored file and reads or replaces it, the plan must list the cases that its tests cover: each key the guard protects, each form that spells the same key (a dotted key, an inline table, a nested table), each shape that the reference decoder in a parity test special-cases, both sides of each limit (a read or search window is a limit), the first and the last place where a search or replace can match (a match on the last line, an end of file with no trailing newline), and, when the target comes from one of several candidate roots, a case where the roots differ. A plan that leaves out a case that applies is a plan defect.'
 severity = 'warning'
 
 [execute.guardrails.target-choice-pinned-by-test]
 description = 'Before marking a task done that adds or changes code that reads, checks or writes a target chosen from more than one candidate (for example the main root or the active worktree, a user file or a project file), name the candidate that the code uses and the source of that choice. Add a test in which the candidates differ, such as two directories that hold different content, and assert that the result comes from the chosen candidate and that the other candidate is not read or changed. A test with one candidate, or with candidates that hold equal values, passes whichever candidate the code reads and fails the task. Record the candidate and the test name in task verification.'
+severity = 'error'
+
+[plan.guardrails.sibling-action-input-policy-parity]
+description = 'When a plan adds an action or a tool that reads or writes a resource that an existing action or tool already handles (a stored file, a linked folder, a config section), the plan must list the input states that reach both: a missing path, a directory, a symlink, a file over the size cap, a value of the wrong shape, and an existing file whose result carries a warning. For each state the plan states whether the new action accepts or refuses it as the existing action does, which error class (DomainError, InfraError or DataError) it returns, and which warning text it shows. Every difference needs a stated reason and a mention in the tool description. The plan must name a test that runs the same state through both actions and asserts the same outcome and the same warning text. A difference left implicit is a plan defect.'
+severity = 'error'
+
+[execute.guardrails.sibling-action-input-policy-verified]
+description = 'Before marking a task done that adds an action, or changes how an action treats an input state, on a resource that another action or tool already handles (a stored file, a linked folder, a config section), grep for the other action and compare how each handles a missing path, a directory, a symlink, a file over the size cap, a value of the wrong shape, and an existing file whose result carries a warning. Compare the error class returned for each state and the warning text. Each difference is removed, or named with its reason in the tool description. Add a test that runs each state through both actions and asserts the same outcome and the same warning text, or asserts the stated difference. Record the other action, the states compared and the test name in task verification.'
+severity = 'error'
+
+[execute.guardrails.loader-silent-default-surfaced]
+description = "Before marking a task done that makes a handler call an existing loader or parser for a stored value (a config section, a state file key, a list), read that loader. List what it returns for a missing key, an empty value, a value of the wrong type and an element of the wrong type. When it returns an empty or default value with no error for a shape that is not valid, the handler must not report that value as a real result (for example '0 items' or 'none'). Check the shape in the handler, make the loader return a warning, or state in the output that the value was defaulted. Add a test with a wrong-shaped value and assert that the output names the key and the problem. Record the loader and the shapes checked in task verification."
+severity = 'error'
+
+[execute.guardrails.search-replace-edges-tested]
+description = "Before marking a task done that adds or changes code that finds text in a stored file and reads or replaces it (for example the line under an anchor, a marker or a section), list the edges of that code and add a test for each edge that the task's tests do not reach. Edges: a match on the first line and on the last line; an end of file with no trailing newline; a match at the edge of a read or search window and one just past it, with both inputs built from the window constant; each branch that returns an error or a warning. A test of a branch asserts the Msg or warning text and, when the code wraps a lower-level error, the cause with errors.Is or errors.As. A test of a replace asserts the full resulting text, not only that the anchor is present. Record each edge and its test name in task verification."
+severity = 'warning'
+
+[plan.guardrails.stored-file-shape-readers-enumerated]
+description = 'When a plan adds or changes the shape of a stored file that a skill or tool reads (a row kind or marker such as a Dropped: or Moved: prefix, a status value, a note, or a section that is present only under a condition), the plan must list every reader of that file: each SKILL.md step, each other skill that takes the file as input, each docs page and each Go reader. For each reader and each row kind, including the new one, the plan states how the reader treats it (live item, skipped, counted, or refused) and names the step or test that pins it. A reader that treats a marker row as an ordinary live item is a plan defect. The plan must also list each older form of the file that can still be on disk, and state which step reads, converts or refuses it. A plan that leaves a reader or an older form implicit is a plan defect.'
+severity = 'error'
+
+[execute.guardrails.stored-file-shape-readers-verified]
+description = "Before marking a task done that adds or changes the shape of a stored file that a skill or tool reads (a row kind or marker such as a Dropped: or Moved: prefix, a status value, a note, or a section that is present only under a condition), grep the repo for every reader of that file: SKILL.md steps, other skills that take the file as input, docs pages and Go code. For each reader and each row kind, including the new one, read how the reader treats a row of that kind (live item, skipped, counted, or refused). A reader that treats a marker row as an ordinary live item fails the task. Check each prose claim about when a part of the file is present (for example 'present only when') against each older form of the file that can still be on disk and against the step that converts it. Record the readers, the older forms and the checks in task verification."
 severity = 'error'

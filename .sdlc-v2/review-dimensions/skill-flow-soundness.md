@@ -15,7 +15,7 @@ severity: high
   (success, cancel, error, stall, interrupt) must have an explicit next
   instruction. When the skill has a routes table, each terminal state needs
   its own row. A state the flow can enter but never says how to leave is
-  incomplete. A recovery step in a refusal or error row must change the failing condition for every input state that reaches that row. Read the tool or flag that the step names, and list the states that reach the row (for example a new file and an existing file). A step that works for only some of these states leaves the others stuck, and it is a finding.
+  incomplete. A recovery step in a refusal or error row must change the failing condition for every input state that reaches that row. Read the tool or flag that the step names, and list the states that reach the row (for example a new file and an existing file). A step that works for only some of these states leaves the others stuck, and it is a finding. When an error or refusal row ends the run, also read the Suggestion and Next text of the tool that returned the error. The row must follow the recovery that text names, or the prose must state why the run ends instead. A row that ends the run while the tool tells the caller to retry, or the reverse, is a finding.
 - **Gate consistency.** A condition gating one step must not be
   contradicted by another step in the same file assuming the opposite
   (e.g. one step skips work "if `--force` was NOT passed" while a later
@@ -24,7 +24,11 @@ severity: high
   Arguments table must be referenced by name somewhere in Workflow, and
   every flag referenced in Workflow must appear in the Arguments table.
   An orphan in either direction is a flow defect — a flag nobody reads, or
-  a behavior nobody can invoke.
+  a behavior nobody can invoke. The same parity applies to a value, note,
+  marker or status that a step defines or records (for example a kind of
+  kept note or a column value): some later step or tool must read it, and
+  each value a step reads must be recorded by some step. A recorded value
+  that nothing reads is a finding.
 - **Numbered-step drift.** After steps are renumbered or reordered, every
   cross-reference to a step number — in the same file, or in a companion
   sub-flow it dispatches — must be updated to match.
@@ -73,7 +77,12 @@ severity: high
   a field (for example zero counts) while another route can still add
   data to that field makes the record disagree with itself, and is a
   finding. The same applies to one call described in two places with
-  different arguments.
+  different arguments. The same holds when one route writes a field twice,
+  or when a second pass of the same route writes a field that already holds
+  a value (for example a note in a table cell): the prose must state whether
+  the second write replaces the value, appends to it or is refused. A second
+  write with no stated outcome that leaves two values in one field is a
+  finding.
 - **Stopped-worker output.** Output from a stopped, abandoned, or
   never-reported worker must not feed a consolidation or merge step
   unless that step labels it partial.
@@ -105,7 +114,12 @@ severity: high
 - **Count and flag sources.** A route that counts findings (found, open,
   blocking) must count every source, including findings recorded without an
   id. A route must not advance on a flag that the fixer set on its own work
-  (for example `fixed: true`) unless an independent re-check runs first.
+  (for example `fixed: true`) unless an independent re-check runs first. A
+  count named for a good outcome (pass, ok, clean) must count only items
+  that reached that outcome. A definition such as 'all other rows' takes in
+  items that no check ran on, for example when the source of the check was
+  unavailable. Such items need their own bucket or stay out of the count. A
+  pass count that includes unchecked items is a finding.
 - **Delegated next routes.** A step that defers to a tool result's `next`
   string is a route. List each `next` value the tool can return, and confirm
   that each one reaches every enabled opt-in step. An offer that hands off

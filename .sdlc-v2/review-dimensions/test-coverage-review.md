@@ -203,3 +203,19 @@ new changes to that same bar:
   key, a comment-only file). A parity test that skips one of those shapes does
   not show that the two agree. This extends the static-table bullet above to
   guards, nested forms and parity tests.
+- Code that finds text in a stored file and reads or replaces it (the line
+  under an anchor, a marker, a section) needs tests at the edges of what the
+  search can reach: a match on the first line, a match on the last line, an
+  end of file with no trailing newline, and a match exactly at the edge of a
+  read or search window with one just past it. Each test asserts the full
+  resulting text, not only that the anchor is still present. A test set that
+  matches only in the middle of a well-formed file passes when the replace
+  drops or doubles the last line.
+- When an action can return a normal outcome and a warning in one result (an
+  existing file that is reused and a warning about it), one test asserts both
+  the outcome and the warning text, for every action that reaches the state.
+  When two actions or tools share a resource, a state that a test pins for one
+  action is pinned for the other, or the test states why the other action
+  cannot reach it. A test that checks only the outcome, or only one of the two
+  actions, passes when the other action drops the warning or reports another
+  outcome.

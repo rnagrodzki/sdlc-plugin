@@ -48,6 +48,7 @@ severity: high
   both the number and the label. A Go string that says `7c2 and d` where the
   SKILL.md says `7c2 and 7d` is a finding.
 - **Instruction parity with returned text.** A prohibition, a required order or a recovery step in a SKILL.md or docs page (for example 'do not edit the file by hand') must agree with the `Next`, `Suggestion` and warning text that the dispatched tool returns for the same situation. Read the Go strings and the SKILL.md step side by side. When one text forbids what the other tells the caller to do, or names a different recovery step, that is a finding, because the caller follows the text it reads last. This extends the Go-side step labels bullet above, which compares step numbers and labels but not instructions.
+- **Row kinds read by another skill.** When one skill writes a stored file or table that another skill or tool reads as input (for example a topic file that the plan skill reads as its requirements file), list every row kind or marker the writer can record: a prefix such as `Dropped:` or `Moved:`, a status value, a kept or drop note. For each kind, read each reader (the reading skill's step, its tool and its docs page) and state how it treats a row of that kind. A reader that treats a marker row as an ordinary live item (a requirement, a proposal or a counted row) is a finding. A reader page that lists fewer kinds than the writer records is a finding too. The writer and each reader state the same rule for each kind.
 
 ## What NOT to flag
 

@@ -212,7 +212,13 @@ When reviewing changes to MCP handler code, perform these concrete checks:
 
 - A tool annotation (read-only, idempotent) with a reason string must be
   checked against an actual call-graph/reference search of the handler —
-  a plausible-sounding reason is not evidence the annotation is correct.
+  a plausible-sounding reason is not evidence the annotation is correct. A
+  tool annotation covers every action of the tool. When a change adds an
+  action to an annotated tool, check the annotation against each side effect
+  of the new action (a file write, a rename, a delete). An annotation that
+  fits the old actions but not the new one (for example read-only on a tool
+  whose new action writes a file) is a finding, unless
+  `docs/mcp-tool-annotations.md` names an exception that covers the action.
 
 ## Cross-references
 
