@@ -67,6 +67,7 @@ var evidenceNow = time.Now
 type evidenceWriterFile struct {
 	WriterID  string         `json:"writerId"`
 	Status    string         `json:"status"`
+	StartedAt string         `json:"startedAt,omitempty"`
 	UpdatedAt string         `json:"updatedAt"`
 	Items     []EvidenceItem `json:"items"`
 }
@@ -434,6 +435,7 @@ func evidenceRecord(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 		if stored.file.Status != "" {
 			wf.Status = stored.file.Status
 		}
+		wf.StartedAt = stored.file.StartedAt
 		if stored.file.Items != nil {
 			wf.Items = stored.file.Items
 		}
@@ -443,6 +445,9 @@ func evidenceRecord(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	}
 	wf.Items = evidenceUpsert(wf.Items, in.Items)
 	wf.UpdatedAt = evidenceNow().UTC().Format(time.RFC3339)
+	if wf.StartedAt == "" {
+		wf.StartedAt = wf.UpdatedAt
+	}
 
 	size, err := evidenceMarshalSize(wf)
 	if err != nil {

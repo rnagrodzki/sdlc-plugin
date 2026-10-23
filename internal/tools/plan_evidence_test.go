@@ -265,6 +265,127 @@ func TestEvidence_StatusTransitions(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// startedAt
+// ---------------------------------------------------------------------------
+
+func TestEvidence_StartedAt_FirstWriteSetsItEqualToUpdatedAt(t *testing.T) {
+	root, runID := evidenceTestFixture(t)
+	now := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	evidenceSetClock(t, now)
+
+	evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "w1"})
+
+	got := evidenceReadFile(t, root, runID, "w1")
+	want := now.Format(time.RFC3339)
+	if got.StartedAt != want || got.UpdatedAt != want {
+		t.Errorf("startedAt = %q, updatedAt = %q, want both %q", got.StartedAt, got.UpdatedAt, want)
+	}
+}
+
+func TestEvidence_StartedAt_LaterWriteKeepsItAndMovesUpdatedAt(t *testing.T) {
+	root, runID := evidenceTestFixture(t)
+	first := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	second := first.Add(90 * time.Second)
+
+	evidenceSetClock(t, first)
+	evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "w1", Items: []EvidenceItem{{ID: "F-1", Summary: "a"}}})
+	evidenceSetClock(t, second)
+	evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "w1", Status: "done"})
+
+	got := evidenceReadFile(t, root, runID, "w1")
+	if want := first.Format(time.RFC3339); got.StartedAt != want {
+		t.Errorf("startedAt = %q, want the first write time %q", got.StartedAt, want)
+	}
+	if want := second.Format(time.RFC3339); got.UpdatedAt != want {
+		t.Errorf("updatedAt = %q, want the second write time %q", got.UpdatedAt, want)
+	}
+}
+
+func TestEvidence_StartedAt_OldFileFormGetsItAtNextWrite(t *testing.T) {
+	root, runID := evidenceTestFixture(t)
+	now := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	evidenceSetClock(t, now)
+
+	// Old form: no startedAt key (omitempty drops the empty field).
+	evidenceWriteRaw(t, root, runID, "w1", evidenceWriterFile{WriterID: "w1", Status: "running", UpdatedAt: "2026-01-01T00:00:00Z", Items: []EvidenceItem{{ID: "F-old", Summary: "kept"}}})
+	raw, err := os.ReadFile(evidenceWriterPath(root, runID, "w1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "startedAt") {
+		t.Fatalf("old-form fixture must have no startedAt key: %s", raw)
+	}
+
+	evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "w1"})
+
+	got := evidenceReadFile(t, root, runID, "w1")
+	if want := now.Format(time.RFC3339); got.StartedAt != want {
+		t.Errorf("startedAt = %q, want %q", got.StartedAt, want)
+	}
+	if len(got.Items) != 1 || got.Items[0].ID != "F-old" {
+		t.Errorf("items = %+v, want the stored item kept", got.Items)
+	}
+}
+
+func TestEvidence_StartedAt_BadFileIsReplacedWithNewStartedAt(t *testing.T) {
+	root, runID := evidenceTestFixture(t)
+	now := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	evidenceSetClock(t, now)
+	want := now.Format(time.RFC3339)
+
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"not json", "{broken"},
+		{"startedAt wrong type", `{"writerId":"w-bad","status":"done","startedAt":123,"updatedAt":"2026-01-01T00:00:00Z","items":[]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			writer := "w-" + strings.ReplaceAll(tc.name, " ", "-")
+			path := evidenceWriterPath(root, runID, writer)
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte(tc.raw), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			rec := evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: writer})
+			if !strings.Contains(rec.Summary, "Replaced the unreadable writer file") {
+				t.Errorf("summary does not report the replacement: %q", rec.Summary)
+			}
+			got := evidenceReadFile(t, root, runID, writer)
+			if got.StartedAt != want || got.UpdatedAt != want || got.Status != "running" {
+				t.Errorf("replaced file = %+v, want startedAt = updatedAt = %q and status running", got, want)
+			}
+		})
+	}
+}
+
+func TestEvidence_StartedAt_DigestTableUnchanged(t *testing.T) {
+	root, runID := evidenceTestFixture(t)
+	now := time.Date(2026, 10, 23, 9, 0, 0, 0, time.UTC)
+	evidenceSetClock(t, now)
+	updated := now.Add(-100 * time.Second).Format(time.RFC3339)
+
+	withStart := evidenceWriterFile{WriterID: "w1", Status: "done", StartedAt: now.Add(-500 * time.Second).Format(time.RFC3339), UpdatedAt: updated, Items: []EvidenceItem{{ID: "F-1", Summary: "s"}}}
+	evidenceWriteRaw(t, root, runID, "w1", withStart)
+	with := evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_digest", RunID: runID, ExpectedWriters: []string{"w1"}})
+
+	withStart.StartedAt = ""
+	evidenceWriteRaw(t, root, runID, "w1", withStart)
+	without := evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_digest", RunID: runID, ExpectedWriters: []string{"w1"}})
+
+	if with.Writers.Table != without.Writers.Table {
+		t.Errorf("table changed with startedAt:\nwith:\n%s\nwithout:\n%s", with.Writers.Table, without.Writers.Table)
+	}
+	if strings.Contains(with.Writers.Table, "startedAt") {
+		t.Errorf("table must not show startedAt:\n%s", with.Writers.Table)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Brief
 // ---------------------------------------------------------------------------
 

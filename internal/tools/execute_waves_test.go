@@ -3,6 +3,7 @@ package tools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -284,6 +285,39 @@ func TestExecActionWaveCompute_DirectRoute(t *testing.T) {
 	}
 	if waves, ok := out["waves"].([]map[string]any); !ok || len(waves) != 0 {
 		t.Fatalf("waves = %+v, want empty slice", out["waves"])
+	}
+}
+
+// TestExecActionWaveCompute_CleansDotSlashPath pins that the shared Files
+// parser (parseTaskFiles) cleans each path: a "./shared.go" bullet lands in
+// the wave file list as "shared.go".
+func TestExecActionWaveCompute_CleansDotSlashPath(t *testing.T) {
+	fixture := strings.Replace(multiWaveFixture, "`shared.go`"+` — add helper`, "`./shared.go`"+` — add helper`, 1)
+	if fixture == multiWaveFixture {
+		t.Fatal("fixture replace did not apply")
+	}
+	path := waveComputeWritePlan(t, fixture)
+
+	res, err := execActionWaveCompute(ExecuteStateIn{PlanPath: path})
+	if err != nil {
+		t.Fatalf("execActionWaveCompute: %v", err)
+	}
+	waves, _ := res.(map[string]any)["waves"].([]map[string]any)
+	var files []string
+	for _, w := range waves {
+		files = append(files, w["expectedFiles"].([]string)...)
+	}
+	found := false
+	for _, f := range files {
+		if f == "./shared.go" {
+			t.Fatalf("wave file list holds %q, want it cleaned: %v", f, files)
+		}
+		if f == "shared.go" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("wave file list %v must hold shared.go", files)
 	}
 }
 

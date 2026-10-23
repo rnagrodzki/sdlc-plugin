@@ -143,21 +143,14 @@ func waveComputeParseDependsOn(body string) []int {
 	return parseDependsOnRefs(dependsOn)
 }
 
-// waveComputeParseFiles extracts literal file paths from a task's
-// **Files:** block (Create:/Modify:/Test: bullet lines). Only the first
-// backtick-quoted path on each bullet line is taken: a Modify line's
-// trailing "— [what changes]" note can itself contain backticked tokens
-// that are not file paths, so a whole-block scan would over-capture.
+// waveComputeParseFiles extracts the file paths of a task's **Files:**
+// block. It reuses parseTaskFiles (plan_gates.go), the one shared Files
+// parser, so scheduling and the plan_gates checks read the same paths. The
+// paths are cleaned: "./a.go" and "a.go" are one path.
 func waveComputeParseFiles(body string) []string {
-	block, found := extractDelimitedBlock(body, psFilesBlockStartRe, []string{"\n**", "\n### ", "\n---", "\n## "})
-	if !found {
-		return nil
-	}
 	var files []string
-	for _, line := range psFileLineBulletRe.FindAllString(block, -1) {
-		if m := backtickPathRe.FindStringSubmatch(line); m != nil {
-			files = append(files, m[1])
-		}
+	for _, f := range parseTaskFiles(body) {
+		files = append(files, f.Path)
 	}
 	return files
 }
