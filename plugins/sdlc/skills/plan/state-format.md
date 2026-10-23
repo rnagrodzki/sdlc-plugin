@@ -65,6 +65,7 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
     "expectedWriters": ["lane-static-structural-r1"],
     "updatedAt": "2026-05-09T14:10:00.000Z"
   },
+  "stepTimes": [ { "step": "2", "iteration": 0, "at": "2026-10-23T12:20:11Z" } ],
   "planTiming": {
     "startedAt": "2026-05-09T14:00:00Z",
     "lastModifiedAt": "2026-05-09T14:09:40Z",
@@ -97,6 +98,7 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
 | `sessionId`     | string \| null   | The Claude session ID of the newest session that called `plan_prepare` for this run. `plan_prepare` creates a new run with `sessionId: null`. The `record-mcp-invocation` hook writes the ID after each `plan_prepare` call, so a resume in a new session replaces it. The hook writes nothing when the session ID is empty, the branch has no name (detached `HEAD`), the branch has no active plan run, or the stored ID is the same. Read by the dashboard to attach waits. |
 | `guardrailCounts` | object \| absent | Counts of the plan guardrails that `plan_prepare` loaded: `total`, `error`, `warning`. Written for the dashboard plan setup tile. Absent when the first call's guardrail config read failed (a later successful call without `resume` writes it). Never written for a run with no named branch. See [guardrailCounts](#guardrailcounts) below. |
 | `checkpoint`    | object \| absent | The plan run's current step/iteration/expected-writers, replaced on every `plan_mark({marker: "checkpoint"})` call. Absent until the first checkpoint marker is written. See [checkpoint](#checkpoint) below. |
+| `stepTimes` | array \| absent | One `{ step, iteration, at }` entry for the first checkpoint of each step and iteration. Added by `plan_mark({marker: "checkpoint"})`. Read by the `done` timing report. See [stepTimes](#steptimes) below. |
 | `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`, and an optional `findings`. Upserted by `plan_mark({marker: "review-round"})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
 | `reviewOutcome` | object \| absent | The user's answer to each finding still open at the review-loop limit. Replaced on every `plan_mark({marker: "review-outcome"})` call. Absent until the first call. See [reviewOutcome](#reviewoutcome) below. |
 | `planTiming` | object \| absent | `startedAt` (the `skillInvoked` time), `lastModifiedAt` (the plan file's modification time), and `durationMs` (the time between them). Rewritten by every `plan_mark` call, before its write (function `refreshPlanTiming`). The same step also rewrites `planFilePath` as an absolute, cleaned path. Left as it is when `skillInvoked` or `planFilePath` is missing, or when the plan file cannot be read. Read by ship's report step. |
@@ -181,6 +183,20 @@ The resume flow (`plan_prepare({resume: true})`) reads `checkpoint.step` to tell
 
 ---
 
+## stepTimes
+
+Written by `plan_mark({ marker: "checkpoint", data: {...} })`. The first checkpoint of each step and iteration adds one entry. A later checkpoint with the same step and iteration adds nothing.
+
+| Field       | Type    | Description |
+|-------------|---------|-------------|
+| `step`      | string  | The `checkpoint.step` value of the call. |
+| `iteration` | integer | The `checkpoint.iteration` value of the call. |
+| `at`        | string  | RFC 3339 UTC time of the first checkpoint for this step and iteration. |
+
+plan_mark keeps at most 64 entries (a fixed limit). A checkpoint past 64 entries adds no entry and returns a warning. A `stepTimes` value that is not a list stays as it is, and the checkpoint returns a warning.
+
+---
+
 ## reviewRounds
 
 Written by `plan_mark({ marker: "review-round", data: {...} })`, once for each Step 5 review round, at every exit of the round (Step 5 Approved, or Step 6 after the fixes; the last round also records in Step 6, before it goes to the user). `reviewRounds` lives in its own top-level state key and never participates in the Stop hook's four-marker check. Unlike `criticalDecisions`, it is **not appended to**: each call **upserts** one row by `round`. A call replaces the row with the same `round`, or inserts a new row. A resumed run can send the same round twice, so a replay is safe. The list stays sorted by `round`. The key is absent until the first `review-round` call. The dashboard reads the rows. They are display data only.
@@ -195,7 +211,7 @@ Each row of `reviewRounds` (the first five keys are required, `findings` is opti
 | `mergedStatus` | string   | The `mergedStatus` of the round's `merge_results` call. Exactly `Approved` or `Issues Found`. |
 | `found`        | integer  | Blocking issues found in the round (>= 0): the `blockingCount` of the `merge_results` call. |
 | `fixed`        | integer  | Blocking issues the round fixed (>= 0). `0` for an Approved round. The last round (`reviewLoop.maxRounds`) also gets the Step 6 fix pass, so its `fixed` is the real count. |
-| `lenses`       | object[] | One `{ name, verdict }` for each lens (max 32). `name`: letters, digits, `.`, `_`, `-` (max 64); the first character must be a letter or a digit (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, the same rule as `writerId`). `verdict`: exactly `Approved` or `Issues Found`. A single reviewer (<5 tasks) gives `[{ "name": "all", "verdict": "<mergedStatus>" }]`. Lanes are not listed. |
+| `lenses`       | object[] | One `{ name, verdict }` for each lens (max 32). `name`: letters, digits, `.`, `_`, `-` (max 64); the first character must be a letter or a digit (`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, the same rule as `writerId`). `verdict`: exactly `Approved` or `Issues Found`. A single reviewer (fewer than 8 tasks) gives `[{ "name": "all", "verdict": "<mergedStatus>" }]`. Lanes are not listed. |
 | `findings`     | object[] \| absent | One `{ id, fixed }` for each finding of the round (max 200). `id`: the `id` of the issue in the `merge_results` `allIssues`, `f-` plus 8 lower-case hex characters (`^f-[0-9a-f]{8}$`). `fixed`: a boolean, `true` when the round fixed the finding. Each `id` appears once in a call: a repeated `id` returns an error. Guardrail findings and lens findings share one ID space, so no kind is stored. A passed `[]` is stored as `[]`. The key is absent when the call did not send `findings` (an older caller). An invalid entry returns an error and writes nothing. |
 
 ```json
@@ -352,8 +368,15 @@ Each `<writerId>.json` holds one writer's recorded findings:
 |-------------|--------|-----------------------------------------------------------------------------------|
 | `writerId`  | string | The writer's own ID. Must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (max 64 chars). `"main"` is reserved for the orchestrator session. |
 | `status`    | string | `running` or `done`.                                                              |
+| `startedAt` | string | UTC time of the first `evidence_record` call for this writer. Later calls keep it. Absent in a file from before the upgrade. |
 | `updatedAt` | string | ISO 8601 UTC timestamp of the last `evidence_record` call for this writer.        |
 | `items`     | array  | Up to 200 items, max 64 KiB total file size. Each item: `id` (unique per writer, e.g. `F-auth-1`; must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`), `summary` (one line, max 200 chars), `ref` (optional, one line, max 500 chars — `path:line` or URL), `body` (optional Markdown, returned only by `evidence_get`). |
+
+A writer file that has `startedAt`:
+
+```json
+{ "writerId": "lane-style-compliance-r1", "status": "done", "startedAt": "2026-10-23T12:40:02Z", "updatedAt": "2026-10-23T12:42:31Z", "items": [] }
+```
 
 Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` reads every writer file's `status`/`updatedAt`/item summaries to report which writers are still `running`, which have gone stale (`stalledWriters`), and which expected writers never wrote a file at all (`missingWriters`). A writer file that exists but cannot be parsed is listed in `unreadableWriters`; when that writer is expected it is also listed in `stalledWriters`, because it can never report `done`. All three lists sit under the output's `writers` object. The next `evidence_record` call for that writer replaces the unreadable file.
 

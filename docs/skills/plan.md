@@ -100,6 +100,7 @@ Loads the proposal, delta specs, and task list from
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.
+- Step 7 prints a timing report: the total time, the time of each step and the 3 slowest agents. The plan state keeps at most 64 step times. A run past 64 checkpoints adds the line "Steps: first 64 checkpoints only". The plan checks refuse a plan file over 8 MiB with an error that names the size.
 
 ## Recovery after compaction
 
@@ -325,8 +326,7 @@ contrast of 4.5:1 or more. No pastel fills.
   finding: accepted, rejected, or stop. It stores the answers with
   `plan_mark` `review-outcome` and does not start a 6th round.
   Each review round is recorded with `plan_mark` `review-round` for the
-  dashboard. A failed record call does not stop the skill. A plan with fewer
-  than 5 tasks uses one reviewer. The skill still sends the output of that
+  dashboard. A failed record call does not stop the skill. A plan with fewer than 8 tasks uses one reviewer, on the model that did not write the plan. The dimension-coverage lane (G17) runs in round 1 only. The skill still sends the output of that
   reviewer through `merge_results` as one lens named `all`, so the record has
   the merged status and the blocking count.
   Each record also lists the blocking findings of the round as `{id, fixed}`.

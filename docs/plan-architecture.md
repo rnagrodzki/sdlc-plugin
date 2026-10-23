@@ -21,7 +21,7 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, upsert a `review-round` row, replace the `review-outcome` answers (`reviewOutcome`), or replace the `checkpoint` progress marker. Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
 | `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Eleven actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `openspec_instructions`, `openspec_stage`, `evidence_record`, `evidence_digest`, `evidence_get`, `preplan_context`, `preplan_check` |
-| `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Ten actions (9 today + `plan_style`); plan pipeline uses `plan_format` (PF1-PF14) and `plan_style` |
+| `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Eleven actions (9 today + `plan_style` + `plan_gates`); plan pipeline uses `plan_format` (PF1-PF14), `plan_style` and `plan_gates` |
 | `links_validate` | `internal/tools/links.go` `RegisterLinksTools` | URL extraction + HTTP validation with line tracking |
 | `execute_state` | `internal/tools/execute_state.go` `RegisterExecuteStateTools` | Ledger operations (review skill; plan uses the evidence store instead — see [Evidence store and compaction recovery](#evidence-store-and-compaction-recovery)) |
 
@@ -30,7 +30,7 @@ Subagents dispatched by the plan skill may call additional tools (e.g., `Glob`,
 
 ### Skill Files
 
-Fifteen files in `plugins/sdlc/skills/plan/`:
+Fourteen files in `plugins/sdlc/skills/plan/`:
 
 | File | Role |
 |------|------|
@@ -40,12 +40,11 @@ Fifteen files in `plugins/sdlc/skills/plan/`:
 | `plan-format-reference.md` | Plan document format specification (PF checks, contract rendering) |
 | `state-format.md` | State file schema reference |
 | `intake-verify-prompt.md` | Step 1 intake audit subagent prompt |
-| `lane-static-structural-prompt.md` | Lane 0 prompt: G1, G2, G3, G7, G12 |
-| `lane-content-coverage-prompt.md` | Lane 1 prompt: G5, G6, G8, G9, G11, G13, G15, G16, G18-G21 |
-| `lane-file-existence-prompt.md` | Lane 2 prompt: G4, G10 |
-| `lane-guardrail-compliance-prompt.md` | Lane 3 prompt: G14 |
-| `g17-dimension-coverage-prompt.md` | Lane 4 prompt: G17 |
-| `lane-style-compliance-prompt.md` | Lane 5 prompt: G22 |
+| `lane-static-structural-prompt.md` | static-structural lane prompt: G1, G2, G7 |
+| `lane-content-coverage-prompt.md` | content-coverage lane prompt: G11, G16, G18-G21 |
+| `lane-guardrail-compliance-prompt.md` | guardrail-compliance lane prompt: G14 |
+| `g17-dimension-coverage-prompt.md` | dimension-coverage lane prompt: G17 (round 1 only) |
+| `lane-style-compliance-prompt.md` | style-compliance lane prompt: G22 |
 | `lens-architecture-prompt.md` | Step 5 architecture lens prompt |
 | `lens-requirements-prompt.md` | Step 5 requirements lens prompt |
 | `lens-risk-prompt.md` | Step 5 risk lens prompt |
@@ -136,7 +135,7 @@ flowchart TD
     S2["Step 2 - Decompose Into Tasks"]
     S2 --> S3
 
-    S3["Step 3 - Six-Lane Gate Evaluation"]
+    S3["Step 3 - Lanes and Gate Checks"]
     S3 --> S4["Step 4 - Revise Plan From Findings"]
     S4 --> lw_check{Lightweight?}
     lw_check -->|yes| S6_5
@@ -272,16 +271,16 @@ calls. The call passes the active template path, except for a lightweight
 plan. A finding that is left stays until the Step 6.6 format gate. Then the
 orchestrator goes to Step 3.
 
-### Step 3: Six-Lane Gate Evaluation
+### Step 3: Lanes and Gate Checks
 
 | Aspect | Detail |
 |--------|--------|
 | **Tools called** | `plan_support({action: "merge_results"})`, `plan_support({action: "evidence_record"})` (`main` item `S3-guardrail-findings`: the `{id, gateId}` of each `G14` and `G22` issue from `allIssues`, without the synthetic lane issues, read by the round 1 review record), `plan_mark({marker: "guardrailsEvaluated"})`, `plan_mark({marker: "critiqueRan"})` |
-| **Subagents** | 6 lane subagents dispatched in a single message (see [Fan-Out Architecture](#step-3-six-lane-gate)) |
+| **Subagents** | 5 lane subagents and the `validate plan_gates` call in a single message, after the inline check of G5, G6, G13 and G15 (see [Fan-Out Architecture](#step-3-lane-and-gate-check-fan-out)) |
 | **Plan sections written** | None (findings stored for Step 4) |
-| **Failure modes** | Lane failure, or a lane not returned after its retry: the lane is recorded with `status: "fail"` and a blocking synthetic issue (lanes 0–3 and 5). `merge_results` lists it in `laneFailures` and sets the merged status to `Issues Found`. A Lane 4 failure alone is advisory. Session stops during Step 3: critique markers are not set and the stop hook warns. The resume path dispatches the lanes again. |
+| **Failure modes** | Lane failure, or a lane not returned after its retry: the lane is recorded with `status: "fail"` and a blocking synthetic issue (every lane except dimension-coverage, and the go-gates entry). `merge_results` lists it in `laneFailures` and sets the merged status to `Issues Found`. A dimension-coverage failure alone is advisory. Session stops during Step 3: critique markers are not set and the stop hook warns. The resume path dispatches the lanes again. |
 
-All six lanes run in parallel. Each lane evaluates its assigned gates against
+All lanes and the `plan_gates` call run in parallel. Each lane evaluates its assigned gates against
 the plan file and returns structured findings. `merge_results` deduplicates
 issues, checks for coverage gaps (missing gate IDs), and produces a merged
 status. The two once-per-run markers (`guardrailsEvaluated`, `critiqueRan`)
@@ -305,11 +304,11 @@ appendix mapping OpenSpec requirements to plan tasks.
 | Aspect | Detail |
 |--------|--------|
 | **Tools called** | `plan_support({action: "merge_results"})`; `plan_mark({marker: "review-round"})` when the round is Approved |
-| **Subagents** | 3 lens reviewers dispatched in a single message (see [Fan-Out Architecture](#step-5-three-lens-review)) |
+| **Subagents** | 3 lens reviewers dispatched in a single message for plans with 8 or more tasks, else 1 reviewer, both on the opposite model (see [Fan-Out Architecture](#step-5-lens-review)) |
 | **Plan sections written** | `## Verification Scorecard` (regenerated after each lens merge iteration) |
 | **Failure modes** | All lenses approve: proceed to Step 6.5. Lens or reviewer not returned after its retry: the orchestrator does that review inline from the same filled prompt and records it as `<writerId>-inline-fallback`. Round `reviewLoop.maxRounds` (5) ends with blocking issues: Step 6 runs its fix pass, then asks one AskUserQuestion question per open finding (`accepted` / `rejected` / `stop`, 4 per call) and stores the answers with `plan_mark({marker: "review-outcome"})`. No 6th round starts. |
 
-Skipped in `lightweight` mode. Three lens reviewers (architecture,
+Skipped in `lightweight` mode. For a plan with 8 or more tasks, three lens reviewers (architecture,
 requirements, risk) evaluate the plan independently. Results merge through
 `plan_support.merge_results`. After each merge, the `## Verification
 Scorecard` section is assembled and written (or regenerated) in the plan file.
@@ -369,7 +368,7 @@ The `final: true` flag enables PF9 (Verification Scorecard) and PF10
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | None (learning capture appends directly to `.sdlc-v2/learnings/log.md`) |
+| **Tools called** | `plan_mark({marker: "done"})`, which returns the `timing` report that Step 7 prints |
 | **Subagents** | None |
 | **Plan sections written** | None (Scorecard already written in Step 5) |
 | **Failure modes** | None |
@@ -496,9 +495,9 @@ exploration; the brief is never stored (only a brief that passes validation
 is written), and the writer evidence files stay in `<runId>.evidence/` until
 the Stop hook removes the whole directory after the `done` marker.
 
-### Step 3: Six-Lane Gate
+### Step 3: Lane and Gate-Check Fan-Out
 
-Six subagents are dispatched in a single `Agent` tool-use message, in the
+Five lane subagents and one `validate plan_gates` call are dispatched in a single message, in the
 foreground, each with its filled prompt inline. Each lane
 runs independently with its own model and prompt template. All must complete
 before the merge barrier. A lane has no timeout: the foreground call returns
@@ -518,7 +517,7 @@ The same dispatch rules apply to lanes, lenses, the reviewer and Gate A:
 - A lane that is not returned gets a synthetic `laneResults` entry with
   `status: "fail"` and one blocking issue `Lane <name> not returned — <failure>`.
   The entry counts as collected, so the merge and the JOIN barriers go on.
-  Every failed entry of lanes 0–3 and 5 carries such a blocking issue. Step 4
+  Every failed entry, except the dimension-coverage entry, carries such a blocking issue. Step 4
   sends the lane again one time (not after a user denial). When the lane
   still fails, Step 4 adds a `## Deviations & assumptions` row and continues.
 - A lens, the reviewer or Gate A that is not returned is reviewed inline from
@@ -531,31 +530,32 @@ The same dispatch rules apply to lanes, lenses, the reviewer and Gate A:
 ```mermaid
 sequenceDiagram
     participant O as Orchestrator
-    participant L0 as Lane 0 static-structural
-    participant L1 as Lane 1 content-coverage
-    participant L2 as Lane 2 file-existence
-    participant L3 as Lane 3 guardrail-compliance
-    participant L4 as Lane 4 dimension-coverage
-    participant L5 as Lane 5 style-compliance
+    participant V as validate plan_gates
+    participant SS as static-structural
+    participant CC as content-coverage
+    participant GC as guardrail-compliance
+    participant DC as dimension-coverage
+    participant SC as style-compliance
     participant PS as plan_support
     participant PM as plan_mark
 
-    O->>L0: dispatch (haiku)
-    O->>L1: dispatch (sonnet)
-    O->>L2: dispatch (haiku)
-    O->>L3: dispatch (sonnet)
-    O->>L4: dispatch (sonnet)
-    O->>L5: dispatch (sonnet)
-    Note over O,L5: All 6 lanes dispatched in single message
+    Note over O: Inline check of G5, G6, G13, G15
+    O->>V: plan_gates(file)
+    O->>SS: dispatch (haiku)
+    O->>CC: dispatch (sonnet)
+    O->>GC: dispatch (sonnet)
+    O->>DC: dispatch (sonnet, round 1 only)
+    O->>SC: dispatch (sonnet)
+    Note over O,SC: All lanes and plan_gates in one message
 
-    L0-->>O: {gateIds, issues, passes}
-    L1-->>O: {gateIds, issues, passes}
-    L2-->>O: {gateIds, issues, passes}
-    L3-->>O: {gateIds, issues, guardrailCompliancePayload}
-    L4-->>O: {gateIds, findings}
-    L5-->>O: {gateIds, issues, passes}
+    V-->>O: findings (G3, G4, G8, G9, G10, G12, G18 floor)
+    SS-->>O: {gateIds, issues, passes}
+    CC-->>O: {gateIds, issues, passes}
+    GC-->>O: {gateIds, issues, guardrailCompliancePayload}
+    DC-->>O: {gateIds, findings}
+    SC-->>O: {gateIds, issues, passes}
 
-    O->>PS: merge_results(laneResults, expectedGates)
+    O->>PS: merge_results(laneResults incl. go-gates and inline-checks, expectedGates)
     PS-->>O: {allIssues, coverageGaps, mergedStatus}
 
     Note over O,PM: JOIN barrier (once-per-run)
@@ -565,12 +565,12 @@ sequenceDiagram
 
 Lane prompt templates are filled with variables from the `plan_prepare`
 payload. Each lane receives the plan file path, format reference path, and
-lane-specific context (e.g., `{GUARDRAILS_FILE}` for lanes 0, 1, and 3,
-`{DIMENSIONS_DIR}` and `{COPILOT_DIR}` for Lane 4).
+lane-specific context (e.g., `{GUARDRAILS_FILE}` for the static-structural, content-coverage and guardrail-compliance lanes,
+`{DIMENSIONS_DIR}` and `{COPILOT_DIR}` for the dimension-coverage lane).
 
-### Step 5: Three-Lens Review
+### Step 5: Lens Review
 
-Three lens reviewers run in parallel. Each uses the
+For a plan with 8 or more tasks, three lens reviewers run in parallel. A smaller plan gets one reviewer. Both use the opposite model. Each uses the
 `plan-reviewer-prompt.md` template with lens-specific focus categories.
 
 ```mermaid
@@ -626,9 +626,11 @@ Lens definitions from `buildLensReviewers()` in `plan.go`:
 ### Merged Re-Dispatch Path
 
 When Step 6 detects a material change (any of the 7 snapshot dimensions
-differ), the pipeline re-dispatches from Step 3. This means all six lanes
-re-evaluate the revised plan. When the change is non-material, only Step 5
-re-dispatches.
+differ), the pipeline re-dispatches from Step 3. Every lane except
+dimension-coverage, both gate checks and the lens reviewers re-evaluate the
+revised plan. The dimension-coverage lane runs in round 1 only: later rounds
+pass a fixed G17 entry with no issues. When the change is non-material, only
+Step 5 re-dispatches.
 
 The material-change detection uses `plan_support` actions:
 
@@ -677,7 +679,7 @@ path.
 | `gate-a` | Step 1 intake-audit subagent | Gate A result |
 | `lane-<name>-r<n>` | Step 3 lane subagent | One lane's result; `<n>` = review iteration |
 | `lens-<name>-r<n>` | Step 5 lens subagent | One lens's result; `<n>` = review iteration |
-| `reviewer-r<n>` | Step 5 single-reviewer path (plans with <5 tasks) | Reviewer result |
+| `reviewer-r<n>` | Step 5 single-reviewer path (plans with fewer than 8 tasks) | Reviewer result |
 
 Every writer records `status: "running"` before starting and `status: "done"`
 with `items` when finished, via the run-context footer appended to its
@@ -692,7 +694,7 @@ never in parallel with another `main` write, since two parallel upserts of
 |---|---|
 | `plan_support({action: "evidence_record", runId, writerId, status, items?, brief?})` | A writer registers itself running, then done with its items. `writerId: "main"` also records the brief (only when it passes validation) and decision records. |
 | `plan_support({action: "evidence_digest", runId, expectedWriters?, timeoutSeconds?, statusOnly?})` | Returns the `writers` status table always, plus a `digest` (run summary including `briefPath`) unless `statusOnly`; never returns item bodies. `expectedWriters` defaults to the checkpoint's `expectedWriters` when omitted. |
-| `plan_support({action: "evidence_get", runId, ids?, writerIds?})` | Needs `ids`, `writerIds`, or both. `ids` (max 200) are item IDs: each ID is searched in every writer file, every match is returned in writer-name order (item IDs are unique only within one writer), and an ID with no match is listed in `notFound`. `writerIds` returns every item of each writer; an unknown writer is listed in `notFound`. Fetches recorded item bodies for CRITIQUE, or for template fills like `{REQUIREMENTS_SUMMARY}` / `{BRIEF_FINDING_IDS}`. |
+| `plan_support({action: "evidence_get", runId, ids?, writerIds?})` | Needs `ids`, `writerIds`, or both. `ids` (max 200) are item IDs: each ID is searched in every writer file, every match is returned in writer-name order (item IDs are unique only within one writer), and an ID with no match is listed in `notFound`. `writerIds` returns every item of each writer; an unknown writer is listed in `notFound`. Fetches recorded item bodies for CRITIQUE, or for template fills like `{REQUIREMENTS_SUMMARY}`, and for the brief ids of the inline G15 check on a resume. |
 | `plan_mark({marker: "checkpoint", data: {step, iteration, expectedWriters?}})` | Replaces (not appends) `st.Data["checkpoint"]`. Called at the start of every step (`1, 2, 3, 4, 5, 6, 6.5, 6.6, 7`); `expectedWriters` is passed only at a fan-out step (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer). |
 | `plan_mark({marker: "review-round", data: {round, mergedStatus, found, fixed, lenses, findings?}})` | Upserts one row of `st.Data["reviewRounds"]` by `round`. Called once per review round, in Step 5 (Approved) or Step 6 (after the fixes). `findings` is optional: max 200 `{id, fixed}`, where `id` is the `merge_results` `allIssues` id (`^f-[0-9a-f]{8}$`); a passed `[]` is stored as `[]`, an absent key stays absent; a repeated `id` is a `DomainError`. The dashboard reads the rows. |
 | `plan_mark({marker: "review-outcome", data: {findings}})` | Replaces (not appends) `st.Data["reviewOutcome"]` with this call's list: 1 to 200 `{id, text, choice, reason}`, `choice` one of `accepted`, `rejected`, `stop` (the `outcomeChoice*` constants), `text` and `reason` max 200 runes. Pass every answered finding on every call. Returns one of two `next` texts: with a `stop` choice, "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; with no `stop` choice, "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5." (`reviewOutcomeStopNext` / `reviewOutcomeNext`). Also rejects a non-array `findings` and a repeated `id`. Invalid input is a `DomainError` that writes nothing. |
@@ -720,7 +722,7 @@ never in parallel with another `main` write, since two parallel upserts of
      writer as possibly still running.
    - At step 3 or later, the skill does not poll. Lanes, lenses, the reviewer
      and Gate A run in the foreground. The skill dispatches the step again
-     under the dispatch rules of [Step 3: Six-Lane Gate](#step-3-six-lane-gate).
+     under the dispatch rules of [Step 3: Lane and Gate-Check Fan-Out](#step-3-lane-and-gate-check-fan-out).
 5. If the resume call returns `no active plan run`, the skill prints "No
    active plan run to resume — starting a new plan." and runs Step 0
    normally.
@@ -780,8 +782,8 @@ Every field of `PlanPrepareOut` and its consuming step:
 |-------|------|----------|
 | `next` | `string` | Step 0 (the literal next instruction — see [MCP Output Contract](mcp-output-contract.md)) |
 | `runId` | `string` | Steps 0-7 (the run ID passed to every `plan_support` evidence call and every subagent's `{RUN_ID}` template var) |
-| `guardrailsFile` | `string` | Step 3 lanes 0, 1, 3, Step 5 lenses and reviewer (`{GUARDRAILS_FILE}` template var) |
-| `styleGuideFile` | `string` | Step 3 lane 5 (`{STYLE_GUIDE_FILE}`) |
+| `guardrailsFile` | `string` | Step 3 static-structural, content-coverage and guardrail-compliance lanes, Step 5 lenses and reviewer (`{GUARDRAILS_FILE}` template var) |
+| `styleGuideFile` | `string` | Step 3 style-compliance lane (`{STYLE_GUIDE_FILE}`) |
 | `openspec` | `OpenspecInfo` | Step 0 (banner), Step 1 (explore context) |
 | `fromOpenspec` | `*FromOpenspecResult` | Step 0 (validation gate) |
 | `openspecContext` | `OpenspecContext` | Steps 2, 4 (task mapping, appendix generation) |
@@ -790,10 +792,11 @@ Every field of `PlanPrepareOut` and its consuming step:
 | `tasks` | `PlanTasks` | Step 6.6 (PF11 requiredFields, PF12 contractShape) |
 | `explorePack` | `ExplorePack` | Step 1 (git scope, OpenSpec paths, keywords) |
 | `planTemplate` | `PlanTemplate` | Step 0 (template path detection) |
-| `githubHosting` | `GithubHosting` | Step 3 Lane 4 (`{GITHUB_HOSTING_DETECTED}`) |
-| `g17Dispatch` | `Dispatch` | Step 3 Lane 4 (subagent type, model, prompt path) |
+| `githubHosting` | `GithubHosting` | Step 3 dimension-coverage lane (`{GITHUB_HOSTING_DETECTED}`) |
+| `g17Dispatch` | `Dispatch` | Step 3 dimension-coverage lane (subagent type, model, prompt path) |
 | `intakeAuditDispatch` | `Dispatch` | Step 1 (intake audit subagent config) |
-| `lanes` | `[]Lane` | Step 3 (6 lane configs: name, model, prompt, gateIds) |
+| `lanes` | `[]Lane` | Step 3 (5 lane configs: name, model, prompt, gateIds) |
+| `gateChecks` | `[]GateCheck` | Step 3 (the `go-gates` and `inline-checks` entries: name, kind, gateIds) |
 | `lensReviewers` | `[]LensReviewer` | Step 5 (3 lens configs: lens, model, prompt, focusCategories) |
 | `reviewLoop` | `ReviewLoop` | Step 5 (loop limit, `reviewLoop.maxRounds`) |
 | `template` | `*TemplateResolution` | Step 0 (skeleton, routing, sections, questions) |
@@ -807,15 +810,15 @@ Lane and lens prompt templates use `{PLACEHOLDER}` variables filled from the
 | Variable | Source | Used by |
 |----------|--------|---------|
 | `{PLAN_FILE_PATH}` | Plan file path on disk | All lanes, all lenses |
-| `{FORMAT_REFERENCE_PATH}` | `plan-format-reference.md` path | Lanes 0, 1 |
-| `{GUARDRAILS_FILE}` | `guardrailsFile` (path to `<runId>.evidence/guardrails.md`) | Lanes 0, 1, 3; all lenses; reviewer template |
+| `{FORMAT_REFERENCE_PATH}` | `plan-format-reference.md` path | static-structural and content-coverage lanes |
+| `{GUARDRAILS_FILE}` | `guardrailsFile` (path to `<runId>.evidence/guardrails.md`) | static-structural, content-coverage and guardrail-compliance lanes; all lenses; reviewer template |
 | `{RUN_ID}` | `runId` | Every dispatched writer (explorer, lane, lens, reviewer, gate-a subagent) |
 | `{WRITER_ID}` | Computed per dispatch (e.g. `"explore-" + slugify(dimension.name)`, or a lane/lens/reviewer name) | Every dispatched writer, for its own `evidence_record` calls |
 | `{PLAN_INSTRUCTIONS}` | `style.instructions` (from `[planStyle] instructions`) | All lanes, all lenses (custom-instruction compliance check) |
-| `{DIMENSIONS_DIR}` | `.sdlc-v2/review-dimensions/` | Lane 4 |
-| `{COPILOT_DIR}` | `.github/instructions/` | Lane 4 |
-| `{GITHUB_HOSTING_DETECTED}` | `githubHosting.detected` (boolean) | Lane 4 |
-| `{OPENSPEC_TASKS}` | `openspecContext.tasks` (JSON or null) | Lane 1 (G11, G16) |
+| `{DIMENSIONS_DIR}` | `.sdlc-v2/review-dimensions/` | dimension-coverage lane |
+| `{COPILOT_DIR}` | `.github/instructions/` | dimension-coverage lane |
+| `{GITHUB_HOSTING_DETECTED}` | `githubHosting.detected` (boolean) | dimension-coverage lane |
+| `{OPENSPEC_TASKS}` | `openspecContext.tasks` (JSON or null) | content-coverage lane (G11, G16) |
 
 ### F-DIM-N Finding Provenance Chain
 
@@ -868,28 +871,28 @@ produce findings or validation results that feed into subsequent writing steps.
 
 | Gate | Name | Lane | Model | Severity | Blocking |
 |------|------|------|-------|----------|----------|
-| G1 | Requirements coverage | 0 static-structural | haiku | warning* | No* |
-| G2 | No orphan tasks | 0 static-structural | haiku | warning* | No* |
-| G3 | Dependency integrity | 0 static-structural | haiku | error | **Yes** |
-| G4 | File conflict potential | 2 file-existence | haiku | error | **Yes** |
-| G5 | Context sufficiency | 1 content-coverage | sonnet | warning | No |
-| G6 | Classification accuracy | 1 content-coverage | sonnet | warning | No |
-| G7 | No scope creep | 0 static-structural | haiku | warning* | No* |
-| G8 | Verification completeness | 1 content-coverage | sonnet | warning | No |
-| G9 | Decomposition balance | 1 content-coverage | sonnet | warning | No |
-| G10 | File existence | 2 file-existence | haiku | error | **Yes** |
-| G11 | OpenSpec requirements coverage | 1 content-coverage | sonnet | error | **Yes** |
-| G12 | Dependency target existence | 0 static-structural | haiku | error | **Yes** |
-| G13 | Self-containment test | 1 content-coverage | sonnet | warning | No |
-| G14 | Guardrail compliance | 3 guardrail-compliance | sonnet | per-guardrail | per-guardrail |
-| G15 | Brief citation coverage | 1 content-coverage | sonnet | warning | No |
-| G16 | OpenSpec tasks.md coverage | 1 content-coverage | sonnet | error | **Yes** |
-| G17 | Dimension coverage | 4 dimension-coverage | sonnet | advisory | No (never) |
-| G18 | Contract concreteness | 1 content-coverage | sonnet | error | **Yes** |
-| G19 | Render-don't-narrate | 1 content-coverage | sonnet | error | **Yes** |
-| G20 | Notes rationale-only | 1 content-coverage | sonnet | error | **Yes** |
-| G21 | Self-contained code references | 1 content-coverage | sonnet | error | **Yes** |
-| G22 | Style compliance | 5 style-compliance | sonnet | error | **Yes** |
+| G1 | Requirements coverage | static-structural | haiku | warning* | No* |
+| G2 | No orphan tasks | static-structural | haiku | warning* | No* |
+| G3 | Dependency integrity | go-gates (`validate plan_gates`) | Go | error | **Yes** |
+| G4 | File conflict potential | go-gates (`validate plan_gates`) | Go | error | **Yes** |
+| G5 | Context sufficiency | inline-checks | main session | warning | No |
+| G6 | Classification accuracy | inline-checks | main session | warning | No |
+| G7 | No scope creep | static-structural | haiku | warning* | No* |
+| G8 | Verification completeness | go-gates (`validate plan_gates`) | Go | warning | No |
+| G9 | Decomposition balance | go-gates (`validate plan_gates`) | Go | warning | No |
+| G10 | File existence | go-gates (`validate plan_gates`) | Go | error | **Yes** |
+| G11 | OpenSpec requirements coverage | content-coverage | sonnet | error | **Yes** |
+| G12 | Dependency target existence | go-gates (`validate plan_gates`) | Go | error | **Yes** |
+| G13 | Self-containment test | inline-checks | main session | warning | No |
+| G14 | Guardrail compliance | guardrail-compliance | sonnet | per-guardrail | per-guardrail |
+| G15 | Brief citation coverage | inline-checks | main session | warning | No |
+| G16 | OpenSpec tasks.md coverage | content-coverage | sonnet | error | **Yes** |
+| G17 | Dimension coverage | dimension-coverage (round 1 only) | sonnet | advisory | No (never) |
+| G18 | Contract concreteness | content-coverage | sonnet | error | **Yes** |
+| G19 | Render-don't-narrate | content-coverage | sonnet | error | **Yes** |
+| G20 | Notes rationale-only | content-coverage | sonnet | error | **Yes** |
+| G21 | Self-contained code references | content-coverage | sonnet | error | **Yes** |
+| G22 | Style compliance | style-compliance | sonnet | error | **Yes** |
 
 **\* Escalation rule:** G1, G2, G7 escalate from `warning` to `error`
 (blocking) when the plan has 3 or more uncovered requirements or orphan tasks.
@@ -898,12 +901,11 @@ produce findings or validation results that feed into subsequent writing steps.
 `error`-severity guardrails are blocking; `warning`-severity guardrails are
 advisory.
 
-**G5 note:** The lane-content-coverage prompt lists G6/G8/G9/G13/G15 as
-warning and G11/G16/G18-G21 as error, but omits G5 from both lists. G5 is
-classified as warning here based on the pattern (correctable, non-blocking).
-
 **G17 note:** Dimension coverage is always advisory and non-blocking. Findings
 are spliced as a `## Suggested Review Dimensions` advisory block in Step 4.
+
+**G18 note:** `go-gates` also reports the G18 floor (a Contract with no code
+block, table or diagram). G18 stays with `content-coverage`.
 
 ### PF1-PF14 Format Checks
 
