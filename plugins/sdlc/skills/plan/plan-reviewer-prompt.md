@@ -4,7 +4,7 @@ Use this template in plan Step 5 (CRITIQUE) when dispatching the plan review sub
 
 **Purpose:** Verify the plan is complete, accurate, and ready for execution by execute.
 
-**Model selection:** Use a different model than the one that wrote the plan for plans with 5+ tasks (cross-model review catches blind spots). For plans under 5 tasks, same model is acceptable.
+**Model selection:** Use a different model than the one that wrote the plan, for every plan size (cross-model review catches blind spots).
 
 ## How to Fill This Template
 
@@ -13,20 +13,20 @@ Use this template in plan Step 5 (CRITIQUE) when dispatching the plan review sub
 - `{SOURCE_REQUIREMENTS}` — file path or inline text of the original spec/requirements (if available)
 - `{BRIEF_FILE}` — absolute path to `brief.md` in the run's evidence directory (`<runId>.evidence/brief.md`), or `"none — orchestrator skipped"` when the lightweight path or fallback ran
 - `{OPENSPEC_TASKS}` — serialized JSON array from `openspecContext.tasks[]` when the plan loads an existing change (`--spec <change-name>`); `"none — plan not from OpenSpec"` otherwise
-- `{REQUIREMENTS_JSON}` — JSON array of `{ reqId, capability, type, name, scenarioCount }` from the delta-spec inventory, or `"null"` when unavailable (CLI absent or non-OpenSpec plan). When `{LENS}=all` (single-reviewer, <5 tasks), include this for traceability matrix building if present.
-- `{LENS}` — reviewer lens: one of `architecture`, `requirements`, `risk`, or `all`. When `{LENS}=all`, the reviewer evaluates all categories (status quo for plans <5 tasks). When `{LENS}` is one of the three specific values, the reviewer filters evaluation to the categories listed in `{LENS_FOCUS}`.
+- `{REQUIREMENTS_JSON}` — JSON array of `{ reqId, capability, type, name, scenarioCount }` from the delta-spec inventory, or `"null"` when unavailable (CLI absent or non-OpenSpec plan). When `{LENS}=all` (single-reviewer, <8 tasks), include this for traceability matrix building if present.
+- `{LENS}` — reviewer lens: one of `architecture`, `requirements`, `risk`, or `all`. When `{LENS}=all`, the reviewer evaluates all categories (status quo for plans <8 tasks). When `{LENS}` is one of the three specific values, the reviewer filters evaluation to the categories listed in `{LENS_FOCUS}`.
 - `{LENS_FOCUS}` — category subset for the lens, rendered as a bullet list (e.g., `- Buildability\n- Task descriptions\n- Decision documentation\n- Dependency accuracy`). When `{LENS}=all`, set to `"all categories below"`.
 
 **Lens → category mapping (KD3, Fixes #418):**
 - `architecture`: Buildability, Task descriptions, Decision documentation, Dependency accuracy
 - `requirements`: Requirements coverage, Metadata completeness, Plan completeness, OpenSpec G16, Exploration provenance, Best-practice traceability
 - `risk`: File paths, Verification strategy, Scope discipline, Guardrail compliance
-- `all`: all categories (single-reviewer mode for plans <5 tasks — preserves today's behavior)
+- `all`: all categories (single-reviewer mode for plans <8 tasks — preserves today's behavior)
 
 ```
 Task tool (general-purpose):
   description: "Plan review for <feature name>"
-  model: <reviewer model — different from plan author model when 5+ tasks>
+  model: <reviewer model — different from plan author model>
   mode: bypassPermissions
   prompt: |
     You are reviewing a plan document for completeness, accuracy, and executability.
@@ -90,11 +90,11 @@ Task tool (general-purpose):
 
 ## Handling Reviewer Output
 
-**Single reviewer (`{LENS}=all`, plans <5 tasks):**
+**Single reviewer (`{LENS}=all`, plans <8 tasks):**
 - Approved → Proceed to Step 7 (Handoff)
 - Issues Found → Fix each blocking issue in the plan document; re-dispatch the reviewer; maximum 5 reviewer iterations — if still unresolved, surface to user
 
-**Multi-lens reviewer (plans ≥5 tasks — merge in Step 5):**
+**Multi-lens reviewer (plans ≥8 tasks — merge in Step 5):**
 - Main agent merges lens results with `plan_support({action: "merge_results", lensResults})` (SKILL.md Step 5 maps each lens output to the tool's fields): Status = `Approved` iff ALL lenses approved; Issues = union of blocking issues (dedup by gate ID + lower-cased trimmed summary); Recommendations = exact-text dedup
 - Merged Approved → Proceed to Step 7
 - Merged Issues Found → Fix blocking issues; re-dispatch all lenses in next iteration; maximum 5 iterations total

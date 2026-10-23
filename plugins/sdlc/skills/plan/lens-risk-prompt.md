@@ -2,7 +2,7 @@
 
 **Lens:** risk
 **Focus categories:** File paths, Verification strategy, Scope discipline, Guardrail compliance
-**Default model:** sonnet (overridden to opposite-of-plan-author at dispatch time for ≥5-task plans)
+**Default model:** sonnet (overridden to opposite-of-plan-author at dispatch time; plans with 8 or more tasks get the 3 lenses)
 
 You are reviewing a plan document for risk and compliance. Evaluate ONLY the focus areas listed below — skip all other categories.
 
