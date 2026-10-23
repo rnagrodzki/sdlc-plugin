@@ -416,6 +416,43 @@ func TestPlanSkillsParamsMatchSchema(t *testing.T) {
 	}
 }
 
+// TestPlanSkillActionsAreRegistered checks that every name({ ... }) tool call
+// in skills/plan/SKILL.md names a registered MCP tool and, when it sets an
+// action, an action in that tool's registered enum. Step 3 calls validate
+// with the plan_gates action, so the test also requires that call: a
+// misspelled or dropped action name then fails here, not in a plan run. It
+// reads SKILL.md only: plan-format-reference.md holds example code such as
+// signToken(...) that is not an MCP call, so flagParityAssertToolsResolve
+// (which reads every skills/plan/*.md file) does not fit this skill.
+func TestPlanSkillActionsAreRegistered(t *testing.T) {
+	reg := flagParityBuildRegistry(t)
+	rel := "skills/plan/SKILL.md"
+	data, err := os.ReadFile(filepath.Join(planSkillsRepoRoot(t), rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+
+	sawPlanGates := false
+	for _, c := range flagParityToolCalls(string(data)) {
+		if c.name == "validate" && c.action == "plan_gates" {
+			sawPlanGates = true
+		}
+		enum := reg.actions[c.name]
+		switch {
+		case !reg.tools[c.name]:
+			t.Errorf("%s:%d: references MCP tool %q, which is not registered by any Register*Tools function", rel, c.line, c.name)
+		case c.action == "":
+		case enum == nil:
+			t.Errorf("%s:%d: %s call sets action %q, but the registered %s tool has no action enum", rel, c.line, c.name, c.action, c.name)
+		case !enum[c.action]:
+			t.Errorf("%s:%d: %s call references action %q, which is not in the registered %s action enum", rel, c.line, c.name, c.action, c.name)
+		}
+	}
+	if !sawPlanGates {
+		t.Errorf("%s: no validate call with action %q found — the skill dropped it, or the call-detection regex no longer matches its call style", rel, "plan_gates")
+	}
+}
+
 // TestPlanSkillsNoOrchestratorReferences is the AC3 acceptance criterion:
 // neither SKILL.md may reference the retired plan-explore-orchestrator /
 // wave-runner agents by name in their own prose (Ruling Set 15 replaced
