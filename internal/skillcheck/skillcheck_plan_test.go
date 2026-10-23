@@ -454,7 +454,6 @@ var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/g17-dimension-coverage-prompt.md":    "5e5ce6093275c3b5e82c943fa3f6ed43c074cfababb3ebde287b8db3da599872",
 	"skills/plan/intake-verify-prompt.md":             "eeae004f3a04a9382988fbf160b9e15d038300c50abb9c60ff2d168b6906b724",
 	"skills/plan/lane-content-coverage-prompt.md":     "3cdb91f357683fd5519e6c5f937a2bbacc6d357639f19239d0e31ad472cb5ae8",
-	"skills/plan/lane-file-existence-prompt.md":       "b3b761ebd1c9a1b20c1228a317fb074d769dccaa0ef0ed6034ceb3eb77a56c9d",
 	"skills/plan/lane-guardrail-compliance-prompt.md": "40e29d72be6c960fd14f1ec0866a9166836cdce33b2a1298507fc2d97b8b2f15",
 	"skills/plan/lane-static-structural-prompt.md":    "abfb3e2b81f32214e91bdcddc0919ed438f9d6d0024503c0f03caed0d3a3e363",
 	"skills/plan/lane-style-compliance-prompt.md":     "8e176210995de9741a3ab519f939089b921564952fcfb4071193f80c06be20d4",

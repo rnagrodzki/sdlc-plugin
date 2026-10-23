@@ -177,6 +177,26 @@ type Lane struct {
 	GateIDs            []string `json:"gateIds"`
 }
 
+// GateCheck is a Step 3 gate check that starts no sub-agent.
+type GateCheck struct {
+	Name    string   `json:"name" jsonschema_description:"Entry name in merge_results laneResults: go-gates or inline-checks."`
+	Kind    string   `json:"kind" jsonschema_description:"validate: call validate({action:\"plan_gates\"}); inline: the main session judges the gates."`
+	GateIDs []string `json:"gateIds" jsonschema_description:"Gates this entry covers in merge_results. Never empty."`
+}
+
+// planInlineGateIDs are the gates the main session judges itself in Step 3.
+// planGatesGateIDs (plan_gates.go) holds the gates that validate plan_gates owns.
+var planInlineGateIDs = []string{"G5", "G6", "G13", "G15"}
+
+// buildGateChecks returns the Step 3 gate checks that start no sub-agent.
+// With buildLanes, the entries cover G1..G22, each gate once.
+func buildGateChecks() []GateCheck {
+	return []GateCheck{
+		{Name: "go-gates", Kind: "validate", GateIDs: planGatesGateIDs},
+		{Name: "inline-checks", Kind: "inline", GateIDs: planInlineGateIDs},
+	}
+}
+
 // LensReviewer mirrors plan.js's buildLensReviewers() entry shape.
 type LensReviewer struct {
 	Lens               string   `json:"lens"`
@@ -236,6 +256,7 @@ type PlanPrepareOut struct {
 	IntakeAuditDispatch Dispatch            `json:"intakeAuditDispatch"`
 	Lanes               []Lane              `json:"lanes"`
 	LensReviewers       []LensReviewer      `json:"lensReviewers"`
+	GateChecks          []GateCheck         `json:"gateChecks"`
 	ReviewLoop          ReviewLoop          `json:"reviewLoop"`
 	Template            *TemplateResolution `json:"template,omitempty"`
 	Errors              []string            `json:"errors"`
@@ -952,9 +973,9 @@ func buildIntakeAuditDispatch() Dispatch {
 	}
 }
 
-// buildLanes mirrors plan.js's buildLanes (lane partitioning: four
-// static lane definitions, a fifth entry mirroring g17Dispatch verbatim, and
-// a sixth style-compliance lane that owns G22).
+// buildLanes mirrors plan.js's buildLanes (lane partitioning: three
+// static lane definitions, a fourth entry mirroring g17Dispatch verbatim, and
+// a fifth style-compliance lane that owns G22).
 func buildLanes(g17Dispatch Dispatch) []Lane {
 	type laneDef struct {
 		name         string
@@ -963,9 +984,8 @@ func buildLanes(g17Dispatch Dispatch) []Lane {
 		gateIDs      []string
 	}
 	defs := []laneDef{
-		{"static-structural", "haiku", "lane-static-structural-prompt.md", []string{"G1", "G2", "G3", "G7", "G12"}},
-		{"content-coverage", "sonnet", "lane-content-coverage-prompt.md", []string{"G5", "G6", "G8", "G9", "G11", "G13", "G15", "G16", "G18", "G19", "G20", "G21"}},
-		{"file-existence", "haiku", "lane-file-existence-prompt.md", []string{"G4", "G10"}},
+		{"static-structural", "haiku", "lane-static-structural-prompt.md", []string{"G1", "G2", "G7"}},
+		{"content-coverage", "sonnet", "lane-content-coverage-prompt.md", []string{"G11", "G16", "G18", "G19", "G20", "G21"}},
 		{"guardrail-compliance", "sonnet", "lane-guardrail-compliance-prompt.md", []string{"G14"}},
 	}
 
@@ -988,8 +1008,7 @@ func buildLanes(g17Dispatch Dispatch) []Lane {
 		GateIDs:            []string{"G17"},
 	})
 
-	// The style lane stays last so lanes[3] (guardrail-compliance) and
-	// lanes[4] (dimension-coverage) keep their indices.
+	// The style lane stays last. SKILL.md names lanes by name, not by index.
 	lanes = append(lanes, Lane{
 		Name:               "style-compliance",
 		SubagentType:       "general-purpose",
@@ -1814,6 +1833,7 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 		IntakeAuditDispatch: intakeAuditDispatch,
 		Lanes:               lanes,
 		LensReviewers:       lensReviewers,
+		GateChecks:          buildGateChecks(),
 		ReviewLoop:          ReviewLoop{MaxRounds: maxReviewRounds},
 		Template:            templateResolution,
 		Errors:              errs,
@@ -2817,7 +2837,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 // later task.
 func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
-		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan. "+
+		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan, plus gateChecks (the Step 3 gate checks that start no sub-agent). "+
 			"Writes the plan state file and <runId>.evidence/guardrails.md and style-guide.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes older runs' evidence for the branch. Optional: resume (post-compact recovery; reuses the active run, implies resolveTemplate, and fails when none exists). Returns runId, guardrailsFile, styleGuideFile and next. A failed state read, state write, guardrails write or style guide write returns an infrastructure error; the evidence cleanup is best-effort.",
 		mcpserver.Annotations{
 			Title:      "Prepare plan state and template",

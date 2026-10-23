@@ -65,7 +65,7 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 		"openspec", "fromOpenspec", "openspecContext", "guardrails",
 		"style", "tasks", "styleGuideFile",
 		"explorePack", "planTemplate", "githubHosting", "g17Dispatch",
-		"intakeAuditDispatch", "lanes", "lensReviewers", "reviewLoop", "errors",
+		"intakeAuditDispatch", "lanes", "lensReviewers", "gateChecks", "reviewLoop", "errors",
 	}
 	for _, k := range expectedTopKeys {
 		if _, ok := m[k]; !ok {
@@ -98,32 +98,32 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 		t.Errorf("Errors = %v, want empty", out.Errors)
 	}
 
-	// Lane fan-out: 4 static lanes + 1 mirrored G17 (dimension-coverage) lane + 1 style lane.
-	if len(out.Lanes) != 6 {
-		t.Fatalf("len(Lanes) = %d, want 6", len(out.Lanes))
+	// Lane fan-out: 3 static lanes + 1 mirrored G17 (dimension-coverage) lane + 1 style lane.
+	if len(out.Lanes) != 5 {
+		t.Fatalf("len(Lanes) = %d, want 5", len(out.Lanes))
 	}
-	wantLaneNames := []string{"static-structural", "content-coverage", "file-existence", "guardrail-compliance", "dimension-coverage", "style-compliance"}
+	wantLaneNames := []string{"static-structural", "content-coverage", "guardrail-compliance", "dimension-coverage", "style-compliance"}
 	for i, name := range wantLaneNames {
 		if out.Lanes[i].Name != name {
 			t.Errorf("Lanes[%d].Name = %q, want %q", i, out.Lanes[i].Name, name)
 		}
 	}
 	wantGuardrailGates := []string{"G14"}
-	if !reflect.DeepEqual(out.Lanes[3].GateIDs, wantGuardrailGates) {
-		t.Errorf("Lanes[3] (guardrail-compliance) GateIDs = %v, want %v", out.Lanes[3].GateIDs, wantGuardrailGates)
+	if !reflect.DeepEqual(out.Lanes[2].GateIDs, wantGuardrailGates) {
+		t.Errorf("Lanes[2] (guardrail-compliance) GateIDs = %v, want %v", out.Lanes[2].GateIDs, wantGuardrailGates)
 	}
-	last := out.Lanes[4]
+	last := out.Lanes[3]
 	if last.SubagentType != out.G17Dispatch.SubagentType || last.Model != out.G17Dispatch.Model {
 		t.Errorf("dimension-coverage lane %+v does not mirror g17Dispatch %+v", last, out.G17Dispatch)
 	}
 	if len(last.GateIDs) != 1 || last.GateIDs[0] != "G17" {
 		t.Errorf("dimension-coverage lane GateIDs = %v, want [G17]", last.GateIDs)
 	}
-	if !reflect.DeepEqual(out.Lanes[5].GateIDs, []string{"G22"}) {
-		t.Errorf("Lanes[5] (style-compliance) GateIDs = %v, want [G22]", out.Lanes[5].GateIDs)
+	if !reflect.DeepEqual(out.Lanes[4].GateIDs, []string{"G22"}) {
+		t.Errorf("Lanes[4] (style-compliance) GateIDs = %v, want [G22]", out.Lanes[4].GateIDs)
 	}
-	if out.Lanes[5].SubagentType != "general-purpose" || out.Lanes[5].Model != "sonnet" {
-		t.Errorf("Lanes[5] (style-compliance) = %+v, want subagentType=general-purpose model=sonnet", out.Lanes[5])
+	if out.Lanes[4].SubagentType != "general-purpose" || out.Lanes[4].Model != "sonnet" {
+		t.Errorf("Lanes[4] (style-compliance) = %+v, want subagentType=general-purpose model=sonnet", out.Lanes[4])
 	}
 
 	// Lens reviewers: 3 static lenses.
@@ -149,10 +149,11 @@ func TestPlanPrepare_KeySetAndDefaults(t *testing.T) {
 	}
 }
 
-// TestPlanPrepare_LanesCoverAllGates verifies the six plan_prepare lanes
-// together cover G1..G22 exactly: feeding each lane's GateIDs to merge_results
-// as a passing lane result reports no coverage gap. G22 lives in its own
-// style-compliance lane, so a lane that drops a gate shows up here.
+// TestPlanPrepare_LanesCoverAllGates verifies the five plan_prepare lanes and
+// the gateChecks entries together cover G1..G22 exactly once each: feeding
+// every lane and gate check to merge_results as a passing result reports no
+// coverage gap, and no gate id appears in two entries. G22 lives in its own
+// style-compliance lane, so an entry that drops or repeats a gate shows up here.
 func TestPlanPrepare_LanesCoverAllGates(t *testing.T) {
 	dir := t.TempDir()
 	initGitFixture(t, dir)
@@ -162,20 +163,86 @@ func TestPlanPrepare_LanesCoverAllGates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planPrepareCore: %v", err)
 	}
-	if len(out.Lanes) != 6 {
-		t.Fatalf("len(Lanes) = %d, want 6", len(out.Lanes))
+	if len(out.Lanes) != 5 {
+		t.Fatalf("len(Lanes) = %d, want 5", len(out.Lanes))
+	}
+	if len(out.GateChecks) != 2 {
+		t.Fatalf("len(GateChecks) = %d, want 2", len(out.GateChecks))
 	}
 
-	results := make([]LaneResult, 0, len(out.Lanes))
-	for _, lane := range out.Lanes {
-		results = append(results, LaneResult{Name: lane.Name, Status: "pass", GateIDs: lane.GateIDs})
+	results := make([]LaneResult, 0, len(out.Lanes)+len(out.GateChecks))
+	seen := map[string]string{}
+	record := func(owner string, gateIDs []string) {
+		for _, id := range gateIDs {
+			if prev, dup := seen[id]; dup {
+				t.Errorf("gate %s is in both %q and %q, want one owner", id, prev, owner)
+			}
+			seen[id] = owner
+		}
+		results = append(results, LaneResult{Name: owner, Status: "pass", GateIDs: gateIDs})
 	}
+	for _, lane := range out.Lanes {
+		record(lane.Name, lane.GateIDs)
+	}
+	for _, check := range out.GateChecks {
+		record(check.Name, check.GateIDs)
+	}
+
 	merged, err := mergeResults(PlanSupportIn{LaneResults: results, ExpectedGates: allGates()})
 	if err != nil {
 		t.Fatalf("mergeResults: %v", err)
 	}
 	if len(merged.CoverageGaps) != 0 {
-		t.Errorf("CoverageGaps = %v, want empty (lanes must cover G1..G22)", merged.CoverageGaps)
+		t.Errorf("CoverageGaps = %v, want empty (lanes and gateChecks must cover G1..G22)", merged.CoverageGaps)
+	}
+	if len(seen) != len(allGates()) {
+		t.Errorf("distinct gates = %d, want %d", len(seen), len(allGates()))
+	}
+}
+
+// TestPlanPrepare_GateChecks verifies the gateChecks entries: names, kinds,
+// and gate lists. go-gates must reuse planGatesGateIDs (plan_gates.go) so the
+// plan_gates validator and plan_prepare cannot drift apart.
+func TestPlanPrepare_GateChecks(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+
+	want := []GateCheck{
+		{Name: "go-gates", Kind: "validate", GateIDs: planGatesGateIDs},
+		{Name: "inline-checks", Kind: "inline", GateIDs: []string{"G5", "G6", "G13", "G15"}},
+	}
+	if !reflect.DeepEqual(out.GateChecks, want) {
+		t.Errorf("GateChecks = %+v, want %+v", out.GateChecks, want)
+	}
+	for _, check := range out.GateChecks {
+		if len(check.GateIDs) == 0 {
+			t.Errorf("GateChecks[%q].GateIDs is empty, want at least one gate", check.Name)
+		}
+	}
+
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	checks, ok := m["gateChecks"].([]any)
+	if !ok || len(checks) != 2 {
+		t.Fatalf(`JSON "gateChecks" = %v, want 2 entries`, m["gateChecks"])
+	}
+	first, _ := checks[0].(map[string]any)
+	for _, k := range []string{"name", "kind", "gateIds"} {
+		if _, ok := first[k]; !ok {
+			t.Errorf(`gateChecks[0] missing JSON key %q`, k)
+		}
 	}
 }
 
