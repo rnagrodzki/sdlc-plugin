@@ -1462,6 +1462,12 @@ func TestPlanMark_PlanTiming_DoneAppendsHistoryRecord(t *testing.T) {
 	if len(out.Warnings) != 0 {
 		t.Errorf("planMark(done).Warnings = %q, want empty", out.Warnings)
 	}
+	if out.Next != planDoneNext {
+		t.Errorf("planMark(done).Next = %q, want %q", out.Next, planDoneNext)
+	}
+	if !strings.HasPrefix(out.Timing, "Step 7: Timing (wall clock, UTC)\n") {
+		t.Errorf("planMark(done).Timing = %q, want the Step 7 timing report", out.Timing)
+	}
 
 	runs, err := history.NewFileWriter(historyDir(dir)).ReadRecentRuns(10)
 	if err != nil {

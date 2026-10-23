@@ -453,9 +453,9 @@ func TestPlanSkillsNoOrchestratorReferences(t *testing.T) {
 var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/g17-dimension-coverage-prompt.md":    "5e5ce6093275c3b5e82c943fa3f6ed43c074cfababb3ebde287b8db3da599872",
 	"skills/plan/intake-verify-prompt.md":             "eeae004f3a04a9382988fbf160b9e15d038300c50abb9c60ff2d168b6906b724",
-	"skills/plan/lane-content-coverage-prompt.md":     "3cdb91f357683fd5519e6c5f937a2bbacc6d357639f19239d0e31ad472cb5ae8",
+	"skills/plan/lane-content-coverage-prompt.md":     "4edd956548e0d3b10b9da4c449b012af2ef8d79f5f25f3c51e7f1444bd36514b",
 	"skills/plan/lane-guardrail-compliance-prompt.md": "40e29d72be6c960fd14f1ec0866a9166836cdce33b2a1298507fc2d97b8b2f15",
-	"skills/plan/lane-static-structural-prompt.md":    "abfb3e2b81f32214e91bdcddc0919ed438f9d6d0024503c0f03caed0d3a3e363",
+	"skills/plan/lane-static-structural-prompt.md":    "79ec35f1054923d4f272c165ce46f8de8a1642c8101fdec60722a126fd66399b",
 	"skills/plan/lane-style-compliance-prompt.md":     "8e176210995de9741a3ab519f939089b921564952fcfb4071193f80c06be20d4",
 	"skills/plan/lens-architecture-prompt.md":         "fe2315f0cc6b1a1f06224f37f2b8c0c7348364d67db0e0b490c6c9fd13e825a0",
 	"skills/plan/lens-requirements-prompt.md":         "82b555e796446c9236bc8abc99c9dd524edb8c79b55f6fe6d4333dfbae50560b",

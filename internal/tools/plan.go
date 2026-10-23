@@ -2631,8 +2631,9 @@ type PlanMarkOut struct {
 	OK       bool     `json:"ok"`
 	Marker   string   `json:"marker"`
 	Path     string   `json:"path"`
-	Next     string   `json:"next,omitempty"`     // checkpoint and review-outcome only
-	Warnings []string `json:"warnings,omitempty"` // done only: history write failed; the marker itself was saved
+	Next     string   `json:"next,omitempty"`                // checkpoint, review-outcome and done only
+	Warnings []string `json:"warnings,omitempty"`            // checkpoint: step time not recorded; done: history or evidence read failed; the marker itself was saved
+	Timing   string   `json:"timing,omitempty" render:"raw"` // done only: the Step 7 timing report
 }
 
 // planMark is the core logic, separated from the handler for testability.
@@ -2716,11 +2717,13 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 	}
 
 	// "checkpoint" replaces its own top-level state key on every call (no
-	// append, unlike the structured-data markers below). It and
-	// "review-outcome" are the only markers that return a non-empty Next.
+	// append, unlike the structured-data markers below). It, "review-outcome"
+	// and "done" are the only markers that return a non-empty Next. It also
+	// adds the first checkpoint of a step and iteration to stepTimes.
 	if in.Marker == "checkpoint" {
 		checkpoint.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		st.Data["checkpoint"] = checkpoint
+		warnings := recordStepTime(st, checkpoint)
 
 		refreshPlanTiming(st, contentRoot)
 		if err := state.Write(st); err != nil {
@@ -2730,7 +2733,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 				Cause:      err,
 			}
 		}
-		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path, Next: checkpointNext(mainRoot, checkpoint)}, nil
+		return PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path, Next: checkpointNext(mainRoot, checkpoint), Warnings: warnings}, nil
 	}
 
 	// "review-round" upserts its entry into reviewRounds by round. It
@@ -2823,6 +2826,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		if herr := appendPlanRunRecord(mainRoot, branch, st); herr != nil {
 			out.Warnings = append(out.Warnings, "plan timing not saved to history: "+herr.Error())
 		}
+		attachPlanDoneTiming(&out, mainRoot, st)
 	}
 	return out, nil
 }
@@ -2869,10 +2873,12 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_mark",
 		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, replace the progress checkpoint (checkpoint), record a review round (review-round), or store the answers to the findings open at the review-loop limit (review-outcome). "+
 			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next: the step-continuation sentence, plus the full custom plan instructions text (from [planStyle].instructions) when any are configured, plus a last-round sentence when step is \"5\" and iteration reaches the review-loop limit (plan_prepare's reviewLoop.maxRounds). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
+			"The first checkpoint of each step and iteration also adds {step, iteration, at} to the top-level stepTimes list (max 64 entries). A stepTimes value that is not a list is kept, and the checkpoint returns a warning. "+
 			"review-round — Requires: data.round, data.mergedStatus, data.found, data.fixed, data.lenses. Optional: data.findings (max 200 {id, fixed}). Replaces the row with the same round. Returns no next. "+
 			"review-outcome — Requires: data.findings (1 to 200 {id, text, choice, reason}; choice is accepted, rejected, or stop). Pass every answered finding on every call: each call replaces the stored reviewOutcome. Returns next. Invalid input returns DomainError and writes nothing. "+
-			"Markers other than checkpoint and review-outcome return no next: the call only records state; continue the current SKILL.md step. "+
-			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warnings set. Repeating done appends another history record.",
+			"Markers other than checkpoint, review-outcome and done return no next: the call only records state; continue the current SKILL.md step. "+
+			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warnings set. Repeating done appends another history record. "+
+			"The done marker also returns timing: the Step 7 timing report (total, the time of each step, the 3 slowest agents). It reads planIntegrity, stepTimes and the run's evidence writer files (<runId>.evidence/*.json). Absent data shows as unknown in its line. An evidence folder that cannot be listed adds the warning \"timing: cannot read evidence: <error>\"; each skipped writer file or stepTimes entry adds one warning; done still returns ok.",
 		mcpserver.Annotations{
 			Title:      "Record plan progress marker",
 			ReadOnly:   true,
