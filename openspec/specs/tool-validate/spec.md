@@ -10,8 +10,8 @@ The tool SHALL run the validator named by `action` and SHALL use only the input 
 
 | Field | Type | Required | Encoding | Meaning |
 |---|---|---|---|---|
-| `action` | string (enum) | yes | one of the 10 actions below, e.g. `plan_format` | Validator to run |
-| `file` | string | `plan_format` and `plan_style` only | path, absolute or relative to the main worktree root, e.g. `docs/plans/x.md` | Plan file to check |
+| `action` | string (enum) | yes | one of the 11 actions below, e.g. `plan_format` | Validator to run |
+| `file` | string | `plan_format`, `plan_style` and `plan_gates` only | path, absolute or relative to the root of the action, e.g. `docs/plans/x.md` | Plan file to check |
 | `final` | boolean | no | `true` / `false` | `plan_format`: also run PF9, and PF10 when `template` is set |
 | `template` | string | no | path, e.g. `.sdlc-v2/plan-template.md` | `plan_format`: template for PF10 and for the PF13 measured sections; `plan_style`: template for the measured sections |
 | `strict` | boolean | no | `true` / `false` | `cost_tiers`: report `INHERITED` as `error` instead of `warning` |
@@ -24,6 +24,7 @@ The tool SHALL run the validator named by `action` and SHALL use only the input 
 |---|---|---|---|
 | `plan_format` | `file`, `final`, `template` | main | `PF1`–`PF7`, `PF9`, `PF10`, `PF11`, `PF12`, `PF13`, `PF14` |
 | `plan_style` | `file`, `template` | main | `PF13` |
+| `plan_gates` | `file` | active | `G3`, `G4`, `G8`, `G9`, `G10`, `G12`, `G18` |
 | `discovery` | none | main | `PD1`–`PD16` |
 | `pr_template` | none | main | `V1`–`V5` |
 | `cost_tiers` | `strict` | main | `INHERITED`, `MISSING_DOC`, `DRIFT`, `STALE_DOC`, `NO_COST_DOC` |
@@ -62,19 +63,21 @@ The tool SHALL reject an `action` outside the enum with a `DomainError`.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
-| Unknown `action` | `DomainError` | `unknown validate action "<action>" (sdlc v<version>, commit <commit>)` / pass one of the 9 valid actions, or update the sdlc plugin |
+| Unknown `action` | `DomainError` | `unknown validate action "<action>" (sdlc v<version>, commit <commit>)` / pass one of the valid actions, which the Suggestion lists by name, or update the sdlc plugin |
 
 #### Scenario: Nonsense action
 - **WHEN** the tool is called with `action: "nonsense"`
 - **THEN** the result is a `DomainError` whose message starts with `unknown validate action "nonsense"`
+- **AND** its Suggestion lists `plan_gates`
 
 ### Requirement: Root selection
-The tool SHALL read from the main worktree root, except for `dimensions`, `ci_script_drift`, and opted-in `guardrails`, which read the active worktree root.
+The tool SHALL read from the main worktree root, except for `dimensions`, `ci_script_drift`, `plan_gates`, and opted-in `guardrails`, which read the active worktree root.
 
 | Case | Root | Active root cannot be resolved |
 |---|---|---|
 | `dimensions` | active | falls back to main (no error) |
 | `ci_script_drift` | active | falls back to main (no error) |
+| `plan_gates` | active | `InfraError` `resolve active worktree for plan_gates: <cause>` |
 | `guardrails` with `activeWorktree: true` | active | `InfraError` `resolve active worktree for guardrails activeWorktree:true: <cause>` |
 | Every other case | main | n/a |
 | Main root cannot be resolved (any action) | n/a | `InfraError` `resolve project root: <cause>` |
@@ -92,6 +95,10 @@ The tool SHALL read from the main worktree root, except for `dimensions`, `ci_sc
 #### Scenario: CI drift from a linked worktree
 - **WHEN** CI files were scaffolded only in a linked worktree and the tool runs there with `action: "ci_script_drift"`
 - **THEN** `findings` is an empty list
+
+#### Scenario: plan_gates with no active worktree fails loud
+- **WHEN** the tool runs from the main repo's `.git` directory with `action: "plan_gates"`
+- **THEN** the result is an `InfraError` whose message starts with `resolve active worktree for plan_gates`
 
 ### Requirement: plan_format reads the plan file
 The `plan_format` action SHALL require `file`, resolve it against the main worktree root when relative, and report read failures as a `DomainError`.
@@ -669,3 +676,132 @@ The `dimensions` action with `file` SHALL report the findings of the dimension f
 #### Scenario: No match
 - **WHEN** `file` is `missing.md`
 - **THEN** the tool returns a DomainError `file missing.md matches no review-dimension file`
+
+### Requirement: plan_gates action
+The `plan_gates` action SHALL check a plan file against the gates G3, G4, G8, G9, G12 and the G18 floor. It SHALL return one finding for each offender, with the gate id as `id` and the plan file as `path`, sorted by gate, then task number, then message. G8 and G9 findings SHALL be `warning`; the other gates SHALL be `error`, except the G10 Files-bullet warnings. It requires `file`, resolves a relative `file` against the active worktree root, and writes nothing.
+
+#### Scenario: Forward reference
+- **WHEN** Task 2 depends on Task 3
+- **THEN** the findings hold the `error` finding G3 `Task 2: depends on Task 3, which is not listed before it`
+
+#### Scenario: Self-dependency
+- **WHEN** Task 2 depends on Task 2
+- **THEN** the findings hold the `error` finding G3 `Task 2: depends on itself`
+
+#### Scenario: Missing dependency target
+- **WHEN** Task 2 depends on Task 9 and the plan has no Task 9
+- **THEN** the findings hold the `error` finding G12 `Task 2: depends on nonexistent Task 9`
+
+#### Scenario: Shared path with a dependency chain
+- **WHEN** Tasks 1 and 3 modify one path, Task 3 depends on Task 2, and Task 2 depends on Task 1
+- **THEN** the findings hold no G4 finding
+
+#### Scenario: Shared path with no dependency
+- **WHEN** Task 1 modifies `./a.go`, Task 2 modifies `a.go`, and no dependency links them
+- **THEN** the findings hold one `error` finding G4 `Task 1 and Task 2 both modify a.go with no dependency path between them`
+
+#### Scenario: Missing Verify field
+- **WHEN** Task 1 has no `**Verify:**` line
+- **THEN** the findings hold a `warning` finding G8 whose message is `Task 1` and the PF3 Verify text
+
+#### Scenario: Too many files
+- **WHEN** Task 1 touches 6 distinct paths
+- **THEN** the findings hold the `warning` finding G9 `Task 1: touches 6 files (limit 5)`
+
+#### Scenario: Too many Trivial tasks
+- **WHEN** 5 of 5 tasks are Trivial
+- **THEN** the findings hold the `warning` finding G9 `Plan: 5 of 5 tasks are Trivial (limit 80%)`
+
+#### Scenario: Prose-only Contract
+- **WHEN** the Contract block of the last task has prose only, and a `## Verification Scorecard` table follows it
+- **THEN** the findings hold the `error` finding G18 `Task N: Contract has no code block, table or diagram` for that task
+
+#### Scenario: No Contract line
+- **WHEN** a task has no `**Contract:**` line
+- **THEN** the findings hold no G18 finding for that task
+
+#### Scenario: Not a plan
+- **WHEN** the file has no `### Task N:` heading outside a code fence
+- **THEN** the result is a `DomainError` whose message starts with `plan_gates: no "### Task N: <title>" heading outside a code fence, so no gate was checked:`
+- **AND** its Suggestion ends with `Then retry plan_gates.`
+
+#### Scenario: G18 floor outside the go-gates gate IDs
+- **WHEN** a task has a prose-only Contract
+- **THEN** the finding carries id `G18`, although G18 is not in the `go-gates` gate IDs of `plan_prepare`
+
+#### Scenario: Dot slash path is one path
+- **WHEN** Task 1 modifies `./a.go` and `a.go` in two bullets
+- **THEN** the action reads one Modify path `a.go`
+
+#### Scenario: Extension path wins over a slash word
+- **WHEN** a Files bullet is `- Modify: the \`read/write\` helper in \`a.go\``
+- **THEN** the Modify path of that bullet is `a.go`
+
+#### Scenario: Files bullet with no path
+- **WHEN** Task 1 has the Files bullet `- Modify: the helpers`
+- **THEN** the findings hold a `warning` finding G10 that starts with `Task 1: Files bullet "Modify: the helpers" names no path, so G4, G9 and G10 skip it. Write it as`
+
+#### Scenario: Task with no Files block
+- **WHEN** Task 3 has no `**Files:**` line
+- **THEN** the findings hold the `warning` finding G10 `Task 3: no **Files:** block, so G4, G9 and G10 do not check this task`
+
+#### Scenario: Plan file not found
+- **WHEN** `plan_gates` runs with a `file` that does not exist
+- **THEN** the result is a `DomainError` whose Suggestion ends with `A relative path resolves against the active worktree root (the checkout of the current branch).`
+- **AND** the same call with `plan_format` gives a Suggestion that ends with `A relative path resolves against the main worktree root.`
+
+#### Scenario: Empty file input
+- **WHEN** `plan_gates` runs with an empty `file`
+- **THEN** the result is a `DomainError` `plan_gates: file is required`
+
+### Requirement: plan_gates Modify path check
+The `plan_gates` action SHALL check each Modify path against the active worktree root and report each bad path as a G10 `error` finding. A path that the plan text makes impossible to check (a parent is a file, a name too long, a symbolic link loop) SHALL be a G10 `error` finding, so the other gates still report. Any other failed check of a Modify path SHALL return an `InfraError`.
+
+#### Scenario: Absent path
+- **WHEN** Task 2 modifies `x.go`, `x.go` does not exist, and no earlier task creates it
+- **THEN** the findings hold the G10 finding `Task 2: Modify path x.go does not exist`
+
+#### Scenario: Path created by an earlier task
+- **WHEN** Task 1 creates `x.go`, Task 2 modifies `x.go`, and `x.go` does not exist
+- **THEN** the findings hold no G10 finding
+
+#### Scenario: Folder path
+- **WHEN** a Modify path of Task 2 is a folder
+- **THEN** the findings hold a G10 finding that ends with `is not a regular file`
+
+#### Scenario: Path outside the project
+- **WHEN** a Modify path of Task 2 is `../x.go`
+- **THEN** the findings hold a G10 finding that ends with `is outside the project`
+
+#### Scenario: Parent is a file
+- **WHEN** a Modify path of Task 1 is `a.txt/x.go` and `a.txt` is a regular file
+- **THEN** the findings hold the `error` finding G10 `Task 1: Modify path a.txt/x.go cannot be checked: a parent in the path is a file, not a folder`
+- **AND** the findings of the other gates are still returned
+
+#### Scenario: Name too long
+- **WHEN** a Modify path of Task 1 has a name longer than the file system allows
+- **THEN** the findings hold a G10 finding that ends with `cannot be checked: the path or one of its names is too long`
+
+#### Scenario: Permission denied
+- **WHEN** a Modify path is `locked/x.go` and the process has no search permission on `locked`
+- **THEN** the result is an `InfraError` whose message starts with `plan_gates: cannot check Modify path locked/x.go: ` and whose cause is the permission error
+- **AND** its Suggestion is `Give this process read and search permission on each folder of locked/x.go (ls -ld on each parent shows it). Then retry plan_gates.`
+
+#### Scenario: Create and Modify in one task
+- **WHEN** Task 1 creates and modifies `new.go`, and `new.go` does not exist
+- **THEN** the findings hold the G10 finding `Task 1: Modify path new.go does not exist`
+
+#### Scenario: Path only in the active worktree
+- **WHEN** a Modify path exists in the active worktree and not in the main worktree
+- **THEN** the findings hold no G10 finding
+
+### Requirement: Plan file read limit
+The `plan_format`, `plan_style` and `plan_gates` actions SHALL refuse a plan file over 8 MiB (8388608 bytes) with a `DomainError` that names the action, the size and the limit, and SHALL read a file of exactly 8 MiB.
+
+#### Scenario: File over the limit
+- **WHEN** `plan_gates` runs on a file of 8388609 bytes
+- **THEN** the result is a `DomainError` `plan_gates: file is 8388609 bytes, over the 8 MiB limit (8388608 bytes): <path>`
+
+#### Scenario: File at the limit
+- **WHEN** `plan_format` runs on a file of 8388608 bytes
+- **THEN** the action reads the file and returns its findings

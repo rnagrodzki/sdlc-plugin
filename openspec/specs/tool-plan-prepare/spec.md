@@ -67,13 +67,14 @@ On success the tool SHALL return the top-level fields below. The tool SHALL NOT 
 | `g17Dispatch` / `intakeAuditDispatch` | `subagentType`, `model`, `promptTemplatePath` |
 | `lanes` | Five Step 3 lane dispatch entries |
 | `lensReviewers` | Three Step 5 lens dispatch entries |
+| `gateChecks` | Two Step 3 gate checks that start no sub-agent: `go-gates` and `inline-checks` |
 | `reviewLoop` | `maxRounds`: the Step 5 review-loop limit, `5` |
 | `template` | Template resolution; present only when the template was resolved |
 | `errors` | Soft error strings (see "Soft errors") |
 
 #### Scenario: Top-level key set
 - **WHEN** `plan_prepare({skipConfigCheck: true})` succeeds
-- **THEN** the output has `openspec`, `fromOpenspec`, `openspecContext`, `guardrails`, `style`, `tasks`, `explorePack`, `planTemplate`, `githubHosting`, `g17Dispatch`, `intakeAuditDispatch`, `lanes`, `lensReviewers`, `reviewLoop`, `errors`
+- **THEN** the output has `openspec`, `fromOpenspec`, `openspecContext`, `guardrails`, `style`, `tasks`, `explorePack`, `planTemplate`, `githubHosting`, `g17Dispatch`, `intakeAuditDispatch`, `lanes`, `lensReviewers`, `gateChecks`, `reviewLoop`, `errors`
 - **AND** it has no `warnings` field
 
 #### Scenario: Style guide file
@@ -288,35 +289,49 @@ The tool SHALL read guardrails, style, and task contract settings from the proje
 - **AND** `style.warnings` has one entry that names `style.tone`
 
 ### Requirement: Dispatch metadata
-The tool SHALL return fixed dispatch metadata for the skill's sub-agents. Every entry uses `subagentType: general-purpose`.
+The tool SHALL return fixed dispatch metadata for the skill's sub-agents and gate checks. Every lane and lens entry uses `subagentType: general-purpose`.
 
 | Entry | Model | Gate IDs / focus | Prompt template |
 |---|---|---|---|
-| `lanes[0]` `static-structural` | `haiku` | G1, G2, G3, G7, G12 | `lane-static-structural-prompt.md` |
-| `lanes[1]` `content-coverage` | `sonnet` | G5, G6, G8, G9, G11, G13, G15, G16, G18, G19, G20, G21 | `lane-content-coverage-prompt.md` |
-| `lanes[2]` `file-existence` | `haiku` | G4, G10 | `lane-file-existence-prompt.md` |
-| `lanes[3]` `guardrail-compliance` | `sonnet` | G14 | `lane-guardrail-compliance-prompt.md` |
-| `lanes[4]` `dimension-coverage` | same as `g17Dispatch` | G17 | `g17-dimension-coverage-prompt.md` |
-| `lanes[5]` `style-compliance` | `sonnet` | G22 | `lane-style-compliance-prompt.md` |
+| `lanes[0]` `static-structural` | `haiku` | G1, G2, G7 | `lane-static-structural-prompt.md` |
+| `lanes[1]` `content-coverage` | `sonnet` | G11, G16, G18, G19, G20, G21 | `lane-content-coverage-prompt.md` |
+| `lanes[2]` `guardrail-compliance` | `sonnet` | G14 | `lane-guardrail-compliance-prompt.md` |
+| `lanes[3]` `dimension-coverage` | same as `g17Dispatch` | G17 | `g17-dimension-coverage-prompt.md` |
+| `lanes[4]` `style-compliance` | `sonnet` | G22 | `lane-style-compliance-prompt.md` |
 | `lensReviewers[0]` `architecture` | `sonnet` | Buildability, Task descriptions, Decision documentation, Dependency accuracy | `lens-architecture-prompt.md` |
 | `lensReviewers[1]` `requirements` | `sonnet` | Requirements coverage, Metadata completeness, Plan completeness, OpenSpec G16, Exploration provenance, Best-practice traceability | `lens-requirements-prompt.md` |
 | `lensReviewers[2]` `risk` | `sonnet` | File paths, Verification strategy, Scope discipline, Guardrail compliance | `lens-risk-prompt.md` |
 | `g17Dispatch` | `sonnet` | — | `g17-dimension-coverage-prompt.md` |
 | `intakeAuditDispatch` | `sonnet` | — | `intake-verify-prompt.md` |
 
+| Gate check | `kind` | `gateIds` |
+|---|---|---|
+| `gateChecks[0]` `go-gates` | `validate` | G3, G4, G8, G9, G10, G12 |
+| `gateChecks[1]` `inline-checks` | `inline` | G5, G6, G13, G15 |
+
 - `promptTemplatePath` is the file in `$CLAUDE_PLUGIN_ROOT/skills/plan/` when present.
 - Otherwise it is the highest-versioned match under `~/.claude/plugins` inside a `/plan/` path.
 - It is null when neither location has the file.
+- The lanes and the gate checks cover each gate from G1 to G22 exactly one time.
 
 #### Scenario: Lane order and G17 mirror
 - **WHEN** `plan_prepare` succeeds
-- **THEN** `lanes` has 6 entries named `static-structural`, `content-coverage`, `file-existence`, `guardrail-compliance`, `dimension-coverage`, `style-compliance`
-- **AND** `lanes[4]` has the same `subagentType` and `model` as `g17Dispatch` and `gateIds` `["G17"]`
+- **THEN** `lanes` has 5 entries named `static-structural`, `content-coverage`, `guardrail-compliance`, `dimension-coverage`, `style-compliance`
+- **AND** `lanes[3]` has the same `subagentType` and `model` as `g17Dispatch` and `gateIds` `["G17"]`
 
 #### Scenario: Style gate on the guardrail lane
 - **WHEN** `plan_prepare` succeeds
-- **THEN** `lanes[3].gateIds` is `["G14"]`, so the guardrail lane no longer holds the style gate
-- **AND** `lanes[5].gateIds` is `["G22"]`
+- **THEN** `lanes[2].gateIds` is `["G14"]`, so the guardrail lane does not hold the style gate
+- **AND** `lanes[4].gateIds` is `["G22"]`
+
+#### Scenario: Gate checks
+- **WHEN** `plan_prepare` succeeds
+- **THEN** `gateChecks` has 2 entries named `go-gates` and `inline-checks`
+- **AND** `go-gates` has `kind: validate` and `gateIds` `["G3","G4","G8","G9","G10","G12"]`
+
+#### Scenario: One owner for each gate
+- **WHEN** the `gateIds` of every `lanes[]` entry and every `gateChecks[]` entry are joined
+- **THEN** the list holds each gate from G1 to G22 exactly one time
 
 ### Requirement: Discovery pack and environment signals
 The tool SHALL return discovery and environment signals that never fail the call.
