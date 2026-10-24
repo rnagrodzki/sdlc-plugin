@@ -39,7 +39,15 @@ Review Go source changes for baseline code quality in this module
 - Package-scope regexes, constants, and helpers must not repeat an existing
   package-scope pattern. Before adding one, grep the package for the same
   literal and reuse the existing identifier. Example: `openspecStagingLineRe`
-  duplicates `stagingHeaderRe`.
+  duplicates `stagingHeaderRe`. A sibling pattern for the same kind of value
+  or the same construct (a path in backticks, a table separator row, a code
+  fence line) that differs only in what it accepts (an extra extension, a path
+  with a slash) is a finding too: widen the existing identifier, or build the
+  sibling from it and state the difference in its doc comment. A third copy of
+  such a pattern, or a second scan loop or extractor for a Markdown structure
+  that the package already scans (fences, a section, a table), is a finding. A
+  done-with-concerns note that names the duplicate does not resolve it.
+  Example: `taskFilePathRe` beside `backtickPathRe`.
 - A number or string derived from a format (the length of a date prefix, a
   separator width, a layout) is defined once, as a named constant or computed
   from the format. The same literal in two or more places drifts when the
@@ -70,10 +78,24 @@ Review Go source changes for baseline code quality in this module
   package, is a finding. This extends the path-citation rule above. Example:
   `siblingMeta` comments that cite line numbers in another package, where two
   of the numbers were wrong.
+- A comment must name only files, functions, tools, flags and requirement ids
+  that exist in the repository today. Grep for each name that a comment cites. A
+  name with no match, such as a file from a removed or foreign port or an id
+  from an old requirement list, is a finding: the reader cannot open it and the
+  comment misleads. Name the symbol that exists, or delete the reference. This
+  extends the path-citation rule and the planning-artifact rule above, which
+  cover data-directory paths and plan references only. Example: a comment that
+  cited `plan.js` when the repository has no such file.
 - No exported identifiers with zero callers module-wide (verified via
   `grep -r`), no commented-out blocks, no debug `fmt.Println`/`log.Printf`
   outside intentional CLI output paths. Exported identifiers that compile
-  but have no callers are still dead code.
+  but have no callers are still dead code. An unexported function whose only
+  callers are `_test.go` files is dead code too: grep its callers and confirm
+  that at least one is outside `_test.go` files. A parameter that the function
+  body never reads is a finding: remove it and update the callers. A
+  parameter kept to satisfy an interface or a function type is exempt.
+  Example: `planDoneTiming` took an unused `mainRoot` parameter, and
+  `planTimingReport` had no production caller.
 - When a struct field's type changes from non-pointer to pointer (`*int`,
   `*string`, `*bool`), every dereference site must be nil-guarded before
   use or use a local-default pattern (e.g. `value := 0; if ptr != nil {
@@ -136,8 +158,14 @@ Review Go source changes for baseline code quality in this module
   reader. Run `grep -nE '\bKD[0-9]+\b|\((Deviations|Final Shape)\)|"Final Shape"|// Step [0-9]'`
   on modified `.go` files to catch these patterns.
 - Records passed as parameters or returned should use named structs, not
-  positional tuples via arrays (`[2]string`). Positional syntax is fragile
-  and does not scale when the record gains a fifth field.
+  positional tuples via arrays (`[2]string`) or a run of three or more return
+  values of one kind. Positional syntax is fragile and does not scale when the
+  record gains a fifth field. A failure travels as an `error` value, never as
+  a `string` or `bool` in a return slot: a caller can ignore a string, and
+  cannot test it with `errors.Is` or `errors.As`. Return a named struct and an
+  `error`. This extends the `error`-interface rule above. Example:
+  `stepTimeFields` returned a positional tuple whose last value was a string
+  error.
 - A function with about four or more parameters of the same type next to each
   other (for example five `string` parameters) is a finding: a caller can swap
   two arguments and the code still compiles. Pass a named options struct

@@ -185,7 +185,16 @@ those same guardrails:
   non-table element). Read the loader and list what it returns for a missing
   key, a wrong type and a wrong-typed element. The handler MUST surface a
   warning or an error that names the key and the shape. A count reported as a
-  real result when the loader defaulted it is a finding.
+  real result when the loader defaulted it is a finding. The same applies to a
+  parser or check that the change adds. A check whose item set is empty (a file
+  with no `Task` heading, a list with no entries) MUST report 'nothing
+  checked' with a warning that names the missing part, never clean or pass. A
+  parser that skips an entry under a known heading because the entry matches no
+  rule (for example a bullet in a `Files` list) MUST count the skip and report
+  it in a warning that names the entry, or fail with an error that names it. A
+  parser that drops an entry with no signal is a finding. A test drives an
+  input with no items and an input with one unmatched entry, and asserts the
+  warning or the error.
 - A handler that replaces a user-owned file MUST write a temp file and rename
   it, or the review MUST confirm that an in-place write is safe. Example:
   `openspec_save` rewrote the plan file in place.
@@ -211,7 +220,43 @@ those same guardrails:
   expected format with one example, and the effect on the result, such as the
   value used instead, a row left out or a field shown blank. A warning that
   only says the input was invalid is a finding. This extends the
-  actionable-errors bullet above to warnings.
+  actionable-errors bullet above to warnings. Three more checks apply. A
+  warning for a value of the wrong type names the type found, the type
+  expected and the fix. A warning for an exceeded limit or cap states the
+  limit, the value that exceeded it and the item dropped, as the limit bullet
+  above requires for errors. Read the code that runs after the warning: the
+  effect that the warning states MUST be the effect that happens, and a
+  warning that says a step is skipped while the code keeps it is a finding.
+  Example: a 'Step skipped' warning on a step that the code kept.
+- A cap on the number of stored entries, or on the size of a stored value,
+  MUST hold on every path that writes the value and on every path that reads
+  it to act on it. A cap that only the write path enforces lets a hand-edited
+  or older file exceed it with no signal; a cap that only the read path
+  enforces lets a bad write through. Grep each writer and each reader of the
+  stored value for the cap constant. A path that does not enforce the cap MUST
+  warn when the stored data is over the cap, or the description MUST say why
+  it trusts the writer. A cap enforced on one path only is a finding. This
+  extends the maximum-value bullet above, which covers handler input only.
+  Example: a step-time list capped on write and read back with no cap.
+- A number that a registered tool or action description states, such as a
+  limit, a cap or a fixed count of agents or lanes, MUST come from the constant
+  that the code uses, or the description MUST leave the number out. A
+  description of a cap MUST state the set the cap counts and what happens at
+  the cap (rejected, oldest entry dropped or ignored). Read the code that
+  enforces the cap: a hard-coded number, or a stated outcome that the code
+  contradicts, is a finding. This extends the maximum-value bullet above, which
+  builds the number from a constant for an input description only. Example: a
+  `plan_mark` description that hard-coded a 64-entry limit and a 3-agent count
+  and described a cap behavior that the code did not have.
+- A list of ids that a check, lane or tool declares as its own (for example the
+  `gateIds` of a gate check) MUST hold every id that the check can emit in its
+  findings or results, and no id that it never emits. Compare the declared list
+  with the ids in the emitting code. A caller that reads the declared list to
+  report which checks ran, or which stay unchecked, never names an id that is
+  missing from it, so the gap is silent. A test asserts that the declared set
+  equals the emitted set. A missing or extra id is a finding. This extends the
+  enum-like value bullet above, which covers narration templates only. Example:
+  `go-gates` declared `gateIds` without the G18 findings it emits.
 
 ## Cross-references
 

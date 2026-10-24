@@ -82,7 +82,15 @@ Several `internal/tools/*.go` files already follow this with their own
   `InfraError` for filesystem, network, or process failures, `DataError` for
   parse or schema failures. A filesystem read failure returned as
   `DomainError` is a finding. Example: `openspec_save` mapped every plan read
-  failure to a `DomainError`.
+  failure to a `DomainError`. The reverse is a finding too: a parse or rule
+  failure of content the user wrote (a plan, a config file, a task body)
+  returned as `InfraError`, because an `InfraError` reads as a plugin or
+  environment fault and gives the user no text to fix. Return `DomainError` or
+  `DataError` by cause, with a Suggestion that names the heading or line to
+  fix. A runner of independent checks (for example a set of gates) records an
+  error from one check as the result of that check and runs the others; one
+  check's input error MUST NOT abort the batch. Example: plan-text errors
+  returned as `InfraError` aborted all gate checks.
 - Do not build an error message by string-replacing text in another error's
   message. Keep the failing values typed and format this call site's message
   from them. Example: `openspecSaveMaterializeError` edited its error text by
