@@ -3,11 +3,14 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -52,6 +55,36 @@ func span(id string, d time.Duration) planWriterSpan {
 	start := time.Date(2026, 10, 23, 12, 0, 0, 0, time.UTC)
 	return planWriterSpan{WriterID: id, Status: evidenceStatusDone,
 		StartedAt: start.Format(time.RFC3339), UpdatedAt: start.Add(d).Format(time.RFC3339)}
+}
+
+// planTimingReport builds the report from raw stepTimes and writer spans,
+// the way the done marker does with an evidence folder it could list.
+func planTimingReport(startAt, doneAt string, steps any, writers []planWriterSpan) string {
+	agents, _ := planWriterAgents(writers)
+	return planTimingText(startAt, doneAt, parseStepTimes(steps), agents, true)
+}
+
+// fullStepTimes returns n valid entries for step 1, iterations 0..n-1.
+func fullStepTimes(n int) []any {
+	raw := make([]any, 0, n)
+	for i := 0; i < n; i++ {
+		raw = append(raw, stepEntry("1", i, "2026-10-23T12:00:00Z"))
+	}
+	return raw
+}
+
+// notListWarning is the checkpoint warning for a stepTimes value of the
+// given JSON type in the state file at path.
+func notListWarning(step string, iteration int, path, typ string) string {
+	return fmt.Sprintf("Step time not recorded for step %s iteration %d: stepTimes in %s is a %s, not a list. "+
+		"Expected a list such as %s. The Step 7 timing report shows Steps: unknown. "+
+		"To fix it, remove the stepTimes key from that file.", step, iteration, path, typ, planStepTimesExample)
+}
+
+// capWarning is the checkpoint warning at the stepTimes limit.
+func capWarning(step string, iteration int) string {
+	return fmt.Sprintf("Step time not recorded for step %s iteration %d: stepTimes holds %d entries, the limit (%d). "+
+		"The Steps line of the Step 7 timing report leaves this step out.", step, iteration, maxStepTimesStored, maxStepTimesStored)
 }
 
 // reportLine returns the report line that starts with prefix (after the
@@ -132,9 +165,12 @@ func storedStepTimes(t *testing.T, dir string) []any {
 // ---------------------------------------------------------------------------
 
 func TestPlanTiming_UpsertStepTime_Absent_NewListWithOneEntry(t *testing.T) {
-	list, warn := upsertStepTime(nil, "2", 0, "2026-10-23T12:00:00Z")
+	list, res, warn := upsertStepTime(nil, "2", 0, "2026-10-23T12:00:00Z", "/s.json")
 	if warn != "" {
 		t.Errorf("warning = %q, want none", warn)
+	}
+	if want := (PlanStepTimeResult{Step: "2", Iteration: 0, At: "2026-10-23T12:00:00Z", Status: stepTimeAdded}); res != want {
+		t.Errorf("result = %+v, want %+v", res, want)
 	}
 	b, _ := json.Marshal(list)
 	if want := `[{"step":"2","iteration":0,"at":"2026-10-23T12:00:00Z"}]`; string(b) != want {
@@ -143,20 +179,27 @@ func TestPlanTiming_UpsertStepTime_Absent_NewListWithOneEntry(t *testing.T) {
 }
 
 func TestPlanTiming_UpsertStepTime_NotAList_KeptWithWarning(t *testing.T) {
-	for _, raw := range []any{"oops", float64(7), map[string]any{"step": "1"}, true} {
-		list, warn := upsertStepTime(raw, "2", 0, "2026-10-23T12:00:00Z")
-		if want := "stepTimes is not a list: step time not recorded"; warn != want {
+	for raw, typ := range map[any]string{"oops": "string", float64(7): "number", true: "boolean"} {
+		list, res, warn := upsertStepTime(raw, "2", 0, "2026-10-23T12:00:00Z", "/s.json")
+		if want := notListWarning("2", 0, "/s.json", typ); warn != want {
 			t.Errorf("raw %v: warning = %q, want %q", raw, warn, want)
+		}
+		if res.Status != stepTimeNotRecorded || res.At != "" {
+			t.Errorf("raw %v: result = %+v, want not recorded with no at", raw, res)
 		}
 		if !reflect.DeepEqual(list, raw) {
 			t.Errorf("raw %v: list = %v, want the value unchanged", raw, list)
 		}
 	}
+	obj := map[string]any{"step": "1"}
+	if _, _, warn := upsertStepTime(obj, "2", 0, "2026-10-23T12:00:00Z", "/s.json"); warn != notListWarning("2", 0, "/s.json", "object") {
+		t.Errorf("object: warning = %q", warn)
+	}
 }
 
 func TestPlanTiming_UpsertStepTime_BadEntryKept_NeverMatches(t *testing.T) {
 	raw := []any{"junk", map[string]any{"step": "2", "iteration": float64(0), "at": "not a time"}}
-	list, warn := upsertStepTime(raw, "2", 0, "2026-10-23T12:00:00Z")
+	list, _, warn := upsertStepTime(raw, "2", 0, "2026-10-23T12:00:00Z", "/s.json")
 	if warn != "" {
 		t.Errorf("warning = %q, want none", warn)
 	}
@@ -172,51 +215,49 @@ func TestPlanTiming_UpsertStepTime_Match_KeepsFirstEntry(t *testing.T) {
 		stepEntry("2", 0, "2026-10-23T12:00:00Z"),
 		stepEntry("2", 0, "2026-10-23T12:30:00Z"), // a second entry for the same step
 	}
-	list, warn := upsertStepTime(raw, "2", 0, "2026-10-23T13:00:00Z")
+	list, res, warn := upsertStepTime(raw, "2", 0, "2026-10-23T13:00:00Z", "/s.json")
 	if warn != "" {
 		t.Errorf("warning = %q, want none", warn)
 	}
 	if !reflect.DeepEqual(list, raw) {
 		t.Errorf("list = %v, want the list unchanged (first entry and its at kept)", list)
 	}
+	if want := (PlanStepTimeResult{Step: "2", Iteration: 0, At: "2026-10-23T12:00:00Z", Status: stepTimeKept}); res != want {
+		t.Errorf("result = %+v, want %+v (the stored time)", res, want)
+	}
 	// Same step, other iteration: not a match.
-	list, _ = upsertStepTime(raw, "2", 1, "2026-10-23T13:00:00Z")
+	list, _, _ = upsertStepTime(raw, "2", 1, "2026-10-23T13:00:00Z", "/s.json")
 	if got, _ := list.([]any); len(got) != 4 {
 		t.Errorf("len = %d after a new iteration, want 4", len(got))
 	}
 }
 
 func TestPlanTiming_UpsertStepTime_Cap(t *testing.T) {
-	build := func(n int) []any {
-		raw := make([]any, 0, n)
-		for i := 0; i < n; i++ {
-			raw = append(raw, stepEntry("1", i, "2026-10-23T12:00:00Z"))
-		}
-		return raw
+	list, _, warn := upsertStepTime(fullStepTimes(maxStepTimesStored-1), "2", 0, "2026-10-23T13:00:00Z", "/s.json")
+	if got, _ := list.([]any); warn != "" || len(got) != maxStepTimesStored {
+		t.Errorf("one below the limit: len = %d, warning = %q, want %d and none", len(got), warn, maxStepTimesStored)
 	}
 
-	list, warn := upsertStepTime(build(63), "2", 0, "2026-10-23T13:00:00Z")
-	if got, _ := list.([]any); warn != "" || len(got) != 64 {
-		t.Errorf("63 entries: len = %d, warning = %q, want 64 and none", len(got), warn)
+	list, res, warn := upsertStepTime(fullStepTimes(maxStepTimesStored), "2", 0, "2026-10-23T13:00:00Z", "/s.json")
+	if want := capWarning("2", 0); warn != want {
+		t.Errorf("at the limit: warning = %q, want %q", warn, want)
 	}
-
-	list, warn = upsertStepTime(build(64), "2", 0, "2026-10-23T13:00:00Z")
-	if want := "step time not recorded: 64 entries stored"; warn != want {
-		t.Errorf("64 entries: warning = %q, want %q", warn, want)
+	if res.Status != stepTimeNotRecorded {
+		t.Errorf("at the limit: status = %q, want %q", res.Status, stepTimeNotRecorded)
 	}
-	if got, _ := list.([]any); len(got) != 64 {
-		t.Errorf("64 entries: len = %d, want 64 (no entry added)", len(got))
+	if got, _ := list.([]any); len(got) != maxStepTimesStored {
+		t.Errorf("at the limit: len = %d, want %d (no entry added)", len(got), maxStepTimesStored)
 	}
 
 	// A match at the cap is not a new entry, so it needs no warning.
-	if _, warn = upsertStepTime(build(64), "1", 5, "2026-10-23T13:00:00Z"); warn != "" {
-		t.Errorf("64 entries, matching step: warning = %q, want none", warn)
+	if _, _, warn = upsertStepTime(fullStepTimes(maxStepTimesStored), "1", 5, "2026-10-23T13:00:00Z", "/s.json"); warn != "" {
+		t.Errorf("at the limit, matching step: warning = %q, want none", warn)
 	}
 }
 
 func TestPlanTiming_UpsertStepTime_TypedList(t *testing.T) {
 	raw := []PlanStepTime{{Step: "1", Iteration: 0, At: "2026-10-23T11:00:00Z"}}
-	list, warn := upsertStepTime(raw, "2", 0, "2026-10-23T12:00:00Z")
+	list, _, warn := upsertStepTime(raw, "2", 0, "2026-10-23T12:00:00Z", "/s.json")
 	got, _ := list.([]any)
 	if warn != "" || len(got) != 2 {
 		t.Errorf("len = %d, warning = %q, want 2 and none", len(got), warn)
@@ -278,10 +319,8 @@ func TestPlanTiming_Report_Format(t *testing.T) {
 }
 
 func TestPlanTiming_Report_StepsLine(t *testing.T) {
-	full := make([]any, 0, 64)
-	for i := 0; i < 64; i++ {
-		full = append(full, stepEntry("1", i, "2026-10-23T12:00:00Z"))
-	}
+	full := fullStepTimes(maxStepTimesStored)
+	note := fmt.Sprintf("Steps: first %d checkpoints only", maxStepTimesStored)
 	cases := []struct {
 		name  string
 		steps any
@@ -319,16 +358,70 @@ func TestPlanTiming_Report_StepsLine(t *testing.T) {
 		})
 	}
 
-	t.Run("a full list adds the first-64 note", func(t *testing.T) {
+	t.Run("a full list adds the limit note", func(t *testing.T) {
 		report := planTimingReport(goldenStart, goldenDone, full, nil)
-		if !strings.Contains(report, "\n  Steps: first 64 checkpoints only") {
-			t.Errorf("report lacks the first-64 note:\n%s", report)
+		if !strings.Contains(report, "\n  "+note) {
+			t.Errorf("report lacks the limit note:\n%s", report)
 		}
-		short := planTimingReport(goldenStart, goldenDone, full[:63], nil)
-		if strings.Contains(short, "first 64 checkpoints only") {
-			t.Errorf("63 entries must not add the note:\n%s", short)
+		short := planTimingReport(goldenStart, goldenDone, full[:maxStepTimesStored-1], nil)
+		if strings.Contains(short, note) {
+			t.Errorf("one entry below the limit must not add the note:\n%s", short)
 		}
 	})
+
+	t.Run("a list past the limit is read up to the limit only", func(t *testing.T) {
+		long := append(fullStepTimes(maxStepTimesStored), "junk", stepEntry("9", 0, "2026-10-23T12:30:00Z"))
+		p := parseStepTimes(long)
+		if len(p.entries) != maxStepTimesStored {
+			t.Errorf("entries = %d, want %d", len(p.entries), maxStepTimesStored)
+		}
+		want := []string{fmt.Sprintf("Timing: stepTimes holds %d entries; the report reads the first %d only.", maxStepTimesStored+2, maxStepTimesStored)}
+		if !reflect.DeepEqual(p.warnings, want) {
+			t.Errorf("warnings = %q, want %q (no warning for an entry past the limit)", p.warnings, want)
+		}
+	})
+}
+
+// A step whose span ends before it starts shows unknown, never a negative
+// time: step 0 with a checkpoint before skillInvoked, and the last step with
+// a checkpoint after the done stamp.
+func TestPlanTiming_Report_NegativeSpanIsUnknown(t *testing.T) {
+	steps := []any{stepEntry("0", 0, "2026-10-23T11:00:00Z"), stepEntry("1", 0, "2026-10-23T12:00:00Z")}
+	if got := reportLine(planTimingReport(goldenStart, goldenDone, steps, nil), "Steps:"); got != "Steps: 0 unknown · 1 1h 18m" {
+		t.Errorf("step 0 before start: Steps line = %q", got)
+	}
+	steps = []any{stepEntry("1", 0, "2026-10-23T12:00:00Z"), stepEntry("2", 0, "2026-10-23T14:00:00Z")}
+	if got := reportLine(planTimingReport(goldenStart, goldenDone, steps, nil), "Steps:"); got != "Steps: 1 2h 0m · 2 unknown" {
+		t.Errorf("last step after done: Steps line = %q", got)
+	}
+}
+
+func TestPlanTiming_StepTimeFields_Reasons(t *testing.T) {
+	const at = "2026-10-23T12:00:00Z"
+	cases := []struct {
+		name  string
+		entry any
+		want  string
+	}{
+		{"not an object", "junk", "not an object"},
+		{"step not a string", map[string]any{"step": float64(2), "iteration": float64(0), "at": at}, "step is not a non-empty string"},
+		{"step empty", map[string]any{"step": "", "iteration": float64(0), "at": at}, "step is not a non-empty string"},
+		{"iteration missing", map[string]any{"step": "1", "at": at}, "iteration is not a whole number of 0 or more"},
+		{"iteration a string", map[string]any{"step": "1", "iteration": "1", "at": at}, "iteration is not a whole number of 0 or more"},
+		{"iteration below 0", map[string]any{"step": "1", "iteration": float64(-1), "at": at}, "iteration is not a whole number of 0 or more"},
+		{"iteration not whole", map[string]any{"step": "1", "iteration": 1.5, "at": at}, "iteration is not a whole number of 0 or more"},
+		{"iteration above MaxInt32", map[string]any{"step": "1", "iteration": float64(math.MaxInt32) + 1, "at": at}, "iteration is not a whole number of 0 or more"},
+		{"at missing", map[string]any{"step": "1", "iteration": float64(0)}, "at is not RFC 3339"},
+		{"at bad", map[string]any{"step": "1", "iteration": float64(0), "at": "noon"}, "at is not RFC 3339"},
+		{"valid at MaxInt32", map[string]any{"step": "1", "iteration": float64(math.MaxInt32), "at": at}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, reason := stepTimeFields(tc.entry); reason != tc.want {
+				t.Errorf("reason = %q, want %q", reason, tc.want)
+			}
+		})
+	}
 }
 
 func TestPlanTiming_Report_StartStampBad_TotalAndStepZeroUnknown(t *testing.T) {
@@ -408,6 +501,8 @@ func TestPlanTiming_Report_AgentsLine(t *testing.T) {
 			{WriterID: "running", Status: evidenceStatusRunning, StartedAt: "2026-10-23T10:00:00Z", UpdatedAt: "2026-10-23T13:00:00Z"},
 			{WriterID: "no-start", Status: evidenceStatusDone, UpdatedAt: "2026-10-23T13:00:00Z"},
 			{WriterID: "bad-time", Status: evidenceStatusDone, StartedAt: "x", UpdatedAt: "2026-10-23T13:00:00Z"},
+			{WriterID: "bad-end", Status: evidenceStatusDone, StartedAt: "2026-10-23T12:00:00Z", UpdatedAt: ""},
+			{WriterID: "bad-end-2", Status: evidenceStatusDone, StartedAt: "2026-10-23T12:00:00Z", UpdatedAt: "later"},
 			{WriterID: "backwards", Status: evidenceStatusDone, StartedAt: "2026-10-23T13:00:00Z", UpdatedAt: "2026-10-23T12:00:00Z"},
 			span("only", 90*time.Second),
 		}
@@ -418,7 +513,7 @@ func TestPlanTiming_Report_AgentsLine(t *testing.T) {
 	})
 
 	t.Run("a writer list that could not be read shows unknown", func(t *testing.T) {
-		report := planTimingText(goldenStart, goldenDone, nil, nil, false)
+		report := planTimingText(goldenStart, goldenDone, parseStepTimes(nil), nil, false)
 		if got := reportLine(report, "Slowest agents:"); got != "Slowest agents: unknown" {
 			t.Errorf("Agents line = %q, want unknown", got)
 		}
@@ -452,6 +547,9 @@ func TestPlanMark_CheckpointStepTimes_FirstCheckpointOfAStepWins(t *testing.T) {
 	if len(out.Warnings) != 0 {
 		t.Errorf("Warnings = %q, want none", out.Warnings)
 	}
+	if out.StepTime == nil || out.StepTime.Status != stepTimeAdded || out.StepTime.Step != "2" || out.StepTime.Iteration != 0 {
+		t.Fatalf("StepTime = %+v, want step 2 iteration 0 added", out.StepTime)
+	}
 	list := storedStepTimes(t, dir)
 	if len(list) != 1 {
 		t.Fatalf("stepTimes = %v, want 1 entry", list)
@@ -463,6 +561,9 @@ func TestPlanMark_CheckpointStepTimes_FirstCheckpointOfAStepWins(t *testing.T) {
 	if _, err := time.Parse(time.RFC3339, first["at"].(string)); err != nil {
 		t.Errorf("stepTimes[0].at = %v, want RFC 3339: %v", first["at"], err)
 	}
+	if out.StepTime.At != first["at"] {
+		t.Errorf("StepTime.At = %q, want the stored at %v", out.StepTime.At, first["at"])
+	}
 
 	// Move the stored time into the past: a second checkpoint of the same
 	// step and iteration must leave the entry and its time alone.
@@ -470,8 +571,12 @@ func TestPlanMark_CheckpointStepTimes_FirstCheckpointOfAStepWins(t *testing.T) {
 	patchPlanState(t, dir, func(data map[string]any) {
 		data[planStepTimesKey] = []any{stepEntry("2", 0, old)}
 	})
-	if _, err := planMark(dir, dir, checkpointIn("2", 0)); err != nil {
+	again, err := planMark(dir, dir, checkpointIn("2", 0))
+	if err != nil {
 		t.Fatalf("planMark(checkpoint) again: %v", err)
+	}
+	if want := (PlanStepTimeResult{Step: "2", Iteration: 0, At: old, Status: stepTimeKept}); again.StepTime == nil || *again.StepTime != want {
+		t.Errorf("StepTime = %+v, want %+v", again.StepTime, want)
 	}
 	list = storedStepTimes(t, dir)
 	if len(list) != 1 || list[0].(map[string]any)["at"] != old {
@@ -500,7 +605,7 @@ func TestPlanMark_CheckpointStepTimes_NotAList_KeptWithWarning(t *testing.T) {
 	if !out.OK {
 		t.Error("OK = false, want true: the checkpoint is still written")
 	}
-	if want := []string{"stepTimes is not a list: step time not recorded"}; !reflect.DeepEqual(out.Warnings, want) {
+	if want := []string{notListWarning("2", 0, out.Path, "string")}; !reflect.DeepEqual(out.Warnings, want) {
 		t.Errorf("Warnings = %q, want %q", out.Warnings, want)
 	}
 	doc := readSoleStateDoc(t, dir)
@@ -518,14 +623,19 @@ func TestPlanMark_CheckpointStepTimes_NotAList_KeptWithWarning(t *testing.T) {
 	if got := reportLine(done.Timing, "Steps:"); got != "Steps: unknown (stepTimes is not a list)" {
 		t.Errorf("Steps line = %q, want the not-a-list text", got)
 	}
+	wantDone := fmt.Sprintf("Timing: stepTimes in %s is a string, not a list, so the Steps line shows unknown. "+
+		"Expected a list such as %s. To fix it, remove the stepTimes key from that file.", done.Path, planStepTimesExample)
+	if !reflect.DeepEqual(done.Warnings, []string{wantDone}) {
+		t.Errorf("done Warnings = %q, want %q", done.Warnings, wantDone)
+	}
 }
 
-func TestPlanMark_CheckpointStepTimes_CapAt64(t *testing.T) {
+func TestPlanMark_CheckpointStepTimes_CapAtLimit(t *testing.T) {
 	dir, _ := seedDoneRun(t)
 	base := time.Now().UTC().Add(-48 * time.Hour)
 	patchPlanState(t, dir, func(data map[string]any) {
-		list := make([]any, 0, 63)
-		for i := 0; i < 63; i++ {
+		list := make([]any, 0, maxStepTimesStored-1)
+		for i := 0; i < maxStepTimesStored-1; i++ {
 			list = append(list, stepEntry("1", i, base.Add(time.Duration(i)*time.Minute).Format(time.RFC3339)))
 		}
 		data[planStepTimesKey] = list
@@ -533,32 +643,35 @@ func TestPlanMark_CheckpointStepTimes_CapAt64(t *testing.T) {
 
 	out, err := planMark(dir, dir, checkpointIn("2", 0))
 	if err != nil || len(out.Warnings) != 0 {
-		t.Fatalf("63 entries: err = %v, warnings = %q, want the entry added with none", err, out.Warnings)
+		t.Fatalf("one below the limit: err = %v, warnings = %q, want the entry added with none", err, out.Warnings)
 	}
-	if n := len(storedStepTimes(t, dir)); n != 64 {
-		t.Fatalf("stepTimes has %d entries, want 64", n)
+	if n := len(storedStepTimes(t, dir)); n != maxStepTimesStored {
+		t.Fatalf("stepTimes has %d entries, want %d", n, maxStepTimesStored)
 	}
 
 	out, err = planMark(dir, dir, checkpointIn("3", 0))
 	if err != nil {
 		t.Fatalf("planMark(checkpoint) at the cap: %v", err)
 	}
-	if want := []string{"step time not recorded: 64 entries stored"}; !reflect.DeepEqual(out.Warnings, want) {
+	if want := []string{capWarning("3", 0)}; !reflect.DeepEqual(out.Warnings, want) {
 		t.Errorf("Warnings = %q, want %q", out.Warnings, want)
 	}
 	if !out.OK || out.Next == "" {
 		t.Errorf("OK = %v, Next = %q, want the checkpoint saved with its next text", out.OK, out.Next)
 	}
-	if n := len(storedStepTimes(t, dir)); n != 64 {
-		t.Errorf("stepTimes has %d entries, want 64 (no entry added)", n)
+	if out.StepTime == nil || out.StepTime.Status != stepTimeNotRecorded {
+		t.Errorf("StepTime = %+v, want status not recorded", out.StepTime)
+	}
+	if n := len(storedStepTimes(t, dir)); n != maxStepTimesStored {
+		t.Errorf("stepTimes has %d entries, want %d (no entry added)", n, maxStepTimesStored)
 	}
 
 	done, err := planMark(dir, dir, PlanMarkIn{Marker: "done"})
 	if err != nil {
 		t.Fatalf("planMark(done): %v", err)
 	}
-	if !strings.Contains(done.Timing, "\n  Steps: first 64 checkpoints only") {
-		t.Errorf("timing lacks the first-64 note:\n%s", done.Timing)
+	if note := fmt.Sprintf("\n  Steps: first %d checkpoints only", maxStepTimesStored); !strings.Contains(done.Timing, note) {
+		t.Errorf("timing lacks the limit note:\n%s", done.Timing)
 	}
 }
 
@@ -690,14 +803,70 @@ func TestPlanTiming_Done_EvidenceFolderNotListable_WarnsAndReturnsOK(t *testing.
 	if !out.OK || out.Next != planDoneNext {
 		t.Errorf("OK = %v, Next = %q, want ok with the done next text", out.OK, out.Next)
 	}
-	if len(out.Warnings) != 1 || !strings.HasPrefix(out.Warnings[0], "timing: cannot read evidence: ") {
-		t.Fatalf("Warnings = %q, want one \"timing: cannot read evidence: <error>\"", out.Warnings)
+	if len(out.Warnings) != 1 || !strings.HasPrefix(out.Warnings[0], "Timing: cannot read evidence: ") {
+		t.Fatalf("Warnings = %q, want one \"Timing: cannot read evidence: <error>\"", out.Warnings)
 	}
-	if !strings.Contains(out.Warnings[0], "not a directory") {
+	if !strings.HasSuffix(out.Warnings[0], ": "+syscall.ENOTDIR.Error()) {
 		t.Errorf("Warning = %q, want the OS error in it", out.Warnings[0])
+	}
+	st, err := state.LatestPlanRun(dir, "main")
+	if err != nil || st == nil {
+		t.Fatalf("LatestPlanRun: %v", err)
+	}
+	if _, _, lerr := planReadWriterSpans(st); !errors.Is(lerr, syscall.ENOTDIR) {
+		t.Errorf("listing error = %v, want ENOTDIR as its cause", lerr)
 	}
 	if got := reportLine(out.Timing, "Slowest agents:"); got != "Slowest agents: unknown" {
 		t.Errorf("Agents line = %q, want unknown", got)
+	}
+}
+
+// In a linked worktree, mainRoot (state and evidence) and contentRoot
+// (branch) differ. The done marker reads the writers from the evidence folder
+// under mainRoot.
+func TestPlanTiming_Done_LinkedWorktree_ReadsMainEvidence(t *testing.T) {
+	base := t.TempDir()
+	mainDir, linkedDir := filepath.Join(base, "main"), filepath.Join(base, "linked")
+	if err := os.MkdirAll(mainDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	initGitFixture(t, mainDir)
+	gitCommit(t, mainDir, "initial")
+	runGit(t, mainDir, "worktree", "add", "-b", "feat/linked", linkedDir)
+	if _, err := runPlanPrepare(t, mainDir, linkedDir, PlanPrepareIn{SkipConfigCheck: true}); err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	st, err := state.LatestPlanRun(mainDir, "feat/linked")
+	if err != nil || st == nil {
+		t.Fatalf("LatestPlanRun: %v, %v", st, err)
+	}
+	writeTimingWriter(t, state.EvidenceDir(mainDir, state.RunID(st)), "lens-a", evidenceStatusDone, "2026-10-23T12:00:00Z", "2026-10-23T12:02:00Z")
+
+	out, err := planMark(mainDir, linkedDir, PlanMarkIn{Marker: "done"})
+	if err != nil {
+		t.Fatalf("planMark(done): %v", err)
+	}
+	if got := reportLine(out.Timing, "Slowest agents:"); got != "Slowest agents: lens-a 2m 0s" {
+		t.Errorf("Agents line = %q, want the writer from the main evidence folder", got)
+	}
+}
+
+// A run whose evidence folder is gone has no writer to rank: the agents line
+// shows none, with no warning.
+func TestPlanTiming_Done_EvidenceFolderMissing_NoneAndNoWarning(t *testing.T) {
+	dir, evidenceDir := seedDoneRun(t)
+	if err := os.RemoveAll(evidenceDir); err != nil {
+		t.Fatal(err)
+	}
+	out, err := planMark(dir, dir, PlanMarkIn{Marker: "done"})
+	if err != nil || !out.OK {
+		t.Fatalf("planMark(done): %v, OK = %v, want ok", err, out.OK)
+	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("Warnings = %q, want none", out.Warnings)
+	}
+	if got := reportLine(out.Timing, "Slowest agents:"); got != "Slowest agents: none" {
+		t.Errorf("Agents line = %q, want none", got)
 	}
 }
 
@@ -708,6 +877,7 @@ func TestPlanTiming_Done_SkippedWriterFiles_WarnOnePerFile(t *testing.T) {
 	}
 	writeTimingWriter(t, evidenceDir, "bad-time", evidenceStatusDone, "yesterday", "2026-10-23T12:00:00Z")
 	writeTimingWriter(t, evidenceDir, "backwards", evidenceStatusDone, "2026-10-23T12:10:00Z", "2026-10-23T12:00:00Z")
+	writeTimingWriter(t, evidenceDir, "bad-end", evidenceStatusDone, "2026-10-23T12:00:00Z", "soon")
 	writeTimingWriter(t, evidenceDir, "good-1", evidenceStatusDone, "2026-10-23T12:00:00Z", "2026-10-23T12:05:00Z")
 	// A running writer and a writer with no startedAt never rank, so their
 	// times are not checked and they add no warning.
@@ -719,9 +889,10 @@ func TestPlanTiming_Done_SkippedWriterFiles_WarnOnePerFile(t *testing.T) {
 		t.Fatalf("planMark(done): %v", err)
 	}
 	want := []string{
-		"timing: writer backwards skipped: end before start",
-		"timing: writer bad-json skipped: unreadable file",
-		"timing: writer bad-time skipped: bad time",
+		"Timing: writer bad-json skipped: unreadable file",
+		"Timing: writer backwards skipped: updatedAt 2026-10-23T12:00:00Z is before startedAt 2026-10-23T12:10:00Z",
+		`Timing: writer bad-end skipped: updatedAt "soon" is not RFC 3339 (example: 2026-10-23T12:00:00Z)`,
+		`Timing: writer bad-time skipped: startedAt "yesterday" is not RFC 3339 (example: 2026-10-23T12:00:00Z)`,
 	}
 	if !reflect.DeepEqual(out.Warnings, want) {
 		t.Errorf("Warnings = %q, want %q", out.Warnings, want)
@@ -749,11 +920,11 @@ func TestPlanTiming_Done_BadStepTimesEntries_WarnAndKeepGoing(t *testing.T) {
 		t.Fatalf("planMark(done): %v", err)
 	}
 	want := []string{
-		"timing: stepTimes entry 0 skipped: not an object",
-		"timing: stepTimes entry 1 skipped: step is not a non-empty string",
-		"timing: stepTimes entry 2 skipped: iteration is not a whole number of 0 or more",
-		"timing: stepTimes entry 3 skipped: at is not RFC 3339",
-		"timing: step 3 skipped: time before the previous step",
+		"Timing: stepTimes entry 0 skipped: not an object",
+		"Timing: stepTimes entry 1 skipped: step is not a non-empty string",
+		"Timing: stepTimes entry 2 skipped: iteration is not a whole number of 0 or more",
+		"Timing: stepTimes entry 3 skipped: at is not RFC 3339",
+		"Timing: step 3 is shown as unknown: its time 2026-10-23T11:00:00Z is before 2026-10-23T12:00:00Z, the time of the step before it",
 	}
 	if !reflect.DeepEqual(out.Warnings, want) {
 		t.Errorf("Warnings = %q, want %q", out.Warnings, want)
@@ -773,7 +944,8 @@ func TestPlanTiming_Done_CalledAgain_BuildsReportAgain(t *testing.T) {
 		t.Fatalf("first Agents line = %q", got)
 	}
 
-	// The second call reads the data as it is then, with its own done stamp.
+	// The second call reads the data as it is then: the new skillInvoked and
+	// the new writer file show in its report.
 	patchPlanState(t, dir, func(data map[string]any) {
 		integrity, _ := data["planIntegrity"].(map[string]any)
 		integrity["skillInvoked"] = time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
@@ -788,7 +960,7 @@ func TestPlanTiming_Done_CalledAgain_BuildsReportAgain(t *testing.T) {
 		t.Errorf("Next = %q, Warnings = %q, want the done next text and none", second.Next, second.Warnings)
 	}
 	if got := reportLine(second.Timing, "Total:"); !strings.HasPrefix(got, "Total: 2h 0m (") {
-		t.Errorf("Total line = %q, want 2h 0m from the patched start to the new done stamp", got)
+		t.Errorf("Total line = %q, want 2h 0m from the patched start", got)
 	}
 	if got := reportLine(second.Timing, "Slowest agents:"); got != "Slowest agents: late-agent 1m 0s" {
 		t.Errorf("Agents line = %q", got)
@@ -868,9 +1040,11 @@ func TestPlanTiming_PlanMarkDescription_MatchesContract(t *testing.T) {
 		t.Fatal("plan_mark is not registered")
 	}
 	for _, want := range []string{
-		"The first checkpoint of each step and iteration also adds {step, iteration, at} to the top-level stepTimes list (max 64 entries). A stepTimes value that is not a list is kept, and the checkpoint returns a warning.",
+		"The first checkpoint of each step and iteration also adds {step, iteration, at} to the top-level stepTimes list, and the checkpoint returns stepTime {step, iteration, at, status}",
+		fmt.Sprintf("When stepTimes already holds %d entries, the checkpoint is still saved, no entry is added, status is not recorded and the checkpoint returns a warning.", maxStepTimesStored),
 		"Markers other than checkpoint, review-outcome and done return no next",
-		"The done marker also returns timing: the Step 7 timing report (total, the time of each step, the 3 slowest agents). It reads planIntegrity, stepTimes and the run's evidence writer files (<runId>.evidence/*.json). Absent data shows as unknown in its line. An evidence folder that cannot be listed adds the warning \"timing: cannot read evidence: <error>\"; each skipped writer file or stepTimes entry adds one warning; done still returns ok.",
+		fmt.Sprintf("The done marker also returns timing: the Step 7 timing report (total, the time of each step, the %d slowest agents).", planTimingTopAgents),
+		"It reads planIntegrity, stepTimes and the run's evidence writer files (<runId>.evidence/*.json). Absent data shows as unknown in its line. An evidence folder that cannot be listed adds the warning \"Timing: cannot read evidence: <error>\"; each skipped writer file or stepTimes entry adds one warning; done still returns ok.",
 	} {
 		if !strings.Contains(desc, want) {
 			t.Errorf("plan_mark description lacks %q", want)

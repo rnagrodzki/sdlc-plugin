@@ -17,7 +17,7 @@
 | `plan_prepare` output | `lanes`, `lensReviewers` | also `gateChecks`: the `go-gates` and `inline-checks` entries |
 | G17 lane in round 2 and later | starts again on a material change | does not start. A fixed G17 entry with no issues goes to `merge_results`. |
 | Step 5 reviewers | 3 lenses at 5 or more tasks, else 1 reviewer on any model | 3 lenses at 8 or more tasks, else 1 reviewer on the opposite model |
-| Evidence writer file | `updatedAt` only | also `startedAt`, the time of the first write |
+| Evidence writer file | `updatedAt` only | also `startedAt`, set by the first write that finds it empty; `evidence_record` echoes `startedAt` and `updatedAt` |
 | Plan state | no step times | top-level `stepTimes` list, 64 entries or fewer |
 | `plan_mark` `done` | no `next`, no timing | returns `timing` (the report) and `next` |
 | Plan file read | no size limit | `plan_format`, `plan_style` and `plan_gates` refuse a file over 8 MiB |
@@ -33,8 +33,8 @@ None.
 - `skill-plan`: Step 3 runs 5 lanes, the `plan_gates` call and the inline check. Round 2 and later skip the G17 lane. The lens limit is 8 tasks. Step 7 prints the timing report.
 - `tool-plan-prepare`: the `file-existence` lane goes away, and the output gets `gateChecks`.
 - `tool-validate`: the new `plan_gates` action and the 8 MiB plan read limit.
-- `tool-plan-mark`: `checkpoint` records `stepTimes`, and `done` returns `timing` and `next`.
-- `tool-plan-support`: `evidence_record` stamps `startedAt` on the first write of a writer.
+- `tool-plan-mark`: `checkpoint` records `stepTimes` and returns `stepTime`, and `done` returns `timing` and `next`.
+- `tool-plan-support`: `evidence_record` stamps `startedAt` on a write to a writer file that has none, and echoes `startedAt` and `updatedAt`.
 
 ## Flow after the change
 

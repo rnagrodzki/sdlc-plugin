@@ -105,8 +105,10 @@ stateDiagram-v2
   Absent --> Stored: first checkpoint of a step and iteration
   Stored --> Stored: same step and iteration, first at kept
   Stored --> Full: list reaches 64 entries
-  Full --> Full: new step, no entry added, warning
+  Full --> Full: new step, checkpoint saved, no entry added, status not recorded, warning
 ```
+
+The `done` report reads only the first 64 entries of a longer, hand-edited list and warns about the rest.
 
 Life of the `startedAt` field of one evidence writer file:
 
@@ -114,7 +116,8 @@ Life of the `startedAt` field of one evidence writer file:
 stateDiagram-v2
   [*] --> NoFile
   NoFile --> Started: first evidence_record, startedAt equals updatedAt
-  OldForm --> Started: next evidence_record sets startedAt
+  OldForm --> Started: next evidence_record sets startedAt to its updatedAt
+  Unreadable --> Started: evidence_record replaces the file, new startedAt
   Started --> Started: later evidence_record keeps startedAt, moves updatedAt
 ```
 
@@ -125,7 +128,7 @@ stateDiagram-v2
 type GateCheck struct {
     Name    string   `json:"name"`    // go-gates | inline-checks
     Kind    string   `json:"kind"`    // validate | inline
-    GateIDs []string `json:"gateIds"` // never empty
+    GateIDs []string `json:"gateIds"` // never empty; go-gates also reports G18 floor findings outside its gateIds
 }
 
 // plan_mark output: new field, wider next and warnings
@@ -136,6 +139,22 @@ type PlanMarkOut struct {
     Next     string   `json:"next,omitempty"`     // checkpoint, review-outcome, done
     Warnings []string `json:"warnings,omitempty"` // checkpoint: step time not recorded; done: history or evidence read failed
     Timing   string   `json:"timing,omitempty" render:"raw"` // done only
+    StepTime *PlanStepTimeResult `json:"stepTime,omitempty"` // checkpoint only
+}
+
+// what a checkpoint did to stepTimes
+type PlanStepTimeResult struct {
+    Step      string `json:"step"`
+    Iteration int    `json:"iteration"`
+    At        string `json:"at"`     // the stored time; empty when not recorded
+    Status    string `json:"status"` // added | kept | not recorded
+}
+
+// evidence_record output: new fields
+type EvidenceRecordOut struct {
+    // writerId, status, itemCount, fileBytes, briefPath as before
+    StartedAt string `json:"startedAt"`
+    UpdatedAt string `json:"updatedAt"`
 }
 
 // evidence writer file: new field
@@ -171,6 +190,9 @@ Step 7: Timing (wall clock, UTC)
 | Gate ownership source | `plan_prepare` returns `gateChecks` | gate ids written in SKILL.md | One Go list holds the ownership. A test proves that each gate has one owner. |
 | G3 rule | flag a reference to the same task or a later task | reuse the PF4 cycle code | A plan with no forward reference has no cycle. |
 | G10 root | the active worktree, error when it cannot be resolved | fall back to the main worktree | A silent fallback reports a clean result for files that nobody checked. |
+| G10 stat error caused by the plan text | a G10 `error` finding (a parent is a file, a name too long, a symbolic link loop) | an `InfraError` that stops every gate | The plan text is the caller's input, and one bad path must not hide the other findings. Other stat errors stay an `InfraError`. |
+| Files bullet path | the first path with an extension, else the first path with a slash; a bullet with no path gives a G10 warning | the first path of any shape | wave-compute keeps the path it read before, and an unread bullet is reported, not dropped. |
+| No `### Task N:` heading | `DomainError` | `findings: (none)` | No gate was checked, so an empty list would read as a clean pass. |
 | G17 in round 2 and later | a fixed entry with no issues | store the round 1 result | G17 is advisory. A fixed entry gives the same merge with no storage. |
 | Time data | writer `startedAt`, top-level `stepTimes`, `done` `timing` | a list inside `checkpoint`; keys in `planIntegrity` | The typed checkpoint read and the ship report read those keys. |
 | Lens limit | 8 tasks in SKILL.md text | a Go task count | Go has no task count and does not know the author model. |

@@ -100,7 +100,47 @@ Loads the proposal, delta specs, and task list from
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.
-- Step 7 prints a timing report: the total time, the time of each step and the 3 slowest agents. The plan state keeps at most 64 step times. A run past 64 checkpoints adds the line "Steps: first 64 checkpoints only". The plan checks refuse a plan file over 8 MiB with an error that names the size.
+- **Step 3 runs 5 review lanes and 2 gate checks.** The lanes are
+  `static-structural`, `content-coverage`, `guardrail-compliance`,
+  `dimension-coverage` (G17) and `style-compliance`. There is no
+  file-existence lane: the gate checks cover its gates. The gate checks start
+  no agent:
+  - `go-gates` calls `validate({action: "plan_gates"})` in the same message
+    as the lanes. It checks G3, G4, G8, G9, G10 and G12 by count and lookup,
+    plus the G18 floor (a Contract with no code block, table or diagram).
+    G8 and G9 are warnings; the other gates are errors.
+  - `inline-checks` is the main session's own check of G5, G6, G13 and G15,
+    before the lane dispatch.
+- Step 7 prints a timing report, then one line for each warning. All times
+  are wall clock, UTC. Example:
+
+  ```
+  Step 7: Timing (wall clock, UTC)
+    Total: 42m (2026-05-09T13:30:00Z to 2026-05-09T14:12:00Z)
+    Steps: 0 2m · 1 9m · 2 6m · 3 r1 7m · 4 r1 5m · 5 r1 8m · 6 r1 4m · 7 1m
+    Slowest agents: lane-content-coverage-r1 6m 12s · explore-api 4m 3s · lens-risk-r1 3m 40s
+  ```
+
+  - **Total** runs from the skill start (`planIntegrity.skillInvoked`) to the
+    `done` mark, in minutes. It includes the time you spend answering
+    questions. It is not the plan timing in the run history, which ends at
+    the last edit of the plan file.
+  - **Steps** gives each step from its first checkpoint to the first
+    checkpoint of the next step, in minutes. Step 0 runs from the skill start
+    to its checkpoint. The last step ends at the `done` mark. A label
+    `<step> r<n>` is round `n` of that step.
+  - **Slowest agents** gives the 3 longest agents, from the first to the last
+    evidence write of each agent, in minutes and seconds. It leaves out the
+    orchestrator (`main`), an agent that still runs, and an agent with no
+    start time. The gate checks are not agents.
+  - Data that is absent or bad prints `unknown`. A run that started before
+    this version has no step times and no agent start times, so those lines
+    print `unknown` or `none`.
+  - The plan state keeps at most 64 step times: one for the first checkpoint
+    of each step and round. When the list holds 64 entries, the report adds
+    the line "Steps: first 64 checkpoints only".
+- The validate actions `plan_format`, `plan_style` and `plan_gates` refuse a
+  plan file over 8 MiB with an error that names the size and the limit.
 
 ## Recovery after compaction
 
@@ -326,9 +366,10 @@ contrast of 4.5:1 or more. No pastel fills.
   finding: accepted, rejected, or stop. It stores the answers with
   `plan_mark` `review-outcome` and does not start a 6th round.
   Each review round is recorded with `plan_mark` `review-round` for the
-  dashboard. A failed record call does not stop the skill. A plan with fewer than 8 tasks uses one reviewer, on the model that did not write the plan. The dimension-coverage lane (G17) runs in round 1 only. The skill still sends the output of that
+  dashboard. A failed record call does not stop the skill. A plan with fewer than 8 tasks uses one reviewer, on the model that did not write the plan. The skill still sends the output of that
   reviewer through `merge_results` as one lens named `all`, so the record has
-  the merged status and the blocking count.
+  the merged status and the blocking count. The dimension-coverage lane (G17)
+  runs in round 1 only.
   Each record also lists the blocking findings of the round as `{id, fixed}`.
   Step 3 stores the `G14` and `G22` issues, without the synthetic lane issues, as the
   evidence item `S3-guardrail-findings`. The round 1 record adds them with

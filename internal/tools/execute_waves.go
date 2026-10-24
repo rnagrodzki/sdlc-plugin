@@ -144,12 +144,17 @@ func waveComputeParseDependsOn(body string) []int {
 }
 
 // waveComputeParseFiles extracts the file paths of a task's **Files:**
-// block. It reuses parseTaskFiles (plan_gates.go), the one shared Files
-// parser, so scheduling and the plan_gates checks read the same paths. The
-// paths are cleaned: "./a.go" and "a.go" are one path.
+// block. It reuses parseTaskFiles (plan_gates.go), so scheduling and the
+// plan_gates checks read the same paths. (snapshotPlan in plan_support.go
+// still parses the Files block on its own for the material-change compare.)
+// The paths are cleaned: "./a.go" and "a.go" are one path. A bullet with an
+// extension path yields the same path as before parseTaskFiles was shared; a
+// bullet with only a slash path (a folder such as `internal/dir/`) is now
+// included, where it was skipped before.
 func waveComputeParseFiles(body string) []string {
 	var files []string
-	for _, f := range parseTaskFiles(body) {
+	taskFiles, _, _ := parseTaskFiles(body)
+	for _, f := range taskFiles {
 		files = append(files, f.Path)
 	}
 	return files

@@ -290,7 +290,10 @@ func TestEvidence_StartedAt_LaterWriteKeepsItAndMovesUpdatedAt(t *testing.T) {
 	evidenceSetClock(t, first)
 	evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "w1", Items: []EvidenceItem{{ID: "F-1", Summary: "a"}}})
 	evidenceSetClock(t, second)
-	evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "w1", Status: "done"})
+	out := evidenceMustCall(t, root, PlanSupportIn{Action: "evidence_record", RunID: runID, WriterID: "w1", Status: "done"})
+	if out.Record.StartedAt != first.Format(time.RFC3339) || out.Record.UpdatedAt != second.Format(time.RFC3339) {
+		t.Errorf("record = %+v, want startedAt of the first write and updatedAt of this write echoed", out.Record)
+	}
 
 	got := evidenceReadFile(t, root, runID, "w1")
 	if want := first.Format(time.RFC3339); got.StartedAt != want {

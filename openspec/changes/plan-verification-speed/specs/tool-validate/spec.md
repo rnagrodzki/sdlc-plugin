@@ -83,11 +83,15 @@ The tool SHALL read from the main worktree root, except for `dimensions`, `ci_sc
 ## ADDED Requirements
 
 ### Requirement: plan_gates action
-The `plan_gates` action SHALL check a plan file against the gates G3, G4, G8, G9, G12 and the G18 floor. It SHALL return one finding for each offender, with the gate id as `id`, sorted by gate, then task number, then message. It requires `file` and writes nothing.
+The `plan_gates` action SHALL check a plan file against the gates G3, G4, G8, G9, G12 and the G18 floor. It SHALL return one finding for each offender, with the gate id as `id` and the plan file as `path`, sorted by gate, then task number, then message. G8 and G9 findings SHALL be `warning`; the other gates SHALL be `error`, except the G10 Files-bullet warnings. It requires `file`, resolves a relative `file` against the active worktree root, and writes nothing.
 
 #### Scenario: Forward reference
 - **WHEN** Task 2 depends on Task 3
 - **THEN** the findings hold the `error` finding G3 `Task 2: depends on Task 3, which is not listed before it`
+
+#### Scenario: Self-dependency
+- **WHEN** Task 2 depends on Task 2
+- **THEN** the findings hold the `error` finding G3 `Task 2: depends on itself`
 
 #### Scenario: Missing dependency target
 - **WHEN** Task 2 depends on Task 9 and the plan has no Task 9
@@ -122,15 +126,41 @@ The `plan_gates` action SHALL check a plan file against the gates G3, G4, G8, G9
 - **THEN** the findings hold no G18 finding for that task
 
 #### Scenario: Not a plan
-- **WHEN** the file has no `### Task` heading
-- **THEN** the result is `findings: (none)`
+- **WHEN** the file has no `### Task N:` heading outside a code fence
+- **THEN** the result is a `DomainError` whose message starts with `plan_gates: no "### Task N: <title>" heading outside a code fence, so no gate was checked:`
+- **AND** its Suggestion ends with `Then retry plan_gates.`
+
+#### Scenario: G18 floor outside the go-gates gate IDs
+- **WHEN** a task has a prose-only Contract
+- **THEN** the finding carries id `G18`, although G18 is not in the `go-gates` gate IDs of `plan_prepare`
+
+#### Scenario: Dot slash path is one path
+- **WHEN** Task 1 modifies `./a.go` and `a.go` in two bullets
+- **THEN** the action reads one Modify path `a.go`
+
+#### Scenario: Extension path wins over a slash word
+- **WHEN** a Files bullet is `- Modify: the \`read/write\` helper in \`a.go\``
+- **THEN** the Modify path of that bullet is `a.go`
+
+#### Scenario: Files bullet with no path
+- **WHEN** Task 1 has the Files bullet `- Modify: the helpers`
+- **THEN** the findings hold a `warning` finding G10 that starts with `Task 1: Files bullet "Modify: the helpers" names no path, so G4, G9 and G10 skip it. Write it as`
+
+#### Scenario: Task with no Files block
+- **WHEN** Task 3 has no `**Files:**` line
+- **THEN** the findings hold the `warning` finding G10 `Task 3: no **Files:** block, so G4, G9 and G10 do not check this task`
+
+#### Scenario: Plan file not found
+- **WHEN** `plan_gates` runs with a `file` that does not exist
+- **THEN** the result is a `DomainError` whose Suggestion ends with `A relative path resolves against the active worktree root (the checkout of the current branch).`
+- **AND** the same call with `plan_format` gives a Suggestion that ends with `A relative path resolves against the main worktree root.`
 
 #### Scenario: Empty file input
 - **WHEN** `plan_gates` runs with an empty `file`
 - **THEN** the result is a `DomainError` `plan_gates: file is required`
 
 ### Requirement: plan_gates Modify path check
-The `plan_gates` action SHALL check each Modify path against the active worktree root and report each bad path as a G10 `error` finding. It SHALL return an `InfraError` when a path cannot be checked for a reason other than absence.
+The `plan_gates` action SHALL check each Modify path against the active worktree root and report each bad path as a G10 `error` finding. A path that the plan text makes impossible to check (a parent is a file, a name too long, a symbolic link loop) SHALL be a G10 `error` finding, so the other gates still report. Any other failed check of a Modify path SHALL return an `InfraError`.
 
 #### Scenario: Absent path
 - **WHEN** Task 2 modifies `x.go`, `x.go` does not exist, and no earlier task creates it
@@ -149,9 +179,22 @@ The `plan_gates` action SHALL check each Modify path against the active worktree
 - **THEN** the findings hold a G10 finding that ends with `is outside the project`
 
 #### Scenario: Parent is a file
-- **WHEN** a Modify path is `a.txt/x.go` and `a.txt` is a regular file
-- **THEN** the result is an `InfraError` whose message starts with `plan_gates: cannot check Modify path`
-- **AND** its Suggestion is `Check that each parent of a.txt/x.go is a folder that you can read. If a parent is a file, correct the Modify path in the plan. Then retry plan_gates.`
+- **WHEN** a Modify path of Task 1 is `a.txt/x.go` and `a.txt` is a regular file
+- **THEN** the findings hold the `error` finding G10 `Task 1: Modify path a.txt/x.go cannot be checked: a parent in the path is a file, not a folder`
+- **AND** the findings of the other gates are still returned
+
+#### Scenario: Name too long
+- **WHEN** a Modify path of Task 1 has a name longer than the file system allows
+- **THEN** the findings hold a G10 finding that ends with `cannot be checked: the path or one of its names is too long`
+
+#### Scenario: Permission denied
+- **WHEN** a Modify path is `locked/x.go` and the process has no search permission on `locked`
+- **THEN** the result is an `InfraError` whose message starts with `plan_gates: cannot check Modify path locked/x.go: ` and whose cause is the permission error
+- **AND** its Suggestion is `Give this process read and search permission on each folder of locked/x.go (ls -ld on each parent shows it). Then retry plan_gates.`
+
+#### Scenario: Create and Modify in one task
+- **WHEN** Task 1 creates and modifies `new.go`, and `new.go` does not exist
+- **THEN** the findings hold the G10 finding `Task 1: Modify path new.go does not exist`
 
 #### Scenario: Path only in the active worktree
 - **WHEN** a Modify path exists in the active worktree and not in the main worktree

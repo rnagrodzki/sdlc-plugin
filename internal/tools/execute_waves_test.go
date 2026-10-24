@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -318,6 +319,56 @@ func TestExecActionWaveCompute_CleansDotSlashPath(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("wave file list %v must hold shared.go", files)
+	}
+}
+
+// TestExecActionWaveCompute_SlashWordsAndFolders pins how the shared Files
+// parser schedules a bullet with a slash word or a folder. A slash word in
+// the "what changes" text ("the `read/write` helper in `a.go`") does not
+// replace the file path, so two tasks that share only that word stay in one
+// wave. A bullet whose only path is a folder yields that folder, so two tasks
+// that modify one folder are put in different waves.
+func TestExecActionWaveCompute_SlashWordsAndFolders(t *testing.T) {
+	task := func(n int, bullet string) string {
+		return fmt.Sprintf("### Task %d: t%d\n\n**Complexity:** Standard\n**Risk:** Low\n**Depends on:** none\n**Verify:** tests\n\n**Files:**\n- %s\n\n**Acceptance criteria:**\n- [ ] works\n\n", n, n, bullet)
+	}
+	fixture := "# Plan\n\n**Goal:** g\n**Architecture:** a\n**Source:** s\n**Verification:** v\n\n" +
+		task(1, "Modify: the `read/write` helper in `a.go`") +
+		task(2, "Modify: the `read/write` helper in `b.go`") +
+		task(3, "Modify: `internal/dir/` — add a file") +
+		task(4, "Modify: `internal/dir/` — add another file")
+	path := waveComputeWritePlan(t, fixture)
+
+	res, err := execActionWaveCompute(ExecuteStateIn{PlanPath: path})
+	if err != nil {
+		t.Fatalf("execActionWaveCompute: %v", err)
+	}
+	waves, _ := res.(map[string]any)["waves"].([]map[string]any)
+	waveOf := map[string]int{}
+	var files []string
+	for i, w := range waves {
+		tasks, _ := w["tasks"].([]map[string]any)
+		for _, tk := range tasks {
+			waveOf[tk["id"].(string)] = i
+		}
+		files = append(files, w["expectedFiles"].([]string)...)
+	}
+	if len(waveOf) != 4 {
+		t.Fatalf("waves = %+v, want all 4 tasks scheduled", waves)
+	}
+	if waveOf["1"] != waveOf["2"] {
+		t.Errorf("tasks 1 and 2 share only the word read/write, want one wave: %v", waveOf)
+	}
+	if waveOf["3"] == waveOf["4"] {
+		t.Errorf("tasks 3 and 4 both modify internal/dir, want different waves: %v", waveOf)
+	}
+	for _, want := range []string{"a.go", "b.go", "internal/dir"} {
+		if !containsStr(files, want) {
+			t.Errorf("expectedFiles %v must hold %s", files, want)
+		}
+	}
+	if containsStr(files, "read/write") {
+		t.Errorf("expectedFiles %v must not hold the slash word read/write", files)
 	}
 }
 

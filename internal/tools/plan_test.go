@@ -1537,8 +1537,29 @@ func TestPlanMark_PlanTiming_DoneHistoryWriteFailure_ReturnsWarning(t *testing.T
 	if !out.OK {
 		t.Error("planMark(done).OK = false, want true even when the history write fails")
 	}
-	if len(out.Warnings) == 0 {
-		t.Error("planMark(done).Warnings = empty, want an error naming the history write failure")
+	if len(out.Warnings) != 1 || !strings.HasPrefix(out.Warnings[0], "plan timing not saved to history: ") {
+		t.Errorf("planMark(done).Warnings = %q, want one warning naming the history write failure", out.Warnings)
+	}
+	if out.Next != planDoneNext || out.Timing == "" {
+		t.Errorf("Next = %q, Timing = %q, want the done next text and a timing report", out.Next, out.Timing)
+	}
+
+	// With a timing warning too, the history warning comes first.
+	files := listStateFiles(t, dir)
+	evidenceDir := state.EvidenceDir(dir, strings.TrimSuffix(files[0], ".json"))
+	if err := os.RemoveAll(evidenceDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(evidenceDir, []byte("not a folder"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = planMark(dir, dir, PlanMarkIn{Marker: "done"})
+	if err != nil {
+		t.Fatalf("planMark(done) again: %v", err)
+	}
+	if len(out.Warnings) != 2 || !strings.HasPrefix(out.Warnings[0], "plan timing not saved to history: ") ||
+		!strings.HasPrefix(out.Warnings[1], "Timing: cannot read evidence: ") {
+		t.Errorf("Warnings = %q, want the history warning, then the timing warning", out.Warnings)
 	}
 }
 

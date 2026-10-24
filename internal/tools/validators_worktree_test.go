@@ -133,6 +133,9 @@ func TestValidateRoot(t *testing.T) {
 		{"ci_script_drift reads active", ValidateIn{Action: "ci_script_drift"}, ok, "/active", false},
 		{"ci_script_drift fails open", ValidateIn{Action: "ci_script_drift"}, fail, "/main", false},
 		{"other action ignores the flag", ValidateIn{Action: "discovery", ActiveWorktree: true}, fail, "/main", false},
+		{"plan_format reads main", ValidateIn{Action: "plan_format", File: "p.md"}, ok, "/main", false},
+		{"plan_gates reads active", ValidateIn{Action: "plan_gates", File: "p.md"}, ok, "/active", false},
+		{"plan_gates fails loud", ValidateIn{Action: "plan_gates", File: "p.md"}, fail, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,11 +145,40 @@ func TestValidateRoot(t *testing.T) {
 				if !errors.As(err, &infra) || !errors.Is(err, boom) {
 					t.Fatalf("err = %v, want an InfraError wrapping the resolution error", err)
 				}
+				if !strings.HasPrefix(infra.Msg, "resolve active worktree for "+tc.in.Action) || infra.Suggestion == "" {
+					t.Errorf("InfraError = %+v, want the action in Msg and a Suggestion", infra)
+				}
 				return
 			}
 			if err != nil || got != tc.want {
 				t.Errorf("validateRoot = (%q, %v), want (%q, nil)", got, err, tc.want)
 			}
 		})
+	}
+}
+
+// TestValidate_PlanGates_ReadsActiveWorktree proves the plan_gates root swap
+// in the registered handler: from a linked worktree, a Modify path that
+// exists only in that tree passes G10. From the main repo's .git directory,
+// where the active root does not resolve, plan_gates fails loud.
+func TestValidate_PlanGates_ReadsActiveWorktree(t *testing.T) {
+	mainDir, linkedDir := validateWorktreeFixture(t)
+	writeFile(t, filepath.Join(linkedDir, "only_linked.go"), "package x\n")
+	planPath := filepath.Join(t.TempDir(), "plan.md")
+	writeFile(t, planPath, gatePlan(gateTask{Num: 1, Files: []string{"Modify: " + bt("only_linked.go")}}))
+
+	t.Chdir(linkedDir)
+	res, text := callRegisteredValidate(t, map[string]any{"action": "plan_gates", "file": planPath})
+	if res.IsError {
+		t.Fatalf("plan_gates from the linked tree returned an error:\n%s", text)
+	}
+	if strings.Contains(text, "only_linked.go does not exist") {
+		t.Errorf("plan_gates must read the linked tree, where only_linked.go exists:\n%s", text)
+	}
+
+	t.Chdir(filepath.Join(mainDir, ".git"))
+	res, text = callRegisteredValidate(t, map[string]any{"action": "plan_gates", "file": planPath})
+	if !res.IsError || !strings.Contains(text, "resolve active worktree for plan_gates") {
+		t.Errorf("plan_gates with no active worktree must be an error result naming the resolution:\n%s", text)
 	}
 }

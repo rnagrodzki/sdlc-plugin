@@ -492,6 +492,8 @@ func evidenceRecord(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 			ItemCount: len(wf.Items),
 			FileBytes: size,
 			BriefPath: briefPath,
+			StartedAt: wf.StartedAt,
+			UpdatedAt: wf.UpdatedAt,
 		},
 	}, nil
 }

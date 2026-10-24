@@ -197,14 +197,14 @@ The skill SHALL judge the warning gates G5, G6, G13 and G15 in the main session 
 - **THEN** the skill runs the inline check again and starts no sub-agent for it
 
 ### Requirement: Gate check retry
-When a `go-gates` entry has `status: "fail"`, the skill SHALL call `validate({action: "plan_gates"})` again one time and fix its findings. After a second error, it SHALL add a Deviations row with the gates, the error, and `asked=no`, and continue.
+When a `go-gates` entry has `status: "fail"`, the skill SHALL apply the error's Suggestion, call `validate({action: "plan_gates"})` again one time, and fix its findings. After a second error, it SHALL add a Deviations row, keep the issue open, and set `materialChangeDetected = true`.
 
 ```mermaid
 stateDiagram-v2
   [*] --> Failed
-  Failed --> Retried: call plan_gates again
-  Retried --> Fixed: findings returned and fixed
-  Retried --> Deviation: second error, Deviations row added
+  Failed --> Retried: apply Suggestion, call plan_gates again
+  Retried --> Fixed: no findings, or findings returned and fixed
+  Retried --> Deviation: second error, Deviations row added, issue stays open
   Fixed --> [*]
   Deviation --> [*]
 ```
@@ -212,13 +212,15 @@ stateDiagram-v2
 #### Scenario: Retry returns findings
 - **WHEN** the Step 3 `plan_gates` call failed and the retry returns a G10 finding
 - **THEN** the skill fixes the G10 finding in the plan file
-- **AND** the flow goes to Step 5
+- **AND** the flow continues Step 4
 
 #### Scenario: Retry fails again
 - **WHEN** the retry of `plan_gates` returns an error
-- **THEN** the plan has a Deviations row that names G3, G4, G8, G9, G10, G12 and the error, with `asked=no`
+- **THEN** the plan has a Deviations row that names G3, G4, G8, G9, G10, G12, the G18 no-visual-block floor and the error, with `asked=no`
+- **AND** `materialChangeDetected` is true, so round 2 runs `plan_gates` again
 
 #### Scenario: Retry in Step 6
 - **WHEN** a merged re-dispatch gives the synthetic issue `Gate check go-gates failed`
-- **THEN** the skill records that issue as `fixed: true` after the retry
-- **AND** the skill does not set `materialChangeDetected` for it
+- **THEN** a retry with no findings records that issue as `fixed: true`
+- **AND** a retry with findings fixes them, records the issue as `fixed: true`, and sets `materialChangeDetected = true`
+- **AND** a second error adds a Deviations row, records the issue as `fixed: false`, and sets `materialChangeDetected = true`

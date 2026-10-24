@@ -189,7 +189,11 @@ func getGitScopeFiles(contentRoot string) []string {
 }
 
 // backtickPathRe matches inline-code file paths in markdown, e.g. `src/foo.go`.
-var backtickPathRe = regexp.MustCompile("`([a-zA-Z0-9_\\-./]+\\.[a-zA-Z]{1,10})`")
+var backtickPathRe = regexp.MustCompile("`(" + extPathPattern + ")`")
+
+// extPathPattern is a path whose last element has an extension ("a/b.go").
+// backtickPathRe and parseTaskFiles (plan_gates.go) share it.
+const extPathPattern = "[a-zA-Z0-9_\\-./]+\\.[a-zA-Z]{1,10}"
 
 // getOpenSpecPaths scans an OpenSpec change's proposal.md and every delta
 // spec the openspec CLI reports for the change (specs/**/*.md, at any

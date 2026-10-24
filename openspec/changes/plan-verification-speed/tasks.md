@@ -29,5 +29,5 @@ flowchart LR
 
 ## Workflow follow-up
 
-- Run `task deploy`, reload the plugin, then call `validate({action:"plan_gates", file:"<plan file>"})`. Expect findings or `findings: (none)`, with no error.
+- Run `task deploy`, reload the plugin, then call `validate({action:"plan_gates", file:"<plan file>"})`. Expect findings or `findings: (none)`, with no error. A file with no `### Task N:` heading returns a DomainError.
 - `/sdlc:ship` archives the change after validation passes.

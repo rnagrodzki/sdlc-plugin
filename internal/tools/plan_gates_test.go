@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -109,7 +110,7 @@ func TestPlanGates_G3DependencyOrder(t *testing.T) {
 	}{
 		{"earlier task passes", "Task 1", nil},
 		{"later task fails", "Task 3", []string{"Task 2: depends on Task 3, which is not listed before it"}},
-		{"same task fails", "Task 2", []string{"Task 2: depends on Task 2, which is not listed before it"}},
+		{"same task fails", "Task 2", []string{"Task 2: depends on itself"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -152,6 +153,40 @@ func TestPlanGates_G4SharedModifyPath(t *testing.T) {
 			gateTask{Num: 2, Files: []string{"Modify: " + bt("a.go")}},
 		))
 		wantGateMessages(t, f, "G4", "Task 1 and Task 2 both modify a.go with no dependency path between them")
+	})
+	t.Run("three tasks, one dependency: each unlinked pair is reported", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "a.go"), "package a\n")
+		f := runGates(t, root, gatePlan(
+			gateTask{Num: 1, Files: []string{"Modify: " + bt("a.go")}},
+			gateTask{Num: 2, Depends: "Task 1", Files: []string{"Modify: " + bt("a.go")}},
+			gateTask{Num: 3, Files: []string{"Modify: " + bt("a.go")}},
+		))
+		wantGateMessages(t, f, "G4",
+			"Task 1 and Task 3 both modify a.go with no dependency path between them",
+			"Task 2 and Task 3 both modify a.go with no dependency path between them",
+		)
+	})
+	t.Run("two shared paths are each reported", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "a.go"), "package a\n")
+		writeFile(t, filepath.Join(root, "b.go"), "package b\n")
+		f := runGates(t, root, gatePlan(
+			gateTask{Num: 1, Files: []string{"Modify: " + bt("b.go"), "Modify: " + bt("a.go")}},
+			gateTask{Num: 2, Files: []string{"Modify: " + bt("a.go"), "Modify: " + bt("b.go")}},
+		))
+		wantGateMessages(t, f, "G4",
+			"Task 1 and Task 2 both modify a.go with no dependency path between them",
+			"Task 1 and Task 2 both modify b.go with no dependency path between them",
+		)
+	})
+	t.Run("one task listing a path twice is not a pair", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "a.go"), "package a\n")
+		f := runGates(t, root, gatePlan(
+			gateTask{Num: 1, Files: []string{"Modify: " + bt("a.go"), "Modify: " + bt("./a.go")}},
+		))
+		wantGateMessages(t, f, "G4")
 	})
 	t.Run("dot slash path is the same path", func(t *testing.T) {
 		root := t.TempDir()
@@ -229,20 +264,28 @@ func TestPlanGates_G9TaskSize(t *testing.T) {
 		}
 		return out
 	}
-	f := runGates(t, t.TempDir(), gatePlan(gateTask{Num: 1, Files: files(5)}))
+	f := runGates(t, t.TempDir(), gatePlan(gateTask{Num: 1, Files: files(planGatesMaxTaskFiles)}))
 	wantGateMessages(t, f, "G9")
 
-	f = runGates(t, t.TempDir(), gatePlan(gateTask{Num: 1, Files: files(6)}))
-	wantGateMessages(t, f, "G9", "Task 1: touches 6 files (limit 5)")
+	over := planGatesMaxTaskFiles + 1
+	f = runGates(t, t.TempDir(), gatePlan(gateTask{Num: 1, Files: files(over)}))
+	wantGateMessages(t, f, "G9", fmt.Sprintf("Task 1: touches %d files (limit %d)", over, planGatesMaxTaskFiles))
 	if got := findingsByID(f, "G9")[0].Severity; got != "warning" {
 		t.Errorf("G9 severity = %q, want warning", got)
 	}
+
+	// One path under Create and Modify counts once: the limit counts
+	// distinct paths.
+	atLimit := append(files(planGatesMaxTaskFiles), "Modify: "+bt("f1.go"), "Test: "+bt("./f2.go"))
+	f = runGates(t, t.TempDir(), gatePlan(gateTask{Num: 1, Files: atLimit}))
+	wantGateMessages(t, f, "G9")
 }
 
 func TestPlanGates_G9TrivialShare(t *testing.T) {
+	const total = 10
 	tasks := func(trivial int) []gateTask {
 		var out []gateTask
-		for i := 1; i <= 5; i++ {
+		for i := 1; i <= total; i++ {
 			c := "Standard"
 			if i <= trivial {
 				c = "Trivial"
@@ -251,11 +294,14 @@ func TestPlanGates_G9TrivialShare(t *testing.T) {
 		}
 		return out
 	}
-	f := runGates(t, t.TempDir(), gatePlan(tasks(4)...))
+	// The largest Trivial count whose share is not above the limit passes;
+	// one more fails.
+	atLimit := int(planGatesMaxTrivialShare * total)
+	f := runGates(t, t.TempDir(), gatePlan(tasks(atLimit)...))
 	wantGateMessages(t, f, "G9")
 
-	f = runGates(t, t.TempDir(), gatePlan(tasks(5)...))
-	wantGateMessages(t, f, "G9", "Plan: 5 of 5 tasks are Trivial (limit 80%)")
+	f = runGates(t, t.TempDir(), gatePlan(tasks(atLimit+1)...))
+	wantGateMessages(t, f, "G9", fmt.Sprintf("Plan: %d of %d tasks are Trivial (limit %d%%)", atLimit+1, total, int(planGatesMaxTrivialShare*100)))
 }
 
 // ---------------------------------------------------------------------------
@@ -335,21 +381,92 @@ func TestPlanGates_G10ActiveRootOnly(t *testing.T) {
 	wantGateMessages(t, out.Findings, "G10", "Task 1: Modify path only_active.go does not exist")
 }
 
-func TestPlanGates_G10ParentIsFileIsInfraError(t *testing.T) {
+// A Modify path whose parent is a file is a mistake in the plan text, so it
+// is a G10 finding, and the other gates still report.
+func TestPlanGates_G10ParentIsFileIsFinding(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, "a.txt"), "x")
-	writeFile(t, filepath.Join(root, "plan.md"), gatePlan(gateTask{Num: 1, Files: []string{"Modify: " + bt("a.txt/x.go")}}))
+	f := runGates(t, root, gatePlan(
+		gateTask{Num: 1, Verify: "-", Files: []string{"Modify: " + bt("a.txt/x.go")}},
+	))
+	wantGateMessages(t, f, "G10", "Task 1: Modify path a.txt/x.go cannot be checked: a parent in the path is a file, not a folder")
+	if got := findingsByID(f, "G10")[0].Severity; got != "error" {
+		t.Errorf("G10 severity = %q, want error", got)
+	}
+	if len(findingsByID(f, "G8")) != 1 {
+		t.Errorf("G8 must still report next to the G10 finding: %+v", f)
+	}
+}
+
+func TestPlanGates_G10PathTooLongIsFinding(t *testing.T) {
+	long := strings.Repeat("n", 300) + ".go"
+	f := runGates(t, t.TempDir(), gatePlan(gateTask{Num: 1, Files: []string{"Modify: " + bt(long)}}))
+	wantGateMessages(t, f, "G10", "Task 1: Modify path "+long+" cannot be checked: the path or one of its names is too long")
+}
+
+// A Modify path that cannot be checked for a reason the plan text does not
+// cause (here: no search permission on a folder) is an InfraError that keeps
+// the OS error as its cause.
+func TestPlanGates_G10PermissionDeniedIsInfraError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores folder permissions")
+	}
+	root := t.TempDir()
+	locked := filepath.Join(root, "locked")
+	writeFile(t, filepath.Join(locked, "x.go"), "package x\n")
+	writeFile(t, filepath.Join(root, "plan.md"), gatePlan(gateTask{Num: 1, Files: []string{"Modify: " + bt("locked/x.go")}}))
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(locked, 0o755) })
+
 	_, err := validate(root, ValidateIn{Action: "plan_gates", File: "plan.md"})
 	var infra *mcpserver.InfraError
 	if !errors.As(err, &infra) {
 		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
 	}
-	if !strings.HasPrefix(infra.Msg, "plan_gates: cannot check Modify path a.txt/x.go: ") {
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Errorf("err = %v, want the permission error as its cause", err)
+	}
+	var pe *fs.PathError
+	if !errors.As(infra.Cause, &pe) {
+		t.Errorf("Cause = %T, want *fs.PathError", infra.Cause)
+	}
+	if !strings.HasPrefix(infra.Msg, "plan_gates: cannot check Modify path locked/x.go: ") {
 		t.Errorf("Msg = %q", infra.Msg)
 	}
-	wantSug := "Check that each parent of a.txt/x.go is a folder that you can read. If a parent is a file, correct the Modify path in the plan. Then retry plan_gates."
+	wantSug := "Give this process read and search permission on each folder of locked/x.go (ls -ld on each parent shows it). Then retry plan_gates."
 	if infra.Suggestion != wantSug {
 		t.Errorf("Suggestion = %q, want %q", infra.Suggestion, wantSug)
+	}
+}
+
+// Create is registered after the Modify loop of a task, so a task that
+// creates and modifies one path reports the Modify path as absent.
+func TestPlanGates_G10CreateAndModifyInOneTask(t *testing.T) {
+	f := runGates(t, t.TempDir(), gatePlan(gateTask{Num: 1, Files: []string{"Create: " + bt("new.go"), "Modify: " + bt("new.go")}}))
+	wantGateMessages(t, f, "G10", "Task 1: Modify path new.go does not exist")
+}
+
+func TestPlanGates_G10UnreadableFiles(t *testing.T) {
+	plan := gatePlan(
+		gateTask{Num: 1, Files: []string{"Modify: " + bt("Makefile") + " - add a target", "Modify: the helpers", "Test: run " + bt("go test ./...")}},
+		gateTask{Num: 2, Files: []string{"Modify: " + bt("./Makefile")}},
+	)
+	plan += "### Task 3: Task 3\n\n**Complexity:** Standard\n**Risk:** Low\n**Depends on:** none\n**Verify:** tests\n\n**Acceptance criteria:**\n- [ ] works\n"
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "Makefile"), "all:\n")
+	f := runGates(t, root, plan)
+	wantGateMessages(t, f, "G10",
+		`Task 1: Files bullet "Modify: `+"`Makefile`"+` - add a target" names no path, so G4, G9 and G10 skip it. Write it as `+taskFileShape,
+		`Task 1: Files bullet "Modify: the helpers" names no path, so G4, G9 and G10 skip it. Write it as `+taskFileShape,
+		`Task 1: Files bullet "Test: run `+"`go test ./...`"+`" names no path, so G4, G9 and G10 skip it. Write it as `+taskFileShape,
+		"Task 3: no **Files:** block, so G4, G9 and G10 do not check this task",
+	)
+	for _, x := range findingsByID(f, "G10") {
+		if x.Severity != "warning" {
+			t.Errorf("G10 finding %q: severity = %q, want warning", x.Message, x.Severity)
+		}
 	}
 }
 
@@ -397,6 +514,29 @@ func TestPlanGates_ContractBlockEnd(t *testing.T) {
 	if _, found := contractBlock("### Task 1: x\n**Files:**\n"); found {
 		t.Error("a body with no **Contract:** line has no Contract block")
 	}
+}
+
+func TestPlanGates_RawTaskBodies_UnclosedFenceAndRepeat(t *testing.T) {
+	// An unclosed fence is not a fence, so the heading after it counts.
+	got := rawTaskBodies("### Task 1: a\n```\nbody\n### Task 2: b\nbody2\n")
+	if len(got) != 2 || !strings.HasPrefix(got[2], "### Task 2: b") {
+		t.Fatalf("bodies = %q, want task 2 found after the unclosed fence", got)
+	}
+	// A repeated task number keeps its first body.
+	got = rawTaskBodies("### Task 1: first\nA\n### Task 1: second\nB\n")
+	if len(got) != 1 || !strings.Contains(got[1], "first") || strings.Contains(got[1], "second") {
+		t.Fatalf("bodies = %q, want the first body of task 1", got)
+	}
+}
+
+// With two "### Task 1" headings, the G18 floor reads only the first body
+// and reports task 1 at most once.
+func TestPlanGates_G18RepeatedTaskNumber(t *testing.T) {
+	plan := gatePlan(gateTask{Num: 1}, gateTask{Num: 1, Contract: "- shape: prose only\n"})
+	wantGateMessages(t, runGates(t, t.TempDir(), plan), "G18")
+
+	plan = gatePlan(gateTask{Num: 1, Contract: "- shape: prose only\n"}, gateTask{Num: 1, Contract: "- shape: prose only\n"})
+	wantGateMessages(t, runGates(t, t.TempDir(), plan), "G18", "Task 1: Contract has no code block, table or diagram")
 }
 
 func TestPlanGates_RawTaskBodies(t *testing.T) {
@@ -456,10 +596,21 @@ func TestPlanGates_NoTrailingNewline(t *testing.T) {
 	}
 }
 
-func TestPlanGates_NotAPlanReturnsNoFindings(t *testing.T) {
-	f := runGates(t, t.TempDir(), "# Notes\n\nno task heading here\n")
-	if f == nil || len(f) != 0 {
-		t.Fatalf("findings = %#v, want an empty non-nil list", f)
+// A file with no task heading checks no gate, so it is an error, not a
+// clean pass.
+func TestPlanGates_NotAPlanIsDomainError(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), "# Notes\n\nno task heading here\n```\n### Task 1: in a fence\n```\n")
+	_, err := validate(root, ValidateIn{Action: "plan_gates", File: "plan.md"})
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %v (%T), want DomainError", err, err)
+	}
+	if !strings.HasPrefix(de.Msg, `plan_gates: no "### Task N: <title>" heading outside a code fence, so no gate was checked: `) {
+		t.Errorf("Msg = %q", de.Msg)
+	}
+	if !strings.Contains(de.Suggestion, "Then retry plan_gates.") {
+		t.Errorf("Suggestion = %q", de.Suggestion)
 	}
 }
 
@@ -484,7 +635,10 @@ func TestPlanGates_NotInBlockingChecks(t *testing.T) {
 
 func TestPlanGates_ParseTaskFiles(t *testing.T) {
 	body := "### Task 1: x\n\n**Files:**\n- Create: `new.go` — a `Foo` note\n- Modify: `./pkg/a.go`\n- Test: `pkg/a_test.go`\n- `loose.go` — no kind word\n- Delete: `old.go`\n- Modify: the `Foo` func in `b.go`\n- Modify: `internal/dir/`\n\n**Contract:**\n- `notafile.go`\n"
-	got := parseTaskFiles(body)
+	got, unparsed, found := parseTaskFiles(body)
+	if !found || len(unparsed) != 0 {
+		t.Fatalf("found = %v, unparsed = %q, want a block with no unparsed bullet", found, unparsed)
+	}
 	want := []taskFile{
 		{"Create", "new.go"},
 		{"Modify", "pkg/a.go"},
@@ -500,6 +654,24 @@ func TestPlanGates_ParseTaskFiles(t *testing.T) {
 	wantPaths := []string{"new.go", "pkg/a.go", "pkg/a_test.go", "loose.go", "old.go", "b.go", "internal/dir"}
 	if paths := waveComputeParseFiles(body); !reflect.DeepEqual(paths, wantPaths) {
 		t.Fatalf("waveComputeParseFiles = %v, want %v", paths, wantPaths)
+	}
+}
+
+// The first path with an extension wins over an earlier slash word, so a
+// bullet yields the same path that wave-compute read before the parser was
+// shared. A slash path is used only when the bullet has no extension path.
+func TestPlanGates_ParseTaskFiles_ExtensionPathFirst(t *testing.T) {
+	body := "**Files:**\n- Modify: the `read/write` helper in `a.go`\n- Create: `docs/` — holds `b.md`\n- Modify: `./Makefile`\n- Modify: `Makefile`\n- see `notes`\n"
+	got, unparsed, found := parseTaskFiles(body)
+	want := []taskFile{{"Modify", "a.go"}, {"Create", "b.md"}, {"Modify", "Makefile"}}
+	if !found || !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseTaskFiles = %+v (found %v), want %+v", got, found, want)
+	}
+	if wantUnparsed := []string{"Modify: `Makefile`"}; !reflect.DeepEqual(unparsed, wantUnparsed) {
+		t.Errorf("unparsed = %q, want %q (a bullet with no kind word is not reported)", unparsed, wantUnparsed)
+	}
+	if _, _, found := parseTaskFiles("### Task 1: x\n**Verify:** tests\n"); found {
+		t.Error("a body with no **Files:** line must report found = false")
 	}
 }
 
@@ -558,26 +730,32 @@ func TestPlanGates_InputStateParity(t *testing.T) {
 		if err != nil || len(findingsByID(pf.Findings, "PF2")) == 0 {
 			t.Fatalf("plan_format must report PF2 for a file with no task heading: err=%v findings=%+v", err, pf.Findings)
 		}
-		pg, err := validate(root, ValidateIn{Action: "plan_gates", File: "notes.md"})
-		if err != nil || len(pg.Findings) != 0 {
-			t.Fatalf("plan_gates must return no findings: err=%v findings=%+v", err, pg.Findings)
+		var de *mcpserver.DomainError
+		if _, err := validate(root, ValidateIn{Action: "plan_gates", File: "notes.md"}); !errors.As(err, &de) {
+			t.Fatalf("plan_gates must return a DomainError for a file with no task heading: err=%v", err)
 		}
 	})
 
-	t.Run("relative file root", func(t *testing.T) {
-		active := func() (string, error) { return "/active", nil }
-		if r, _ := validateRoot("/main", ValidateIn{Action: "plan_format", File: "p.md"}, active); r != "/main" {
-			t.Errorf("plan_format root = %q, want /main", r)
-		}
-		if r, _ := validateRoot("/main", ValidateIn{Action: "plan_gates", File: "p.md"}, active); r != "/active" {
-			t.Errorf("plan_gates root = %q, want /active", r)
+	t.Run("not-found hint names the root of the action", func(t *testing.T) {
+		for action, want := range map[string]string{
+			"plan_format": "A relative path resolves against the main worktree root.",
+			"plan_gates":  "A relative path resolves against the active worktree root (the checkout of the current branch).",
+		} {
+			_, err := validate(root, ValidateIn{Action: action, File: "absent.md"})
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) || !strings.HasSuffix(de.Suggestion, want) {
+				t.Errorf("%s: err = %v, want a Suggestion ending %q", action, err, want)
+			}
 		}
 	})
 }
 
 func TestPlanGates_ReadLimit(t *testing.T) {
+	// A task heading, so plan_gates checks the file and does not refuse it.
+	const header = "### Task 1: t\n"
 	line := strings.Repeat("x", 1023) + "\n"
-	exact := strings.Repeat(line, maxPlanFileBytes/len(line))
+	body := strings.Repeat(line, (maxPlanFileBytes-len(header))/len(line))
+	exact := header + body + strings.Repeat("x", maxPlanFileBytes-len(header)-len(body))
 	if len(exact) != maxPlanFileBytes {
 		t.Fatalf("fixture is %d bytes, want %d", len(exact), maxPlanFileBytes)
 	}
@@ -595,7 +773,7 @@ func TestPlanGates_ReadLimit(t *testing.T) {
 			if !errors.As(err, &de) {
 				t.Fatalf("err = %v (%T), want DomainError", err, err)
 			}
-			want := fmt.Sprintf("%s: file is 8388609 bytes, over the 8 MiB limit (8388608 bytes): %s", action, filepath.Join(root, "over.md"))
+			want := fmt.Sprintf("%s: file is %d bytes, over the %s limit (%d bytes): %s", action, maxPlanFileBytes+1, maxPlanFileText, maxPlanFileBytes, filepath.Join(root, "over.md"))
 			if de.Msg != want {
 				t.Errorf("Msg = %q, want %q", de.Msg, want)
 			}
@@ -603,22 +781,6 @@ func TestPlanGates_ReadLimit(t *testing.T) {
 				t.Error("DomainError must carry a Suggestion")
 			}
 		})
-	}
-}
-
-func TestPlanGates_ValidateRoot(t *testing.T) {
-	boom := errors.New("boom")
-	r, err := validateRoot("/main", ValidateIn{Action: "plan_gates"}, func() (string, error) { return "/active", nil })
-	if err != nil || r != "/active" {
-		t.Fatalf("validateRoot = %q, %v; want /active", r, err)
-	}
-	_, err = validateRoot("/main", ValidateIn{Action: "plan_gates"}, func() (string, error) { return "", boom })
-	var infra *mcpserver.InfraError
-	if !errors.As(err, &infra) || !errors.Is(err, boom) {
-		t.Fatalf("err = %v, want an InfraError wrapping the resolution error", err)
-	}
-	if !strings.Contains(infra.Msg, "resolve active worktree for plan_gates") || infra.Suggestion == "" {
-		t.Errorf("InfraError = %+v, want the plan_gates message and a Suggestion", infra)
 	}
 }
 

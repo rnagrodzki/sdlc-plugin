@@ -65,7 +65,12 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
     "expectedWriters": ["lane-static-structural-r1"],
     "updatedAt": "2026-05-09T14:10:00.000Z"
   },
-  "stepTimes": [ { "step": "2", "iteration": 0, "at": "2026-10-23T12:20:11Z" } ],
+  "stepTimes": [
+    { "step": "0", "iteration": 0, "at": "2026-05-09T14:02:10Z" },
+    { "step": "1", "iteration": 0, "at": "2026-05-09T14:02:30Z" },
+    { "step": "2", "iteration": 0, "at": "2026-05-09T14:03:50Z" },
+    { "step": "3", "iteration": 1, "at": "2026-05-09T14:04:40Z" }
+  ],
   "planTiming": {
     "startedAt": "2026-05-09T14:00:00Z",
     "lastModifiedAt": "2026-05-09T14:09:40Z",
@@ -176,10 +181,12 @@ Written by `plan_mark({ marker: "checkpoint", data: {...} })`. Unlike the `planI
 |-------------------|----------|-------------------------------------------------------------------------------|
 | `step`            | string   | The SKILL.md step this checkpoint reflects. One of `0`, `1`, `2`, `3`, `4`, `5`, `6`, `6.5`, `6.6`, `7`. |
 | `iteration`       | integer  | Iteration counter (used by the Step 5/6 review loop, which can repeat up to 5 times). |
-| `expectedWriters` | string[] | Writer IDs the run is currently waiting on (e.g. dispatched lane or lens subagent IDs). Max 32 entries. |
+| `expectedWriters` | string[] \| null | Writer IDs the run is currently waiting on (e.g. dispatched lane or lens subagent IDs). Max 32 entries. Absent (`null`) when the call passed none. |
 | `updatedAt`       | string   | ISO 8601 UTC timestamp stamped by `plan_mark` at write time (not caller-supplied). |
 
 The resume flow (`plan_prepare({resume: true})`) reads `checkpoint.step` to tell the orchestrator where to pick back up, and `checkpoint.expectedWriters` together with `plan_support({action: "evidence_digest"})` to tell it which writers it is still waiting on.
+
+At step 1, `expectedWriters` is absent until the explorer dispatch. Step 1 writes a checkpoint with no `expectedWriters` at its start, and writes it again with the explorer writer IDs right before the dispatch. It dispatches explorers only when that second call succeeds. So a step 1 checkpoint with no `expectedWriters` means that no explorer started. On resume, SKILL.md then reads the `evidence_digest` index: with no `main` item `R1`, it runs Step 1 from its start; with `R1`, Step 1 took a path with no explorers and recorded its requirements, so the run continues at the Step 1 Re-anchor and Gate A.
 
 ---
 
@@ -193,7 +200,7 @@ Written by `plan_mark({ marker: "checkpoint", data: {...} })`. The first checkpo
 | `iteration` | integer | The `checkpoint.iteration` value of the call. |
 | `at`        | string  | RFC 3339 UTC time of the first checkpoint for this step and iteration. |
 
-plan_mark keeps at most 64 entries (a fixed limit). A checkpoint past 64 entries adds no entry and returns a warning. A `stepTimes` value that is not a list stays as it is, and the checkpoint returns a warning.
+plan_mark keeps at most 64 entries (a fixed limit). When the list holds 64 entries, a checkpoint for a new step and iteration adds no entry and returns a warning; the checkpoint itself is saved. A `stepTimes` value that is not a list stays as it is, and the checkpoint returns a warning.
 
 ---
 
@@ -352,7 +359,8 @@ Each `<writerId>.json` holds one writer's recorded findings:
 {
   "writerId": "lane-static-structural-r1",
   "status": "done",
-  "updatedAt": "2026-05-09T14:03:00.000Z",
+  "startedAt": "2026-05-09T14:02:40Z",
+  "updatedAt": "2026-05-09T14:03:00Z",
   "items": [
     {
       "id": "F-auth-1",
@@ -368,14 +376,14 @@ Each `<writerId>.json` holds one writer's recorded findings:
 |-------------|--------|-----------------------------------------------------------------------------------|
 | `writerId`  | string | The writer's own ID. Must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (max 64 chars). `"main"` is reserved for the orchestrator session. |
 | `status`    | string | `running` or `done`.                                                              |
-| `startedAt` | string | UTC time of the first `evidence_record` call for this writer. Later calls keep it. Absent in a file from before the upgrade. |
+| `startedAt` | string \| absent | RFC 3339 UTC time of the first `evidence_record` call that found no `startedAt` for this writer. That call sets it to its own `updatedAt`. Later calls keep it. A file written before the upgrade has no `startedAt` until its next `evidence_record` call, which sets it then. A replaced unreadable file also gets it at that call. In both cases `startedAt` is later than the real start of the agent. |
 | `updatedAt` | string | ISO 8601 UTC timestamp of the last `evidence_record` call for this writer.        |
 | `items`     | array  | Up to 200 items, max 64 KiB total file size. Each item: `id` (unique per writer, e.g. `F-auth-1`; must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`), `summary` (one line, max 200 chars), `ref` (optional, one line, max 500 chars — `path:line` or URL), `body` (optional Markdown, returned only by `evidence_get`). |
 
-A writer file that has `startedAt`:
+A file from before the upgrade has no `startedAt` until its next write:
 
 ```json
-{ "writerId": "lane-style-compliance-r1", "status": "done", "startedAt": "2026-10-23T12:40:02Z", "updatedAt": "2026-10-23T12:42:31Z", "items": [] }
+{ "writerId": "lane-style-compliance-r1", "status": "done", "updatedAt": "2026-05-09T14:05:10Z", "items": [] }
 ```
 
 Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` reads every writer file's `status`/`updatedAt`/item summaries to report which writers are still `running`, which have gone stale (`stalledWriters`), and which expected writers never wrote a file at all (`missingWriters`). A writer file that exists but cannot be parsed is listed in `unreadableWriters`; when that writer is expected it is also listed in `stalledWriters`, because it can never report `done`. All three lists sit under the output's `writers` object. The next `evidence_record` call for that writer replaces the unreadable file.
@@ -389,7 +397,7 @@ Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` 
 1. On a genuinely new run (no active run for the branch, and not a `resume: true` call), `plan_prepare(...)` writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent: { userPrompt, timestamp }` through `state.Write`, which prunes prior `plan-<branchSlug>-*.json` files for the same branch — **except** a sibling run whose `planIntegrity.done` marker is already set, which is kept (see [Evaluate, Don't Delete](#evaluate-dont-delete) below). It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs the same way (`state.PruneEvidenceDirs`, same done-run exception). When the guardrail config read succeeds, the same call then writes the state file a second time, to add `guardrailCounts` (see [guardrailCounts](#guardrailcounts)).
 2. The first `resolveTemplate: true` call for that run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags). Every `plan_prepare` call without `resume: true` (the first call and the `resolveTemplate` call) also writes `guardrailCounts` again, in a second `state.Write`, when the guardrail config read succeeds.
 3. A `resume: true` call does not create or prune anything, and `plan_prepare` itself writes nothing (not even `guardrailCounts`). After the call, the `record-mcp-invocation` hook can still write `sessionId` (see the `sessionId` row above). The call reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
-4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place, atomically; `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically; `plan_mark({ marker: "review-outcome", data })` replaces `reviewOutcome` in-place, atomically; `plan_mark({ marker: "guardrailResults", data })` and `plan_mark({ marker: "criticalDecisions", data })` append their array payload to their own top-level key (`guardrailResults`, `criticalDecisions`). Before each of these writes, every `plan_mark` call also refreshes `planTiming` and rewrites `planFilePath` as an absolute, cleaned path (`refreshPlanTiming`; skipped when `skillInvoked` or `planFilePath` is missing, or the plan file cannot be read). Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
+4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place and, in the same atomic write, adds the first `{ step, iteration, at }` of each step and iteration to `stepTimes` (max 64 entries; at the limit, or when `stepTimes` is not a list, it adds no entry and returns a warning — see [stepTimes](#steptimes)); `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically; `plan_mark({ marker: "review-outcome", data })` replaces `reviewOutcome` in-place, atomically; `plan_mark({ marker: "guardrailResults", data })` and `plan_mark({ marker: "criticalDecisions", data })` append their array payload to their own top-level key (`guardrailResults`, `criticalDecisions`). Before each of these writes, every `plan_mark` call also refreshes `planTiming` and rewrites `planFilePath` as an absolute, cleaned path (`refreshPlanTiming`; skipped when `skillInvoked` or `planFilePath` is missing, or the plan file cannot be read). Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
 
 ### Evaluate, Don't Delete
 
