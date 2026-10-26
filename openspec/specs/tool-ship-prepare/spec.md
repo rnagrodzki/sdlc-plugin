@@ -68,27 +68,28 @@ Unless `skipConfigCheck` is `true`, the tool SHALL check the project config vers
 - **THEN** `errors` holds the `config-version:` entry and no GC runs
 
 ### Requirement: Flag merge precedence
-The tool SHALL resolve each flag from input, then config `[ship]`, then the built-in default, and SHALL record the winning tier per key in `sources`.
+The tool SHALL resolve each flag from input, then the `[ship]` section of the local files, then the built-in default, and SHALL record the winning tier per key in `sources`.
 
 | Flag key | Precedence | Default |
 |---|---|---|
-| `steps` | non-empty `steps` input (`cli`) > `quick:true` → the `[ship.quick]` table (`quick`) > the `[ship.steps]` table (`config`) > default | `["execute","commit","review","archive-openspec","pr","learnings-commit"]` |
-| `auto`, `draft` | input `true` (`cli`) > config bool > default | `false` |
+| `steps` | non-empty `steps` input (`cli`) > `quick:true` → the `[ship.quick]` table (`quick`) > the `[ship.steps]` table (`local`) > default | `["execute","commit","review","archive-openspec","pr","learnings-commit"]` |
+| `auto`, `draft` | input `true` (`cli`) > config bool (`local`) > default | `false` |
 | `quality` | input only; key omitted when not given | none |
 | `bump` | see the bump requirement | `"patch"` |
-| `reviewThreshold` | config string > default | `"info"` |
-| `rebase` | input string > config (`true`→`"auto"`, `false`→`"skip"`, string verbatim, any other type passed through) > default | `"auto"` |
-| `verifyPipelineTimeout` | config number > default | `1200` |
-| `verifyPipelineInterval` | config number > default | `60` |
-| `verifyPipelineMaxIterations` | config number > default | `3` |
-| `awaitRemoteReviewTimeout` | config number > default | `600` |
-| `awaitRemoteReviewInterval` | config number > default | `60` |
-| `awaitRemoteReviewers` | non-empty config array > default | `["copilot"]` |
-| `executeWaveTimeout` | config number > default | `1800` |
-| `executeWaveInterval` | config number > default | `60` |
-| `executeCommitWaves` | config `execute.commitWaves` bool > default | `true` |
+| `reviewThreshold` | config string (`local`) > default | `"info"` |
+| `rebase` | input string > config (`true`→`"auto"`, `false`→`"skip"`, string verbatim, any other type passed through) (`local`) > default | `"auto"` |
+| `verifyPipelineTimeout` | config number (`local`) > default | `1200` |
+| `verifyPipelineInterval` | config number (`local`) > default | `60` |
+| `verifyPipelineMaxIterations` | config number (`local`) > default | `3` |
+| `awaitRemoteReviewTimeout` | config number (`local`) > default | `600` |
+| `awaitRemoteReviewInterval` | config number (`local`) > default | `60` |
+| `awaitRemoteReviewers` | non-empty config array (`local`) > default | `["copilot"]` |
+| `executeWaveTimeout` | config number (`local`) > default | `1800` |
+| `executeWaveInterval` | config number (`local`) > default | `60` |
+| `executeCommitWaves` | `[ship]` `execute.commitWaves` bool (`local`) > default | `true` |
 
-- `sources` values: `cli`, `quick`, `config`, `default`, plus the three bump-policy values below.
+- `sources` values: `cli`, `quick`, `local`, `default`, plus the three bump-policy values below.
+- `local` marks a value from the `[ship]` section of `~/.sdlc/local.toml` merged with `.sdlc-v2/local.toml` (the project file wins per key). `sources` cannot tell which of the two files set it.
 - A non-boolean `execute.commitWaves` sets `flags.commitWavesInvalidType:true` and keeps the default.
 - `[ship.steps]` and `[ship.quick]` are tables of step name → `true` or `false`. The table can also be an inline table under `[ship]`, for example `steps = { harden = true }`.
 - In the `[ship.steps]` table, a step that the table does not name uses its default. In the `[ship.quick]` table, a step that the table does not name is off.
@@ -113,7 +114,7 @@ flowchart TD
 #### Scenario: Steps from config
 - **WHEN** config has `[ship.steps]` with `commit = true`, `review = true`, `execute = false`, `archive-openspec = false`, `pr = false`, `learnings-commit = false`, and the input has no `steps`
 - **THEN** `flags.steps` is `["commit","review"]`
-- **AND** `sources.steps` is `"config"`
+- **AND** `sources.steps` is `"local"`
 
 #### Scenario: Defaults with no config
 - **WHEN** no `[ship]` section exists and the input sets no flags
@@ -122,11 +123,16 @@ flowchart TD
 #### Scenario: Malformed rebase config passes through
 - **WHEN** config `[ship]` sets `rebase` to a number
 - **THEN** `flags.rebase` holds that number
-- **AND** `sources.rebase` is `"config"`
+- **AND** `sources.rebase` is `"local"`
 
 #### Scenario: reviewThreshold from config
 - **WHEN** config `[ship]` sets `reviewThreshold = "low"`
-- **THEN** `flags.reviewThreshold` is `"low"` and `sources.reviewThreshold` is `"config"`
+- **THEN** `flags.reviewThreshold` is `"low"` and `sources.reviewThreshold` is `"local"`
+
+#### Scenario: Draft from the local file
+- **WHEN** `.sdlc-v2/local.toml` `[ship]` sets `draft = true`
+- **AND** the input has no `draft`
+- **THEN** `flags.draft` is `true` and `sources.draft` is `"local"`
 
 #### Scenario: Step table fills defaults
 - **WHEN** config has `[ship.steps]` with only `harden = true`
@@ -142,13 +148,14 @@ The tool SHALL resolve `bump` as input > config `ship.bump` > `"patch"`, then ap
 
 | Step | Rule | `sources.bump` |
 |---|---|---|
-| 1 | `bump` input wins; else config `ship.bump`; else `"patch"` | `cli` / `config` / `default` |
+| 1 | `bump` input wins; else config `ship.bump`; else `"patch"` | `cli` / `local` / `default` |
 | 2 | `version.preRelease` matching `^[a-z][a-z0-9]*$` replaces a non-`cli` bump | `config (version.preRelease)` |
 | 3 | `preReleasePolicy: "always-rc"` replaces any non-RC bump with `"rc"`, CLI included | `config (version.preReleasePolicy)`, or `config (version.preReleasePolicy enforced over cli)` when it replaced a CLI value |
 | 3 | `preReleasePolicy: "default-rc"` replaces a non-RC bump with `"rc"` only when the bump did not come from input | `config (version.preReleasePolicy)` |
 
 - A bump counts as RC when it is `rc` or any label matching `^[a-z][a-z0-9]*$` other than `major`, `minor`, `patch`.
 - `flags.bump` is never empty.
+- `ship.bump` comes from the `[ship]` section of the local files. `version.*` comes from `.sdlc-v2/config.toml`, so its labels keep the `config (version.…)` form.
 
 #### Scenario: always-rc overrides CLI bump
 - **WHEN** the call passes `bump:"minor"` and config sets `version.preReleasePolicy = "always-rc"`
@@ -172,6 +179,17 @@ The tool SHALL resolve `bump` as input > config `ship.bump` > `"patch"`, then ap
 #### Scenario: Other policy values do nothing
 - **WHEN** config sets `version.preReleasePolicy = "continue-rc"` and nothing else
 - **THEN** `flags.bump` is `"patch"` and `sources.bump` is `"default"`
+
+#### Scenario: Bump from the local file
+- **WHEN** `.sdlc-v2/local.toml` `[ship]` sets `bump = "minor"`
+- **AND** the input has no `bump` and no `version.preRelease` or `version.preReleasePolicy` is set
+- **THEN** `flags.bump` is `"minor"` and `sources.bump` is `"local"`
+
+#### Scenario: preRelease wins over a local bump
+- **WHEN** `.sdlc-v2/local.toml` `[ship]` sets `bump = "minor"`
+- **AND** `.sdlc-v2/config.toml` sets `version.preRelease = "rc"`
+- **THEN** `flags.bump` is `"rc"`
+- **AND** `sources.bump` is `"config (version.preRelease)"`
 
 ### Requirement: Pipeline validation
 The tool SHALL collect validation problems into `errors` and `warnings`, and SHALL NOT create a state file when `errors` is non-empty.
@@ -346,7 +364,7 @@ The tool SHALL compute `flags.executeDispatchArgs` as the argument string for th
 ```
 
 - `--quality` appears only when `quality` was given.
-- `--commit-waves` appears only when `sources.executeCommitWaves` is `"config"`.
+- `--commit-waves` appears only when `sources.executeCommitWaves` is `"local"`.
 
 #### Scenario: Quality absent
 - **WHEN** config sets `executeWaveTimeout = 900` and `executeWaveInterval = 30`, and the input has no `quality`
@@ -359,6 +377,7 @@ The tool SHALL compute `flags.executeDispatchArgs` as the argument string for th
 #### Scenario: commitWaves configured
 - **WHEN** config `[ship]` sets `execute.commitWaves = false` and nothing else
 - **THEN** `flags.executeDispatchArgs` is `"--wave-timeout 1800 --wave-interval 60 --commit-waves false"`
+- **AND** `sources.executeCommitWaves` is `"local"`
 
 #### Scenario: commitWaves not configured
 - **WHEN** config `[ship]` has no `execute.commitWaves`

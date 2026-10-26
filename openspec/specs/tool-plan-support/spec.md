@@ -353,11 +353,12 @@ The evidence actions SHALL store one run's evidence under `<main root>/.sdlc-v2/
 
 - A `runId` with a path separator or `..` is rejected before any file is read.
 - Any `DomainError` from an evidence action leaves every file under `.sdlc-v2/runs/` unchanged.
+- The evidence actions, `plan_mark` and `plan_prepare` return the same class and message for the same `runId` state.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | `runId` empty | `DomainError` | `runId is required for <action>` / pass runId from plan_prepare's runId output |
-| `runId` invalid or run state file absent | `DomainError` | `plan run <runId> not found` / call `plan_prepare({resume:true, resolveTemplate:true})` and use its runId |
+| `runId` invalid or run state file absent | `DomainError` | `plan run <runId> not found` / `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId, no resume and no resolveTemplate to start a new run.` |
 | Run state file unreadable or not JSON | `InfraError` | `plan run <runId> state read failed` / fix or delete the state file, call plan_prepare again |
 | OS read failure in the evidence directory | `InfraError` | `evidence read failed: <path>` / make sure `<runId>.evidence/` is a writable directory |
 | OS write failure in the evidence directory | `InfraError` | `evidence write failed: <path>` / same as above |
@@ -370,6 +371,11 @@ The evidence actions SHALL store one run's evidence under `<main root>/.sdlc-v2/
 #### Scenario: Evidence directory is a regular file
 - **WHEN** `<runId>.evidence` exists as a regular file
 - **THEN** each evidence action returns `InfraError` with a message starting `evidence read failed: `
+
+#### Scenario: Not-found suggestion names this session's run
+- **WHEN** `evidence_digest` is called with the `runId` of a deleted run
+- **THEN** the tool returns `DomainError` `plan run <runId> not found`
+- **AND** the suggestion starts with `Pass the runId that plan_prepare returned in this session.`
 
 ### Requirement: evidence_record upsert
 The `evidence_record` action SHALL upsert `items` into `<writerId>.json` by item `id`: an existing id is replaced in place as a whole item, and a new id is appended in input order.
@@ -545,6 +551,7 @@ Without `statusOnly` the `evidence_digest` action SHALL also return a `digest` s
 - Items of unreadable writer files are left out of the index.
 - `summary` is `<runId> — step <step>, iteration <i>; writers: <d> done, <r> running, <m> missing, <s> stalled[, <u> unreadable]; <n> items; <c> custom instructions.` Step defaults to `0` without a checkpoint.
 - `next` starts with `If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first` and names `continue at step <step> (iteration <i>)`.
+- `next` says: when lanes and lensReviewers are not in context, call `plan_prepare({resume:true, resolveTemplate:true, skipConfigCheck:true, runId:"<runId>"})` first, with the `runId` of this call.
 - When writers are missing or stalled, `next` ends with `Missing: <list>. Stalled: <list>. Wait one poll cycle (evidence_digest statusOnly); if a writer is still listed, re-dispatch it or force-progress past it.`
 
 #### Scenario: Digest hides bodies
@@ -555,6 +562,10 @@ Without `statusOnly` the `evidence_digest` action SHALL also return a `digest` s
 #### Scenario: Resume point from checkpoint
 - **WHEN** the run checkpoint has step `6.5` and iteration 2
 - **THEN** `next` contains `continue at step 6.5 (iteration 2)`
+
+#### Scenario: Resume call names the run
+- **WHEN** `evidence_digest` is called with `runId` `plan-main-20261026T084445Z`
+- **THEN** `next` contains `plan_prepare({resume:true, resolveTemplate:true, skipConfigCheck:true, runId:"plan-main-20261026T084445Z"})`
 
 #### Scenario: Index cap
 - **WHEN** the run holds 201 items

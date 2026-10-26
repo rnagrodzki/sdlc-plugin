@@ -346,6 +346,7 @@ The skill SHALL ask for approval before a high-risk wave unless effective auto o
 
 - After a `skip`, a later task that depends on a skipped task is recorded with `task-fail` and `skippedDependency: true` instead of being dispatched.
 - The final report lists every skipped task as not implemented.
+- A saved setting is a deciding source with the label `local` (a value from `.sdlc-v2/local.toml` or `~/.sdlc/local.toml`) or `config`. Either label prints the saved-setting warning.
 
 #### Scenario: High-risk wave, interactive
 - **WHEN** a wave is high-risk
@@ -366,6 +367,11 @@ The skill SHALL ask for approval before a high-risk wave unless effective auto o
 #### Scenario: Auto-approved from a saved config file
 - **WHEN** a high-risk wave proceeds without a prompt
 - **AND** `sources.highRiskAutoApprove` or `sources.auto` is `"config"`
+- **THEN** before dispatch the skill prints a line starting `WARNING: high-risk wave <N> auto-approved from .sdlc-v2/local.toml`
+
+#### Scenario: Auto-approved from a local file
+- **WHEN** a high-risk wave proceeds without a prompt
+- **AND** `sources.highRiskAutoApprove` or `sources.auto` is `"local"`
 - **THEN** before dispatch the skill prints a line starting `WARNING: high-risk wave <N> auto-approved from .sdlc-v2/local.toml`
 
 #### Scenario: Auto-approved from a per-run source

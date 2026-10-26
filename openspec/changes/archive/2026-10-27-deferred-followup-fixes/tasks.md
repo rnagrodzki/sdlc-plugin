@@ -64,10 +64,10 @@ flowchart LR
 
 ## 8. Close #79, #80 and #81 with evidence comments
 
-- [ ] 8.1 Confirm that `gh auth status --active` shows `rnagrodzki` before any post in rnagrodzki/sdlc-plugin — verify: `gh auth status --active` <!-- ref:8-1-confirm-that-gh-auth-status-active-s-53c81d -->
-- [ ] 8.2 Close issue #79 as not planned with its evidence comment in rnagrodzki/sdlc-plugin — verify: `gh issue view 79 --repo rnagrodzki/sdlc-plugin --json state,stateReason` <!-- ref:8-2-close-issue-79-as-not-planned-with-i-96d4ab -->
-- [ ] 8.3 Close issue #80 as not planned with its evidence comment in rnagrodzki/sdlc-plugin — verify: `gh issue view 80 --repo rnagrodzki/sdlc-plugin --json state,stateReason` <!-- ref:8-3-close-issue-80-as-not-planned-with-i-2f1e88 -->
-- [ ] 8.4 Close issue #81 as not planned with its evidence comment in rnagrodzki/sdlc-plugin — verify: `gh issue view 81 --repo rnagrodzki/sdlc-plugin --json state,stateReason` <!-- ref:8-4-close-issue-81-as-not-planned-with-i-dc35b3 -->
+- [x] 8.1 Confirm that `gh auth status --active` shows `rnagrodzki` before any post in rnagrodzki/sdlc-plugin — verify: `gh auth status --active` <!-- ref:8-1-confirm-that-gh-auth-status-active-s-53c81d -->
+- [x] 8.2 Close issue #79 as not planned with its evidence comment in rnagrodzki/sdlc-plugin — verify: `gh issue view 79 --repo rnagrodzki/sdlc-plugin --json state,stateReason` <!-- ref:8-2-close-issue-79-as-not-planned-with-i-96d4ab -->
+- [x] 8.3 Close issue #80 as not planned with its evidence comment in rnagrodzki/sdlc-plugin — verify: `gh issue view 80 --repo rnagrodzki/sdlc-plugin --json state,stateReason` <!-- ref:8-3-close-issue-80-as-not-planned-with-i-2f1e88 -->
+- [x] 8.4 Close issue #81 as not planned with its evidence comment in rnagrodzki/sdlc-plugin — verify: `gh issue view 81 --repo rnagrodzki/sdlc-plugin --json state,stateReason` <!-- ref:8-4-close-issue-81-as-not-planned-with-i-dc35b3 -->
 
 ## 9. Keep a live plan run when another run on the branch writes
 
