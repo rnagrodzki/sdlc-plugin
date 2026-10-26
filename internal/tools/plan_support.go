@@ -1765,11 +1765,12 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 }
 
 // repairPreplanHeadings reads the existing topic file, adds each absent section
-// heading (addPreplanHeadings) and writes the result with preplanWriteBytes. It
-// returns the added headings, which is an empty non-nil list when the file has
-// every heading; then it writes nothing. A read error comes from
-// readPreplanTopic. A write error is an InfraError, and the file stays as it
-// was. dir is the topic folder, named in the write Suggestion.
+// heading (addPreplanHeadings) and writes the result as a temp file that it
+// renames over the topic file. It returns the added headings, which is an
+// empty non-nil list when the file has every heading; then it writes nothing.
+// A read error comes from readPreplanTopic. A write error is an InfraError, and
+// the file stays as it was. dir is the topic folder, named in the write
+// Suggestion.
 func repairPreplanHeadings(action, file, dir string) ([]string, error) {
 	data, err := readPreplanTopic(action, file)
 	if err != nil {
