@@ -2587,9 +2587,10 @@ func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
 // duration always reflects the last edit to the plan document — never the
 // time of the marker call itself (a "done" call minutes after the last edit
 // still reports the edit time). The "done" marker additionally appends a
-// durable history record, since the Stop hook deletes the plan state file
-// once "done" is observed (see docs/plan-architecture.md's Lifecycle
-// section) — without this, the timing would be lost the moment the run ends.
+// durable history record, since ship's cleanup step or the GC TTL sweep
+// deletes the plan state file later (see docs/plan-architecture.md's
+// Lifecycle section) — without this, the timing would be lost when the run
+// file goes.
 // ---------------------------------------------------------------------------
 
 // refreshPlanTiming updates st.Data["planTiming"] ({startedAt,
@@ -2927,7 +2928,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
 		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan, plus gateChecks (the Step 3 gate checks that start no sub-agent). "+
-			"Writes the plan state file and <runId>.evidence/guardrails.md and style-guide.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes the older runs of the branch that are not done, not written in the last 24 hours and not stamped by another session, with their evidence. Optional: resume (post-compact recovery; reuses the run, implies resolveTemplate, and fails when none exists); runId (the runId of the first call; a resume or resolveTemplate call reuses that run, not the newest run of the branch; a first call ignores it). A resume or resolveTemplate call with runId returns DomainError 'plan run <runId> not found' when the run does not exist, DomainError 'plan run <runId> is done' for a done run, and InfraError for an unreadable state file; it never starts a new run. Returns runId, guardrailsFile, styleGuideFile and next. A failed state read, state write, guardrails write or style guide write returns an infrastructure error; the evidence cleanup is best-effort.",
+			"Writes the plan state file and <runId>.evidence/guardrails.md and style-guide.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes the older runs of the branch that are not done, not written in the last 24 hours and not stamped by another session, with their evidence. Optional: resume (post-compact recovery; reuses the run, implies resolveTemplate, and fails when none exists); runId (the runId of the first call; a resume or resolveTemplate call reuses that run, not the newest run of the branch; a first call ignores it). A resume or resolveTemplate call with runId returns DomainError 'plan run <runId> not found' when the run does not exist, DomainError 'plan run <runId> is done' for a done run, DomainError 'plan run <runId> has no skillInvoked marker' for a run that is not active, and InfraError for an unreadable state file; it never starts a new run. Returns runId, guardrailsFile, styleGuideFile and next. A failed state read, state write, guardrails write or style guide write returns an infrastructure error; the evidence cleanup is best-effort.",
 		mcpserver.Annotations{
 			Title:      "Prepare plan state and template",
 			ReadOnly:   true,

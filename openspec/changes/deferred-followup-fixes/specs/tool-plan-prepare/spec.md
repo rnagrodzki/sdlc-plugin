@@ -187,10 +187,11 @@ The tool SHALL return these tool errors and SHALL NOT return a partial payload w
 | `guardrails.md` cannot be written | `InfraError` | `guardrails file write failed: <path>` / make `<runId>.evidence/` writable |
 | `resume` with no active run | `DomainError` | `no active plan run on branch <branch>` / `call plan_prepare without resume to start a new plan run` |
 | `resume` or `resolveTemplate` with a `runId` whose state file cannot be read or is not JSON | `InfraError` | `plan run <runId> state read failed` / `the plan state file is unreadable or corrupt: fix its permissions or delete it, then call plan_prepare again` |
-| `resume` or `resolveTemplate` with a `runId` that is invalid or has no state file | `DomainError` | `plan run <runId> not found` / `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId to start a new run.` |
-| `resume` or `resolveTemplate` with the `runId` of a done run | `DomainError` | `plan run <runId> is done` / `Start a new plan: call plan_prepare with no runId and no resume.` |
+| `resume` or `resolveTemplate` with a `runId` that is invalid or has no state file | `DomainError` | `plan run <runId> not found` / `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId, no resume and no resolveTemplate to start a new run.` |
+| `resume` or `resolveTemplate` with the `runId` of a done run | `DomainError` | `plan run <runId> is done` / `Start a new plan: call plan_prepare with no runId, no resume and no resolveTemplate.` |
+| `resume` or `resolveTemplate` with a `runId` of a run that has no `skillInvoked` marker | `DomainError` | `plan run <runId> has no skillInvoked marker` / `Start a new plan: call plan_prepare with no runId, no resume and no resolveTemplate.` |
 
-- The `runId` checks run in the table order above: read failure, then not found, then done.
+- The `runId` checks run in the table order above: read failure, then not found, then done, then no `skillInvoked` marker.
 - `plan_prepare`, `plan_mark` and `plan_support` `evidence_*` return the same class and message for the same `runId` state, except that only `plan_prepare` rejects a done run.
 
 #### Scenario: Runs path is a file on a first call

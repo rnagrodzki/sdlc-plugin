@@ -932,7 +932,7 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 
 When invoking `error-report`, provide:
 - **Skill**: received-review
-- **Step**: Step 12 — REPLY (posting GitHub thread replies, only after user consent or pre-approval in Step 10)
+- **Step**: Step 12 — REPLY (posting GitHub thread replies, only after the Step 12 reply prompt or under --auto)
 - **Operation**: `gh api` call to post comment reply
 - **Error**: HTTP status + error message from above
 - **Suggested investigation**: Check `gh auth status`; verify PR number is correct and accessible; confirm repo permissions

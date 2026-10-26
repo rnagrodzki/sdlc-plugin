@@ -454,7 +454,7 @@ type PruneQuery struct {
 	Prefix     string // "plan", "ship" or "execute"
 	BranchSlug string // SlugifyBranch output
 	SelfPath   string // the writer's own file; "" (before Init) excludes nothing
-	SessionID  string // the writer's sessionId; "" disables the session keep rule
+	SessionID  string // the writer's sessionId; "" counts as different from every stamped sibling (plan runs: rule 3 keeps them all)
 }
 
 // PruneTargets returns the absolute paths of the <Prefix>-<BranchSlug>-*.json

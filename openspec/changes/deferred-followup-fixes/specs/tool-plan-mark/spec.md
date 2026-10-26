@@ -122,7 +122,7 @@ The tool SHALL return these errors in addition to the checkpoint data errors.
 | State file lookup fails | `InfraError` | `find plan state file: <cause>` / check read permission |
 | No state file for the branch | `DomainError` | `no plan state file found for branch "<branch>"; run plan_prepare first` / stay on the branch `plan_prepare` ran on |
 | `runId` state file cannot be read or is not JSON | `InfraError` | `plan run <runId> state read failed` / `the plan state file is unreadable or corrupt: fix its permissions or delete it, then call plan_prepare again` |
-| `runId` is invalid (not a bare `plan-` run ID) or has no state file | `DomainError` | `plan run <runId> not found` / `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId to start a new run.` |
+| `runId` is invalid (not a bare `plan-` run ID) or has no state file | `DomainError` | `plan run <runId> not found` / `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId, no resume and no resolveTemplate to start a new run.` |
 | State file write fails | `InfraError` | `write plan state file: <cause>` / check write permission and disk space |
 
 #### Scenario: Not a git repository

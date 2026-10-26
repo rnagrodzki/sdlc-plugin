@@ -21,7 +21,7 @@ The evidence actions SHALL store one run's evidence under `<main root>/.sdlc-v2/
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | `runId` empty | `DomainError` | `runId is required for <action>` / pass runId from plan_prepare's runId output |
-| `runId` invalid or run state file absent | `DomainError` | `plan run <runId> not found` / `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId to start a new run.` |
+| `runId` invalid or run state file absent | `DomainError` | `plan run <runId> not found` / `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId, no resume and no resolveTemplate to start a new run.` |
 | Run state file unreadable or not JSON | `InfraError` | `plan run <runId> state read failed` / fix or delete the state file, call plan_prepare again |
 | OS read failure in the evidence directory | `InfraError` | `evidence read failed: <path>` / make sure `<runId>.evidence/` is a writable directory |
 | OS write failure in the evidence directory | `InfraError` | `evidence write failed: <path>` / same as above |
