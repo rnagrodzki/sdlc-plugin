@@ -2439,6 +2439,9 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if out.AddedSections == nil || len(*out.AddedSections) != 0 {
 			t.Errorf("AddedSections = %v, want an empty non-nil list for a new file", out.AddedSections)
 		}
+		if out.EmptySections != nil {
+			t.Errorf("EmptySections = %v, want unset for preplan_context", out.EmptySections)
+		}
 		got, err := os.ReadFile(wantFile)
 		if err != nil {
 			t.Fatalf("read topic file: %v", err)
@@ -3497,6 +3500,12 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 	withLine := func(line string) string {
 		return strings.Replace(preplanSkeletonFor("auth flow"), startedLine, startedLine+"\n"+line+"\n", 1)
 	}
+	// A new topic file holds 7 empty sections: the summary and next name them.
+	const (
+		skeletonEmpty = " Empty sections: ## Goal, ## Problem and benefit, ## Users and effect, ## Risk if wrong, ## Non-goals, ## Flows, ## Decisions."
+		skeletonNext  = "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table." +
+			" emptySections lists 7 empty section(s). The Step 4 route table of the skill picks the next step."
+	)
 
 	t.Run("writes the check line with 53 guardrails, then replaces it", func(t *testing.T) {
 		root := t.TempDir()
@@ -3514,11 +3523,14 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		if out.PreplanFile != file {
 			t.Errorf("PreplanFile = %q, want %q", out.PreplanFile, file)
 		}
-		if want := "Added the Guardrail check line to 2026-10-12-auth-flow.md."; out.Summary != want {
+		if want := "Added the Guardrail check line to 2026-10-12-auth-flow.md." + skeletonEmpty; out.Summary != want {
 			t.Errorf("Summary = %q, want %q", out.Summary, want)
 		}
-		if want := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."; out.Next != want {
-			t.Errorf("Next = %q, want %q", out.Next, want)
+		if out.Next != skeletonNext {
+			t.Errorf("Next = %q, want %q", out.Next, skeletonNext)
+		}
+		if out.EmptySections == nil || !reflect.DeepEqual(*out.EmptySections, preplanHeadings(preplanSections...)) {
+			t.Errorf("EmptySections = %v, want the 7 headings of a skeleton file", out.EmptySections)
 		}
 		if out.PreplanCreated != nil || out.Guardrails != nil {
 			t.Errorf("PreplanCreated = %v, Guardrails = %v, want both unset", out.PreplanCreated, out.Guardrails)
@@ -3533,7 +3545,7 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		if out.GuardrailCheckLine != second {
 			t.Errorf("second GuardrailCheckLine = %q, want %q", out.GuardrailCheckLine, second)
 		}
-		if want := "Replaced the Guardrail check line of 2026-10-12-auth-flow.md. Old line: " + want; out.Summary != want {
+		if want := "Replaced the Guardrail check line of 2026-10-12-auth-flow.md. Old line: " + want + skeletonEmpty; out.Summary != want {
 			t.Errorf("second Summary = %q, want %q", out.Summary, want)
 		}
 		wantPreplanBytes(t, file, withLine(second))
@@ -3577,7 +3589,7 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		if strings.ContainsAny(out.GuardrailCheckLine, "\r\n") || strings.HasSuffix(out.GuardrailCheckLine, "..") {
 			t.Errorf("GuardrailCheckLine = %q, want one line with one final period", out.GuardrailCheckLine)
 		}
-		if want := "Added the Guardrail check line to 2026-10-12-auth-flow.md. Guardrails unavailable: " + w + "."; out.Summary != want {
+		if want := "Added the Guardrail check line to 2026-10-12-auth-flow.md. Guardrails unavailable: " + w + "." + skeletonEmpty; out.Summary != want {
 			t.Errorf("Summary = %q, want %q", out.Summary, want)
 		}
 		wantPreplanBytes(t, file, withLine(want))
@@ -3694,12 +3706,206 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		if err != nil {
 			t.Fatalf("preplan_check: %v", err)
 		}
-		want := "Replaced the Guardrail check line of auth-flow.md. Old line: **Guardrail check:** old 2 more Guardrail check line(s) stay in the file: delete them by hand."
+		want := "Replaced the Guardrail check line of auth-flow.md. Old line: **Guardrail check:** old 2 more Guardrail check line(s) stay in the file: delete them by hand." + skeletonEmpty
 		if out.Summary != want {
 			t.Errorf("Summary = %q, want %q", out.Summary, want)
 		}
 		wantPreplanBytes(t, file, strings.Replace(content, "**Guardrail check:** old", out.GuardrailCheckLine, 1))
 	})
+
+	t.Run("every section has content: emptySections is none and next stays", func(t *testing.T) {
+		root := t.TempDir()
+		file := writePreplanTopic(t, root, "auth-flow.md", preplanTopicWithBodies(nil))
+		out, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
+		if err != nil {
+			t.Fatalf("preplan_check: %v", err)
+		}
+		if want := "Added the Guardrail check line to auth-flow.md. Empty sections: none."; out.Summary != want {
+			t.Errorf("Summary = %q, want %q", out.Summary, want)
+		}
+		if want := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."; out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+		if out.EmptySections == nil || len(*out.EmptySections) != 0 {
+			t.Errorf("EmptySections = %v, want an empty non-nil list", out.EmptySections)
+		}
+		raw, err := json.Marshal(out)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if !strings.Contains(string(raw), `"emptySections":[]`) {
+			t.Errorf("output JSON = %s, want an emptySections field with an empty list", raw)
+		}
+		got, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if strings.Count(string(got), "**Guardrail check:** ") != 1 {
+			t.Errorf("topic file =\n%s\nwant one check line", got)
+		}
+	})
+
+	t.Run("2 empty sections are named in the summary and counted in next", func(t *testing.T) {
+		root := t.TempDir()
+		writePreplanTopic(t, root, "auth-flow.md", preplanTopicWithBodies(map[string]string{"Risk if wrong": "\n", "Non-goals": " \t\n"}))
+		out, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
+		if err != nil {
+			t.Fatalf("preplan_check: %v", err)
+		}
+		if want := "Added the Guardrail check line to auth-flow.md. Empty sections: ## Risk if wrong, ## Non-goals."; out.Summary != want {
+			t.Errorf("Summary = %q, want %q", out.Summary, want)
+		}
+		want := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table." +
+			" emptySections lists 2 empty section(s). The Step 4 route table of the skill picks the next step."
+		if out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+		if want := preplanHeadings("Risk if wrong", "Non-goals"); out.EmptySections == nil || !reflect.DeepEqual(*out.EmptySections, want) {
+			t.Errorf("EmptySections = %v, want %q", out.EmptySections, want)
+		}
+	})
+
+	t.Run("a heading that the file lacks is an empty section; the call adds no heading", func(t *testing.T) {
+		root := t.TempDir()
+		content := strings.Replace(preplanTopicWithBodies(nil), "## Non-goals\n\ntext\n\n", "", 1)
+		file := writePreplanTopic(t, root, "auth-flow.md", content)
+		out, err := planSupportCore(root, root, preplanCheckIn("auth flow", 1, 0, 0))
+		if err != nil {
+			t.Fatalf("preplan_check: %v", err)
+		}
+		if want := preplanHeadings("Non-goals"); out.EmptySections == nil || !reflect.DeepEqual(*out.EmptySections, want) {
+			t.Errorf("EmptySections = %v, want %q", out.EmptySections, want)
+		}
+		got, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		if strings.Contains(string(got), "## Non-goals") {
+			t.Errorf("topic file =\n%s\nwant no Non-goals heading: only preplan_context adds headings", got)
+		}
+	})
+}
+
+// preplanTopicWithBodies returns a topic file with every preplanSections
+// section. Each body is "text", and the Decisions body is the table header
+// and one row. A body in over replaces the body of that section.
+func preplanTopicWithBodies(over map[string]string) string {
+	var b strings.Builder
+	b.WriteString("**Status:** in progress\n\n")
+	for _, name := range preplanSections {
+		body := "text\n"
+		if name == preplanDecisionsSection {
+			body = preplanDecisionsHeader + "| 1 | pick A | because |\n"
+		}
+		if v, ok := over[name]; ok {
+			body = v
+		}
+		b.WriteString(preplanHeadingPrefix + name + "\n\n" + body + "\n")
+	}
+	return b.String()
+}
+
+// TestPreplanEmptySections covers each input of the empty-list test table of
+// the plan and each rule of preplanEmptySections. Every case also runs in
+// CRLF form and with the last line end removed: the list must stay the same.
+func TestPreplanEmptySections(t *testing.T) {
+	const (
+		hdr    = preplanDecisionsHeader
+		row    = "| 1 | pick A | because |\n"
+		fenced = "```\n## Goal\n```\n"
+	)
+	all := preplanHeadings(preplanSections...)
+	except := func(names ...string) []string {
+		var out []string
+		for _, h := range all {
+			keep := true
+			for _, n := range names {
+				if h == preplanHeadingPrefix+n {
+					keep = false
+				}
+			}
+			if keep {
+				out = append(out, h)
+			}
+		}
+		return out
+	}
+	// without returns a full topic file with the heading and the body of one section removed.
+	without := func(name string) string {
+		text := preplanTopicWithBodies(nil)
+		i := strings.Index(text, preplanHeadingPrefix+name+"\n")
+		if i < 0 {
+			t.Fatalf("no %s section in the test file", name)
+		}
+		if j := strings.Index(text[i+len(preplanHeadingPrefix):], "\n"+preplanHeadingPrefix); j >= 0 {
+			return text[:i] + text[i+len(preplanHeadingPrefix)+j+1:]
+		}
+		return text[:i]
+	}
+
+	for _, tc := range []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{"an empty file", "", all},
+		{"a new skeleton file", preplanSkeletonFor("auth flow"), all},
+		{"content in every section and one Decisions row", preplanTopicWithBodies(nil), nil},
+		{"absent heading", without("Risk if wrong"), preplanHeadings("Risk if wrong")},
+		{"absent Decisions heading", without("Decisions"), preplanHeadings("Decisions")},
+		{"body of blank lines and spaces", preplanTopicWithBodies(map[string]string{"Non-goals": " \t\n\n   \n"}), preplanHeadings("Non-goals")},
+		{"text after the blank lines", preplanTopicWithBodies(map[string]string{"Flows": "\n\n  \nx\n"}), nil},
+		{"Decisions table with only the header", preplanTopicWithBodies(map[string]string{"Decisions": hdr}), preplanHeadings("Decisions")},
+		{"Decisions body with only the Smallest cut line", preplanTopicWithBodies(map[string]string{"Decisions": "Smallest cut: all of it.\n"}), preplanHeadings("Decisions")},
+		{"Decisions header and a Smallest cut line", preplanTopicWithBodies(map[string]string{"Decisions": hdr + "\nSmallest cut: all of it.\n"}), preplanHeadings("Decisions")},
+		{"Decisions with one data row", preplanTopicWithBodies(map[string]string{"Decisions": hdr + row}), nil},
+		{"Decisions last with a data row and no final blank line", "## Decisions\n\n" + hdr + row, except("Decisions")},
+		{"Decisions last with the header only and no final blank line", "## Decisions\n\n" + hdr, all},
+		{"Decisions with a Smallest cut line and one data row", preplanTopicWithBodies(map[string]string{"Decisions": hdr + row + "\nSmallest cut: all of it.\n"}), nil},
+		{"Decisions with only Dropped rows", preplanTopicWithBodies(map[string]string{"Decisions": hdr + "| 1 | Dropped: A | no |\n| 2 | Dropped: B | no |\n"}), nil},
+		{"Decisions with the separator row only", preplanTopicWithBodies(map[string]string{"Decisions": "|---|---|---|\n"}), preplanHeadings("Decisions")},
+		{"Decisions with a header and a row but no separator row", preplanTopicWithBodies(map[string]string{"Decisions": "| # | Decision | Reason |\n" + row}), nil},
+		{"Decisions with an indented row", preplanTopicWithBodies(map[string]string{"Decisions": hdr + " " + row}), preplanHeadings("Decisions")},
+		{"## Goal at byte 0 with body text", "## Goal\ntext\n", except("Goal")},
+		{"## Goal at byte 0 with no body", "## Goal\n", all},
+		{"only ### lines under Flows", preplanTopicWithBodies(map[string]string{"Flows": "### Sub one\n\n### Sub two\n"}), nil},
+		{"a fence under Flows that holds ## Goal", preplanTopicWithBodies(map[string]string{"Flows": fenced}), nil},
+		{"a fenced ## Goal is not a heading", "## Flows\n\n" + fenced, except("Flows")},
+		{"a ~~~ fence under Flows that holds ## Risk if wrong", preplanTopicWithBodies(map[string]string{"Flows": "~~~\n## Risk if wrong\n~~~\n"}), nil},
+		{"an unclosed fence under Flows swallows the next heading", preplanTopicWithBodies(map[string]string{"Flows": "```\ncode\n"}), preplanHeadings("Decisions")},
+		{"the first heading of a name counts: text first", "## Goal\ntext\n## Goal\n\n", except("Goal")},
+		{"the first heading of a name counts: blank first", "## Goal\n\n## Goal\ntext\n", all},
+		{"## Open questions is not in the list", preplanTopicWithBodies(nil) + "## Open questions\n\n", nil},
+		{"a heading with trailing spaces", strings.Replace(preplanTopicWithBodies(nil), "## Flows\n", "## Flows  \n", 1), nil},
+		{"a longer heading is another name", strings.Replace(preplanTopicWithBodies(nil), "## Flows\n", "## Flows and more\n", 1), preplanHeadings("Flows")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.want
+			if want == nil {
+				want = []string{}
+			}
+			lf := tc.in
+			crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+			for _, form := range []struct{ name, text string }{
+				{"LF", lf},
+				{"LF without the last line end", strings.TrimSuffix(lf, "\n")},
+				{"CRLF", crlf},
+				{"CRLF without the last line end", strings.TrimSuffix(crlf, "\r\n")},
+			} {
+				data := []byte(form.text)
+				got := preplanEmptySections(data)
+				if got == nil {
+					t.Errorf("%s: got a nil slice, want a non-nil slice", form.name)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s: got %q, want %q", form.name, got, want)
+				}
+				if string(data) != form.text {
+					t.Errorf("%s: preplanEmptySections changed its input", form.name)
+				}
+			}
+		})
+	}
 }
 
 // TestPreplanWarningText verifies the guardrail warning becomes one line with

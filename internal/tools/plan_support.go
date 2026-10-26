@@ -197,6 +197,9 @@ type PlanSupportOut struct {
 
 	// preplan_check (PreplanFile above is also set by this action).
 	GuardrailCheckLine string `json:"guardrailCheckLine,omitempty"` // the check line as written, with no line end
+	// EmptySections is a pointer so an empty list still renders (none) for
+	// preplan_check while every other action omits it.
+	EmptySections *[]string `json:"emptySections,omitempty" jsonschema_description:"preplan_check only: the ## headings of the topic sections that are absent or hold only blank lines, in preplanSections order. Decisions is empty when its table has no row. (none) when every section has content."`
 }
 
 // LaneResult represents the outcome of a single review lane.
@@ -304,7 +307,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. It lists the names in <main-worktree>/.sdlc-v2/preplan/ (at most 10000) and uses the one file named exactly <slug>.md or YYYY-MM-DD-<slug>.md. With no such file it creates YYYY-MM-DD-<slug>.md (the UTC date of today) with the 7-section skeleton that holds a **Started:** line (UTC, RFC 3339). It never replaces a file. With such a file it adds each section heading of the skeleton that the file lacks, after its nearest earlier section, in a temp file that it renames. It writes nothing when every heading is there. Before the read it refuses a live link to a regular file (DomainError) and a file over 8 MiB (DataError). A file that went away after the folder list returns DomainError. A failed Lstat, read or write returns InfraError and leaves the file as it was. A dangling link, a folder, a link loop, a pipe or a device at the path returns InfraError, where preplan_check returns DomainError. Two or more such files return DataError that names them; nothing is written. A folder that cannot be listed (not a missing folder), or that holds more than 10000 names, returns InfraError. Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), addedSections (the headings this call added, (none) when it added none), summary, next. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Every error carries a Suggestion. A dangling symlink on the path to the topic file returns InfraError that names the link and its missing target; nothing is written. Its Suggestion for a folder link is "Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>"; for a topic-file link it is "Remove the link, then try again: rm <link>".
-`+"- preplan_check: Write the guardrail check line of an existing topic file. Call it once at the end of each preplan Step 4, after the skill counts the proposals. Requires topic, passCount, keptCount, droppedCount (each a whole number from 0 to "+strconv.Itoa(preplanCountMax)+"). No optional fields. It finds the file as preplan_context does, never creates one, and refuses a file that is not a regular file. It reads at most "+dashboardDeleteReadMaxText+", loads the plan guardrails for the count, and replaces the first **Guardrail check:** line in the first "+strconv.Itoa(dashboardPreplanHeadMax)+" bytes, else adds one after the **Started:** line, else after the **Status:** line. The line is \"**Guardrail check:** <guardrails> guardrails, <sum> proposals: <passCount> pass, <keptCount> kept, <droppedCount> dropped. Last check: <UTC time, RFC 3339>.\" When the plan config cannot be read, the call still succeeds: the line ends with \" Guardrails unavailable: <warning>.\" and summary names the warning. It writes a temp file and renames it. Returns preplanFile, guardrailCheckLine, summary (added or replaced, the old line, and the count of other check lines that stay in the file), next. A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over "+dashboardDeleteReadMaxText+" or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was.",
+`+"- preplan_check: Write the guardrail check line of an existing topic file. Call it once at the end of each preplan Step 4, after the skill counts the proposals. Requires topic, passCount, keptCount, droppedCount (each a whole number from 0 to "+strconv.Itoa(preplanCountMax)+"). No optional fields. It finds the file as preplan_context does, never creates one, and refuses a file that is not a regular file. It reads at most "+dashboardDeleteReadMaxText+", loads the plan guardrails for the count, and replaces the first **Guardrail check:** line in the first "+strconv.Itoa(dashboardPreplanHeadMax)+" bytes, else adds one after the **Started:** line, else after the **Status:** line. The line is \"**Guardrail check:** <guardrails> guardrails, <sum> proposals: <passCount> pass, <keptCount> kept, <droppedCount> dropped. Last check: <UTC time, RFC 3339>.\" When the plan config cannot be read, the call still succeeds: the line ends with \" Guardrails unavailable: <warning>.\" and summary names the warning. It writes a temp file and renames it. Returns preplanFile, guardrailCheckLine, emptySections (the ## headings of the skeleton sections that are absent or hold only blank lines, in skeleton order. Decisions is empty when its table has no row. (none) when every section has content), summary (added or replaced, the old line, the count of other check lines that stay in the file, and the empty sections), next. A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over "+dashboardDeleteReadMaxText+" or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was.",
 		mcpserver.Annotations{
 			Title:      "Plan support and evidence store",
 			ReadOnly:   true,
@@ -1464,6 +1467,53 @@ func preplanFindSpan(spans []preplanSpan, name string) int {
 	return -1
 }
 
+// preplanEmptySections returns the "## <name>" heading of each
+// preplanSections name whose heading is absent or whose body holds only
+// blank lines, in preplanSections order. Decisions is empty when its
+// table has no data row. It returns a non-nil slice.
+//
+// preplanSectionSpans finds the headings and the fences, so this list and
+// addPreplanHeadings agree about a heading. The first heading of a name
+// counts. A blank line holds only spaces, tabs and CR.
+func preplanEmptySections(data []byte) []string {
+	spans, _ := preplanSectionSpans(data)
+	empty := []string{}
+	for _, name := range preplanSections {
+		i := preplanFindSpan(spans, name)
+		if i < 0 {
+			empty = append(empty, preplanHeadingPrefix+name)
+			continue
+		}
+		body := data[spans[i].bodyStart:spans[i].bodyEnd]
+		blank := len(bytes.TrimLeft(body, " \t\r\n")) == 0
+		if blank || (name == preplanDecisionsSection && !preplanHasDecisionRow(body)) {
+			empty = append(empty, preplanHeadingPrefix+name)
+		}
+	}
+	return empty
+}
+
+// preplanHasDecisionRow reports whether body, the body of ## Decisions, holds
+// a line that starts with "|" after the header row and the separator row. The
+// first such line is the header row. The second is the separator row when it
+// holds only "|", "-", ":", spaces, tabs and CR. Other text is not a row.
+func preplanHasDecisionRow(body []byte) bool {
+	rows := 0
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		if !bytes.HasPrefix(line, []byte("|")) {
+			continue
+		}
+		rows++
+		if rows == 2 && len(bytes.Trim(line, "|-: \t\r")) == 0 {
+			continue
+		}
+		if rows > 1 {
+			return true
+		}
+	}
+	return false
+}
+
 // preplanHeadEnd returns the offset after the line end of the last head line
 // (Status, Started or Guardrail check) that starts in preplanHead(data), or 0
 // when the head has none. A head line with no line end ends at len(data).
@@ -1877,6 +1927,9 @@ func preplanNoFileSuggestionFor(action string) string {
 //     check line in the head (no place for the line: DataError).
 //  6. preplanWriteBytes writes a temp file and renames it over the topic file
 //     (InfraError; the old file stays as it was).
+//
+// The result lists the empty sections of the bytes that step 6 wrote
+// (preplanEmptySections).
 func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	const action = preplanCheckAction
 	pass, kept, dropped, err := preplanCheckCounts(action, in)
@@ -1923,12 +1976,25 @@ func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 			Cause:      err,
 		}
 	}
+	empty := preplanEmptySections(next)
 	return PlanSupportOut{
-		Summary:            preplanCheckSummary(name, prior, warning, next),
-		Next:               "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table.",
+		Summary:            preplanCheckSummary(name, prior, warning, next, empty),
+		Next:               preplanCheckNext(empty),
 		PreplanFile:        file,
 		GuardrailCheckLine: line,
+		EmptySections:      &empty,
 	}, nil
+}
+
+// preplanCheckNext returns the Next of a successful preplan_check call. With
+// 1 or more empty sections it adds the count and points at the Step 4 route
+// table of the skill.
+func preplanCheckNext(empty []string) string {
+	next := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."
+	if len(empty) > 0 {
+		next += fmt.Sprintf(" emptySections lists %d empty section(s). The Step 4 route table of the skill picks the next step.", len(empty))
+	}
+	return next
 }
 
 // preplanCheckCounts returns the three counts of a preplan_check call. A
@@ -2060,9 +2126,10 @@ func preplanCheckLine(guardrails, pass, kept, dropped int, warning string) strin
 
 // preplanCheckSummary returns the Summary of a successful preplan_check call.
 // It says whether the line was added or replaced, and echoes the replaced
-// line. It names the guardrail warning, if any, and the number of other
-// Guardrail check lines in next that stay in the file.
-func preplanCheckSummary(name, prior, warning string, next []byte) string {
+// line. It names the guardrail warning, if any, the number of other
+// Guardrail check lines in next that stay in the file, and last the empty
+// sections (none when the list is empty).
+func preplanCheckSummary(name, prior, warning string, next []byte, empty []string) string {
 	summary := fmt.Sprintf("Added the Guardrail check line to %s.", name)
 	if prior != "" {
 		summary = fmt.Sprintf("Replaced the Guardrail check line of %s. Old line: %s", name, prior)
@@ -2073,7 +2140,10 @@ func preplanCheckSummary(name, prior, warning string, next []byte) string {
 	if stale := len(preplanGuardrailCheckRe.FindAllIndex(next, -1)) - 1; stale > 0 {
 		summary += fmt.Sprintf(" %d more Guardrail check line(s) stay in the file: delete them by hand.", stale)
 	}
-	return summary
+	if len(empty) == 0 {
+		return summary + " Empty sections: none."
+	}
+	return summary + " Empty sections: " + strings.Join(empty, ", ") + "."
 }
 
 // preplanWarningText makes the guardrail warning fit on the check line: one
