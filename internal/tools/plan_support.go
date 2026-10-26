@@ -193,13 +193,13 @@ type PlanSupportOut struct {
 	PreplanCreated *bool  `json:"preplanCreated,omitempty"` // true only when this call created the file
 	// AddedSections is a pointer so an empty list still renders (none) for
 	// preplan_context while every other action omits it.
-	AddedSections *[]string `json:"addedSections,omitempty" jsonschema_description:"preplan_context only: the ## section headings that this call added to an existing topic file, in preplanSections order. (none) when the call created the file or the file already had every heading."`
+	AddedSections *[]string `json:"addedSections,omitempty" jsonschema_description:"preplan_context only: the ## section headings that this call added to an existing topic file, in skeleton order (Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions). (none) when the call created the file or the file already had every heading."`
 
 	// preplan_check (PreplanFile above is also set by this action).
 	GuardrailCheckLine string `json:"guardrailCheckLine,omitempty"` // the check line as written, with no line end
 	// EmptySections is a pointer so an empty list still renders (none) for
 	// preplan_check while every other action omits it.
-	EmptySections *[]string `json:"emptySections,omitempty" jsonschema_description:"preplan_check only: the ## headings of the topic sections that are absent or hold only blank lines, in preplanSections order. Decisions is empty when its table has no row. (none) when every section has content."`
+	EmptySections *[]string `json:"emptySections,omitempty" jsonschema_description:"preplan_check only: the ## headings of the skeleton sections that are absent or hold only blank lines, in skeleton order (Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions). Open questions is not a skeleton section. Decisions is empty when its table has no row: no line that starts with | (after leading spaces) below the header and separator rows. (none) when every section has content."`
 }
 
 // LaneResult represents the outcome of a single review lane.
@@ -306,8 +306,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Each write sets updatedAt (UTC). A write to a writer file that has no startedAt sets startedAt to that updatedAt; later writes keep it. A file written before startedAt existed, or an unreadable file that this call replaces, gets startedAt at this later write, so its startedAt can be later than the writer's real start. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record (writerId, status, itemCount, fileBytes, briefPath, startedAt, updatedAt). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
-- preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. It lists the names in <main-worktree>/.sdlc-v2/preplan/ (at most 10000) and uses the one file named exactly <slug>.md or YYYY-MM-DD-<slug>.md. With no such file it creates YYYY-MM-DD-<slug>.md (the UTC date of today) with the 7-section skeleton that holds a **Started:** line (UTC, RFC 3339). It never replaces a file. With such a file it adds each section heading of the skeleton that the file lacks, after its nearest earlier section, in a temp file that it renames. It writes nothing when every heading is there. Before the read it refuses a live link to a regular file (DomainError) and a file over 8 MiB (DataError). A file that went away after the folder list returns DomainError. A failed Lstat, read or write returns InfraError and leaves the file as it was. A dangling link, a folder, a link loop, a pipe or a device at the path returns InfraError, where preplan_check returns DomainError. Two or more such files return DataError that names them; nothing is written. A folder that cannot be listed (not a missing folder), or that holds more than 10000 names, returns InfraError. Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), addedSections (the headings this call added, (none) when it added none), summary, next. A bad topic returns DomainError and writes nothing. A failed create returns InfraError. Every error carries a Suggestion. A dangling symlink on the path to the topic file returns InfraError that names the link and its missing target; nothing is written. Its Suggestion for a folder link is "Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>"; for a topic-file link it is "Remove the link, then try again: rm <link>".
-`+"- preplan_check: Write the guardrail check line of an existing topic file. Call it once at the end of each preplan Step 4, after the skill counts the proposals. Requires topic, passCount, keptCount, droppedCount (each a whole number from 0 to "+strconv.Itoa(preplanCountMax)+"). No optional fields. It finds the file as preplan_context does, never creates one, and refuses a file that is not a regular file. It reads at most "+dashboardDeleteReadMaxText+", loads the plan guardrails for the count, and replaces the first **Guardrail check:** line in the first "+strconv.Itoa(dashboardPreplanHeadMax)+" bytes, else adds one after the **Started:** line, else after the **Status:** line. The line is \"**Guardrail check:** <guardrails> guardrails, <sum> proposals: <passCount> pass, <keptCount> kept, <droppedCount> dropped. Last check: <UTC time, RFC 3339>.\" When the plan config cannot be read, the call still succeeds: the line ends with \" Guardrails unavailable: <warning>.\" and summary names the warning. It writes a temp file and renames it. Returns preplanFile, guardrailCheckLine, emptySections (the ## headings of the skeleton sections that are absent or hold only blank lines, in skeleton order. Decisions is empty when its table has no row. (none) when every section has content), summary (added or replaced, the old line, the count of other check lines that stay in the file, and the empty sections), next. A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over "+dashboardDeleteReadMaxText+" or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was.",
+`+preplanToolDescription(),
 		mcpserver.Annotations{
 			Title:      "Plan support and evidence store",
 			ReadOnly:   true,
@@ -366,9 +365,9 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 		return evidenceDigest(mainRoot, in)
 	case "evidence_get":
 		return evidenceGet(mainRoot, in)
-	case "preplan_context":
+	case preplanContextAction:
 		return planPreplanContext(mainRoot, in.Topic)
-	case "preplan_check":
+	case preplanCheckAction:
 		return planPreplanCheck(mainRoot, in)
 	default:
 		return PlanSupportOut{}, unknownActionError("action", in.Action,
@@ -1335,6 +1334,43 @@ func buildPreplanSkeletonTail() string {
 	return tail
 }
 
+// preplanToolDescription returns the preplan_context and preplan_check lines
+// of the plan_support tool description. Each number and the section order
+// come from the constants that the code uses (preplanSections, preplanDirMax,
+// dashboardDeleteReadMaxText, dashboardPreplanHeadMax, preplanCountMax), so
+// the text cannot go stale; TestPreplanToolDescription pins it. It is called
+// once, at registration.
+func preplanToolDescription() string {
+	sections := strconv.Itoa(len(preplanSections))
+	order := strings.Join(preplanSections, ", ")
+	dirMax := strconv.Itoa(preplanDirMax)
+	return "- preplan_context: Return the plan guardrails and the topic file path. Requires topic. No optional fields. " +
+		"It lists the names in <main-worktree>/.sdlc-v2/preplan/ (at most " + dirMax + ") and uses the one file named exactly <slug>.md or YYYY-MM-DD-<slug>.md. " +
+		"With no such file it creates YYYY-MM-DD-<slug>.md (the UTC date of today, mode 0644, O_EXCL so it never replaces a file) with the " + sections + "-section skeleton (the ## sections " + order + ", in this skeleton order) under a **Started:** line (UTC, RFC 3339). " +
+		"With such a file it adds each skeleton heading that the file lacks, after its nearest earlier section, and replaces the file by a temp file and a rename that keeps the file mode. " +
+		"When a code fence (``` or ~~~) is still open at the end of the file, it first adds a closing fence line there, so the added headings are not code, and summary names that line. " +
+		"It writes nothing when every heading is there, so a second call writes nothing. " +
+		"The repair needs no **Status:** or **Started:** line, because it only inserts headings; preplan_check needs one of those lines as the place of its check line, so it refuses such a file with DataError. " +
+		"A bad topic returns DomainError and writes nothing. A folder that cannot be listed (not a missing folder), or that holds more than " + dirMax + " names, returns InfraError. " +
+		"Two or more such files return DataError that names them; nothing is written. A failed create returns InfraError. " +
+		"A dangling symlink on the path to the topic file returns InfraError that names the link and its missing target; nothing is written. " +
+		"Its Suggestion for a folder link is \"Start a new session so the session-start hook repairs the link, or run: mkdir -p <target>\"; for a topic-file link it is \"Remove the link, then try again: rm <link>\". " +
+		"Before the read it refuses a live link, a link loop, a folder, a pipe or a device at the path with the same DomainError and Suggestion as preplan_check. " +
+		"A file over " + dashboardDeleteReadMaxText + ", or a repair that would make it larger than " + dashboardDeleteReadMaxText + ", returns DataError and writes nothing. " +
+		"A file that went away after the folder list returns DomainError. A failed Lstat, read or write returns InfraError and leaves the file as it was. Every error carries a Suggestion. " +
+		"Returns guardrails, preplanFile (absolute path), preplanCreated (true when this call created the file, false when it already existed), addedSections (the headings this call added, in skeleton order, (none) when it added none), summary, next.\n" +
+		"- preplan_check: Write the guardrail check line of an existing topic file. Call it once at the end of each preplan Step 4, after the skill counts the proposals. " +
+		"Requires topic, passCount, keptCount, droppedCount (each a whole number from 0 to " + strconv.Itoa(preplanCountMax) + "). No optional fields. " +
+		"It finds the file as preplan_context does, never creates one, and refuses a file that is not a regular file. " +
+		"It reads at most " + dashboardDeleteReadMaxText + ", loads the plan guardrails for the count, and replaces the first **Guardrail check:** line in the first " + strconv.Itoa(dashboardPreplanHeadMax) + " bytes, else adds one after the **Started:** line, else after the **Status:** line. " +
+		"The line is \"**Guardrail check:** <guardrails> guardrails, <sum> proposals: <passCount> pass, <keptCount> kept, <droppedCount> dropped. Last check: <UTC time, RFC 3339>.\" " +
+		"When the plan config cannot be read, the call still succeeds: the line ends with \" Guardrails unavailable: <warning>.\" and summary names the warning. " +
+		"It writes a temp file and renames it, and the file keeps its mode. " +
+		"Returns preplanFile, guardrailCheckLine, emptySections (the ## headings of the " + sections + " skeleton sections, " + order + ", that are absent or hold only blank lines, in skeleton order; Decisions is empty when its table has no row below the header and separator rows, where a row is a line that starts with | after its leading spaces; (none) when every section has content), " +
+		"summary (added or replaced, the old line, the count of other check lines that stay in the file, the empty sections, and a code fence that is still open at the end of the file, which makes each ## heading after it count as absent), next. " +
+		"A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over " + dashboardDeleteReadMaxText + " or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was."
+}
+
 // preplanSkeletonTail is the text of a new topic file that follows the
 // "**Started:**" line (see preplanSkeleton).
 var preplanSkeletonTail = buildPreplanSkeletonTail()
@@ -1347,32 +1383,38 @@ type preplanSpan struct {
 	bodyEnd              int // start of the next "## " line outside a fence, or len(data)
 }
 
-// preplanFenceMarkers are the line starts that open a fence. Only a line that
-// starts with the same marker closes it.
-var preplanFenceMarkers = []string{"```", "~~~"}
-
 // preplanSectionSpans returns every "## " heading of data outside a fence,
-// in file order, and openFence: the fence marker that is still open at the
-// end of data ("" when no fence is open). addPreplanHeadings and
-// preplanEmptySections read it.
+// in file order, and openFence: the fence run (for example "```" or "~~~~")
+// that is still open at the end of data ("" when no fence is open).
+// addPreplanHeadings and preplanEmptySections read it.
 //
 // The name of a span is the text after "## " with its trailing spaces, tabs
 // and CR removed. A "###" line is not a heading: it is body of the section
 // above it.
+//
+// A fence opens at a column-0 run of 3 or more backticks or tildes
+// (preplanFenceRun). It closes at a line that holds only a run of the same
+// character, at least as long as the opening run, then spaces or tabs. A fence
+// that never closes stays open to the end of data. This rule differs from
+// fenceLines (validators.go) and anyFenceLineRe (plan_gates.go) on purpose: a
+// topic file is Markdown that a person edits and a renderer shows, so the rule
+// follows the renderer. A renderer opens a fence with "~~~" too, and it shows
+// every line after an unclosed fence as code. fenceLines treats an unclosed
+// fence as no fence, so it would count a "## " line that the reader sees as
+// code as a heading.
 func preplanSectionSpans(data []byte) (spans []preplanSpan, openFence string) {
 	for start := 0; start < len(data); {
-		end := len(data) // end of the line, after its line feed
-		if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
-			end = start + i + 1
-		}
+		end := min(preplanLineEnd(data, start)+1, len(data)) // after the line feed
 		line := string(data[start:end])
+		run := preplanFenceRun(line)
 		switch {
 		case openFence != "":
-			if strings.HasPrefix(line, openFence) {
+			if run != "" && run[0] == openFence[0] && len(run) >= len(openFence) &&
+				strings.TrimRight(line[len(run):], " \t\r\n") == "" {
 				openFence = ""
 			}
-		case preplanFenceMarker(line) != "":
-			openFence = preplanFenceMarker(line)
+		case run != "":
+			openFence = run
 		case strings.HasPrefix(line, preplanHeadingPrefix):
 			if n := len(spans); n > 0 {
 				spans[n-1].bodyEnd = start
@@ -1389,34 +1431,39 @@ func preplanSectionSpans(data []byte) (spans []preplanSpan, openFence string) {
 	return spans, openFence
 }
 
-// preplanFenceMarker returns the fence marker that line starts with, or "".
-func preplanFenceMarker(line string) string {
-	for _, m := range preplanFenceMarkers {
-		if strings.HasPrefix(line, m) {
-			return m
-		}
+// preplanFenceRun returns the run of 3 or more backticks or 3 or more tildes
+// that starts line, or "" when line starts with no such run.
+func preplanFenceRun(line string) string {
+	if line == "" || (line[0] != '`' && line[0] != '~') {
+		return ""
 	}
-	return ""
+	n := 1
+	for n < len(line) && line[n] == line[0] {
+		n++
+	}
+	if n < 3 {
+		return ""
+	}
+	return line[:n]
 }
 
 // addPreplanHeadings returns data with a heading block for each
 // preplanSections name that has no heading line, and the added headings
-// ("## <name>") in preplanSections order. With no absent name it returns
-// data itself and nil. It never changes a byte of data outside the
-// inserted blocks.
+// ("## <name>") in preplanSections order. closed is the fence run of the
+// closing line that it added, or "" when it added none. With no absent name
+// it returns data itself, nil and "". It never changes a byte of data outside
+// the inserted text.
 //
 // The names go in one at a time, in list order, into the updated text. An
 // absent name goes at the end of the body of its nearest earlier present
 // name, else before the first heading, else at the end of the text. The
 // place is never before the end of the last head line (Status, Started,
 // Guardrail check) in preplanHead. A fence still open at the end of the text
-// gets a closing line before blocks that go there. The blocks use the first
-// line end of data (CRLF or LF, LF when data has none).
-func addPreplanHeadings(data []byte) (next []byte, added []string) {
-	eol := "\n"
-	if i := bytes.IndexByte(data, '\n'); i > 0 && data[i-1] == '\r' {
-		eol = "\r\n"
-	}
+// gets a closing line before blocks that go there, so the blocks are not
+// code. The inserted text uses the first line end of data (CRLF or LF, LF
+// when data has none).
+func addPreplanHeadings(data []byte) (next []byte, added []string, closed string) {
+	eol := preplanEOL(data, preplanLineEnd(data, 0))
 	next = data
 	for idx, name := range preplanSections {
 		spans, openFence := preplanSectionSpans(next)
@@ -1444,6 +1491,7 @@ func addPreplanHeadings(data []byte) (next []byte, added []string) {
 				insert += eol
 			}
 			insert += openFence + eol
+			closed = openFence
 		}
 		insert += preplanSpacing(before+insert, eol) + preplanSectionBlock(name, eol)
 
@@ -1454,7 +1502,7 @@ func addPreplanHeadings(data []byte) (next []byte, added []string) {
 		next = out
 		added = append(added, preplanHeadingPrefix+name)
 	}
-	return next, added
+	return next, added, closed
 }
 
 // preplanFindSpan returns the index of the first span named name, or -1.
@@ -1470,14 +1518,18 @@ func preplanFindSpan(spans []preplanSpan, name string) int {
 // preplanEmptySections returns the "## <name>" heading of each
 // preplanSections name whose heading is absent or whose body holds only
 // blank lines, in preplanSections order. Decisions is empty when its
-// table has no data row. It returns a non-nil slice.
+// table has no data row. empty is a non-nil slice. openFence is the fence run
+// that is still open at the end of data, or "" (see preplanSectionSpans):
+// each heading after an unclosed fence counts as absent, so the caller names
+// the open fence.
 //
 // preplanSectionSpans finds the headings and the fences, so this list and
 // addPreplanHeadings agree about a heading. The first heading of a name
 // counts. A blank line holds only spaces, tabs and CR.
-func preplanEmptySections(data []byte) []string {
-	spans, _ := preplanSectionSpans(data)
-	empty := []string{}
+func preplanEmptySections(data []byte) (empty []string, openFence string) {
+	var spans []preplanSpan
+	spans, openFence = preplanSectionSpans(data)
+	empty = []string{}
 	for _, name := range preplanSections {
 		i := preplanFindSpan(spans, name)
 		if i < 0 {
@@ -1490,21 +1542,24 @@ func preplanEmptySections(data []byte) []string {
 			empty = append(empty, preplanHeadingPrefix+name)
 		}
 	}
-	return empty
+	return empty, openFence
 }
 
 // preplanHasDecisionRow reports whether body, the body of ## Decisions, holds
-// a line that starts with "|" after the header row and the separator row. The
-// first such line is the header row. The second is the separator row when it
-// holds only "|", "-", ":", spaces, tabs and CR. Other text is not a row.
+// a table row after the header row and the separator row. A table row is a
+// line that starts with "|" after its leading spaces and tabs. The first such
+// line is the header row. The second is the separator row when
+// tableSeparatorRe (plan_gates.go) matches it: "|", an optional ":", then 3
+// or more "-". A shorter separator such as "|-|" counts as a data row. Other
+// text is not a row.
 func preplanHasDecisionRow(body []byte) bool {
 	rows := 0
 	for _, line := range bytes.Split(body, []byte("\n")) {
-		if !bytes.HasPrefix(line, []byte("|")) {
+		if !bytes.HasPrefix(bytes.TrimLeft(line, " \t"), []byte("|")) {
 			continue
 		}
 		rows++
-		if rows == 2 && len(bytes.Trim(line, "|-: \t\r")) == 0 {
+		if rows == 2 && tableSeparatorRe.Match(line) {
 			continue
 		}
 		if rows > 1 {
@@ -1522,10 +1577,9 @@ func preplanHeadEnd(data []byte) int {
 	end := 0
 	for _, re := range []*regexp.Regexp{dashboardPreplanStatusRe, dashboardPreplanStartedRe, preplanGuardrailCheckRe} {
 		for _, loc := range re.FindAllIndex(head, -1) {
-			e := len(data)
-			if i := bytes.IndexByte(data[loc[0]:], '\n'); i >= 0 {
-				e = loc[0] + i + 1
-			}
+			// The line end comes from the full data: a head line can run past
+			// the end of head.
+			e := min(preplanLineEnd(data, loc[0])+1, len(data))
 			if e > end {
 				end = e
 			}
@@ -1682,15 +1736,26 @@ func preplanSlug(action, topic string) (string, error) {
 // topic. It lists <mainRoot>/.sdlc-v2/preplan/ and uses the one file named
 // exactly <slug>.md or YYYY-MM-DD-<slug>.md (findPreplanFiles). With no such
 // file it creates YYYY-MM-DD-<slug>.md (UTC date of preplanNow) with the
-// skeleton and its Started line. It never replaces a file (O_EXCL). It adds
-// each absent section heading to an existing file (addPreplanHeadings). Two or
-// more such files return a DataError; a folder that cannot be listed, or
-// that holds more than preplanDirMax names, returns an InfraError.
-// It starts no plan run and writes no state. A bad topic returns a
-// DomainError and writes nothing; a failed create returns an InfraError. The
-// topic is trimmed once here, before preplanSlug and the file heading use it.
+// skeleton and its Started line (createPreplanFile, O_EXCL). With such a file
+// it runs repairPreplanHeadings, which reads the file (readPreplanTopic),
+// adds each absent section heading (addPreplanHeadings) and replaces the file
+// by a temp file and a rename. It starts no plan run and writes no state.
+//
+// Errors, in the order of the steps:
+//   - A bad topic: DomainError, nothing written (preplanSlug).
+//   - A folder that cannot be listed or holds more than preplanDirMax names:
+//     InfraError. Two or more matching files: DataError (preplanMatches).
+//   - A failed create, or a dangling link on the path: InfraError.
+//   - A topic path that is a link, a folder or another file that is not
+//     regular: DomainError (readPreplanTopic, the same text as preplan_check).
+//   - A file over dashboardDeleteReadMax, or a repair that would make it
+//     larger than that: DataError, nothing written.
+//   - A file that went away after the folder listing: DomainError.
+//   - A failed Lstat, read or write: InfraError, the file stays as it was.
+//
+// The topic is trimmed once here, before preplanSlug and the file heading use it.
 func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
-	const action = "preplan_context"
+	const action = preplanContextAction
 	topic = strings.TrimSpace(topic)
 	slug, err := preplanSlug(action, topic)
 	if err != nil {
@@ -1725,8 +1790,9 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 		}
 	}
 	added := []string{}
+	var closed string
 	if !created {
-		if added, err = repairPreplanHeadings(action, file, dir); err != nil {
+		if added, closed, err = repairPreplanHeadings(action, file, dir); err != nil {
 			return PlanSupportOut{}, err
 		}
 	}
@@ -1745,10 +1811,13 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 		summary += fmt.Sprintf("Created topic file %s.", name)
 	} else {
 		summary += fmt.Sprintf("Topic file %s exists.", name)
-		next = "Read preplanFile, then continue with its open questions, if any."
+		next = "Read preplanFile, then " + preplanFirstGap
 		if len(added) > 0 {
 			summary += fmt.Sprintf(" Added %d section heading(s): %s.", len(added), strings.Join(added, ", "))
-			next = fmt.Sprintf("Read preplanFile: preplan_context added %d section heading(s). Then continue with its open questions, if any.", len(added))
+			next = fmt.Sprintf("Read preplanFile: preplan_context added %d section heading(s). Then %s", len(added), preplanFirstGap)
+		}
+		if closed != "" {
+			summary += fmt.Sprintf(" Added a %s line at the end of the file to close the fence that was still open, so the added headings are not code.", closed)
 		}
 	}
 	if warning != "" {
@@ -1764,30 +1833,45 @@ func planPreplanContext(mainRoot, topic string) (PlanSupportOut, error) {
 	}, nil
 }
 
+// preplanFirstGap ends the Next of a preplan_context call on an existing
+// topic file. It names the gap order of the preplan skill (Step 3).
+const preplanFirstGap = "continue with its first gap: the first empty section, then the open questions, if any."
+
 // repairPreplanHeadings reads the existing topic file, adds each absent section
 // heading (addPreplanHeadings) and writes the result as a temp file that it
 // renames over the topic file. It returns the added headings, which is an
-// empty non-nil list when the file has every heading; then it writes nothing.
-// A read error comes from readPreplanTopic. A write error is an InfraError, and
-// the file stays as it was. dir is the topic folder, named in the write
-// Suggestion.
-func repairPreplanHeadings(action, file, dir string) ([]string, error) {
+// empty non-nil list when the file has every heading; then it writes nothing,
+// so a second call on a repaired file writes nothing. closed is the fence run
+// of the closing line that it added at the end of the file, or "".
+//
+// A read error comes from readPreplanTopic. A repaired text over
+// dashboardDeleteReadMax is a DataError and nothing is written: the next read
+// would refuse the file. A write error is an InfraError, and the file stays as
+// it was. dir is the topic folder, named in the write Suggestion.
+func repairPreplanHeadings(action, file, dir string) (added []string, closed string, err error) {
 	data, err := readPreplanTopic(action, file)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	repaired, added := addPreplanHeadings(data)
+	repaired, added, closed := addPreplanHeadings(data)
 	if len(added) == 0 {
-		return []string{}, nil
+		return []string{}, "", nil
+	}
+	if len(repaired) > dashboardDeleteReadMax {
+		return nil, "", &mcpserver.DataError{
+			Msg: fmt.Sprintf("%s: adding %d section heading(s) makes %s %d bytes, more than the %d bytes (%s) that preplan_context and preplan_check read; nothing was written",
+				action, len(added), file, len(repaired), dashboardDeleteReadMax, dashboardDeleteReadMaxText),
+			Suggestion: "Make the topic file smaller than " + dashboardDeleteReadMaxText + " by hand, with room for the absent headings" + preplanRetry(action),
+		}
 	}
 	if err := preplanWriteBytes(file, repaired); err != nil {
-		return nil, &mcpserver.InfraError{
+		return nil, "", &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("%s: %v", action, err),
 			Suggestion: "Check write permission on " + dir + " and free disk space" + preplanRetry(action),
 			Cause:      err,
 		}
 	}
-	return added, nil
+	return added, closed, nil
 }
 
 // preplanWriteString writes content to f for createPreplanFile. A test replaces
@@ -1805,11 +1889,12 @@ var preplanCloseFile = func(f *os.File) error {
 
 // createPreplanFile creates file with content when it is absent and reports
 // whether it created the file. It makes the parent directory first. The create
-// uses O_EXCL, so an existing regular file stays unchanged and the call
-// reports false with no error. A dangling symlink at file or at any folder on
-// the path to file returns a *fsx.DanglingLinkError and writes nothing. A
-// path at file that cannot be read as a regular file (a link loop, a folder)
-// returns an error. A write that fails after the create removes the partial
+// uses O_EXCL, so an existing path stays unchanged and the call reports false
+// with no error, whatever the path holds: readPreplanTopic, which the caller
+// runs next, refuses a link, a folder, a pipe or another file that is not
+// regular with the same DomainError as preplan_check. A dangling symlink at
+// file or at any folder on the path to file returns a *fsx.DanglingLinkError
+// and writes nothing. A write that fails after the create removes the partial
 // file, so the next call starts from a clean state.
 func createPreplanFile(file, content string) (bool, error) {
 	if err := fsx.MkdirAll(filepath.Dir(file), 0o755); err != nil {
@@ -1825,15 +1910,7 @@ func createPreplanFile(file, content string) (bool, error) {
 			if last, target, ok := fsx.FindDanglingLink(file); ok {
 				return false, &fsx.DanglingLinkError{Link: file, Target: target, Remove: true, Chain: last != file, Err: err}
 			}
-			// Something exists at file. Only a regular file (or a live link
-			// to one) is a topic file the caller can read.
-			info, statErr := os.Stat(file)
-			if statErr != nil {
-				return false, statErr
-			}
-			if !info.Mode().IsRegular() {
-				return false, errors.New("exists and is not a regular file")
-			}
+			// Something exists at file. readPreplanTopic checks its kind.
 			return false, nil
 		}
 		return false, err
@@ -1861,8 +1938,21 @@ func createPreplanFile(file, content string) (bool, error) {
 var (
 	preplanLstat      = os.Lstat
 	preplanReadFile   = os.ReadFile
-	preplanWriteBytes = fsx.AtomicWriteBytes
+	preplanWriteBytes = writePreplanKeepPerm
 )
+
+// writePreplanKeepPerm writes data over the existing topic file at path
+// through a temp file and a rename (fsx.AtomicWriteBytesPerm). The new file
+// keeps the permission bits of the file it replaces, so a rewrite does not
+// change the mode that createPreplanFile or the user gave it. A failed Stat
+// writes nothing.
+func writePreplanKeepPerm(path string, data []byte) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	return fsx.AtomicWriteBytesPerm(path, data, info.Mode().Perm())
+}
 
 // preplanCountMax is the largest value that preplan_check accepts for each of
 // passCount, keptCount and droppedCount. The sum of the three stays far from
@@ -1885,9 +1975,13 @@ const preplanCheckAgain = ", then call preplan_check again."
 // finds no topic file.
 const preplanNoFileSuggestion = "Run plan_support with action preplan_context and this topic first."
 
-// preplanCheckAction is the name of the preplan_check action in error
-// messages. preplanRetry and preplanNoFileSuggestionFor compare with it.
-const preplanCheckAction = "preplan_check"
+// The names of the preplan actions. planSupportCore dispatches on them, each
+// error message starts with one, and preplanRetry and
+// preplanNoFileSuggestionFor compare with preplanCheckAction.
+const (
+	preplanContextAction = "preplan_context"
+	preplanCheckAction   = "preplan_check"
+)
 
 // preplanRunAgain ends each preplan_context Suggestion that a new run can fix.
 const preplanRunAgain = ", then run /sdlc:preplan again."
@@ -1977,10 +2071,10 @@ func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 			Cause:      err,
 		}
 	}
-	empty := preplanEmptySections(next)
+	empty, openFence := preplanEmptySections(next)
 	return PlanSupportOut{
-		Summary:            preplanCheckSummary(name, prior, warning, next, empty),
-		Next:               preplanCheckNext(empty),
+		Summary:            preplanCheckSummary(name, prior, warning, next, empty, openFence),
+		Next:               preplanCheckNext(empty, openFence),
 		PreplanFile:        file,
 		GuardrailCheckLine: line,
 		EmptySections:      &empty,
@@ -1989,11 +2083,16 @@ func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 
 // preplanCheckNext returns the Next of a successful preplan_check call. With
 // 1 or more empty sections it adds the count and points at the Step 4 route
-// table of the skill.
-func preplanCheckNext(empty []string) string {
+// table of the skill. With a fence still open at the end of the file
+// (openFence), it says to close the fence first: the headings after it count
+// as absent.
+func preplanCheckNext(empty []string, openFence string) string {
 	next := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."
 	if len(empty) > 0 {
 		next += fmt.Sprintf(" emptySections lists %d empty section(s). The Step 4 route table of the skill picks the next step.", len(empty))
+	}
+	if openFence != "" {
+		next += fmt.Sprintf(" First add the closing %s line of the open fence where the code ends: each ## heading after the fence counts as absent until then.", openFence)
 	}
 	return next
 }
@@ -2086,10 +2185,12 @@ func preplanIOError(action, file string, read bool, err error) error {
 // preplanNotRegularError returns the DomainError for a topic file path whose
 // mode is not regular. The Suggestion fits the kind: a link to a file that
 // exists can become a copy of that file; a dangling link, a folder or another
-// file goes away, and the next /sdlc:preplan run creates a new topic file. The
+// file goes away, and the next /sdlc:preplan run creates a new topic file. A
+// link whose target cannot be read (a link loop, a target with no access)
+// goes away too; its message names the Stat error, which is the Cause. The
 // retry text of the live-link Suggestion comes from action (preplanRetry).
 func preplanNotRegularError(action, file string, mode fs.FileMode) error {
-	const rerun = ", then run /sdlc:preplan again. preplan_context then creates a new topic file."
+	const rerun = preplanRunAgain + " preplan_context then creates a new topic file."
 	kind := preplanFileKind(mode)
 	if mode&fs.ModeSymlink == 0 {
 		msg := fmt.Sprintf("%s: %s is %s", action, file, kind)
@@ -2098,13 +2199,21 @@ func preplanNotRegularError(action, file string, mode fs.FileMode) error {
 		}
 		return &mcpserver.DomainError{Msg: msg, Suggestion: "Remove or rename " + file + rerun}
 	}
-	if _, err := os.Stat(file); errors.Is(err, fs.ErrNotExist) {
+	_, err := os.Stat(file)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
 		msg := fmt.Sprintf("%s: %s is a symlink to a missing file", action, file)
 		if last, target, ok := fsx.FindDanglingLink(file); ok {
 			dl := &fsx.DanglingLinkError{Link: file, Target: target, Remove: true, Chain: last != file}
 			msg = action + ": " + dl.Problem()
 		}
 		return &mcpserver.DomainError{Msg: msg, Suggestion: "Remove the link with rm " + file + rerun}
+	case err != nil:
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("%s: %s is a symlink whose target cannot be read: %v", action, file, err),
+			Suggestion: "Remove the link with rm " + file + rerun,
+			Cause:      err,
+		}
 	}
 	return &mcpserver.DomainError{
 		Msg:        fmt.Sprintf("%s: %s is %s, not a regular file", action, file, kind),
@@ -2128,9 +2237,10 @@ func preplanCheckLine(guardrails, pass, kept, dropped int, warning string) strin
 // preplanCheckSummary returns the Summary of a successful preplan_check call.
 // It says whether the line was added or replaced, and echoes the replaced
 // line. It names the guardrail warning, if any, the number of other
-// Guardrail check lines in next that stay in the file, and last the empty
-// sections (none when the list is empty).
-func preplanCheckSummary(name, prior, warning string, next []byte, empty []string) string {
+// Guardrail check lines in next that stay in the file, the empty sections
+// (none when the list is empty), and last the fence that is still open at the
+// end of the file (openFence), if any.
+func preplanCheckSummary(name, prior, warning string, next []byte, empty []string, openFence string) string {
 	summary := fmt.Sprintf("Added the Guardrail check line to %s.", name)
 	if prior != "" {
 		summary = fmt.Sprintf("Replaced the Guardrail check line of %s. Old line: %s", name, prior)
@@ -2142,9 +2252,14 @@ func preplanCheckSummary(name, prior, warning string, next []byte, empty []strin
 		summary += fmt.Sprintf(" %d more Guardrail check line(s) stay in the file: delete them by hand.", stale)
 	}
 	if len(empty) == 0 {
-		return summary + " Empty sections: none."
+		summary += " Empty sections: none."
+	} else {
+		summary += " Empty sections: " + strings.Join(empty, ", ") + "."
 	}
-	return summary + " Empty sections: " + strings.Join(empty, ", ") + "."
+	if openFence != "" {
+		summary += fmt.Sprintf(" A %s fence is still open at the end of the file, so each ## heading after it counts as absent.", openFence)
+	}
+	return summary
 }
 
 // preplanWarningText makes the guardrail warning fit on the check line: one
@@ -2175,15 +2290,11 @@ func setGuardrailCheckLine(data []byte, line string) (next []byte, prior string,
 	if loc == nil {
 		return nil, "", false
 	}
-	start := loc[0]
 	var insert string
 	at := len(data)
-	if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
-		eol := "\n"
-		if i > 0 && data[start+i-1] == '\r' {
-			eol = "\r\n"
-		}
-		at = start + i + 1
+	if nl := preplanLineEnd(data, loc[0]); nl < len(data) {
+		eol := preplanEOL(data, nl)
+		at = nl + 1
 		insert = eol + line + eol
 	} else {
 		// The anchor is the last line and has no line end.

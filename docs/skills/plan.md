@@ -38,10 +38,18 @@ reads its sections this way:
 | Non-goals, `Smallest cut:` line | Key Decisions |
 | Decisions rows | requirements |
 
-An empty new section becomes a discovery question, except with `--auto`.
-With `--auto`, the plan asks no question. It applies its `--auto` rule and
-records the choice in Key Decisions. A new section that the topic file already fills answers its
-discovery question, so the plan does not ask it again.
+If `Problem and benefit`, `Risk if wrong` or `Non-goals` is empty or absent
+(an older topic file has none of them), the plan asks one discovery question
+for each such section, except with `--auto`. With `--auto`, the plan asks no
+question. It takes the narrowest reading, records it in Context or Key
+Decisions, and adds a `Deviations & assumptions` row with `asked=no`. A
+section that the topic file already fills answers its question, so the plan
+does not ask it again. An empty `Goal`, `Users and effect` or `Flows` section
+makes the requirements vague, so the plan asks its usual discovery questions.
+
+The plan writes the smallest cut with the decision text of each picked row,
+not the row number. With no `Smallest cut:` line, the smallest cut is all
+proposals that are not dropped or moved.
 
 - If the plan template has no `Context` or `Key Decisions` section, the plan
   records the same content as requirement items.

@@ -29,6 +29,20 @@ var ErrParse = errors.New("fsx: parse error")
 // operation, a reader of path never observes a partially written file, and a
 // failure at any step leaves any pre-existing path untouched.
 func AtomicWriteBytes(path string, data []byte) error {
+	return atomicWriteBytes(path, data, nil)
+}
+
+// AtomicWriteBytesPerm is AtomicWriteBytes with the permission bits perm on
+// the new file. It sets perm on the temp sibling before the rename, so the
+// file at path never has the 0600 mode of os.CreateTemp, and a failure at any
+// step leaves any pre-existing path untouched.
+func AtomicWriteBytesPerm(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteBytes(path, data, &perm)
+}
+
+// atomicWriteBytes holds the steps of AtomicWriteBytes and
+// AtomicWriteBytesPerm. A nil perm keeps the mode of os.CreateTemp (0600).
+func atomicWriteBytes(path string, data []byte, perm *os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -36,6 +50,13 @@ func AtomicWriteBytes(path string, data []byte) error {
 	}
 	tmpName := tmp.Name()
 
+	if perm != nil {
+		if err := tmp.Chmod(*perm); err != nil {
+			tmp.Close()
+			os.Remove(tmpName)
+			return fmt.Errorf("fsx: chmod temp file for %s: %w", path, err)
+		}
+	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmpName)

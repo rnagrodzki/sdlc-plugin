@@ -171,6 +171,28 @@ func preplanHead(data []byte) []byte {
 	return data
 }
 
+// preplanLineEnd returns the offset of the line feed that ends the line that
+// starts at start, or len(data) when that line has no line feed. The topic
+// file helpers (replacePreplanHeadLine, setGuardrailCheckLine,
+// preplanSectionSpans, preplanHeadEnd, addPreplanHeadings) share it, so each
+// one treats a last line with no line end the same way.
+func preplanLineEnd(data []byte, start int) int {
+	if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
+		return start + i
+	}
+	return len(data)
+}
+
+// preplanEOL returns the line end of the line whose line feed is at nl, an
+// offset from preplanLineEnd: "\r\n" when a CR comes before the line feed,
+// else "\n". It returns "\n" when nl is len(data), a line with no line end.
+func preplanEOL(data []byte, nl int) string {
+	if nl > 0 && nl < len(data) && data[nl-1] == '\r' {
+		return "\r\n"
+	}
+	return "\n"
+}
+
 // replacePreplanHeadLine replaces the first line that re matches in the first
 // dashboardPreplanHeadMax bytes of data with replacement, a line with no line
 // end. old is the replaced line with no line end. found is false when the
@@ -186,10 +208,8 @@ func replacePreplanHeadLine(data []byte, re *regexp.Regexp, replacement string) 
 
 	// The match can stop at the end of head, inside a long line. Take the whole
 	// line from the full data, so no tail of the old line stays.
-	start, end := loc[0], len(data)
-	if i := bytes.IndexByte(data[start:], '\n'); i >= 0 {
-		end = start + i
-	}
+	start := loc[0]
+	end := preplanLineEnd(data, start)
 	line := data[start:end]
 	if bytes.HasSuffix(line, []byte("\r")) {
 		replacement += "\r"

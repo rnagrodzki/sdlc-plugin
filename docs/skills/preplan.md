@@ -80,7 +80,7 @@ add `Open questions`. The skill adds that section when a question is open:
 | `Risk if wrong` | Who or what fails if the change has a defect. |
 | `Non-goals` | What the change does not build, one bullet for each. A scope option that you did not pick is a bullet `Offered, not picked: <option>.` If you say that the change excludes nothing, the line `None stated.` |
 | `Flows` | A before and after diagram for each flow that a proposal changes, with the same steps as a numbered list. If no flow changes, the line `No flow change.` |
-| `Decisions` | A table with one row for each proposal. The number of a row never changes, and the skill never uses it again. Under the table, the line `Smallest cut: #<id>, #<id>.` or `Smallest cut: all.` holds your answer to the cut question (see [How the dialogue works](#how-the-dialogue-works)). The line is not a row. |
+| `Decisions` | A table with one row for each proposal. The number of a row never changes, and the skill never uses it again. Under the table, one line holds your answer to the cut question (see [How the dialogue works](#how-the-dialogue-works)), for example `Smallest cut: #1, #3.`, `Smallest cut: #2.` or `Smallest cut: all.`. The numbers are in ascending order. The line is not a row. |
 | `Open questions` | One bullet for each question that has no answer yet. The section exists only when at least one question is open. |
 
 After the first check, one `**Guardrail check:**` line under the Started line
@@ -146,7 +146,10 @@ each kept or dropped result as a note in the `Decisions` table.
   `Non-goals` bullet. If your answer is neither `all` nor the number of a
   proposal that is not dropped or moved, the skill names the valid numbers
   and asks again. With one such proposal, or with a `Smallest cut:` line
-  already in the file, the skill does not ask the cut question.
+  already in the file, the skill does not ask the cut question. When you add
+  a new proposal, the skill deletes a `Smallest cut:` line that lists
+  numbers, because that cut question did not offer the new proposal, and it
+  asks the cut question again. A `Smallest cut: all.` line stays.
 
 ### Guardrail check
 
@@ -173,16 +176,19 @@ line. The first step stops in these cases:
 - The topic is not valid (see [Flags](#flags)).
 - Two files match the topic, or the folder holds more than 10000 names (see
   [Topic file](#topic-file)).
-- The folder cannot be listed, or the tool cannot create the topic file.
+- The folder cannot be listed, or the tool cannot create the topic file. Fix
+  the folder or its permission as the printed error says, then run the skill
+  again.
 - The topic file is a link, a folder, or another file that is not a regular
   file. The first step refuses a link too, even a link to a regular file.
   Replace the link with a copy of the file that it points to, then run the
   skill again.
-- The topic file is larger than 8 MiB. The tool refuses a larger file before
-  it reads it, and it changes nothing. Make the file smaller, then run the
-  skill again.
+- The topic file is larger than 8 MiB, or the added section headings would
+  make it larger than 8 MiB. The tool refuses a larger file before it reads
+  it, and it changes nothing. Make the file smaller, then run the skill again.
 - A read of the topic file fails, or the write of the added section headings
-  fails. The file stays as it was.
+  fails. The file stays as it was. Fix the cause that the printed error names,
+  for example the file or folder permission, then run the skill again.
 
 The check can stop the dialogue with an error. The skill prints the error,
 then goes to the cancel step, which sets the status to `paused`. An error at
@@ -222,8 +228,9 @@ If you change a proposal later, the skill checks it again.
 
 After the check, the skill removes from the `Smallest cut:` line the number of
 each proposal that is dropped or moved. If this removes the last number, the
-skill deletes the line, and your next "done" asks the cut question again if two or more
-proposals remain. A `Smallest cut: all.` line stays as it is.
+skill deletes the line. If two or more proposals remain, the skill then asks
+the cut question again before the handoff. A `Smallest cut: all.` line stays
+as it is.
 
 ### Hand off to plan
 
@@ -235,16 +242,19 @@ and no `Smallest cut:` line, the skill asks the cut question first (see
 [How the dialogue works](#how-the-dialogue-works)).
 
 Then the guardrail check runs. If a section is still empty after the check,
-the skill lists the empty sections and asks once: fill them, or go to the
-handoff with the empty sections. A section is empty when it is absent or
-holds only blank lines. A `Decisions` table with no row is empty too. The
+the skill lists the empty sections and asks: fill them, or go to the handoff
+with the empty sections. It asks on each final check that still finds an
+empty section. A section is empty when it is absent or
+holds only blank lines. Only the seven sections from `Goal` to `Decisions` count:
+`Open questions` is never an empty section. A `Decisions` table with no row is empty too. The
 skill says that `/plan` can start with the empty sections, but each one is a
 gap in its requirements. The "done" option means go to the handoff. The skill
 does not record your answer in the file, so a later "done" with an empty
 section asks again.
 
 - **Fill them:** the skill goes back to the dialogue. The first gap is the
-  first empty section.
+  first empty section. If a section heading is missing from the file, for
+  example because you deleted it, the tool adds it again first.
 - **Go to the handoff:** the skill continues as below.
 - **Cancel:** the status becomes `paused` and the skill keeps the file.
 - **Any other answer**, for example free text: the skill lists the empty

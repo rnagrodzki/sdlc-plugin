@@ -27,7 +27,7 @@ absolute path as `preplanFile`.
 
 ## Topic file
 
-The tool writes the skeleton once: a `# Preplan: <topic>` heading, a `**Status:** in progress` line, a `**Started:** <UTC time>` line, and the sections below in this order, except `## Open questions`. When the file exists, the tool adds each absent section heading in this order and returns them as `addedSections`. The skill adds `## Open questions` only when a question is open. The skill never writes the skeleton, never creates the file, never adds a section heading, and never changes the Started line.
+The tool writes the skeleton once: a `# Preplan: <topic>` heading, a `**Status:** in progress` line, a `**Started:** <UTC time>` line, and the sections below in this order, except `## Open questions`. When the file exists, the tool adds each absent skeleton heading (`## Goal` to `## Decisions`) in this order and returns them as `addedSections`. The skill never writes the skeleton, never creates the file, never adds a skeleton heading, and never changes the Started line. `## Open questions` is the one heading that the skill adds, and only when a question is open.
 
 When Step 4 reaches the `preplan_check` call, the tool writes one `**Guardrail check:**` line under the Started line. It shows the guardrail count, the proposal counts and the UTC time of the check. When the guardrails are unavailable, the line ends with `Guardrails unavailable: <warning>.` The skill never writes that line. A cancel in Step 4 and a `preplan_check` error write no line.
 
@@ -76,6 +76,7 @@ Every exit state names its next instruction:
 | tool error | Step 4 | print the error's `## Do this` text as it is, then go to the cancel step |
 | cancelled during the dialogue | Step 3 or Step 4 | go to the cancel step: set status `paused`, keep the file, end |
 | cancelled at the soft gate | Step 4 | go to the cancel step: set status `paused`, keep the file, end |
+| tool error at the soft gate | Step 4 | print the error's `## Do this` text as it is, then go to the cancel step |
 | user stops at the handoff | Step 5 | end. Status stays `ready for plan` |
 | plan skill ends | Step 5 | end |
 | plan skill stops with an error | Step 5 | print the error. Status stays `ready for plan`. Tell the user to run `/sdlc:plan <preplanFile>`. End |
@@ -91,7 +92,7 @@ Print the announce line. When the argument holds a topic, use it as the topic. W
 
 ## Step 1: Load the guardrails and the topic file
 
-Make exactly one call:
+Make exactly one call here. Only the soft gate can make one more `preplan_context` call (see Soft gate routes):
 
 ```
 plan_support({ action: "preplan_context", topic: "<topic>" })
@@ -101,14 +102,14 @@ Never call `plan_prepare`. It starts a plan run and prunes other runs.
 
 | Result | Next |
 |---|---|
-| success | keep `guardrails`, `preplanFile`, `preplanCreated` and `summary`. Go to Step 2 |
-| tool error (bad topic, two topic files that match, a folder that cannot be listed or holds too many names, a failed create, a link or another file that is not regular, a file over 8 MiB, or a failed read or heading write) | print the error's `## Do this` text as it is, then stop. Make no other call |
+| success | keep `guardrails`, `preplanFile`, `preplanCreated`, `addedSections` and `summary`. Go to Step 2 |
+| tool error (bad topic, two topic files that match, a folder that cannot be listed or holds too many names, a failed create, a link or another file that is not regular, a file over 8 MiB or a repair that would make it larger, or a failed read or heading write) | print the error's `## Do this` text as it is, then stop. Make no other call |
 
 When the `summary` holds `Warning: <warning>.`, the guardrails are unavailable. The dialogue continues. At Step 4, `preplan_check` loads the guardrails again and writes its own warning into the check line. If the two loads differ, the check line shows the result of the second load.
 
 ## Step 2: Read the topic file
 
-Read `preplanFile`. The topic file is the only state of this skill, so a new run of the skill continues from it. In an existing file, `preplan_context` already added each absent section heading. Each added section is empty, so Step 3 finds it as a gap.
+Read `preplanFile`. The topic file is the only state of this skill, so a new run of the skill continues from it. In an existing file, `preplan_context` already added each absent skeleton heading. Each added section is empty, so Step 3 finds it as a gap. When `addedSections` lists headings, tell the user which headings the tool added. When `summary` says that the tool added a closing fence line, tell the user that too.
 
 | `preplanCreated` | Action |
 |---|---|
@@ -134,7 +135,7 @@ Dialogue rules:
 - Pick the next question from the first gap: `## Goal`, then `## Problem and benefit`, then `## Users and effect`, then `## Risk if wrong`, then `## Non-goals`, then the `## Open questions` bullets, then a missing `## Flows` entry, then the next proposal.
 - A benefit with no measure or no baseline is vague. Ask one follow-up question for both.
 - When a question offers scope options and the user picks some, add each option not picked to `## Non-goals` as `Offered, not picked: <option>.` Never record the "done" or the "cancel" option.
-- Cut question: restate each live proposal with its `#` value. Ask which proposals form the smallest version that still gives value. Options: all live proposals, or a list of `#` values. The "done" option means all. The Step 3 routes say when to ask it. The cut question is not a scope question: it adds no `## Non-goals` bullet.
+- Cut question: restate each live proposal with its `#` value. Ask which proposals form the smallest version that still gives value. Options: all live proposals, or a list of `#` values. Here the "done" option is the "all live proposals" option: offer it once, labelled "all (done)". The Step 3 routes say when to ask it. The cut question is not a scope question: it adds no `## Non-goals` bullet.
 
 After each answer, edit the topic file before the next question:
 
@@ -142,7 +143,7 @@ After each answer, edit the topic file before the next question:
 - When the user says that the change excludes nothing, write the line `None stated.` under `## Non-goals`. Delete the line when the section gets a bullet.
 - After an answer to the cut question that the Step 3 routes accept, write one line under the `## Decisions` table: `Smallest cut: all.` for all live proposals or "done", else `Smallest cut: #<id>, #<id>.` with each picked `#` value in ascending order.
 - Add a new question as a bullet to `## Open questions`. If the section does not exist, add it after `## Decisions`. Remove a bullet when an answer closes it. When the last bullet goes, delete the section.
-- Add a proposal as a new row of `## Decisions`, with the next unused `#` value. The row goes above the `Smallest cut:` line, if the file has one.
+- Add a proposal as a new row of `## Decisions`, with the next unused `#` value. The row goes above the `Smallest cut:` line, if the file has one. If that line lists ids, delete it: the cut question did not offer the new proposal, so the Step 3 and Step 4 routes ask it again. Keep a `Smallest cut: all.` line: `all` includes the new proposal.
 - When a proposal changes a flow, write a before/after diagram and its text twin under `## Flows` (see **Mermaid rule**). When the user confirms that no flow changes, write the line `No flow change.` under `## Flows`.
 
 Do not show a new proposal to the user as accepted before Step 4 checks it.
@@ -188,12 +189,12 @@ How to write the notes:
 - Drop: keep the `## Decisions` row. Start its `Decision` cell with `Dropped:`. End its Reason cell with `Dropped by: <ids>.` Tell the user which guardrails caused the drop.
 - Warning conflict: ask with AskUserQuestion. Restate the proposal, each guardrail `id`, and its `description`. Options: keep the proposal as it is, rework it later, or cancel. On keep, delete an earlier `Kept with warning:` note in the Reason cell, then end the cell with `Kept with warning: <ids>.` The cell holds one kept note at most. On rework, keep the row in `## Decisions` and start its `Decision` cell with `Moved:`. Add the proposal as a bullet to `## Open questions`. If the section does not exist, add it after `## Decisions`. A `Moved:` row is not a proposal: Step 4 does not check it, and the Step 3 and Step 4 routes do not count it. When an answer brings the proposal back, add it as a new row with the next unused `#` value. On cancel, go to the cancel step.
 
-Prune the `Smallest cut:` line after the check and before the count. Remove from the line each `#` value whose row is not live: its `Decision` cell starts with `Dropped:` or `Moved:`. When the prune removes the last id of a line that lists ids, delete the line. The next "done" then asks the cut question again. Keep a `Smallest cut: all.` line as it is. Example: proposal #2 is dropped in this pass:
+Prune the `Smallest cut:` line after the check and before the count. Remove from the line each `#` value whose row is not live: its `Decision` cell starts with `Dropped:` or `Moved:`. When the prune removes the last id of a line that lists ids, delete the line. With 2 or more live proposals left, the Step 4 route table then asks the cut question again. Keep a `Smallest cut: all.` line as it is. Example: proposal #2 is dropped in this pass:
 
 | Line before | Line after | Outcome |
 |---|---|---|
 | `Smallest cut: #1, #2, #3.` | `Smallest cut: #1, #3.` | the other ids stay |
-| `Smallest cut: #2.` | no line | the last id goes, so Step 4 deletes the line. The next "done" asks the cut question again |
+| `Smallest cut: #2.` | no line | the last id goes, so Step 4 deletes the line. With 2 or more live proposals left, the Step 4 route table asks the cut question again |
 | `Smallest cut: all.` | `Smallest cut: all.` | no change |
 | `Smallest cut: #1, #3.` | `Smallest cut: #1, #3.` | no change: the line does not list #2 |
 
@@ -207,25 +208,26 @@ After the check, count the rows and make one call:
 plan_support({ action: "preplan_check", topic: "<topic>", passCount: <n>, keptCount: <n>, droppedCount: <n> })
 ```
 
-Then read `preplanFile` again. The tool changed the file. Keep `emptySections`: the `## ` headings of the sections that are absent or hold only blank lines (for `## Decisions`, a table with no row), or `(none)`.
+Then read `preplanFile` again. The tool changed the file. Keep `emptySections`: the `## ` headings of the skeleton sections (`## Goal` to `## Decisions`) that are absent or hold only blank lines (for `## Decisions`, a table with no row), or `(none)`. `## Open questions` is not a skeleton section, so it is never in the list. When `summary` says that a code fence is still open, each heading after the fence counts as absent: add the closing fence line where the code ends, tell the user, then follow the route table.
 
-Step 4 routes (one row matches each result). A `## Flows` entry is a diagram or the line `No flow change.`:
+Step 4 routes (the first row that matches the result applies). A `## Flows` entry is a diagram or the line `No flow change.`:
 
 | Step 4 result | Next |
 |---|---|
 | `preplan_check` returns an error | print the error's `## Do this` text as it is, then go to the cancel step |
+| `final` set, the call succeeded, `passCount + keptCount` is 2 or more, and the file has no `Smallest cut:` line (the prune of this pass deleted it) | Step 3: ask the cut question |
 | `final` set, the call succeeded, `passCount + keptCount` is 1 or more, `## Flows` has an entry, `emptySections` is `(none)` | Step 5 |
 | `final` set, the call succeeded, `passCount + keptCount` is 1 or more, `## Flows` has an entry, `emptySections` lists 1 or more | soft gate question |
 | none of the rows above, for example every proposal dropped | Step 3 |
 
-Soft gate question: ask with AskUserQuestion. Restate each section in `emptySections` and what it holds (see the section table). Say that `/sdlc:plan` can start with the empty sections, but each one is a gap in its requirements. Options: fill the sections, go to the handoff with the empty sections, or cancel. The "done" option means go to the handoff. The answer is not recorded in the topic file, so the next `final` pass with empty sections asks again.
+Soft gate question: ask with AskUserQuestion. Restate each section in `emptySections` and what it holds (see the section table). Say that `/sdlc:plan` can start with the empty sections, but each one is a gap in its requirements. Options: fill the sections, go to the handoff with the empty sections, or cancel. Here the "done" option is the handoff option: offer it once, labelled "go to the handoff (done)". The answer is not recorded in the topic file, so the next `final` pass with empty sections asks again.
 
 Soft gate routes (one row matches each answer):
 
 | Answer | Next |
 |---|---|
-| fill the sections | Step 3 with `final` not set. The first gap is the first empty section |
-| go to the handoff with the empty sections, or "done" | Step 5 |
+| fill the sections | if a heading in `emptySections` is absent from the file, call `plan_support({ action: "preplan_context", topic: "<topic>" })` once more: it adds the absent heading, and a closing fence line when a fence is still open, and changes nothing else. Then read `preplanFile` again. On a tool error, print the error's `## Do this` text as it is, then go to the cancel step. Then Step 3 with `final` not set. The first gap is the first empty section |
+| go to the handoff (done) | Step 5 |
 | cancel | the cancel step: status `paused`, the file stays |
 | any other answer, for example free text | the soft gate: restate the empty sections, then ask again |
 
@@ -294,7 +296,7 @@ After:
 ## Rules
 
 - Never call `plan_prepare`. This skill starts no plan run.
-- Never write the skeleton, never create the topic file, and never add a section heading by hand. `preplan_context` creates the file and adds absent headings.
+- Never write the skeleton, never create the topic file, and never add a skeleton heading (`## Goal` to `## Decisions`) by hand. `preplan_context` creates the file and adds absent skeleton headings. The one heading that the skill adds is `## Open questions`.
 - Write and edit only the file at `preplanFile`. Never write a topic file under a `plans/` directory: after each write there, the plan format hook checks the file as a plan and reports plan format findings, because a topic file is not a plan.
 - Edit the topic file after each answer, before the next question.
 - Check each proposal against the guardrails before the user sees it as accepted.
