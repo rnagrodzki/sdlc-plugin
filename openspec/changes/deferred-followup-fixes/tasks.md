@@ -99,11 +99,11 @@ flowchart LR
 
 ## 13. Staging of another plan is kept
 
-- [ ] 13.1 Refuse a stage whose existing `stage.json` names another plan file, with `ErrStagedByOtherPlan` and `stagedPlanPath`, before any write, in internal/openspec/stage.go — verify: `go test ./internal/openspec/...` <!-- ref:13-1-refuse-a-stage-whose-existing-stage-378067 -->
-- [ ] 13.2 Map `ErrStagedByOtherPlan` to a `DomainError` and update the `openspec_stage` description in internal/tools/plan_support.go — verify: `go test ./internal/tools/ -run TestPlanSupportOpenspecStage` <!-- ref:13-2-map-errstagedbyotherplan-to-a-domai-821166 -->
-- [ ] 13.3 Add `TestPlanSupportOpenspecStage_OtherPlan` in internal/tools/plan_support_test.go — verify: `go test ./internal/tools/ -run TestPlanSupportOpenspecStage_OtherPlan` <!-- ref:13-3-add-testplansupportopenspecstage-ot-745822 -->
-- [ ] 13.4 Add the `staged by another plan` rule to Create-flow authoring item 3 in plugins/sdlc/skills/plan/SKILL.md — verify: `go test ./internal/skillcheck/...` <!-- ref:13-4-add-the-staged-by-another-plan-rule-49f687 -->
-- [ ] 13.5 Describe the refusal in the OpenSpec staging section of docs/plan-architecture.md — verify: `grep -n 'names another .planPath.' docs/plan-architecture.md` <!-- ref:13-5-describe-the-refusal-in-the-openspe-486864 -->
+- [x] 13.1 Refuse a stage whose existing `stage.json` names another plan file, with `ErrStagedByOtherPlan` and `stagedPlanPath`, before any write, in internal/openspec/stage.go — verify: `go test ./internal/openspec/...` <!-- ref:13-1-refuse-a-stage-whose-existing-stage-378067 -->
+- [x] 13.2 Map `ErrStagedByOtherPlan` to a `DomainError` and update the `openspec_stage` description in internal/tools/plan_support.go — verify: `go test ./internal/tools/ -run TestPlanSupportOpenspecStage` <!-- ref:13-2-map-errstagedbyotherplan-to-a-domai-821166 -->
+- [x] 13.3 Add `TestPlanSupportOpenspecStage_OtherPlan` in internal/tools/plan_support_test.go — verify: `go test ./internal/tools/ -run TestPlanSupportOpenspecStage_OtherPlan` <!-- ref:13-3-add-testplansupportopenspecstage-ot-745822 -->
+- [x] 13.4 Add the `staged by another plan` rule to Create-flow authoring item 3 in plugins/sdlc/skills/plan/SKILL.md — verify: `go test ./internal/skillcheck/...` <!-- ref:13-4-add-the-staged-by-another-plan-rule-49f687 -->
+- [x] 13.5 Describe the refusal in the OpenSpec staging section of docs/plan-architecture.md — verify: `grep -n 'names another .planPath.' docs/plan-architecture.md` <!-- ref:13-5-describe-the-refusal-in-the-openspe-486864 -->
 
 ## Workflow follow-up
 

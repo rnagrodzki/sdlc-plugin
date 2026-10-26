@@ -55,6 +55,11 @@ var ErrTargetSpecTooLarge = fmt.Errorf("%w: too large", ErrTargetSpec)
 // into the temp directory (1 MiB).
 const maxTargetSpecBytes = 1 << 20
 
+// ErrStagedByOtherPlan is returned by Stage when the staging dir of the
+// change holds a stage.json whose planPath names another plan file. Stage
+// then writes nothing, so the staging of the other plan stays.
+var ErrStagedByOtherPlan = errors.New("openspec stage: staged by another plan")
+
 // StageManifestFile is the manifest file name written at the root of a
 // change's staging directory.
 const StageManifestFile = "stage.json"
@@ -163,8 +168,9 @@ func PrepareInstructions(activeRoot, change string) (schema string, guides []Art
 //
 // Every check runs before the first write under activeRoot: the change name
 // (ErrInvalidChangeName), each file path against the outputPath patterns the
-// CLI reports for a temp change (ErrPathNotAllowed), and the copy of the
-// current specs (ErrTargetSpec). A failed validation is not an error: the
+// CLI reports for a temp change (ErrPathNotAllowed), the planPath of an
+// existing stage.json of the change (ErrStagedByOtherPlan), and the copy of
+// the current specs (ErrTargetSpec). A failed validation is not an error: the
 // result has Valid false and the CLI output, and stage.json has no
 // validatedAt. now defaults to time.Now when nil.
 func Stage(activeRoot, change string, files []StageFile, planPath string, now func() time.Time) (StageResult, error) {
@@ -179,6 +185,10 @@ func Stage(activeRoot, change string, files []StageFile, planPath string, now fu
 	}
 	if err := checkPathSyntax(files); err != nil {
 		return StageResult{}, err
+	}
+	if other := stagedPlanPath(activeRoot, change); other != "" && planPath != "" &&
+		filepath.Clean(other) != filepath.Clean(planPath) {
+		return StageResult{}, fmt.Errorf("%w: %s", ErrStagedByOtherPlan, other)
 	}
 
 	tmp, cleanup, err := newTempChange(activeRoot, change)
@@ -258,6 +268,19 @@ func Stage(activeRoot, change string, files []StageFile, planPath string, now fu
 		}
 	}
 	return result, nil
+}
+
+// stagedPlanPath returns the planPath of the existing stage.json of
+// change. It returns "" when the file is missing, cannot be read, cannot
+// be parsed, or has no planPath. Such a staging has no owner to compare, so
+// a new stage replaces it, as today.
+func stagedPlanPath(activeRoot, change string) string {
+	stagingDir := filepath.Join(activeRoot, filepath.FromSlash(StagingDirRel(change)))
+	var manifest StageManifest
+	if err := fsx.ReadJSON(filepath.Join(stagingDir, StageManifestFile), &manifest); err != nil {
+		return ""
+	}
+	return manifest.PlanPath
 }
 
 // newTempChange creates a temp directory holding a copy of

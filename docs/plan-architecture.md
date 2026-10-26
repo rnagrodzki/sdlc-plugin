@@ -461,7 +461,14 @@ Step 6 (and again on a Step 7 reject with feedback):**
    `outputPath` glob patterns the CLI reports for a temp change (e.g.
    `specs/**/*.md`, where `**` matches zero or more whole path segments),
    rejecting any path that matches none of them, is absolute, contains
-   `..`/`.` segments, or repeats. On success it replaces the whole
+   `..`/`.` segments, or repeats.
+   It also refuses the call, before any write, when the `stage.json` of
+   the change names another `planPath`: a second plan session that picks
+   the same change name cannot replace the staging of the first when both
+   calls pass a `planPath`. The skill then picks a new change name and
+   retries; a refused call does not count toward its 5-call cap, and it
+   stops after 3 refusals.
+   On success it replaces the whole
    `<active-worktree>/.sdlc-v2/openspec-staging/<changeName>/` directory
    (gitignored) with the new files, writes a `stage.json` manifest
    (`change`, `schema`, `planPath`, each file's `path` + SHA-256, and
