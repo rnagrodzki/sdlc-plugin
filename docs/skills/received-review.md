@@ -81,8 +81,8 @@ moment a verdict is first reached — a verdict can still change later in the
 run, and the deferred file is append-only, so an early write would leave a
 stale entry behind. They show up in the deferred backlog that
 [/deferred](deferred.md) triages, and in the end-of-run ledger that accounts
-for every finding as `fixed`, `deferred` (grouped by `reason`), or
-`UNACCOUNTED`.
+for every finding as `fixed`, `deferred` (grouped by `reason`),
+`skipped at Step 10`, or `UNACCOUNTED`.
 
 **Recording is best-effort, with a fallback.** The primary write attaches the
 finding to the current `/ship` run. When there is no ship state for the branch
@@ -113,6 +113,25 @@ is listed under "Auto-accepted", and each pending edit under "Pending", in the
 summary this skill relays back. Pass
 `--no-harden` to skip this dispatch — for example when `/ship`'s own `harden`
 step already owns hardening for the run.
+
+## Consent and auto-apply severities
+
+Set `receivedReview.alwaysFixSeverities` in `.sdlc-v2/local.toml` (or `~/.sdlc/local.toml`).
+Allowed values: `critical`, `high`, `medium`, `low`, `info`. Default: `[]` (every finding asks).
+
+| Situation | What happens |
+|---|---|
+| `--auto` | Every "will fix" finding gets its fix. The setting adds nothing. |
+| A "will fix" finding with a listed severity | It gets its fix with no prompt. One `pre-approved` line shows it. |
+| A comment with no severity | It counts as `medium`. |
+| Other findings exist | One prompt asks about them only. |
+| You answer skip | Only the pre-approved findings get their fix. Skipped findings get no fix, no reply and no record. |
+| You answer edit | The skill shows the plan again and computes the pre-approved findings again. |
+| Every finding is pre-approved | No prompt. |
+| No finding needs an action | No prompt. Only the summary shows. |
+| The local file cannot be read | The error shows, and every finding asks. |
+
+The end-of-run ledger gets one more term: `skipped at Step 10` counts each finding that you skipped while pre-approved findings existed. The term shows only when its count is not 0.
 
 ## Fix progress on the dashboard
 

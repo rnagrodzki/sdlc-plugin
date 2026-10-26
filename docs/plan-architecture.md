@@ -85,7 +85,10 @@ rules:
 
 - **Prune-on-write:** When a new `plan-<branch>-*.json` is written, older
   state files for the same branch prefix are deleted — except a sibling
-  `plan` run already marked `done`, which is kept (see
+  `plan` run that is `done`, that was written in the last 24 hours
+  (`state.PlanRunLiveWindow`), or that has a `sessionId` that differs from
+  the writer's. A new run has no `sessionId` yet, so it keeps every stamped
+  run. The run of a second plan session on the same branch is thus kept (see
   [Plan run lifetime](#plan-run-lifetime)).
 - **Evaluate, don't delete:** The stop hook reads the state file once `done`
   is set and evaluates it, but no longer deletes it — deletion is owned by
@@ -164,7 +167,7 @@ flowchart TD
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_prepare({resolveTemplate: true, fileCount: N})`, `plan_mark({marker: "plan-file", path: "..."})` |
+| **Tools called** | `plan_prepare({resolveTemplate: true, runId, fileCount: N})`, `plan_mark({marker: "plan-file", runId, path: "..."})` |
 | **Subagents** | None |
 | **Plan sections written** | Template skeleton (header fields: Goal, Architecture, Source, Verification) via `skeletonMarkdown` + `headerMarkdown` |
 | **Failure modes** | Missing `.sdlc-v2/config.toml`: benign fallback to defaults. Invalid OpenSpec change: `errors[]` populated, pipeline stops. |
@@ -203,7 +206,10 @@ both under gitignored `.sdlc-v2/runs/` — but never a tracked file, which is
 what lets it stay `ReadOnly:true` in its MCP annotations (see
 docs/mcp-tool-annotations.md) and therefore callable in plan mode at all. A
 call without `resume` or `resolveTemplate` also starts a new run and
-best-effort deletes older runs' evidence directories for the branch.
+best-effort deletes the evidence directories of older runs of the branch
+that are not kept (not done, not written in the last 24 hours, and with no
+`sessionId` that differs from the writer's). A new run has no `sessionId`
+yet, so it keeps the evidence of every stamped run.
 
 Two consequences worth knowing:
 
@@ -275,7 +281,7 @@ orchestrator goes to Step 3.
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `validate({action: "plan_gates", file: planFilePath})` (the `go-gates` gate check, sent in the lane fan-out message), `plan_support({action: "merge_results"})`, `plan_support({action: "evidence_record"})` (`main` item `S3-guardrail-findings`: the `{id, gateId}` of each `G14` and `G22` issue from `allIssues`, without the synthetic lane issues, read by the round 1 review record), `plan_mark({marker: "guardrailsEvaluated"})`, `plan_mark({marker: "critiqueRan"})` |
+| **Tools called** | `validate({action: "plan_gates", file: planFilePath})` (the `go-gates` gate check, sent in the lane fan-out message), `plan_support({action: "merge_results"})`, `plan_support({action: "evidence_record"})` (`main` item `S3-guardrail-findings`: the `{id, gateId}` of each `G14` and `G22` issue from `allIssues`, without the synthetic lane issues, read by the round 1 review record), `plan_mark({marker: "guardrailsEvaluated", runId})`, `plan_mark({marker: "critiqueRan", runId})` |
 | **Subagents** | 5 lane subagents and the `validate plan_gates` call in a single message, after the inline check of G5, G6, G13 and G15 (see [Fan-Out Architecture](#step-3-lane-and-gate-check-fan-out)) |
 | **Plan sections written** | None (findings stored for Step 4) |
 | **Failure modes** | Lane failure, or a lane not returned after its retry: the lane is recorded with `status: "fail"` and a blocking synthetic issue (every lane except dimension-coverage, and the go-gates entry). `merge_results` lists it in `laneFailures` and sets the merged status to `Issues Found`. A dimension-coverage failure alone is advisory. Session stops during Step 3: critique markers are not set and the stop hook warns. The resume path dispatches the lanes again. |
@@ -303,10 +309,10 @@ appendix mapping OpenSpec requirements to plan tasks.
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_support({action: "merge_results"})`; `plan_mark({marker: "review-round"})` when the round is Approved; merged re-dispatch only: `validate({action: "plan_gates", file: planFilePath})` in the dispatch message |
+| **Tools called** | `plan_support({action: "merge_results"})`; `plan_mark({marker: "review-round", runId})` when the round is Approved; merged re-dispatch only: `validate({action: "plan_gates", file: planFilePath})` in the dispatch message |
 | **Subagents** | 3 lens reviewers dispatched in a single message for plans with 8 or more tasks, else 1 reviewer, both on the opposite model (see [Fan-Out Architecture](#step-5-lens-review)) |
 | **Plan sections written** | `## Verification Scorecard` (regenerated after each lens merge iteration) |
-| **Failure modes** | All lenses approve: proceed to Step 6.5. Lens or reviewer not returned after its retry: the orchestrator does that review inline from the same filled prompt and records it as `<writerId>-inline-fallback`. Round `reviewLoop.maxRounds` (5) ends with blocking issues: Step 6 runs its fix pass, then asks one AskUserQuestion question per open finding (`accepted` / `rejected` / `stop`, 4 per call) and stores the answers with `plan_mark({marker: "review-outcome"})`. No 6th round starts. |
+| **Failure modes** | All lenses approve: proceed to Step 6.5. Lens or reviewer not returned after its retry: the orchestrator does that review inline from the same filled prompt and records it as `<writerId>-inline-fallback`. Round `reviewLoop.maxRounds` (5) ends with blocking issues: Step 6 runs its fix pass, then asks one AskUserQuestion question per open finding (`accepted` / `rejected` / `stop`, 4 per call) and stores the answers with `plan_mark({marker: "review-outcome", runId})`. No 6th round starts. |
 
 Skipped in `lightweight` mode. For a plan with 8 or more tasks, three lens reviewers (architecture,
 requirements, risk) evaluate the plan independently. Results merge through
@@ -327,7 +333,7 @@ unavailable, it asks nothing and stops with no hand-off.
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_support({action: "material_snapshot"})`, `plan_support({action: "material_compare"})`, `plan_mark({marker: "review-round"})` (every round); for a `Gate check go-gates failed` issue: `validate({action: "plan_gates", file: planFilePath})` once more; last round with open findings only: `plan_mark({marker: "review-outcome"})`; Create flow only, at the end of the step: `plan_support({action: "openspec_instructions"})`, `plan_support({action: "openspec_stage"})` (see [OpenSpec staging](#openspec-staging)) |
+| **Tools called** | `plan_support({action: "material_snapshot"})`, `plan_support({action: "material_compare"})`, `plan_mark({marker: "review-round", runId})` (every round); for a `Gate check go-gates failed` issue: `validate({action: "plan_gates", file: planFilePath})` once more; last round with open findings only: `plan_mark({marker: "review-outcome", runId})`; Create flow only, at the end of the step: `plan_support({action: "openspec_instructions"})`, `plan_support({action: "openspec_stage"})` (see [OpenSpec staging](#openspec-staging)) |
 | **Subagents** | None |
 | **Plan sections written** | Fixes applied to task sections; Create flow only: `**OpenSpec-Create:**` header line replaced by `**OpenSpec-Staging:**`, `## OpenSpec Appendix` body replaced by the staged-file traceability table |
 | **Failure modes** | Material change detected: the next round runs the merged dispatch from Step 5 (lanes, gate checks and lenses). Non-material change: Step 5 dispatches the lenses only. |
@@ -368,7 +374,7 @@ The `final: true` flag enables PF9 (Verification Scorecard) and PF10
 
 | Aspect | Detail |
 |--------|--------|
-| **Tools called** | `plan_mark({marker: "done"})`, which returns the `timing` report that Step 7 prints (see [Step 7 timing report](#step-7-timing-report)); `learnings_log({action: "append"})` |
+| **Tools called** | `plan_mark({marker: "done", runId})`, which returns the `timing` report that Step 7 prints (see [Step 7 timing report](#step-7-timing-report)); `learnings_log({action: "append"})` |
 | **Subagents** | None |
 | **Plan sections written** | None (Scorecard already written in Step 5) |
 | **Failure modes** | None |
@@ -381,7 +387,7 @@ during Step 5's lens-merge iterations. When the plan file header has an
 
 #### Step 7 timing report
 
-`plan_mark({marker: "done"})` builds the report in
+`plan_mark({marker: "done", runId})` builds the report in
 `internal/tools/plan_timing.go` and returns it in `timing`. Step 7 prints
 `timing` verbatim, then each `warnings` line. `timing` always holds the
 report. All times are wall clock, UTC.
@@ -527,7 +533,8 @@ at `<runId>.evidence/brief.md` and feeds Step 2's decomposition.
 A brief that contains zero `F-DIM-N` finding IDs triggers a fallback to inline
 exploration; the brief is never stored (only a brief that passes validation
 is written), and the writer evidence files stay in `<runId>.evidence/` until
-the Stop hook removes the whole directory after the `done` marker.
+ship's `cleanup-pipeline` step (only when the stamp landed and the ship report
+file exists) or the GC TTL sweep removes the whole directory.
 
 ### Step 3: Lane and Gate-Check Fan-Out
 
@@ -733,19 +740,24 @@ never in parallel with another `main` write, since two parallel upserts of
 | `plan_support({action: "evidence_record", runId, writerId, status, items?, brief?})` | A writer registers itself running, then done with its items. `writerId: "main"` also records the brief (only when it passes validation) and decision records. |
 | `plan_support({action: "evidence_digest", runId, expectedWriters?, timeoutSeconds?, statusOnly?})` | Returns the `writers` status table always, plus a `digest` (run summary including `briefPath`) unless `statusOnly`; never returns item bodies. `expectedWriters` defaults to the checkpoint's `expectedWriters` when omitted. |
 | `plan_support({action: "evidence_get", runId, ids?, writerIds?})` | Needs `ids`, `writerIds`, or both. `ids` (max 200) are item IDs: each ID is searched in every writer file, every match is returned in writer-name order (item IDs are unique only within one writer), and an ID with no match is listed in `notFound`. `writerIds` returns every item of each writer; an unknown writer is listed in `notFound`. Fetches recorded item bodies for CRITIQUE, or for template fills like `{REQUIREMENTS_SUMMARY}`, and for the brief ids of the inline G15 check on a resume. |
-| `plan_mark({marker: "checkpoint", data: {step, iteration, expectedWriters?}})` | Replaces (not appends) `st.Data["checkpoint"]`. In the same write, the first checkpoint of each step and iteration adds one `{step, iteration, at}` entry to the top-level `stepTimes` list (max 64); a repeat keeps the first entry. At the limit the checkpoint is saved, no entry is added and a warning is returned; a `stepTimes` value that is not a list is kept and a warning is returned. The result echoes `stepTime` (`step`, `iteration`, `at` and status `added`, `kept` or `not recorded`). Called at the start of every step (`1, 2, 3, 4, 5, 6, 6.5, 6.6, 7`); `expectedWriters` is passed only at a fan-out step (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer). |
-| `plan_mark({marker: "review-round", data: {round, mergedStatus, found, fixed, lenses, findings?}})` | Upserts one row of `st.Data["reviewRounds"]` by `round`. Called once per review round, in Step 5 (Approved) or Step 6 (after the fixes). `findings` is optional: max 200 `{id, fixed}`, where `id` is the `merge_results` `allIssues` id (`^f-[0-9a-f]{8}$`); a passed `[]` is stored as `[]`, an absent key stays absent; a repeated `id` is a `DomainError`. The dashboard reads the rows. |
-| `plan_mark({marker: "review-outcome", data: {findings}})` | Replaces (not appends) `st.Data["reviewOutcome"]` with this call's list: 1 to 200 `{id, text, choice, reason}`, `choice` one of `accepted`, `rejected`, `stop` (the `outcomeChoice*` constants), `text` and `reason` max 200 runes. Pass every answered finding on every call. Returns one of two `next` texts: with a `stop` choice, "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; with no `stop` choice, "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5." (`reviewOutcomeStopNext` / `reviewOutcomeNext`). Also rejects a non-array `findings` and a repeated `id`. Invalid input is a `DomainError` that writes nothing. |
-| `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true})` | Reuses the active run without resetting it. Restores `runId`, `guardrailsFile`, `styleGuideFile`, `lanes`, `gateChecks`, `lensReviewers`, `style`, and `template.activeTemplatePath` as a fresh run would set them. Returns a `no active plan run` domain error when there is none. |
+| `plan_mark({marker: "checkpoint", runId, data: {step, iteration, expectedWriters?}})` | Replaces (not appends) `st.Data["checkpoint"]`. In the same write, the first checkpoint of each step and iteration adds one `{step, iteration, at}` entry to the top-level `stepTimes` list (max 64); a repeat keeps the first entry. At the limit the checkpoint is saved, no entry is added and a warning is returned; a `stepTimes` value that is not a list is kept and a warning is returned. The result echoes `stepTime` (`step`, `iteration`, `at` and status `added`, `kept` or `not recorded`). Called at the start of every step (`1, 2, 3, 4, 5, 6, 6.5, 6.6, 7`); `expectedWriters` is passed only at a fan-out step (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer). |
+| `plan_mark({marker: "review-round", runId, data: {round, mergedStatus, found, fixed, lenses, findings?}})` | Upserts one row of `st.Data["reviewRounds"]` by `round`. Called once per review round, in Step 5 (Approved) or Step 6 (after the fixes). `findings` is optional: max 200 `{id, fixed}`, where `id` is the `merge_results` `allIssues` id (`^f-[0-9a-f]{8}$`); a passed `[]` is stored as `[]`, an absent key stays absent; a repeated `id` is a `DomainError`. The dashboard reads the rows. |
+| `plan_mark({marker: "review-outcome", runId, data: {findings}})` | Replaces (not appends) `st.Data["reviewOutcome"]` with this call's list: 1 to 200 `{id, text, choice, reason}`, `choice` one of `accepted`, `rejected`, `stop` (the `outcomeChoice*` constants), `text` and `reason` max 200 runes. Pass every answered finding on every call. Returns one of two `next` texts: with a `stop` choice, "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; with no `stop` choice, "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5." (`reviewOutcomeStopNext` / `reviewOutcomeNext`). Also rejects a non-array `findings` and a repeated `id`. Invalid input is a `DomainError` that writes nothing. |
+| `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true, runId})` | Reuses the run that `runId` names (else the active run) without resetting it. Restores `runId`, `guardrailsFile`, `styleGuideFile`, `lanes`, `gateChecks`, `lensReviewers`, `style`, and `template.activeTemplatePath` as a fresh run would set them. Returns a `no active plan run` domain error when there is none. |
 
 ### Resume flow
 
 1. The SessionStart hook (post-compact) prints `Active plan (post-compact):
    step <n>, branch <b>; plan file: <path>` plus a `Resume with:` line
-   (`internal/hooks/session_start.go`, `planResumeLines`).
+   (`internal/hooks/session_start.go`, `planResumeLines`). The hook calls
+   `state.PlanRunForSession` with `activeOnly`. It picks the newest active
+   plan run of the branch (`skillInvoked` set, `done` not set, written in
+   the last 24 hours) in two steps: first the run whose `sessionId` is the
+   session of the hook, else the newest active run with no `sessionId`. It
+   prints no line when neither exists.
 2. The skill's Session recovery rule matches the plan file path and calls
    `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck:
-   true})`.
+   true, runId})` with the `runId` of the `Resume with:` line.
 3. `plan_support({action: "evidence_digest", runId})` returns the writer
    status table plus `briefPath`. On error, the skill prints it, stops, and
    tells the user to re-invoke `/sdlc:plan`.
@@ -771,9 +783,9 @@ never in parallel with another `main` write, since two parallel upserts of
      A step 3 resume also runs both gate checks again (`validate plan_gates`
      and the inline check of G5, G6, G13 and G15). A repeat is safe: neither
      gate check writes anything.
-5. If the resume call returns `no active plan run`, the skill prints "No
-   active plan run to resume — starting a new plan." and runs Step 0
-   normally.
+5. If the resume call returns `no active plan run`, `plan run <runId> not
+   found` or `plan run <runId> is done`, the skill prints "No active plan
+   run to resume — starting a new plan." and runs Step 0 normally.
 
 ### Lifecycle
 
@@ -781,10 +793,13 @@ never in parallel with another `main` write, since two parallel upserts of
   (`internal/tools/plan.go`, inside `newPlanRun`), which best-effort deletes
   sibling `<runId>.evidence/` directories that share the same state-file
   prefix and branch slug, skipping its own run's directory **and** any
-  sibling whose state file is itself a finished (`done`) plan run — the same
+  sibling whose plan run is kept (done, written in the last 24 hours, or
+  with a `sessionId` that differs from the writer's) — the same
   exception `state.Write`'s prune-on-write applies to the `.json` files
   themselves (see [Plan run lifetime](#plan-run-lifetime)). This is not
-  TTL-based — it only fires when a new run starts on the same branch.
+  the GC TTL — it only fires when a new run starts on the same branch. A new
+  run has no `sessionId` yet, so it keeps every stamped run, and it keeps
+  each plan run written in the last 24 hours.
 - Every `plan_mark` call refreshes `st.Data["planTiming"]`
   (`refreshPlanTiming` in `internal/tools/plan.go`) from
   `planIntegrity.skillInvoked` and the plan file's own mtime — the run's
@@ -792,7 +807,7 @@ never in parallel with another `main` write, since two parallel upserts of
   acceptance time. This is best-effort: a missing `planFilePath`, or a plan
   file that cannot be stat'ed, leaves `planTiming` (and `planFilePath`) at
   their previous value and does not fail the marker call.
-- `plan_mark({marker: "done"})` appends one `history.RunRecord` (skill
+- `plan_mark({marker: "done", runId})` appends one `history.RunRecord` (skill
   `"plan"`, outcome `"done"`, `plan_file`, `started_at`, `last_modified_at`,
   `duration_ms`) to `.sdlc-v2/history/runs.jsonl`
   (`appendPlanRunRecord` in `internal/tools/plan.go`) — this file lives
@@ -802,7 +817,7 @@ never in parallel with another `main` write, since two parallel upserts of
   `done` after a rejected ExitPlanMode) appends a newer record rather than
   replacing the first; readers take the latest `skill:"plan"` record for the
   branch. A failed append is non-fatal: the call still returns `ok: true`,
-  with the error named in `warning`. After `plan_mark({marker: "done"})`,
+  with the error named in `warning`. After `plan_mark({marker: "done", runId})`,
   the Stop hook (`internal/hooks/stop_hooks.go`, `planIntegrityFromState`)
   reads the state file once and evaluates the five markers, but it does
   **not** delete the state file or `state.EvidenceDir(st.Root, runId)` —
@@ -815,8 +830,7 @@ never in parallel with another `main` write, since two parallel upserts of
   matching `.json` state file has already been removed. It is the TTL
   backstop both for runs that never reached `done` and were never followed
   by a new run on the same branch, and for a `done` run's evidence
-  directory once the Stop hook has stopped being the thing that cleans it
-  up.
+  directory that ship's `cleanup-pipeline` step did not delete.
 
 ---
 
@@ -1003,7 +1017,7 @@ stateDiagram-v2
     CritiqueRan --> Waiting: Stop fires before "done"
     Waiting --> [*]: State file kept (no evaluation, no deletion)
 
-    note right of Created: Prune-on-write deletes older plan-branch-*.json (done runs kept)
+    note right of Created: Prune-on-write deletes older plan-branch-*.json (done and live runs kept)
     note right of Done: stop-plan-integrity checks all 5 markers
     note right of Kept: Survives so ship's report step can read Planning/Timeline
 ```
@@ -1022,7 +1036,7 @@ stateDiagram-v2
 
 `stop-plan-integrity` in `internal/hooks/stop_hooks.go`:
 
-1. Attempts to find and read `plan-<branch>-*.json` state file.
+1. Finds the plan state file in three steps (`findPlanState`): first the newest plan run of the branch whose `sessionId` is the session of the hook, else the newest plan run of the branch with no `sessionId` (both from `state.PlanRunForSession`, not limited to active runs, so a run that reached `done` is found), else the newest plan run of the branch (`state.LatestPlanRun`).
 2. Calls `planIntegrityFromState`: first checks whether the `done` marker is present. If absent, the plan is still running — returns silently without evaluation or deletion.
 3. Once `done` is present, checks all 5 markers present + `planFilePath` stat, and leaves the state file and its evidence directory on disk — this hook no longer deletes them. Deletion is owned by ship's `cleanup-pipeline` step or the GC TTL sweep; see [Plan run lifetime](#plan-run-lifetime) below.
 4. If no state file found, falls back to `planIntegrityFromTranscript`: scans last 64KB of transcript for "Plan mode is active".
@@ -1041,7 +1055,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 
 `state.Write` deletes sibling state files of the same prefix and branch on every write (prune-on-write). `state.keepSibling` decides which siblings stay. The first matching rule applies:
 
-1. plan: a finished (`done`) plan run is kept. `state.PruneEvidenceDirs` keeps its evidence directory by the same rule.
+1. plan: a finished (`done`) plan run is kept. A plan run that was written in the last 24 hours, or that has a `sessionId` that differs from the writer's, is kept too, so two plan sessions can share a branch. A new run has no `sessionId` yet, so it keeps every stamped run. The GC TTL sweep deletes such a run later. `state.PruneEvidenceDirs` keeps its evidence directory by the same rule (`state.keepPlanSibling`).
 2. ship: a dry-run run (`flags.dryRun:true`) is deleted, also when it is completed or has another `sessionId`.
 3. ship: a run with `pipelineStatus:"completed"` is kept.
 4. execute: a run with `runStatus:"completed"` is kept.

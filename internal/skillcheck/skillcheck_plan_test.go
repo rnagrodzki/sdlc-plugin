@@ -17,10 +17,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -620,5 +622,97 @@ func TestPlanSkillPreplanTopicMap(t *testing.T) {
 				t.Errorf("%s: the bullet %q does not say %q:\n%s", rel, start, want, b)
 			}
 		}
+	}
+}
+
+// planSkillsIsReuseCall reports whether site is a plan_prepare call that
+// reuses an existing run: it has the top-level key resume or resolveTemplate.
+// The first plan_prepare call has neither key: it creates the run.
+func planSkillsIsReuseCall(site planSkillsCallSite) bool {
+	return site.name == "plan_prepare" &&
+		(slices.Contains(site.keys, "resume") || slices.Contains(site.keys, "resolveTemplate"))
+}
+
+// planSkillsRunIDProblems returns one message for each call in content that
+// must pass runId and does not: every plan_mark call, and every plan_prepare
+// call that planSkillsIsReuseCall accepts. The first plan_prepare call creates
+// the run, so it has no run ID to pass. Only top-level keys count
+// (planSkillsExtractArgKeys), so a runId inside data does not satisfy the
+// check.
+func planSkillsRunIDProblems(content string) []string {
+	var problems []string
+	for _, site := range planSkillsExtractCalls(content) {
+		switch {
+		case slices.Contains(site.keys, "runId"):
+		case site.name == "plan_mark":
+			problems = append(problems, fmt.Sprintf("plan_mark call at line %d has no runId", site.line))
+		case planSkillsIsReuseCall(site):
+			problems = append(problems, fmt.Sprintf("plan_prepare reuse call at line %d has no runId", site.line))
+		}
+	}
+	return problems
+}
+
+// TestPlanSkillCallsPassRunID checks that every plan_mark call and every
+// plan_prepare call with resume or resolveTemplate in plan/SKILL.md passes
+// runId, so a second plan session on the same branch cannot receive this
+// session's writes. Prose mentions count as calls. The match is on the
+// literal "plan_mark({" and "plan_prepare({", with or without a space after
+// the brace. planSkillsExtractArgKeys gives the top-level keys of each call.
+func TestPlanSkillCallsPassRunID(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    []string
+	}{
+		{"plan_mark with runId", `plan_mark({ marker: "done", runId: "<runId>" })`, nil},
+		{"plan_mark without runId", `plan_mark({ marker: "done" })`, []string{"plan_mark call at line 1 has no runId"}},
+		{"plan_mark without runId and no space after the brace", `plan_mark({marker: "done"})`, []string{"plan_mark call at line 1 has no runId"}},
+		{"plan_prepare resume with runId", `plan_prepare({ resume: true, runId: "<runId>" })`, nil},
+		{"plan_prepare resolveTemplate without runId", `plan_prepare({ ..., resolveTemplate: true, ... })`, []string{"plan_prepare reuse call at line 1 has no runId"}},
+		{"plan_prepare resume without runId", `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true })`, []string{"plan_prepare reuse call at line 1 has no runId"}},
+		{"first plan_prepare call", `plan_prepare({ skipConfigCheck: true, userPrompt: USER_PROMPT })`, nil},
+		{"runId only inside data", `plan_mark({ marker: "checkpoint", data: { runId: "x" } })`, []string{"plan_mark call at line 1 has no runId"}},
+		{"nested braces", `plan_mark({ marker: "checkpoint", runId: "<runId>", data: { step: "1", expectedWriters: ["a"] } })`, nil},
+		{"last line with no newline", "text\nplan_mark({ marker: \"done\", runId: \"<runId>\" })", nil},
+		{"line number of a later call", "text\nplan_mark({ marker: \"done\" })", []string{"plan_mark call at line 2 has no runId"}},
+		{"shorthand runId key", `plan_mark({ marker: "done", runId })`, []string{"plan_mark call at line 1 has no runId"}},
+		{"no call", "plan_mark and plan_prepare in prose, with no call", nil},
+		{"closing brace inside a string value", `plan_mark({ note: "}", marker: "done" })`, []string{"plan_mark call at line 1 has no runId"}},
+		{"braces inside a string value, with runId", `plan_mark({ path: "{x}", marker: "done", runId: "r" })`, nil},
+		{"two calls on one line", `plan_mark({ marker: "a", runId: "r" }) then plan_mark({ marker: "b" })`, []string{"plan_mark call at line 1 has no runId"}},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got := strings.Join(planSkillsRunIDProblems(tc.content), "\n")
+			if want := strings.Join(tc.want, "\n"); got != want {
+				t.Errorf("planSkillsRunIDProblems(%q)\n got: %q\nwant: %q", tc.content, got, want)
+			}
+		})
+	}
+
+	rel := "skills/plan/SKILL.md"
+	data, err := os.ReadFile(filepath.Join(planSkillsRepoRoot(t), rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	content := string(data)
+	marks, reuses := 0, 0
+	for _, site := range planSkillsExtractCalls(content) {
+		switch site.name {
+		case "plan_mark":
+			marks++
+		case "plan_prepare":
+			if planSkillsIsReuseCall(site) {
+				reuses++
+			}
+		}
+	}
+	if marks == 0 || reuses == 0 {
+		t.Fatalf("%s: found %d plan_mark calls and %d plan_prepare reuse calls -- the call detection no longer matches this file's call style", rel, marks, reuses)
+	}
+	for _, problem := range planSkillsRunIDProblems(content) {
+		t.Errorf("%s: %s", rel, problem)
 	}
 }

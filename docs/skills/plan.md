@@ -104,7 +104,7 @@ Loads the proposal, delta specs, and task list from
   entry.
 - **`plan_prepare` always runs first, but it only resumes state when asked.**
   The skill's first action is always a `plan_prepare(...)` call. By default it
-  starts a fresh run. Pass `resume: true` to reuse the active run instead —
+  starts a fresh run. Pass `resume: true` and the `runId` to reuse that run instead —
   the skill does this automatically after a compaction (see
   [Recovery after compaction](#recovery-after-compaction) below).
 - **Complexity routing matters.** If your change touches only 1 file, the skill
@@ -177,9 +177,9 @@ Loads the proposal, delta specs, and task list from
 
 ## Recovery after compaction
 
-- What you see: `Active plan (post-compact): step <n>, branch <b>; plan file: <path>` in the session context, followed by a line that tells Claude to invoke the sdlc:plan skill first when the skill instructions are not in context, and a `Resume with:` line.
-- What the skill does: reloads the run with `plan_prepare` (resume mode), reads the evidence digest, then resumes at the saved step; it does not clear the plan file.
-- Where evidence lives: <main-worktree>/.sdlc-v2/runs/<runId>.evidence/ (deleted after the plan is done).
+- What you see: `Active plan (post-compact): step <n>, branch <b>; plan file: <path>` in the session context, followed by a line that tells Claude to invoke the sdlc:plan skill first when the skill instructions are not in context, and a `Resume with:` line. The banner shows only for a run that was written in the last 24 hours (`state.PlanRunLiveWindow`).
+- What the skill does: reloads the run with `plan_prepare` (resume mode, with the `runId` of the `Resume with:` line), reads the evidence digest, then resumes at the saved step; it does not clear the plan file.
+- Where evidence lives: <main-worktree>/.sdlc-v2/runs/<runId>.evidence/ (deleted by ship's cleanup step when ship saved the plan summary, else by the GC sweep). A second plan session on the same branch keeps its own run and its own evidence.
 
 ## Plan writing style
 

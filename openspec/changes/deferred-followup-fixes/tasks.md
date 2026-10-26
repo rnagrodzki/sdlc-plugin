@@ -57,10 +57,10 @@ flowchart LR
 
 ## 7. Docs for received-review and ship (#78, #82)
 
-- [ ] 7.1 Add `## Consent and auto-apply severities` and the `skipped at Step 10` ledger term in docs/skills/received-review.md — verify: `grep -n '## Consent and auto-apply severities' docs/skills/received-review.md` <!-- ref:7-1-add-consent-and-auto-apply-severitie-ddfeb8 -->
-- [ ] 7.2 Update the `sources` values and the pause rule in docs/skills/ship.md — verify: `grep -rn '"config' docs/skills/ship.md` shows only the `config (version.*)` labels <!-- ref:7-2-update-the-sources-values-and-the-pa-00b5f2 -->
-- [ ] 7.3 Update the `sources` list and the pause rule in plugins/sdlc/skills/ship/reference.md — verify: `grep -n '"local"' plugins/sdlc/skills/ship/reference.md` <!-- ref:7-3-update-the-sources-list-and-the-paus-9638b4 -->
-- [ ] 7.4 Change the `sources.steps` values to `local` in plugins/sdlc/skills/ship/config-format.md — verify: `go test ./internal/config/... ./internal/skillcheck/...` <!-- ref:7-4-change-the-sources-steps-values-to-l-e73df8 -->
+- [x] 7.1 Add `## Consent and auto-apply severities` and the `skipped at Step 10` ledger term in docs/skills/received-review.md — verify: `grep -n '## Consent and auto-apply severities' docs/skills/received-review.md` <!-- ref:7-1-add-consent-and-auto-apply-severitie-ddfeb8 -->
+- [x] 7.2 Update the `sources` values and the pause rule in docs/skills/ship.md — verify: `grep -rn '"config' docs/skills/ship.md` shows only the `config (version.*)` labels <!-- ref:7-2-update-the-sources-values-and-the-pa-00b5f2 -->
+- [x] 7.3 Update the `sources` list and the pause rule in plugins/sdlc/skills/ship/reference.md — verify: `grep -n '"local"' plugins/sdlc/skills/ship/reference.md` <!-- ref:7-3-update-the-sources-list-and-the-paus-9638b4 -->
+- [x] 7.4 Change the `sources.steps` values to `local` in plugins/sdlc/skills/ship/config-format.md — verify: `go test ./internal/config/... ./internal/skillcheck/...` <!-- ref:7-4-change-the-sources-steps-values-to-l-e73df8 -->
 
 ## 8. Close #79, #80 and #81 with evidence comments
 
@@ -91,11 +91,11 @@ flowchart LR
 
 ## 12. Plan skill passes the run ID, docs describe parallel runs
 
-- [ ] 12.1 Pass `runId` in every `plan_mark` call and every reuse call of `plan_prepare`, and fix the state-file lifecycle text, in plugins/sdlc/skills/plan/SKILL.md — verify: `go test ./internal/skillcheck/...` <!-- ref:12-1-pass-runid-in-every-plan-mark-call-79b5f0 -->
-- [ ] 12.2 Add `runId` to the resume and `plan_mark` reference text in plugins/sdlc/skills/plan/state-format.md — verify: `grep -c 'runId' plugins/sdlc/skills/plan/state-format.md` is higher than before <!-- ref:12-2-add-runid-to-the-resume-and-plan-ma-871f58 -->
-- [ ] 12.3 Describe the live-run keep rule and the run ID lookup in docs/plan-architecture.md — verify: `grep -n 'state.PlanRunLiveWindow' docs/plan-architecture.md` <!-- ref:12-3-describe-the-live-run-keep-rule-and-ab2abe -->
-- [ ] 12.4 Update the evidence lifetime and resume lines of Recovery after compaction in docs/skills/plan.md — verify: `grep -n 'Resume with:' docs/skills/plan.md` <!-- ref:12-4-update-the-evidence-lifetime-and-re-521e6f -->
-- [ ] 12.5 Add `TestPlanSkillCallsPassRunID` in internal/skillcheck/skillcheck_plan_test.go — verify: `go test ./internal/skillcheck/ -run TestPlanSkillCallsPassRunID` <!-- ref:12-5-add-testplanskillcallspassrunid-in-caea64 -->
+- [x] 12.1 Pass `runId` in every `plan_mark` call and every reuse call of `plan_prepare`, and fix the state-file lifecycle text, in plugins/sdlc/skills/plan/SKILL.md — verify: `go test ./internal/skillcheck/...` <!-- ref:12-1-pass-runid-in-every-plan-mark-call-79b5f0 -->
+- [x] 12.2 Add `runId` to the resume and `plan_mark` reference text in plugins/sdlc/skills/plan/state-format.md — verify: `grep -c 'runId' plugins/sdlc/skills/plan/state-format.md` is higher than before <!-- ref:12-2-add-runid-to-the-resume-and-plan-ma-871f58 -->
+- [x] 12.3 Describe the live-run keep rule and the run ID lookup in docs/plan-architecture.md — verify: `grep -n 'state.PlanRunLiveWindow' docs/plan-architecture.md` <!-- ref:12-3-describe-the-live-run-keep-rule-and-ab2abe -->
+- [x] 12.4 Update the evidence lifetime and resume lines of Recovery after compaction in docs/skills/plan.md — verify: `grep -n 'Resume with:' docs/skills/plan.md` <!-- ref:12-4-update-the-evidence-lifetime-and-re-521e6f -->
+- [x] 12.5 Add `TestPlanSkillCallsPassRunID` in internal/skillcheck/skillcheck_plan_test.go — verify: `go test ./internal/skillcheck/ -run TestPlanSkillCallsPassRunID` <!-- ref:12-5-add-testplanskillcallspassrunid-in-caea64 -->
 
 ## 13. Staging of another plan is kept
 

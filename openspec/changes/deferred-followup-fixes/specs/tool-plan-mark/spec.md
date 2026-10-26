@@ -67,7 +67,7 @@ Keep rule for a sibling run. The writer `sessionId` is the `sessionId` of the ru
 | 1 | has `planIntegrity.done` | kept |
 | 2 | state file last written less than 24 hours ago | kept |
 | 3 | has a non-empty `sessionId` that differs from the writer `sessionId` | kept |
-| 4 | any other run | removed, with its `.evidence/` directory |
+| 4 | any other run | its state file is removed. Its `.evidence/` directory stays until a `plan_prepare` call that starts a new run, or the GC TTL sweep, removes it. |
 
 - An empty writer `sessionId` (the hook did not stamp the written run yet) counts as different from every non-empty `sessionId`.
 - The GC TTL sweep (7 days by default) removes a run that rule 3 keeps, when that run is not the newest run of the branch.
