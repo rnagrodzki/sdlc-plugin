@@ -15,11 +15,16 @@ severity: high
   (success, cancel, error, stall, interrupt) must have an explicit next
   instruction. When the skill has a routes table, each terminal state needs
   its own row. A state the flow can enter but never says how to leave is
-  incomplete. A recovery step in a refusal or error row must change the failing condition for every input state that reaches that row. Read the tool or flag that the step names, and list the states that reach the row (for example a new file and an existing file). A step that works for only some of these states leaves the others stuck, and it is a finding. When an error or refusal row ends the run, also read the Suggestion and Next text of the tool that returned the error. The row must follow the recovery that text names, or the prose must state why the run ends instead. A row that ends the run while the tool tells the caller to retry, or the reverse, is a finding.
+  incomplete. A recovery step in a refusal or error row must change the failing condition for every input state that reaches that row. Read the tool or flag that the step names, and list the states that reach the row (for example a new file and an existing file). A step that works for only some of these states leaves the others stuck, and it is a finding. When an error or refusal row ends the run, also read the Suggestion and Next text of the tool that returned the error. The row must follow the recovery that text names, or the prose must state why the run ends instead. A row that ends the run while the tool tells the caller to retry, or the reverse, is a finding. The next instruction of a stop, cancel or error exit that ends the run says what the user does next (for example fix an input and run the skill again), or states that nothing is left to do. This holds for a stop in the first step, before any file or state is written, and for each cause that a step lists. Read each listed cause, not only the causes that have a row. A cause that names the reason and no next action for the user is a finding.
 - **Gate consistency.** A condition gating one step must not be
   contradicted by another step in the same file assuming the opposite
   (e.g. one step skips work "if `--force` was NOT passed" while a later
-  step assumes `--force` is always set by that point).
+  step assumes `--force` is always set by that point). The same holds
+  for an absolute statement (never, only, always, does not) in a rules
+  list, a description or a table: no step may do what it forbids or skip
+  what it requires, for example a rule that says the skill never adds a
+  section heading while a step adds one. A step that breaks such a
+  statement is a finding.
 - **Arguments-table / Workflow parity.** Every flag documented in the
   Arguments table must be referenced by name somewhere in Workflow, and
   every flag referenced in Workflow must appear in the Arguments table.
@@ -28,7 +33,10 @@ severity: high
   marker or status that a step defines or records (for example a kind of
   kept note or a column value): some later step or tool must read it, and
   each value a step reads must be recorded by some step. A recorded value
-  that nothing reads is a finding.
+  that nothing reads is a finding. The same parity applies to each field
+  that a tool returns and that the skill documents: some step must read
+  it, or the skill must state that it is informational only. A documented
+  field that no step reads is a finding.
 - **Numbered-step drift.** After steps are renumbered or reordered, every
   cross-reference to a step number — in the same file, or in a companion
   sub-flow it dispatches — must be updated to match.
@@ -53,7 +61,10 @@ severity: high
 - **AskUserQuestion option quality.** Options offered to the user must be
   mutually exclusive, phrased without a leading/loaded framing, and (per
   this project's own tool convention) carry a real, statable default —
-  not a set where only one option is actually workable.
+  not a set where only one option is actually workable. Each option must
+  lead to a different next action or a different recorded value. Two
+  options with the same outcome are one option written twice, and they
+  are a finding. Merge them or state what differs.
 - **Resource cleanup.** When a skill's flow dispatches background workers,
   sub-agents, or async tasks (e.g. Agent tool calls), verify that every
   possible exit path (success, stall, error, timeout, interrupt, cancel)
@@ -119,7 +130,14 @@ severity: high
   that reached that outcome. A definition such as 'all other rows' takes in
   items that no check ran on, for example when the source of the check was
   unavailable. Such items need their own bucket or stay out of the count. A
-  pass count that includes unchecked items is a finding.
+  pass count that includes unchecked items is a finding. The same holds
+  in the other direction: a set or count that routes the flow (for
+  example the sections still empty) must leave out any item that the
+  flow marks optional, or the route fires on a state that needs no
+  action. Check each such definition against the tool field it names. Each
+  member of a set that routes the flow to a question (for example each
+  section still empty) has a defined question or a named source that fills
+  it. A member with no defined question or source is a finding.
 - **Delegated next routes.** A step that defers to a tool result's `next`
   string is a route. List each `next` value the tool can return, and confirm
   that each one reaches every enabled opt-in step. An offer that hands off
@@ -132,6 +150,7 @@ severity: high
 - **Route placement.** A route leaves a step only at the end of that step, or it names the point where the rest of the step goes. A route taken from the middle of a step that skips the rest of it is a finding (for example 'fixes done, go to Step 5' inside a fix loop). Each route row names exactly one target step. A row that names two targets is a finding. Walk zero results and an errored check as boundary states of every routes table and bullet list, together with the last round and a single-item batch.
 - **Failure and warning signals.** A gate check, lane or retry that fails, errors or hits its retry limit must be reported as failed. Its gates are listed as unchecked, the final report has a slot for it, and the run records a failure, never a pass or `fixed: true`. A constant pass line that ignores a failed lane is a finding. Each field that a tool returns to report a problem (warnings, a partial-failure list, the result of a sibling check) must be read by a step and shown to the user or routed. A field that no step reads is a finding.
 - **Retry discipline.** A retry is a recovery step, so the recovery-step rule in Exit-state completeness applies: it must change an input or wait on a condition that the failed call did not control. Retrying a call that fails the same way for the same input (for example a deterministic validator error) is a finding. The step must route that error class to a fix or a stop.
+- **Mid-run change of stored data.** When a step deletes, prunes, adds or rewrites data that a later step reads or routes on (a section heading, a marker line such as a cut line, a table row), walk each later step that depends on that data. Each one must say what it does when the data is missing, because an earlier step or the user may have removed it during the run. A value derived from the data (an answer the user gave, a line the skill wrote, a count) must be recomputed or asked again by a named step when a later step changes the data. Check a final pass and a re-run of the step as boundary states. A flow that can reach a state with the data missing or the value stale, and has no step that restores or re-derives it, is a finding.
 
 ## What NOT to flag
 

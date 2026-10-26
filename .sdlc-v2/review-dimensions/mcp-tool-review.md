@@ -97,6 +97,17 @@ those same guardrails:
   action names the difference and the reason. This extends the new-action
   bullet above, which checks the new fields and not the policy shared with a
   sibling action.
+- A write or repair action that leaves a file on disk MUST leave a file that
+  the sibling read or check action of the same resource accepts. Run the read
+  action on the file that the write produced. When the read action refuses
+  it, the write is a finding, unless the description of the write names the
+  refusal and the reason. A write that adds, rewrites or repairs content (a
+  heading, a closing fence line, a marker) can create a state that the reader
+  rejects, so compare the reader's rules with what the writer emits. A test
+  runs the write and then the read on the result, and asserts the read
+  outcome. This extends the shared-input-policy bullet above, which compares
+  how two actions treat the same input, not the output of one action as the
+  input of the other.
 - When a handler action writes a state file owned by another tool (a
   cross-tool side effect), verify: (1) the action's description in the
   tool registration names the side effect and its recovery contract; (2)
@@ -195,9 +206,31 @@ those same guardrails:
   parser that drops an entry with no signal is a finding. A test drives an
   input with no items and an input with one unmatched entry, and asserts the
   warning or the error.
+- A parser or check that classifies the lines of a Markdown file (fences,
+  table rows, headings, line ends) MUST read every spelling of a construct
+  that the file can hold, or report the form it cannot read. Drive these
+  through the check and compare each with the plain form: a code fence with
+  no closing line, a table row or heading with leading spaces, and CRLF line
+  ends. A form that makes a section read as empty, or that the check skips
+  with no signal, is a finding: the caller sees 'empty' for a file that has
+  content. A test per form asserts the result or the warning. This extends
+  the zero-count bullet above, which tests an input with no items and one
+  unmatched entry, but not a variant spelling of an entry that is present.
+  Example: an unclosed code fence made a check report sections as empty, and
+  an indented table row was skipped.
 - A handler that replaces a user-owned file MUST write a temp file and rename
   it, or the review MUST confirm that an in-place write is safe. Example:
   `openspec_save` rewrote the plan file in place.
+- A handler that replaces an existing user-owned file with a temp file and a
+  rename MUST give the new file the mode of the old file. A temp file from
+  `os.CreateTemp` has mode 0600, so a rename over a 0644 file narrows the
+  mode with no signal. Read the old mode (`os.Stat`) and apply it before the
+  rename, or the review MUST confirm that the default mode is right. A test
+  creates the file with a mode other than 0600, runs the real handler and
+  asserts the mode after the rewrite. A rewrite that changes the mode with no
+  stated reason is a finding. This extends the temp-and-rename bullet above,
+  which checks only that the write is atomic. Example: a repair of a topic
+  file that dropped it from 0644 to 0600.
 - **Closed-set reason values.** Each value of a closed-set state or reason
   field MUST name one condition. A catch-all value that merges distinct
   conditions (for example one value for a stalled worker and a worker that
