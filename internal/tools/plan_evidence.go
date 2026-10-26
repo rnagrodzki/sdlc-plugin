@@ -107,23 +107,15 @@ func evidenceRequireRunID(action, runID string) error {
 	return nil
 }
 
-// evidenceLoadRun resolves runID to its evidence directory. state.LoadRun
-// is the only runID check (it rejects any path-traversal form before
-// touching the filesystem); a rejected or missing run is "not found". A
-// valid run whose state file cannot be read or decoded is an InfraError, so a
-// corrupt file is not misreported as a missing run.
+// evidenceLoadRun resolves runID to its evidence directory. The run lookup
+// and its errors are planRunByID's (plan.go), shared with plan_mark and
+// plan_prepare: a rejected or missing run is "not found"; a valid run whose
+// state file cannot be read or decoded is an InfraError, so a corrupt file
+// is not misreported as a missing run.
 func evidenceLoadRun(mainRoot, runID string) (*state.State, string, error) {
-	st, err := state.LoadRun(mainRoot, runID)
-	if err != nil && !errors.Is(err, state.ErrInvalidRunID) {
-		return nil, "", &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("plan run %s state read failed", runID),
-			Suggestion: "the plan state file is unreadable or corrupt: fix its permissions or delete it, then call plan_prepare again",
-			Cause:      err,
-		}
-	}
-	if err != nil || st == nil {
-		return nil, "", evidenceDomainErr(fmt.Sprintf("plan run %s not found", runID),
-			"call plan_prepare({resume:true, resolveTemplate:true}) and use its runId")
+	st, err := planRunByID(mainRoot, runID)
+	if err != nil {
+		return nil, "", err
 	}
 	return st, state.EvidenceDir(mainRoot, runID), nil
 }
@@ -314,7 +306,7 @@ func evidenceCheckpoint(st *state.State) (*PlanCheckpoint, error) {
 	}
 	return nil, &mcpserver.InfraError{
 		Msg:        fmt.Sprintf("plan run %s has a malformed checkpoint in %s", state.RunID(st), st.Path),
-		Suggestion: `call plan_mark({marker:"checkpoint", data:{step:"<current step>"}}) to replace it, then retry evidence_digest`,
+		Suggestion: fmt.Sprintf(`call plan_mark({marker:"checkpoint", runId:%q, data:{step:"<current step>"}}) to replace it, then retry evidence_digest`, state.RunID(st)),
 		Cause:      err,
 	}
 }
@@ -503,7 +495,7 @@ func evidenceRecord(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 // ---------------------------------------------------------------------------
 
 const evidenceDigestNextBase = "If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path. " +
-	"If lanes and lensReviewers are not in context, call plan_prepare({resume:true, resolveTemplate:true}) first. " +
+	"If lanes and lensReviewers are not in context, call plan_prepare({resume:true, resolveTemplate:true, skipConfigCheck:true, runId:\"%s\"}) first. " +
 	"Re-read the plan file, then continue at step %s (iteration %d). Fetch bodies with evidence_get only when the step needs them."
 
 // evidenceNoExpectedWritersNext is the statusOnly next step when neither
@@ -609,7 +601,7 @@ func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 		return out, nil
 	}
 
-	out.Next = fmt.Sprintf(evidenceDigestNextBase, step, iteration)
+	out.Next = fmt.Sprintf(evidenceDigestNextBase, in.RunID, step, iteration)
 	if lagging {
 		out.Next += fmt.Sprintf(" Missing: %s. Stalled: %s. Wait one poll cycle (evidence_digest statusOnly); if a writer is still listed, re-dispatch it or force-progress past it.",
 			evidenceList(missing), evidenceList(stalled))

@@ -11,7 +11,8 @@ model: opus
 Process reviewer comments with technical rigor. Each item is verified against the full
 codebase context — not just the change diff — before any response is drafted. Internal
 self-critique gates ensure quality. No changes are made until the user explicitly approves
-the proposed action plan.
+the proposed action plan, except the "will fix" findings that `alwaysFixSeverities`
+pre-approves (Step 10).
 
 **Announce at start:** "I'm using received-review (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
@@ -26,8 +27,8 @@ Thread classification (outstanding/replied/self-replied) is available via the
 (post-reply verification). Automatic per-thread resolution is still not supported.
 
 Concretely: the `received_review_prepare` tool returns only
-`{version, timestamp, pr:{number,owner,repo}, view, checks, plugin_version, warnings?}` — a PR overview
-(`gh pr view`) and CI status (`gh pr checks`), nothing more; it does not classify threads.
+`{version, timestamp, pr:{number,owner,repo}, view, checks, plugin_version, style, alwaysFixSeverities, warnings?, next}` — a PR overview
+(`gh pr view`), CI status (`gh pr checks`) and the auto-apply severities, nothing more; it does not classify threads.
 Classification comes from the separate `received_review_verify` tool instead, which returns
 `{version, timestamp, pr, threads, outstanding, replied, total}` — each entry in `threads`
 carries a `status` field (`outstanding` | `replied` | `self-replied`). There is still no
@@ -42,11 +43,11 @@ capability from a previous version remains unavailable here and is not simulated
   mutation — resolve threads manually in the GitHub UI after confirming the reply addresses
   the feedback, or ask the user to.
 
-There is likewise no per-user configuration surface for auto-fix-by-severity or
-auto-harden-by-default in this port (no tool resolves `.sdlc-v2/local.toml` for this skill).
-`--auto`, described in Steps 10–12 below, is parsed directly from this invocation's own
-`$ARGUMENTS` and has one meaning throughout: skip the confirmation prompt for "agree, will
-fix" items. There is no severity-based partial-auto mode.
+There is no per-user configuration surface for auto-harden-by-default in this port.
+`received_review_prepare` returns `alwaysFixSeverities` from the local files: in manual mode,
+Step 10 pre-approves the "agree, will fix" findings with a listed severity. `--auto`,
+described in Steps 10–12 below, is parsed directly from this invocation's own `$ARGUMENTS`
+and has one meaning throughout: skip the confirmation prompt for "agree, will fix" items.
 
 ---
 
@@ -63,23 +64,24 @@ If the system context contains "Plan mode is active":
 
 Parse `--auto` from this invocation's own `$ARGUMENTS` now; store it as a boolean for Steps 10–12. Parse `--no-harden` the same way; store it as a boolean for Step 11.6. Parse `--pr <number>` if present.
 
-### Step 1a — Fetch PR overview (when a PR number is available)
+### Step 1a — Fetch PR overview and the auto-apply severities (every run)
 
 ```
-received_review_prepare({ pr: <PR_NUMBER> })
-→ { version, timestamp, pr: { number, owner, repo }, view, checks, plugin_version, warnings? }
+received_review_prepare({ pr: <PR_NUMBER — omit when no PR number is available> })
+→ { version, timestamp, pr: { number, owner, repo }, view, checks, plugin_version, style, alwaysFixSeverities, warnings?, next }
 ```
+Store `alwaysFixSeverities` as ALWAYS_FIX for Step 10. `(none)` means an empty list. Show each `warnings` entry.
+With no PR number, `view` and `checks` are empty: say that the PR overview was skipped.
 
 **On success:** `view` is the plain-text output of `gh pr view <PR_NUMBER>` (title, branch,
 labels, additions/deletions — no comments); `checks` is the plain-text output of
 `gh pr checks <PR_NUMBER>`, including failing and pending checks. Use both for overview
 context and to confirm the PR is the one the user means. Report any failing checks alongside
-the analysis in Step 10. When `warnings` is present, `gh pr checks` itself failed and `checks`
-is empty: say that CI status is unknown and show the warning.
+the analysis in Step 10. When a `warnings` entry says `gh pr checks` failed, `checks` is empty:
+say that CI status is unknown. Show every other entry as given.
 
-**On tool error** (bad PR number, no `gh` auth, no git remote): show the error to the user.
-If no PR number was supplied at all, this step is simply skipped — proceed to Step 1b for a
-non-PR source of feedback.
+**On tool error** (bad PR number, no `gh` auth, no git remote, unreadable local.toml): show the
+error to the user, set ALWAYS_FIX to `[]` (every "will fix" finding asks), and continue with Step 1b.
 
 ### Step 1b — Fetch actual comments (always required — the tool above does not return them)
 
@@ -416,34 +418,53 @@ Still display the full analysis table and action plan above for visibility, then
 directly to Step 11 as if the user selected `implement` for every "agree, will fix" item.
 `needs-direction` items are displayed and NEVER auto-actioned, in either mode — but under
 `--auto` Step 11 also records each of them through `ship_state` (Step 4's contract), so being
-displayed is not the only thing that happens to them.
+displayed is not the only thing that happens to them. Under `--auto`, Step 10 computes no
+pre-approved set: ALWAYS_FIX adds nothing to the rule above.
+
+**Pre-approval (manual mode only):** First, mark each "agree, will fix" finding as **pre-approved**
+when its severity, in lowercase, is in ALWAYS_FIX. A human comment with no severity counts as
+`medium`, the same value Step 11 records. Show one line for each pre-approved finding in the
+action plan: `pre-approved (<severity> in alwaysFixSeverities): <file>:<line> — <title>`.
+Ask the prompt below only when the plan has a finding that is not pre-approved. The prompt
+covers only those findings.
+
+In manual mode, count the pre-approved findings as A and the other findings as O. The other findings are the
+"agree, will fix" findings with a severity that is not in ALWAYS_FIX, and every pushback,
+"agree, won't fix" and "needs direction" finding.
+- When O is 0 and A is 1 or more, ask no prompt: run Step 11 for the pre-approved findings only.
+- When O is 0 and A is 0, there is no finding to act on: ask no prompt, do not run Step 11,
+  and show only the Step 12 summary.
 
 **Manual mode (default):** When `--auto` was not passed, use AskUserQuestion to ask:
-> No changes have been made yet. How to proceed?
+> No changes have been made yet. Pre-approved findings: <A>. How to proceed with the other <O> findings?
 
 Options:
 - **implement** — post responses to PR and apply code changes
 - **edit** — modify the plan before proceeding
-- **skip** — discard, make no changes
+- **skip** — discard the prompted findings, make no changes for them
 
-If the user chooses **edit**, ask what to change, revise, and present again.
-Loop until explicit **implement** or **skip**.
+**implement** runs Step 11 for the pre-approved findings and the prompted findings.
 
-**skip** discards the whole run: no fixes, no replies, and no deferred records — Step 11 never
-runs, and recording is Step 11's job. Say so when reporting the skip, so the user knows the
-unfixed findings live only in this conversation.
+If the user chooses **edit**, ask what to change, revise, compute the pre-approved set, A and O
+again, and present again. Loop until explicit **implement** or **skip**, or until O is 0
+(then the O-is-0 rules above apply).
+
+**skip** discards the prompted findings: no fixes, no replies and no deferred records for them.
+With no pre-approved finding, Step 11 never runs. With pre-approved findings, Step 11 runs for
+them only. Say so when reporting the skip, so the user knows the
+skipped findings live only in this conversation.
 
 **Do NOT proceed to Step 11 without explicit `implement` from the user via AskUserQuestion**,
-unless `--auto` was passed at Step 1. Without `--auto`, pipeline context does NOT override
+unless `--auto` was passed at Step 1, or Step 11 acts only on pre-approved findings. Without `--auto`, pipeline context does NOT override
 this gate — even when invoked from `/ship`, if `--auto` was not explicitly passed as a
-flag to this invocation, the consent gate is mandatory. Do not infer from surrounding context
+flag to this invocation, the consent gate is mandatory for every finding that is not pre-approved. Do not infer from surrounding context
 that automatic execution is expected.
 
 ---
 
 ## Step 11 — IMPLEMENT: Execute Changes
 
-**Only execute after explicit `implement` from Step 10, OR when `--auto` was passed at Step 1 (auto-proceed for "will fix" items only).**
+**Only execute after explicit `implement` from Step 10, OR when `--auto` was passed at Step 1 (auto-proceed for "will fix" items only), OR for the pre-approved findings of Step 10. A finding skipped at the Step 10 prompt gets no `fix-progress` call, no fix, no `defer` record and no reply.**
 
 Implement accepted code changes. Replies are drafted here but posted in Step 12, after Step 11.7's
 link gate and after the recording result below is known.
@@ -454,7 +475,7 @@ link gate and after the recording result below is known.
 3. Complex fixes (refactoring, logic changes)
 
 **Fix progress.** Before the first fix, make one `fix-progress` call with `status:"queued"` for each
-"agree-will-fix" finding. Use the same `origin`, `file`, `line` and `title` in each call for one
+"agree-will-fix" finding, except a finding skipped at the Step 10 prompt. Use the same `origin`, `file`, `line` and `title` in each call for one
 finding. A different title makes a second record. `origin` is `local-review` when the finding came
 from the dispatch prompt (Step 1b), conversation context, or user paste — anything with no PR
 comment behind it — and `pr-comment` when it came from a GitHub reviewer or automated PR comment.
@@ -508,7 +529,7 @@ Wrong:   Long apology, defensive explanation, over-explaining
 ```
 State the correction factually and move on.
 
-**Last in this step — record every finding, fixed or not.** Do this only after the fix pass
+**Last in this step — record every finding, fixed or not, except a finding skipped at the Step 10 prompt.** Do this only after the fix pass
 above is finished, including any pushback you just corrected into a fix and, under `--auto`,
 any fix reverted by the failed-fix rule above. Verdicts are final only at this point, in both
 modes.
@@ -570,7 +591,8 @@ The unfixed rule below then makes its `defer` call, with `reason: "needs-directi
 finding as "stays deferred".
 
 For each finding still **unfixed** and without a `**Deferred-id:**` line, make the
-`ship_state({action:"defer", ...})` call defined in Step 4, once per finding, and handle a
+`ship_state({action:"defer", ...})` call defined in Step 4, once per finding (except a finding
+skipped at the Step 10 prompt, which gets no `defer` call), and handle a
 `WARNING: could not persist` narration exactly as Step 4 says (one `deferred_add` fallback;
 UNACCOUNTED only if that fails too). A finding with a `**Deferred-id:**` line is already
 deferred: make no `defer` call, and say "stays deferred as <id>" in the Step 12 summary (it has
@@ -588,7 +610,8 @@ A finding with no `queued` call gets no `fix-progress` call with `status:"deferr
 gets its `defer` record, except a finding with a `**Deferred-id:**` line, which keeps its
 existing deferred item. Track per finding whether its record (`defer` or `deferred_add`)
 succeeded — Step 11.6, Step 12's ledger and Step 12's reply bodies all read that result. An unfixed finding with no record is the exact
-failure this step exists to prevent.
+failure this step exists to prevent. A finding skipped at the Step 10 prompt is the one
+exception: it has no record by the user's choice, and Step 12 counts it as `skipped at Step 10`.
 
 ---
 
@@ -618,7 +641,8 @@ Only cluster findings that reached a Step 4 verdict. In manual mode those are th
 (`agree-will-fix | agree-won't-fix | disagree | needs-direction`); under `--auto` they are
 `agree-will-fix` and `needs-direction` only, each unfixed one carrying a `detail.reason`
 (`wont-fix | disagree | needs-direction`). Findings marked `cannot-verify` in Step 3, or never
-reached that far, MUST NOT enter a cluster.
+reached that far, MUST NOT enter a cluster. A finding skipped at the Step 10 prompt MUST NOT
+enter a cluster either.
 
 Call `ship_state({action:"harden_clusters", detail:{findings:[{file, severity, title, body,
 verdict, reason?}, ...]}})` with one record per surviving finding — `verdict` and `reason`
@@ -674,7 +698,8 @@ Before any `gh api` reply is posted, validate every URL embedded in every drafte
 Reply bodies must never include an AI-tool attribution line ("Generated with Claude Code" or
 similar).
 
-1. Concatenate all reply bodies (one per line) and write them via the tool (overwrite each
+1. Concatenate all reply bodies (one per line), except the body of each finding skipped at the
+   Step 10 prompt, and write them via the tool (overwrite each
    run — this is a scratch working file, not a durable record):
    ```
    received_review_verify({ writeReplyBodies: true, content: "<concatenated reply bodies>" })
@@ -712,9 +737,11 @@ Review feedback processing complete:
 - M comments pushed back (with technical reasoning)
 - K comments intentionally skipped (agree, won't fix)
 - P comments skipped as already addressed (Step 1b): <file:line>, <file:line>, ...
+- S findings skipped at the Step 10 prompt (no fix, no reply, no record)
 ```
 
-Omit the last line when P is 0.
+Omit the P line when P is 0, and the S line when S is 0. Count only the findings that
+Step 11 acted on in N, M and K. Count each finding skipped at the Step 10 prompt only in S.
 
 Then one ledger line that accounts for **every** finding this run touched — the total from
 Step 4 plus any Step 2 `--auto` unclear items, the count fixed in Step 11, and the deferred
@@ -731,7 +758,7 @@ Run /sdlc:deferred to act on the 5 deferred findings.
 ```
 
 The `/sdlc:deferred` line appears only when the deferred count is non-zero. When
-`fixed + deferred` does not equal the total, state the gap on the same line instead of
+`fixed + deferred + skipped at Step 10` does not equal the total, state the gap on the same line instead of
 swallowing it:
 
 ```
@@ -747,6 +774,16 @@ A finding with a `**Deferred-id:**` line that stays deferred also counts as **de
 existing deferred item is its record, and the ledger groups it under `below-threshold`. For each
 such finding, add one `- ` line below the block: `<file:line> stays deferred as <id>`. A finding
 with that line that was fixed, and whose `healing_record` call succeeded, counts as fixed.
+
+When the user skipped findings at the Step 10 prompt and Step 11 ran for the pre-approved
+findings, the ledger adds a `skipped at Step 10` term:
+
+```
+Review findings: 14 total = 3 fixed + 0 deferred + 11 skipped at Step 10
+```
+
+`skipped at Step 10` counts each finding of a partial skip. The term shows only when that
+count is not 0.
 
 Step 11.6 notes (harden dispatch skipped, failed, suppressed clusters, singleton `disagree`
 findings that formed no cluster, the `staysDeferred[]` and `evidenceOnly[]` counts, and the
@@ -769,7 +806,7 @@ Options:
 - **selective** — let me choose which threads to reply to
 
 3. **If yes, selective, or auto mode:** For each comment in the action plan, post a reply
-   using its comment ID from Step 1b:
+   using its comment ID from Step 1b. Post no reply for a finding skipped at the Step 10 prompt:
 
    **For addressed comments (agree, will fix):**
    ```bash
@@ -829,8 +866,9 @@ received_review_verify({ pr: <PR_NUMBER> })
 → { threads, outstanding, replied, total }
 
 If `outstanding > 0`:
-1. List outstanding threads (path, line, reviewer, body snippet)
-2. For each: draft and post a reply (following Step 7 format)
+1. List outstanding threads (path, line, reviewer, body snippet). Leave out each thread whose
+   finding was skipped at the Step 10 prompt, and list it as `skipped at Step 10 — no reply`.
+2. For each other thread: draft and post a reply (following Step 7 format)
 3. Re-verify. Max 2 verification rounds — if still outstanding after 2 rounds,
    report remaining threads to user for manual handling.
 
@@ -864,12 +902,12 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 - Express gratitude — let the code changes speak
 - Display output from internal critique steps (Steps 5-6, 8-9) to the user
 - End a finding under `--auto` with `agree-won't-fix`, `disagree`, or "cannot verify" — under `--auto` each one becomes `needs-direction` and is recorded; only `agree-will-fix` ends a finding
-- Leave any unfixed finding without a durable record at the end of Step 11 — `ship_state({action:"defer", ...})`, or the `deferred_add` fallback when that one did not persist — in either mode (a finding with a `**Deferred-id:**` line already has its record)
+- Leave any unfixed finding without a durable record at the end of Step 11 — `ship_state({action:"defer", ...})`, or the `deferred_add` fallback when that one did not persist — in either mode (a finding with a `**Deferred-id:**` line already has its record; a finding skipped at the Step 10 prompt gets no record)
 - Make a `defer` call for a finding with a `**Deferred-id:**` line — it is already deferred, and a second call adds a second deferred item
 - Write a defer record before Step 11 — an earlier verdict can still change, and `deferred.json` is append-only (the one exception: Step 2's `--auto` unclear-item record, which is final the moment it's written, since that item leaves the run there and never reaches Step 11)
 - Claim in a PR reply that a finding is tracked as a deferred follow-up when its record failed
 - Mark a finding `needs-direction` when only one approach exists — that is a fix, not a question (the two exceptions record what happened instead: a Step 2 `--auto` unclear item, and a Step 11 fix that failed its own verification)
-- Skip the Step 10 consent gate without `--auto` having been passed to this invocation — pipeline context, conversation history, or inference about "auto mode" is not a substitute for the flag
+- Skip the Step 10 consent gate for a finding that is not pre-approved, without `--auto` having been passed to this invocation — pipeline context, conversation history, or inference about "auto mode" is not a substitute for the flag
 - Use `AskUserQuestion` in Step 11.6 when `--auto` was passed to this invocation
 - Dispatch harden in Step 11.6 when this agent has no `AskUserQuestion` and `--auto` was not passed — skip the step and say so in the Step 12 summary; never add `--auto` to the dispatch on your own
 - Post a reply from Step 12 without Step 11.7's link verification passing first
@@ -883,7 +921,7 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 
 | Error | Recovery | Invoke error-report? |
 |-------|----------|---------------------------|
-| `received_review_prepare` fails (bad PR, no remote, gh not authed) | Show the error; if no PR number was given, fall back to Step 1b's non-PR sources | No — user-facing input/auth issue |
+| `received_review_prepare` fails (bad PR, no remote, gh not authed, unreadable local.toml) | Show the error; set ALWAYS_FIX to `[]`; if no PR number was given, use Step 1b's non-PR sources | No — user-facing input, auth or config issue |
 | `gh pr view`/`gh api` fails to fetch comments in Step 1b (persistent: auth error, repo not found) | Show the error; ask the user to verify `gh auth status` and the PR number/access; stop (Step 1b) | No — auth or permissions issue |
 | Comment references file/line that no longer exists | Note the discrepancy; verify against current HEAD diff | No — expected with rebased PRs |
 | Cannot verify reviewer's claim (no runtime data/external context) | State limitation explicitly; ask user for direction, or under `--auto` give it the `needs-direction` verdict (Step 4) and record it in Step 11 | No — expected limitation |
@@ -894,7 +932,7 @@ Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not
 
 When invoking `error-report`, provide:
 - **Skill**: received-review
-- **Step**: Step 12 — REPLY (posting GitHub thread replies, only after user consent in Step 10)
+- **Step**: Step 12 — REPLY (posting GitHub thread replies, only after user consent or pre-approval in Step 10)
 - **Operation**: `gh api` call to post comment reply
 - **Error**: HTTP status + error message from above
 - **Suggested investigation**: Check `gh auth status`; verify PR number is correct and accessible; confirm repo permissions
@@ -925,6 +963,9 @@ When invoking `error-report`, provide:
   later — except a Step 2 `--auto` unclear item, recorded immediately in Step 2 since it never
   reaches Step 11 at all. This prevents automated tools from silently suppressing pushback —
   and, equally, from closing a finding on the model's word alone with no one watching.
+- **`alwaysFixSeverities` is not auto mode:** it removes the Step 10 prompt only for "agree,
+  will fix" findings at a listed severity, in manual mode. Pushback, "agree, will not fix" and
+  "needs direction" findings still ask. Under `--auto` the setting adds nothing.
 - **`needs-direction` needs a real choice:** two or more viable approaches plus the trade-off.
   If only one approach exists, the verdict is wrong — fix the finding. The only exceptions are
   records with no approach to weigh: a Step 2 `--auto` unclear item (`unclear: ...`) and a

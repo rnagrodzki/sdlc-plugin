@@ -2157,6 +2157,269 @@ func TestPlanPrepareDoneRunNotResumed(t *testing.T) {
 	}
 }
 
+// Two live plan runs of one branch, as two plan sessions leave them: run A
+// is older, run B is the newest run of the branch.
+const (
+	planTestRunA = "plan-main-20260101T000000Z"
+	planTestRunB = "plan-main-20260102T000000Z"
+)
+
+// planTestReadRun returns the raw bytes of the state file of runID under root.
+func planTestReadRun(t *testing.T, root, runID string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join(planTestRunsDir(root), runID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// TestPlanMark_RunIDTargetsOwnRun verifies a checkpoint with run A's ID
+// changes run A and leaves the newer run B as it was.
+func TestPlanMark_RunIDTargetsOwnRun(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+	planTestSeedRun(t, dir, planTestRunA, planTestActiveData())
+	planTestSeedRun(t, dir, planTestRunB, planTestActiveData())
+	beforeB := planTestReadRun(t, dir, planTestRunB)
+
+	out, err := planMark(dir, dir, PlanMarkIn{
+		Marker: "checkpoint",
+		RunID:  planTestRunA,
+		Data:   map[string]any{"step": "3", "iteration": float64(1)},
+	})
+	if err != nil {
+		t.Fatalf("planMark(checkpoint, runId A): %v", err)
+	}
+	if got := filepath.Base(out.Path); got != planTestRunA+".json" {
+		t.Errorf("planMark wrote %q, want %q", got, planTestRunA+".json")
+	}
+	var docA map[string]any
+	if err := json.Unmarshal(planTestReadRun(t, dir, planTestRunA), &docA); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := docA["checkpoint"]; !ok {
+		t.Errorf("run A has no checkpoint: %v", docA)
+	}
+	if afterB := planTestReadRun(t, dir, planTestRunB); string(afterB) != string(beforeB) {
+		t.Errorf("run B changed:\nbefore=%s\nafter=%s", beforeB, afterB)
+	}
+}
+
+// TestPlanPrepare_ResumeByRunID verifies resume and resolveTemplate calls
+// with run A's ID reuse run A, not the newer run B, and that both calls with
+// the ID of a done run fail without starting a new run.
+func TestPlanPrepare_ResumeByRunID(t *testing.T) {
+	dir := planTestTemplateRepo(t)
+	planTestSeedRun(t, dir, planTestRunA, planTestActiveData())
+	planTestSeedRun(t, dir, planTestRunB, planTestActiveData())
+	beforeB := planTestReadRun(t, dir, planTestRunB)
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, RunID: planTestRunA})
+	if err != nil {
+		t.Fatalf("resume with runId A: %v", err)
+	}
+	if out.RunID != planTestRunA {
+		t.Errorf("resume RunID = %q, want %q", out.RunID, planTestRunA)
+	}
+	if want := planPrepareResumeNext(planTestRunA); out.Next != want {
+		t.Errorf("resume Next = %q, want %q", out.Next, want)
+	}
+
+	out, err = runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true, UserPrompt: "session A", RunID: planTestRunA})
+	if err != nil {
+		t.Fatalf("resolveTemplate with runId A: %v", err)
+	}
+	if out.RunID != planTestRunA {
+		t.Errorf("resolveTemplate RunID = %q, want %q", out.RunID, planTestRunA)
+	}
+	var docA map[string]any
+	if err := json.Unmarshal(planTestReadRun(t, dir, planTestRunA), &docA); err != nil {
+		t.Fatal(err)
+	}
+	if intent, _ := docA["creationIntent"].(map[string]any); intent["userPrompt"] != "session A" {
+		t.Errorf("run A creationIntent = %v, want userPrompt %q", docA["creationIntent"], "session A")
+	}
+	if afterB := planTestReadRun(t, dir, planTestRunB); string(afterB) != string(beforeB) {
+		t.Errorf("run B changed:\nbefore=%s\nafter=%s", beforeB, afterB)
+	}
+
+	const doneRun = "plan-main-20260103T000000Z"
+	planTestSeedRun(t, dir, doneRun, map[string]any{
+		"planIntegrity": map[string]any{"skillInvoked": "x", "done": "y"},
+	})
+	filesBefore := listStateFiles(t, dir)
+	for name, in := range map[string]PlanPrepareIn{
+		"resume":          {SkipConfigCheck: true, Resume: true, RunID: doneRun},
+		"resolveTemplate": {SkipConfigCheck: true, ResolveTemplate: true, RunID: doneRun},
+	} {
+		_, err := runPlanPrepare(t, dir, dir, in)
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("%s with done runId: err = %T %v, want *mcpserver.DomainError", name, err, err)
+		}
+		if want := "plan run " + doneRun + " is done"; de.Msg != want {
+			t.Errorf("%s Msg = %q, want %q", name, de.Msg, want)
+		}
+		if de.Suggestion != "Start a new plan: call plan_prepare with no runId, no resume and no resolveTemplate." {
+			t.Errorf("%s Suggestion = %q", name, de.Suggestion)
+		}
+	}
+	if filesAfter := listStateFiles(t, dir); !reflect.DeepEqual(filesAfter, filesBefore) {
+		t.Errorf("state files = %v, want %v (no new run for a done runId)", filesAfter, filesBefore)
+	}
+}
+
+// TestPlanPrepare_RunIDNotActiveRefused verifies resume and resolveTemplate
+// calls with the runId of a run that has no usable skillInvoked marker
+// return the "has no skillInvoked marker" DomainError and leave the run
+// file byte-for-byte unchanged.
+func TestPlanPrepare_RunIDNotActiveRefused(t *testing.T) {
+	const runID = "plan-main-20260104T000000Z"
+	shapes := map[string]map[string]any{
+		"wrong-type planIntegrity":           {"planIntegrity": "not an object"},
+		"planIntegrity without skillInvoked": {"planIntegrity": map[string]any{"plan-file": "x"}},
+	}
+	for shape, data := range shapes {
+		for mode, in := range map[string]PlanPrepareIn{
+			"resume":          {SkipConfigCheck: true, Resume: true, RunID: runID},
+			"resolveTemplate": {SkipConfigCheck: true, ResolveTemplate: true, RunID: runID},
+		} {
+			t.Run(shape+"/"+mode, func(t *testing.T) {
+				dir := planTestTemplateRepo(t)
+				planTestSeedRun(t, dir, runID, data)
+				before := planTestReadRun(t, dir, runID)
+
+				_, err := runPlanPrepare(t, dir, dir, in)
+				var de *mcpserver.DomainError
+				if !errors.As(err, &de) {
+					t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+				}
+				if want := "plan run " + runID + " has no skillInvoked marker"; de.Msg != want {
+					t.Errorf("Msg = %q, want %q", de.Msg, want)
+				}
+				if de.Suggestion != "Start a new plan: call plan_prepare with no runId, no resume and no resolveTemplate." {
+					t.Errorf("Suggestion = %q", de.Suggestion)
+				}
+				if after := planTestReadRun(t, dir, runID); string(after) != string(before) {
+					t.Errorf("run file changed:\nbefore=%s\nafter=%s", before, after)
+				}
+				if files := listStateFiles(t, dir); len(files) != 1 {
+					t.Errorf("state files = %v, want only the seeded run (no new run)", files)
+				}
+			})
+		}
+	}
+}
+
+// TestPlanPrepare_FirstCallIgnoresRunID verifies a first call (no resume,
+// no resolveTemplate) with a runId starts a new run with no error.
+func TestPlanPrepare_FirstCallIgnoresRunID(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+	const missing = "plan-main-20200101T000000Z"
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, RunID: missing})
+	if err != nil {
+		t.Fatalf("first call with runId: %v", err)
+	}
+	if out.RunID == "" || out.RunID == missing {
+		t.Errorf("RunID = %q, want a new run", out.RunID)
+	}
+	if _, err := os.Stat(filepath.Join(planTestRunsDir(dir), out.RunID+".json")); err != nil {
+		t.Errorf("new run state file missing: %v", err)
+	}
+}
+
+// planTestErrResult classifies err as "ok", "domain: <msg>" or
+// "infra: <msg>", so the parity test compares tools on one string.
+func planTestErrResult(err error) string {
+	var de *mcpserver.DomainError
+	var ie *mcpserver.InfraError
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.As(err, &de):
+		return "domain: " + de.Msg
+	case errors.As(err, &ie):
+		return "infra: " + ie.Msg
+	default:
+		return fmt.Sprintf("other %T: %v", err, err)
+	}
+}
+
+// TestPlanRunByID_SameResultForEveryTool verifies plan_mark, plan_prepare
+// (resume) and plan_support evidence_get give the same result class and
+// message for each runId input state (planRunByID is their one lookup).
+func TestPlanRunByID_SameResultForEveryTool(t *testing.T) {
+	const runID = "plan-main-20261026T084445Z"
+	const notFound = "domain: plan run %s not found"
+	const readFailed = "infra: plan run %s state read failed"
+	runFile := func(dir string) string { return filepath.Join(planTestRunsDir(dir), runID+".json") }
+
+	cases := []struct {
+		name    string
+		runID   string
+		seed    func(t *testing.T, dir string)
+		want    string // plan_mark and evidence_get
+		wantPre string // plan_prepare; "" means want
+	}{
+		{name: "no file", runID: runID, seed: func(*testing.T, string) {}, want: fmt.Sprintf(notFound, runID)},
+		{name: "ship run ID", runID: "ship-main-20261026T084445Z", seed: func(*testing.T, string) {}, want: fmt.Sprintf(notFound, "ship-main-20261026T084445Z")},
+		{name: "path traversal", runID: "../" + runID, seed: func(*testing.T, string) {}, want: fmt.Sprintf(notFound, "../"+runID)},
+		{name: "bad JSON", runID: runID, seed: func(t *testing.T, dir string) {
+			writeFile(t, runFile(dir), "{not json")
+		}, want: fmt.Sprintf(readFailed, runID)},
+		{name: "directory at file path", runID: runID, seed: func(t *testing.T, dir string) {
+			if err := os.MkdirAll(runFile(dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, want: fmt.Sprintf(readFailed, runID)},
+		{name: "symlink to valid run", runID: runID, seed: func(t *testing.T, dir string) {
+			planTestSeedRun(t, dir, planTestRunA, planTestActiveData())
+			if err := os.Symlink(filepath.Join(planTestRunsDir(dir), planTestRunA+".json"), runFile(dir)); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "ok"},
+		{name: "9 MiB run file", runID: runID, seed: func(t *testing.T, dir string) {
+			data := planTestActiveData()
+			data["padding"] = strings.Repeat("x", 9<<20)
+			planTestSeedRun(t, dir, runID, data)
+		}, want: "ok"},
+		{name: "done run", runID: runID, seed: func(t *testing.T, dir string) {
+			planTestSeedRun(t, dir, runID, map[string]any{
+				"planIntegrity": map[string]any{"skillInvoked": "x", "done": "y"},
+			})
+		}, want: "ok", wantPre: fmt.Sprintf("domain: plan run %s is done", runID)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := planTestTemplateRepo(t)
+			if err := os.MkdirAll(planTestRunsDir(dir), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			tc.seed(t, dir)
+			wantPre := tc.wantPre
+			if wantPre == "" {
+				wantPre = tc.want
+			}
+
+			// evidence_get and plan_prepare (resume) do not write the run;
+			// plan_mark runs last because it does.
+			_, err := planSupportCore(dir, dir, PlanSupportIn{Action: "evidence_get", RunID: tc.runID, IDs: []string{"F-none"}})
+			if got := planTestErrResult(err); got != tc.want {
+				t.Errorf("evidence_get = %q, want %q", got, tc.want)
+			}
+			_, err = runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, RunID: tc.runID})
+			if got := planTestErrResult(err); got != wantPre {
+				t.Errorf("plan_prepare(resume) = %q, want %q", got, wantPre)
+			}
+			_, err = planMark(dir, dir, PlanMarkIn{Marker: "critiqueRan", RunID: tc.runID})
+			if got := planTestErrResult(err); got != tc.want {
+				t.Errorf("plan_mark = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // TestPlanPrepare_GuardrailsFileFormat verifies guardrails.md for configured
 // guardrails (multi-line description, a line starting with #) and for none.
 func TestPlanPrepare_GuardrailsFileFormat(t *testing.T) {

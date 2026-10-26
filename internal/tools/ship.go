@@ -142,7 +142,8 @@ type ShipPrepareOut struct {
 	// the shape written into the initialized state's `flags` field.
 	Flags map[string]any `json:"flags"`
 	// Sources records, per flag key, which precedence tier won ("cli",
-	// "config", "config (version.preRelease)",
+	// "local" (a [ship] value from .sdlc-v2/local.toml or ~/.sdlc/local.toml),
+	// "config (version.preRelease)",
 	// "config (version.preReleasePolicy)",
 	// "config (version.preReleasePolicy enforced over cli)",
 	// "quick", "plan" (openspecChange from the plan's **Source:** header),
@@ -796,7 +797,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	default:
 		if hasStepsTbl {
 			merged["steps"] = cfgSteps
-			sources["steps"] = "config"
+			sources["steps"] = "local"
 		} else {
 			merged["steps"] = append([]string{}, shipmeta.ShipBuiltInDefaults.Steps...)
 			sources["steps"] = "default"
@@ -820,7 +821,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		sources["bump"] = "cli"
 	} else if v, ok := cfg["bump"].(string); ok && v != "" {
 		merged["bump"] = v
-		sources["bump"] = "config"
+		sources["bump"] = "local"
 	} else {
 		merged["bump"] = shipmeta.ShipBuiltInDefaults.Bump
 		sources["bump"] = "default"
@@ -858,7 +859,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	// reviewThreshold: config string > default (no cli flag).
 	if v, ok := cfg["reviewThreshold"].(string); ok && v != "" {
 		merged["reviewThreshold"] = v
-		sources["reviewThreshold"] = "config"
+		sources["reviewThreshold"] = "local"
 	} else {
 		merged["reviewThreshold"] = shipmeta.ShipBuiltInDefaults.ReviewThreshold
 		sources["reviewThreshold"] = "default"
@@ -888,7 +889,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 			// usable one.
 			merged["rebase"] = vv
 		}
-		sources["rebase"] = "config"
+		sources["rebase"] = "local"
 	} else {
 		merged["rebase"] = "auto"
 		sources["rebase"] = "default"
@@ -906,7 +907,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	// awaitRemoteReviewers: config non-empty array > default.
 	if arr, ok := cfg["awaitRemoteReviewers"].([]any); ok && len(arr) > 0 {
 		merged["awaitRemoteReviewers"] = anyToStringSlice(arr)
-		sources["awaitRemoteReviewers"] = "config"
+		sources["awaitRemoteReviewers"] = "local"
 	} else {
 		merged["awaitRemoteReviewers"] = append([]string{}, shipmeta.ShipBuiltInDefaults.AwaitRemoteReviewers...)
 		sources["awaitRemoteReviewers"] = "default"
@@ -920,7 +921,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		if v, exists := execCfg["commitWaves"]; exists {
 			if b, ok := v.(bool); ok {
 				merged["executeCommitWaves"] = b
-				sources["executeCommitWaves"] = "config"
+				sources["executeCommitWaves"] = "local"
 			} else {
 				merged["commitWavesInvalidType"] = true
 			}
@@ -958,7 +959,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	// [execute] commitWaves that execute itself resolves against. Forwarding
 	// the default unconditionally would silently override a user's own
 	// top-level execute.commitWaves on every ship run.
-	if sources["executeCommitWaves"] == "config" {
+	if sources["executeCommitWaves"] == "local" {
 		argParts = append(argParts, "--commit-waves", fmt.Sprint(merged["executeCommitWaves"]))
 	}
 	merged["executeDispatchArgs"] = strings.Join(argParts, " ")
@@ -976,7 +977,7 @@ func mergeShipBool(merged map[string]any, sources map[string]string, key string,
 	}
 	if v, ok := cfg[key].(bool); ok {
 		merged[key] = v
-		sources[key] = "config"
+		sources[key] = "local"
 		return
 	}
 	merged[key] = def
@@ -988,7 +989,7 @@ func mergeShipBool(merged map[string]any, sources map[string]string, key string,
 func mergeShipInt(merged map[string]any, sources map[string]string, key string, cfg map[string]any, def int) {
 	if v, ok := cfgInt(cfg, key); ok {
 		merged[key] = v
-		sources[key] = "config"
+		sources[key] = "local"
 		return
 	}
 	merged[key] = def

@@ -397,7 +397,7 @@ func TestShipPrepare_NoSessionID(t *testing.T) {
 
 // TestShipPrepare_StepsFromConfig verifies that a [ship.steps] table
 // configured in .sdlc-v2/local.toml is picked up with Sources["steps"] ==
-// "config" (ship is not a project section, so its config lives in
+// "local" (ship is not a project section, so its config lives in
 // local.toml, not config.toml).
 func TestShipPrepare_StepsFromConfig(t *testing.T) {
 	dir := t.TempDir()
@@ -421,8 +421,8 @@ learnings-commit = false
 	if len(out.Errors) != 0 {
 		t.Fatalf("Errors = %v, want empty", out.Errors)
 	}
-	if src := out.Sources["steps"]; src != "config" {
-		t.Errorf("Sources[steps] = %q, want %q", src, "config")
+	if src := out.Sources["steps"]; src != "local" {
+		t.Errorf("Sources[steps] = %q, want %q", src, "local")
 	}
 	steps, _ := out.Flags["steps"].([]string)
 	if len(steps) != 2 || steps[0] != "commit" || steps[1] != "review" {
@@ -430,14 +430,46 @@ learnings-commit = false
 	}
 }
 
+// TestShipPrepare_BumpFromLocal verifies that ship.bump set in
+// .sdlc-v2/local.toml wins over the default and reports Sources["bump"] ==
+// "local".
+func TestShipPrepare_BumpFromLocal(t *testing.T) {
+	out := shipPrepareWithLocal(t, "feat/local-bump", "[ship]\nbump = \"minor\"\n", ShipPrepareIn{})
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	if got, _ := out.Flags["bump"].(string); got != "minor" {
+		t.Errorf("Flags[bump] = %v, want %q", out.Flags["bump"], "minor")
+	}
+	if src := out.Sources["bump"]; src != "local" {
+		t.Errorf("Sources[bump] = %q, want %q", src, "local")
+	}
+}
+
+// TestShipPrepare_LocalBumpVersionPreReleaseWins verifies that
+// version.preRelease keeps priority over a local ship.bump, and that its
+// "config (version.preRelease)" label does not change to "local".
+func TestShipPrepare_LocalBumpVersionPreReleaseWins(t *testing.T) {
+	cfg := map[string]any{"bump": "minor"}
+	versionCfg := map[string]any{"preRelease": "rc"}
+	merged, sources, _ := mergeShipFlags(ShipPrepareIn{}, cfg, versionCfg)
+
+	if got, _ := merged["bump"].(string); got != "rc" {
+		t.Errorf("Flags[bump] = %v, want %q (version.preRelease wins over local ship.bump)", merged["bump"], "rc")
+	}
+	if src := sources["bump"]; src != "config (version.preRelease)" {
+		t.Errorf("Sources[bump] = %q, want %q", src, "config (version.preRelease)")
+	}
+}
+
 // TestShipPrepare_RebaseConfigMalformedValuePassesThrough verifies that a
 // config `ship.rebase` value which is neither bool nor string (a number,
 // here) is still passed through verbatim into Flags["rebase"], with
-// Sources["rebase"] == "config" — matching ship.js's mergeFlags, which does
+// Sources["rebase"] == "local" — matching ship.js's mergeFlags, which does
 // `merged.rebase = cfg.rebase` unconditionally with no type gate. Before the
 // fix, Go's type-switch had no default case, so Flags["rebase"] was left
 // unset (absent from the map) while Sources["rebase"] was still stamped
-// "config" — a merged/sources disagreement that this test locks against
+// "local" — a merged/sources disagreement that this test locks against
 // regressing.
 func TestShipPrepare_RebaseConfigMalformedValuePassesThrough(t *testing.T) {
 	dir := t.TempDir()
@@ -456,8 +488,8 @@ rebase = 42
 	if len(out.Errors) != 0 {
 		t.Fatalf("Errors = %v, want empty", out.Errors)
 	}
-	if src := out.Sources["rebase"]; src != "config" {
-		t.Errorf("Sources[rebase] = %q, want %q", src, "config")
+	if src := out.Sources["rebase"]; src != "local" {
+		t.Errorf("Sources[rebase] = %q, want %q", src, "local")
 	}
 	if v, ok := out.Flags["rebase"]; !ok {
 		t.Error("Flags[rebase] is absent, want the malformed config value passed through verbatim")
@@ -902,8 +934,8 @@ func TestShipPrepare_InvalidReviewThreshold(t *testing.T) {
 	}{
 		{name: "invalid", config: `reviewThreshold = "severe"`, wantErr: true},
 		{name: "uppercase", config: `reviewThreshold = "LOW"`, wantErr: true},
-		{name: "info", config: `reviewThreshold = "info"`, wantValue: "info", wantSrc: "config"},
-		{name: "low", config: `reviewThreshold = "low"`, wantValue: "low", wantSrc: "config"},
+		{name: "info", config: `reviewThreshold = "info"`, wantValue: "info", wantSrc: "local"},
+		{name: "low", config: `reviewThreshold = "low"`, wantValue: "low", wantSrc: "local"},
 		{name: "unset", config: "", wantValue: "info", wantSrc: "default"},
 	}
 	for _, tc := range cases {
@@ -997,14 +1029,14 @@ func TestShipPrepare_ConditionalStepRejected(t *testing.T) {
 			name:    "config steps received-review",
 			step:    "received-review",
 			config:  "[ship.steps]\nreceived-review = true\n",
-			wantSrc: "config",
+			wantSrc: "local",
 			label:   "ship.steps",
 		},
 		{
 			name:    "config steps commit-fixes",
 			step:    "commit-fixes",
 			config:  "[ship.steps]\ncommit-fixes = true\n",
-			wantSrc: "config",
+			wantSrc: "local",
 			label:   "ship.steps",
 		},
 		{
@@ -1119,8 +1151,8 @@ func TestShipPrepare_StepTableDefaults(t *testing.T) {
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("Flags[steps] = %v, want %v", out.Flags["steps"], want)
 	}
-	if src := out.Sources["steps"]; src != "config" {
-		t.Errorf("Sources[steps] = %q, want %q", src, "config")
+	if src := out.Sources["steps"]; src != "local" {
+		t.Errorf("Sources[steps] = %q, want %q", src, "local")
 	}
 
 	raw, err := os.ReadFile(out.StateFile)
@@ -1991,7 +2023,7 @@ func TestMergeShipFlags_CommitWaves_DefaultTrueNotForwarded(t *testing.T) {
 }
 
 // TestMergeShipFlags_CommitWaves_ConfigForwarded verifies that an explicitly
-// configured ship.execute.commitWaves is both merged with source "config"
+// configured ship.execute.commitWaves is both merged with source "local"
 // and forwarded as --commit-waves in executeDispatchArgs.
 func TestMergeShipFlags_CommitWaves_ConfigForwarded(t *testing.T) {
 	cfg := map[string]any{"execute": map[string]any{"commitWaves": false}}
@@ -2000,8 +2032,8 @@ func TestMergeShipFlags_CommitWaves_ConfigForwarded(t *testing.T) {
 	if v, _ := merged["executeCommitWaves"].(bool); v {
 		t.Errorf("Flags[executeCommitWaves] = %v, want false", merged["executeCommitWaves"])
 	}
-	if src := sources["executeCommitWaves"]; src != "config" {
-		t.Errorf("Sources[executeCommitWaves] = %q, want %q", src, "config")
+	if src := sources["executeCommitWaves"]; src != "local" {
+		t.Errorf("Sources[executeCommitWaves] = %q, want %q", src, "local")
 	}
 	want := "--wave-timeout 1800 --wave-interval 60 --commit-waves false"
 	if got, _ := merged["executeDispatchArgs"].(string); got != want {
@@ -2011,7 +2043,7 @@ func TestMergeShipFlags_CommitWaves_ConfigForwarded(t *testing.T) {
 
 // TestMergeShipFlags_CommitWaves_InvalidType verifies the wrong-typed-value
 // path: the dead default's fix must land here too (defaults to true, not
-// false), and an invalid type never sets source to "config", so it is never
+// false), and an invalid type never sets source to "local", so it is never
 // forwarded to execute.
 func TestMergeShipFlags_CommitWaves_InvalidType(t *testing.T) {
 	cfg := map[string]any{"execute": map[string]any{"commitWaves": "nope"}}
@@ -2061,7 +2093,7 @@ commitWaves = "nope"
 }
 
 // TestMergeShipFlags_ReviewThreshold_ConfigOverDefault pins the precedence of
-// ship.reviewThreshold: a configured value wins and reports source "config";
+// ship.reviewThreshold: a configured value wins and reports source "local";
 // an absent or empty value falls back to the built-in default and reports
 // source "default". The default's value is pinned separately by
 // TestShippedReviewThresholdDefaultsAgree in internal/config.
@@ -2073,7 +2105,7 @@ func TestMergeShipFlags_ReviewThreshold_ConfigOverDefault(t *testing.T) {
 		wantValue  string
 		wantSource string
 	}{
-		{"configured value wins over the default", map[string]any{"reviewThreshold": "critical"}, "critical", "config"},
+		{"configured value wins over the default", map[string]any{"reviewThreshold": "critical"}, "critical", "local"},
 		{"absent key falls back to the default", map[string]any{}, def, "default"},
 		{"empty string falls back to the default", map[string]any{"reviewThreshold": ""}, def, "default"},
 	}
@@ -2085,6 +2117,41 @@ func TestMergeShipFlags_ReviewThreshold_ConfigOverDefault(t *testing.T) {
 			}
 			if got := sources["reviewThreshold"]; got != tc.wantSource {
 				t.Errorf("Sources[reviewThreshold] = %q, want %q", got, tc.wantSource)
+			}
+		})
+	}
+}
+
+// TestMergeShipFlags_LocalLabels pins the source label of the [ship] keys that
+// are merged by mergeShipBool (auto, draft), mergeShipInt (the seven timing
+// keys) and the awaitRemoteReviewers branch: a value set in the [ship] config
+// reports "local" (the [ship] section lives in local.toml), and an absent key
+// reports "default".
+func TestMergeShipFlags_LocalLabels(t *testing.T) {
+	cases := []struct {
+		key string
+		set any // value for the key in the [ship] config
+	}{
+		{"auto", true},
+		{"draft", true},
+		{"verifyPipelineTimeout", float64(1111)},
+		{"verifyPipelineInterval", float64(22)},
+		{"verifyPipelineMaxIterations", float64(33)},
+		{"awaitRemoteReviewTimeout", float64(4444)},
+		{"awaitRemoteReviewInterval", float64(55)},
+		{"executeWaveTimeout", float64(6666)},
+		{"executeWaveInterval", float64(77)},
+		{"awaitRemoteReviewers", []any{"some-reviewer"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			_, set, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{tc.key: tc.set}, map[string]any{})
+			if got := set[tc.key]; got != "local" {
+				t.Errorf("Sources[%s] with the key set = %q, want %q", tc.key, got, "local")
+			}
+			_, absent, _ := mergeShipFlags(ShipPrepareIn{}, map[string]any{}, map[string]any{})
+			if got := absent[tc.key]; got != "default" {
+				t.Errorf("Sources[%s] with the key absent = %q, want %q", tc.key, got, "default")
 			}
 		})
 	}

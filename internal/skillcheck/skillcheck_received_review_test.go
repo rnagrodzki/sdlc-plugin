@@ -33,6 +33,14 @@ var receivedReviewSkillsUnfixedRuleRe = regexp.MustCompile("still\\s+\\*\\*unfix
 // line.
 var receivedReviewSkillsNoDeferRe = regexp.MustCompile("already\\s+deferred:\\s+make\\s+no\\s+`defer`\\s+call,\\s+and\\s+say\\s+\"stays\\s+deferred\\s+as")
 
+// receivedReviewSkillsPreApprovalRe matches the Step 10 rule that marks a
+// will-fix finding with a listed severity as pre-approved.
+var receivedReviewSkillsPreApprovalRe = regexp.MustCompile(`mark\s+each\s+"agree,\s+will\s+fix"\s+finding\s+as\s+\*\*pre-approved\*\*`)
+
+// receivedReviewSkillsPartialSkipRe matches the Step 11 rule that keeps a
+// finding skipped at the Step 10 prompt out of the fix, defer and reply passes.
+var receivedReviewSkillsPartialSkipRe = regexp.MustCompile("skipped\\s+at\\s+the\\s+Step\\s+10\\s+prompt\\s+gets\\s+no\\s+`fix-progress`\\s+call,\\s+no\\s+fix,\\s+no\\s+`defer`\\s+record\\s+and\\s+no\\s+reply")
+
 // receivedReviewSkillsDeferredIDClauses are the sentences that handle a
 // finding with a Deferred-id line outside the fixed call itself: they keep it
 // from being deferred a second time, allow one retry of its fixed call and
@@ -226,6 +234,27 @@ func TestReceivedReviewSkillParity(t *testing.T) {
 		for _, c := range receivedReviewSkillsDeferredIDClauses {
 			if !c.re.MatchString(body) {
 				t.Errorf("received-review/SKILL.md lost the sentence for %s", c.where)
+			}
+		}
+	})
+
+	// alwaysFixSeverities pre-approves only the will-fix findings at a listed
+	// severity, and a finding skipped at the Step 10 prompt must stay out of
+	// the fix, defer and reply passes. A wrong edit of either sentence applies
+	// fixes the user did not approve.
+	t.Run("pre-approval rules", func(t *testing.T) {
+		body := flagParityBody(executeSkillsReadFile(t,
+			filepath.Join(executeSkillsRepoRoot(t), "skills", "received-review", "SKILL.md")))
+
+		for _, c := range []struct {
+			name string
+			re   *regexp.Regexp
+		}{
+			{"receivedReviewSkillsPreApprovalRe", receivedReviewSkillsPreApprovalRe},
+			{"receivedReviewSkillsPartialSkipRe", receivedReviewSkillsPartialSkipRe},
+		} {
+			if !c.re.MatchString(body) {
+				t.Errorf("received-review/SKILL.md does not match %s", c.name)
 			}
 		}
 	})

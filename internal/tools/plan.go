@@ -68,7 +68,8 @@ type PlanPrepareIn struct {
 	Lightweight        bool   `json:"lightweight" jsonschema_description:"Requests the lightweight complexity-routing path regardless of file count, adjusting dispatch metadata accordingly."`
 	FileCount          int    `json:"fileCount" jsonschema_description:"Number of files the change is expected to touch, used with lightweight to compute complexity routing (pipeline mode)."`
 	UserPrompt         string `json:"userPrompt" jsonschema_description:"User's plan request text, forwarded to buildExplorePack for keyword-scope and web-research-signal detection. Empty behaves identically to prior versions."`
-	Resume             bool   `json:"resume,omitempty" jsonschema_description:"Boolean. Post-compact recovery: true reuses the active plan run of this branch without resetting it, and always resolves the template (as if resolveTemplate were true). The saved userPrompt and routing flags replace the input values. Fails when no active run exists. Example: true after the session context shows 'Active plan (post-compact):'."`
+	Resume             bool   `json:"resume,omitempty" jsonschema_description:"Boolean. Post-compact recovery: true reuses the plan run that runId names (else the active plan run of this branch) without resetting it, and always resolves the template (as if resolveTemplate were true). The saved userPrompt and routing flags replace the input values. Fails when no active run exists. Example: true after the session context shows 'Active plan (post-compact):'."`
+	RunID              string `json:"runId,omitempty" jsonschema_description:"Run ID from the first plan_prepare call of this session. Used only with resolveTemplate or resume: the call reuses this run, never the newest run of the branch. Omit it on the first call. Example: plan-main-20261026T084445Z"`
 }
 
 // OpenspecChangeInfo, OpenspecAuthoritative, and OpenspecInfo used to be
@@ -1294,8 +1295,8 @@ const styleGuideReminder = " Follow style.writingGuide for every narrative secti
 
 // Root "next" hints returned by plan_prepare, one per run-selection row.
 const (
-	planPrepareNextFirst = "Print the context detection summary. Then run the gate check and complexity routing, and call plan_prepare again with resolveTemplate:true and the same userPrompt." + styleGuideReminder
-	planPrepareNextTmpl  = "Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker \"plan-file\" and the plan path." + styleGuideReminder
+	planPrepareNextFirst = "Print the context detection summary. Then run the gate check and complexity routing, and call plan_prepare again with resolveTemplate:true, the same userPrompt and the runId of this result." + styleGuideReminder
+	planPrepareNextTmpl  = "Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker \"plan-file\", the plan path and runId. Pass runId on every later plan_mark call." + styleGuideReminder
 )
 
 // planPrepareResumeNext is the root next (and template.next) of a resume call.
@@ -1313,7 +1314,10 @@ type planRun struct {
 // selectPlanRun applies plan_prepare's run-selection table:
 //
 //	first call (no resolveTemplate, no resume) -> new run: skillInvoked +
-//	    creationIntent {userPrompt, timestamp}; older evidence dirs pruned.
+//	    creationIntent {userPrompt, timestamp}; older evidence dirs of runs
+//	    that are not kept (state.keepPlanSibling) pruned; runId ignored.
+//	resolveTemplate or resume, runId set       -> reuse that run; a missing
+//	    or done run is a DomainError, never a new run.
 //	resolveTemplate, active run                -> reuse it; full creationIntent.
 //	resolveTemplate, no active run             -> new run; full creationIntent.
 //	resume, active run                         -> reuse it; no state write.
@@ -1364,7 +1368,10 @@ func selectPlanRun(mainRoot, contentRoot string, in PlanPrepareIn) (planRun, Pla
 		return planRun{st: st, next: planPrepareNextFirst}, in, nil
 	}
 
-	active, err := state.ActivePlanRun(mainRoot, branch)
+	active, err := planRunForReuse(mainRoot, branch, in.RunID)
+	if err != nil && in.RunID != "" {
+		return planRun{}, in, err // DomainError or InfraError of planRunByID
+	}
 	if err != nil {
 		p := planStateReadPath(runsDir, branch)
 		return planRun{}, in, &mcpserver.InfraError{
@@ -1474,6 +1481,76 @@ func applySavedIntent(st *state.State, in PlanPrepareIn) PlanPrepareIn {
 		in.FileCount = int(v)
 	}
 	return in
+}
+
+// planRunNotFoundSuggestion is the Suggestion of the "plan run <runId> not
+// found" DomainError of planRunByID.
+const planRunNotFoundSuggestion = `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId, no resume and no resolveTemplate to start a new run.`
+
+// planRunNewRunSuggestion is the Suggestion of the planRunForReuse
+// DomainErrors for a run that cannot be reused.
+const planRunNewRunSuggestion = "Start a new plan: call plan_prepare with no runId, no resume and no resolveTemplate."
+
+// planRunByID loads the plan run runID. It is the one run-by-ID lookup of
+// the plan tools: evidenceLoadRun (plan_evidence.go) calls it too.
+// An invalid ID or a missing file is a DomainError; any other read or
+// parse failure is an InfraError. It does not check done.
+func planRunByID(mainRoot, runID string) (*state.State, error) {
+	st, err := state.LoadRun(mainRoot, runID)
+	if err != nil && !errors.Is(err, state.ErrInvalidRunID) {
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("plan run %s state read failed", runID),
+			Suggestion: "the plan state file is unreadable or corrupt: fix its permissions or delete it, then call plan_prepare again",
+			Cause:      err,
+		}
+	}
+	if err != nil || st == nil {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("plan run %s not found", runID),
+			Suggestion: planRunNotFoundSuggestion,
+		}
+	}
+	return st, nil
+}
+
+// planRunForMark returns the run that plan_mark writes to:
+// planRunByID(runID) when runID is set, else LatestPlanRun(branch).
+func planRunForMark(mainRoot, branch, runID string) (*state.State, error) {
+	if runID != "" {
+		return planRunByID(mainRoot, runID)
+	}
+	return state.LatestPlanRun(mainRoot, branch)
+}
+
+// planRunForReuse returns the run that a resolveTemplate or resume call
+// reuses. With runID set: planRunByID(runID), and a DomainError when that
+// run is not active (state.IsActivePlanRun): "is done" when
+// planIntegrity.done is set, else "has no skillInvoked marker" (planIntegrity
+// missing, null, of another type, or without skillInvoked). With runID
+// empty: ActivePlanRun(branch), as today.
+func planRunForReuse(mainRoot, branch, runID string) (*state.State, error) {
+	if runID == "" {
+		return state.ActivePlanRun(mainRoot, branch)
+	}
+	st, err := planRunByID(mainRoot, runID)
+	if err != nil {
+		return nil, err
+	}
+	if state.IsActivePlanRun(st) {
+		return st, nil
+	}
+	if integrity, ok := st.Data["planIntegrity"].(map[string]any); ok {
+		if _, done := integrity["done"]; done {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("plan run %s is done", runID),
+				Suggestion: planRunNewRunSuggestion,
+			}
+		}
+	}
+	return nil, &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("plan run %s has no skillInvoked marker", runID),
+		Suggestion: planRunNewRunSuggestion,
+	}
 }
 
 func noActivePlanRunError(branch string) error {
@@ -2625,6 +2702,7 @@ func appendPlanRunRecord(mainRoot, branch string, st *state.State) error {
 type PlanMarkIn struct {
 	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint,enum=review-round,enum=review-outcome" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data). \"review-round\" records one plan review round in reviewRounds and replaces the entry with the same round (requires data {round, mergedStatus, found, fixed, lenses}; findings optional). \"review-outcome\" replaces reviewOutcome with the user's answers to the findings open at the review-loop limit (requires data {findings})."`
 	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
+	RunID  string         `json:"runId,omitempty" jsonschema_description:"Run ID from plan_prepare (runId). Pass it on every call: the marker goes to that run. Without it, the newest plan run of the current branch is used, which can belong to another session on the same branch. Example: plan-main-20261026T084445Z"`
 	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,rejected,reason}]}; rejected is [{option,why}], defaults to [] when omitted; the tool always sets at to the call time, overwriting any caller-supplied value). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. For \"review-round\": JSON object, every key required except findings: {round: integer >= 1; mergedStatus: \"Approved\" or \"Issues Found\" (exact text); found: integer >= 0, blocking issues found in the round; fixed: integer >= 0, blocking issues fixed; lenses: JSON array (max 32) of {name: lens name, letters, digits, '.', '_', '-'; verdict: \"Approved\" or \"Issues Found\"}; findings (optional): JSON array (max 200) of {id: the merge_results allIssues id, \"f-\" plus 8 lower-case hex characters; fixed: boolean}}. Example: {\"round\":2,\"mergedStatus\":\"Issues Found\",\"found\":4,\"fixed\":4,\"lenses\":[{\"name\":\"architecture\",\"verdict\":\"Approved\"},{\"name\":\"risk\",\"verdict\":\"Issues Found\"}],\"findings\":[{\"id\":\"f-3a9c1e07\",\"fixed\":true}]}. Replaces the entry with the same round; max 20 rounds stored. For \"review-outcome\": JSON object {findings: JSON array, 1 to 200 entries, of {id: the merge_results allIssues id; text: string, max 200 characters; choice: \"accepted\", \"rejected\", or \"stop\"; reason: string, max 200 characters, \"\" when there is none}}, all 4 entry keys required. Pass every answered finding on every call: the call replaces the stored reviewOutcome. Example: {\"findings\":[{\"id\":\"f-9d01aa42\",\"text\":\"Missing test for the stop route\",\"choice\":\"accepted\",\"reason\":\"Covered by the flow walk task\"}]}. Ignored for every other marker."`
 }
 
@@ -2703,9 +2781,12 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		}
 	}
 
-	// Every marker's lookup resolves the branch's most recent plan run by
-	// filename timestamp (LatestPlanRun), not by state.Find's file mtime.
-	st, err := state.LatestPlanRun(mainRoot, branch)
+	// With runId, the marker goes to that run. Without it, the lookup
+	// resolves the branch's most recent plan run by filename timestamp.
+	st, err := planRunForMark(mainRoot, branch, in.RunID)
+	if err != nil && in.RunID != "" {
+		return PlanMarkOut{}, err // DomainError or InfraError of planRunByID
+	}
 	if err != nil {
 		return PlanMarkOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("find plan state file: %s", err.Error()),
@@ -2846,7 +2927,7 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
 		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan, plus gateChecks (the Step 3 gate checks that start no sub-agent). "+
-			"Writes the plan state file and <runId>.evidence/guardrails.md and style-guide.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes older runs' evidence for the branch. Optional: resume (post-compact recovery; reuses the active run, implies resolveTemplate, and fails when none exists). Returns runId, guardrailsFile, styleGuideFile and next. A failed state read, state write, guardrails write or style guide write returns an infrastructure error; the evidence cleanup is best-effort.",
+			"Writes the plan state file and <runId>.evidence/guardrails.md and style-guide.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes the older runs of the branch that are not done, not written in the last 24 hours and not stamped by another session, with their evidence. Optional: resume (post-compact recovery; reuses the run, implies resolveTemplate, and fails when none exists); runId (the runId of the first call; a resume or resolveTemplate call reuses that run, not the newest run of the branch; a first call ignores it). A resume or resolveTemplate call with runId returns DomainError 'plan run <runId> not found' when the run does not exist, DomainError 'plan run <runId> is done' for a done run, and InfraError for an unreadable state file; it never starts a new run. Returns runId, guardrailsFile, styleGuideFile and next. A failed state read, state write, guardrails write or style guide write returns an infrastructure error; the evidence cleanup is best-effort.",
 		mcpserver.Annotations{
 			Title:      "Prepare plan state and template",
 			ReadOnly:   true,
@@ -2875,7 +2956,8 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "plan_mark",
-		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the current branch's plan state file, append structured data (guardrailResults, criticalDecisions) to it, replace the progress checkpoint (checkpoint), record a review round (review-round), or store the answers to the findings open at the review-loop limit (review-outcome). "+
+		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the plan state file that runId names (the newest plan run of the current branch when runId is absent), append structured data (guardrailResults, criticalDecisions) to it, replace the progress checkpoint (checkpoint), record a review round (review-round), or store the answers to the findings open at the review-loop limit (review-outcome). "+
+			"Optional on every marker: runId (the runId that plan_prepare returned; pass it so that a second plan session on the same branch does not get this write). A runId with no state file, or that is not a plan run ID, returns DomainError 'plan run <runId> not found'; an unreadable state file returns InfraError. A done run is accepted. "+
 			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next: the step-continuation sentence, plus the full custom plan instructions text (from [planStyle].instructions) when any are configured, plus a last-round sentence when step is \"5\" and iteration reaches the review-loop limit (plan_prepare's reviewLoop.maxRounds). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
 			"The first checkpoint of each step and iteration also adds {step, iteration, at} to the top-level stepTimes list, and the checkpoint returns stepTime {step, iteration, at, status}: status is added, kept (an earlier entry owns the time; at is its time) or not recorded. "+
 			"When stepTimes already holds "+strconv.Itoa(maxStepTimesStored)+" entries, the checkpoint is still saved, no entry is added, status is not recorded and the checkpoint returns a warning. A stepTimes value that is not a list is kept, status is not recorded, and the checkpoint returns a warning. "+
