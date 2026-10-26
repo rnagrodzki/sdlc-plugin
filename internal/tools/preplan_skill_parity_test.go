@@ -1,0 +1,74 @@
+package tools
+
+import (
+	"os"
+	"reflect"
+	"strings"
+	"testing"
+)
+
+// preplanSkillTableSections returns the "## " names in the first cell of each
+// data row of the section table in the preplan SKILL.md, in file order. It
+// finds the table by its header row "| Section | Content |" and stops at the
+// first line after it that is not a table row. It fails the test when the
+// header row is missing, so a layout change cannot pass on an empty list.
+func preplanSkillTableSections(t *testing.T, md string) []string {
+	t.Helper()
+	lines := strings.Split(md, "\n")
+	start := -1
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "| Section | Content |" {
+			start = i + 1
+			break
+		}
+	}
+	if start < 0 {
+		t.Fatal("SKILL.md has no \"| Section | Content |\" table header row")
+	}
+	var names []string
+	for _, line := range lines[start:] {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") {
+			break
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		first := strings.TrimSpace(cells[0])
+		if strings.Trim(first, "-: ") == "" {
+			continue
+		}
+		names = append(names, strings.TrimPrefix(strings.Trim(first, "`"), preplanHeadingPrefix))
+	}
+	return names
+}
+
+// TestPreplanSkillSectionTableParity checks that the "## " names in the
+// section table of the preplan SKILL.md equal preplanSections, in order,
+// and that "## Open questions" is the one extra row, after them.
+func TestPreplanSkillSectionTableParity(t *testing.T) {
+	b, err := os.ReadFile("../../plugins/sdlc/skills/preplan/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	md := string(b)
+	want := append(append([]string(nil), preplanSections...), "Open questions")
+
+	if got := preplanSkillTableSections(t, md); !reflect.DeepEqual(got, want) {
+		t.Errorf("SKILL.md section table = %v, want preplanSections then Open questions = %v", got, want)
+	}
+
+	for name, drifted := range map[string]string{
+		"section removed": strings.Replace(md, "| `## Risk if wrong` | who or what fails if the change has a defect |\n", "", 1),
+		"section renamed": strings.Replace(md, "| `## Non-goals` |", "| `## Out of scope` |", 1),
+		"order swapped": strings.Replace(
+			strings.Replace(md, "| `## Goal` |", "| `## TMP` |", 1),
+			"| `## Problem and benefit` |", "| `## Goal` |", 1),
+		"open questions moved up": strings.Replace(md, "| `## Goal` |", "| `## Open questions` | x |\n| `## Goal` |", 1),
+	} {
+		if drifted == md {
+			t.Fatalf("%s: the drift edit changed nothing; update the test to the SKILL.md table", name)
+		}
+		if got := preplanSkillTableSections(t, drifted); reflect.DeepEqual(got, want) {
+			t.Errorf("%s: the parity check did not see the change", name)
+		}
+	}
+}
