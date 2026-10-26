@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Staging of another plan is kept
-The system SHALL refuse an `openspec_stage` call, before any write, when the staging directory of the change holds a `stage.json` whose `planPath` is not empty and differs from the `planPath` of the call after path cleaning. The call SHALL return a DomainError that names the other plan path, tells the caller to call again with that `planPath` when both paths name the same plan file, and SHALL write nothing. The system SHALL skip this check when the call has no `planPath`, or when the existing `stage.json` is missing, cannot be read, cannot be parsed, or has no `planPath`.
+The system SHALL refuse an `openspec_stage` call, before any write, when the staging directory of the change holds a `stage.json` whose `planPath` is not empty and differs from the `planPath` of the call after path cleaning. The call SHALL return a DomainError that names the other plan path, and SHALL write nothing. The message SHALL tell the caller to call again with that `planPath` when both paths name the same plan file.
 
 #### Scenario: Another plan staged the same change
 - **WHEN** the `stage.json` of change `add-widget` has `planPath` `/plans/a.md`
@@ -19,6 +19,9 @@ The system SHALL refuse an `openspec_stage` call, before any write, when the sta
 - **WHEN** the `stage.json` of change `add-widget` has `planPath` `/plans/a.md`
 - **AND** an `openspec_stage` call for `add-widget` has `planPath` `/plans/a.md`
 - **THEN** the call replaces the staging folder, as before
+
+### Requirement: Staging with an unknown owner is replaced
+The system SHALL skip the ownership check, and replace the staging directory, when the call has no `planPath`, or when the existing `stage.json` is missing, cannot be read, cannot be parsed, or has no `planPath`.
 
 #### Scenario: Call with no plan path
 - **WHEN** the `stage.json` of change `add-widget` has `planPath` `/plans/a.md`
