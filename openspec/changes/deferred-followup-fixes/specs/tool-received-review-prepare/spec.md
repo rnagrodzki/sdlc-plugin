@@ -197,22 +197,22 @@ The tool SHALL return `alwaysFixSeverities` as `[]` with one warning when the st
 #### Scenario: String instead of a list
 - **WHEN** `.sdlc-v2/local.toml` sets `alwaysFixSeverities = "high"`
 - **THEN** `alwaysFixSeverities` is `[]`
-- **AND** `warnings` contains `local receivedReview.alwaysFixSeverities has wrong type string; expected a list of strings; using [] (every will-fix finding asks)`
+- **AND** `warnings` contains `Local receivedReview.alwaysFixSeverities has wrong type string; expected a list of strings such as ["high", "critical"]; using [] (every will-fix finding asks).`
 
 #### Scenario: Item of the wrong type
 - **WHEN** `.sdlc-v2/local.toml` sets `alwaysFixSeverities = ["high", 3]`
 - **THEN** `alwaysFixSeverities` is `[]`
-- **AND** `warnings` contains `local receivedReview.alwaysFixSeverities item 3 has wrong type int64; expected a string; using [] (every will-fix finding asks)`
+- **AND** `warnings` contains `Local receivedReview.alwaysFixSeverities item 3 has wrong type float64; expected a string such as "high"; using [] (every will-fix finding asks).`
 
 #### Scenario: Unknown item
 - **WHEN** `.sdlc-v2/local.toml` sets `alwaysFixSeverities = ["urgent"]`
 - **THEN** `alwaysFixSeverities` is `[]`
-- **AND** `warnings` contains `local receivedReview.alwaysFixSeverities "urgent" is not in allowed values [critical high medium low info]; using [] (every will-fix finding asks)`
+- **AND** `warnings` contains `Local receivedReview.alwaysFixSeverities "urgent" is not in allowed values [critical high medium low info]; using [] (every will-fix finding asks).`
 
 #### Scenario: Repeated item
 - **WHEN** `.sdlc-v2/local.toml` sets `alwaysFixSeverities = ["High", "high"]`
 - **THEN** `alwaysFixSeverities` is `["high"]`
-- **AND** `warnings` contains `local receivedReview.alwaysFixSeverities lists "high" more than once; kept once`
+- **AND** `warnings` contains `Local receivedReview.alwaysFixSeverities lists "high" more than once; kept once.`
 
 ### Requirement: Unreadable local file
 The tool SHALL fail with an `InfraError` when `~/.sdlc/local.toml` or `.sdlc-v2/local.toml` cannot be read or parsed, on a PR run and on a no-PR run.
@@ -224,7 +224,7 @@ The tool SHALL fail with an `InfraError` when `~/.sdlc/local.toml` or `.sdlc-v2/
 - **WHEN** `.sdlc-v2/local.toml` does not parse
 - **AND** the call has `pr: 0`
 - **THEN** the call fails with an `InfraError` starting with `read [receivedReview] section of .sdlc-v2/local.toml (or ~/.sdlc/local.toml):`
-- **AND** the suggestion is `Fix the TOML syntax or the file permissions of the file the error names (or delete its receivedReview section to ask for every finding), then retry received_review_prepare.`
+- **AND** the suggestion is `Fix the TOML syntax or the read permission of the file the error names, or remove it if it is a directory, then retry received_review_prepare.`
 
 #### Scenario: Malformed user-level file
 - **WHEN** `~/.sdlc/local.toml` does not parse

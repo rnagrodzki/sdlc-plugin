@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
@@ -155,17 +157,40 @@ func activePlanMarkers() map[string]any {
 	return map[string]any{"skillInvoked": "2024-01-01T00:00:00Z"}
 }
 
-// callPlanPrepareHook runs the hook for a plan_prepare event in sessionID and
-// asserts the result is silent.
-func callPlanPrepareHook(t *testing.T, sessionID string) {
+// planPrepareTextResponse returns the tool_response of a plan_prepare call in
+// the MCP result shape: one text content block with the Markdown bullet of
+// the runId (render rule 4 of internal/mcpserver/render.go).
+func planPrepareTextResponse(runID string) map[string]any {
+	return map[string]any{
+		"content": []any{
+			map[string]any{"type": "text", "text": "- runId: " + runID + "\n"},
+		},
+	}
+}
+
+// callPlanPrepareHookWith runs the hook for a plan_prepare event in sessionID
+// with toolResponse as the tool_response of the envelope, and asserts the
+// result is silent.
+func callPlanPrepareHookWith(t *testing.T, sessionID string, toolResponse any) {
 	t.Helper()
-	out, err := recordMCPInvocation(HookCtx{SessionID: sessionID}, Event{ToolName: planPrepareTool})
+	event := Event{ToolName: planPrepareTool, Raw: map[string]any{"tool_response": toolResponse}}
+	out, err := recordMCPInvocation(HookCtx{SessionID: sessionID}, event)
 	if err != nil {
 		t.Fatal(err)
 	}
 	assertSilent(t, out)
 }
 
+// callPlanPrepareHook runs the hook for a plan_prepare event in sessionID. The
+// response names runID. It asserts the result is silent.
+func callPlanPrepareHook(t *testing.T, sessionID, runID string) {
+	t.Helper()
+	callPlanPrepareHookWith(t, sessionID, planPrepareTextResponse(runID))
+}
+
+// TestRecordMCPInvocation_PlanSessionStamp pins the session stamp of the
+// record-mcp-invocation hook: it goes only to the active plan run that the
+// plan_prepare response names.
 func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 	t.Run("first plan_prepare stamps the session ID", func(t *testing.T) {
 		root := gitFixture(t, "feat/plan-stamp-first")
@@ -174,7 +199,7 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 			t.Fatalf("precondition: sessionId = %q, want empty", got)
 		}
 
-		callPlanPrepareHook(t, "s-1")
+		callPlanPrepareHook(t, "s-1", state.RunID(st))
 
 		if got := planRunSessionID(t, st.Path); got != "s-1" {
 			t.Errorf("sessionId = %q, want s-1", got)
@@ -185,8 +210,8 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 		root := gitFixture(t, "feat/plan-stamp-resume")
 		st := newPlanState(t, root, "feat/plan-stamp-resume", activePlanMarkers(), "")
 
-		callPlanPrepareHook(t, "s-1")
-		callPlanPrepareHook(t, "s-2")
+		callPlanPrepareHook(t, "s-1", state.RunID(st))
+		callPlanPrepareHook(t, "s-2", state.RunID(st))
 
 		if got := planRunSessionID(t, st.Path); got != "s-2" {
 			t.Errorf("sessionId = %q, want s-2", got)
@@ -196,13 +221,13 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 	t.Run("same session ID: no state write", func(t *testing.T) {
 		root := gitFixture(t, "feat/plan-stamp-same")
 		st := newPlanState(t, root, "feat/plan-stamp-same", activePlanMarkers(), "")
-		callPlanPrepareHook(t, "s-2")
+		callPlanPrepareHook(t, "s-2", state.RunID(st))
 
 		old := time.Now().Add(-time.Hour).Truncate(time.Second)
 		if err := os.Chtimes(st.Path, old, old); err != nil {
 			t.Fatal(err)
 		}
-		callPlanPrepareHook(t, "s-2")
+		callPlanPrepareHook(t, "s-2", state.RunID(st))
 
 		info, err := os.Stat(st.Path)
 		if err != nil {
@@ -220,7 +245,11 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 		root := gitFixture(t, "feat/plan-stamp-other-tool")
 		st := newPlanState(t, root, "feat/plan-stamp-other-tool", activePlanMarkers(), "")
 
-		out, err := recordMCPInvocation(HookCtx{SessionID: "s-1"}, Event{ToolName: "mcp__plugin_sdlc_sdlc__plan_mark"})
+		event := Event{
+			ToolName: "mcp__plugin_sdlc_sdlc__plan_mark",
+			Raw:      map[string]any{"tool_response": planPrepareTextResponse(state.RunID(st))},
+		}
+		out, err := recordMCPInvocation(HookCtx{SessionID: "s-1"}, event)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -235,7 +264,7 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 		root := gitFixture(t, "feat/plan-stamp-empty-id")
 		st := newPlanState(t, root, "feat/plan-stamp-empty-id", activePlanMarkers(), "")
 
-		callPlanPrepareHook(t, "")
+		callPlanPrepareHook(t, "", state.RunID(st))
 
 		if got := planRunSessionID(t, st.Path); got != "" {
 			t.Errorf("sessionId = %q, want empty", got)
@@ -245,7 +274,7 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 	t.Run("no plan run: silent, no state file created", func(t *testing.T) {
 		root := gitFixture(t, "feat/plan-stamp-no-run")
 
-		callPlanPrepareHook(t, "s-1")
+		callPlanPrepareHook(t, "s-1", "plan-feat-plan-stamp-no-run-20261026T100000Z")
 
 		matches, err := filepath.Glob(filepath.Join(root, paths.DataDir, paths.RunsSubdir, "plan-*.json"))
 		if err != nil {
@@ -260,10 +289,181 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 		root := gitFixture(t, "feat/plan-stamp-done")
 		st := newPlanState(t, root, "feat/plan-stamp-done", allPlanMarkers(), "")
 
-		callPlanPrepareHook(t, "s-1")
+		callPlanPrepareHook(t, "s-1", state.RunID(st))
 
 		if got := planRunSessionID(t, st.Path); got != "" {
 			t.Errorf("sessionId = %q, want empty", got)
+		}
+	})
+
+	t.Run("only the named run gets the stamp", func(t *testing.T) {
+		branch := "feat/plan-stamp-two-runs"
+		root := gitFixture(t, branch)
+		slug := state.SlugifyBranch(branch)
+		olderID := "plan-" + slug + "-20261026T100000Z"
+		newerID := "plan-" + slug + "-20261026T110000Z"
+		olderPath := writePlanRun(t, root, olderID, map[string]any{"planIntegrity": activePlanMarkers()})
+		newerPath := writePlanRun(t, root, newerID, map[string]any{"planIntegrity": activePlanMarkers()})
+
+		callPlanPrepareHook(t, "s-1", olderID)
+
+		if got := planRunSessionID(t, olderPath); got != "s-1" {
+			t.Errorf("named run sessionId = %q, want s-1", got)
+		}
+		if got := planRunSessionID(t, newerPath); got != "" {
+			t.Errorf("newer run sessionId = %q, want empty (not named)", got)
+		}
+	})
+
+	t.Run("no runId in the response: no stamp", func(t *testing.T) {
+		root := gitFixture(t, "feat/plan-stamp-no-run-id")
+		st := newPlanState(t, root, "feat/plan-stamp-no-run-id", activePlanMarkers(), "")
+
+		callPlanPrepareHookWith(t, "s-1", map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "- status: ok\n"}},
+		})
+
+		if got := planRunSessionID(t, st.Path); got != "" {
+			t.Errorf("sessionId = %q, want empty", got)
+		}
+	})
+
+	t.Run("named run has no file: no stamp, no stderr line", func(t *testing.T) {
+		branch := "feat/plan-stamp-no-file"
+		root := gitFixture(t, branch)
+		slug := state.SlugifyBranch(branch)
+		otherPath := writePlanRun(t, root, "plan-"+slug+"-20261026T100000Z", map[string]any{"planIntegrity": activePlanMarkers()})
+
+		stderr := captureStderr(t, func() {
+			callPlanPrepareHook(t, "s-1", "plan-"+slug+"-20261026T110000Z")
+		})
+
+		if stderr != "" {
+			t.Errorf("stderr = %q, want empty", stderr)
+		}
+		if got := planRunSessionID(t, otherPath); got != "" {
+			t.Errorf("other run sessionId = %q, want empty", got)
+		}
+	})
+
+	t.Run("malformed run ID in the response: no stamp, no stderr line", func(t *testing.T) {
+		root := gitFixture(t, "feat/plan-stamp-malformed-id")
+		st := newPlanState(t, root, "feat/plan-stamp-malformed-id", activePlanMarkers(), "")
+
+		stderr := captureStderr(t, func() {
+			callPlanPrepareHook(t, "s-1", "plan-x")
+		})
+
+		if stderr != "" {
+			t.Errorf("stderr = %q, want empty", stderr)
+		}
+		if got := planRunSessionID(t, st.Path); got != "" {
+			t.Errorf("sessionId = %q, want empty", got)
+		}
+	})
+
+	t.Run("named run has no skillInvoked: no stamp", func(t *testing.T) {
+		root := gitFixture(t, "feat/plan-stamp-no-skill")
+		st := newPlanState(t, root, "feat/plan-stamp-no-skill", map[string]any{}, "")
+
+		callPlanPrepareHook(t, "s-1", state.RunID(st))
+
+		if got := planRunSessionID(t, st.Path); got != "" {
+			t.Errorf("sessionId = %q, want empty", got)
+		}
+	})
+
+	t.Run("named run file has bad JSON: no stamp on any run, one stderr line", func(t *testing.T) {
+		branch := "feat/plan-stamp-bad-json"
+		root := gitFixture(t, branch)
+		slug := state.SlugifyBranch(branch)
+		badID := "plan-" + slug + "-20261026T100000Z"
+		badPath := writePlanRun(t, root, badID, nil)
+		if err := os.WriteFile(badPath, []byte("{not json"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		goodPath := writePlanRun(t, root, "plan-"+slug+"-20261026T110000Z", map[string]any{"planIntegrity": activePlanMarkers()})
+
+		stderr := captureStderr(t, func() {
+			callPlanPrepareHook(t, "s-1", badID)
+		})
+
+		assertPlanStampStderr(t, stderr)
+		if got := planRunSessionID(t, goodPath); got != "" {
+			t.Errorf("other run sessionId = %q, want empty", got)
+		}
+	})
+
+	t.Run("array response: stamp works", func(t *testing.T) {
+		root := gitFixture(t, "feat/plan-stamp-array")
+		st := newPlanState(t, root, "feat/plan-stamp-array", activePlanMarkers(), "")
+
+		callPlanPrepareHookWith(t, "s-1", []any{
+			map[string]any{"type": "text", "text": "- runId: " + state.RunID(st) + "\n"},
+		})
+
+		if got := planRunSessionID(t, st.Path); got != "s-1" {
+			t.Errorf("sessionId = %q, want s-1", got)
+		}
+	})
+
+	t.Run("JSON response: stamp works", func(t *testing.T) {
+		root := gitFixture(t, "feat/plan-stamp-json")
+		st := newPlanState(t, root, "feat/plan-stamp-json", activePlanMarkers(), "")
+
+		callPlanPrepareHookWith(t, "s-1", map[string]any{"runId": state.RunID(st)})
+
+		if got := planRunSessionID(t, st.Path); got != "s-1" {
+			t.Errorf("sessionId = %q, want s-1", got)
+		}
+	})
+
+	t.Run("upper-case branch: stamp works", func(t *testing.T) {
+		root := gitFixture(t, "PROJ-123-fix")
+		st := newPlanState(t, root, "PROJ-123-fix", activePlanMarkers(), "")
+		if !strings.HasPrefix(state.RunID(st), "plan-PROJ-123-fix-") {
+			t.Fatalf("precondition: run ID = %q, want the upper-case slug", state.RunID(st))
+		}
+
+		callPlanPrepareHook(t, "s-1", state.RunID(st))
+
+		if got := planRunSessionID(t, st.Path); got != "s-1" {
+			t.Errorf("sessionId = %q, want s-1", got)
+		}
+	})
+
+	t.Run("full Run dispatch: a real envelope stamps only the named run", func(t *testing.T) {
+		branch := "feat/plan-stamp-run-dispatch"
+		root := gitFixture(t, branch)
+		slug := state.SlugifyBranch(branch)
+		olderID := "plan-" + slug + "-20261026T100000Z"
+		newerID := "plan-" + slug + "-20261026T110000Z"
+		olderPath := writePlanRun(t, root, olderID, map[string]any{"planIntegrity": activePlanMarkers()})
+		newerPath := writePlanRun(t, root, newerID, map[string]any{"planIntegrity": activePlanMarkers()})
+
+		stdin, err := json.Marshal(map[string]any{
+			"hook_event_name": "PostToolUse",
+			"session_id":      "s-run",
+			"tool_name":       planPrepareTool,
+			"tool_input":      map[string]any{"resume": true},
+			"tool_response":   planPrepareTextResponse(olderID),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if code := Run("record-mcp-invocation", bytes.NewReader(stdin), &out); code != 0 {
+			t.Errorf("exit code = %d, want 0", code)
+		}
+		if out.Len() != 0 {
+			t.Errorf("stdout = %q, want empty", out.String())
+		}
+
+		if got := planRunSessionID(t, olderPath); got != "s-run" {
+			t.Errorf("named run sessionId = %q, want s-run", got)
+		}
+		if got := planRunSessionID(t, newerPath); got != "" {
+			t.Errorf("newer run sessionId = %q, want empty (not named)", got)
 		}
 	})
 
@@ -277,7 +477,10 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 		var out Output
 		stderr := captureStderr(t, func() {
 			var err error
-			out, err = recordMCPInvocation(HookCtx{SessionID: "s-1"}, Event{ToolName: planPrepareTool})
+			out, err = recordMCPInvocation(HookCtx{SessionID: "s-1"}, Event{
+				ToolName: planPrepareTool,
+				Raw:      map[string]any{"tool_response": planPrepareTextResponse(state.RunID(st))},
+			})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -302,7 +505,10 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 		var out Output
 		stderr := captureStderr(t, func() {
 			var err error
-			out, err = recordMCPInvocation(HookCtx{SessionID: "s-1"}, Event{ToolName: planPrepareTool})
+			out, err = recordMCPInvocation(HookCtx{SessionID: "s-1"}, Event{
+				ToolName: planPrepareTool,
+				Raw:      map[string]any{"tool_response": planPrepareTextResponse(state.RunID(st))},
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

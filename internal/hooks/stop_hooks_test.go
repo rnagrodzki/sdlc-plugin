@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"
@@ -224,6 +225,23 @@ func newPlanState(t *testing.T, root, branch string, planIntegrity map[string]an
 		t.Fatal(err)
 	}
 	return st
+}
+
+// writePlanRun writes the plan run file <runID>.json with data into the runs
+// folder of root and returns its path. A test that needs two runs of one
+// branch uses it, because newPlanState (state.Init) names a run by the
+// second, so two runs created in one second share one file.
+func writePlanRun(t *testing.T, root, runID string, data map[string]any) string {
+	t.Helper()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	mustMkdirAll(t, dir)
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, runID+".json")
+	mustWriteFile(t, path, string(raw))
+	return path
 }
 
 func TestStopPlanIntegrity_AllMarkersPresent_KeepsStateSilently(t *testing.T) {
@@ -659,7 +677,7 @@ func TestStopPlanIntegrity_ExactSlugMatch_IgnoresSuperstringSlugRun(t *testing.T
 	// prefix-matching bug would have picked this one instead.
 	featXPath, featXEvidence := writeRun("plan-feat-x-20260929T120000Z.json")
 
-	if st := findPlanState("feat"); st == nil || st.Path != featPath {
+	if st := findPlanState("feat", ""); st == nil || st.Path != featPath {
 		t.Fatalf("findPlanState(%q).Path = %+v, want %q", "feat", st, featPath)
 	}
 
@@ -688,7 +706,7 @@ func TestFindPlanState_CorruptStateFile_ReturnsNil(t *testing.T) {
 	mustMkdirAll(t, dir)
 	mustWriteFile(t, filepath.Join(dir, "plan-feat-plan-corrupt-20260929T110000Z.json"), "{not json")
 
-	if st := findPlanState(branch); st != nil {
+	if st := findPlanState(branch, ""); st != nil {
 		t.Fatalf("findPlanState = %+v, want nil for a corrupt state file", st)
 	}
 
@@ -697,6 +715,108 @@ func TestFindPlanState_CorruptStateFile_ReturnsNil(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertSilent(t, out)
+}
+
+// TestFindPlanState_BySession pins the run choice of findPlanState: the run
+// of the session wins over a newer run of another session, and every other
+// case degrades to the newest run or to nil.
+func TestFindPlanState_BySession(t *testing.T) {
+	branch := "feat/plan-by-session"
+	slug := state.SlugifyBranch(branch)
+	olderID := "plan-" + slug + "-20261026T100000Z"
+	newerID := "plan-" + slug + "-20261026T110000Z"
+
+	t.Run("the run of this session wins over a newer run", func(t *testing.T) {
+		root := gitFixture(t, branch)
+		olderPath := writePlanRun(t, root, olderID, map[string]any{"sessionId": "s-1", "planIntegrity": allPlanMarkers()})
+		writePlanRun(t, root, newerID, map[string]any{"sessionId": "s-2", "planIntegrity": allPlanMarkers()})
+
+		if st := findPlanState(branch, "s-1"); st == nil || st.Path != olderPath {
+			t.Fatalf("findPlanState(%q, %q) = %+v, want path %q", branch, "s-1", st, olderPath)
+		}
+	})
+
+	t.Run("no run of this session: the newest run wins", func(t *testing.T) {
+		root := gitFixture(t, branch)
+		writePlanRun(t, root, olderID, map[string]any{"sessionId": "s-1", "planIntegrity": allPlanMarkers()})
+		newerPath := writePlanRun(t, root, newerID, map[string]any{"sessionId": "s-2", "planIntegrity": allPlanMarkers()})
+
+		if st := findPlanState(branch, "s-3"); st == nil || st.Path != newerPath {
+			t.Fatalf("findPlanState(%q, %q) = %+v, want path %q", branch, "s-3", st, newerPath)
+		}
+	})
+
+	t.Run("empty session ID: the newest run wins", func(t *testing.T) {
+		root := gitFixture(t, branch)
+		writePlanRun(t, root, olderID, map[string]any{"sessionId": "s-1", "planIntegrity": allPlanMarkers()})
+		newerPath := writePlanRun(t, root, newerID, map[string]any{"sessionId": "s-2", "planIntegrity": allPlanMarkers()})
+
+		if st := findPlanState(branch, ""); st == nil || st.Path != newerPath {
+			t.Fatalf("findPlanState(%q, %q) = %+v, want path %q", branch, "", st, newerPath)
+		}
+	})
+
+	t.Run("runs path is a regular file: nil", func(t *testing.T) {
+		root := gitFixture(t, branch)
+		mustMkdirAll(t, filepath.Join(root, paths.DataDir))
+		mustWriteFile(t, filepath.Join(root, paths.DataDir, paths.RunsSubdir), "not a folder")
+
+		if st := findPlanState(branch, "s-1"); st != nil {
+			t.Fatalf("findPlanState = %+v, want nil", st)
+		}
+	})
+}
+
+// TestStopPlanIntegrity_ChecksRunOfSession proves the stop-plan-integrity
+// hook passes the session_id of its stdin envelope to findPlanState: the
+// same two runs give a warning for the session of the run with a missing
+// checkpoint and silence for the other session. It goes through Run with a
+// real JSON envelope.
+func TestStopPlanIntegrity_ChecksRunOfSession(t *testing.T) {
+	branch := "feat/plan-stop-session"
+	slug := state.SlugifyBranch(branch)
+
+	root := gitFixture(t, branch)
+	planFile := filepath.Join(root, "plans", "my-plan.md")
+	mustMkdirAll(t, filepath.Join(root, "plans"))
+	mustWriteFile(t, planFile, "# Plan\n\nSome content.\n")
+
+	incomplete := allPlanMarkers()
+	delete(incomplete, "critiqueRan")
+	writePlanRun(t, root, "plan-"+slug+"-20261026T100000Z", map[string]any{
+		"sessionId":     "s-1",
+		"planFilePath":  planFile,
+		"planIntegrity": incomplete,
+	})
+	writePlanRun(t, root, "plan-"+slug+"-20261026T110000Z", map[string]any{
+		"sessionId":     "s-2",
+		"planFilePath":  planFile,
+		"planIntegrity": allPlanMarkers(),
+	})
+
+	for _, tc := range []struct {
+		sessionID   string
+		wantWarning bool
+	}{
+		{sessionID: "s-1", wantWarning: true},
+		{sessionID: "s-2", wantWarning: false},
+	} {
+		t.Run("session "+tc.sessionID, func(t *testing.T) {
+			stdin := `{"hook_event_name":"Stop","session_id":"` + tc.sessionID + `"}`
+			var out bytes.Buffer
+			stderrText := captureStderr(t, func() {
+				if code := Run("stop-plan-integrity", strings.NewReader(stdin), &out); code != 0 {
+					t.Errorf("exit code = %d, want 0", code)
+				}
+			})
+			if out.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", out.String())
+			}
+			if got := strings.Contains(stderrText, "Missing checkpoints: critiqueRan"); got != tc.wantWarning {
+				t.Errorf("warning for critiqueRan = %v, want %v; stderr = %q", got, tc.wantWarning, stderrText)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -27,18 +27,6 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
-// sessionStart is the "session-start" hook handler, ported from
-// hooks/session-start.js. It outputs the plugin version, skill count, and
-// project context (pipeline resume, OpenSpec, git status, Jira cache, ship
-// config) as plain text for Claude Code's SessionStart system-reminder.
-//
-// Every phase below degrades independently and silently on error — a
-// problem in one phase (missing repo, unreadable cache, corrupt state file)
-// never suppresses another phase's output, mirroring the JS source's
-// per-phase try/catch structure. Phases that can panic on unexpected input
-// are wrapped with recover() for the same reason; safePhase's fail-open
-// convention is documented on its own doc comment below.
-
 // BuildCommit and BuildTime are the sdlc binary's build metadata, surfaced
 // in the session-start header alongside PluginVersion. cmd/sdlc's main()
 // wires these from version.GetBuildInfo() before dispatching to Run (Task
@@ -48,7 +36,19 @@ var (
 	BuildTime   = "unknown"
 )
 
-func sessionStart(_ HookCtx, event Event) (Output, error) {
+// sessionStart is the "session-start" hook handler, ported from
+// hooks/session-start.js. It outputs the plugin version, skill count, and
+// project context (pipeline resume, OpenSpec, git status, Jira cache, ship
+// config) as plain text for Claude Code's SessionStart system-reminder.
+// ctx.SessionID selects the plan run that the post-compact plan banner names.
+//
+// Every phase below degrades independently and silently on error — a
+// problem in one phase (missing repo, unreadable cache, corrupt state file)
+// never suppresses another phase's output, mirroring the JS source's
+// per-phase try/catch structure. Phases that can panic on unexpected input
+// are wrapped with recover() for the same reason; safePhase's fail-open
+// convention is documented on its own doc comment below.
+func sessionStart(ctx HookCtx, event Event) (Output, error) {
 	var header []string
 
 	pluginRoot, rootOK := safeResolvePluginRoot()
@@ -77,7 +77,7 @@ func sessionStart(_ HookCtx, event Event) (Output, error) {
 	}
 
 	var resume []string
-	resume = append(resume, safeStringsPhase("pipeline-resume", func() []string { return pipelineResumePhase(event.Source) })...)
+	resume = append(resume, safeStringsPhase("pipeline-resume", func() []string { return pipelineResumePhase(event.Source, ctx.SessionID) })...)
 	resume = append(resume, safeStringsPhase("compact-recovery", compactRecoveryPhase)...)
 	resume = append(resume, safeStringsPhase("worktree-links", worktreeLinkPhase)...)
 	resume = append(resume, safeStringsPhase("openspec", openSpecPhase)...)
@@ -511,7 +511,11 @@ func dashboardPhase() []string {
 // Phase: pipeline resume detection (ship/execute state)
 // ---------------------------------------------------------------------------
 
-func pipelineResumePhase(source string) []string {
+// pipelineResumePhase returns the resume banner lines of the ship, execute
+// and plan runs of the current branch. sessionID selects the plan run of
+// this session (see planResumeLines); an empty sessionID selects the newest
+// active plan run.
+func pipelineResumePhase(source, sessionID string) []string {
 	root, err := worktree.MainRoot()
 	if err != nil {
 		return nil
@@ -524,7 +528,7 @@ func pipelineResumePhase(source string) []string {
 	var lines []string
 	lines = append(lines, shipResumeLines(root, branch)...)
 	lines = append(lines, executeResumeLines(root, branch, source)...)
-	lines = append(lines, planResumeLines(root, branch, source)...)
+	lines = append(lines, planResumeLines(root, branch, source, sessionID)...)
 	return lines
 }
 
@@ -702,13 +706,6 @@ func executeResumeLines(root, branch, source string) []string {
 	return []string{line, "  Resume with: /execute --resume"}
 }
 
-// planResumeMaxAge bounds how stale an active plan run's state file may be
-// before its resume banner is suppressed, mirroring compactRecoveryTTL and
-// staleSidecarThreshold's own age-gate convention elsewhere in this file. A
-// plan run left mid-flight for longer than this was most likely abandoned,
-// not merely compacted, so resurfacing it would be misleading.
-const planResumeMaxAge = 24 * time.Hour
-
 // planResumeLines returns the post-compact banner for an active plan run, or
 // nil. Unlike shipResumeLines/executeResumeLines, this banner only ever
 // fires on source == "compact": a plan run in progress at ordinary session
@@ -716,23 +713,19 @@ const planResumeMaxAge = 24 * time.Hour
 // with the plan skill already in context), so only compaction — which drops
 // that in-context skill knowledge — needs a printed reminder.
 //
-// state.ActivePlanRun already restricts the match to the exact branch slug
-// (LatestPlanRun) and to a run that has skillInvoked but not done
-// (planIntegrity), so a stale, completed, or wrong-branch run never reaches
-// here. Any ActivePlanRun error (e.g. corrupt state JSON) is treated the
+// state.PlanRunForSession (activeOnly) restricts the match to the exact
+// branch slug, to the run of sessionID (else the newest unstamped run), and
+// to a run that has skillInvoked, no done, and a write inside
+// PlanRunLiveWindow, so a stale, completed, wrong-branch or other-session
+// run never reaches here. Any PlanRunForSession error is treated the
 // same as "no active run" — this phase must degrade silently, not fail the
 // hook.
-func planResumeLines(root, branch, source string) []string {
+func planResumeLines(root, branch, source, sessionID string) []string {
 	if source != "compact" {
 		return nil
 	}
-	st, err := state.ActivePlanRun(root, branch)
+	st, err := state.PlanRunForSession(root, branch, sessionID, true)
 	if err != nil || st == nil {
-		return nil
-	}
-
-	info, err := os.Stat(st.Path)
-	if err != nil || time.Since(info.ModTime()) > planResumeMaxAge {
 		return nil
 	}
 
@@ -752,7 +745,7 @@ func planResumeLines(root, branch, source string) []string {
 	lines := []string{
 		fmt.Sprintf("Active plan (post-compact): step %s, branch %s; plan file: %s", step, branch, planFile),
 		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
-		fmt.Sprintf("  Resume with: plan_prepare({resume:true, resolveTemplate:true}) then plan_support({action:\"evidence_digest\", runId:\"%s\"})", state.RunID(st)),
+		fmt.Sprintf("  Resume with: plan_prepare({resume:true, resolveTemplate:true, skipConfigCheck:true, runId:\"%[1]s\"}) then plan_support({action:\"evidence_digest\", runId:\"%[1]s\"})", state.RunID(st)),
 	}
 	return append(lines, instructionLines(style.Instructions)...)
 }
