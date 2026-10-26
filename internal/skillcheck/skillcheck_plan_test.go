@@ -532,3 +532,51 @@ func TestPlanSkillsReferenceFilesAreUnmodified(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanSkillPreplanTopicMap checks that the Preplan topic file block of
+// plan SKILL.md Step 1 names each new topic section and each new row kind.
+// The block is the only reader of the section bodies of a topic file, so a
+// section or row kind that preplan writes and the block does not name has no
+// reader. The block also has to route an empty or absent new section to the
+// Structured discovery question and to the --auto suppression rule, and to
+// say that the Smallest cut: line is not a requirement.
+func TestPlanSkillPreplanTopicMap(t *testing.T) {
+	rel := "skills/plan/SKILL.md"
+	data, err := os.ReadFile(filepath.Join(planSkillsRepoRoot(t), rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	content := string(data)
+
+	const start = "**Preplan topic file:**"
+	from := strings.Index(content, start)
+	if from < 0 {
+		t.Fatalf("%s: no %q block found", rel, start)
+	}
+	block := content[from:]
+	// The block ends at the first blank line after its heading line.
+	if end := strings.Index(block, "\n\n"); end >= 0 {
+		block = block[:end]
+	}
+
+	for _, want := range []string{
+		"`## Problem and benefit`",
+		"`## Risk if wrong`",
+		"`## Non-goals`",
+		"`Smallest cut:`",
+		"`Offered, not picked:`",
+		"`None stated.`",
+		// These two phrases occur only in the new bullets, so deleting the
+		// non-goals bullet or the routing bullet fails the test. The tokens
+		// below them also occur in older bullets.
+		"and the `Smallest cut:` line under the Decisions table",
+		"An empty or absent new section",
+		"**Structured discovery**",
+		"**`--auto` suppression**",
+		"The `Smallest cut:` line under the table is not a row and not a requirement.",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("%s: Preplan topic file block does not name %s", rel, want)
+		}
+	}
+}
