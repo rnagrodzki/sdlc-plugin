@@ -362,11 +362,17 @@ func TestWrite_PrunesOldFiles(t *testing.T) {
 	}
 }
 
+// ageFile sets the file time of path to now minus age.
+func ageFile(t *testing.T, path string, age time.Duration) {
+	t.Helper()
+	setMtime(t, path, time.Now().Add(-age))
+}
+
 // TestWriteKeepsDonePlanRun verifies Write's sibling-prune loop skips a
 // "plan" run whose planIntegrity.done marker is set, so a finished plan run
 // survives a later /sdlc:plan on the same branch (its state file is removed
 // later by ship's cleanup-pipeline step or GC, not by Write). An older plan
-// run without "done" is still pruned, matching today's behavior, and
+// run without "done" and past PlanRunLiveWindow is still pruned, and
 // exec-*/ship-* sibling pruning (TestWrite_PrunesOldFiles) is unaffected
 // since the done-run exception only applies to prefix "plan".
 func TestWriteKeepsDonePlanRun(t *testing.T) {
@@ -391,6 +397,7 @@ func TestWriteKeepsDonePlanRun(t *testing.T) {
 	if err := os.WriteFile(notDonePath, []byte(`{}`), 0o644); err != nil {
 		t.Fatalf("WriteFile not-done: %v", err)
 	}
+	ageFile(t, notDonePath, PlanRunLiveWindow+time.Hour)
 
 	newSt := &State{
 		Path:       filepath.Join(dir, "plan-feat-20260929T120000Z.json"),
@@ -1967,6 +1974,7 @@ func TestPruneEvidenceDirs_BehaviorTable(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, siblingJSON), []byte(`{}`), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
+	ageFile(t, filepath.Join(dir, siblingJSON), PlanRunLiveWindow+time.Hour)
 
 	st := &State{
 		Path:       filepath.Join(dir, own+".json"),
@@ -1996,8 +2004,8 @@ func TestPruneEvidenceDirs_BehaviorTable(t *testing.T) {
 
 // TestPruneEvidenceDirsKeepsDonePlanRun verifies PruneEvidenceDirs skips a
 // sibling "plan" run's evidence directory when that run's state file is a
-// done run (isDonePlanRun), mirroring Write's own done-run exception. A
-// sibling without "done" is still pruned (today's behavior).
+// done run (keepPlanSibling), mirroring Write's own done-run exception. A
+// sibling without "done" and past PlanRunLiveWindow is still pruned.
 func TestPruneEvidenceDirsKeepsDonePlanRun(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
@@ -2028,6 +2036,7 @@ func TestPruneEvidenceDirsKeepsDonePlanRun(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, notDoneOlder+".json"), []byte(`{}`), 0o644); err != nil {
 		t.Fatalf("WriteFile not-done: %v", err)
 	}
+	ageFile(t, filepath.Join(dir, notDoneOlder+".json"), PlanRunLiveWindow+time.Hour)
 
 	st := &State{
 		Path:       filepath.Join(dir, own+".json"),
@@ -2147,5 +2156,320 @@ func TestWrite_DoesNotTouchEvidenceDirs(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, staleEvidence)); err != nil {
 		t.Fatalf("expected .evidence dir to survive Write's prune, stat error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// keepPlanSibling, Write and PruneEvidenceDirs: live plan runs
+// ---------------------------------------------------------------------------
+
+// TestKeepPlanSibling covers each rule of keepPlanSibling. "old" is past
+// PlanRunLiveWindow, "fresh" is inside it. A row with evalAt set passes
+// now = file time + evalAt, to pin the edge of the window. The last rows pin
+// the results for a wrong-typed sessionId and for a file over siblingReadMax.
+func TestKeepPlanSibling(t *testing.T) {
+	old := PlanRunLiveWindow + time.Minute
+	fresh := PlanRunLiveWindow - time.Minute
+	// Valid JSON over siblingReadMax, stamped by another session.
+	oversize := `{"sessionId":"S1","pad":"` + strings.Repeat("x", siblingReadMax) + `"}`
+
+	tests := []struct {
+		name          string
+		content       string // "" with noFile false is an empty file
+		noFile        bool
+		age           time.Duration
+		evalAt        time.Duration // when non-zero, now = file time + evalAt
+		writerSession string
+		want          bool
+	}{
+		{"done, old (rule 1)", `{"planIntegrity":{"done":"x"}}`, false, old, 0, "S2", true},
+		{"no done, fresh (rule 2)", `{"sessionId":"S1"}`, false, fresh, 0, "S1", true},
+		{"no done, old, other session (rule 3)", `{"sessionId":"S1"}`, false, old, 0, "S2", true},
+		{"no done, old, writer has no session yet (rule 3)", `{"sessionId":"S1"}`, false, old, 0, "", true},
+		{"no done, old, same session (delete)", `{"sessionId":"S1"}`, false, old, 0, "S1", false},
+		{"no done, old, no sessionId (delete)", `{}`, false, old, 0, "S2", false},
+		{"no done, old, null sessionId (delete)", `{"sessionId":null}`, false, old, 0, "S2", false},
+		{"no file (delete)", "", true, 0, 0, "S2", false},
+		{"invalid JSON, fresh (rule 2)", `{not json`, false, fresh, 0, "S2", true},
+		{"invalid JSON, old (delete)", `{not json`, false, old, 0, "S2", false},
+		{"edge: exactly PlanRunLiveWindow old (delete)", `{}`, false, 0, PlanRunLiveWindow, "S2", false},
+		{"edge: one nanosecond inside PlanRunLiveWindow (rule 2)", `{}`, false, 0, PlanRunLiveWindow - time.Nanosecond, "S2", true},
+		{"no done, old, number sessionId (reads as no sessionId, delete)", `{"sessionId":5}`, false, old, 0, "S2", false},
+		{"no done, old, over siblingReadMax, other session (rule 3 skipped, delete)", oversize, false, old, 0, "S2", false},
+		{"no done, fresh, over siblingReadMax (rule 2)", oversize, false, fresh, 0, "S2", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "plan-feat-20260929T110000Z.json")
+			now := time.Now()
+			if !tc.noFile {
+				if err := os.WriteFile(path, []byte(tc.content), 0o644); err != nil {
+					t.Fatalf("WriteFile: %v", err)
+				}
+				ageFile(t, path, tc.age)
+				if tc.evalAt != 0 {
+					// Read the stored time back: the file system may round it.
+					info, err := os.Stat(path)
+					if err != nil {
+						t.Fatalf("Stat: %v", err)
+					}
+					now = info.ModTime().Add(tc.evalAt)
+				}
+			}
+			if got := keepPlanSibling(path, tc.writerSession, now); got != tc.want {
+				t.Fatalf("keepPlanSibling = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestWriteKeepsLivePlanRun verifies Write keeps a fresh plan sibling and a
+// plan sibling stamped by another session, and prunes an old sibling of the
+// writer's own session.
+func TestWriteKeepsLivePlanRun(t *testing.T) {
+	root := t.TempDir()
+	dir := keepRuleRunsDir(t, root)
+	old := PlanRunLiveWindow + time.Hour
+
+	fresh := writeSibling(t, dir, "plan-feat-20260929T100000Z.json", `{"sessionId":"S1"}`)
+	otherSession := writeSibling(t, dir, "plan-feat-20260929T101000Z.json", `{"sessionId":"S1"}`)
+	ageFile(t, otherSession, old)
+	ownSession := writeSibling(t, dir, "plan-feat-20260929T102000Z.json", `{"sessionId":"S2"}`)
+	ageFile(t, ownSession, old)
+	unstamped := writeSibling(t, dir, "plan-feat-20260929T103000Z.json", `{}`)
+	ageFile(t, unstamped, old)
+
+	st := &State{
+		Path:       filepath.Join(dir, "plan-feat-20260929T120000Z.json"),
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "feat",
+		Data:       map[string]any{"sessionId": "S2"},
+	}
+	if err := Write(st); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	for path, wantExist := range map[string]bool{
+		fresh: true, otherSession: true, ownSession: false, unstamped: false,
+	} {
+		if _, err := os.Stat(path); (err == nil) != wantExist {
+			t.Errorf("exists(%s) = %v, want %v", filepath.Base(path), err == nil, wantExist)
+		}
+	}
+}
+
+// TestPruneEvidenceDirsKeepsLivePlanRun verifies PruneEvidenceDirs applies the
+// keepPlanSibling rule: the evidence of a fresh run and of a run stamped by
+// another session stays, the evidence of an old run of the writer's own
+// session goes.
+func TestPruneEvidenceDirsKeepsLivePlanRun(t *testing.T) {
+	root := t.TempDir()
+	dir := keepRuleRunsDir(t, root)
+	old := PlanRunLiveWindow + time.Hour
+
+	runs := []struct {
+		id      string
+		content string
+		age     time.Duration
+		want    bool
+	}{
+		{"plan-feat-20260929T100000Z", `{"sessionId":"S2"}`, 0, true},
+		{"plan-feat-20260929T101000Z", `{"sessionId":"S1"}`, old, true},
+		{"plan-feat-20260929T102000Z", `{"sessionId":"S2"}`, old, false},
+		{"plan-feat-20260929T103000Z", `{}`, old, false},
+	}
+	for _, r := range runs {
+		ageFile(t, writeSibling(t, dir, r.id+".json", r.content), r.age)
+		if err := os.MkdirAll(filepath.Join(dir, r.id+evidenceDirSuffix), 0o755); err != nil {
+			t.Fatalf("MkdirAll: %v", err)
+		}
+	}
+
+	PruneEvidenceDirs(&State{
+		Path:       filepath.Join(dir, "plan-feat-20260929T120000Z.json"),
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "feat",
+		Data:       map[string]any{"sessionId": "S2"},
+	})
+
+	for _, r := range runs {
+		_, err := os.Stat(filepath.Join(dir, r.id+evidenceDirSuffix))
+		if (err == nil) != r.want {
+			t.Errorf("exists(%s.evidence) = %v, want %v", r.id, err == nil, r.want)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// IsActivePlanRun, PlanRunForSession
+// ---------------------------------------------------------------------------
+
+// TestIsActivePlanRun covers the skillInvoked and done markers, and a nil state.
+func TestIsActivePlanRun(t *testing.T) {
+	tests := []struct {
+		name string
+		st   *State
+		want bool
+	}{
+		{"nil state", nil, false},
+		{"no planIntegrity", &State{Data: map[string]any{}}, false},
+		{"no skillInvoked", &State{Data: map[string]any{"planIntegrity": map[string]any{}}}, false},
+		{"skillInvoked", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x"}}}, true},
+		{"skillInvoked and done", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x", "done": "y"}}}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsActivePlanRun(tc.st); got != tc.want {
+				t.Fatalf("IsActivePlanRun = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// planRunFixture is one plan run file that a PlanRunForSession case writes.
+type planRunFixture struct {
+	id  string
+	raw string
+	age time.Duration // 0 is "just written"
+}
+
+// planRunForSessionCase is one row of the PlanRunForSession rule table.
+type planRunForSessionCase struct {
+	name       string
+	runs       []planRunFixture
+	sessionID  string
+	activeOnly bool
+	want       string // run ID, "" for nil
+}
+
+// planRunForSessionCases returns the rows of the PlanRunForSession rule
+// table for branch "feat".
+func planRunForSessionCases() []planRunForSessionCase {
+	const (
+		active  = `"planIntegrity":{"skillInvoked":"x"}`
+		doneRun = `"planIntegrity":{"skillInvoked":"x","done":"y"}`
+	)
+	stale := PlanRunLiveWindow + time.Minute
+	const (
+		r1 = "plan-feat-20260929T100000Z"
+		r2 = "plan-feat-20260929T110000Z"
+		r3 = "plan-feat-20260929T120000Z"
+	)
+
+	return []planRunForSessionCase{
+		{"own run, newer run of another session", []planRunFixture{
+			{r1, `{"sessionId":"S",` + active + `}`, 0},
+			{r2, `{"sessionId":"T",` + active + `}`, 0},
+		}, "S", true, r1},
+		{"no own run, newer unstamped run", []planRunFixture{
+			{r1, `{"sessionId":"T",` + active + `}`, 0},
+			{r2, `{` + active + `}`, 0},
+		}, "S", true, r2},
+		{"every run has another session", []planRunFixture{
+			{r1, `{"sessionId":"T",` + active + `}`, 0},
+			{r2, `{"sessionId":"V",` + active + `}`, 0},
+		}, "S", true, ""},
+		{"empty session, active only: newest active run in window", []planRunFixture{
+			{r1, `{"sessionId":"T",` + active + `}`, 0},
+			{r2, `{"sessionId":"V",` + doneRun + `}`, 0},
+			{r3, `{"sessionId":"V",` + active + `}`, stale},
+		}, "", true, r1},
+		{"empty session, active only: only stale runs", []planRunFixture{
+			{r1, `{` + active + `}`, stale},
+		}, "", true, ""},
+		{"empty session, not active only: newest run", []planRunFixture{
+			{r1, `{` + active + `}`, 0},
+			{r2, `{"sessionId":"V",` + doneRun + `}`, stale},
+		}, "", false, r2},
+		{"own run is done, newer run active, not active only", []planRunFixture{
+			{r1, `{"sessionId":"S",` + doneRun + `}`, 0},
+			{r2, `{"sessionId":"T",` + active + `}`, 0},
+		}, "S", false, r1},
+		{"own run is past the window", []planRunFixture{
+			{r1, `{"sessionId":"S",` + active + `}`, stale},
+		}, "S", true, ""},
+		{"two own runs, newest wins", []planRunFixture{
+			{r1, `{"sessionId":"S",` + active + `}`, 0},
+			{r2, `{"sessionId":"S",` + active + `}`, 0},
+		}, "S", true, r2},
+		{"two unstamped runs, newest wins", []planRunFixture{
+			{r1, `{` + active + `}`, 0},
+			{r2, `{` + active + `}`, 0},
+		}, "S", true, r2},
+		{"own run beats a newer unstamped run", []planRunFixture{
+			{r1, `{"sessionId":"S",` + active + `}`, 0},
+			{r2, `{` + active + `}`, 0},
+		}, "S", true, r1},
+		{"unstamped run is done, not active only", []planRunFixture{
+			{r1, `{` + doneRun + `}`, 0},
+		}, "S", false, r1},
+		{"own run has no skillInvoked", []planRunFixture{
+			{r1, `{"sessionId":"S"}`, 0},
+		}, "S", true, ""},
+		{"own run, newer sibling with bad JSON", []planRunFixture{
+			{r1, `{"sessionId":"S",` + active + `}`, 0},
+			{r2, `{not json`, 0},
+		}, "S", true, r1},
+		{"run of another branch is ignored", []planRunFixture{
+			{"plan-feat-other-20260929T130000Z", `{"sessionId":"S",` + active + `}`, 0},
+		}, "S", true, ""},
+		{"no run file for the branch", nil, "S", true, ""},
+	}
+}
+
+// TestPlanRunForSession covers each row of the PlanRunForSession rule table.
+func TestPlanRunForSession(t *testing.T) {
+	for _, tc := range planRunForSessionCases() {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := keepRuleRunsDir(t, root)
+			for _, r := range tc.runs {
+				ageFile(t, writeSibling(t, dir, r.id+".json", r.raw), r.age)
+			}
+			got, err := PlanRunForSession(root, "feat", tc.sessionID, tc.activeOnly)
+			if err != nil {
+				t.Fatalf("PlanRunForSession: %v", err)
+			}
+			switch {
+			case tc.want == "" && got != nil:
+				t.Fatalf("PlanRunForSession = %s, want nil", RunID(got))
+			case tc.want != "" && got == nil:
+				t.Fatalf("PlanRunForSession = nil, want %s", tc.want)
+			case tc.want != "" && RunID(got) != tc.want:
+				t.Fatalf("PlanRunForSession = %s, want %s", RunID(got), tc.want)
+			}
+		})
+	}
+}
+
+// TestPlanRunForSession_NoRunsDir verifies a missing runs/ folder returns
+// (nil, nil).
+func TestPlanRunForSession_NoRunsDir(t *testing.T) {
+	st, err := PlanRunForSession(t.TempDir(), "feat", "S", true)
+	if err != nil || st != nil {
+		t.Fatalf("PlanRunForSession = (%v, %v), want (nil, nil)", st, err)
+	}
+}
+
+// TestPlanRunForSession_RunsPathIsFile verifies a ReadDir failure other than a
+// missing folder (runs is a regular file) returns an error and no state.
+func TestPlanRunForSession_RunsPathIsFile(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, paths.DataDir)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, paths.RunsSubdir), []byte("not a dir"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := PlanRunForSession(root, "feat", "S", true)
+	if err == nil {
+		t.Fatalf("PlanRunForSession: expected the ReadDir error, got nil (st=%+v)", st)
+	}
+	if st != nil {
+		t.Fatalf("PlanRunForSession: expected nil state on error, got %+v", st)
 	}
 }

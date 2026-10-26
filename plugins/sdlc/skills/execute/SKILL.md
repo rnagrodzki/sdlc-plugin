@@ -204,7 +204,7 @@ Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — t
    - `skip` → do not dispatch this wave. Record each of its tasks with `execute_state({ action: "task-fail", wave: N, taskId: "<id>", taskName: "<name>", complexity: "<complexity>", risk: "<risk>", error: "skipped by user at the high-risk gate" })`, then `execute_state({ action: "wave-fail", wave: N, error: "skipped by user at the high-risk gate" })`, and continue with the next wave. A later task that depends on a skipped task is not dispatched either: record it with `task-fail` and `skippedDependency: true`. Step 9 lists every skipped task as not implemented.
    - `cancel` → stop before `wave-start`. Do not call `cleanup`; the state stays resumable. Print the "Execution state preserved at ..." line from Step 9.
 
-   When a high-risk wave proceeds without a prompt **and** the deciding value came from a saved config file rather than a per-run signal — Step 0 reported `sources.highRiskAutoApprove == "config"`, or `sources.auto == "config"` — print this line before dispatching, so a saved setting can never skip a high-risk approval silently:
+   When a high-risk wave proceeds without a prompt **and** the deciding value came from a saved config file rather than a per-run signal — Step 0 reported `sources.highRiskAutoApprove` as `"local"` or `"config"`, or `sources.auto` as `"local"` or `"config"` — print this line before dispatching, so a saved setting can never skip a high-risk approval silently:
 
 ```
 WARNING: high-risk wave <N> auto-approved from .sdlc-v2/local.toml (<executePrefs.highRiskAutoApprove|executePrefs.auto>), not a per-run --auto. Breaking, irreversible, credential or infra changes in this wave will proceed without confirmation.

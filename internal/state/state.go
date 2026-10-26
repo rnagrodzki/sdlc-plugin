@@ -2,7 +2,7 @@
 // state.js shared library: filename grammar, branch slug helpers, file lookup
 // (delimiter-aware mtime-newest), init/write with prune-on-write, and session
 // stamping. The "Run helpers" section adds plan-run selection by exact run ID
-// (RunID, LoadRun, LatestPlanRun, ActivePlanRun), plan-run lookup by plan
+// (RunID, LoadRun, LatestPlanRun, ActivePlanRun, PlanRunForSession), plan-run lookup by plan
 // file (FindPlanRunByPlanFile) and per-run evidence
 // directories (EvidenceDir, PruneEvidenceDirs).
 //
@@ -534,7 +534,9 @@ type siblingMeta struct {
 // keepSibling reports whether a sibling state file is kept. The first
 // matching rule applies:
 //
-//  1. plan: a done plan run (isDonePlanRun) is kept.
+//  1. plan: a done plan run, a not-done plan run written inside
+//     PlanRunLiveWindow, or a plan run stamped by another session is
+//     kept (keepPlanSibling).
 //  2. ship: a dry-run (flags.dryRun == true) is not kept.
 //  3. ship: pipelineStatus "completed" is kept.
 //  4. execute: runStatus "completed" is kept.
@@ -549,7 +551,7 @@ type siblingMeta struct {
 func keepSibling(prefix, path, writerSession string) bool {
 	switch prefix {
 	case "plan":
-		return isDonePlanRun(path)
+		return keepPlanSibling(path, writerSession, time.Now())
 	case "ship", "execute":
 	default:
 		return false
@@ -617,6 +619,48 @@ func isDonePlanRun(path string) bool {
 	pi, _ := data["planIntegrity"].(map[string]any)
 	_, hasDone := pi["done"]
 	return hasDone
+}
+
+// PlanRunLiveWindow is how long a plan run that is not done stays live after
+// its last state write. A write to another plan run of the branch never
+// deletes a live run. The post-compact banner uses the same window.
+const PlanRunLiveWindow = 24 * time.Hour
+
+// keepPlanSibling reports whether a plan sibling survives a prune. The
+// first matching rule applies:
+//
+//  1. a done run (the isDonePlanRun read): keep.
+//  2. a file written less than PlanRunLiveWindow before now
+//     (withinLiveWindow, one os.Stat): keep.
+//  3. a sibling with a non-empty sessionId that differs from writerSession
+//     (readSiblingMeta): keep. writerSession "" counts as different: the
+//     first write of a new run has no sessionId yet, because the hook
+//     stamps it after the plan_prepare call. readSiblingMeta reads at most
+//     siblingReadMax bytes: a file over siblingReadMax is unreadable, so
+//     rule 3 is skipped for it.
+//  4. anything else: delete. An os.Stat error, or JSON that cannot be
+//     parsed, skips its rule only.
+//
+// A run that rule 3 keeps is deleted by the GC TTL sweep (gc.go) when it is
+// past the TTL and not the newest run of the branch. The TTL is the
+// state.gc.ttlDays setting, 7 days by default (resolveGCTTLDays in
+// internal/tools/ship.go); gc.go takes the TTL from its caller.
+func keepPlanSibling(path, writerSession string, now time.Time) bool {
+	if isDonePlanRun(path) {
+		return true
+	}
+	if withinLiveWindow(path, now) {
+		return true
+	}
+	meta, ok := readSiblingMeta(path)
+	return ok && meta.SessionID != "" && meta.SessionID != writerSession
+}
+
+// withinLiveWindow reports whether the file at path was written less than
+// PlanRunLiveWindow before now. An os.Stat error returns false.
+func withinLiveWindow(path string, now time.Time) bool {
+	info, err := os.Stat(path)
+	return err == nil && now.Sub(info.ModTime()) < PlanRunLiveWindow
 }
 
 // ---------------------------------------------------------------------------
@@ -757,15 +801,118 @@ func ActivePlanRun(root, branch string) (*State, error) {
 		return nil, nil
 	}
 
+	if !IsActivePlanRun(st) {
+		return nil, nil
+	}
+	return st, nil
+}
+
+// IsActivePlanRun reports whether st is mid-flight: planIntegrity has
+// skillInvoked and has no done. ActivePlanRun and PlanRunForSession use it,
+// and the stamp hook calls it. A nil st is not active.
+func IsActivePlanRun(st *State) bool {
+	if st == nil {
+		return false
+	}
 	integrity, _ := st.Data["planIntegrity"].(map[string]any)
 	if _, hasSkillInvoked := integrity["skillInvoked"]; !hasSkillInvoked {
-		return nil, nil
+		return false
 	}
 	if _, hasDone := integrity["done"]; hasDone {
-		return nil, nil
+		return false
+	}
+	return true
+}
+
+// planRunFile names one plan run file of runs/: its run ID and branch slug.
+type planRunFile struct{ runID, slug string }
+
+// planRunsNewestFirst lists the plan run files of <root>/.sdlc-v2/runs/ of
+// every branch, newest filename timestamp first. Files with an equal
+// timestamp keep the ReadDir order. Callers filter by slug. It returns
+// (nil, nil) when runs/ does not exist, and "state: readdir <dir>: <err>"
+// for another ReadDir failure. It reads no run file.
+func planRunsNewestFirst(root string) ([]planRunFile, error) {
+	dir := stateDir(root)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("state: readdir %s: %w", dir, err)
 	}
 
-	return st, nil
+	type candidate struct {
+		file      planRunFile
+		timestamp string
+	}
+	var candidates []candidate
+	for _, e := range entries {
+		parsed := parseStateFilename(e.Name())
+		if parsed == nil || parsed.Prefix != "plan" {
+			continue
+		}
+		candidates = append(candidates, candidate{
+			file:      planRunFile{runID: strings.TrimSuffix(e.Name(), ".json"), slug: parsed.Slug},
+			timestamp: parsed.Timestamp,
+		})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].timestamp > candidates[j].timestamp
+	})
+
+	runs := make([]planRunFile, len(candidates))
+	for i, c := range candidates {
+		runs[i] = c.file
+	}
+	return runs, nil
+}
+
+// PlanRunForSession returns the newest plan run of branch whose sessionId
+// is sessionID. When no run has that sessionId, it returns the newest run
+// with no sessionId. With sessionID empty, it returns the newest run.
+// activeOnly limits the search to active runs: skillInvoked set, done not
+// set (the ActivePlanRun rule), and file time inside PlanRunLiveWindow.
+// "Newest" is the newest filename timestamp, as in LatestPlanRun. A
+// candidate that LoadRun cannot read is skipped, so one bad sibling does
+// not hide the run of this session. A ReadDir failure other than a missing
+// folder is returned as a plain error. Each hook caller treats it as "no
+// run": the banner prints no line, and the Stop hook uses its transcript
+// fallback, as for a LatestPlanRun error.
+//
+// Returns (nil, nil) when runs/ does not exist or no candidate matches.
+func PlanRunForSession(root, branch, sessionID string, activeOnly bool) (*State, error) {
+	runs, err := planRunsNewestFirst(root)
+	if err != nil {
+		return nil, err
+	}
+
+	slug := SlugifyBranch(branch)
+	now := time.Now()
+	var unstamped *State // newest eligible run with no sessionId
+	for _, c := range runs {
+		if c.slug != slug {
+			continue
+		}
+		st, err := LoadRun(root, c.runID)
+		if err != nil || st == nil {
+			continue
+		}
+		if activeOnly && (!IsActivePlanRun(st) || !withinLiveWindow(st.Path, now)) {
+			continue
+		}
+		if sessionID == "" {
+			return st, nil
+		}
+		stamped, _ := st.Data["sessionId"].(string)
+		if stamped == sessionID {
+			return st, nil
+		}
+		if stamped == "" && unstamped == nil {
+			unstamped = st
+		}
+	}
+	return unstamped, nil
 }
 
 // FindPlanRunByPlanFile returns the newest plan run in <root>/.sdlc-v2/runs/
@@ -786,29 +933,12 @@ func FindPlanRunByPlanFile(root, planPath string) (*State, error) {
 	}
 	want := filepath.Clean(planPath)
 
-	dir := stateDir(root)
-	entries, err := os.ReadDir(dir)
+	runs, err := planRunsNewestFirst(root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("state: readdir %s: %w", dir, err)
+		return nil, err
 	}
 
-	type candidate struct{ runID, timestamp string }
-	var candidates []candidate
-	for _, e := range entries {
-		parsed := parseStateFilename(e.Name())
-		if parsed == nil || parsed.Prefix != "plan" {
-			continue
-		}
-		candidates = append(candidates, candidate{strings.TrimSuffix(e.Name(), ".json"), parsed.Timestamp})
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].timestamp > candidates[j].timestamp
-	})
-
-	for _, c := range candidates {
+	for _, c := range runs {
 		st, err := LoadRun(root, c.runID)
 		if err != nil || st == nil {
 			continue
@@ -834,7 +964,8 @@ func FindPlanRunByPlanFile(root, planPath string) (*State, error) {
 // Write's own prune already owns.
 //
 // Like Write's own prune, a sibling "plan" run's evidence directory is kept
-// rather than removed when its state file is a done run (isDonePlanRun) —
+// rather than removed when its run is kept (keepPlanSibling: done,
+// written inside PlanRunLiveWindow, or stamped by another session) —
 // see Write's doc comment for why.
 //
 // Best-effort, like the Write prune: a ReadDir failure (including runs/ not
@@ -849,6 +980,7 @@ func PruneEvidenceDirs(st *State) {
 	}
 
 	ownRunID := RunID(st)
+	writerSession, _ := st.Data["sessionId"].(string)
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -866,8 +998,8 @@ func PruneEvidenceDirs(st *State) {
 		if parsed == nil || parsed.Prefix != st.Prefix || parsed.Slug != st.BranchSlug {
 			continue
 		}
-		if parsed.Prefix == "plan" && isDonePlanRun(filepath.Join(dir, runID+".json")) {
-			continue // evidence of a done plan run stays with its state file
+		if parsed.Prefix == "plan" && keepPlanSibling(filepath.Join(dir, runID+".json"), writerSession, time.Now()) {
+			continue // evidence of a kept plan run stays with its state file
 		}
 		_ = removeAll(filepath.Join(dir, name)) // best-effort
 	}

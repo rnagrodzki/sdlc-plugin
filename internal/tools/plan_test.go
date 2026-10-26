@@ -1836,13 +1836,47 @@ func planTestTemplateRepo(t *testing.T) string {
 	return dir
 }
 
+// planTestAgeRun sets the file time of the state file of runID to now minus
+// age, so the keep rule for a live plan run (state.PlanRunLiveWindow) reads it.
+func planTestAgeRun(t *testing.T, root, runID string, age time.Duration) {
+	t.Helper()
+	setStateFileMtime(t, filepath.Join(planTestRunsDir(root), runID+".json"), age)
+}
+
+// TestPlanPrepare_FirstCallKeepsLiveRun verifies a first call keeps an older
+// run on the branch that was written inside state.PlanRunLiveWindow, with its
+// state file and .evidence/ directory.
+func TestPlanPrepare_FirstCallKeepsLiveRun(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+	const liveRun = "plan-main-20200101T000000Z"
+	planTestSeedRun(t, dir, liveRun, planTestActiveData())
+	planTestAgeRun(t, dir, liveRun, state.PlanRunLiveWindow-time.Hour)
+
+	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("planPrepareCore: %v", err)
+	}
+	if out.RunID == "" || out.RunID == liveRun {
+		t.Fatalf("RunID = %q, want a new run ID", out.RunID)
+	}
+	if _, err := os.Stat(filepath.Join(planTestRunsDir(dir), liveRun+".evidence")); err != nil {
+		t.Errorf("live evidence dir removed (stat err = %v)", err)
+	}
+	want := []string{liveRun + ".json", out.RunID + ".json"}
+	if files := listStateFiles(t, dir); !reflect.DeepEqual(files, want) {
+		t.Errorf("state files = %v, want %v", files, want)
+	}
+}
+
 // TestPlanPrepare_FirstCallStartsNewRunAndPrunesOld verifies a first call
 // with an older run on the branch returns a new runId, and removes the
-// older run's state file and .evidence/ directory.
+// older run's state file and .evidence/ directory when that run is past
+// state.PlanRunLiveWindow.
 func TestPlanPrepare_FirstCallStartsNewRunAndPrunesOld(t *testing.T) {
 	dir := planTestGitRepo(t, "main")
 	const oldRun = "plan-main-20200101T000000Z"
 	planTestSeedRun(t, dir, oldRun, planTestActiveData())
+	planTestAgeRun(t, dir, oldRun, state.PlanRunLiveWindow+time.Hour)
 
 	out, err := runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true})
 	if err != nil {

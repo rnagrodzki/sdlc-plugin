@@ -86,14 +86,14 @@ highRiskAutoApprove = true
 	if !result.HighRiskAutoApprove {
 		t.Errorf("highRiskAutoApprove = %v, want true", result.HighRiskAutoApprove)
 	}
-	if result.Sources["auto"] != "config" {
-		t.Errorf("sources[auto] = %q, want config", result.Sources["auto"])
+	if result.Sources["auto"] != "local" {
+		t.Errorf("sources[auto] = %q, want local", result.Sources["auto"])
 	}
-	if result.Sources["quality"] != "config" {
-		t.Errorf("sources[quality] = %q, want config", result.Sources["quality"])
+	if result.Sources["quality"] != "local" {
+		t.Errorf("sources[quality] = %q, want local", result.Sources["quality"])
 	}
-	if result.Sources["highRiskAutoApprove"] != "config" {
-		t.Errorf("sources[highRiskAutoApprove] = %q, want config", result.Sources["highRiskAutoApprove"])
+	if result.Sources["highRiskAutoApprove"] != "local" {
+		t.Errorf("sources[highRiskAutoApprove] = %q, want local", result.Sources["highRiskAutoApprove"])
 	}
 }
 
@@ -371,8 +371,8 @@ func TestExecActionResolveConfig_InvalidCLIQualityWarnsAndFallsThrough(t *testin
 		if result.Quality != "minimal" {
 			t.Errorf("quality = %q, want minimal (from config)", result.Quality)
 		}
-		if result.Sources["quality"] != "config" {
-			t.Errorf("sources[quality] = %q, want config", result.Sources["quality"])
+		if result.Sources["quality"] != "local" {
+			t.Errorf("sources[quality] = %q, want local", result.Sources["quality"])
 		}
 	})
 
@@ -468,6 +468,9 @@ func TestExecActionResolveConfig_MigratesStaleHighRiskAutoApprove(t *testing.T) 
 	result := out.(ExecuteResolveConfigOut)
 	if !result.HighRiskAutoApprove {
 		t.Errorf("highRiskAutoApprove = %v, want true (migrated from config.toml)", result.HighRiskAutoApprove)
+	}
+	if result.Sources["highRiskAutoApprove"] != "local" {
+		t.Errorf("sources[highRiskAutoApprove] = %q, want local", result.Sources["highRiskAutoApprove"])
 	}
 	if len(result.Warnings) == 0 || !strings.Contains(result.Warnings[0], "Moved personal settings") {
 		t.Fatalf("expected a \"Moved personal settings\" warning, got: %v", result.Warnings)

@@ -94,7 +94,7 @@
 # [receivedReview]
 # Severities whose 'will fix' findings bypass the per-finding consent gate.
 # Local-only — must NEVER be set in .sdlc-v2/config.toml.
-# Valid items: "low" | "medium" | "high" | "critical"
+# Valid items: "critical" | "high" | "medium" | "low" | "info"
 # alwaysFixSeverities = []
 
 # ─── Automation (optional — delete if not using) ──────────────────

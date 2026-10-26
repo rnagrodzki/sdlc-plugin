@@ -14,6 +14,7 @@ package skillcheck
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -310,4 +311,64 @@ func TestExecuteSkillsSkillCallsAreAllowlisted(t *testing.T) {
 	if calls == 0 {
 		t.Error(`found no Skill("...") call; the guardrail harden call is expected, so the regexp or the file list is wrong`)
 	}
+}
+
+// executeSkillsHighRiskGateMarker is the phrase that identifies the high-risk
+// warning rule line in skills/execute/SKILL.md. The test keys on it, not on
+// sources.highRiskAutoApprove, because another line also holds that name.
+const executeSkillsHighRiskGateMarker = "rather than a per-run signal"
+
+// executeSkillsHighRiskGateProblem returns "" when content holds exactly one
+// warning-rule line with both labels, else the failure text.
+func executeSkillsHighRiskGateProblem(content string) string {
+	var rules []string
+	for _, line := range strings.Split(content, "\n") {
+		if strings.Contains(line, executeSkillsHighRiskGateMarker) {
+			rules = append(rules, line)
+		}
+	}
+	switch len(rules) {
+	case 0:
+		return "high-risk warning rule not found"
+	case 1:
+		if strings.Contains(rules[0], `"local"`) && strings.Contains(rules[0], `"config"`) {
+			return ""
+		}
+		return `high-risk warning rule must accept "local" and "config"`
+	default:
+		return fmt.Sprintf("high-risk warning rule found %d times, want 1", len(rules))
+	}
+}
+
+// TestExecuteSkillsHighRiskGateLabels checks that the high-risk warning rule
+// accepts both saved-setting labels. Issue #78: a rule that names only
+// "config" stops the warning with no error once the tool reports "local".
+func TestExecuteSkillsHighRiskGateLabels(t *testing.T) {
+	rule := "When a high-risk wave proceeds without a prompt and the value came from a saved file " +
+		executeSkillsHighRiskGateMarker + " - Step 0 reported"
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"both labels", rule + ` "local" or "config"` + "\n", ""},
+		{"config only", rule + ` "config"` + "\n", `high-risk warning rule must accept "local" and "config"`},
+		{"local only", rule + ` "local"` + "\n", `high-risk warning rule must accept "local" and "config"`},
+		{"rule missing", "no matching line\n", "high-risk warning rule not found"},
+		{"rule twice", rule + ` "local" "config"` + "\n" + rule + ` "local" "config"` + "\n", "high-risk warning rule found 2 times, want 1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := executeSkillsHighRiskGateProblem(tc.content); got != tc.want {
+				t.Errorf("problem = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("real file", func(t *testing.T) {
+		path := filepath.Join(executeSkillsRepoRoot(t), "skills", "execute", "SKILL.md")
+		if got := executeSkillsHighRiskGateProblem(executeSkillsReadFile(t, path)); got != "" {
+			t.Errorf("%s: %s", path, got)
+		}
+	})
 }

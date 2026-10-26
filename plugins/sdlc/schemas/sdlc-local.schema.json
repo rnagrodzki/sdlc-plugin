@@ -134,11 +134,11 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["low", "medium", "high", "critical"]
+            "enum": ["critical", "high", "medium", "low", "info"]
           },
           "uniqueItems": true,
           "default": [],
-          "description": "Severities whose 'will fix' findings bypass the per-finding consent gate. Local-only — must NEVER be set in .sdlc-v2/config.toml."
+          "description": "Severities whose 'will fix' findings /received-review applies with no consent prompt (Step 10, manual mode). Read by received_review_prepare. Local-only — must NEVER be set in .sdlc-v2/config.toml."
         }
       },
       "additionalProperties": false

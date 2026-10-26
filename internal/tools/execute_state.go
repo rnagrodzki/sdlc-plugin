@@ -181,8 +181,8 @@ type ExecuteResolveConfigOut struct {
 	Auto                bool              `json:"auto" jsonschema_description:"Effective auto mode: true when the --auto flag was passed, or this branch's ship state has flags.auto=true, or executePrefs.auto in .sdlc-v2/local.toml is true."`
 	Quality             string            `json:"quality" jsonschema_description:"Resolved quality tier (full|balanced|minimal), or empty when nothing supplied one and auto is false -- in which case the execute skill presents its tier selection prompt. Never omitted: empty is a load-bearing outcome a reader must be able to tell apart from an absent field."`
 	CommitWaves         bool              `json:"commitWaves" jsonschema_description:"Effective commit-waves setting: whether execute commits each wave separately. Resolution order CLI > config execute.commitWaves > default true; sources.commitWaves reports which one won."`
-	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"Effective high-risk auto-approval, from executePrefs.highRiskAutoApprove in .sdlc-v2/local.toml (a personal setting) and false otherwise. No plan-approval state is consulted; sources.highRiskAutoApprove reports whether the value came from config or the built-in default."`
-	Sources             map[string]string `json:"sources" jsonschema_description:"Per-key provenance: cli, pipeline, config, default, or unset."`
+	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"Effective high-risk auto-approval, from executePrefs.highRiskAutoApprove in .sdlc-v2/local.toml (a personal setting) and false otherwise. No plan-approval state is consulted; sources.highRiskAutoApprove reports whether the value came from local.toml (local) or the built-in default (default)."`
+	Sources             map[string]string `json:"sources" jsonschema_description:"Per-key provenance: cli, pipeline, local (from .sdlc-v2/local.toml or ~/.sdlc/local.toml: auto, quality, highRiskAutoApprove), config (from .sdlc-v2/config.toml: commitWaves), default, or unset."`
 	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead). Also carries a notice (not a problem) when personal keys were moved from config.toml [execute] to local.toml [executePrefs]."`
 }
 
@@ -2175,7 +2175,7 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 		if !out.Auto {
 			if ca, ok := prefs["auto"].(bool); ok && ca {
 				out.Auto = true
-				out.Sources["auto"] = "config"
+				out.Sources["auto"] = "local"
 			} else {
 				out.Sources["auto"] = "default"
 			}
@@ -2202,7 +2202,7 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 			if cq, isString := rawQuality.(string); isString {
 				if sliceContainsStr(validQuality, cq) {
 					out.Quality = cq
-					out.Sources["quality"] = "config"
+					out.Sources["quality"] = "local"
 				} else {
 					out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.quality %q is not in allowed values %v; using default", cq, validQuality))
 					out.Sources["quality"] = "default"
@@ -2254,7 +2254,7 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	if rawHraa, ok := prefs["highRiskAutoApprove"]; ok {
 		if hraa, isBool := rawHraa.(bool); isBool {
 			out.HighRiskAutoApprove = hraa
-			out.Sources["highRiskAutoApprove"] = "config"
+			out.Sources["highRiskAutoApprove"] = "local"
 		} else {
 			out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
 			out.HighRiskAutoApprove = false
