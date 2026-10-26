@@ -1626,6 +1626,35 @@ const preplanCheckAgain = ", then call preplan_check again."
 // finds no topic file.
 const preplanNoFileSuggestion = "Run plan_support with action preplan_context and this topic first."
 
+// preplanCheckAction is the name of the preplan_check action in error
+// messages. preplanRetry and preplanNoFileSuggestionFor compare with it.
+const preplanCheckAction = "preplan_check"
+
+// preplanRunAgain ends each preplan_context Suggestion that a new run can fix.
+const preplanRunAgain = ", then run /sdlc:preplan again."
+
+// preplanGoneSuggestion is the Suggestion of a call, other than preplan_check,
+// whose topic file went away after the folder listing.
+const preplanGoneSuggestion = "Run /sdlc:preplan again: the topic file went away after the folder listing, and the next run creates a new one."
+
+// preplanRetry returns the end of a Suggestion that a second call can fix:
+// preplanCheckAgain for preplan_check, preplanRunAgain for every other action.
+func preplanRetry(action string) string {
+	if action == preplanCheckAction {
+		return preplanCheckAgain
+	}
+	return preplanRunAgain
+}
+
+// preplanNoFileSuggestionFor returns preplanNoFileSuggestion for preplan_check
+// and preplanGoneSuggestion for every other action.
+func preplanNoFileSuggestionFor(action string) string {
+	if action == preplanCheckAction {
+		return preplanNoFileSuggestion
+	}
+	return preplanGoneSuggestion
+}
+
 // planPreplanCheck writes the guardrail check line of the existing topic
 // file for in.Topic. The steps run in this order, and no step before the
 // last one writes. Every error message starts with "preplan_check:".
@@ -1641,7 +1670,7 @@ const preplanNoFileSuggestion = "Run plan_support with action preplan_context an
 //  6. preplanWriteBytes writes a temp file and renames it over the topic file
 //     (InfraError; the old file stays as it was).
 func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
-	const action = "preplan_check"
+	const action = preplanCheckAction
 	pass, kept, dropped, err := preplanCheckCounts(action, in)
 	if err != nil {
 		return PlanSupportOut{}, err
@@ -1725,10 +1754,11 @@ func preplanCheckCounts(action string, in PlanSupportIn) (pass, kept, dropped in
 
 // readPreplanTopic checks that file is a regular file of at most
 // dashboardDeleteReadMax bytes, then reads it. Each message starts with
-// action + ":".
+// action + ":". The retry text of each Suggestion comes from action
+// (preplanRetry).
 //
 //   - A file that is gone at the Lstat or the read: DomainError with
-//     preplanNoFileSuggestion.
+//     preplanNoFileSuggestionFor(action).
 //   - A symlink, a folder or another file that is not regular: DomainError
 //     (preplanNotRegularError).
 //   - A file over the size limit: DataError.
@@ -1743,9 +1773,9 @@ func readPreplanTopic(action, file string) ([]byte, error) {
 	}
 	if info.Size() > dashboardDeleteReadMax {
 		return nil, &mcpserver.DataError{
-			Msg: fmt.Sprintf("%s: %s is %d bytes, more than the %d bytes (%s) that preplan_check reads",
-				action, file, info.Size(), dashboardDeleteReadMax, dashboardDeleteReadMaxText),
-			Suggestion: "Make the topic file smaller than " + dashboardDeleteReadMaxText + " by hand" + preplanCheckAgain,
+			Msg: fmt.Sprintf("%s: %s is %d bytes, more than the %d bytes (%s) that %s reads",
+				action, file, info.Size(), dashboardDeleteReadMax, dashboardDeleteReadMaxText, action),
+			Suggestion: "Make the topic file smaller than " + dashboardDeleteReadMaxText + " by hand" + preplanRetry(action),
 		}
 	}
 	data, err := preplanReadFile(file)
@@ -1760,18 +1790,19 @@ func readPreplanTopic(action, file string) ([]byte, error) {
 // path, so the message adds only the action. fs.ErrNotExist gives a
 // DomainError: the file went away after the folder listing. Any other error
 // gives an InfraError whose Suggestion fits the error: fs.ErrPermission
-// points at the permission that the operation needs.
+// points at the permission that the operation needs. The Suggestion text
+// comes from action (preplanNoFileSuggestionFor, preplanRetry).
 func preplanIOError(action, file string, read bool, err error) error {
 	msg := fmt.Sprintf("%s: %v", action, err)
 	if errors.Is(err, fs.ErrNotExist) {
-		return &mcpserver.DomainError{Msg: msg, Suggestion: preplanNoFileSuggestion, Cause: err}
+		return &mcpserver.DomainError{Msg: msg, Suggestion: preplanNoFileSuggestionFor(action), Cause: err}
 	}
-	suggestion := "Fix the cause that the message names" + preplanCheckAgain
+	suggestion := "Fix the cause that the message names" + preplanRetry(action)
 	if errors.Is(err, fs.ErrPermission) {
 		if read {
-			suggestion = "Give your user read permission on " + file + preplanCheckAgain
+			suggestion = "Give your user read permission on " + file + preplanRetry(action)
 		} else {
-			suggestion = "Give your user search permission on " + filepath.Dir(file) + preplanCheckAgain
+			suggestion = "Give your user search permission on " + filepath.Dir(file) + preplanRetry(action)
 		}
 	}
 	return &mcpserver.InfraError{Msg: msg, Suggestion: suggestion, Cause: err}
@@ -1780,7 +1811,8 @@ func preplanIOError(action, file string, read bool, err error) error {
 // preplanNotRegularError returns the DomainError for a topic file path whose
 // mode is not regular. The Suggestion fits the kind: a link to a file that
 // exists can become a copy of that file; a dangling link, a folder or another
-// file goes away, and the next /sdlc:preplan run creates a new topic file.
+// file goes away, and the next /sdlc:preplan run creates a new topic file. The
+// retry text of the live-link Suggestion comes from action (preplanRetry).
 func preplanNotRegularError(action, file string, mode fs.FileMode) error {
 	const rerun = ", then run /sdlc:preplan again. preplan_context then creates a new topic file."
 	kind := preplanFileKind(mode)
@@ -1801,7 +1833,7 @@ func preplanNotRegularError(action, file string, mode fs.FileMode) error {
 	}
 	return &mcpserver.DomainError{
 		Msg:        fmt.Sprintf("%s: %s is %s, not a regular file", action, file, kind),
-		Suggestion: "Replace the link " + file + " with a copy of the file it points to" + preplanCheckAgain,
+		Suggestion: "Replace the link " + file + " with a copy of the file it points to" + preplanRetry(action),
 	}
 }
 

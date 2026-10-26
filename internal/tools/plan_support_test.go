@@ -4008,3 +4008,142 @@ func TestPlanSupportPreplanCheckErrors(t *testing.T) {
 		wantPreplanBytes(t, file, skeleton)
 	})
 }
+
+// TestReadPreplanTopicActionText checks that the retry text and the no-file
+// Suggestion of readPreplanTopic follow the calling action: preplan_check keeps
+// its text, and preplan_context tells the user to run /sdlc:preplan again.
+// Each state checks the class, the message and the Suggestion for both actions.
+func TestReadPreplanTopicActionText(t *testing.T) {
+	const content = "**Status:** in progress\n"
+	const rerun = ", then run /sdlc:preplan again. preplan_context then creates a new topic file."
+	errPermission := fmt.Errorf("%w: injected", fs.ErrPermission)
+	errNotExist := fmt.Errorf("%w: injected", fs.ErrNotExist)
+
+	// The two big files hold the bytes of the size boundary: the limit, and
+	// the limit + 1 byte. Both actions read the same files.
+	bigDir := t.TempDir()
+	atLimit := filepath.Join(bigDir, "at-limit.md")
+	writeFile(t, atLimit, content+preplanFiller(dashboardDeleteReadMax-len(content)))
+	overLimit := filepath.Join(bigDir, "over-limit.md")
+	writeFile(t, overLimit, content+preplanFiller(dashboardDeleteReadMax+1-len(content)))
+
+	for _, a := range []struct {
+		action, again, gone string
+	}{
+		{"preplan_check", ", then call preplan_check again.", "Run plan_support with action preplan_context and this topic first."},
+		{"preplan_context", ", then run /sdlc:preplan again.", "Run /sdlc:preplan again: the topic file went away after the folder listing, and the next run creates a new one."},
+	} {
+		// wantErr checks the class, the message and the Suggestion of err.
+		wantErr := func(t *testing.T, err error, class, msg, suggestion string) {
+			t.Helper()
+			if err == nil {
+				t.Fatal("expected an error, got nil")
+			}
+			if got := errorClassOf(err); got != class {
+				t.Errorf("error class = %q, want %s (err %v)", got, class, err)
+			}
+			if err.Error() != msg {
+				t.Errorf("err.Error() = %q, want %q", err.Error(), msg)
+			}
+			if got := suggestionOf(err); got != suggestion {
+				t.Errorf("Suggestion = %q, want %q", got, suggestion)
+			}
+		}
+		// topicPath returns the path of a topic file in a new folder.
+		topicPath := func(t *testing.T) string {
+			return filepath.Join(t.TempDir(), "auth-flow.md")
+		}
+
+		t.Run(a.action+": a file of dashboardDeleteReadMax bytes", func(t *testing.T) {
+			data, err := readPreplanTopic(a.action, atLimit)
+			if err != nil {
+				t.Fatalf("readPreplanTopic: %v, want no error at the limit", err)
+			}
+			if len(data) != dashboardDeleteReadMax {
+				t.Errorf("read %d bytes, want %d", len(data), dashboardDeleteReadMax)
+			}
+		})
+
+		t.Run(a.action+": a file of dashboardDeleteReadMax + 1 bytes", func(t *testing.T) {
+			swapPreplanSeam(t, &preplanReadFile, func(path string) ([]byte, error) {
+				t.Errorf("preplanReadFile(%s) was called, want no read of a big file", path)
+				return nil, errInjectedPreplan
+			})
+			_, err := readPreplanTopic(a.action, overLimit)
+			wantErr(t, err, "data",
+				fmt.Sprintf("%s: %s is %d bytes, more than the %d bytes (8 MiB) that %s reads",
+					a.action, overLimit, dashboardDeleteReadMax+1, dashboardDeleteReadMax, a.action),
+				"Make the topic file smaller than 8 MiB by hand"+a.again)
+		})
+
+		for _, op := range []string{"Lstat", "read"} {
+			for _, tc := range []struct {
+				name           string
+				err            error
+				class          string
+				wantSuggestion func(file string) string
+			}{
+				{"an opaque error", errInjectedPreplan, "infra", func(string) string {
+					return "Fix the cause that the message names" + a.again
+				}},
+				{"a permission error", errPermission, "infra", func(file string) string {
+					if op == "read" {
+						return "Give your user read permission on " + file + a.again
+					}
+					return "Give your user search permission on " + filepath.Dir(file) + a.again
+				}},
+				{"a file that is gone", errNotExist, "domain", func(string) string { return a.gone }},
+			} {
+				t.Run(a.action+": "+op+" failure: "+tc.name, func(t *testing.T) {
+					file := topicPath(t)
+					writeFile(t, file, content)
+					if op == "read" {
+						swapPreplanSeam(t, &preplanReadFile, func(string) ([]byte, error) { return nil, tc.err })
+					} else {
+						swapPreplanSeam(t, &preplanLstat, func(string) (fs.FileInfo, error) { return nil, tc.err })
+					}
+					_, err := readPreplanTopic(a.action, file)
+					wantErr(t, err, tc.class, a.action+": "+tc.err.Error(), tc.wantSuggestion(file))
+					if !errors.Is(err, tc.err) {
+						t.Errorf("err = %v, want it to wrap the %s error", err, op)
+					}
+				})
+			}
+		}
+
+		t.Run(a.action+": a symlink to a regular file", func(t *testing.T) {
+			file := topicPath(t)
+			target := filepath.Join(t.TempDir(), "target.md")
+			writeFile(t, target, content)
+			if err := os.Symlink(target, file); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readPreplanTopic(a.action, file)
+			wantErr(t, err, "domain", a.action+": "+file+" is a symlink, not a regular file",
+				"Replace the link "+file+" with a copy of the file it points to"+a.again)
+		})
+
+		// The other not-regular states do not depend on the action: their
+		// Suggestion already names /sdlc:preplan.
+		t.Run(a.action+": a dangling symlink", func(t *testing.T) {
+			file := topicPath(t)
+			target := filepath.Join(t.TempDir(), "gone.md")
+			if err := os.Symlink(target, file); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readPreplanTopic(a.action, file)
+			wantErr(t, err, "domain", a.action+": "+file+" is a link to "+target+", which does not exist.",
+				"Remove the link with rm "+file+rerun)
+		})
+
+		t.Run(a.action+": a folder", func(t *testing.T) {
+			file := topicPath(t)
+			if err := os.Mkdir(file, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			_, err := readPreplanTopic(a.action, file)
+			wantErr(t, err, "domain", a.action+": "+file+" is a folder, not a regular file",
+				"Remove or rename "+file+rerun)
+		})
+	}
+}
