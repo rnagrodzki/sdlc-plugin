@@ -45,7 +45,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context, plus one temp-and-rename rewrite of an existing regular .sdlc-v2/preplan/*.md file for preplan_check (each call writes a new Last check time, so two calls give two files; idempotent:true stays because the plan-tools exception of docs/mcp-tool-annotations.md keeps readOnly:true, under which idempotent has no meaning)",
+		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context, plus one temp-and-rename rewrite of an existing regular .sdlc-v2/preplan/*.md file that keeps its mode: for preplan_check (each call writes a new Last check time, so two calls give two files), and for preplan_context when the file lacks a section heading (additive: it inserts the absent headings and, when a code fence is still open at the end of the file, one closing fence line before them; a second call writes nothing). readOnly:true and idempotent:true stay because the plan-tools exception of docs/mcp-tool-annotations.md keeps readOnly:true for the plan skill in plan mode, and idempotent has no meaning under readOnly:true",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -498,6 +498,19 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				}
 				if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md")); err != nil {
 					t.Fatalf("preplan_context did not write the topic file: %v", err)
+				}
+				// preplan_context adds absent headings to an old topic file:
+				// check the write stays untracked.
+				legacy := filepath.Join(root, ".sdlc-v2", "preplan", "legacy-topic.md")
+				old := "# Preplan: legacy topic\n\n**Status:** in progress\n\n## Goal\n\n## Users and effect\n\n## Flows\n\n## Decisions\n\n| # | Decision | Reason |\n|---|---|---|\n"
+				if err := os.WriteFile(legacy, []byte(old), 0o644); err != nil {
+					t.Fatalf("write the legacy topic file: %v", err)
+				}
+				if _, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "legacy topic"}); err != nil {
+					t.Fatalf("preplan_context on a legacy file: %v", err)
+				}
+				if got, err := os.ReadFile(legacy); err != nil || !strings.Contains(string(got), "\n## Problem and benefit\n") {
+					t.Fatalf("preplan_context did not add the headings: %v\n%s", err, got)
 				}
 				// preplan_check rewrites the topic file: check the write
 				// stays untracked.

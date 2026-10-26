@@ -531,3 +531,48 @@ func TestAtomicWriteBytes_WritesExactBytesAndNoTempFiles(t *testing.T) {
 		t.Fatalf("expected only the destination file, found %d entries", len(entries))
 	}
 }
+
+// TestAtomicWriteBytesPerm_SetsPermAndLeavesNoTemp checks that the new file
+// has the given permission bits (not the 0600 of os.CreateTemp), the bytes
+// replace the old file, and no temp sibling stays. AtomicWriteBytes keeps
+// 0600.
+func TestAtomicWriteBytesPerm_SetsPermAndLeavesNoTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "topic.md")
+	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AtomicWriteBytesPerm(path, []byte("new"), 0o644); err != nil {
+		t.Fatalf("AtomicWriteBytesPerm: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != "new" {
+		t.Fatalf("content = %q (err %v), want new", got, err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o644 {
+		t.Errorf("perm = %v, want 0644", perm)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Errorf("entries = %v, want only topic.md", entries)
+	}
+
+	if err := AtomicWriteBytes(path, []byte("again")); err != nil {
+		t.Fatalf("AtomicWriteBytes: %v", err)
+	}
+	info, err = os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("AtomicWriteBytes perm = %v, want 0600", perm)
+	}
+}

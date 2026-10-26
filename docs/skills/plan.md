@@ -26,6 +26,39 @@ or a plain description.
 | `--spec [<change-name>]` | Opts into OpenSpec and skips the gate-check question. With a name: plan from that existing change (`openspec/changes/<change-name>/`). Without one: use the branch-matched change, else ask which active change to use, or offer to create a new one. | off |
 | `--from-openspec <name>` | Deprecated alias of `--spec <name>`, kept for one release. Prints a deprecation notice. | none |
 
+## Preplan topic file
+
+A topic file from [`/preplan`](preplan.md) is a requirements file. The plan
+reads its sections this way:
+
+| Topic section | Plan section |
+|---|---|
+| Goal, Users and effect, Flows | requirements context |
+| Problem and benefit, Risk if wrong | Context |
+| Non-goals, `Smallest cut:` line | Key Decisions |
+| Decisions rows | requirements |
+
+If `Problem and benefit`, `Risk if wrong` or `Non-goals` is empty or absent
+(an older topic file has none of them), the plan asks one discovery question
+for each such section, except with `--auto`. With `--auto`, the plan asks no
+question. It takes the narrowest reading, records it in Context or Key
+Decisions, and adds a `Deviations & assumptions` row with `asked=no`. A
+section that the topic file already fills answers its question, so the plan
+does not ask it again. An empty `Goal`, `Users and effect` or `Flows` section
+makes the requirements vague, so the plan asks its usual discovery questions.
+
+The plan writes the smallest cut with the decision text of each picked row,
+not the row number. With no `Smallest cut:` line, the smallest cut is all
+proposals that are not dropped or moved.
+
+- If the plan template has no `Context` or `Key Decisions` section, the plan
+  records the same content as requirement items.
+- A `Decisions` row whose decision starts with `Dropped:` or `Moved:` is not a
+  requirement. The `Smallest cut:` line is not a requirement either.
+- A scope option under `Non-goals` that starts with `Offered, not picked:` is
+  a non-goal, not a requirement. The line `None stated.` gives the Key
+  Decisions bullet "Non-goals: none stated" and no discovery question.
+
 ## Examples
 
 **Plan from a description you type interactively:**

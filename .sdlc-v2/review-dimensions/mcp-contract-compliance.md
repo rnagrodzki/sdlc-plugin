@@ -188,6 +188,16 @@ error with an empty or missing `## Do this` section is a defect.
   registered tool and action description. This extends the stale-description
   bullets above: those catch a description that omits new behavior, this
   catches one that claims more than the code does.
+- Text that the calling model reads (a `jsonschema_description`, a
+  registered tool or action description, an error `Msg` or `Suggestion`, a
+  `Next` or warning text) MUST name only what the caller can see: a tool, an
+  input or output field by its JSON key, a file path, or a value with its
+  unit. It MUST NOT name a Go identifier (a constant, function, type or
+  struct field), because the model cannot look it up or act on it. State the
+  value instead, built from the constant. A Go identifier in such text is a
+  finding. This extends the description bullets above, which check that the
+  text is present and true, not that the model can use it. Example: an `*In`
+  field description that named a Go identifier.
 
 ## Review procedure for closed-set enum tags and error-field coverage
 

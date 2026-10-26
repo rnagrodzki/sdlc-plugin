@@ -532,3 +532,93 @@ func TestPlanSkillsReferenceFilesAreUnmodified(t *testing.T) {
 		})
 	}
 }
+
+// TestPlanSkillPreplanTopicMap checks that the Preplan topic file block of
+// plan SKILL.md Step 1 names each new topic section and each new row kind.
+// The block is the only reader of the section bodies of a topic file, so a
+// section or row kind that preplan writes and the block does not name has no
+// reader. The block also has to route an empty or absent new section to the
+// Structured discovery question and to the --auto suppression rule, and to
+// say that the Smallest cut: line is not a requirement. The routing claims
+// are checked inside the one bullet that makes them, so a token that also
+// occurs in another bullet cannot satisfy them. TestPlanSkillPreplanSectionParity
+// (internal/tools) checks every name of the section list against the block,
+// so a new section that this test does not name still fails there.
+func TestPlanSkillPreplanTopicMap(t *testing.T) {
+	rel := "skills/plan/SKILL.md"
+	data, err := os.ReadFile(filepath.Join(planSkillsRepoRoot(t), rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	content := string(data)
+
+	const start = "**Preplan topic file:**"
+	from := strings.Index(content, start)
+	if from < 0 {
+		t.Fatalf("%s: no %q block found", rel, start)
+	}
+	block := content[from:]
+	// The block ends at the first blank line after its heading line.
+	if end := strings.Index(block, "\n\n"); end >= 0 {
+		block = block[:end]
+	}
+
+	for _, want := range []string{
+		"`## Problem and benefit`",
+		"`## Risk if wrong`",
+		"`## Non-goals`",
+		"`Smallest cut:`",
+		"`Offered, not picked:`",
+		"`None stated.`",
+		// These two phrases occur only in the new bullets, so deleting the
+		// non-goals bullet or the routing bullet fails the test. The tokens
+		// below them also occur in older bullets.
+		"and the `Smallest cut:` line under the Decisions table",
+		"The `Smallest cut:` line under the table is not a row and not a requirement.",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("%s: Preplan topic file block does not name %s", rel, want)
+		}
+	}
+
+	// bullet returns the top-level bullet of the block that starts with
+	// start, up to the next top-level bullet. Its nested lines belong to it.
+	bullet := func(start string) string {
+		t.Helper()
+		from := strings.Index(block, "\n- "+start)
+		if from < 0 {
+			t.Fatalf("%s: Preplan topic file block has no bullet that starts with %q", rel, start)
+			return ""
+		}
+		b := block[from+1:]
+		if end := strings.Index(b[2:], "\n- "); end >= 0 {
+			b = b[:end+2]
+		}
+		return b
+	}
+	for start, wants := range map[string][]string{
+		"An empty or absent new section": {
+			"`## Problem and benefit`, `## Risk if wrong` or `## Non-goals`",
+			"ask one **Structured discovery** question for each such section",
+			"Under `--auto`, ask none of them: the **`--auto` suppression** rule applies",
+			"`asked=no`",
+			"A filled new section answers its question: do not ask it again.",
+		},
+		"`## Goal`, `## Users and effect`, `## Flows`": {
+			"When one of them is empty or absent",
+			"use **Structured discovery** below for it, and under `--auto` its **`--auto` suppression** rule",
+		},
+		"`## Non-goals` and the `Smallest cut:` line": {
+			"not its `#<id>`",
+			"With no `Smallest cut:` line",
+			"the smallest cut is all live proposals",
+		},
+	} {
+		b := bullet(start)
+		for _, want := range wants {
+			if !strings.Contains(b, want) {
+				t.Errorf("%s: the bullet %q does not say %q:\n%s", rel, start, want, b)
+			}
+		}
+	}
+}

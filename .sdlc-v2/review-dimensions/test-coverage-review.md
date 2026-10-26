@@ -32,7 +32,11 @@ new changes to that same bar:
   serialization: nil vs empty collections, zero counts, boundary
   conditions, and all possible output states from tool handlers (clean
   pass, empty results, error cases). Tests must verify that null never
-  appears where an empty array/object is expected.
+  appears where an empty array/object is expected. A field the caller acts
+  on, such as a list of skipped or empty parts, is also pinned through the
+  MCP layer: one test calls the registered tool and asserts the rendered
+  line, including the `(none)` form of an empty value. A test of the Go
+  struct alone does not pin the rendering.
 - Test fixtures that hardcode system state (e.g. Register*Tools call lists
   in skillcheck helpers) must be maintained in a single location, not
   duplicated across multiple test files. When system state changes, all
@@ -170,7 +174,11 @@ new changes to that same bar:
   (`os.Geteuid() == 0`) gives no coverage in a root container, because it
   never runs there. Reach the same failure through an injectable seam or
   through a condition that root cannot bypass, such as a regular file where
-  a directory is required. This extends the `t.Skip()` rule above.
+  a directory is required. The same holds for a test or table row that skips
+  when the host lacks a tool or feature (for example no `mkfifo` for a named
+  pipe): build the state in process or through a seam. A skip that stays
+  prints a message that names the missing tool and the state left untested;
+  a silent skip reads as a pass. This extends the `t.Skip()` rule above.
 - When a change adds a new accepted form of an input next to a form that
   stays supported (a new file-name scheme beside the legacy name, a new key
   beside the old key), each error-path and edge-case test of that input
@@ -206,14 +214,22 @@ new changes to that same bar:
 - Code that finds text in a stored file and reads or replaces it (the line
   under an anchor, a marker, a section) needs tests at the edges of what the
   search can reach: a match on the first line, a match on the last line, an
-  end of file with no trailing newline, and a match exactly at the edge of a
-  read or search window with one just past it. Each test asserts the full
+  end of file with no trailing newline, a match exactly at the edge of a
+  read or search window with one just past it, and a match that starts
+  inside the window and ends past it. Each edge also runs on a damaged file
+  (for example a missing heading or an unclosed code fence) and with CRLF
+  line ends, not only on a well-formed LF file. Each test asserts the full
   resulting text, not only that the anchor is still present. A test set that
   matches only in the middle of a well-formed file passes when the replace
   drops or doubles the last line.
 - When an action can return a normal outcome and a warning in one result (an
   existing file that is reused and a warning about it), one test asserts both
   the outcome and the warning text, for every action that reaches the state.
+  A result that changes nothing (zero rows added, zero files replaced) is an
+  outcome too. When it carries a warning, for example one for a config value
+  of the wrong shape, one test asserts the full text of the result, not a
+  substring, so a dropped or reworded sentence fails it. A later edit that
+  weakens that test to a substring check is a masked regression.
   When two actions or tools share a resource, a state that a test pins for one
   action is pinned for the other, or the test states why the other action
   cannot reach it. A test that checks only the outcome, or only one of the two
