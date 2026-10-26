@@ -2319,8 +2319,9 @@ func TestPlanSupportOpenspecStage_OtherPlan(t *testing.T) {
 		manifestNotJSON    = `not json`
 		wantMsg            = `openspec_stage: change "add-widget" is staged by another plan: /plans/a.md. ` +
 			`If this call names the same plan file under another path, call again with planPath set to /plans/a.md.`
-		wantSuggestion = "Pick another change name: replace add-widget in every header line that holds it (**Source:**, **OpenSpec-Create:** and **OpenSpec-Staging:**), then run Create-flow authoring again. " +
-			"If the other plan is abandoned, ask the user, then delete .sdlc-v2/openspec-staging/add-widget/ and call openspec_stage again."
+		wantSuggestion = "If /plans/a.md is the plan file of this call under another path, call openspec_stage again with planPath set to /plans/a.md. " +
+			"If /plans/a.md is another plan, pick another change name: replace add-widget in every header line that holds it (**Source:**, **OpenSpec-Create:** and **OpenSpec-Staging:**), then run Create-flow authoring again. " +
+			"If that other plan is abandoned, ask the user, then delete .sdlc-v2/openspec-staging/add-widget/ and call openspec_stage again."
 	)
 
 	for _, tc := range []struct {
@@ -2403,6 +2404,13 @@ func TestPlanSupportOpenspecStage_OtherPlan(t *testing.T) {
 			}
 			if out.Valid == nil || !*out.Valid {
 				t.Errorf("Valid = %v, want true", out.Valid)
+			}
+			wantReplaced := tc.existing != "" || tc.manifestDir
+			if out.StagingReplaced == nil || *out.StagingReplaced != wantReplaced {
+				t.Errorf("StagingReplaced = %v, want %v", out.StagingReplaced, wantReplaced)
+			}
+			if out.StagedPlanPath != tc.planPath {
+				t.Errorf("StagedPlanPath = %q, want %q", out.StagedPlanPath, tc.planPath)
 			}
 			if got, err := os.ReadFile(filepath.Join(stagingDir, "proposal.md")); err != nil || string(got) != "# new\n" {
 				t.Errorf("proposal.md = %q (err %v), want the new content", got, err)

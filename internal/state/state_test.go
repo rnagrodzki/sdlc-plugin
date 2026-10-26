@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -574,7 +575,7 @@ func TestKeepSibling_WrongTypedField(t *testing.T) {
 		t.Run(tc.content, func(t *testing.T) {
 			dir := t.TempDir()
 			fp := writeSibling(t, dir, "ship-main-20261019T100000Z.json", tc.content)
-			if got := keepSibling("ship", fp, tc.writer); got != tc.want {
+			if got := keepSibling("ship", fp, tc.writer, time.Now()); got != tc.want {
 				t.Fatalf("keepSibling(ship, %s, %q) = %v, want %v", tc.content, tc.writer, got, tc.want)
 			}
 		})
@@ -796,15 +797,15 @@ func TestKeepSibling_OtherPrefixAndUnreadable(t *testing.T) {
 	dir := t.TempDir()
 	completed := writeSibling(t, dir, "commit-main-20261019T100000Z.json",
 		`{"sessionId":"s1","pipelineStatus":"completed","runStatus":"completed"}`)
-	if keepSibling("commit", completed, "s2") {
+	if keepSibling("commit", completed, "s2", time.Now()) {
 		t.Error("keepSibling(commit, completed file) = true, want false")
 	}
 
 	missing := filepath.Join(dir, "ship-main-20261019T110000Z.json")
-	if keepSibling("ship", missing, "s2") {
+	if keepSibling("ship", missing, "s2", time.Now()) {
 		t.Error("keepSibling(ship, missing file) = true, want false")
 	}
-	if keepSibling("execute", missing, "s2") {
+	if keepSibling("execute", missing, "s2", time.Now()) {
 		t.Error("keepSibling(execute, missing file) = true, want false")
 	}
 
@@ -818,7 +819,7 @@ func TestKeepSibling_OtherPrefixAndUnreadable(t *testing.T) {
 		t.Error("readSiblingMeta(directory) ok = true, want false")
 	}
 	for _, prefix := range []string{"ship", "execute"} {
-		if keepSibling(prefix, asDir, "s2") {
+		if keepSibling(prefix, asDir, "s2", time.Now()) {
 			t.Errorf("keepSibling(%s, directory) = true, want false", prefix)
 		}
 	}
@@ -830,11 +831,11 @@ func TestKeepSibling_OtherPrefixAndUnreadable(t *testing.T) {
 func TestKeepSibling_StatusFieldPerPrefix(t *testing.T) {
 	dir := t.TempDir()
 	ship := writeSibling(t, dir, "ship-main-20261019T100000Z.json", `{"runStatus":"completed"}`)
-	if keepSibling("ship", ship, "") {
+	if keepSibling("ship", ship, "", time.Now()) {
 		t.Error("keepSibling(ship, runStatus completed) = true, want false")
 	}
 	exec := writeSibling(t, dir, "execute-main-20261019T100000Z.json", `{"pipelineStatus":"completed"}`)
-	if keepSibling("execute", exec, "") {
+	if keepSibling("execute", exec, "", time.Now()) {
 		t.Error("keepSibling(execute, pipelineStatus completed) = true, want false")
 	}
 }
@@ -862,7 +863,7 @@ func TestKeepSibling_SizeLimit(t *testing.T) {
 			if info, err := os.Stat(fp); err != nil || info.Size() != int64(tc.size) {
 				t.Fatalf("file size = %v (err %v), want %d", info, err, tc.size)
 			}
-			if got := keepSibling("ship", fp, ""); got != tc.want {
+			if got := keepSibling("ship", fp, "", time.Now()); got != tc.want {
 				t.Fatalf("keepSibling(ship, %d bytes) = %v, want %v", tc.size, got, tc.want)
 			}
 		})
@@ -2328,6 +2329,31 @@ func TestIsActivePlanRun(t *testing.T) {
 	}
 }
 
+// TestIsDonePlanRun covers the done marker: present with any value is done;
+// a nil state, no planIntegrity, or a planIntegrity that is not an object is
+// not done.
+func TestIsDonePlanRun(t *testing.T) {
+	tests := []struct {
+		name string
+		st   *State
+		want bool
+	}{
+		{"nil state", nil, false},
+		{"no planIntegrity", &State{Data: map[string]any{}}, false},
+		{"planIntegrity not an object", &State{Data: map[string]any{"planIntegrity": "done"}}, false},
+		{"no done", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x"}}}, false},
+		{"done", &State{Data: map[string]any{"planIntegrity": map[string]any{"done": "y"}}}, true},
+		{"done without skillInvoked", &State{Data: map[string]any{"planIntegrity": map[string]any{"done": nil}}}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsDonePlanRun(tc.st); got != tc.want {
+				t.Fatalf("IsDonePlanRun = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // planRunFixture is one plan run file that a PlanRunForSession case writes.
 type planRunFixture struct {
 	id  string
@@ -2390,6 +2416,9 @@ func planRunForSessionCases() []planRunForSessionCase {
 		{"own run is past the window", []planRunFixture{
 			{r1, `{"sessionId":"S",` + active + `}`, stale},
 		}, "S", true, ""},
+		{"own run is just inside the window", []planRunFixture{
+			{r1, `{"sessionId":"S",` + active + `}`, PlanRunLiveWindow - time.Minute},
+		}, "S", true, r1},
 		{"two own runs, newest wins", []planRunFixture{
 			{r1, `{"sessionId":"S",` + active + `}`, 0},
 			{r2, `{"sessionId":"S",` + active + `}`, 0},
@@ -2471,5 +2500,64 @@ func TestPlanRunForSession_RunsPathIsFile(t *testing.T) {
 	}
 	if st != nil {
 		t.Fatalf("PlanRunForSession: expected nil state on error, got %+v", st)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("PlanRunForSession error = %v, want it to wrap ENOTDIR", err)
+	}
+	if want := "state: readdir " + filepath.Join(dataDir, paths.RunsSubdir) + ": "; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("PlanRunForSession error = %q, want prefix %q", err.Error(), want)
+	}
+}
+
+// TestWriteKeepsStampedPlanRunForUnstampedWriter covers the production path
+// of a new plan run: its first Write has no sessionId yet (the hook stamps
+// it after plan_prepare). An old sibling stamped by another session is kept
+// (keepPlanSibling rule 3: "" differs from every stamped sibling). An old
+// unstamped sibling is pruned.
+func TestWriteKeepsStampedPlanRunForUnstampedWriter(t *testing.T) {
+	root := t.TempDir()
+	dir := keepRuleRunsDir(t, root)
+	old := PlanRunLiveWindow + time.Hour
+
+	stamped := writeSibling(t, dir, "plan-feat-20260929T100000Z.json", `{"sessionId":"S1"}`)
+	ageFile(t, stamped, old)
+	unstamped := writeSibling(t, dir, "plan-feat-20260929T101000Z.json", `{}`)
+	ageFile(t, unstamped, old)
+
+	st := &State{
+		Path:       filepath.Join(dir, "plan-feat-20260929T120000Z.json"),
+		Root:       root,
+		Prefix:     "plan",
+		BranchSlug: "feat",
+		Data:       map[string]any{},
+	}
+	if err := Write(st); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	for path, wantExist := range map[string]bool{stamped: true, unstamped: false} {
+		if _, err := os.Stat(path); (err == nil) != wantExist {
+			t.Errorf("exists(%s) = %v, want %v", filepath.Base(path), err == nil, wantExist)
+		}
+	}
+}
+
+// TestPlanRunIDPattern verifies the exported run ID grammar matches what
+// LoadRun accepts: a plan prefix, a slug of letters, digits and hyphens, and
+// the filename timestamp.
+func TestPlanRunIDPattern(t *testing.T) {
+	re := regexp.MustCompile(`^` + PlanRunIDPattern + `$`)
+	for id, want := range map[string]bool{
+		"plan-main-20260929T114125Z":      true,
+		"plan-Feat-X-1-20260929T114125Z":  true,
+		"ship-main-20260929T114125Z":      false,
+		"plan-a..b-20260929T114125Z":      false,
+		"plan-main-2026092T114125Z":       false,
+		"plan-main-20260929T114125Z.json": false,
+		"plan--20260929T114125Z":          false,
+	} {
+		if got := re.MatchString(id); got != want {
+			t.Errorf("PlanRunIDPattern match %q = %v, want %v", id, got, want)
+		}
 	}
 }

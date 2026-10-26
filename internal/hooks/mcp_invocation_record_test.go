@@ -2,13 +2,19 @@ package hooks
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
@@ -490,17 +496,14 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 	})
 
 	t.Run("state write error: silent, one stderr line", func(t *testing.T) {
-		if os.Geteuid() == 0 {
-			t.Skip("a folder mode does not stop the root user")
-		}
 		root := gitFixture(t, "feat/plan-stamp-write-error")
 		st := newPlanState(t, root, "feat/plan-stamp-write-error", activePlanMarkers(), "")
 
-		runsDir := filepath.Dir(st.Path)
-		if err := os.Chmod(runsDir, 0o500); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(runsDir, 0o700) })
+		// A replaced claim reaches the write-failure branch with no file
+		// mode, so the case also runs as the root user.
+		orig := claimPlanSession
+		claimPlanSession = func(*state.State, string) error { return errors.New("simulated state write failure") }
+		t.Cleanup(func() { claimPlanSession = orig })
 
 		var out Output
 		stderr := captureStderr(t, func() {
@@ -516,13 +519,94 @@ func TestRecordMCPInvocation_PlanSessionStamp(t *testing.T) {
 		assertSilent(t, out)
 		assertPlanStampStderr(t, stderr)
 
-		if err := os.Chmod(runsDir, 0o700); err != nil {
-			t.Fatal(err)
-		}
 		if got := planRunSessionID(t, st.Path); got != "" {
 			t.Errorf("sessionId = %q, want empty (write failed)", got)
 		}
 	})
+
+	t.Run("tool_response json.Marshal fails: silent, no stderr, no write", func(t *testing.T) {
+		root := gitFixture(t, "feat/plan-stamp-marshal-error")
+		st := newPlanState(t, root, "feat/plan-stamp-marshal-error", activePlanMarkers(), "")
+		before, err := os.ReadFile(st.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		var out Output
+		stderr := captureStderr(t, func() {
+			var err error
+			// NaN is not valid JSON, so json.Marshal rejects the response.
+			out, err = recordMCPInvocation(HookCtx{SessionID: "s-1"}, Event{
+				ToolName: planPrepareTool,
+				Raw:      map[string]any{"tool_response": map[string]any{"runId": state.RunID(st), "x": math.NaN()}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+		assertSilent(t, out)
+		if stderr != "" {
+			t.Errorf("stderr = %q, want empty", stderr)
+		}
+		after, err := os.ReadFile(st.Path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(before, after) {
+			t.Errorf("plan state changed:\nbefore %s\nafter  %s", before, after)
+		}
+	})
+}
+
+// TestRecordMCPInvocation_PlanSessionStamp_RealRenderer feeds the hook the
+// result of the registered plan_prepare tool, called over an in-memory MCP
+// session, in place of a hand-typed fixture. It pins planRunIDRe to the real
+// rendered form of runId: a renderer change that breaks the match fails here.
+func TestRecordMCPInvocation_PlanSessionStamp_RealRenderer(t *testing.T) {
+	root := gitFixture(t, "feat/plan-stamp-renderer")
+	st := newPlanState(t, root, "feat/plan-stamp-renderer", activePlanMarkers(), "")
+	runID := state.RunID(st)
+
+	s := mcpserver.New("test", "0.0.0-test")
+	tools.RegisterPlanTools(s)
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	c, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	res, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "plan_prepare", Arguments: map[string]any{
+		"skipConfigCheck": true,
+		"resume":          true,
+		"runId":           runID,
+	}})
+	if err != nil {
+		t.Fatalf("CallTool plan_prepare: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("plan_prepare returned an error: %+v", res.Content)
+	}
+
+	// The hook receives tool_response as decoded JSON, so round-trip the
+	// result through JSON to get the same shape.
+	raw, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var toolResponse map[string]any
+	if err := json.Unmarshal(raw, &toolResponse); err != nil {
+		t.Fatal(err)
+	}
+
+	callPlanPrepareHookWith(t, "s-renderer", toolResponse)
+	if got := planRunSessionID(t, st.Path); got != "s-renderer" {
+		t.Errorf("sessionId = %q, want %q (planRunIDRe did not match the rendered runId)", got, "s-renderer")
+	}
 }
 
 // assertPlanStampStderr checks that stderr holds exactly one line that starts

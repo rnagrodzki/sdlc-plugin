@@ -494,8 +494,22 @@ func evidenceRecord(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 // Action: evidence_digest
 // ---------------------------------------------------------------------------
 
-const evidenceDigestNextBase = "If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path. " +
-	"If lanes and lensReviewers are not in context, call plan_prepare({resume:true, resolveTemplate:true, skipConfigCheck:true, runId:\"%s\"}) first. " +
+// PlanSkillReinvoke is the sentence that tells the model to load the
+// sdlc:plan skill before it resumes a plan run. The evidence_digest next
+// step and the post-compact plan banner (internal/hooks) both print it.
+const PlanSkillReinvoke = "If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path."
+
+// PlanResumeCall returns the plan_prepare call that resumes the plan run
+// runID. The evidence_digest next step and the post-compact plan banner
+// (internal/hooks) both print it.
+func PlanResumeCall(runID string) string {
+	return `plan_prepare({resume:true, resolveTemplate:true, skipConfigCheck:true, runId:"` + runID + `"})`
+}
+
+// evidenceDigestNextBase takes PlanSkillReinvoke, PlanResumeCall(runID),
+// the checkpoint step and the iteration.
+const evidenceDigestNextBase = "%s " +
+	"If lanes and lensReviewers are not in context, call %s first. " +
 	"Re-read the plan file, then continue at step %s (iteration %d). Fetch bodies with evidence_get only when the step needs them."
 
 // evidenceNoExpectedWritersNext is the statusOnly next step when neither
@@ -601,7 +615,7 @@ func evidenceDigest(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 		return out, nil
 	}
 
-	out.Next = fmt.Sprintf(evidenceDigestNextBase, in.RunID, step, iteration)
+	out.Next = fmt.Sprintf(evidenceDigestNextBase, PlanSkillReinvoke, PlanResumeCall(in.RunID), step, iteration)
 	if lagging {
 		out.Next += fmt.Sprintf(" Missing: %s. Stalled: %s. Wait one poll cycle (evidence_digest statusOnly); if a writer is still listed, re-dispatch it or force-progress past it.",
 			evidenceList(missing), evidenceList(stalled))

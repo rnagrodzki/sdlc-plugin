@@ -428,6 +428,64 @@ func TestReceivedReviewPrepare_Success(t *testing.T) {
 	}
 }
 
+// TestReceivedReviewPrepare_PRRunSeverities pins alwaysFixSeverities and the
+// warning order on a PR run: the severity warning comes first, then the
+// gh pr checks warning, and the PR view still loads.
+func TestReceivedReviewPrepare_PRRunSeverities(t *testing.T) {
+	const fallback = "using [] (every will-fix finding asks)."
+	tests := []struct {
+		name           string
+		project        string
+		checks         string // body of the `checks)` case in the stub
+		wantSeverities []string
+		wantWarnings   []string
+	}{
+		{
+			name:           "valid list",
+			project:        "[receivedReview]\nalwaysFixSeverities = [\"High\", \"info\"]\n",
+			checks:         `printf 'build\tpass\t1m\thttps://x\n'`,
+			wantSeverities: []string{"high", "info"},
+		},
+		{
+			name:           "bad value and failed checks",
+			project:        "[receivedReview]\nalwaysFixSeverities = [\"urgent\"]\n",
+			checks:         `echo boom >&2; exit 2`,
+			wantSeverities: []string{},
+			wantWarnings: []string{
+				`Local receivedReview.alwaysFixSeverities "urgent" is not in allowed values [critical high medium low info]; ` + fallback,
+				"gh pr checks 42: exit 2: boom",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "user.toml"))
+			dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+			writeFile(t, filepath.Join(dir, paths.DataDir, paths.LocalConfigFile), tt.project)
+			script := "#!/bin/sh\ncase \"$2\" in\n  view)\n    echo 'title: T'\n    ;;\n  checks)\n    " + tt.checks + "\n    ;;\nesac\n"
+			cleanup := stubGH(t, script)
+			defer cleanup()
+
+			out, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: 42})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out.View != "title: T" {
+				t.Errorf("View = %q, want %q", out.View, "title: T")
+			}
+			if out.PR != (receivedReviewPR{Number: 42, Owner: "owner", Repo: "repo"}) {
+				t.Errorf("PR = %+v, want {42 owner repo}", out.PR)
+			}
+			if !sameStrings(out.AlwaysFixSeverities, tt.wantSeverities) {
+				t.Errorf("AlwaysFixSeverities = %q, want %q", out.AlwaysFixSeverities, tt.wantSeverities)
+			}
+			if !sameStrings(out.Warnings, tt.wantWarnings) {
+				t.Errorf("Warnings = %q, want %q", out.Warnings, tt.wantWarnings)
+			}
+		})
+	}
+}
+
 // TestReceivedReviewPrepare_Style verifies that received_review_prepare
 // attaches the plugin-wide communication style, defaulting to a functional
 // audience when no [style] config section is present.
@@ -629,10 +687,25 @@ func TestReceivedReviewPrepare_AlwaysFixSeverities(t *testing.T) {
 		{name: "no receivedReview section", project: "[review]\nscope = \"all\"\n", want: []string{}},
 		{
 			// config.ReadSection skips a non-table receivedReview value, so
-			// the tool sees no section: an empty list and no warning.
-			name:    "receivedReview not a table",
-			project: "receivedReview = \"high\"\n",
-			want:    []string{},
+			// the tool sees no section: an empty list and one warning.
+			name:         "receivedReview not a table",
+			project:      "receivedReview = \"high\"\n",
+			want:         []string{},
+			wantWarnings: []string{`Local receivedReview has wrong type string; expected a table such as [receivedReview] with alwaysFixSeverities = ["high"]; ` + fallback},
+		},
+		{
+			name:         "user-level receivedReview not a table",
+			user:         "receivedReview = [\"high\"]\n",
+			want:         []string{},
+			wantWarnings: []string{`Local receivedReview has wrong type []interface {}; expected a table such as [receivedReview] with alwaysFixSeverities = ["high"]; ` + fallback},
+		},
+		{
+			// The project table replaces the user value whole, so the user
+			// value that is not a table gives no warning.
+			name:    "project table wins over user non-table",
+			user:    "receivedReview = \"high\"\n",
+			project: "[receivedReview]\nalwaysFixSeverities = [\"low\"]\n",
+			want:    []string{"low"},
 		},
 		{name: "section with no key", project: "[receivedReview]\n", want: []string{}},
 		{name: "empty list", project: "[receivedReview]\nalwaysFixSeverities = []\n", want: []string{}},
@@ -647,6 +720,13 @@ func TestReceivedReviewPrepare_AlwaysFixSeverities(t *testing.T) {
 		{
 			name:         "duplicate after lowercasing",
 			project:      "[receivedReview]\nalwaysFixSeverities = [\"High\", \"high\"]\n",
+			want:         []string{"high"},
+			wantWarnings: []string{key + ` lists "high" more than once; kept once.`},
+		},
+		{
+			// A third copy adds no second warning.
+			name:         "three copies give one warning",
+			project:      "[receivedReview]\nalwaysFixSeverities = [\"high\", \"high\", \"high\"]\n",
 			want:         []string{"high"},
 			wantWarnings: []string{key + ` lists "high" more than once; kept once.`},
 		},

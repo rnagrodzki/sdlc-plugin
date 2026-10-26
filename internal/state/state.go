@@ -49,16 +49,29 @@ func SlugifyBranch(branch string) string {
 // Filename parsing
 // ---------------------------------------------------------------------------
 
+// timestampPattern is the <YYYYMMDDTHHmmssZ> timestamp at the end of a state
+// file basename and of a run ID.
+const timestampPattern = `\d{8}T\d{6}Z`
+
+// runSlugPattern is the allowed form of the slug inside a run ID
+// (SlugifyBranch output): alphanumerics and hyphens only. It keeps upper case.
+const runSlugPattern = `[A-Za-z0-9-]+`
+
+// PlanRunIDPattern is the unanchored regular expression of a plan run ID
+// that LoadRun accepts: plan-<slug>-<YYYYMMDDTHHmmssZ>. Code outside this
+// package that finds a run ID in text builds its matcher from it.
+const PlanRunIDPattern = `plan-` + runSlugPattern + `-` + timestampPattern
+
 // filenameRe matches the canonical state file basename:
 //
 //	<prefix>-<slug>-<YYYYMMDDTHHmmssZ>.json
 var filenameRe = regexp.MustCompile(
-	`^(ship|execute|plan|commit)-(.+)-(\d{8}T\d{6}Z)\.json$`,
+	`^(ship|execute|plan|commit)-(.+)-(` + timestampPattern + `)\.json$`,
 )
 
 // timestampSuffixRe matches what follows "<prefix>-<slug>-" in a canonical
 // state file basename. Find uses it to match the slug exactly.
-var timestampSuffixRe = regexp.MustCompile(`^\d{8}T\d{6}Z\.json$`)
+var timestampSuffixRe = regexp.MustCompile(`^` + timestampPattern + `\.json$`)
 
 // parsedFilename holds the components extracted from a state file basename.
 type parsedFilename struct {
@@ -454,7 +467,12 @@ type PruneQuery struct {
 	Prefix     string // "plan", "ship" or "execute"
 	BranchSlug string // SlugifyBranch output
 	SelfPath   string // the writer's own file; "" (before Init) excludes nothing
-	SessionID  string // the writer's sessionId; "" counts as different from every stamped sibling (plan runs: rule 3 keeps them all)
+	// SessionID is the writer's sessionId. Plan runs (keepPlanSibling rule
+	// 3): "" counts as different from every stamped sibling, so a stamped
+	// sibling is kept. Ship and execute runs (keepSibling rule 5): the
+	// session rule needs both IDs non-empty, so "" turns it off and only
+	// the status rules keep a sibling.
+	SessionID string
 }
 
 // PruneTargets returns the absolute paths of the <Prefix>-<BranchSlug>-*.json
@@ -476,6 +494,7 @@ func PruneTargets(q PruneQuery) ([]string, error) {
 		}
 		return nil, fmt.Errorf("state: readdir for prune %s: %w", dir, err)
 	}
+	now := time.Now() // one instant for every sibling
 	for _, e := range entries {
 		name := e.Name()
 		if !strings.HasSuffix(name, ".json") {
@@ -495,7 +514,7 @@ func PruneTargets(q PruneQuery) ([]string, error) {
 		if fp == selfPath {
 			continue // never prune the writer's own file
 		}
-		if keepSibling(parsed.Prefix, fp, sessionID) {
+		if keepSibling(parsed.Prefix, fp, sessionID, now) {
 			continue
 		}
 		targets = append(targets, fp)
@@ -547,11 +566,13 @@ type siblingMeta struct {
 //  7. Anything else is not kept.
 //
 // A field with an unexpected type (json.UnmarshalTypeError) reads as its
-// zero value; the other fields still apply.
-func keepSibling(prefix, path, writerSession string) bool {
+// zero value; the other fields still apply. now is the instant rule 1
+// measures the live window from; the caller reads the clock once for all
+// siblings.
+func keepSibling(prefix, path, writerSession string, now time.Time) bool {
 	switch prefix {
 	case "plan":
-		return keepPlanSibling(path, writerSession, time.Now())
+		return keepPlanSibling(path, writerSession, now)
 	case "ship", "execute":
 	default:
 		return false
@@ -616,8 +637,19 @@ func isDonePlanRun(path string) bool {
 	if err := fsx.ReadJSON(path, &data); err != nil {
 		return false
 	}
-	pi, _ := data["planIntegrity"].(map[string]any)
-	_, hasDone := pi["done"]
+	return IsDonePlanRun(&State{Data: data})
+}
+
+// IsDonePlanRun reports whether st has the done marker: data.planIntegrity
+// is an object that has a "done" key (any value). A nil st, a missing
+// planIntegrity, or a planIntegrity that is not an object is not done.
+// isDonePlanRun and IsActivePlanRun use it.
+func IsDonePlanRun(st *State) bool {
+	if st == nil {
+		return false
+	}
+	integrity, _ := st.Data["planIntegrity"].(map[string]any)
+	_, hasDone := integrity["done"]
 	return hasDone
 }
 
@@ -670,11 +702,10 @@ func withinLiveWindow(path string, now time.Time) bool {
 // evidenceDirSuffix marks a plan run's evidence directory.
 const evidenceDirSuffix = ".evidence"
 
-// runSlugRe is the allowed form of the slug inside a runID (SlugifyBranch
-// output): alphanumerics and hyphens only. LoadRun rejects any runID whose
-// slug fails this check, closing off "." (e.g. "..") and other characters
-// SlugifyBranch never itself produces.
-var runSlugRe = regexp.MustCompile(`^[A-Za-z0-9-]+$`)
+// runSlugRe matches a whole slug of runSlugPattern. LoadRun rejects any
+// runID whose slug fails this check, closing off "." (e.g. "..") and other
+// characters SlugifyBranch never itself produces.
+var runSlugRe = regexp.MustCompile(`^` + runSlugPattern + `$`)
 
 // ErrInvalidRunID is wrapped by LoadRun's error when runID fails validation
 // (as opposed to a read or decode failure of a valid run's file).
@@ -756,33 +787,18 @@ func LoadRun(root, runID string) (*State, error) {
 // runs/ exists as a regular file) or when the winning file fails to load
 // (e.g. corrupt JSON).
 func LatestPlanRun(root, branch string) (*State, error) {
-	dir := stateDir(root)
-	entries, err := os.ReadDir(dir)
+	runs, err := planRunsNewestFirst(root)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("state: readdir %s: %w", dir, err)
+		return nil, err
 	}
 
 	slug := SlugifyBranch(branch)
-
-	var bestName, bestTimestamp string
-	for _, e := range entries {
-		parsed := parseStateFilename(e.Name())
-		if parsed == nil || parsed.Prefix != "plan" || parsed.Slug != slug {
-			continue
-		}
-		if bestName == "" || parsed.Timestamp > bestTimestamp {
-			bestName = e.Name()
-			bestTimestamp = parsed.Timestamp
+	for _, c := range runs {
+		if c.slug == slug {
+			return LoadRun(root, c.runID)
 		}
 	}
-	if bestName == "" {
-		return nil, nil
-	}
-
-	return LoadRun(root, strings.TrimSuffix(bestName, ".json"))
+	return nil, nil
 }
 
 // ActivePlanRun returns LatestPlanRun's run for branch only when it is
@@ -818,10 +834,7 @@ func IsActivePlanRun(st *State) bool {
 	if _, hasSkillInvoked := integrity["skillInvoked"]; !hasSkillInvoked {
 		return false
 	}
-	if _, hasDone := integrity["done"]; hasDone {
-		return false
-	}
-	return true
+	return !IsDonePlanRun(st)
 }
 
 // planRunFile names one plan run file of runs/: its run ID and branch slug.
@@ -981,6 +994,7 @@ func PruneEvidenceDirs(st *State) {
 
 	ownRunID := RunID(st)
 	writerSession, _ := st.Data["sessionId"].(string)
+	now := time.Now() // one instant for every sibling
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -998,7 +1012,7 @@ func PruneEvidenceDirs(st *State) {
 		if parsed == nil || parsed.Prefix != st.Prefix || parsed.Slug != st.BranchSlug {
 			continue
 		}
-		if parsed.Prefix == "plan" && keepPlanSibling(filepath.Join(dir, runID+".json"), writerSession, time.Now()) {
+		if parsed.Prefix == "plan" && keepPlanSibling(filepath.Join(dir, runID+".json"), writerSession, now) {
 			continue // evidence of a kept plan run stays with its state file
 		}
 		_ = removeAll(filepath.Join(dir, name)) // best-effort

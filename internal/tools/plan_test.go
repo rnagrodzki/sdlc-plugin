@@ -1716,8 +1716,11 @@ func TestPlanPrepare_CreationIntent_FirstCallThenResolveTemplate(t *testing.T) {
 	if first.RunID == "" {
 		t.Fatal("RunID empty after first call")
 	}
-	if first.Next != planPrepareNextFirst {
-		t.Errorf("Next = %q, want %q", first.Next, planPrepareNextFirst)
+	// Literal text, not the constant: the test fails when the runId
+	// instruction is removed from the hint.
+	const wantFirstNext = "Print the context detection summary. Then run the gate check and complexity routing, and call plan_prepare again with resolveTemplate:true, the same userPrompt and the runId of this result. Follow style.writingGuide for every narrative section."
+	if first.Next != wantFirstNext {
+		t.Errorf("Next = %q, want %q", first.Next, wantFirstNext)
 	}
 	doc := readSoleStateDoc(t, dir)
 	firstIntent, ok := doc["creationIntent"].(map[string]any)
@@ -1744,8 +1747,9 @@ func TestPlanPrepare_CreationIntent_FirstCallThenResolveTemplate(t *testing.T) {
 	if second.RunID != first.RunID {
 		t.Errorf("resolveTemplate RunID = %q, want %q (same run)", second.RunID, first.RunID)
 	}
-	if second.Next != planPrepareNextTmpl {
-		t.Errorf("Next = %q, want %q", second.Next, planPrepareNextTmpl)
+	const wantTmplNext = "Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker \"plan-file\", the plan path and runId. Pass runId on every later plan_mark call. Follow style.writingGuide for every narrative section."
+	if second.Next != wantTmplNext {
+		t.Errorf("Next = %q, want %q", second.Next, wantTmplNext)
 	}
 
 	doc = readSoleStateDoc(t, dir) // still exactly one file
@@ -2311,6 +2315,90 @@ func TestPlanPrepare_RunIDNotActiveRefused(t *testing.T) {
 	}
 }
 
+// TestPlanMark_EchoesRunID verifies plan_mark returns the run ID it wrote
+// to, with runId and when the lookup falls back to the newest run.
+func TestPlanMark_EchoesRunID(t *testing.T) {
+	dir := planTestTemplateRepo(t)
+	planTestSeedRun(t, dir, planTestRunA, planTestActiveData())
+	planTestSeedRun(t, dir, planTestRunB, planTestActiveData())
+	const newest = planTestRunB // the later filename timestamp
+
+	for name, tc := range map[string]struct{ runID, want string }{
+		"runId set":     {runID: planTestRunA, want: planTestRunA},
+		"runId omitted": {runID: "", want: newest},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := planMark(dir, dir, PlanMarkIn{Marker: "critiqueRan", RunID: tc.runID})
+			if err != nil {
+				t.Fatalf("planMark: %v", err)
+			}
+			if out.RunID != tc.want {
+				t.Errorf("RunID = %q, want %q", out.RunID, tc.want)
+			}
+		})
+	}
+}
+
+// TestPlanPrepare_RunIDDoneWithoutSkillInvoked verifies a run with the done
+// marker and no skillInvoked marker gives "is done", not "has no
+// skillInvoked marker": the done check comes first.
+func TestPlanPrepare_RunIDDoneWithoutSkillInvoked(t *testing.T) {
+	const runID = "plan-main-20260105T000000Z"
+	for mode, in := range map[string]PlanPrepareIn{
+		"resume":          {SkipConfigCheck: true, Resume: true, RunID: runID},
+		"resolveTemplate": {SkipConfigCheck: true, ResolveTemplate: true, RunID: runID},
+	} {
+		t.Run(mode, func(t *testing.T) {
+			dir := planTestTemplateRepo(t)
+			planTestSeedRun(t, dir, runID, map[string]any{
+				"planIntegrity": map[string]any{"done": "y"},
+			})
+			before := planTestReadRun(t, dir, runID)
+
+			_, err := runPlanPrepare(t, dir, dir, in)
+			if got, want := planTestErrResult(err), "domain: plan run "+runID+" is done"; got != want {
+				t.Fatalf("result = %q, want %q", got, want)
+			}
+			if after := planTestReadRun(t, dir, runID); string(after) != string(before) {
+				t.Errorf("run file changed:\nbefore=%s\nafter=%s", before, after)
+			}
+		})
+	}
+}
+
+// TestPlanPrepare_NoBranchNextNamesNoRunID verifies that a call outside git
+// (no branch, so no run) returns no runId and a Next that does not ask for
+// one.
+func TestPlanPrepare_NoBranchNextNamesNoRunID(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in   PlanPrepareIn
+		want string
+	}{
+		"first call": {
+			in:   PlanPrepareIn{SkipConfigCheck: true},
+			want: "Print the context detection summary. Then run the gate check and complexity routing, and call plan_prepare again with resolveTemplate:true and the same userPrompt. No plan run is tracked outside a git branch, so this result has no runId. Follow style.writingGuide for every narrative section.",
+		},
+		"resolveTemplate": {
+			in:   PlanPrepareIn{SkipConfigCheck: true, ResolveTemplate: true},
+			want: "Write template.headerMarkdown + template.skeletonMarkdown to the plan file. No plan run is tracked outside a git branch, so this result has no runId and plan_mark cannot record markers. Follow style.writingGuide for every narrative section.",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir() // not a git repository: no branch
+			out, err := runPlanPrepare(t, dir, dir, tc.in)
+			if err != nil {
+				t.Fatalf("planPrepareCore: %v", err)
+			}
+			if out.RunID != "" {
+				t.Errorf("RunID = %q, want empty", out.RunID)
+			}
+			if out.Next != tc.want {
+				t.Errorf("Next = %q, want %q", out.Next, tc.want)
+			}
+		})
+	}
+}
+
 // TestPlanPrepare_FirstCallIgnoresRunID verifies a first call (no resume,
 // no resolveTemplate) with a runId starts a new run with no error.
 func TestPlanPrepare_FirstCallIgnoresRunID(t *testing.T) {
@@ -2342,6 +2430,39 @@ func planTestErrResult(err error) string {
 		return "infra: " + ie.Msg
 	default:
 		return fmt.Sprintf("other %T: %v", err, err)
+	}
+}
+
+// planTestErrSuggestion returns the Suggestion of a DomainError or
+// InfraError, and "" for any other value.
+func planTestErrSuggestion(err error) string {
+	var de *mcpserver.DomainError
+	var ie *mcpserver.InfraError
+	switch {
+	case errors.As(err, &de):
+		return de.Suggestion
+	case errors.As(err, &ie):
+		return ie.Suggestion
+	default:
+		return ""
+	}
+}
+
+// planTestWantSuggestion maps a planTestErrResult value of the planRunByID
+// lookups to the literal Suggestion text that goes with it. The texts are
+// literal, not the constants, so a changed Suggestion fails the test.
+func planTestWantSuggestion(result string) string {
+	switch {
+	case result == "ok":
+		return ""
+	case strings.HasSuffix(result, " not found"):
+		return `Pass the runId that plan_prepare returned in this session. After a compaction, use the runId of the "Resume with:" line. If that run no longer exists, call plan_prepare with no runId, no resume and no resolveTemplate to start a new run.`
+	case strings.HasSuffix(result, " state read failed"):
+		return "the plan state file is unreadable or corrupt: fix its permissions or delete it, then call plan_prepare again"
+	case strings.HasSuffix(result, " is done"):
+		return "Start a new plan: call plan_prepare with no runId, no resume and no resolveTemplate."
+	default:
+		return "unexpected result " + result
 	}
 }
 
@@ -2408,13 +2529,22 @@ func TestPlanRunByID_SameResultForEveryTool(t *testing.T) {
 			if got := planTestErrResult(err); got != tc.want {
 				t.Errorf("evidence_get = %q, want %q", got, tc.want)
 			}
+			if got, want := planTestErrSuggestion(err), planTestWantSuggestion(tc.want); got != want {
+				t.Errorf("evidence_get Suggestion = %q, want %q", got, want)
+			}
 			_, err = runPlanPrepare(t, dir, dir, PlanPrepareIn{SkipConfigCheck: true, Resume: true, RunID: tc.runID})
 			if got := planTestErrResult(err); got != wantPre {
 				t.Errorf("plan_prepare(resume) = %q, want %q", got, wantPre)
 			}
+			if got, want := planTestErrSuggestion(err), planTestWantSuggestion(wantPre); got != want {
+				t.Errorf("plan_prepare(resume) Suggestion = %q, want %q", got, want)
+			}
 			_, err = planMark(dir, dir, PlanMarkIn{Marker: "critiqueRan", RunID: tc.runID})
 			if got := planTestErrResult(err); got != tc.want {
 				t.Errorf("plan_mark = %q, want %q", got, tc.want)
+			}
+			if got, want := planTestErrSuggestion(err), planTestWantSuggestion(tc.want); got != want {
+				t.Errorf("plan_mark Suggestion = %q, want %q", got, want)
 			}
 		})
 	}

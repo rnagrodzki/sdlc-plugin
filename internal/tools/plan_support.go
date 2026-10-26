@@ -63,7 +63,7 @@ type PlanSupportIn struct {
 
 	// openspec_stage
 	Files    []openspec.StageFile `json:"files,omitempty" jsonschema_description:"openspec_stage only: JSON array of {path, content}; path relative to the change dir. Example: [{\"path\":\"proposal.md\",\"content\":\"# Proposal\"}]"`
-	PlanPath string               `json:"planPath,omitempty" jsonschema_description:"openspec_stage only: absolute plan file path, saved in stage.json. It is also the owner key of the staging: a later openspec_stage call for the same changeName with a different non-empty planPath is refused. Example: /Users/me/.claude/plans/add-widget.md"`
+	PlanPath string               `json:"planPath,omitempty" jsonschema_description:"openspec_stage only: absolute plan file path, saved in stage.json. It is also the owner key of the staging: a later openspec_stage call for the same changeName with a different non-empty planPath is refused. The owner check is skipped, and the staging is replaced, when this planPath is empty or when the existing stage.json is missing, unreadable, unparseable or has no planPath. Example: /Users/me/.claude/plans/add-widget.md"`
 
 	// evidence_record / evidence_digest / evidence_get
 	RunID           string         `json:"runId,omitempty" jsonschema_description:"Plain text. evidence_* only (required): plan run ID from plan_prepare's runId output. Example: plan-main-20260929T114125Z."`
@@ -171,6 +171,12 @@ type PlanSupportOut struct {
 	StagedFiles    []openspec.StagedFile `json:"files,omitempty"`
 	Valid          *bool                 `json:"valid,omitempty"` // pointer so false still renders
 	ValidateOutput string                `json:"validateOutput,omitempty"`
+	// StagingReplaced is true when the call replaced an existing staging dir,
+	// false when it created one. Pointer so false still renders.
+	StagingReplaced *bool `json:"stagingReplaced,omitempty"`
+	// StagedPlanPath is the planPath written to stage.json, the owner key of
+	// the staging. Empty (omitted) when the call passed no planPath.
+	StagedPlanPath string `json:"stagedPlanPath,omitempty"`
 
 	// openspec_instructions
 	SchemaName string                   `json:"schemaName,omitempty"`
@@ -302,7 +308,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
 - openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a temp copy of openspec/config.yaml. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing in the repository; a missing openspec CLI returns InfraError.
-- openspec_stage: Write the authored artifacts to <active-worktree>/.sdlc-v2/openspec-staging/<changeName>/ (replaces the whole directory) and validate them in a temp copy. Requires changeName, files. Optional: planPath. Returns stagingDir, files, valid, validateOutput. A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. A current spec that cannot be read returns InfraError.
+- openspec_stage: Write the authored artifacts to <active-worktree>/.sdlc-v2/openspec-staging/<changeName>/ (replaces the whole directory) and validate them in a temp copy. Requires changeName, files. Optional: planPath. Returns stagingDir, files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. A current spec that cannot be read returns InfraError.
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Each write sets updatedAt (UTC). A write to a writer file that has no startedAt sets startedAt to that updatedAt; later writes keep it. A file written before startedAt existed, or an unreadable file that this call replaces, gets startedAt at this later write, so its startedAt can be later than the writer's real start. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record (writerId, status, itemCount, fileBytes, briefPath, startedAt, updatedAt). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
@@ -1144,6 +1150,7 @@ func requireActiveRoot(action, contentRoot string) error {
 // mapOpenspecError turns an internal/openspec error from action into the
 // matching DomainError or InfraError.
 func mapOpenspecError(action string, in PlanSupportIn, err error) error {
+	var staged *openspec.StagedByOtherPlanError
 	switch {
 	case errors.Is(err, openspec.ErrInvalidChangeName):
 		return &mcpserver.DomainError{
@@ -1172,13 +1179,15 @@ func mapOpenspecError(action string, in PlanSupportIn, err error) error {
 			Suggestion: openspecCLISuggestion,
 			Cause:      err,
 		}
-	case errors.Is(err, openspec.ErrStagedByOtherPlan):
-		other := strings.TrimPrefix(err.Error(), openspec.ErrStagedByOtherPlan.Error()+": ")
+	case errors.As(err, &staged):
+		other := staged.PlanPath
 		return &mcpserver.DomainError{
 			Msg: fmt.Sprintf("%s: change %q is staged by another plan: %s. If this call names the same plan file under another path, call again with planPath set to %s.",
 				action, in.ChangeName, other, other),
-			Suggestion: fmt.Sprintf("Pick another change name: replace %s in every header line that holds it (**Source:**, **OpenSpec-Create:** and **OpenSpec-Staging:**), then run Create-flow authoring again. "+
-				"If the other plan is abandoned, ask the user, then delete %s and call openspec_stage again.", in.ChangeName, openspec.StagingDirRel(in.ChangeName)),
+			Suggestion: fmt.Sprintf("If %s is the plan file of this call under another path, call openspec_stage again with planPath set to %s. "+
+				"If %s is another plan, pick another change name: replace %s in every header line that holds it (**Source:**, **OpenSpec-Create:** and **OpenSpec-Staging:**), then run Create-flow authoring again. "+
+				"If that other plan is abandoned, ask the user, then delete %s and call openspec_stage again.",
+				other, other, other, in.ChangeName, openspec.StagingDirRel(in.ChangeName)),
 			Cause: err,
 		}
 	case errors.Is(err, openspec.ErrTargetSpecTooLarge):
@@ -1260,10 +1269,12 @@ func openspecStage(contentRoot string, in PlanSupportIn) (PlanSupportOut, error)
 		}
 	}
 	out := PlanSupportOut{
-		StagingDir:     res.StagingDir,
-		StagedFiles:    res.Files,
-		Valid:          &valid,
-		ValidateOutput: validateOutput,
+		StagingDir:      res.StagingDir,
+		StagedFiles:     res.Files,
+		Valid:           &valid,
+		ValidateOutput:  validateOutput,
+		StagingReplaced: &res.Replaced,
+		StagedPlanPath:  res.PlanPath,
 	}
 	if valid {
 		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation passed.", len(res.Files), in.ChangeName, res.StagingDir)

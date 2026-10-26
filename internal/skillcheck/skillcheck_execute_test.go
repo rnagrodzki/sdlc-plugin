@@ -319,7 +319,10 @@ func TestExecuteSkillsSkillCallsAreAllowlisted(t *testing.T) {
 const executeSkillsHighRiskGateMarker = "rather than a per-run signal"
 
 // executeSkillsHighRiskGateProblem returns "" when content holds exactly one
-// warning-rule line with both labels, else the failure text.
+// warning-rule line that accepts "local" and does not accept "config", else
+// the failure text. execute_state resolve-config labels a saved auto or
+// highRiskAutoApprove value "local" and never "config" ("config" is only for
+// commitWaves), so a "config" branch in the rule is dead text.
 func executeSkillsHighRiskGateProblem(content string) string {
 	var rules []string
 	for _, line := range strings.Split(content, "\n") {
@@ -331,18 +334,21 @@ func executeSkillsHighRiskGateProblem(content string) string {
 	case 0:
 		return "high-risk warning rule not found"
 	case 1:
-		if strings.Contains(rules[0], `"local"`) && strings.Contains(rules[0], `"config"`) {
-			return ""
+		if !strings.Contains(rules[0], `"local"`) {
+			return `high-risk warning rule must accept "local"`
 		}
-		return `high-risk warning rule must accept "local" and "config"`
+		if strings.Contains(rules[0], `"config"`) {
+			return `high-risk warning rule must not accept "config": the tool never emits it for auto or highRiskAutoApprove`
+		}
+		return ""
 	default:
 		return fmt.Sprintf("high-risk warning rule found %d times, want 1", len(rules))
 	}
 }
 
 // TestExecuteSkillsHighRiskGateLabels checks that the high-risk warning rule
-// accepts both saved-setting labels. Issue #78: a rule that names only
-// "config" stops the warning with no error once the tool reports "local".
+// accepts the saved-setting label the tool emits. Issue #78: a rule that names
+// only "config" stops the warning with no error once the tool reports "local".
 func TestExecuteSkillsHighRiskGateLabels(t *testing.T) {
 	rule := "When a high-risk wave proceeds without a prompt and the value came from a saved file " +
 		executeSkillsHighRiskGateMarker + " - Step 0 reported"
@@ -351,11 +357,11 @@ func TestExecuteSkillsHighRiskGateLabels(t *testing.T) {
 		content string
 		want    string
 	}{
-		{"both labels", rule + ` "local" or "config"` + "\n", ""},
-		{"config only", rule + ` "config"` + "\n", `high-risk warning rule must accept "local" and "config"`},
-		{"local only", rule + ` "local"` + "\n", `high-risk warning rule must accept "local" and "config"`},
+		{"local only", rule + ` "local"` + "\n", ""},
+		{"config only", rule + ` "config"` + "\n", `high-risk warning rule must accept "local"`},
+		{"both labels", rule + ` "local" or "config"` + "\n", `high-risk warning rule must not accept "config": the tool never emits it for auto or highRiskAutoApprove`},
 		{"rule missing", "no matching line\n", "high-risk warning rule not found"},
-		{"rule twice", rule + ` "local" "config"` + "\n" + rule + ` "local" "config"` + "\n", "high-risk warning rule found 2 times, want 1"},
+		{"rule twice", rule + ` "local"` + "\n" + rule + ` "local"` + "\n", "high-risk warning rule found 2 times, want 1"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

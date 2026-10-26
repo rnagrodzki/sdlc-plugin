@@ -1672,7 +1672,7 @@ func TestPipelineResumePhase_PlanSuppressedWhenStale(t *testing.T) {
 	root := gitFixture(t, branch)
 
 	st := activePlanState(t, root, branch, nil)
-	old := time.Now().Add(-25 * time.Hour)
+	old := time.Now().Add(-(state.PlanRunLiveWindow + time.Hour))
 	if err := os.Chtimes(st.Path, old, old); err != nil {
 		t.Fatal(err)
 	}
@@ -1950,7 +1950,7 @@ func TestCompactRecoveryPhase_StaleSweep(t *testing.T) {
 		mustWriteFile(t, filepath.Join(execDir, name), "{}")
 	}
 
-	old := time.Now().Add(-25 * time.Hour)
+	old := time.Now().Add(-(state.PlanRunLiveWindow + time.Hour))
 	for _, name := range staleFiles {
 		if err := os.Chtimes(filepath.Join(execDir, name), old, old); err != nil {
 			t.Fatal(err)

@@ -139,7 +139,8 @@ Local config, `plugins/sdlc/templates/local.toml`:
 
 ```diff
  [receivedReview]
- # Severities whose 'will fix' findings bypass the per-finding consent gate.
+ # Severities whose 'will fix' findings /received-review applies with no
+ # consent prompt (Step 10, manual mode).
  # Local-only — must NEVER be set in .sdlc-v2/config.toml.
 -# Valid items: "low" | "medium" | "high" | "critical"
 +# Valid items: "critical" | "high" | "medium" | "low" | "info"

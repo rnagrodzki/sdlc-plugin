@@ -42,12 +42,12 @@ type ReceivedReviewOut struct {
 	Style         ChatStyle        `json:"style"`
 	// AlwaysFixSeverities is the checked receivedReview.alwaysFixSeverities
 	// list from the merged local files. Never nil. Empty renders (none).
-	AlwaysFixSeverities []string `json:"alwaysFixSeverities" jsonschema_description:"Lowercase severities (critical, high, medium, low, info) whose agree-will-fix findings received-review Step 10 applies with no prompt in manual mode. Read from receivedReview.alwaysFixSeverities in ~/.sdlc/local.toml merged with .sdlc-v2/local.toml (the project file wins). Empty when the key is absent, or when its value has the wrong type or an unknown item (see warnings)."`
+	AlwaysFixSeverities []string `json:"alwaysFixSeverities" jsonschema_description:"Lowercase severities (critical, high, medium, low, info) whose agree-will-fix findings received-review Step 10 applies with no prompt in manual mode. Read from receivedReview.alwaysFixSeverities in the merged local files .sdlc-v2/local.toml (or ~/.sdlc/local.toml); the project file wins. Empty when the key is absent, or when receivedReview is not a table or the value has the wrong type or an unknown item (see warnings)."`
 	// Warnings reports a bad receivedReview.alwaysFixSeverities value, and a
 	// `gh pr checks` failure that left Checks empty. The call still succeeds:
 	// the setting falls back to an empty list, and checks are best effort,
 	// the view is not.
-	Warnings []string `json:"warnings,omitempty"`
+	Warnings []string `json:"warnings,omitempty" jsonschema_description:"Problems that did not fail the call, from two sources: a bad receivedReview value or receivedReview.alwaysFixSeverities value (alwaysFixSeverities is then empty), and a gh pr checks failure (checks is then empty and CI status is unknown). Absent when there is none."`
 	Next     string   `json:"next" jsonschema_description:"The next step for the received-review skill: the PR text when a PR overview was loaded, or the no-PR text when pr was omitted or 0."`
 }
 
@@ -74,50 +74,91 @@ type receivedReviewPR struct {
 // ---------------------------------------------------------------------------
 
 func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) (ReceivedReviewOut, error) {
-	// KD5 gate.
+	if err := checkReceivedReviewInput(projectRoot, in); err != nil {
+		return ReceivedReviewOut{}, err
+	}
+
+	// Read the setting before the PR check, so a run with no PR gets it too.
+	severities, warnings, err := readAlwaysFixSeverities(projectRoot)
+	if err != nil {
+		return ReceivedReviewOut{}, err
+	}
+
+	if in.PR == 0 {
+		return newReceivedReviewOut(projectRoot, severities, warnings, receivedReviewNextNoPR), nil
+	}
+
+	pr, view, err := fetchReceivedReviewPR(activeRoot, in.PR)
+	if err != nil {
+		return ReceivedReviewOut{}, err
+	}
+
+	// Checks are best effort: a gh failure adds a warning, not an error.
+	checks, warning := receivedReviewChecks(activeRoot, in.PR)
+	if warning != "" {
+		warnings = append(warnings, warning)
+	}
+
+	out := newReceivedReviewOut(projectRoot, severities, warnings, receivedReviewNextPR)
+	out.PR = pr
+	out.View = view
+	out.Checks = checks
+	return out, nil
+}
+
+// newReceivedReviewOut builds the fields that a PR run and a run with no PR
+// share. The caller sets PR, View and Checks for a PR run.
+func newReceivedReviewOut(projectRoot string, severities, warnings []string, next string) ReceivedReviewOut {
+	return ReceivedReviewOut{
+		Version:             1,
+		Timestamp:           time.Now().UTC().Format(time.RFC3339),
+		PluginVersion:       pluginVersion,
+		Style:               chatStyleFor(projectRoot),
+		AlwaysFixSeverities: severities,
+		Warnings:            warnings,
+		Next:                next,
+	}
+}
+
+// checkReceivedReviewInput runs the config-version gate (KD5) and rejects a
+// negative PR number. 0 (or an omitted pr) is a run with no PR.
+func checkReceivedReviewInput(projectRoot string, in ReceivedReviewIn) error {
 	if err := configmigrate.Verify(projectRoot); err != nil {
-		return ReceivedReviewOut{}, &mcpserver.DataError{
+		return &mcpserver.DataError{
 			Msg:        fmt.Sprintf("config-version: %s", err.Error()),
 			Suggestion: "The " + paths.DataDir + " directory has no config.toml and migrate cannot convert a JSON-era config; run /setup to write it, then retry received_review_prepare with the same pr number.",
 			Cause:      err,
 		}
 	}
-
-	// Validate PR number. 0 (or an omitted pr) is a run with no PR.
 	if in.PR < 0 {
-		return ReceivedReviewOut{}, &mcpserver.DomainError{
+		return &mcpserver.DomainError{
 			Msg:        "pr must be a positive integer, or 0 to skip the PR overview",
 			Suggestion: "Pass the PR number for this branch (gh pr view), or omit pr when no PR exists yet, then retry received_review_prepare.",
 		}
 	}
+	return nil
+}
 
-	// Read the setting before the PR check, so a run with no PR gets it too.
-	severities, warnings, err := resolveAlwaysFixSeverities(projectRoot)
+// readAlwaysFixSeverities is resolveAlwaysFixSeverities with a read failure
+// of a local file mapped to the InfraError of received_review_prepare.
+func readAlwaysFixSeverities(projectRoot string) (severities, warnings []string, err error) {
+	severities, warnings, err = resolveAlwaysFixSeverities(projectRoot)
 	if err != nil {
-		return ReceivedReviewOut{}, &mcpserver.InfraError{
+		return nil, nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("read [receivedReview] section of %s: %s", config.LocalFilesLabel, err.Error()),
 			Suggestion: receivedReviewReadSuggestion,
 			Cause:      err,
 		}
 	}
+	return severities, warnings, nil
+}
 
-	if in.PR == 0 {
-		return ReceivedReviewOut{
-			Version:             1,
-			Timestamp:           time.Now().UTC().Format(time.RFC3339),
-			PR:                  receivedReviewPR{},
-			PluginVersion:       pluginVersion,
-			Style:               chatStyleFor(projectRoot),
-			AlwaysFixSeverities: severities,
-			Warnings:            warnings,
-			Next:                receivedReviewNextNoPR,
-		}, nil
-	}
-
-	// Detect owner/repo from git remote.
+// fetchReceivedReviewPR reads owner and repo from the origin remote and
+// fetches `gh pr view <pr>`. Every failure is an InfraError.
+func fetchReceivedReviewPR(activeRoot string, number int) (receivedReviewPR, string, error) {
 	remoteURL, err := execx.Run("git", []string{"remote", "get-url", "origin"}, execx.Options{Dir: activeRoot})
 	if err != nil {
-		return ReceivedReviewOut{}, &mcpserver.InfraError{
+		return receivedReviewPR{}, "", &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("get git remote URL: %s", err.Error()),
 			Suggestion: "Add a remote named origin (git remote add origin <url>) in the active worktree, then retry received_review_prepare.",
 			Cause:      err,
@@ -126,49 +167,33 @@ func receivedReviewPrepare(projectRoot, activeRoot string, in ReceivedReviewIn) 
 
 	owner, repo, err := ghx.ParseRemoteOwner(remoteURL)
 	if err != nil {
-		return ReceivedReviewOut{}, &mcpserver.InfraError{
+		return receivedReviewPR{}, "", &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("parse remote owner/repo: %s", err.Error()),
 			Suggestion: "Point origin at a git@host:owner/repo or https://host/owner/repo URL so owner and repo can be parsed, then retry received_review_prepare.",
 			Cause:      err,
 		}
 	}
 
-	// Fetch PR view and checks (best effort for checks).
-	view, err := ghx.PRView(activeRoot, in.PR)
+	view, err := ghx.PRView(activeRoot, number)
 	if err != nil {
-		return ReceivedReviewOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("gh pr view %d: %s", in.PR, err.Error()),
+		return receivedReviewPR{}, "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("gh pr view %d: %s", number, err.Error()),
 			Suggestion: "Confirm the PR number exists on this repo and gh is authenticated (gh auth status), then retry received_review_prepare.",
 			Cause:      err,
 		}
 	}
-
-	checks, warning := receivedReviewChecks(activeRoot, in.PR)
-	if warning != "" {
-		warnings = append(warnings, warning)
-	}
-
-	return ReceivedReviewOut{
-		Version:             1,
-		Timestamp:           time.Now().UTC().Format(time.RFC3339),
-		PR:                  receivedReviewPR{Number: in.PR, Owner: owner, Repo: repo},
-		View:                view,
-		Checks:              checks,
-		PluginVersion:       pluginVersion,
-		Style:               chatStyleFor(projectRoot),
-		AlwaysFixSeverities: severities,
-		Warnings:            warnings,
-		Next:                receivedReviewNextPR,
-	}, nil
+	return receivedReviewPR{Number: number, Owner: owner, Repo: repo}, view, nil
 }
 
 // resolveAlwaysFixSeverities reads receivedReview.alwaysFixSeverities from
-// ~/.sdlc/local.toml merged with .sdlc-v2/local.toml (the project file wins).
+// the merged local files that config.LocalFilesLabel names (the project file
+// wins; config.UserConfigPath resolves the user file).
 //
 // severities is never nil. A missing file, section or key gives an empty
-// list and no warning. A bad value (not a list, a non-string item, or an
-// item outside dimensions.ValidSeverities) gives an empty list and one
-// warning: a bad setting must never pre-approve a fix. Items are lowercased;
+// list and no warning. A receivedReview value that is not a table, or a bad
+// alwaysFixSeverities value (not a list, a non-string item, or an item
+// outside dimensions.ValidSeverities), gives an empty list and one warning:
+// a bad setting must never pre-approve a fix. Items are lowercased;
 // a repeated item is kept once, with a warning. err is set only when a local
 // file cannot be read or parsed.
 func resolveAlwaysFixSeverities(projectRoot string) (severities []string, warnings []string, err error) {
@@ -180,9 +205,9 @@ func resolveAlwaysFixSeverities(projectRoot string) (severities []string, warnin
 		// ErrNotFound also covers a receivedReview key that is not a table
 		// (receivedReview = "high"): config.ReadSection skips a non-table
 		// value. An empty list is safe, because every will-fix finding then
-		// asks the user.
+		// asks the user. A non-table value still gets a warning.
 		if errors.Is(err, config.ErrNotFound) {
-			return []string{}, nil, nil
+			return []string{}, receivedReviewNonTableWarning(projectRoot, fallback), nil
 		}
 		return nil, nil, err
 	}
@@ -215,6 +240,30 @@ func resolveAlwaysFixSeverities(projectRoot string) (severities []string, warnin
 		}
 	}
 	return severities, warnings, nil
+}
+
+// receivedReviewNonTableWarning returns one warning when the effective
+// receivedReview value exists but is not a table, and nil otherwise. The
+// effective value is the project file's, else the user file's: a project
+// value that is not a table replaces the user table whole (config.mergeLocal).
+// config.ReadSection reports that case as ErrNotFound, the same as a
+// missing section, so this check reads the two layers again.
+func receivedReviewNonTableWarning(projectRoot, fallback string) []string {
+	user, project, err := config.ReadLocalLayers(projectRoot)
+	if err != nil {
+		return nil
+	}
+	raw, ok := project["receivedReview"]
+	if !ok {
+		raw, ok = user["receivedReview"]
+	}
+	if !ok {
+		return nil
+	}
+	if _, isTable := raw.(map[string]any); isTable {
+		return nil
+	}
+	return []string{fmt.Sprintf(`Local receivedReview has wrong type %T; expected a table such as [receivedReview] with alwaysFixSeverities = ["high"]; %s`, raw, fallback)}
 }
 
 // receivedReviewChecks runs `gh pr checks <pr>` best effort and returns its
@@ -479,7 +528,7 @@ func writeReplyBodies(root string, in ReceivedReviewVerifyIn) (ReceivedReviewVer
 // RegisterReceivedReviewTools registers received_review_prepare and received_review_verify on the server.
 func RegisterReceivedReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "received_review_prepare",
-		"INTERNAL — called by sdlc skills only. Fetch PR view and checks for the received-review skill, and read receivedReview.alwaysFixSeverities from ~/.sdlc/local.toml merged with .sdlc-v2/local.toml. Requires: nothing. Optional: pr (omit or 0 when no PR exists: no git or gh command runs). Returns PR metadata (empty with no PR), alwaysFixSeverities, warnings and next. An unreadable local file is an InfraError; a bad value is a warning and an empty list. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions.",
+		"INTERNAL — called by sdlc skills only. Fetch PR view and checks for the received-review skill, and read receivedReview.alwaysFixSeverities from the merged local files "+config.LocalFilesLabel+" (the project file wins). Requires: nothing. Optional: pr (omit or 0 when no PR exists: no git or gh command runs). Returns PR metadata (empty with no PR), alwaysFixSeverities, warnings and next. An unreadable local file is an InfraError; a bad value is a warning and an empty list. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions.",
 		mcpserver.Annotations{
 			Title:      "Fetch PR review feedback",
 			ReadOnly:   true,

@@ -750,7 +750,7 @@ never in parallel with another `main` write, since two parallel upserts of
 | `plan_mark({marker: "checkpoint", runId, data: {step, iteration, expectedWriters?}})` | Replaces (not appends) `st.Data["checkpoint"]`. In the same write, the first checkpoint of each step and iteration adds one `{step, iteration, at}` entry to the top-level `stepTimes` list (max 64); a repeat keeps the first entry. At the limit the checkpoint is saved, no entry is added and a warning is returned; a `stepTimes` value that is not a list is kept and a warning is returned. The result echoes `stepTime` (`step`, `iteration`, `at` and status `added`, `kept` or `not recorded`). Called at the start of every step (`1, 2, 3, 4, 5, 6, 6.5, 6.6, 7`); `expectedWriters` is passed only at a fan-out step (Step 1 explorers, Step 3 lanes, Step 5 lenses or reviewer). |
 | `plan_mark({marker: "review-round", runId, data: {round, mergedStatus, found, fixed, lenses, findings?}})` | Upserts one row of `st.Data["reviewRounds"]` by `round`. Called once per review round, in Step 5 (Approved) or Step 6 (after the fixes). `findings` is optional: max 200 `{id, fixed}`, where `id` is the `merge_results` `allIssues` id (`^f-[0-9a-f]{8}$`); a passed `[]` is stored as `[]`, an absent key stays absent; a repeated `id` is a `DomainError`. The dashboard reads the rows. |
 | `plan_mark({marker: "review-outcome", runId, data: {findings}})` | Replaces (not appends) `st.Data["reviewOutcome"]` with this call's list: 1 to 200 `{id, text, choice, reason}`, `choice` one of `accepted`, `rejected`, `stop` (the `outcomeChoice*` constants), `text` and `reason` max 200 runes. Pass every answered finding on every call. Returns one of two `next` texts: with a `stop` choice, "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; with no `stop` choice, "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5." (`reviewOutcomeStopNext` / `reviewOutcomeNext`). Also rejects a non-array `findings` and a repeated `id`. Invalid input is a `DomainError` that writes nothing. |
-| `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true, runId})` | Reuses the run that `runId` names (else the active run) without resetting it. Restores `runId`, `guardrailsFile`, `styleGuideFile`, `lanes`, `gateChecks`, `lensReviewers`, `style`, and `template.activeTemplatePath` as a fresh run would set them. Returns a `no active plan run` domain error when there is none. |
+| `plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true, runId})` | Reuses the run that `runId` names (else the active run) without resetting it. Restores `runId`, `guardrailsFile`, `styleGuideFile`, `lanes`, `gateChecks`, `lensReviewers`, `style`, and `template.activeTemplatePath` as a fresh run would set them. Without `runId`, returns a `no active plan run on branch <branch>` domain error when the branch has no active run. With `runId`, it never starts a new run and returns a domain error `plan run <runId> not found` (no such run), `plan run <runId> is done` (a done run), or `plan run <runId> has no skillInvoked marker` (a run that is not active), and an infrastructure error `plan run <runId> state read failed` for an unreadable state file. |
 
 ### Resume flow
 
@@ -791,8 +791,10 @@ never in parallel with another `main` write, since two parallel upserts of
      and the inline check of G5, G6, G13 and G15). A repeat is safe: neither
      gate check writes anything.
 5. If the resume call returns `no active plan run`, `plan run <runId> not
-   found` or `plan run <runId> is done`, the skill prints "No active plan
-   run to resume — starting a new plan." and runs Step 0 normally.
+   found`, `plan run <runId> is done` or `plan run <runId> has no
+   skillInvoked marker`, the skill prints "No active plan run to resume —
+   starting a new plan.", ignores the `Active plan (post-compact):` line for
+   the rest of the session, and runs Step 0 normally.
 
 ### Lifecycle
 

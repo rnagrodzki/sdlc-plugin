@@ -11,8 +11,9 @@ model: opus
 Process reviewer comments with technical rigor. Each item is verified against the full
 codebase context — not just the change diff — before any response is drafted. Internal
 self-critique gates ensure quality. No changes are made until the user explicitly approves
-the proposed action plan, except the "will fix" findings that `alwaysFixSeverities`
-pre-approves (Step 10).
+the proposed action plan, with two exceptions: every "will fix" finding when `--auto` was
+passed, and the "will fix" findings that `alwaysFixSeverities` pre-approves in manual mode
+(Step 10).
 
 **Announce at start:** "I'm using received-review (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
@@ -30,7 +31,7 @@ Concretely: the `received_review_prepare` tool returns only
 `{version, timestamp, pr:{number,owner,repo}, view, checks, plugin_version, style, alwaysFixSeverities, warnings?, next}` — a PR overview
 (`gh pr view`), CI status (`gh pr checks`) and the auto-apply severities, nothing more; it does not classify threads.
 Classification comes from the separate `received_review_verify` tool instead, which returns
-`{version, timestamp, pr, threads, outstanding, replied, total}` — each entry in `threads`
+`{version, timestamp, pr, threads, outstanding, replied, total, next}` — each entry in `threads`
 carries a `status` field (`outstanding` | `replied` | `self-replied`). There is still no
 `flags` object, no `reply_footer`, and no GraphQL review-thread ID exposed by either tool.
 Every decision this skill made in a previous version by reading a pre-computed manifest field
@@ -71,6 +72,8 @@ received_review_prepare({ pr: <PR_NUMBER — omit when no PR number is available
 → { version, timestamp, pr: { number, owner, repo }, view, checks, plugin_version, style, alwaysFixSeverities, warnings?, next }
 ```
 Store `alwaysFixSeverities` as ALWAYS_FIX for Step 10. `(none)` means an empty list. Show each `warnings` entry.
+Follow `next`: it names the source of the feedback for Step 1b (the PR comments, or the
+dispatch prompt, the conversation or a user paste when there is no PR).
 With no PR number, `view` and `checks` are empty: say that the PR overview was skipped.
 
 **On success:** `view` is the plain-text output of `gh pr view <PR_NUMBER>` (title, branch,
@@ -228,7 +231,7 @@ it never reaches Step 3. This is the payload it uses:
 
 ```
 ship_state({action:"defer", step:"received-review", detail:{
-  severity:    "<critical|high|medium|low — the finding's own severity; use medium when a human comment carries none>",
+  severity:    "<critical|high|medium|low|info — the finding's own severity; use medium when a human comment carries none>",
   file:        "<path from Step 1b's File column>",
   title:       "<the finding in one line>",
   line:        <line number, when known>,
@@ -450,8 +453,8 @@ again, and present again. Loop until explicit **implement** or **skip**, or unti
 (then the O-is-0 rules above apply).
 
 **skip** discards the prompted findings: no fixes, no replies and no deferred records for them.
-With no pre-approved finding, Step 11 never runs. With pre-approved findings, Step 11 runs for
-them only. Say so when reporting the skip, so the user knows the
+With no pre-approved finding, Step 11 never runs: go to Step 12 and show only item 1 (the
+summary and the ledger). With pre-approved findings, Step 11 runs for them only. Say so when reporting the skip, so the user knows the
 skipped findings live only in this conversation.
 
 **Do NOT proceed to Step 11 without explicit `implement` from the user via AskUserQuestion**,
@@ -723,7 +726,9 @@ identity match, Atlassian host match) — use in sandboxed CI.
 
 ## Step 12 — REPLY: Post PR Thread Replies
 
-**Mandatory step — always presented after Step 11 completes.**
+**Mandatory step — always presented after Step 11 completes. When Step 10 runs no Step 11
+(manual mode: a skip with no pre-approved finding, or no finding to act on), present only
+item 1 below (the summary and the ledger), then stop: there is nothing to reply to or verify.**
 
 **No PR number available:** print `no PR — thread replies skipped; ledger only`, still run
 item 1 below (the summary and ledger need no PR), then skip items 2-4 of this step and skip
@@ -775,15 +780,16 @@ existing deferred item is its record, and the ledger groups it under `below-thre
 such finding, add one `- ` line below the block: `<file:line> stays deferred as <id>`. A finding
 with that line that was fixed, and whose `healing_record` call succeeded, counts as fixed.
 
-When the user skipped findings at the Step 10 prompt and Step 11 ran for the pre-approved
-findings, the ledger adds a `skipped at Step 10` term:
+When the user skipped findings at the Step 10 prompt, the ledger adds a `skipped at Step 10`
+term, whether Step 11 ran for pre-approved findings or did not run at all:
 
 ```
 Review findings: 14 total = 3 fixed + 0 deferred + 11 skipped at Step 10
+Review findings: 14 total = 0 fixed + 0 deferred + 14 skipped at Step 10
 ```
 
-`skipped at Step 10` counts each finding of a partial skip. The term shows only when that
-count is not 0.
+`skipped at Step 10` counts each finding skipped at the prompt (S). The term shows whenever
+S is not 0.
 
 Step 11.6 notes (harden dispatch skipped, failed, suppressed clusters, singleton `disagree`
 findings that formed no cluster, the `staysDeferred[]` and `evidenceOnly[]` counts, and the
@@ -865,14 +871,19 @@ After posting replies, verify completeness:
 received_review_verify({ pr: <PR_NUMBER> })
 → { threads, outstanding, replied, total }
 
-If `outstanding > 0`:
+A thread whose finding was skipped at the Step 10 prompt gets no reply by design, so it stays
+`outstanding`. Count the outstanding threads without these threads as R.
+
+If R > 0:
 1. List outstanding threads (path, line, reviewer, body snippet). Leave out each thread whose
    finding was skipped at the Step 10 prompt, and list it as `skipped at Step 10 — no reply`.
 2. For each other thread: draft and post a reply (following Step 7 format)
-3. Re-verify. Max 2 verification rounds — if still outstanding after 2 rounds,
+3. Re-verify. Max 2 verification rounds — if R is still above 0 after 2 rounds,
    report remaining threads to user for manual handling.
 
-If `outstanding === 0`: proceed to report.
+If R is 0 (every outstanding thread, if any, was skipped at the Step 10 prompt): list each
+skipped thread as `skipped at Step 10 — no reply`, run no further verification round, and
+proceed to report.
 
 Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not authed), note the failure and proceed to report anyway — do not block skill completion on this check.
 

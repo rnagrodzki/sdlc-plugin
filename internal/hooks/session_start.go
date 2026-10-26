@@ -29,17 +29,17 @@ import (
 
 // BuildCommit and BuildTime are the sdlc binary's build metadata, surfaced
 // in the session-start header alongside PluginVersion. cmd/sdlc's main()
-// wires these from version.GetBuildInfo() before dispatching to Run (Task
-// 1); they default to "unknown" for the same reason PluginVersion does.
+// wires these from version.GetBuildInfo() before dispatching to Run; they
+// default to "unknown" for the same reason PluginVersion does.
 var (
 	BuildCommit = "unknown"
 	BuildTime   = "unknown"
 )
 
-// sessionStart is the "session-start" hook handler, ported from
-// hooks/session-start.js. It outputs the plugin version, skill count, and
-// project context (pipeline resume, OpenSpec, git status, Jira cache, ship
-// config) as plain text for Claude Code's SessionStart system-reminder.
+// sessionStart is the "session-start" hook handler. It outputs the plugin
+// version, skill count, and project context (pipeline resume, OpenSpec, git
+// status, Jira cache, ship config) as plain text for Claude Code's
+// SessionStart system-reminder.
 // ctx.SessionID selects the plan run that the post-compact plan banner names.
 //
 // Every phase below degrades independently and silently on error — a
@@ -744,8 +744,8 @@ func planResumeLines(root, branch, source, sessionID string) []string {
 	style := planStyleForHook(root)
 	lines := []string{
 		fmt.Sprintf("Active plan (post-compact): step %s, branch %s; plan file: %s", step, branch, planFile),
-		"  If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path.",
-		fmt.Sprintf("  Resume with: plan_prepare({resume:true, resolveTemplate:true, skipConfigCheck:true, runId:\"%[1]s\"}) then plan_support({action:\"evidence_digest\", runId:\"%[1]s\"})", state.RunID(st)),
+		"  " + tools.PlanSkillReinvoke,
+		fmt.Sprintf("  Resume with: %s then plan_support({action:\"evidence_digest\", runId:\"%s\"})", tools.PlanResumeCall(state.RunID(st)), state.RunID(st)),
 	}
 	return append(lines, instructionLines(style.Instructions)...)
 }

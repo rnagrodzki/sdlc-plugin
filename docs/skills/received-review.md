@@ -81,8 +81,9 @@ moment a verdict is first reached — a verdict can still change later in the
 run, and the deferred file is append-only, so an early write would leave a
 stale entry behind. They show up in the deferred backlog that
 [/deferred](deferred.md) triages, and in the end-of-run ledger that accounts
-for every finding as `fixed`, `deferred` (grouped by `reason`),
-`skipped at Step 10`, or `UNACCOUNTED`.
+for every finding as `fixed`, `deferred` (grouped by `reason`), or
+`UNACCOUNTED`. (Manual mode adds a fourth term, `skipped at Step 10`; see
+[Consent and auto-apply severities](#consent-and-auto-apply-severities).)
 
 **Recording is best-effort, with a fallback.** The primary write attaches the
 finding to the current `/ship` run. When there is no ship state for the branch
@@ -122,16 +123,22 @@ Allowed values: `critical`, `high`, `medium`, `low`, `info`. Default: `[]` (ever
 | Situation | What happens |
 |---|---|
 | `--auto` | Every "will fix" finding gets its fix. The setting adds nothing. |
-| A "will fix" finding with a listed severity | It gets its fix with no prompt. One `pre-approved` line shows it. |
+| A "will fix" finding with a listed severity | It gets its fix with no prompt. One `pre-approved` line shows it, for example `pre-approved (high in alwaysFixSeverities): internal/api/user.go:42 — <title>`. |
 | A comment with no severity | It counts as `medium`. |
 | Other findings exist | One prompt asks about them only. |
 | You answer skip | Only the pre-approved findings get their fix. Skipped findings get no fix, no reply and no record. |
 | You answer edit | The skill shows the plan again and computes the pre-approved findings again. |
-| Every finding is pre-approved | No prompt. |
+| Every finding is pre-approved | No Step 10 plan prompt. The later prompts still ask in manual mode: the Step 11.6 harden prompt and, when a PR exists, the Step 12 reply prompt. |
 | No finding needs an action | No prompt. Only the summary shows. |
+| A bad value: a wrong type (including a `receivedReview` value that is not a table) or an unknown item such as `"blocker"` | The whole list becomes `[]`, one warning shows, and every finding asks. `["high", "blocker"]` pre-approves nothing. |
 | The local file cannot be read | The error shows, and every finding asks. |
 
-The end-of-run ledger gets one more term: `skipped at Step 10` counts each finding that you skipped while pre-approved findings existed. The term shows only when its count is not 0.
+In manual mode, the end-of-run ledger gets one more term: `skipped at Step 10` counts each finding that you skipped at the Step 10 prompt, whether or not pre-approved findings got their fix. The term shows only when its count is not 0. The summary also gets one line for these findings:
+
+```
+- 11 findings skipped at the Step 10 prompt (no fix, no reply, no record)
+Review findings: 14 total = 3 fixed + 0 deferred + 11 skipped at Step 10
+```
 
 ## Fix progress on the dashboard
 

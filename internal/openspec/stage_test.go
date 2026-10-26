@@ -229,6 +229,106 @@ func TestStage_PathNotAllowed(t *testing.T) {
 	}
 }
 
+// writeStageManifestRaw writes raw as the stage.json of change under root.
+func writeStageManifestRaw(t *testing.T, root, change, raw string) {
+	t.Helper()
+	dir := filepath.Join(root, filepath.FromSlash(StagingDirRel(change)))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir staging dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, StageManifestFile), []byte(raw), 0o644); err != nil {
+		t.Fatalf("write stage.json: %v", err)
+	}
+}
+
+func TestStagedPlanPath(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string // "" means no stage.json
+		want string
+	}{
+		{"missing stage.json", "", ""},
+		{"corrupt stage.json", "not json", ""},
+		{"no planPath", `{"change":"add-widget","files":[]}`, ""},
+		{"planPath of the wrong type", `{"change":"add-widget","planPath":1,"files":[]}`, ""},
+		{"bad file path", `{"change":"add-widget","planPath":"/plans/a.md","files":[{"path":"../x.md"}]}`, ""},
+		{"planPath set", `{"change":"add-widget","planPath":"/plans/a.md","files":[{"path":"proposal.md"}]}`, "/plans/a.md"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.raw != "" {
+				writeStageManifestRaw(t, root, "add-widget", tc.raw)
+			}
+			if got := stagedPlanPath(root, "add-widget"); got != tc.want {
+				t.Errorf("stagedPlanPath = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCheckStageInput_Owner(t *testing.T) {
+	const owned = `{"change":"add-widget","planPath":"/plans/a.md","files":[]}`
+	cases := []struct {
+		name     string
+		raw      string // "" means no stage.json
+		planPath string
+		wantErr  bool
+	}{
+		{"same path", owned, "/plans/a.md", false},
+		{"same path after Clean", owned, "/plans/./a.md", false},
+		{"other path", owned, "/plans/b.md", true},
+		{"missing stage.json", "", "/plans/b.md", false},
+		{"corrupt stage.json", "not json", "/plans/b.md", false},
+		{"empty planPath", owned, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			if tc.raw != "" {
+				writeStageManifestRaw(t, root, "add-widget", tc.raw)
+			}
+			err := checkStageInput(root, "add-widget", stageFiles(false), tc.planPath)
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("checkStageInput err = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, ErrStagedByOtherPlan) {
+				t.Fatalf("checkStageInput err = %v, want ErrStagedByOtherPlan", err)
+			}
+			var staged *StagedByOtherPlanError
+			if !errors.As(err, &staged) || staged.PlanPath != "/plans/a.md" {
+				t.Fatalf("errors.As PlanPath = %+v, want /plans/a.md (err %v)", staged, err)
+			}
+			if want := "openspec stage: staged by another plan: /plans/a.md"; err.Error() != want {
+				t.Errorf("err.Error() = %q, want %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+func TestStage_StagedByOtherPlanWritesNothing(t *testing.T) {
+	root, log := setupStageRepo(t)
+	const owned = `{"change":"add-widget","planPath":"/plans/a.md","files":[]}`
+	writeStageManifestRaw(t, root, "add-widget", owned)
+
+	_, err := Stage(root, "add-widget", stageFiles(false), "/plans/b.md", fixedNow)
+	if !errors.Is(err, ErrStagedByOtherPlan) {
+		t.Fatalf("Stage err = %v, want ErrStagedByOtherPlan", err)
+	}
+	dir := filepath.Join(root, filepath.FromSlash(StagingDirRel("add-widget")))
+	got, err := os.ReadFile(filepath.Join(dir, StageManifestFile))
+	if err != nil || string(got) != owned {
+		t.Errorf("stage.json = %q (err %v), want it unchanged", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "proposal.md")); !os.IsNotExist(err) {
+		t.Errorf("a refused Stage wrote proposal.md (stat err %v)", err)
+	}
+	assertTempDirsRemoved(t, log, 0)
+}
+
 func TestStage_DuplicatePathRejected(t *testing.T) {
 	root, _ := setupStageRepo(t)
 	files := append(stageFiles(false), StageFile{Path: "tasks.md", Content: "again"})
@@ -244,6 +344,9 @@ func TestStage_ValidWritesFilesAndManifest(t *testing.T) {
 	res, err := Stage(root, "add-widget", files, "/plans/p.md", fixedNow)
 	if err != nil {
 		t.Fatalf("Stage: %v", err)
+	}
+	if res.Replaced || res.PlanPath != "/plans/p.md" {
+		t.Fatalf("Replaced = %v, PlanPath = %q; want false, /plans/p.md", res.Replaced, res.PlanPath)
 	}
 	if !res.Valid {
 		t.Fatalf("Valid = false, output %q", res.ValidateOutput)
@@ -303,8 +406,12 @@ func TestStage_RestageReplacesDir(t *testing.T) {
 		t.Fatalf("design.md not staged: %v", err)
 	}
 
-	if _, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow); err != nil {
+	res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+	if err != nil {
 		t.Fatalf("restage: %v", err)
+	}
+	if !res.Replaced {
+		t.Fatal("restage Replaced = false, want true")
 	}
 	if _, err := os.Stat(design); !os.IsNotExist(err) {
 		t.Fatalf("design.md still present after a restage without it (stat err %v)", err)

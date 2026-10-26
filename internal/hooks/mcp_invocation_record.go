@@ -66,9 +66,13 @@ func recordMCPInvocation(ctx HookCtx, event Event) (Output, error) {
 }
 
 // planRunIDRe finds the run ID in the plan_prepare result: the Markdown
-// form "runId: plan-..." and the JSON form "runId":"plan-...". The branch
-// slug keeps upper case (state.SlugifyBranch).
-var planRunIDRe = regexp.MustCompile(`runId"?:\s*"?(plan-[A-Za-z0-9-]+-[0-9]{8}T[0-9]{6}Z)`)
+// form "runId: plan-..." and the JSON form "runId":"plan-...". The run ID
+// grammar is state.PlanRunIDPattern.
+var planRunIDRe = regexp.MustCompile(`runId"?:\s*"?(` + state.PlanRunIDPattern + `)`)
+
+// claimPlanSession is state.ClaimSession; tests replace it to simulate a
+// failed state write.
+var claimPlanSession = state.ClaimSession
 
 // stampPlanSession writes sessionID into the plan run that toolResponse
 // names (runId). It writes nothing and prints nothing when:
@@ -94,12 +98,12 @@ func stampPlanSession(root, sessionID string, toolResponse any) {
 		return
 	}
 	if st == nil || !state.IsActivePlanRun(st) {
-		return // no file, a done run, or no skillInvoked: no stamp, as today
+		return // no file, a done run, or no skillInvoked: no stamp
 	}
 	if current, _ := st.Data["sessionId"].(string); current == sessionID {
 		return
 	}
-	if err := state.ClaimSession(st, sessionID); err != nil {
+	if err := claimPlanSession(st, sessionID); err != nil {
 		fmt.Fprintf(os.Stderr, "[sdlc/hook record-mcp-invocation] plan session stamp: %v\n", err)
 	}
 }
