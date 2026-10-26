@@ -2346,7 +2346,13 @@ func preplanSkeletonFor(topic string) string {
 		"\n" +
 		"## Goal\n" +
 		"\n" +
+		"## Problem and benefit\n" +
+		"\n" +
 		"## Users and effect\n" +
+		"\n" +
+		"## Risk if wrong\n" +
+		"\n" +
+		"## Non-goals\n" +
 		"\n" +
 		"## Flows\n" +
 		"\n" +
@@ -2354,6 +2360,38 @@ func preplanSkeletonFor(topic string) string {
 		"\n" +
 		"| # | Decision | Reason |\n" +
 		"|---|---|---|\n"
+}
+
+// TestPreplanSkeletonMatchesSections pins the "## " headings of a new topic
+// file to preplanSections, in order, and the block helper to the same text in
+// LF and CRLF line ends.
+func TestPreplanSkeletonMatchesSections(t *testing.T) {
+	skeleton := preplanSkeleton("auth flow", preplanTestNow)
+
+	var headings []string
+	for _, line := range strings.Split(skeleton, "\n") {
+		if strings.HasPrefix(line, preplanHeadingPrefix) {
+			headings = append(headings, strings.TrimPrefix(line, preplanHeadingPrefix))
+		}
+	}
+	if !reflect.DeepEqual(headings, preplanSections) {
+		t.Errorf("skeleton headings = %q, want preplanSections %q", headings, preplanSections)
+	}
+
+	if skeleton != preplanSkeletonFor("auth flow") {
+		t.Errorf("skeleton =\n%s\nwant the hand-typed text:\n%s", skeleton, preplanSkeletonFor("auth flow"))
+	}
+	if !strings.HasSuffix(skeleton, "## Decisions\n\n| # | Decision | Reason |\n|---|---|---|\n") {
+		t.Errorf("skeleton does not end after the Decisions table header:\n%s", skeleton)
+	}
+
+	if got, want := preplanSectionBlock("Goal", "\r\n"), "## Goal\r\n\r\n"; got != want {
+		t.Errorf("CRLF Goal block = %q, want %q", got, want)
+	}
+	if got, want := preplanSectionBlock(preplanDecisionsSection, "\r\n"),
+		"## Decisions\r\n\r\n| # | Decision | Reason |\r\n|---|---|---|\r\n"; got != want {
+		t.Errorf("CRLF Decisions block = %q, want %q", got, want)
+	}
 }
 
 // dataDirEntries lists the names directly under root/.sdlc-v2.

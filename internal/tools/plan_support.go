@@ -1292,20 +1292,46 @@ const (
 // end-to-end test writes topic files with its values.
 var PreplanStatuses = []string{preplanStatusInProgress, preplanStatusReadyForPlan, preplanStatusPaused}
 
+// preplanSections is the canonical order of the "## " sections of a topic
+// file. The skeleton, the heading repair of preplan_context and the
+// emptySections list of preplan_check read it.
+var preplanSections = []string{
+	"Goal", "Problem and benefit", "Users and effect", "Risk if wrong",
+	"Non-goals", "Flows", "Decisions",
+}
+
+// preplanHeadingPrefix starts each section heading line of a topic file.
+const preplanHeadingPrefix = "## "
+
+// preplanDecisionsSection is the section whose body starts with the table header.
+const preplanDecisionsSection = "Decisions"
+
+// preplanDecisionsHeader is the table header of ## Decisions, with LF line ends.
+const preplanDecisionsHeader = "| # | Decision | Reason |\n|---|---|---|\n"
+
+// preplanSectionBlock returns one empty section with eol line ends:
+// "## <name>" eol eol, then preplanDecisionsHeader (eol line ends) for Decisions.
+func preplanSectionBlock(name, eol string) string {
+	block := preplanHeadingPrefix + name + eol + eol
+	if name == preplanDecisionsSection {
+		block += strings.ReplaceAll(preplanDecisionsHeader, "\n", eol)
+	}
+	return block
+}
+
+// buildPreplanSkeletonTail joins the empty section blocks of preplanSections.
+// A blank line separates the Started line from the first section.
+func buildPreplanSkeletonTail() string {
+	tail := "\n"
+	for _, s := range preplanSections {
+		tail += preplanSectionBlock(s, "\n")
+	}
+	return tail
+}
+
 // preplanSkeletonTail is the text of a new topic file that follows the
 // "**Started:**" line (see preplanSkeleton).
-const preplanSkeletonTail = `
-## Goal
-
-## Users and effect
-
-## Flows
-
-## Decisions
-
-| # | Decision | Reason |
-|---|---|---|
-`
+var preplanSkeletonTail = buildPreplanSkeletonTail()
 
 // preplanNow is the clock of preplan_context and preplan_check; tests replace
 // it to fix the date of a new topic file, its Started line and the time of

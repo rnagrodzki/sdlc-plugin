@@ -232,7 +232,7 @@ Shape of `requirements.md`:
 The requirements file holds what the user asked for. It does not hold the behavior rules or the acceptance checks. `/sdlc:preplan` asks for them. Plan alone must guess them.
 
 1. Ask with AskUserQuestion. Restate these facts first: the design is approved, `requirements.md` holds N requests and M data needs, and it has no behavior rules and no acceptance checks. Offer these options:
-   - **Preplan first (Recommended)**: runs `/sdlc:preplan` in this session. Preplan asks one question at a time about who is affected, what changes, and what fails. It checks each answer against the plan guardrails. It then offers `/sdlc:plan`.
+   - **Preplan first (Recommended)**: runs `/sdlc:preplan` in this session. Preplan asks one question at a time about the problem and its benefit, who is affected, what changes, what fails, and what the change does not build. It checks each answer against the plan guardrails. It then offers `/sdlc:plan`.
    - **Plan now**: skips preplan. Plan reads `requirements.md` as it is and guesses the missing rules.
    - **Stop**: ends this skill. `requirements.md` stays in the repo.
 2. Preplan first: run `Skill(sdlc:preplan, "<topic>")`. The topic is a short name of the goal, 5 words at most. Preplan makes the file name from it.
@@ -246,7 +246,10 @@ While preplan runs, the preplan rules stay in force. Use `requirements.md` only 
 | Preplan section | Source in `requirements.md` |
 |---|---|
 | `## Goal` | `## Goal`. Add this line: `Design source: design/dashboard/requirements.md. Draft: design/dashboard/static/.` |
+| `## Problem and benefit` | The `## Goal` of `requirements.md` gives the problem. Preplan asks the user for the measure and its baseline. |
 | `## Users and effect` | The `Why` cells of `## Requests`. Many cells are `—`, because the loop does not ask for a reason. Preplan asks the user for the missing ones. |
+| `## Risk if wrong` | No source. Preplan asks the user. |
+| `## Non-goals` | No source. Preplan asks the user. Rows of `## Not in the draft` stay in `## Open questions`, because they are undecided. |
 | `## Decisions` | One proposal for each row of `## Requests`. One for each record of `## Dependencies`. One for the port: copy the draft to the shipped folder, remove each `designDep` call and each `sample` value. |
 | `## Open questions` | Each row of `## Not in the draft`. Each missing behavior rule or acceptance check. |
 
