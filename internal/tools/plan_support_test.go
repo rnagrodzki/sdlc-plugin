@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -2435,6 +2436,9 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if out.PreplanCreated == nil || !*out.PreplanCreated {
 			t.Errorf("PreplanCreated = %v, want true for an absent file", out.PreplanCreated)
 		}
+		if out.AddedSections == nil || len(*out.AddedSections) != 0 {
+			t.Errorf("AddedSections = %v, want an empty non-nil list for a new file", out.AddedSections)
+		}
 		got, err := os.ReadFile(wantFile)
 		if err != nil {
 			t.Fatalf("read topic file: %v", err)
@@ -2480,8 +2484,9 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 	t.Run("an existing file stays unchanged", func(t *testing.T) {
 		root := newOpenspecStageFixture(t, guardrailsToml)
 		file := filepath.Join(root, ".sdlc-v2", "preplan", "auth-flow.md")
-		const custom = "# Preplan: auth flow\n\nMy own notes.\n"
+		custom := "# Preplan: auth flow\n\nMy own notes.\n" + preplanSkeletonTail
 		writeFile(t, file, custom)
+		noPreplanCheckWrite(t)
 
 		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
 		if err != nil {
@@ -2501,6 +2506,9 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		}
 		if want := "Read preplanFile, then continue with its open questions, if any."; out.Next != want {
 			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+		if out.AddedSections == nil || len(*out.AddedSections) != 0 {
+			t.Errorf("AddedSections = %v, want an empty non-nil list", out.AddedSections)
 		}
 	})
 
@@ -2610,13 +2618,13 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 			t.Errorf("PreplanFile = %q, PreplanCreated = %v, want %q and false", out.PreplanFile, out.PreplanCreated, file)
 		}
 		if !strings.HasPrefix(out.Summary, "0 guardrail(s) loaded. Warning: Failed to read plan config: ") ||
-			!strings.HasSuffix(out.Summary, ". Topic file 2026-10-01-auth-flow.md exists.") {
-			t.Errorf("Summary = %q, want the read warning and the existing file", out.Summary)
+			!strings.HasSuffix(out.Summary, ". Topic file 2026-10-01-auth-flow.md exists. Added 7 section heading(s): ## Goal, ## Problem and benefit, ## Users and effect, ## Risk if wrong, ## Non-goals, ## Flows, ## Decisions.") {
+			t.Errorf("Summary = %q, want the read warning, the existing file and the added headings", out.Summary)
 		}
-		if want := "Read preplanFile, then continue with its open questions, if any. preplan_check writes the warning into the Guardrail check line at Step 4."; out.Next != want {
+		if want := "Read preplanFile: preplan_context added 7 section heading(s). Then continue with its open questions, if any. preplan_check writes the warning into the Guardrail check line at Step 4."; out.Next != want {
 			t.Errorf("Next = %q, want %q", out.Next, want)
 		}
-		wantPreplanBytes(t, file, "# Preplan: auth flow\n")
+		wantPreplanBytes(t, file, "# Preplan: auth flow\n"+preplanSkeletonTail)
 	})
 
 	t.Run("served over MCP", func(t *testing.T) {
@@ -2628,12 +2636,27 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		if !strings.Contains(text, "- preplanCreated: true") {
 			t.Errorf("rendered result lacks preplanCreated: true:\n%s", text)
 		}
+		if !strings.Contains(text, "- addedSections: (none)") {
+			t.Errorf("rendered result lacks addedSections: (none):\n%s", text)
+		}
 		if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md")); err != nil {
 			t.Errorf("topic file missing after the MCP call: %v", err)
 		}
 		again := evidenceRender(t, root, map[string]any{"action": "preplan_context", "topic": "auth flow"})
 		if !strings.Contains(again, "- preplanCreated: false") {
 			t.Errorf("second call must render preplanCreated: false:\n%s", again)
+		}
+		if !strings.Contains(again, "- addedSections: (none)") {
+			t.Errorf("second call must render addedSections: (none):\n%s", again)
+		}
+
+		// An old file with 4 sections gets the 3 absent headings, and the
+		// rendered result lists them.
+		file := filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md")
+		writeFile(t, file, "**Status:** in progress\n\n## Goal\n\n## Users and effect\n\n## Flows\n\n## Decisions\n")
+		repaired := evidenceRender(t, root, map[string]any{"action": "preplan_context", "topic": "auth flow"})
+		if want := "- addedSections:\n  - ## Problem and benefit\n  - ## Risk if wrong\n  - ## Non-goals\n"; !strings.Contains(repaired, want) {
+			t.Errorf("repair call must render the added headings %q:\n%s", want, repaired)
 		}
 	})
 
@@ -2666,8 +2689,9 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 	t.Run("an existing dated file is continued", func(t *testing.T) {
 		root := newOpenspecStageFixture(t, "")
 		file := filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-01-auth-flow.md")
-		const custom = "# Preplan: auth flow\n\nOlder notes.\n"
+		custom := "# Preplan: auth flow\n\nOlder notes.\n" + preplanSkeletonTail
 		writeFile(t, file, custom)
+		noPreplanCheckWrite(t)
 
 		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
 		if err != nil {
@@ -2750,6 +2774,9 @@ func TestPlanSupportPreplanContext(t *testing.T) {
 		}
 		if strings.Contains(text, "preplanCreated") {
 			t.Errorf("merge_results output renders preplanCreated:\n%s", text)
+		}
+		if strings.Contains(text, "addedSections") {
+			t.Errorf("merge_results output renders addedSections:\n%s", text)
 		}
 	})
 }
@@ -4145,5 +4172,497 @@ func TestReadPreplanTopicActionText(t *testing.T) {
 			wantErr(t, err, "domain", a.action+": "+file+" is a folder, not a regular file",
 				"Remove or rename "+file+rerun)
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// preplan_context heading repair
+// ---------------------------------------------------------------------------
+
+// preplanBlocks joins the empty section blocks of names with eol line ends.
+func preplanBlocks(eol string, names ...string) string {
+	var b strings.Builder
+	for _, n := range names {
+		b.WriteString(preplanSectionBlock(n, eol))
+	}
+	return b.String()
+}
+
+// preplanHeadings returns "## <name>" for each name.
+func preplanHeadings(names ...string) []string {
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, preplanHeadingPrefix+n)
+	}
+	return out
+}
+
+// TestPreplanSectionSpans pins the offsets of each span, the fence rule and
+// the open fence at the end of the text.
+func TestPreplanSectionSpans(t *testing.T) {
+	const data = "# T\n## A\n\nx\n### sub\n```\n## B\n```\n## C  \r\n~~~\n## D\n"
+	spans, open := preplanSectionSpans([]byte(data))
+	a, c := strings.Index(data, "## A"), strings.Index(data, "## C")
+	tilde := strings.Index(data, "~~~")
+	want := []preplanSpan{
+		{name: "A", lineStart: a, bodyStart: a + len("## A\n"), bodyEnd: c},
+		{name: "C", lineStart: c, bodyStart: tilde, bodyEnd: len(data)},
+	}
+	if !reflect.DeepEqual(spans, want) {
+		t.Errorf("spans = %+v, want %+v", spans, want)
+	}
+	if open != "~~~" {
+		t.Errorf("openFence = %q, want ~~~", open)
+	}
+
+	// A heading on the last line with no line end has its body start at the end.
+	spans, open = preplanSectionSpans([]byte("## Goal"))
+	if want := []preplanSpan{{name: "Goal", lineStart: 0, bodyStart: 7, bodyEnd: 7}}; !reflect.DeepEqual(spans, want) || open != "" {
+		t.Errorf("spans = %+v, open %q, want %+v and no open fence", spans, open, want)
+	}
+	if spans, open := preplanSectionSpans(nil); spans != nil || open != "" {
+		t.Errorf("empty data gives spans %+v, open %q, want none", spans, open)
+	}
+}
+
+// TestAddPreplanHeadings covers each rule of addPreplanHeadings and each input
+// of the repair test table of the plan: the place of each absent name, the
+// head guard, fences, line ends, spacing, and the cases with no change.
+func TestAddPreplanHeadings(t *testing.T) {
+	const (
+		goal, problem, users, risk = "Goal", "Problem and benefit", "Users and effect", "Risk if wrong"
+		nonGoals, flows, decisions = "Non-goals", "Flows", "Decisions"
+		hdr                        = "| # | Decision | Reason |\n|---|---|---|\n"
+	)
+	lf := func(names ...string) string { return preplanBlocks("\n", names...) }
+	complete := "**Status:** s\n\n" + lf(preplanSections...)
+	prefix := "## Users and effect\n\n"
+	statusAt4096 := prefix + preplanFiller(dashboardPreplanHeadMax-len(prefix)) + "**Status:** s\n"
+	const status = "**Status:** s"
+	statusEndsAt4096 := prefix + preplanFiller(dashboardPreplanHeadMax-len(prefix)-len(status)) + status + "\n"
+	if n := strings.Index(statusAt4096, "**Status:**"); n != dashboardPreplanHeadMax {
+		t.Fatalf("the late Status line starts at byte %d, want %d", n, dashboardPreplanHeadMax)
+	}
+	if n := strings.Index(statusEndsAt4096, status) + len(status); n != dashboardPreplanHeadMax {
+		t.Fatalf("the Status line ends at byte %d, want %d", n, dashboardPreplanHeadMax)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		in    string
+		want  string   // "" with no added names: no change
+		added []string // names, not headings
+	}{
+		{"no heading at all", "My own notes.",
+			"My own notes.\n\n" + lf(preplanSections...), preplanSections},
+		{"an empty file", "", lf(preplanSections...), preplanSections},
+		{"a heading at byte 0 and no head line", "## Users and effect\n\nbody\n",
+			lf(goal, problem) + "## Users and effect\n\nbody\n\n" + lf(risk, nonGoals, flows, decisions),
+			[]string{goal, problem, risk, nonGoals, flows, decisions}},
+		{"the last heading on the last line with no line end", "**Status:** s\n\n## Goal",
+			"**Status:** s\n\n## Goal\n\n" + lf(preplanSections[1:]...), preplanSections[1:]},
+		{"a CRLF file", "**Status:** s\r\n\r\n## Goal\r\n\r\ntext\r\n",
+			"**Status:** s\r\n\r\n## Goal\r\n\r\ntext\r\n\r\n" + preplanBlocks("\r\n", preplanSections[1:]...), preplanSections[1:]},
+		{"## Goal in a backtick fence under Flows", "## Flows\n\n```\n## Goal\n```\n",
+			lf(goal, problem, users, risk, nonGoals) + "## Flows\n\n```\n## Goal\n```\n\n" + lf(decisions),
+			[]string{goal, problem, users, risk, nonGoals, decisions}},
+		{"## Goal in a ~~~ fence under Flows", "## Flows\n\n~~~\n## Goal\n~~~\n",
+			lf(goal, problem, users, risk, nonGoals) + "## Flows\n\n~~~\n## Goal\n~~~\n\n" + lf(decisions),
+			[]string{goal, problem, users, risk, nonGoals, decisions}},
+		{"a ``` line does not close a ~~~ fence", "## Flows\n\n~~~\n```\n## Goal\n~~~\n",
+			lf(goal, problem, users, risk, nonGoals) + "## Flows\n\n~~~\n```\n## Goal\n~~~\n\n" + lf(decisions),
+			[]string{goal, problem, users, risk, nonGoals, decisions}},
+		{"a real ## Goal and a fenced one", "## Goal\n\n## Flows\n\n```\n## Goal\n```\n",
+			"## Goal\n\n" + lf(problem, users, risk, nonGoals) + "## Flows\n\n```\n## Goal\n```\n\n" + lf(decisions),
+			[]string{problem, users, risk, nonGoals, decisions}},
+		{"### lines under Flows", strings.Replace(complete, "## Flows\n\n", "## Flows\n\n### Sub one\n\n### Sub two\n\n", 1), "", nil},
+		{"headings out of list order", "## Flows\n\n## Goal\n\n",
+			"## Flows\n\n" + lf(decisions) + "## Goal\n\n" + lf(problem, users, risk, nonGoals),
+			[]string{problem, users, risk, nonGoals, decisions}},
+		{"## Open questions after Decisions", "**Status:** s\n\n## Goal\n\n## Decisions\n\n" + hdr + "\n## Open questions\n\n- q?\n",
+			"**Status:** s\n\n## Goal\n\n" + lf(problem, users, risk, nonGoals, flows) + "## Decisions\n\n" + hdr + "\n## Open questions\n\n- q?\n",
+			[]string{problem, users, risk, nonGoals, flows}},
+		{"a ## line above the status line", "## Users and effect\n\n**Status:** s\n",
+			"## Users and effect\n\n**Status:** s\n\n" + lf(risk, nonGoals, flows, decisions) + lf(goal, problem),
+			[]string{goal, problem, risk, nonGoals, flows, decisions}},
+		{"the head guard reads the Started and Guardrail check lines", "## Users and effect\n**Started:** t\n**Guardrail check:** x\n",
+			"## Users and effect\n**Started:** t\n**Guardrail check:** x\n\n" + lf(risk, nonGoals, flows, decisions) + lf(goal, problem),
+			[]string{goal, problem, risk, nonGoals, flows, decisions}},
+		{"two ## Goal lines", "## Goal\n\nA\n\n## Goal\n\nB\n",
+			"## Goal\n\nA\n\n" + lf(preplanSections[1:]...) + "## Goal\n\nB\n", preplanSections[1:]},
+		{"## Flows with trailing spaces", strings.Replace(complete, "## Flows\n", "## Flows   \n", 1), "", nil},
+		{"## Flows with a tab", strings.Replace(complete, "## Flows\n", "## Flows\t\n", 1), "", nil},
+		{"## Flows with more text is another heading", strings.Replace(complete, "## Flows\n", "## Flows and more\n", 1),
+			strings.Replace(complete, "## Flows\n\n", "## Flows\n\n## Flows and more\n\n", 1), []string{flows}},
+		{"an unclosed fence at the end", "## Goal\n\n```\ncode\n",
+			"## Goal\n\n```\ncode\n```\n\n" + lf(preplanSections[1:]...), preplanSections[1:]},
+		{"an unclosed fence with no line end", "## Goal\n\n~~~\ncode",
+			"## Goal\n\n~~~\ncode\n~~~\n\n" + lf(preplanSections[1:]...), preplanSections[1:]},
+		{"a Status line that starts at byte dashboardPreplanHeadMax", statusAt4096,
+			lf(goal, problem) + statusAt4096 + "\n" + lf(risk, nonGoals, flows, decisions),
+			[]string{goal, problem, risk, nonGoals, flows, decisions}},
+		{"a Status line that ends at byte dashboardPreplanHeadMax", statusEndsAt4096,
+			statusEndsAt4096 + "\n" + lf(risk, nonGoals, flows, decisions) + lf(goal, problem),
+			[]string{goal, problem, risk, nonGoals, flows, decisions}},
+		{"an old-form file with a ## Guardrail check section",
+			"**Status:** s\n\n## Goal\n\ng\n\n## Guardrail check\n\n| a |\n\n## Users and effect\n\n## Flows\n\n## Decisions\n\n" + hdr,
+			"**Status:** s\n\n## Goal\n\ng\n\n" + lf(problem) + "## Guardrail check\n\n| a |\n\n## Users and effect\n\n" + lf(risk, nonGoals) + "## Flows\n\n## Decisions\n\n" + hdr,
+			[]string{problem, risk, nonGoals}},
+		{"a complete file", complete, "", nil},
+		{"a complete CRLF file", strings.ReplaceAll(complete, "\n", "\r\n"), "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in := []byte(tc.in)
+			orig := append([]byte(nil), in...)
+			next, added := addPreplanHeadings(in)
+			if !bytes.Equal(in, orig) {
+				t.Errorf("addPreplanHeadings changed its input to %q", in)
+			}
+			if tc.added == nil {
+				if added != nil || string(next) != tc.in {
+					t.Errorf("addPreplanHeadings = (%q, %q), want the input and nil", next, added)
+				}
+				if len(in) > 0 && &next[0] != &in[0] {
+					t.Error("addPreplanHeadings returned a copy, want data itself when no name is absent")
+				}
+				return
+			}
+			if string(next) != tc.want {
+				t.Errorf("next =\n%q\nwant\n%q", next, tc.want)
+			}
+			if want := preplanHeadings(tc.added...); !reflect.DeepEqual(added, want) {
+				t.Errorf("added = %q, want %q", added, want)
+			}
+			// The repaired text has every heading, so a second call adds none.
+			if again, more := addPreplanHeadings(next); more != nil || !bytes.Equal(again, next) {
+				t.Errorf("a second call added %q, want none", more)
+			}
+		})
+	}
+}
+
+// TestPlanPreplanContextRepair runs the heading repair through preplan_context:
+// the place of each heading, the result texts, the file mode, no write for a
+// complete file, a failed write, and a file of exactly the size limit.
+func TestPlanPreplanContextRepair(t *testing.T) {
+	setPreplanNow(t, preplanTestNow)
+	const hdr = "| # | Decision | Reason |\n|---|---|---|\n"
+
+	t.Run("a 4-section file gets the 3 absent headings", func(t *testing.T) {
+		root := t.TempDir()
+		const before = "# Preplan: auth flow\n\n**Status:** in progress\n\n## Goal\n\nShip faster.\n\n## Users and effect\n\n## Flows\n\n## Decisions\n\n" + hdr
+		file := writePreplanTopic(t, root, "auth-flow.md", before)
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		wantPreplanBytes(t, file, "# Preplan: auth flow\n\n**Status:** in progress\n\n## Goal\n\nShip faster.\n\n"+
+			"## Problem and benefit\n\n## Users and effect\n\n## Risk if wrong\n\n## Non-goals\n\n## Flows\n\n## Decisions\n\n"+hdr)
+		if want := preplanHeadings("Problem and benefit", "Risk if wrong", "Non-goals"); out.AddedSections == nil || !reflect.DeepEqual(*out.AddedSections, want) {
+			t.Errorf("AddedSections = %v, want %q", out.AddedSections, want)
+		}
+		if want := "0 guardrail(s) loaded — none configured. Topic file auth-flow.md exists. Added 3 section heading(s): ## Problem and benefit, ## Risk if wrong, ## Non-goals."; out.Summary != want {
+			t.Errorf("Summary = %q, want %q", out.Summary, want)
+		}
+		if want := "Read preplanFile: preplan_context added 3 section heading(s). Then continue with its open questions, if any."; out.Next != want {
+			t.Errorf("Next = %q, want %q", out.Next, want)
+		}
+		if out.PreplanCreated == nil || *out.PreplanCreated {
+			t.Errorf("PreplanCreated = %v, want false", out.PreplanCreated)
+		}
+		info, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if mode := info.Mode().Perm(); mode != 0o600 {
+			t.Errorf("file mode = %v, want 0600 after the temp file and rename", mode)
+		}
+	})
+
+	t.Run("a file with all 7 headings gets no write", func(t *testing.T) {
+		noPreplanCheckWrite(t)
+		root := t.TempDir()
+		file := writePreplanTopic(t, root, "auth-flow.md", preplanSkeletonFor("auth flow"))
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		if out.AddedSections == nil || len(*out.AddedSections) != 0 {
+			t.Errorf("AddedSections = %v, want an empty non-nil list", out.AddedSections)
+		}
+		wantPreplanBytes(t, file, preplanSkeletonFor("auth flow"))
+	})
+
+	t.Run("a write failure leaves the file as it was", func(t *testing.T) {
+		swapPreplanSeam(t, &preplanWriteBytes, func(string, []byte) error { return errInjectedPreplan })
+		root := t.TempDir()
+		const before = "# Preplan: auth flow\n\n**Status:** in progress\n"
+		file := writePreplanTopic(t, root, "auth-flow.md", before)
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if got := errorClassOf(err); got != "infra" {
+			t.Fatalf("error class = %q, want infra (err %v)", got, err)
+		}
+		if want := "preplan_context: " + errInjectedPreplan.Error(); err.Error() != want {
+			t.Errorf("err.Error() = %q, want %q", err.Error(), want)
+		}
+		if want := "Check write permission on " + filepath.Dir(file) + " and free disk space, then run /sdlc:preplan again."; suggestionOf(err) != want {
+			t.Errorf("Suggestion = %q, want %q", suggestionOf(err), want)
+		}
+		if !errors.Is(err, errInjectedPreplan) {
+			t.Errorf("err = %v, want it to wrap the write error", err)
+		}
+		if out.PreplanFile != "" || out.AddedSections != nil {
+			t.Errorf("output = %+v, want empty on a failed write", out)
+		}
+		wantPreplanBytes(t, file, before)
+	})
+
+	t.Run("a file of exactly dashboardDeleteReadMax bytes is read and repaired", func(t *testing.T) {
+		root := t.TempDir()
+		head := "**Status:** in progress\n"
+		content := head + preplanFiller(dashboardDeleteReadMax-len(head))
+		file := writePreplanTopic(t, root, "auth-flow.md", content)
+		out, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_context", Topic: "auth flow"})
+		if err != nil {
+			t.Fatalf("preplan_context: %v", err)
+		}
+		if out.AddedSections == nil || len(*out.AddedSections) != len(preplanSections) {
+			t.Errorf("AddedSections = %v, want the 7 headings", out.AddedSections)
+		}
+		got, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := content + "\n" + preplanBlocks("\n", preplanSections...); string(got) != want {
+			t.Errorf("file has %d bytes, want %d: the content then a blank line and the 7 blocks", len(got), len(want))
+		}
+	})
+}
+
+// TestPreplanContextCheckParity runs each state of the topic path through
+// preplan_context and preplan_check, each in a new root, and checks the error
+// class and the message stem of each action (sibling-action-input-policy-parity).
+func TestPreplanContextCheckParity(t *testing.T) {
+	setPreplanNow(t, preplanTestNow)
+	const noHeadings = "# Preplan: auth flow\n\n**Status:** in progress\n"
+	repaired := noHeadings + "\n" + preplanBlocks("\n", preplanSections...)
+	complete := preplanSkeletonFor("auth flow")
+
+	// want is the result of one action: class "" is success. stem starts the
+	// error message. check runs more checks on a success.
+	type want struct {
+		class, stem string
+		check       func(t *testing.T, root, file string, out PlanSupportOut)
+	}
+	// wantAdded returns a check of AddedSections and of the file bytes.
+	wantAdded := func(n int, content string) func(t *testing.T, root, file string, out PlanSupportOut) {
+		return func(t *testing.T, _, file string, out PlanSupportOut) {
+			if out.AddedSections == nil || len(*out.AddedSections) != n {
+				t.Errorf("AddedSections = %v, want %d heading(s)", out.AddedSections, n)
+			}
+			wantPreplanBytes(t, file, content)
+		}
+	}
+	// checkLine checks that preplan_check wrote its line into the file.
+	checkLine := func(t *testing.T, _, file string, out PlanSupportOut) {
+		got, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.GuardrailCheckLine == "" || !strings.Contains(string(got), out.GuardrailCheckLine+"\n") {
+			t.Errorf("file lacks the check line %q:\n%s", out.GuardrailCheckLine, got)
+		}
+	}
+	noWrite := func(t *testing.T) { noPreplanCheckWrite(t) }
+
+	for _, row := range []struct {
+		name string
+		// setup makes the state at file, in the preplan folder of root.
+		setup    func(t *testing.T, root, file string)
+		ctx, chk want
+	}{
+		{"no file", func(*testing.T, string, string) {},
+			want{check: func(t *testing.T, root, _ string, out PlanSupportOut) {
+				if out.PreplanCreated == nil || !*out.PreplanCreated {
+					t.Errorf("PreplanCreated = %v, want true", out.PreplanCreated)
+				}
+				if out.AddedSections == nil || len(*out.AddedSections) != 0 {
+					t.Errorf("AddedSections = %v, want an empty non-nil list", out.AddedSections)
+				}
+				wantPreplanBytes(t, filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md"), complete)
+			}},
+			want{class: "domain", stem: `preplan_check: no topic file for topic "auth flow"`}},
+		{"two files for one slug", func(t *testing.T, root, file string) {
+			noWrite(t)
+			writeFile(t, file, noHeadings)
+			writePreplanTopic(t, root, "2026-10-01-auth-flow.md", noHeadings)
+		},
+			want{class: "data", stem: `preplan_context: topic "auth flow" matches 2 topic files`},
+			want{class: "data", stem: `preplan_check: topic "auth flow" matches 2 topic files`}},
+		{"a regular file with no head line", func(t *testing.T, _, file string) {
+			writeFile(t, file, "# Preplan: auth flow\n\nnotes\n")
+		},
+			want{check: func(t *testing.T, root, file string, out PlanSupportOut) {
+				wantAdded(7, "# Preplan: auth flow\n\nnotes\n\n"+preplanBlocks("\n", preplanSections...))(t, root, file, out)
+			}},
+			want{class: "data", stem: "preplan_check: %s has no **Started:** line"}},
+		{"a regular file and a plan config that cannot be read", func(t *testing.T, root, file string) {
+			writeFile(t, filepath.Join(root, ".sdlc-v2", "config.toml"), "[plan\nguardrails = [\n")
+			writeFile(t, file, noHeadings)
+		},
+			want{check: func(t *testing.T, root, file string, out PlanSupportOut) {
+				wantAdded(7, repaired)(t, root, file, out)
+				_, warning := loadGuardrails(root)
+				if warning == "" || !strings.Contains(out.Summary, "Warning: "+warning+".") {
+					t.Errorf("Summary = %q, want the warning %q", out.Summary, warning)
+				}
+				if !strings.HasSuffix(out.Next, " preplan_check writes the warning into the Guardrail check line at Step 4.") {
+					t.Errorf("Next = %q, want the warning sentence at the end", out.Next)
+				}
+			}},
+			want{check: func(t *testing.T, root, file string, out PlanSupportOut) {
+				checkLine(t, root, file, out)
+				_, warning := loadGuardrails(root)
+				if want := " Guardrails unavailable: " + preplanWarningText(warning) + "."; warning == "" || !strings.HasSuffix(out.GuardrailCheckLine, want) {
+					t.Errorf("GuardrailCheckLine = %q, want the suffix %q", out.GuardrailCheckLine, want)
+				}
+			}}},
+		{"a regular file with all 7 headings", func(t *testing.T, _, file string) {
+			writeFile(t, file, complete)
+		},
+			want{check: wantAdded(0, complete)},
+			want{check: checkLine}},
+		{"a regular file with absent headings", func(t *testing.T, _, file string) {
+			writeFile(t, file, noHeadings)
+		},
+			want{check: func(t *testing.T, root, file string, out PlanSupportOut) {
+				wantAdded(7, repaired)(t, root, file, out)
+				if info, err := os.Stat(file); err != nil || info.Mode().Perm() != 0o600 {
+					t.Errorf("file mode = %v (err %v), want 0600", info, err)
+				}
+			}},
+			want{check: checkLine}},
+		{"a live link to a regular file", func(t *testing.T, _, file string) {
+			noWrite(t)
+			target := filepath.Join(t.TempDir(), "target.md")
+			writeFile(t, target, noHeadings)
+			if err := os.Symlink(target, file); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { wantPreplanBytes(t, target, noHeadings) })
+		},
+			want{class: "domain", stem: "preplan_context: %s is a symlink, not a regular file"},
+			want{class: "domain", stem: "preplan_check: %s is a symlink, not a regular file"}},
+		{"a named pipe", func(t *testing.T, _, file string) {
+			noWrite(t)
+			mkfifo, err := exec.LookPath("mkfifo")
+			if err != nil {
+				t.Skipf("no mkfifo: %v", err)
+			}
+			if out, err := exec.Command(mkfifo, file).CombinedOutput(); err != nil {
+				t.Skipf("mkfifo: %v: %s", err, out)
+			}
+		},
+			want{class: "infra", stem: "preplan_context: create %s: exists and is not a regular file"},
+			want{class: "domain", stem: "preplan_check: %s is not a regular file"}},
+		{"a file over 8 MiB", func(t *testing.T, _, file string) {
+			noWrite(t)
+			swapPreplanSeam(t, &preplanReadFile, func(path string) ([]byte, error) {
+				t.Errorf("preplanReadFile(%s) was called, want no read of a big file", path)
+				return nil, errInjectedPreplan
+			})
+			writeFile(t, file, noHeadings+preplanFiller(dashboardDeleteReadMax+1-len(noHeadings)))
+		},
+			want{class: "data", stem: fmt.Sprintf("preplan_context: %%s is %d bytes, more than", dashboardDeleteReadMax+1)},
+			want{class: "data", stem: fmt.Sprintf("preplan_check: %%s is %d bytes, more than", dashboardDeleteReadMax+1)}},
+		{"a dangling link", func(t *testing.T, _, file string) {
+			noWrite(t)
+			if err := os.Symlink(filepath.Join(t.TempDir(), "gone.md"), file); err != nil {
+				t.Fatal(err)
+			}
+		},
+			want{class: "infra", stem: "preplan_context: create %s: "},
+			want{class: "domain", stem: "preplan_check: %s is a link to "}},
+		{"a folder", func(t *testing.T, _, file string) {
+			noWrite(t)
+			if err := os.Mkdir(file, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+			want{class: "infra", stem: "preplan_context: create %s: exists and is not a regular file"},
+			want{class: "domain", stem: "preplan_check: %s is a folder, not a regular file"}},
+		{"a link loop", func(t *testing.T, _, file string) {
+			noWrite(t)
+			other := filepath.Join(filepath.Dir(file), "other.md")
+			if err := os.Symlink(other, file); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(file, other); err != nil {
+				t.Fatal(err)
+			}
+		},
+			want{class: "infra", stem: "preplan_context: create %s: stat "},
+			want{class: "domain", stem: "preplan_check: %s is a symlink, not a regular file"}},
+		{"an Lstat error", func(t *testing.T, _, file string) {
+			noWrite(t)
+			writeFile(t, file, noHeadings)
+			swapPreplanSeam(t, &preplanLstat, func(string) (fs.FileInfo, error) { return nil, errInjectedPreplan })
+		},
+			want{class: "infra", stem: "preplan_context: " + errInjectedPreplan.Error()},
+			want{class: "infra", stem: "preplan_check: " + errInjectedPreplan.Error()}},
+		{"a read error", func(t *testing.T, _, file string) {
+			noWrite(t)
+			writeFile(t, file, noHeadings)
+			swapPreplanSeam(t, &preplanReadFile, func(string) ([]byte, error) { return nil, errInjectedPreplan })
+		},
+			want{class: "infra", stem: "preplan_context: " + errInjectedPreplan.Error()},
+			want{class: "infra", stem: "preplan_check: " + errInjectedPreplan.Error()}},
+		{"a write error", func(t *testing.T, _, file string) {
+			writeFile(t, file, noHeadings)
+			swapPreplanSeam(t, &preplanWriteBytes, func(string, []byte) error { return errInjectedPreplan })
+			t.Cleanup(func() { wantPreplanBytes(t, file, noHeadings) })
+		},
+			want{class: "infra", stem: "preplan_context: " + errInjectedPreplan.Error()},
+			want{class: "infra", stem: "preplan_check: " + errInjectedPreplan.Error()}},
+	} {
+		for _, a := range []struct {
+			in   PlanSupportIn
+			want want
+		}{
+			{PlanSupportIn{Action: "preplan_context", Topic: "auth flow"}, row.ctx},
+			{preplanCheckIn("auth flow", 1, 0, 0), row.chk},
+		} {
+			t.Run(row.name+": "+a.in.Action, func(t *testing.T) {
+				root := t.TempDir()
+				dir := filepath.Join(root, ".sdlc-v2", "preplan")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				file := filepath.Join(dir, "auth-flow.md")
+				row.setup(t, root, file)
+
+				out, err := planSupportCore(root, root, a.in)
+				if a.want.class == "" {
+					if err != nil {
+						t.Fatalf("%s: %v, want success", a.in.Action, err)
+					}
+					a.want.check(t, root, file, out)
+					return
+				}
+				if got := errorClassOf(err); got != a.want.class {
+					t.Fatalf("error class = %q, want %s (err %v)", got, a.want.class, err)
+				}
+				stem := a.want.stem
+				if strings.Contains(stem, "%s") {
+					stem = fmt.Sprintf(stem, file)
+				}
+				if !strings.HasPrefix(err.Error(), stem) {
+					t.Errorf("err.Error() = %q, want the stem %q", err.Error(), stem)
+				}
+				if suggestionOf(err) == "" {
+					t.Error("Suggestion is empty, want recovery text")
+				}
+			})
+		}
 	}
 }
