@@ -14,9 +14,19 @@ after that. The full command name is `/sdlc:openspec-save`.
 ## The merge-first flow
 
 The change is written in the plan phase, but it is not yet in the tracked tree.
-It sits under `.sdlc-v2/openspec-staging/<change>/` of the main worktree. This
-skill runs from any worktree of the repo. This skill moves it to the
-repository and sends it to review on its own:
+It sits under `.sdlc-v2/openspec-staging/<change>/` of the main worktree. When
+the skill can find the main worktree, it runs from any worktree of the repo.
+Two other cases exist:
+
+- A plan that an older plugin staged has its change under
+  `.sdlc-v2/openspec-staging/<change>/` of the active worktree. The skill uses
+  that folder when the folder of the main worktree and
+  `openspec/changes/<change>/` are both missing.
+- When the skill cannot find the main worktree, it uses only the folder of the
+  active worktree and prints the warning `Main worktree not found (...)`.
+
+This skill moves the change into the tracked tree and sends it to review on its
+own:
 
 1. `/plan` stages the change and writes the `**OpenSpec-Staging:**` header line
    in the plan file.

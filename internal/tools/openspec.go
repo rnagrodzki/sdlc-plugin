@@ -1,12 +1,14 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -93,11 +95,11 @@ func RegisterOpenspecTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "openspec_save",
-		"INTERNAL — called by sdlc skills only. Saves the OpenSpec change that a plan staged under <main-worktree>/.sdlc-v2/openspec-staging/<change>/ (or, for an older plan, under the active worktree) into openspec/changes/<change>/ of the active worktree, so the change can go to review as its own docs pull request before any code is written. "+
-			"If the main worktree cannot be resolved, it reads only the staging folder of the active worktree and adds a warning. "+
+		"INTERNAL — called by sdlc skills only. Saves the OpenSpec change that a plan staged under "+stagingFolderText("<change>")+" (or, for an older plan, under the active worktree) into openspec/changes/<change>/ of the active worktree, so the change can go to review as its own docs pull request before any code is written. "+
+			"If the main worktree cannot be resolved, it reads only the staging folder of the active worktree and adds a warning (on a failed save, the error Suggestion holds the same text). A git output over the size cap while it resolves the main worktree is an InfraError. "+
 			"Call it after /plan created the change, from the default branch or from the branch openspec/<change>, with tracked files outside openspec/changes/<change>/ and .sdlc-v2/ clean. "+
 			"Input: planPath, the absolute path of the plan file with an **OpenSpec-Staging:** header line. "+
-			"Output: change, branch, branchCreated, materialized (created | already), refsStamped, stagedFiles, warnings (for example a change with no tasks.md), summary, next. "+
+			"Output: change, branch, branchCreated, materialized (created | already), refsStamped, stagedFiles, warnings (a change with no tasks.md, or a main worktree that was not found), summary, next. "+
 			"Side effects: on the default branch it creates and switches to the branch openspec/<change> (git switch -c); it moves the staged files into openspec/changes/<change>/ through the OpenSpec CLI; it writes a ref comment into each task line of openspec/changes/<change>/tasks.md; it runs git add on openspec/changes/<change>/; it rewrites the plan's **OpenSpec-Staging:** header line to **OpenSpec-Saved:** openspec/changes/<change>/ (branch openspec/<change>). It does not commit. "+
 			"A plan that already has the **OpenSpec-Saved:** line returns materialized \"already\": the tool checks that the current branch is the saved branch and that openspec/changes/<change>/ exists (each failed check is an error), then runs git add on openspec/changes/<change>/ again. It does not change the plan file.",
 		mcpserver.Annotations{
@@ -116,10 +118,58 @@ func RegisterOpenspecTools(s *mcpserver.Server) {
 					Cause:      err,
 				}
 			}
-			mainRoot, mainErr := worktree.MainRoot()
-			return openspecSaveRoots(mainRoot, mainErr, workDir, in)
+			mainRoot, warning, err := mainRootOrWarning("openspec_save")
+			if err != nil {
+				return OpenspecSaveOut{}, err
+			}
+			if warning != "" {
+				warning += " Read only the staging folder of the active worktree."
+			}
+			return openspecSaveRun(openspecSaveDirs{Active: workDir, Staging: mainRoot, MainWarning: warning}, in)
 		},
 	)
+}
+
+// resolveMainRoot resolves the main worktree of the process's working
+// directory. Tests replace it to make the resolution fail.
+var resolveMainRoot = worktree.MainRoot
+
+// mainRootOrWarning resolves the main worktree for tool. A git output that
+// is over the execx cap (execx.ErrOutputCap) is an InfraError. Any other
+// failure (not a git repository, output that cannot be parsed) returns an
+// empty root and the warning "Main worktree not found (<error>)."; the
+// caller then uses its own fallback root and reports the warning.
+func mainRootOrWarning(tool string) (root, warning string, err error) {
+	root, err = resolveMainRoot()
+	switch {
+	case err == nil:
+		return root, "", nil
+	case errors.Is(err, execx.ErrOutputCap):
+		return "", "", &mcpserver.InfraError{
+			Msg:        tool + ": resolve main worktree: " + err.Error(),
+			Suggestion: "Check that `git worktree list --porcelain` runs in the current directory and prints a normal list, then call " + tool + " again.",
+			Cause:      err,
+		}
+	default:
+		return "", "Main worktree not found (" + err.Error() + ").", nil
+	}
+}
+
+// stagingFolderText is the staging folder of change in tool descriptions:
+// <main-worktree>/ plus openspec.StagingDirRel(change).
+func stagingFolderText(change string) string {
+	return "<main-worktree>/" + openspec.StagingDirRel(change)
+}
+
+// materializeReadText describes, for the execute_state init and the
+// ship_prepare tool descriptions, where openspec.Materialize reads the staged
+// files of change and when it deletes the staging folder.
+func materializeReadText(change string) string {
+	target := "openspec/changes/" + change + "/"
+	return "It reads the staged files from " + stagingFolderText(change) +
+		", or from the same folder under the active worktree when that folder and " + target +
+		" are both missing (a plan staged by an older plugin). It deletes the staging folder that it read after a successful copy, and when " +
+		target + " already holds the same files."
 }
 
 // enrichConfig is the core logic, separated from the handler for testability.

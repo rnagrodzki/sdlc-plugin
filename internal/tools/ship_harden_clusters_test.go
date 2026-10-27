@@ -2,9 +2,12 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -1305,6 +1308,33 @@ func hfsDeferred(file, severity, title, reason string) map[string]any {
 	return m
 }
 
+// hfsData builds ship Data with healing and deferredFindings. A nil healing
+// or a nil deferred leaves its key out (absent, not null).
+func hfsData(healing map[string]any, deferred any) map[string]any {
+	data := map[string]any{}
+	if healing != nil {
+		data["healing"] = healing
+	}
+	if deferred != nil {
+		data["deferredFindings"] = deferred
+	}
+	return data
+}
+
+// hfsRun calls hardenFindingsFromShip on hfsData(healing, deferred). bad is
+// the Field of the returned *shipDataShapeError, or "" with no error.
+func hfsRun(healing map[string]any, deferred any) (findings []HardenClusterFinding, bad string, cut bool) {
+	res, err := hardenFindingsFromShip(hfsData(healing, deferred))
+	if err != nil {
+		var shape *shipDataShapeError
+		if !errors.As(err, &shape) {
+			return nil, "error of type " + fmt.Sprintf("%T", err), false
+		}
+		return res.Findings, shape.Field, res.Cut
+	}
+	return res.Findings, "", res.Cut
+}
+
 // hfsReviewClustersPath is the harden skill file whose Ship mapping table
 // hardenShipVerdicts must equal.
 const hfsReviewClustersPath = "../../plugins/sdlc/skills/harden/review-clusters.md"
@@ -1378,7 +1408,7 @@ func hfsMappingTableProblems(md string) []string {
 			if reason != rowReason {
 				problems = append(problems, fmt.Sprintf("reason %q: table reason column %q, want the same reason", rowReason, reason))
 			}
-			got, bad, _ := hardenFindingsFromShip(nil, []any{hfsDeferred("a.go", "high", "t", rowReason)})
+			got, bad, _ := hfsRun(nil, []any{hfsDeferred("a.go", "high", "t", rowReason)})
 			if bad != "" || len(got) != 1 || got[0].Verdict != verdict || got[0].Reason != reason {
 				problems = append(problems, fmt.Sprintf("reason %q: mapper gave %+v (badField %q), table says verdict %q reason %q", rowReason, got, bad, verdict, reason))
 			}
@@ -1387,7 +1417,7 @@ func hfsMappingTableProblems(md string) []string {
 			if verdict != "agree-will-fix" || reason != "—" {
 				problems = append(problems, fmt.Sprintf("healing.fixed row: table verdict %q reason %q, want agree-will-fix and —", verdict, reason))
 			}
-			got, bad, _ := hardenFindingsFromShip(map[string]any{"fixed": []any{hfsFixed("a.go", "high", "t")}}, nil)
+			got, bad, _ := hfsRun(map[string]any{"fixed": []any{hfsFixed("a.go", "high", "t")}}, nil)
 			if bad != "" || len(got) != 1 || got[0].Verdict != "agree-will-fix" || got[0].Reason != "" {
 				problems = append(problems, fmt.Sprintf("healing.fixed row: mapper gave %+v (badField %q)", got, bad))
 			}
@@ -1481,7 +1511,7 @@ func TestHardenFindingsFromShip_Fields(t *testing.T) {
 		},
 	}
 
-	got, bad, cut := hardenFindingsFromShip(healing, deferred)
+	got, bad, cut := hfsRun(healing, deferred)
 	if bad != "" || cut {
 		t.Fatalf("badField = %q, cut = %v, want \"\" and false", bad, cut)
 	}
@@ -1530,10 +1560,17 @@ func TestHardenFindingsFromShip_Skips(t *testing.T) {
 		map[string]any{"file": 5, "severity": true, "title": []any{}, "reason": "disagree", "line": "3", "deferredId": 7, "description": 1},
 	}
 
-	got, bad, cut := hardenFindingsFromShip(healing, deferred)
-	if bad != "" || cut {
-		t.Fatalf("badField = %q, cut = %v, want \"\" and false", bad, cut)
+	res, err := hardenFindingsFromShip(hfsData(healing, deferred))
+	if err != nil || res.Cut {
+		t.Fatalf("err = %v, cut = %v, want nil and false", err, res.Cut)
 	}
+	// Two healing.fixed entries and three deferredFindings entries cannot be
+	// read: two that are not an object in each list, and the unknown reason.
+	// The record with a deferredId is left out on purpose and not counted.
+	if res.Skipped != 5 {
+		t.Errorf("skipped = %d, want 5", res.Skipped)
+	}
+	got := res.Findings
 	want := []HardenClusterFinding{
 		{File: "c.go", Severity: "high", Title: "fixed with blank id", Verdict: "agree-will-fix"},
 		{File: "e.go", Severity: "low", Title: "old entry", Verdict: hardenVerdictNotEvaluated, Reason: history.ReasonBelowThreshold},
@@ -1588,7 +1625,7 @@ func TestHardenFindingsFromShip_Limit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, bad, cut := hardenFindingsFromShip(tt.healing, tt.deferred)
+			got, bad, cut := hfsRun(tt.healing, tt.deferred)
 			if bad != "" {
 				t.Fatalf("badField = %q, want empty", bad)
 			}
@@ -1623,13 +1660,13 @@ func TestHardenFindingsFromShip_BadField(t *testing.T) {
 		{"fixed bad, deferred good", map[string]any{"fixed": "oops"}, good, "healing.fixed"},
 		{"fixed good, deferred bad", map[string]any{"fixed": []any{hfsFixed("a.go", "high", "t")}}, "oops", "deferredFindings"},
 		{"both absent", nil, nil, ""},
-		{"both null", map[string]any{"fixed": nil}, nil, ""},
+		{"fixed null", map[string]any{"fixed": nil}, nil, "healing.fixed"},
 		{"both empty lists", map[string]any{"fixed": []any{}}, []any{}, ""},
 		{"both good", map[string]any{"fixed": []any{hfsFixed("a.go", "high", "t")}}, good, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, bad, cut := hardenFindingsFromShip(tt.healing, tt.deferred)
+			got, bad, cut := hfsRun(tt.healing, tt.deferred)
 			if bad != tt.want {
 				t.Errorf("badField = %q, want %q", bad, tt.want)
 			}
@@ -1640,6 +1677,81 @@ func TestHardenFindingsFromShip_BadField(t *testing.T) {
 				t.Errorf("badField %q set, but %d findings returned: %+v", tt.want, len(got), got)
 			}
 		})
+	}
+}
+
+// TestHardenFindingsFromShip_ShapeOfData checks the shapes that hfsData
+// cannot build: a null deferredFindings, and a healing value that is null or
+// not an object. The error names the field, the shape needed and the type
+// found.
+func TestHardenFindingsFromShip_ShapeOfData(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     map[string]any
+		wantText string // "" for no error
+	}{
+		{"deferredFindings null", map[string]any{"deferredFindings": nil}, "deferredFindings of the ship state is not a list (found null)"},
+		{"healing a list", map[string]any{"healing": []any{}}, "healing of the ship state is not an object (found list)"},
+		{"healing a string", map[string]any{"healing": "x"}, "healing of the ship state is not an object (found string)"},
+		{"healing null", map[string]any{"healing": nil, "deferredFindings": []any{}}, ""},
+		{"healing.fixed an object", map[string]any{"healing": map[string]any{"fixed": map[string]any{}}}, "healing.fixed of the ship state is not a list (found object)"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := hardenFindingsFromShip(tt.data)
+			if tt.wantText == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want nil", err)
+				}
+				return
+			}
+			var shape *shipDataShapeError
+			if !errors.As(err, &shape) || err.Error() != tt.wantText {
+				t.Fatalf("err = %v, want a *shipDataShapeError %q", err, tt.wantText)
+			}
+			if len(res.Findings) != 0 {
+				t.Errorf("findings = %+v, want none with an error", res.Findings)
+			}
+		})
+	}
+}
+
+// TestHardenShipVerdicts_CoverDeferredReasons checks that hardenShipVerdicts
+// has one verdict for each deferral reason, and no other key. A new reason
+// with no verdict would make hardenFindingsFromShip skip its entries.
+func TestHardenShipVerdicts_CoverDeferredReasons(t *testing.T) {
+	keys := make([]string, 0, len(hardenShipVerdicts))
+	for reason := range hardenShipVerdicts {
+		keys = append(keys, reason)
+	}
+	reasons := append([]string(nil), history.DeferredReasons()...)
+	sort.Strings(keys)
+	sort.Strings(reasons)
+	if !reflect.DeepEqual(keys, reasons) {
+		t.Errorf("hardenShipVerdicts keys = %v, history.DeferredReasons() = %v, want the same set", keys, reasons)
+	}
+}
+
+// TestDeferredReason checks the reason of a deferredFindings entry: an
+// empty, absent or non-string reason, and a nil entry, read as
+// below-threshold.
+func TestDeferredReason(t *testing.T) {
+	tests := []struct {
+		name string
+		m    map[string]any
+		want string
+	}{
+		{"set", map[string]any{"reason": history.ReasonDisagree}, history.ReasonDisagree},
+		{"unknown kept", map[string]any{"reason": "cannot-verify"}, "cannot-verify"},
+		{"empty", map[string]any{"reason": ""}, history.ReasonBelowThreshold},
+		{"absent", map[string]any{}, history.ReasonBelowThreshold},
+		{"not a string", map[string]any{"reason": 3.0}, history.ReasonBelowThreshold},
+		{"nil entry", nil, history.ReasonBelowThreshold},
+	}
+	for _, tt := range tests {
+		if got := deferredReason(tt.m); got != tt.want {
+			t.Errorf("%s: deferredReason = %q, want %q", tt.name, got, tt.want)
+		}
 	}
 }
 
@@ -1666,7 +1778,7 @@ func TestHardenFindingsFromShip_SameRuleAsLedger(t *testing.T) {
 	if ledger == nil {
 		t.Fatal("shipBuildReviewLedger returned nil for a state with a reviewTotal")
 	}
-	got, bad, cut := hardenFindingsFromShip(healing, list)
+	got, bad, cut := hfsRun(healing, list)
 	if bad != "" || cut {
 		t.Fatalf("badField = %q, cut = %v, want \"\" and false", bad, cut)
 	}

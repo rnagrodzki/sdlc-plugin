@@ -157,12 +157,8 @@ func (p *dashboardQueuePairs) covers(file, line, title, deferredID string) bool 
 // is the text of a state issue when the key is present and its value is not a
 // list (null included), else empty. An absent key gives no list and no problem.
 func dashboardQueueDeferredList(data map[string]any) (list []any, problem string) {
-	raw, present := data["deferredFindings"]
-	if !present {
-		return nil, ""
-	}
-	list, ok := raw.([]any)
-	if !ok {
+	list, err := shipDataList(data, "deferredFindings", "data.deferredFindings")
+	if err != nil {
 		return nil, "data.deferredFindings of the ship state is not a list — the review queue shows no deferred finding"
 	}
 	return list, ""
@@ -174,15 +170,24 @@ func dashboardQueueIssue(severity, text string) DashboardIssue {
 	return DashboardIssue{Source: dashboardSourceState, Severity: severity, Text: text}
 }
 
-// dashboardQueueCut returns rows cut at dashboardQueueRowsMax. When it cuts
-// rows, issues holds one info issue that tells how many rows are not shown.
-func dashboardQueueCut(rows []DashboardQueueRow) ([]DashboardQueueRow, []DashboardIssue) {
-	if len(rows) <= dashboardQueueRowsMax {
+// dashboardCutRows returns rows cut at limit. When it cuts rows, issues holds
+// one info state issue: "<N> <rowsName> rows not shown: <where> shows the
+// first <limit> of <M>". Callers: the review queue (rowsName "review queue",
+// where "the queue") and the harden step detail (rowsName "harden <list>",
+// where "the harden step").
+func dashboardCutRows[T any](rows []T, limit int, rowsName, where string) ([]T, []DashboardIssue) {
+	if len(rows) <= limit {
 		return rows, nil
 	}
 	issue := dashboardQueueIssue("info", fmt.Sprintf(
-		"%d review queue rows not shown: the queue shows the first %d of %d", len(rows)-dashboardQueueRowsMax, dashboardQueueRowsMax, len(rows)))
-	return rows[:dashboardQueueRowsMax], []DashboardIssue{issue}
+		"%d %s rows not shown: %s shows the first %d of %d", len(rows)-limit, rowsName, where, limit, len(rows)))
+	return rows[:limit], []DashboardIssue{issue}
+}
+
+// dashboardQueueCut returns the queue rows cut at dashboardQueueRowsMax, with
+// the info issue of dashboardCutRows when it cuts rows.
+func dashboardQueueCut(rows []DashboardQueueRow) ([]DashboardQueueRow, []DashboardIssue) {
+	return dashboardCutRows(rows, dashboardQueueRowsMax, "review queue", "the queue")
 }
 
 // dashboardQueueAddFindings joins the review findings of dims into q. Called

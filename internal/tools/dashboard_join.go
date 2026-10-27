@@ -16,6 +16,8 @@ const (
 	dashboardShipStepReview  = "review"
 	// The received-review station is built from data.healing.fixProgress.
 	dashboardShipStepReceivedReview = "received-review"
+	// The harden step detail is built by dashboardHardenDetail.
+	dashboardShipStepHarden = "harden"
 )
 
 // dashboardExecuteRefPrefix goes before the Ref of each issue that a joined
@@ -36,8 +38,7 @@ const dashboardExecuteRefPrefix = "execute:"
 // review totals also gets detail.reviewQueue from dashboardReviewQueue, built
 // after the received-review station, so the fix records are in it. The
 // issues of dashboardReviewQueue go to the pipeline issues. A harden step
-// gets the detail of dashboardHardenDetail when that returns one, and the
-// issues of dashboardHardenDetail go to the pipeline issues.
+// gets its detail and issues from dashboardAttachHarden.
 func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	data := st.Data
 	p.SessionID = dashboardStr(data["sessionId"])
@@ -101,13 +102,7 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	if problem != "" {
 		p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "medium", Text: problem})
 	}
-	if step := dashboardStepNamed(p, dashboardShipStepHarden); step != nil {
-		harden, hardenIssues := dashboardHardenDetail(data, step, runCompleted)
-		if harden != nil {
-			step.Detail = &DashboardStepDetail{Kind: dashboardKindHarden, Harden: harden}
-		}
-		p.Issues = append(p.Issues, hardenIssues...)
-	}
+	dashboardAttachHarden(p, data, runCompleted)
 
 	if entries, ok := dashboardDecodeExploreSummary(data["planExploreSummary"]); ok {
 		plan := DashboardStep{
@@ -120,6 +115,23 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 		}
 		dashboardInsertPlanStation(p, plan)
 	}
+}
+
+// dashboardAttachHarden gives the harden step of p the detail of
+// dashboardHardenDetail when that returns one, and adds the issues of
+// dashboardHardenDetail to the pipeline issues. A pipeline with no harden
+// step gets neither. runCompleted is true when the run has a
+// pipelineCompletedAt.
+func dashboardAttachHarden(p *DashboardPipeline, data map[string]any, runCompleted bool) {
+	step := dashboardStepNamed(p, dashboardShipStepHarden)
+	if step == nil {
+		return
+	}
+	harden, issues := dashboardHardenDetail(data, step, runCompleted)
+	if harden != nil {
+		step.Detail = &DashboardStepDetail{Kind: dashboardKindHarden, Harden: harden}
+	}
+	p.Issues = append(p.Issues, issues...)
 }
 
 // dashboardInsertPlanStation puts plan first in p.Steps, adds one done

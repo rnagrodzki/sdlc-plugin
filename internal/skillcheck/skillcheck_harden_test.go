@@ -287,8 +287,8 @@ func TestHardenSkillParity(t *testing.T) {
 	// site cannot pass because a copy stays elsewhere. The pins run on the
 	// text with whitespace folded, because the sentences wrap across lines.
 	t.Run("ship_state_record_contract", func(t *testing.T) {
-		// The rows of the held exit table. SKILL.md and docs/skills/harden.md
-		// hold the same six rows.
+		// The rows of the held exit table of SKILL.md. docs/skills/harden.md
+		// states the same six exits in user terms (docsHeldExitRows below).
 		heldExitRows := []string{
 			"| `--auto` | normal path (after 5c and 5d) | `pending-stored` with the returned `deferredId` for each \"Pending (needs a person — stored …)\" item. `pending-not-stored` for each \"Pending (NOT stored …)\" item. | Step 6 when `plugin-defect`, else Step 7 |",
 			"| `--auto` | 5a write-back halt or 5b halt | The rows of the line above, plus `not-processed` for each \"Not processed (halt)\" item | `rm -f \"<manifestPath>\"`, then stop. No Step 7. |",
@@ -302,9 +302,13 @@ func TestHardenSkillParity(t *testing.T) {
 		flat := strings.Join(strings.Fields(skill), " ")
 		for _, want := range append([]string{
 			// Per-iteration contract, rule 3: the one exception.
-			"One exception: keep the `writtenPatch` of each applied proposal for the 5e record. It is a record of a done write, not a change to write.",
-			// Step 5b: a repaired guardrail candidate sets writtenPatch.
-			"When 5a or `consolidate` repaired a guardrail candidate before this write, set the proposal's `writtenPatch` to the TOML entry that this write added.",
+			"One exception: keep the `writtenPatch` of each applied proposal that has one (5a step 3 sets it) for the 5e record. It is a record of a done write, not a change to write.",
+			// Step 5a step 3: every consolidate and each repaired guardrail
+			// candidate set writtenPatch, where the write lands.
+			"After a write with `ok` `true`, set the proposal's `writtenPatch` to the TOML entries that this write added, when they can differ from the proposal `patch`: for every `consolidate`, and for any other proposal whose candidate step 2 repaired.",
+			"A `consolidate` always writes its merged candidate (see the `consolidate` paragraph in 5b), with or without a repair round, so it counts as repaired.",
+			// Step 5e: the fallback when writtenPatch is lost can be inexact.
+			"When it is lost (for example, after a context compaction), the proposal `patch` is sent, and it can differ from the TOML that 5a wrote.",
 			// Step 5e: the entry of applied, the rationale rule, the patch rule.
 			"one `{surface, action, targetFile, rationale, patch}` entry, built from the matching proposal,",
 			"Send `rationale` only when the proposal `rationale` is a non-empty string; otherwise leave the key out.",
@@ -314,6 +318,14 @@ func TestHardenSkillParity(t *testing.T) {
 			"`held` — one `{surface, action, targetFile, reason, deferredId}` entry for each proposal that this run left for a person (the held exit table below).",
 			"Send `deferredId` only with reason `pending-stored`:",
 			"Send `held: []` when no row of the held exit table gives an entry.",
+			// Step 5e: a held targetFile passes the 5a step 0 check first.
+			"Check each `held[].targetFile` with the 5a step 0 table before you send it.",
+			"When the check fails, send `targetFile: \"(path rejected)\"`.",
+			// Step 5e: the limits of one call and their outcome.
+			"Limits of one call: at most 100 `applied` entries, at most 100 `held` entries, and a `rationale` of at most 600 characters. A call past a limit fails and writes nothing, and the `started` record of 5-pre stays.",
+			// Step 5e: the record of the halted proposal itself.
+			"The proposal is in neither `applied` nor `held`, and `skipped` counts it.",
+			"The proposal is in `applied`, because 5a wrote and checked it. The record does not show that the Copilot mirror failed.",
 			// Step 5e: each held reason.
 			"| `pending-stored` | `--auto` stored the proposal as a deferred item. `deferredId` is the id of that item |",
 			"| `pending-not-stored` | `--auto` could not store the proposal: the `deferred_add` call failed, or the id check failed |",
@@ -322,6 +334,9 @@ func TestHardenSkillParity(t *testing.T) {
 			"applied: [<entries built above>], held: [<entries built above>], skipped: <count built above>,",
 		}, heldExitRows...) {
 			hardenSkillsAssertOnce(t, "harden/SKILL.md", flat, want)
+		}
+		if strings.Contains(flat, "When 5a or `consolidate` repaired a guardrail candidate before this write") {
+			t.Error("harden/SKILL.md still sets writtenPatch in 5b only for a repaired candidate; 5a step 3 sets it, for every consolidate too")
 		}
 		if strings.Contains(flat, "{surface, action, targetFile}") {
 			t.Error("harden/SKILL.md still names the old 5e entry {surface, action, targetFile}, without rationale and patch")
@@ -333,13 +348,45 @@ func TestHardenSkillParity(t *testing.T) {
 		docs := executeSkillsReadFile(t, docsPath)
 		hardenSkillsAssertOnce(t, "docs/skills/harden.md", docs, "\n## Ship state record\n")
 		docsFlat := strings.Join(strings.Fields(docs), " ")
+		// The six exits of the held exit table, in user terms.
+		docsHeldExitRows := []string{
+			"| `--auto` | every proposal processed | `pending-stored`, with its `deferredId`, for each pending edit that was stored. `pending-not-stored` for each pending edit that was not stored | the `error-report` route when the result is `plugin-defect`, then the learnings entry |",
+			"| `--auto` | a halt | the entries of the row above, plus `not-processed` for each proposal after the halted one | stops. No learnings entry |",
+			"| interactive | you decided every proposal | `[]` | the `error-report` route when the result is `plugin-defect`, then the learnings entry |",
+			"| interactive | a halt | `not-processed` for each proposal after the halted one | stops. No learnings entry |",
+			"| interactive | you chose **cancel** at the `Apply this proposal?` prompt | `[]` | stops. No learnings entry |",
+			"| any | the orchestrator drafted no proposal, or a `plugin-defect` result with no repair proposal | `[]`. The proposal loop did not run |",
+		}
 		for _, want := range append([]string{
-			"| `applied[].rationale` | The rationale of the proposal. The key is absent when the proposal has no rationale |",
+			"| `applied[].rationale?` | The rationale of the proposal, at most 600 characters. The key is absent when the proposal has no rationale |",
+			"The key is absent when there is no text. A patch over 1536 bytes is cut, and the entry gets `patchCut: true` |",
+			"| `held[].targetFile` | The target file of the proposal, or `(path rejected)` when the path is not a file of its surface.",
 			"| `held[].reason` | `pending-stored`, `pending-not-stored` or `not-processed` |",
+			"When the proposal loop does not run (the orchestrator drafted no proposal, or a `plugin-defect` result with no repair proposal), the run makes one call: a `done` record, with no `started` record before it.",
+			"**Limits of one call.** A call with more than 100 `applied[]` entries, more than 100 `held[]` entries, or a `rationale` over 600 characters fails with an error and writes nothing.",
+			"The proposal that caused a halt has no `held` entry:",
 			"| The session ends between step 5-pre and step 5e | the `started` record |",
-			"| The step 5e call fails (for example, a field is not valid) | the `started` record |",
-		}, heldExitRows...) {
+			"The harden step of `/ship` commits the leftover edits in its own commit, not the pipeline `commit` step.",
+			"| The step 5e call fails (for example, a field is not valid, or a list is over its limit) | the `started` record |",
+			"The dashboard shows a `started` record as \"interrupted\" only when the harden step of the ship run no longer runs.",
+			"A run that stops before step 5-pre leaves no record, and the dashboard shows no run. These stops include:",
+		}, docsHeldExitRows...) {
 			hardenSkillsAssertOnce(t, "docs/skills/harden.md", docsFlat, want)
+		}
+		// The docs page does not copy the internal rows of the skill table.
+		for _, row := range heldExitRows {
+			if strings.Contains(docsFlat, row) {
+				t.Errorf("docs/skills/harden.md copies the skill held exit row %q; describe the exit in user terms", row)
+			}
+		}
+		for _, stale := range []string{
+			"Two errors end the run before step 5-pre",
+			"commits its edits in the commit step",
+			"Otherwise it is the patch of the proposal, or `\"\"`.",
+		} {
+			if strings.Contains(docsFlat, stale) {
+				t.Errorf("docs/skills/harden.md still holds the stale text %q", stale)
+			}
 		}
 	})
 }

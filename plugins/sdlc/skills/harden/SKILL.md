@@ -603,7 +603,7 @@ draft is a draft that the orchestrator could not generalize to a class.
 **Per-iteration contract (R-iteration-write) — applies to every pass through the proposal loop:**
 1. **Re-read before acting:** At the start of each iteration, re-read `targetFile` from disk. Never rely on an in-memory copy from a previous write.
 2. **Write before advancing:** Persist the approved change to disk (via Edit/Write) before presenting the next proposal. Do not accumulate approved changes across proposals and write them together.
-3. **No cross-proposal accumulation:** Hold only the current proposal's patch in memory. Clear per-proposal state after each write. One exception: keep the `writtenPatch` of each applied proposal for the 5e record. It is a record of a done write, not a change to write.
+3. **No cross-proposal accumulation:** Hold only the current proposal's patch in memory. Clear per-proposal state after each write. One exception: keep the `writtenPatch` of each applied proposal that has one (5a step 3 sets it) for the 5e record. It is a record of a done write, not a change to write.
 4. **Halt on failure:** If validation or the write itself fails for a proposal, do not silently advance to the next proposal — halt iteration for this proposal and surface the error per 5a.
 
 **Order.** Process the proposals in `RESULT.proposals` order. The `repair`
@@ -957,6 +957,14 @@ a `null` in the write. `scopeIds` lists the `guardrails[]` ids.
    method}` (e.g. `split into dry-1, dry-2` or `shortened description`) for
    the 5d summary's `Repaired:` list.
 
+   **`writtenPatch`.** After a write with `ok` `true`, set the proposal's
+   `writtenPatch` to the TOML entries that this write added, when they can
+   differ from the proposal `patch`: for every `consolidate`, and for any
+   other proposal whose candidate step 2 repaired. A `consolidate` always
+   writes its merged candidate (see the `consolidate` paragraph in 5b), with
+   or without a repair round, so it counts as repaired. A split adds two
+   entries: `writtenPatch` holds both. Other proposals get no `writtenPatch`.
+
    - **`ok` is `false`** (for example, the tool refuses to delete a guardrail
      table that holds a comment line): part of the call can be on disk.
      Write back the content of `targetFile` re-read at the top of 5a. Show
@@ -1068,10 +1076,6 @@ Display a one-line confirmation for 5a's successful write:
 ```
 Applied {action} on {surface} → {targetFile}
 ```
-
-When 5a or `consolidate` repaired a guardrail candidate before this write, set
-the proposal's `writtenPatch` to the TOML entry that this write added. A split
-adds two entries: `writtenPatch` holds both.
 
 Immediately after (still this iteration, before advancing to the next
 proposal), keep the Copilot mirror in step with the dimension files. This
@@ -1313,7 +1317,10 @@ When the gate holds, build:
   `RESULT.proposals` holds no proposal that Step 5 applied, so `applied` is
   `[]`. Send `rationale` only when the proposal `rationale` is a non-empty
   string; otherwise leave the key out. `patch` is the proposal `writtenPatch`
-  when it is set, else the proposal `patch`, else `""`. healing_record cuts a
+  when it is set, else the proposal `patch`, else `""`. Nothing stores
+  `writtenPatch` before this call: it lives only in this conversation. When
+  it is lost (for example, after a context compaction), the proposal `patch`
+  is sent, and it can differ from the TOML that 5a wrote. healing_record cuts a
   patch over 1536 bytes and sets `patchCut`. Do not send `patchCut`.
 - `held` — one `{surface, action, targetFile, reason, deferredId}` entry for
   each proposal that this run left for a person (the held exit table below). Build each
@@ -1321,6 +1328,15 @@ When the gate holds, build:
   `pending-stored`: it is the `id` that the `deferred_add` call of the
   section returned (the `{id}` of the 5d line). Send `held: []` when no row
   of the held exit table gives an entry.
+- Check each `held[].targetFile` with the 5a step 0 table before you send it.
+  A held proposal never reached 5a, so its `targetFile` never passed that
+  check, and it can come from untrusted PR comments. When the check fails,
+  send `targetFile: "(path rejected)"`. healing_record refuses an empty
+  `targetFile`, and the dashboard shows this text in place of the path.
+- Limits of one call: at most 100 `applied` entries, at most 100 `held`
+  entries, and a `rationale` of at most 600 characters. A call past a limit
+  fails and writes nothing, and the `started` record of 5-pre stays. Cut a
+  longer `rationale` to its first 600 characters before you send it.
 - `skipped` — `RESULT.proposals.length - applied.length` (`0` when
   `RESULT.proposals` itself is empty).
 - `classification` — `RESULT.classification` (`"plugin-defect"` on the
@@ -1345,6 +1361,18 @@ point):
 | interactive | 5a write-back halt or 5b halt | `not-processed` for each proposal after the halted proposal in `RESULT.proposals` order | `rm -f "<manifestPath>"`, then stop. No Step 7. |
 | interactive | `cancel` at the approval gate | `[]`. A person chose `cancel`. | Abort, `rm -f "<manifestPath>"`. No Step 7. |
 | any | Step 4 route (b) through Step 6, or route (d) | `[]`. Step 5 did not run. | Step 7 |
+
+The halted proposal itself (the proposal that caused a halt) has no `held`
+entry, because the halt did not leave it for later:
+
+- **5a write-back halt.** The proposal is in neither `applied` nor `held`,
+  and `skipped` counts it. Its file is not restored, but the record does not
+  show it. The printed `NOT restored: <file>` line (and its `Reverted` line in
+  the 5d summary under `--auto`) is the only record of the file.
+- **5b halt.** The proposal is in `applied`, because 5a wrote and checked
+  it. The record does not show that the Copilot mirror failed. The printed
+  halt message (and the `; Copilot mirror failed` part of its 5d line under
+  `--auto`) is the only record of the mirror failure.
 
 ```
 ship_state({

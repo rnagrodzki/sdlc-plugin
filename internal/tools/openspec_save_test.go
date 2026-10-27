@@ -61,6 +61,11 @@ func savedFixture(t *testing.T, branch, plan string) (root, planPath string) {
 	return root, planPath
 }
 
+// openspecSave saves with the active worktree workDir as the only root.
+func openspecSave(workDir string, in OpenspecSaveIn) (OpenspecSaveOut, error) {
+	return openspecSaveRun(openspecSaveDirs{Active: workDir}, in)
+}
+
 // readSaveFile returns the content of path, failing the test on error.
 func readSaveFile(t *testing.T, path string) string {
 	t.Helper()

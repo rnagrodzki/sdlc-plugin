@@ -9,15 +9,12 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/telemetry"
 )
 
-// dashboardShipStepHarden is the name of the harden step of a ship pipeline.
-const dashboardShipStepHarden = "harden"
-
 // Limits of the harden step detail. The snapshot is built every 2 s, so each
 // list has a cap; a cut list gives one info issue.
 const (
-	dashboardHardenRecordsMax   = 50  // run records read for one run
-	dashboardHardenRowsMax      = 100 // rows in each of edits, held, timeline
-	dashboardHardenRationaleMax = 600 // runes of one rationale
+	dashboardHardenRecordsMax   = 50                       // run records read for one run
+	dashboardHardenRowsMax      = 100                      // rows in each of edits, held, timeline
+	dashboardHardenRationaleMax = healingRationaleMaxRunes // runes of one rationale (the writer limit)
 )
 
 // dashboardHardenFixPassPrefix starts the harden decision that the ship
@@ -37,7 +34,7 @@ var dashboardHardenHeldLabels = map[string]string{
 type DashboardHarden struct {
 	Edits     []DashboardHardenEdit  `json:"edits"`             // applied[] of each valid run record
 	Clusters  []DashboardHardenRun   `json:"clusters"`          // one row for each valid run record
-	Funnel    *DashboardHardenFunnel `json:"funnel,omitempty"`  // absent when a source list is not a list
+	Funnel    *DashboardHardenFunnel `json:"funnel,omitempty"`  // absent when a source value has the wrong shape
 	FixPass   *DashboardHardenFix    `json:"fixPass,omitempty"` // absent when no fix pass started
 	Held      []DashboardHardenHeld  `json:"held"`              // held[] of each valid run record
 	Timeline  []DashboardHardenEvent `json:"timeline"`          // harden decisions, in stored order
@@ -61,7 +58,7 @@ type DashboardHardenRun struct {
 	Phase          string `json:"phase"`   // a healingPhases value
 	Classification string `json:"classification"`
 	Interrupted    bool   `json:"interrupted"` // a started record of a run that is not live
-	Applied        int    `json:"applied"`     // edits in the record
+	Applied        int    `json:"applied"`     // number of edits in the record
 	Skipped        int    `json:"skipped"`
 }
 
@@ -105,68 +102,98 @@ type DashboardHardenEvent struct {
 // step.Status only and does not set step.Detail. runCompleted is true when
 // the run has a pipelineCompletedAt.
 //
-// A run record that cannot be read is skipped and counted in Malformed; the
-// pipeline then gets one medium state issue. A healing.fixed or
-// deferredFindings value that is not a list gives one medium state issue
-// for the first bad field, and Funnel and FixPass are absent. A decisions
-// value that is not a list gives its own medium state issue, an empty
-// Timeline and no FixPass. Each cut list gives one info issue.
+// A data.healing value that is not an object (null is an empty object) gives
+// one medium state issue; the run records and the funnel are then not shown.
+// The run records come from dashboardHardenRuns, the funnel from
+// dashboardHardenFunnel and the timeline from dashboardHardenTimeline. A
+// decisions value that is not a list gives its own medium state issue, an
+// empty Timeline and no FixPass. FixPass is set only when a fix pass started
+// and the funnel is shown.
 func dashboardHardenDetail(data map[string]any, step *DashboardStep, runCompleted bool) (*DashboardHarden, []DashboardIssue) {
-	healing, _ := data["healing"].(map[string]any)
-	rawHardened, hasHardened := healing["hardened"]
-
-	decisions, decisionsOK := hardenShipList(data["decisions"])
-	var hardenDecisions []map[string]any
-	for _, raw := range decisions {
-		m, ok := raw.(map[string]any)
-		if ok && dashboardStr(m["step"]) == dashboardShipStepHarden {
-			hardenDecisions = append(hardenDecisions, m)
-		}
-	}
-	if !hasHardened && len(hardenDecisions) == 0 {
-		return nil, nil
-	}
-
 	var issues []DashboardIssue
+	healing, healingErr := shipDataHealing(data)
+	if healingErr != nil {
+		issues = append(issues, dashboardHardenShapeIssue(healingErr, "run records and funnel"))
+	}
+	_, hasHardened := healing["hardened"]
+	decisions, decisionsErr := shipDataList(data, "decisions", "decisions")
+	hardenDecisions := dashboardHardenDecisions(decisions)
+	if !hasHardened && len(hardenDecisions) == 0 {
+		return nil, issues
+	}
+
 	h := &DashboardHarden{
 		Edits:    []DashboardHardenEdit{},
 		Clusters: []DashboardHardenRun{},
 		Held:     []DashboardHardenHeld{},
 		Timeline: []DashboardHardenEvent{},
 	}
-
-	// A started record is live only while the harden step runs in a live run.
-	live := step.Status == StepInProgress && !runCompleted
-	var records []map[string]any
 	if hasHardened {
-		list, ok := rawHardened.([]any)
-		if !ok {
-			h.Malformed = 1
-		}
-		for _, raw := range list {
-			if rec, ok := dashboardHardenRecordValid(raw); ok {
-				records = append(records, rec)
-			} else {
-				h.Malformed++
-			}
+		// A started record is live only while the harden step runs in a live run.
+		live := step.Status == StepInProgress && !runCompleted
+		issues = append(issues, dashboardHardenRuns(h, healing, live)...)
+	}
+	if healingErr == nil {
+		issues = append(issues, dashboardHardenFunnel(h, data)...)
+	}
+	if decisionsErr != nil {
+		return h, append(issues, dashboardHardenShapeIssue(decisionsErr, "timeline"))
+	}
+	fixStarted, cut := dashboardHardenTimeline(h, hardenDecisions)
+	issues = append(issues, cut...)
+	if fixStarted && h.Funnel != nil {
+		// dashboardHardenFunnel checked that deferredFindings is a list or absent.
+		deferred, _ := shipDataList(data, "deferredFindings", "deferredFindings")
+		h.FixPass = dashboardHardenFixPass(deferred)
+	}
+	return h, issues
+}
+
+// dashboardHardenDecisions returns the entries of decisions that are objects
+// with step harden, in stored order.
+func dashboardHardenDecisions(decisions []any) []map[string]any {
+	var out []map[string]any
+	for _, raw := range decisions {
+		if m, ok := raw.(map[string]any); ok && dashboardStr(m["step"]) == dashboardShipStepHarden {
+			out = append(out, m)
 		}
 	}
-	if h.Malformed > 0 {
+	return out
+}
+
+// dashboardHardenRuns fills h.Clusters, h.Edits, h.Held and h.Malformed from
+// healing.hardened and returns its issues. A hardened value that is not a
+// list counts as one malformed record and gives the medium shape issue of
+// dashboardHardenShapeIssue. Each run record that dashboardHardenRecordValid
+// refuses is skipped and counted in Malformed, and those records give one
+// medium state issue. live is true while the harden step runs in a live run.
+// Each cut list gives one info issue.
+func dashboardHardenRuns(h *DashboardHarden, healing map[string]any, live bool) []DashboardIssue {
+	var issues []DashboardIssue
+	list, err := shipDataList(healing, "hardened", "healing.hardened")
+	if err != nil {
+		h.Malformed = 1
+		issues = append(issues, dashboardHardenShapeIssue(err, "run records"))
+	}
+	var records []map[string]any
+	bad := 0
+	for _, raw := range list {
+		if rec, ok := dashboardHardenRecordValid(raw); ok {
+			records = append(records, rec)
+		} else {
+			bad++
+		}
+	}
+	if bad > 0 {
+		h.Malformed += bad
 		issues = append(issues, dashboardQueueIssue("medium", fmt.Sprintf(
-			"healing.hardened of the ship state holds %d record(s) that cannot be read — they are not shown in the harden step", h.Malformed)))
+			"healing.hardened of the ship state holds %d record(s) that cannot be read — they are not shown in the harden step", bad)))
 	}
-	records, issues = dashboardHardenCut(records, dashboardHardenRecordsMax, "run record", issues)
+	records, cut := dashboardCutRows(records, dashboardHardenRecordsMax, "harden run record", "the harden step")
+	issues = append(issues, cut...)
 	for _, rec := range records {
-		phase := dashboardStr(rec["phase"])
 		applied, _ := rec["applied"].([]any)
-		h.Clusters = append(h.Clusters, DashboardHardenRun{
-			Trigger:        dashboardPreview(dashboardStr(rec["trigger"])),
-			Phase:          phase,
-			Classification: dashboardStr(rec["classification"]),
-			Interrupted:    phase == "started" && !live,
-			Applied:        len(applied),
-			Skipped:        dashboardInt(rec["skipped"]),
-		})
+		h.Clusters = append(h.Clusters, dashboardHardenRunOf(rec, len(applied), live))
 		for _, raw := range applied {
 			if m, ok := raw.(map[string]any); ok {
 				h.Edits = append(h.Edits, dashboardHardenEditOf(m))
@@ -174,74 +201,106 @@ func dashboardHardenDetail(data map[string]any, step *DashboardStep, runComplete
 		}
 		held, _ := rec["held"].([]any)
 		for _, raw := range held {
-			m, ok := raw.(map[string]any)
-			if !ok {
-				continue
+			if m, ok := raw.(map[string]any); ok {
+				h.Held = append(h.Held, dashboardHardenHeldOf(m))
 			}
-			reason := dashboardStr(m["reason"])
-			h.Held = append(h.Held, DashboardHardenHeld{
-				Surface:    dashboardStr(m["surface"]),
-				Action:     dashboardStr(m["action"]),
-				TargetFile: dashboardStr(m["targetFile"]),
-				Reason:     reason,
-				Label:      dashboardHardenHeldLabels[reason],
-				DeferredID: dashboardStr(m["deferredId"]),
-			})
 		}
 	}
-	h.Edits, issues = dashboardHardenCut(h.Edits, dashboardHardenRowsMax, "edit", issues)
-	h.Held, issues = dashboardHardenCut(h.Held, dashboardHardenRowsMax, "held", issues)
-
-	findings, badField, cut := hardenFindingsFromShip(healing, data["deferredFindings"])
-	if badField != "" {
-		issues = append(issues, dashboardHardenListIssue(badField, "funnel"))
-	} else {
-		if cut {
-			issues = append(issues, dashboardQueueIssue("info", fmt.Sprintf(
-				"the harden funnel counts only the first %d findings of the ship state", hardenFindingsMax)))
-		}
-		_, suppressed, loneDisagree := hardenBuildClusters(findings)
-		fixNow, staysDeferred, evidenceOnly := hardenSplitFindings(findings)
-		h.Funnel = &DashboardHardenFunnel{
-			FixNow:        len(fixNow),
-			StaysDeferred: len(staysDeferred),
-			EvidenceOnly:  len(evidenceOnly),
-			Suppressed:    len(suppressed),
-			LoneDisagree:  len(loneDisagree),
-		}
-	}
-
-	if !decisionsOK {
-		issues = append(issues, dashboardHardenListIssue("decisions", "timeline"))
-	} else {
-		fixStarted := false
-		for _, m := range hardenDecisions {
-			decision := dashboardStr(m["decision"])
-			if strings.HasPrefix(decision, dashboardHardenFixPassPrefix) {
-				fixStarted = true
-			}
-			at := dashboardStr(m["at"])
-			if _, ok := dashboardParseTime(at); !ok {
-				at = ""
-			}
-			h.Timeline = append(h.Timeline, DashboardHardenEvent{At: at, Decision: dashboardPreview(decision)})
-		}
-		h.Timeline, issues = dashboardHardenCut(h.Timeline, dashboardHardenRowsMax, "timeline", issues)
-		if fixStarted && badField == "" {
-			h.FixPass = dashboardHardenFixPass(data["deferredFindings"])
-		}
-	}
-	return h, issues
+	h.Edits, cut = dashboardCutRows(h.Edits, dashboardHardenRowsMax, "harden edit", "the harden step")
+	issues = append(issues, cut...)
+	h.Held, cut = dashboardCutRows(h.Held, dashboardHardenRowsMax, "harden held", "the harden step")
+	return append(issues, cut...)
 }
 
-// dashboardHardenRecordValid returns raw as a run record when every field
-// that the harden detail reads has its stored form. A record is not valid
+// dashboardHardenRunOf builds the cluster row of a valid run record with
+// applied edits. A started record is interrupted when the run is not live.
+func dashboardHardenRunOf(rec map[string]any, applied int, live bool) DashboardHardenRun {
+	phase := dashboardStr(rec["phase"])
+	return DashboardHardenRun{
+		Trigger:        dashboardPreview(dashboardStr(rec["trigger"])),
+		Phase:          phase,
+		Classification: dashboardStr(rec["classification"]),
+		Interrupted:    phase == healingPhaseStarted && !live,
+		Applied:        applied,
+		Skipped:        dashboardInt(rec["skipped"]),
+	}
+}
+
+// dashboardHardenHeldOf builds one held row from a valid held entry.
+func dashboardHardenHeldOf(m map[string]any) DashboardHardenHeld {
+	reason := dashboardStr(m["reason"])
+	return DashboardHardenHeld{
+		Surface:    dashboardStr(m["surface"]),
+		Action:     dashboardStr(m["action"]),
+		TargetFile: dashboardStr(m["targetFile"]),
+		Reason:     reason,
+		Label:      dashboardHardenHeldLabels[reason],
+		DeferredID: dashboardStr(m["deferredId"]),
+	}
+}
+
+// dashboardHardenFunnel sets h.Funnel from the findings of
+// hardenFindingsFromShip and returns its issues. A source value with the
+// wrong shape leaves h.Funnel nil and gives the medium shape issue of the
+// first bad field. A cut input gives one info issue. Entries that cannot be
+// read give one medium issue; the funnel is still shown without them.
+func dashboardHardenFunnel(h *DashboardHarden, data map[string]any) []DashboardIssue {
+	res, err := hardenFindingsFromShip(data)
+	if err != nil {
+		return []DashboardIssue{dashboardHardenShapeIssue(err, "funnel")}
+	}
+	var issues []DashboardIssue
+	if res.Cut {
+		issues = append(issues, dashboardQueueIssue("info", fmt.Sprintf(
+			"The harden funnel counts only the first %d findings of the ship state", hardenFindingsMax)))
+	}
+	if res.Skipped > 0 {
+		issues = append(issues, dashboardQueueIssue("medium", fmt.Sprintf(
+			"%d entries of healing.fixed and deferredFindings of the ship state cannot be read — the harden funnel does not count them", res.Skipped)))
+	}
+	_, suppressed, loneDisagree := hardenBuildClusters(res.Findings)
+	fixNow, staysDeferred, evidenceOnly := hardenSplitFindings(res.Findings)
+	h.Funnel = &DashboardHardenFunnel{
+		FixNow:        len(fixNow),
+		StaysDeferred: len(staysDeferred),
+		EvidenceOnly:  len(evidenceOnly),
+		Suppressed:    len(suppressed),
+		LoneDisagree:  len(loneDisagree),
+	}
+	return issues
+}
+
+// dashboardHardenTimeline fills h.Timeline from the harden decisions, in
+// stored order, and returns whether one of them starts the fix pass, plus
+// the info issue of a cut timeline. An at that does not parse as RFC 3339
+// is shown as "".
+func dashboardHardenTimeline(h *DashboardHarden, decisions []map[string]any) (fixStarted bool, issues []DashboardIssue) {
+	for _, m := range decisions {
+		decision := dashboardStr(m["decision"])
+		if strings.HasPrefix(decision, dashboardHardenFixPassPrefix) {
+			fixStarted = true
+		}
+		at := dashboardStr(m["at"])
+		if _, ok := dashboardParseTime(at); !ok {
+			at = ""
+		}
+		h.Timeline = append(h.Timeline, DashboardHardenEvent{At: at, Decision: dashboardPreview(decision)})
+	}
+	h.Timeline, issues = dashboardCutRows(h.Timeline, dashboardHardenRowsMax, "harden timeline", "the harden step")
+	return fixStarted, issues
+}
+
+// dashboardHardenRecordValid returns raw as a run record when the fields that
+// decide how the record shows have their stored form. A record is not valid
 // when it is not an object; when phase is not in healingPhases or trigger is
 // empty; when applied is not a list, or held is present and not a list; when
 // an applied entry is not an object, lacks surface, action or targetFile, or
 // has a rationale or patch that is not a string; or when a held entry is not
 // an object, lacks surface, action or targetFile, or has a reason outside
 // healingHeldReasons. An absent held key is valid: older records have none.
+// The record's classification and skipped, applied[].patchCut and
+// held[].deferredId are not checked: a value of the wrong type reads as its
+// zero value ("", 0 or false).
 func dashboardHardenRecordValid(raw any) (map[string]any, bool) {
 	rec, ok := raw.(map[string]any)
 	if !ok {
@@ -283,14 +342,10 @@ func dashboardHardenRecordValid(raw any) (map[string]any, bool) {
 }
 
 // dashboardHardenHasFields reports whether m has a non-empty string surface,
-// action and targetFile.
+// action and targetFile. It uses the field check of the healing_record
+// writer (healingMissingEntryField), so the reader and the writer agree.
 func dashboardHardenHasFields(m map[string]any) bool {
-	for _, field := range []string{"surface", "action", "targetFile"} {
-		if strings.TrimSpace(dashboardStr(m[field])) == "" {
-			return false
-		}
-	}
-	return true
+	return healingMissingEntryField(m) == ""
 }
 
 // dashboardHardenEditOf builds one edit row from a valid applied entry. The
@@ -317,27 +372,21 @@ func dashboardHardenEditOf(m map[string]any) DashboardHardenEdit {
 }
 
 // dashboardHardenFixPass counts the fix pass of the harden step from the
-// deferredFindings list: Fixed is the number of entries with fixedInRun
-// true; Total adds the entries with reason below-threshold (an empty reason
-// counts as below-threshold), a deferredId and no fixedInRun true. The
-// caller checked that deferredFindings is a list, absent or null.
-func dashboardHardenFixPass(deferredFindings any) *DashboardHardenFix {
-	list, _ := hardenShipList(deferredFindings)
+// deferredFindings list: Fixed is the number of entries that
+// deferredFixedInRun reports as fixed; Total adds the entries whose
+// deferredReason is below-threshold, with a deferredId and not fixed.
+func dashboardHardenFixPass(deferredFindings []any) *DashboardHardenFix {
 	fix := &DashboardHardenFix{}
-	for _, raw := range list {
+	for _, raw := range deferredFindings {
 		m, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
-		if fixed, _ := m["fixedInRun"].(bool); fixed {
+		if deferredFixedInRun(m) {
 			fix.Fixed++
 			continue
 		}
-		reason := dashboardStr(m["reason"])
-		if reason == "" {
-			reason = history.ReasonBelowThreshold
-		}
-		if reason == history.ReasonBelowThreshold && strings.TrimSpace(dashboardStr(m["deferredId"])) != "" {
+		if deferredReason(m) == history.ReasonBelowThreshold && strings.TrimSpace(dashboardStr(m["deferredId"])) != "" {
 			fix.Total++
 		}
 	}
@@ -345,19 +394,11 @@ func dashboardHardenFixPass(deferredFindings any) *DashboardHardenFix {
 	return fix
 }
 
-// dashboardHardenListIssue returns the medium state issue of a source list
-// that is not a list. part names the part of the harden step not shown.
-func dashboardHardenListIssue(field, part string) DashboardIssue {
-	return dashboardQueueIssue("medium", fmt.Sprintf("%s of the ship state is not a list — the harden %s is not shown", field, part))
-}
-
-// dashboardHardenCut returns rows cut at limit and issues with one info
-// issue added when it cuts rows. list names the rows in the issue text.
-func dashboardHardenCut[T any](rows []T, limit int, list string, issues []DashboardIssue) ([]T, []DashboardIssue) {
-	if len(rows) <= limit {
-		return rows, issues
-	}
-	issues = append(issues, dashboardQueueIssue("info", fmt.Sprintf(
-		"%d harden %s rows not shown: the harden step shows the first %d of %d", len(rows)-limit, list, limit, len(rows))))
-	return rows[:limit], issues
+// dashboardHardenShapeIssue returns the medium state issue of a ship state
+// value with the wrong shape: the text of err, then "— the harden step does
+// not show its <part>". err is a *shipDataShapeError, so the text starts with
+// "<field> of the ship state is not a list" (or "an object") and names the
+// type found.
+func dashboardHardenShapeIssue(err error, part string) DashboardIssue {
+	return dashboardQueueIssue("medium", fmt.Sprintf("%s — the harden step does not show its %s", err.Error(), part))
 }

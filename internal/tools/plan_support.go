@@ -167,16 +167,17 @@ type PlanSupportOut struct {
 	AppendixMarkdown string `json:"appendixMarkdown,omitempty"`
 
 	// openspec_stage
-	StagingDir     string                `json:"stagingDir,omitempty"`
-	StagedFiles    []openspec.StagedFile `json:"files,omitempty"`
-	Valid          *bool                 `json:"valid,omitempty"` // pointer so false still renders
-	ValidateOutput string                `json:"validateOutput,omitempty"`
+	StagingDir     string                `json:"stagingDir,omitempty" jsonschema_description:"openspec_stage only: the staging folder relative to stagingRoot, in the form the plan's **OpenSpec-Staging:** header uses. Absent on other actions. Example: .sdlc-v2/openspec-staging/add-widget/"`
+	StagingRoot    string                `json:"stagingRoot,omitempty" jsonschema_description:"openspec_stage only: absolute path of the root that holds stagingDir. It is the main worktree, or the active worktree when the main worktree could not be resolved (the summary then holds a warning). Absent on other actions. Example: /Users/me/repo"`
+	StagedFiles    []openspec.StagedFile `json:"files,omitempty" jsonschema_description:"openspec_stage only: each staged file with its path relative to stagingDir and its SHA-256. Absent on other actions."`
+	Valid          *bool                 `json:"valid,omitempty" jsonschema_description:"openspec_stage only: true when openspec validate --strict passed and no diagram contrast problem was found. Absent on other actions."` // pointer so false still renders
+	ValidateOutput string                `json:"validateOutput,omitempty" jsonschema_description:"openspec_stage only: the openspec validate output, plus one diagram contrast line for each problem. Absent when empty."`
 	// StagingReplaced is true when the call replaced an existing staging dir,
 	// false when it created one. Pointer so false still renders.
-	StagingReplaced *bool `json:"stagingReplaced,omitempty"`
+	StagingReplaced *bool `json:"stagingReplaced,omitempty" jsonschema_description:"openspec_stage only: true when the call replaced an existing staging folder, false when it created one. Absent on other actions."`
 	// StagedPlanPath is the planPath written to stage.json, the owner key of
 	// the staging. Empty (omitted) when the call passed no planPath.
-	StagedPlanPath string `json:"stagedPlanPath,omitempty"`
+	StagedPlanPath string `json:"stagedPlanPath,omitempty" jsonschema_description:"openspec_stage only: the planPath written to stage.json, the owner key of the staging. Absent when the call passed no planPath."`
 
 	// openspec_instructions
 	SchemaName string                   `json:"schemaName,omitempty"`
@@ -308,7 +309,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
 - openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a temp copy of openspec/config.yaml. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing in the repository; a missing openspec CLI returns InfraError.
-- openspec_stage: Write the authored artifacts to <main-worktree>/.sdlc-v2/openspec-staging/<changeName>/ (replaces the whole directory), so a run in any worktree of the repo finds them, and validate them in a temp copy of the active worktree. Requires changeName, files. Optional: planPath. Returns stagingDir (relative to the main worktree), files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. A current spec that cannot be read returns InfraError.
+- openspec_stage: Write the authored artifacts to `+stagingFolderText("<changeName>")+` (replaces the whole directory), so a run in any worktree of the repo finds them, and validate them in a temp copy of the active worktree. When the main worktree cannot be resolved, it writes under the active worktree and the summary holds a warning; a git output over the size cap while it resolves the main worktree is an InfraError. Requires changeName, files. Optional: planPath. Returns stagingDir (relative to stagingRoot), stagingRoot (absolute path of the main worktree, or of the fallback root), files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). The summary names the absolute staging folder. A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. A current spec that cannot be read returns InfraError.
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Each write sets updatedAt (UTC). A write to a writer file that has no startedAt sets startedAt to that updatedAt; later writes keep it. A file written before startedAt existed, or an unreadable file that this call replaces, gets startedAt at this later write, so its startedAt can be later than the writer's real start. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record (writerId, status, itemCount, fileBytes, briefPath, startedAt, updatedAt). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
@@ -320,18 +321,6 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 			OpenWorld:  false,
 		},
 		func(ctx mcpserver.Ctx, in PlanSupportIn) (PlanSupportOut, error) {
-			root, err := worktree.MainRoot()
-			if err != nil {
-				cwd, cwdErr := os.Getwd()
-				if cwdErr != nil {
-					return PlanSupportOut{}, &mcpserver.InfraError{
-						Msg:        "resolve root: " + err.Error(),
-						Suggestion: "Run plan_support from inside a git repository (or a worktree of one) so the main root can be resolved, then retry.",
-						Cause:      err,
-					}
-				}
-				root = cwd
-			}
 			// An unresolved active worktree stays empty: the openspec_*
 			// actions that read the active worktree refuse. openspec_stage
 			// writes the staging folder under the main root.
@@ -339,9 +328,47 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 			if err != nil {
 				contentRoot = ""
 			}
-			return planSupportCore(root, contentRoot, in)
+			root, warning, err := planSupportMainRoot(contentRoot)
+			if err != nil {
+				return PlanSupportOut{}, err
+			}
+			out, err := planSupportCore(root, contentRoot, in)
+			// Only openspec_stage reports the fallback: a later run in
+			// another worktree looks for its staging folder under the main
+			// worktree, so the caller must know it was written elsewhere.
+			if err == nil && warning != "" && in.Action == "openspec_stage" {
+				out.Summary = strings.TrimSpace(out.Summary + " Warning: " + warning)
+			}
+			return out, err
 		},
 	)
+}
+
+// planSupportMainRoot resolves the main root of plan_support. A git output
+// over the execx cap is an InfraError (see mainRootOrWarning). When the main
+// worktree cannot be resolved for any other reason, the root is contentRoot
+// (the active worktree), or the current directory when contentRoot is empty,
+// and warning names the error and the root used. The caller adds warning to
+// the Summary of openspec_stage, which then reports that it wrote the
+// staging folder under that root and not under the main worktree.
+func planSupportMainRoot(contentRoot string) (root, warning string, err error) {
+	root, warning, err = mainRootOrWarning("plan_support")
+	if err != nil || warning == "" {
+		return root, "", err
+	}
+	root = contentRoot
+	if root == "" {
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return "", "", &mcpserver.InfraError{
+				Msg:        "plan_support: resolve root: " + warning + " " + cwdErr.Error(),
+				Suggestion: "Run plan_support from inside a git repository (or a worktree of one) so the main root can be resolved, then retry.",
+				Cause:      cwdErr,
+			}
+		}
+		root = cwd
+	}
+	return root, warning + " Used " + root + " as the main root.", nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1270,17 +1297,19 @@ func openspecStage(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportO
 	}
 	out := PlanSupportOut{
 		StagingDir:      res.StagingDir,
+		StagingRoot:     mainRoot,
 		StagedFiles:     res.Files,
 		Valid:           &valid,
 		ValidateOutput:  validateOutput,
 		StagingReplaced: &res.Replaced,
 		StagedPlanPath:  res.PlanPath,
 	}
+	absDir := filepath.Join(mainRoot, filepath.FromSlash(res.StagingDir)) + string(filepath.Separator)
 	if valid {
-		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation passed.", len(res.Files), in.ChangeName, res.StagingDir)
+		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation passed.", len(res.Files), in.ChangeName, absDir)
 		out.Next = "Staged and valid. Add the **OpenSpec-Staging:** header to the plan."
 	} else {
-		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation failed.", len(res.Files), in.ChangeName, res.StagingDir)
+		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation failed.", len(res.Files), in.ChangeName, absDir)
 		out.Next = "Fix the artifacts using validateOutput and call openspec_stage again."
 	}
 	return out, nil

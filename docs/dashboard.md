@@ -881,7 +881,8 @@ look alike on the page. Their causes and their fixes differ.
   ended between the two writes, or a `done` write that failed (see
   [Ship state record](skills/harden.md#ship-state-record)). The ship state
   file needs no repair. A resume of the ship run does not run that cluster
-  again. The commit step commits its edits. A `started` row is not
+  again. The harden step commits its leftover edits in its own commit, not
+  the pipeline `commit` step. A `started` row is not
   interrupted while the harden step is `in_progress` and the run has no
   `pipelineCompletedAt`.
 - **Malformed record.** `malformed` counts it, and the page does not show
@@ -893,7 +894,11 @@ look alike on the page. Their causes and their fixes differ.
   object or lacks `surface`, `action` or `targetFile`; when `rationale` or
   `patch` is not a string; when `held` is present and not a list; or when
   `held[].reason` is unknown. A `healing.hardened` value that is not a list
-  counts as one malformed record. `healing_record` stores the valid form,
+  counts as one malformed record, and it gives another `medium` `state`
+  issue in place of the issue above: `healing.hardened of the ship state is
+  not a list (found <type>) — the harden step does not show its run
+  records`. `<type>` is the JSON type found, for example `object` or `null`.
+  `healing_record` stores the valid form,
   so the cause is a ship state file that was edited by hand, damaged, or
   written by another tool. To fix it, correct the record to the form in
   [Ship state record](skills/harden.md#ship-state-record), or remove it.
@@ -905,19 +910,51 @@ The rules of the other fields:
   `timeline[]` holds at most 100 rows. A cut list adds one `info` `state`
   issue: `N harden <list> rows not shown: the harden step shows the first L of
   M`. `<list>` is `run record`, `edit`, `held` or `timeline`.
-- **`funnel`.** It counts the findings of `healing.fixed` (the entries with
-  no `deferredId`) and of `deferredFindings`. It counts at most 500
-  findings. A longer input adds one `info` `state` issue: `the harden funnel
-  counts only the first 500 findings of the ship state`. When `healing.fixed`
-  or `deferredFindings` is present and not a list, `funnel` is absent, and
-  one `medium` `state` issue names the first bad field: `<field> of the ship
-  state is not a list — the harden funnel is not shown`.
+- **`clusters[]` and `edits[]`.** `clusters[].applied` is a number: the
+  count of `applied[]` entries in the run record, not the list. The entries
+  are in `edits[]`. `edits[].patchCut` is `true` when the stored entry has
+  `patchCut: true` (the writer cut the patch at 1536 bytes), or when the
+  patch is longer than 1536 bytes after redaction and the page cuts it. The
+  key is absent otherwise, and always absent for an edit with no patch.
+- **`funnel`.** It sorts the findings with the rules of `harden_clusters`.
+  The findings are the `healing.fixed` records with no `deferredId` (verdict
+  `agree-will-fix`), then the `deferredFindings` entries. An entry with an
+  empty reason counts as `below-threshold`. The funnel shows what harden saw
+  before its fix pass: it ignores `fixedInRun`, so an entry that the fix pass
+  fixed still counts in `fixNow`. `fixPass` shows the result of the fix pass.
+  The first three fields count findings, the last two count files:
+
+  | Field | Counts |
+  |---|---|
+  | `fixNow` | `below-threshold` findings with a `deferredId`. The fix pass of the harden step fixes them. |
+  | `staysDeferred` | `below-threshold` findings with no `deferredId`, and `needs-direction` findings. They stay deferred. |
+  | `evidenceOnly` | `disagree` and `wont-fix` findings. Harden reads them as evidence only. |
+  | `suppressed` | Files over the cap of 5 clusters. The files with the fewest findings (ties by path) are not hardened. |
+  | `loneDisagree` | Files whose only finding is a `disagree` finding. They form no cluster. |
+
+  A `healing.fixed` record or `agree-will-fix` finding counts in none of the
+  three finding fields. A file that has only `below-threshold` findings forms
+  no cluster, so it is never `suppressed`. The funnel counts at most 500
+  findings. A longer input adds one `info` `state` issue: `The harden funnel
+  counts only the first 500 findings of the ship state`. An entry that is not
+  an object, and a `deferredFindings` entry with an unknown reason, is not
+  counted; such entries add one `medium` `state` issue: `N entries of
+  healing.fixed and deferredFindings of the ship state cannot be read — the
+  harden funnel does not count them`. When `healing.fixed` or
+  `deferredFindings` is present and not a list (`null` included), `funnel`
+  is absent, and one `medium` `state` issue names the first bad field and
+  the type found: `<field> of the ship state is not a list (found <type>) —
+  the harden step does not show its funnel`. When `healing` is present and
+  not an object (`null` is an empty object), `funnel` is absent, no run
+  record is read, and one `medium` `state` issue says `healing of the ship
+  state is not an object (found <type>) — the harden step does not show its
+  run records and funnel`.
 - **`timeline`.** One row for each decision of step `harden`, in stored
   order. `at` is `""` when the stored time is not RFC 3339. `decision` is
   redacted and cut at 120 characters. When `decisions` is not a list,
   `timeline` is `[]`, `fixPass` is absent, and one `medium` `state` issue
-  says `decisions of the ship state is not a list — the harden timeline is
-  not shown`.
+  says `decisions of the ship state is not a list (found <type>) — the harden
+  step does not show its timeline`.
 - **`fixPass`.** Present when a `harden` decision starts with `fix pass
   started` and the lists above are valid. `fixed` counts the
   `deferredFindings` entries with `fixedInRun: true`. `total` adds the

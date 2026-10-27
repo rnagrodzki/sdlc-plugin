@@ -700,3 +700,117 @@ func TestMaterialize_MainStagingBadManifestNoFallback(t *testing.T) {
 		})
 	}
 }
+
+// The tests below repeat the error rows with an active root and a staging
+// root that differ, so a fix that reads or deletes the wrong root fails.
+
+// Rule 5, distinct roots: the target under the active root differs from the
+// staging dir under the staging root. Nothing changes.
+func TestMaterialize_TargetDiffersStagingRoot(t *testing.T) {
+	active, log := setupStageRepo(t)
+	stagingRoot := t.TempDir()
+	target := writeTarget(t, active, "add-widget", stageFiles(false))
+	mustWrite(t, filepath.Join(target, "tasks.md"), "# Tasks (edited)\n")
+	staging := writeStaging(t, stagingRoot, "add-widget", stageFiles(false))
+	targetBefore, stagingBefore := snapshot(t, target), snapshot(t, staging)
+
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "openspec change add-widget already exists and differs from staging") {
+		t.Fatalf("err = %v, want differs-from-staging ErrMaterialize", err)
+	}
+	assertUnchanged(t, target, targetBefore)
+	assertUnchanged(t, staging, stagingBefore)
+	if n := stubCalls(t, log); n != 0 {
+		t.Fatalf("stub calls = %d, want 0", n)
+	}
+}
+
+// Rule 7, distinct roots: a file of the staging dir under the staging root
+// changed after validation. Nothing is written and the staging dir stays.
+func TestMaterialize_StagedFileHashMismatchStagingRoot(t *testing.T) {
+	active, log := setupStageRepo(t)
+	stagingRoot := t.TempDir()
+	staging := writeStaging(t, stagingRoot, "add-widget", stageFiles(false))
+	mustWrite(t, filepath.Join(staging, "tasks.md"), "# Tasks (edited after validation)\n")
+	stagingBefore := snapshot(t, staging)
+
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "staged file tasks.md changed after validation") {
+		t.Fatalf("err = %v, want changed-after-validation ErrMaterialize", err)
+	}
+	assertMissing(t, filepath.Join(active, "openspec", "changes", "add-widget"))
+	assertUnchanged(t, staging, stagingBefore)
+	if n := stubCalls(t, log); n != 0 {
+		t.Fatalf("stub calls = %d, want 0", n)
+	}
+	assertGitClean(t, active)
+}
+
+// Rule 7 on the fallback: the staging root has no staging dir, and a file
+// of the old staging dir under the active root changed after validation.
+func TestMaterialize_StagedFileHashMismatchFallback(t *testing.T) {
+	active, log := setupStageRepo(t)
+	stagingRoot := t.TempDir()
+	staging := writeStaging(t, active, "add-widget", stageFiles(false))
+	mustWrite(t, filepath.Join(staging, "tasks.md"), "# Tasks (edited after validation)\n")
+	stagingBefore := snapshot(t, staging)
+
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "staged file tasks.md changed after validation") {
+		t.Fatalf("err = %v, want changed-after-validation ErrMaterialize", err)
+	}
+	assertMissing(t, filepath.Join(active, "openspec", "changes", "add-widget"))
+	assertUnchanged(t, staging, stagingBefore)
+	if n := stubCalls(t, log); n != 0 {
+		t.Fatalf("stub calls = %d, want 0", n)
+	}
+}
+
+// An unsafe stage.json path under the staging root is refused before any
+// write, as with equal roots.
+func TestMaterialize_RejectsUnsafeManifestPathStagingRoot(t *testing.T) {
+	active, log := setupStageRepo(t)
+	stagingRoot := t.TempDir()
+	staging := writeStaging(t, stagingRoot, "add-widget", stageFiles(false))
+	m := readManifest(t, stagingRoot, "add-widget")
+	m.Files = append(m.Files, StagedFile{Path: "../escape.md", SHA256: sha("x")})
+	if err := fsx.AtomicWriteJSON(filepath.Join(staging, StageManifestFile), m); err != nil {
+		t.Fatal(err)
+	}
+	stagingBefore := snapshot(t, staging)
+
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	if !errors.Is(err, ErrMaterialize) || !errors.Is(err, ErrPathNotAllowed) {
+		t.Fatalf("err = %v, want ErrMaterialize and ErrPathNotAllowed", err)
+	}
+	assertMissing(t, filepath.Join(active, "openspec", "changes", "add-widget"))
+	assertUnchanged(t, staging, stagingBefore)
+	if n := stubCalls(t, log); n != 0 {
+		t.Fatalf("stub calls = %d, want 0", n)
+	}
+}
+
+// Rule 8 rollback, distinct roots: validation fails, the target under the
+// active root is removed, and the staging dir under the staging root stays
+// whole, so a later start can try again.
+func TestMaterialize_ValidateFailsRollsBackStagingRoot(t *testing.T) {
+	active, log := setupStageRepo(t)
+	stagingRoot := t.TempDir()
+	t.Setenv("STUB_VALIDATE_EXIT", "1")
+	staging := writeStaging(t, stagingRoot, "add-widget", stageFiles(false))
+	stagingBefore := snapshot(t, staging)
+
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "proposal.md missing Why section") {
+		t.Fatalf("err = %v, want ErrMaterialize carrying the CLI output", err)
+	}
+	assertMissing(t, filepath.Join(active, "openspec", "changes", "add-widget"))
+	assertUnchanged(t, staging, stagingBefore)
+	if n := stubCalls(t, log); n != 2 {
+		t.Fatalf("stub calls = %d, want 2 (new change, validate)", n)
+	}
+	if out := strings.TrimSpace(git(t, active, "diff", "--cached", "--name-only")); out != "" {
+		t.Fatalf("index not empty after rollback: %s", out)
+	}
+	assertGitClean(t, active)
+}

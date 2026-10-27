@@ -131,7 +131,7 @@ Loads the proposal, delta specs, and task list from
   change). That change is authored from the reviewed plan at the end of
   Step 6, and authored again when you reject the plan with feedback.
 - **Staging a created change can stop the skill.** The skill stages the
-  authored files with `openspec_stage`. Four exits apply:
+  authored files with `openspec_stage`. These exits apply:
   - `staged by another plan`: another plan file staged this change name.
     If the error names this plan file under another path, the skill calls
     again with that path. Otherwise the skill asks you whether the other
@@ -146,13 +146,22 @@ Loads the proposal, delta specs, and task list from
     a change name that no plan uses, then run the skill again.
   - After 5 `openspec_stage` tries that return `valid: false`, the skill
     shows the OpenSpec CLI output and stops with no plan handoff.
-  - On a resume at or after Step 6.5, the skill reads the staging folder of
-    the main worktree, then the folder of the active worktree (an older
-    plugin staged there). If both folders are missing, the skill prints
+  - On a resume at or after Step 6.5, the skill stages the files of the
+    change again from the staging folder of the main worktree. Only when
+    that folder is missing does it use the staging folder of the active
+    worktree (an older plugin staged there). When the skill cannot find the
+    main worktree, it uses only the folder of the active worktree and
+    prints a notice. If both folders are missing, the skill prints
     `Staging folder of <name> not found under <MAIN_ROOT> or <ACTIVE_ROOT>.
-    Run /sdlc:plan again to author the change.` and stops with no plan
-    handoff and no `openspec_stage` call. Run the skill again to author the
-    change.
+    The change is authored again from the plan.` In this message, `<name>`
+    is the change name, `<MAIN_ROOT>` is the path of the main worktree and
+    `<ACTIVE_ROOT>` is the path of the active worktree. The skill fills in
+    the real values. It then authors the change again from the plan and
+    stages it, with no step for you to do.
+  - On that resume, a `valid: false` result follows the 5-try rule above,
+    and the resume call counts as the first try. Any other error stops the
+    skill with no plan handoff. Fix the cause that the error names, then
+    run the skill again.
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.

@@ -5911,7 +5911,7 @@ func TestShipStateHealingRecord_EchoesRecord(t *testing.T) {
 	}{
 		{map[string]any{"kind": "review-total", "total": float64(3), "dimensions": float64(2)},
 			"continue-after-review-total", "Review total stored. Run the per-finding review routing."},
-		{healingHardenedDetail(nil), "continue-harden", "Harden record stored. The harden run is finished. Return to the step that dispatched harden."},
+		{healingHardenedDetail(nil), "continue-harden", "Harden record stored. " + healingHardenedDoneNext},
 	} {
 		tc.detail["branch"] = branch
 		out, err := shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: tc.detail}, fixedNow(at))
@@ -6831,13 +6831,13 @@ func TestShipStateHealingRecord_KindNext(t *testing.T) {
 		{"hardened started, no live run", true, nil, started, healingNarrNoLiveRun,
 			"continue-harden", "No live ship run, so the harden record is not stored. Continue the harden run. When it ends, record phase done with the same trigger."},
 		{"hardened done recorded", false, nil, done, healingNarrRecorded,
-			"continue-harden", "Harden record stored. The harden run is finished. Return to the step that dispatched harden."},
+			"continue-harden", "Harden record stored. " + healingHardenedDoneNext},
 		{"hardened replaced started record", false, []map[string]any{started}, done, healingNarrReplaced,
-			"continue-harden", "Harden record stored. The harden run is finished. Return to the step that dispatched harden."},
+			"continue-harden", "Harden record stored. " + healingHardenedDoneNext},
 		{"hardened done repeat", false, []map[string]any{done}, done, healingNarrDuplicate,
-			"continue-harden", "Harden record already stored. The harden run is finished. Return to the step that dispatched harden."},
+			"continue-harden", "Harden record already stored. " + healingHardenedDoneNext},
 		{"hardened done, no live run", true, nil, done, healingNarrNoLiveRun,
-			"continue-harden", "No live ship run, so the harden record is not stored. The harden run is finished. Return to the step that dispatched harden."},
+			"continue-harden", "No live ship run, so the harden record is not stored. " + healingHardenedDoneNext},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -7276,6 +7276,10 @@ func TestShipStateHealingRecord_HeldRejections(t *testing.T) {
 	for i := range tooMany {
 		tooMany[i] = healingHeldEntry(nil)
 	}
+	var tooManyApplied []any
+	for range healingAppliedMax + 1 {
+		tooManyApplied = append(tooManyApplied, healingAppliedWith(nil)...)
+	}
 	held := func(entry any) map[string]any {
 		return healingHardenedDetail(map[string]any{"held": []any{entry}})
 	}
@@ -7314,7 +7318,32 @@ func TestShipStateHealingRecord_HeldRejections(t *testing.T) {
 		{"held reason missing", held(healingHeldEntry(map[string]any{"reason": nil})),
 			[]string{"detail.held[0].reason"}, append([]string{"detail.held[0].reason"}, healingHeldReasons...)},
 		{"held reason unknown", held(healingHeldEntry(map[string]any{"reason": "later"})),
-			[]string{"detail.held[0].reason later"}, append([]string{"detail.held[0].reason"}, healingHeldReasons...)},
+			[]string{`detail.held[0].reason "later" is not a held reason`}, append([]string{"detail.held[0].reason"}, healingHeldReasons...)},
+		{"held reason not a string", held(healingHeldEntry(map[string]any{"reason": float64(3)})),
+			[]string{"detail.held[0].reason must be a string, got float64"}, append([]string{"detail.held[0].reason"}, healingHeldReasons...)},
+		{"held reason null", held(map[string]any{"surface": "review-dimensions", "action": "add", "targetFile": "/x", "reason": nil}),
+			[]string{"detail.held[0].reason is required"}, append([]string{"detail.held[0].reason"}, healingHeldReasons...)},
+		// A valid entry first, so the index of the bad entry is 1.
+		{"second held entry bad", healingHardenedDetail(map[string]any{"held": []any{healingHeldEntry(nil), healingHeldEntry(map[string]any{"targetFile": nil})}}),
+			[]string{"detail.held[1].targetFile is required"}, []string{"detail.held[1].targetFile"}},
+		{"second held deferredId whitespace only", healingHardenedDetail(map[string]any{"held": []any{healingHeldEntry(nil), healingHeldEntry(map[string]any{"deferredId": "  "})}}),
+			[]string{"detail.held[1].deferredId must be a non-empty string"}, []string{"detail.held[1].deferredId"}},
+		{"held action whitespace only", held(healingHeldEntry(map[string]any{"action": " \t"})),
+			[]string{"detail.held[0].action is required"}, []string{"detail.held[0].action"}},
+		{"second applied entry bad", healingHardenedDetail(map[string]any{"applied": append(healingAppliedWith(nil), map[string]any{"surface": "plan-guardrails", "action": "add"})}),
+			[]string{"detail.applied[1].targetFile is required"}, []string{"detail.applied[1].targetFile"}},
+		{"second applied surface unknown", healingHardenedDetail(map[string]any{"applied": append(healingAppliedWith(nil), map[string]any{"surface": "readme", "action": "add", "targetFile": "/x"})}),
+			[]string{`detail.applied[1].surface "readme"`}, append([]string{"detail.applied[1].surface"}, healingSurfaceIDs()...)},
+		{"second applied rationale not a string", healingHardenedDetail(map[string]any{"applied": append(healingAppliedWith(nil), healingAppliedWith(map[string]any{"rationale": true})...)}),
+			[]string{"detail.applied[1].rationale must be a string"}, []string{"detail.applied[1].rationale"}},
+		{"applied action whitespace only", healingHardenedDetail(map[string]any{"applied": healingAppliedWith(map[string]any{"action": "   "})}),
+			[]string{"detail.applied[0].action is required"}, []string{"detail.applied[0].action"}},
+		{"rationale over the limit", healingHardenedDetail(map[string]any{"applied": healingAppliedWith(map[string]any{"rationale": strings.Repeat("é", healingRationaleMaxRunes+1)})}),
+			[]string{fmt.Sprintf("detail.applied[0].rationale has %d runes — the limit is %d", healingRationaleMaxRunes+1, healingRationaleMaxRunes)},
+			[]string{"detail.applied[0].rationale", fmt.Sprint(healingRationaleMaxRunes)}},
+		{"applied over the limit", healingHardenedDetail(map[string]any{"applied": tooManyApplied}),
+			[]string{fmt.Sprintf("detail.applied has %d entries — the limit is %d", healingAppliedMax+1, healingAppliedMax)},
+			[]string{fmt.Sprintf("Send at most %d applied entries", healingAppliedMax)}},
 		{"held deferredId missing with pending-stored", held(healingHeldEntry(map[string]any{"deferredId": nil})),
 			[]string{"detail.held[0].deferredId is required"}, []string{"detail.held[0].deferredId"}},
 		{"held deferredId with pending-not-stored", held(healingHeldEntry(map[string]any{"reason": healingHeldPendingNotStored})),
@@ -7513,6 +7542,132 @@ func TestShipStateHealingRecord_OptionalFields(t *testing.T) {
 			t.Errorf("held[1] = %v, want unknown keys dropped", second)
 		}
 	})
+
+	t.Run("rationale at the limit stored", func(t *testing.T) {
+		r := strings.Repeat("é", healingRationaleMaxRunes)
+		e := storedApplied(t, hardenedStored(t, map[string]any{"applied": healingAppliedWith(map[string]any{"rationale": r})}))
+		if e["rationale"] != r {
+			t.Errorf("rationale has %d runes, want the %d-rune value stored whole", utf8.RuneCountInString(fmt.Sprint(e["rationale"])), healingRationaleMaxRunes)
+		}
+	})
+	t.Run("held deferredId stored trimmed", func(t *testing.T) {
+		rec := hardenedStored(t, map[string]any{"held": []any{healingHeldEntry(map[string]any{"deferredId": "  harden-deferred-1\n"})}})
+		h, _ := rec["held"].([]any)
+		first, _ := h[0].(map[string]any)
+		if first["deferredId"] != "harden-deferred-1" {
+			t.Errorf("held[0].deferredId = %q, want %q", first["deferredId"], "harden-deferred-1")
+		}
+	})
+}
+
+// TestShipStateHealingRecord_PatchCutWarning pins that a hardened call that
+// stores a cut patch names each cut entry, the limit and the received byte
+// count in summary, next and warnings, and that a call with no cut patch, or
+// a call that stores nothing, has no warning.
+func TestShipStateHealingRecord_PatchCutWarning(t *testing.T) {
+	call := func(t *testing.T, dir, branch string, detail map[string]any) ShipHealingRecordOut {
+		t.Helper()
+		d := map[string]any{"branch": branch}
+		maps.Copy(d, detail)
+		out, err := shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d}, fixedNow(time.Now()))
+		if err != nil {
+			t.Fatalf("healing_record: %v", err)
+		}
+		return out.(ShipHealingRecordOut)
+	}
+	long := strings.Repeat("p", healingPatchMaxBytes+10)
+	applied := append(healingAppliedWith(map[string]any{"patch": "short"}), healingAppliedWith(map[string]any{"patch": long})...)
+	want := fmt.Sprintf("Patch cut to %d bytes and marked patchCut: applied[1].patch (%d bytes).", healingPatchMaxBytes, len(long))
+
+	branch := "feat/heal-cut-warning"
+	dir, _ := deferFixture(t, branch)
+	out := call(t, dir, branch, healingHardenedDetail(map[string]any{"applied": applied}))
+	if !slices.Equal(out.Warnings, []string{want}) {
+		t.Errorf("warnings = %q, want [%q]", out.Warnings, want)
+	}
+	if !strings.Contains(out.Summary, want) || out.Next == nil || !strings.Contains(out.Next.Instruction, want) {
+		t.Errorf("summary %q / next %v, want both to carry %q", out.Summary, out.Next, want)
+	}
+	// The same done record again stores nothing, so there is no warning.
+	if again := call(t, dir, branch, healingHardenedDetail(map[string]any{"applied": applied})); len(again.Warnings) != 0 || again.Written {
+		t.Errorf("repeat call: warnings = %q, written = %v, want no warning and no write", again.Warnings, again.Written)
+	}
+	if plain := call(t, dir, branch, healingHardenedDetail(map[string]any{"trigger": "no cut"})); len(plain.Warnings) != 0 {
+		t.Errorf("call with no cut patch: warnings = %q, want none", plain.Warnings)
+	}
+}
+
+// TestShipStateHealingRecord_DoneNextFollowsHardenSkill pins that the next
+// of a done record follows the held exit table of the harden skill: Step 6
+// or Step 7 after the record, and a stop after a halt. It does not send the
+// caller back to the step that dispatched harden.
+func TestShipStateHealingRecord_DoneNextFollowsHardenSkill(t *testing.T) {
+	for _, w := range []string{"Step 6", "plugin-defect", "Step 7", "halt", "stop"} {
+		if !strings.Contains(healingHardenedDoneNext, w) {
+			t.Errorf("healingHardenedDoneNext %q does not contain %q", healingHardenedDoneNext, w)
+		}
+	}
+	if strings.Contains(healingHardenedDoneNext, "dispatched harden") {
+		t.Errorf("healingHardenedDoneNext %q sends the caller back to the dispatching step", healingHardenedDoneNext)
+	}
+}
+
+// TestShipStateHealingRecord_TextsMatchLimits pins the limits and the held
+// reasons in the ShipStateIn.Detail tag (a literal) and in the healing_record
+// action description (built from the constants) to the Go constants.
+func TestShipStateHealingRecord_TextsMatchLimits(t *testing.T) {
+	field, ok := reflect.TypeOf(ShipStateIn{}).FieldByName("Detail")
+	if !ok {
+		t.Fatal("ShipStateIn has no Detail field")
+	}
+	tag := field.Tag.Get("jsonschema_description")
+	wants := []string{
+		fmt.Sprintf("applied (at most %d entries", healingAppliedMax),
+		fmt.Sprintf("rationale at most %d runes", healingRationaleMaxRunes),
+		fmt.Sprintf("a patch over %d bytes is cut", healingPatchMaxBytes),
+		fmt.Sprintf("held (optional, at most %d entries", healingHeldMax),
+		"reason is one of " + strings.Join(healingHeldReasons, " | "),
+		"required for reason " + healingHeldPendingStored,
+	}
+	for _, w := range wants {
+		if !strings.Contains(tag, w) {
+			t.Errorf("Detail tag does not contain %q", w)
+		}
+	}
+
+	s := mcpserver.New("test", "0.0.0-test")
+	RegisterShipStateTools(s)
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	c, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	resp, err := c.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	desc := ""
+	for _, tool := range resp.Tools {
+		if tool.Name == "ship_state" {
+			desc = tool.Description
+		}
+	}
+	for _, w := range []string{
+		fmt.Sprintf("at most %d runes; a longer rationale is a DomainError", healingRationaleMaxRunes),
+		fmt.Sprintf("a patch over %d bytes is cut", healingPatchMaxBytes),
+		fmt.Sprintf("(at most %d entries; a longer list is a DomainError and writes nothing)", healingAppliedMax),
+		fmt.Sprintf("detail.held, at most %d entries (a longer list is a DomainError and writes nothing)", healingHeldMax),
+		"reason (one of " + strings.Join(healingHeldReasons, " | ") + ")",
+	} {
+		if !strings.Contains(desc, w) {
+			t.Errorf("ship_state description does not contain %q", w)
+		}
+	}
 }
 
 func TestShipStateHealingRecord_NoLiveRun(t *testing.T) {
@@ -7649,6 +7804,27 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 	if err := validate(withID); err != nil {
 		t.Errorf("fixed record with deferredId: want accepted, got %v", err)
 	}
+	// held: the schema pairs deferredId with reason pending-stored, as
+	// healingHeldItem does.
+	heldDoc := func(entry map[string]any) map[string]any {
+		return map[string]any{"hardened": []any{map[string]any{
+			"phase": "done", "trigger": "t", "classification": "user-code", "applied": []any{},
+			"skipped": float64(0), "recordedAt": "2026-09-30T01:02:03Z", "held": []any{entry},
+		}}}
+	}
+	for name, entry := range map[string]map[string]any{
+		"pending-stored without deferredId":  healingHeldEntry(map[string]any{"deferredId": nil}),
+		"not-processed with deferredId":      healingHeldEntry(map[string]any{"reason": healingHeldNotProcessed}),
+		"pending-not-stored with deferredId": healingHeldEntry(map[string]any{"reason": healingHeldPendingNotStored}),
+		"empty deferredId":                   healingHeldEntry(map[string]any{"deferredId": ""}),
+	} {
+		if err := validate(heldDoc(entry)); err == nil {
+			t.Errorf("held %s: want schema rejection, got nil", name)
+		}
+	}
+	if err := validate(heldDoc(healingHeldEntry(map[string]any{"reason": healingHeldNotProcessed, "deferredId": nil}))); err != nil {
+		t.Errorf("held not-processed without deferredId: want accepted, got %v", err)
+	}
 	goodFix := func() map[string]any {
 		return map[string]any{
 			"origin": "local-review", "severity": "high", "file": "a.go", "line": float64(4), "title": "t",
@@ -7703,9 +7879,17 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 							Properties struct {
 								Phase   struct{ Enum []string } `json:"phase"`
 								Applied struct {
-									Items struct {
+									MaxItems    int    `json:"maxItems"`
+									Description string `json:"description"`
+									Items       struct {
 										Properties struct {
-											Surface struct{ Enum []string } `json:"surface"`
+											Surface   struct{ Enum []string } `json:"surface"`
+											Rationale struct {
+												MaxLength int `json:"maxLength"`
+											} `json:"rationale"`
+											Patch struct {
+												Description string `json:"description"`
+											} `json:"patch"`
 										} `json:"properties"`
 									} `json:"items"`
 								} `json:"applied"`
@@ -7736,6 +7920,15 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 	}
 	if got := hp.Held.MaxItems; got != healingHeldMax {
 		t.Errorf("schema hardened.held.maxItems = %d, want %d (healingHeldMax)", got, healingHeldMax)
+	}
+	if got := hp.Applied.MaxItems; got != healingAppliedMax {
+		t.Errorf("schema hardened.applied.maxItems = %d, want %d (healingAppliedMax)", got, healingAppliedMax)
+	}
+	if got := hp.Applied.Items.Properties.Rationale.MaxLength; got != healingRationaleMaxRunes {
+		t.Errorf("schema applied.rationale.maxLength = %d, want %d (healingRationaleMaxRunes)", got, healingRationaleMaxRunes)
+	}
+	if got := hp.Applied.Items.Properties.Patch.Description; !strings.Contains(got, fmt.Sprintf("At most %d bytes", healingPatchMaxBytes)) {
+		t.Errorf("schema applied.patch.description = %q, want it to name %d bytes (healingPatchMaxBytes)", got, healingPatchMaxBytes)
 	}
 	for name, pair := range map[string][2][]string{
 		"fixed.origin":         {fp.Origin.Enum, healingOrigins},

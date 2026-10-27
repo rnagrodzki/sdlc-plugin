@@ -539,6 +539,8 @@
               },
               "applied": {
                 "type": "array",
+                "maxItems": 100,
+                "description": "Proposals that harden applied. An empty list is valid. healing_record rejects a longer list with a DomainError and writes no record.",
                 "items": {
                   "type": "object",
                   "properties": {
@@ -553,15 +555,20 @@
                       "type": "string"
                     },
                     "rationale": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 600,
+                      "description": "Why harden made the edit. Optional. An empty value stores no key. healing_record rejects a longer rationale with a DomainError and writes no record."
                     },
                     "patch": {
                       "type": "string",
-                      "description": "At most 1536 bytes. healing_record cuts a longer patch and sets patchCut."
+                      "minLength": 1,
+                      "description": "The text of the edit. Optional. An empty value stores no key. At most 1536 bytes: healing_record cuts a longer patch on a UTF-8 boundary and sets patchCut."
                     },
                     "patchCut": {
                       "type": "boolean",
-                      "const": true
+                      "const": true,
+                      "description": "Set only by healing_record, when it cut the patch. A caller that sends patchCut gets a DomainError. Absent when the patch is whole."
                     }
                   },
                   "required": ["surface", "action", "targetFile"],
@@ -579,7 +586,7 @@
               "held": {
                 "type": "array",
                 "maxItems": 100,
-                "description": "Proposals that harden left for a person. An empty list is valid. Entries can share one deferredId. The tool does not check that the list covers every item of the harden summary, or that deferredId names a stored deferred item.",
+                "description": "Proposals that harden left for a person. An empty list is valid. healing_record rejects a longer list with a DomainError and writes no record, so the started record stays. deferredId is required with reason pending-stored and absent with the other reasons. Entries can share one deferredId. The tool does not check that the list covers every item of the harden summary, or that deferredId names a stored deferred item.",
                 "items": {
                   "type": "object",
                   "properties": {
@@ -595,14 +602,26 @@
                     },
                     "reason": {
                       "type": "string",
-                      "enum": ["pending-stored", "pending-not-stored", "not-processed"]
+                      "enum": ["pending-stored", "pending-not-stored", "not-processed"],
+                      "description": "How harden left the proposal. pending-stored: stored as a deferred item. pending-not-stored: no deferred item, because the deferred_add call failed or its id check failed. not-processed: harden stopped before this proposal."
                     },
                     "deferredId": {
-                      "type": "string"
+                      "type": "string",
+                      "minLength": 1,
+                      "description": "The id of the deferred item that holds the proposal, stored trimmed. Required with reason pending-stored, absent with the other reasons."
                     }
                   },
                   "required": ["surface", "action", "targetFile", "reason"],
-                  "additionalProperties": false
+                  "additionalProperties": false,
+                  "if": {
+                    "properties": { "reason": { "const": "pending-stored" } }
+                  },
+                  "then": {
+                    "required": ["deferredId"]
+                  },
+                  "else": {
+                    "not": { "required": ["deferredId"] }
+                  }
                 }
               }
             },

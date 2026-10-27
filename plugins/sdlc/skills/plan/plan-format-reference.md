@@ -549,7 +549,8 @@ need to open OpenSpec files separately.
 - **OpenSpec change active** (source matches `openspec/changes/`): body lists each requirement from
   the inventory with the task(s) that cover it, and reproduces the relevant delta-spec fragments.
 - **OpenSpec staging** (`openspecStage` true): body is the link + traceability table only; artifacts
-  live in `.sdlc-v2/openspec-staging/<name>/`.
+  live in `<MAIN_ROOT>/.sdlc-v2/openspec-staging/<name>/`, the staging folder of the main worktree
+  (the `stagingRoot` that `openspec_stage` returned).
 
 **Nested-fence safety (N+1 backticks):** delta-spec fragments reproduced here are themselves
 markdown containing fenced code blocks (scenario snippets, requirement bodies). A plain 3-backtick

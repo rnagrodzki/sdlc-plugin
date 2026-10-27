@@ -230,11 +230,15 @@ c. Set `openspecStage = true`. `openspecContext` stays empty and `fromOpenspecDi
 1. Take `<name>` from that header line. Set `openspecStage = true`.
 2. Continue at the checkpoint the plan's saved state names (`checkpoint.step`). At step 0, redo complexity routing, then continue at step c above: make the template-resolution call with `openspecStage: true`, the routing flags and the `runId` of the resumed run (the `runId` that the resume `plan_prepare` call returned), and write the template only if the plan file is empty or holds only the two step-b header lines (keep them in place of `**Source:** [TBD]`).
 3. If `checkpoint.step` is before `6.5`, author nothing now. **Create-flow authoring** runs at the end of Step 6.
-4. If `checkpoint.step` is `6.5` or later and the header has `**OpenSpec-Staging:**`, stage the files on disk again. Do not author them again.
-   - Read every file in `<MAIN_ROOT>/.sdlc-v2/openspec-staging/<name>/`. `<MAIN_ROOT>` is the path of the first `worktree` entry of `git worktree list --porcelain` that has no `bare` line. If the command fails or lists no such entry, `<MAIN_ROOT>` is `<ACTIVE_ROOT>`. If that folder is missing, read `<ACTIVE_ROOT>/.sdlc-v2/openspec-staging/<name>/` (an older plugin staged there). `<ACTIVE_ROOT>` is the active worktree root. Skip `stage.json`, the tool's manifest.
-   - If both folders are missing, do not call `openspec_stage`. Print `Staging folder of <name> not found under <MAIN_ROOT> or <ACTIVE_ROOT>. Run /sdlc:plan again to author the change.` with both paths filled in. Then stop.
-   - Call `plan_support({ action: "openspec_stage", changeName: "<name>", files: [...], planPath: "<plan file path>" })` once with all these files. This is safe: `openspec_stage` replaces the whole staging directory on every call that it does not refuse. A `staged by another plan` refusal writes nothing. On that refusal, follow the `staged by another plan` rule of **Create-flow authoring** item 3.
-5. If `checkpoint.step` is `6.5` or later and the header has `**OpenSpec-Create:**`, the authoring did not finish. Run **Create-flow authoring** once before you continue.
+4. If `checkpoint.step` is `6.5` or later and the header has `**OpenSpec-Staging:**`, stage the files on disk again. Do not author them again, except when both staging folders are missing (see below).
+   - Read every file in `<MAIN_ROOT>/.sdlc-v2/openspec-staging/<name>/`. `<MAIN_ROOT>` is the path of the first `worktree` entry of `git worktree list --porcelain` that has no `bare` line. `openspec_stage` finds the main worktree by the same rule. If the command fails or lists no such entry, `<MAIN_ROOT>` is `<ACTIVE_ROOT>`, and you print `Main worktree not found. Only the staging folder of the active worktree is used.` If that folder is missing, read `<ACTIVE_ROOT>/.sdlc-v2/openspec-staging/<name>/` (an older plugin staged there). `<ACTIVE_ROOT>` is the active worktree root. Skip `stage.json`, the tool's manifest.
+   - If both folders are missing, do not call `openspec_stage`. Print `Staging folder of <name> not found under <MAIN_ROOT> or <ACTIVE_ROOT>. The change is authored again from the plan.` with both paths filled in. Replace the `**OpenSpec-Staging:**` header line with `**OpenSpec-Create:** <name>` and keep the `**Source:**` line. Then go to item 5. Item 5 runs **Create-flow authoring**, which stages the files and puts the `**OpenSpec-Staging:**` line back. A later resume finds the `**OpenSpec-Create:**` line and goes to item 5 too, so no step needs a manual edit of the plan file.
+   - Call `plan_support({ action: "openspec_stage", changeName: "<name>", files: [...], planPath: "<plan file path>" })` once with all these files. This is safe: `openspec_stage` replaces the whole staging directory on every call that it does not refuse. Route the result by the rules of **Create-flow authoring** item 3:
+     - `valid: true`: continue. If the summary holds `Warning: Main worktree not found`, show that warning to the user.
+     - `valid: false`: show `validateOutput`, fix the artifacts, and call `openspec_stage` again with all files. This resume call is the first of the 5 calls that item 3 allows. When a later call returns `valid: true`, apply **Create-flow authoring** item 4.
+     - `staged by another plan`: the refusal writes nothing. Follow the `staged by another plan` rule of **Create-flow authoring** item 3.
+     - Any other error: print the error and its Suggestion, and stop — no plan handoff. Tell the user the next action: fix the cause that the error names, then invoke `/sdlc:plan` again.
+5. If `checkpoint.step` is `6.5` or later and the header has `**OpenSpec-Create:**`, the authoring did not finish, or item 4 found no staging folder. Run **Create-flow authoring** once before you continue.
 6. The `openspec_stage` attempt counter, the `staged by another plan` refusal counter and the list of refused change names restart empty (counters at 0) on every resume — a count or a list from the session before the resume never carries over.
 
 Without either header line, Create was not chosen: if Create is chosen now, it starts fresh at step a.
@@ -943,11 +947,11 @@ plan_support({ action: "openspec_appendix", changeName: <name>, proposalPath, de
 Write the returned `appendixMarkdown` into the `## OpenSpec Appendix` section. The tool builds the requirement inventory table and delta-spec fragments (with nested-fence safety) server-side.
 
 **(b)** When `openspecStage` is true (the Create OpenSpec change path — option 1 of Step 0's OpenSpec gate check, implements R63), write `[TBD — authored at the end of Step 6]` in the `## OpenSpec Appendix` section now. **Create-flow authoring** (end of Step 6) replaces it with a staging-path reference and a traceability table ONLY — never authored artifact content, drafts, or per-file target annotations of any kind.
-The artifacts exist as staged files under `.sdlc-v2/openspec-staging/<name>/`, so the appendix links to them instead of re-authoring them:
+The artifacts exist as staged files under `<MAIN_ROOT>/.sdlc-v2/openspec-staging/<name>/` (the main worktree, not the active worktree), so the appendix links to them instead of re-authoring them. In the `**Staging:**` line, replace `<stagingRoot>` with the `stagingRoot` value that the last `openspec_stage` call returned:
 
 ```markdown
 ## OpenSpec Appendix
-**Staging:** `.sdlc-v2/openspec-staging/<name>/` (materialized at ship/execute start, or earlier by `/sdlc:openspec-save`)
+**Staging:** `<stagingRoot>/.sdlc-v2/openspec-staging/<name>/` (materialized at ship/execute start, or earlier by `/sdlc:openspec-save`)
 | Requirement | Spec file | Covering task(s) |
 |---|---|---|
 | Base branch configuration | specs/base-branch/spec.md | Task 2, Task 3 |
@@ -1139,7 +1143,7 @@ If this was round `reviewLoop.maxRounds`, do not re-dispatch: after the **Round 
 
    A refused call does not count toward the 5 calls: the counter keeps its value. After 3 refusals, show the error to the user and stop — no plan handoff. Tell the user the next action: delete the staging directory of the other plan (the folder that the error Suggestion names) when that plan is abandoned, or give a change name that no plan uses, then invoke `/sdlc:plan` again.
 4. When `openspec_stage` returns `valid: true`, update the plan file. This step is the same on the first run and on each new run.
-   - If the header has an `**OpenSpec-Create:** <name>` line, replace it with `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<name>/`. If the header already has the `**OpenSpec-Staging:**` line, keep it: it already holds the current `<name>`. Keep the `**Source:**` line.
+   - If the header has an `**OpenSpec-Create:** <name>` line, replace it with `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<name>/`. This path is relative to the main worktree (the `stagingRoot` that `openspec_stage` returned), not to the active worktree. Keep it in this relative form: materialize and `openspec_save` accept only this form. If the header already has the `**OpenSpec-Staging:**` line, keep it: it already holds the current `<name>`. Keep the `**Source:**` line.
    - Replace the full body of `## OpenSpec Appendix` with a new appendix (b) table (Step 4), built from the files of this run. Do this also when the body already holds a table.
 
 ## Step 6.5 (LINK VERIFICATION): Validate URLs in plan content (R18) — HARD GATE

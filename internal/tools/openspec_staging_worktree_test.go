@@ -1,12 +1,18 @@
 package tools
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 )
 
@@ -72,6 +78,13 @@ func stageFromWorktree(t *testing.T, r stagingRepo, active, planPath string) {
 	}
 	if out.StagingDir != ".sdlc-v2/openspec-staging/add-widget/" {
 		t.Errorf("StagingDir = %q, want the path relative to the main worktree", out.StagingDir)
+	}
+	if out.StagingRoot != r.main {
+		t.Errorf("StagingRoot = %q, want the main worktree %q", out.StagingRoot, r.main)
+	}
+	absDir := filepath.Join(r.main, ".sdlc-v2", "openspec-staging", stagingChange) + string(filepath.Separator)
+	if !strings.Contains(out.Summary, " in "+absDir+";") {
+		t.Errorf("Summary = %q, want the absolute staging folder %s", out.Summary, absDir)
 	}
 	mainManifest := filepath.Join(r.main, ".sdlc-v2", "openspec-staging", stagingChange, openspec.StageManifestFile)
 	if _, err := os.Stat(mainManifest); err != nil {
@@ -191,17 +204,21 @@ func saveRootsFixture(t *testing.T) (root, planPath string) {
 	return root, planPath
 }
 
-// TestOpenspecSaveRoots_MainRoot: a set mainRoot with no error is the staging
-// root. The active worktree has no staging folder, so the save succeeds only
-// if it reads the folder under mainRoot. It adds no warning.
-func TestOpenspecSaveRoots_MainRoot(t *testing.T) {
+// saveMainWarning is the MainWarning the openspec_save handler builds when
+// the main worktree resolution fails with "no main".
+const saveMainWarning = "Main worktree not found (no main). Read only the staging folder of the active worktree."
+
+// TestOpenspecSaveRun_StagingRoot: a set Staging root is read first. The
+// active worktree has no staging folder, so the save succeeds only if it
+// reads the folder under Staging. It adds no warning.
+func TestOpenspecSaveRun_StagingRoot(t *testing.T) {
 	root, planPath := saveRootsFixture(t)
 	mainRoot := t.TempDir()
 	writeMaterializeStaging(t, mainRoot, saveChange, map[string]string{"tasks.md": "- [ ] From main\n"})
 
-	out, err := openspecSaveRoots(mainRoot, nil, root, OpenspecSaveIn{PlanPath: planPath})
+	out, err := openspecSaveRun(openspecSaveDirs{Active: root, Staging: mainRoot}, OpenspecSaveIn{PlanPath: planPath})
 	if err != nil {
-		t.Fatalf("openspecSaveRoots: %v", err)
+		t.Fatalf("openspecSaveRun: %v", err)
 	}
 	if out.Change != saveChange || out.Materialized != "created" {
 		t.Errorf("out = %+v, want change %s, materialized created", out, saveChange)
@@ -211,23 +228,23 @@ func TestOpenspecSaveRoots_MainRoot(t *testing.T) {
 	}
 	tasks := readSaveFile(t, filepath.Join(root, "openspec", "changes", saveChange, "tasks.md"))
 	if !strings.Contains(tasks, "From main") {
-		t.Errorf("tasks.md = %q, want the content staged under mainRoot", tasks)
+		t.Errorf("tasks.md = %q, want the content staged under the staging root", tasks)
 	}
 	stagingDir := filepath.Join(mainRoot, ".sdlc-v2", "openspec-staging", saveChange)
 	if _, err := os.Stat(stagingDir); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("staging folder under mainRoot still exists (stat err %v), want it gone", err)
+		t.Errorf("staging folder under the staging root still exists (stat err %v), want it gone", err)
 	}
 }
 
-// TestOpenspecSaveRoots_EmptyMainRoot: an empty mainRoot with no error means
-// the active worktree is the staging root. It adds no warning.
-func TestOpenspecSaveRoots_EmptyMainRoot(t *testing.T) {
+// TestOpenspecSaveRun_EmptyStagingRoot: an empty Staging root means the
+// active worktree is the staging root. It adds no warning.
+func TestOpenspecSaveRun_EmptyStagingRoot(t *testing.T) {
 	root, planPath := saveRootsFixture(t)
 	writeMaterializeStaging(t, root, saveChange, map[string]string{"tasks.md": "- [ ] From active\n"})
 
-	out, err := openspecSaveRoots("", nil, root, OpenspecSaveIn{PlanPath: planPath})
+	out, err := openspecSaveRun(openspecSaveDirs{Active: root}, OpenspecSaveIn{PlanPath: planPath})
 	if err != nil {
-		t.Fatalf("openspecSaveRoots: %v", err)
+		t.Fatalf("openspecSaveRun: %v", err)
 	}
 	if out.Change != saveChange || out.Materialized != "created" {
 		t.Errorf("out = %+v, want change %s, materialized created", out, saveChange)
@@ -241,34 +258,214 @@ func TestOpenspecSaveRoots_EmptyMainRoot(t *testing.T) {
 	}
 }
 
-// TestOpenspecSaveRoots_MainRootError: a non-nil mainErr makes the active
-// worktree the only staging root, even when mainRoot is set. The save adds
-// one warning with the error text. A decoy folder under mainRoot proves that
-// the save read the folder of the active worktree and left the decoy alone.
-func TestOpenspecSaveRoots_MainRootError(t *testing.T) {
+// TestOpenspecSaveRun_MainWarning: a successful save adds MainWarning to
+// Warnings as the only entry.
+func TestOpenspecSaveRun_MainWarning(t *testing.T) {
 	root, planPath := saveRootsFixture(t)
-	mainRoot := t.TempDir()
 	writeMaterializeStaging(t, root, saveChange, map[string]string{"tasks.md": "- [ ] From active\n"})
-	writeMaterializeStaging(t, mainRoot, saveChange, map[string]string{"tasks.md": "- [ ] From main\n"})
 
-	out, err := openspecSaveRoots(mainRoot, errors.New("no main"), root, OpenspecSaveIn{PlanPath: planPath})
+	out, err := openspecSaveRun(openspecSaveDirs{Active: root, MainWarning: saveMainWarning}, OpenspecSaveIn{PlanPath: planPath})
 	if err != nil {
-		t.Fatalf("openspecSaveRoots: %v", err)
+		t.Fatalf("openspecSaveRun: %v", err)
 	}
-	const wantWarning = "Main worktree not found (no main). Read only the staging folder of the active worktree."
-	if len(out.Warnings) != 1 || out.Warnings[0] != wantWarning {
-		t.Errorf("Warnings = %q, want [%q]", out.Warnings, wantWarning)
+	if len(out.Warnings) != 1 || out.Warnings[0] != saveMainWarning {
+		t.Errorf("Warnings = %q, want [%q]", out.Warnings, saveMainWarning)
 	}
-	tasks := readSaveFile(t, filepath.Join(root, "openspec", "changes", saveChange, "tasks.md"))
-	if !strings.Contains(tasks, "From active") || strings.Contains(tasks, "From main") {
-		t.Errorf("tasks.md = %q, want the content staged under the active worktree", tasks)
+}
+
+// TestOpenspecSaveRun_MainWarningOnFailure: when the save fails because no
+// staging folder exists under the active worktree, the error Suggestion
+// carries MainWarning, so the caller learns that the main worktree was not
+// read.
+func TestOpenspecSaveRun_MainWarningOnFailure(t *testing.T) {
+	root, planPath := saveRootsFixture(t)
+
+	_, err := openspecSaveRun(openspecSaveDirs{Active: root, MainWarning: saveMainWarning}, OpenspecSaveIn{PlanPath: planPath})
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
 	}
-	activeStaging := filepath.Join(root, ".sdlc-v2", "openspec-staging", saveChange)
-	if _, err := os.Stat(activeStaging); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("staging folder of the active worktree still exists (stat err %v), want it gone", err)
+	if !strings.Contains(de.Msg, "staging dir") {
+		t.Errorf("Msg = %q, want the missing staging dir", de.Msg)
 	}
-	decoy := filepath.Join(mainRoot, ".sdlc-v2", "openspec-staging", saveChange, "tasks.md")
-	if got := readSaveFile(t, decoy); got != "- [ ] From main\n" {
-		t.Errorf("decoy under mainRoot = %q, want it unchanged", got)
+	if !strings.HasSuffix(de.Suggestion, " "+saveMainWarning) {
+		t.Errorf("Suggestion = %q, want it to end with %q", de.Suggestion, saveMainWarning)
 	}
+}
+
+// fakeMainRoot replaces resolveMainRoot for the test.
+func fakeMainRoot(t *testing.T, root string, err error) {
+	t.Helper()
+	orig := resolveMainRoot
+	resolveMainRoot = func() (string, error) { return root, err }
+	t.Cleanup(func() { resolveMainRoot = orig })
+}
+
+// callRegisteredTool runs the tool name, registered by register, over an
+// in-memory MCP session in the process's current directory and returns the
+// result and its first text content.
+func callRegisteredTool(t *testing.T, register func(*mcpserver.Server), name string, args map[string]any) (*mcp.CallToolResult, string) {
+	t.Helper()
+	s := mcpserver.New("test", "0.0.0-test")
+	register(s)
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	res, err := c.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool %s: %v", name, err)
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content[0] is %T, want *mcp.TextContent", res.Content[0])
+	}
+	return res, text.Text
+}
+
+// TestOpenspecSave_RegisteredFromLinkedWorktree runs the registered
+// openspec_save tool in a linked worktree (on the branch openspec/<change>)
+// of a real repo. The change is staged only under the main worktree, so the
+// save succeeds only if the handler resolves the main worktree.
+func TestOpenspecSave_RegisteredFromLinkedWorktree(t *testing.T) {
+	main := t.TempDir()
+	initGitFixture(t, main)
+	gitCommit(t, main, "init")
+	linked := filepath.Join(t.TempDir(), "wt")
+	runGit(t, main, "worktree", "add", "-b", saveTarget, linked)
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, main, saveChange, map[string]string{"tasks.md": "- [ ] From main\n"})
+	planPath := filepath.Join(t.TempDir(), "plan.md")
+	writeFile(t, planPath, matPlanHeaders(saveChange))
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(linked))
+	t.Chdir(linked)
+
+	res, text := callRegisteredTool(t, RegisterOpenspecTools, "openspec_save", map[string]any{"planPath": planPath})
+	if res.IsError {
+		t.Fatalf("openspec_save failed:\n%s", text)
+	}
+	for _, want := range []string{"- materialized: created\n", "- branchCreated: false\n", "## Warnings\n(none)\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("result missing %q:\n%s", want, text)
+		}
+	}
+	tasks := readSaveFile(t, filepath.Join(linked, "openspec", "changes", saveChange, "tasks.md"))
+	if !strings.Contains(tasks, "From main") {
+		t.Errorf("tasks.md = %q, want the content staged under the main worktree", tasks)
+	}
+	if _, err := os.Stat(filepath.Join(main, ".sdlc-v2", "openspec-staging", saveChange)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("staging folder under the main worktree still exists (stat err %v), want it gone", err)
+	}
+}
+
+// TestOpenspecSave_RegisteredMainRootFailure checks the two failure paths of
+// the main worktree resolution in the registered openspec_save handler: an
+// output-cap error is an InfraError and saves nothing; any other error falls
+// back to the staging folder of the active worktree with a warning.
+func TestOpenspecSave_RegisteredMainRootFailure(t *testing.T) {
+	t.Run("output cap is an infra error", func(t *testing.T) {
+		root, planPath := saveRootsFixture(t)
+		writeMaterializeStaging(t, root, saveChange, map[string]string{"tasks.md": "- [ ] From active\n"})
+		t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
+		t.Chdir(root)
+		fakeMainRoot(t, "", fmt.Errorf("worktree: could not determine main worktree: %w", execx.ErrOutputCap))
+
+		res, text := callRegisteredTool(t, RegisterOpenspecTools, "openspec_save", map[string]any{"planPath": planPath})
+		if !res.IsError {
+			t.Fatalf("openspec_save succeeded, want an infra error:\n%s", text)
+		}
+		if !strings.Contains(text, "infra") || !strings.Contains(text, "openspec_save: resolve main worktree") {
+			t.Errorf("error text = %q, want an infra error that names the main worktree resolution", text)
+		}
+		if _, err := os.Stat(filepath.Join(root, "openspec", "changes", saveChange)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("change folder exists (stat err %v), want none", err)
+		}
+	})
+
+	t.Run("other error falls back with a warning", func(t *testing.T) {
+		root, planPath := saveRootsFixture(t)
+		writeMaterializeStaging(t, root, saveChange, map[string]string{"tasks.md": "- [ ] From active\n"})
+		t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
+		t.Chdir(root)
+		fakeMainRoot(t, "", errors.New("no main"))
+
+		res, text := callRegisteredTool(t, RegisterOpenspecTools, "openspec_save", map[string]any{"planPath": planPath})
+		if res.IsError {
+			t.Fatalf("openspec_save failed:\n%s", text)
+		}
+		for _, want := range []string{"- materialized: created\n", saveMainWarning} {
+			if !strings.Contains(text, want) {
+				t.Errorf("result missing %q:\n%s", want, text)
+			}
+		}
+	})
+}
+
+// TestPlanSupport_RegisteredStageMainRootFailure checks the two failure paths
+// of the main worktree resolution in the registered plan_support handler for
+// openspec_stage: an output-cap error is an InfraError and writes nothing;
+// any other error writes the staging folder under the active worktree and
+// adds a warning to the summary that names the error and that root.
+func TestPlanSupport_RegisteredStageMainRootFailure(t *testing.T) {
+	args := map[string]any{
+		"action":     "openspec_stage",
+		"changeName": stagingChange,
+		"files": []map[string]any{
+			{"path": "proposal.md", "content": "# Proposal\n"},
+			{"path": "tasks.md", "content": stagingTasks},
+		},
+	}
+	setup := func(t *testing.T, mainErr error) string {
+		t.Helper()
+		stubOpenspecForStage(t, 0)
+		root := newOpenspecStageFixture(t, "")
+		real, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			t.Fatalf("EvalSymlinks: %v", err)
+		}
+		t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(real))
+		t.Chdir(real)
+		fakeMainRoot(t, "", mainErr)
+		return real
+	}
+
+	t.Run("output cap is an infra error", func(t *testing.T) {
+		root := setup(t, fmt.Errorf("worktree: could not determine main worktree: %w", execx.ErrOutputCap))
+		res, text := callRegisteredTool(t, RegisterPlanSupportTools, "plan_support", args)
+		if !res.IsError {
+			t.Fatalf("openspec_stage succeeded, want an infra error:\n%s", text)
+		}
+		if !strings.Contains(text, "infra") || !strings.Contains(text, "plan_support: resolve main worktree") {
+			t.Errorf("error text = %q, want an infra error that names the main worktree resolution", text)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging", stagingChange)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("staging folder exists (stat err %v), want none", err)
+		}
+	})
+
+	t.Run("other error stages under the active worktree with a warning", func(t *testing.T) {
+		root := setup(t, errors.New("no main"))
+		res, text := callRegisteredTool(t, RegisterPlanSupportTools, "plan_support", args)
+		if res.IsError {
+			t.Fatalf("openspec_stage failed:\n%s", text)
+		}
+		for _, want := range []string{
+			"Warning: Main worktree not found (no main). Used " + root + " as the main root.",
+			"- stagingRoot: " + root + "\n",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("result missing %q:\n%s", want, text)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging", stagingChange, openspec.StageManifestFile)); err != nil {
+			t.Errorf("stage.json under the active worktree is missing: %v", err)
+		}
+	})
 }

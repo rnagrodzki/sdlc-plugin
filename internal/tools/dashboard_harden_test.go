@@ -197,36 +197,50 @@ func TestDashboardHarden_Malformed(t *testing.T) {
 		edit(rec)
 		return rec
 	}
+	// fieldEdit returns an edit that deletes key from the first entry of the
+	// list list ("applied" or "held") of a record.
+	fieldEdit := func(list, key string) func(map[string]any) {
+		return func(r map[string]any) { delete(r[list].([]any)[0].(map[string]any), key) }
+	}
 	cases := []struct {
 		name      string
 		hardened  any
 		malformed int
 		clusters  int
+		issue     string // "" for the issue of records that cannot be read
 	}{
-		{"hardened not a list", map[string]any{"x": 1}, 1, 0},
-		{"entry not an object", []any{valid(), "x"}, 1, 1},
-		{"phase unknown", []any{valid(), bad(func(r map[string]any) { r["phase"] = "half" })}, 1, 1},
-		{"trigger empty", []any{valid(), bad(func(r map[string]any) { r["trigger"] = "" })}, 1, 1},
-		{"applied not a list", []any{valid(), bad(func(r map[string]any) { r["applied"] = "x" })}, 1, 1},
-		{"applied absent", []any{valid(), bad(func(r map[string]any) { delete(r, "applied") })}, 1, 1},
-		{"held not a list", []any{valid(), bad(func(r map[string]any) { r["held"] = map[string]any{} })}, 1, 1},
-		{"applied entry not an object", []any{valid(), bad(func(r map[string]any) { r["applied"] = []any{1.0} })}, 1, 1},
+		{"hardened not a list", map[string]any{"x": 1}, 1, 0,
+			"healing.hardened of the ship state is not a list (found object) — the harden step does not show its run records"},
+		{"hardened null", nil, 1, 0,
+			"healing.hardened of the ship state is not a list (found null) — the harden step does not show its run records"},
+		{"entry not an object", []any{valid(), "x"}, 1, 1, ""},
+		{"held entry not an object", []any{valid(), bad(func(r map[string]any) { r["held"] = []any{"x"} })}, 1, 1, ""},
+		{"applied entry no surface", []any{valid(), bad(fieldEdit("applied", "surface"))}, 1, 1, ""},
+		{"applied entry no action", []any{valid(), bad(fieldEdit("applied", "action"))}, 1, 1, ""},
+		{"held entry no action", []any{valid(), bad(fieldEdit("held", "action"))}, 1, 1, ""},
+		{"held entry no targetFile", []any{valid(), bad(fieldEdit("held", "targetFile"))}, 1, 1, ""},
+		{"phase unknown", []any{valid(), bad(func(r map[string]any) { r["phase"] = "half" })}, 1, 1, ""},
+		{"trigger empty", []any{valid(), bad(func(r map[string]any) { r["trigger"] = "" })}, 1, 1, ""},
+		{"applied not a list", []any{valid(), bad(func(r map[string]any) { r["applied"] = "x" })}, 1, 1, ""},
+		{"applied absent", []any{valid(), bad(func(r map[string]any) { delete(r, "applied") })}, 1, 1, ""},
+		{"held not a list", []any{valid(), bad(func(r map[string]any) { r["held"] = map[string]any{} })}, 1, 1, ""},
+		{"applied entry not an object", []any{valid(), bad(func(r map[string]any) { r["applied"] = []any{1.0} })}, 1, 1, ""},
 		{"applied entry no targetFile", []any{valid(), bad(func(r map[string]any) {
 			r["applied"].([]any)[0].(map[string]any)["targetFile"] = ""
-		})}, 1, 1},
+		})}, 1, 1, ""},
 		{"held entry no surface", []any{valid(), bad(func(r map[string]any) {
 			delete(r["held"].([]any)[0].(map[string]any), "surface")
-		})}, 1, 1},
+		})}, 1, 1, ""},
 		{"held reason unknown", []any{valid(), bad(func(r map[string]any) {
 			r["held"].([]any)[0].(map[string]any)["reason"] = "lost"
-		})}, 1, 1},
+		})}, 1, 1, ""},
 		{"rationale not a string", []any{valid(), bad(func(r map[string]any) {
 			r["applied"].([]any)[0].(map[string]any)["rationale"] = 3.0
-		})}, 1, 1},
+		})}, 1, 1, ""},
 		{"patch not a string", []any{valid(), bad(func(r map[string]any) {
 			r["applied"].([]any)[0].(map[string]any)["patch"] = []any{}
-		})}, 1, 1},
-		{"two bad records", []any{"x", valid(), bad(func(r map[string]any) { r["phase"] = nil })}, 2, 1},
+		})}, 1, 1, ""},
+		{"two bad records", []any{"x", valid(), bad(func(r map[string]any) { r["phase"] = nil })}, 2, 1, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -245,8 +259,11 @@ func TestDashboardHarden_Malformed(t *testing.T) {
 			if len(h.Held) != 0 {
 				t.Errorf("held = %+v, want []", h.Held)
 			}
-			want := []DashboardIssue{{Source: dashboardSourceState, Severity: "medium", Text: fmt.Sprintf(
-				"healing.hardened of the ship state holds %d record(s) that cannot be read — they are not shown in the harden step", c.malformed)}}
+			text := c.issue
+			if text == "" {
+				text = fmt.Sprintf("healing.hardened of the ship state holds %d record(s) that cannot be read — they are not shown in the harden step", c.malformed)
+			}
+			want := []DashboardIssue{{Source: dashboardSourceState, Severity: "medium", Text: text}}
 			if !reflect.DeepEqual(issues, want) {
 				t.Errorf("issues = %+v, want %+v", issues, want)
 			}
@@ -348,8 +365,20 @@ func TestDashboardHarden_TextLimits(t *testing.T) {
 	}
 }
 
-// dashHardenFunnelData returns ship data with a fixed record, a fixed record
-// with a deferredId, and one deferredFindings entry of each reason.
+// dashHardenFunnelData returns ship data whose funnel has a different count
+// in each of its five fields:
+//
+//	fixNow 1         b3.go: empty reason, a deferredId and fixedInRun true
+//	staysDeferred 5  f2.go, f3.go: needs-direction; f4.go, b1.go, b2.go:
+//	                 below-threshold or empty reason, no deferredId
+//	evidenceOnly 4   f1.go: wont-fix; l1.go, l2.go, l3.go: disagree
+//	suppressed 2     f1.go to f7.go each have a healing.fixed record, so 7
+//	                 files cluster; the cap keeps 5 (f1.go to f4.go have 2
+//	                 findings each, then f5.go), f6.go and f7.go are suppressed
+//	loneDisagree 3   l1.go, l2.go, l3.go: one disagree finding each
+//
+// The healing.fixed record of z.go has a deferredId, so it adds no finding:
+// if it did, z.go would be an 8th cluster file and suppressed would be 3.
 func dashHardenFunnelData() map[string]any {
 	finding := func(file, reason, id string) map[string]any {
 		m := map[string]any{"file": file, "severity": "low", "title": "t " + file, "reason": reason}
@@ -358,50 +387,41 @@ func dashHardenFunnelData() map[string]any {
 		}
 		return m
 	}
+	fixed := []any{map[string]any{"file": "z.go", "severity": "high", "title": "fixed z", "deferredId": "d9"}}
+	for i := 1; i <= 7; i++ {
+		fixed = append(fixed, map[string]any{"file": fmt.Sprintf("f%d.go", i), "severity": "high", "title": "fixed"})
+	}
+	fixedInRun := finding("b3.go", "", "d1")
+	fixedInRun["fixedInRun"] = true
 	return map[string]any{
-		"healing": map[string]any{
-			"hardened": []any{},
-			"fixed": []any{
-				map[string]any{"file": "a.go", "severity": "high", "title": "fixed a"},
-				map[string]any{"file": "z.go", "severity": "high", "title": "fixed z", "deferredId": "d9"},
-			},
-		},
+		"healing": map[string]any{"hardened": []any{}, "fixed": fixed},
 		"deferredFindings": []any{
-			finding("a.go", "below-threshold", "d1"),
-			finding("b.go", "", "d2"),
-			finding("c.go", "below-threshold", ""),
-			finding("d.go", "needs-direction", ""),
-			finding("e.go", "disagree", ""),
-			finding("f.go", "wont-fix", ""),
-			finding("f.go", "disagree", ""),
+			finding("f1.go", "wont-fix", ""),
+			finding("f2.go", "needs-direction", ""),
+			finding("f3.go", "needs-direction", ""),
+			finding("f4.go", "below-threshold", ""),
+			finding("b1.go", "below-threshold", ""),
+			finding("b2.go", "", ""),
+			fixedInRun,
+			finding("l1.go", "disagree", ""),
+			finding("l2.go", "disagree", ""),
+			finding("l3.go", "disagree", ""),
 		},
 	}
 }
 
-// TestDashboardHarden_Funnel checks that the funnel counts equal the lengths
-// that hardenBuildClusters and hardenSplitFindings return, and that a cut
-// input gives one info issue.
+// TestDashboardHarden_Funnel checks each funnel field against a literal
+// count, and that a cut input gives one info issue. A deferredFindings entry
+// with fixedInRun true still counts in fixNow: the funnel shows what harden
+// saw before its fix pass.
 func TestDashboardHarden_Funnel(t *testing.T) {
-	data := dashHardenFunnelData()
-	h, issues := dashHardenBuild(data, StepInProgress, false)
+	h, issues := dashHardenBuild(dashHardenFunnelData(), StepInProgress, false)
 	if len(issues) != 0 {
 		t.Errorf("issues = %+v, want none", issues)
 	}
-	findings, badField, cut := hardenFindingsFromShip(data["healing"].(map[string]any), data["deferredFindings"])
-	if badField != "" || cut {
-		t.Fatalf("badField = %q, cut = %v, want neither", badField, cut)
-	}
-	_, suppressed, loneDisagree := hardenBuildClusters(findings)
-	fixNow, staysDeferred, evidenceOnly := hardenSplitFindings(findings)
-	want := &DashboardHardenFunnel{
-		FixNow: len(fixNow), StaysDeferred: len(staysDeferred), EvidenceOnly: len(evidenceOnly),
-		Suppressed: len(suppressed), LoneDisagree: len(loneDisagree),
-	}
+	want := &DashboardHardenFunnel{FixNow: 1, StaysDeferred: 5, EvidenceOnly: 4, Suppressed: 2, LoneDisagree: 3}
 	if !reflect.DeepEqual(h.Funnel, want) {
 		t.Errorf("funnel = %+v, want %+v", h.Funnel, want)
-	}
-	if want.FixNow == 0 || want.StaysDeferred == 0 || want.EvidenceOnly == 0 || want.LoneDisagree == 0 {
-		t.Errorf("fixture gives an empty count: %+v", want)
 	}
 
 	many := make([]any, hardenFindingsMax+1)
@@ -409,13 +429,72 @@ func TestDashboardHarden_Funnel(t *testing.T) {
 		many[i] = map[string]any{"file": fmt.Sprintf("f%d.go", i), "severity": "low", "title": "t", "reason": "disagree"}
 	}
 	h, issues = dashHardenBuild(map[string]any{"healing": map[string]any{"hardened": []any{}}, "deferredFindings": many}, StepInProgress, false)
-	info := dashHardenIssues(issues, "info")
-	if h.Funnel == nil || h.Funnel.EvidenceOnly != hardenFindingsMax || len(info) != 1 || len(issues) != 1 {
-		t.Errorf("funnel = %+v, issues = %+v, want %d evidence-only and one info issue", h.Funnel, issues, hardenFindingsMax)
+	wantCut := []DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: fmt.Sprintf(
+		"The harden funnel counts only the first %d findings of the ship state", hardenFindingsMax)}}
+	if h.Funnel == nil || h.Funnel.EvidenceOnly != hardenFindingsMax || !reflect.DeepEqual(issues, wantCut) {
+		t.Errorf("funnel = %+v, issues = %+v, want %d evidence-only and %+v", h.Funnel, issues, hardenFindingsMax, wantCut)
 	}
-	wantCut := fmt.Sprintf("the harden funnel counts only the first %d findings of the ship state", hardenFindingsMax)
-	if len(info) == 1 && !strings.Contains(fmt.Sprintf("%+v", info[0]), wantCut) {
-		t.Errorf("funnel cut issue = %+v, want text %q", info[0], wantCut)
+}
+
+// TestDashboardHarden_FunnelSkipped checks that deferredFindings and
+// healing.fixed entries that cannot be read give one medium issue with their
+// count, and that the funnel still counts the other entries.
+func TestDashboardHarden_FunnelSkipped(t *testing.T) {
+	data := map[string]any{
+		"healing": map[string]any{"hardened": []any{}, "fixed": []any{"not an object"}},
+		"deferredFindings": []any{
+			42.0,
+			map[string]any{"file": "a.go", "severity": "low", "title": "t", "reason": "cannot-verify"},
+			map[string]any{"file": "b.go", "severity": "low", "title": "t", "reason": "needs-direction"},
+		},
+	}
+	h, issues := dashHardenBuild(data, StepInProgress, false)
+	want := []DashboardIssue{{Source: dashboardSourceState, Severity: "medium", Text: "3 entries of healing.fixed and deferredFindings of the ship state cannot be read — the harden funnel does not count them"}}
+	if !reflect.DeepEqual(issues, want) {
+		t.Errorf("issues = %+v, want %+v", issues, want)
+	}
+	if h.Funnel == nil || h.Funnel.StaysDeferred != 1 {
+		t.Errorf("funnel = %+v, want staysDeferred 1", h.Funnel)
+	}
+}
+
+// TestDashboardHarden_HealingNotAnObject checks that a data.healing value
+// that is not an object gives one medium issue that names the field and the
+// type found, and that the harden step shows no funnel. A null data.healing
+// is an empty object and gives no issue.
+func TestDashboardHarden_HealingNotAnObject(t *testing.T) {
+	decision := []any{map[string]any{"step": "harden", "decision": "fix pass started: 1 finding(s)", "at": "2026-10-07T08:55:00Z"}}
+	p := dashHardenShip(t, func(d map[string]any) {
+		d["healing"] = []any{"x"}
+		d["decisions"] = decision
+	})
+	h := dashHardenOf(t, p)
+	if h.Funnel != nil || h.FixPass != nil || len(h.Clusters) != 0 || h.Malformed != 0 {
+		t.Errorf("harden = %+v, want no funnel, no fixPass, no cluster and malformed 0", h)
+	}
+	want := "healing of the ship state is not an object (found list) — the harden step does not show its run records and funnel"
+	found := 0
+	for _, is := range dashRRStateIssues(p) {
+		if is.Text == want && is.Severity == "medium" {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Errorf("state issues = %+v, want one medium issue %q", dashRRStateIssues(p), want)
+	}
+
+	// With no harden decision the step has no detail, but the issue stays.
+	p = dashHardenShip(t, func(d map[string]any) { d["healing"] = "x" })
+	if s := dashJoinStep(t, p, "harden"); s.Detail != nil {
+		t.Errorf("harden detail = %+v, want none", s.Detail)
+	}
+	if issues := dashRRStateIssues(p); len(issues) != 1 || !strings.HasPrefix(issues[0].Text, "healing of the ship state is not an object (found string)") {
+		t.Errorf("state issues = %+v, want one healing issue", issues)
+	}
+
+	h2, issues := dashHardenBuild(map[string]any{"healing": nil, "decisions": decision}, StepInProgress, false)
+	if h2 == nil || len(issues) != 0 || h2.Funnel == nil {
+		t.Errorf("null healing: detail = %+v, issues = %+v, want a funnel and no issue", h2, issues)
 	}
 }
 
@@ -431,15 +510,17 @@ func TestDashboardHarden_BadSourceList(t *testing.T) {
 		timeline   int
 	}{
 		{"healing.fixed", func(d map[string]any) { d["healing"].(map[string]any)["fixed"] = "x" },
-			"healing.fixed of the ship state is not a list — the harden funnel is not shown", false, 1},
+			"healing.fixed of the ship state is not a list (found string) — the harden step does not show its funnel", false, 1},
 		{"deferredFindings", func(d map[string]any) { d["deferredFindings"] = 5.0 },
-			"deferredFindings of the ship state is not a list — the harden funnel is not shown", false, 1},
+			"deferredFindings of the ship state is not a list (found number) — the harden step does not show its funnel", false, 1},
+		{"deferredFindings null", func(d map[string]any) { d["deferredFindings"] = nil },
+			"deferredFindings of the ship state is not a list (found null) — the harden step does not show its funnel", false, 1},
 		{"decisions", func(d map[string]any) { d["decisions"] = map[string]any{} },
-			"decisions of the ship state is not a list — the harden timeline is not shown", true, 0},
+			"decisions of the ship state is not a list (found object) — the harden step does not show its timeline", true, 0},
 		{"healing.fixed and deferredFindings", func(d map[string]any) {
 			d["healing"].(map[string]any)["fixed"] = 1.0
 			d["deferredFindings"] = "x"
-		}, "healing.fixed of the ship state is not a list — the harden funnel is not shown", false, 1},
+		}, "healing.fixed of the ship state is not a list (found number) — the harden step does not show its funnel", false, 1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

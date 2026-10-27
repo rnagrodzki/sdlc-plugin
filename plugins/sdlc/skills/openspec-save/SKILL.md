@@ -8,7 +8,7 @@ model: sonnet
 
 # OpenSpec Save (SDLC)
 
-`/sdlc:plan` with the choice **Create OpenSpec change** stages the change files under `.sdlc-v2/openspec-staging/<change>/` of the main worktree. That folder is outside the tracked tree. A run in any worktree of the repo finds it. This skill moves the change onto its own branch `openspec/<change>`, commits it, and opens a PR. Reviewers then review the spec before any code exists. Merge that PR first. Then run `/sdlc:ship` on a new branch from the default branch.
+`/sdlc:plan` with the choice **Create OpenSpec change** stages the change files under `.sdlc-v2/openspec-staging/<change>/` of the main worktree. That folder is outside the tracked tree. When the tool can resolve the main worktree, a run in any worktree of the repo finds the folder. When that folder and `openspec/changes/<change>/` are both missing, the tool uses `.sdlc-v2/openspec-staging/<change>/` of the active worktree: an older plugin staged the change there. When the tool cannot resolve the main worktree, it uses only the folder of the active worktree, and `warnings` holds `Main worktree not found (...)`. This skill moves the change onto its own branch `openspec/<change>`, commits it, and opens a PR. Reviewers then review the spec before any code exists. Merge that PR first. Then run `/sdlc:ship` on a new branch from the default branch.
 
 **Announce at start:** "I'm using openspec-save (sdlc v{sdlc_version})." - extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
