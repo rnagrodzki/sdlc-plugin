@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.4.9] - 2026-10-27
+
+### RC 1
+
+- Preplan topic file has 7 sections, built from one shared section list
+- preplan_context adds absent section headings to an old topic file and reports open code fences
+- preplan_check returns the list of empty sections (emptySections)
+- Topic read error text matches the calling action
+- The preplan skill asks for the new sections in a fixed order
+- The plan skill maps the new topic sections in Step 1, and the docs describe them
+- End-to-end tests pin the heading repair and the empty-section report
+- Guardrails, review dimensions and Copilot instructions gain skill edit-effect and file-mode checks
+
+### RC 2
+
+- Parallel plan sessions on one branch no longer overwrite each other: plan_prepare and plan_mark take a runId, hooks find the plan run of the current session, and a live run is kept.
+- A resume of a plan run with no skillInvoked marker is rejected.
+- openspec_stage refuses to stage a change name that another plan already staged.
+- Execute and ship config values carry the source label "local".
+- received-review reads an alwaysFixSeverities setting and pre-approves findings of those severities.
+- Review rules and dimensions now cover the failure classes that review found on this branch.
+
 ## [0.4.8] - 2026-10-24
 
 ### RC 1
