@@ -42,6 +42,16 @@ and `mcp-output-drives-behavior` guardrails.
   tool description must say so.
 - `Next` must be populated with an exact per-outcome string, not free-form
   interpolation. Pattern: `VersionPrepareOut.Next` at version.go.
+- Every exported `*Out` field that the diff adds, or whose meaning the diff
+  changes, MUST have a `jsonschema_description:"..."` tag. The tag says what
+  the field holds, when the handler sets it, and when it is empty or left out
+  (an `omitempty` or `omitzero` tag). A field added to an existing struct needs
+  the tag even when the older fields of that struct have none. A `[]string`
+  field that carries warnings or messages is a field like any other. A new
+  `*Out` field with no tag is a finding. This extends the `*In` rule above,
+  which names `*In` fields only. Verify: list each `*Out` field in the diff and
+  read its tag. Example: a `Warnings` field added to an existing `*Out` struct
+  with no tag.
 - Tools publish no output schema. The renderer in `internal/mcpserver`
   shows the LLM the concrete shape by rendering every field with its JSON
   key as the label, so the output shape is visible in the result itself.
@@ -116,6 +126,19 @@ and `mcp-output-drives-behavior` guardrails.
   the class against `docs/mcp-output-contract.md`. A class that does not match
   the cause is a finding, because the renderer picks the default recovery text
   from the class.
+- A `Next`, `Suggestion` or retry hint that tells the caller to call a tool
+  again MUST pass every argument that selects the target record (a run ID, a
+  worker ID, a branch, a path) with the value the handler resolved. A retry
+  that drops a selecting argument can reach another record, such as the run of
+  another session, and is a finding. Text built from a value that can be
+  empty, or that the renderer shows as `(none)`, MUST leave out that clause or
+  name the step that supplies the value; a hint that tells the caller to pass
+  `(none)` is a finding. A test per state (value set, value empty) calls the
+  registered tool and asserts the rendered text. This extends the per-outcome
+  `Next` bullet and the recovery-action bullet above: they check that the text
+  is specific and that the named tool can fix the error, not that the call it
+  describes keeps the target. Example: a retry hint that omitted `runId`, and
+  a `Next` that named a `runId` that could be `(none)`.
 
 Every error result MUST render a non-empty `## Do this` section. When a typed
 error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered
@@ -133,6 +156,19 @@ error with an empty or missing `## Do this` section is a defect.
   expected to be one of a known set of values, the handler must check it
   against that set and reject unknown values with a `DomainError`, not
   silently fall back to a default.
+- A handler input whose effect depends on another input, or on the caller's
+  scope, MUST have a stated outcome for the case it does not support. An input
+  that takes effect only with another input (for example a run ID that is read
+  only when a resume flag is set) and is set alone MUST be rejected with a
+  `DomainError`, or ignored with a warning that names the input and the
+  effect. An input that selects a stored record (a run ID, a path) MUST state
+  and test the result for a record of another scope (another branch, session
+  or owner): refuse it, or accept it with a warning that names the owner. An
+  input that the handler drops with no error and no warning is a finding. A
+  test per case asserts the error or the warning. This extends the validation
+  bullet above, which checks the type and value of each field and not its use
+  together with other fields. Example: a run ID set without a resume flag was
+  ignored, and a run ID of another branch was accepted.
 
 ## Output field conventions for []string
 

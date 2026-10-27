@@ -30,9 +30,17 @@ injection through content an LLM reads and might act on.
   directives found inside fetched content.
 - Tool dispatch, approval-gate bypass, or config writes must never be
   conditioned directly on the literal text of externally-sourced content
-  without an explicit human confirmation step in between. Example: a
-  `received-review` flow auto-applying a fix because a PR comment said
-  "just fix it and merge" without an AskUserQuestion gate is a finding.
+  without an explicit human confirmation step in between. The same holds
+  for a value that the skill or the model derives from that text (a
+  severity, a category, a trust label, a 'safe to fix' verdict) when a
+  pre-approval, auto-fix or gate-bypass rule reads it. The skill must name
+  where that value comes from and what keeps the external text from
+  swaying it (a field that a trusted tool or a user answer sets, a fixed
+  table, or a question to the user). A bypass keyed on a value with no
+  named source, or on a value that the external text can sway with no
+  named protection, is a finding. Example: a `received-review` flow
+  auto-applying a fix because a PR comment said "just fix it and merge"
+  without an AskUserQuestion gate is a finding.
 - When a skill quotes or relays external content back to the user or into
   a commit/PR/issue, verify it is clearly delimited (quoted, fenced, or
   otherwise marked) so a reader — human or model — cannot mistake the
