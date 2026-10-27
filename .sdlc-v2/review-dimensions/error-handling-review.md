@@ -95,6 +95,16 @@ Several `internal/tools/*.go` files already follow this with their own
   message. Keep the failing values typed and format this call site's message
   from them. Example: `openspecSaveMaterializeError` edited its error text by
   string replacement.
+- A handler or helper that tries more than one candidate target in turn (for
+  example the main root, then the active worktree) reports every failed
+  attempt when all of them fail: the returned error names each target and its
+  cause. An error from an earlier attempt that a later attempt overwrites, that
+  the code drops before the return, or that the code passes to a later function
+  as an `error` parameter is a finding. Handle it where it arises, collect it
+  in a list, or join it with `errors.Join`. This extends the chain-preservation
+  bullet above, which keeps the chain of one error but not the errors of
+  several attempts. Example: `openspec_save` lost the main-worktree error when
+  the save failed.
 
 ## File-system operation error discrimination
 

@@ -212,6 +212,14 @@ new changes to that same bar:
   content. The test asserts that the chosen candidate is read or changed and
   that the other one is left alone. A test with one candidate, or with equal
   candidates, passes whichever one the code reads.
+- A test of code that copies, maps or counts fields of one record into another
+  gives each source field its own value, and asserts each output field against
+  its source. A fixture that holds the same value in two fields, or the same
+  count in two buckets, passes when the code reads the wrong field. Confirm
+  that the test fails when two output fields are swapped. This extends the
+  candidates-differ bullet above, which covers a target chosen from several
+  candidates. Example: a funnel test whose inputs did not show which input
+  field fed which output field.
 - A test set for a guard (a check that decides whether a write, a delete or a
   rewrite goes ahead) covers every key the guard protects, a key nested or
   dotted inside a guarded value, and the empty and wrong-type forms of each.
