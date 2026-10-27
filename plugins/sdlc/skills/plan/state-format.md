@@ -144,7 +144,7 @@ Written by `plan_prepare`. The first call writes the bootstrap shape `{ userProm
 |--------------------------|---------|----------------------------------------------------------------------|
 | `fromOpenspec`           | string  | OpenSpec change name, or empty string when not planning from OpenSpec. |
 | `fromOpenspecDirect`     | boolean | Whether the OpenSpec change was passed directly (not detected).      |
-| `openspecStage`          | boolean | Whether the plan authors a new OpenSpec change and stages it (the Create-flow staging path: `plan_support`'s `openspec_instructions`/`openspec_stage` actions write into `<ACTIVE_ROOT>/.sdlc-v2/openspec-staging/<name>/`, materialized into `openspec/changes/<name>/` at the next run's start). |
+| `openspecStage`          | boolean | Whether the plan authors a new OpenSpec change and stages it (the Create-flow staging path: `plan_support`'s `openspec_instructions`/`openspec_stage` actions write into `<MAIN_ROOT>/.sdlc-v2/openspec-staging/<name>/`, materialized into `openspec/changes/<name>/` of the active worktree at the next run's start). |
 | `lightweight`            | boolean | Whether the caller requested the lightweight pipeline override.      |
 | `fileCount`              | integer | File count used for complexity routing.                              |
 

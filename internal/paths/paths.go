@@ -77,6 +77,8 @@ var LinkedStateEntries = []string{
 
 // UnlinkedStateEntries are the DataDir entries that are never linked: tracked
 // config, user-written templates, legacy locations, and branch-local state.
+// openspec-staging is not linked either: openspec_stage writes it under the
+// main worktree directly, and Materialize reads it from there.
 var UnlinkedStateEntries = []string{
 	ConfigFile, GitignoreFile, ReviewDimensionsSubdir, LocalConfigFile,
 	LegacyLocalJSONFile, LegacyConfigJSONFile, JiraTemplatesSubdir, LegacyExecutionSubdir,

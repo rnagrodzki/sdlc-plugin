@@ -469,7 +469,7 @@ Step 6 (and again on a Step 7 reject with feedback):**
    retries; a refused call does not count toward its 5-call cap, and it
    stops after 3 refusals.
    On success it replaces the whole
-   `<active-worktree>/.sdlc-v2/openspec-staging/<changeName>/` directory
+   `<main-worktree>/.sdlc-v2/openspec-staging/<changeName>/` directory
    (gitignored) with the new files, writes a `stage.json` manifest
    (`change`, `schema`, `planPath`, each file's `path` + SHA-256, and
    `validatedAt` once validation passes), and runs `openspec validate
@@ -479,6 +479,8 @@ Step 6 (and again on a Step 7 reject with feedback):**
    validation is not an error — the result carries `valid: false` and the
    CLI output, `stage.json` keeps no `validatedAt`, and the skill can fix
    the artifacts and re-stage.
+   An older plugin staged under the active worktree. Materialize reads that
+   folder only when the main folder and the change folder are both missing.
 4. When `openspec_stage` returns `valid: true`, the skill replaces the
    plan's `**OpenSpec-Create:** <changeName>` header line with
    `**OpenSpec-Staging:** .sdlc-v2/openspec-staging/<changeName>/` (or keeps

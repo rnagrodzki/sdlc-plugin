@@ -14,7 +14,8 @@ after that. The full command name is `/sdlc:openspec-save`.
 ## The merge-first flow
 
 The change is written in the plan phase, but it is not yet in the tracked tree.
-It sits under `.sdlc-v2/openspec-staging/<change>/`. This skill moves it to the
+It sits under `.sdlc-v2/openspec-staging/<change>/` of the main worktree. This
+skill runs from any worktree of the repo. This skill moves it to the
 repository and sends it to review on its own:
 
 1. `/plan` stages the change and writes the `**OpenSpec-Staging:**` header line

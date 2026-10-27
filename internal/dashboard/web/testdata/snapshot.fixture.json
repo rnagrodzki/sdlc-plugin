@@ -691,7 +691,32 @@
                 "reviewTotals": { "found": 0, "fixed": 0, "deferred": 0, "unaccounted": 0 }
               }
             },
-            { "name": "harden", "status": "failed" },
+            {
+              "name": "harden",
+              "status": "failed",
+              "detail": {
+                "kind": "harden",
+                "harden": {
+                  "edits": [
+                    { "surface": "plan-guardrails", "action": "add", "targetFile": ".sdlc-v2/config.toml", "rationale": "Two reviews found the same missing check.", "patch": "id = \"auth-check\"", "patchCut": true },
+                    { "surface": "review-dimensions", "action": "strengthen", "targetFile": ".sdlc-v2/review-dimensions/auth-checks.md" }
+                  ],
+                  "clusters": [
+                    { "trigger": "cluster:src/auth.ts", "phase": "done", "interrupted": false, "classification": "user-code", "applied": 2, "skipped": 0 },
+                    { "trigger": "cluster:src/cache.ts", "phase": "started", "interrupted": true, "classification": "user-code", "applied": 0, "skipped": 0 }
+                  ],
+                  "funnel": { "fixNow": 2, "staysDeferred": 1, "evidenceOnly": 0, "suppressed": 0, "loneDisagree": 0 },
+                  "fixPass": { "fixed": 2, "total": 2 },
+                  "held": [
+                    { "surface": "review-dimensions", "action": "merge", "targetFile": ".sdlc-v2/review-dimensions/cache.md", "reason": "pending-stored", "label": "stored as a deferred item", "deferredId": "harden-pending-dimensions" }
+                  ],
+                  "timeline": [
+                    { "at": "2026-10-27T07:31:00Z", "decision": "fix pass started: 2 finding(s)" }
+                  ],
+                  "malformed": 1
+                }
+              }
+            },
             { "name": "pr", "status": "pending" },
             { "name": "verify-pipeline", "status": "pending" },
             { "name": "await-remote-review", "status": "pending" },

@@ -131,7 +131,7 @@ Loads the proposal, delta specs, and task list from
   change). That change is authored from the reviewed plan at the end of
   Step 6, and authored again when you reject the plan with feedback.
 - **Staging a created change can stop the skill.** The skill stages the
-  authored files with `openspec_stage`. Three exits apply:
+  authored files with `openspec_stage`. Four exits apply:
   - `staged by another plan`: another plan file staged this change name.
     If the error names this plan file under another path, the skill calls
     again with that path. Otherwise the skill asks you whether the other
@@ -146,6 +146,13 @@ Loads the proposal, delta specs, and task list from
     a change name that no plan uses, then run the skill again.
   - After 5 `openspec_stage` tries that return `valid: false`, the skill
     shows the OpenSpec CLI output and stops with no plan handoff.
+  - On a resume at or after Step 6.5, the skill reads the staging folder of
+    the main worktree, then the folder of the active worktree (an older
+    plugin staged there). If both folders are missing, the skill prints
+    `Staging folder of <name> not found under <MAIN_ROOT> or <ACTIVE_ROOT>.
+    Run /sdlc:plan again to author the change.` and stops with no plan
+    handoff and no `openspec_stage` call. Run the skill again to author the
+    change.
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.

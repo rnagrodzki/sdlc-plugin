@@ -74,7 +74,7 @@ retry this step with `/clear`.
 ## 6. OpenSpec plan → ship
 
 - [ ] `/sdlc:plan` in plan mode → **Create OpenSpec change** → approve
-- [ ] only the plan file and `.sdlc-v2/openspec-staging/<name>/` exist; `git status` clean
+- [ ] only the plan file and `.sdlc-v2/openspec-staging/<name>/` of the main worktree exist; `git status` clean
 - [ ] `/sdlc:ship --plan <file>` → `openspec/changes/<name>/` committed, validated, archived
 - [ ] `.sdlc-v2/reports/ship-<runId>-report.md` has `## Planning` and `## Timeline`
 - [ ] `.sdlc-v2/runs/plan-*.json` for this plan is gone after ship
