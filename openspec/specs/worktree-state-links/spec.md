@@ -14,7 +14,7 @@ In a linked worktree, the system SHALL make each entry in the "Link" column a sy
 | `reports/` | `local.toml`, `local.json`, `config.json`, `*.bak` (config) |
 | `history/` | `jira-templates/` (user templates) |
 | `evidence/` | `execution/` (legacy, migrated into `runs/`) |
-| `learnings/` | `openspec-staging/` (belongs to the active worktree's branch) |
+| `learnings/` | `openspec-staging/` (written and read under the main worktree directly, so no link is needed) |
 | `reviews/` | `plan-template.md`, `pr-template.md` (setup-written templates) |
 | `state/` | `scratch/`, `backups/` (no code writes them; never created) |
 | `preplan/` | |
@@ -35,6 +35,10 @@ In a linked worktree, the system SHALL make each entry in the "Link" column a sy
 #### Scenario: Preplan and archive folders are linked
 - **WHEN** a session starts in a linked worktree that has no `.sdlc-v2/preplan` and no `.sdlc-v2/run-archive`
 - **THEN** both are symlinks to the same entries under `<main-worktree>/.sdlc-v2/`
+
+#### Scenario: Staging folder is not linked
+- **WHEN** a session starts in a linked worktree that has no `.sdlc-v2/openspec-staging`
+- **THEN** no `.sdlc-v2/openspec-staging` symlink is created in the linked worktree
 
 ### Requirement: Link creation trigger
 The SessionStart hook SHALL create missing links whenever the session's active worktree is a linked worktree, and SHALL create no link in the main worktree. The main worktree is the checkout whose `.git` is a folder.
