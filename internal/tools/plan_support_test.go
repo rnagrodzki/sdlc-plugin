@@ -2319,9 +2319,9 @@ func TestPlanSupportOpenspecStage_OtherPlan(t *testing.T) {
 		manifestNotJSON    = `not json`
 		wantMsg            = `openspec_stage: change "add-widget" is staged by another plan: /plans/a.md. ` +
 			`If this call names the same plan file under another path, call again with planPath set to /plans/a.md.`
-		wantSuggestion = "If /plans/a.md is the plan file of this call under another path, call openspec_stage again with planPath set to /plans/a.md. " +
+		wantSuggestionFmt = "If /plans/a.md is the plan file of this call under another path, call openspec_stage again with planPath set to /plans/a.md. " +
 			"If /plans/a.md is another plan, pick another change name: replace add-widget in every header line that holds it (**Source:**, **OpenSpec-Create:** and **OpenSpec-Staging:**), then run Create-flow authoring again. " +
-			"If that other plan is abandoned, ask the user, then delete .sdlc-v2/openspec-staging/add-widget/ and call openspec_stage again."
+			"If that other plan is abandoned, ask the user, then delete %s and call openspec_stage again."
 	)
 
 	for _, tc := range []struct {
@@ -2347,6 +2347,7 @@ func TestPlanSupportOpenspecStage_OtherPlan(t *testing.T) {
 			stubOpenspecForStage(t, 0)
 			root := newOpenspecStageFixture(t, "")
 			stagingDir := filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget")
+			wantSuggestion := fmt.Sprintf(wantSuggestionFmt, stagingDir)
 			oldFile := filepath.Join(stagingDir, "old.md")
 			manifestFile := filepath.Join(stagingDir, openspec.StageManifestFile)
 			if tc.existing != "" {

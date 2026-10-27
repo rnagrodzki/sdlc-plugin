@@ -93,7 +93,8 @@ func RegisterOpenspecTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "openspec_save",
-		"INTERNAL — called by sdlc skills only. Saves the OpenSpec change that a plan staged under .sdlc-v2/openspec-staging/<change>/ into openspec/changes/<change>/, so the change can go to review as its own docs pull request before any code is written. "+
+		"INTERNAL — called by sdlc skills only. Saves the OpenSpec change that a plan staged under <main-worktree>/.sdlc-v2/openspec-staging/<change>/ (or, for an older plan, under the active worktree) into openspec/changes/<change>/ of the active worktree, so the change can go to review as its own docs pull request before any code is written. "+
+			"If the main worktree cannot be resolved, it reads only the staging folder of the active worktree and adds a warning. "+
 			"Call it after /plan created the change, from the default branch or from the branch openspec/<change>, with tracked files outside openspec/changes/<change>/ and .sdlc-v2/ clean. "+
 			"Input: planPath, the absolute path of the plan file with an **OpenSpec-Staging:** header line. "+
 			"Output: change, branch, branchCreated, materialized (created | already), refsStamped, stagedFiles, warnings (for example a change with no tasks.md), summary, next. "+
@@ -115,7 +116,8 @@ func RegisterOpenspecTools(s *mcpserver.Server) {
 					Cause:      err,
 				}
 			}
-			return openspecSave(workDir, in)
+			mainRoot, mainErr := worktree.MainRoot()
+			return openspecSaveRoots(mainRoot, mainErr, workDir, in)
 		},
 	)
 }

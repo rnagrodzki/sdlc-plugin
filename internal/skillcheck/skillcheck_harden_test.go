@@ -280,6 +280,68 @@ func TestHardenSkillParity(t *testing.T) {
 			hardenSkillsAssertOnce(t, "harden-orchestrator.md", flat, want)
 		}
 	})
+
+	// Step 5e sends the ship state record of a harden run: the rationale and
+	// the written patch of each applied proposal, and the held list. Each pin
+	// states one rule of that record and occurs once, so the deletion of one
+	// site cannot pass because a copy stays elsewhere. The pins run on the
+	// text with whitespace folded, because the sentences wrap across lines.
+	t.Run("ship_state_record_contract", func(t *testing.T) {
+		// The rows of the held exit table. SKILL.md and docs/skills/harden.md
+		// hold the same six rows.
+		heldExitRows := []string{
+			"| `--auto` | normal path (after 5c and 5d) | `pending-stored` with the returned `deferredId` for each \"Pending (needs a person — stored …)\" item. `pending-not-stored` for each \"Pending (NOT stored …)\" item. | Step 6 when `plugin-defect`, else Step 7 |",
+			"| `--auto` | 5a write-back halt or 5b halt | The rows of the line above, plus `not-processed` for each \"Not processed (halt)\" item | `rm -f \"<manifestPath>\"`, then stop. No Step 7. |",
+			"| interactive | normal path | `[]`. A person decided each proposal. | Step 6 when `plugin-defect`, else Step 7 |",
+			"| interactive | 5a write-back halt or 5b halt | `not-processed` for each proposal after the halted proposal in `RESULT.proposals` order | `rm -f \"<manifestPath>\"`, then stop. No Step 7. |",
+			"| interactive | `cancel` at the approval gate | `[]`. A person chose `cancel`. | Abort, `rm -f \"<manifestPath>\"`. No Step 7. |",
+			"| any | Step 4 route (b) through Step 6, or route (d) | `[]`. Step 5 did not run. | Step 7 |",
+		}
+
+		skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "harden", "SKILL.md"))
+		flat := strings.Join(strings.Fields(skill), " ")
+		for _, want := range append([]string{
+			// Per-iteration contract, rule 3: the one exception.
+			"One exception: keep the `writtenPatch` of each applied proposal for the 5e record. It is a record of a done write, not a change to write.",
+			// Step 5b: a repaired guardrail candidate sets writtenPatch.
+			"When 5a or `consolidate` repaired a guardrail candidate before this write, set the proposal's `writtenPatch` to the TOML entry that this write added.",
+			// Step 5e: the entry of applied, the rationale rule, the patch rule.
+			"one `{surface, action, targetFile, rationale, patch}` entry, built from the matching proposal,",
+			"Send `rationale` only when the proposal `rationale` is a non-empty string; otherwise leave the key out.",
+			"`patch` is the proposal `writtenPatch` when it is set, else the proposal `patch`, else `\"\"`.",
+			"healing_record cuts a patch over 1536 bytes and sets `patchCut`. Do not send `patchCut`.",
+			// Step 5e: the entry of held, the deferredId rule, the empty list.
+			"`held` — one `{surface, action, targetFile, reason, deferredId}` entry for each proposal that this run left for a person (the held exit table below).",
+			"Send `deferredId` only with reason `pending-stored`:",
+			"Send `held: []` when no row of the held exit table gives an entry.",
+			// Step 5e: each held reason.
+			"| `pending-stored` | `--auto` stored the proposal as a deferred item. `deferredId` is the id of that item |",
+			"| `pending-not-stored` | `--auto` could not store the proposal: the `deferred_add` call failed, or the id check failed |",
+			"| `not-processed` | A halt stopped the loop before this proposal |",
+			// Step 5e: the call sends held between applied and skipped.
+			"applied: [<entries built above>], held: [<entries built above>], skipped: <count built above>,",
+		}, heldExitRows...) {
+			hardenSkillsAssertOnce(t, "harden/SKILL.md", flat, want)
+		}
+		if strings.Contains(flat, "{surface, action, targetFile}") {
+			t.Error("harden/SKILL.md still names the old 5e entry {surface, action, targetFile}, without rationale and patch")
+		}
+
+		// The docs section lists the record fields, each held reason, each
+		// exit of the held table and the causes of an interrupted record.
+		docsPath := filepath.Join(filepath.Dir(filepath.Dir(executeSkillsRepoRoot(t))), "docs", "skills", "harden.md")
+		docs := executeSkillsReadFile(t, docsPath)
+		hardenSkillsAssertOnce(t, "docs/skills/harden.md", docs, "\n## Ship state record\n")
+		docsFlat := strings.Join(strings.Fields(docs), " ")
+		for _, want := range append([]string{
+			"| `applied[].rationale` | The rationale of the proposal. The key is absent when the proposal has no rationale |",
+			"| `held[].reason` | `pending-stored`, `pending-not-stored` or `not-processed` |",
+			"| The session ends between step 5-pre and step 5e | the `started` record |",
+			"| The step 5e call fails (for example, a field is not valid) | the `started` record |",
+		}, heldExitRows...) {
+			hardenSkillsAssertOnce(t, "docs/skills/harden.md", docsFlat, want)
+		}
+	})
 }
 
 // hardenSkillsAssertOnce reports an error unless text holds want exactly

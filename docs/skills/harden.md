@@ -208,6 +208,65 @@ replay run does not close the item. After it, `/harden` prints one line:
 [`/deferred`](deferred.md) lists the item and prints the replay command. It
 never files the item as a GitHub issue.
 
+## Ship state record
+
+When [`/ship`](ship.md) runs `/harden` (the `--step "ship harden"` argument),
+`/harden` stores one record of the run in the ship state, in
+`data.healing.hardened`. The dashboard and the ship report read it. A
+standalone `/harden` run stores nothing.
+
+The run makes two `healing_record` calls with the same `trigger`. The first
+call (step 5-pre) stores a `started` record before the first write. The second
+call (step 5e) stores a `done` record. It replaces the `started` record.
+
+| Field | Description |
+|-------|-------------|
+| `phase` | `started` or `done` |
+| `trigger` | The first 200 characters of the failure text. It is the key of the record |
+| `classification` | `user-code`, `plugin-defect` or `ambiguous` |
+| `applied[]` | One entry for each proposal that was written: `surface`, `action`, `targetFile`, `rationale`, `patch` |
+| `applied[].rationale` | The rationale of the proposal. The key is absent when the proposal has no rationale |
+| `applied[].patch` | The text that the write added. For a guardrail that 5a or `consolidate` repaired, it is the repaired TOML entry. Otherwise it is the patch of the proposal, or `""`. A patch over 1536 bytes is cut, and the entry gets `patchCut: true` |
+| `skipped` | The number of proposals that were not applied |
+| `held[]` | One entry for each proposal that the run left for a person: `surface`, `action`, `targetFile`, `reason`, `deferredId` |
+| `held[].reason` | `pending-stored`, `pending-not-stored` or `not-processed` |
+| `held[].deferredId` | The id of the deferred item. Only `pending-stored` has it |
+| `recordedAt` | The time of the call |
+
+The three reasons of `held`:
+
+- `pending-stored`: `--auto` stored the proposal as a deferred item
+  (see [Auto mode and pending edits](#auto-mode-and-pending-edits)).
+- `pending-not-stored`: `--auto` could not store the proposal. Copy it by hand
+  from the summary.
+- `not-processed`: a halt stopped the loop before the proposal.
+
+Each run matches exactly one row of this table (mode first, then the exit
+point):
+
+| Mode | Exit point into the `done` record | `held` | Next step |
+|---|---|---|---|
+| `--auto` | normal path (after 5c and 5d) | `pending-stored` with the returned `deferredId` for each "Pending (needs a person — stored …)" item. `pending-not-stored` for each "Pending (NOT stored …)" item. | Step 6 when `plugin-defect`, else Step 7 |
+| `--auto` | 5a write-back halt or 5b halt | The rows of the line above, plus `not-processed` for each "Not processed (halt)" item | `rm -f "<manifestPath>"`, then stop. No Step 7. |
+| interactive | normal path | `[]`. A person decided each proposal. | Step 6 when `plugin-defect`, else Step 7 |
+| interactive | 5a write-back halt or 5b halt | `not-processed` for each proposal after the halted proposal in `RESULT.proposals` order | `rm -f "<manifestPath>"`, then stop. No Step 7. |
+| interactive | `cancel` at the approval gate | `[]`. A person chose `cancel`. | Abort, `rm -f "<manifestPath>"`. No Step 7. |
+| any | Step 4 route (b) through Step 6, or route (d) | `[]`. Step 5 did not run. | Step 7 |
+
+A record can stay `started`. The dashboard then shows the run as
+"interrupted". These are the causes:
+
+| Cause | Record that stays | What happens next |
+|---|---|---|
+| The session ends between step 5-pre and step 5e | the `started` record | Nothing runs. On a resume, `/ship` does not run the cluster again and commits its edits in the commit step. |
+| The step 5e call fails (for example, a field is not valid) | the `started` record | `/harden` prints a warning line and goes on to the next step of the table above. |
+
+Two errors end the run before step 5-pre, so they leave no record and the
+dashboard shows no run: a JSON error in the response of the orchestrator
+(Step 3), and a `plugin-defect` result that breaks the contract (Step 4).
+`/harden` shows the raw response, removes the manifest and stops. `/ship`
+records the failed invocation as a decision and goes on to the next cluster.
+
 ## Learnings triage
 
     /harden --from-learnings

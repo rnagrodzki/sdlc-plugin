@@ -145,7 +145,7 @@ The system SHALL use the active worktree as the staging root when the main workt
 #### Scenario: openspec_save with no main worktree
 - **WHEN** `openspec_save` runs and the main worktree cannot be resolved, with cause `<cause>`
 - **THEN** the call reads only `<active-worktree>/.sdlc-v2/openspec-staging/<change>/`
-- **AND** `warnings` holds `main worktree not found (<cause>): read the staging folder of the active worktree only`
+- **AND** `warnings` holds `Main worktree not found (<cause>). Read only the staging folder of the active worktree.`
 
 #### Scenario: openspec_save in a linked worktree
 - **WHEN** `openspec_save` runs in a linked worktree and the main worktree resolves

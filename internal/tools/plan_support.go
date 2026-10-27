@@ -308,7 +308,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
 - openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a temp copy of openspec/config.yaml. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing in the repository; a missing openspec CLI returns InfraError.
-- openspec_stage: Write the authored artifacts to <active-worktree>/.sdlc-v2/openspec-staging/<changeName>/ (replaces the whole directory) and validate them in a temp copy. Requires changeName, files. Optional: planPath. Returns stagingDir, files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. A current spec that cannot be read returns InfraError.
+- openspec_stage: Write the authored artifacts to <main-worktree>/.sdlc-v2/openspec-staging/<changeName>/ (replaces the whole directory), so a run in any worktree of the repo finds them, and validate them in a temp copy of the active worktree. Requires changeName, files. Optional: planPath. Returns stagingDir (relative to the main worktree), files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. A current spec that cannot be read returns InfraError.
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Each write sets updatedAt (UTC). A write to a writer file that has no startedAt sets startedAt to that updatedAt; later writes keep it. A file written before startedAt existed, or an unreadable file that this call replaces, gets startedAt at this later write, so its startedAt can be later than the writer's real start. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record (writerId, status, itemCount, fileBytes, briefPath, startedAt, updatedAt). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
@@ -333,8 +333,8 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 				root = cwd
 			}
 			// An unresolved active worktree stays empty: the openspec_*
-			// actions that write under it refuse instead of falling back to
-			// the main worktree.
+			// actions that read the active worktree refuse. openspec_stage
+			// writes the staging folder under the main root.
 			contentRoot, err := worktree.ActiveRoot()
 			if err != nil {
 				contentRoot = ""
@@ -1149,7 +1149,7 @@ func requireActiveRoot(action, contentRoot string) error {
 
 // mapOpenspecError turns an internal/openspec error from action into the
 // matching DomainError or InfraError.
-func mapOpenspecError(action string, in PlanSupportIn, err error) error {
+func mapOpenspecError(action, mainRoot string, in PlanSupportIn, err error) error {
 	var staged *openspec.StagedByOtherPlanError
 	switch {
 	case errors.Is(err, openspec.ErrInvalidChangeName):
@@ -1187,7 +1187,7 @@ func mapOpenspecError(action string, in PlanSupportIn, err error) error {
 			Suggestion: fmt.Sprintf("If %s is the plan file of this call under another path, call openspec_stage again with planPath set to %s. "+
 				"If %s is another plan, pick another change name: replace %s in every header line that holds it (**Source:**, **OpenSpec-Create:** and **OpenSpec-Staging:**), then run Create-flow authoring again. "+
 				"If that other plan is abandoned, ask the user, then delete %s and call openspec_stage again.",
-				other, other, other, in.ChangeName, openspec.StagingDirRel(in.ChangeName)),
+				other, other, other, in.ChangeName, filepath.Join(mainRoot, filepath.FromSlash(openspec.StagingDirRel(in.ChangeName)))),
 			Cause: err,
 		}
 	case errors.Is(err, openspec.ErrTargetSpecTooLarge):
@@ -1221,7 +1221,7 @@ func openspecInstructions(mainRoot, contentRoot string, in PlanSupportIn) (PlanS
 	}
 	schema, guides, err := openspec.PrepareInstructions(contentRoot, in.ChangeName)
 	if err != nil {
-		return PlanSupportOut{}, mapOpenspecError(action, in, err)
+		return PlanSupportOut{}, mapOpenspecError(action, mainRoot, in, err)
 	}
 	guardrails, warning := loadGuardrails(mainRoot)
 	summary := fmt.Sprintf("OpenSpec change %q uses schema %q with %d artifact(s) and %d guardrail(s).", in.ChangeName, schema, len(guides), len(guardrails))
@@ -1245,7 +1245,7 @@ func openspecStage(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportO
 		return PlanSupportOut{}, err
 	}
 	if !openspec.ValidChangeName(in.ChangeName) {
-		return PlanSupportOut{}, mapOpenspecError(action, in, openspec.ErrInvalidChangeName)
+		return PlanSupportOut{}, mapOpenspecError(action, mainRoot, in, openspec.ErrInvalidChangeName)
 	}
 	if len(in.Files) == 0 {
 		return PlanSupportOut{}, &mcpserver.DomainError{
@@ -1255,7 +1255,7 @@ func openspecStage(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportO
 	}
 	res, err := openspec.Stage(contentRoot, mainRoot, in.ChangeName, in.Files, in.PlanPath, nil)
 	if err != nil {
-		return PlanSupportOut{}, mapOpenspecError(action, in, err)
+		return PlanSupportOut{}, mapOpenspecError(action, mainRoot, in, err)
 	}
 	valid := res.Valid
 	validateOutput := res.ValidateOutput

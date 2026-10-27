@@ -35,7 +35,9 @@ const dashboardExecuteRefPrefix = "execute:"
 // a list with records and none valid, adds a state issue. A review step with
 // review totals also gets detail.reviewQueue from dashboardReviewQueue, built
 // after the received-review station, so the fix records are in it. The
-// issues of dashboardReviewQueue go to the pipeline issues.
+// issues of dashboardReviewQueue go to the pipeline issues. A harden step
+// gets the detail of dashboardHardenDetail when that returns one, and the
+// issues of dashboardHardenDetail go to the pipeline issues.
 func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	data := st.Data
 	p.SessionID = dashboardStr(data["sessionId"])
@@ -98,6 +100,13 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 	}
 	if problem != "" {
 		p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "medium", Text: problem})
+	}
+	if step := dashboardStepNamed(p, dashboardShipStepHarden); step != nil {
+		harden, hardenIssues := dashboardHardenDetail(data, step, runCompleted)
+		if harden != nil {
+			step.Detail = &DashboardStepDetail{Kind: dashboardKindHarden, Harden: harden}
+		}
+		p.Issues = append(p.Issues, hardenIssues...)
 	}
 
 	if entries, ok := dashboardDecodeExploreSummary(data["planExploreSummary"]); ok {

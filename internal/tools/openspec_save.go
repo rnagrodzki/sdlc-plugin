@@ -60,18 +60,29 @@ var openspecSaveGit = func(dir string, args ...string) (string, error) {
 	return execx.Run("git", args, execx.Options{Dir: dir, KeepLeadingSpace: true})
 }
 
-// openspecSave saves the OpenSpec change staged by the plan at in.PlanPath
-// into openspec/changes/<change>/ on the branch openspec/<change>. Every git
-// command and the change files use workDir. The plan file is read and
-// rewritten at in.PlanPath. It checks the plan path, the header lines, and
-// the change name before any git command. It then applies the branch rule
-// and the status guard before it creates the branch, so a failed guard
-// changes nothing. A failure after the branch is created leaves the repo on
-// that branch, and the error Suggestion names it. On success the change
-// files are staged and the plan's **OpenSpec-Staging:** line is rewritten to
-// **OpenSpec-Saved:**. A plan that already has the Saved line goes to
-// openspecSaveAlready.
+// openspecSave saves with the active root as the staging root.
 func openspecSave(workDir string, in OpenspecSaveIn) (OpenspecSaveOut, error) {
+	return openspecSaveRoots("", nil, workDir, in)
+}
+
+// openspecSaveRoots saves the OpenSpec change staged by the plan at
+// in.PlanPath into openspec/changes/<change>/ on the branch openspec/<change>.
+// Every git command and the change files use workDir. The staged files are
+// read from the staging folder under mainRoot, or under workDir for a plan
+// from an older plugin. An empty mainRoot, or a non-nil mainErr, means workDir
+// is the only staging root; a non-nil mainErr also adds one warning when the
+// save succeeds. The plan file is read and rewritten at in.PlanPath. It
+// checks the plan path, the header lines, and the change name before any git
+// command. It then applies the branch rule and the status guard before it
+// creates the branch, so a failed guard changes nothing. A failure after the
+// branch is created leaves the repo on that branch, and the error Suggestion
+// names it. On success the change files are staged and the plan's
+// **OpenSpec-Staging:** line is rewritten to **OpenSpec-Saved:**. A plan that
+// already has the Saved line goes to openspecSaveAlready.
+func openspecSaveRoots(mainRoot string, mainErr error, workDir string, in OpenspecSaveIn) (OpenspecSaveOut, error) {
+	if mainRoot == "" || mainErr != nil {
+		mainRoot = workDir
+	}
 	plan, err := openspecSaveReadPlan(in.PlanPath)
 	if err != nil {
 		return OpenspecSaveOut{}, err
@@ -95,12 +106,15 @@ func openspecSave(workDir string, in OpenspecSaveIn) (OpenspecSaveOut, error) {
 		}
 	}
 
-	out, err := openspecSaveApply(workDir, in.PlanPath, plan, change)
+	out, err := openspecSaveApply(mainRoot, workDir, in.PlanPath, plan, change)
 	if err != nil {
 		if create {
 			openspecSaveNoteBranch(err, target)
 		}
 		return OpenspecSaveOut{}, err
+	}
+	if mainErr != nil {
+		out.Warnings = append(out.Warnings, "Main worktree not found ("+mainErr.Error()+"). Read only the staging folder of the active worktree.")
 	}
 	out.BranchCreated = create
 	return out, nil
@@ -284,13 +298,14 @@ func openspecSaveGuards(workDir, change string) (create bool, err error) {
 
 // openspecSaveApply runs the writes of a save on the current branch:
 // Materialize, the task ref stamp, git add on the change dir, and the plan
-// header rewrite. The returned output has BranchCreated false; the caller
-// sets it.
-func openspecSaveApply(workDir, planPath, plan, change string) (OpenspecSaveOut, error) {
+// header rewrite. Materialize reads the staged files under mainRoot (or under
+// workDir for a plan from an older plugin) and writes the change under
+// workDir. The returned output has BranchCreated false; the caller sets it.
+func openspecSaveApply(mainRoot, workDir, planPath, plan, change string) (OpenspecSaveOut, error) {
 	changeDir := openspecSaveChangeDir(change)
 	target := "openspec/" + change
 
-	res, err := openspec.Materialize(workDir, workDir, plan)
+	res, err := openspec.Materialize(workDir, mainRoot, plan)
 	if err != nil {
 		return OpenspecSaveOut{}, openspecSaveMaterializeError(err)
 	}
