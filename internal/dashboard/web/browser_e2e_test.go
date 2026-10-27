@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -359,6 +360,46 @@ func browserSeedWait(t *testing.T, root string, w browserWaitSeed, now time.Time
 		AskedAt:   browserTS(now.Add(-2 * time.Minute)),
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// What browserSeedHardenShip writes and the harden tile test looks for.
+const (
+	browserHardenRationale = "Two reviews found the same gap."
+	browserHardenPatch     = `id = "auth-check"`
+	// browserHardenNoWhy is the text of an edit of an old record, which has no rationale.
+	browserHardenNoWhy = "No rationale recorded."
+	// browserHardenBad is the marker of the run record that is not an object.
+	browserHardenBad = "1 harden record could not be read. The other records show below."
+)
+
+// browserSeedHardenShip writes a ship run whose harden step has two run
+// records: one valid record with a new-form and an old-form edit, and one
+// entry that is not an object.
+func browserSeedHardenShip(t *testing.T, root string, now time.Time) {
+	t.Helper()
+	st, err := state.Init(root, "ship", "feat/harden", "s-harden")
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Data["branch"] = "feat/harden"
+	st.Data["startedAt"] = browserTS(now.Add(-30 * time.Minute))
+	st.Data["steps"] = []any{
+		map[string]any{"name": "review", "status": tools.StepCompleted, "startedAt": browserTS(now.Add(-30 * time.Minute)), "completedAt": browserTS(now.Add(-20 * time.Minute))},
+		map[string]any{"name": "harden", "status": tools.StepCompleted, "startedAt": browserTS(now.Add(-20 * time.Minute)), "completedAt": browserTS(now.Add(-10 * time.Minute))},
+	}
+	st.Data["healing"] = map[string]any{"hardened": []any{
+		map[string]any{"phase": "done", "trigger": "cluster:src/auth.ts", "classification": "user-code",
+			"applied": []any{
+				map[string]any{"surface": "plan-guardrails", "action": "add", "targetFile": ".sdlc-v2/config.toml",
+					"rationale": browserHardenRationale, "patch": browserHardenPatch},
+				map[string]any{"surface": "review-dimensions", "action": "strengthen", "targetFile": ".sdlc-v2/review-dimensions/auth-checks.md"},
+			},
+			"skipped": 0, "recordedAt": browserTS(now.Add(-11 * time.Minute))},
+		"not an object",
+	}}
+	if err := state.Write(st); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -831,4 +872,168 @@ func TestBrowserE2E(t *testing.T) {
 		return os.IsNotExist(err)
 	})
 	page.wait("the card to go", `document.querySelectorAll('#feed [data-lone-wait]').length === 0`)
+}
+
+// TestBrowserE2E_HardenTile drives the real page against a snapshot that holds
+// a harden step, and reads the harden tile. It has its own temp repos: repo
+// repoH holds the ship run of browserSeedHardenShip, and repo repoA holds the
+// seed of TestBrowserE2E, so the test also shows that a ship pipeline without
+// a harden step is not changed by the tile.
+//
+// The tile of repoH must show the rationale of the new-form edit, the text
+// for the old-form edit, the toggle of the patch, and the marker for the run
+// record that cannot be read. The patch opens on a click.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_HardenTile(t *testing.T) {
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+	stderrBuf := captureStderr(t)
+	shortTimings(t, browserSnapshotEvery, time.Second)
+
+	now := time.Now().UTC()
+	repoH, repoA := t.TempDir(), t.TempDir()
+	browserSeedHardenShip(t, repoH, now)
+	browserSeedRepoA(t, repoA, now)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	o := browserOptions(ln, []string{repoA, repoH}, &browserCollector{})
+	base := "http://" + ln.Addr().String()
+
+	// Cleanups run last in, first out: the server stops first, then the log is
+	// read, and captureStderr puts the old writer back.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server stderr:\n%s", stderrBuf.String())
+		}
+	})
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	serveDone := make(chan int, 1)
+	go func() { serveDone <- Serve(serveCtx, o) }()
+	t.Cleanup(func() {
+		stopServe()
+		select {
+		case <-serveDone:
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return at cleanup")
+		}
+	})
+	browserWaitFor(t, "GET /api/health", func() bool {
+		resp, err := http.Get(base + "/api/health")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	})
+
+	// The snapshot must hold the harden detail, else the page checks below prove nothing.
+	var harden *tools.DashboardHarden
+	for _, repo := range browserSnapshotOf(t, base).Repos {
+		if repo.Root != repoH {
+			continue
+		}
+		for _, p := range repo.Pipelines {
+			for _, s := range p.Steps {
+				if s.Name == "harden" && s.Detail != nil {
+					harden = s.Detail.Harden
+				}
+			}
+		}
+	}
+	if harden == nil {
+		t.Fatal("the snapshot has no harden step with a detail for the harden repo; the page checks below would prove nothing")
+	}
+	if len(harden.Edits) != 2 || len(harden.Clusters) != 1 || harden.Malformed != 1 {
+		t.Fatalf("snapshot harden: %d edits, %d run records, %d malformed; want 2, 1 and 1", len(harden.Edits), len(harden.Clusters), harden.Malformed)
+	}
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.ExecPath(chrome),
+		chromedp.NoSandbox,
+		chromedp.UserDataDir(t.TempDir()),
+		chromedp.WindowSize(1400, 1000),
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	t.Cleanup(cancelAlloc)
+	ctx, cancelCtx := chromedp.NewContext(allocCtx)
+	t.Cleanup(cancelCtx)
+	// Run with no step starts the browser. Later steps use a context with a limit.
+	if err := chromedp.Do(ctx); err != nil {
+		t.Fatalf("start Chrome: %v", err)
+	}
+	page := &browserPage{t: t, ctx: ctx}
+
+	page.do("open the dashboard", chromedp.Navigate(base+"/"))
+	page.wait("the first snapshot", `document.getElementById('conn').getAttribute('data-state') === 'snapshot'`)
+	page.click("the Pipelines tab", "#tab-pipelines")
+
+	// inBlock wraps body in a function that finds the pipeline block of the repo
+	// with the given root. The body returns false when the block is not there yet.
+	inBlock := func(root, body string) string {
+		return `(function () {
+			var block = Array.prototype.filter.call(document.querySelectorAll('#feed > [data-key]'), function (b) {
+				return b.getAttribute('data-key').indexOf(` + browserJSON(root+"\n") + `) === 0;
+			})[0];
+			if (!block) return false;
+			` + body + `
+		})()`
+	}
+	const hardenTile = `details[data-section="harden"]`
+	page.wait("the harden tile in the pipeline of the harden repo", inBlock(repoH, `
+		var tile = block.querySelector('`+hardenTile+`');
+		return !!tile && tile.open && !!tile.querySelector('.hd-edit');`))
+
+	var tile struct {
+		Whys    []string `json:"whys"`    // the .hd-why text of each edit, in page order
+		Patches []string `json:"patches"` // the summary text of each patch toggle
+		Bad     []string `json:"bad"`     // the text of each marker for a record that cannot be read
+		Edits   int      `json:"edits"`
+	}
+	raw := browserMust[string](page, "read the harden tile", inBlock(repoH, `
+		var tile = block.querySelector('`+hardenTile+`');
+		var texts = function (sel) {
+			return Array.prototype.map.call(tile.querySelectorAll(sel), function (n) { return n.textContent; });
+		};
+		return JSON.stringify({
+			whys: texts('.hd-why'),
+			patches: texts('details.hd-patch > summary'),
+			bad: texts('.hd-bad'),
+			edits: tile.querySelectorAll('.hd-edits .hd-edit').length
+		});`))
+	if err := json.Unmarshal([]byte(raw), &tile); err != nil {
+		t.Fatalf("decode the harden tile %q: %v", raw, err)
+	}
+	if tile.Edits != 2 {
+		t.Errorf("edits in the harden tile = %d; want 2 (the new-form and the old-form edit)", tile.Edits)
+	}
+	if !slices.Equal(tile.Whys, []string{browserHardenRationale, browserHardenNoWhy}) {
+		t.Errorf("rationale texts = %q; want the rationale %q, then %q", tile.Whys, browserHardenRationale, browserHardenNoWhy)
+	}
+	if len(tile.Patches) != 1 || !strings.HasPrefix(tile.Patches[0], "patch") {
+		t.Errorf("patch toggles = %q; want one toggle that starts with \"patch\" (the old-form edit has none)", tile.Patches)
+	}
+	if !slices.Equal(tile.Bad, []string{browserHardenBad}) {
+		t.Errorf("malformed markers = %q; want %q", tile.Bad, browserHardenBad)
+	}
+
+	// The patch is behind the toggle. A click opens it and shows the diff.
+	const patchToggle = `#feed [data-key] ` + hardenTile + ` details.hd-patch > summary`
+	page.click("the patch toggle", patchToggle)
+	page.wait("the patch to open", inBlock(repoH, `
+		var patch = block.querySelector('`+hardenTile+` details.hd-patch');
+		return !!patch && patch.open && patch.querySelector('.hd-diff').textContent === `+browserJSON(browserHardenPatch)+`;`))
+
+	// The pipeline of the other repo still shows its steps and has no harden tile.
+	page.wait("the steps of the ship pipeline of repo A", inBlock(repoA, `
+		var names = Array.prototype.map.call(block.querySelectorAll('.station'), function (s) {
+			return (s.getAttribute('title') || '').split(',')[0];
+		});
+		return ['execute', 'commit', 'review'].every(function (n) { return names.indexOf(n) !== -1; }) &&
+			!!block.querySelector('details[data-section="review"]') &&
+			block.querySelectorAll('`+hardenTile+`').length === 0;`))
 }
