@@ -507,6 +507,120 @@ func hardenClustersNext(clusters []HardenCluster, fixNow int) string {
 }
 
 // ---------------------------------------------------------------------------
+// Ship state -> cluster findings
+// ---------------------------------------------------------------------------
+
+// hardenShipVerdicts is the Go form of the Ship mapping table in
+// plugins/sdlc/skills/harden/review-clusters.md: deferral reason -> verdict.
+var hardenShipVerdicts = map[string]string{
+	history.ReasonWontFix:        "agree-won't-fix",
+	history.ReasonDisagree:       "disagree",
+	history.ReasonNeedsDirection: "needs-direction",
+	history.ReasonBelowThreshold: hardenVerdictNotEvaluated,
+}
+
+// hardenFindingsMax is the most findings hardenFindingsFromShip returns.
+const hardenFindingsMax = 500
+
+// hardenFindingsFromShip builds the harden_clusters input from a ship
+// state: healing.fixed records with no deferredId (verdict agree-will-fix),
+// then deferredFindings entries. FixedInRun is false on every finding.
+// An empty deferral reason counts as below-threshold, as in
+// shipBuildReviewLedger. badField names the first of "healing.fixed" and
+// "deferredFindings" that is present and not a list, else "". cut is true
+// when the input held more than hardenFindingsMax findings.
+//
+// healing is the state's data.healing map and deferredFindings is its
+// data.deferredFindings value. An absent or null value is an empty list. When
+// badField is set, no finding is returned. An entry that is not an object, a
+// healing.fixed record with a deferredId (its run entry already stands for
+// it) and a deferredFindings entry with an unknown reason give no finding. A
+// field of the wrong type reads as its empty value. The walk is its own, not
+// shared with shipBuildReviewLedger: that one counts entries and skips
+// fixedInRun entries, and this one builds finding objects from all entries.
+//
+// The caller is the harden step detail of the dashboard snapshot. It feeds
+// the result to hardenBuildClusters and hardenSplitFindings.
+func hardenFindingsFromShip(healing map[string]any, deferredFindings any) (findings []HardenClusterFinding, badField string, cut bool) {
+	fixed, ok := hardenShipList(healing["fixed"])
+	if !ok {
+		return nil, "healing.fixed", false
+	}
+	deferred, ok := hardenShipList(deferredFindings)
+	if !ok {
+		return nil, "deferredFindings", false
+	}
+
+	findings = []HardenClusterFinding{}
+	// add appends f, or reports that the input held more than
+	// hardenFindingsMax findings.
+	add := func(f HardenClusterFinding) (full bool) {
+		if len(findings) == hardenFindingsMax {
+			return true
+		}
+		findings = append(findings, f)
+		return false
+	}
+
+	for _, entry := range fixed {
+		m, isObj := entry.(map[string]any)
+		if !isObj {
+			continue
+		}
+		if strings.TrimSpace(dashboardStr(m["deferredId"])) != "" {
+			continue // its run entry already stands for it
+		}
+		if add(HardenClusterFinding{
+			File:     dashboardStr(m["file"]),
+			Severity: dashboardStr(m["severity"]),
+			Title:    dashboardStr(m["title"]),
+			Verdict:  "agree-will-fix",
+		}) {
+			return findings, "", true
+		}
+	}
+
+	for _, entry := range deferred {
+		m, isObj := entry.(map[string]any)
+		if !isObj {
+			continue
+		}
+		reason := dashboardStr(m["reason"])
+		if reason == "" {
+			reason = history.ReasonBelowThreshold // an entry from before the reason field
+		}
+		verdict, known := hardenShipVerdicts[reason]
+		if !known {
+			continue
+		}
+		if add(HardenClusterFinding{
+			File:       dashboardStr(m["file"]),
+			Severity:   dashboardStr(m["severity"]),
+			Title:      dashboardStr(m["title"]),
+			Body:       dashboardStr(m["description"]),
+			Verdict:    verdict,
+			Reason:     reason,
+			Line:       dashboardInt(m["line"]),
+			DeferredID: strings.TrimSpace(dashboardStr(m["deferredId"])),
+		}) {
+			return findings, "", true
+		}
+	}
+	return findings, "", false
+}
+
+// hardenShipList reads one source list of hardenFindingsFromShip. An absent or
+// null value is an empty list. ok is false when the value is not a list.
+// The caller is hardenFindingsFromShip.
+func hardenShipList(v any) (items []any, ok bool) {
+	if v == nil {
+		return nil, true
+	}
+	items, ok = v.([]any)
+	return items, ok
+}
+
+// ---------------------------------------------------------------------------
 // dirtySurfaces: harden-surface paths with uncommitted edits
 // ---------------------------------------------------------------------------
 

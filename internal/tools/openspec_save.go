@@ -290,7 +290,7 @@ func openspecSaveApply(workDir, planPath, plan, change string) (OpenspecSaveOut,
 	changeDir := openspecSaveChangeDir(change)
 	target := "openspec/" + change
 
-	res, err := openspec.Materialize(workDir, plan)
+	res, err := openspec.Materialize(workDir, workDir, plan)
 	if err != nil {
 		return OpenspecSaveOut{}, openspecSaveMaterializeError(err)
 	}

@@ -551,6 +551,17 @@
                     },
                     "targetFile": {
                       "type": "string"
+                    },
+                    "rationale": {
+                      "type": "string"
+                    },
+                    "patch": {
+                      "type": "string",
+                      "description": "At most 1536 bytes. healing_record cuts a longer patch and sets patchCut."
+                    },
+                    "patchCut": {
+                      "type": "boolean",
+                      "const": true
                     }
                   },
                   "required": ["surface", "action", "targetFile"],
@@ -564,6 +575,35 @@
               "recordedAt": {
                 "type": "string",
                 "format": "date-time"
+              },
+              "held": {
+                "type": "array",
+                "maxItems": 100,
+                "description": "Proposals that harden left for a person. An empty list is valid. Entries can share one deferredId. The tool does not check that the list covers every item of the harden summary, or that deferredId names a stored deferred item.",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "surface": {
+                      "type": "string",
+                      "enum": ["plan-guardrails", "execute-guardrails", "review-dimensions", "copilot-instructions", "error-report-skill", "skill-recommendation"]
+                    },
+                    "action": {
+                      "type": "string"
+                    },
+                    "targetFile": {
+                      "type": "string"
+                    },
+                    "reason": {
+                      "type": "string",
+                      "enum": ["pending-stored", "pending-not-stored", "not-processed"]
+                    },
+                    "deferredId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": ["surface", "action", "targetFile", "reason"],
+                  "additionalProperties": false
+                }
               }
             },
             "required": ["phase", "trigger", "classification", "applied", "skipped", "recordedAt"],

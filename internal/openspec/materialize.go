@@ -1,7 +1,7 @@
 // Materialization of a staged OpenSpec change at run start.
 //
 // Plan stages a change's artifacts under
-// <active-worktree>/.sdlc-v2/openspec-staging/<change>/ (see stage.go) and
+// <main-worktree>/.sdlc-v2/openspec-staging/<change>/ (see stage.go) and
 // records the staging dir in the plan's **OpenSpec-Staging:** header. When a
 // run starts, Materialize moves the staged files into
 // openspec/changes/<change>/ by the first matching rule of the spec's rule
@@ -84,7 +84,9 @@ type MaterializeResult struct {
 }
 
 // Materialize applies the first matching rule for the change staged by
-// planContent, relative to the active worktree root activeRoot:
+// planContent. The target is under activeRoot. The staging dir is under
+// stagingRoot, or under activeRoot when the stagingRoot dir does not exist
+// and the target does not exist (the fallback for an older plan):
 //
 //  1. no **OpenSpec-Staging:** header: zero result, nil error
 //  2. invalid change name: ErrInvalidChangeName; nothing written
@@ -92,7 +94,8 @@ type MaterializeResult struct {
 //  4. target and staging exist, every stage.json file matches the target by
 //     SHA-256: staging dir deleted; "already"
 //  5. target and staging exist, any file differs: error; nothing changed
-//  6. target and staging both missing: error naming the staging path
+//  6. target and staging both missing: error naming the staging path (both
+//     staging paths when stagingRoot differs from activeRoot)
 //  7. a staged file's SHA-256 differs from stage.json: error; nothing written
 //  8. otherwise: `openspec new change`, copy each stage.json file, `openspec
 //     validate <change> --strict`, `git add openspec/changes/<change>/`,
@@ -102,7 +105,7 @@ type MaterializeResult struct {
 // kept. A failed validation returns an ErrMaterialize error carrying the CLI
 // output. The .openspec.yaml file `openspec new change` creates is never
 // overwritten. See ErrMaterialize for which errors wrap it.
-func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
+func Materialize(activeRoot, stagingRoot, planContent string) (MaterializeResult, error) {
 	change, ok := StagedChangeFromPlan(planContent)
 	if !ok {
 		return MaterializeResult{}, nil // rule 1
@@ -113,7 +116,7 @@ func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
 
 	targetRel := filepath.Join("openspec", "changes", change)
 	targetDir := filepath.Join(activeRoot, targetRel)
-	stagingDir := filepath.Join(activeRoot, filepath.FromSlash(StagingDirRel(change)))
+	stagingDir := filepath.Join(stagingRoot, filepath.FromSlash(StagingDirRel(change)))
 
 	targetExists, err := dirExists(targetDir)
 	if err != nil {
@@ -122,6 +125,21 @@ func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
 	stagingExists, err := dirExists(stagingDir)
 	if err != nil {
 		return MaterializeResult{}, err
+	}
+	// Fallback for a plan that an older plugin staged under the active
+	// worktree: read it only when the target and the main staging dir are
+	// both missing.
+	if !targetExists && !stagingExists && filepath.Clean(stagingRoot) != filepath.Clean(activeRoot) {
+		fallbackDir := filepath.Join(activeRoot, filepath.FromSlash(StagingDirRel(change)))
+		fallbackExists, err := dirExists(fallbackDir)
+		if err != nil {
+			return MaterializeResult{}, err
+		}
+		if !fallbackExists {
+			return MaterializeResult{}, fmt.Errorf("%w: openspec/changes/%s/ does not exist and the staging dirs %s and %s are missing", // rule 6
+				ErrMaterialize, change, stagingDir+string(filepath.Separator), fallbackDir+string(filepath.Separator))
+		}
+		stagingDir, stagingExists = fallbackDir, true
 	}
 	result := MaterializeResult{Change: change, Materialized: MaterializedAlready}
 

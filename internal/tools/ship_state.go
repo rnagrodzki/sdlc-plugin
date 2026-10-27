@@ -45,7 +45,7 @@ import (
 type ShipStateIn struct {
 	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=commit-check,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record,enum=harden_clusters,enum=report" jsonschema_description:"Operation to perform: init, begin-step, complete-step, commit-check, start (legacy), complete (legacy), skip, fail, decide, defer, healing_record, harden_clusters, report, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
-	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, merge, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, deferredId (kind fixed: the deferred row to resolve; the deferredFindings entries with it get fixedInRun:true), status, phase, trigger, classification, applied, skipped, branch; harden_clusters reads findings, branch. Each finding may also carry line, deferredId and fixedInRun. report reads write, format, branch; deferred_add reads id, description, created, source, priority, merge (true to merge into the open item with the same id)). See the action list for which sub-fields each action reads."`
+	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, merge, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, deferredId (kind fixed: the deferred row to resolve; the deferredFindings entries with it get fixedInRun:true), status, phase, trigger, classification, applied (with optional rationale and patch), skipped, held (optional, at most 100, [] is valid; deferredId is required for reason pending-stored and absent for the other reasons; entries can share one deferredId; not checked against the harden summary or the deferred items), branch; harden_clusters reads findings, branch. Each finding may also carry line, deferredId and fixedInRun. report reads write, format, branch; deferred_add reads id, description, created, source, priority, merge (true to merge into the open item with the same id)). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session. init also uses it to keep older ship runs of the branch: a run that is not a dry-run and whose non-empty sessionId differs from this non-empty value is kept. When either value is empty, a sibling run that is not completed is deleted."`
 }
 
@@ -2007,6 +2007,34 @@ var (
 // for one run. A fix-progress call for a new key past it is rejected.
 const healingFixProgressMax = 200
 
+// healingPatchMaxBytes is the byte limit of applied[].patch. A longer
+// patch is cut on a UTF-8 boundary and marked patchCut. No setting changes it.
+const healingPatchMaxBytes = 1536
+
+// healingHeldMax is the most entries detail.held holds for one record.
+const healingHeldMax = 100
+
+// The reasons a held[] entry may carry: how harden left the proposal for a
+// person.
+const (
+	healingHeldPendingStored    = "pending-stored"     // stored as a deferred item, deferredId required
+	healingHeldPendingNotStored = "pending-not-stored" // deferred_add failed or the id check failed
+	healingHeldNotProcessed     = "not-processed"      // harden stopped before this proposal
+)
+
+// healingHeldReasons is the set of held[].reason values. ship-state.schema.json
+// carries the same set.
+var healingHeldReasons = []string{healingHeldPendingStored, healingHeldPendingNotStored, healingHeldNotProcessed}
+
+// healingCutPatch cuts s to at most healingPatchMaxBytes bytes on a UTF-8
+// boundary. cut is true when s was longer than the limit.
+func healingCutPatch(s string) (out string, cut bool) {
+	if len(s) <= healingPatchMaxBytes {
+		return s, false
+	}
+	return strings.ToValidUTF8(s[:healingPatchMaxBytes], ""), true
+}
+
 // Narrations returned by healing_record. Callers and tests match on them.
 const (
 	healingNarrRecorded  = "recorded"
@@ -2788,14 +2816,14 @@ func healingHardened(d map[string]any, timestamp string) (map[string]any, error)
 	if !ok || rawApplied == nil {
 		return nil, &mcpserver.DomainError{
 			Msg:        `healing_record: detail.applied is required for kind "hardened"`,
-			Suggestion: "Pass detail.applied as a JSON array of {surface, action, targetFile} objects (an empty array when harden applied nothing), then retry ship_state healing_record.",
+			Suggestion: "Pass detail.applied as a JSON array of {surface, action, targetFile, rationale?, patch?} objects (an empty array when harden applied nothing), then retry ship_state healing_record.",
 		}
 	}
 	items, isList := rawApplied.([]any)
 	if !isList {
 		return nil, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("healing_record: detail.applied must be an array, got %T", rawApplied),
-			Suggestion: "Pass detail.applied as a JSON array of {surface, action, targetFile} objects (an empty array when harden applied nothing), then retry ship_state healing_record.",
+			Suggestion: "Pass detail.applied as a JSON array of {surface, action, targetFile, rationale?, patch?} objects (an empty array when harden applied nothing), then retry ship_state healing_record.",
 		}
 	}
 	surfaceIDs := healingSurfaceIDs()
@@ -2806,7 +2834,7 @@ func healingHardened(d map[string]any, timestamp string) (map[string]any, error)
 		if !isObj {
 			return nil, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("healing_record: detail.applied[%d] must be an object, got %T", i, item),
-				Suggestion: "Pass every detail.applied entry as a {surface, action, targetFile} object, then retry ship_state healing_record.",
+				Suggestion: "Pass every detail.applied entry as a {surface, action, targetFile, rationale?, patch?} object, then retry ship_state healing_record.",
 			}
 		}
 		entry := map[string]any{}
@@ -2815,7 +2843,7 @@ func healingHardened(d map[string]any, timestamp string) (map[string]any, error)
 			if !isStr || strings.TrimSpace(s) == "" {
 				return nil, &mcpserver.DomainError{
 					Msg: fmt.Sprintf("healing_record: detail.applied[%d].%s is required and must be a non-empty string", i, field),
-					Suggestion: fmt.Sprintf("Set detail.applied[%d].%s to a non-empty string — every applied entry needs surface, action and targetFile — then retry ship_state healing_record.",
+					Suggestion: fmt.Sprintf("Set detail.applied[%d].%s to a non-empty string — every applied entry needs surface, action and targetFile; rationale and patch are optional — then retry ship_state healing_record.",
 						i, field),
 				}
 			}
@@ -2828,20 +2856,162 @@ func healingHardened(d map[string]any, timestamp string) (map[string]any, error)
 				Suggestion: "Set detail.applied[].surface to one of " + surfaces + ", then retry ship_state healing_record.",
 			}
 		}
+		if err := healingAppliedOptional(m, entry, i); err != nil {
+			return nil, err
+		}
 		applied = append(applied, entry)
 	}
 	skipped, err := healingNonNegInt(d, "skipped", "hardened")
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{
+	held, hasHeld, err := healingHeld(d, surfaceIDs)
+	if err != nil {
+		return nil, err
+	}
+	rec := map[string]any{
 		"phase":          phase,
 		"trigger":        trigger,
 		"classification": classification,
 		"applied":        applied,
 		"skipped":        skipped,
 		"recordedAt":     timestamp,
-	}, nil
+	}
+	if hasHeld {
+		rec["held"] = held
+	}
+	return rec, nil
+}
+
+// healingAppliedOptional copies the optional rationale and patch of the
+// applied entry m (index i) into entry. A key that is absent or "" stores
+// nothing; any other value that is not a string is a DomainError. A patch
+// longer than healingPatchMaxBytes is cut by healingCutPatch and the entry
+// gets patchCut:true. Only the tool sets patchCut: a caller value of any kind
+// is a DomainError.
+func healingAppliedOptional(m, entry map[string]any, i int) error {
+	if _, has := m["patchCut"]; has {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("healing_record: detail.applied[%d].patchCut is set by the tool — remove it", i),
+			Suggestion: fmt.Sprintf("Remove detail.applied[%d].patchCut — healing_record sets patchCut when it cuts a patch over %d bytes — then retry ship_state healing_record.", i, healingPatchMaxBytes),
+		}
+	}
+	for _, field := range []string{"rationale", "patch"} {
+		raw, has := m[field]
+		if !has {
+			continue
+		}
+		s, isStr := raw.(string)
+		if !isStr {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("healing_record: detail.applied[%d].%s must be a string, got %T", i, field, raw),
+				Suggestion: fmt.Sprintf("Set detail.applied[%d].%s to a string, or omit it — rationale and patch are optional — then retry ship_state healing_record.", i, field),
+			}
+		}
+		if s == "" {
+			continue
+		}
+		if field == "patch" {
+			var cut bool
+			s, cut = healingCutPatch(s)
+			if cut {
+				entry["patchCut"] = true
+			}
+		}
+		entry[field] = s
+	}
+	return nil
+}
+
+// healingHeld validates the optional detail.held list and returns it as it
+// is stored. has is false when the key is absent: the record then gets no
+// held key. An empty list is valid and is stored as []. Entries may share
+// one deferredId. The tool does not check that the list covers every item of
+// the harden summary, or that a deferredId names a stored deferred item.
+func healingHeld(d map[string]any, surfaceIDs []string) (held []any, has bool, err error) {
+	raw, has := d["held"]
+	if !has {
+		return nil, false, nil
+	}
+	items, isList := raw.([]any)
+	if !isList {
+		return nil, false, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("healing_record: detail.held must be an array, got %T", raw),
+			Suggestion: "Pass detail.held as a JSON array of {surface, action, targetFile, reason, deferredId?} objects (an empty array when harden held nothing), or omit it, then retry ship_state healing_record.",
+		}
+	}
+	if len(items) > healingHeldMax {
+		return nil, false, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("healing_record: detail.held has %d entries — the limit is %d", len(items), healingHeldMax),
+			Suggestion: fmt.Sprintf("Send at most %d held entries, then retry ship_state healing_record.", healingHeldMax),
+		}
+	}
+	surfaces := strings.Join(surfaceIDs, " | ")
+	reasons := strings.Join(healingHeldReasons, " | ")
+	held = make([]any, 0, len(items))
+	for i, item := range items {
+		m, isObj := item.(map[string]any)
+		if !isObj {
+			return nil, false, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("healing_record: detail.held[%d] must be an object, got %T", i, item),
+				Suggestion: "Pass every detail.held entry as a {surface, action, targetFile, reason, deferredId?} object, then retry ship_state healing_record.",
+			}
+		}
+		entry := map[string]any{}
+		for _, field := range []string{"surface", "action", "targetFile"} {
+			s, isStr := m[field].(string)
+			if !isStr || strings.TrimSpace(s) == "" {
+				return nil, false, &mcpserver.DomainError{
+					Msg: fmt.Sprintf("healing_record: detail.held[%d].%s is required and must be a non-empty string", i, field),
+					Suggestion: fmt.Sprintf("Set detail.held[%d].%s to a non-empty string — every held entry needs surface, action, targetFile and reason — then retry ship_state healing_record.",
+						i, field),
+				}
+			}
+			entry[field] = s
+		}
+		if !slices.Contains(surfaceIDs, entry["surface"].(string)) {
+			return nil, false, &mcpserver.DomainError{
+				Msg: fmt.Sprintf("healing_record: detail.held[%d].surface %q is not a harden surface id — accepted values are %s",
+					i, entry["surface"], surfaces),
+				Suggestion: fmt.Sprintf("Set detail.held[%d].surface to one of %s, then retry ship_state healing_record.", i, surfaces),
+			}
+		}
+		reason, _ := m["reason"].(string)
+		if !slices.Contains(healingHeldReasons, reason) {
+			return nil, false, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("healing_record: detail.held[%d].reason %v is not a held reason — it is required, and accepted values are %s", i, m["reason"], reasons),
+				Suggestion: fmt.Sprintf("Set detail.held[%d].reason to one of %s, then retry ship_state healing_record.", i, reasons),
+			}
+		}
+		entry["reason"] = reason
+		rawID, hasID := m["deferredId"]
+		switch {
+		case !hasID && reason == healingHeldPendingStored:
+			return nil, false, &mcpserver.DomainError{
+				Msg: fmt.Sprintf("healing_record: detail.held[%d].deferredId is required for reason %q", i, healingHeldPendingStored),
+				Suggestion: fmt.Sprintf("Set detail.held[%d].deferredId to the id of the stored deferred item — reason %s needs it — then retry ship_state healing_record.",
+					i, healingHeldPendingStored),
+			}
+		case hasID && reason != healingHeldPendingStored:
+			return nil, false, &mcpserver.DomainError{
+				Msg: fmt.Sprintf("healing_record: detail.held[%d].deferredId must be absent for reason %q — only %s carries a deferredId", i, reason, healingHeldPendingStored),
+				Suggestion: fmt.Sprintf("Remove detail.held[%d].deferredId, or set its reason to %s when a deferred item was stored, then retry ship_state healing_record.",
+					i, healingHeldPendingStored),
+			}
+		case hasID:
+			id, isStr := rawID.(string)
+			if !isStr || strings.TrimSpace(id) == "" {
+				return nil, false, &mcpserver.DomainError{
+					Msg: fmt.Sprintf("healing_record: detail.held[%d].deferredId must be a non-empty string, got %T %v", i, rawID, rawID),
+					Suggestion: fmt.Sprintf("Set detail.held[%d].deferredId to the non-empty id of the stored deferred item, then retry ship_state healing_record.",
+						i),
+				}
+			}
+			entry["deferredId"] = id
+		}
+		held = append(held, entry)
+	}
+	return held, true, nil
 }
 
 // healingSameFinding reports whether the stored record m has the key
@@ -4357,7 +4527,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. The failure row carries the same plan fields from linkedPlan as history_record; a linkedPlan that is not an object or has a bad time adds a warnings entry. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it (with no ship state file the summary says the item is stored nowhere). Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`"). defer and deferred_add read .sdlc-v2/history/deferred.json to merge into an open row: a defer with reason `+history.ReasonNeedsDirection+` on a file that has an open `+history.ReasonNeedsDirection+` row appends its description as a line to that row instead of adding a row. The response names the row id it merged into, and its next field says whether the call merged, added a row, or found the text already there. The run-scoped entry is written after deferred.json and carries deferredId, the id of the deferred.json row that holds the text (absent when the deferred.json write failed). When the deferred.json write succeeded, defer also reads data.healing.fixProgress of the run: when it holds the finding's row (match: the only row with the same file, line and title, else the only queued or fixing row with the same file and line), defer sets it to deferred (a failed row stays failed) and copies deferredId onto it. The summary and next then end with a note: "Fix-progress row set to deferred (was <prior status>)." when the status changed, or "Fix-progress row kept <status> and got the deferred id." when the status stayed and the row only received the deferredId; with no matching row, or nothing to change, defer adds no note. When the deferred.json write failed, defer does not change the row and adds no note. A damaged data.healing (not an object, or a fixProgress that is not a list) leaves the row unchanged and adds a warning with the repair step to the summary and to next, and the defer call does not fail for it. A failed state write after a good deferred.json write names that row: run deferred_resolve on it before a retry (a retry in a later second adds a second row), or retry only when a second row is acceptable.
-- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1); a repeat with the same (origin, file, line, title) is a duplicate; kind fixed also sets the matching data.healing.fixProgress row to fixed (match: the exact key, else the only row with the same file, line and title, else the only queued or fixing row with the same file and line; it creates no row; a duplicate fixed call still repairs the row, with narration "fix-progress row set to fixed" and written true; when the call changes the status of a row, the response carries fixRow {status, prior, updatedAt} and next names the prior status; a fixProgress value that is not a list does not fail the call: the fixed record is written, no row changes, and summary, next and warnings carry a warning that names the state file); Optional detail.deferredId (string, the id from the finding's Deferred-id line): healing_record kind fixed with deferredId also resolves that row in .sdlc-v2/history/deferred.json. The row is resolved first (a resolved row is left as it is), then fixedInRun:true is set on every deferredFindings entry with that deferredId: entries that share one merged deferred.json row are all flagged by one call, and the whole row is resolved; an id missing from either store (deferredFindings or deferred.json) is a DomainError, and the response echoes deferredId and fixedInRun with next "deferred item <id> resolved. Continue the fix pass." or "deferred item <id> was already resolved. Continue the fix pass.") | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile}], detail.skipped (non-negative integer); a "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires the finding fields of "fixed" — detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1) — plus detail.status (one of `+strings.Join(healingFixStatuses, " | ")+`). Upserts data.healing.fixProgress[] on the key (origin, file, line, title): a new key appends a record with firstAt and updatedAt; a repeat of the stored status changes nothing (a new severity included); a stored final status (`+strings.Join(healingFixFinal, " | ")+`) is kept when the incoming status is queued or fixing, and a stored failed is kept when the incoming status is deferred (narration "kept <status>"); any other status change replaces the whole record and keeps firstAt and the deferredId of the stored record. At most `+fmt.Sprint(healingFixProgressMax)+` records: a new key past the cap is a DomainError, while a stored key still updates. Never writes data.healing.fixed). Optional: detail.branch. A no-op call returns narration "already recorded — no change" (or "kept <status>"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing; a fixed record with detail.deferredId then resolves nothing, and its next says that the deferred item stays open. A damaged data.healing (not an object, or a list key that is not a list) is a DataError that names the state file, except a fixProgress value on kind fixed (see above). Returns summary, kind, written (true only when this call changed the state file), record (the record as stored after the call: recordedAt for review-total, fixed and hardened; status, firstAt and updatedAt for fix-progress; on a no-op call, and on a repeat fixed call that only sets its fixProgress row, the stored entry, not the incoming one; with no live run the validated incoming record), and next (id "continue-fix-pass" with the instruction for the fix pass: kind fix-progress and kind fixed return it (with detail.deferredId, the instruction of kind fixed names the deferred item); kind review-total returns next id "continue-after-review-total" and kind hardened returns next id "continue-harden", each with the instruction for the calling step; for kind hardened, phase started asks for the done record and phase done ends the harden run).
+- healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1); a repeat with the same (origin, file, line, title) is a duplicate; kind fixed also sets the matching data.healing.fixProgress row to fixed (match: the exact key, else the only row with the same file, line and title, else the only queued or fixing row with the same file and line; it creates no row; a duplicate fixed call still repairs the row, with narration "fix-progress row set to fixed" and written true; when the call changes the status of a row, the response carries fixRow {status, prior, updatedAt} and next names the prior status; a fixProgress value that is not a list does not fail the call: the fixed record is written, no row changes, and summary, next and warnings carry a warning that names the state file); Optional detail.deferredId (string, the id from the finding's Deferred-id line): healing_record kind fixed with deferredId also resolves that row in .sdlc-v2/history/deferred.json. The row is resolved first (a resolved row is left as it is), then fixedInRun:true is set on every deferredFindings entry with that deferredId: entries that share one merged deferred.json row are all flagged by one call, and the whole row is resolved; an id missing from either store (deferredFindings or deferred.json) is a DomainError, and the response echoes deferredId and fixedInRun with next "deferred item <id> resolved. Continue the fix pass." or "deferred item <id> was already resolved. Continue the fix pass.") | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile, optional rationale (string), optional patch (string; a patch over 1536 bytes is cut and the entry gets patchCut:true; the caller never sends patchCut)}], detail.skipped (non-negative integer). Optional: detail.held, at most 100 entries [{surface, action, targetFile, reason (one of pending-stored | pending-not-stored | not-processed), deferredId (required for pending-stored, absent otherwise; entries can share one deferredId)}]; an empty held list is valid and stored as []; the tool does not check that held lists every item of the harden summary, and does not check deferredId against the stored deferred items. A wrong type, a caller patchCut or a bad held entry returns DomainError and writes nothing. A "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires the finding fields of "fixed" — detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1) — plus detail.status (one of `+strings.Join(healingFixStatuses, " | ")+`). Upserts data.healing.fixProgress[] on the key (origin, file, line, title): a new key appends a record with firstAt and updatedAt; a repeat of the stored status changes nothing (a new severity included); a stored final status (`+strings.Join(healingFixFinal, " | ")+`) is kept when the incoming status is queued or fixing, and a stored failed is kept when the incoming status is deferred (narration "kept <status>"); any other status change replaces the whole record and keeps firstAt and the deferredId of the stored record. At most `+fmt.Sprint(healingFixProgressMax)+` records: a new key past the cap is a DomainError, while a stored key still updates. Never writes data.healing.fixed). Optional: detail.branch. A no-op call returns narration "already recorded — no change" (or "kept <status>"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing; a fixed record with detail.deferredId then resolves nothing, and its next says that the deferred item stays open. A damaged data.healing (not an object, or a list key that is not a list) is a DataError that names the state file, except a fixProgress value on kind fixed (see above). Returns summary, kind, written (true only when this call changed the state file), record (the record as stored after the call: recordedAt for review-total, fixed and hardened; status, firstAt and updatedAt for fix-progress; on a no-op call, and on a repeat fixed call that only sets its fixProgress row, the stored entry, not the incoming one; with no live run the validated incoming record), and next (id "continue-fix-pass" with the instruction for the fix pass: kind fix-progress and kind fixed return it (with detail.deferredId, the instruction of kind fixed names the deferred item); kind review-total returns next id "continue-after-review-total" and kind hardened returns next id "continue-harden", each with the instruction for the calling step; for kind hardened, phase started asks for the done record and phase done ends the harden run).
 - harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction"|"not-evaluated" (only with reason below-threshold), reason? (one of `+strings.Join(history.DeferredReasons(), " | ")+`), line?, deferredId?, fixedInRun?}]. Optional: detail.branch (the ship run whose healing.hardened triggers set alreadyHardened). failureText has every double quote replaced by a single quote and every backslash by a slash, so it is safe inside a quoted --failure-text argument. A below-threshold finding joins the cluster of its file when that file has another finding that is not below-threshold; a file with only below-threshold findings forms no cluster. Each finding also lands in at most one of three lists, which never change the clusters. The reason of a finding picks its list; the verdict picks it only when the reason is empty. fixNow holds a below-threshold finding with a deferredId and fixedInRun false. staysDeferred holds a below-threshold finding without a deferredId and a needs-direction finding. evidenceOnly holds a disagree or wont-fix finding (the verdict agree-won't-fix counts as wont-fix). Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, fixNow, staysDeferred, evidenceOnly (each [] when empty), and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. reviewLedger and reportData.deferredFindings (a count) skip each deferredFindings entry with fixedInRun:true; the state's own data.deferredFindings array in the same response is not filtered and keeps those entries. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, healing records, this run's execute state (only when the execute step completed) and its linked plan run, the review run ledger of this ship run (for the Review waves section), CLI evidence, user input and learnings, and render it. Its deferredFindings list leaves out each entry with fixedInRun:true (the fix is counted under healing.fixed). Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.

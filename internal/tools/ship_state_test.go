@@ -18,6 +18,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -7167,13 +7168,13 @@ func TestShipStateHealingRecord_Rejections(t *testing.T) {
 		{"hardened unknown phase", healingHardenedDetail(map[string]any{"phase": "finished"}), []string{"finished"}, healingPhases},
 		{"hardened missing trigger", healingHardenedDetail(map[string]any{"trigger": nil}), []string{"detail.trigger"}, nil},
 		{"hardened missing classification", healingHardenedDetail(map[string]any{"classification": nil}), []string{"detail.classification"}, nil},
-		{"hardened missing applied", healingHardenedDetail(map[string]any{"applied": nil}), []string{"detail.applied"}, nil},
-		{"hardened applied not array", healingHardenedDetail(map[string]any{"applied": "none"}), []string{"detail.applied"}, nil},
-		{"hardened applied entry not object", healingHardenedDetail(map[string]any{"applied": []any{"x"}}), []string{"detail.applied[0]"}, nil},
+		{"hardened missing applied", healingHardenedDetail(map[string]any{"applied": nil}), []string{"detail.applied"}, []string{"rationale", "patch"}},
+		{"hardened applied not array", healingHardenedDetail(map[string]any{"applied": "none"}), []string{"detail.applied"}, []string{"rationale", "patch"}},
+		{"hardened applied entry not object", healingHardenedDetail(map[string]any{"applied": []any{"x"}}), []string{"detail.applied[0]"}, []string{"rationale", "patch"}},
 		{
 			"hardened applied missing targetFile",
 			healingHardenedDetail(map[string]any{"applied": []any{map[string]any{"surface": "plan-guardrails", "action": "add"}}}),
-			[]string{"detail.applied[0].targetFile"}, nil,
+			[]string{"detail.applied[0].targetFile"}, []string{"rationale", "patch"},
 		},
 		{
 			"hardened unknown surface",
@@ -7237,6 +7238,281 @@ func TestShipStateHealingRecord_Rejections(t *testing.T) {
 	if h, ok := readStateData(t, path)["healing"]; ok {
 		t.Errorf("data.healing = %v, want absent — rejected calls must not write", h)
 	}
+}
+
+// healingHeldEntry returns a valid held entry with reason pending-stored. A
+// nil override deletes the key.
+func healingHeldEntry(overrides map[string]any) map[string]any {
+	e := map[string]any{
+		"surface": "review-dimensions", "action": "add", "targetFile": "/wt/.sdlc-v2/review-dimensions/x.md",
+		"reason": healingHeldPendingStored, "deferredId": "harden-deferred-1",
+	}
+	for k, v := range overrides {
+		if v == nil {
+			delete(e, k)
+			continue
+		}
+		e[k] = v
+	}
+	return e
+}
+
+// healingAppliedWith returns detail.applied with one valid entry that also
+// carries the extra keys.
+func healingAppliedWith(extra map[string]any) []any {
+	e := map[string]any{"surface": "plan-guardrails", "action": "add", "targetFile": "/wt/.sdlc-v2/config.toml"}
+	for k, v := range extra {
+		e[k] = v
+	}
+	return []any{e}
+}
+
+// TestShipStateHealingRecord_HeldRejections has one case for each rule of
+// the optional hardened fields (applied[].rationale, applied[].patch,
+// applied[].patchCut, held and its entries). Each case returns a DomainError
+// whose Suggestion names the field, and the state file does not change.
+func TestShipStateHealingRecord_HeldRejections(t *testing.T) {
+	tooMany := make([]any, healingHeldMax+1)
+	for i := range tooMany {
+		tooMany[i] = healingHeldEntry(nil)
+	}
+	held := func(entry any) map[string]any {
+		return healingHardenedDetail(map[string]any{"held": []any{entry}})
+	}
+	cases := []struct {
+		name      string
+		detail    map[string]any
+		msgWants  []string
+		suggWants []string
+	}{
+		{"rationale not a string", healingHardenedDetail(map[string]any{"applied": healingAppliedWith(map[string]any{"rationale": float64(1)})}),
+			[]string{"detail.applied[0].rationale must be a string"}, []string{"detail.applied[0].rationale"}},
+		{"rationale null", healingHardenedDetail(map[string]any{"applied": healingAppliedWith(map[string]any{"rationale": nil})}),
+			[]string{"detail.applied[0].rationale must be a string"}, []string{"detail.applied[0].rationale"}},
+		{"patch not a string", healingHardenedDetail(map[string]any{"applied": healingAppliedWith(map[string]any{"patch": []any{"x"}})}),
+			[]string{"detail.applied[0].patch must be a string"}, []string{"detail.applied[0].patch"}},
+		{"caller patchCut true", healingHardenedDetail(map[string]any{"applied": healingAppliedWith(map[string]any{"patch": "x", "patchCut": true})}),
+			[]string{"detail.applied[0].patchCut is set by the tool — remove it"}, []string{"detail.applied[0].patchCut"}},
+		{"caller patchCut false", healingHardenedDetail(map[string]any{"applied": healingAppliedWith(map[string]any{"patchCut": false})}),
+			[]string{"detail.applied[0].patchCut is set by the tool — remove it"}, []string{"detail.applied[0].patchCut"}},
+		{"held not a list", healingHardenedDetail(map[string]any{"held": "none"}),
+			[]string{"detail.held must be an array"}, []string{"detail.held"}},
+		{"held null", healingHardenedDetail(map[string]any{"held": nil}),
+			[]string{"detail.held must be an array"}, []string{"detail.held"}},
+		{"held over the limit", healingHardenedDetail(map[string]any{"held": tooMany}),
+			[]string{fmt.Sprintf("detail.held has %d entries — the limit is %d", healingHeldMax+1, healingHeldMax)},
+			[]string{fmt.Sprintf("Send at most %d held entries, then retry ship_state healing_record.", healingHeldMax)}},
+		{"held entry not an object", held("x"), []string{"detail.held[0] must be an object"}, []string{"detail.held entry"}},
+		{"held surface missing", held(healingHeldEntry(map[string]any{"surface": nil})),
+			[]string{"detail.held[0].surface"}, []string{"detail.held[0].surface"}},
+		{"held surface unknown", held(healingHeldEntry(map[string]any{"surface": "readme"})),
+			[]string{"readme", "detail.held[0].surface"}, append([]string{"detail.held[0].surface"}, healingSurfaceIDs()...)},
+		{"held action empty", held(healingHeldEntry(map[string]any{"action": ""})),
+			[]string{"detail.held[0].action"}, []string{"detail.held[0].action"}},
+		{"held targetFile missing", held(healingHeldEntry(map[string]any{"targetFile": nil})),
+			[]string{"detail.held[0].targetFile"}, []string{"detail.held[0].targetFile"}},
+		{"held reason missing", held(healingHeldEntry(map[string]any{"reason": nil})),
+			[]string{"detail.held[0].reason"}, append([]string{"detail.held[0].reason"}, healingHeldReasons...)},
+		{"held reason unknown", held(healingHeldEntry(map[string]any{"reason": "later"})),
+			[]string{"detail.held[0].reason later"}, append([]string{"detail.held[0].reason"}, healingHeldReasons...)},
+		{"held deferredId missing with pending-stored", held(healingHeldEntry(map[string]any{"deferredId": nil})),
+			[]string{"detail.held[0].deferredId is required"}, []string{"detail.held[0].deferredId"}},
+		{"held deferredId with pending-not-stored", held(healingHeldEntry(map[string]any{"reason": healingHeldPendingNotStored})),
+			[]string{"detail.held[0].deferredId must be absent"}, []string{"detail.held[0].deferredId"}},
+		{"held deferredId with not-processed", held(healingHeldEntry(map[string]any{"reason": healingHeldNotProcessed})),
+			[]string{"detail.held[0].deferredId must be absent"}, []string{"detail.held[0].deferredId"}},
+		{"held deferredId empty", held(healingHeldEntry(map[string]any{"deferredId": ""})),
+			[]string{"detail.held[0].deferredId must be a non-empty string"}, []string{"detail.held[0].deferredId"}},
+		{"held deferredId not a string", held(healingHeldEntry(map[string]any{"deferredId": float64(7)})),
+			[]string{"detail.held[0].deferredId must be a non-empty string"}, []string{"detail.held[0].deferredId"}},
+	}
+
+	branch := "feat/heal-held-reject"
+	dir, path := deferFixture(t, branch)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := map[string]any{"branch": branch}
+			maps.Copy(d, tc.detail)
+			_, err := shipState(dir, dir, ShipStateIn{Action: "healing_record", Detail: d}, fixedNow(time.Now()))
+			if err == nil {
+				t.Fatal("want DomainError, got nil")
+			}
+			if !isDomainError(err) {
+				t.Fatalf("error = %v (%T), want DomainError", err, err)
+			}
+			msg := err.Error()
+			if !strings.HasPrefix(msg, "healing_record: ") {
+				t.Errorf("message %q does not start with the action name", msg)
+			}
+			for _, w := range tc.msgWants {
+				if !strings.Contains(msg, w) {
+					t.Errorf("message %q does not contain %q", msg, w)
+				}
+			}
+			sugg := suggestionOf(err)
+			for _, w := range tc.suggWants {
+				if !strings.Contains(sugg, w) {
+					t.Errorf("suggestion %q does not contain %q", sugg, w)
+				}
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Error("state file changed — a rejected call must not write")
+			}
+		})
+	}
+}
+
+// hardenedStored runs one hardened healing_record call with the overrides and
+// returns the hardened record as stored in the state file.
+func hardenedStored(t *testing.T, overrides map[string]any) map[string]any {
+	t.Helper()
+	branch := "feat/heal-optional"
+	dir, path := deferFixture(t, branch)
+	healingCall(t, dir, branch, healingHardenedDetail(overrides))
+	hardened, _ := healingData(t, path)["hardened"].([]any)
+	if len(hardened) != 1 {
+		t.Fatalf("hardened = %v, want one record", hardened)
+	}
+	rec, _ := hardened[0].(map[string]any)
+	return rec
+}
+
+// storedApplied returns applied[0] of rec.
+func storedApplied(t *testing.T, rec map[string]any) map[string]any {
+	t.Helper()
+	applied, _ := rec["applied"].([]any)
+	if len(applied) != 1 {
+		t.Fatalf("applied = %v, want one entry", rec["applied"])
+	}
+	e, _ := applied[0].(map[string]any)
+	return e
+}
+
+// TestShipStateHealingRecord_OptionalFields pins how healing_record stores
+// the optional hardened fields: rationale, patch (cut at
+// healingPatchMaxBytes on a UTF-8 boundary, with patchCut) and held.
+func TestShipStateHealingRecord_OptionalFields(t *testing.T) {
+	t.Run("old record shape stays as today", func(t *testing.T) {
+		rec := hardenedStored(t, nil)
+		e := storedApplied(t, rec)
+		want := map[string]any{"surface": "plan-guardrails", "action": "add", "targetFile": "/wt/.sdlc-v2/config.toml"}
+		if !reflect.DeepEqual(e, want) {
+			t.Errorf("applied[0] = %v, want %v", e, want)
+		}
+	})
+	t.Run("rationale and patch stored", func(t *testing.T) {
+		e := storedApplied(t, hardenedStored(t, map[string]any{
+			"applied": healingAppliedWith(map[string]any{"rationale": "Two reviews found the same gap.", "patch": "- [ ] Check token expiry"}),
+		}))
+		if e["rationale"] != "Two reviews found the same gap." || e["patch"] != "- [ ] Check token expiry" {
+			t.Errorf("applied[0] = %v, want rationale and patch stored", e)
+		}
+		if _, ok := e["patchCut"]; ok {
+			t.Errorf("applied[0] = %v, want no patchCut on a short patch", e)
+		}
+	})
+	t.Run("empty rationale stores no key", func(t *testing.T) {
+		e := storedApplied(t, hardenedStored(t, map[string]any{"applied": healingAppliedWith(map[string]any{"rationale": ""})}))
+		if _, ok := e["rationale"]; ok {
+			t.Errorf("applied[0] = %v, want no rationale key", e)
+		}
+	})
+	t.Run("empty patch stores no key", func(t *testing.T) {
+		e := storedApplied(t, hardenedStored(t, map[string]any{"applied": healingAppliedWith(map[string]any{"patch": ""})}))
+		if _, ok := e["patch"]; ok {
+			t.Errorf("applied[0] = %v, want no patch key", e)
+		}
+		if _, ok := e["patchCut"]; ok {
+			t.Errorf("applied[0] = %v, want no patchCut key", e)
+		}
+	})
+	t.Run("no held key stores no held key", func(t *testing.T) {
+		rec := hardenedStored(t, nil)
+		if _, ok := rec["held"]; ok {
+			t.Errorf("record = %v, want no held key", rec)
+		}
+	})
+	t.Run("empty held stored as empty list", func(t *testing.T) {
+		rec := hardenedStored(t, map[string]any{"held": []any{}})
+		if h, ok := rec["held"].([]any); !ok || len(h) != 0 {
+			t.Errorf("held = %#v, want []", rec["held"])
+		}
+	})
+
+	patchCases := []struct {
+		name    string
+		patch   string
+		wantLen int
+		wantCut bool
+	}{
+		{"patch at the limit stays whole", strings.Repeat("a", healingPatchMaxBytes), healingPatchMaxBytes, false},
+		{"patch one byte over is cut", strings.Repeat("a", healingPatchMaxBytes+1), healingPatchMaxBytes, true},
+		// "é" is 2 bytes and starts at byte healingPatchMaxBytes-1: the cut
+		// splits it, so the partial rune is dropped.
+		{"multi-byte rune at the cut point", strings.Repeat("a", healingPatchMaxBytes-1) + "é", healingPatchMaxBytes - 1, true},
+	}
+	for _, tc := range patchCases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := storedApplied(t, hardenedStored(t, map[string]any{"applied": healingAppliedWith(map[string]any{"patch": tc.patch})}))
+			got, _ := e["patch"].(string)
+			if len(got) != tc.wantLen {
+				t.Errorf("stored patch has %d bytes, want %d", len(got), tc.wantLen)
+			}
+			if !utf8.ValidString(got) {
+				t.Error("stored patch is not valid UTF-8")
+			}
+			if !strings.HasPrefix(tc.patch, got) {
+				t.Error("stored patch is not a prefix of the sent patch")
+			}
+			cut, has := e["patchCut"]
+			if tc.wantCut && cut != true {
+				t.Errorf("patchCut = %v, want true", cut)
+			}
+			if !tc.wantCut && has {
+				t.Errorf("patchCut = %v, want no key", cut)
+			}
+		})
+	}
+
+	t.Run("held at the limit stored, entries share one deferredId", func(t *testing.T) {
+		entries := make([]any, healingHeldMax)
+		for i := range entries {
+			entries[i] = healingHeldEntry(map[string]any{"action": fmt.Sprintf("add-%d", i)})
+		}
+		entries[1] = healingHeldEntry(map[string]any{"reason": healingHeldPendingNotStored, "deferredId": nil, "extra": "dropped"})
+		entries[2] = healingHeldEntry(map[string]any{"reason": healingHeldNotProcessed, "deferredId": nil})
+		rec := hardenedStored(t, map[string]any{"held": entries})
+		h, _ := rec["held"].([]any)
+		if len(h) != healingHeldMax {
+			t.Fatalf("held has %d entries, want %d", len(h), healingHeldMax)
+		}
+		first, _ := h[0].(map[string]any)
+		want := map[string]any{
+			"surface": "review-dimensions", "action": "add-0", "targetFile": "/wt/.sdlc-v2/review-dimensions/x.md",
+			"reason": healingHeldPendingStored, "deferredId": "harden-deferred-1",
+		}
+		if !reflect.DeepEqual(first, want) {
+			t.Errorf("held[0] = %v, want %v", first, want)
+		}
+		if last, _ := h[healingHeldMax-1].(map[string]any); last["deferredId"] != "harden-deferred-1" {
+			t.Errorf("held[last] = %v, want the shared deferredId", last)
+		}
+		second, _ := h[1].(map[string]any)
+		if _, ok := second["deferredId"]; ok || second["reason"] != healingHeldPendingNotStored {
+			t.Errorf("held[1] = %v, want reason %s and no deferredId", second, healingHeldPendingNotStored)
+		}
+		if _, ok := second["extra"]; ok {
+			t.Errorf("held[1] = %v, want unknown keys dropped", second)
+		}
+	})
 }
 
 func TestShipStateHealingRecord_NoLiveRun(t *testing.T) {
@@ -7306,12 +7582,32 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 		applied = append(applied, map[string]any{"surface": id, "action": "add", "targetFile": "/x"})
 	}
 	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{"trigger": "every surface", "applied": applied}))
+	// A record with every new optional field: rationale, a patch over the
+	// limit (so the tool writes patchCut), and held with every reason and a
+	// shared deferredId.
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+		"trigger": "every new field",
+		"applied": healingAppliedWith(map[string]any{"rationale": "why", "patch": strings.Repeat("p", healingPatchMaxBytes+1)}),
+		"held": []any{
+			healingHeldEntry(nil),
+			healingHeldEntry(map[string]any{"surface": "copilot-instructions"}),
+			healingHeldEntry(map[string]any{"reason": healingHeldPendingNotStored, "deferredId": nil}),
+			healingHeldEntry(map[string]any{"reason": healingHeldNotProcessed, "deferredId": nil}),
+		},
+	}))
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{"trigger": "empty held", "held": []any{}}))
 	healingCall(t, dir, branch, healingFixProgressDetail(nil))
 	healingCall(t, dir, branch, healingFixProgressDetail(map[string]any{"status": "fixing"}))
 	healingCall(t, dir, branch, healingFixProgressDetail(map[string]any{"line": nil, "origin": "pr-comment", "status": "deferred"}))
 	healing := healingData(t, path)
 	if progress, _ := healing["fixProgress"].([]any); len(progress) != 2 {
 		t.Fatalf("fixProgress = %v, want 2 records", healing["fixProgress"])
+	}
+	if hardened, _ := healing["hardened"].([]any); len(hardened) != 4 {
+		t.Fatalf("hardened = %v, want 4 records", healing["hardened"])
+	}
+	if rec, _ := healing["hardened"].([]any)[2].(map[string]any); storedApplied(t, rec)["patchCut"] != true {
+		t.Fatalf("record %v, want applied[0].patchCut true so the schema sees it", rec)
 	}
 
 	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
@@ -7413,6 +7709,15 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 										} `json:"properties"`
 									} `json:"items"`
 								} `json:"applied"`
+								Held struct {
+									MaxItems int `json:"maxItems"`
+									Items    struct {
+										Properties struct {
+											Surface struct{ Enum []string } `json:"surface"`
+											Reason  struct{ Enum []string } `json:"reason"`
+										} `json:"properties"`
+									} `json:"items"`
+								} `json:"held"`
 							} `json:"properties"`
 						} `json:"items"`
 					} `json:"hardened"`
@@ -7429,6 +7734,9 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 	if got := doc.Properties.Healing.Properties.FixProgress.MaxItems; got != healingFixProgressMax {
 		t.Errorf("schema fixProgress.maxItems = %d, want %d (healingFixProgressMax)", got, healingFixProgressMax)
 	}
+	if got := hp.Held.MaxItems; got != healingHeldMax {
+		t.Errorf("schema hardened.held.maxItems = %d, want %d (healingHeldMax)", got, healingHeldMax)
+	}
 	for name, pair := range map[string][2][]string{
 		"fixed.origin":         {fp.Origin.Enum, healingOrigins},
 		"fixed.severity":       {fp.Severity.Enum, dimensions.ValidSeverities},
@@ -7437,6 +7745,8 @@ func TestShipStateHealingRecord_SchemaAcceptsWrittenRecords(t *testing.T) {
 		"fixProgress.status":   {xp.Status.Enum, healingFixStatuses},
 		"hardened.phase":       {hp.Phase.Enum, healingPhases},
 		"applied.surface":      {hp.Applied.Items.Properties.Surface.Enum, healingSurfaceIDs()},
+		"held.surface":         {hp.Held.Items.Properties.Surface.Enum, healingSurfaceIDs()},
+		"held.reason":          {hp.Held.Items.Properties.Reason.Enum, healingHeldReasons},
 	} {
 		if !reflect.DeepEqual(pair[0], pair[1]) {
 			t.Errorf("schema enum %s = %v, want %v (the Go set the handler checks)", name, pair[0], pair[1])

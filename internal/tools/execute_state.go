@@ -2418,7 +2418,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 	var materializeResult *openspec.MaterializeResult
 	if planContent != "" {
 		if _, ok := openspec.StagedChangeFromPlan(planContent); ok {
-			res, mErr := openspec.Materialize(workDir, planContent)
+			res, mErr := openspec.Materialize(workDir, root, planContent)
 			if mErr != nil {
 				return nil, mapMaterializeError(mErr)
 			}

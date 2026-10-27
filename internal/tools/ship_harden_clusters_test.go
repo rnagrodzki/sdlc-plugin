@@ -3,6 +3,8 @@ package tools
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1279,3 +1281,414 @@ var errStubStatusFailed = &stubStatusError{}
 type stubStatusError struct{}
 
 func (*stubStatusError) Error() string { return "stub: git status failed" }
+
+// ---------------------------------------------------------------------------
+// hardenFindingsFromShip: ship state -> cluster findings
+// ---------------------------------------------------------------------------
+
+// hfsFixed builds a healing.fixed record as it reads back from a JSON state
+// file.
+func hfsFixed(file, severity, title string) map[string]any {
+	return map[string]any{
+		"file": file, "severity": severity, "title": title,
+		"origin": healingOriginLocal, "recordedAt": "2026-10-27T12:00:00Z",
+	}
+}
+
+// hfsDeferred builds a deferredFindings entry with only the three finding
+// fields and a reason, as it reads back from a JSON state file.
+func hfsDeferred(file, severity, title, reason string) map[string]any {
+	m := map[string]any{"file": file, "severity": severity, "title": title}
+	if reason != "" {
+		m["reason"] = reason
+	}
+	return m
+}
+
+// hfsReviewClustersPath is the harden skill file whose Ship mapping table
+// hardenShipVerdicts must equal.
+const hfsReviewClustersPath = "../../plugins/sdlc/skills/harden/review-clusters.md"
+
+// hfsMappingTableProblems parses the "## Ship mapping" table of a
+// review-clusters.md text and returns one message for each row or table fact
+// that disagrees with hardenShipVerdicts and hardenFindingsFromShip. An empty
+// result means the table and the Go code agree. The header and separator rows
+// are skipped, and so is the row for a finding with neither record
+// (unaccounted), which the mapper never receives.
+func hfsMappingTableProblems(md string) []string {
+	var rows [][]string
+	inSection := false
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			inSection = strings.TrimSpace(line) == "## Ship mapping"
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		if !inSection || !strings.HasPrefix(trimmed, "|") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(trimmed, "|"), "|")
+		for i := range cells {
+			cells[i] = strings.TrimSpace(cells[i])
+		}
+		rows = append(rows, cells)
+	}
+	if len(rows) == 0 {
+		return []string{"no table under the heading '## Ship mapping'"}
+	}
+
+	separator := regexp.MustCompile(`^:?-+:?$`)
+	reasonInCell := regexp.MustCompile("with reason `([^`]+)`")
+	unquote := func(s string) string { return strings.Trim(s, "`") }
+
+	var problems []string
+	seenReasons := map[string]bool{}
+	sawFixed := false
+	for i, cells := range rows {
+		if i == 0 {
+			continue // header row
+		}
+		if len(cells) != 3 {
+			problems = append(problems, fmt.Sprintf("row %q has %d cells, want 3", strings.Join(cells, "|"), len(cells)))
+			continue
+		}
+		if separator.MatchString(cells[0]) {
+			continue
+		}
+		data, verdict, reason := cells[0], unquote(cells[1]), unquote(cells[2])
+		switch {
+		case strings.Contains(data, "unaccounted"):
+			continue
+		case strings.Contains(data, "`deferredFindings[]`"):
+			m := reasonInCell.FindStringSubmatch(data)
+			if m == nil {
+				problems = append(problems, fmt.Sprintf("row %q names no reason", data))
+				continue
+			}
+			rowReason := m[1]
+			seenReasons[rowReason] = true
+			want, known := hardenShipVerdicts[rowReason]
+			if !known {
+				problems = append(problems, fmt.Sprintf("row for reason %q has no entry in hardenShipVerdicts", rowReason))
+				continue
+			}
+			if verdict != want {
+				problems = append(problems, fmt.Sprintf("reason %q: table verdict %q, hardenShipVerdicts %q", rowReason, verdict, want))
+			}
+			if reason != rowReason {
+				problems = append(problems, fmt.Sprintf("reason %q: table reason column %q, want the same reason", rowReason, reason))
+			}
+			got, bad, _ := hardenFindingsFromShip(nil, []any{hfsDeferred("a.go", "high", "t", rowReason)})
+			if bad != "" || len(got) != 1 || got[0].Verdict != verdict || got[0].Reason != reason {
+				problems = append(problems, fmt.Sprintf("reason %q: mapper gave %+v (badField %q), table says verdict %q reason %q", rowReason, got, bad, verdict, reason))
+			}
+		case strings.Contains(data, "`data.healing.fixed`"):
+			sawFixed = true
+			if verdict != "agree-will-fix" || reason != "—" {
+				problems = append(problems, fmt.Sprintf("healing.fixed row: table verdict %q reason %q, want agree-will-fix and —", verdict, reason))
+			}
+			got, bad, _ := hardenFindingsFromShip(map[string]any{"fixed": []any{hfsFixed("a.go", "high", "t")}}, nil)
+			if bad != "" || len(got) != 1 || got[0].Verdict != "agree-will-fix" || got[0].Reason != "" {
+				problems = append(problems, fmt.Sprintf("healing.fixed row: mapper gave %+v (badField %q)", got, bad))
+			}
+		default:
+			problems = append(problems, fmt.Sprintf("row %q is not a known Ship data kind", data))
+		}
+	}
+	if !sawFixed {
+		problems = append(problems, "no data.healing.fixed row")
+	}
+	for reason := range hardenShipVerdicts {
+		if !seenReasons[reason] {
+			problems = append(problems, fmt.Sprintf("hardenShipVerdicts has reason %q, the table has no row for it", reason))
+		}
+	}
+	return problems
+}
+
+func TestHardenFindingsFromShip_MatchesShipMappingTable(t *testing.T) {
+	raw, err := os.ReadFile(hfsReviewClustersPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", hfsReviewClustersPath, err)
+	}
+	md := string(raw)
+
+	if problems := hfsMappingTableProblems(md); len(problems) != 0 {
+		t.Fatalf("Ship mapping table and hardenShipVerdicts disagree:\n  %s", strings.Join(problems, "\n  "))
+	}
+
+	// The check itself must fail on a damaged table.
+	t.Run("changed verdict fails", func(t *testing.T) {
+		changed := strings.Replace(md, "| `disagree` | `disagree` |", "| `needs-direction` | `disagree` |", 1)
+		if changed == md {
+			t.Fatal("test setup: the disagree row was not found in the table")
+		}
+		if len(hfsMappingTableProblems(changed)) == 0 {
+			t.Error("a changed verdict gave no problem")
+		}
+	})
+	t.Run("missing table fails", func(t *testing.T) {
+		if len(hfsMappingTableProblems("# Review-finding clusters for harden\n\n## Ship mapping\n\nNo table here.\n")) == 0 {
+			t.Error("a section without a table gave no problem")
+		}
+		if len(hfsMappingTableProblems("")) == 0 {
+			t.Error("an empty file gave no problem")
+		}
+	})
+	t.Run("new reason row fails", func(t *testing.T) {
+		extra := "| `deferredFindings[]` with reason `cannot-verify` | `not-evaluated` | `cannot-verify` |\n"
+		changed := strings.Replace(md, "| finding with neither record (unaccounted)", extra+"| finding with neither record (unaccounted)", 1)
+		if changed == md {
+			t.Fatal("test setup: the unaccounted row was not found in the table")
+		}
+		if len(hfsMappingTableProblems(changed)) == 0 {
+			t.Error("a deferredFindings[] row with a reason that is not in hardenShipVerdicts gave no problem")
+		}
+	})
+	t.Run("missing reason row fails", func(t *testing.T) {
+		kept := make([]string, 0)
+		for _, line := range strings.Split(md, "\n") {
+			if !strings.Contains(line, "with reason `wont-fix`") {
+				kept = append(kept, line)
+			}
+		}
+		if len(hfsMappingTableProblems(strings.Join(kept, "\n"))) == 0 {
+			t.Error("a table without the wont-fix row gave no problem")
+		}
+	})
+}
+
+func TestHardenFindingsFromShip_Fields(t *testing.T) {
+	// The values come from a JSON round trip, so numbers are float64.
+	healing := map[string]any{"fixed": []any{
+		map[string]any{
+			"file": "a.go", "severity": "high", "title": "first fixed",
+			"line": float64(7), "description": "must stay out", "origin": healingOriginLocal,
+			"reason": "wont-fix", "fixedInRun": true,
+		},
+		hfsFixed("b.go", "low", "second fixed"),
+	}}
+	deferred := []any{
+		map[string]any{
+			"file": "c.go", "severity": "medium", "title": "first deferred",
+			"description": "why it stays", "line": float64(42),
+			"deferredId": "d-1", "reason": history.ReasonNeedsDirection,
+			"fixedInRun": true,
+		},
+		map[string]any{
+			"file": "d.go", "severity": "critical", "title": "second deferred",
+			"reason": history.ReasonWontFix,
+		},
+	}
+
+	got, bad, cut := hardenFindingsFromShip(healing, deferred)
+	if bad != "" || cut {
+		t.Fatalf("badField = %q, cut = %v, want \"\" and false", bad, cut)
+	}
+	want := []HardenClusterFinding{
+		{File: "a.go", Severity: "high", Title: "first fixed", Verdict: "agree-will-fix"},
+		{File: "b.go", Severity: "low", Title: "second fixed", Verdict: "agree-will-fix"},
+		{
+			File: "c.go", Severity: "medium", Title: "first deferred", Body: "why it stays", Line: 42,
+			DeferredID: "d-1", Verdict: "needs-direction", Reason: "needs-direction", FixedInRun: false,
+		},
+		{File: "d.go", Severity: "critical", Title: "second deferred", Verdict: "agree-won't-fix", Reason: "wont-fix"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d findings, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("finding %d:\n got  %+v\n want %+v", i, got[i], want[i])
+		}
+	}
+	for i, f := range got {
+		if f.FixedInRun {
+			t.Errorf("finding %d: FixedInRun is true, want false on every finding", i)
+		}
+	}
+}
+
+func TestHardenFindingsFromShip_Skips(t *testing.T) {
+	deferredWithID := hfsFixed("b.go", "high", "fixed with id")
+	deferredWithID["deferredId"] = "d-9"
+	blankID := hfsFixed("c.go", "high", "fixed with blank id")
+	blankID["deferredId"] = "   "
+	healing := map[string]any{"fixed": []any{
+		"not an object",
+		nil,
+		deferredWithID, // its run entry already stands for it
+		blankID,        // a blank id is no id
+	}}
+	emptyReason := hfsDeferred("e.go", "low", "old entry", "")
+	deferred := []any{
+		42,
+		[]any{"x"},
+		hfsDeferred("d.go", "high", "unknown reason", "cannot-verify"),
+		emptyReason,
+		// wrong-typed fields read as empty values
+		map[string]any{"file": 5, "severity": true, "title": []any{}, "reason": "disagree", "line": "3", "deferredId": 7, "description": 1},
+	}
+
+	got, bad, cut := hardenFindingsFromShip(healing, deferred)
+	if bad != "" || cut {
+		t.Fatalf("badField = %q, cut = %v, want \"\" and false", bad, cut)
+	}
+	want := []HardenClusterFinding{
+		{File: "c.go", Severity: "high", Title: "fixed with blank id", Verdict: "agree-will-fix"},
+		{File: "e.go", Severity: "low", Title: "old entry", Verdict: hardenVerdictNotEvaluated, Reason: history.ReasonBelowThreshold},
+		{Verdict: "disagree", Reason: history.ReasonDisagree},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d findings, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("finding %d:\n got  %+v\n want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestHardenFindingsFromShip_Limit(t *testing.T) {
+	fixedList := func(n int) []any {
+		list := make([]any, 0, n)
+		for i := 0; i < n; i++ {
+			list = append(list, hfsFixed(fmt.Sprintf("f%d.go", i), "high", "fixed"))
+		}
+		return list
+	}
+	deferredList := func(n int) []any {
+		list := make([]any, 0, n)
+		for i := 0; i < n; i++ {
+			list = append(list, hfsDeferred(fmt.Sprintf("d%d.go", i), "high", "deferred", history.ReasonWontFix))
+		}
+		return list
+	}
+
+	tests := []struct {
+		name      string
+		healing   map[string]any
+		deferred  any
+		wantLen   int
+		wantCut   bool
+		wantLastF string // File of the last returned finding
+	}{
+		{"fixed at the limit", map[string]any{"fixed": fixedList(hardenFindingsMax)}, nil, hardenFindingsMax, false, fmt.Sprintf("f%d.go", hardenFindingsMax-1)},
+		{"fixed over the limit", map[string]any{"fixed": fixedList(hardenFindingsMax + 1)}, nil, hardenFindingsMax, true, fmt.Sprintf("f%d.go", hardenFindingsMax-1)},
+		{"deferred at the limit", nil, deferredList(hardenFindingsMax), hardenFindingsMax, false, fmt.Sprintf("d%d.go", hardenFindingsMax-1)},
+		{"deferred over the limit", nil, deferredList(hardenFindingsMax + 1), hardenFindingsMax, true, fmt.Sprintf("d%d.go", hardenFindingsMax-1)},
+		{"both lists over the limit", map[string]any{"fixed": fixedList(hardenFindingsMax - 1)}, deferredList(2), hardenFindingsMax, true, "d0.go"},
+		{"both lists at the limit", map[string]any{"fixed": fixedList(hardenFindingsMax - 1)}, deferredList(1), hardenFindingsMax, false, "d0.go"},
+		{
+			"entries that give no finding do not count",
+			map[string]any{"fixed": append(fixedList(hardenFindingsMax), "not an object")},
+			append(deferredList(0), hfsDeferred("x.go", "high", "t", "cannot-verify")),
+			hardenFindingsMax, false, fmt.Sprintf("f%d.go", hardenFindingsMax-1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, bad, cut := hardenFindingsFromShip(tt.healing, tt.deferred)
+			if bad != "" {
+				t.Fatalf("badField = %q, want empty", bad)
+			}
+			if cut != tt.wantCut {
+				t.Errorf("cut = %v, want %v", cut, tt.wantCut)
+			}
+			if len(got) != tt.wantLen {
+				t.Fatalf("got %d findings, want %d", len(got), tt.wantLen)
+			}
+			if last := got[len(got)-1].File; last != tt.wantLastF {
+				t.Errorf("last finding file = %q, want %q (stored order, first %d kept)", last, tt.wantLastF, hardenFindingsMax)
+			}
+		})
+	}
+}
+
+func TestHardenFindingsFromShip_BadField(t *testing.T) {
+	good := []any{hfsDeferred("a.go", "high", "t", history.ReasonWontFix)}
+	tests := []struct {
+		name     string
+		healing  map[string]any
+		deferred any
+		want     string
+	}{
+		{"fixed is a string", map[string]any{"fixed": "oops"}, nil, "healing.fixed"},
+		{"fixed is an object", map[string]any{"fixed": map[string]any{"file": "a.go"}}, nil, "healing.fixed"},
+		{"fixed is a number", map[string]any{"fixed": float64(3)}, nil, "healing.fixed"},
+		{"deferred is a string", nil, "oops", "deferredFindings"},
+		{"deferred is an object", nil, map[string]any{"file": "a.go"}, "deferredFindings"},
+		{"deferred is a bool", map[string]any{"fixed": []any{}}, true, "deferredFindings"},
+		{"both bad: healing.fixed comes first", map[string]any{"fixed": "oops"}, "oops", "healing.fixed"},
+		{"fixed bad, deferred good", map[string]any{"fixed": "oops"}, good, "healing.fixed"},
+		{"fixed good, deferred bad", map[string]any{"fixed": []any{hfsFixed("a.go", "high", "t")}}, "oops", "deferredFindings"},
+		{"both absent", nil, nil, ""},
+		{"both null", map[string]any{"fixed": nil}, nil, ""},
+		{"both empty lists", map[string]any{"fixed": []any{}}, []any{}, ""},
+		{"both good", map[string]any{"fixed": []any{hfsFixed("a.go", "high", "t")}}, good, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, bad, cut := hardenFindingsFromShip(tt.healing, tt.deferred)
+			if bad != tt.want {
+				t.Errorf("badField = %q, want %q", bad, tt.want)
+			}
+			if cut {
+				t.Error("cut = true, want false")
+			}
+			if tt.want != "" && len(got) != 0 {
+				t.Errorf("badField %q set, but %d findings returned: %+v", tt.want, len(got), got)
+			}
+		})
+	}
+}
+
+// TestHardenFindingsFromShip_SameRuleAsLedger feeds one state to
+// shipBuildReviewLedger and to the mapper. The two walks are separate (Key
+// Decisions row "Ledger walk not shared"), so this test pins that both count
+// an entry with no reason as below-threshold, and that they agree on the
+// count of every reason.
+func TestHardenFindingsFromShip_SameRuleAsLedger(t *testing.T) {
+	healing := map[string]any{
+		"reviewTotal": map[string]any{"total": float64(9)},
+		"fixed":       []any{hfsFixed("a.go", "high", "fixed")},
+	}
+	list := []any{
+		hfsDeferred("b.go", "low", "no reason", ""),
+		hfsDeferred("c.go", "low", "no reason either", ""),
+		hfsDeferred("d.go", "low", "explicit below-threshold", history.ReasonBelowThreshold),
+		hfsDeferred("e.go", "low", "wont-fix", history.ReasonWontFix),
+		hfsDeferred("f.go", "low", "disagree", history.ReasonDisagree),
+		hfsDeferred("g.go", "low", "needs-direction", history.ReasonNeedsDirection),
+	}
+
+	ledger := shipBuildReviewLedger(healing, list)
+	if ledger == nil {
+		t.Fatal("shipBuildReviewLedger returned nil for a state with a reviewTotal")
+	}
+	got, bad, cut := hardenFindingsFromShip(healing, list)
+	if bad != "" || cut {
+		t.Fatalf("badField = %q, cut = %v, want \"\" and false", bad, cut)
+	}
+
+	byReason := map[string]int{}
+	for _, f := range got {
+		if f.Verdict == "agree-will-fix" {
+			continue // from healing.fixed; the ledger counts it under Fixed
+		}
+		byReason[f.Reason]++
+	}
+	if gotBelow, ledgerBelow := byReason[history.ReasonBelowThreshold], ledger.DeferredByReason[history.ReasonBelowThreshold]; gotBelow != 3 || ledgerBelow != 3 {
+		t.Errorf("below-threshold count: mapper %d, ledger %d, want 3 in both (an empty reason counts as below-threshold)", gotBelow, ledgerBelow)
+	}
+	for reason, n := range ledger.DeferredByReason {
+		if byReason[reason] != n {
+			t.Errorf("reason %q: ledger %d, mapper %d", reason, n, byReason[reason])
+		}
+	}
+	for reason, n := range byReason {
+		if ledger.DeferredByReason[reason] != n {
+			t.Errorf("reason %q: mapper %d, ledger %d", reason, n, ledger.DeferredByReason[reason])
+		}
+	}
+}

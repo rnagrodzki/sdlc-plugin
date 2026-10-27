@@ -543,7 +543,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		if in.DryRun {
 			out.Openspec = &ShipOpenspecOut{Change: change, Materialized: "dry-run"}
 		} else {
-			res, mErr := openspec.Materialize(activeRoot, planContent)
+			res, mErr := openspec.Materialize(activeRoot, cfgRoot, planContent)
 			if mErr != nil {
 				// mapMaterializeError is shared with execute_state init, whose
 				// messages carry an "init: " prefix; drop it here. The mapped

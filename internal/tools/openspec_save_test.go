@@ -185,7 +185,7 @@ func TestOpenspecSave_CreatesBranchAndSaves(t *testing.T) {
 	if !strings.Contains(plan, "**Source:** openspec/changes/add-widget/\n") {
 		t.Errorf("plan lost its other lines:\n%s", plan)
 	}
-	res, err := openspec.Materialize(root, plan)
+	res, err := openspec.Materialize(root, root, plan)
 	if err != nil || res != (openspec.MaterializeResult{}) {
 		t.Errorf("Materialize(rewritten plan) = %+v, %v; want zero result, nil", res, err)
 	}

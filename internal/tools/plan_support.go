@@ -364,7 +364,7 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 	case "openspec_instructions":
 		return openspecInstructions(mainRoot, contentRoot, in)
 	case "openspec_stage":
-		return openspecStage(contentRoot, in)
+		return openspecStage(mainRoot, contentRoot, in)
 	case "evidence_record":
 		return evidenceRecord(mainRoot, in)
 	case "evidence_digest":
@@ -1237,9 +1237,9 @@ func openspecInstructions(mainRoot, contentRoot string, in PlanSupportIn) (PlanS
 	}, nil
 }
 
-// openspecStage writes the authored artifacts to the active worktree's
+// openspecStage writes the authored artifacts to the main worktree's
 // staging dir and validates a temp copy of them.
-func openspecStage(contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
+func openspecStage(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	const action = "openspec_stage"
 	if err := requireActiveRoot(action, contentRoot); err != nil {
 		return PlanSupportOut{}, err
@@ -1253,7 +1253,7 @@ func openspecStage(contentRoot string, in PlanSupportIn) (PlanSupportOut, error)
 			Suggestion: "Pass files as a JSON array of {path, content}, one entry per artifact file from openspec_instructions.",
 		}
 	}
-	res, err := openspec.Stage(contentRoot, in.ChangeName, in.Files, in.PlanPath, nil)
+	res, err := openspec.Stage(contentRoot, mainRoot, in.ChangeName, in.Files, in.PlanPath, nil)
 	if err != nil {
 		return PlanSupportOut{}, mapOpenspecError(action, in, err)
 	}
