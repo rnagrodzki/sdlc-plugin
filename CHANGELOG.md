@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.10] - 2026-10-27
+
+### RC 1
+
+- Harden records now store each edit's rationale, the written patch and a held list. A patch over 1536 bytes is cut and marked. A new mapper turns ship state into harden cluster findings. Staged OpenSpec changes start in any worktree (4b94df6).
+- The dashboard snapshot builds a harden detail for the ship harden step. Harden step 5e sends the rationale, the written patch and the held list. A functional test stages in one worktree and starts in another (be052e7).
+- The snapshot fixture and the dashboard docs describe the harden detail. The plan and openspec-save skills and docs point to the main worktree for the staging folder (d35b91c).
+- The dashboard page shows the harden tile: edits, run records, finding funnel, fix pass, held rows, timeline and an unreadable-record marker (76792d8).
+- A browser test checks the harden tile in the real page (348642b).
+- A test covers the `openspec_stage` refusal when the main and active worktree roots differ. The docs describe the `held[]` rules and the Materialize fallback (4985fa3).
+- Harden records are bounded: at most 100 applied entries, at most 100 held entries, rationale at most 600 characters. The tool warns when it stores a cut patch (a63f4e2).
+- The completed `harden-visualization` OpenSpec change is archived and its six delta specs are merged into the main specs (458c59a).
+- Six new execute guardrails are added, two existing ones move from warning to error, and the review dimensions and skill-doc-drift instructions are extended (ce55d99).
+
 ## [0.4.9] - 2026-10-27
 
 ### RC 1
