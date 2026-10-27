@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -8,6 +9,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -416,6 +420,70 @@ func TestReceivedReviewPrepare_Success(t *testing.T) {
 	if out.Warnings != nil {
 		t.Errorf("Warnings = %q, want nil", out.Warnings)
 	}
+	if len(out.AlwaysFixSeverities) != 0 {
+		t.Errorf("AlwaysFixSeverities = %q, want empty", out.AlwaysFixSeverities)
+	}
+	if out.Next != receivedReviewNextPR {
+		t.Errorf("Next = %q, want %q", out.Next, receivedReviewNextPR)
+	}
+}
+
+// TestReceivedReviewPrepare_PRRunSeverities pins alwaysFixSeverities and the
+// warning order on a PR run: the severity warning comes first, then the
+// gh pr checks warning, and the PR view still loads.
+func TestReceivedReviewPrepare_PRRunSeverities(t *testing.T) {
+	const fallback = "using [] (every will-fix finding asks)."
+	tests := []struct {
+		name           string
+		project        string
+		checks         string // body of the `checks)` case in the stub
+		wantSeverities []string
+		wantWarnings   []string
+	}{
+		{
+			name:           "valid list",
+			project:        "[receivedReview]\nalwaysFixSeverities = [\"High\", \"info\"]\n",
+			checks:         `printf 'build\tpass\t1m\thttps://x\n'`,
+			wantSeverities: []string{"high", "info"},
+		},
+		{
+			name:           "bad value and failed checks",
+			project:        "[receivedReview]\nalwaysFixSeverities = [\"urgent\"]\n",
+			checks:         `echo boom >&2; exit 2`,
+			wantSeverities: []string{},
+			wantWarnings: []string{
+				`Local receivedReview.alwaysFixSeverities "urgent" is not in allowed values [critical high medium low info]; ` + fallback,
+				"gh pr checks 42: exit 2: boom",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "user.toml"))
+			dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+			writeFile(t, filepath.Join(dir, paths.DataDir, paths.LocalConfigFile), tt.project)
+			script := "#!/bin/sh\ncase \"$2\" in\n  view)\n    echo 'title: T'\n    ;;\n  checks)\n    " + tt.checks + "\n    ;;\nesac\n"
+			cleanup := stubGH(t, script)
+			defer cleanup()
+
+			out, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: 42})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if out.View != "title: T" {
+				t.Errorf("View = %q, want %q", out.View, "title: T")
+			}
+			if out.PR != (receivedReviewPR{Number: 42, Owner: "owner", Repo: "repo"}) {
+				t.Errorf("PR = %+v, want {42 owner repo}", out.PR)
+			}
+			if !sameStrings(out.AlwaysFixSeverities, tt.wantSeverities) {
+				t.Errorf("AlwaysFixSeverities = %q, want %q", out.AlwaysFixSeverities, tt.wantSeverities)
+			}
+			if !sameStrings(out.Warnings, tt.wantWarnings) {
+				t.Errorf("Warnings = %q, want %q", out.Warnings, tt.wantWarnings)
+			}
+		})
+	}
 }
 
 // TestReceivedReviewPrepare_Style verifies that received_review_prepare
@@ -462,19 +530,380 @@ func TestReceivedReviewPrepare_ConfigGate(t *testing.T) {
 	}
 }
 
-// TestReceivedReviewPrepare_InvalidPR pins that pr 0 or negative fails with a
+// TestReceivedReviewPrepare_InvalidPR pins that a negative pr fails with a
 // DomainError before any git or gh command runs.
 func TestReceivedReviewPrepare_InvalidPR(t *testing.T) {
-	for _, pr := range []int{0, -3} {
-		dir := t.TempDir() // not a git repo: git must not run either
+	dir := t.TempDir() // not a git repo: git must not run either
+	cleanup := stubGH(t, failingGH)
+	defer cleanup()
+
+	for _, pr := range []int{-1, -3} {
 		_, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: pr})
 		var domErr *mcpserver.DomainError
 		if !errors.As(err, &domErr) {
 			t.Fatalf("pr %d: err = %v (%T), want *mcpserver.DomainError", pr, err, err)
 		}
-		if domErr.Msg != "pr must be a positive integer" {
-			t.Errorf("pr %d: Msg = %q, want %q", pr, domErr.Msg, "pr must be a positive integer")
+		const wantMsg = "pr must be a positive integer, or 0 to skip the PR overview"
+		if domErr.Msg != wantMsg {
+			t.Errorf("pr %d: Msg = %q, want %q", pr, domErr.Msg, wantMsg)
 		}
+		if !strings.Contains(domErr.Suggestion, "omit pr") {
+			t.Errorf("pr %d: Suggestion = %q, want it to say omit pr", pr, domErr.Suggestion)
+		}
+	}
+}
+
+// TestReceivedReviewPrepare_NoPR pins the no-PR run: with pr omitted or 0
+// the tool runs no git or gh command (the folder is not a git repo and gh
+// fails on every call) and returns only style, alwaysFixSeverities and the
+// no-PR next text.
+func TestReceivedReviewPrepare_NoPR(t *testing.T) {
+	for _, in := range []ReceivedReviewIn{{}, {PR: 0}} {
+		dir := t.TempDir()
+		cleanup := stubGH(t, failingGH)
+		out, err := receivedReviewPrepare(dir, dir, in)
+		cleanup()
+		if err != nil {
+			t.Fatalf("pr %d: unexpected error: %v", in.PR, err)
+		}
+		if out.PR != (receivedReviewPR{}) {
+			t.Errorf("PR = %+v, want the zero value", out.PR)
+		}
+		if out.View != "" || out.Checks != "" {
+			t.Errorf("View = %q, Checks = %q, want both empty", out.View, out.Checks)
+		}
+		if out.Style.Audience != "functional" {
+			t.Errorf("Style.Audience = %q, want functional", out.Style.Audience)
+		}
+		if len(out.AlwaysFixSeverities) != 0 {
+			t.Errorf("AlwaysFixSeverities = %q, want empty", out.AlwaysFixSeverities)
+		}
+		if len(out.Warnings) != 0 {
+			t.Errorf("Warnings = %q, want none", out.Warnings)
+		}
+		if out.Next != receivedReviewNextNoPR {
+			t.Errorf("Next = %q, want %q", out.Next, receivedReviewNextNoPR)
+		}
+		if !strings.Contains(out.Next, "skipped") {
+			t.Errorf("Next = %q, want it to say the overview was skipped", out.Next)
+		}
+	}
+}
+
+// callRegisteredReceivedReviewPrepare calls the registered
+// received_review_prepare tool through an in-memory MCP client, from the
+// current directory, and returns the rendered Markdown text.
+func callRegisteredReceivedReviewPrepare(t *testing.T, args map[string]any) string {
+	t.Helper()
+	s := mcpserver.New("test", "0.0.0-test")
+	RegisterReceivedReviewTools(s)
+
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	res, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "received_review_prepare", Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("CallTool: no content")
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content[0] is %T, want *mcp.TextContent", res.Content[0])
+	}
+	if res.IsError {
+		t.Fatalf("received_review_prepare failed: %s", text.Text)
+	}
+	return text.Text
+}
+
+// TestReceivedReviewPrepare_RenderedAlwaysFixSeverities calls the registered
+// received_review_prepare tool with no pr argument and pins the rendered
+// alwaysFixSeverities field: "(none)" with no local.toml, and the stored
+// values when .sdlc-v2/local.toml sets the list.
+func TestReceivedReviewPrepare_RenderedAlwaysFixSeverities(t *testing.T) {
+	tests := []struct {
+		name    string
+		project string // .sdlc-v2/local.toml; empty: no file
+		want    []string
+	}{
+		{name: "no local file", want: []string{"- alwaysFixSeverities: (none)"}},
+		{
+			name:    "stored list",
+			project: "[receivedReview]\nalwaysFixSeverities = [\"High\", \"info\"]\n",
+			want:    []string{"alwaysFixSeverities:", "  - high", "  - info"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "user.toml"))
+			dir := t.TempDir()
+			mustRun(t, dir, "git", "init")
+			if tt.project != "" {
+				writeFile(t, filepath.Join(dir, paths.DataDir, paths.LocalConfigFile), tt.project)
+			}
+			cleanup := stubGH(t, failingGH)
+			defer cleanup()
+			t.Chdir(dir)
+
+			text := callRegisteredReceivedReviewPrepare(t, map[string]any{})
+			for _, want := range tt.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("rendered text missing %q:\n%s", want, text)
+				}
+			}
+			if !strings.Contains(text, receivedReviewNextNoPR) {
+				t.Errorf("rendered text missing the no-PR next text:\n%s", text)
+			}
+		})
+	}
+}
+
+// TestReceivedReviewPrepare_AlwaysFixSeverities drives each row of the
+// receivedReview.alwaysFixSeverities outcome table through a no-PR run.
+// Every case points the user-level file at its own temp path, so no case
+// reads the real home folder.
+func TestReceivedReviewPrepare_AlwaysFixSeverities(t *testing.T) {
+	const key = "Local receivedReview.alwaysFixSeverities"
+	const fallback = "using [] (every will-fix finding asks)."
+	tests := []struct {
+		name         string
+		user         string // user-level local.toml; empty: no file
+		project      string // .sdlc-v2/local.toml; empty: no file
+		want         []string
+		wantWarnings []string
+	}{
+		{name: "no local file", want: []string{}},
+		{name: "no receivedReview section", project: "[review]\nscope = \"all\"\n", want: []string{}},
+		{
+			// config.ReadSection skips a non-table receivedReview value, so
+			// the tool sees no section: an empty list and one warning.
+			name:         "receivedReview not a table",
+			project:      "receivedReview = \"high\"\n",
+			want:         []string{},
+			wantWarnings: []string{`Local receivedReview has wrong type string; expected a table such as [receivedReview] with alwaysFixSeverities = ["high"]; ` + fallback},
+		},
+		{
+			name:         "user-level receivedReview not a table",
+			user:         "receivedReview = [\"high\"]\n",
+			want:         []string{},
+			wantWarnings: []string{`Local receivedReview has wrong type []interface {}; expected a table such as [receivedReview] with alwaysFixSeverities = ["high"]; ` + fallback},
+		},
+		{
+			// The project table replaces the user value whole, so the user
+			// value that is not a table gives no warning.
+			name:    "project table wins over user non-table",
+			user:    "receivedReview = \"high\"\n",
+			project: "[receivedReview]\nalwaysFixSeverities = [\"low\"]\n",
+			want:    []string{"low"},
+		},
+		{name: "section with no key", project: "[receivedReview]\n", want: []string{}},
+		{name: "empty list", project: "[receivedReview]\nalwaysFixSeverities = []\n", want: []string{}},
+		{name: "valid list", project: "[receivedReview]\nalwaysFixSeverities = [\"high\", \"info\"]\n", want: []string{"high", "info"}},
+		{name: "mixed case", project: "[receivedReview]\nalwaysFixSeverities = [\"High\"]\n", want: []string{"high"}},
+		{
+			name:         "duplicate",
+			project:      "[receivedReview]\nalwaysFixSeverities = [\"high\", \"high\"]\n",
+			want:         []string{"high"},
+			wantWarnings: []string{key + ` lists "high" more than once; kept once.`},
+		},
+		{
+			name:         "duplicate after lowercasing",
+			project:      "[receivedReview]\nalwaysFixSeverities = [\"High\", \"high\"]\n",
+			want:         []string{"high"},
+			wantWarnings: []string{key + ` lists "high" more than once; kept once.`},
+		},
+		{
+			// A third copy adds no second warning.
+			name:         "three copies give one warning",
+			project:      "[receivedReview]\nalwaysFixSeverities = [\"high\", \"high\", \"high\"]\n",
+			want:         []string{"high"},
+			wantWarnings: []string{key + ` lists "high" more than once; kept once.`},
+		},
+		{
+			name:         "string not list",
+			project:      "[receivedReview]\nalwaysFixSeverities = \"high\"\n",
+			want:         []string{},
+			wantWarnings: []string{key + ` has wrong type string; expected a list of strings such as ["high", "critical"]; ` + fallback},
+		},
+		{
+			// TOML decoding turns every integer into float64 (fsx.DecodeTOML).
+			name:         "non-string item",
+			project:      "[receivedReview]\nalwaysFixSeverities = [\"high\", 3]\n",
+			want:         []string{},
+			wantWarnings: []string{key + ` item 3 has wrong type float64; expected a string such as "high"; ` + fallback},
+		},
+		{
+			name:         "unknown item",
+			project:      "[receivedReview]\nalwaysFixSeverities = [\"urgent\"]\n",
+			want:         []string{},
+			wantWarnings: []string{key + ` "urgent" is not in allowed values [critical high medium low info]; ` + fallback},
+		},
+		{
+			// The warning names the value as the user wrote it.
+			name:         "unknown item keeps original case",
+			project:      "[receivedReview]\nalwaysFixSeverities = [\"Urgent\"]\n",
+			want:         []string{},
+			wantWarnings: []string{key + ` "Urgent" is not in allowed values [critical high medium low info]; ` + fallback},
+		},
+		{
+			// An unknown item drops the whole list, so the duplicate warning
+			// is not reported: only the one unknown-item warning remains.
+			name:         "duplicate then unknown gives only the unknown-item warning",
+			project:      "[receivedReview]\nalwaysFixSeverities = [\"high\", \"high\", \"urgent\"]\n",
+			want:         []string{},
+			wantWarnings: []string{key + ` "urgent" is not in allowed values [critical high medium low info]; ` + fallback},
+		},
+		{name: "user-level file only", user: "[receivedReview]\nalwaysFixSeverities = [\"medium\"]\n", want: []string{"medium"}},
+		{
+			name:    "project file wins",
+			user:    "[receivedReview]\nalwaysFixSeverities = [\"high\"]\n",
+			project: "[receivedReview]\nalwaysFixSeverities = [\"low\"]\n",
+			want:    []string{"low"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userPath := filepath.Join(t.TempDir(), "user.toml")
+			t.Setenv(config.UserConfigPathEnv, userPath)
+			if tt.user != "" {
+				writeFile(t, userPath, tt.user)
+			}
+			dir := t.TempDir()
+			if tt.project != "" {
+				writeFile(t, filepath.Join(dir, paths.DataDir, paths.LocalConfigFile), tt.project)
+			}
+			cleanup := stubGH(t, failingGH)
+			defer cleanup()
+
+			out, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if !sameStrings(out.AlwaysFixSeverities, tt.want) {
+				t.Errorf("AlwaysFixSeverities = %q, want %q", out.AlwaysFixSeverities, tt.want)
+			}
+			if !sameStrings(out.Warnings, tt.wantWarnings) {
+				t.Errorf("Warnings = %q, want %q", out.Warnings, tt.wantWarnings)
+			}
+		})
+	}
+}
+
+// TestReceivedReviewPrepare_SeverityReadError pins that a local file that
+// cannot be parsed fails with an InfraError, for a no-PR run and for a PR
+// run, before any git or gh command runs. The message names the file.
+func TestReceivedReviewPrepare_SeverityReadError(t *testing.T) {
+	tests := []struct {
+		name      string
+		userLevel bool // true: malformed user-level file; false: malformed .sdlc-v2/local.toml
+		pr        int
+	}{
+		{name: "project file no PR", pr: 0},
+		{name: "project file PR", pr: 42},
+		{name: "user-level file no PR", userLevel: true, pr: 0},
+		{name: "user-level file PR", userLevel: true, pr: 42},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			userPath := filepath.Join(t.TempDir(), "user.toml")
+			t.Setenv(config.UserConfigPathEnv, userPath)
+			dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+			badPath := filepath.Join(dir, paths.DataDir, paths.LocalConfigFile)
+			if tt.userLevel {
+				badPath = userPath
+			}
+			writeFile(t, badPath, "[receivedReview\nalwaysFixSeverities = [\"high\"\n")
+			cleanup := stubGH(t, failingGH)
+			defer cleanup()
+
+			_, err := receivedReviewPrepare(dir, dir, ReceivedReviewIn{PR: tt.pr})
+			var infra *mcpserver.InfraError
+			if !errors.As(err, &infra) {
+				t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+			}
+			if !strings.HasPrefix(infra.Msg, "read [receivedReview] section of "+config.LocalFilesLabel+": ") {
+				t.Errorf("Msg = %q, want the read [receivedReview] prefix", infra.Msg)
+			}
+			if !strings.Contains(infra.Msg, badPath) {
+				t.Errorf("Msg = %q, want it to name %s", infra.Msg, badPath)
+			}
+			if infra.Suggestion != receivedReviewReadSuggestion {
+				t.Errorf("Suggestion = %q, want %q", infra.Suggestion, receivedReviewReadSuggestion)
+			}
+		})
+	}
+}
+
+// sameStrings reports whether a and b hold the same items in the same order.
+// A nil and an empty slice are equal.
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestReceivedReviewPrepare_SameReadErrorAsReviewPrepare pins that
+// received_review_prepare and review_prepare fail the same way on a
+// .sdlc-v2/local.toml they cannot read: both return an InfraError whose
+// message names the file.
+func TestReceivedReviewPrepare_SameReadErrorAsReviewPrepare(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, localPath string)
+	}{
+		{name: "malformed TOML", setup: func(t *testing.T, localPath string) {
+			writeFile(t, localPath, "[receivedReview\n")
+		}},
+		{name: "directory at the path", setup: func(t *testing.T, localPath string) {
+			if err := os.MkdirAll(localPath, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", localPath, err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			localPath := filepath.Join(dir, paths.DataDir, paths.LocalConfigFile)
+			tt.setup(t, localPath)
+			cleanup := stubGH(t, failingGH)
+			defer cleanup()
+
+			_, rrErr := receivedReviewPrepare(dir, dir, ReceivedReviewIn{})
+			_, rErr := reviewPrepare(dir, dir, ReviewPrepareIn{})
+			for name, err := range map[string]error{"received_review_prepare": rrErr, "review_prepare": rErr} {
+				var infra *mcpserver.InfraError
+				if !errors.As(err, &infra) {
+					t.Errorf("%s: err = %v (%T), want *mcpserver.InfraError", name, err, err)
+					continue
+				}
+				if !strings.Contains(infra.Msg, localPath) {
+					t.Errorf("%s: Msg = %q, want it to name %s", name, infra.Msg, localPath)
+				}
+			}
+			// The received_review_prepare Suggestion must be true for bad
+			// TOML and for a directory at the path.
+			var infra *mcpserver.InfraError
+			if errors.As(rrErr, &infra) && infra.Suggestion != receivedReviewReadSuggestion {
+				t.Errorf("received_review_prepare: Suggestion = %q, want %q", infra.Suggestion, receivedReviewReadSuggestion)
+			}
+		})
 	}
 }
 

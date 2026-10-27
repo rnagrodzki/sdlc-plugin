@@ -2306,6 +2306,133 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 	})
 }
 
+// TestPlanSupportOpenspecStage_OtherPlan verifies openspec_stage refuses a
+// change name whose staging dir holds a stage.json with another planPath,
+// leaves that staging untouched, and does so before it needs the openspec CLI.
+// Every other combination of existing stage.json and planPath stages as before.
+func TestPlanSupportOpenspecStage_OtherPlan(t *testing.T) {
+	const (
+		manifestA          = `{"change":"add-widget","schema":"spec-driven","planPath":"/plans/a.md","files":[]}`
+		manifestASlash     = `{"change":"add-widget","schema":"spec-driven","planPath":"/plans/a.md/","files":[]}`
+		manifestNoPlan     = `{"change":"add-widget","schema":"spec-driven","files":[]}`
+		manifestNumberPlan = `{"change":"add-widget","schema":"spec-driven","planPath":123,"files":[]}`
+		manifestNotJSON    = `not json`
+		wantMsg            = `openspec_stage: change "add-widget" is staged by another plan: /plans/a.md. ` +
+			`If this call names the same plan file under another path, call again with planPath set to /plans/a.md.`
+		wantSuggestion = "If /plans/a.md is the plan file of this call under another path, call openspec_stage again with planPath set to /plans/a.md. " +
+			"If /plans/a.md is another plan, pick another change name: replace add-widget in every header line that holds it (**Source:**, **OpenSpec-Create:** and **OpenSpec-Staging:**), then run Create-flow authoring again. " +
+			"If that other plan is abandoned, ask the user, then delete .sdlc-v2/openspec-staging/add-widget/ and call openspec_stage again."
+	)
+
+	for _, tc := range []struct {
+		name        string
+		existing    string // stage.json content; "" means no staging folder
+		manifestDir bool   // stage.json is a directory, not a file
+		planPath    string
+		refused     bool
+	}{
+		{"no staging folder", "", false, "/plans/a.md", false},
+		{"same plan", manifestA, false, "/plans/a.md", false},
+		{"same plan after Clean", manifestA, false, "/plans/./a.md", false},
+		{"stored path with a trailing slash", manifestASlash, false, "/plans/a.md", false},
+		{"another plan", manifestA, false, "/plans/b.md", true},
+		{"same file as a relative path", manifestA, false, "plans/a.md", true},
+		{"empty planPath in the call", manifestA, false, "", false},
+		{"no planPath in stage.json", manifestNoPlan, false, "/plans/b.md", false},
+		{"planPath of the wrong JSON type", manifestNumberPlan, false, "/plans/b.md", false},
+		{"stage.json not valid JSON", manifestNotJSON, false, "/plans/b.md", false},
+		{"stage.json is a directory", "", true, "/plans/b.md", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubOpenspecForStage(t, 0)
+			root := newOpenspecStageFixture(t, "")
+			stagingDir := filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget")
+			oldFile := filepath.Join(stagingDir, "old.md")
+			manifestFile := filepath.Join(stagingDir, openspec.StageManifestFile)
+			if tc.existing != "" {
+				writeFile(t, oldFile, "# old\n")
+				writeFile(t, manifestFile, tc.existing)
+			}
+			if tc.manifestDir {
+				writeFile(t, oldFile, "# old\n")
+				if err := os.MkdirAll(manifestFile, 0o755); err != nil {
+					t.Fatalf("mkdir stage.json: %v", err)
+				}
+			}
+			if tc.refused {
+				// The refusal must come before the first CLI call.
+				pathWithoutOpenspec(t)
+			}
+
+			out, err := planSupportCore(root, root, PlanSupportIn{
+				Action:     "openspec_stage",
+				ChangeName: "add-widget",
+				Files:      []openspec.StageFile{{Path: "proposal.md", Content: "# new\n"}},
+				PlanPath:   tc.planPath,
+			})
+
+			if tc.refused {
+				if err == nil {
+					t.Fatal("expected an error, got nil")
+				}
+				if got := errorClassOf(err); got != "domain" {
+					t.Errorf("error class = %q, want domain (err %v)", got, err)
+				}
+				if err.Error() != wantMsg {
+					t.Errorf("err.Error() = %q, want %q", err.Error(), wantMsg)
+				}
+				if !errors.Is(err, openspec.ErrStagedByOtherPlan) {
+					t.Errorf("errors.Is(err, ErrStagedByOtherPlan) = false (err %v)", err)
+				}
+				if got := suggestionOf(err); got != wantSuggestion {
+					t.Errorf("Suggestion = %q, want %q", got, wantSuggestion)
+				}
+				if got, err := os.ReadFile(oldFile); err != nil || string(got) != "# old\n" {
+					t.Errorf("old staged file = %q (err %v), want it unchanged", got, err)
+				}
+				if got, err := os.ReadFile(manifestFile); err != nil || string(got) != tc.existing {
+					t.Errorf("stage.json = %q (err %v), want it unchanged", got, err)
+				}
+				if _, err := os.Stat(filepath.Join(stagingDir, "proposal.md")); !errors.Is(err, fs.ErrNotExist) {
+					t.Errorf("a refused call wrote proposal.md (stat err %v)", err)
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("openspec_stage: %v", err)
+			}
+			if out.Valid == nil || !*out.Valid {
+				t.Errorf("Valid = %v, want true", out.Valid)
+			}
+			wantReplaced := tc.existing != "" || tc.manifestDir
+			if out.StagingReplaced == nil || *out.StagingReplaced != wantReplaced {
+				t.Errorf("StagingReplaced = %v, want %v", out.StagingReplaced, wantReplaced)
+			}
+			if out.StagedPlanPath != tc.planPath {
+				t.Errorf("StagedPlanPath = %q, want %q", out.StagedPlanPath, tc.planPath)
+			}
+			if got, err := os.ReadFile(filepath.Join(stagingDir, "proposal.md")); err != nil || string(got) != "# new\n" {
+				t.Errorf("proposal.md = %q (err %v), want the new content", got, err)
+			}
+			if _, err := os.Stat(oldFile); !errors.Is(err, fs.ErrNotExist) {
+				t.Errorf("old.md still exists after the re-stage (stat err %v)", err)
+			}
+			raw, err := os.ReadFile(manifestFile)
+			if err != nil {
+				t.Fatalf("read stage.json: %v", err)
+			}
+			var manifest openspec.StageManifest
+			if err := json.Unmarshal(raw, &manifest); err != nil {
+				t.Fatalf("decode stage.json: %v", err)
+			}
+			if manifest.PlanPath != tc.planPath {
+				t.Errorf("stage.json planPath = %q, want %q", manifest.PlanPath, tc.planPath)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // preplan_context
 // ---------------------------------------------------------------------------

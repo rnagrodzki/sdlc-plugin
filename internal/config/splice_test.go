@@ -179,6 +179,7 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 				"  steps = { execute = true, commit = true }   # c\n" +
 				"# Default version bump.\n" +
 				"# Valid: \"major\" | \"minor\" | \"patch\", or a pre-release label such as \"rc\", \"beta\", \"alpha\"\n" +
+				"# A label is lowercase, starts with a letter, and has only letters and digits.\n" +
 				"bump = \"patch\"\n\n# tail\n",
 		},
 		{
@@ -225,6 +226,7 @@ func TestWriteSection_SpliceCases(t *testing.T) {
 			want: "[ship]\nzeta = 'z'\nalpha   =   \"a\"\n" +
 				"# Default version bump.\n" +
 				"# Valid: \"major\" | \"minor\" | \"patch\", or a pre-release label such as \"rc\", \"beta\", \"alpha\"\n" +
+				"# A label is lowercase, starts with a letter, and has only letters and digits.\n" +
 				"bump = 'minor'\n",
 		},
 		{

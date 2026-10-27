@@ -63,26 +63,29 @@ func stopPlanIntegrity(ctx HookCtx, event Event) (Output, error) {
 		return silent, nil
 	}
 
-	if st := findPlanState(branch); st != nil {
+	if st := findPlanState(branch, ctx.SessionID); st != nil {
 		return planIntegrityFromState(st), nil
 	}
 
 	return planIntegrityFromTranscript(event, branch), nil
 }
 
-// findPlanState resolves the repo root and looks up the latest "plan" run
-// state file for branch (state.LatestPlanRun, not state.ActivePlanRun — this
-// caller needs a run that has reached "done", not one still in flight). Any
+// findPlanState resolves the repo root and looks up the newest "plan" run of
+// sessionID on branch (state.PlanRunForSession, not active-only — this
+// caller needs a run that has reached "done"), else state.LatestPlanRun. Any
 // failure (no root, e.g. outside a git repo — mirroring the JS source's own
 // try/catch around resolveMainWorktree() — or no matching state, or an
 // unparseable state file per Ruling 4) degrades uniformly to "no state
 // found" (nil), never propagating an error to the caller.
-func findPlanState(branch string) *state.State {
+func findPlanState(branch, sessionID string) *state.State {
 	root, err := worktree.MainRoot()
 	if err != nil {
 		return nil
 	}
-	st, err := state.LatestPlanRun(root, branch)
+	st, err := state.PlanRunForSession(root, branch, sessionID, false)
+	if err == nil && st == nil {
+		st, err = state.LatestPlanRun(root, branch)
+	}
 	if err != nil || st == nil {
 		return nil
 	}

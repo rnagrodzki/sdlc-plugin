@@ -510,8 +510,13 @@ func TestEvidence_Digest_ExpectedWritersFromCheckpoint(t *testing.T) {
 	if out.Digest.Checkpoint == nil || out.Digest.Checkpoint.Step != "6.5" || out.Digest.Checkpoint.Iteration != 2 {
 		t.Errorf("digest.checkpoint = %+v", out.Digest.Checkpoint)
 	}
-	if !strings.Contains(out.Next, "continue at step 6.5 (iteration 2)") {
-		t.Errorf("next = %q, want step 6.5 iteration 2", out.Next)
+	// The literal pins the argument order of the Sprintf: runId and step are
+	// both strings, so a swap would pass go vet.
+	wantNext := "If the sdlc:plan skill instructions are not in context, invoke the sdlc:plan skill first; its Session recovery rule selects the resume path. " +
+		"If lanes and lensReviewers are not in context, call plan_prepare({resume:true, resolveTemplate:true, skipConfigCheck:true, runId:\"" + runID + "\"}) first. " +
+		"Re-read the plan file, then continue at step 6.5 (iteration 2). Fetch bodies with evidence_get only when the step needs them."
+	if !strings.HasPrefix(out.Next, wantNext) {
+		t.Errorf("next = %q, want prefix %q", out.Next, wantNext)
 	}
 	if !strings.HasPrefix(out.Summary, runID+" — step 6.5, iteration 2; writers: 0 done, 0 running, 1 missing, 0 stalled; 0 items; 0 custom instructions.") {
 		t.Errorf("summary = %q", out.Summary)
@@ -831,6 +836,9 @@ func TestEvidence_ErrorMatrix(t *testing.T) {
 		infra     bool
 		msg       func(root, runID string) string // exact message; nil when msgPrefix is used
 		msgPrefix func(root, runID string) string
+		// suggestion, when set, is the exact Suggestion text; nil checks
+		// only that the Suggestion is not empty.
+		suggestion func(runID string) string
 	}
 	exact := func(s string) func(string, string) string { return func(string, string) string { return s } }
 
@@ -910,7 +918,10 @@ func TestEvidence_ErrorMatrix(t *testing.T) {
 		}, msg: corruptMsg},
 		{name: "digest/checkpoint malformed", setup: badCheckpoint, infra: true, in: func(r string) PlanSupportIn {
 			return PlanSupportIn{Action: "evidence_digest", RunID: r}
-		}, msgPrefix: func(_, runID string) string { return "plan run " + runID + " has a malformed checkpoint in " }},
+		}, msgPrefix: func(_, runID string) string { return "plan run " + runID + " has a malformed checkpoint in " },
+			suggestion: func(runID string) string {
+				return `call plan_mark({marker:"checkpoint", runId:"` + runID + `", data:{step:"<current step>"}}) to replace it, then retry evidence_digest`
+			}},
 
 		// evidence_get
 		{name: "get/runId empty", in: func(string) PlanSupportIn { return PlanSupportIn{Action: "evidence_get", IDs: []string{"F-1"}} },
@@ -981,6 +992,11 @@ func TestEvidence_ErrorMatrix(t *testing.T) {
 			}
 			if strings.TrimSpace(suggestion) == "" {
 				t.Error("suggestion is empty")
+			}
+			if c.suggestion != nil {
+				if want := c.suggestion(runID); suggestion != want {
+					t.Errorf("suggestion = %q, want %q", suggestion, want)
+				}
 			}
 
 			after := evidenceSnapshotRuns(t, root)

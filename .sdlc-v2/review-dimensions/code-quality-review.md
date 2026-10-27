@@ -157,6 +157,16 @@ Review Go source changes for baseline code quality in this module
   committed with the code, so these references mean nothing to a later
   reader. Run `grep -nE '\bKD[0-9]+\b|\((Deviations|Final Shape)\)|"Final Shape"|// Step [0-9]'`
   on modified `.go` files to catch these patterns.
+- A comment states what the code does, not how it differs from an earlier
+  version or from the state before the change. Wording such as 'as today',
+  'no longer', 'previously' or 'used to' in a new or changed comment compares
+  the code with a past that a later reader cannot see, and it goes stale on
+  the next edit. Rewrite the comment to state the rule that holds now. Run
+  `grep -nEi '\b(as today|no longer|previously|used to)\b'` on the added lines
+  of modified `.go` files to find these. This extends the planning-artifact
+  bullet above, which names step numbers, Key Decision ids, task IDs and plan
+  section names only. Example: a comment that said 'as today' to describe how
+  a lookup picks a run.
 - Records passed as parameters or returned should use named structs, not
   positional tuples via arrays (`[2]string`) or a run of three or more return
   values of one kind. Positional syntax is fragile and does not scale when the

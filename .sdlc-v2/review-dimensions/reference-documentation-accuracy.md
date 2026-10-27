@@ -96,6 +96,26 @@ severity: high
   a canonical item, is a finding.
 - Named git refs in prose (default branch, base branch, target branch) must
   match the ref the code reads for that step. A mismatch is a finding.
+- When a reference document states the shape of a stored or returned value (a
+  JSON key set, a key shown as `null`, a nested object such as an intent or
+  marker record), compare it with the Go struct tags and with the code that
+  builds the value. A key documented as `null` that the code leaves out
+  (`omitempty`, `omitzero`, a conditional set), a key the code writes that the
+  doc omits, or a nested object whose keys differ from the code, is a finding.
+- When a reference document shows a call (function name, arguments, order,
+  return value; for example a `state.GC` call), compare it with the current
+  function signature and with its call sites. A stale argument list or return
+  shape is a finding.
+- A filename, id or key pattern that the code builds from several prefixes,
+  suffixes or alternatives (for example a regex alternation of file-name
+  prefixes) must list every alternative the regex accepts, in the prose, the
+  tables and the examples. A table row that names the writers of a record (for
+  example `expectedWriters`) must carry the id pattern as well. A list with
+  fewer alternatives than the regex has is a finding.
+- Rules inside one reference document must not contradict each other. A claim
+  of "once", "only", "always" or "never" must hold against every other rule,
+  lifecycle step and table row of the same document: walk each rule against the
+  claim. A claim that another rule of the same document breaks is a finding.
 
 ## What NOT to flag
 

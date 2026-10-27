@@ -104,7 +104,7 @@ Loads the proposal, delta specs, and task list from
   entry.
 - **`plan_prepare` always runs first, but it only resumes state when asked.**
   The skill's first action is always a `plan_prepare(...)` call. By default it
-  starts a fresh run. Pass `resume: true` to reuse the active run instead —
+  starts a fresh run. Pass `resume: true` and the `runId` to reuse that run instead —
   the skill does this automatically after a compaction (see
   [Recovery after compaction](#recovery-after-compaction) below).
 - **Complexity routing matters.** If your change touches only 1 file, the skill
@@ -130,6 +130,22 @@ Loads the proposal, delta specs, and task list from
   without OpenSpec, or for a change the skill creates (Create OpenSpec
   change). That change is authored from the reviewed plan at the end of
   Step 6, and authored again when you reject the plan with feedback.
+- **Staging a created change can stop the skill.** The skill stages the
+  authored files with `openspec_stage`. Three exits apply:
+  - `staged by another plan`: another plan file staged this change name.
+    If the error names this plan file under another path, the skill calls
+    again with that path. Otherwise the skill asks you whether the other
+    plan is abandoned, and on yes deletes its staging directory and stages
+    again (under `--auto` it does not ask and does not delete). Otherwise it
+    picks a new change name, rewrites the
+    `**Source:**`, `**OpenSpec-Create:**` and `**OpenSpec-Staging:**`
+    header lines, and authors the change again. A refused call does not
+    count as a try.
+  - After 3 such refusals, the skill shows the error and stops with no plan
+    handoff. Delete the staging directory of the abandoned plan, or choose
+    a change name that no plan uses, then run the skill again.
+  - After 5 `openspec_stage` tries that return `valid: false`, the skill
+    shows the OpenSpec CLI output and stops with no plan handoff.
 - **Plan mode vs. normal mode.** In plan mode, the skill writes to the
   designated plan file path. In normal mode, it creates a file and tells you
   where it is.
@@ -177,9 +193,12 @@ Loads the proposal, delta specs, and task list from
 
 ## Recovery after compaction
 
-- What you see: `Active plan (post-compact): step <n>, branch <b>; plan file: <path>` in the session context, followed by a line that tells Claude to invoke the sdlc:plan skill first when the skill instructions are not in context, and a `Resume with:` line.
-- What the skill does: reloads the run with `plan_prepare` (resume mode), reads the evidence digest, then resumes at the saved step; it does not clear the plan file.
-- Where evidence lives: <main-worktree>/.sdlc-v2/runs/<runId>.evidence/ (deleted after the plan is done).
+- What you see: `Active plan (post-compact): step <n>, branch <b>; plan file: <path>` in the session context, followed by a line that tells Claude to invoke the sdlc:plan skill first when the skill instructions are not in context, and a `Resume with:` line. The banner shows only for a run that was written in the last 24 hours (`state.PlanRunLiveWindow`).
+- What the skill does: reloads the run with `plan_prepare` (resume mode, with the `runId` of the `Resume with:` line), reads the evidence digest, then resumes at the saved step; it does not clear the plan file.
+- When the saved run is gone: if the resume call returns `no active plan run`, `plan run <runId> not found`, `plan run <runId> is done` or `plan run <runId> has no skillInvoked marker`, the skill prints "No active plan run to resume — starting a new plan.", ignores the `Active plan (post-compact):` line for the rest of the session, and starts a new plan.
+- When the run disappears in the middle of a plan: if a call returns `plan run <runId> not found` (or a reuse `plan_prepare` call returns `is done` or `has no skillInvoked marker`), the skill tells you that the run state is gone. It stops the background agents that it still holds, names each agent that it could not stop, and starts a new plan with no `runId`.
+- Where evidence lives: <main-worktree>/.sdlc-v2/runs/<runId>.evidence/. Ship's `cleanup-pipeline` step deletes the plan run and its evidence only when the ship run links a plan run and the ship report file exists on disk. Otherwise the GC sweep removes them after the TTL. The GC sweep keeps the newest plan state file of a branch that still exists, even past the TTL; `execute_state` gc reaps the evidence directory after the TTL.
+- A second plan session on the same branch keeps its own run and its own evidence. A new run of the branch deletes an older run only when that run is not done, was not written in the last 24 hours (`state.PlanRunLiveWindow`), and has no `sessionId` that differs from the writer's.
 
 ## Plan writing style
 

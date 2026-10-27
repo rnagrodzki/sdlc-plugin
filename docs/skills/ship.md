@@ -85,7 +85,8 @@ them via `--steps`):
   deferred findings that are below the review threshold, with its own commit.
   The fix pass sends those findings to [/received-review](received-review.md),
   which fixes each one or leaves it deferred. Outside `--auto`, the fix pass
-  pauses for you, as the received-review step does. A fix pass that changes nothing
+  pauses for you, as the received-review step does, unless
+  `receivedReview.alwaysFixSeverities` pre-approves every finding. A fix pass that changes nothing
   ends as `Fix pass: 0 changes`, with no commit. The fix pass does not run
   when the working tree has uncommitted changes outside `.sdlc-v2/` and
   `openspec/`, so its commit holds only its own edits. A failed fix pass ends
@@ -244,8 +245,9 @@ The saved state file (one per branch, under `.sdlc-v2/`)
 records, alongside the resolved pipeline flags:
 
 - **`sources`** — a per-flag resolution trace: which precedence tier won for
-  each resolved flag. Values include `"cli"`, `"config"`, `"quick"`,
-  `"default"`, and, for the bump flag specifically,
+  each resolved flag. Values include `"cli"`, `"local"` (a `[ship]` value
+  from a local.toml file), `"quick"`, `"default"`, and, for the bump flag
+  specifically, `"config (version.preRelease)"` and
   `"config (version.preReleasePolicy enforced over cli)"` when
   `preReleasePolicy: "always-rc"` overrides an explicit `--bump`. Useful for
   answering "why did ship pick this bump/quality level?" after the fact.

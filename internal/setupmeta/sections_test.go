@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
+	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 )
 
@@ -540,5 +541,27 @@ func TestStyleFields_NamesAndOptions(t *testing.T) {
 		if c.got != c.want {
 			t.Errorf("%s = %v, want %v (commstyle)", c.label, c.got, c.want)
 		}
+	}
+}
+
+// TestReceivedReviewFieldOptions pins the alwaysFixSeverities options to the
+// one severity list in dimensions.ValidSeverities. The field uses that slice
+// itself, so a change to the list reaches the setup wizard with no second edit.
+func TestReceivedReviewFieldOptions(t *testing.T) {
+	var field *Field
+	for i := range receivedReviewFields {
+		if receivedReviewFields[i].Name == "alwaysFixSeverities" {
+			field = &receivedReviewFields[i]
+			break
+		}
+	}
+	if field == nil {
+		t.Fatal(`receivedReviewFields has no "alwaysFixSeverities" field`)
+	}
+	if !slices.Equal(field.Options, dimensions.ValidSeverities) {
+		t.Errorf("alwaysFixSeverities.Options = %v, want dimensions.ValidSeverities %v", field.Options, dimensions.ValidSeverities)
+	}
+	if len(field.Options) == 0 || &field.Options[0] != &dimensions.ValidSeverities[0] {
+		t.Error("alwaysFixSeverities.Options is a copy, want dimensions.ValidSeverities itself")
 	}
 }

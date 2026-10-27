@@ -10,6 +10,7 @@
 
 # Default version bump.
 # Valid: "major" | "minor" | "patch", or a pre-release label such as "rc", "beta", "alpha"
+# A label is lowercase, starts with a letter, and has only letters and digits.
 # bump = "patch"
 
 # Create PR as draft.
@@ -92,9 +93,12 @@
 
 # ─── Received-review defaults (optional — delete if not using) ────
 # [receivedReview]
-# Severities whose 'will fix' findings bypass the per-finding consent gate.
+# Severities whose 'will fix' findings /received-review applies with no
+# consent prompt (Step 10, manual mode). Manual mode only: under --auto every
+# 'will fix' finding is already applied, so this setting adds nothing.
 # Local-only — must NEVER be set in .sdlc-v2/config.toml.
-# Valid items: "low" | "medium" | "high" | "critical"
+# Valid items: "critical" | "high" | "medium" | "low" | "info"
+# Items must be unique.
 # alwaysFixSeverities = []
 
 # ─── Automation (optional — delete if not using) ──────────────────
@@ -113,6 +117,8 @@
 # review = "auto"
 #
 # # Rate-based thresholds for halting an unattended run on plan drift.
+# # maxErrorRate and maxWarningRate: a number from 0 to 1.
+# # minErrorFloor: a whole number >= 0.
 # [automation.drift]
 # maxErrorRate = 0.15
 # maxWarningRate = 0.4
@@ -121,6 +127,7 @@
 # # Execution report emitted at the end of a run.
 # [automation.report]
 # enabled = true
+# # Valid: "md" | "json"
 # format = "md"
 #
 # # Feature-branch push during ship skips the manual confirmation pause.
@@ -160,6 +167,7 @@
 # Branch name template. Placeholders: {type}, {slug}, {issue}, {date}.
 # template = "{type}/{slug}"
 # Maximum length of the slug segment before substitution into the template.
+# Whole number from 8 to 100.
 # slugMaxLength = 50
 # Maps logical plan type to branch prefix.
 # typeMap = { feature = "feat", bugfix = "fix", chore = "chore", docs = "docs", refactor = "refactor" }

@@ -45,7 +45,7 @@ the struct (or sorted-key order for a map).
 ````markdown
 # plan_prepare — ok
 
-**Next:** Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker "plan-file" and the plan path.
+**Next:** Write template.headerMarkdown + template.skeletonMarkdown to the plan file, then call plan_mark with marker "plan-file", the plan path and runId. Pass runId on every later plan_mark call.
 
 ## Summary
 Template resolved. 44 guardrails loaded.

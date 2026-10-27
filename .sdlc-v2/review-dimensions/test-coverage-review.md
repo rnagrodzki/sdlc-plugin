@@ -137,6 +137,15 @@ new changes to that same bar:
   more elements exist. Example: a batch write that refuses several
   sections must be tested with two refused sections, to confirm the
   recovery message names each one and not only the first.
+- A check that reports, counts or drops repeated entries (a duplicate warning,
+  a dedupe, a warn-once counter) is tested with a value that repeats three
+  times and with copies that are apart in the list, not only with one pair. A
+  pair shows that the second copy is caught. It does not show whether the third
+  copy is reported again, merged into the first warning or dropped. Each test
+  asserts the number of warnings, their full text and the items that stay. This
+  extends the single-element and multi-element bullet above, which covers
+  guards and refusals. Example: a list with one repeated severity, where the
+  test covered the second copy only.
 - When a function instantiates a structured error (InfraError,
   DomainError, DataError) in a default or catch-all arm (e.g., after
   specific-condition checks fail), test the default arm directly: use an

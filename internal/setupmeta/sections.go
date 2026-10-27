@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
+	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 )
 
@@ -235,11 +236,11 @@ var receivedReviewFields = []Field{
 		Name:        "alwaysFixSeverities",
 		Label:       "Severities to auto-apply without consent",
 		Type:        "multi-enum",
-		Options:     []string{"low", "medium", "high", "critical"},
+		Options:     dimensions.ValidSeverities,
 		Default:     []string{},
-		Description: "Severities whose \"agree, will fix\" findings bypass the per-finding consent gate in /received-review (Step 10 / Step 12). Stored in .sdlc-v2/local.toml under receivedReview.alwaysFixSeverities — per-developer, never project-wide. Default `[]` preserves the original consent-on-every-finding behavior; e.g. `[\"critical\",\"high\"]` auto-applies high-impact fixes without prompting.",
-		Details:     "A finding at a listed severity skips the per-finding consent gate in /received-review and applies automatically. This value is per-developer, stored in local.toml, never project-wide.",
-		Examples:    []string{"[] — every finding asks for consent before it applies", "[\"critical\", \"high\"] — only low and medium findings still ask for consent"},
+		Description: "Severities whose \"agree, will fix\" findings /received-review applies with no consent prompt in Step 10 (manual mode), with one `pre-approved` log line each. Stored in .sdlc-v2/local.toml under receivedReview.alwaysFixSeverities — per-developer, never project-wide. Default `[]` asks for consent on every finding. --auto applies every \"will fix\" finding, so the setting adds nothing under --auto. The Step 12 reply prompt does not change.",
+		Details:     "In manual mode, /received-review applies an \"agree, will fix\" finding at a listed severity with no consent prompt, and logs one `pre-approved` line for it. Other findings still ask. This value is per-developer, stored in local.toml, never project-wide.",
+		Examples:    []string{"[] — every finding asks for consent before it applies", "[\"critical\", \"high\"] — medium, low and info findings still ask for consent"},
 	},
 }
 
@@ -695,7 +696,7 @@ func Sections() []Section {
 		{
 			ID:              "received-review",
 			Label:           "received-review",
-			Purpose:         "Per-user severity allowlist for /received-review auto-apply. When set, \"agree, will fix\" findings whose severity is in the list bypass the per-finding consent gate in Step 10/12 and are auto-applied with a one-line `fixed: ...` log. Stored in .sdlc-v2/local.toml under receivedReview.alwaysFixSeverities — never in project config. Default `[]` preserves the original consent-on-every-finding behavior.",
+			Purpose:         "Per-user severity allowlist for /received-review auto-apply. In manual mode, Step 10 applies the \"agree, will fix\" findings whose severity is in the list with no consent prompt, and logs one `pre-approved (<severity> in alwaysFixSeverities): ...` line for each. Stored in .sdlc-v2/local.toml under receivedReview.alwaysFixSeverities — never in project config. Default `[]` asks for consent on every finding.",
 			ConfigFile:      ".sdlc-v2/local.toml",
 			ConfigPath:      "receivedReview",
 			ConsumedBy:      []string{"received-review"},

@@ -126,6 +126,24 @@ type ShipGCReport struct {
 	ExploreTempdirs ShipGCBucket `json:"exploreTempdirs"`
 }
 
+// Source labels: the precedence tier that won for one flag key, as stored in
+// ship_prepare's sources map and in execute_state resolve-config's sources
+// map. The values are a contract: the ship and execute skills compare them as
+// strings, so never change a value.
+const (
+	sourceCLI      = "cli"
+	sourceQuick    = "quick"
+	sourceLocal    = "local"    // a value from the merged local files (config.LocalFilesLabel)
+	sourceDefault  = "default"  // the built-in default
+	sourcePipeline = "pipeline" // execute: flags.auto of this branch's ship state
+	sourcePlan     = "plan"     // ship: openspecChange from the plan's **Source:** header
+	sourceConfig   = "config"   // execute: execute.commitWaves in .sdlc-v2/config.toml
+
+	sourceConfigPreRelease       = "config (version.preRelease)"
+	sourceConfigPreReleasePolicy = "config (version.preReleasePolicy)"
+	sourceConfigPolicyOverCLI    = "config (version.preReleasePolicy enforced over cli)"
+)
+
 // ShipPrepareOut is the output for the ship_prepare tool.
 type ShipPrepareOut struct {
 	Errors   []string `json:"errors"`
@@ -142,7 +160,8 @@ type ShipPrepareOut struct {
 	// the shape written into the initialized state's `flags` field.
 	Flags map[string]any `json:"flags"`
 	// Sources records, per flag key, which precedence tier won ("cli",
-	// "config", "config (version.preRelease)",
+	// "local" (a [ship] value from .sdlc-v2/local.toml or ~/.sdlc/local.toml),
+	// "config (version.preRelease)",
 	// "config (version.preReleasePolicy)",
 	// "config (version.preReleasePolicy enforced over cli)",
 	// "quick", "plan" (openspecChange from the plan's **Source:** header),
@@ -373,7 +392,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	}
 
 	// Warn when always-rc enforcement overrode an explicit CLI --bump.
-	if sources["bump"] == "config (version.preReleasePolicy enforced over cli)" {
+	if sources["bump"] == sourceConfigPolicyOverCLI {
 		warnings = append(warnings, fmt.Sprintf(
 			"preReleasePolicy %q overrode explicit CLI --bump %q to %q",
 			"always-rc", in.Bump, merged["bump"]))
@@ -401,7 +420,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		if !sliceContainsStr(shipmeta.ValidSteps, st) {
 			msg := fmt.Sprintf("Unrecognized step %q in %s. Valid values: %s",
 				st, stepsFieldLabel(sources["steps"]), strings.Join(shipmeta.ValidSteps, ", "))
-			if sources["steps"] == "cli" {
+			if sources["steps"] == sourceCLI {
 				errors = append(errors, msg)
 			} else {
 				warnings = append(warnings, msg)
@@ -448,18 +467,18 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	}
 
 	// --bump without a pr step (version diagnostics now run inside pr_prepare).
-	if bumpVal, _ := merged["bump"].(string); bumpVal != "" && sources["bump"] == "cli" && !sliceContainsStr(stepsList, "pr") {
+	if bumpVal, _ := merged["bump"].(string); bumpVal != "" && sources["bump"] == sourceCLI && !sliceContainsStr(stepsList, "pr") {
 		errors = append(errors, fmt.Sprintf(
 			"--bump %q specified but pr step is skipped — resolve by removing --bump or adding \"pr\" to ship.steps.", bumpVal))
 	}
 
 	// --quick + --steps conflict.
-	if in.Quick && sources["steps"] == "cli" {
+	if in.Quick && sources["steps"] == sourceCLI {
 		errors = append(errors, "--quick + --steps not allowed: use --quick or --steps, not both")
 	}
 
 	// --quick with no configured profile.
-	if in.Quick && sources["steps"] == "quick" && len(stepsList) == 0 {
+	if in.Quick && sources["steps"] == sourceQuick && len(stepsList) == 0 {
 		errors = append(errors, "No quick profile defined. Run `ship --init-config` to set one.")
 	}
 
@@ -664,9 +683,9 @@ func isDefaultBranch(branch string) bool {
 // the quick table, "ship.steps" otherwise).
 func stepsFieldLabel(source string) string {
 	switch source {
-	case "cli":
+	case sourceCLI:
 		return "--steps"
-	case "quick":
+	case sourceQuick:
 		return "ship.quick"
 	default:
 		return "ship.steps"
@@ -742,12 +761,12 @@ func resolveShipOpenspecChange(merged map[string]any, sources map[string]string,
 	}
 	switch {
 	case input != "":
-		merged["openspecChange"], sources["openspecChange"] = input, "cli"
+		merged["openspecChange"], sources["openspecChange"] = input, sourceCLI
 		if planChange != "" && planChange != input {
 			warnings = append(warnings, fmt.Sprintf("openspecChange %q differs from plan Source %q; using %q", input, planChange, input))
 		}
 	case planChange != "":
-		merged["openspecChange"], sources["openspecChange"] = planChange, "plan"
+		merged["openspecChange"], sources["openspecChange"] = planChange, sourcePlan
 	default:
 		merged["openspecChange"] = nil
 	}
@@ -789,17 +808,17 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	switch {
 	case len(in.Steps) > 0:
 		merged["steps"] = shipmeta.OrderSteps(in.Steps)
-		sources["steps"] = "cli"
+		sources["steps"] = sourceCLI
 	case in.Quick:
 		merged["steps"] = quickSteps
-		sources["steps"] = "quick"
+		sources["steps"] = sourceQuick
 	default:
 		if hasStepsTbl {
 			merged["steps"] = cfgSteps
-			sources["steps"] = "config"
+			sources["steps"] = sourceLocal
 		} else {
 			merged["steps"] = append([]string{}, shipmeta.ShipBuiltInDefaults.Steps...)
-			sources["steps"] = "default"
+			sources["steps"] = sourceDefault
 		}
 	}
 
@@ -811,26 +830,26 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	// omission rather than falling back to a built-in default).
 	if in.Quality != "" {
 		merged["quality"] = in.Quality
-		sources["quality"] = "cli"
+		sources["quality"] = sourceCLI
 	}
 
 	// bump: cli > config string > default.
 	if in.Bump != "" {
 		merged["bump"] = in.Bump
-		sources["bump"] = "cli"
+		sources["bump"] = sourceCLI
 	} else if v, ok := cfg["bump"].(string); ok && v != "" {
 		merged["bump"] = v
-		sources["bump"] = "config"
+		sources["bump"] = sourceLocal
 	} else {
 		merged["bump"] = shipmeta.ShipBuiltInDefaults.Bump
-		sources["bump"] = "default"
+		sources["bump"] = sourceDefault
 	}
 
 	// version.preRelease overrides a non-cli bump when it is a valid label.
-	if sources["bump"] != "cli" {
+	if sources["bump"] != sourceCLI {
 		if pr, ok := versionCfg["preRelease"].(string); ok && preReleaseLabelRe.MatchString(pr) {
 			merged["bump"] = pr
-			sources["bump"] = "config (version.preRelease)"
+			sources["bump"] = sourceConfigPreRelease
 		}
 	}
 
@@ -843,14 +862,14 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 		bump, _ := merged["bump"].(string)
 		// Valid RC results: "rc" or a valid preRelease label (which implies RC)
 		isRC := bump == "rc" || (preReleaseLabelRe.MatchString(bump) && bump != "major" && bump != "minor" && bump != "patch")
-		if !isRC && !(policy == "default-rc" && sources["bump"] == "cli") {
+		if !isRC && !(policy == "default-rc" && sources["bump"] == sourceCLI) {
 			// Enforce by overriding to "rc" to ensure preReleasePolicy is not merely informational.
 			// default-rc with an explicit CLI --bump is the one exception: the CLI wins.
 			merged["bump"] = "rc"
-			if sources["bump"] == "cli" {
-				sources["bump"] = "config (version.preReleasePolicy enforced over cli)"
+			if sources["bump"] == sourceCLI {
+				sources["bump"] = sourceConfigPolicyOverCLI
 			} else {
-				sources["bump"] = "config (version.preReleasePolicy)"
+				sources["bump"] = sourceConfigPreReleasePolicy
 			}
 		}
 	}
@@ -858,10 +877,10 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	// reviewThreshold: config string > default (no cli flag).
 	if v, ok := cfg["reviewThreshold"].(string); ok && v != "" {
 		merged["reviewThreshold"] = v
-		sources["reviewThreshold"] = "config"
+		sources["reviewThreshold"] = sourceLocal
 	} else {
 		merged["reviewThreshold"] = shipmeta.ShipBuiltInDefaults.ReviewThreshold
-		sources["reviewThreshold"] = "default"
+		sources["reviewThreshold"] = sourceDefault
 	}
 
 	// rebase: cli string > config (bool coerced to "auto"/"skip", string
@@ -870,7 +889,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	// default "auto".
 	if in.Rebase != "" {
 		merged["rebase"] = in.Rebase
-		sources["rebase"] = "cli"
+		sources["rebase"] = sourceCLI
 	} else if v, exists := cfg["rebase"]; exists {
 		switch vv := v.(type) {
 		case bool:
@@ -888,10 +907,10 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 			// usable one.
 			merged["rebase"] = vv
 		}
-		sources["rebase"] = "config"
+		sources["rebase"] = sourceLocal
 	} else {
 		merged["rebase"] = "auto"
-		sources["rebase"] = "default"
+		sources["rebase"] = sourceDefault
 	}
 
 	// Numeric timing/iteration knobs: config int > default.
@@ -906,21 +925,21 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	// awaitRemoteReviewers: config non-empty array > default.
 	if arr, ok := cfg["awaitRemoteReviewers"].([]any); ok && len(arr) > 0 {
 		merged["awaitRemoteReviewers"] = anyToStringSlice(arr)
-		sources["awaitRemoteReviewers"] = "config"
+		sources["awaitRemoteReviewers"] = sourceLocal
 	} else {
 		merged["awaitRemoteReviewers"] = append([]string{}, shipmeta.ShipBuiltInDefaults.AwaitRemoteReviewers...)
-		sources["awaitRemoteReviewers"] = "default"
+		sources["awaitRemoteReviewers"] = sourceDefault
 	}
 
 	// execute.commitWaves: config bool > default true, with an
 	// invalid-type marker warning consumed by validation.
 	merged["executeCommitWaves"] = true
-	sources["executeCommitWaves"] = "default"
+	sources["executeCommitWaves"] = sourceDefault
 	if execCfg, ok := cfg["execute"].(map[string]any); ok {
 		if v, exists := execCfg["commitWaves"]; exists {
 			if b, ok := v.(bool); ok {
 				merged["executeCommitWaves"] = b
-				sources["executeCommitWaves"] = "config"
+				sources["executeCommitWaves"] = sourceLocal
 			} else {
 				merged["commitWavesInvalidType"] = true
 			}
@@ -958,7 +977,7 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 	// [execute] commitWaves that execute itself resolves against. Forwarding
 	// the default unconditionally would silently override a user's own
 	// top-level execute.commitWaves on every ship run.
-	if sources["executeCommitWaves"] == "config" {
+	if sources["executeCommitWaves"] == sourceLocal {
 		argParts = append(argParts, "--commit-waves", fmt.Sprint(merged["executeCommitWaves"]))
 	}
 	merged["executeDispatchArgs"] = strings.Join(argParts, " ")
@@ -971,16 +990,16 @@ func mergeShipFlags(in ShipPrepareIn, cfg map[string]any, versionCfg map[string]
 func mergeShipBool(merged map[string]any, sources map[string]string, key string, cliVal bool, cfg map[string]any, def bool) {
 	if cliVal {
 		merged[key] = true
-		sources[key] = "cli"
+		sources[key] = sourceCLI
 		return
 	}
 	if v, ok := cfg[key].(bool); ok {
 		merged[key] = v
-		sources[key] = "config"
+		sources[key] = sourceLocal
 		return
 	}
 	merged[key] = def
-	sources[key] = "default"
+	sources[key] = sourceDefault
 }
 
 // mergeShipInt merges an integer config knob using config > default
@@ -988,11 +1007,11 @@ func mergeShipBool(merged map[string]any, sources map[string]string, key string,
 func mergeShipInt(merged map[string]any, sources map[string]string, key string, cfg map[string]any, def int) {
 	if v, ok := cfgInt(cfg, key); ok {
 		merged[key] = v
-		sources[key] = "config"
+		sources[key] = sourceLocal
 		return
 	}
 	merged[key] = def
-	sources[key] = "default"
+	sources[key] = sourceDefault
 }
 
 // cfgInt reads an integer-valued config field. Config is decoded from JSON,

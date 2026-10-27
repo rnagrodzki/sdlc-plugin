@@ -120,9 +120,9 @@ explicit --steps (a set)  or  --quick ([ship.quick] table)  >  [ship.steps] tabl
 
 The plugin fixes the order: `execute`, `commit`, `review`, `verify-openspec`, `archive-openspec`, `harden`, `pr`, `verify-pipeline`, `await-remote-review`, `learnings-commit`.
 
-`sources.steps` records the tier that applied as one of four values: `cli`, `quick`, `config`, or `default`. `config` covers both local.toml files: `config.ReadSection` merges `~/.sdlc/local.toml` and `.sdlc-v2/local.toml` (project wins per key) before `mergeShipFlags` sees the value, so `sources` cannot tell which of the two files supplied it.
+`sources.steps` records the tier that applied as one of four values: `cli`, `quick`, `local`, or `default`. `local` covers both local.toml files: `config.ReadSection` merges `~/.sdlc/local.toml` and `.sdlc-v2/local.toml` (project wins per key) before `mergeShipFlags` sees the value, so `sources` cannot tell which of the two files supplied it.
 
-`quick` and an explicit non-empty `steps` list are mutually exclusive: when both are supplied, `ship_prepare` returns the error above and no tier applies. `auto`, `draft`, `bump`, `reviewThreshold`, `rebase`, and the numeric timing knobs each follow their own cli-input > config > default chain — see the Field Reference table above and `ship.go`'s `mergeShipFlags` for the authoritative per-field precedence.
+`quick` and an explicit non-empty `steps` list are mutually exclusive: when both are supplied, `ship_prepare` returns the error above and no tier applies. `auto`, `draft`, `bump`, `reviewThreshold`, `rebase`, and the numeric timing knobs each follow their own cli-input > local > default chain (`bump` then also takes the `version.preRelease` and `version.preReleasePolicy` overrides, see `reference.md`) — see the Field Reference table above and `ship.go`'s `mergeShipFlags` for the authoritative per-field precedence.
 
 ---
 

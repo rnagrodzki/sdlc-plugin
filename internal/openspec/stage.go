@@ -55,6 +55,25 @@ var ErrTargetSpecTooLarge = fmt.Errorf("%w: too large", ErrTargetSpec)
 // into the temp directory (1 MiB).
 const maxTargetSpecBytes = 1 << 20
 
+// ErrStagedByOtherPlan is returned by Stage when the staging dir of the
+// change holds a stage.json whose planPath names another plan file. Stage
+// then writes nothing, so the staging of the other plan stays.
+var ErrStagedByOtherPlan = errors.New("openspec stage: staged by another plan")
+
+// StagedByOtherPlanError is the error Stage returns for ErrStagedByOtherPlan.
+// PlanPath is the planPath stored in the stage.json of the other plan.
+// errors.Is(err, ErrStagedByOtherPlan) is true for it; read PlanPath with
+// errors.As.
+type StagedByOtherPlanError struct {
+	PlanPath string
+}
+
+func (e *StagedByOtherPlanError) Error() string {
+	return ErrStagedByOtherPlan.Error() + ": " + e.PlanPath
+}
+
+func (e *StagedByOtherPlanError) Unwrap() error { return ErrStagedByOtherPlan }
+
 // StageManifestFile is the manifest file name written at the root of a
 // change's staging directory.
 const StageManifestFile = "stage.json"
@@ -88,11 +107,16 @@ type StageManifest struct {
 // relative to the active worktree root, exactly as StagingDirRel returns it
 // (the form the plan's **OpenSpec-Staging:** header uses). ValidateOutput is
 // the combined stdout/stderr of `openspec validate <change> --strict`.
+// Replaced is true when a staging directory of the change existed before
+// this call and Stage replaced it, false when Stage created it. PlanPath is
+// the planPath written to stage.json (the owner key of the staging).
 type StageResult struct {
 	StagingDir     string
 	Files          []StagedFile
 	Valid          bool
 	ValidateOutput string
+	Replaced       bool
+	PlanPath       string
 }
 
 // ArtifactGuide is the authoring guidance for one artifact of a change,
@@ -163,21 +187,16 @@ func PrepareInstructions(activeRoot, change string) (schema string, guides []Art
 //
 // Every check runs before the first write under activeRoot: the change name
 // (ErrInvalidChangeName), each file path against the outputPath patterns the
-// CLI reports for a temp change (ErrPathNotAllowed), and the copy of the
-// current specs (ErrTargetSpec). A failed validation is not an error: the
+// CLI reports for a temp change (ErrPathNotAllowed), the planPath of an
+// existing stage.json of the change (ErrStagedByOtherPlan), and the copy of
+// the current specs (ErrTargetSpec). A failed validation is not an error: the
 // result has Valid false and the CLI output, and stage.json has no
 // validatedAt. now defaults to time.Now when nil.
 func Stage(activeRoot, change string, files []StageFile, planPath string, now func() time.Time) (StageResult, error) {
 	if now == nil {
 		now = time.Now
 	}
-	if !ValidChangeName(change) {
-		return StageResult{}, fmt.Errorf("%w: %q", ErrInvalidChangeName, change)
-	}
-	if len(files) == 0 {
-		return StageResult{}, errors.New("openspec stage: no files to stage")
-	}
-	if err := checkPathSyntax(files); err != nil {
+	if err := checkStageInput(activeRoot, change, files, planPath); err != nil {
 		return StageResult{}, err
 	}
 
@@ -211,6 +230,10 @@ func Stage(activeRoot, change string, files []StageFile, planPath string, now fu
 	// dropped since the previous staging disappears.
 	stagingRel := StagingDirRel(change)
 	stagingDir := filepath.Join(activeRoot, filepath.FromSlash(stagingRel))
+	replaced, err := dirExists(stagingDir)
+	if err != nil {
+		return StageResult{}, err
+	}
 	if err := os.RemoveAll(stagingDir); err != nil {
 		return StageResult{}, fmt.Errorf("openspec stage: clear %s: %w", stagingDir, err)
 	}
@@ -250,7 +273,7 @@ func Stage(activeRoot, change string, files []StageFile, planPath string, now fu
 	}
 	output := strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n"))
 
-	result := StageResult{StagingDir: stagingRel, Files: staged, Valid: exit == 0, ValidateOutput: output}
+	result := StageResult{StagingDir: stagingRel, Files: staged, Valid: exit == 0, ValidateOutput: output, Replaced: replaced, PlanPath: planPath}
 	if result.Valid {
 		manifest.ValidatedAt = now().UTC().Format(time.RFC3339)
 		if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
@@ -258,6 +281,43 @@ func Stage(activeRoot, change string, files []StageFile, planPath string, now fu
 		}
 	}
 	return result, nil
+}
+
+// checkStageInput runs the checks of Stage that need no openspec CLI, in
+// this order: the change name (ErrInvalidChangeName), a non-empty file list,
+// the syntax of each file path (ErrPathNotAllowed), and the owner of an
+// existing staging (*StagedByOtherPlanError). The owner check is skipped when
+// planPath is empty or the existing stage.json names no owner (see
+// stagedPlanPath). It writes nothing.
+func checkStageInput(activeRoot, change string, files []StageFile, planPath string) error {
+	if !ValidChangeName(change) {
+		return fmt.Errorf("%w: %q", ErrInvalidChangeName, change)
+	}
+	if len(files) == 0 {
+		return errors.New("openspec stage: no files to stage")
+	}
+	if err := checkPathSyntax(files); err != nil {
+		return err
+	}
+	if other := stagedPlanPath(activeRoot, change); other != "" && planPath != "" &&
+		filepath.Clean(other) != filepath.Clean(planPath) {
+		return &StagedByOtherPlanError{PlanPath: other}
+	}
+	return nil
+}
+
+// stagedPlanPath returns the planPath of the existing stage.json of
+// change, read with readStageManifest. It returns "" when the file is
+// missing, cannot be read, cannot be parsed, lists a bad file path, or has
+// no planPath. Such a staging has no owner to compare, so a new stage
+// replaces it.
+func stagedPlanPath(activeRoot, change string) string {
+	stagingDir := filepath.Join(activeRoot, filepath.FromSlash(StagingDirRel(change)))
+	manifest, err := readStageManifest(stagingDir)
+	if err != nil {
+		return ""
+	}
+	return manifest.PlanPath
 }
 
 // newTempChange creates a temp directory holding a copy of

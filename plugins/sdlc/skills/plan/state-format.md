@@ -19,7 +19,7 @@ Example: `.sdlc-v2/runs/plan-fix-my-bug-20260509T140000Z.json`
 The filename pattern is recognized by the `internal/state` package's filename parser:
 
 ```
-/^(ship|execute|plan)-(.+)-(\d{8}T\d{6}Z)\.json$/
+/^(ship|execute|plan|commit)-(.+)-(\d{8}T\d{6}Z)\.json$/
 ```
 
 ---
@@ -98,17 +98,17 @@ State files are always written to the **main working tree's** `.sdlc-v2/runs/`, 
 | Field           | Type             | Description                                                                 |
 |-----------------|------------------|-----------------------------------------------------------------------------|
 | `planIntegrity` | object           | Checkpoint markers; each key's presence means that checkpoint was reached.  |
-| `planFilePath`  | string \| null   | Absolute path to the written plan file. Used by the Stop hook to stat the file for non-empty content verification. `null` until the `planFile` marker is written. |
-| `creationIntent`| object           | The prompt and routing decision that started this run, plus flags needed to resume it. Written once by `plan_prepare` when the run is created; never written by `plan_mark`. See [creationIntent](#creationintent) below. |
-| `sessionId`     | string \| null   | The Claude session ID of the newest session that called `plan_prepare` for this run. `plan_prepare` creates a new run with `sessionId: null`. The `record-mcp-invocation` hook writes the ID after each `plan_prepare` call, so a resume in a new session replaces it. The hook writes nothing when the session ID is empty, the branch has no name (detached `HEAD`), the branch has no active plan run, or the stored ID is the same. Read by the dashboard to attach waits. |
+| `planFilePath`  | string \| absent | Absolute path to the written plan file. Used by the Stop hook to stat the file for non-empty content verification. The key is absent until the `planFile` marker is written. |
+| `creationIntent`| object           | The prompt and routing decision that started this run, plus flags needed to resume it. Written by `plan_prepare` when the run is created, and written again by every `plan_prepare` call with `resolveTemplate` and without `resume`; never written by `plan_mark`. See [creationIntent](#creationintent) below. |
+| `sessionId`     | string \| null   | The Claude session ID of the newest session that called `plan_prepare` for this run. `plan_prepare` creates a new run with `sessionId: null`. The `record-mcp-invocation` hook writes the ID after each `plan_prepare` call, so a resume in a new session replaces it. The hook writes the ID into the run that the `plan_prepare` result names. It writes nothing when the session ID is empty, the branch has no name (detached `HEAD`), the result names no run, the named run has no file or is not active, or the stored ID is the same. Read by the dashboard to attach waits. |
 | `guardrailCounts` | object \| absent | Counts of the plan guardrails that `plan_prepare` loaded: `total`, `error`, `warning`. Written for the dashboard plan setup tile. Absent when the first call's guardrail config read failed (a later successful call without `resume` writes it). Never written for a run with no named branch. See [guardrailCounts](#guardrailcounts) below. |
-| `checkpoint`    | object \| absent | The plan run's current step/iteration/expected-writers, replaced on every `plan_mark({marker: "checkpoint"})` call. Absent until the first checkpoint marker is written. See [checkpoint](#checkpoint) below. |
-| `stepTimes` | array \| absent | One `{ step, iteration, at }` entry for the first checkpoint of each step and iteration. Added by `plan_mark({marker: "checkpoint"})`. Read by the `done` timing report. See [stepTimes](#steptimes) below. |
-| `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`, and an optional `findings`. Upserted by `plan_mark({marker: "review-round"})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
-| `reviewOutcome` | object \| absent | The user's answer to each finding still open at the review-loop limit. Replaced on every `plan_mark({marker: "review-outcome"})` call. Absent until the first call. See [reviewOutcome](#reviewoutcome) below. |
+| `checkpoint`    | object \| absent | The plan run's current step/iteration/expected-writers, replaced on every `plan_mark({marker: "checkpoint", runId})` call. Absent until the first checkpoint marker is written. See [checkpoint](#checkpoint) below. |
+| `stepTimes` | array \| absent | One `{ step, iteration, at }` entry for the first checkpoint of each step and iteration. Added by `plan_mark({marker: "checkpoint", runId})`. Read by the `done` timing report. See [stepTimes](#steptimes) below. |
+| `reviewRounds`  | array \| absent  | One row per Step 5 review round: `round`, `mergedStatus`, `found`, `fixed`, `lenses`, and an optional `findings`. Upserted by `plan_mark({marker: "review-round", runId})`. Read by the dashboard. See [reviewRounds](#reviewrounds) below. |
+| `reviewOutcome` | object \| absent | The user's answer to each finding still open at the review-loop limit. Replaced on every `plan_mark({marker: "review-outcome", runId})` call. Absent until the first call. See [reviewOutcome](#reviewoutcome) below. |
 | `planTiming` | object \| absent | `startedAt` (the `skillInvoked` time), `lastModifiedAt` (the plan file's modification time), and `durationMs` (the time between them). Rewritten by every `plan_mark` call, before its write (function `refreshPlanTiming`). The same step also rewrites `planFilePath` as an absolute, cleaned path. Left as it is when `skillInvoked` or `planFilePath` is missing, or when the plan file cannot be read. Read by ship's report step. |
-| `guardrailResults` | array \| absent | One `{ id, status, detail }` entry per guardrail result. Appended to (not replaced) by every `plan_mark({marker: "guardrailResults", data: {results}})` call. Absent until the first call. The plan skill makes no such call today; the tool still accepts it. |
-| `criticalDecisions` | array \| absent | One `{ key, choice, rejected, reason, at }` entry per key decision. Appended to by `plan_mark({marker: "criticalDecisions", data: {decisions}})`. Absent until the call. See [criticalDecisions](#criticaldecisions) below. |
+| `guardrailResults` | array \| absent | One `{ id, status, detail }` entry per guardrail result. Appended to (not replaced) by every `plan_mark({marker: "guardrailResults", runId, data: {results}})` call. Absent until the first call. The plan skill makes no such call today; the tool still accepts it. |
+| `criticalDecisions` | array \| absent | One `{ key, choice, rejected, reason, at }` entry per key decision. Appended to by `plan_mark({marker: "criticalDecisions", runId, data: {decisions}})`. Absent until the call. See [criticalDecisions](#criticaldecisions) below. |
 
 ---
 
@@ -119,16 +119,16 @@ Each field inside `planIntegrity` is an ISO 8601 timestamp string. Absence of a 
 | Marker                | Written when                                                                      |
 |-----------------------|-----------------------------------------------------------------------------------|
 | `skillInvoked`        | `plan_prepare(...)` at Step 0 prepare — plan was invoked (written automatically as a side effect; no separate `plan_mark` call) |
-| `planFile`            | `plan_mark({ marker: "plan-file", path: <abs> })` after Step 0 path resolution    |
-| `guardrailsEvaluated` | `plan_mark({ marker: "guardrailsEvaluated" })` at end of Step 3 guardrail gate    |
-| `critiqueRan`         | `plan_mark({ marker: "critiqueRan" })` as final action of Step 3                  |
-| `done`                | `plan_mark({ marker: "done" })` right before the plan is presented (terminal marker). The Stop hook evaluates the other four markers only once this key is present; it is not one of the four checked markers itself. The hook does not delete the state file on `done` — see [Evaluate, Don't Delete](#evaluate-dont-delete) below. |
+| `planFile`            | `plan_mark({ marker: "plan-file", runId, path: <abs> })` after Step 0 path resolution    |
+| `guardrailsEvaluated` | `plan_mark({ marker: "guardrailsEvaluated", runId })` at end of Step 3 guardrail gate    |
+| `critiqueRan`         | `plan_mark({ marker: "critiqueRan", runId })` as final action of Step 3                  |
+| `done`                | `plan_mark({ marker: "done", runId })` right before the plan is presented (terminal marker). The Stop hook evaluates the other four markers only once this key is present; it is not one of the four checked markers itself. The hook does not delete the state file on `done` — see [Evaluate, Don't Delete](#evaluate-dont-delete) below. |
 
 ---
 
 ## creationIntent
 
-Written once, by `plan_prepare` (function `fullCreationIntent`), the first time it creates a run. Never appended to or overwritten by `plan_mark`. A resumed run (`plan_prepare({resume: true})`) reads it back to restore the original prompt and flags (`applySavedIntent`), so a worker that only sees the resumed call still knows what the run was asked to do.
+Written by `plan_prepare`. The first call writes the bootstrap shape `{ userPrompt, timestamp }`. Every `plan_prepare` call with `resolveTemplate` and without `resume` writes the full shape (function `fullCreationIntent`) and replaces the stored value (see [Write](#write) rules 1 and 2). Never appended to or overwritten by `plan_mark`. A resumed run (`plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true, runId})`) reads it back to restore the original prompt and flags (`applySavedIntent`), so a worker that only sees the resumed call still knows what the run was asked to do.
 
 | Field       | Type   | Description                                                                 |
 |-------------|--------|------------------------------------------------------------------------------|
@@ -175,16 +175,16 @@ The key is absent when the first call's guardrail config read failed and no late
 
 ## checkpoint
 
-Written by `plan_mark({ marker: "checkpoint", data: {...} })`. Unlike the `planIntegrity` markers, `checkpoint` is **replaced**, not appended, on every call — it always reflects the run's current position, not its history. Absent until the first checkpoint marker is written.
+Written by `plan_mark({ marker: "checkpoint", runId, data: {...} })`. Unlike the `planIntegrity` markers, `checkpoint` is **replaced**, not appended, on every call — it always reflects the run's current position, not its history. Absent until the first checkpoint marker is written.
 
 | Field             | Type     | Description                                                                 |
 |-------------------|----------|-------------------------------------------------------------------------------|
 | `step`            | string   | The SKILL.md step this checkpoint reflects. One of `0`, `1`, `2`, `3`, `4`, `5`, `6`, `6.5`, `6.6`, `7`. |
 | `iteration`       | integer  | Iteration counter (used by the Step 5/6 review loop, which can repeat up to 5 times). |
-| `expectedWriters` | string[] \| null | Writer IDs the run is currently waiting on (e.g. dispatched lane or lens subagent IDs). Max 32 entries. Absent (`null`) when the call passed none. |
+| `expectedWriters` | string[] \| null | Writer IDs the run is currently waiting on (e.g. dispatched lane or lens subagent IDs). Max 32 entries. Each entry must match `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (`writerIDRe` in `internal/tools/plan.go`); the call rejects any other entry. Absent (`null`) when the call passed none. |
 | `updatedAt`       | string   | ISO 8601 UTC timestamp stamped by `plan_mark` at write time (not caller-supplied). |
 
-The resume flow (`plan_prepare({resume: true})`) reads `checkpoint.step` to tell the orchestrator where to pick back up, and `checkpoint.expectedWriters` together with `plan_support({action: "evidence_digest"})` to tell it which writers it is still waiting on.
+The resume flow (`plan_prepare({resume: true, resolveTemplate: true, skipConfigCheck: true, runId})`) reads `checkpoint.step` to tell the orchestrator where to pick back up, and `checkpoint.expectedWriters` together with `plan_support({action: "evidence_digest"})` to tell it which writers it is still waiting on.
 
 At step 1, `expectedWriters` is absent until the explorer dispatch. Step 1 writes a checkpoint with no `expectedWriters` at its start, and writes it again with the explorer writer IDs right before the dispatch. It dispatches explorers only when that second call succeeds. So a step 1 checkpoint with no `expectedWriters` means that no explorer started. On resume, SKILL.md then reads the `evidence_digest` index: with no `main` item `R1`, it runs Step 1 from its start; with `R1`, Step 1 took a path with no explorers and recorded its requirements, so the run continues at the Step 1 Re-anchor and Gate A.
 
@@ -192,7 +192,7 @@ At step 1, `expectedWriters` is absent until the explorer dispatch. Step 1 write
 
 ## stepTimes
 
-Written by `plan_mark({ marker: "checkpoint", data: {...} })`. The first checkpoint of each step and iteration adds one entry. A later checkpoint with the same step and iteration adds nothing.
+Written by `plan_mark({ marker: "checkpoint", runId, data: {...} })`. The first checkpoint of each step and iteration adds one entry. A later checkpoint with the same step and iteration adds nothing.
 
 | Field       | Type    | Description |
 |-------------|---------|-------------|
@@ -206,7 +206,7 @@ plan_mark keeps at most 64 entries (a fixed limit). When the list holds 64 entri
 
 ## reviewRounds
 
-Written by `plan_mark({ marker: "review-round", data: {...} })`, once for each Step 5 review round, at every exit of the round (Step 5 Approved, or Step 6 after the fixes; the last round also records in Step 6, before it goes to the user). `reviewRounds` lives in its own top-level state key and never participates in the Stop hook's four-marker check. Unlike `criticalDecisions`, it is **not appended to**: each call **upserts** one row by `round`. A call replaces the row with the same `round`, or inserts a new row. A resumed run can send the same round twice, so a replay is safe. The list stays sorted by `round`. The key is absent until the first `review-round` call. The dashboard reads the rows. They are display data only.
+Written by `plan_mark({ marker: "review-round", runId, data: {...} })`, once for each Step 5 review round, at every exit of the round (Step 5 Approved, or Step 6 after the fixes; the last round also records in Step 6, before it goes to the user). `reviewRounds` lives in its own top-level state key and never participates in the Stop hook's four-marker check. Unlike `criticalDecisions`, it is **not appended to**: each call **upserts** one row by `round`. A call replaces the row with the same `round`, or inserts a new row. When the stored list holds several rows with the same `round`, the call removes all of them and adds its one row (`upsertReviewRound`). A resumed run can send the same round twice, so a replay is safe. The list stays sorted by `round`. The key is absent until the first `review-round` call. The dashboard reads the rows. They are display data only.
 
 Caps: a state file holds at most **20 rounds**. Each round holds at most **32 lenses** and **200 findings**. A call over a cap returns an error and leaves the state file unchanged.
 
@@ -258,7 +258,7 @@ Each row of `reviewRounds` (the first five keys are required, `findings` is opti
 
 ## reviewOutcome
 
-Written by `plan_mark({ marker: "review-outcome", data: { findings: [...] } })` after the review loop reaches its limit with findings still open, and the user answers each one. Like `checkpoint`, `reviewOutcome` is **replaced**, not appended, on every call: the stored list is the list of the last call. Pass every answered finding on every call. For example, call 1 with `a` and `b`, then call 2 with `a` alone, leaves only `a`. The key is absent until the first call. A call with invalid data returns an error and leaves the stored outcome unchanged.
+Written by `plan_mark({ marker: "review-outcome", runId, data: { findings: [...] } })` after the review loop reaches its limit with findings still open, and the user answers each one. Like `checkpoint`, `reviewOutcome` is **replaced**, not appended, on every call: the stored list is the list of the last call. Pass every answered finding on every call. For example, call 1 with `a` and `b`, then call 2 with `a` alone, leaves only `a`. The key is absent until the first call. A call with invalid data returns an error and leaves the stored outcome unchanged.
 
 The call returns one of two `next` texts. The tool picks the text from the stored choices:
 
@@ -305,7 +305,7 @@ An unknown key in `data` or in an entry is also rejected.
 
 ## criticalDecisions
 
-Written by `plan_mark({ marker: "criticalDecisions", data: { decisions: [...] } })`, exactly once per run, right before the terminal `done` marker. Like `guardrailResults` (`plan_mark({ marker: "guardrailResults", data: { results: [...] } })`, shape `{id, status, detail}` per entry), `criticalDecisions` is a **structured-data marker**: it lives in its own top-level state key, is **appended to**, not replaced, on every call, and never participates in the Stop hook's four-marker check.
+Written by `plan_mark({ marker: "criticalDecisions", runId, data: { decisions: [...] } })`, exactly once per run, right before the terminal `done` marker. Like `guardrailResults` (`plan_mark({ marker: "guardrailResults", runId, data: { results: [...] } })`, shape `{id, status, detail}` per entry), `criticalDecisions` is a **structured-data marker**: it lives in its own top-level state key, is **appended to**, not replaced, on every call, and never participates in the Stop hook's four-marker check.
 
 Each entry of the `decisions` array:
 
@@ -394,27 +394,27 @@ Writer files are capped at 32 per run (`evidenceMaxWriters`). `evidence_digest` 
 
 ### Write
 
-1. On a genuinely new run (no active run for the branch, and not a `resume: true` call), `plan_prepare(...)` writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent: { userPrompt, timestamp }` through `state.Write`, which prunes prior `plan-<branchSlug>-*.json` files for the same branch — **except** a sibling run whose `planIntegrity.done` marker is already set, which is kept (see [Evaluate, Don't Delete](#evaluate-dont-delete) below). It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs the same way (`state.PruneEvidenceDirs`, same done-run exception). When the guardrail config read succeeds, the same call then writes the state file a second time, to add `guardrailCounts` (see [guardrailCounts](#guardrailcounts)).
-2. The first `resolveTemplate: true` call for that run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags). Every `plan_prepare` call without `resume: true` (the first call and the `resolveTemplate` call) also writes `guardrailCounts` again, in a second `state.Write`, when the guardrail config read succeeds.
-3. A `resume: true` call does not create or prune anything, and `plan_prepare` itself writes nothing (not even `guardrailCounts`). After the call, the `record-mcp-invocation` hook can still write `sessionId` (see the `sessionId` row above). The call reads the branch's active run back (`state.ActivePlanRun`) and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
-4. Subsequent `plan_mark({ marker, path })` calls update the `planIntegrity` keys and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", data })` replaces `checkpoint` in-place and, in the same atomic write, adds the first `{ step, iteration, at }` of each step and iteration to `stepTimes` (max 64 entries; at the limit, or when `stepTimes` is not a list, it adds no entry and returns a warning — see [stepTimes](#steptimes)); `plan_mark({ marker: "review-round", data })` upserts one `reviewRounds` row by `round`, atomically; `plan_mark({ marker: "review-outcome", data })` replaces `reviewOutcome` in-place, atomically; `plan_mark({ marker: "guardrailResults", data })` and `plan_mark({ marker: "criticalDecisions", data })` append their array payload to their own top-level key (`guardrailResults`, `criticalDecisions`). Before each of these writes, every `plan_mark` call also refreshes `planTiming` and rewrites `planFilePath` as an absolute, cleaned path (`refreshPlanTiming`; skipped when `skillInvoked` or `planFilePath` is missing, or the plan file cannot be read). Every `plan_mark` write goes through `state.Write`, with the same done-run exception as step 1 — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
+1. On a genuinely new run (a call with neither `resume` nor `resolveTemplate`, or a `resolveTemplate` call with no `runId` and no active run for the branch), `plan_prepare(...)` writes the new marker atomically with `planIntegrity: { skillInvoked: <ISO-ts> }` and `creationIntent` through `state.Write`. The call with neither flag writes the bootstrap `creationIntent: { userPrompt, timestamp }`. The `resolveTemplate` call writes the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags). `state.Write` prunes prior `plan-<branchSlug>-*.json` files for the same branch — **except** a sibling run whose `planIntegrity.done` marker is already set, a not-done sibling written in the last 24 hours (`state.PlanRunLiveWindow`), or a sibling whose `sessionId` is set and differs from the writer's, which is kept (see [Evaluate, Don't Delete](#evaluate-dont-delete) below). A new run has no `sessionId` yet (the hook stamps it after the `plan_prepare` call), so it keeps every stamped sibling. It then best-effort prunes stale `<runId>.evidence/` directories left by earlier runs the same way (`state.PruneEvidenceDirs`, same keep rule). When the guardrail config read succeeds, the same call then writes the state file a second time, to add `guardrailCounts` (see [guardrailCounts](#guardrailcounts)).
+2. Every `resolveTemplate: true` call without `resume` that reuses an existing run overwrites `creationIntent` with the full shape (`fullCreationIntent`: userPrompt, scope, routing, timestamp, flags). Every `plan_prepare` call without `resume: true` (the first call and the `resolveTemplate` call) also writes `guardrailCounts` again, in a second `state.Write`, when the guardrail config read succeeds.
+3. A `resume: true` call does not create or prune anything, and `plan_prepare` itself writes nothing (not even `guardrailCounts`). After the call, the `record-mcp-invocation` hook can still write `sessionId` (see the `sessionId` row above). That stamp write goes through `state.ClaimSession` and `state.Write`, so it prunes sibling runs of the branch by the keep rule of rule 1. The call reads the run that `runId` names back (`state.LoadRun`), or the branch's active run (`state.ActivePlanRun`) when `runId` is absent, and restores `creationIntent` into the caller's input (`applySavedIntent`) instead of overwriting it.
+4. Subsequent `plan_mark({ marker, path, runId })` calls update the `planIntegrity` keys of the run that `runId` names (the branch's newest plan run when `runId` is absent) and `planFilePath` in-place, atomically; `plan_mark({ marker: "checkpoint", runId, data })` replaces `checkpoint` in-place and, in the same atomic write, adds the first `{ step, iteration, at }` of each step and iteration to `stepTimes` (max 64 entries; at the limit, or when `stepTimes` is not a list, it adds no entry and returns a warning — see [stepTimes](#steptimes)); `plan_mark({ marker: "review-round", runId, data })` upserts one `reviewRounds` row by `round`, atomically; `plan_mark({ marker: "review-outcome", runId, data })` replaces `reviewOutcome` in-place, atomically; `plan_mark({ marker: "guardrailResults", runId, data })` and `plan_mark({ marker: "criticalDecisions", runId, data })` append their array payload to their own top-level key (`guardrailResults`, `criticalDecisions`). Before each of these writes, every `plan_mark` call also refreshes `planTiming` and rewrites `planFilePath` as an absolute, cleaned path (`refreshPlanTiming`; skipped when `skillInvoked` or `planFilePath` is missing, or the plan file cannot be read). Every `plan_mark` write goes through `state.Write`, with the same keep rule as step 1 (done, written in the last 24 hours, or with a `sessionId` that differs from the writer's) — so a finished (`done`) run can survive alongside a newer in-progress run for the same branch until it is removed (see below).
 
 ### Evaluate, Don't Delete
 
 The stop hook runs at session end:
 
-1. Calls `findStateFile('plan', branchSlug)` and captures the returned path.
+1. Finds the plan run in three steps and captures its path: the newest plan run of the branch whose `sessionId` is the session of the hook; else the newest plan run of the branch with no `sessionId` (both steps are `state.PlanRunForSession`, not limited to active runs, so a run that reached `done` is found); else the newest plan run of the branch (`state.LatestPlanRun`, a fallback that the Stop hook adds itself).
 2. Reads the marker via `readState`.
 3. If the `done` marker is absent, the plan is still running (e.g. a Stop fired mid-plan across a compaction): returns silently, with no evaluation and no deletion.
 4. Once `done` is present: evaluates the four required `planIntegrity` keys (`skillInvoked`, `planFile`, `guardrailsEvaluated`, `critiqueRan`) and stats `planFilePath`; any missing or failing marker produces one aggregated warning, never a block.
-5. The state file and its per-run evidence directory (`state.EvidenceDir(st.Root, state.RunID(st))`) are left on disk — **this hook no longer deletes them.** A finished run survives so ship's `report` step can later read `planIntegrity`/`planTiming` for the ship report's `## Planning`/`## Timeline` sections. Removal happens afterward, via `ship_state({action: "cleanup-pipeline"})` or the GC TTL sweep below — see `docs/plan-architecture.md`'s **Plan run lifetime** table for the full path.
-6. Because the file is no longer deleted on `done`, a later Stop event on the same branch finds the same state file and simply re-evaluates (silently, if nothing is missing). The transcript-fallback path (R21) engages only when `findStateFile` finds no plan state file for the branch at all.
+5. The state file and its per-run evidence directory (`state.EvidenceDir(st.Root, state.RunID(st))`) are left on disk — **this hook no longer deletes them.** A finished run survives so ship's `report` step can later read `planIntegrity`/`planTiming` for the ship report's `## Planning`/`## Timeline` sections. Removal happens afterward, via `ship_state({action: "cleanup-pipeline"})`, the GC TTL sweep below, or the dashboard run archive (`ArchiveRun` in `internal/tools/dashboard_archive.go`, which moves the state file and the evidence directory into `<main-worktree>/.sdlc-v2/run-archive/<runId>/`) — see `docs/plan-architecture.md`'s **Plan run lifetime** table for the full path.
+6. Because the file is no longer deleted on `done`, a later Stop event of the same session finds the same state file and simply re-evaluates (silently, if nothing is missing). The transcript-fallback path (R21) engages only when the lookup of item 1 finds no plan state file for the branch at all.
 
 Every step above is wrapped so a read or stat failure cannot break the hook's advisory-only exit-0 contract.
 
 ### GC Orphan Sweep
 
-Stale plan markers (abandoned sessions, branch-deleted, TTL-expired) are removed by `ship --gc` and `execute --gc` via the same TTL+branch-liveness sweep (`state.GC`, `{ prefix: 'plan', ttlDays, knownBranches }`). For a live branch, `state.GC` keeps a file that is within the TTL **or** is the newest of its branch; it deletes a file only once it is both past the TTL **and** no longer the newest — a gone branch's files are deleted regardless of age. `ship_state({action: "cleanup-pipeline"})` runs this same sweep, plus its own report-gated removal of a `done` plan run once the ship report has read it (see [Evaluate, Don't Delete](#evaluate-dont-delete) above and `docs/plan-architecture.md`'s **Plan run lifetime** table; the Stop hook itself never deletes anything). The sweep reports plan-prefix files in a `plan` bucket alongside the existing `ship` and `execute` buckets in the JSON output. `execute_state` gc (and `cleanup-pipeline`) also reap `runs/` subdirectories older than the TTL that do not belong to a live execute run (`execReapRunDirectories` in `internal/tools/execute_state.go`); this includes abandoned `<runId>.evidence/` directories, independently of whether the matching `.json` state file has been removed yet. Evidence directories are therefore cleaned by three paths: `state.PruneEvidenceDirs` (on the next new run for the same branch, for any sibling run that is not itself a done plan run), `cleanup-pipeline`'s report-gated removal, and this TTL reap.
+Stale plan markers (abandoned sessions, branch-deleted, TTL-expired) are removed by `ship --gc` and `execute --gc` via the same TTL+branch-liveness sweep (`state.GC(root, GCOptions{TTL, BranchExists, TempDir})`; it has no prefix option and sweeps the files of every prefix in one call). For a live branch, `state.GC` keeps a file that is within the TTL **or** is the newest of its branch; it deletes a file only once it is both past the TTL **and** no longer the newest — a gone branch's files are deleted regardless of age. `ship_state({action: "cleanup-pipeline"})` runs this same sweep, plus its own report-gated removal of a `done` plan run once the ship report has read it (see [Evaluate, Don't Delete](#evaluate-dont-delete) above and `docs/plan-architecture.md`'s **Plan run lifetime** table; the Stop hook itself never deletes anything). The sweep reports plan-prefix files in a `plan` bucket alongside the existing `ship` and `execute` buckets in the JSON output. `execute_state` gc (and `cleanup-pipeline`) also reap `runs/` subdirectories older than the TTL that do not belong to a live execute run (`execReapRunDirectories` in `internal/tools/execute_state.go`); this includes abandoned `<runId>.evidence/` directories, independently of whether the matching `.json` state file has been removed yet. Evidence directories are therefore cleaned by four paths: `state.PruneEvidenceDirs` (on the next new run for the same branch; it skips each sibling plan run that `state.keepPlanSibling` keeps: a run that is done, was written in the last 24 hours, or has a `sessionId` that differs from the writer's), `cleanup-pipeline`'s report-gated removal, this TTL reap, and the dashboard run archive (`ArchiveRun`, which moves the `<runId>.evidence/` content and the plan state file into `<main-worktree>/.sdlc-v2/run-archive/<runId>/`).
 
 ### Atomic Write
 
@@ -465,7 +465,6 @@ A marker file with only `skillInvoked`, the bootstrap `creationIntent`, and `gua
   "planIntegrity": {
     "skillInvoked": "2026-05-09T14:00:05.123Z"
   },
-  "planFilePath": null,
   "creationIntent": {
     "userPrompt": "Fix the auth redirect bug",
     "timestamp": "2026-05-09T14:00:05.123Z"

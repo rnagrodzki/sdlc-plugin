@@ -97,6 +97,17 @@ those same guardrails:
   action names the difference and the reason. This extends the new-action
   bullet above, which checks the new fields and not the policy shared with a
   sibling action.
+- Two helpers that resolve or load the same resource for different actions
+  (for example one lookup for a read action and one for a write action) MUST
+  return one error shape: the same error class, a `Msg` built the same way and
+  a `Suggestion` with the same recovery steps for each state that both can
+  reach. The one exception is a difference that the doc comment of a helper
+  names, with the reason. The two copies drift on a missing record, a damaged
+  record and a record in the wrong state, so a difference with no stated
+  reason is a finding. This extends the shared-input-policy bullet above,
+  which compares two actions and not the helpers they call. Example: a reuse
+  lookup and a mark lookup that returned different errors for the same missing
+  run.
 - A write or repair action that leaves a file on disk MUST leave a file that
   the sibling read or check action of the same resource accepts. Run the read
   action on the file that the write produced. When the read action refuses
@@ -290,6 +301,22 @@ those same guardrails:
   equals the emitted set. A missing or extra id is a finding. This extends the
   enum-like value bullet above, which covers narration templates only. Example:
   `go-gates` declared `gateIds` without the G18 findings it emits.
+- A file or directory path that a text names MUST come from the constant or
+  helper that the code uses to resolve that path (for example `paths.DataDir`
+  plus a file-name constant, or a label constant that names the local config
+  files), not be typed again as a literal. The texts are the registered tool and
+  action description, an error `Msg` or `Suggestion`, a warning, a `Next` text
+  and a `jsonschema_description`. Build a runtime text from the constant. A
+  struct tag must be a string literal, so a path in a tag needs a test that
+  reads the tag and compares the path with the constant, or the tag names the
+  file and leaves out the directory. A literal path in a text with neither is a
+  finding: the text drifts when the path moves, and one path spelled in two
+  texts drifts apart. A text that names one location when the code reads more
+  than one (a project file and a user file) is a finding too. This extends the
+  descriptor bullet above that checks a named path against the loader. That
+  bullet checks that the path is true now, not that it stays true. Example: a
+  field description that named the local config file and the user config file
+  as typed paths.
 
 ## Cross-references
 
