@@ -497,7 +497,7 @@ when the plan has none) and applies the first matching rule:
 
 | Target `openspec/changes/<name>/` | Staging dir | Result |
 |---|---|---|
-| missing | missing | error — nothing to materialize from |
+| missing | missing | error — nothing to materialize from. When the main worktree is not the active worktree, `Materialize` first looks for the staging dir under the active worktree (an older plugin staged there) and uses it as the staging dir; the error is raised only when that dir is missing too, and it names both paths. |
 | exists | missing | no-op — already materialized (`"already"`) |
 | exists | exists, every staged file's SHA-256 matches the target | staging dir deleted; no-op (`"already"`) |
 | exists | exists, any file differs from staging | error — the existing target is never overwritten |

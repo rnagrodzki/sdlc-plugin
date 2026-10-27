@@ -2306,6 +2306,49 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 	})
 }
 
+// TestPlanSupportOpenspecStage_OtherPlanNamesMainStaging verifies that, with a
+// main root and an active root that differ, openspec_stage reads the owner
+// check from the staging dir under the main root, leaves the active root
+// alone, and names the main staging dir in the Suggestion.
+func TestPlanSupportOpenspecStage_OtherPlanNamesMainStaging(t *testing.T) {
+	stubOpenspecForStage(t, 0)
+	mainRoot := newOpenspecStageFixture(t, "")
+	activeRoot := newOpenspecStageFixture(t, "")
+	mainStaging := filepath.Join(mainRoot, ".sdlc-v2", "openspec-staging", "add-widget")
+	activeStaging := filepath.Join(activeRoot, ".sdlc-v2", "openspec-staging", "add-widget")
+	writeFile(t, filepath.Join(mainStaging, "old.md"), "# old\n")
+	writeFile(t, filepath.Join(mainStaging, openspec.StageManifestFile),
+		`{"change":"add-widget","schema":"spec-driven","planPath":"/plans/a.md","files":[]}`)
+	// The refusal must come before the first CLI call.
+	pathWithoutOpenspec(t)
+
+	_, err := planSupportCore(mainRoot, activeRoot, PlanSupportIn{
+		Action:     "openspec_stage",
+		ChangeName: "add-widget",
+		Files:      []openspec.StageFile{{Path: "proposal.md", Content: "# new\n"}},
+		PlanPath:   "/plans/b.md",
+	})
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if !errors.Is(err, openspec.ErrStagedByOtherPlan) {
+		t.Fatalf("errors.Is(err, ErrStagedByOtherPlan) = false (err %v)", err)
+	}
+	suggestion := suggestionOf(err)
+	if !strings.Contains(suggestion, "delete "+mainStaging+" and call") {
+		t.Errorf("Suggestion = %q, want it to name the main staging dir %q", suggestion, mainStaging)
+	}
+	if strings.Contains(suggestion, activeStaging) {
+		t.Errorf("Suggestion = %q, must not name the active staging dir %q", suggestion, activeStaging)
+	}
+	if _, statErr := os.Stat(activeStaging); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Errorf("a refused call touched the active staging dir (stat err %v)", statErr)
+	}
+	if got, readErr := os.ReadFile(filepath.Join(mainStaging, "old.md")); readErr != nil || string(got) != "# old\n" {
+		t.Errorf("old staged file = %q (err %v), want it unchanged", got, readErr)
+	}
+}
+
 // TestPlanSupportOpenspecStage_OtherPlan verifies openspec_stage refuses a
 // change name whose staging dir holds a stage.json with another planPath,
 // leaves that staging untouched, and does so before it needs the openspec CLI.
