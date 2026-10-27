@@ -599,6 +599,26 @@ describe('fixes tile', () => {
   });
 });
 
+describe('harden tile', () => {
+  test('isWideSection is true for a harden detail', () => {
+    assert.equal(view.isWideSection({ kind: 'harden' }), true);
+  });
+
+  test('sectionMeta of 1 edit and an empty held list is 1 edit', () => {
+    const detail = { kind: 'harden', harden: { edits: [{ surface: 'plan-guardrails' }], held: [] } };
+    assert.equal(view.sectionMeta({ name: 'harden', detail }), '1 edit');
+  });
+
+  test('sectionMeta of 2 edits and 1 held row names the held rows', () => {
+    const detail = { kind: 'harden', harden: { edits: [{}, {}], held: [{}] } };
+    assert.equal(view.sectionMeta({ name: 'harden', detail }), '2 edits · 1 held back');
+  });
+
+  test('sectionMeta of a harden detail without harden data is 0 edits', () => {
+    assert.equal(view.sectionMeta({ name: 'harden', detail: { kind: 'harden' } }), '0 edits');
+  });
+});
+
 describe('defaultCollapsed', () => {
   test('COLLAPSE_FINISHED is true', () => {
     assert.equal(view.COLLAPSE_FINISHED, true);
@@ -4396,7 +4416,7 @@ describe('render stepTile and stepTiles', () => {
 
   test('every detail kind has a body builder', () => {
     assert.deepEqual(Object.keys(render.TILE_BODIES).sort(), [
-      'dimensions', 'explorers', 'findings', 'fixes', 'guardrails', 'result', 'rounds', 'waves',
+      'dimensions', 'explorers', 'findings', 'fixes', 'guardrails', 'harden', 'result', 'rounds', 'waves',
     ]);
   });
 
@@ -4976,6 +4996,157 @@ describe('render fixesBody', () => {
       'Token expiry check skips equal times', 'Error message leaks the user id', 'Docs miss the new reason field',
     ]);
     assert.deepEqual(byClass(t, 'fix-where').map((n) => n.textContent), ['internal/auth/token.go:42', 'internal/api/errors.go:17', 'docs/errors.md']);
+  });
+});
+
+describe('render hardenBody', () => {
+  const harden = render.TILE_BODIES.harden;
+  const draw = (data) => harden(fakeDoc(), view, data === undefined ? { kind: 'harden' } : { kind: 'harden', harden: data });
+  const edit = (surface, targetFile, extra) =>
+    Object.assign({ surface, action: 'add', targetFile, rationale: 'Why ' + surface + ' ' + targetFile }, extra);
+
+  test('TILE_BODIES.harden is hardenBody', () => {
+    assert.equal(render.TILE_BODIES.harden, render.hardenBody);
+  });
+
+  test('the edits group by surface in surface order, then by target file in first-edit order', () => {
+    const out = draw({
+      edits: [
+        edit('review-dimensions', 'b.md'),
+        edit('plan-guardrails', 'config.toml'),
+        edit('review-dimensions', 'a.md'),
+        edit('review-dimensions', 'b.md', { action: 'strengthen' }),
+      ],
+    });
+    const surfaces = byClass(out, 'hd-surface');
+    assert.deepEqual(surfaces.map((s) => oneByClass(s, 'hd-surface-head').children.map((c) => c.textContent)), [
+      ['plan guardrails', '1 edit'],
+      ['review dimensions', '3 edits'],
+    ]);
+    const files = byClass(surfaces[1], 'hd-file');
+    assert.deepEqual(files.map((f) => oneByClass(f, 'hd-path').textContent), ['b.md', 'a.md']);
+    assert.deepEqual(byClass(files[0], 'hd-act').map((n) => n.textContent), ['add', 'strengthen']);
+    assert.deepEqual(byClass(files[0], 'hd-act').map((n) => n.className), ['hd-act act-add', 'hd-act act-strengthen']);
+    assert.equal(textOf(oneByClass(byClass(out, 'hd-edits')[0], 'wave-head')), 'edits4');
+  });
+
+  test('an old-form edit with no rationale and no patch shows No rationale recorded. and no patch', () => {
+    const out = draw({ edits: [{ surface: 'plan-guardrails', action: 'add', targetFile: 'config.toml' }] });
+    const why = oneByClass(out, 'hd-why');
+    assert.equal(why.className, 'hd-why none');
+    assert.equal(why.textContent, 'No rationale recorded.');
+    assert.equal(byClass(out, 'hd-patch').length, 0);
+  });
+
+  test('a patch shows its line counts and diff lines; patchCut adds the cut flag and the cut line', () => {
+    const patch = '@@ -1 +1,2 @@\n-old\n+new\n+more';
+    const out = draw({ edits: [edit('plan-guardrails', 'config.toml', { patch, patchCut: true })] });
+    const sum = oneByClass(out, 'hd-patch-sum');
+    assert.deepEqual(sum.children.map((c) => c.textContent), ['patch', '+2', '−1', 'cut at 1536 bytes']);
+    assert.deepEqual(byClass(out, 'hd-line').map((n) => [n.className, n.textContent]), [
+      ['hd-line hunk', '@@ -1 +1,2 @@'],
+      ['hd-line del', '-old'],
+      ['hd-line add', '+new'],
+      ['hd-line add', '+more'],
+      ['hd-line cut', '… patch cut'],
+    ]);
+    const whole = draw({ edits: [edit('plan-guardrails', 'config.toml', { patch: '+x' })] });
+    assert.equal(byClass(whole, 'hd-cutflag').length, 0);
+    assert.equal(byClass(whole, 'cut').length, 0);
+  });
+
+  test('the run row shows interrupted and a stalled lamp from record.interrupted, not from phase', () => {
+    const out = draw({
+      clusters: [
+        { trigger: 'cluster:a', phase: 'started', interrupted: false, classification: 'user-code', applied: 1, skipped: 2 },
+        { trigger: 'cluster:b', phase: 'done', interrupted: true, classification: 'plugin-defect', applied: 0, skipped: 0 },
+      ],
+    });
+    const rows = byClass(out, 'hd-row');
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((r) => r.children[0].className), ['lamp completed', 'lamp stalled']);
+    assert.deepEqual(rows.map((r) => byClass(r, 'hd-cutflag').map((n) => n.textContent)), [[], ['interrupted']]);
+    assert.deepEqual(rows.map((r) => oneByClass(r, 'hd-row-text').textContent), ['cluster:a', 'cluster:b']);
+    assert.equal(oneByClass(rows[0], 'hd-row-text').attrs.title, 'cluster:a');
+    assert.deepEqual(rows.map((r) => oneByClass(r, 'lens-chip').className), ['lens-chip', 'lens-chip issues']);
+    assert.equal(oneByClass(rows[0], 'hd-row-meta').children[1].textContent, '1 applied · 2 skipped');
+  });
+
+  test('the malformed marker counts the records that could not be read', () => {
+    const one = oneByClass(draw({ malformed: 1 }), 'hd-bad');
+    assert.equal(one.textContent, '1 harden record could not be read. The other records show below.');
+    assert.equal(one.attrs.role, 'status');
+    const out = draw({ malformed: 3 });
+    assert.equal(out.children[0].className, 'hd-bad');
+    assert.equal(out.children[0].textContent, '3 harden records could not be read. The other records show below.');
+    assert.equal(byClass(draw({ malformed: 0 }), 'hd-bad').length, 0);
+  });
+
+  test('an absent funnel shows each funnel row at 0', () => {
+    const out = draw({});
+    const rows = byClass(out, 'hd-funnel-row');
+    assert.deepEqual(rows.map((r) => [r.children[0].textContent, r.children[2].textContent]), [
+      ['fix now', '0'], ['stays deferred', '0'], ['evidence only', '0'], ['suppressed', '0'], ['lone disagree', '0'],
+    ]);
+    assert.deepEqual(byClass(out, 'hd-bar').map((b) => [b.attrs.max, b.attrs.value]), Array(5).fill(['1', '0']));
+  });
+
+  test('the funnel bars share the largest count as max', () => {
+    const out = draw({ funnel: { fixNow: 4, staysDeferred: 1, evidenceOnly: 0, suppressed: 2, loneDisagree: 0 } });
+    assert.deepEqual(byClass(out, 'hd-bar').map((b) => [b.className, b.attrs.max, b.attrs.value]), [
+      ['hd-bar fix', '4', '4'], ['hd-bar def', '4', '1'], ['hd-bar ev', '4', '0'], ['hd-bar off', '4', '2'], ['hd-bar off', '4', '0'],
+    ]);
+  });
+
+  test('empty lists show their empty lines', () => {
+    for (const data of [undefined, {}, { edits: [], clusters: [], held: [], timeline: [] }]) {
+      const out = draw(data);
+      assert.deepEqual(byClass(out, 'generic-line').map((n) => n.textContent), ['No edit applied.', 'No fix pass.', 'Nothing held back.']);
+      assert.equal(byClass(out, 'hd-row').length, 0);
+      assert.equal(byClass(out, 'hd-tl').length, 0);
+      assert.equal(byClass(out, 'hd-bad').length, 0);
+    }
+  });
+
+  test('the fix pass shows K of T fixed and no failed part', () => {
+    const out = draw({ fixPass: { fixed: 1, total: 3, failed: 2 } });
+    assert.equal(textOf(oneByClass(out, 'round-sum')), '1 of 3 fixed');
+    const bar = oneByClass(out, 'fix-progress');
+    assert.deepEqual([bar.attrs.max, bar.attrs.value, bar.attrs['aria-label']], ['3', '1', 'Fixes done']);
+  });
+
+  test('the held row shows the target file, the label and the deferred item', () => {
+    const out = draw({
+      held: [
+        { surface: 'review-dimensions', action: 'merge', targetFile: 'cache.md', reason: 'pending-stored', label: 'stored as a deferred item', deferredId: 'd-1' },
+        { surface: 'plan-guardrails', action: 'remove', targetFile: 'config.toml', reason: 'pending-not-stored', label: 'not stored' },
+      ],
+    });
+    const held = byClass(out, 'hd-held')[0];
+    assert.equal(textOf(oneByClass(held, 'wave-head')), 'held back for a person2');
+    assert.deepEqual(byClass(held, 'hd-why').map((n) => n.textContent), ['stored as a deferred item', 'not stored']);
+    assert.deepEqual(byClass(held, 'hd-path').map((n) => n.textContent), ['cache.md', 'deferred item d-1', 'config.toml']);
+    assert.deepEqual(byClass(held, 'hd-act').map((n) => n.className), ['hd-act act-merge', 'hd-act act-remove']);
+  });
+
+  test('the timeline shows a clock time, or a dash for a time that does not parse', () => {
+    const out = draw({ timeline: [{ at: '2026-10-27T07:31:00Z', decision: 'fix pass started' }, { at: '', decision: 'held' }] });
+    const rows = byClass(out, 'hd-tl');
+    assert.match(rows[0].children[0].textContent, /^\d{2}:\d{2}$/);
+    assert.equal(rows[1].children[0].textContent, '—');
+    assert.deepEqual(rows.map((r) => r.children[1].textContent), ['fix pass started', 'held']);
+  });
+
+  test('the fixture identity-service harden tile is wide and shows the stored detail', () => {
+    const block = fixtureBlock('identity-service', (p) => p.branch === 'feat/int-4305-http-stat');
+    const t = tileByName(block, 'harden');
+    assert.ok(t, 'no harden tile');
+    assert.ok(classesOf(t).includes('wide'));
+    assert.equal(oneByClass(t, 'hd-bad').textContent, '1 harden record could not be read. The other records show below.');
+    assert.deepEqual(byClass(t, 'hd-cutflag').map((n) => n.textContent), ['cut at 1536 bytes', 'interrupted']);
+    assert.equal(textOf(oneByClass(t, 'round-sum')), '2 of 2 fixed');
+    assert.deepEqual(byClass(byClass(t, 'hd-held')[0], 'hd-why').map((n) => n.textContent), ['stored as a deferred item']);
+    assert.deepEqual(byClass(t, 'hd-why').map((n) => n.textContent).slice(0, 2), ['Two reviews found the same missing check.', 'No rationale recorded.']);
   });
 });
 
@@ -5617,7 +5788,7 @@ describe('wait display from the shared fixture', () => {
 });
 
 describe('page scripts ship no preview code', () => {
-  for (const name of ['render.js', 'app.js']) {
+  for (const name of ['render.js', 'app.js', 'view.js']) {
     test(`${name} has no fixture data and no note box`, () => {
       const source = fs.readFileSync(path.join(__dirname, '../static', name), 'utf8');
       for (const word of ['identity-service', 'payments-service', 'scenarios', 'snapshot.fixture', 'note',
@@ -5652,6 +5823,7 @@ describe('render.js browser global fallback', () => {
       'findingRow',
       'findingsBody',
       'guardrailsBody',
+      'hardenBody',
       'headerTotals',
       'historyTable',
       'issuesTile',

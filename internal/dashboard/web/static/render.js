@@ -1199,8 +1199,252 @@
     return out;
   }
 
+  // --- Harden section ---------------------------------------------------------
+  // Edit view on the left: each edit that harden applied, by surface and file,
+  // with its rationale and patch. Run view on the right: run records, finding
+  // funnel, fix pass, held-back proposals, timeline.
+
+  var HARDEN_SURFACES = [
+    { key: 'plan-guardrails', label: 'plan guardrails' },
+    { key: 'execute-guardrails', label: 'execute guardrails' },
+    { key: 'review-dimensions', label: 'review dimensions' },
+    { key: 'copilot-instructions', label: 'copilot instructions' },
+    { key: 'error-report-skill', label: 'error-report skill' },
+    { key: 'skill-recommendation', label: 'skill recommendation' },
+  ];
+  var HARDEN_ACTIONS = ['add', 'strengthen', 'consolidate', 'repair', 'merge', 'remove'];
+  var HARDEN_FUNNEL = [
+    { key: 'fixNow', label: 'fix now', tone: 'fix' },
+    { key: 'staysDeferred', label: 'stays deferred', tone: 'def' },
+    { key: 'evidenceOnly', label: 'evidence only', tone: 'ev' },
+    { key: 'suppressed', label: 'suppressed', tone: 'off' },
+    { key: 'loneDisagree', label: 'lone disagree', tone: 'off' },
+  ];
+
+  function hardenHead(doc, label, count) {
+    return append(el(doc, 'div', 'wave-head'), [el(doc, 'span', '', label), count == null ? null : el(doc, 'span', 'count-badge', count)]);
+  }
+
+  // The chip of an action. A class comes only from the known actions.
+  function hardenAction(doc, action) {
+    var known = HARDEN_ACTIONS.indexOf(action) !== -1 ? action : 'other';
+    return el(doc, 'span', 'hd-act act-' + known, action || 'edit');
+  }
+
+  function patchStats(patch) {
+    var stats = { add: 0, del: 0 };
+    String(patch).split('\n').forEach(function (line) {
+      if (line.charAt(0) === '+') stats.add++;
+      else if (line.charAt(0) === '-') stats.del++;
+    });
+    return stats;
+  }
+
+  // The patch of one edit, behind a disclosure: `patch +N −M`, then the diff.
+  function hardenPatch(doc, edit) {
+    var stats = patchStats(edit.patch);
+    var summary = append(el(doc, 'summary', 'hd-patch-sum'), [
+      el(doc, 'span', '', 'patch'),
+      el(doc, 'span', 'hd-add', '+' + stats.add),
+      el(doc, 'span', 'hd-del', '−' + stats.del),
+      edit.patchCut ? el(doc, 'span', 'hd-cutflag', 'cut at 1536 bytes') : null,
+    ]);
+    var diff = el(doc, 'pre', 'hd-diff');
+    String(edit.patch).split('\n').forEach(function (line) {
+      var kind = line.charAt(0) === '+' ? ' add' : line.charAt(0) === '-' ? ' del' : line.indexOf('@@') === 0 ? ' hunk' : '';
+      diff.appendChild(el(doc, 'span', 'hd-line' + kind, line));
+    });
+    if (edit.patchCut) diff.appendChild(el(doc, 'span', 'hd-line cut', '… patch cut'));
+    return append(el(doc, 'details', 'hd-patch'), [summary, diff]);
+  }
+
+  // One edit. A record from an older run has no rationale and no patch.
+  function hardenEditRow(doc, edit) {
+    var why = edit.rationale ? el(doc, 'div', 'hd-why', edit.rationale) : el(doc, 'div', 'hd-why none', 'No rationale recorded.');
+    var main = append(el(doc, 'div', 'hd-edit-main'), [why, edit.patch ? hardenPatch(doc, edit) : null]);
+    return append(el(doc, 'div', 'hd-edit'), [hardenAction(doc, edit.action), main]);
+  }
+
+  // Groups the edits by surface, then by target file. The surfaces come in the
+  // order of HARDEN_SURFACES; the files of a surface in the order of their first edit.
+  function groupHardenEdits(edits) {
+    var surfaces = Object.create(null);
+    edits.forEach(function (edit) {
+      var key = edit.surface || 'other';
+      var group = surfaces[key] || (surfaces[key] = { key: key, count: 0, files: Object.create(null), order: [] });
+      var file = edit.targetFile || '';
+      if (!group.files[file]) {
+        group.files[file] = [];
+        group.order.push(file);
+      }
+      group.files[file].push(edit);
+      group.count++;
+    });
+    var rank = function (key) {
+      for (var i = 0; i < HARDEN_SURFACES.length; i++) {
+        if (HARDEN_SURFACES[i].key === key) return i;
+      }
+      return HARDEN_SURFACES.length;
+    };
+    return Object.keys(surfaces)
+      .sort(function (a, b) {
+        return rank(a) - rank(b);
+      })
+      .map(function (key) {
+        return surfaces[key];
+      });
+  }
+
+  function surfaceLabel(key) {
+    for (var i = 0; i < HARDEN_SURFACES.length; i++) {
+      if (HARDEN_SURFACES[i].key === key) return HARDEN_SURFACES[i].label;
+    }
+    return key;
+  }
+
+  function hardenEdits(doc, node, edits) {
+    node.appendChild(hardenHead(doc, 'edits', edits.length));
+    if (edits.length === 0) {
+      node.appendChild(el(doc, 'p', 'generic-line', 'No edit applied.'));
+      return node;
+    }
+    groupHardenEdits(edits).forEach(function (group) {
+      var block = el(doc, 'div', 'hd-surface');
+      block.appendChild(
+        append(el(doc, 'div', 'hd-surface-head'), [el(doc, 'span', '', surfaceLabel(group.key)), el(doc, 'span', 'count-badge', plural(group.count, 'edit', 'edits'))])
+      );
+      group.order.forEach(function (file) {
+        var fileBlock = el(doc, 'div', 'hd-file');
+        if (file) fileBlock.appendChild(el(doc, 'div', 'hd-path', file));
+        group.files[file].forEach(function (edit) {
+          fileBlock.appendChild(hardenEditRow(doc, edit));
+        });
+        block.appendChild(fileBlock);
+      });
+      node.appendChild(block);
+    });
+    return node;
+  }
+
+  // One run record of harden. The snapshot sets `interrupted` on a started
+  // record of a run that no longer runs.
+  function hardenRunRow(doc, record) {
+    var meta = append(el(doc, 'div', 'hd-row-meta'), [
+      el(doc, 'span', 'lens-chip' + (record.classification === 'plugin-defect' ? ' issues' : ''), record.classification || 'unknown'),
+      el(doc, 'span', '', (record.applied || 0) + ' applied · ' + (record.skipped || 0) + ' skipped'),
+      record.interrupted ? el(doc, 'span', 'hd-cutflag', 'interrupted') : null,
+    ]);
+    var text = el(doc, 'div', 'hd-row-text', record.trigger);
+    text.setAttribute('title', record.trigger || '');
+    return append(el(doc, 'div', 'hd-row'), [lamp(doc, record.interrupted ? 'stalled' : 'completed'), append(el(doc, 'div', ''), [text, meta])]);
+  }
+
+  function hardenFunnel(doc, node, funnel) {
+    node.appendChild(hardenHead(doc, 'finding funnel'));
+    var max = 1;
+    HARDEN_FUNNEL.forEach(function (row) {
+      max = Math.max(max, Number(funnel[row.key]) || 0);
+    });
+    HARDEN_FUNNEL.forEach(function (row) {
+      var n = Number(funnel[row.key]) || 0;
+      var bar = el(doc, 'progress', 'hd-bar ' + row.tone);
+      bar.setAttribute('max', String(max));
+      bar.setAttribute('value', String(n));
+      bar.setAttribute('aria-label', row.label);
+      node.appendChild(append(el(doc, 'div', 'hd-funnel-row'), [el(doc, 'span', '', row.label), bar, el(doc, 'span', 'n', n)]));
+    });
+    return node;
+  }
+
+  // The fix pass: `K of T fixed`. The snapshot keeps no failed count.
+  function hardenFixPass(doc, node, pass) {
+    node.appendChild(hardenHead(doc, 'fix pass'));
+    var total = Number(pass.total) || 0;
+    if (total === 0) {
+      node.appendChild(el(doc, 'p', 'generic-line', 'No fix pass.'));
+      return node;
+    }
+    var parts = [{ strong: true, text: pass.fixed || 0 }, { text: ' of ' }, { strong: true, text: total }, { text: ' fixed' }];
+    var bar = el(doc, 'progress', 'fix-progress');
+    bar.setAttribute('max', String(total));
+    bar.setAttribute('value', String(pass.fixed || 0));
+    bar.setAttribute('aria-label', 'Fixes done');
+    return append(node, [strongLine(doc, 'round-sum', parts), bar]);
+  }
+
+  // The proposals that harden did not apply. A person decides each one.
+  function hardenHeld(doc, node, held) {
+    node.appendChild(hardenHead(doc, 'held back for a person', held.length));
+    if (held.length === 0) {
+      node.appendChild(el(doc, 'p', 'generic-line', 'Nothing held back.'));
+      return node;
+    }
+    held.forEach(function (item) {
+      var main = append(el(doc, 'div', 'hd-edit-main'), [
+        el(doc, 'div', 'hd-path', item.targetFile),
+        el(doc, 'div', 'hd-why', item.label),
+        item.deferredId ? el(doc, 'div', 'hd-path', 'deferred item ' + item.deferredId) : null,
+      ]);
+      node.appendChild(append(el(doc, 'div', 'hd-edit'), [hardenAction(doc, item.action), main]));
+    });
+    return node;
+  }
+
+  // The harden decisions, in stored order. The time shows in the browser time zone.
+  function hardenTimeline(doc, view, node, steps) {
+    node.appendChild(hardenHead(doc, 'timeline', steps.length));
+    steps.forEach(function (item) {
+      node.appendChild(append(el(doc, 'div', 'hd-tl'), [el(doc, 'span', 'hd-tl-time', view.clockLabel(item.at) || '—'), el(doc, 'span', 'hd-tl-text', item.decision)]));
+    });
+    return node;
+  }
+
+  /**
+   * The harden tile: a marker for run records that could not be read, the
+   * edit view, and the run view. `detail.harden` holds the values; a missing
+   * list shows as empty and a missing funnel or fix pass shows as zero.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {{harden?: object}} detail
+   * @returns {Element} div.hd
+   */
+  function hardenBody(doc, view, detail) {
+    var data = detail.harden || {};
+    var out = el(doc, 'div', 'hd');
+
+    var bad = Number(data.malformed) || 0;
+    if (bad > 0) {
+      var badNode = el(doc, 'div', 'hd-bad', plural(bad, 'harden record', 'harden records') + ' could not be read. The other records show below.');
+      badNode.setAttribute('role', 'status');
+      out.appendChild(badNode);
+    }
+
+    var editsNode = el(doc, 'div', 'hd-edits');
+    hardenEdits(doc, editsNode, data.edits || []);
+
+    var clustersNode = el(doc, 'div', 'hd-clusters');
+    var clusters = data.clusters || [];
+    clustersNode.appendChild(hardenHead(doc, 'run records', clusters.length));
+    clusters.forEach(function (record) {
+      clustersNode.appendChild(hardenRunRow(doc, record));
+    });
+
+    var funnelNode = el(doc, 'div', 'hd-funnel');
+    hardenFunnel(doc, funnelNode, data.funnel || {});
+    var passNode = el(doc, 'div', 'hd-fixpass');
+    hardenFixPass(doc, passNode, data.fixPass || {});
+    var heldNode = el(doc, 'div', 'hd-held');
+    hardenHeld(doc, heldNode, data.held || []);
+    var timelineNode = el(doc, 'div', 'hd-timeline');
+    hardenTimeline(doc, view, timelineNode, data.timeline || []);
+
+    var run = append(el(doc, 'div', 'hd-run'), [clustersNode, funnelNode, passNode, heldNode, timelineNode]);
+    return append(out, [append(el(doc, 'div', 'hd-cols'), [editsNode, run])]);
+  }
+
   // Body builder by detail kind: (doc, view, detail, pipeline, step) -> Element.
   var TILE_BODIES = {
+    harden: hardenBody,
     waves: wavesBody,
     dimensions: dimensionsBody,
     explorers: explorersBody,
@@ -1983,6 +2227,7 @@
     commandGroupTable: commandGroupTable,
     detailBody: detailBody,
     guardrailsBody: guardrailsBody,
+    hardenBody: hardenBody,
     resultBody: resultBody,
     issuesTile: issuesTile,
     sessionTile: sessionTile,
