@@ -63,12 +63,26 @@ type HardenClustersOut struct {
 	Next          string                 `json:"next"` // e.g. "dispatch 2 cluster(s) with alreadyHardened:false, one at a time" | "no clusters — skip"
 }
 
-// hardenVerdictNotEvaluated is the verdict for a finding that received-review
-// never evaluated. It is valid only together with history.ReasonBelowThreshold.
-const hardenVerdictNotEvaluated = "not-evaluated"
+// The verdicts of a harden_clusters finding (received-review's vocabulary).
+// hardenVerdictDisagree and hardenVerdictNeedsDirection have the same text as
+// history.ReasonDisagree and history.ReasonNeedsDirection, but a verdict and a
+// deferral reason are two fields, so each has its own constant.
+const (
+	hardenVerdictAgreeWillFix   = "agree-will-fix"
+	hardenVerdictAgreeWontFix   = "agree-won't-fix"
+	hardenVerdictDisagree       = "disagree"
+	hardenVerdictNeedsDirection = "needs-direction"
+	// hardenVerdictNotEvaluated is the verdict for a finding that
+	// received-review never evaluated. It is valid only together with
+	// history.ReasonBelowThreshold.
+	hardenVerdictNotEvaluated = "not-evaluated"
+)
 
 // hardenVerdicts are the accepted values for a finding's verdict field.
-var hardenVerdicts = []string{"agree-will-fix", "agree-won't-fix", "disagree", "needs-direction", hardenVerdictNotEvaluated}
+var hardenVerdicts = []string{
+	hardenVerdictAgreeWillFix, hardenVerdictAgreeWontFix, hardenVerdictDisagree,
+	hardenVerdictNeedsDirection, hardenVerdictNotEvaluated,
+}
 
 // hardenMaxClusters caps how many clusters one harden_clusters call reports
 // — the harden pipeline dispatches clusters one at a time, and a run with
@@ -287,7 +301,7 @@ func hardenFieldTypeError(i int, field, typeName string, got any) error {
 // lone-disagree rule — by its own verdict, or by a reason the reviewer
 // recorded as disagree instead (received-review lets a human record either).
 func hardenIsDisagree(f HardenClusterFinding) bool {
-	return f.Verdict == "disagree" || f.Reason == history.ReasonDisagree
+	return f.Verdict == hardenVerdictDisagree || f.Reason == history.ReasonDisagree
 }
 
 // hardenBuildClusters groups findings by file. A below-threshold finding
@@ -470,7 +484,7 @@ func hardenSplitFindings(findings []HardenClusterFinding) (fixNow, staysDeferred
 			}
 		case history.ReasonNeedsDirection:
 			staysDeferred = append(staysDeferred, f)
-		case history.ReasonDisagree, history.ReasonWontFix, "agree-won't-fix":
+		case history.ReasonDisagree, history.ReasonWontFix, hardenVerdictAgreeWontFix:
 			evidenceOnly = append(evidenceOnly, f)
 		}
 	}
@@ -504,6 +518,190 @@ func hardenClustersNext(clusters []HardenCluster, fixNow int) string {
 		return fmt.Sprintf("dispatch %d cluster(s), then run one fix pass for %d fix-now finding(s)", pending, fixNow)
 	}
 	return fmt.Sprintf("dispatch %d cluster(s) with alreadyHardened:false, one at a time", pending)
+}
+
+// ---------------------------------------------------------------------------
+// Ship state -> cluster findings
+// ---------------------------------------------------------------------------
+
+// hardenShipVerdicts is the Go form of the Ship mapping table in
+// plugins/sdlc/skills/harden/review-clusters.md: deferral reason -> verdict.
+var hardenShipVerdicts = map[string]string{
+	history.ReasonWontFix:        hardenVerdictAgreeWontFix,
+	history.ReasonDisagree:       hardenVerdictDisagree,
+	history.ReasonNeedsDirection: hardenVerdictNeedsDirection,
+	history.ReasonBelowThreshold: hardenVerdictNotEvaluated,
+}
+
+// hardenFindingsMax is the most findings hardenFindingsFromShip returns.
+const hardenFindingsMax = 500
+
+// hardenShipFindings is the result of hardenFindingsFromShip.
+type hardenShipFindings struct {
+	// Findings holds the mapped findings, in stored order. Never nil.
+	Findings []HardenClusterFinding
+	// Cut is true when the input held more than hardenFindingsMax findings.
+	Cut bool
+	// Skipped counts the entries that cannot be read: an entry that is not an
+	// object, and a deferredFindings entry with an unknown reason. A
+	// healing.fixed record with a deferredId is not counted: it is left out
+	// on purpose. When Cut is true, only the entries read before the cut are
+	// counted.
+	Skipped int
+}
+
+// hardenFindingsFromShip builds the harden_clusters input from the Data map
+// of a ship state: healing.fixed records with no deferredId (verdict
+// agree-will-fix), then deferredFindings entries. FixedInRun is false on
+// every finding, so the result is what harden saw before its fix pass. The
+// reason of a deferredFindings entry is read by deferredReason, so an empty
+// reason counts as below-threshold, as in shipBuildReviewLedger.
+//
+// data.healing must be an object, or absent or null (an empty object).
+// data.healing.fixed and data.deferredFindings must be lists, or absent. A
+// value of another shape, null included for a list, returns a
+// *shipDataShapeError for the first bad field (healing, then healing.fixed,
+// then deferredFindings) and no finding. An entry that is not an object, a
+// healing.fixed record with a deferredId (its run entry already stands for
+// it) and a deferredFindings entry with an unknown reason give no finding;
+// the first and the last are counted in Skipped. A field of the wrong type
+// reads as its empty value. The walk is its own, not shared with
+// shipBuildReviewLedger: that one counts entries and skips fixedInRun
+// entries, and this one builds finding objects from all entries.
+//
+// The caller is the harden step detail of the dashboard snapshot. It feeds
+// the findings to hardenBuildClusters and hardenSplitFindings.
+func hardenFindingsFromShip(data map[string]any) (hardenShipFindings, error) {
+	healing, err := shipDataHealing(data)
+	if err != nil {
+		return hardenShipFindings{}, err
+	}
+	fixed, err := shipDataList(healing, "fixed", "healing.fixed")
+	if err != nil {
+		return hardenShipFindings{}, err
+	}
+	deferred, err := shipDataList(data, "deferredFindings", "deferredFindings")
+	if err != nil {
+		return hardenShipFindings{}, err
+	}
+
+	out := hardenShipFindings{Findings: []HardenClusterFinding{}}
+	// add appends f, or sets Cut when the input holds more than
+	// hardenFindingsMax findings.
+	add := func(f HardenClusterFinding) (full bool) {
+		if len(out.Findings) >= hardenFindingsMax {
+			out.Cut = true
+			return true
+		}
+		out.Findings = append(out.Findings, f)
+		return false
+	}
+
+	for _, entry := range fixed {
+		m, isObj := entry.(map[string]any)
+		if !isObj {
+			out.Skipped++
+			continue
+		}
+		if strings.TrimSpace(dashboardStr(m["deferredId"])) != "" {
+			continue // its run entry already stands for it
+		}
+		if add(HardenClusterFinding{
+			File:     dashboardStr(m["file"]),
+			Severity: dashboardStr(m["severity"]),
+			Title:    dashboardStr(m["title"]),
+			Verdict:  hardenVerdictAgreeWillFix,
+		}) {
+			return out, nil
+		}
+	}
+
+	for _, entry := range deferred {
+		m, isObj := entry.(map[string]any)
+		if !isObj {
+			out.Skipped++
+			continue
+		}
+		reason := deferredReason(m)
+		verdict, known := hardenShipVerdicts[reason]
+		if !known {
+			out.Skipped++
+			continue
+		}
+		if add(HardenClusterFinding{
+			File:       dashboardStr(m["file"]),
+			Severity:   dashboardStr(m["severity"]),
+			Title:      dashboardStr(m["title"]),
+			Body:       dashboardStr(m["description"]),
+			Verdict:    verdict,
+			Reason:     reason,
+			Line:       dashboardInt(m["line"]),
+			DeferredID: strings.TrimSpace(dashboardStr(m["deferredId"])),
+		}) {
+			return out, nil
+		}
+	}
+	return out, nil
+}
+
+// deferredReason returns the reason of a data.deferredFindings entry. An
+// empty or absent reason, or one that is not a string, is
+// history.ReasonBelowThreshold: an entry from before the reason field was a
+// below-threshold deferral. A nil m gives history.ReasonBelowThreshold.
+// Callers: shipBuildReviewLedger, renderShipReportDeferred,
+// hardenFindingsFromShip and dashboardHardenFixPass.
+func deferredReason(m map[string]any) string {
+	if reason, _ := m["reason"].(string); reason != "" {
+		return reason
+	}
+	return history.ReasonBelowThreshold
+}
+
+// shipDataShapeError reports a ship state value that has the wrong JSON
+// shape. Its text starts with "<Field> of the ship state is not <Want>".
+type shipDataShapeError struct {
+	Field string // the key path, for example healing.fixed
+	Want  string // the shape the readers need: "a list" or "an object"
+	Found any    // the stored value
+}
+
+// Error returns "<Field> of the ship state is not <Want> (found <type>)".
+func (e *shipDataShapeError) Error() string {
+	return fmt.Sprintf("%s of the ship state is not %s (found %s)", e.Field, e.Want, jsonTypeName(e.Found))
+}
+
+// shipDataList returns the list m[key] of a ship state. field is the key path
+// that an error names. An absent key gives no list and no error. A present
+// value that is not a list, null included, gives a *shipDataShapeError: the
+// same rule as healingList, which the writer applies. Callers:
+// hardenFindingsFromShip, the harden step detail of the dashboard and
+// dashboardQueueDeferredList.
+func shipDataList(m map[string]any, key, field string) ([]any, error) {
+	raw, present := m[key]
+	if !present {
+		return nil, nil
+	}
+	list, ok := raw.([]any)
+	if !ok {
+		return nil, &shipDataShapeError{Field: field, Want: "a list", Found: raw}
+	}
+	return list, nil
+}
+
+// shipDataHealing returns data.healing of a ship state. An absent or null
+// value is an empty object, as in healingObject. A value that is not an
+// object gives a *shipDataShapeError and a nil map. Callers:
+// hardenFindingsFromShip and dashboardHardenDetail.
+func shipDataHealing(data map[string]any) (map[string]any, error) {
+	raw := data["healing"]
+	if raw == nil {
+		return map[string]any{}, nil
+	}
+	healing, ok := raw.(map[string]any)
+	if !ok {
+		return nil, &shipDataShapeError{Field: "healing", Want: "an object", Found: raw}
+	}
+	return healing, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -692,6 +692,13 @@
       case 'result':
         // The text before the first colon: `nothing to commit: execute committed 2 wave commit(s)` gives `nothing to commit`.
         return String(d.result || '').split(':')[0].trim();
+      case 'harden': {
+        var hardenData = d.harden || {};
+        var hardenEdits = hardenData.edits || [];
+        var hardenHeld = hardenData.held || [];
+        var hardenText = plural(hardenEdits.length, 'edit', 'edits');
+        return hardenHeld.length > 0 ? hardenText + ' · ' + hardenHeld.length + ' held back' : hardenText;
+      }
       default:
         return '';
     }
@@ -707,7 +714,7 @@
   function isWideSection(detail) {
     if (!detail) return false;
     if (detail.kind === 'waves') return true;
-    return detail.kind === 'explorers' || detail.kind === 'rounds' || detail.kind === 'fixes' || detail.kind === 'dimensions';
+    return detail.kind === 'explorers' || detail.kind === 'rounds' || detail.kind === 'fixes' || detail.kind === 'dimensions' || detail.kind === 'harden';
   }
 
   /**

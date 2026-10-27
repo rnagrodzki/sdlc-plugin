@@ -15,7 +15,7 @@ The tool SHALL run exactly one operation per call, selected by the `action` fiel
 | `material_compare` | `filePath`, `snapshotPath` | — | `material`, `triggers` | nothing |
 | `openspec_appendix` | `changeName` | `proposalPath`, `designPath`, `specPaths`, `planTasks` | `appendixMarkdown` | nothing |
 | `openspec_instructions` | `changeName` | — | `schemaName`, `artifacts`, `guardrails` | one temp dir |
-| `openspec_stage` | `changeName`, `files` | `planPath` | `stagingDir`, `files`, `valid`, `validateOutput` | `<active-worktree>/.sdlc-v2/openspec-staging/<changeName>/`, one temp validation dir |
+| `openspec_stage` | `changeName`, `files` | `planPath` | `stagingDir`, `files`, `valid`, `validateOutput` | `<main-worktree>/.sdlc-v2/openspec-staging/<changeName>/`, one temp validation dir |
 | `evidence_record` | `runId`, `writerId` | `status`, `items`, `brief` | `record` | `<writerId>.json`, `brief.md` |
 | `evidence_digest` | `runId` | `expectedWriters`, `timeoutSeconds`, `statusOnly` | `writers`, `digest` (not with `statusOnly`) | nothing |
 | `evidence_get` | `runId`, plus `ids` or `writerIds` | — | `get` | nothing |
@@ -647,12 +647,14 @@ The `openspec_stage` action SHALL replace the staging dir for `changeName` with 
 
 | Output | Meaning |
 |---|---|
-| `stagingDir` | Repo-relative staging dir, e.g. `.sdlc-v2/openspec-staging/add-widget/` |
+| `stagingDir` | Staging dir relative to the main worktree, e.g. `.sdlc-v2/openspec-staging/add-widget/` |
 | `files` | `[{path, sha256}]` as written to `stage.json` |
 | `valid` | `true` when `openspec validate <changeName> --strict` exits 0 in the temp copy and no staged file has a diagram contrast hit |
 | `validateOutput` | CLI output of that validation, then one line `diagram contrast: <path>:<line>: <reason>: <text>` per hit |
 
 - Each call replaces the whole staging dir, so a file dropped from `files` is removed.
+- The staging dir is under the main worktree, so a run in any worktree of the repo finds it. The temp validation copy reads `openspec/config.yaml` and the current specs from the active worktree.
+- The Suggestion of the staged-by-another-plan DomainError names the absolute path of the staging dir under the main worktree.
 - `next` is `Staged and valid. Add the **OpenSpec-Staging:** header to the plan.` when `valid`, else `Fix the artifacts using validateOutput and call openspec_stage again.`
 - The tool keeps `ReadOnly: true`: it writes only gitignored paths and the OS temp dir, and no path comes from a caller field without the name and path checks.
 
@@ -671,12 +673,22 @@ The `openspec_stage` action SHALL replace the staging dir for `changeName` with 
 
 #### Scenario: Restage drops a file
 - **WHEN** a second call for `add-widget` omits `design.md`
-- **THEN** `.sdlc-v2/openspec-staging/add-widget/design.md` no longer exists
+- **THEN** `<main-worktree>/.sdlc-v2/openspec-staging/add-widget/design.md` no longer exists
 
 #### Scenario: Pastel diagram in a staged artifact
 - **WHEN** line 30 of the staged `proposal.md` is `classDef new fill:#d4f7d4,stroke:#2a7a2a` inside a mermaid block and the CLI validation passes
 - **THEN** `valid` is `false`
 - **AND** `validateOutput` contains `diagram contrast: proposal.md:30: no text color: classDef new fill:#d4f7d4,stroke:#2a7a2a`
+
+#### Scenario: Stage from a linked worktree
+- **WHEN** `openspec_stage` is called for `add-widget` in the linked worktree `/repo-wt` of the main worktree `/repo`
+- **THEN** `stagingDir` is `.sdlc-v2/openspec-staging/add-widget/`
+- **AND** the files exist under `/repo/.sdlc-v2/openspec-staging/add-widget/`
+
+#### Scenario: Staged-by-another-plan Suggestion names the main dir
+- **WHEN** the `stage.json` under `/repo/.sdlc-v2/openspec-staging/add-widget/` has `planPath` `/plans/a.md`
+- **AND** an `openspec_stage` call for `add-widget` has `planPath` `/plans/b.md`
+- **THEN** the Suggestion of the DomainError names `/repo/.sdlc-v2/openspec-staging/add-widget`
 
 ### Requirement: merge_results blocking count
 The `merge_results` action SHALL return `blockingCount`: the number of blocking issues after the merge, `0` too. The value SHALL equal the count in its summary text. Other actions SHALL not return `blockingCount`.

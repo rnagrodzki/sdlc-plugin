@@ -313,7 +313,7 @@
     "openspec": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Set by init when the plan has an **OpenSpec-Staging:** header: the result of materializing that staged change (see openspec.Materialize) before the state file was written.",
+      "description": "Set by init when the plan has an **OpenSpec-Staging:** header: the result of the copy of that staged change into openspec/changes/<name>/, done before the state file was written. init reads the staging folder under the main worktree first and the active worktree as a fallback, and deletes the staging folder after the copy.",
       "properties": {
         "change": { "type": "string" },
         "materialized": { "type": "string", "enum": ["created", "already"] }

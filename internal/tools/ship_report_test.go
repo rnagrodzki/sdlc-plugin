@@ -379,6 +379,56 @@ func TestShipStateReport_HealingRendered(t *testing.T) {
 	}
 }
 
+// TestShipStateReport_HardenedNewFieldsIgnored pins that the report readers
+// ignore applied[].rationale, applied[].patch, applied[].patchCut and held:
+// a record with them renders the same Hardened section as an old record.
+func TestShipStateReport_HardenedNewFieldsIgnored(t *testing.T) {
+	section := func(rec map[string]any) string {
+		t.Helper()
+		root := shipReportRoot(t)
+		createShipReportState(t, root, map[string]any{
+			"healing": map[string]any{"hardened": []any{rec}},
+		})
+		out := runShipReport(t, root, nil)
+		start := strings.Index(out.Display, "### Hardened\n")
+		end := strings.Index(out.Display, "### Harden commit\n")
+		if start < 0 || end < start {
+			t.Fatalf("display has no Hardened section:\n%s", out.Display)
+		}
+		return out.Display[start:end]
+	}
+	record := func(applied map[string]any, extra map[string]any) map[string]any {
+		rec := map[string]any{"phase": "done", "trigger": "t1", "classification": "user-code", "skipped": 1,
+			"applied": []any{applied}}
+		for k, v := range extra {
+			rec[k] = v
+		}
+		return rec
+	}
+	old := section(record(map[string]any{"surface": "guardrails", "action": "add", "targetFile": ".sdlc-v2/config.toml"}, nil))
+	withNew := section(record(
+		map[string]any{"surface": "guardrails", "action": "add", "targetFile": ".sdlc-v2/config.toml",
+			"rationale": "RATIONALE-TEXT", "patch": "PATCH-TEXT", "patchCut": true},
+		map[string]any{"held": []any{map[string]any{
+			"surface": "review-dimensions", "action": "add", "targetFile": "HELD-TARGET",
+			"reason": "pending-stored", "deferredId": "harden-deferred-1",
+		}}},
+	))
+	if old != withNew {
+		t.Errorf("Hardened section differs with the new fields.\nold:\n%s\nnew:\n%s", old, withNew)
+	}
+	for _, want := range []string{"| t1 | user-code | 1 | 1 |", "| guardrails | 1 | .sdlc-v2/config.toml |"} {
+		if !strings.Contains(withNew, want) {
+			t.Errorf("Hardened section missing %q:\n%s", want, withNew)
+		}
+	}
+	for _, absent := range []string{"RATIONALE-TEXT", "PATCH-TEXT", "HELD-TARGET", "review-dimensions"} {
+		if strings.Contains(withNew, absent) {
+			t.Errorf("Hardened section shows %q — the report must ignore the new fields:\n%s", absent, withNew)
+		}
+	}
+}
+
 func TestShipStateReport_InterruptedHardenedRecord(t *testing.T) {
 	root := shipReportRoot(t)
 	createShipReportState(t, root, map[string]any{

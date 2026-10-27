@@ -603,7 +603,7 @@ draft is a draft that the orchestrator could not generalize to a class.
 **Per-iteration contract (R-iteration-write) — applies to every pass through the proposal loop:**
 1. **Re-read before acting:** At the start of each iteration, re-read `targetFile` from disk. Never rely on an in-memory copy from a previous write.
 2. **Write before advancing:** Persist the approved change to disk (via Edit/Write) before presenting the next proposal. Do not accumulate approved changes across proposals and write them together.
-3. **No cross-proposal accumulation:** Hold only the current proposal's patch in memory. Clear per-proposal state after each write.
+3. **No cross-proposal accumulation:** Hold only the current proposal's patch in memory. Clear per-proposal state after each write. One exception: keep the `writtenPatch` of each applied proposal that has one (5a step 3 sets it) for the 5e record. It is a record of a done write, not a change to write.
 4. **Halt on failure:** If validation or the write itself fails for a proposal, do not silently advance to the next proposal — halt iteration for this proposal and surface the error per 5a.
 
 **Order.** Process the proposals in `RESULT.proposals` order. The `repair`
@@ -957,6 +957,14 @@ a `null` in the write. `scopeIds` lists the `guardrails[]` ids.
    method}` (e.g. `split into dry-1, dry-2` or `shortened description`) for
    the 5d summary's `Repaired:` list.
 
+   **`writtenPatch`.** After a write with `ok` `true`, set the proposal's
+   `writtenPatch` to the TOML entries that this write added, when they can
+   differ from the proposal `patch`: for every `consolidate`, and for any
+   other proposal whose candidate step 2 repaired. A `consolidate` always
+   writes its merged candidate (see the `consolidate` paragraph in 5b), with
+   or without a repair round, so it counts as repaired. A split adds two
+   entries: `writtenPatch` holds both. Other proposals get no `writtenPatch`.
+
    - **`ok` is `false`** (for example, the tool refuses to delete a guardrail
      table that holds a comment line): part of the call can be on disk.
      Write back the content of `targetFile` re-read at the top of 5a. Show
@@ -1301,17 +1309,70 @@ above (before that exit's `rm -f "<manifestPath>"`).
 
 When the gate holds, build:
 
-- `applied` — one `{surface, action, targetFile}` entry, copied from the
-  matching proposal, for every proposal that reached 5b's `Applied {action}
-  on {surface} → {targetFile}` confirmation line (the same set 5d calls
-  `Auto-accepted` under `--auto`). It counts each applied `repair`,
-  `remove` and `merge` too. On Step 4 route (d) and route (b),
+- `applied` — one `{surface, action, targetFile, rationale, patch}` entry,
+  built from the matching proposal, for every proposal that reached 5b's
+  `Applied {action} on {surface} → {targetFile}` confirmation line (the same
+  set 5d calls `Auto-accepted` under `--auto`). It counts each applied
+  `repair`, `remove` and `merge` too. On Step 4 route (d) and route (b),
   `RESULT.proposals` holds no proposal that Step 5 applied, so `applied` is
-  `[]`.
+  `[]`. Send `rationale` only when the proposal `rationale` is a non-empty
+  string; otherwise leave the key out. `patch` is the proposal `writtenPatch`
+  when it is set, else the proposal `patch`, else `""`. Nothing stores
+  `writtenPatch` before this call: it lives only in this conversation. When
+  it is lost (for example, after a context compaction), the proposal `patch`
+  is sent, and it can differ from the TOML that 5a wrote. healing_record cuts a
+  patch over 1536 bytes and sets `patchCut`. Do not send `patchCut`.
+- `held` — one `{surface, action, targetFile, reason, deferredId}` entry for
+  each proposal that this run left for a person (the held exit table below). Build each
+  entry from the matching proposal. Send `deferredId` only with reason
+  `pending-stored`: it is the `id` that the `deferred_add` call of the
+  section returned (the `{id}` of the 5d line). Send `held: []` when no row
+  of the held exit table gives an entry.
+- Check each `held[].targetFile` with the 5a step 0 table before you send it.
+  A held proposal never reached 5a, so its `targetFile` never passed that
+  check, and it can come from untrusted PR comments. When the check fails,
+  send `targetFile: "(path rejected)"`. healing_record refuses an empty
+  `targetFile`, and the dashboard shows this text in place of the path.
+- Limits of one call: at most 100 `applied` entries, at most 100 `held`
+  entries, and a `rationale` of at most 600 characters. A call past a limit
+  fails and writes nothing, and the `started` record of 5-pre stays. Cut a
+  longer `rationale` to its first 600 characters before you send it.
 - `skipped` — `RESULT.proposals.length - applied.length` (`0` when
   `RESULT.proposals` itself is empty).
 - `classification` — `RESULT.classification` (`"plugin-defect"` on the
   Step 6 route).
+
+The three `reason` values:
+
+| `reason` | Meaning |
+|---|---|
+| `pending-stored` | `--auto` stored the proposal as a deferred item. `deferredId` is the id of that item |
+| `pending-not-stored` | `--auto` could not store the proposal: the `deferred_add` call failed, or the id check failed |
+| `not-processed` | A halt stopped the loop before this proposal |
+
+Held exit table. Each run matches exactly one row (mode first, then the exit
+point):
+
+| Mode | Exit point into 5e | `held` | Next step after 5e |
+|---|---|---|---|
+| `--auto` | normal path (after 5c and 5d) | `pending-stored` with the returned `deferredId` for each "Pending (needs a person — stored …)" item. `pending-not-stored` for each "Pending (NOT stored …)" item. | Step 6 when `plugin-defect`, else Step 7 |
+| `--auto` | 5a write-back halt or 5b halt | The rows of the line above, plus `not-processed` for each "Not processed (halt)" item | `rm -f "<manifestPath>"`, then stop. No Step 7. |
+| interactive | normal path | `[]`. A person decided each proposal. | Step 6 when `plugin-defect`, else Step 7 |
+| interactive | 5a write-back halt or 5b halt | `not-processed` for each proposal after the halted proposal in `RESULT.proposals` order | `rm -f "<manifestPath>"`, then stop. No Step 7. |
+| interactive | `cancel` at the approval gate | `[]`. A person chose `cancel`. | Abort, `rm -f "<manifestPath>"`. No Step 7. |
+| any | Step 4 route (b) through Step 6, or route (d) | `[]`. Step 5 did not run. | Step 7 |
+
+The halted proposal itself (the proposal that caused a halt) has no `held`
+entry, because the halt did not leave it for later:
+
+- **5a write-back halt.** The proposal is in neither `applied` nor `held`,
+  and `skipped` counts it. Its file is not restored, but the record does not
+  show it. The printed `NOT restored: <file>` line (and its `Reverted` line in
+  the 5d summary under `--auto`) is the only record of the file.
+- **5b halt.** The proposal is in `applied`, because 5a wrote and checked
+  it. The record does not show that the Copilot mirror failed. The printed
+  halt message (and the `; Copilot mirror failed` part of its 5d line under
+  `--auto`) is the only record of the mirror failure.
 
 ```
 ship_state({
@@ -1323,6 +1384,7 @@ ship_state({
     trigger: "<same first-200-chars trigger string passed to 5-pre>",
     classification: "<RESULT.classification>",
     applied: [<entries built above>],
+    held: [<entries built above>],
     skipped: <count built above>,
   },
 }) → { summary, kind, written, record }
@@ -1360,7 +1422,7 @@ call `AskUserQuestion` and do not invoke `error-report`, for the same reason as
 the payload: do not emit 5d again. Then continue to Step 7 with `Routed: no`.
 
 **In either mode**, when Step 5 did not run, emit the 5e record (when its gate
-holds, with `classification: "plugin-defect"` and `applied: []`) before
+holds, with `classification: "plugin-defect"`, `applied: []` and `held: []`) before
 leaving this step. When Step 5 ran, 5e already ran: do not emit it again.
 
 1. Display `RESULT.errorReportPayload` to the user as the proposed

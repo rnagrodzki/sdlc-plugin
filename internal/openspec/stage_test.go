@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -185,7 +186,7 @@ func readManifest(t *testing.T, root, change string) StageManifest {
 func TestStage_InvalidChangeName(t *testing.T) {
 	root, log := setupStageRepo(t)
 
-	_, err := Stage(root, "grp/demo", stageFiles(false), "", fixedNow)
+	_, err := Stage(root, root, "grp/demo", stageFiles(false), "", fixedNow)
 	if !errors.Is(err, ErrInvalidChangeName) {
 		t.Fatalf("Stage err = %v, want ErrInvalidChangeName", err)
 	}
@@ -213,7 +214,7 @@ func TestStage_PathNotAllowed(t *testing.T) {
 			root, log := setupStageRepo(t)
 			files := append(stageFiles(false), StageFile{Path: tc.path, Content: "x"})
 
-			_, err := Stage(root, "add-widget", files, "", fixedNow)
+			_, err := Stage(root, root, "add-widget", files, "", fixedNow)
 			if !errors.Is(err, ErrPathNotAllowed) {
 				t.Fatalf("Stage err = %v, want ErrPathNotAllowed", err)
 			}
@@ -314,7 +315,7 @@ func TestStage_StagedByOtherPlanWritesNothing(t *testing.T) {
 	const owned = `{"change":"add-widget","planPath":"/plans/a.md","files":[]}`
 	writeStageManifestRaw(t, root, "add-widget", owned)
 
-	_, err := Stage(root, "add-widget", stageFiles(false), "/plans/b.md", fixedNow)
+	_, err := Stage(root, root, "add-widget", stageFiles(false), "/plans/b.md", fixedNow)
 	if !errors.Is(err, ErrStagedByOtherPlan) {
 		t.Fatalf("Stage err = %v, want ErrStagedByOtherPlan", err)
 	}
@@ -332,7 +333,7 @@ func TestStage_StagedByOtherPlanWritesNothing(t *testing.T) {
 func TestStage_DuplicatePathRejected(t *testing.T) {
 	root, _ := setupStageRepo(t)
 	files := append(stageFiles(false), StageFile{Path: "tasks.md", Content: "again"})
-	if _, err := Stage(root, "add-widget", files, "", fixedNow); !errors.Is(err, ErrPathNotAllowed) {
+	if _, err := Stage(root, root, "add-widget", files, "", fixedNow); !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("Stage err = %v, want ErrPathNotAllowed", err)
 	}
 }
@@ -341,7 +342,7 @@ func TestStage_ValidWritesFilesAndManifest(t *testing.T) {
 	root, log := setupStageRepo(t)
 	files := stageFiles(true)
 
-	res, err := Stage(root, "add-widget", files, "/plans/p.md", fixedNow)
+	res, err := Stage(root, root, "add-widget", files, "/plans/p.md", fixedNow)
 	if err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
@@ -398,7 +399,7 @@ func TestStage_ValidWritesFilesAndManifest(t *testing.T) {
 
 func TestStage_RestageReplacesDir(t *testing.T) {
 	root, _ := setupStageRepo(t)
-	if _, err := Stage(root, "add-widget", stageFiles(true), "", fixedNow); err != nil {
+	if _, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow); err != nil {
 		t.Fatalf("first Stage: %v", err)
 	}
 	design := filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget", "design.md")
@@ -406,7 +407,7 @@ func TestStage_RestageReplacesDir(t *testing.T) {
 		t.Fatalf("design.md not staged: %v", err)
 	}
 
-	res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+	res, err := Stage(root, root, "add-widget", stageFiles(false), "", fixedNow)
 	if err != nil {
 		t.Fatalf("restage: %v", err)
 	}
@@ -427,7 +428,7 @@ func TestStage_InvalidChangeReportsCLIOutput(t *testing.T) {
 	root, log := setupStageRepo(t)
 	t.Setenv("STUB_VALIDATE_EXIT", "1")
 
-	res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+	res, err := Stage(root, root, "add-widget", stageFiles(false), "", fixedNow)
 	if err != nil {
 		t.Fatalf("Stage: %v (a failed validation is a result, not an error)", err)
 	}
@@ -466,7 +467,7 @@ func TestStage_CopiesTargetSpecs(t *testing.T) {
 		gitCommitAll(t, root)
 		t.Setenv("STUB_REQUIRE_SPEC", "user-auth")
 
-		res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+		res, err := Stage(root, root, "add-widget", stageFiles(false), "", fixedNow)
 		if err != nil {
 			t.Fatalf("Stage: %v", err)
 		}
@@ -484,7 +485,7 @@ func TestStage_CopiesTargetSpecs(t *testing.T) {
 		gitCommitAll(t, root)
 		t.Setenv("STUB_REQUIRE_SPEC", "billing")
 
-		res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+		res, err := Stage(root, root, "add-widget", stageFiles(false), "", fixedNow)
 		if err != nil {
 			t.Fatalf("Stage: %v", err)
 		}
@@ -533,7 +534,7 @@ func TestStage_CopiesTargetSpecs(t *testing.T) {
 func TestStage_NewCapabilityNoTarget(t *testing.T) {
 	root, log := setupStageRepo(t)
 
-	res, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+	res, err := Stage(root, root, "add-widget", stageFiles(false), "", fixedNow)
 	if err != nil {
 		t.Fatalf("Stage: %v (a new capability has no target spec)", err)
 	}
@@ -596,7 +597,7 @@ func TestStage_TargetSpecTooLarge(t *testing.T) {
 				}
 			}
 
-			_, err := Stage(root, "add-widget", stageFiles(false), "", fixedNow)
+			_, err := Stage(root, root, "add-widget", stageFiles(false), "", fixedNow)
 			if tc.lock {
 				if cerr := os.Chmod(specPath(root), 0o644); cerr != nil {
 					t.Fatalf("restore mode: %v", cerr)
@@ -693,7 +694,7 @@ func TestStage_RealCLIOmittedScenario(t *testing.T) {
 		}
 	}
 
-	res, err := Stage(root, "add-widget", files(delta(first)), "", fixedNow)
+	res, err := Stage(root, root, "add-widget", files(delta(first)), "", fixedNow)
 	if err != nil {
 		t.Fatalf("Stage: %v", err)
 	}
@@ -713,7 +714,7 @@ func TestStage_RealCLIOmittedScenario(t *testing.T) {
 		t.Fatalf("openspec/changes created in the repo (stat err %v)", err)
 	}
 
-	res, err = Stage(root, "add-widget", files(delta(first+second)), "", fixedNow)
+	res, err = Stage(root, root, "add-widget", files(delta(first+second)), "", fixedNow)
 	if err != nil {
 		t.Fatalf("Stage with the scenario restored: %v", err)
 	}
@@ -791,4 +792,83 @@ func TestMatchOutputPath(t *testing.T) {
 			t.Errorf("matchOutputPath(%q, %q) = %v, want %v", tc.pattern, tc.path, got, tc.want)
 		}
 	}
+}
+
+// TestStage_WritesUnderStagingRoot checks that Stage with two different roots
+// writes the files and stage.json under the staging root, writes nothing under
+// the active root's staging dir, and reads the current spec from the active
+// root (the stub's validate fails when that spec was not copied).
+func TestStage_WritesUnderStagingRoot(t *testing.T) {
+	active, log := setupStageRepo(t)
+	stagingRoot := t.TempDir()
+	mustWrite(t, filepath.Join(active, "openspec", "specs", "user-auth", "spec.md"), "# Current user-auth spec\n")
+	t.Setenv("STUB_REQUIRE_SPEC", "user-auth")
+	files := stageFiles(true)
+
+	res, err := Stage(active, stagingRoot, "add-widget", files, "/plans/p.md", fixedNow)
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if !res.Valid {
+		t.Fatalf("Valid = false, output %q (the current spec was not read from the active root)", res.ValidateOutput)
+	}
+	if res.StagingDir != ".sdlc-v2/openspec-staging/add-widget/" {
+		t.Fatalf("StagingDir = %q", res.StagingDir)
+	}
+	dir := filepath.Join(stagingRoot, filepath.FromSlash(StagingDirRel("add-widget")))
+	got := snapshot(t, dir)
+	for _, f := range files {
+		if got[f.Path] != f.Content {
+			t.Fatalf("staged %s = %q, want %q", f.Path, got[f.Path], f.Content)
+		}
+	}
+	m := readManifest(t, stagingRoot, "add-widget")
+	if m.PlanPath != "/plans/p.md" || m.ValidatedAt == "" || len(m.Files) != len(files) {
+		t.Fatalf("stage.json = %+v, want planPath /plans/p.md, validatedAt set, %d files", m, len(files))
+	}
+	assertMissing(t, filepath.Join(active, ".sdlc-v2", "openspec-staging"))
+	assertTempDirsRemoved(t, log, 3)
+}
+
+// TestStage_OwnerCheckUsesStagingRoot checks that the owner check reads
+// stage.json under the staging root: an owner there refuses the stage, and an
+// owner under the active root only is not read.
+func TestStage_OwnerCheckUsesStagingRoot(t *testing.T) {
+	const owned = `{"change":"add-widget","planPath":"/plans/a.md","files":[]}`
+
+	t.Run("owner under staging root refuses", func(t *testing.T) {
+		active, log := setupStageRepo(t)
+		stagingRoot := t.TempDir()
+		writeStageManifestRaw(t, stagingRoot, "add-widget", owned)
+
+		_, err := Stage(active, stagingRoot, "add-widget", stageFiles(false), "/plans/b.md", fixedNow)
+		var staged *StagedByOtherPlanError
+		if !errors.As(err, &staged) || staged.PlanPath != "/plans/a.md" {
+			t.Fatalf("Stage err = %v, want StagedByOtherPlanError for /plans/a.md", err)
+		}
+		assertMissing(t, filepath.Join(active, ".sdlc-v2", "openspec-staging"))
+		assertTempDirsRemoved(t, log, 0)
+	})
+
+	t.Run("owner under active root only is not read", func(t *testing.T) {
+		active, _ := setupStageRepo(t)
+		stagingRoot := t.TempDir()
+		writeStageManifestRaw(t, active, "add-widget", owned)
+		activeDir := filepath.Join(active, filepath.FromSlash(StagingDirRel("add-widget")))
+		before := snapshot(t, activeDir)
+
+		res, err := Stage(active, stagingRoot, "add-widget", stageFiles(false), "/plans/b.md", fixedNow)
+		if err != nil {
+			t.Fatalf("Stage: %v (the owner check must not read the active root)", err)
+		}
+		if res.Replaced {
+			t.Fatalf("Replaced = true, want false: the staging root had no staging dir")
+		}
+		if m := readManifest(t, stagingRoot, "add-widget"); m.PlanPath != "/plans/b.md" {
+			t.Fatalf("stage.json planPath = %q, want /plans/b.md", m.PlanPath)
+		}
+		if after := snapshot(t, activeDir); !reflect.DeepEqual(before, after) {
+			t.Fatalf("active-root staging changed:\nbefore %v\nafter  %v", before, after)
+		}
+	})
 }

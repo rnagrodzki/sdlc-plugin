@@ -1,8 +1,9 @@
 // Staging of OpenSpec artifacts outside the repository's tracked tree.
 //
 // Plan mode forbids tracked-file writes, so plan authors a change's artifacts
-// into <active-worktree>/.sdlc-v2/openspec-staging/<change>/ (gitignored) and
-// a later run start materializes them into openspec/changes/<change>/.
+// into <main-worktree>/.sdlc-v2/openspec-staging/<change>/ (gitignored) and
+// a later run start in any worktree of the repo materializes them into
+// openspec/changes/<change>/ of that worktree.
 //
 // Both entry points here need the CLI to describe a change that does not
 // exist yet, and the CLI can only describe an existing change. So each one
@@ -104,7 +105,7 @@ type StageManifest struct {
 }
 
 // StageResult is the outcome of Stage. StagingDir is the staging directory
-// relative to the active worktree root, exactly as StagingDirRel returns it
+// relative to the staging root (the main worktree), exactly as StagingDirRel returns it
 // (the form the plan's **OpenSpec-Staging:** header uses). ValidateOutput is
 // the combined stdout/stderr of `openspec validate <change> --strict`.
 // Replaced is true when a staging directory of the change existed before
@@ -133,7 +134,7 @@ type ArtifactGuide struct {
 }
 
 // StagingDirRel returns the staging directory for change, relative to the
-// active worktree root, with a trailing slash:
+// staging root (the main worktree), with a trailing slash:
 // ".sdlc-v2/openspec-staging/<change>/".
 func StagingDirRel(change string) string {
 	return paths.DataDir + "/" + paths.OpenspecStagingSubdir + "/" + change + "/"
@@ -175,28 +176,29 @@ func PrepareInstructions(activeRoot, change string) (schema string, guides []Art
 	return status.SchemaName, guides, nil
 }
 
-// Stage writes files into <activeRoot>/.sdlc-v2/openspec-staging/<change>/,
+// Stage writes files into <stagingRoot>/.sdlc-v2/openspec-staging/<change>/,
 // replacing any earlier staging of the same change, writes stage.json, and
 // validates a temp copy of the staged change with `openspec validate
-// <change> --strict`.
+// <change> --strict`. It reads openspec/config.yaml and the current specs from
+// activeRoot.
 //
 // Before validating, Stage copies the current spec of each capability that a
 // staged specs/<capability>/spec.md names into the temp directory, so a
 // MODIFIED delta is checked against the current spec the same way as at ship.
 // A capability with no current spec is a new capability and copies nothing.
 //
-// Every check runs before the first write under activeRoot: the change name
+// Every check runs before the first write under stagingRoot: the change name
 // (ErrInvalidChangeName), each file path against the outputPath patterns the
 // CLI reports for a temp change (ErrPathNotAllowed), the planPath of an
 // existing stage.json of the change (ErrStagedByOtherPlan), and the copy of
 // the current specs (ErrTargetSpec). A failed validation is not an error: the
 // result has Valid false and the CLI output, and stage.json has no
 // validatedAt. now defaults to time.Now when nil.
-func Stage(activeRoot, change string, files []StageFile, planPath string, now func() time.Time) (StageResult, error) {
+func Stage(activeRoot, stagingRoot, change string, files []StageFile, planPath string, now func() time.Time) (StageResult, error) {
 	if now == nil {
 		now = time.Now
 	}
-	if err := checkStageInput(activeRoot, change, files, planPath); err != nil {
+	if err := checkStageInput(stagingRoot, change, files, planPath); err != nil {
 		return StageResult{}, err
 	}
 
@@ -229,7 +231,7 @@ func Stage(activeRoot, change string, files []StageFile, planPath string, now fu
 	// All checks passed: replace the staging dir as a whole, so a file
 	// dropped since the previous staging disappears.
 	stagingRel := StagingDirRel(change)
-	stagingDir := filepath.Join(activeRoot, filepath.FromSlash(stagingRel))
+	stagingDir := filepath.Join(stagingRoot, filepath.FromSlash(stagingRel))
 	replaced, err := dirExists(stagingDir)
 	if err != nil {
 		return StageResult{}, err
@@ -289,7 +291,7 @@ func Stage(activeRoot, change string, files []StageFile, planPath string, now fu
 // existing staging (*StagedByOtherPlanError). The owner check is skipped when
 // planPath is empty or the existing stage.json names no owner (see
 // stagedPlanPath). It writes nothing.
-func checkStageInput(activeRoot, change string, files []StageFile, planPath string) error {
+func checkStageInput(stagingRoot, change string, files []StageFile, planPath string) error {
 	if !ValidChangeName(change) {
 		return fmt.Errorf("%w: %q", ErrInvalidChangeName, change)
 	}
@@ -299,7 +301,7 @@ func checkStageInput(activeRoot, change string, files []StageFile, planPath stri
 	if err := checkPathSyntax(files); err != nil {
 		return err
 	}
-	if other := stagedPlanPath(activeRoot, change); other != "" && planPath != "" &&
+	if other := stagedPlanPath(stagingRoot, change); other != "" && planPath != "" &&
 		filepath.Clean(other) != filepath.Clean(planPath) {
 		return &StagedByOtherPlanError{PlanPath: other}
 	}
@@ -311,8 +313,8 @@ func checkStageInput(activeRoot, change string, files []StageFile, planPath stri
 // missing, cannot be read, cannot be parsed, lists a bad file path, or has
 // no planPath. Such a staging has no owner to compare, so a new stage
 // replaces it.
-func stagedPlanPath(activeRoot, change string) string {
-	stagingDir := filepath.Join(activeRoot, filepath.FromSlash(StagingDirRel(change)))
+func stagedPlanPath(stagingRoot, change string) string {
+	stagingDir := filepath.Join(stagingRoot, filepath.FromSlash(StagingDirRel(change)))
 	manifest, err := readStageManifest(stagingDir)
 	if err != nil {
 		return ""

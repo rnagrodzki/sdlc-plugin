@@ -33,6 +33,18 @@ and `mcp-output-drives-behavior` guardrails.
 - A closed-set field's `jsonschema_description` MUST list every allowed value.
   A description that calls the field plain text or free text is a finding,
   even when the field has an enum tag.
+- A closed set that a description names MUST be listed in full. This holds for
+  a set inside a JSON-encoded or free-form field (for example the `reason`
+  values of the `held` entries inside a `detail` object), not only for a field
+  with an enum tag: the `jsonschema_description` of the outer field lists each
+  key the handler reads and each value it accepts inside. A registered tool or
+  action description that names the values of a closed set is built from the
+  canonical list, not typed by hand, so a new member cannot leave it stale. A
+  description that names some members, names a member the code lacks, or calls
+  the set free text is a finding. A test compares the description with the
+  canonical list. This extends the closed-set bullet above, which names a field
+  with an enum tag only. Example: a `detail` description that described `held`
+  incompletely, and a tool description that typed the held reasons by hand.
 
 ## Output struct contracts (`*Out`)
 

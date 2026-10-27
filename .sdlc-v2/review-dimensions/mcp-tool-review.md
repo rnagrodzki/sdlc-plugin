@@ -162,6 +162,20 @@ those same guardrails:
   with a `DomainError` that states the maximum and the value, and the
   description of the input builds its number from that constant. An input
   with a minimum and no maximum is a finding.
+- A list input and a free-text input that the handler stores or echoes MUST
+  have a maximum, as a count or size input does: a maximum entry count for a
+  list and a maximum length for text, each held in one named constant. The
+  handler rejects a larger input with a `DomainError` that states the limit and
+  the value, and the description of the input builds its number from that
+  constant. An input with no maximum is accepted at any size and is a finding.
+  The value that the handler checks, the value that it stores and the value
+  that it echoes are one value: a value trimmed for the check is stored
+  trimmed. A handler that cuts, trims or drops part of a value to fit a cap or
+  a form MUST say so in the output: a warning names the field, the limit and
+  what changed, and a cut with no warning is a finding. This extends the
+  maximum-value bullet above, which names count and size inputs only. Example:
+  a healing record whose `applied[]` list and `rationale` text had no maximum,
+  a `deferredId` stored untrimmed, and a patch cut with no warning.
 - A JSON-encoded collection input (for example `plannedWavesJson`) MUST
   document its omitted-field behavior and each input the handler rejects (an
   empty array when entries are required, duplicate IDs, partial coverage of

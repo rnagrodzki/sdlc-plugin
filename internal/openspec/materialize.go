@@ -1,7 +1,7 @@
 // Materialization of a staged OpenSpec change at run start.
 //
 // Plan stages a change's artifacts under
-// <active-worktree>/.sdlc-v2/openspec-staging/<change>/ (see stage.go) and
+// <main-worktree>/.sdlc-v2/openspec-staging/<change>/ (see stage.go) and
 // records the staging dir in the plan's **OpenSpec-Staging:** header. When a
 // run starts, Materialize moves the staged files into
 // openspec/changes/<change>/ by the first matching rule of the spec's rule
@@ -84,7 +84,9 @@ type MaterializeResult struct {
 }
 
 // Materialize applies the first matching rule for the change staged by
-// planContent, relative to the active worktree root activeRoot:
+// planContent. The target is under activeRoot. The staging dir is under
+// stagingRoot, or under activeRoot when the stagingRoot dir does not exist
+// and the target does not exist (the fallback for an older plan):
 //
 //  1. no **OpenSpec-Staging:** header: zero result, nil error
 //  2. invalid change name: ErrInvalidChangeName; nothing written
@@ -92,7 +94,8 @@ type MaterializeResult struct {
 //  4. target and staging exist, every stage.json file matches the target by
 //     SHA-256: staging dir deleted; "already"
 //  5. target and staging exist, any file differs: error; nothing changed
-//  6. target and staging both missing: error naming the staging path
+//  6. target and staging both missing: error naming the staging path (both
+//     staging paths when stagingRoot differs from activeRoot)
 //  7. a staged file's SHA-256 differs from stage.json: error; nothing written
 //  8. otherwise: `openspec new change`, copy each stage.json file, `openspec
 //     validate <change> --strict`, `git add openspec/changes/<change>/`,
@@ -102,7 +105,7 @@ type MaterializeResult struct {
 // kept. A failed validation returns an ErrMaterialize error carrying the CLI
 // output. The .openspec.yaml file `openspec new change` creates is never
 // overwritten. See ErrMaterialize for which errors wrap it.
-func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
+func Materialize(activeRoot, stagingRoot, planContent string) (MaterializeResult, error) {
 	change, ok := StagedChangeFromPlan(planContent)
 	if !ok {
 		return MaterializeResult{}, nil // rule 1
@@ -113,24 +116,17 @@ func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
 
 	targetRel := filepath.Join("openspec", "changes", change)
 	targetDir := filepath.Join(activeRoot, targetRel)
-	stagingDir := filepath.Join(activeRoot, filepath.FromSlash(StagingDirRel(change)))
-
 	targetExists, err := dirExists(targetDir)
 	if err != nil {
 		return MaterializeResult{}, err
 	}
-	stagingExists, err := dirExists(stagingDir)
+	stagingDir, stagingExists, err := resolveStagingDir(activeRoot, stagingRoot, change, targetExists)
 	if err != nil {
-		return MaterializeResult{}, err
+		return MaterializeResult{}, err // rule 6, or a stat failure
 	}
 	result := MaterializeResult{Change: change, Materialized: MaterializedAlready}
-
-	if targetExists && !stagingExists {
+	if !stagingExists {
 		return result, nil // rule 3
-	}
-	if !targetExists && !stagingExists {
-		return MaterializeResult{}, fmt.Errorf("%w: openspec/changes/%s/ does not exist and the staging dir %s is missing", // rule 6
-			ErrMaterialize, change, stagingDir+string(filepath.Separator))
 	}
 
 	manifest, err := readStageManifest(stagingDir)
@@ -139,14 +135,12 @@ func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
 	}
 
 	if targetExists {
-		for _, f := range manifest.Files {
-			got, err := fileSHA256(filepath.Join(targetDir, filepath.FromSlash(f.Path)))
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return MaterializeResult{}, err
-			}
-			if got != f.SHA256 {
-				return MaterializeResult{}, fmt.Errorf("%w: openspec change %s already exists and differs from staging", ErrMaterialize, change) // rule 5
-			}
+		bad, err := firstMismatch(manifest, targetDir)
+		if err != nil {
+			return MaterializeResult{}, err
+		}
+		if bad != "" {
+			return MaterializeResult{}, fmt.Errorf("%w: openspec change %s already exists and differs from staging", ErrMaterialize, change) // rule 5
 		}
 		if err := os.RemoveAll(stagingDir); err != nil { // rule 4
 			return MaterializeResult{}, fmt.Errorf("openspec materialize: delete %s: %w", stagingDir, err)
@@ -154,14 +148,12 @@ func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
 		return result, nil
 	}
 
-	for _, f := range manifest.Files { // rule 7
-		got, err := fileSHA256(filepath.Join(stagingDir, filepath.FromSlash(f.Path)))
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return MaterializeResult{}, err
-		}
-		if got != f.SHA256 {
-			return MaterializeResult{}, fmt.Errorf("%w: staged file %s changed after validation", ErrMaterialize, f.Path)
-		}
+	bad, err := firstMismatch(manifest, stagingDir)
+	if err != nil {
+		return MaterializeResult{}, err
+	}
+	if bad != "" {
+		return MaterializeResult{}, fmt.Errorf("%w: staged file %s changed after validation", ErrMaterialize, bad) // rule 7
 	}
 
 	// Rule 8. The target did not exist before this point, so removing it on
@@ -177,6 +169,54 @@ func Materialize(activeRoot, planContent string) (MaterializeResult, error) {
 	}
 	result.Materialized = MaterializedCreated
 	return result, nil
+}
+
+// resolveStagingDir returns the staging dir of change and whether it exists.
+// It is under stagingRoot. When that dir and the target are both missing and
+// stagingRoot differs from activeRoot, it is the dir under activeRoot (the
+// fallback for a plan that an older plugin staged under the active
+// worktree). A missing target with no staging dir is the rule 6 error, which
+// names every staging dir it checked. A target with no staging dir returns
+// exists false and no error (rule 3).
+func resolveStagingDir(activeRoot, stagingRoot, change string, targetExists bool) (dir string, exists bool, err error) {
+	dir = filepath.Join(stagingRoot, filepath.FromSlash(StagingDirRel(change)))
+	exists, err = dirExists(dir)
+	if err != nil || exists || targetExists {
+		return dir, exists, err
+	}
+	checked := []string{dir + string(filepath.Separator)}
+	if filepath.Clean(stagingRoot) != filepath.Clean(activeRoot) {
+		fallback := filepath.Join(activeRoot, filepath.FromSlash(StagingDirRel(change)))
+		fallbackExists, err := dirExists(fallback)
+		if err != nil {
+			return "", false, err
+		}
+		if fallbackExists {
+			return fallback, true, nil
+		}
+		checked = append(checked, fallback+string(filepath.Separator))
+	}
+	noun := "staging dir " + checked[0] + " is"
+	if len(checked) > 1 {
+		noun = "staging dirs " + strings.Join(checked, " and ") + " are"
+	}
+	return "", false, fmt.Errorf("%w: openspec/changes/%s/ does not exist and the %s missing", ErrMaterialize, change, noun)
+}
+
+// firstMismatch returns the path of the first stage.json file whose SHA-256
+// under dir differs from the manifest, or "" when every file matches. A
+// missing file counts as a mismatch. Any other read failure is returned.
+func firstMismatch(manifest StageManifest, dir string) (string, error) {
+	for _, f := range manifest.Files {
+		got, err := fileSHA256(filepath.Join(dir, filepath.FromSlash(f.Path)))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		if got != f.SHA256 {
+			return f.Path, nil
+		}
+	}
+	return "", nil
 }
 
 // createChange runs rule 8 up to and including `git add`: create the change

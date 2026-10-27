@@ -500,7 +500,7 @@ var planSkillsReferenceFileHashes = map[string]string{
 	"skills/plan/lens-requirements-prompt.md":         "1cca1107f1bed8ad92753e305114225d71505750f114e4cdd4f0e12b2f083236",
 	"skills/plan/lens-risk-prompt.md":                 "6e9bfc5711d0d14e7bba2293040f0184bc88911ce3c2cb5050ae1590648020fc",
 	"skills/plan/plan-reviewer-prompt.md":             "9e9b0e938c57db33def969f19d818ac978fd397956fb7d5d5aaa39b8141ff3fe",
-	"skills/plan/plan-format-reference.md":            "a5a8c6aa54c71dadc13c84b96030029246a3d91b905f558968741fddd7aa75d0",
+	"skills/plan/plan-format-reference.md":            "fa489c983e611dffa87cab0c4c8c85883c6c334db308d409d1d6b258a59ef35a",
 	"skills/plan/plan-template-default.md":            "45af486fb7e93c36ba47ccd9a5ef832e96b294ff804b36144dad0d6f892a3e7a",
 	"skills/execute/spec-compliance-reviewer.md":      "b163b798f92a9247eda48763c08c8f4ec43872fae31201427f204ebb4c99af1e",
 }
@@ -714,5 +714,58 @@ func TestPlanSkillCallsPassRunID(t *testing.T) {
 	}
 	for _, problem := range planSkillsRunIDProblems(content) {
 		t.Errorf("%s: %s", rel, problem)
+	}
+}
+
+// TestPlanSkillCreateFlowResumeRestage pins item 4 of "Create flow on
+// resume" in plan/SKILL.md. When both staging folders are missing, the
+// skill must rewrite the header to **OpenSpec-Create:** and go to item 5
+// (a stop there is a dead end: a re-run reaches the same stop). The
+// re-stage call must route valid:false and other errors, and a failed
+// main-worktree lookup must print a notice.
+func TestPlanSkillCreateFlowResumeRestage(t *testing.T) {
+	rel := "skills/plan/SKILL.md"
+	data, err := os.ReadFile(filepath.Join(planSkillsRepoRoot(t), rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	content := string(data)
+
+	const start = "**Create flow on resume:**"
+	from := strings.Index(content, start)
+	if from < 0 {
+		t.Fatalf("%s: no %q block found", rel, start)
+	}
+	block := content[from:]
+	if end := strings.Index(block, "\n\n"); end >= 0 {
+		block = block[:end]
+	}
+
+	for _, want := range []string{
+		"Replace the `**OpenSpec-Staging:**` header line with `**OpenSpec-Create:** <name>`",
+		"Then go to item 5.",
+		"print `Main worktree not found. Only the staging folder of the active worktree is used.`",
+		"`valid: false`: show `validateOutput`",
+		"This resume call is the first of the 5 calls that item 3 allows.",
+		"Any other error: print the error and its Suggestion, and stop",
+		"If the summary holds `Warning: Main worktree not found`",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("%s: Create flow on resume block does not contain %q", rel, want)
+		}
+	}
+	if strings.Contains(block, "Run /sdlc:plan again to author the change.") {
+		t.Errorf("%s: Create flow on resume still stops when both staging folders are missing; a re-run reaches the same stop", rel)
+	}
+
+	// The appendix Staging line and the header rewrite must name the main
+	// worktree: a bare .sdlc-v2/ path reads as the active worktree.
+	for _, want := range []string{
+		"**Staging:** `<stagingRoot>/.sdlc-v2/openspec-staging/<name>/`",
+		"This path is relative to the main worktree (the `stagingRoot` that `openspec_stage` returned)",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("%s does not contain %q", rel, want)
+		}
 	}
 }

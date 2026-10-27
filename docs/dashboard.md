@@ -48,7 +48,8 @@ For each registered repo, the page shows:
   dimensions as cards in balanced columns, review findings, plan
   guardrails, plan explorers, plan review rounds, the review queue of a
   ship run, the fixes of the received-review step when the run has no
-  review queue, or the result of a commit step with nothing to
+  review queue, the harden edits, run records and held proposals of a ship
+  harden step, or the result of a commit step with nothing to
   commit. Each issue has a severity, a location (the file and line of a
   review finding, else the step, wave, or task it came from), and a
   reason. The issues tile lists issues from critical to info and shows at
@@ -840,10 +841,11 @@ collector reads the data, and the tool action that writes it.
 
 | Field | Source | Written by |
 |---|---|---|
-| `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, `findings`, `guardrails`, `result`, or `fixes`. It tells which field of `detail` is filled. | Collector, not stored |
+| `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, `findings`, `guardrails`, `result`, `fixes`, or `harden`. It tells which field of `detail` is filled. | Collector, not stored |
 | `steps[].startedAt`, `steps[].completedAt` | `startedAt` and `completedAt` of a ship step or an execute wave, as RFC 3339 text. No key when the time is absent or does not parse. A running step has no `completedAt`. The `plan` step of a ship block gets its times from `linkedPlan` of the ship state, else from the plan row of `runs.jsonl` (old runs). With neither, it has no times. The steps of a standalone plan or review pipeline have no times. | ship_state step actions; execute_state wave actions; ship_state `complete-step` of `execute` for `linkedPlan` |
 | `steps[].detail.fixes` | `healing.fixProgress[]` of the ship state, in stored order. Each row has `title` (redacted, at most 120 characters), `severity`, `file`, `line` (absent when 0), `status`: `queued`, `fixing`, `fixed`, `failed`, or `deferred`, and `origin` (`local-review` or `pr-comment`, `local-review` when the record has none). A record with an unknown status, severity or origin is skipped. | ship_state `healing_record` kinds `fix-progress` and `fixed`; ship_state `defer` |
 | `steps[].detail.fixes[].origin` | `origin` of the fix record. `local-review` when absent. | received-review |
+| `steps[].detail.harden` | `healing.hardened[]`, `deferredFindings[]`, `healing.fixed[]` and the `harden` decisions of the ship state. `edits[]` `{surface, action, targetFile, rationale?, patch?, patchCut?}` (at most 100, rationale at most 600 characters, patch at most 1536 bytes, both redacted). `clusters[]` `{trigger, phase, interrupted, classification, applied, skipped}` (at most 50, trigger at most 120 characters). `funnel?` `{fixNow, staysDeferred, evidenceOnly, suppressed, loneDisagree}` (the first three count findings, the last two count files). `fixPass?` `{fixed, total}`. `held[]` `{surface, action, targetFile, reason, label, deferredId?}` (at most 100). `timeline[]` `{at, decision}` (at most 100, decision at most 120 characters). `malformed`. A `started` record is `interrupted` unless the harden step still runs. A run that stops with its harden step `in_progress` shows the pipeline as stalled, and its `started` record keeps `interrupted: false`. The paragraph "Interrupted run or malformed harden record" below the table gives the rules of each field. | ship_state `healing_record` kind `hardened`, ship_state `decide`, Collector (derived) |
 | received-review step | A ship run with a review step has a seeded received-review entry in its ship state, and the step shows from that entry with its stored status and times. An older run gets the step after the first `review` step when `healing.fixProgress[]` holds a valid fix record. A `fixProgress` value that is not a list, or a list with records and no valid fix record, adds a `state` issue. The step of an older run is `in_progress` while a row is `queued` or `fixing` on a live run, else `completed`. Its `startedAt` is the earliest `firstAt`. Its `completedAt` is the latest `updatedAt`. | ship_prepare (seeded entry); Collector, derived |
 | `steps[].detail.reviewQueue` | Set on the `review` step of a ship block that has `reviewTotals`. `rows` holds one row for each fix record (`healing.fixProgress`), then one row for each deferred finding that no fix record pairs with. A fix record pairs with a deferred finding when it has the same `deferredId`, else the same file, line and title. A deferred finding with no `deferredId` also pairs with the only fix record on its file and line. A deferred finding with a `deferredId` does not pair this way: `ship_state defer` copies the `deferredId` onto the fix record that it matched, so a `deferredId` that no fix record has means that no fix record matched. The queue does not read `fixedInRun`. It has at most 200 rows. A row has `title`, `severity`, `file`, `line` (`""` when none), `status`, `origin`, `dimension` (`""` when unknown) and `text` (`""` when unknown). `status` is a fix status, or `below` for a deferred finding with the reason `below-threshold` or no reason, or `deferred` for a deferred finding with any other reason. When the queue has no row from these two sources, it has one row with the status `open` for each review finding of the joined review run. A row gets its `dimension` from the review finding that has its file and line, only when exactly one finding has them. A row with no text of its own gets its `text` from that finding too. `threshold` is `flags.reviewThreshold`, `info` when absent or not a severity. `unrouted` is `reviewTotals.unaccounted` (at least 0): the findings with no fix record and no deferred entry. It is 0 when the queue has `open` rows, because every review finding then has a row. `reason` is `no-findings` when the review found 0 and the queue has no row, `all-below-threshold` when every row is `below` and `unrouted` is 0, else `""`. The collector adds a `state` issue to the ship block when `deferredFindings` is not a list, when deferred entries are not an object or have no title, when `flags.reviewThreshold` is present and not a severity, and (severity `info`) when it cuts rows at 200. | Collector, not stored |
 | `steps[].detail.waves` | `waves[]` of the execute state, with `number`, `status`, `committedSha`, and `tasks[]`. A task name is the name of its task row, else the name in the wave's `planned[]`, else the `plannedTasks` name. | The execute_state wave and task actions: `wave-start`, `wave-done`, `wave-fail`, `task-done`, `task-fail`, `wave-commit`, `wave-committed`, and the others that edit `waves[]` |
@@ -857,7 +859,7 @@ collector reads the data, and the tool action that writes it.
 | `steps[].detail.explorers` | In a plan block: the `explore-*` writers of the plan run's evidence store. In a ship block: the `planExploreSummary` of the ship state, and `rounds` from its `planReviewRounds`. | plan_support `evidence_record`; ship_state `cleanup-pipeline` for `planExploreSummary` and `planReviewRounds` |
 | `steps[].detail.rounds`, `.maxRounds` | `reviewRounds` of the plan state. In a ship block: `planReviewRounds` of the ship state, which holds the same rows. `maxRounds` is the review-loop limit of the plan skill, not a stored value. | plan_mark `review-round`; ship_state `cleanup-pipeline` for `planReviewRounds` |
 | `steps[].detail.roundTotals`, `.repairLimit`, `.outcomes` | From `reviewRounds` and `reviewOutcome` of the plan state. `roundTotals` holds `iterations` (the number of stored rounds), `violations`, `fixes`, and `distinct`. When every round has a `findings` list, `violations` and `fixes` count distinct finding IDs across all rounds, a finding counts as fixed when any round fixed it, and `distinct` is `true`. Else they are the sums of the `found` and `fixed` counts of the rounds, and `distinct` is `false`. `repairLimit` is derived, not stored: it is `true` when the last stored round has a number of at least the review-loop limit (5) and its merged status is Issues Found. `outcomes` is one `{id, text, choice, reason}` for each finding of `reviewOutcome.findings`, in stored order. | plan_mark `review-round`, `review-outcome` |
-| `issues[].source`, `.severity`, `.text`, `.file`, `.line`, `.ref` | Failed ship steps, failed or partial waves, failed tasks that have an error, `issues[]` of the state file, review findings, review ledger files that cannot be used and a damaged `healing.fixProgress` (as `state` issues with no `ref`), and the stalled notice. `source` is `step`, `wave`, `review`, `state`, `task`, or `pipeline`. `.file` and `.line` are set for `review` issues only. `ref` is the step, wave, dimension, or task. | Collector, derived. Inputs come from ship_state `fail`, the execute_state wave and task actions, and `ledger_checkout` |
+| `issues[].source`, `.severity`, `.text`, `.file`, `.line`, `.ref` | Failed ship steps, failed or partial waves, failed tasks that have an error, `issues[]` of the state file, review findings, review ledger files that cannot be used and a damaged `healing.fixProgress` (as `state` issues with no `ref`), a harden record that cannot be read or a ship state list that is not a list (as `medium` `state` issues), a cut harden list (as an `info` issue), and the stalled notice. `source` is `step`, `wave`, `review`, `state`, `task`, or `pipeline`. `.file` and `.line` are set for `review` issues only. `ref` is the step, wave, dimension, or task. | Collector, derived. Inputs come from ship_state `fail`, the execute_state wave and task actions, and `ledger_checkout` |
 | `sessionId` | `sessionId` of the ship, execute or plan state; `""` when unknown. A plan state gets its session ID from the `record-mcp-invocation` hook after each `plan_prepare` call. A review block has none. | ship_prepare or ship_state `init`; execute_state `init`; hook `record-mcp-invocation` |
 | `attention` | The newest open wait record of the pipeline session and branch. It holds `kind` (`question` or `permission`), `askedAt`, `header`, and `text`. Only a `running` pipeline with a `sessionId` has it. Absent when no wait is open. | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
 | `repos[].loneWaits[]` | Open waits that no shown running pipeline owns (same session ID and branch), newest first, max 50. `[]` when none. A wait record older than 24 hours is not listed. Each item has `kind` (`question` or `permission`), `sessionId`, `toolUseId` (`""` for a permission), `branch`, `header`, `text` and `askedAt`. See [Dismiss a wait](#dismiss-a-wait). | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
@@ -869,6 +871,102 @@ collector reads the data, and the tool action that writes it.
 | `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a `**Started:**` line that does not parse, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times, an unread attention folder (`Attention folder unread: ...`), a count of open waits older than the newest 50 lone waits (`N older open waits not shown`). `[]` when none, never `null`. | Collector, derived |
 | `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, `updatedAt` (the change time of the file), and `durationMs`. The collector reads the first 4 KiB of each file. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `durationMs` is a number of milliseconds, always present: the change time of the file minus the UTC RFC 3339 time on the `**Started:**` line. A status change or any other edit moves the change time, so the value grows with each change; it is not the time spent on the topic. It is `0` when the file has no Started line, when the line does not parse, or when the start is equal to or later than the change time. A line that does not parse also adds the warning `Preplan <slug> start time not read: "<text>" (expected RFC 3339; duration shown as 0)`. A missing line adds no warning. `[]` when none, never `null`. | plan_support `preplan_context` (skeleton and Started line), then the preplan skill |
 | `pipelines[].planStartedAt` | Ship blocks only: `linkedPlan.startedAt` of the ship state, else the `started_at` of the joined plan row (see [How runs join a ship block](#how-runs-join-a-ship-block)). Absent when no plan is linked. | ship_state `complete-step` of `execute` (`linkedPlan`); plan_mark `done` (the plan row) |
+
+**Interrupted run or malformed harden record.** A harden run writes a
+`started` record, then a `done` record that replaces it. The two cases below
+look alike on the page. Their causes and their fixes differ.
+
+- **Interrupted run.** The `clusters[]` row has `phase` `started` and
+  `interrupted: true`. The record is valid. The cause is a session that
+  ended between the two writes, or a `done` write that failed (see
+  [Ship state record](skills/harden.md#ship-state-record)). The ship state
+  file needs no repair. A resume of the ship run does not run that cluster
+  again. The harden step commits its leftover edits in its own commit, not
+  the pipeline `commit` step. A `started` row is not
+  interrupted while the harden step is `in_progress` and the run has no
+  `pipelineCompletedAt`.
+- **Malformed record.** `malformed` counts it, and the page does not show
+  it. The pipeline gets one `medium` `state` issue: `healing.hardened of the
+  ship state holds N record(s) that cannot be read — they are not shown in
+  the harden step`. A record is malformed when it is not an object; when
+  `phase` is not `started` or `done`; when `trigger` is empty; when
+  `applied` is not a list; when an `applied[]` or `held[]` entry is not an
+  object or lacks `surface`, `action` or `targetFile`; when `rationale` or
+  `patch` is not a string; when `held` is present and not a list; or when
+  `held[].reason` is unknown. A `healing.hardened` value that is not a list
+  counts as one malformed record, and it gives another `medium` `state`
+  issue in place of the issue above: `healing.hardened of the ship state is
+  not a list (found <type>) — the harden step does not show its run
+  records`. `<type>` is the JSON type found, for example `object` or `null`.
+  `healing_record` stores the valid form,
+  so the cause is a ship state file that was edited by hand, damaged, or
+  written by another tool. To fix it, correct the record to the form in
+  [Ship state record](skills/harden.md#ship-state-record), or remove it.
+
+The rules of the other fields:
+
+- **Limits.** The page reads the first 50 valid run records. `edits[]` and
+  `held[]` come only from those records. Each of `edits[]`, `held[]` and
+  `timeline[]` holds at most 100 rows. A cut list adds one `info` `state`
+  issue: `N harden <list> rows not shown: the harden step shows the first L of
+  M`. `<list>` is `run record`, `edit`, `held` or `timeline`.
+- **`clusters[]` and `edits[]`.** `clusters[].applied` is a number: the
+  count of `applied[]` entries in the run record, not the list. The entries
+  are in `edits[]`. `edits[].patchCut` is `true` when the stored entry has
+  `patchCut: true` (the writer cut the patch at 1536 bytes), or when the
+  patch is longer than 1536 bytes after redaction and the page cuts it. The
+  key is absent otherwise, and always absent for an edit with no patch.
+- **`funnel`.** It sorts the findings with the rules of `harden_clusters`.
+  The findings are the `healing.fixed` records with no `deferredId` (verdict
+  `agree-will-fix`), then the `deferredFindings` entries. An entry with an
+  empty reason counts as `below-threshold`. The funnel shows what harden saw
+  before its fix pass: it ignores `fixedInRun`, so an entry that the fix pass
+  fixed still counts in `fixNow`. `fixPass` shows the result of the fix pass.
+  The first three fields count findings, the last two count files:
+
+  | Field | Counts |
+  |---|---|
+  | `fixNow` | `below-threshold` findings with a `deferredId`. The fix pass of the harden step fixes them. |
+  | `staysDeferred` | `below-threshold` findings with no `deferredId`, and `needs-direction` findings. They stay deferred. |
+  | `evidenceOnly` | `disagree` and `wont-fix` findings. Harden reads them as evidence only. |
+  | `suppressed` | Files over the cap of 5 clusters. The files with the fewest findings (ties by path) are not hardened. |
+  | `loneDisagree` | Files whose only finding is a `disagree` finding. They form no cluster. |
+
+  A `healing.fixed` record or `agree-will-fix` finding counts in none of the
+  three finding fields. A file that has only `below-threshold` findings forms
+  no cluster, so it is never `suppressed`. The funnel counts at most 500
+  findings. A longer input adds one `info` `state` issue: `The harden funnel
+  counts only the first 500 findings of the ship state`. An entry that is not
+  an object, and a `deferredFindings` entry with an unknown reason, is not
+  counted; such entries add one `medium` `state` issue: `N entries of
+  healing.fixed and deferredFindings of the ship state cannot be read — the
+  harden funnel does not count them`. When `healing.fixed` or
+  `deferredFindings` is present and not a list (`null` included), `funnel`
+  is absent, and one `medium` `state` issue names the first bad field and
+  the type found: `<field> of the ship state is not a list (found <type>) —
+  the harden step does not show its funnel`. When `healing` is present and
+  not an object (`null` is an empty object), `funnel` is absent, no run
+  record is read, and one `medium` `state` issue says `healing of the ship
+  state is not an object (found <type>) — the harden step does not show its
+  run records and funnel`.
+- **`timeline`.** One row for each decision of step `harden`, in stored
+  order. `at` is `""` when the stored time is not RFC 3339. `decision` is
+  redacted and cut at 120 characters. When `decisions` is not a list,
+  `timeline` is `[]`, `fixPass` is absent, and one `medium` `state` issue
+  says `decisions of the ship state is not a list (found <type>) — the harden
+  step does not show its timeline`.
+- **`fixPass`.** Present when a `harden` decision starts with `fix pass
+  started` and the lists above are valid. `fixed` counts the
+  `deferredFindings` entries with `fixedInRun: true`. `total` adds the
+  entries that are not fixed yet, have a `deferredId`, and have the reason
+  `below-threshold` or no reason.
+- **`held[].reason` and `.label`.** `label` is the page text of `reason`:
+
+  | `reason` | `label` |
+  |---|---|
+  | `pending-stored` | `stored as a deferred item` |
+  | `pending-not-stored` | `not stored — copy it by hand` |
+  | `not-processed` | `not processed — harden stopped` |
 
 **Deferred findings that the fix pass fixed.** `healing_record` kind `fixed`
 with `detail.deferredId` sets `fixedInRun:true` on the `deferredFindings`
@@ -917,6 +1015,8 @@ Two consumers keep the entry:
   `received-review` step. On a completed run, the step shows
   completed. A row keeps its last status. A `queued` or `fixing` row on a
   completed run means that the fix pass stopped.
+  The `harden` step has `harden` when the ship state holds
+  `healing.hardened` or a decision of step `harden`.
 
 ### How runs join a ship block
 
@@ -955,6 +1055,9 @@ without names, unless a wave stores the name. A ship state without
 `planExploreSummary` has no `plan` step when it also has no `linkedPlan` and no
 joined plan row. A ship state without
 `planReviewRounds` shows explorers only.
+A harden record written before `rationale`, `patch` and `held`
+existed shows the action, the surface and the file of each edit, and no
+held rows.
 
 ### Lifetime of the source data
 

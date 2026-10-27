@@ -1535,10 +1535,7 @@ func renderShipReportDeferred(w *shipReportWriter, out ShipRunReportOut) {
 	}
 	for _, raw := range out.Deferred {
 		m, _ := raw.(map[string]any)
-		reason := shipReportStr(m["reason"])
-		if reason == "" {
-			reason = history.ReasonBelowThreshold
-		}
+		reason := deferredReason(m)
 		w.line("- [%s] %s — %s (%s)", shipReportShort(shipReportStr(m["severity"]), shipReportCommandMax),
 			shipReportShort(shipReportLocation(m), shipReportTextMax),
 			shipReportShort(shipReportStr(m["title"]), shipReportTextMax),

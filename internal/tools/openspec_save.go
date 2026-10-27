@@ -22,18 +22,18 @@ type OpenspecSaveIn struct {
 
 // OpenspecSaveOut is the output of the openspec_save tool. Materialized is
 // "created" or "already". StagedFiles lists the staged paths under
-// openspec/changes/<change>/. Warnings lists non-fatal problems, for example
-// a change with no tasks.md.
+// openspec/changes/<change>/. Warnings lists non-fatal problems: a change
+// with no tasks.md, and a main worktree that could not be resolved.
 type OpenspecSaveOut struct {
-	Change        string   `json:"change"`
-	Branch        string   `json:"branch"`
-	BranchCreated bool     `json:"branchCreated"`
-	Materialized  string   `json:"materialized"`
-	RefsStamped   int      `json:"refsStamped"`
-	StagedFiles   []string `json:"stagedFiles"`
-	Warnings      []string `json:"warnings"`
-	Summary       string   `json:"summary"`
-	Next          string   `json:"next"`
+	Change        string   `json:"change" jsonschema_description:"Name of the saved OpenSpec change. Example: add-widget"`
+	Branch        string   `json:"branch" jsonschema_description:"Branch that holds the change: openspec/<change>, or the branch named by an existing **OpenSpec-Saved:** line."`
+	BranchCreated bool     `json:"branchCreated" jsonschema_description:"True when this call created and switched to the branch openspec/<change>; false when the save ran on that branch already."`
+	Materialized  string   `json:"materialized" jsonschema_description:"created when this call created openspec/changes/<change>/; already when an earlier call or run created it."`
+	RefsStamped   int      `json:"refsStamped" jsonschema_description:"Count of task lines in openspec/changes/<change>/tasks.md that got a ref comment. 0 when tasks.md does not exist or on an already save."`
+	StagedFiles   []string `json:"stagedFiles" jsonschema_description:"Repo-relative paths under openspec/changes/<change>/ that are staged in git after the call. Empty when the change dir matches the last commit."`
+	Warnings      []string `json:"warnings" jsonschema_description:"Non-fatal problems of a successful save. Sources: openspec/changes/<change>/tasks.md does not exist (no task refs stamped); the main worktree could not be resolved, so only the staging folder of the active worktree was read. Empty when neither applies."`
+	Summary       string   `json:"summary" jsonschema_description:"One sentence that names the change, the branch and the count of staged files."`
+	Next          string   `json:"next" jsonschema_description:"The next step for the caller, for example to run the commit skill and then the pr skill."`
 }
 
 // openspecSavedHeaderRe matches the plan header line openspec_save writes
@@ -60,18 +60,57 @@ var openspecSaveGit = func(dir string, args ...string) (string, error) {
 	return execx.Run("git", args, execx.Options{Dir: dir, KeepLeadingSpace: true})
 }
 
-// openspecSave saves the OpenSpec change staged by the plan at in.PlanPath
-// into openspec/changes/<change>/ on the branch openspec/<change>. Every git
-// command and the change files use workDir. The plan file is read and
-// rewritten at in.PlanPath. It checks the plan path, the header lines, and
-// the change name before any git command. It then applies the branch rule
-// and the status guard before it creates the branch, so a failed guard
-// changes nothing. A failure after the branch is created leaves the repo on
-// that branch, and the error Suggestion names it. On success the change
-// files are staged and the plan's **OpenSpec-Staging:** line is rewritten to
-// **OpenSpec-Saved:**. A plan that already has the Saved line goes to
-// openspecSaveAlready.
-func openspecSave(workDir string, in OpenspecSaveIn) (OpenspecSaveOut, error) {
+// openspecSaveDirs holds the roots of one save.
+type openspecSaveDirs struct {
+	// Active is the active worktree: every git command and the change files
+	// use it.
+	Active string
+	// Staging is the root whose staging folder is read first (the main
+	// worktree). Empty means Active.
+	Staging string
+	// MainWarning is set when the main worktree could not be resolved. A
+	// successful save adds it to Warnings; a failed save adds it to the error
+	// Suggestion.
+	MainWarning string
+}
+
+// stagingRoot returns Staging, or Active when Staging is empty.
+func (d openspecSaveDirs) stagingRoot() string {
+	if d.Staging == "" {
+		return d.Active
+	}
+	return d.Staging
+}
+
+// openspecSaveRun saves the OpenSpec change staged by the plan at
+// in.PlanPath into openspec/changes/<change>/ on the branch openspec/<change>.
+// Every git command and the change files use dirs.Active. The staged files
+// are read from the staging folder under dirs.Staging, or under dirs.Active
+// for a plan from an older plugin. The plan file is read and rewritten at
+// in.PlanPath. It checks the plan path, the header lines, and the change name
+// before any git command. It then applies the branch rule and the status
+// guard before it creates the branch, so a failed guard changes nothing. A
+// failure after the branch is created leaves the repo on that branch, and the
+// error Suggestion names it. On success the change files are staged and the
+// plan's **OpenSpec-Staging:** line is rewritten to **OpenSpec-Saved:**. A
+// plan that already has the Saved line goes to openspecSaveAlready.
+func openspecSaveRun(dirs openspecSaveDirs, in OpenspecSaveIn) (OpenspecSaveOut, error) {
+	out, err := openspecSaveSteps(dirs, in)
+	if err != nil {
+		if dirs.MainWarning != "" {
+			openspecSaveNote(err, " "+dirs.MainWarning)
+		}
+		return OpenspecSaveOut{}, err
+	}
+	if dirs.MainWarning != "" {
+		out.Warnings = append(out.Warnings, dirs.MainWarning)
+	}
+	return out, nil
+}
+
+// openspecSaveSteps runs the checks and writes of openspecSaveRun.
+func openspecSaveSteps(dirs openspecSaveDirs, in OpenspecSaveIn) (OpenspecSaveOut, error) {
+	workDir := dirs.Active
 	plan, err := openspecSaveReadPlan(in.PlanPath)
 	if err != nil {
 		return OpenspecSaveOut{}, err
@@ -95,7 +134,7 @@ func openspecSave(workDir string, in OpenspecSaveIn) (OpenspecSaveOut, error) {
 		}
 	}
 
-	out, err := openspecSaveApply(workDir, in.PlanPath, plan, change)
+	out, err := openspecSaveApply(dirs, in.PlanPath, plan, change)
 	if err != nil {
 		if create {
 			openspecSaveNoteBranch(err, target)
@@ -284,13 +323,16 @@ func openspecSaveGuards(workDir, change string) (create bool, err error) {
 
 // openspecSaveApply runs the writes of a save on the current branch:
 // Materialize, the task ref stamp, git add on the change dir, and the plan
-// header rewrite. The returned output has BranchCreated false; the caller
+// header rewrite. Materialize reads the staged files under dirs.Staging (or
+// under dirs.Active for a plan from an older plugin) and writes the change
+// under dirs.Active. The returned output has BranchCreated false; the caller
 // sets it.
-func openspecSaveApply(workDir, planPath, plan, change string) (OpenspecSaveOut, error) {
+func openspecSaveApply(dirs openspecSaveDirs, planPath, plan, change string) (OpenspecSaveOut, error) {
+	workDir := dirs.Active
 	changeDir := openspecSaveChangeDir(change)
 	target := "openspec/" + change
 
-	res, err := openspec.Materialize(workDir, plan)
+	res, err := openspec.Materialize(workDir, dirs.stagingRoot(), plan)
 	if err != nil {
 		return OpenspecSaveOut{}, openspecSaveMaterializeError(err)
 	}
@@ -367,7 +409,12 @@ func openspecSaveWritePlan(path, content string) error {
 // save created and switched to branch, so the caller knows where the repo
 // is. A retry on that branch continues the save.
 func openspecSaveNoteBranch(err error, branch string) {
-	note := fmt.Sprintf(" The save created and switched to branch %s. Stay on %s to call openspec_save again.", branch, branch)
+	openspecSaveNote(err, fmt.Sprintf(" The save created and switched to branch %s. Stay on %s to call openspec_save again.", branch, branch))
+}
+
+// openspecSaveNote appends note to the Suggestion of a typed error. Any
+// other error is left as it is.
+func openspecSaveNote(err error, note string) {
 	var de *mcpserver.DomainError
 	if errors.As(err, &de) {
 		de.Suggestion += note

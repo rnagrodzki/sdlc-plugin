@@ -168,6 +168,7 @@ const (
 	dashboardKindGuardrails = "guardrails" // plan setup station
 	dashboardKindResult     = "result"     // one result line of a ship step
 	dashboardKindFixes      = "fixes"      // received-review station of a ship run
+	dashboardKindHarden     = "harden"     // harden station of a ship run
 )
 
 // DashboardStepDetail is what a pipeline did inside one step. Kind tells
@@ -191,6 +192,7 @@ type DashboardStepDetail struct {
 	ReviewPlan   *DashboardReviewPlan      `json:"reviewPlan,omitempty"`  // kind dimensions
 	Fixes        []DashboardFix            `json:"fixes,omitempty"`       // kind fixes
 	ReviewQueue  *DashboardReviewQueue     `json:"reviewQueue,omitempty"` // review step of a ship run
+	Harden       *DashboardHarden          `json:"harden,omitempty"`      // kind harden
 }
 
 // DashboardReviewQueue is the review queue of a ship review step.

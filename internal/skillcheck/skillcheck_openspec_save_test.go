@@ -195,6 +195,29 @@ func TestOpenspecSaveSkillParity(t *testing.T) {
 		}
 	})
 
+	// openspec_save reads the staging folder of the main worktree, falls
+	// back to the active worktree for a plan that an older plugin staged,
+	// and reads only the active worktree, with a warning, when the main
+	// worktree cannot be resolved. Both pages must state these conditions.
+	t.Run("staging_folder_conditions", func(t *testing.T) {
+		for name, text := range map[string]string{"openspec-save/SKILL.md": skill, "docs/skills/openspec-save.md": docs} {
+			flat := strings.Join(strings.Fields(text), " ")
+			for _, want := range []string{
+				"an older plugin staged",
+				"Main worktree not found (...)",
+				"of the active worktree",
+			} {
+				if !strings.Contains(flat, want) {
+					t.Errorf("%s does not contain %q", name, want)
+				}
+			}
+			if strings.Contains(flat, "A run in any worktree of the repo finds it.") ||
+				strings.Contains(flat, "skill runs from any worktree of the repo.") {
+				t.Errorf("%s says without a condition that a run in any worktree finds the staging folder", name)
+			}
+		}
+	})
+
 	t.Run("skill_lists_name_the_skill", func(t *testing.T) {
 		readme := executeSkillsReadFile(t, filepath.Join(docsDir, "skills", "README.md"))
 		if !strings.Contains(readme, "](openspec-save.md)") {

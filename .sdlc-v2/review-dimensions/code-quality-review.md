@@ -64,6 +64,14 @@ Review Go source changes for baseline code quality in this module
   a hard-coded number in a description, is a finding. This extends the
   format-derived literal rule above, which names only values derived from a
   format.
+- A string that is a value of a closed set (a phase, a status, a step name, a
+  reason) is not typed inline where the package names that set with constants.
+  Grep the package for the literal and for the constants of the set before
+  writing it in a comparison, an assignment or a map key, and use the
+  constant. When the set has no constants and two or more sites use the
+  literal, define them. This extends the format-derived literal rule above,
+  which names only values derived from a format. Example: the phase `started`
+  typed as an inline literal.
 - Naming is consistent with sibling files in the same package — check for
   drift before introducing a second convention.
 - Documentation strings/doc comments citing paths (`.sdlc`, `.sdlc-v2`) or
@@ -182,12 +190,30 @@ Review Go source changes for baseline code quality in this module
   instead, or state in the review why the argument order cannot be swapped by
   mistake. This extends the named-struct rule above. Example: `PruneTargets`
   took five adjacent `string` parameters.
+- A function must not take an `error` as an input parameter to decide its
+  own result. The caller handles the error where it arises and passes the
+  callee only the values that the callee needs; the callee returns its own
+  failure as an `error`. A function whose job is to wrap, classify or render an
+  error is exempt. An `error` parameter splits one error path across two
+  functions. This extends the rule above that a failure travels as an `error`
+  return value. Example: `openspecSaveRoots` took an `error` as an input
+  parameter.
 - Doc comments must be complete, not only accurate: when the code handles a
   case the doc comment does not mention (a second action that returns the
   same type with extra status values, a field populated on more paths than
   stated, or an additional DomainError failure mode), that omission is a
   finding, the same as a claim the code does not back. Check MCP tool
   description strings the same way.
+- A doc comment that names the callers or users of an identifier ("Used by X
+  and Y", "called from Z") makes a claim about code outside the function body,
+  and the claim goes stale when a caller is added or removed. Grep the package
+  for every caller and compare the list with the comment: a caller that the
+  comment leaves out, or a named function that does not call the identifier, is
+  a finding. Prefer a comment that states what the identifier does and names no
+  caller. This extends the doc-comment completeness rule above, which checks
+  the cases in the code body. Example: the doc comment of `hardenShipList`
+  named one caller and was wrong, and the doc comment of `guardrailDescMaxBytes`
+  named two users and missed `bytesOver`.
 - Functions or types with near-identical names (differing only by a package
   prefix or a single token, e.g. `openspec.StagedChangeFromPlan` vs a local
   `openspecChangeFromPlan`) that extract different things from the same
@@ -198,20 +224,29 @@ Review Go source changes for baseline code quality in this module
   confuse this with Go error values in the `error` interface, which follow Go
   convention and stay lowercase (`errors.New("file not found")`). Exported
   string constants representing user-visible text must start with a capital
-  letter.
+  letter. A stored label or issue text that a page or report draws counts as
+  user-facing text, and the strings of one list share one case: a new string
+  matches its siblings. When a stored value stays lowercase, the display layer
+  capitalizes it at one named site. Otherwise the stored value changes together
+  with every test, fixture and spec line that pins it. The change states which
+  of the two it uses, and a test pins the result. Example: an issue text in
+  sentence case beside held labels in lower case.
 - Validator functions must not duplicate input checks. When a handler
   validates the same input condition in more than one place (e.g. two
   separate "file is required" checks for the same action), consolidate into
   a single validation point and call it from both paths. Duplicate checks
   diverge when one is updated and the other is not, and they hide the real
   validation logic under repeated boilerplate.
-- Convergence checks and loop-termination conditions must avoid fragile
-  exact-equality comparisons. For example, `round == maxRounds` fails when
-  round is incremented past maxRounds; use `>=` instead. A convergence check
-  like `score == prevScore` fails when score can skip the equality point;
-  prefer monotone predicates or tolerance bands. Equality-based termination
-  in critical control flow is brittle and should be replaced with robust
-  comparison patterns.
+- Convergence checks, loop-termination conditions and limit checks must avoid
+  fragile exact-equality comparisons. For example, `round == maxRounds` fails
+  when round is incremented past maxRounds; use `>=` instead. A convergence
+  check like `score == prevScore` fails when score can skip the equality point;
+  prefer monotone predicates or tolerance bands. A check of a count, a length
+  or a size against a cap or a maximum (`len(items) == max`) fails the same way
+  when the count can pass the limit value, for example when it grows by more
+  than one step or when the limit changes: write `>=` or `>`. Equality-based
+  termination in critical control flow is brittle and should be replaced with
+  robust comparison patterns. Example: a cap check written with `==`.
 - Redundant recomputation of values that are already available must be
   consolidated. When a function is called multiple times with the same
   inputs in the same scope (e.g. `LimitsFor` called in a loop with an
@@ -220,7 +255,12 @@ Review Go source changes for baseline code quality in this module
   calls mask expensive operations and are worse than not optimizing at all.
 - Type assertions use the two-value form (`v, ok := x.(T)`) and handle
   `ok == false`. A dropped `ok` is a silently discarded error, as in
-  `commitBaseHead`.
+  `commitBaseHead`. When the asserted value is a key of a stored file or state
+  map (`healing, _ := data["healing"].(map[string]any)`), the `false` branch
+  returns an error that names the file and the key (a `DataError` in
+  `internal/tools`). Reading a damaged value as absent lets the next write
+  overwrite it. Every reader of the same key treats a wrong type the same way:
+  grep the package for the key and compare the readers.
 - Helper duplication is checked by behavior, not only by literal. Before
   adding a helper, grep the package and the module for an existing function
   that does the same work, even under another name (for example
@@ -231,6 +271,18 @@ Review Go source changes for baseline code quality in this module
   that differ only in a name or a message string, are a finding. Merge them
   into one helper with a parameter. This extends the existing-function check
   above. Example: `guardReadError` and `mirrorReadError`, added in one diff.
+- A split of an oversize function does not end the size rule. Each helper that
+  the split creates meets the same limits as the function (about 100 lines,
+  about 10 return statements): count the lines and the returns of each new
+  helper (`grep -n '^func '` gives where each starts), and split it again or
+  state why it stays whole. A loop, check or switch that appears in two or more
+  helpers or functions of the same change, and differs only in a name or a
+  message, is one block: write it once in a shared helper that each site calls.
+  A copy of the block in each helper is a finding, even when each copy is
+  short. This extends the function-length bullets and the helper-duplication
+  bullet above, which count one function and compare whole helper bodies.
+  Example: a validation loop for surface, action and target file copied into
+  three helpers, and two helpers of 85 and 90 lines with 11 and 13 returns.
 - A parse, format or normalization of a value that the project stores in a known
   layout (a timestamp line, a dated file name, a stored heading) must call the
   helper that already reads or writes that layout. Before writing `time.Parse`,
@@ -246,6 +298,17 @@ Review Go source changes for baseline code quality in this module
   the two copies drift on a missing file, an empty file and a parse error.
   This extends the stored-layout rule above. Example: `readSiblingMeta`
   hand-rolls a JSON read next to `isDonePlanRun`.
+- A rule that gives a stored value its meaning (an empty reason means
+  below-threshold) lives in one named helper that every site calls. The same
+  holds for reading a key of a stored record (a flag such as
+  `m["fixedInRun"]`): grep the package for the key and call the helper that
+  reads it. Before writing such a condition or key read inline, grep the
+  package for it. A second inline copy is a finding, even when each copy is one
+  line. A new function that differs from an existing one only in a label, a
+  constant or a type is a finding: give the existing function a parameter.
+  This extends the helper-duplication and stored-layout rules above. Example:
+  one default for an empty reason written at four sites, and a flag read inline
+  beside the helper that reads it.
 - Zero-argument clock reads (for example `now()`) count as the same inputs
   for the redundant-recomputation rule. Read the clock once per handler and
   reuse the value, so one record carries one timestamp.

@@ -16,7 +16,6 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
-	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -543,7 +542,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		if in.DryRun {
 			out.Openspec = &ShipOpenspecOut{Change: change, Materialized: "dry-run"}
 		} else {
-			res, mErr := openspec.Materialize(activeRoot, planContent)
+			res, mErr := openspec.Materialize(activeRoot, cfgRoot, planContent)
 			if mErr != nil {
 				// mapMaterializeError is shared with execute_state init, whose
 				// messages carry an "init: " prefix; drop it here. The mapped
@@ -1492,11 +1491,7 @@ func shipBuildReviewLedger(healing map[string]any, deferredFindings []any) *Ship
 		if deferredFixedInRun(m) {
 			continue // counted under fixed by its healing_record
 		}
-		reason, _ := m["reason"].(string)
-		if reason == "" {
-			reason = history.ReasonBelowThreshold
-		}
-		byReason[reason]++
+		byReason[deferredReason(m)]++
 		deferred++
 	}
 	return &ShipReviewLedger{
@@ -1617,7 +1612,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 // tools.
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
-		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later.",
+		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing.",
 		mcpserver.Annotations{
 			Title:       "Prepare ship pipeline run",
 			ReadOnly:    false,
