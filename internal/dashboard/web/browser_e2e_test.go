@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -56,6 +57,46 @@ const (
 	browserTitlePR2 = "PR comment: rename the helper"
 	// browserPRPrefix starts the title of every PR comment row.
 	browserPRPrefix = "PR comment:"
+)
+
+// What the Activity tab Preplans box steps (A1 to A3) seed and look for.
+const (
+	browserFullSlug = "full-topic" // the topic file that the collector reads whole
+	browserBigSlug  = "big-topic"  // the topic file that is over the read cap
+	// browserFullGoal is the one sentence of the ## Goal section of full-topic.md.
+	browserFullGoal = "Show every preplan on the Activity tab with its proposal counts."
+	// browserFullCounts starts the meta line of the full-topic row: the live,
+	// kept and dropped rows of the ## Decisions table of full-topic.md.
+	browserFullCounts = "live 3 · kept 1 · dropped 1"
+	// browserFullCheck is the Guardrail check line of full-topic.md. Its counts
+	// match the ## Decisions table: 3 live rows (2 pass, 1 kept) and 1 dropped row.
+	browserFullCheck = "**Guardrail check:** 12 guardrails, 4 proposals: 2 pass, 1 kept, 1 dropped. Last check: 2026-10-29T07:58:25Z."
+	// browserBigTopicSize is the size of big-topic.md in bytes: 1 MiB. It is
+	// above the cap of the collector (dashboardPreplanSummaryMax in
+	// internal/tools/dashboard_preplans.go: 256 KiB, the largest size in bytes
+	// of one topic file that the collector reads whole for its summary). It is
+	// below the 8 MiB read limit of preplan_check, so the file is a topic file
+	// that the tools accept.
+	browserBigTopicSize = 1 << 20
+	// browserUnreadWord is in the label of every part of a Preplans box row that
+	// the collector did not read.
+	browserUnreadWord = "unreadable"
+	// browserBigUnreadMeta is how many times browserUnreadWord is in the meta
+	// line of the big-topic row: the proposals, check, open questions, gaps and
+	// cut parts. The goal part is the sixth unread name, on the goal line.
+	browserBigUnreadMeta = 5
+)
+
+// The CSS selectors of the Activity tab Preplans box.
+const (
+	browserSelActivityTab = "#tab-activity"
+	// browserSelBoxTitle is the title h2 of the box. Only the Preplans box has
+	// the class act-wide, and the title text is "Preplans (n)".
+	browserSelBoxTitle = ".act-wide .list-title"
+	browserSelRow      = ".act-preplan"
+	browserSelRowTitle = ".pp-name"
+	browserSelRowGoal  = ".act-text"
+	browserSelRowMeta  = ".act-meta"
 )
 
 // browserWaitSeed names one open question wait that no pipeline owns.
@@ -315,9 +356,10 @@ func (s *browserShip) addPR(t *testing.T, title string, at time.Time) {
 }
 
 // browserSeedRepoA writes everything that repo A shows: the preplan topic
-// file, runs.jsonl with a plan row, a ship row and the two rows that the
-// History steps delete, the running ship state, and one lone wait. The times
-// are near now, so the 24-hour windows of the snapshot hold them.
+// files (the two of browserSeedPreplanSummary too), runs.jsonl with a plan
+// row, a ship row and the two rows that the History steps delete, the running
+// ship state, and one lone wait. The times are near now, so the 24-hour
+// windows of the snapshot hold them.
 func browserSeedRepoA(t *testing.T, root string, now time.Time) *browserShip {
 	t.Helper()
 	topic := filepath.Join(root, paths.DataDir, paths.PreplanSubdir, browserPlanSlug+".md")
@@ -341,9 +383,54 @@ func browserSeedRepoA(t *testing.T, root string, now time.Time) *browserShip {
 		{Timestamp: browserTS(now.Add(-40 * time.Minute)), Skill: "commit", Branch: browserBranchB, Outcome: "success", DurationMs: 30000},
 	})
 
+	browserSeedPreplanSummary(t, root)
+
 	ship := browserSeedShip(t, root, now)
 	browserSeedWait(t, root, browserWaitA, now)
 	return ship
+}
+
+// browserFullTopic returns the text of full-topic.md. It is a topic file that
+// passes the format checker of preplan_write (rules P1 to P11), so the
+// collector reads every summary field: the goal sentence, 3 live rows (1 kept),
+// 1 dropped row, the check time, 1 open question and no unread name. The file
+// has no **Started:** line, so its duration is 0.
+func browserFullTopic() string {
+	const decisions = "| # | Decision | Reason |\n" +
+		"|---|---|---|\n" +
+		"| 1 | Show the box on the Activity tab | The user compares preplans there. |\n" +
+		"| 2 | Read each topic file once | Kept with warning: the read costs time on a big file. |\n" +
+		"| 3 | Show the counts of the proposals | The counts tell how far the preplan is. |\n" +
+		"| 4 | Dropped: Add a bin button to the box | Dropped by: the Preplans tab keeps the controls. |\n"
+	sections := []struct{ name, body string }{
+		{"Goal", browserFullGoal + "\n"},
+		{"Problem and benefit", "The Activity tab shows no preplan today.\n"},
+		{"Users and effect", "The user sees each preplan next to the other work.\n"},
+		{"Risk if wrong", "The box shows a wrong count.\n"},
+		{"Non-goals", "None stated.\n"},
+		{"Flows", "No flow change.\n"},
+		{"Decisions", decisions},
+		{"Open questions", "- Which repos does the box list?\n"},
+	}
+	var b strings.Builder
+	b.WriteString("# Preplan: " + browserFullSlug + "\n\n**Status:** " + tools.PreplanStatuses[1] + "\n" + browserFullCheck + "\n")
+	for _, s := range sections {
+		b.WriteString("\n## " + s.name + "\n\n" + s.body)
+	}
+	return b.String()
+}
+
+// browserSeedPreplanSummary writes the two topic files of the Activity tab
+// Preplans box to root: full-topic.md (browserFullTopic) and big-topic.md. The
+// head of big-topic.md is a valid topic head, so its row shows in the list.
+// The whole file is browserBigTopicSize bytes, so the collector does not read
+// it whole.
+func browserSeedPreplanSummary(t *testing.T, root string) {
+	t.Helper()
+	dir := filepath.Join(root, paths.DataDir, paths.PreplanSubdir)
+	e2eWriteFile(t, filepath.Join(dir, browserFullSlug+".md"), browserFullTopic())
+	head := "# Preplan: " + browserBigSlug + "\n\n**Status:** " + tools.PreplanStatuses[1] + "\n\n"
+	e2eWriteFile(t, filepath.Join(dir, browserBigSlug+".md"), head+strings.Repeat("x", browserBigTopicSize-len(head)))
 }
 
 // browserSeedWait writes the question wait w to root. Its session is not the
@@ -519,6 +606,82 @@ func (p *browserPage) waitClosed(id string) {
 	p.wait("the close event of "+id, `window.__closed === true && !document.getElementById(`+browserJSON(id)+`).open`)
 }
 
+// browserPreplanPartJS returns a JavaScript expression for the text of the
+// part (a CSS selector inside the row) of the Activity tab Preplans box row
+// whose title starts with slug. The expression is "" when no row has that
+// title.
+func browserPreplanPartJS(slug, part string) string {
+	return `(function () {
+		var rows = document.querySelectorAll(` + browserJSON(browserSelRow) + `);
+		for (var i = 0; i < rows.length; i++) {
+			var title = rows[i].querySelector(` + browserJSON(browserSelRowTitle) + `);
+			if (title && title.textContent.indexOf(` + browserJSON(slug) + `) === 0) {
+				var node = rows[i].querySelector(` + browserJSON(part) + `);
+				return node ? node.textContent : '';
+			}
+		}
+		return '';
+	})()`
+}
+
+// browserCountTopicFiles returns the number of topic files in the preplan
+// folder of root.
+func browserCountTopicFiles(t *testing.T, root string) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(root, paths.DataDir, paths.PreplanSubdir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
+			n++
+		}
+	}
+	return n
+}
+
+// browserCheckPreplanBox runs the steps A1 to A3: the Preplans box of the
+// Activity tab. The collector read full-topic.md whole, so its row shows the
+// goal sentence and the counts. big-topic.md is over the read cap of the
+// collector, so every part of its row shows an unread label. A row that the
+// collector read must show no unread label. root is repo A.
+func browserCheckPreplanBox(page *browserPage, root string) {
+	t := page.t
+
+	// Step A1: the Activity tab shows the box with one row for each topic file.
+	t.Log("step A1: Activity Preplans box title")
+	files := browserCountTopicFiles(t, root)
+	title := "Preplans (" + strconv.Itoa(files) + ")"
+	page.click("the Activity tab", browserSelActivityTab)
+	page.wait("the title of the Preplans box", `(function () {
+		var n = document.querySelector(`+browserJSON(browserSelBoxTitle)+`);
+		return !!n && n.textContent === `+browserJSON(title)+`;
+	})()`)
+	if got := page.count(browserSelRow); got != files {
+		t.Fatalf("Preplans box rows = %d; want %d, one for each topic file", got, files)
+	}
+
+	// Step A2: the row of the file that the collector read whole.
+	t.Log("step A2: full-topic row")
+	goal := browserPreplanPartJS(browserFullSlug, browserSelRowGoal)
+	meta := browserPreplanPartJS(browserFullSlug, browserSelRowMeta)
+	page.wait("the goal sentence in the full-topic row", goal+` === `+browserJSON(browserFullGoal))
+	page.wait("the counts in the full-topic row", meta+`.indexOf(`+browserJSON(browserFullCounts)+`) === 0`)
+	if got := browserMust[string](page, "the full-topic row text", goal+` + ' ' + `+meta); strings.Contains(got, browserUnreadWord) {
+		t.Fatalf("full-topic row = %q; want no %q label, the collector read the whole file", got, browserUnreadWord)
+	}
+
+	// Step A3: the row of the file that is over the read cap.
+	t.Log("step A3: big-topic row")
+	bigGoal := browserPreplanPartJS(browserBigSlug, browserSelRowGoal)
+	page.wait("the unread label in the goal line of the big-topic row", bigGoal+`.indexOf(`+browserJSON(browserUnreadWord)+`) !== -1`)
+	bigMeta := browserMust[string](page, "the big-topic meta line", browserPreplanPartJS(browserBigSlug, browserSelRowMeta))
+	if got := strings.Count(bigMeta, browserUnreadWord); got != browserBigUnreadMeta {
+		t.Fatalf("big-topic meta line = %q; want %d parts with %q, got %d", bigMeta, browserBigUnreadMeta, browserUnreadWord, got)
+	}
+}
+
 // browserSnapshotOf reads GET /api/snapshot from the server at base.
 func browserSnapshotOf(t *testing.T, base string) tools.DashboardSnapshot {
 	t.Helper()
@@ -686,6 +849,9 @@ func TestBrowserE2E(t *testing.T) {
 	page.click("the duration sort header", `button[data-pp-sort="duration"]`)
 	page.wait("the longest row first", `document.querySelector('.pp tbody tr select[data-pp-set]').getAttribute('data-pp-set') === 'browser-long'`)
 	page.wait("the duration sort", `document.querySelector('button[data-pp-sort="duration"]').closest('th').getAttribute('aria-sort') === 'descending'`)
+
+	// Steps A1 to A3: the Preplans box of the Activity tab.
+	browserCheckPreplanBox(page, repoA)
 
 	// Step 2: History.
 	t.Log("step 2: history delete")
