@@ -39,10 +39,11 @@ const (
 	planStatusIssuesFound = "Issues Found"
 )
 
-// PlanSupportIn carries the merged input for the plan_support tool's 11
-// actions. Each field is consumed by one or more actions (noted in comments).
+// PlanSupportIn carries the merged input for the actions of the plan_support
+// tool (planSupportActions). Each field is consumed by one or more actions
+// (noted in comments).
 type PlanSupportIn struct {
-	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=openspec_instructions,enum=openspec_stage,enum=evidence_record,enum=evidence_digest,enum=evidence_get,enum=preplan_context,enum=preplan_check" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"openspec_instructions\", \"openspec_stage\", \"evidence_record\", \"evidence_digest\", \"evidence_get\", \"preplan_context\", or \"preplan_check\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=openspec_instructions,enum=openspec_stage,enum=evidence_record,enum=evidence_digest,enum=evidence_get,enum=preplan_context,enum=preplan_check,enum=preplan_write" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"openspec_instructions\", \"openspec_stage\", \"evidence_record\", \"evidence_digest\", \"evidence_get\", \"preplan_context\", \"preplan_check\", or \"preplan_write\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError."`
 
 	// merge_results
 	LaneResults   []LaneResult `json:"laneResults,omitempty" jsonschema_description:"merge_results only: outcomes from each review lane to merge. At least one of laneResults or lensResults is required."`
@@ -77,13 +78,19 @@ type PlanSupportIn struct {
 	TimeoutSeconds  int            `json:"timeoutSeconds,omitempty" jsonschema_description:"Integer 60-86400. evidence_digest only: seconds since the last update after which a running writer counts as stalled. 0 or absent = 1800. Example: 1800."`
 	StatusOnly      bool           `json:"statusOnly,omitempty" jsonschema_description:"Boolean. evidence_digest only: true returns only the writers section (poll mode). Example: true in the Step 1 POLL loop."`
 
-	// preplan_context, preplan_check
-	Topic string `json:"topic,omitempty" jsonschema_description:"preplan_context and preplan_check (required): plain-text topic name, one line, 1-50 characters after outer spaces are trimmed, with at least one ASCII letter or digit (a-z, A-Z, 0-9). The slug is the topic lowercased, with each run of other characters turned into one hyphen, so two topics can share one slug (\"Auth flow\" and \"auth-flow\" both give auth-flow). An existing file named <slug>.md or YYYY-MM-DD-<slug>.md is reused, whatever its date. preplan_context adds each absent section heading to it. With no such file, preplan_context creates YYYY-MM-DD-<slug>.md with the UTC date of today. preplan_check never creates a file: a topic with no file is an error. Two such files return an error and write nothing. Example: auth flow"`
+	// preplan_context, preplan_check, preplan_write
+	Topic string `json:"topic,omitempty" jsonschema_description:"preplan_context, preplan_check and preplan_write (required): plain-text topic name, one line, 1-50 characters after outer spaces are trimmed, with at least one ASCII letter or digit (a-z, A-Z, 0-9). The slug is the topic lowercased, with each run of other characters turned into one hyphen, so two topics can share one slug (\"Auth flow\" and \"auth-flow\" both give auth-flow). An existing file named <slug>.md or YYYY-MM-DD-<slug>.md is reused, whatever its date. preplan_context adds each absent section heading to it. With no such file, preplan_context creates YYYY-MM-DD-<slug>.md with the UTC date of today. preplan_check and preplan_write never create a file: a topic with no file is an error. Two such files return an error and write nothing. Example: auth flow"`
 
 	// preplan_check
 	PassCount    *int `json:"passCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 to 10000. Live proposals (Decisions rows that start with neither Dropped: nor Moved:) whose Reason holds no Kept with warning: note. Each live proposal is in passCount or keptCount, never both. Absent, negative or more than 10000 is rejected. Example: 6"`
 	KeptCount    *int `json:"keptCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 to 10000. Live proposals whose Reason holds a Kept with warning: note after the check. Absent, negative or more than 10000 is rejected. Example: 1"`
 	DroppedCount *int `json:"droppedCount,omitempty" jsonschema_description:"preplan_check only (required): integer 0 to 10000. Decisions rows whose Decision cell starts with Dropped:. Absent, negative or more than 10000 is rejected. Example: 0"`
+
+	// preplan_write. Another action that gets one of these fields returns
+	// DomainError (preplanWriteFieldError).
+	Section     string  `json:"section,omitempty" jsonschema:"enum=Goal,enum=Problem and benefit,enum=Users and effect,enum=Risk if wrong,enum=Non-goals,enum=Flows,enum=Decisions,enum=Open questions,enum=Guardrail check" jsonschema_description:"preplan_write only. One of: Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions, Open questions, Guardrail check. Omit it to write only the status. Example: Decisions"`
+	Content     *string `json:"content,omitempty" jsonschema_description:"preplan_write only. Required with section, not allowed without section. The full new body of section, at most 65536 bytes; a larger body is rejected by rule P1; the body is stored without its final line ends and with the line ends of the file. An empty string clears the body, and deletes the Open questions or Guardrail check section. Outside a code fence no line starts with # or ## (P2), and each code fence closes (P3). Decisions is blank, or the two lines | # | Decision | Reason | and |---|---|---|, then rows of 3 cells, then at most one Smallest cut: line (P4-P7). Non-goals is None stated. or - bullets (P8). Open questions is - bullets (P9). Flows is No flow change. or a mermaid fence (P10). Guardrail check takes only an empty string (P11). Example: Ship the login page first."`
+	TopicStatus string  `json:"topicStatus,omitempty" jsonschema:"enum=in progress,enum=ready for plan,enum=paused" jsonschema_description:"preplan_write only. The new Status line value: in progress, ready for plan or paused. Example: ready for plan"`
 }
 
 // EvidenceItem is one evidence entry of a writer, stored in
@@ -196,7 +203,7 @@ type PlanSupportOut struct {
 	// preplan_context (Guardrails above is also set by this action).
 	// PreplanCreated is a pointer so false still renders for preplan_context
 	// while every other action omits it.
-	PreplanFile    string `json:"preplanFile,omitempty"`    // absolute <mainRoot>/.sdlc-v2/preplan/<slug>.md or YYYY-MM-DD-<slug>.md
+	PreplanFile    string `json:"preplanFile,omitempty" jsonschema_description:"preplan_context, preplan_check and preplan_write: absolute path of the topic file, <main worktree>/.sdlc-v2/preplan/<slug>.md or YYYY-MM-DD-<slug>.md. Absent on other actions."`
 	PreplanCreated *bool  `json:"preplanCreated,omitempty"` // true only when this call created the file
 	// AddedSections is a pointer so an empty list still renders (none) for
 	// preplan_context while every other action omits it.
@@ -207,6 +214,13 @@ type PlanSupportOut struct {
 	// EmptySections is a pointer so an empty list still renders (none) for
 	// preplan_check while every other action omits it.
 	EmptySections *[]string `json:"emptySections,omitempty" jsonschema_description:"preplan_check only: the ## headings of the skeleton sections that are absent or hold only blank lines, in skeleton order (Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions). Open questions is not a skeleton section. Decisions is empty when its table has no row: no line that starts with | (after leading spaces) below the header and separator rows. (none) when every section has content."`
+
+	// preplan_write (PreplanFile above is also set by this action). Each is a
+	// pointer so an empty list or 0 still renders for preplan_write while
+	// every other action omits it.
+	Written         *[]string `json:"written,omitempty" jsonschema_description:"preplan_write only: the parts that this call wrote, the section name and/or Status. (none) on a no-op. Absent on other actions. Example: [Decisions, Status]"`
+	ReadyTopicFiles *[]string `json:"readyTopicFiles,omitempty" jsonschema_description:"preplan_write only, with topicStatus ready for plan: absolute paths of this topic file first, then up to 3 other ready topic files, newest first. Never empty. Absent otherwise. Example: [/repo/.sdlc-v2/preplan/2026-10-29-auth-flow.md]"`
+	ReadyLeftOut    *int      `json:"readyLeftOut,omitempty" jsonschema_description:"preplan_write only, with topicStatus ready for plan: the count of other ready topic files that are not in readyTopicFiles. 0 still renders. Absent otherwise. Example: 0"`
 }
 
 // LaneResult represents the outcome of a single review lane.
@@ -302,7 +316,7 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_support",
 		`INTERNAL — called by sdlc skills only. Plan support utilities.
 
-Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
+Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError):
 
 - merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch. Lane status must be pass or fail, and every issue severity must be blocking or advisory; any other value fails with a DomainError and nothing is merged. Every issue in allIssues carries an "id" field: "f-" plus the first 8 hex chars of sha256(gateId|lower(trim(summary))). The same gate and summary always give the same id. An "id" in the input is ignored.
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
@@ -379,6 +393,9 @@ func planSupportMainRoot(contentRoot string) (root, warning string, err error) {
 // filesystem lookups; contentRoot anchors worktree-relative operations and is
 // empty when the active worktree could not be resolved.
 func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
+	if err := preplanWriteFieldError(in); err != nil {
+		return PlanSupportOut{}, err
+	}
 	switch in.Action {
 	case "merge_results":
 		return mergeResults(in)
@@ -402,11 +419,25 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 		return planPreplanContext(mainRoot, in.Topic)
 	case preplanCheckAction:
 		return planPreplanCheck(mainRoot, in)
+	case preplanWriteAction:
+		return planPreplanWrite(mainRoot, in)
 	default:
+		last := len(planSupportActions) - 1
 		return PlanSupportOut{}, unknownActionError("action", in.Action,
-			" — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix, openspec_instructions, openspec_stage, evidence_record, evidence_digest, evidence_get, preplan_context, preplan_check",
-			"call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare, openspec_appendix, openspec_instructions, openspec_stage, evidence_record, evidence_digest, evidence_get, preplan_context or preplan_check")
+			" — valid actions: "+strings.Join(planSupportActions, ", "),
+			"call plan_support again with action set to exactly one of "+
+				strings.Join(planSupportActions[:last], ", ")+" or "+planSupportActions[last])
 	}
+}
+
+// planSupportActions lists the actions of plan_support in the order of the
+// action enum tag of PlanSupportIn. The unknown-action error names them, and
+// TestPlanSupportActionList pins the enum and description tags to it.
+var planSupportActions = []string{
+	"merge_results", "material_snapshot", "material_compare",
+	"openspec_appendix", "openspec_instructions", "openspec_stage",
+	"evidence_record", "evidence_digest", "evidence_get",
+	preplanContextAction, preplanCheckAction, preplanWriteAction,
 }
 
 // ---------------------------------------------------------------------------
@@ -1350,15 +1381,29 @@ var PreplanStatuses = []string{preplanStatusInProgress, preplanStatusReadyForPla
 // file. The skeleton, the heading repair of preplan_context and the
 // emptySections list of preplan_check read it.
 var preplanSections = []string{
-	"Goal", "Problem and benefit", "Users and effect", "Risk if wrong",
-	"Non-goals", "Flows", "Decisions",
+	preplanGoalSection, "Problem and benefit", "Users and effect", "Risk if wrong",
+	preplanNonGoalsSection, preplanFlowsSection, preplanDecisionsSection,
 }
+
+// The section names that code reads by name: the skeleton sections that the
+// format checker (preplan_format.go) gives its own rules, and the two
+// sections that are not in the skeleton. preplanSections, preplanWriteSections
+// and the checker read them, so each name has one definition.
+const (
+	preplanGoalSection      = "Goal"
+	preplanNonGoalsSection  = "Non-goals"
+	preplanFlowsSection     = "Flows"
+	preplanDecisionsSection = "Decisions" // its body starts with the table header
+
+	preplanOpenQuestionsSection  = "Open questions"
+	preplanGuardrailCheckSection = "Guardrail check"
+)
+
+// preplanTitlePrefix starts the title line of a topic file.
+const preplanTitlePrefix = "# "
 
 // preplanHeadingPrefix starts each section heading line of a topic file.
 const preplanHeadingPrefix = "## "
-
-// preplanDecisionsSection is the section whose body starts with the table header.
-const preplanDecisionsSection = "Decisions"
 
 // preplanDecisionsHeader is the table header of ## Decisions, with LF line ends.
 const preplanDecisionsHeader = "| # | Decision | Reason |\n|---|---|---|\n"
@@ -1383,12 +1428,13 @@ func buildPreplanSkeletonTail() string {
 	return tail
 }
 
-// preplanToolDescription returns the preplan_context and preplan_check lines
-// of the plan_support tool description. Each number and the section order
-// come from the constants that the code uses (preplanSections, preplanDirMax,
-// dashboardDeleteReadMaxText, dashboardPreplanHeadMax, preplanCountMax), so
-// the text cannot go stale; TestPreplanToolDescription pins it. It is called
-// once, at registration.
+// preplanToolDescription returns the preplan_context, preplan_check and
+// preplan_write lines of the plan_support tool description. Each number and
+// the section order come from the constants that the code uses
+// (preplanSections, preplanDirMax, dashboardDeleteReadMaxText,
+// dashboardPreplanHeadMax, preplanCountMax), so the text cannot go stale;
+// TestPreplanToolDescription pins it. The preplan_write line comes from
+// preplanWriteDescription. It is called once, at registration.
 func preplanToolDescription() string {
 	sections := strconv.Itoa(len(preplanSections))
 	order := strings.Join(preplanSections, ", ")
@@ -1417,7 +1463,8 @@ func preplanToolDescription() string {
 		"It writes a temp file and renames it, and the file keeps its mode. " +
 		"Returns preplanFile, guardrailCheckLine, emptySections (the ## headings of the " + sections + " skeleton sections, " + order + ", that are absent or hold only blank lines, in skeleton order; Decisions is empty when its table has no row below the header and separator rows, where a row is a line that starts with | after its leading spaces; (none) when every section has content), " +
 		"summary (added or replaced, the old line, the count of other check lines that stay in the file, the empty sections, and a code fence that is still open at the end of the file, which makes each ## heading after it count as absent), next. " +
-		"A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over " + dashboardDeleteReadMaxText + " or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was."
+		"A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over " + dashboardDeleteReadMaxText + " or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was. A dangling link at the preplan folder returns InfraError.\n" +
+		preplanWriteDescription()
 }
 
 // preplanSkeletonTail is the text of a new topic file that follows the
@@ -1434,8 +1481,9 @@ type preplanSpan struct {
 
 // preplanSectionSpans returns every "## " heading of data outside a fence,
 // in file order, and openFence: the fence run (for example "```" or "~~~~")
-// that is still open at the end of data ("" when no fence is open).
-// addPreplanHeadings and preplanEmptySections read it.
+// that is still open at the end of data ("" when no fence is open). The
+// readers that cut a topic file into sections use it, so they agree about
+// where a section starts and ends.
 //
 // The name of a span is the text after "## " with its trailing spaces, tabs
 // and CR removed. A "###" line is not a heading: it is body of the section
@@ -1455,15 +1503,11 @@ func preplanSectionSpans(data []byte) (spans []preplanSpan, openFence string) {
 	for start := 0; start < len(data); {
 		end := min(preplanLineEnd(data, start)+1, len(data)) // after the line feed
 		line := string(data[start:end])
-		run := preplanFenceRun(line)
+		wasOpen := openFence != ""
+		openFence = preplanFenceStep(openFence, line)
 		switch {
-		case openFence != "":
-			if run != "" && run[0] == openFence[0] && len(run) >= len(openFence) &&
-				strings.TrimRight(line[len(run):], " \t\r\n") == "" {
-				openFence = ""
-			}
-		case run != "":
-			openFence = run
+		case wasOpen || openFence != "":
+			// a line inside a fence, or the line that opens or closes it
 		case strings.HasPrefix(line, preplanHeadingPrefix):
 			if n := len(spans); n > 0 {
 				spans[n-1].bodyEnd = start
@@ -1512,7 +1556,7 @@ func preplanFenceRun(line string) string {
 // code. The inserted text uses the first line end of data (CRLF or LF, LF
 // when data has none).
 func addPreplanHeadings(data []byte) (next []byte, added []string, closed string) {
-	eol := preplanEOL(data, preplanLineEnd(data, 0))
+	eol := preplanFileEOL(data)
 	next = data
 	for idx, name := range preplanSections {
 		spans, openFence := preplanSectionSpans(next)
@@ -1554,6 +1598,13 @@ func addPreplanHeadings(data []byte) (next []byte, added []string, closed string
 	return next, added, closed
 }
 
+// preplanFileEOL returns the line end that text added to the topic file data
+// uses: the line end of the first line of data, CRLF or LF (LF when data has
+// no line end).
+func preplanFileEOL(data []byte) string {
+	return preplanEOL(data, preplanLineEnd(data, 0))
+}
+
 // preplanFindSpan returns the index of the first span named name, or -1.
 func preplanFindSpan(spans []preplanSpan, name string) int {
 	for i, s := range spans {
@@ -1578,6 +1629,13 @@ func preplanFindSpan(spans []preplanSpan, name string) int {
 func preplanEmptySections(data []byte) (empty []string, openFence string) {
 	var spans []preplanSpan
 	spans, openFence = preplanSectionSpans(data)
+	return preplanEmptySectionsOf(data, spans), openFence
+}
+
+// preplanEmptySectionsOf is preplanEmptySections for a caller that already
+// holds spans, the preplanSectionSpans of data. It returns the same non-nil
+// list and scans data no second time.
+func preplanEmptySectionsOf(data []byte, spans []preplanSpan) (empty []string) {
 	empty = []string{}
 	for _, name := range preplanSections {
 		i := preplanFindSpan(spans, name)
@@ -1591,7 +1649,7 @@ func preplanEmptySections(data []byte) (empty []string, openFence string) {
 			empty = append(empty, preplanHeadingPrefix+name)
 		}
 	}
-	return empty, openFence
+	return empty
 }
 
 // preplanHasDecisionRow reports whether body, the body of ## Decisions, holds
@@ -1747,7 +1805,7 @@ func preplanMatches(action, dir string, topic preplanTopic) ([]string, error) {
 // preplanSkeleton returns the text of a new topic file: the heading, the
 // status line, the Started line (UTC, RFC 3339) and the empty sections.
 func preplanSkeleton(topic string, started time.Time) string {
-	return "# Preplan: " + topic + "\n\n**Status:** " + preplanStatusInProgress +
+	return preplanTitlePrefix + "Preplan: " + topic + "\n\n**Status:** " + preplanStatusInProgress +
 		"\n\n**Started:** " + started.UTC().Format(time.RFC3339) + "\n" + preplanSkeletonTail
 }
 
@@ -1908,17 +1966,13 @@ func repairPreplanHeadings(action, file, dir string) (added []string, closed str
 	}
 	if len(repaired) > dashboardDeleteReadMax {
 		return nil, "", &mcpserver.DataError{
-			Msg: fmt.Sprintf("%s: adding %d section heading(s) makes %s %d bytes, more than the %d bytes (%s) that preplan_context and preplan_check read; nothing was written",
+			Msg: fmt.Sprintf("%s: adding %d section heading(s) makes %s %d bytes, more than the %d bytes (%s) that preplan_context, preplan_check and preplan_write read; nothing was written",
 				action, len(added), file, len(repaired), dashboardDeleteReadMax, dashboardDeleteReadMaxText),
 			Suggestion: "Make the topic file smaller than " + dashboardDeleteReadMaxText + " by hand, with room for the absent headings" + preplanRetry(action),
 		}
 	}
 	if err := preplanWriteBytes(file, repaired); err != nil {
-		return nil, "", &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("%s: %v", action, err),
-			Suggestion: "Check write permission on " + dir + " and free disk space" + preplanRetry(action),
-			Cause:      err,
-		}
+		return nil, "", preplanWriteFailure(action, dir, err)
 	}
 	return added, closed, nil
 }
@@ -1982,8 +2036,9 @@ func createPreplanFile(file, content string) (bool, error) {
 // Action: preplan_check
 // ---------------------------------------------------------------------------
 
-// Seams of preplan_check. Tests replace them to force an Lstat, read or write
-// failure, or a file mode, without a broken filesystem.
+// Seams for the reads and writes of a topic file. Tests replace them to force
+// an Lstat, read or write failure, or a file mode, without a broken
+// filesystem.
 var (
 	preplanLstat      = os.Lstat
 	preplanReadFile   = os.ReadFile
@@ -2020,16 +2075,22 @@ var preplanGuardrailCheckRe = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(prep
 // can fix.
 const preplanCheckAgain = ", then call preplan_check again."
 
-// preplanNoFileSuggestion is the Suggestion of a preplan_check call that
-// finds no topic file.
+// preplanWriteAgain ends each preplan_write Suggestion that a second call
+// can fix.
+const preplanWriteAgain = ", then call preplan_write again."
+
+// preplanNoFileSuggestion is the Suggestion of a preplan_check or
+// preplan_write call that finds no topic file.
 const preplanNoFileSuggestion = "Run plan_support with action preplan_context and this topic first."
 
 // The names of the preplan actions. planSupportCore dispatches on them, each
 // error message starts with one, and preplanRetry and
-// preplanNoFileSuggestionFor compare with preplanCheckAction.
+// preplanNoFileSuggestionFor compare with preplanCheckAction and
+// preplanWriteAction.
 const (
 	preplanContextAction = "preplan_context"
 	preplanCheckAction   = "preplan_check"
+	preplanWriteAction   = "preplan_write"
 )
 
 // preplanRunAgain ends each preplan_context Suggestion that a new run can fix.
@@ -2040,21 +2101,100 @@ const preplanRunAgain = ", then run /sdlc:preplan again."
 const preplanGoneSuggestion = "Run /sdlc:preplan again: the topic file went away after the folder listing, and the next run creates a new one."
 
 // preplanRetry returns the end of a Suggestion that a second call can fix:
-// preplanCheckAgain for preplan_check, preplanRunAgain for every other action.
+// preplanCheckAgain for preplan_check, preplanWriteAgain for preplan_write,
+// preplanRunAgain for every other action.
 func preplanRetry(action string) string {
-	if action == preplanCheckAction {
+	switch action {
+	case preplanCheckAction:
 		return preplanCheckAgain
+	case preplanWriteAction:
+		return preplanWriteAgain
 	}
 	return preplanRunAgain
 }
 
 // preplanNoFileSuggestionFor returns preplanNoFileSuggestion for preplan_check
-// and preplanGoneSuggestion for every other action.
+// and preplan_write, and preplanGoneSuggestion for every other action.
 func preplanNoFileSuggestionFor(action string) string {
-	if action == preplanCheckAction {
+	if action == preplanCheckAction || action == preplanWriteAction {
 		return preplanNoFileSuggestion
 	}
 	return preplanGoneSuggestion
+}
+
+// preplanFoundTopic is the existing topic file that preplanReadTopicFile found
+// and read: its folder, its name, its absolute path and its bytes.
+type preplanFoundTopic struct {
+	dir, name, file string
+	data            []byte
+}
+
+// preplanReadTopicFile is the find and read step of preplan_check and
+// preplan_write. It trims topic, makes its slug (preplanSlug, DomainError),
+// finds exactly one topic file under mainRoot (preplanMatches; no file:
+// preplanNoTopicFile), and reads it (readPreplanTopic). Each message starts
+// with action + ":".
+func preplanReadTopicFile(action, mainRoot, topic string) (preplanFoundTopic, error) {
+	topic = strings.TrimSpace(topic)
+	slug, err := preplanSlug(action, topic)
+	if err != nil {
+		return preplanFoundTopic{}, err
+	}
+	dir := filepath.Join(mainRoot, paths.DataDir, paths.PreplanSubdir)
+	names, err := preplanMatches(action, dir, preplanTopic{name: topic, slug: slug})
+	if err != nil {
+		return preplanFoundTopic{}, err
+	}
+	if len(names) == 0 {
+		return preplanFoundTopic{}, preplanNoTopicFile(action, topic, dir)
+	}
+	file := filepath.Join(dir, names[0])
+	data, err := readPreplanTopic(action, file)
+	if err != nil {
+		return preplanFoundTopic{}, err
+	}
+	return preplanFoundTopic{dir: dir, name: names[0], file: file, data: data}, nil
+}
+
+// preplanNoTopicFile returns the error of a topic with no file in dir. A
+// dangling link at dir or at a folder above it gives an InfraError that names
+// the link and its missing target, with the Suggestion of preplan_context for
+// a folder link, and the *fsx.DanglingLinkError as its Cause. Any other case
+// gives a DomainError with preplanNoFileSuggestion.
+func preplanNoTopicFile(action, topic, dir string) error {
+	if link, target, ok := fsx.FindDanglingLink(dir); ok {
+		dl := &fsx.DanglingLinkError{Link: link, Target: target}
+		return &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("%s: list %s: %s", action, dir, dl.Problem()),
+			Suggestion: dl.Recovery(),
+			Cause:      dl,
+		}
+	}
+	return &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("%s: no topic file for topic %q in %s", action, topic, dir),
+		Suggestion: preplanNoFileSuggestion,
+	}
+}
+
+// preplanWriteFailure returns the InfraError of a failed write of the topic
+// file in dir. The os error names the operation and the path, so the message
+// adds only the action. The Suggestion fits the error: fs.ErrNotExist (the
+// file went away after the read) gives the Suggestion of a missing topic
+// file (preplanNoFileSuggestionFor), fs.ErrPermission points at the write
+// permission on dir, and any other error also names the free disk space.
+func preplanWriteFailure(action, dir string, err error) error {
+	suggestion := "Check write permission on " + dir + " and free disk space" + preplanRetry(action)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		suggestion = preplanNoFileSuggestionFor(action)
+	case errors.Is(err, fs.ErrPermission):
+		suggestion = "Give your user write permission on " + dir + preplanRetry(action)
+	}
+	return &mcpserver.InfraError{
+		Msg:        fmt.Sprintf("%s: %v", action, err),
+		Suggestion: suggestion,
+		Cause:      err,
+	}
 }
 
 // planPreplanCheck writes the guardrail check line of the existing topic
@@ -2063,16 +2203,17 @@ func preplanNoFileSuggestionFor(action string) string {
 //
 //  1. preplanCheckCounts: each count is set, and is 0 to preplanCountMax
 //     (DomainError).
-//  2. The trimmed topic gives a slug (preplanSlug, DomainError).
-//  3. preplanMatches finds exactly one topic file under mainRoot (no file:
-//     DomainError; list errors, a full folder, two files: see preplanMatches).
-//  4. readPreplanTopic checks the file and reads it (see readPreplanTopic).
-//  5. loadGuardrails counts the guardrails, and setGuardrailCheckLine puts the
+//  2. preplanReadTopicFile: the trimmed topic gives a slug (preplanSlug,
+//     DomainError), preplanMatches finds exactly one topic file under
+//     mainRoot (no file: preplanNoTopicFile; list errors, a full folder, two
+//     files: see preplanMatches), and readPreplanTopic checks the file and
+//     reads it.
+//  3. loadGuardrails counts the guardrails, and setGuardrailCheckLine puts the
 //     check line in the head (no place for the line: DataError).
-//  6. preplanWriteBytes writes a temp file and renames it over the topic file
+//  4. preplanWriteBytes writes a temp file and renames it over the topic file
 //     (InfraError; the old file stays as it was).
 //
-// The result lists the empty sections of the bytes that step 6 wrote
+// The result lists the empty sections of the bytes that step 4 wrote
 // (preplanEmptySections).
 func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	const action = preplanCheckAction
@@ -2080,51 +2221,28 @@ func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 	if err != nil {
 		return PlanSupportOut{}, err
 	}
-	topic := strings.TrimSpace(in.Topic)
-	slug, err := preplanSlug(action, topic)
-	if err != nil {
-		return PlanSupportOut{}, err
-	}
-
-	dir := filepath.Join(mainRoot, paths.DataDir, paths.PreplanSubdir)
-	names, err := preplanMatches(action, dir, preplanTopic{name: topic, slug: slug})
-	if err != nil {
-		return PlanSupportOut{}, err
-	}
-	if len(names) == 0 {
-		return PlanSupportOut{}, &mcpserver.DomainError{
-			Msg:        fmt.Sprintf("%s: no topic file for topic %q in %s", action, topic, dir),
-			Suggestion: preplanNoFileSuggestion,
-		}
-	}
-	name := names[0]
-	file := filepath.Join(dir, name)
-	data, err := readPreplanTopic(action, file)
+	topic, err := preplanReadTopicFile(action, mainRoot, in.Topic)
 	if err != nil {
 		return PlanSupportOut{}, err
 	}
 
 	guardrails, warning := loadGuardrails(mainRoot)
 	line := preplanCheckLine(len(guardrails), pass, kept, dropped, warning)
-	next, prior, ok := setGuardrailCheckLine(data, line)
+	next, prior, ok := setGuardrailCheckLine(topic.data, line)
 	if !ok {
 		return PlanSupportOut{}, &mcpserver.DataError{
-			Msg:        fmt.Sprintf("%s: %s has no **Started:** line and no **Status:** line in its first %d bytes", action, file, dashboardPreplanHeadMax),
+			Msg:        fmt.Sprintf("%s: %s has no **Started:** line and no **Status:** line in its first %d bytes", action, topic.file, dashboardPreplanHeadMax),
 			Suggestion: "Add a **Status:** line near the top of the topic file by hand" + preplanCheckAgain,
 		}
 	}
-	if err := preplanWriteBytes(file, next); err != nil {
-		return PlanSupportOut{}, &mcpserver.InfraError{
-			Msg:        fmt.Sprintf("%s: %v", action, err),
-			Suggestion: "Check write permission on " + dir + " and free disk space" + preplanCheckAgain,
-			Cause:      err,
-		}
+	if err := preplanWriteBytes(topic.file, next); err != nil {
+		return PlanSupportOut{}, preplanWriteFailure(action, topic.dir, err)
 	}
 	empty, openFence := preplanEmptySections(next)
 	return PlanSupportOut{
-		Summary:            preplanCheckSummary(name, prior, warning, next, empty, openFence),
+		Summary:            preplanCheckSummary(topic.name, prior, warning, next, empty, openFence),
 		Next:               preplanCheckNext(empty, openFence),
-		PreplanFile:        file,
+		PreplanFile:        topic.file,
 		GuardrailCheckLine: line,
 		EmptySections:      &empty,
 	}, nil
@@ -2133,7 +2251,9 @@ func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 // preplanCheckNext returns the Next of a successful preplan_check call. With
 // 1 or more empty sections it adds the count and points at the Step 4 route
 // table of the skill. With a fence still open at the end of the file
-// (openFence), it says to close the fence first: the headings after it count
+// (openFence), it says to close the fence first with tool calls only
+// (preplan_context, else preplan_write of the last section), as the Step 4
+// open-fence repair of the preplan skill does: the headings after it count
 // as absent.
 func preplanCheckNext(empty []string, openFence string) string {
 	next := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."
@@ -2141,7 +2261,7 @@ func preplanCheckNext(empty []string, openFence string) string {
 		next += fmt.Sprintf(" emptySections lists %d empty section(s). The Step 4 route table of the skill picks the next step.", len(empty))
 	}
 	if openFence != "" {
-		next += fmt.Sprintf(" First add the closing %s line of the open fence where the code ends: each ## heading after the fence counts as absent until then.", openFence)
+		next += fmt.Sprintf(" First close the open %s fence with tool calls, not a file edit: call plan_support preplan_context with the same topic; when its summary names no closing fence line, send the full body of the last section with preplan_write, with the fence closed. Each ## heading after the fence counts as absent until then.", openFence)
 	}
 	return next
 }
@@ -2274,9 +2394,9 @@ func preplanNotRegularError(action, file string, mode fs.FileMode) error {
 // the given guardrail count and proposal counts. A guardrail warning adds
 // " Guardrails unavailable: <warning>." at the end.
 func preplanCheckLine(guardrails, pass, kept, dropped int, warning string) string {
-	line := fmt.Sprintf("%s %d guardrails, %d proposals: %d pass, %d kept, %d dropped. Last check: %s.",
+	line := fmt.Sprintf("%s %d guardrails, %d proposals: %d pass, %d kept, %d dropped. %s%s.",
 		preplanGuardrailCheckPrefix, guardrails, pass+kept+dropped, pass, kept, dropped,
-		preplanNow().UTC().Format(time.RFC3339))
+		preplanLastCheckLabel, preplanNow().UTC().Format(time.RFC3339))
 	if warning != "" {
 		line += " Guardrails unavailable: " + preplanWarningText(warning) + "."
 	}
@@ -2298,7 +2418,7 @@ func preplanCheckSummary(name, prior, warning string, next []byte, empty []strin
 		summary += " Guardrails unavailable: " + preplanWarningText(warning) + "."
 	}
 	if stale := len(preplanGuardrailCheckRe.FindAllIndex(next, -1)) - 1; stale > 0 {
-		summary += fmt.Sprintf(" %d more Guardrail check line(s) stay in the file: delete them by hand.", stale)
+		summary += fmt.Sprintf(" %d more Guardrail check line(s) stay in the file. No preplan action removes them: tell the user to delete them by hand. Do not edit the file.", stale)
 	}
 	if len(empty) == 0 {
 		summary += " Empty sections: none."

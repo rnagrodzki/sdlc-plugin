@@ -20,7 +20,7 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | `plan_prepare` | `internal/tools/plan.go` `RegisterPlanTools` | Context detection, template resolution, OpenSpec validation, guardrail loading, lane/lens construction, complexity routing. Computes pending OpenSpec tasks.md ref stamps but never writes them — see [OpenSpec tasks.md Ref Stamping](#openspec-tasksmd-ref-stamping) |
 | `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, upsert a `review-round` row, replace the `review-outcome` answers (`reviewOutcome`), or replace the `checkpoint` progress marker. `checkpoint` also adds the first `{step, iteration, at}` of each step and iteration to the top-level `stepTimes` list (max 64). Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` and returns the Step 7 `timing` report and a `next` text |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
-| `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Eleven actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `openspec_instructions`, `openspec_stage`, `evidence_record`, `evidence_digest`, `evidence_get`, `preplan_context`, `preplan_check` |
+| `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Twelve actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `openspec_instructions`, `openspec_stage`, `evidence_record`, `evidence_digest`, `evidence_get`, `preplan_context`, `preplan_check`, `preplan_write` |
 | `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Eleven actions (9 today + `plan_style` + `plan_gates`); plan pipeline uses `plan_format` (PF1-PF14), `plan_style` and `plan_gates` |
 | `links_validate` | `internal/tools/links.go` `RegisterLinksTools` | URL extraction + HTTP validation with line tracking |
 | `execute_state` | `internal/tools/execute_state.go` `RegisterExecuteStateTools` | Ledger operations (review skill; plan uses the evidence store instead — see [Evidence store and compaction recovery](#evidence-store-and-compaction-recovery)) |
@@ -107,7 +107,7 @@ rules:
 
 | Hook | Trigger | Handler | Effect |
 |------|---------|---------|--------|
-| `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 5 planIntegrity markers were written. Gates on `done` marker before evaluating; never deletes the state file (see [Plan run lifetime](#plan-run-lifetime)). Falls back to transcript scanning (last 64KB for "Plan mode is active") when no state file found. Always ExitCode 0 (advisory). |
+| `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 5 planIntegrity markers were written. Gates on `done` marker before evaluating; never deletes the state file (see [Plan run lifetime](#plan-run-lifetime)). Falls back to transcript scanning when no state file found. The fallback warns only when both conditions are true: the last 64 KiB of the transcript hold "Plan mode is active", and the first 64 MiB hold no preplan marker (`<command-name>/sdlc:preplan</command-name>` or `"skill":"sdlc:preplan"`). A marker after the first 64 MiB does not stop the warning. A failed scan counts as no marker. Always ExitCode 0 (advisory). |
 | `post-tool-validate` | `PostToolUse` on `Edit\|Write` | `internal/hooks/post_tool_validate.go` | Runs a validator after edits to plan files, `pr-template.md`, dimension files (`.md`), and `.sdlc-v2/config.toml`. The hook runs after the write, so the edit is already saved and stays on disk. A finding goes back to the model as a block reason (`{decision: "block", reason}`). Scope of each validator: a dimension file edit checks the whole `.sdlc-v2/review-dimensions` folder of the active worktree, so a finding in an untouched dimension file is reported too; a `pr-template.md` edit checks the template; a `.sdlc-v2/config.toml` edit checks the guardrails of `plan` and `execute` together, under the project root two folders above the edited file; a plan file edit checks that file. After an edit of a Copilot mirror `.github/instructions/<name>.instructions.md`, the hook adds a note only when `.sdlc-v2/review-dimensions/<name>.md` exists and the mirror has no valid marker line. The note never blocks. |
 | `pipeline-continue` | `PostToolUse` on `Bash\|TodoWrite` | `internal/hooks/pipeline_continue.go` | Signals pipeline-aware hooks that a tool completed during an active pipeline |
 | `stop-pipeline-continue` | `Stop` | `internal/hooks/stop_hooks.go` | Counterpart to `pipeline-continue`; fires on session stop during an active pipeline |
@@ -1050,7 +1050,7 @@ stateDiagram-v2
 1. Finds the plan state file in three steps (`findPlanState`): first the newest plan run of the branch whose `sessionId` is the session of the hook, else the newest plan run of the branch with no `sessionId` (both from `state.PlanRunForSession`, not limited to active runs, so a run that reached `done` is found), else the newest plan run of the branch (`state.LatestPlanRun`).
 2. Calls `planIntegrityFromState`: first checks whether the `done` marker is present. If absent, the plan is still running — returns silently without evaluation or deletion.
 3. Once `done` is present, checks all 5 markers present + `planFilePath` stat, and leaves the state file and its evidence directory on disk — this hook no longer deletes them. Deletion is owned by ship's `cleanup-pipeline` step or the GC TTL sweep; see [Plan run lifetime](#plan-run-lifetime) below.
-4. If no state file found, falls back to `planIntegrityFromTranscript`: scans last 64KB of transcript for "Plan mode is active".
+4. If no state file found, falls back to `planIntegrityFromTranscript`: scans the last 64 KiB of the transcript (`transcriptTailLimit`) for "Plan mode is active". When that text is there, `transcriptHasPreplan` reads the transcript from byte 0, up to the first 64 MiB (`transcriptPreplanScanMax`), for a preplan marker: `<command-name>/sdlc:preplan</command-name>` or `"skill":"sdlc:preplan"`. The hook warns only when the scan finds no marker. A marker after the first 64 MiB does not stop the warning. An open or read error of the scan counts as no marker, so the hook warns. When the hook cannot read the last 64 KiB, it gives no warning.
 5. Advisory only (ExitCode 0 always). Missing markers produce a warning, not a failure.
 
 ### Plan run lifetime
@@ -1094,7 +1094,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | `links_validate` finds broken URLs | 6.5 | Pipeline blocks, surfaces broken URLs to user | **Yes** |
 | `validate({action: "plan_format"})` finds PF failures | 6.6 | Pipeline blocks, surfaces PF findings to user | **Yes** |
 | Session interrupted (Ctrl+C, timeout) | Any | `stop-plan-integrity` hook fires, warns on missing markers | No (advisory) |
-| State file missing at stop time | Stop | Falls back to transcript scanning | No (advisory) |
+| State file missing at stop time | Stop | Falls back to transcript scanning. No warning when the first 64 MiB of the transcript hold a preplan marker | No (advisory) |
 
 ---
 
@@ -1148,7 +1148,8 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | G1-G22 gate definitions | No | Lane prompt `.md` files | Hard-coded |
 | planIntegrity markers (4) | No | `stop_hooks.go` `requiredPlanMarkers` | Hard-coded |
 | Snapshot dimensions (7) | No | `plan_support.go` `PlanSnapshot` | Hard-coded |
-| Transcript scan window (64KB) | No | `stop_hooks.go` | Hard-coded |
+| Transcript scan window (last 64 KiB) | No | `stop_hooks.go` `transcriptTailLimit` | Hard-coded |
+| Preplan transcript scan bound (first 64 MiB) | No | `stop_hooks.go` `transcriptPreplanScanMax` | Hard-coded |
 
 Every `.sdlc-v2/local.toml` row above also reads `~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`). Order: built-in default < `~/.sdlc/local.toml` < `.sdlc-v2/local.toml`. Tables merge key by key, and a list in the project file replaces the user list.
 

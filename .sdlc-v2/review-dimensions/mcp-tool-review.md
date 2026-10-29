@@ -331,6 +331,39 @@ those same guardrails:
   bullet checks that the path is true now, not that it stays true. Example: a
   field description that named the local config file and the user config file
   as typed paths.
+- An action that replaces, clears or deletes stored text (a section, a file, a
+  row) MUST NOT read an omitted, empty or blank input as 'clear it'. Read what
+  the handler does when the input that supplies the new text is missing. An
+  omitted input either fails with a `DomainError` that names the input, or
+  keeps the stored value and says so in the output. A call that clears text on
+  purpose takes an explicit input for that choice, and the registered
+  description names each case in which the call discards or replaces text. A
+  handler that erases stored text on an omitted input is a finding. A test
+  omits the input on a seeded record and asserts the output and that the stored
+  text is unchanged. This extends the fail-closed guard bullet above, which
+  covers a value of an unexpected shape, not a missing value. Example: a
+  section write that cleared the section when `content` was omitted.
+- A rejection of an input that has a closed set of values (a section name, an
+  action name) or a format rule (a heading shape, a table layout) MUST give the
+  caller what it needs to retry. For a closed set, the `Suggestion` lists every
+  allowed value, built from the constant that the check uses. For a format
+  rule, the `Msg` names the value found and the rule it breaks, and the
+  `Suggestion` states the rule with one valid example. The `jsonschema_description`
+  of the input or the action description states the same rule, so the caller
+  can learn it before the first call. A generic text such as 'check the format'
+  is a finding. This extends the actionable-errors bullet above and the warning
+  bullet, which asks for the expected format with one example for warnings
+  only. Example: an unknown-section error that did not list the valid section
+  names.
+- A struct tag must be a string literal, so a number in a `jsonschema_description`
+  tag (a limit, a cap, a fixed count) cannot be built from the constant that
+  holds it. Such a tag leaves the number out, or a test reads the tag and
+  compares the number with the constant, as the path bullet above requires for a
+  path in a tag. A tag that hard-codes a number with neither is a finding: the
+  tag goes stale when the limit changes. This extends the stated-number bullet
+  above, which asks that a description build its number from the constant and
+  which a tag cannot meet. Example: the tag of a ready-list output field that
+  typed its count limits as numbers.
 
 ## Cross-references
 

@@ -2,7 +2,7 @@
 name: plan
 description: "Use when writing an implementation plan from requirements, a spec, a design doc, or a user description. ALWAYS use when plan mode is active — this is the designated plan-mode skill. Analyzes scope, maps file structure, decomposes into classified tasks with dependencies, and produces a plan ready for execute. Triggers on: write plan, create plan, plan this, break this into tasks, implementation plan, plan mode."
 user-invocable: true
-argument-hint: "[--auto] [--spec [<change-name>]] [spec-file-path]"
+argument-hint: "[--auto] [--spec [<change-name>]] [spec-file-path...]"
 model: opus
 ---
 
@@ -46,9 +46,9 @@ Example — OpenSpec gate check:
 | Argument | Effect |
 |---|---|
 | `--auto` | Suppresses the questions that have a safe default (each `--auto` rule below names its choice). At the OpenSpec gate check it takes **Create OpenSpec change** |
-| `--spec` | Opts into OpenSpec and skips the gate-check question. Without a name: use the branch-matched change, else ask which active change to use, or offer **Create OpenSpec change** when none exists (see **OpenSpec gate check** below) |
+| `--spec` | Opts into OpenSpec and skips the gate-check question. Without a name: use the branch-matched change, else ask which active change to use, or offer **Create OpenSpec change** when none exists (see **OpenSpec gate check** below). Every `--spec` form (with a name, without a name, or the `--from-openspec` alias) with two or more topic-file paths: before `plan_prepare`, stop and print: `--spec cannot be used with several topic files. Run /sdlc:plan --spec <name>, or /sdlc:plan with topic files only.` |
 | `--spec <change-name>` | Plans from the existing change `openspec/changes/<change-name>/`. The name goes to `plan_prepare` as `fromOpenspec` |
-| `[spec-file-path]` | Requirements file. A path into `openspec/changes/<name>/` works the same as `--spec <name>`. A preplan topic file has its own read rule (Step 1 **Preplan topic file**) |
+| `[spec-file-path...]` | Requirements file. A path into `openspec/changes/<name>/` works the same as `--spec <name>`. A preplan topic file has its own read rule (Step 1 **Preplan topic file**). Two or more paths must all be preplan topic files. Split the paths at spaces. Put a path that holds spaces in double quotes: a path in double quotes is one path, spaces included. With two or more paths, check each path by the topic-file rule of Step 1 (**Preplan topic file**) before `plan_prepare`. If a path fails the check, stop and print: `<path> is not a preplan topic file. Run /sdlc:plan with topic files only, or with one requirements file.`, with `<path>` replaced by the path. Then print: `Put a path with spaces in double quotes.` |
 
 `--from-openspec <change-name>` is a deprecated alias of `--spec <change-name>`. When it is passed, print this line, then behave exactly as if `--spec <change-name>` had been passed:
 `--from-openspec is deprecated — use --spec <change-name>`
@@ -70,7 +70,7 @@ Example — OpenSpec gate check:
 
 **Load State (mandatory) — Context detection and guardrail loading:**
 
-This is plan's mandatory state/config load. Call `plan_prepare({ skipConfigCheck: <bool>, fromOpenspec: <name or omit>, userPrompt: USER_PROMPT })` before any other planning action below this point. The only things that may legitimately precede it are the unavoidable prerequisites above it in this same step — mode detection, gathering `userPrompt` via AskUserQuestion, and OpenSpec change-name detection (`fromOpenspec` is an *input* to this call, not something it produces). Do NOT read `.sdlc-v2/config.toml`/`local.toml` or any other project state/config file directly to determine guardrails or plan-integrity state — this call's returned payload is the only sanctioned source. Note: `plan_prepare` has no `action` parameter — unlike `execute_state`/`ship_state`'s `{action:"read"}`, it is a single-purpose call whose full input schema (`skipConfigCheck`, `fromOpenspec`, `userPrompt`, `runId`, `resume`, plus the template/routing flags added by the second call below) doubles as its "load state" contract.
+This is plan's mandatory state/config load. Call `plan_prepare({ skipConfigCheck: <bool>, fromOpenspec: <name or omit>, userPrompt: USER_PROMPT })` before any other planning action below this point. The only things that may legitimately precede it are the unavoidable prerequisites above it in this same step — mode detection, gathering `userPrompt` via AskUserQuestion, the topic-path checks of **Flag parsing** (the `--spec` row and the `[spec-file-path...]` row), and OpenSpec change-name detection (`fromOpenspec` is an *input* to this call, not something it produces). Do NOT read `.sdlc-v2/config.toml`/`local.toml` or any other project state/config file directly to determine guardrails or plan-integrity state — this call's returned payload is the only sanctioned source. Note: `plan_prepare` has no `action` parameter — unlike `execute_state`/`ship_state`'s `{action:"read"}`, it is a single-purpose call whose full input schema (`skipConfigCheck`, `fromOpenspec`, `userPrompt`, `runId`, `resume`, plus the template/routing flags added by the second call below) doubles as its "load state" contract.
 
 Pass `fromOpenspec` only when flag parsing resolved a change name (`--spec <change-name>`, its deprecated alias, or a spec file path into `openspec/changes/<name>/`). The tool call returns the prepare payload directly — there is no output file to read and no cleanup trap to install for this step (that differs from the `explorePack` tempdir, handled separately in Step 1). The tool has already written the `skillInvoked` planIntegrity marker as a side effect; do not call `plan_mark` with the marker `skillInvoked` — that would be a redundant explicit call, since `plan_prepare` writes that marker for free.
 
@@ -300,6 +300,7 @@ Call `plan_mark({ marker: "checkpoint", runId: "<runId>", path: "", data: { step
 - `**Guardrail check:**` line — the check record of preplan. It is not a requirement, so do not copy it into the plan. Step 3 (the guardrail-compliance lane) checks the plan against the guardrails again. An older topic file can hold a `## Guardrail check` section instead. Treat it the same way: a `kept — <ids>` row there means the same as a `Kept with warning: <ids>.` note.
 - `## Open questions` — present only when a question has no answer. An older topic file can hold an empty section: it has no question to ask. Each bullet is a scope question with no answer. Ask it in **Structured discovery** below. Under `--auto`, use the **`--auto` suppression** rule there.
 - The `**Status:**` line is the state of preplan. It is not a requirement.
+- Several topic files: read each file with the rules above, in argument order. Step 0 **Flag parsing** already checked that each path is a preplan topic file by the rule above. Number the R-items across all files. For each topic, write one Non-goals bullet and one Smallest cut bullet in `## Key Decisions`, with the topic name first, and one root problem in `## Context`. Each of them follows the template condition and the fallback of its single-file rule above: when the active template does not list the section, record the item as a requirement item. The topic name is the text after `# Preplan: ` on the first line of the file. Sample bullets: `- Dashboard preplans: Non-goals: none stated` and `- Dashboard preplans: Smallest cut: all requirements`. When two files have decisions that contradict each other, ask one Structured discovery question for each conflict. Under --auto, take the decision of the earlier file and add one ## Deviations & assumptions row with asked=no. **Source:** lists each path, separated by ", ", unless the OpenSpec gate check sets it. Sample: `**Source:** <main-worktree>/.sdlc-v2/preplan/2026-10-29-a.md, <main-worktree>/.sdlc-v2/preplan/2026-10-29-b.md`. A resumed run takes the paths from the `**Source:**` line of the plan file when that line lists them. Otherwise it takes them from the original request in the session context. If neither holds, ask for the paths as in Step 0 **Gather requirements**. A conflict answer is a D<n> record, so a resumed run does not ask it again.
 
 **Discovery dispatch (full pipeline only, implements R24–R28):**
 
@@ -519,7 +520,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
 Wait for answers before continuing.
 
-**`--auto` suppression (R65):** When `--auto` is set, suppress the AskUserQuestion above. Pick the most conservative approach autonomously: for approach-pattern ambiguities (triggers a/c), prefer whichever viable option most closely matches existing codebase patterns as a tiebreaker between equally-conservative choices; for scope-boundary or vague-requirement ambiguities (trigger b, or an underspecified goal), default to the narrowest scope that still satisfies the stated requirement. Record the choice in `## Key Decisions` with rationale, and add a `## Deviations & assumptions` row with `asked=no`.
+**`--auto` suppression (R65):** When `--auto` is set, suppress the AskUserQuestion above. Pick the most conservative approach autonomously: for approach-pattern ambiguities (triggers a/c), prefer whichever viable option most closely matches existing codebase patterns as a tiebreaker between equally-conservative choices; for scope-boundary or vague-requirement ambiguities (trigger b, or an underspecified goal), default to the narrowest scope that still satisfies the stated requirement. A conflict between two topic files is the exception: take the choice that the **Several topic files** bullet of the **Preplan topic file** block names, not one of these two defaults. Record the choice in `## Key Decisions` with rationale, and add a `## Deviations & assumptions` row with `asked=no`.
 
 **Codebase exploration (skip for lightweight):** Use read-only tools (Glob, Grep, Read, LSP):
 - Relevant file structure and patterns in affected areas
@@ -1260,6 +1261,7 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 | Plan reviewer loop exceeds `reviewLoop.maxRounds` (5) iterations | Surface to user for guidance |
 | Requirements are contradictory | Flag specific contradictions, ask user to resolve |
 | User approves but output path fails | Retry with a different path; offer to print plan to screen |
+| The plan stops with an error after Step 1 dispatched background explorers | Call `TaskStop` for each background task ID that this session still holds. If a `TaskStop` call fails, or a task ID is no longer known, print `Warning: <writerId> not stopped, it can still run.` Then print the error. |
 
 ## DO NOT
 

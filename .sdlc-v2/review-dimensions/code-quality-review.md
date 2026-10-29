@@ -57,13 +57,16 @@ Review Go source changes for baseline code quality in this module
 - A size, count or retry limit (a read cap such as `1 << 20`, a maximum entry
   count) is defined once as a named constant, never as an inline literal, and
   a limit with the same meaning reuses the existing constant. Text that states
-  the limit (a tool or action description, an error or warning, a doc comment)
-  builds the number from that constant, so a changed limit cannot leave a
-  stale text. Grep the package and the tool descriptions for the literal
-  (`1048576`, `1 << 20`) before adding it; two inline copies of one limit, or
-  a hard-coded number in a description, is a finding. This extends the
-  format-derived literal rule above, which names only values derived from a
-  format.
+  the limit (a tool or action description, an error or warning) builds the
+  number from that constant, so a changed limit cannot leave a stale text. A Go
+  doc comment cannot build a number, so it names the constant and not the
+  number: a doc comment that gives the limit as a literal (`64 KiB`, `100`)
+  beside the constant that holds it is a finding. Grep the package and the tool
+  descriptions for the literal (`1048576`, `1 << 20`) before adding it; two
+  inline copies of one limit, or a hard-coded number in a description, is a
+  finding. This extends the format-derived literal rule above, which names only
+  values derived from a format. Example: doc comments that restated a size
+  limit as a number beside the constant that holds it.
 - A string that is a value of a closed set (a phase, a status, a step name, a
   reason) is not typed inline where the package names that set with constants.
   Grep the package for the literal and for the constants of the set before
@@ -72,8 +75,37 @@ Review Go source changes for baseline code quality in this module
   literal, define them. This extends the format-derived literal rule above,
   which names only values derived from a format. Example: the phase `started`
   typed as an inline literal.
+- The constants of one closed set (the section names of a file format, the
+  actions of a tool, the statuses of a record) are defined in one place: one
+  `const` block of one file. Constants of one set in two or more blocks or files
+  are a finding, and so is a second constant for a value that the set already
+  names. Merge them into one definition, and have each site use it. A list of
+  the members of the set that a doc comment or a struct tag types again is built
+  from the canonical list, or a test compares it with that list; a struct tag
+  must be a string literal, so a tag needs the test. This extends the closed-set
+  bullet above, which asks that a literal is replaced by a constant and does not
+  say where the constants of a set live. Example: section-name constants defined
+  in three places, and an action list typed in four places.
 - Naming is consistent with sibling files in the same package — check for
   drift before introducing a second convention.
+- A parameter, closure parameter, local variable or named result must not take
+  the name of an imported package (`path`, `filepath`, `strings`, `time`,
+  `errors`) or of a predeclared identifier (`max`, `min`, `len`, `cap`, `new`,
+  `copy`, `clear`, `close`, `error`, `string`, `any`). A name that shadows one
+  of these hides the package or the built-in for the rest of its scope: a later
+  edit that calls `path.Join` or `max(a, b)` there no longer compiles, and a
+  reader takes the name for the package or the built-in. Check the parameter
+  list of each function and closure that the change adds, and each `:=`. A
+  shadowing name is a finding: rename it. Example: closure parameters named
+  `path` and `max`.
+- A name states what its value holds. A variable, field or result that merges
+  three or more conditions (an `&&` or `||` chain, or one flag set on several
+  paths) under a name that states one of them is a finding: the name misleads,
+  and a reader cannot see which condition decided. Give each condition its own
+  name, or name the merged value for all of them. Check the name of each new
+  boolean or status value against the conditions that set it. A struct field or
+  package variable that code assigns and no code reads is dead: delete it.
+  Example: a variable named for the last check that merged three conditions.
 - Documentation strings/doc comments citing paths (`.sdlc`, `.sdlc-v2`) or
   filenames must stay synchronized with the actual
   `paths.DataDir`/`paths.LegacyDataDir` constants and file-loading code.
@@ -214,6 +246,16 @@ Review Go source changes for baseline code quality in this module
   the cases in the code body. Example: the doc comment of `hardenShipList`
   named one caller and was wrong, and the doc comment of `guardrailDescMaxBytes`
   named two users and missed `bytesOver`.
+- A comment on a struct field, whether a doc comment or a trailing comment,
+  must not restate the text of a tag on the same field (`jsonschema_description`,
+  `json`). The comment and the tag are two copies of one fact, and the copies
+  drift when one of them is edited. Delete the comment, or keep only what the tag
+  leaves out, such as why the field exists or which code sets it. Compare the
+  comment with the tag of each field that the change adds or changes. A comment
+  that repeats its tag is a finding. This extends the doc-comment completeness
+  rule above, which checks that a comment says enough, not that it adds nothing
+  already stated beside it. Example: new `*Out` fields whose trailing comments
+  repeated the text of their `jsonschema_description` tags.
 - Functions or types with near-identical names (differing only by a package
   prefix or a single token, e.g. `openspec.StagedChangeFromPlan` vs a local
   `openspecChangeFromPlan`) that extract different things from the same
@@ -222,7 +264,12 @@ Review Go source changes for baseline code quality in this module
 - User-facing output text (warning messages in reports, Markdown Next hints,
   rendered logs) must use sentence case — capitalize the first letter. Do not
   confuse this with Go error values in the `error` interface, which follow Go
-  convention and stay lowercase (`errors.New("file not found")`). Exported
+  convention: they stay lowercase and end with no period or other final
+  punctuation (`errors.New("file not found")`). A caller joins an error value
+  into a longer message (`fmt.Errorf("read %s: %w", name, err)`), so a final
+  period lands in the middle of that text. An error value that ends with a
+  period is a finding. An error that a program prints whole as its last line to
+  the user and never wraps follows the sibling messages of that file. Exported
   string constants representing user-visible text must start with a capital
   letter. A stored label or issue text that a page or report draws counts as
   user-facing text, and the strings of one list share one case: a new string
@@ -230,7 +277,8 @@ Review Go source changes for baseline code quality in this module
   capitalizes it at one named site. Otherwise the stored value changes together
   with every test, fixture and spec line that pins it. The change states which
   of the two it uses, and a test pins the result. Example: an issue text in
-  sentence case beside held labels in lower case.
+  sentence case beside held labels in lower case; an error value that ended
+  with a period.
 - Validator functions must not duplicate input checks. When a handler
   validates the same input condition in more than one place (e.g. two
   separate "file is required" checks for the same action), consolidate into
@@ -252,7 +300,14 @@ Review Go source changes for baseline code quality in this module
   inputs in the same scope (e.g. `LimitsFor` called in a loop with an
   invariant argument, or a cached value computed twice in different
   branches), consolidate to a single call and reuse the result. Redundant
-  calls mask expensive operations and are worse than not optimizing at all.
+  calls mask expensive operations and are worse than not optimizing at all. A
+  scan is a recomputation too: when two loops or two passes (a regexp pass, a
+  line walk) read the same text, slice or listing in one function, and the
+  second pass finds again what the first pass found (for example one pass for
+  the spans of a text and a second pass for the same spans), keep the first
+  result and drop the second pass. Two passes can also disagree on an edge
+  case, such as a fenced block or a last line with no newline. Example: a text
+  scanned twice for the same spans.
 - Type assertions use the two-value form (`v, ok := x.(T)`) and handle
   `ok == false`. A dropped `ok` is a silently discarded error, as in
   `commitBaseHead`. When the asserted value is a key of a stored file or state
@@ -276,13 +331,16 @@ Review Go source changes for baseline code quality in this module
   about 10 return statements): count the lines and the returns of each new
   helper (`grep -n '^func '` gives where each starts), and split it again or
   state why it stays whole. A loop, check or switch that appears in two or more
-  helpers or functions of the same change, and differs only in a name or a
-  message, is one block: write it once in a shared helper that each site calls.
-  A copy of the block in each helper is a finding, even when each copy is
-  short. This extends the function-length bullets and the helper-duplication
-  bullet above, which count one function and compare whole helper bodies.
-  Example: a validation loop for surface, action and target file copied into
-  three helpers, and two helpers of 85 and 90 lines with 11 and 13 returns.
+  helpers or functions of the same change, or two or more times in one
+  function, and differs only in a name or a message, is one block: write it once
+  in a shared helper that each site calls. A switch that maps one value to
+  another in three or more branches counts too: written at two sites, it is one
+  lookup helper or table that each site calls. A copy of the block in each
+  helper is a finding, even when each copy is short. This extends the
+  function-length bullets and the helper-duplication bullet above, which count
+  one function and compare whole helper bodies. Example: a validation loop for
+  surface, action and target file copied into three helpers, two helpers of 85
+  and 90 lines with 11 and 13 returns, and a three-branch switch written twice.
 - A parse, format or normalization of a value that the project stores in a known
   layout (a timestamp line, a dated file name, a stored heading) must call the
   helper that already reads or writes that layout. Before writing `time.Parse`,
@@ -328,3 +386,13 @@ Review Go source changes for baseline code quality in this module
   extends the generated-name rule above. Example: a review queue that keyed
   deferred findings by file and line dropped one that shared both with a fix
   record, and built the key by hand at two sites.
+- A branch must not decide by matching the text of a warning or an error
+  message (`strings.Contains`, an equality test on a string, a regexp on a
+  `Msg`). A text is written for the reader and changes with each rewording, so
+  the branch breaks with no compile error. The function that makes the warning
+  also returns a typed value, such as a field, a flag or a sentinel `error`,
+  and the caller tests that value. A test changes the text and asserts that the
+  branch does not change. A condition read from message text is a finding.
+  This extends the rule above that a failure travels as an `error` value, not
+  as a `string`. Example: a ready-list check that matched the text of a warning
+  to decide that a file was ready.

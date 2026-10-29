@@ -535,6 +535,133 @@ func TestPlanSkillsReferenceFilesAreUnmodified(t *testing.T) {
 	}
 }
 
+// planSkillsTopicStopSpec is the sentence that the --spec row of plan SKILL.md
+// prints when --spec comes with two or more topic-file paths. It is a closed-set
+// text: the test below reads it from here, so a reworded sentence in SKILL.md
+// fails in one place. The text has no backticks; the row wraps it in them.
+const planSkillsTopicStopSpec = "--spec cannot be used with several topic files. Run /sdlc:plan --spec <name>, or /sdlc:plan with topic files only."
+
+// planSkillsTopicStopNotTopic is the sentence that the [spec-file-path...] row
+// of plan SKILL.md prints for a path that is not a preplan topic file. It is
+// the second closed-set text of the several-paths stops. The text has no
+// backticks; the row wraps it in them.
+const planSkillsTopicStopNotTopic = "<path> is not a preplan topic file. Run /sdlc:plan with topic files only, or with one requirements file."
+
+// planSkillsTopicBlockNames lists the names that the Preplan topic file block
+// of plan SKILL.md has to hold. The first six are section and row names. The
+// last two phrases occur only in the new bullets, so deleting the non-goals
+// bullet or the routing bullet fails the test. The tokens above them also
+// occur in older bullets.
+var planSkillsTopicBlockNames = []string{
+	"`## Problem and benefit`",
+	"`## Risk if wrong`",
+	"`## Non-goals`",
+	"`Smallest cut:`",
+	"`Offered, not picked:`",
+	"`None stated.`",
+	"and the `Smallest cut:` line under the Decisions table",
+	"The `Smallest cut:` line under the table is not a row and not a requirement.",
+}
+
+// planSkillsTopicBulletWants maps the start of a top-level bullet of the
+// Preplan topic file block to the sentences that bullet has to hold. The
+// routing claims are checked inside the one bullet that makes them, so a token
+// that also occurs in another bullet cannot satisfy them. The key of the last
+// entry is the whole first sentence of the Several topic files bullet: a
+// deleted or reworded bullet fails on the key.
+var planSkillsTopicBulletWants = map[string][]string{
+	"An empty or absent new section": {
+		"`## Problem and benefit`, `## Risk if wrong` or `## Non-goals`",
+		"ask one **Structured discovery** question for each such section",
+		"Under `--auto`, ask none of them: the **`--auto` suppression** rule applies",
+		"`asked=no`",
+		"A filled new section answers its question: do not ask it again.",
+	},
+	"`## Goal`, `## Users and effect`, `## Flows`": {
+		"When one of them is empty or absent",
+		"use **Structured discovery** below for it, and under `--auto` its **`--auto` suppression** rule",
+	},
+	"`## Non-goals` and the `Smallest cut:` line": {
+		"not its `#<id>`",
+		"With no `Smallest cut:` line",
+		"the smallest cut is all live proposals",
+	},
+	"Several topic files: read each file with the rules above, in argument order.": {
+		"Step 0 **Flag parsing** already checked that each path is a preplan topic file by the rule above.",
+		"Each of them follows the template condition and the fallback of its single-file rule above",
+		"When two files have decisions that contradict each other, ask one Structured discovery question for each conflict.",
+		"Under --auto, take the decision of the earlier file and add one ## Deviations & assumptions row with asked=no.",
+	},
+}
+
+// planSkillsTopicBlock returns the Preplan topic file block of content: from
+// its heading to the first blank line after it.
+func planSkillsTopicBlock(content string) (string, bool) {
+	from := strings.Index(content, "**Preplan topic file:**")
+	if from < 0 {
+		return "", false
+	}
+	block := content[from:]
+	if end := strings.Index(block, "\n\n"); end >= 0 {
+		block = block[:end]
+	}
+	return block, true
+}
+
+// planSkillsTopicBullet returns the top-level bullet of block that starts with
+// start, up to the next top-level bullet. Its nested lines belong to it.
+func planSkillsTopicBullet(block, start string) (string, bool) {
+	from := strings.Index(block, "\n- "+start)
+	if from < 0 {
+		return "", false
+	}
+	b := block[from+1:]
+	if end := strings.Index(b[2:], "\n- "); end >= 0 {
+		b = b[:end+2]
+	}
+	return b, true
+}
+
+// planSkillsTopicStopProblems returns one message for each stop sentence of
+// the several-paths flow that content does not hold exactly once, and for a
+// Flag parsing row that does not print its stop sentence in backticks after
+// "stop and print: ": the --spec row prints planSkillsTopicStopSpec and the
+// [spec-file-path...] row prints planSkillsTopicStopNotTopic. Both stops sit
+// in Flag parsing, so they run before plan_prepare makes a run.
+func planSkillsTopicStopProblems(content string) []string {
+	var problems []string
+	for _, sentence := range []string{planSkillsTopicStopSpec, planSkillsTopicStopNotTopic} {
+		if n := strings.Count(content, sentence); n != 1 {
+			problems = append(problems, fmt.Sprintf("the stop sentence %q occurs %d times, want 1", sentence, n))
+		}
+	}
+	rows := []struct{ start, sentence string }{
+		{"| `--spec` |", planSkillsTopicStopSpec},
+		{"| `[spec-file-path...]` |", planSkillsTopicStopNotTopic},
+	}
+	for _, r := range rows {
+		row, found := planSkillsFlagRow(content, r.start)
+		if !found {
+			problems = append(problems, fmt.Sprintf("no Flag parsing row starts with %q", r.start))
+			continue
+		}
+		if want := "stop and print: `" + r.sentence + "`"; !strings.Contains(row, want) {
+			problems = append(problems, fmt.Sprintf("the row %q does not say %q", r.start, want))
+		}
+	}
+	return problems
+}
+
+// planSkillsFlagRow returns the table line of content that starts with start.
+func planSkillsFlagRow(content, start string) (string, bool) {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, start) {
+			return line, true
+		}
+	}
+	return "", false
+}
+
 // TestPlanSkillPreplanTopicMap checks that the Preplan topic file block of
 // plan SKILL.md Step 1 names each new topic section and each new row kind.
 // The block is the only reader of the section bodies of a topic file, so a
@@ -543,9 +670,13 @@ func TestPlanSkillsReferenceFilesAreUnmodified(t *testing.T) {
 // Structured discovery question and to the --auto suppression rule, and to
 // say that the Smallest cut: line is not a requirement. The routing claims
 // are checked inside the one bullet that makes them, so a token that also
-// occurs in another bullet cannot satisfy them. TestPlanSkillPreplanSectionParity
-// (internal/tools) checks every name of the section list against the block,
-// so a new section that this test does not name still fails there.
+// occurs in another bullet cannot satisfy them. The Several topic files
+// bullet is pinned by its start, its sentence about the Flag parsing check,
+// its template-condition sentence and its conflict sentences. The --spec row
+// and the [spec-file-path...] row are pinned by their stop sentences.
+// TestPlanSkillPreplanSectionParity (internal/tools) checks every name of the
+// section list against the block, so a new section that this test does not
+// name still fails there.
 func TestPlanSkillPreplanTopicMap(t *testing.T) {
 	rel := "skills/plan/SKILL.md"
 	data, err := os.ReadFile(filepath.Join(planSkillsRepoRoot(t), rel))
@@ -554,74 +685,29 @@ func TestPlanSkillPreplanTopicMap(t *testing.T) {
 	}
 	content := string(data)
 
-	const start = "**Preplan topic file:**"
-	from := strings.Index(content, start)
-	if from < 0 {
-		t.Fatalf("%s: no %q block found", rel, start)
+	block, ok := planSkillsTopicBlock(content)
+	if !ok {
+		t.Fatalf("%s: no Preplan topic file block found", rel)
 	}
-	block := content[from:]
-	// The block ends at the first blank line after its heading line.
-	if end := strings.Index(block, "\n\n"); end >= 0 {
-		block = block[:end]
-	}
-
-	for _, want := range []string{
-		"`## Problem and benefit`",
-		"`## Risk if wrong`",
-		"`## Non-goals`",
-		"`Smallest cut:`",
-		"`Offered, not picked:`",
-		"`None stated.`",
-		// These two phrases occur only in the new bullets, so deleting the
-		// non-goals bullet or the routing bullet fails the test. The tokens
-		// below them also occur in older bullets.
-		"and the `Smallest cut:` line under the Decisions table",
-		"The `Smallest cut:` line under the table is not a row and not a requirement.",
-	} {
+	for _, want := range planSkillsTopicBlockNames {
 		if !strings.Contains(block, want) {
 			t.Errorf("%s: Preplan topic file block does not name %s", rel, want)
 		}
 	}
-
-	// bullet returns the top-level bullet of the block that starts with
-	// start, up to the next top-level bullet. Its nested lines belong to it.
-	bullet := func(start string) string {
-		t.Helper()
-		from := strings.Index(block, "\n- "+start)
-		if from < 0 {
-			t.Fatalf("%s: Preplan topic file block has no bullet that starts with %q", rel, start)
-			return ""
+	for start, wants := range planSkillsTopicBulletWants {
+		b, found := planSkillsTopicBullet(block, start)
+		if !found {
+			t.Errorf("%s: Preplan topic file block has no bullet that starts with %q", rel, start)
+			continue
 		}
-		b := block[from+1:]
-		if end := strings.Index(b[2:], "\n- "); end >= 0 {
-			b = b[:end+2]
-		}
-		return b
-	}
-	for start, wants := range map[string][]string{
-		"An empty or absent new section": {
-			"`## Problem and benefit`, `## Risk if wrong` or `## Non-goals`",
-			"ask one **Structured discovery** question for each such section",
-			"Under `--auto`, ask none of them: the **`--auto` suppression** rule applies",
-			"`asked=no`",
-			"A filled new section answers its question: do not ask it again.",
-		},
-		"`## Goal`, `## Users and effect`, `## Flows`": {
-			"When one of them is empty or absent",
-			"use **Structured discovery** below for it, and under `--auto` its **`--auto` suppression** rule",
-		},
-		"`## Non-goals` and the `Smallest cut:` line": {
-			"not its `#<id>`",
-			"With no `Smallest cut:` line",
-			"the smallest cut is all live proposals",
-		},
-	} {
-		b := bullet(start)
 		for _, want := range wants {
 			if !strings.Contains(b, want) {
 				t.Errorf("%s: the bullet %q does not say %q:\n%s", rel, start, want, b)
 			}
 		}
+	}
+	for _, problem := range planSkillsTopicStopProblems(content) {
+		t.Errorf("%s: %s", rel, problem)
 	}
 }
 

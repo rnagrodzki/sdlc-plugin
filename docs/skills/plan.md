@@ -15,13 +15,13 @@ or a plain description.
 
 ## Syntax
 
-    /plan [options] [spec-file-path]
+    /plan [options] [spec-file-path...]
 
 ## Flags
 
 | Flag | Description | Default |
 |------|-------------|---------|
-| `[spec-file-path]` | Path to a requirements or spec file to plan from. A path into `openspec/changes/<name>/` selects that change, same as `--spec <name>`. | none |
+| `[spec-file-path...]` | Path to a requirements or spec file to plan from. A path into `openspec/changes/<name>/` selects that change, same as `--spec <name>`. Two or more paths must all be preplan topic files. Put a path with spaces in double quotes. `--spec` with two or more paths stops the plan. | none |
 | `--auto` | Skip interactive prompts. Picks conservative defaults. Two prompts stay: a Gate A `CRITICAL` verdict still blocks, and the per-finding questions at the review-loop limit are still asked (only the harden offer is left out). | off |
 | `--spec [<change-name>]` | Opts into OpenSpec and skips the gate-check question. With a name: plan from that existing change (`openspec/changes/<change-name>/`). Without one: use the branch-matched change, else ask which active change to use, or offer to create a new one. | off |
 | `--from-openspec <name>` | Deprecated alias of `--spec <name>`, kept for one release. Prints a deprecation notice. | none |
@@ -58,6 +58,24 @@ proposals that are not dropped or moved.
 - A scope option under `Non-goals` that starts with `Offered, not picked:` is
   a non-goal, not a requirement. The line `None stated.` gives the Key
   Decisions bullet "Non-goals: none stated" and no discovery question.
+
+**Several topic files.** Give two or more topic files to plan them in one
+run. The plan reads each file with the rules above, in argument order, and
+numbers the requirements across all files. For each topic, it writes one
+non-goal entry and one smallest-cut entry in Key Decisions, and one root
+problem in Context. Each entry starts with the topic name. If the plan
+template has no such section, the plan records the entry as a requirement
+item. When two files contradict each other, the plan asks one question for
+each conflict. With `--auto`, the earlier file wins, and the plan records the
+choice in `Deviations & assumptions`.
+
+The `**Source:**` header of the plan lists the paths, separated by `, `,
+unless an OpenSpec change sets the source. A resumed run reads the paths back
+from that header.
+
+The plan checks the paths before it starts a run. If a path is not a topic
+file, the plan stops and prints the path. `--spec`, with or without a change
+name, also stops the plan when it comes with two or more paths.
 
 ## Examples
 

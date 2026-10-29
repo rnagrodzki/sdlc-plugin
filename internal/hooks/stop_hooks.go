@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -41,7 +42,20 @@ var planMarkerDescriptions = map[string]string{
 
 // transcriptTailLimit bounds how much of the transcript file's tail is
 // scanned for the "Plan mode is active" marker (source: 64 KiB).
-const transcriptTailLimit = 64 * 1024
+const transcriptTailLimit = 64 << 10
+
+// transcriptPreplanScanMax bounds the preplan scan of a transcript.
+var transcriptPreplanScanMax int64 = 64 << 20
+
+// transcriptScanBufSize is the read buffer of the scan. The split-marker
+// test lowers it, so a marker crosses a buffer boundary.
+var transcriptScanBufSize = 64 << 10
+
+// preplanTranscriptMarkers are the two records of a preplan invocation.
+var preplanTranscriptMarkers = []string{
+	"<command-name>/sdlc:preplan</command-name>",
+	`"skill":"sdlc:preplan"`,
+}
 
 // stopPlanIntegrity is the "stop-plan-integrity" hook handler (Stop event),
 // ported from hooks/stop-plan-integrity.js. It never blocks — every path
@@ -194,8 +208,12 @@ func containsString(list []string, s string) bool {
 // no-state-file fallback: it reads up to the last transcriptTailLimit bytes
 // of the transcript file named by event.Raw["transcript_path"] and, if that
 // text contains "Plan mode is active", warns to stderr that a plan was
-// presented without any plan integrity state for branch. Any missing
-// transcript_path, or any I/O error opening/reading it, is a silent no-op.
+// presented without any plan integrity state for branch. The warning is
+// skipped when the first transcriptPreplanScanMax bytes of the transcript
+// hold a preplan invocation record (transcriptHasPreplan): a preplan session
+// presents a topic file, not a plan, and its record lies outside the tail.
+// Any missing transcript_path, or any I/O error opening/reading it, is a
+// silent no-op.
 func planIntegrityFromTranscript(event Event, branch string) Output {
 	silent := Output{ExitCode: 0}
 
@@ -210,9 +228,68 @@ func planIntegrityFromTranscript(event Event, branch string) Output {
 	}
 
 	if strings.Contains(string(tail), "Plan mode is active") {
-		fmt.Fprintf(os.Stderr, "[plan-integrity] WARNING: Plan presented but plan was not invoked (no plan integrity state for branch %s). Quality gates may have been bypassed.\n", branch)
+		if !transcriptHasPreplan(transcriptPath, transcriptPreplanScanMax) {
+			fmt.Fprintf(os.Stderr, "[plan-integrity] WARNING: Plan presented but plan was not invoked (no plan integrity state for branch %s). Quality gates may have been bypassed.\n", branch)
+		}
 	}
 	return silent
+}
+
+// transcriptHasPreplan streams the first limit bytes of path and reports a
+// marker match. It keeps the last len(longest marker)-1 bytes of each
+// buffer, so a marker split across two buffers matches. An open or read
+// error returns false: the warning then shows when the tail of the transcript
+// holds the plan mode text. A transcript whose tail cannot be read never gets
+// here: the hook is silent. The result is a bool, not an
+// error: the Stop hook is advisory and exits 0 on every path, and a scan that
+// fails must give the same result as a scan that finds no marker.
+func transcriptHasPreplan(path string, limit int64) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	keep := longestPreplanMarker() - 1
+	bufSize := transcriptScanBufSize
+	buf := make([]byte, keep+bufSize)
+	carry := 0
+	r := io.LimitReader(f, limit)
+	for {
+		n, readErr := r.Read(buf[carry : carry+bufSize])
+		window := buf[:carry+n]
+		if windowHasPreplanMarker(window) {
+			return true
+		}
+		if readErr != nil {
+			return false
+		}
+		carry = min(keep, len(window))
+		copy(buf, window[len(window)-carry:])
+	}
+}
+
+// longestPreplanMarker returns the byte length of the longest entry of
+// preplanTranscriptMarkers.
+func longestPreplanMarker() int {
+	longest := 0
+	for _, marker := range preplanTranscriptMarkers {
+		if len(marker) > longest {
+			longest = len(marker)
+		}
+	}
+	return longest
+}
+
+// windowHasPreplanMarker reports whether window holds one of
+// preplanTranscriptMarkers.
+func windowHasPreplanMarker(window []byte) bool {
+	for _, marker := range preplanTranscriptMarkers {
+		if bytes.Contains(window, []byte(marker)) {
+			return true
+		}
+	}
+	return false
 }
 
 // readFileTail returns up to the last limit bytes of the file at path.

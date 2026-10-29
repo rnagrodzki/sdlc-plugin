@@ -1028,6 +1028,7 @@ func TestOpenspecSourceChangeFromPlan(t *testing.T) {
 		{"unfilled TBD placeholder", "**Source:** [TBD]\n", ""},
 		{"non-openspec source", "**Source:** conversation context\n", ""},
 		{"traversal-shaped segment returned raw", "**Source:** openspec/changes/../\n", ".."},
+		{"list of preplan topic files", "**Source:** .sdlc-v2/preplan/2026-10-29-a.md, .sdlc-v2/preplan/2026-10-29-b.md\n", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

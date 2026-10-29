@@ -68,7 +68,14 @@ Several `internal/tools/*.go` files already follow this with their own
 - When a file implements two or more near-identical polling or retry loops,
   verify they agree on probe-vs-timeout ordering, error classification, and
   final-probe-on-timeout behavior; if a fix is applied to one loop, mirror it
-  to the other or consolidate the loops to prevent drift.
+  to the other or consolidate the loops to prevent drift. The same holds for
+  two or more loops or passes over one set of items (the files of one snapshot,
+  the rows of one table): each pass treats a per-item failure alike. An item
+  that is gone when a pass reads it (`errors.Is(err, fs.ErrNotExist)` after a
+  listing) gives the same result and the same warning text in every pass. A
+  pass that warns while its sibling skips the item with no signal is a finding.
+  Prefer one loop that all passes share. Example: a file deleted during a
+  snapshot gave a warning in one loop only.
 - When handler code calls `os.ReadFile`, `os.Stat`, `filepath.ReadDir`, or
   similar filesystem probes, errors must be classified: use
   `errors.Is(err, fs.ErrNotExist)` to distinguish "file does not exist" from
@@ -105,6 +112,20 @@ Several `internal/tools/*.go` files already follow this with their own
   bullet above, which keeps the chain of one error but not the errors of
   several attempts. Example: `openspec_save` lost the main-worktree error when
   the save failed.
+- A typed error with no `Cause` needs a stated ground. When the branch holds a
+  lower-level error (an `err` from a read, a stat, a parse or a call), the typed
+  error that the branch returns sets `Cause` to it, also when a helper builds
+  the error: the helper takes the error as a parameter. When no lower-level
+  error exists (the code found an empty list, a missing record or a state that
+  breaks a rule, and no operation failed), an `InfraError` is the wrong class,
+  because it reads as a failed filesystem, network or process operation. Return
+  a `DomainError` when the caller's input is wrong, or a `DataError` when stored
+  data breaks a rule. An `InfraError` with no `Cause` is a finding on one of
+  these two grounds. This extends the `Cause` bullet and the error-class bullet
+  above: the first asks for `Cause` when an error is wrapped, and the second
+  names two class mismatches but not an `InfraError` raised for a state.
+  Example: a helper for a 'no topic file' state returned an `InfraError` with
+  no `Cause`.
 
 ## File-system operation error discrimination
 

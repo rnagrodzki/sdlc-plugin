@@ -1043,6 +1043,8 @@ details[open] > summary .chev { transform: rotate(90deg); }
   gap: 0 18px;
   align-items: start;
 }
+/* The Preplans box takes the whole row of the Activity grid. */
+.act-wide { grid-column: 1 / -1; }
 .hist-panel { max-width: 1180px; }
 .list-title { margin: 0 0 12px; font-family: var(--font-sign); font-weight: 600; font-size: 14px; color: var(--ivory); }
 .list-title .n { color: var(--rail); }

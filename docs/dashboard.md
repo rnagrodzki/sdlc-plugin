@@ -72,9 +72,10 @@ For each registered repo, the page shows:
   `completed` or `failed` pipeline drops off the page 7 days after its
   last update. Ship and execute pipelines also carry the worktree path they
   ran in. Some read problems of a repo are warnings: an unread preplan
-  folder or topic file, a Started line that does not parse, more than 100
-  topic files, an unread `runs.jsonl` or execute state for plan times, an
-  unread attention folder, and more than 50 lone waits. A warning shows before the
+  folder or topic file, a topic file whose summary is not read, a Started
+  line that does not parse, more than 100 topic files, an unread
+  `runs.jsonl` or execute state for plan times, an unread attention folder,
+  and more than 50 lone waits. A warning shows before the
   pipeline blocks as the line "Warning for `<repo>`: `<text>`", and the
   archive of the runs of the repo still works. Any other read problem of a
   repo is `repos[].error`, which blocks the archive of every run of the repo
@@ -90,11 +91,35 @@ For each registered repo, the page shows:
   120 characters before it reaches the page. A session shows as "active" when
   its newest evidence line is less than 30 minutes old.
 - **Activity tab** — the repo's open deferred issues, high priority first,
-  and the entries of its learnings log dated within the last 24 hours. A row
-  shows the first 200 characters of its text. A click on a row opens the
-  full item in the [detail viewer](#detail-viewer). Priority chips (all,
-  high, medium, low) with counts filter the deferred items. Each deferred
-  and learning row has a bin icon (see [Delete an item](#delete-an-item)).
+  the entries of its learnings log dated within the last 24 hours, and a
+  Preplans box. The box has one row for each topic file that the Preplans
+  tab lists: the newest 100 files of each repo, and older files add a
+  warning. A file with an unreadable head has no row, and so has a file
+  that went away during the snapshot. A row shows the
+  topic, status, change date, repo name, goal, proposal counts, last check
+  date, open question count, empty sections, and smallest cut. A part whose
+  name is in `unread` (see `repos[].preplans[]`) shows a label in place of
+  its value:
+
+  | `unread` name | Label |
+  |---|---|
+  | `goal` | `goal unreadable` |
+  | `proposals` | `proposals unreadable` |
+  | `lastCheck` | `check unreadable` |
+  | `openQuestions` | `open questions unreadable` |
+  | `gaps` | `gaps unreadable` |
+  | `smallestCut` | `cut unreadable` |
+
+  A row with an empty goal shows `No goal yet`. A topic file with no check
+  line shows `not checked`. A deferred or learning
+  row shows the first 200 characters of its text. A click on a deferred or
+  learning row opens the full item in the [detail viewer](#detail-viewer).
+  Priority chips (all, high, medium, low) with counts filter the deferred
+  items. Each deferred and learning row has a bin icon (see
+  [Delete an item](#delete-an-item)).
+  A row of the Preplans box is read only: the status menu and the bin icon
+  stay on the Preplans tab. See `repos[].preplans[]` in the
+  [Snapshot contract](#snapshot-contract).
 - **History tab** — the 50 newest runs of `runs.jsonl`, newest first, failed
   ship runs too. Each row shows the outcome, kind, branch, repo, finish time,
   plan time, ship time and total time. Outcome chips with counts filter the
@@ -645,7 +670,7 @@ port = 7385         # 1024-65535, loopback only
 | `<repo>/.sdlc-v2/reports/*` | ship, execute | run reports. Clear cache class `orphan-reports` deletes the ones that no run owns |
 | `<repo>/.sdlc-v2/history/deferred.json` | ship_state `defer` and `deferred_add`; server | deferred items. The server rewrites it without one item (see [Delete an item](#delete-an-item)) |
 | `<repo>/.sdlc-v2/learnings/log.md` | `learnings_log`; server | learning entries. The server rewrites it without one entry (see [Delete an item](#delete-an-item)) |
-| `<repo>/.sdlc-v2/preplan/<slug>.md` | plan_support `preplan_context` and `preplan_check`, preplan skill; server | preplan topic files. The server deletes one file (see [Delete an item](#delete-an-item)) or rewrites its `**Status:**` line (see [Change a preplan status](#change-a-preplan-status)) |
+| `<repo>/.sdlc-v2/preplan/<slug>.md` | plan_support `preplan_context`, `preplan_check` and `preplan_write`; server | preplan topic files. The server deletes one file (see [Delete an item](#delete-an-item)) or rewrites its `**Status:**` line (see [Change a preplan status](#change-a-preplan-status)) |
 | `<repo>/.sdlc-v2/history/runs.jsonl` | ship_state `history_record` and `fail`; plan_mark `done`; server | run history. The server rewrites it without the checked rows (see [Delete History rows](#delete-history-rows)) |
 | `<repo>/.sdlc-v2/evidence/attention/*.json` | hooks `block-askuserquestion-auto`, `record-permission-wait`; server | one record for each open wait. The server deletes one record (see [Dismiss a wait](#dismiss-a-wait)) |
 
@@ -868,8 +893,8 @@ collector reads the data, and the tool action that writes it.
 | `repos[].history[].planPaired`, `.planEndedAt` | A ship row with no valid stored plan time gets the plan time of the newest plan row of its branch that ended before the ship and after the previous ship of that branch. The plan row needs a start that parses, a `duration_ms` above 0, and a start that is not after the ship end. The ship row then gets `planStartedAt`, `planDurationMs`, a `totalMs` that counts from the plan start, `planPaired` set to `true`, and `planEndedAt`, the `ts` of that plan row. Both keys are absent otherwise. The pairing reads every line of `runs.jsonl`, so a plan row outside the newest 50 rows still pairs with a ship row inside them. | Collector, not stored |
 | `repos[].sessions[].commandGroups` | One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
 | `repos[].deferred[]` | The open items of `.sdlc-v2/history/deferred.json`, high priority first, then oldest first. Each item has `id`, `priority`, `description`, `created`, `source`, `severity`, `file`, `line`, and `reason`. A value that the record lacks is `""`, or `0` for `line`, never `null`. | ship_state `defer` and `deferred_add`; execute_state `issue-draft` |
-| `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a `**Started:**` line that does not parse, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times, an unread attention folder (`Attention folder unread: ...`), a count of open waits older than the newest 50 lone waits (`N older open waits not shown`). `[]` when none, never `null`. | Collector, derived |
-| `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, `updatedAt` (the change time of the file), and `durationMs`. The collector reads the first 4 KiB of each file. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `durationMs` is a number of milliseconds, always present: the change time of the file minus the UTC RFC 3339 time on the `**Started:**` line. A status change or any other edit moves the change time, so the value grows with each change; it is not the time spent on the topic. It is `0` when the file has no Started line, when the line does not parse, or when the start is equal to or later than the change time. A line that does not parse also adds the warning `Preplan <slug> start time not read: "<text>" (expected RFC 3339; duration shown as 0)`. A missing line adds no warning. `[]` when none, never `null`. | plan_support `preplan_context` (skeleton and Started line), then the preplan skill |
+| `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a `**Started:**` line that does not parse, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times, an unread attention folder (`Attention folder unread: ...`), a count of open waits older than the newest 50 lone waits (`N older open waits not shown`), a topic file of more than 262144 bytes (256 KiB) (`Preplan <slug> summary not read: the file is <n> bytes, the limit is 262144 bytes`, where `<n>` is the size of the file), a link to a regular file in place of a topic file (`Preplan <slug> summary not read: not a regular file`), a summary read that failed (`Preplan <slug> summary not read: <error>`, where `<error>` is the error text of the operating system). Each of these three `summary not read` warnings keeps the row and sets all six `unread` names of `repos[].preplans[]`. `[]` when none, never `null`. | Collector, derived |
+| `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, `updatedAt` (the change time of the file), `durationMs`, `goal`, `live`, `kept`, `dropped`, `lastCheckAt`, `openQuestions`, `gaps`, `smallestCut`, and `unread`. The collector finds `topic`, `status`, and the Started line in the first 4 KiB (4096 bytes) of each file. It ignores the rest of the file for these three. It reads the whole file for the summary fields (`goal` to `unread`), up to 256 KiB (262144 bytes). A file of more than 256 KiB is not read: the row stays, all six `unread` names are set, and the file adds one warning (see `repos[].warnings`). A file that went away after the head read has no row and adds no warning. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `durationMs` is a number of milliseconds, always present: the change time of the file minus the UTC RFC 3339 time on the `**Started:**` line. A status change or any other edit moves the change time, so the value grows with each change; it is not the time spent on the topic. It is `0` when the file has no Started line, when the line does not parse, or when the start is equal to or later than the change time. A line that does not parse also adds the warning `Preplan <slug> start time not read: "<text>" (expected RFC 3339; duration shown as 0)`. A missing line adds no warning. `[]` when none, never `null`. `goal` is the first sentence of `## Goal` (the text of its first paragraph up to the first period followed by a space, else the whole first paragraph), redacted and cut at 120 characters, and `""` when the section is absent or empty. `live`, `kept`, and `dropped` count the rows of the `## Decisions` table. `live` is every row that starts with neither `Dropped:` nor `Moved:`. `kept` is the live rows whose Reason holds `Kept with warning:`. `dropped` is the rows that start with `Dropped:`. A `Moved:` row is in no count. `lastCheckAt` is the `Last check:` time of the `**Guardrail check:**` line, as a UTC RFC 3339 time, and `""` when unread or never checked. The collector finds that line in the first 4 KiB of the file and ignores the rest of the file for it. `openQuestions` is the number of bullets in `## Open questions`, and `0` when the section is absent. `gaps` names each skeleton section that is absent or empty, without `## `. `smallestCut` is `set` when `## Decisions` has a valid `Smallest cut:` line, else `not set`. `unread` lists the parts that the collector did not read or that failed the check, in this order: `goal`, `proposals` (`live`, `kept`, and `dropped`), `smallestCut`, `lastCheck` (`lastCheckAt`), `openQuestions`, and `gaps`. A section fails the check when its body breaks a rule of the format check that `preplan_write` uses (see [Format rules](skills/preplan.md#format-rules)). `lastCheck` is also unread when the `**Guardrail check:**` line in the first 4 KiB has no valid `Last check:` time, or when the file holds the legacy `## Guardrail check` section. A file with no `**Guardrail check:**` line in the first 4 KiB and no legacy section was never checked: `lastCheck` is not unread and `lastCheckAt` is `""`. A check line that starts after the first 4 KiB counts as no line, as it does for `preplan_check`. A code fence that is open at the end of the file hides each `## ` heading after it. Then `gaps` is unread, and so is each part whose heading is not found: `goal`, `proposals` with `smallestCut`, or `openQuestions`. An absent heading with no open fence is not unread: its fields keep their empty values. The field of an unread part is empty: `""`, `0`, `[]`, or `not set`. `gaps` and `unread` are `[]` when empty, never `null`. | plan_support `preplan_context` (skeleton and Started line), then the preplan skill through `preplan_write` and `preplan_check` |
 | `pipelines[].planStartedAt` | Ship blocks only: `linkedPlan.startedAt` of the ship state, else the `started_at` of the joined plan row (see [How runs join a ship block](#how-runs-join-a-ship-block)). Absent when no plan is linked. | ship_state `complete-step` of `execute` (`linkedPlan`); plan_mark `done` (the plan row) |
 
 **Interrupted run or malformed harden record.** A harden run writes a

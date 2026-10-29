@@ -1803,6 +1803,149 @@
     return counts;
   }
 
+  // The names that a preplan row holds in unread. Each one equals a constant
+  // dashboardPreplanUnread* in internal/tools/dashboard_preplans.go. The
+  // "preplan unread names" tests of internal/dashboard/web/testdata/view.test.cjs
+  // read those Go constants and compare them with the keys of
+  // PREPLAN_UNREAD_LABELS, which are the values of this table.
+  var PREPLAN_UNREAD = {
+    goal: 'goal',
+    proposals: 'proposals',
+    smallestCut: 'smallestCut',
+    lastCheck: 'lastCheck',
+    openQuestions: 'openQuestions',
+    gaps: 'gaps',
+  };
+
+  // The text that replaces the part of a Preplans box row that an unread name
+  // stands for. It is never a number or an empty cell.
+  var PREPLAN_UNREAD_LABELS = {};
+  PREPLAN_UNREAD_LABELS[PREPLAN_UNREAD.goal] = 'goal unreadable';
+  PREPLAN_UNREAD_LABELS[PREPLAN_UNREAD.proposals] = 'proposals unreadable';
+  PREPLAN_UNREAD_LABELS[PREPLAN_UNREAD.smallestCut] = 'cut unreadable';
+  PREPLAN_UNREAD_LABELS[PREPLAN_UNREAD.lastCheck] = 'check unreadable';
+  PREPLAN_UNREAD_LABELS[PREPLAN_UNREAD.openQuestions] = 'open questions unreadable';
+  PREPLAN_UNREAD_LABELS[PREPLAN_UNREAD.gaps] = 'gaps unreadable';
+
+  // The values of the smallestCut field of a preplan row, as the collector
+  // sends them (dashboardPreplanCutSet and dashboardPreplanCutNotSet).
+  var PREPLAN_CUT_SET = 'set';
+  var PREPLAN_CUT_NOT_SET = 'not set';
+
+  // The goal line of a row with an empty goal.
+  var PREPLAN_NO_GOAL = 'No goal yet';
+
+  // The check part of a row whose topic file was never checked: lastCheckAt
+  // is '' and unread does not hold lastCheck.
+  var PREPLAN_NOT_CHECKED = 'not checked';
+
+  /**
+   * @param {*} value a field of a snapshot row
+   * @returns {number} value when it is a finite number, else 0
+   */
+  function numberOrZero(value) {
+    return typeof value === 'number' && isFinite(value) ? value : 0;
+  }
+
+  /**
+   * @param {*} value a field of a snapshot row
+   * @returns {string} value when it is a string, else ''
+   */
+  function stringOrEmpty(value) {
+    return typeof value === 'string' ? value : '';
+  }
+
+  /**
+   * @param {*} value a field of a snapshot row
+   * @returns {string[]} the string entries of value when it is an array, else []
+   */
+  function stringList(value) {
+    return Array.isArray(value)
+      ? value.filter(function (entry) {
+          return typeof entry === 'string';
+        })
+      : [];
+  }
+
+  /**
+   * The Activity tab Preplans box rows. preplanItems (the Preplans tab) stays
+   * unchanged. The rows keep the order of repos, then the order of each
+   * repo.preplans (newest first from the collector); nothing is sorted. The
+   * collector keeps at most 100 topic files for each repo in a snapshot, the
+   * newest ones, and adds a repo warning for the older ones, so this list
+   * holds at most 100 rows for each repo; this function applies no cap of its
+   * own.
+   * @param {Array<object>} repos snapshot repos
+   * @param {Set<string>} scope selected repo roots; empty means all
+   * @returns {Array<{repo: object, slug: string, topic: string, status: string, updatedAt: string,
+   *   goal: string, live: number, kept: number, dropped: number, lastCheckAt: string,
+   *   openQuestions: number, gaps: string[], smallestCut: string, unread: string[]}>}
+   *   a missing number is 0, a missing string is '', a missing list is []
+   */
+  function preplanSummaryItems(repos, scope) {
+    var items = [];
+    (repos || []).forEach(function (repo) {
+      if (!inScope(scope, repo.root)) return;
+      (repo.preplans || []).forEach(function (p) {
+        if (!p) return;
+        items.push({
+          repo: repo,
+          slug: stringOrEmpty(p.slug),
+          topic: stringOrEmpty(p.topic),
+          status: stringOrEmpty(p.status),
+          updatedAt: stringOrEmpty(p.updatedAt),
+          goal: stringOrEmpty(p.goal),
+          live: numberOrZero(p.live),
+          kept: numberOrZero(p.kept),
+          dropped: numberOrZero(p.dropped),
+          lastCheckAt: stringOrEmpty(p.lastCheckAt),
+          openQuestions: numberOrZero(p.openQuestions),
+          gaps: stringList(p.gaps),
+          smallestCut: stringOrEmpty(p.smallestCut),
+          unread: stringList(p.unread),
+        });
+      });
+    });
+    return items;
+  }
+
+  /**
+   * The three text lines of one Preplans box row. The title is the topic
+   * (the slug when it has no topic), the status, the date of updatedAt and
+   * the repo name, joined by ' · '; an empty part is left out, as in the
+   * rows of the other Activity boxes. A part whose name is in item.unread
+   * shows its PREPLAN_UNREAD_LABELS text in place of its value, so an unread
+   * field never shows as 0 or as an empty cell.
+   * @param {object} item one preplanSummaryItems entry
+   * @param {string} [tz] IANA time zone for view.dateLabel; undefined is the browser zone
+   * @returns {{title: string, goal: string, meta: string}}
+   */
+  function preplanSummaryLine(item, tz) {
+    var unread = item.unread;
+    /**
+     * @param {string} name the PREPLAN_UNREAD name of the part
+     * @param {string} text the text of the part when it is read
+     * @returns {string} text, or the PREPLAN_UNREAD_LABELS text of name when item.unread holds name
+     */
+    function part(name, text) {
+      return unread.indexOf(name) !== -1 ? PREPLAN_UNREAD_LABELS[name] : text;
+    }
+    var goal = part(PREPLAN_UNREAD.goal, item.goal === '' ? PREPLAN_NO_GOAL : item.goal);
+    var title = [item.topic || item.slug, item.status, dateLabel(item.updatedAt, tz), stringOrEmpty(item.repo && item.repo.name)]
+      .filter(function (text) {
+        return text !== '';
+      })
+      .join(' · ');
+    var meta = [
+      part(PREPLAN_UNREAD.proposals, 'live ' + item.live + ' · kept ' + item.kept + ' · dropped ' + item.dropped),
+      part(PREPLAN_UNREAD.lastCheck, item.lastCheckAt === '' ? PREPLAN_NOT_CHECKED : 'checked ' + dateLabel(item.lastCheckAt, tz)),
+      part(PREPLAN_UNREAD.openQuestions, item.openQuestions + ' open questions'),
+      part(PREPLAN_UNREAD.gaps, 'gaps: ' + (item.gaps.length > 0 ? item.gaps.join(', ') : 'none')),
+      part(PREPLAN_UNREAD.smallestCut, 'cut ' + (item.smallestCut === PREPLAN_CUT_SET ? PREPLAN_CUT_SET : PREPLAN_CUT_NOT_SET)),
+    ].join(' · ');
+    return { title: title, goal: goal, meta: meta };
+  }
+
   // The priorities of the deferred filter, in chip order.
   var DEFERRED_PRIORITIES = ['high', 'medium', 'low'];
 
@@ -1915,6 +2058,9 @@
     PREPLAN_SORT_FIRST: PREPLAN_SORT_FIRST,
     preplanStatus: preplanStatus,
     preplanStatusCounts: preplanStatusCounts,
+    preplanSummaryItems: preplanSummaryItems,
+    preplanSummaryLine: preplanSummaryLine,
+    PREPLAN_UNREAD_LABELS: PREPLAN_UNREAD_LABELS,
     priorityCounts: priorityCounts,
   };
 

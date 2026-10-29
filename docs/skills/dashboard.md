@@ -2,7 +2,8 @@
 
 Open, check, or stop the local sdlc dashboard: one web page that shows the
 pipelines of every registered repo, their progress, session activity,
-issues, and preplan topic files (Preplans tab). The page can also change the
+issues, and preplan topic files (Preplans tab, and the Preplans box on the
+Activity tab). The page can also change the
 status of a preplan topic file, delete History rows, dismiss a wait that no
 pipeline shows, and delete one preplan topic file, deferred item, or learning
 for good. The full command name is `/sdlc:dashboard`.
