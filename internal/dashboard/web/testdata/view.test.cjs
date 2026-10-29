@@ -3104,7 +3104,7 @@ describe('render activityPanel', () => {
     const grid = render.activityPanel(fakeDoc(), view, repos, new Set());
     assert.equal(grid.className, 'act-grid');
     const titles = byClass(grid, 'list-title').map(textOf);
-    assert.deepEqual(titles, ['Open deferred (3)', 'Learnings today (1)']);
+    assert.deepEqual(titles, ['Open deferred (3)', 'Learnings today (1)', 'Preplans (0)']);
   });
 
   test('a deferred row: severity chip, text, then repo · id, and the hint', () => {
@@ -3162,7 +3162,7 @@ describe('render activityPanel', () => {
   test('the scope hides rows of other repos', () => {
     const grid = render.activityPanel(fakeDoc(), view, repos, new Set(['/b']));
     const titles = byClass(grid, 'list-title').map(textOf);
-    assert.deepEqual(titles, ['Open deferred (1)', 'Learnings today (0)']);
+    assert.deepEqual(titles, ['Open deferred (1)', 'Learnings today (0)', 'Preplans (0)']);
     assert.equal(oneByClass(grid.children[0], 'act-meta').textContent, 'b · d-9');
     assert.equal(textOf(oneByClass(grid.children[1], 'generic-line')), 'No learnings today.');
   });
@@ -4068,6 +4068,317 @@ const SHIP = (p) => p.kind === 'ship';
 const PLAN = (p) => p.kind === 'plan';
 const EXECUTE = (p) => p.kind === 'execute';
 const REVIEW = (p) => p.kind === 'review';
+
+// --- The Activity tab Preplans box -----------------------------------------------
+
+// The fixture topic files in fixture order: one repo, three rows.
+const FIXTURE_PREPLAN_SLUGS = ['user-config-autostart', 'dashboard-life-cycle-controls', 'review-dimension-cap'];
+
+// The preplanSummaryItems entry of one fixture topic file.
+function summaryItem(slug) {
+  const item = view.preplanSummaryItems(FIXTURE.repos, new Set()).find((i) => i.slug === slug);
+  assert.ok(item, `fixture has no topic file ${slug}`);
+  return item;
+}
+
+const summaryLine = (slug, extra) => view.preplanSummaryLine(Object.assign({}, summaryItem(slug), extra), 'UTC');
+
+describe('preplanSummaryLine', () => {
+  test('preplanSummaryLine: full row', () => {
+    const line = view.preplanSummaryLine(summaryItem('user-config-autostart'), 'UTC');
+    assert.equal(
+      line.meta,
+      'live 3 · kept 1 · dropped 1 · checked ' + view.dateLabel('2026-10-08T13:58:00Z', 'UTC') + ' · 1 open questions · gaps: none · cut set'
+    );
+    assert.equal(line.title, 'user config autostart · in progress · ' + view.dateLabel('2026-10-08T14:05:00Z', 'UTC'));
+    assert.equal(line.goal, 'Start the dashboard when the user logs in.');
+  });
+
+  test('preplanSummaryLine: no goal', () => {
+    assert.equal(summaryLine('review-dimension-cap').goal, 'No goal yet');
+  });
+
+  test('preplanSummaryLine: gaps none', () => {
+    assert.ok(summaryLine('user-config-autostart').meta.includes('gaps: none'));
+  });
+
+  test('preplanSummaryLine: gaps named', () => {
+    const meta = summaryLine('review-dimension-cap').meta;
+    assert.ok(meta.includes('gaps: Flows'));
+    assert.ok(meta.includes('cut not set'));
+    assert.ok(!meta.includes('gaps: none'));
+    // Two names are joined by a comma and a space.
+    assert.ok(summaryLine('review-dimension-cap', { gaps: ['Flows', 'Risks'] }).meta.includes('gaps: Flows, Risks'));
+  });
+
+  test('preplanSummaryLine: unread fields', () => {
+    const meta = summaryLine('dashboard-life-cycle-controls').meta;
+    assert.ok(meta.includes('proposals unreadable'));
+    assert.ok(meta.includes('check unreadable'));
+    assert.ok(meta.includes('cut unreadable'));
+    // An unread field shows no value: not 0, and not an empty date.
+    assert.ok(!meta.includes('live 0'));
+    assert.ok(!meta.includes('checked'));
+    assert.ok(!meta.includes('cut not set'));
+    // The fields that are read keep their text.
+    assert.ok(meta.includes('0 open questions'));
+    assert.ok(meta.includes('gaps: none'));
+  });
+
+  test('preplanSummaryLine: goal unread', () => {
+    // The row has a goal, and unread wins over it.
+    const item = summaryItem('user-config-autostart');
+    assert.notEqual(item.goal, '');
+    assert.equal(summaryLine('user-config-autostart', { unread: ['goal'] }).goal, 'goal unreadable');
+  });
+
+  test('preplanSummaryLine: questions and gaps unread', () => {
+    const meta = summaryLine('user-config-autostart', { unread: ['openQuestions', 'gaps'] }).meta;
+    assert.ok(meta.includes('open questions unreadable'));
+    assert.ok(meta.includes('gaps unreadable'));
+    assert.ok(!meta.includes('1 open questions'));
+    assert.ok(!meta.includes('gaps: none'));
+    // A part that is not unread keeps its text.
+    assert.ok(meta.startsWith('live 3 · kept 1 · dropped 1 · checked '));
+    assert.ok(meta.endsWith(' · cut set'));
+  });
+
+  test('preplanSummaryLine: the cut shows set or not set, and not set for another value', () => {
+    assert.ok(summaryLine('user-config-autostart', { smallestCut: 'set' }).meta.endsWith(' · cut set'));
+    assert.ok(summaryLine('user-config-autostart', { smallestCut: 'not set' }).meta.endsWith(' · cut not set'));
+    assert.ok(summaryLine('user-config-autostart', { smallestCut: '' }).meta.endsWith(' · cut not set'));
+  });
+
+  test('preplanSummaryLine: the title drops an empty status and date, and falls back to the slug', () => {
+    const item = view.preplanSummaryItems([{ root: '/r', preplans: [{ slug: 'only-slug' }] }], new Set())[0];
+    assert.equal(view.preplanSummaryLine(item, 'UTC').title, 'only-slug');
+    const named = Object.assign({}, item, { topic: 'A topic', status: 'paused' });
+    assert.equal(view.preplanSummaryLine(named, 'UTC').title, 'A topic · paused');
+  });
+});
+
+// The collector source that holds the unread names and the cut values of a preplan row.
+const GO_FILE = path.join(__dirname, '..', '..', '..', 'tools', 'dashboard_preplans.go');
+
+describe('preplan unread names', () => {
+  // The string constants dashboardPreplanUnread* of the collector.
+  const goNames = () => {
+    const source = fs.readFileSync(GO_FILE, 'utf8');
+    return Array.from(source.matchAll(/^\s*dashboardPreplanUnread\w+\s*=\s*"(\w+)"/gm), (m) => m[1]);
+  };
+  // The text of the part that each name replaces, and the text of the same part when it is read.
+  const PARTS = {
+    goal: { label: 'goal unreadable', read: 'Start the dashboard when the user logs in.' },
+    proposals: { label: 'proposals unreadable', read: 'live 3 · kept 1 · dropped 1' },
+    smallestCut: { label: 'cut unreadable', read: 'cut set' },
+    lastCheck: { label: 'check unreadable', read: 'checked ' },
+    openQuestions: { label: 'open questions unreadable', read: '1 open questions' },
+    gaps: { label: 'gaps unreadable', read: 'gaps: none' },
+  };
+
+  test('the names of the label table equal the Go constants of dashboard_preplans.go', () => {
+    const names = goNames();
+    assert.equal(names.length, 6, `found ${names.length} constants in ${GO_FILE}`);
+    assert.deepEqual(Object.keys(view.PREPLAN_UNREAD_LABELS).sort(), names.slice().sort());
+    assert.deepEqual(Object.keys(PARTS).sort(), names.slice().sort());
+  });
+
+  test('the label table maps each name to its label', () => {
+    const want = {};
+    Object.keys(PARTS).forEach((name) => { want[name] = PARTS[name].label; });
+    assert.deepEqual(view.PREPLAN_UNREAD_LABELS, want);
+  });
+
+  for (const name of Object.keys(PARTS)) {
+    test(`unread ${name}: the row shows its label in place of the value`, () => {
+      const line = summaryLine('user-config-autostart', { unread: [name] });
+      const text = name === 'goal' ? line.goal : line.meta;
+      const other = name === 'goal' ? line.meta : line.goal;
+      assert.ok(text.includes(PARTS[name].label), text);
+      assert.ok(!text.includes(PARTS[name].read), text);
+      // The other line keeps the read values.
+      assert.ok(!other.includes('unreadable'), other);
+    });
+  }
+
+  test('a name that is not in the label table changes nothing', () => {
+    const base = summaryLine('user-config-autostart');
+    assert.deepEqual(summaryLine('user-config-autostart', { unread: ['bogus'] }), base);
+  });
+});
+
+describe('preplan cut values', () => {
+  // The values of the string constants dashboardPreplanCutSet and dashboardPreplanCutNotSet, by constant name.
+  const goCutValues = (name) => {
+    const source = fs.readFileSync(GO_FILE, 'utf8');
+    return Array.from(source.matchAll(new RegExp('^\\s*' + name + '\\s*=\\s*"([^"]+)"', 'gm')), (m) => m[1]);
+  };
+
+  test('the collector defines each cut value one time', () => {
+    assert.equal(goCutValues('dashboardPreplanCutSet').length, 1, 'dashboardPreplanCutSet in ' + GO_FILE);
+    assert.equal(goCutValues('dashboardPreplanCutNotSet').length, 1, 'dashboardPreplanCutNotSet in ' + GO_FILE);
+    assert.notEqual(goCutValues('dashboardPreplanCutSet')[0], goCutValues('dashboardPreplanCutNotSet')[0]);
+  });
+
+  test('the Go set value shows as cut set, and the Go not-set value shows as cut not set', () => {
+    const [goSet] = goCutValues('dashboardPreplanCutSet');
+    const [goNotSet] = goCutValues('dashboardPreplanCutNotSet');
+    assert.ok(summaryLine('review-dimension-cap', { smallestCut: goSet }).meta.endsWith(' · cut set'));
+    assert.ok(summaryLine('user-config-autostart', { smallestCut: goNotSet }).meta.endsWith(' · cut not set'));
+  });
+});
+
+describe('preplanSummaryItems', () => {
+  const other = { root: '/o', name: 'o', preplans: [{ slug: 'other-topic', topic: 'other topic', status: 'paused' }] };
+  const repos = FIXTURE.repos.concat([other]);
+
+  test('preplanSummaryItems: scope', () => {
+    const fixtureRoot = fixtureRepo('sdlc-plugin').root;
+    assert.deepEqual(view.preplanSummaryItems(repos, new Set([fixtureRoot])).map((i) => i.slug), FIXTURE_PREPLAN_SLUGS);
+    assert.deepEqual(view.preplanSummaryItems(repos, new Set(['/o'])).map((i) => i.slug), ['other-topic']);
+    assert.deepEqual(view.preplanSummaryItems(repos, new Set([fixtureRepo('identity-service').root])), []);
+    // An empty scope keeps every repo, in the order of repos and then of repo.preplans.
+    assert.deepEqual(view.preplanSummaryItems(repos, new Set()).map((i) => i.slug), FIXTURE_PREPLAN_SLUGS.concat(['other-topic']));
+  });
+
+  test('preplanSummaryItems: the item holds the summary fields of its row, and its repo', () => {
+    const item = summaryItem('review-dimension-cap');
+    const row = fixtureRepo('sdlc-plugin').preplans.find((p) => p.slug === 'review-dimension-cap');
+    assert.equal(item.repo, fixtureRepo('sdlc-plugin'));
+    assert.deepEqual(Object.keys(item).sort(), [
+      'dropped', 'gaps', 'goal', 'kept', 'lastCheckAt', 'live', 'openQuestions', 'repo', 'slug', 'smallestCut', 'status',
+      'topic', 'unread', 'updatedAt',
+    ]);
+    // This row holds live 2 and 0 for the other numbers. The next test gives each number its own value.
+    assert.deepEqual(
+      { live: item.live, kept: item.kept, dropped: item.dropped, openQuestions: item.openQuestions },
+      { live: 2, kept: 0, dropped: 0, openQuestions: 0 }
+    );
+    assert.deepEqual(item.gaps, ['Flows']);
+    assert.equal(item.lastCheckAt, row.lastCheckAt);
+    assert.equal(item.updatedAt, row.updatedAt);
+    assert.equal(item.smallestCut, 'not set');
+    assert.equal(summaryItem('user-config-autostart').kept, 1);
+    assert.equal(summaryItem('user-config-autostart').openQuestions, 1);
+    assert.equal(summaryItem('user-config-autostart').dropped, 1);
+    assert.deepEqual(summaryItem('dashboard-life-cycle-controls').unread, ['proposals', 'smallestCut', 'lastCheck']);
+  });
+
+  test('preplanSummaryItems: each number has its own field and its own place in the meta line', () => {
+    const row = { slug: 'numbers', topic: 'numbers', live: 5, kept: 2, dropped: 3, openQuestions: 4, lastCheckAt: '2026-10-08T13:58:00Z' };
+    const [item] = view.preplanSummaryItems([{ root: '/n', preplans: [row] }], new Set());
+    assert.equal(item.live, 5);
+    assert.equal(item.kept, 2);
+    assert.equal(item.dropped, 3);
+    assert.equal(item.openQuestions, 4);
+    const meta = view.preplanSummaryLine(item, 'UTC').meta;
+    assert.ok(meta.startsWith('live 5 · kept 2 · dropped 3 · '), meta);
+    assert.ok(meta.includes(' · 4 open questions · '), meta);
+  });
+
+  test('preplanSummaryItems: missing keys', () => {
+    const [item] = view.preplanSummaryItems([{ root: '/r', preplans: [{ slug: 'bare' }] }], new Set());
+    assert.deepEqual(item.gaps, []);
+    assert.deepEqual(item.unread, []);
+    assert.deepEqual([item.live, item.kept, item.dropped, item.openQuestions], [0, 0, 0, 0]);
+    assert.deepEqual([item.goal, item.lastCheckAt, item.smallestCut, item.topic, item.status, item.updatedAt], ['', '', '', '', '', '']);
+    assert.equal(item.slug, 'bare');
+  });
+
+  test('preplanSummaryItems: a value of the wrong type falls back, and a null row or a missing list gives no item', () => {
+    const [item] = view.preplanSummaryItems([{ root: '/r', preplans: [
+      { slug: 's', live: '3', kept: NaN, goal: 7, gaps: 'Flows', unread: [1, 'goal'] },
+      null,
+    ] }], new Set());
+    assert.equal(item.live, 0);
+    assert.equal(item.kept, 0);
+    assert.equal(item.goal, '');
+    assert.deepEqual(item.gaps, []);
+    assert.deepEqual(item.unread, ['goal']);
+    assert.deepEqual(view.preplanSummaryItems([{ root: '/c' }], new Set()), []);
+    assert.deepEqual(view.preplanSummaryItems(undefined, new Set()), []);
+  });
+
+  test('view.js exports the Preplans box helpers, and the Activity count badge stays learnings plus deferred', () => {
+    ['preplanSummaryItems', 'preplanSummaryLine'].forEach((name) => {
+      assert.equal(typeof view[name], 'function', name);
+    });
+    const counts = view.scopedCounts(FIXTURE.repos, new Set());
+    const activity = FIXTURE.repos.reduce((n, r) => n + (r.learnings || []).length + (r.deferred || []).length, 0);
+    assert.equal(counts.preplans, 3);
+    assert.equal(counts.activity, activity);
+  });
+});
+
+describe('render activityPanel Preplans box', () => {
+  const boxOf = (repos, scope) => {
+    const grid = render.activityPanel(fakeDoc(), view, repos, scope || new Set());
+    assert.equal(grid.children.length, 3);
+    return grid.children[2];
+  };
+
+  test('activity: preplans box rows', () => {
+    const box = boxOf(FIXTURE.repos);
+    assert.equal(textOf(oneByClass(box, 'list-title')), 'Preplans (3)');
+    const rows = byClass(box, 'act-preplan');
+    assert.equal(rows.length, 3);
+    assert.deepEqual(rows.map((r) => textOf(oneByClass(r, 'pp-name')).split(' · ')[0]), [
+      'user config autostart', 'dashboard life cycle controls', 'review dimension cap',
+    ]);
+    const unreadRow = textOf(rows[1]);
+    assert.ok(unreadRow.includes('proposals unreadable'), unreadRow);
+    assert.ok(unreadRow.includes('Stop and restart the dashboard from the page.'), unreadRow);
+    // Each row holds one div.act-main, and that div holds its three lines in order: title, goal and meta.
+    rows.forEach((r) => {
+      assert.equal(r.children.length, 1);
+      assert.equal(r.children[0], oneByClass(r, 'act-main'));
+      assert.deepEqual(r.children[0].children.map((c) => c.className), ['pp-name', 'act-text', 'act-meta']);
+    });
+    assert.equal(oneByClass(rows[0], 'act-text').textContent, 'Start the dashboard when the user logs in.');
+    assert.ok(oneByClass(rows[0], 'act-meta').textContent.startsWith('live 3 · kept 1 · dropped 1 · checked '));
+    assert.equal(oneByClass(rows[2], 'act-text').textContent, 'No goal yet');
+  });
+
+  test('activity: preplans box is the last box, spans the grid row, and is not a button', () => {
+    const box = boxOf(FIXTURE.repos);
+    assert.equal(box.tagName, 'section');
+    assert.deepEqual(classesOf(box), ['list-panel', 'act-wide']);
+    assert.equal(oneByClass(box, 'list-title').tagName, 'h2');
+    assert.equal(findAll(box, (n) => n.tagName === 'button').length, 0);
+    assert.equal(findAll(box, (n) => n.attrs && n.attrs['data-detail'] !== undefined).length, 0);
+    assert.deepEqual(byClass(box, 'act-preplan').map((r) => r.tagName), ['div', 'div', 'div']);
+    // The first two boxes do not span the row.
+    const grid = render.activityPanel(fakeDoc(), view, FIXTURE.repos, new Set());
+    assert.equal(classesOf(grid.children[0]).includes('act-wide'), false);
+    assert.equal(classesOf(grid.children[1]).includes('act-wide'), false);
+  });
+
+  test('activity: preplans box empty', () => {
+    const box = boxOf([{ root: '/c', name: 'c' }]);
+    assert.equal(textOf(oneByClass(box, 'list-title')), 'Preplans (0)');
+    const line = oneByClass(box, 'generic-line');
+    assert.equal(line.textContent, 'No preplans.');
+    assert.equal(line.attrs['data-empty'], 'no-preplans-activity');
+    assert.equal(byClass(box, 'act-preplan').length, 0);
+  });
+
+  test('activity: preplans box follows the scope', () => {
+    const repos = FIXTURE.repos.concat([{ root: '/o', name: 'o', preplans: [{ slug: 'other-topic', topic: 'other topic' }] }]);
+    assert.equal(textOf(oneByClass(boxOf(repos, new Set(['/o'])), 'list-title')), 'Preplans (1)');
+    assert.equal(textOf(oneByClass(boxOf(repos, new Set([fixtureRepo('sdlc-plugin').root])), 'list-title')), 'Preplans (3)');
+    assert.equal(textOf(oneByClass(boxOf(repos, new Set([fixtureRepo('identity-service').root])), 'list-title')), 'Preplans (0)');
+  });
+
+  test('activity: the text of a topic file goes in as text', () => {
+    const hostile = '<img src=x onerror=alert(1)>';
+    const box = boxOf([{ root: '/r', name: 'r', preplans: [{ slug: 'x', topic: '<b>t</b>', goal: hostile, gaps: [hostile] }] }]);
+    const row = oneByClass(box, 'act-preplan');
+    assert.equal(oneByClass(row, 'act-text').textContent, hostile);
+    assert.ok(oneByClass(row, 'pp-name').textContent.startsWith('<b>t</b>'));
+    assert.ok(oneByClass(row, 'act-meta').textContent.includes('gaps: ' + hostile));
+    assert.equal(findAll(box, (n) => 'innerHTML' in n || 'outerHTML' in n).length, 0);
+  });
+});
 
 describe('render tiles from the shared fixture', () => {
   // One check for each item of the fixture content table: each gives at least one node.

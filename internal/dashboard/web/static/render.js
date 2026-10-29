@@ -26,6 +26,11 @@
     'no-preplans-status': 'No preplans match this filter',
   };
 
+  // The empty-state kind of the Activity tab Preplans box. Its text sits in
+  // EMPTY_TEXTS under this name.
+  var NO_PREPLANS_ACTIVITY = 'no-preplans-activity';
+  EMPTY_TEXTS[NO_PREPLANS_ACTIVITY] = 'No preplans.';
+
   /**
    * @param {Document} doc
    * @param {string} tag
@@ -1939,18 +1944,73 @@
   }
 
   /**
+   * One read-only row of the Activity tab Preplans box: the title line, the
+   * goal line and the meta line of view.preplanSummaryLine, each in a div.
+   * It is a div, not a button: the row has no detail viewer, no status menu
+   * and no bin button. The Preplans tab keeps those controls. Every text goes
+   * in through textContent.
+   * @param {Document} doc
+   * @param {object} view
+   * @param {object} item one view.preplanSummaryItems entry
+   * @returns {Element} div.act-row.act-preplan holding div.act-main with
+   *   div.pp-name (title), div.act-text (goal) and div.act-meta (meta)
+   */
+  function preplanSummaryRow(doc, view, item) {
+    var line = view.preplanSummaryLine(item);
+    var main = append(el(doc, 'div', 'act-main'), [
+      el(doc, 'div', 'pp-name', line.title),
+      el(doc, 'div', 'act-text', line.goal),
+      el(doc, 'div', 'act-meta', line.meta),
+    ]);
+    return append(el(doc, 'div', 'act-row act-preplan'), [main]);
+  }
+
+  /**
+   * The Preplans box of the Activity tab: `Preplans (n)` and one
+   * preplanSummaryRow for each topic file of the repos in scope, in the order
+   * of view.preplanSummaryItems. The collector keeps at most 100 topic files
+   * for each repo in a snapshot, so the box shows at most 100 rows for each
+   * repo; older topic files are not in the snapshot. With no topic file in
+   * scope the box shows the empty state `No preplans.`. The box spans the
+   * whole grid row (class act-wide).
+   * @param {Document} doc
+   * @param {object} view
+   * @param {Array} repos
+   * @param {Set<string>} scope
+   * @returns {Element} section.list-panel.act-wide
+   */
+  function preplanSummaryPanel(doc, view, repos, scope) {
+    var items = view.preplanSummaryItems(repos, scope);
+    var panel = listPanel(doc, 'Preplans', items.length);
+    panel.className += ' act-wide';
+    panel.appendChild(
+      items.length > 0
+        ? append(
+            el(doc, 'div', 'list'),
+            items.map(function (item) {
+              return preplanSummaryRow(doc, view, item);
+            })
+          )
+        : emptyState(doc, NO_PREPLANS_ACTIVITY)
+    );
+    return panel;
+  }
+
+  /**
    * The Activity tab: `Open deferred (n)` first, then `Learnings today (n)`,
-   * both over the repos in scope. A row of priority chips (all, high,
+   * both over the repos in scope, then the Preplans box (preplanSummaryPanel),
+   * which spans the whole grid row. A row of priority chips (all, high,
    * medium, low) filters the deferred list; the row is hidden when no
-   * deferred item is in scope. Each row is a button with a data-detail key
-   * (view.detailKey) that opens the item in the detail viewer, in a
-   * div.act-item next to its bin button (deleteButton).
+   * deferred item is in scope. Each deferred and learning row is a button
+   * with a data-detail key (view.detailKey) that opens the item in the detail
+   * viewer, in a div.act-item next to its bin button (deleteButton). The rows
+   * of the Preplans box are read only.
    * @param {Document} doc
    * @param {object} view
    * @param {Array} repos
    * @param {Set<string>} scope
    * @param {{deferredPriority: string}} [ui] the page state; view.defaultUi() when absent
-   * @returns {Element} div.act-grid
+   * @returns {Element} div.act-grid with three boxes: Open deferred, Learnings today, Preplans
    */
   function activityPanel(doc, view, repos, scope, ui) {
     ui = ui || view.defaultUi();
@@ -2009,7 +2069,8 @@
       learnings.length > 0 ? append(el(doc, 'div', 'list'), learnings) : emptyState(doc, 'no-learnings')
     );
 
-    return append(el(doc, 'div', 'act-grid'), [deferredPanel, learningsPanel]);
+    var preplanBox = preplanSummaryPanel(doc, view, repos, scope);
+    return append(el(doc, 'div', 'act-grid'), [deferredPanel, learningsPanel, preplanBox]);
   }
 
   // The class and glyph of each preplan status, and of a status outside
@@ -2184,7 +2245,8 @@
    * One empty-state line.
    * @param {Document} doc
    * @param {string} kind no-pipelines | none-in-scope | repo-error | repo-warning | no-deferred |
-   *   no-deferred-priority | no-learnings | no-history | no-history-outcome | no-preplans | no-preplans-status
+   *   no-deferred-priority | no-learnings | no-history | no-history-outcome | no-preplans | no-preplans-status |
+   *   no-preplans-activity
    * @param {string|{name: string, error?: string, warning?: string}} [detail] the text for no-pipelines
    *   (view.emptyText), the repo for repo-error, {name, warning} for repo-warning; other kinds ignore it
    * @returns {Element} p.generic-line with data-empty set to kind

@@ -227,6 +227,9 @@ var dashboardPreplanUnreadAll = []string{
 // errPreplanSummaryNotRegular is the error of dashboardPreplanReadSummary
 // for a link (live or dangling), a folder, a pipe or a device at the topic
 // file path. Its text ends with a period, because it ends the repo warning.
+// In the snapshot flow, dashboardPreplans lists only entries that are regular
+// after a Stat that follows links, so only a link to a regular file reaches
+// this error there; a direct call reaches it for every kind named above.
 var errPreplanSummaryNotRegular = errors.New("not a regular file.")
 
 // preplanSummaryTooBigError is the error of dashboardPreplanReadSummary for
