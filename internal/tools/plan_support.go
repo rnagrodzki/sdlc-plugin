@@ -1351,8 +1351,16 @@ var PreplanStatuses = []string{preplanStatusInProgress, preplanStatusReadyForPla
 // emptySections list of preplan_check read it.
 var preplanSections = []string{
 	"Goal", "Problem and benefit", "Users and effect", "Risk if wrong",
-	"Non-goals", "Flows", "Decisions",
+	preplanNonGoalsSection, preplanFlowsSection, preplanDecisionsSection,
 }
+
+// The names of the skeleton sections that the format checker (preplan_format.go)
+// gives its own rules. preplanSections and the checker both read them, so each
+// name has one definition.
+const (
+	preplanNonGoalsSection = "Non-goals"
+	preplanFlowsSection    = "Flows"
+)
 
 // preplanHeadingPrefix starts each section heading line of a topic file.
 const preplanHeadingPrefix = "## "
@@ -1455,15 +1463,11 @@ func preplanSectionSpans(data []byte) (spans []preplanSpan, openFence string) {
 	for start := 0; start < len(data); {
 		end := min(preplanLineEnd(data, start)+1, len(data)) // after the line feed
 		line := string(data[start:end])
-		run := preplanFenceRun(line)
+		wasOpen := openFence != ""
+		openFence = preplanFenceStep(openFence, line)
 		switch {
-		case openFence != "":
-			if run != "" && run[0] == openFence[0] && len(run) >= len(openFence) &&
-				strings.TrimRight(line[len(run):], " \t\r\n") == "" {
-				openFence = ""
-			}
-		case run != "":
-			openFence = run
+		case wasOpen || openFence != "":
+			// a line inside a fence, or the line that opens or closes it
 		case strings.HasPrefix(line, preplanHeadingPrefix):
 			if n := len(spans); n > 0 {
 				spans[n-1].bodyEnd = start
