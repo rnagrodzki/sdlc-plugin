@@ -385,6 +385,31 @@ type DashboardPreplan struct {
 	// DurationMs is the file change time minus the time on the
 	// "**Started:**" line, in milliseconds. 0 means unknown, as in DashboardRun.
 	DurationMs int64 `json:"durationMs"`
+
+	// The summary fields below come from the whole topic file, read up to
+	// dashboardPreplanSummaryMax bytes (dashboardPreplanSummaries); a larger
+	// topic file leaves every summary field unread and the row stays. A field
+	// shows a value only when its section passes the format checker
+	// (preplan_format.go); otherwise the field keeps its zero value and
+	// Unread names it.
+	Goal          string `json:"goal"`          // first Goal sentence, redacted, 120 runes; "" when empty
+	Live          int    `json:"live"`          // live ## Decisions rows (neither Dropped: nor Moved:)
+	Kept          int    `json:"kept"`          // live rows whose Reason holds "Kept with warning:"
+	Dropped       int    `json:"dropped"`       // rows that start with "Dropped:"
+	LastCheckAt   string `json:"lastCheckAt"`   // RFC 3339 UTC time of the "Last check:" text; "" when unread
+	OpenQuestions int    `json:"openQuestions"` // bullets of ## Open questions; 0 when the section is absent
+	// Gaps names the skeleton sections that are absent or empty, without
+	// "## " (preplanEmptySections, the emptySections list of preplan_check).
+	// It encodes as [], never null.
+	Gaps        []string `json:"gaps"`
+	SmallestCut string   `json:"smallestCut"` // "set" or "not set"
+	// Unread holds one name for each part of the topic file whose summary
+	// is not shown: goal, proposals (live, kept, dropped), smallestCut,
+	// lastCheck (lastCheckAt), openQuestions and gaps. A part is unread when
+	// its section failed the checker or the file was not read. The names
+	// come in the order of dashboardPreplanUnreadAll. It encodes as [],
+	// never null.
+	Unread []string `json:"unread"`
 }
 
 // dashboardJoinInfo carries join keys between collectors. Never serialized.
@@ -622,6 +647,7 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	// A preplan read problem is a warning, never repo.Error: repo.Error
 	// blocks the archive of every run of the repo.
 	preplans, warnings := dashboardPreplans(root)
+	warnings = append(warnings, dashboardPreplanSummaries(root, preplans)...)
 	repo.Preplans = preplans
 	repo.Warnings = append(repo.Warnings, warnings...)
 	return repo

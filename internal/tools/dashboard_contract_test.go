@@ -285,6 +285,36 @@ func TestDashboardContract_PreplanDurationEncoding(t *testing.T) {
 	}
 }
 
+// TestDashboardContract_PreplanSummaryListsNeverNull checks that gaps and
+// unread of a preplan row encode as lists, never null, after the snapshot
+// fills the summary: for a topic file with no gap and no unread name, and
+// for a topic file over dashboardPreplanSummaryMax bytes that is not read.
+func TestDashboardContract_PreplanSummaryListsNeverNull(t *testing.T) {
+	root := dashRoot(t)
+	preplanWrite(t, root, "auth-flow", summaryTopic(map[string]string{preplanFlowsSection: "No flow change.\n"}), dashNow)
+	preplanWrite(t, root, "big", summaryTopicOfSize(t, dashboardPreplanSummaryMax+1), dashNow.Add(-time.Hour))
+
+	repo := collectDashboardRepo(root, dashNow)
+	if len(repo.Preplans) != 2 {
+		t.Fatalf("preplans = %+v, want 2 rows", repo.Preplans)
+	}
+	all, err := json.Marshal(dashboardPreplanUnreadAll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantUnread := map[string]string{"auth-flow": `"unread":[]`, "big": `"unread":` + string(all)}
+	for _, p := range repo.Preplans {
+		b, err := json.Marshal(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := string(b)
+		if !strings.Contains(s, `"gaps":[]`) || !strings.Contains(s, wantUnread[p.Slug]) || strings.Contains(s, "null") {
+			t.Errorf("preplan %s JSON = %s, want \"gaps\":[], %s and no null", p.Slug, s, wantUnread[p.Slug])
+		}
+	}
+}
+
 // TestDashboardContract_FixtureHoldsLifeCycleFields checks that the shared
 // snapshot fixture keeps one sample of each field the page tests rely on: a
 // ship pipeline with plan times, three preplans (with the durations 4800000, 0
@@ -301,6 +331,11 @@ func TestDashboardContract_FixtureHoldsLifeCycleFields(t *testing.T) {
 		preplans += len(repo.Preplans)
 		for _, p := range repo.Preplans {
 			preplanDurations = append(preplanDurations, p.DurationMs)
+			// An absent key decodes to nil, so this also pins that each row
+			// holds the gaps and unread keys.
+			if p.Gaps == nil || p.Unread == nil || p.SmallestCut == "" {
+				t.Errorf("repo %s: preplan %s lacks gaps, unread or smallestCut: %+v", repo.Name, p.Slug, p)
+			}
 		}
 		for _, p := range repo.Pipelines {
 			if p.Kind != "ship" || p.PlanStartedAt == "" {

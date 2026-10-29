@@ -1368,7 +1368,7 @@ var PreplanStatuses = []string{preplanStatusInProgress, preplanStatusReadyForPla
 // file. The skeleton, the heading repair of preplan_context and the
 // emptySections list of preplan_check read it.
 var preplanSections = []string{
-	"Goal", "Problem and benefit", "Users and effect", "Risk if wrong",
+	preplanGoalSection, "Problem and benefit", "Users and effect", "Risk if wrong",
 	preplanNonGoalsSection, preplanFlowsSection, preplanDecisionsSection,
 }
 
@@ -1376,6 +1376,7 @@ var preplanSections = []string{
 // gives its own rules. preplanSections and the checker both read them, so each
 // name has one definition.
 const (
+	preplanGoalSection     = "Goal"
 	preplanNonGoalsSection = "Non-goals"
 	preplanFlowsSection    = "Flows"
 )
@@ -1462,8 +1463,9 @@ type preplanSpan struct {
 
 // preplanSectionSpans returns every "## " heading of data outside a fence,
 // in file order, and openFence: the fence run (for example "```" or "~~~~")
-// that is still open at the end of data ("" when no fence is open).
-// addPreplanHeadings and preplanEmptySections read it.
+// that is still open at the end of data ("" when no fence is open). The
+// readers that cut a topic file into sections use it, so they agree about
+// where a section starts and ends.
 //
 // The name of a span is the text after "## " with its trailing spaces, tabs
 // and CR removed. A "###" line is not a heading: it is body of the section
@@ -2002,8 +2004,9 @@ func createPreplanFile(file, content string) (bool, error) {
 // Action: preplan_check
 // ---------------------------------------------------------------------------
 
-// Seams of preplan_check. Tests replace them to force an Lstat, read or write
-// failure, or a file mode, without a broken filesystem.
+// Seams for the reads and writes of a topic file. Tests replace them to force
+// an Lstat, read or write failure, or a file mode, without a broken
+// filesystem.
 var (
 	preplanLstat      = os.Lstat
 	preplanReadFile   = os.ReadFile

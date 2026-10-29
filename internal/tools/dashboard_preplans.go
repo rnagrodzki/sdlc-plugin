@@ -9,6 +9,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -172,8 +173,9 @@ func dashboardPreplanGone(p string, err error) bool {
 
 // dashboardPreplanHead returns the first dashboardPreplanHeadMax bytes of the
 // file at p as valid UTF-8 text. A cut inside a multi-byte character drops the
-// broken bytes.
-func dashboardPreplanHead(p string) (string, error) {
+// broken bytes. It is a package var so that a test can make the head read
+// fail for every user, the root user included.
+var dashboardPreplanHead = func(p string) (string, error) {
 	f, err := os.Open(p)
 	if err != nil {
 		return "", err
@@ -184,4 +186,167 @@ func dashboardPreplanHead(p string) (string, error) {
 		return "", err
 	}
 	return strings.ToValidUTF8(string(buf), ""), nil
+}
+
+// dashboardPreplanSummaryMax bounds the full read of one topic file for the
+// summary fields of its row. A topic file of more than this many bytes is not
+// read: every summary field of the row is unread, one repo warning names the
+// size and the limit, and the row stays in the list. The 4 KiB head read
+// (dashboardPreplanHeadMax) and the 8 MiB limit of preplan_check
+// (dashboardDeleteReadMax) do not change.
+const dashboardPreplanSummaryMax = 256 << 10
+
+// The names that DashboardPreplan.Unread holds. Each one stands for the
+// summary fields that one part of the topic file gives.
+const (
+	dashboardPreplanUnreadGoal          = "goal"          // Goal, from ## Goal
+	dashboardPreplanUnreadProposals     = "proposals"     // Live, Kept, Dropped, from ## Decisions
+	dashboardPreplanUnreadSmallestCut   = "smallestCut"   // SmallestCut, from ## Decisions
+	dashboardPreplanUnreadLastCheck     = "lastCheck"     // LastCheckAt, from the Guardrail check line
+	dashboardPreplanUnreadOpenQuestions = "openQuestions" // OpenQuestions, from ## Open questions
+	dashboardPreplanUnreadGaps          = "gaps"          // Gaps, from the section headings
+)
+
+// The values of DashboardPreplan.SmallestCut.
+const (
+	dashboardPreplanCutSet    = "set"     // ## Decisions holds a valid "Smallest cut:" line
+	dashboardPreplanCutNotSet = "not set" // no such line, no ## Decisions, or the section is unread
+)
+
+// dashboardPreplanUnreadAll lists every unread name in the order that a row
+// gives them. A row whose topic file is not read gets all six.
+var dashboardPreplanUnreadAll = []string{
+	dashboardPreplanUnreadGoal,
+	dashboardPreplanUnreadProposals,
+	dashboardPreplanUnreadSmallestCut,
+	dashboardPreplanUnreadLastCheck,
+	dashboardPreplanUnreadOpenQuestions,
+	dashboardPreplanUnreadGaps,
+}
+
+// errPreplanSummaryNotRegular is the error of dashboardPreplanReadSummary
+// for a link (live or dangling), a folder, a pipe or a device at the topic
+// file path. Its text ends with a period, because it ends the repo warning.
+var errPreplanSummaryNotRegular = errors.New("not a regular file.")
+
+// preplanSummaryTooBigError is the error of dashboardPreplanReadSummary for
+// a topic file of more than max bytes. size is the Stat size of the file.
+// Its text ends with a period, because it ends the repo warning.
+type preplanSummaryTooBigError struct{ size, max int64 }
+
+// Error returns "the file is <size> bytes, the limit is <max> bytes.".
+func (e *preplanSummaryTooBigError) Error() string {
+	return fmt.Sprintf("the file is %d bytes, the limit is %d bytes.", e.size, e.max)
+}
+
+// dashboardPreplanReadSummary reads one topic file for the summary. It
+// checks the Stat size against max before the read and returns
+// *preplanSummaryTooBigError with the size when the file is larger. It calls
+// os.Lstat first, so a link (live or dangling), a folder, a pipe or a device
+// gives errPreplanSummaryNotRegular and is never opened. A failed Lstat or
+// read returns the os error. The Lstat and the read go through the seams of
+// preplan_check (preplanLstat, preplanReadFile), so one injected error
+// reaches both readers. Tests replace it to force a read failure.
+// dashboardReadCapped (dashboard_delete.go) is a style mirror only: its cap
+// is 8 MiB.
+var dashboardPreplanReadSummary = func(path string, max int64) ([]byte, error) {
+	info, err := preplanLstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errPreplanSummaryNotRegular
+	}
+	if info.Size() > max {
+		return nil, &preplanSummaryTooBigError{size: info.Size(), max: max}
+	}
+	return preplanReadFile(path)
+}
+
+// dashboardPreplanSummaries fills the summary fields of each row in place
+// and returns the repo warnings. It reads root/row.Path. dashboardPreplans
+// stays head-only: the preplan_write ready list reads no full file. Section
+// bodies come from preplanSectionSpans.
+//
+// A topic file that is not read (dashboardPreplanReadSummary fails) keeps
+// its row: every name of dashboardPreplanUnreadAll is unread, and one warning
+// "Preplan <slug> summary not read: <error>" names the cause. A section that
+// fails the checker adds its unread names and no warning. Gaps and Unread
+// are never nil after this call.
+func dashboardPreplanSummaries(root string, list []DashboardPreplan) (warnings []string) {
+	for i := range list {
+		row := &list[i]
+		row.Gaps, row.Unread, row.SmallestCut = []string{}, []string{}, dashboardPreplanCutNotSet
+		data, err := dashboardPreplanReadSummary(filepath.Join(root, filepath.FromSlash(row.Path)), dashboardPreplanSummaryMax)
+		if err != nil {
+			row.Unread = slices.Clone(dashboardPreplanUnreadAll)
+			warnings = append(warnings, fmt.Sprintf("Preplan %s summary not read: %v", row.Slug, err))
+			continue
+		}
+		dashboardPreplanSummarize(row, data)
+	}
+	return warnings
+}
+
+// dashboardPreplanSummarize fills the summary fields of row from data, the
+// whole topic file. Each part adds its unread names in the order of
+// dashboardPreplanUnreadAll. An absent section is not unread: its fields
+// keep their zero values, and Gaps names it when it is a skeleton section.
+func dashboardPreplanSummarize(row *DashboardPreplan, data []byte) {
+	spans, _ := preplanSectionSpans(data)
+	if body, ok := dashboardPreplanSectionBody(data, spans, preplanGoalSection); ok {
+		if preplanCheckSection(preplanGoalSection, body) != nil {
+			row.Unread = append(row.Unread, dashboardPreplanUnreadGoal)
+		} else {
+			row.Goal = dashboardPreview(preplanGoalSentence(body))
+		}
+	}
+	if body, ok := dashboardPreplanSectionBody(data, spans, preplanDecisionsSection); ok {
+		if preplanCheckSection(preplanDecisionsSection, body) != nil {
+			row.Unread = append(row.Unread, dashboardPreplanUnreadProposals, dashboardPreplanUnreadSmallestCut)
+		} else {
+			sum := preplanSummarizeDecisions(body)
+			row.Live, row.Kept, row.Dropped = sum.Live, sum.Kept, sum.Dropped
+			if sum.CutSet {
+				row.SmallestCut = dashboardPreplanCutSet
+			}
+		}
+	}
+	// The check line sits in the head, where preplan_check writes it. A
+	// legacy ## Guardrail check section is the old check record: the row
+	// shows no time for it, even when a check line is there too.
+	at, ok := preplanLastCheck(string(preplanHead(data)))
+	if !ok || preplanFindSpan(spans, preplanGuardrailCheckSection) >= 0 {
+		row.Unread = append(row.Unread, dashboardPreplanUnreadLastCheck)
+	} else {
+		row.LastCheckAt = dashboardFormatTime(at)
+	}
+	if body, ok := dashboardPreplanSectionBody(data, spans, preplanOpenQuestionsSection); ok {
+		if preplanCheckSection(preplanOpenQuestionsSection, body) != nil {
+			row.Unread = append(row.Unread, dashboardPreplanUnreadOpenQuestions)
+		} else {
+			row.OpenQuestions = preplanOpenQuestionCount(body)
+		}
+	}
+	// A fence open at the end of the file makes each heading after it count
+	// as absent, so the list is not shown.
+	empty, openFence := preplanEmptySections(data)
+	if openFence != "" {
+		row.Unread = append(row.Unread, dashboardPreplanUnreadGaps)
+		return
+	}
+	for _, heading := range empty {
+		row.Gaps = append(row.Gaps, strings.TrimPrefix(heading, preplanHeadingPrefix))
+	}
+}
+
+// dashboardPreplanSectionBody returns the body of the first section of data
+// named name, from spans (preplanSectionSpans of data). found is false when
+// no such heading is outside a fence.
+func dashboardPreplanSectionBody(data []byte, spans []preplanSpan, name string) (body string, found bool) {
+	i := preplanFindSpan(spans, name)
+	if i < 0 {
+		return "", false
+	}
+	return string(data[spans[i].bodyStart:spans[i].bodyEnd]), true
 }
