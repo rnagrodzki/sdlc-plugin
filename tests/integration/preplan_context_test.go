@@ -1,10 +1,10 @@
 //go:build integration
 
-// preplan_context_test.go drives the plan_support action preplan_context
-// through the real sdlc binary over stdio (connectStdioClient), the same
-// boundary mcp_stdio_test.go uses. The action writes a file under
-// .sdlc-v2/preplan/, so this test checks both the returned result and the
-// file on disk.
+// preplan_context_test.go drives the plan_support actions preplan_context,
+// preplan_check and preplan_write through the real sdlc binary over stdio
+// (connectStdioClient), the same boundary mcp_stdio_test.go uses. The actions
+// write a file under .sdlc-v2/preplan/, so these tests check both the returned
+// result and the file on disk.
 package integration
 
 import (
@@ -14,6 +14,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // preplanWordsSuggestion is the Suggestion text that preplan_context returns
@@ -457,4 +459,197 @@ func TestMCPStdio_PreplanCheck(t *testing.T) {
 			t.Errorf("every section filled: want %q in body, got:\n%s", "- emptySections: (none)", body)
 		}
 	})
+}
+
+// The closed-set strings of TestMCPStdio_PreplanWrite.
+const (
+	// preplanWriteTool is the tool that the test calls.
+	preplanWriteTool = "plan_support"
+	// preplanWriteAction is the plan_support action that the test calls.
+	preplanWriteAction = "preplan_write"
+	// preplanWriteTopic is the topic name of the test.
+	preplanWriteTopic = "auth flow"
+	// preplanWriteGoal is the section that the test writes.
+	preplanWriteGoal = "Goal"
+	// preplanWriteRiskSection is the section that the test seeds and keeps.
+	preplanWriteRiskSection = "Risk if wrong"
+	// preplanWriteDecisions is the section that gets the bad body.
+	preplanWriteDecisions = "Decisions"
+	// preplanWriteStatusPart is the entry of the written list for the Status line.
+	preplanWriteStatusPart = "Status"
+	// preplanWriteStartStatus is the status of a new topic file.
+	preplanWriteStartStatus = "in progress"
+	// preplanWriteReady is the topicStatus that the test writes.
+	preplanWriteReady = "ready for plan"
+	// preplanWriteGoalBody is the Goal body that the test writes.
+	preplanWriteGoalBody = "Users sign in once."
+	// preplanWriteRiskBody is the Risk if wrong body that the test seeds. No
+	// write of the test supplies this section, so it must stay.
+	preplanWriteRiskBody = "A failed sign-in locks the user out."
+	// preplanWriteBadDecisions is a Decisions body with no table header: it
+	// breaks rule P4.
+	preplanWriteBadDecisions = "Use OAuth because it is simpler."
+	// preplanWriteBadRule is the text of the error that the bad body gets.
+	preplanWriteBadRule = `Section "` + preplanWriteDecisions + `" breaks rule P4`
+	// preplanWriteDomainCode is the error code of a bad input.
+	preplanWriteDomainCode = "domain"
+	// preplanWriteMode is the mode that the test gives the topic file. The
+	// file is created with 0o644, so the rewrite must not reset it.
+	preplanWriteMode os.FileMode = 0o640
+)
+
+// preplanWriteGoalAndStatus is the argument set of the call that writes the
+// Goal body and the ready for plan status.
+var preplanWriteGoalAndStatus = map[string]any{
+	"section": preplanWriteGoal, "content": preplanWriteGoalBody, "topicStatus": preplanWriteReady,
+}
+
+// preplanWriteFixture is the state of TestMCPStdio_PreplanWrite: the stdio
+// client, the topic file, and the text of the file after the seed.
+type preplanWriteFixture struct {
+	c      *mcp.ClientSession
+	file   string
+	seeded string
+}
+
+// preplanReadText returns the text of the file at path, or fails the test.
+func preplanReadText(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(data)
+}
+
+// newPreplanWriteFixture starts the server in a new git repo and creates the
+// topic file with preplan_context. It then seeds the Risk if wrong section,
+// which no preplan_write call of the test supplies, and sets the file mode.
+func newPreplanWriteFixture(t *testing.T) preplanWriteFixture {
+	t.Helper()
+	dir := realPath(t, t.TempDir())
+	runGit(t, dir, "init", "-q")
+	c := connectStdioClient(t, dir)
+	env := callTool(t, c, preplanWriteTool, map[string]any{"action": "preplan_context", "topic": preplanWriteTopic})
+	if !env.OK {
+		t.Fatalf("preplan_context: not ok: code=%s body=%s", env.Code, env.Body)
+	}
+	preplanDir := filepath.Join(dir, ".sdlc-v2", "preplan")
+	names := preplanDirEntries(t, preplanDir)
+	if len(names) != 1 {
+		t.Fatalf("preplan dir entries = %v, want one topic file", names)
+	}
+	file := filepath.Join(preplanDir, names[0])
+	skeleton := preplanReadText(t, file)
+	riskHead := "## " + preplanWriteRiskSection + "\n\n"
+	seeded := strings.Replace(skeleton, riskHead, riskHead+preplanWriteRiskBody+"\n\n", 1)
+	if seeded == skeleton {
+		t.Fatalf("the skeleton has no %s section:\n%s", preplanWriteRiskSection, skeleton)
+	}
+	if err := os.WriteFile(file, []byte(seeded), 0o644); err != nil {
+		t.Fatalf("seed the topic file: %v", err)
+	}
+	if err := os.Chmod(file, preplanWriteMode); err != nil {
+		t.Fatalf("chmod the topic file: %v", err)
+	}
+	return preplanWriteFixture{c: c, file: file, seeded: seeded}
+}
+
+// write calls preplan_write for the topic with the given arguments added to
+// the action and the topic.
+func (fx preplanWriteFixture) write(t *testing.T, args map[string]any) renderedResult {
+	t.Helper()
+	call := map[string]any{"action": preplanWriteAction, "topic": preplanWriteTopic}
+	for k, v := range args {
+		call[k] = v
+	}
+	return callTool(t, fx.c, preplanWriteTool, call)
+}
+
+// wantGoalAndStatus returns the text of the topic file after the Goal body and
+// the ready for plan status are written: the seed with two changes.
+func (fx preplanWriteFixture) wantGoalAndStatus(t *testing.T) string {
+	t.Helper()
+	goalHead := "## " + preplanWriteGoal + "\n\n"
+	want := strings.Replace(fx.seeded, goalHead, goalHead+preplanWriteGoalBody+"\n\n", 1)
+	want = strings.Replace(want, "**Status:** "+preplanWriteStartStatus, "**Status:** "+preplanWriteReady, 1)
+	if strings.Count(want, preplanWriteGoalBody) != 1 || strings.Count(want, preplanWriteReady) != 1 {
+		t.Fatalf("the seed has no empty Goal section or no %s status:\n%s", preplanWriteStartStatus, fx.seeded)
+	}
+	return want
+}
+
+// checkFile fails the test unless the topic file holds exactly want and keeps
+// preplanWriteMode.
+func (fx preplanWriteFixture) checkFile(t *testing.T, step, want string) {
+	t.Helper()
+	if got := preplanReadText(t, fx.file); got != want {
+		t.Errorf("%s: topic file differs\nwant:\n%s\ngot:\n%s", step, want, got)
+	}
+	info, err := os.Stat(fx.file)
+	if err != nil {
+		t.Fatalf("%s: stat the topic file: %v", step, err)
+	}
+	if info.Mode().Perm() != preplanWriteMode {
+		t.Errorf("%s: topic file mode = %v, want %v", step, info.Mode().Perm(), preplanWriteMode)
+	}
+}
+
+// checkWriteResult checks the rendered output of the Goal and status call: the
+// file, the written list, and the ready list with its left-out count.
+func (fx preplanWriteFixture) checkWriteResult(t *testing.T, env renderedResult) {
+	t.Helper()
+	if !env.OK {
+		t.Fatalf("preplan_write: not ok: code=%s body=%s", env.Code, env.Body)
+	}
+	if want := "- preplanFile: " + fx.file; !strings.Contains(env.Body, want) {
+		t.Errorf("want %q in body, got:\n%s", want, env.Body)
+	}
+	if got, want := preplanRenderedList(t, env.Body, "written"), []string{preplanWriteGoal, preplanWriteStatusPart}; !slices.Equal(got, want) {
+		t.Errorf("written = %q, want %q; body:\n%s", got, want, env.Body)
+	}
+	if got, want := preplanRenderedList(t, env.Body, "readyTopicFiles"), []string{fx.file}; !slices.Equal(got, want) {
+		t.Errorf("readyTopicFiles = %q, want %q; body:\n%s", got, want, env.Body)
+	}
+	if want := "- readyLeftOut: 0"; !strings.Contains(env.Body, want) {
+		t.Errorf("want %q in body, got:\n%s", want, env.Body)
+	}
+}
+
+// TestMCPStdio_PreplanWrite calls plan_support with action preplan_write
+// through the real subprocess. A call with a section and a topicStatus writes
+// both: the test asserts the rendered output and the bytes of the file, which
+// keeps the Risk if wrong body that the call did not supply and keeps its
+// mode. A second equal call leaves the same bytes. A Decisions body with no
+// table header returns a domain error that names rule P4 and leaves the file
+// as it was.
+func TestMCPStdio_PreplanWrite(t *testing.T) {
+	fx := newPreplanWriteFixture(t)
+	want := fx.wantGoalAndStatus(t)
+
+	env := fx.write(t, preplanWriteGoalAndStatus)
+	fx.checkWriteResult(t, env)
+	fx.checkFile(t, "first call", want)
+	if !strings.Contains(preplanReadText(t, fx.file), preplanWriteRiskBody) {
+		t.Errorf("the write dropped the seeded %s body %q", preplanWriteRiskSection, preplanWriteRiskBody)
+	}
+
+	// A second equal call gives the same file.
+	env = fx.write(t, preplanWriteGoalAndStatus)
+	fx.checkWriteResult(t, env)
+	fx.checkFile(t, "second equal call", want)
+
+	// A bad Decisions body is a domain error that names the rule, and the
+	// file stays as it was.
+	env = fx.write(t, map[string]any{"section": preplanWriteDecisions, "content": preplanWriteBadDecisions})
+	if env.OK {
+		t.Fatalf("preplan_write with a bad Decisions body: want an error, got ok:\n%s", env.Body)
+	}
+	if env.Code != preplanWriteDomainCode {
+		t.Errorf("error code = %q, want %q", env.Code, preplanWriteDomainCode)
+	}
+	if !strings.Contains(env.Body, preplanWriteBadRule) {
+		t.Errorf("want %q in body, got:\n%s", preplanWriteBadRule, env.Body)
+	}
+	fx.checkFile(t, "after the bad body", want)
 }
