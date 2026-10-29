@@ -2,8 +2,10 @@
 
 Shape an idea into one topic file before you plan it. The skill asks you
 questions one at a time, writes your answers into the topic file, and checks
-each proposal against your plan guardrails. At the end it can hand the topic
-file to [`/plan`](plan.md). The full command name is `/sdlc:preplan`.
+each proposal against your plan guardrails. It works while plan mode is
+active. At the end it can hand one or more ready topic files to
+[`/plan`](plan.md), start a new idea, or stop. The full command name is
+`/sdlc:preplan`.
 
 ## When to use
 
@@ -37,6 +39,11 @@ error and stops. It creates no file.
 
 ## Topic file
 
+The skill changes the file only through `plan_support` tool calls, never
+with a file edit. Plan mode permits these calls. The tool checks each
+section body against the format rules. It refuses a body over 64 KiB
+(65536 bytes) or a body that breaks a rule, and the error names the rule.
+
 The skill keeps all its state in one Markdown file:
 `.sdlc-v2/preplan/<date>-<name>.md`. `<date>` is the UTC date of the first
 run, as `YYYY-MM-DD`. The name comes from the topic in four steps:
@@ -69,8 +76,9 @@ the same file.
 
 The skill asks the `plan_support` tool to create the file once, with these
 sections in this order. When you run the skill again on an older file, the
-tool adds each section heading that the file does not have. The tool does not
-add `Open questions`. The skill adds that section when a question is open:
+tool adds each section heading that the file does not have. That step does not
+add `Open questions`. The tool adds that section, after `Decisions`, when the
+skill sends the first open question, and deletes it with the last one:
 
 | Section | Content |
 |---|---|
@@ -93,7 +101,7 @@ The file has a status line. It shows where the topic stands:
 |---|---|
 | `in progress` | The dialogue is running. This is the status of a new file. |
 | `ready for plan` | You finished the dialogue. The file can go to `/plan`. |
-| `paused` | You cancelled during the dialogue, at a guardrail question or at the empty-section question, or the guardrail check stopped with an error (see [Guardrail check](#guardrail-check)). The skill keeps the file. |
+| `paused` | You cancelled during the dialogue, at a guardrail question or at the empty-section question, or the guardrail check stopped with an error (see [Guardrail check](#guardrail-check)), or the tool refused the write of one answer, or of one guardrail check, three times, or a write of the topic file failed after the first question (see [How the dialogue works](#how-the-dialogue-works)). The skill keeps the file. |
 
 The skill sets a status only at these events. You can also set any of the
 three statuses on the Preplans tab of the dashboard, with no dialogue event
@@ -115,6 +123,18 @@ each kept or dropped result as a note in the `Decisions` table.
 - The skill asks one question at a time. It asks about function and effect:
   who uses it, what changes, and what fails. It does not ask about code.
 - Before each question, the skill restates the facts that you need to answer.
+- After each answer, the skill sends each changed section to the tool before
+  the next question.
+- When the tool refuses a write, the skill fixes the section and sends it
+  again. The count is per answer, or per guardrail check: on the third
+  refusal for one answer or one guardrail check, the skill stops trying. The
+  count starts at 0 again after a write that succeeds.
+- After the topic file exists, the skill sets the status `paused` and ends
+  when you cancel, when the tool refuses the write of one answer, or of
+  one guardrail check, three times, or when a tool call fails after the
+  first question. Run
+  `/preplan <topic>` to continue. If the `paused` write itself fails, the
+  skill prints the error and the status stays as it was.
 - The skill asks for the sections in this order:
   1. `Goal`
   2. `Problem and benefit`
@@ -166,7 +186,10 @@ Started line records it:
 If the skill could not read the guardrails, the line ends with
 `Guardrails unavailable: <reason>.` A proposal with a kept note counts as kept. A dropped proposal counts as dropped. A moved proposal counts nowhere. Each other proposal counts as a pass.
 
-A tool error can stop the skill at two places.
+A tool error can stop the skill before the first question or during the
+dialogue. This section lists the errors of the first step and of the check.
+A write of a section or of the status can fail too (see
+[How the dialogue works](#how-the-dialogue-works)).
 
 The first step of the skill loads the guardrails and the topic file. An error
 there stops the skill before the first question. The skill prints the error and
@@ -192,7 +215,9 @@ line. The first step stops in these cases:
 
 The check can stop the dialogue with an error. The skill prints the error,
 then goes to the cancel step, which sets the status to `paused`. An error at
-the first step does not set `paused`. The check stops in these cases:
+the first step, or at the status write or the conversion of an older file
+before the first question, does not set `paused`. A write error after a question also goes to the cancel step.
+The check stops in these cases:
 
 - The tool finds no topic file, or two files match the topic.
 - The folder cannot be listed, or it holds more than 10000 names.
@@ -222,7 +247,9 @@ What the skill does when a proposal breaks a guardrail:
   rule, then asks once: keep the proposal, rework it, or cancel. If you rework
   it, the proposal moves to `Open questions` until you answer. Its row stays
   in the `Decisions` table, marked `Moved:`. When the
-  proposal comes back, it gets a new row with a new number.
+  proposal comes back, it gets a new row with a new number. If you cancel at
+  this question, the skill writes none of the notes of this check: the next
+  run checks every proposal again.
 
 If you change a proposal later, the skill checks it again.
 
@@ -264,12 +291,26 @@ When the file is complete, or you chose to go to the handoff, the status
 becomes `ready for plan`. The skill then asks you to choose:
 
 - **Start plan now:** the skill runs `/sdlc:plan` in the same session. The
-  plan skill reads the topic file as its requirements file.
+  plan skill reads the topic file as its requirements file. If other topic
+  files are `ready for plan`, the skill first asks which of them to add. It
+  offers this file and up to 3 other ready files, the newest first. It looks
+  only at the 100 topic files with the latest change, and it names the
+  number of other ready files that do not fit in the list. If you pick no
+  file, the plan starts with this topic file only. If the tool cannot list
+  the ready files, the skill says so, and the plan starts with this topic
+  file only.
+- **Start a new idea:** the skill asks the name of the next topic, then runs
+  `/preplan <topic>` in the same session. This file stays `ready for plan`,
+  unless the topic name matches this file; the new run then sets it to
+  `in progress`. If you cancel at the topic question, the skill ends, and
+  this file stays `ready for plan`.
 - **Stop:** the skill ends. The status stays `ready for plan`.
+- **Any other answer**, for example free text: the skill restates the three
+  options and asks again.
 
 If the plan skill stops with an error, the skill prints the error. The
-topic file stays `ready for plan`. Run `/plan <topic-file-path>` to try
-again.
+topic file stays `ready for plan`. Run `/plan` with the same topic-file
+paths to try again.
 
 ## Examples
 

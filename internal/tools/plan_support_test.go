@@ -3910,7 +3910,7 @@ func TestPlanSupportPreplanCheck(t *testing.T) {
 		if err != nil {
 			t.Fatalf("preplan_check: %v", err)
 		}
-		want := "Replaced the Guardrail check line of auth-flow.md. Old line: **Guardrail check:** old 2 more Guardrail check line(s) stay in the file: delete them by hand." + skeletonEmpty
+		want := "Replaced the Guardrail check line of auth-flow.md. Old line: **Guardrail check:** old 2 more Guardrail check line(s) stay in the file. No preplan action removes them: tell the user to delete them by hand. Do not edit the file." + skeletonEmpty
 		if out.Summary != want {
 			t.Errorf("Summary = %q, want %q", out.Summary, want)
 		}
@@ -5391,7 +5391,7 @@ func TestPreplanCheckOpenFence(t *testing.T) {
 	}
 	if want := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table." +
 		" emptySections lists 1 empty section(s). The Step 4 route table of the skill picks the next step." +
-		" First add the closing ``` line of the open fence where the code ends: each ## heading after the fence counts as absent until then."; out.Next != want {
+		" First close the open ``` fence with tool calls, not a file edit: call plan_support preplan_context with the same topic; when its summary names no closing fence line, send the full body of the last section with preplan_write, with the fence closed. Each ## heading after the fence counts as absent until then."; out.Next != want {
 		t.Errorf("Next = %q, want %q", out.Next, want)
 	}
 }

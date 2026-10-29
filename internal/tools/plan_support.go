@@ -2205,7 +2205,9 @@ func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 // preplanCheckNext returns the Next of a successful preplan_check call. With
 // 1 or more empty sections it adds the count and points at the Step 4 route
 // table of the skill. With a fence still open at the end of the file
-// (openFence), it says to close the fence first: the headings after it count
+// (openFence), it says to close the fence first with tool calls only
+// (preplan_context, else preplan_write of the last section), as the Step 4
+// open-fence repair of the preplan skill does: the headings after it count
 // as absent.
 func preplanCheckNext(empty []string, openFence string) string {
 	next := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."
@@ -2213,7 +2215,7 @@ func preplanCheckNext(empty []string, openFence string) string {
 		next += fmt.Sprintf(" emptySections lists %d empty section(s). The Step 4 route table of the skill picks the next step.", len(empty))
 	}
 	if openFence != "" {
-		next += fmt.Sprintf(" First add the closing %s line of the open fence where the code ends: each ## heading after the fence counts as absent until then.", openFence)
+		next += fmt.Sprintf(" First close the open %s fence with tool calls, not a file edit: call plan_support preplan_context with the same topic; when its summary names no closing fence line, send the full body of the last section with preplan_write, with the fence closed. Each ## heading after the fence counts as absent until then.", openFence)
 	}
 	return next
 }
@@ -2370,7 +2372,7 @@ func preplanCheckSummary(name, prior, warning string, next []byte, empty []strin
 		summary += " Guardrails unavailable: " + preplanWarningText(warning) + "."
 	}
 	if stale := len(preplanGuardrailCheckRe.FindAllIndex(next, -1)) - 1; stale > 0 {
-		summary += fmt.Sprintf(" %d more Guardrail check line(s) stay in the file: delete them by hand.", stale)
+		summary += fmt.Sprintf(" %d more Guardrail check line(s) stay in the file. No preplan action removes them: tell the user to delete them by hand. Do not edit the file.", stale)
 	}
 	if len(empty) == 0 {
 		summary += " Empty sections: none."

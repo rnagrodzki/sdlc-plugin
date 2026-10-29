@@ -9,8 +9,8 @@
 // argument can be a positional such as `[topic]` or a flag such as `--name`.
 //
 // The shared registry helpers live in skillcheck_flags_test.go. Every
-// unexported identifier below is prefixed preplanSkills, and the one declared
-// Test function is TestPreplanSkillParity.
+// unexported identifier below is prefixed preplanSkills, and the declared
+// Test functions are TestPreplanSkillParity and TestPreplanSkillNoFileEdits.
 package skillcheck
 
 import (
@@ -112,6 +112,30 @@ func TestPreplanSkillParity(t *testing.T) {
 	})
 
 	t.Run("tools_and_actions_resolve", func(t *testing.T) {
-		flagParityAssertToolsResolve(t, "preplan", "plan_support:preplan_context", "plan_support:preplan_check")
+		flagParityAssertToolsResolve(t, "preplan", "plan_support:preplan_context", "plan_support:preplan_check", "plan_support:preplan_write")
 	})
+}
+
+// preplanSkillsForbiddenEdits lists the texts of the old skill that told the
+// model to edit the topic file by hand. The skill now changes the file only
+// through plan_support calls, so none of these texts may come back.
+var preplanSkillsForbiddenEdits = []string{
+	"Edit the topic file",
+	"edit the topic file",
+	"Write and edit only",
+	"edit the `## Decisions` row",
+}
+
+// TestPreplanSkillNoFileEdits checks that the preplan SKILL.md holds no text
+// of preplanSkillsForbiddenEdits, so no step tells the model to edit the
+// topic file with a file tool, which plan mode refuses.
+func TestPreplanSkillNoFileEdits(t *testing.T) {
+	pluginRoot := executeSkillsRepoRoot(t)
+	skill := executeSkillsReadFile(t, filepath.Join(pluginRoot, "skills", "preplan", "SKILL.md"))
+	forbidden := preplanSkillsForbiddenEdits
+	for _, text := range forbidden {
+		if strings.Contains(skill, text) {
+			t.Errorf("preplan/SKILL.md holds %q: change the topic file through a plan_support call, not a file edit", text)
+		}
+	}
 }
