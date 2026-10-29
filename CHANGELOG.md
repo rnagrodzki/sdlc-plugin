@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.11] - 2026-10-29
+
+### RC 1
+
+- /sdlc:preplan now works in plan mode and writes topic files through a new plan_support action.
+- The dashboard Activity tab has a Preplans box that shows a checked summary of each topic file.
+- After a topic file is ready, preplan offers three choices: start a plan, start a new idea, or stop.
+- /sdlc:plan accepts several topic files in one run.
+
 ## [0.4.10] - 2026-10-27
 
 ### RC 1
