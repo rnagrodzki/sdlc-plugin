@@ -22,7 +22,14 @@ new changes to that same bar:
   what `.github/workflows/test.yml` runs).
 - Error paths (not just the happy path) are exercised — this project favors
   sentinel errors and `errors.Is`/`errors.As`; tests should assert against
-  the sentinel, not just a non-nil error.
+  the sentinel, not just a non-nil error. Each fallible call that new code
+  makes (a folder listing, a stat, a read, a write) has a test in which that
+  call fails; the test asserts the refusal text and the cause. Each size cap
+  on a listing or a file has a test at the cap and a test one past it. In a
+  table-driven test every failure row asserts its own cause with `errors.Is`
+  or `errors.As`, not only the message; a row that checks the text alone
+  leaves the cause unpinned. Example: a handler with no test for a failed
+  folder listing and none for an oversize folder.
 - Table-driven tests follow the style already established in sibling
   `_test.go` files in the same package rather than introducing a new
   pattern.
@@ -129,6 +136,13 @@ new changes to that same bar:
   incomplete coverage — the text may change and silent drift would occur.
   Exclude errors.New/fmt.Errorf return values (which follow Go convention
   and stay lowercase); focus on text that reaches the user or LLM renderer.
+  The assertion covers the whole text. A Summary, Next or warning that holds
+  several parts is asserted in full, which also pins the order of the parts
+  and of the output fields. A lone `strings.Contains` of one phrase passes
+  when another part is dropped, reworded or moved; use it only to skip a
+  part that varies by design (a path or a time) and assert every other
+  part. This extends the outcome-and-warning bullet below, which asks for
+  the full text in one case.
 - When a guard or refusal condition evaluates a collection (sections,
   files, keys, rows in a table), test coverage must exercise both
   single-element and multi-element cases. A single-element test that passes
@@ -145,7 +159,13 @@ new changes to that same bar:
   asserts the number of warnings, their full text and the items that stay. This
   extends the single-element and multi-element bullet above, which covers
   guards and refusals. Example: a list with one repeated severity, where the
-  test covered the second copy only.
+  test covered the second copy only. The same holds for a counter of the items
+  that a list leaves out (a tail such as `and N more`, a hidden count). The
+  test uses a count of 1, a count of 2 and a count above 2, and a list at the
+  cap, one past the cap and well past it, and asserts the full text each time.
+  One repeat shows only that the first extra item is counted. It does not show
+  whether N adds up, whether the text reads right for 1 and for many, or
+  whether the shown items and the counted items together equal the whole list.
 - When a function instantiates a structured error (InfraError,
   DomainError, DataError) in a default or catch-all arm (e.g., after
   specific-condition checks fail), test the default arm directly: use an
@@ -238,7 +258,11 @@ new changes to that same bar:
   line ends, not only on a well-formed LF file. Each test asserts the full
   resulting text, not only that the anchor is still present. A test set that
   matches only in the middle of a well-formed file passes when the replace
-  drops or doubles the last line.
+  drops or doubles the last line. The text that the write puts in also runs
+  in each blank form: empty, spaces only, and line ends only (LF and CRLF).
+  Each form can reach another branch of the blank check, and a text made of
+  line ends alone can read as blank or as one empty line. A test set with one
+  blank form leaves the others unpinned.
 - When an action can return a normal outcome and a warning in one result (an
   existing file that is reused and a warning about it), one test asserts both
   the outcome and the warning text, for every action that reaches the state.
