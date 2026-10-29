@@ -106,7 +106,7 @@ stateDiagram-v2
 |---|---|---|---|
 | `goal` | string | first Goal sentence, redacted, 120 runes | `Start the dashboard at login.` |
 | `live`, `kept`, `dropped` | int | Decisions row counts | `3`, `1`, `1` |
-| `lastCheckAt` | string | RFC 3339 UTC, `""` when unread | `2026-10-29T07:58:25Z` |
+| `lastCheckAt` | string | RFC 3339 UTC, `""` when unread or never checked (no check line in the first 4 KiB) | `2026-10-29T07:58:25Z` |
 | `openQuestions` | int | bullet count | `1` |
 | `gaps` | list of string | empty sections, `[]` when none | `["Flows"]` |
 | `smallestCut` | string | `set` or `not set` | `set` |

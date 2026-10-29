@@ -776,3 +776,18 @@ func TestPreplanSplitRow(t *testing.T) {
 		})
 	}
 }
+
+// TestPreplanLastCheckReadsCheckLine feeds the line that preplanCheckLine
+// writes into preplanLastCheck, with and without the guardrail warning, so
+// the writer and the reader of the "Last check:" text cannot drift apart.
+func TestPreplanLastCheckReadsCheckLine(t *testing.T) {
+	at := time.Date(2026, 10, 29, 7, 58, 25, 0, time.UTC)
+	setPreplanNow(t, at)
+	for _, warning := range []string{"", "config not read"} {
+		line := preplanCheckLine(57, 3, 1, 0, warning)
+		got, ok := preplanLastCheck("**Status:** in progress\n\n" + line + "\n")
+		if !ok || !got.Equal(at) {
+			t.Errorf("preplanLastCheck(%q) = (%v, %v), want (%v, true)", line, got, ok, at)
+		}
+	}
+}

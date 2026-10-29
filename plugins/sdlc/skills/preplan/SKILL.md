@@ -43,7 +43,7 @@ When Step 4 reaches the `preplan_check` call, the tool writes one `**Guardrail c
 | `## Non-goals` | what the change does not build, one bullet each. A refused scope option is a bullet `Offered, not picked: <option>.` When the user says that the change excludes nothing, the line `None stated.` |
 | `## Flows` | one before/after Mermaid diagram with its text twin for each flow that a proposal changes, or the line `No flow change.` |
 | `## Decisions` | a table with the columns `#`, `Decision` and `Reason`, one row for each proposal. A proposal is one row of this table, except a row whose `Decision` cell starts with `Moved:` (see Step 4). The `#` value of a row never changes and is never used again. The skill never deletes a row, so the next unused `#` value is one more than the highest `#` in the table. A Reason cell can end with `Kept with warning: <ids>.` or `Dropped by: <ids>.` (see Step 4). No other check text goes in a Reason cell. Under the table, one line `Smallest cut: #<id>, #<id>.` or `Smallest cut: all.` holds the answer to the cut question (see Step 3). The line is not a row. Write it under the last row, before `## Open questions` |
-| `## Open questions` | only when at least one question has no answer: one bullet for each question. The skill adds the section after `## Decisions` with the first bullet. It deletes the whole section with the last bullet |
+| `## Open questions` | only when at least one question has no answer: one bullet for each question. `preplan_write` adds the section after `## Decisions` when the skill sends the first bullet. It deletes the whole section when the skill sends an empty `content` after the last bullet goes |
 
 ### Topic file status
 
@@ -76,7 +76,7 @@ Every exit state names its next instruction:
 |---|---|---|
 | cancelled before the file exists | Step 0 | end. Make no tool call |
 | tool error | Step 1 or Step 2 | print the error's `## Do this` text as it is, then stop. Do not retry |
-| tool error that is not a rule refusal (see the error table) | Step 3, Step 4 or Step 5 | print the error's `## Do this` text as it is, then go to the cancel step |
+| tool error that is not a rule refusal and not a first `section ... not found` error (see the error table) | Step 3, Step 4 or Step 5 | print the error's `## Do this` text as it is, then go to the cancel step |
 | third refusal for one call site | Step 3 or Step 4 | print the error, then go to the cancel step |
 | cancel-step write fails | cancel | print the error's `## Do this` text as it is, then end |
 | cancelled during the dialogue | Step 3 or Step 4 | go to the cancel step: set status `paused`, keep the file, end |
@@ -99,14 +99,16 @@ plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "<status>
 
 The tool changes each CR LF in `content` to LF and removes the final line ends before it checks the body. It refuses a body over 65536 bytes (rule P1) or a body that breaks another format rule. An empty `content` deletes the `## Open questions` or the `## Guardrail check` section. When the file has no Status line, a `topicStatus` call inserts one. The error text of each refusal starts with `preplan_write: ` and names the rule id, for example `preplan_write: Section "Decisions" breaks rule P5: ...`. A rule refusal writes nothing. A second call with the same input gives the same file as the first call, so a new run can repeat a call that an earlier run made.
 
+After each `preplan_write` call and each `preplan_check` call, read `summary`. When it names extra `## ` headings, extra Status lines or extra Guardrail check lines that stay in the file, tell the user which lines stay. Tell the user to delete them by hand: no preplan action removes them. When it says that a code fence is still open, tell the user. The next Step 4 pass repairs the fence (see Step 4). A write to a heading that the fence hides before that pass follows the `section ... not found` row of the error table.
+
 Steps that call `preplan_write`:
 
 | Step | Call | On success |
 |---|---|---|
-| 2 | `topicStatus: "in progress"` when `preplanCreated` is false. Then the 3 old-form calls, only for an old-form file | Step 3 |
-| 3 | `section`, `content` after each answer | next question |
+| 2 | `topicStatus: "in progress"` when `preplanCreated` is false. Then one old-form call for each old-form condition that holds (1 to 3 calls, see Step 2), only for an old-form file | Step 3 |
+| 3 | `section`, `content` after each answer that changes a section | next question |
+| 4, a `Moved:` row in the pass | `section: "Open questions"` with the question of the row, before the Decisions call | the Decisions call |
 | 4 | `section: "Decisions"` for notes and the prune, then `preplan_check` | Step 4 route table |
-| 4, a `Moved:` row in the pass | `section: "Open questions"` with the question of the row, after the Decisions call | `preplan_check` |
 | 4, open-fence repair | `section` of the last section with the fence closed, when `preplan_context` names no closing fence line. Then `section: "Open questions"` when the fence hid that heading | read `preplanFile` again, then the Step 4 route table |
 | 5 | `topicStatus: "ready for plan"` | Step 5 route table |
 | cancel | `topicStatus: "paused"` | end |
@@ -117,6 +119,8 @@ Errors of a `plan_support` call (one outcome for each input):
 |---|---|---|
 | a refusal that names a rule P1-P11, the 1st or 2nd for this call site | 3, 4 | fix the body and send the call again |
 | a refusal that names a rule P1-P11, the 3rd for this call site | 3, 4 | print the error, then the cancel step |
+| a `section "<name>" not found` error, the 1st for this call site | 3, 4 | follow its `## Do this` text once. The text ends with the call to send again: send it once, and do not send it a second time. Then read `preplanFile` again |
+| a `section "<name>" not found` error, the 2nd for this call site | 3, 4 | print the `## Do this` text, then the cancel step |
 | any other error | 2 | print the `## Do this` text, then stop |
 | any other error | 3, 4, 5 | print the `## Do this` text, then the cancel step |
 | any error | cancel | print the `## Do this` text, then end. The status stays as the file holds it |
@@ -134,7 +138,7 @@ Print the announce line. When the argument holds a topic, use it as the topic. W
 
 ## Step 1: Load the guardrails and the topic file
 
-Make exactly one call here. Only the soft gate (see Soft gate routes) and the Step 4 open-fence repair can make one more `preplan_context` call:
+Make exactly one call here. Only the soft gate (see Soft gate routes), the Step 4 open-fence repair and the `section ... not found` row of the error table can make one more `preplan_context` call:
 
 ```
 plan_support({ action: "preplan_context", topic: "<topic>" })
@@ -166,13 +170,7 @@ An old-form file has a `## Guardrail check` section, or a `## Open questions` se
 2. If the file has a `## Guardrail check` section, call `plan_support({ action: "preplan_write", topic: "<topic>", section: "Guardrail check", content: "" })`. It deletes the whole section.
 3. If the file has a `## Open questions` section with no bullet, call `plan_support({ action: "preplan_write", topic: "<topic>", section: "Open questions", content: "" })`. It deletes the section.
 
-A run that stops during the conversion is safe to repeat:
-
-| Stop point | Input of the next run | Result |
-|---|---|---|
-| after the Decisions write | the same Decisions body. The notes are already in the Reason cells | P6 sees one kept note in each cell. The write gives the same file |
-| after the legacy `## Guardrail check` delete | an absent section and empty `content` | no-op, `written` is `(none)` |
-| after the Open questions write | the same Open questions body | the write gives the same file |
+Each call removes its own condition. After call 2, the file has no `## Guardrail check` section. After call 3, the file has no empty `## Open questions` section. A run that stops during the conversion is safe to repeat: the next run sends only the calls whose condition still holds. Call 1 skips a note that the Reason cell already holds, so a repeat gives the same Decisions body.
 
 ## Step 3: Ask one question
 
@@ -187,7 +185,7 @@ Dialogue rules:
 - When a question offers scope options and the user picks some, add each option not picked to `## Non-goals` as `Offered, not picked: <option>.` Never record the "done" or the "cancel" option.
 - Cut question: restate each live proposal with its `#` value. Ask which proposals form the smallest version that still gives value. Options: all live proposals, or a list of `#` values. Here the "done" option is the "all live proposals" option: offer it once, labelled "all (done)". The Step 3 routes say when to ask it. The cut question is not a scope question: it adds no `## Non-goals` bullet.
 
-After each answer, call `preplan_write` with the full new body of each changed section, before the next question. Send one call for each changed section: `plan_support({ action: "preplan_write", topic: "<topic>", section: "<section>", content: "<full new body>" })`. On an error, follow the error table (see **Topic file writes**). The new body holds:
+After each answer that changes a section, call `preplan_write` with the full new body of each changed section, before the next question. Send one call for each changed section: `plan_support({ action: "preplan_write", topic: "<topic>", section: "<section>", content: "<full new body>" })`. On an error, follow the error table (see **Topic file writes**). The new body holds:
 
 - Write the answer into the section that it fills.
 - When the user says that the change excludes nothing, write the line `None stated.` under `## Non-goals`. Delete the line when the section gets a bullet.
@@ -237,7 +235,7 @@ How to write the notes:
 - When the guardrails loaded and `guardrails` is empty, every live proposal is a pass. Delete each kept note.
 - Rework: send a new `## Decisions` body with `preplan_write`, so that the row no longer breaks the guardrail. This body is the one `## Decisions` body of the pass (see below). Tell the user in one line what changed and which guardrails caused it.
 - Drop: keep the `## Decisions` row. Start its `Decision` cell with `Dropped:`. End its Reason cell with `Dropped by: <ids>.` Tell the user which guardrails caused the drop.
-- Warning conflict: ask with AskUserQuestion. Restate the proposal, each guardrail `id`, and its `description`. Options: keep the proposal as it is, rework it later, or cancel. On keep, delete an earlier `Kept with warning:` note in the Reason cell, then end the cell with `Kept with warning: <ids>.` The cell holds one kept note at most. On rework, keep the row in `## Decisions` and start its `Decision` cell with `Moved:`. Add the proposal as a bullet to the `## Open questions` body and send that body with `preplan_write` (`section: "Open questions"`). If the section does not exist, `preplan_write` adds it after `## Decisions`. A `Moved:` row is not a proposal: Step 4 does not check it, and the Step 3 and Step 4 routes do not count it. When an answer brings the proposal back, add it as a new row with the next unused `#` value. On cancel, go to the cancel step.
+- Warning conflict: ask with AskUserQuestion. Restate the proposal, each guardrail `id`, and its `description`. Options: keep the proposal as it is, rework it later, or cancel. On keep, delete an earlier `Kept with warning:` note in the Reason cell, then end the cell with `Kept with warning: <ids>.` The cell holds one kept note at most. On rework, first add the proposal as a bullet to the `## Open questions` body and send that body with `preplan_write` (`section: "Open questions"`). Skip the bullet when the `## Open questions` body already holds it. If the section does not exist, `preplan_write` adds it after `## Decisions`. Then keep the row in `## Decisions` and start its `Decision` cell with `Moved:`. A `Moved:` row is not a proposal: Step 4 does not check it, and the Step 3 and Step 4 routes do not count it. When an answer brings the proposal back, add it as a new row with the next unused `#` value. On cancel, go to the cancel step.
 
 Prune the `Smallest cut:` line after the check and before the count. Remove from the line each `#` value whose row is not live: its `Decision` cell starts with `Dropped:` or `Moved:`. When the prune removes the last id of a line that lists ids, delete the line. With 2 or more live proposals left, the Step 4 route table then asks the cut question again. Keep a `Smallest cut: all.` line as it is. Example: proposal #2 is dropped in this pass:
 
@@ -252,8 +250,8 @@ Write the result of the check and the prune before the count. Each Step 4 pass s
 
 | Step 4 edit | Call |
 |---|---|
-| `Kept with warning:` notes, `Dropped:` and `Moved:` prefixes, rework rows, `Smallest cut:` prune | one `preplan_write` call with `section: "Decisions"` |
-| the question of a `Moved:` row | a second call with `section: "Open questions"` |
+| the question of a `Moved:` row | first, one call with `section: "Open questions"`. A failure of the Decisions call then leaves a live row and its bullet, not a `Moved:` row with no bullet |
+| `Kept with warning:` notes, `Dropped:` and `Moved:` prefixes, rework rows, `Smallest cut:` prune | then one `preplan_write` call with `section: "Decisions"` |
 
 ```
 plan_support({ action: "preplan_write", topic: "<topic>", section: "Decisions", content: "<full new Decisions body>" })
@@ -304,7 +302,7 @@ When Step 4 goes back to Step 3 with `final` set, tell the user what is missing:
 
 Step 5 starts after a Step 4 pass with no empty section, or after the soft gate. Call `plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "ready for plan" })`. Keep `readyTopicFiles`, `readyLeftOut` and `summary`. Then ask with AskUserQuestion. Restate the topic, the number of live proposals (`passCount + keptCount` of the last check), and the path `preplanFile`. Options:
 
-- **Start plan now** — runs `/sdlc:plan` in this session with this topic file and the other ready topic files that the user picks. The plan skill reads each topic file as a requirements file.
+- **Start plan now** — runs `/sdlc:plan` in this session with this topic file and the other ready topic files that the user picks. This topic file is always included. The plan skill reads each topic file as a requirements file.
 - **Start a new idea** — asks the next topic name, then runs `/sdlc:preplan <topic>` in this session. This topic file stays `ready for plan`, unless the topic name matches this file; the new run then sets it to `in progress` (Step 2).
 - **Stop** — ends this skill. The topic file stays `ready for plan`.
 
@@ -312,19 +310,19 @@ On a tool error of the status write, follow the error table (see **Topic file wr
 
 `readyTopicFiles` lists this topic file first, then up to 3 other topic files with the status `ready for plan`, the newest first. The tool looks only at the 100 topic files of the preplan folder with the latest change, and reads the Status line from the first 4096 bytes of each. `readyLeftOut` counts the other ready topic files among them that do not fit in the list. A folder that cannot be listed does not fail the call: `summary` names it, and the list holds this topic file only.
 
-Handoff calls: "Start plan now" runs `Skill(sdlc:plan, "\"<p1>\" \"<p2>\"")`, with each path in double quotes. "Start a new idea" runs `Skill(sdlc:preplan, "<topic>")`. Both run in the same session. No Agent worker exists, so no worker needs a stop. The dispatched skill asks its own questions with AskUserQuestion in the main session.
+Handoff calls: "Start plan now" runs `Skill(sdlc:plan, "\"<p1>\" \"<p2>\"")`, with each path in double quotes. "Start a new idea" runs `Skill(sdlc:preplan, "<topic>")`. Both run in the same session. Preplan starts no Agent worker. The plan skill owns its Step 1 background explorers and stops them (plan **Error Recovery**). The dispatched skill asks its own questions with AskUserQuestion in the main session.
 
 Step 5 routes (one row matches each result):
 
 | Answer | `readyTopicFiles` | Action | Next |
 |---|---|---|---|
-| Start plan now | absent, empty, or the first path is not `preplanFile` | print `Ready topic files not listed. The plan starts with this topic file only.` When `summary` holds a `Ready topic files not listed: ...` sentence, print that sentence too | `Skill(sdlc:plan, "\"<preplanFile>\"")` |
-| Start plan now | `preplanFile` only | when `summary` holds a `Ready topic files not listed: ...` sentence, print it. Otherwise none | `Skill(sdlc:plan, "\"<preplanFile>\"")` |
-| Start plan now | 2 to 4 paths, `preplanFile` first | AskUserQuestion, multiSelect, one option for each path. The text says `readyLeftOut` more files are ready and can go to `/sdlc:plan` as arguments | `Skill(sdlc:plan, "\"<p1>\" \"<p2>\"")`, each picked path in double quotes, in option order. No pick or free text: `preplanFile` only |
-| Start a new idea | any | AskUserQuestion: "What is the short name of the next topic? An existing topic name reopens that file." with a cancel option | `Skill(sdlc:preplan, "<topic>")`. This run ends first. Cancel: end |
+| Start plan now | absent, empty, or the first path is not `preplanFile` | print `Ready topic files not listed. The plan starts with this topic file only.` Print each sentence of `summary` that starts with `Ready topic files` too | `Skill(sdlc:plan, "\"<preplanFile>\"")` |
+| Start plan now | `preplanFile` only | print each sentence of `summary` that starts with `Ready topic files`. When there is none, print nothing | `Skill(sdlc:plan, "\"<preplanFile>\"")` |
+| Start plan now | 2 to 4 paths, `preplanFile` first | AskUserQuestion, multiSelect, one option for each path. Label the `preplanFile` option "always included". The text says `readyLeftOut` more files are ready and can go to `/sdlc:plan` as arguments. The text also holds each sentence of `summary` that starts with `Ready topic files` | `Skill(sdlc:plan, "\"<p1>\" \"<p2>\"")`: `preplanFile` first, then each picked other path, in option order, each path in double quotes. A deselect of `preplanFile` does not remove it. No pick or free text: `preplanFile` only |
+| Start a new idea | any | AskUserQuestion: "What is the short name of the next topic? An existing topic name reopens that file." with a cancel option | `Skill(sdlc:preplan, "<topic>")`. Cancel: end |
 | Stop | any | none | end. Status stays `ready for plan` |
 | any other answer to the handoff question, for example free text or no pick | any | restate the three options | Step 5: ask the handoff question again |
-| plan skill stops with an error | any | print the error. Tell the user to run `/sdlc:plan <paths>` | end. Status stays `ready for plan` |
+| plan skill stops with an error | any | the plan skill stops its own explorers first (plan **Error Recovery**). Print the error. Tell the user to run `/sdlc:plan <paths>` | end. Status stays `ready for plan` |
 | plan skill returns without an error | any | none | end. Status stays `ready for plan` |
 | the new preplan run returns | any | none | end. This file stays `ready for plan`, unless the topic name matches this file; the new run then sets it to `in progress` (Step 2) |
 
@@ -376,7 +374,7 @@ After:
 - Never call `plan_prepare`. This skill starts no plan run.
 - Never write the skeleton, never create the topic file, and never add a skeleton heading (`## Goal` to `## Decisions`) by hand. `preplan_context` creates the file and adds absent skeleton headings. The one heading that `preplan_write` adds, when the skill sends it, is `## Open questions`.
 - Change the topic file only through `preplan_context`, `preplan_check` and `preplan_write`. Never use the Edit tool or the Write tool on it. Never write a topic file under a `plans/` directory: after each write there, the plan format hook checks the file as a plan and reports plan format findings, because a topic file is not a plan.
-- Call `preplan_write` after each answer, before the next question.
+- After each answer that changes a section, call `preplan_write` for each changed section, before the next question.
 - Check each proposal against the guardrails before the user sees it as accepted.
 - Never write the `**Guardrail check:**` line by hand. Only `preplan_check` writes it.
 - After each `preplan_check` call, read `preplanFile` again before the next edit.

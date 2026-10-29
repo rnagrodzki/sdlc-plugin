@@ -42,7 +42,8 @@ error and stops. It creates no file.
 The skill changes the file only through `plan_support` tool calls, never
 with a file edit. Plan mode permits these calls. The tool checks each
 section body against the format rules. It refuses a body over 64 KiB
-(65536 bytes) or a body that breaks a rule, and the error names the rule.
+(65536 bytes) or a body that breaks a rule, and the error names the rule
+(see [Format rules](#format-rules)).
 
 The skill keeps all its state in one Markdown file:
 `.sdlc-v2/preplan/<date>-<name>.md`. `<date>` is the UTC date of the first
@@ -89,7 +90,7 @@ skill sends the first open question, and deletes it with the last one:
 | `Non-goals` | What the change does not build, one bullet for each. A scope option that you did not pick is a bullet `Offered, not picked: <option>.` If you say that the change excludes nothing, the line `None stated.` |
 | `Flows` | A before and after diagram for each flow that a proposal changes, with the same steps as a numbered list. If no flow changes, the line `No flow change.` |
 | `Decisions` | A table with one row for each proposal. The number of a row never changes, and the skill never uses it again. Under the table, one line holds your answer to the cut question (see [How the dialogue works](#how-the-dialogue-works)), for example `Smallest cut: #1, #3.`, `Smallest cut: #2.` or `Smallest cut: all.`. The numbers are in ascending order. The line is not a row. |
-| `Open questions` | One bullet for each question that has no answer yet. The section exists only when at least one question is open. |
+| `Open questions` | One bullet for each question that has no answer yet. After the skill converts an older file, the section exists only when at least one question is open. |
 
 After the first check, one `**Guardrail check:**` line under the Started line
 shows the number of guardrails, the proposal counts and the UTC time of the
@@ -116,7 +117,42 @@ empty, so the skill asks for it in the dialogue. Run `/preplan` again with the
 same topic to continue from the file. The status becomes `in progress`, and
 the skill shows you the open questions, if any. An older file loses its
 `Guardrail check` table and an empty `Open questions` section. The skill keeps
-each kept or dropped result as a note in the `Decisions` table.
+each kept or dropped result as a note in the `Decisions` table. A conversion
+that stops half way is safe to repeat. Each conversion write removes the
+condition that caused it, so the next run sends only the writes that are still
+needed. The `Decisions` write skips a note that the `Reason` cell already
+holds, so the cell never gets a second kept note (rule P6), and a repeat gives
+the same file.
+
+### Format rules
+
+`preplan_write` checks the new body of one section before it writes. First it
+changes each CR LF to LF and removes the final line ends. A body that breaks
+a rule is refused, and the file does not change. The error names the section
+and the rule, for example:
+
+    preplan_write: Section "Decisions" breaks rule P5: row 2 has 2 cells, want 3
+
+The dashboard uses the same check: a section that breaks a rule is unread
+(see the `repos[].preplans[]` row of the
+[Snapshot contract](../dashboard.md#snapshot-contract)).
+
+| Rule | Section | Accepted form |
+|---|---|---|
+| P1 | all | The body is 65536 bytes or less. |
+| P2 | all | No line outside a code fence starts with `# ` or `## `. |
+| P3 | all | Each code fence closes. |
+| P4 | `Decisions` | A body that is not blank starts with the two header lines `\| # \| Decision \| Reason \|` and `\|---\|---\|---\|`. |
+| P5 | `Decisions` | Each row has 3 cells. The `#` value is a positive whole number, written with digits only, and no other row has it. |
+| P6 | `Decisions` | A `Reason` cell holds one `Kept with warning:` note at most. A row whose `Decision` cell starts with `Dropped:` has `Dropped by:` in its `Reason` cell. |
+| P7 | `Decisions` | After the table, only blank lines and at most one line `Smallest cut: all.` or `Smallest cut: #1, #3.`. The numbers are in ascending order, and each one is a row that is not dropped or moved. |
+| P8 | `Non-goals` | The body is `None stated.`, or each line that is not blank starts with `- `. |
+| P9 | `Open questions` | Each line that is not blank starts with `- `. |
+| P10 | `Flows` | The body is `No flow change.`, or it holds a `mermaid` code fence. Each `classDef` line is one of the two `classDef` lines that the skill copies into each diagram (`classDef new ...` and `classDef changed ...`), with no change except leading spaces. |
+| P11 | `Guardrail check` | Only an empty body. It deletes this older section. A body of spaces is not empty. |
+
+A section with no rule of its own, for example `Goal`, has rules P1 to P3
+only.
 
 ### How the dialogue works
 
@@ -288,12 +324,16 @@ section asks again.
   sections again and asks again.
 
 When the file is complete, or you chose to go to the handoff, the status
-becomes `ready for plan`. The skill then asks you to choose:
+becomes `ready for plan`. If the `ready for plan` write fails, the skill
+prints the error and tries to set `paused`. Then it ends and asks no handoff
+question. Run `/preplan <topic>` again after the fix. When the write
+succeeds, the skill asks you to choose:
 
 - **Start plan now:** the skill runs `/sdlc:plan` in the same session. The
   plan skill reads the topic file as its requirements file. If other topic
   files are `ready for plan`, the skill first asks which of them to add. It
-  offers this file and up to 3 other ready files, the newest first. It looks
+  always includes this file. It offers up to 3 other ready files to add, the
+  newest first. It looks
   only at the 100 topic files with the latest change, and it names the
   number of other ready files that do not fit in the list. If you pick no
   file, the plan starts with this topic file only. If the tool cannot list

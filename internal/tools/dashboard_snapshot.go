@@ -388,17 +388,18 @@ type DashboardPreplan struct {
 
 	// The summary fields below come from the whole topic file, read up to
 	// dashboardPreplanSummaryMax bytes (dashboardPreplanSummaries); a larger
-	// topic file leaves every summary field unread and the row stays. A field
+	// topic file leaves every summary field unread and the row stays. A topic
+	// file that went away after the head read has no row. A field
 	// shows a value only when its section passes the format checker
 	// (preplan_format.go); otherwise the field keeps its zero value and
 	// Unread names it. An absent section is not unread, but a section whose
 	// heading is not found while a code fence is open at the end of the file
 	// can be hidden in that fence, so Unread names it.
-	Goal          string `json:"goal"`          // first Goal sentence, redacted, 120 runes; "" when empty
+	Goal          string `json:"goal"`          // first Goal sentence, redacted, cut to dashboardPreviewTextMax runes; "" when empty
 	Live          int    `json:"live"`          // live ## Decisions rows (neither Dropped: nor Moved:)
 	Kept          int    `json:"kept"`          // live rows whose Reason holds "Kept with warning:"
 	Dropped       int    `json:"dropped"`       // rows that start with "Dropped:"
-	LastCheckAt   string `json:"lastCheckAt"`   // RFC 3339 UTC time of the "Last check:" text; "" when unread
+	LastCheckAt   string `json:"lastCheckAt"`   // RFC 3339 UTC time of the "Last check:" text; "" when unread or never checked
 	OpenQuestions int    `json:"openQuestions"` // bullets of ## Open questions; 0 when the section is absent or unread
 	// Gaps names the skeleton sections that are absent or empty, without
 	// "## " (preplanEmptySections, the emptySections list of preplan_check).
@@ -409,9 +410,14 @@ type DashboardPreplan struct {
 	// is not shown: goal, proposals (live, kept, dropped), smallestCut,
 	// lastCheck (lastCheckAt), openQuestions and gaps. A part is unread when
 	// its section failed the checker, its heading can be hidden in a code
-	// fence that is open at the end of the file, or the file was not read. The names
-	// come in the order of dashboardPreplanUnreadAll. It encodes as [],
-	// never null.
+	// fence that is open at the end of the file, or the file was not read.
+	// lastCheck is also unread when the **Guardrail check:** line in the
+	// first dashboardPreplanHeadMax bytes has no valid "Last check:" time, or
+	// when the file holds the legacy ## Guardrail check section. A topic file
+	// with no check line in that head and no legacy section was never
+	// checked: lastCheck is not unread and LastCheckAt is "". The names come
+	// in the order of dashboardPreplanUnreadAll. It encodes as [], never
+	// null.
 	Unread []string `json:"unread"`
 }
 
@@ -650,7 +656,8 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	// A preplan read problem is a warning, never repo.Error: repo.Error
 	// blocks the archive of every run of the repo.
 	preplans, warnings := dashboardPreplans(root)
-	warnings = append(warnings, dashboardPreplanSummaries(root, preplans)...)
+	preplans, summaryWarnings := dashboardPreplanSummaries(root, preplans)
+	warnings = append(warnings, summaryWarnings...)
 	repo.Preplans = preplans
 	repo.Warnings = append(repo.Warnings, warnings...)
 	return repo

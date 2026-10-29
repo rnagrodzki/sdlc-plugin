@@ -651,7 +651,8 @@ func summaryTestRow() DashboardPreplan {
 
 // summaryRun creates the preplan folder of a new root, calls setup with the
 // topic file path, then runs dashboardPreplanSummaries on summaryTestRow. It
-// returns the filled row, the warnings and the file path.
+// returns the filled row, the warnings and the file path. It fails the test
+// when the row does not stay.
 func summaryRun(t *testing.T, setup func(t *testing.T, file string)) (row DashboardPreplan, warnings []string, file string) {
 	t.Helper()
 	root := t.TempDir()
@@ -660,8 +661,10 @@ func summaryRun(t *testing.T, setup func(t *testing.T, file string)) (row Dashbo
 	}
 	file = filepath.Join(preplanDir(root), summaryTestSlug+".md")
 	setup(t, file)
-	list := []DashboardPreplan{summaryTestRow()}
-	warnings = dashboardPreplanSummaries(root, list)
+	list, warnings := dashboardPreplanSummaries(root, []DashboardPreplan{summaryTestRow()})
+	if len(list) != 1 {
+		t.Fatalf("dashboardPreplanSummaries kept %d rows, want 1 (warnings %q)", len(list), warnings)
+	}
 	return list[0], warnings, file
 }
 
@@ -678,7 +681,7 @@ func summaryWarning(cause string) string {
 // summaryNotRegularWarning is the warning of a link, a folder, a pipe or a
 // device at the topic file path.
 func summaryNotRegularWarning(*testing.T, string) string {
-	return summaryWarning("not a regular file.")
+	return summaryWarning("not a regular file")
 }
 
 // summaryNoWarning is the warning func of a case that gives no warning.
@@ -707,20 +710,6 @@ func summaryFolder(t *testing.T, file string) {
 	}
 }
 
-// summaryGone is a setup that leaves the topic file path empty: the file
-// went away after the head read.
-func summaryGone(*testing.T, string) {}
-
-// summaryGoneWarning is the warning of a topic file that went away: the
-// os.Lstat error.
-func summaryGoneWarning(t *testing.T, file string) string {
-	_, err := os.Lstat(file)
-	if err == nil {
-		t.Fatalf("Lstat %s found a file, want none", file)
-	}
-	return summaryWarning(err.Error())
-}
-
 // summaryOverLimit is a setup that writes a valid topic file of
 // dashboardPreplanSummaryMax + 1 bytes.
 func summaryOverLimit(t *testing.T, file string) {
@@ -729,12 +718,16 @@ func summaryOverLimit(t *testing.T, file string) {
 
 // summaryOverLimitWarning is the size warning of summaryOverLimit.
 func summaryOverLimitWarning(*testing.T, string) string {
-	return summaryWarning(fmt.Sprintf("the file is %d bytes, the limit is %d bytes.", dashboardPreplanSummaryMax+1, dashboardPreplanSummaryMax))
+	return summaryWarning(fmt.Sprintf("the file is %d bytes, the limit is %d bytes", dashboardPreplanSummaryMax+1, dashboardPreplanSummaryMax))
 }
 
 // summaryUnreadContract is the literal list of the unread names, in the
 // order that a row gives them. The dashboard page reads these strings, so the
-// tests pin the text here and not through the production constants.
+// tests pin the text here and not through the production constants. The
+// JavaScript side has its own check: the "preplan unread names" tests of
+// internal/dashboard/web/testdata/view.test.cjs read the
+// dashboardPreplanUnread* constants of dashboard_preplans.go and compare them
+// with the keys of PREPLAN_UNREAD_LABELS in view.js.
 var summaryUnreadContract = []string{"goal", "proposals", "smallestCut", "lastCheck", "openQuestions", "gaps"}
 
 // summaryAllUnread checks the row of a topic file that was not read: all six
@@ -746,6 +739,15 @@ func summaryAllUnread(t *testing.T, row DashboardPreplan) {
 	want.Gaps, want.SmallestCut, want.Unread = []string{}, dashboardPreplanCutNotSet, summaryUnreadContract
 	if !reflect.DeepEqual(row, want) {
 		t.Errorf("row = %+v, want %+v", row, want)
+	}
+}
+
+// summaryNoCheckTime checks that the row shows no check time, while the
+// other sections of the file stay read.
+func summaryNoCheckTime(t *testing.T, row DashboardPreplan) {
+	t.Helper()
+	if row.LastCheckAt != "" || row.Live != 3 || row.OpenQuestions != 2 {
+		t.Errorf("lastCheckAt %q, live %d, openQuestions %d, want \"\", 3 and 2", row.LastCheckAt, row.Live, row.OpenQuestions)
 	}
 }
 
@@ -805,12 +807,13 @@ type summaryCase struct {
 
 // summaryConditionCases holds one case for each file state and section state
 // that changes the unread names or the warning: a file over, and exactly at,
-// dashboardPreplanSummaryMax bytes; a link, a folder, a pipe, a device; a file
-// that went away; a failed Lstat or read; each section that breaks its rule;
-// an absent check line or section; an open fence; a file with no final line
-// feed. The head read failure has its own test
-// (TestDashboardPreplanSummariesHeadReadFailsDropsRow), and so does the
-// window of the check line (TestDashboardPreplanSummariesCheckLineHeadWindow).
+// dashboardPreplanSummaryMax bytes; a link, a folder, a pipe, a device; a
+// failed Lstat or read; each section that breaks its rule; an absent check
+// line, a check line with a bad time, a legacy check section; an open fence;
+// a file with no final line feed. The head read failure has its own test
+// (TestDashboardPreplanSummariesHeadReadFailsDropsRow), and so do the window
+// of the check line (TestDashboardPreplanSummariesCheckLineHeadWindow) and a
+// file that went away (TestDashboardPreplanSummariesGoneFileDropsRow).
 var summaryConditionCases = []summaryCase{
 	{"file over the limit", summaryOverLimit, summaryUnreadContract, summaryOverLimitWarning, summaryAllUnread},
 	{"file of exactly the limit", func(t *testing.T, file string) {
@@ -825,7 +828,6 @@ var summaryConditionCases = []summaryCase{
 	{"folder", summaryFolder, summaryUnreadContract, summaryNotRegularWarning, summaryAllUnread},
 	{"pipe", summaryLstatMode(fs.ModeNamedPipe | 0o644), summaryUnreadContract, summaryNotRegularWarning, summaryAllUnread},
 	{"device", summaryLstatMode(fs.ModeDevice | 0o644), summaryUnreadContract, summaryNotRegularWarning, summaryAllUnread},
-	{"file went away", summaryGone, summaryUnreadContract, summaryGoneWarning, summaryAllUnread},
 	{"Lstat error", summaryLstatError, summaryUnreadContract, summaryInjectedWarning, summaryAllUnread},
 	{"full read I/O error", summaryReadError, summaryUnreadContract, summaryInjectedWarning, summaryAllUnread},
 	{"Goal breaks P2", summaryWrite(summaryTopic(map[string]string{preplanGoalSection: "# A heading\nText.\n"})),
@@ -877,8 +879,19 @@ var summaryConditionCases = []summaryCase{
 				t.Errorf("live %d, smallestCut %q, want 0 and %q", row.Live, row.SmallestCut, dashboardPreplanCutNotSet)
 			}
 		}},
+	// A topic file with no check line was never checked: lastCheck is not
+	// unread, and the row shows no time.
 	{"no check line", summaryWrite(strings.Replace(summaryTopic(nil), summaryTestCheckLine, "", 1)),
-		[]string{dashboardPreplanUnreadLastCheck}, summaryNoWarning, nil},
+		[]string{}, summaryNoWarning, summaryNoCheckTime},
+	{"check line with a time that does not parse",
+		summaryWrite(strings.Replace(summaryTopic(nil), "Last check: 2026-10-29T07:58:25Z.", "Last check: 2026-13-45T99:00:00Z.", 1)),
+		[]string{dashboardPreplanUnreadLastCheck}, summaryNoWarning, summaryNoCheckTime},
+	{"check line with no Last check text",
+		summaryWrite(strings.Replace(summaryTopic(nil), " Last check: 2026-10-29T07:58:25Z.", "", 1)),
+		[]string{dashboardPreplanUnreadLastCheck}, summaryNoWarning, summaryNoCheckTime},
+	{"legacy Guardrail check section and no check line",
+		summaryWrite(strings.Replace(summaryTopic(nil), summaryTestCheckLine, "", 1) + "\n## Guardrail check\n\n- 12 guardrails, all pass\n"),
+		[]string{dashboardPreplanUnreadLastCheck}, summaryNoWarning, summaryNoCheckTime},
 	{"legacy Guardrail check section", summaryWrite(summaryTopic(nil) + "\n## Guardrail check\n\n- 12 guardrails, all pass\n"),
 		[]string{dashboardPreplanUnreadLastCheck}, summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
 			if row.LastCheckAt != "" {
@@ -933,8 +946,10 @@ var summaryConditionCases = []summaryCase{
 				t.Errorf("openQuestions = %d, want 2: the last bullet is on the last line", row.OpenQuestions)
 			}
 		}},
+	// The file has no check line, so it was never checked: lastCheck is not
+	// unread.
 	{"Goal heading on the first line", summaryWrite("## Goal\n\n" + summaryTestGoal),
-		[]string{dashboardPreplanUnreadLastCheck}, summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
+		[]string{}, summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
 			if row.Goal != "Start the dashboard when the user logs in." {
 				t.Errorf("goal = %q, want the first sentence", row.Goal)
 			}
@@ -1064,20 +1079,23 @@ func summaryCheckLineAt(t *testing.T, start int) string {
 var summaryCheckLineLen = len(strings.TrimSuffix(summaryTestCheckLine, "\n"))
 
 // summaryCheckWindowCases place the check line at the edge of the
-// dashboardPreplanHeadMax head. at is the want of LastCheckAt ("" when
-// lastCheck is unread). found is whether preplan_check finds the same line
+// dashboardPreplanHeadMax head. at is the want of LastCheckAt. unread is
+// whether lastCheck is unread: a line that starts past the head counts as no
+// line (never checked, not unread), and a line that the head cuts has no
+// valid time (unread). found is whether preplan_check finds the same line
 // (setGuardrailCheckLine replaces it): it finds a line that starts in the
 // head, also a line that the head cuts.
 var summaryCheckWindowCases = []struct {
-	name  string
-	start int
-	at    string
-	found bool
+	name   string
+	start  int
+	at     string
+	unread bool
+	found  bool
 }{
-	{"line ends at the last byte of the head", dashboardPreplanHeadMax - summaryCheckLineLen, "2026-10-29T07:58:25Z", true},
-	{"line starts at the first byte after the head", dashboardPreplanHeadMax, "", false},
-	{"line starts just past the head", dashboardPreplanHeadMax + 1, "", false},
-	{"head cuts the line inside the time", dashboardPreplanHeadMax - summaryCheckLineLen + 2, "", true},
+	{"line ends at the last byte of the head", dashboardPreplanHeadMax - summaryCheckLineLen, "2026-10-29T07:58:25Z", false, true},
+	{"line starts at the first byte after the head", dashboardPreplanHeadMax, "", false, false},
+	{"line starts just past the head", dashboardPreplanHeadMax + 1, "", false, false},
+	{"head cuts the line inside the time", dashboardPreplanHeadMax - summaryCheckLineLen + 2, "", true, true},
 }
 
 // TestDashboardPreplanSummariesCheckLineHeadWindow checks that the summary
@@ -1093,8 +1111,8 @@ func TestDashboardPreplanSummariesCheckLineHeadWindow(t *testing.T) {
 			}
 			row, _, _ := summaryRun(t, summaryWrite(text))
 			unread := slices.Contains(row.Unread, dashboardPreplanUnreadLastCheck)
-			if row.LastCheckAt != c.at || unread != (c.at == "") {
-				t.Errorf("lastCheckAt %q, unread %q, want %q (unread %v)", row.LastCheckAt, row.Unread, c.at, c.at == "")
+			if row.LastCheckAt != c.at || unread != c.unread {
+				t.Errorf("lastCheckAt %q, unread %q, want %q (unread %v)", row.LastCheckAt, row.Unread, c.at, c.unread)
 			}
 			if _, prior, ok := setGuardrailCheckLine([]byte(text), "**Guardrail check:** new"); !ok || (prior != "") != c.found {
 				t.Errorf("preplan_check found the line = %v (ok %v), want %v", prior != "", ok, c.found)
@@ -1137,8 +1155,9 @@ func TestDashboardPreplanSummariesGoalPreview(t *testing.T) {
 
 // summaryParityCases holds one case for each file state that preplan_check
 // refuses or reads: a live link, a dangling link, a folder, a pipe, a
-// device, a file that went away, a file over dashboardPreplanSummaryMax and
-// under 8 MiB, a failed Lstat and a failed read. class is the error class of
+// device, a file over dashboardPreplanSummaryMax and under 8 MiB, a failed
+// Lstat and a failed read. A file that went away has its own test
+// (TestDashboardPreplanSummariesGoneFileDropsRow). class is the error class of
 // readPreplanTopic for preplan_check ("" when it succeeds). The seam cases
 // inject one error through preplanLstat or preplanReadFile, which both
 // readers call.
@@ -1151,7 +1170,6 @@ var summaryParityCases = []struct {
 	{summaryCase{"folder", summaryFolder, summaryUnreadContract, summaryNotRegularWarning, summaryAllUnread}, "domain"},
 	{summaryCase{"pipe", summaryLstatMode(fs.ModeNamedPipe | 0o644), summaryUnreadContract, summaryNotRegularWarning, summaryAllUnread}, "domain"},
 	{summaryCase{"device", summaryLstatMode(fs.ModeDevice | 0o644), summaryUnreadContract, summaryNotRegularWarning, summaryAllUnread}, "domain"},
-	{summaryCase{"file went away", summaryGone, summaryUnreadContract, summaryGoneWarning, summaryAllUnread}, "domain"},
 	{summaryCase{"over 256 KiB, under 8 MiB", summaryOverLimit, summaryUnreadContract, summaryOverLimitWarning, summaryAllUnread}, ""},
 	{summaryCase{"Lstat I/O error", summaryLstatError, summaryUnreadContract, summaryInjectedWarning, summaryAllUnread}, "infra"},
 	{summaryCase{"read I/O error", summaryReadError, summaryUnreadContract, summaryInjectedWarning, summaryAllUnread}, "infra"},
@@ -1173,6 +1191,30 @@ func TestDashboardPreplanSummariesFileStateParity(t *testing.T) {
 				t.Errorf("warnings = %q, want %q", warnings, want)
 			}
 		})
+	}
+}
+
+// TestDashboardPreplanSummariesGoneFileDropsRow checks that a topic file that
+// went away after the head read loses its row with no warning, as in the head
+// read of dashboardPreplans, while the next row stays and is read. A file
+// that went away is a DomainError for preplan_check.
+func TestDashboardPreplanSummariesGoneFileDropsRow(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(preplanDir(root), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(preplanDir(root), summaryTestSlug+".md"), summaryTopic(nil))
+	gone := DashboardPreplan{Slug: "gone", Path: path.Join(paths.DataDir, paths.PreplanSubdir, "gone.md")}
+	list, warnings := dashboardPreplanSummaries(root, []DashboardPreplan{gone, summaryTestRow()})
+	if len(warnings) != 0 {
+		t.Errorf("warnings = %q, want none for a file that went away", warnings)
+	}
+	if len(list) != 1 || list[0].Slug != summaryTestSlug || list[0].Live != 3 || len(list[0].Unread) != 0 {
+		t.Fatalf("rows = %+v, want only the read row of %s", list, summaryTestSlug)
+	}
+	_, err := readPreplanTopic(preplanCheckAction, filepath.Join(preplanDir(root), "gone.md"))
+	if got := errorClassOf(err); got != "domain" {
+		t.Errorf("preplan_check read of the gone file: class %q (err %v), want domain", got, err)
 	}
 }
 

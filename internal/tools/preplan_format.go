@@ -17,14 +17,10 @@ import (
 // preplanWriteContentMax is the largest section body preplan_write accepts.
 const preplanWriteContentMax = 64 << 10
 
-// The section names that the checker knows beside preplanSections, and the
-// marker text of a Decisions row. The names of the skeleton sections come
-// from plan_support.go (preplanSections, preplanNonGoalsSection,
-// preplanFlowsSection, preplanDecisionsSection).
+// The marker texts of a Decisions row and the fixed bodies of Non-goals and
+// Flows. The section names come from plan_support.go (preplanGoalSection and
+// the names next to it).
 const (
-	preplanOpenQuestionsSection  = "Open questions"
-	preplanGuardrailCheckSection = "Guardrail check"
-
 	preplanDroppedPrefix = "Dropped:"           // starts the Decision cell of a dropped row
 	preplanMovedPrefix   = "Moved:"             // starts the Decision cell of a moved row
 	preplanKeptNote      = "Kept with warning:" // inside the Reason cell of a kept row
@@ -56,8 +52,12 @@ var preplanDecisionsHeaderLines = strings.Split(strings.TrimSuffix(preplanDecisi
 // or "Smallest cut: #1, #3.". It does not check that the ids are live.
 var preplanSmallestCutRe = regexp.MustCompile(`^Smallest cut: (all|#[0-9]+(?:, #[0-9]+)*)\.$`)
 
+// preplanLastCheckLabel comes before the time in a Guardrail check line.
+// preplanCheckLine writes it and preplanLastCheckRe reads it.
+const preplanLastCheckLabel = "Last check: "
+
 // preplanLastCheckRe finds the time in the text of a Guardrail check line.
-var preplanLastCheckRe = regexp.MustCompile(`Last check: (\d{4}-\d{2}-\d{2}T\S+?)\.(?:\s|$)`)
+var preplanLastCheckRe = regexp.MustCompile(regexp.QuoteMeta(preplanLastCheckLabel) + `(\d{4}-\d{2}-\d{2}T\S+?)\.(?:\s|$)`)
 
 // preplanFormatError names the broken rule. Its Error() text is
 // `Section "<section>" breaks rule <rule>: <detail>`. The rule helpers return
@@ -73,6 +73,44 @@ func (e *preplanFormatError) Error() string {
 // Its detail is Sprintf(format, args...).
 func preplanRuleError(rule, format string, args ...any) *preplanFormatError {
 	return &preplanFormatError{Rule: rule, Detail: fmt.Sprintf(format, args...)}
+}
+
+// preplanRuleSuggestion returns the Suggestion of a preplan_write call whose
+// content breaks rule: the form that the rule accepts. A second call with a
+// body of that form passes the rule. P11 accepts only an empty string. An
+// unknown rule gives a general text.
+func preplanRuleSuggestion(rule string) string {
+	switch rule {
+	case "P1":
+		return fmt.Sprintf("Shorten the body to at most %d bytes%s", preplanWriteContentMax, preplanWriteAgain)
+	case "P2":
+		return "Remove each line that starts with " + strconv.Quote(preplanTitlePrefix) + " or " + strconv.Quote(preplanHeadingPrefix) +
+			" outside a code fence: a section body holds no heading" + preplanWriteAgain
+	case "P3":
+		return "Close each code fence with a line that holds the same fence characters" + preplanWriteAgain
+	case "P4":
+		return fmt.Sprintf("Start the body with the two lines %q and %q, or send an empty string%s",
+			preplanDecisionsHeaderLines[0], preplanDecisionsHeaderLines[1], preplanWriteAgain)
+	case "P5":
+		return "Give each row 3 cells. The # cell is a positive whole number, for example 4, and no two rows have the same one" + preplanWriteAgain
+	case "P6":
+		return fmt.Sprintf("Put at most one %q note in a Reason cell, and a %q note in the Reason cell of each row that starts with %q%s",
+			preplanKeptNote, preplanDroppedByNote, preplanDroppedPrefix, preplanWriteAgain)
+	case "P7":
+		return "Under the table, write only blank lines and at most one line \"Smallest cut: all.\" or \"Smallest cut: #1, #3.\", " +
+			"with ids of live rows in ascending order" + preplanWriteAgain
+	case "P8":
+		return fmt.Sprintf("Send the body %q, or start each line that is not blank with \"- \"%s", preplanNoneStated, preplanWriteAgain)
+	case "P9":
+		return "Start each line that is not blank with \"- \"" + preplanWriteAgain
+	case "P10":
+		return fmt.Sprintf("Send the body %q, or a body with a mermaid fence. A classDef line is one of: %s%s",
+			preplanNoFlowChange, strings.Join(preplanAllowedClassDefs, "; "), preplanWriteAgain)
+	case "P11":
+		return "Call preplan_write again with section " + preplanGuardrailCheckSection +
+			" and content as an empty string: it deletes the section. No other body is valid."
+	}
+	return "Fix the content" + preplanWriteAgain
 }
 
 // preplanCheckSection checks the new body of one section against the rules
@@ -129,7 +167,7 @@ func preplanBlank(lines []string) bool {
 func preplanCheckFences(lines []string) *preplanFormatError {
 	open, openLine := "", 0
 	for i, line := range lines {
-		if open == "" && (strings.HasPrefix(line, "# ") || strings.HasPrefix(line, preplanHeadingPrefix)) {
+		if open == "" && (strings.HasPrefix(line, preplanTitlePrefix) || strings.HasPrefix(line, preplanHeadingPrefix)) {
 			return preplanRuleError("P2", "line %d starts a heading", i+1)
 		}
 		next := preplanFenceStep(open, line)
@@ -171,12 +209,9 @@ func preplanRowLive(decision string) bool {
 // preplanSplitRow splits one table row into trimmed cells. The outer pipes are
 // optional, and "\|" is text, not a cell border.
 //
-// It does not call splitTableRow (validators.go) because the rule differs:
-// splitTableRow splits on every "|" and so cuts a cell that holds "\|". The
-// Decision and Reason cells hold such text. A grep of internal/ for
-// "func split.*(Row|Cell|Table)" finds splitTableRow and flagParitySplitCells
-// (a test helper of skillcheck). splitTableRow has one caller
-// (readCostTierTableRows).
+// It does not call splitTableRow (validators.go), which splits on every "|"
+// and so cuts a cell that holds "\|". The Decision and Reason cells hold such
+// text.
 func preplanSplitRow(line string) []string {
 	s := strings.TrimPrefix(strings.TrimSpace(line), "|")
 	if strings.HasSuffix(s, "|") && !strings.HasSuffix(s, `\|`) {
@@ -204,6 +239,13 @@ func preplanSplitRow(line string) []string {
 // separator lines. A row may start with spaces or tabs. after is the index of
 // the first line that is not a row. ok is false when the two header lines are
 // not there.
+//
+// It is strict on purpose: the two header lines must equal
+// preplanDecisionsHeaderLines, as rule P4 asks. preplanHasDecisionRow
+// (plan_support.go) is lenient on purpose: for the emptySections list of a
+// file that may be edited by hand, any "|" line below a header and a
+// separator counts as a row. The two can disagree on a damaged table; the
+// dashboard summary then marks the section unread.
 func preplanDecisionTable(lines []string) (rows [][]string, after int, ok bool) {
 	i := 0
 	for i < len(lines) && strings.TrimSpace(lines[i]) == "" {

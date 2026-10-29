@@ -42,7 +42,7 @@ var planMarkerDescriptions = map[string]string{
 
 // transcriptTailLimit bounds how much of the transcript file's tail is
 // scanned for the "Plan mode is active" marker (source: 64 KiB).
-const transcriptTailLimit = 64 * 1024
+const transcriptTailLimit = 64 << 10
 
 // transcriptPreplanScanMax bounds the preplan scan of a transcript.
 var transcriptPreplanScanMax int64 = 64 << 20
@@ -235,7 +235,7 @@ func planIntegrityFromTranscript(event Event, branch string) Output {
 	return silent
 }
 
-// transcriptHasPreplan streams the first max bytes of path and reports a
+// transcriptHasPreplan streams the first limit bytes of path and reports a
 // marker match. It keeps the last len(longest marker)-1 bytes of each
 // buffer, so a marker split across two buffers matches. An open or read
 // error returns false: the warning then shows when the tail of the transcript
@@ -243,7 +243,7 @@ func planIntegrityFromTranscript(event Event, branch string) Output {
 // here: the hook is silent. The result is a bool, not an
 // error: the Stop hook is advisory and exits 0 on every path, and a scan that
 // fails must give the same result as a scan that finds no marker.
-func transcriptHasPreplan(path string, max int64) bool {
+func transcriptHasPreplan(path string, limit int64) bool {
 	f, err := os.Open(path)
 	if err != nil {
 		return false
@@ -254,7 +254,7 @@ func transcriptHasPreplan(path string, max int64) bool {
 	bufSize := transcriptScanBufSize
 	buf := make([]byte, keep+bufSize)
 	carry := 0
-	r := io.LimitReader(f, max)
+	r := io.LimitReader(f, limit)
 	for {
 		n, readErr := r.Read(buf[carry : carry+bufSize])
 		window := buf[:carry+n]

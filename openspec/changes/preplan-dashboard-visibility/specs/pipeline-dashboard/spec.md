@@ -33,7 +33,19 @@ The snapshot SHALL give each `preplans` row `goal`, `live`, `kept`, `dropped`, `
 #### Scenario: File over the summary limit
 - **WHEN** a topic file is 262145 bytes
 - **THEN** `unread` holds `goal`, `proposals`, `lastCheck`, `openQuestions`, `gaps` and `smallestCut`
-- **AND** `warnings` holds `Preplan <slug> summary not read: the file is 262145 bytes, the limit is 262144 bytes.`
+- **AND** `warnings` holds `Preplan <slug> summary not read: the file is 262145 bytes, the limit is 262144 bytes`
+
+#### Scenario: Never checked
+- **WHEN** a topic file has no `**Guardrail check:**` line in its first 4 KiB and no legacy `## Guardrail check` section
+- **THEN** `lastCheckAt` is `""` and `unread` does not hold `lastCheck`
+
+#### Scenario: Check line with a bad time
+- **WHEN** the `**Guardrail check:**` line has no valid `Last check:` time
+- **THEN** `unread` holds `lastCheck`
+
+#### Scenario: File gone during the snapshot
+- **WHEN** a topic file goes away after its head read
+- **THEN** the snapshot has no row for it and no warning for it
 
 #### Scenario: Broken Decisions table
 - **WHEN** the `## Decisions` body breaks a table rule
@@ -48,7 +60,11 @@ The snapshot SHALL give each `preplans` row `goal`, `live`, `kept`, `dropped`, `
 - **THEN** the row encodes `gaps` and `unread` as `[]`, never `null`
 
 ### Requirement: Activity Preplans box rows
-The Preplans box SHALL show one read-only row for each `preplans` row of the repos in scope with topic, status, date, repo name, goal, proposal counts, check date, open question count, gaps and cut state. A field named in `unread` SHALL show `unreadable`, never `0` or an empty cell.
+The Preplans box SHALL show one read-only row for each `preplans` row of the repos in scope with topic, status, date, repo name, goal, proposal counts, check date, open question count, gaps and cut state. A field named in `unread` SHALL show its `<part> unreadable` label, never `0` or an empty cell. A row with an empty `lastCheckAt` and no `lastCheck` in `unread` SHALL show `not checked`.
+
+#### Scenario: Never checked row
+- **WHEN** a row has `lastCheckAt` `""` and `unread` `[]`
+- **THEN** the row shows `not checked` in place of the check date
 
 #### Scenario: Unread proposals
 - **WHEN** a row has `unread` `["proposals"]`

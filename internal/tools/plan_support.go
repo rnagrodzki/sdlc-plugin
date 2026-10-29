@@ -39,10 +39,11 @@ const (
 	planStatusIssuesFound = "Issues Found"
 )
 
-// PlanSupportIn carries the merged input for the plan_support tool's 12
-// actions. Each field is consumed by one or more actions (noted in comments).
+// PlanSupportIn carries the merged input for the actions of the plan_support
+// tool (planSupportActions). Each field is consumed by one or more actions
+// (noted in comments).
 type PlanSupportIn struct {
-	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=openspec_instructions,enum=openspec_stage,enum=evidence_record,enum=evidence_digest,enum=evidence_get,enum=preplan_context,enum=preplan_check,enum=preplan_write" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"openspec_instructions\", \"openspec_stage\", \"evidence_record\", \"evidence_digest\", \"evidence_get\", \"preplan_context\", \"preplan_check\", or \"preplan_write\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored."`
+	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=openspec_instructions,enum=openspec_stage,enum=evidence_record,enum=evidence_digest,enum=evidence_get,enum=preplan_context,enum=preplan_check,enum=preplan_write" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"openspec_instructions\", \"openspec_stage\", \"evidence_record\", \"evidence_digest\", \"evidence_get\", \"preplan_context\", \"preplan_check\", or \"preplan_write\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError."`
 
 	// merge_results
 	LaneResults   []LaneResult `json:"laneResults,omitempty" jsonschema_description:"merge_results only: outcomes from each review lane to merge. At least one of laneResults or lensResults is required."`
@@ -87,9 +88,9 @@ type PlanSupportIn struct {
 
 	// preplan_write. Another action that gets one of these fields returns
 	// DomainError (preplanWriteFieldError).
-	Section     string `json:"section,omitempty" jsonschema:"enum=Goal,enum=Problem and benefit,enum=Users and effect,enum=Risk if wrong,enum=Non-goals,enum=Flows,enum=Decisions,enum=Open questions,enum=Guardrail check" jsonschema_description:"preplan_write only. One of: Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions, Open questions, Guardrail check. Omit it to write only the status. Example: Decisions"`
-	Content     string `json:"content,omitempty" jsonschema_description:"preplan_write only. The full new body of section, at most 65536 bytes; a larger body is rejected by rule P1; the body is stored without its final line ends and with the line ends of the file. Empty clears the body, and deletes the Open questions or Guardrail check section. Not allowed without section. Example: | # | Decision | Reason |"`
-	TopicStatus string `json:"topicStatus,omitempty" jsonschema:"enum=in progress,enum=ready for plan,enum=paused" jsonschema_description:"preplan_write only. The new Status line value: in progress, ready for plan or paused. Example: ready for plan"`
+	Section     string  `json:"section,omitempty" jsonschema:"enum=Goal,enum=Problem and benefit,enum=Users and effect,enum=Risk if wrong,enum=Non-goals,enum=Flows,enum=Decisions,enum=Open questions,enum=Guardrail check" jsonschema_description:"preplan_write only. One of: Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions, Open questions, Guardrail check. Omit it to write only the status. Example: Decisions"`
+	Content     *string `json:"content,omitempty" jsonschema_description:"preplan_write only. Required with section, not allowed without section. The full new body of section, at most 65536 bytes; a larger body is rejected by rule P1; the body is stored without its final line ends and with the line ends of the file. An empty string clears the body, and deletes the Open questions or Guardrail check section. Outside a code fence no line starts with # or ## (P2), and each code fence closes (P3). Decisions is blank, or the two lines | # | Decision | Reason | and |---|---|---|, then rows of 3 cells, then at most one Smallest cut: line (P4-P7). Non-goals is None stated. or - bullets (P8). Open questions is - bullets (P9). Flows is No flow change. or a mermaid fence (P10). Guardrail check takes only an empty string (P11). Example: Ship the login page first."`
+	TopicStatus string  `json:"topicStatus,omitempty" jsonschema:"enum=in progress,enum=ready for plan,enum=paused" jsonschema_description:"preplan_write only. The new Status line value: in progress, ready for plan or paused. Example: ready for plan"`
 }
 
 // EvidenceItem is one evidence entry of a writer, stored in
@@ -202,7 +203,7 @@ type PlanSupportOut struct {
 	// preplan_context (Guardrails above is also set by this action).
 	// PreplanCreated is a pointer so false still renders for preplan_context
 	// while every other action omits it.
-	PreplanFile    string `json:"preplanFile,omitempty"`    // absolute <mainRoot>/.sdlc-v2/preplan/<slug>.md or YYYY-MM-DD-<slug>.md
+	PreplanFile    string `json:"preplanFile,omitempty" jsonschema_description:"preplan_context, preplan_check and preplan_write: absolute path of the topic file, <main worktree>/.sdlc-v2/preplan/<slug>.md or YYYY-MM-DD-<slug>.md. Absent on other actions."`
 	PreplanCreated *bool  `json:"preplanCreated,omitempty"` // true only when this call created the file
 	// AddedSections is a pointer so an empty list still renders (none) for
 	// preplan_context while every other action omits it.
@@ -217,9 +218,9 @@ type PlanSupportOut struct {
 	// preplan_write (PreplanFile above is also set by this action). Each is a
 	// pointer so an empty list or 0 still renders for preplan_write while
 	// every other action omits it.
-	Written         *[]string `json:"written,omitempty" jsonschema_description:"preplan_write only: the parts that this call wrote, the section name and/or Status. (none) on a no-op. Absent on other actions. Example: [Decisions, Status]"`                                                                                       // preplan_write only: parts written, the section name and/or "Status". Empty on a no-op
-	ReadyTopicFiles *[]string `json:"readyTopicFiles,omitempty" jsonschema_description:"preplan_write only, with topicStatus ready for plan: absolute paths of this topic file first, then up to 3 other ready topic files, newest first. Never empty. Absent otherwise. Example: [/repo/.sdlc-v2/preplan/2026-10-29-auth-flow.md]"` // only with topicStatus "ready for plan": this file first, then up to 3 other ready files, newest first. Never empty
-	ReadyLeftOut    *int      `json:"readyLeftOut,omitempty" jsonschema_description:"preplan_write only, with topicStatus ready for plan: the count of other ready topic files that are not in readyTopicFiles. 0 still renders. Absent otherwise. Example: 0"`                                                                      // only with topicStatus "ready for plan": ready files not in the list
+	Written         *[]string `json:"written,omitempty" jsonschema_description:"preplan_write only: the parts that this call wrote, the section name and/or Status. (none) on a no-op. Absent on other actions. Example: [Decisions, Status]"`
+	ReadyTopicFiles *[]string `json:"readyTopicFiles,omitempty" jsonschema_description:"preplan_write only, with topicStatus ready for plan: absolute paths of this topic file first, then up to 3 other ready topic files, newest first. Never empty. Absent otherwise. Example: [/repo/.sdlc-v2/preplan/2026-10-29-auth-flow.md]"`
+	ReadyLeftOut    *int      `json:"readyLeftOut,omitempty" jsonschema_description:"preplan_write only, with topicStatus ready for plan: the count of other ready topic files that are not in readyTopicFiles. 0 still renders. Absent otherwise. Example: 0"`
 }
 
 // LaneResult represents the outcome of a single review lane.
@@ -315,7 +316,7 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_support",
 		`INTERNAL — called by sdlc skills only. Plan support utilities.
 
-Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
+Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError):
 
 - merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch. Lane status must be pass or fail, and every issue severity must be blocking or advisory; any other value fails with a DomainError and nothing is merged. Every issue in allIssues carries an "id" field: "f-" plus the first 8 hex chars of sha256(gateId|lower(trim(summary))). The same gate and summary always give the same id. An "id" in the input is ignored.
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
@@ -421,10 +422,22 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 	case preplanWriteAction:
 		return planPreplanWrite(mainRoot, in)
 	default:
+		last := len(planSupportActions) - 1
 		return PlanSupportOut{}, unknownActionError("action", in.Action,
-			" — valid actions: merge_results, material_snapshot, material_compare, openspec_appendix, openspec_instructions, openspec_stage, evidence_record, evidence_digest, evidence_get, preplan_context, preplan_check, preplan_write",
-			"call plan_support again with action set to exactly one of merge_results, material_snapshot, material_compare, openspec_appendix, openspec_instructions, openspec_stage, evidence_record, evidence_digest, evidence_get, preplan_context, preplan_check or preplan_write")
+			" — valid actions: "+strings.Join(planSupportActions, ", "),
+			"call plan_support again with action set to exactly one of "+
+				strings.Join(planSupportActions[:last], ", ")+" or "+planSupportActions[last])
 	}
+}
+
+// planSupportActions lists the actions of plan_support in the order of the
+// action enum tag of PlanSupportIn. The unknown-action error names them, and
+// TestPlanSupportActionList pins the enum and description tags to it.
+var planSupportActions = []string{
+	"merge_results", "material_snapshot", "material_compare",
+	"openspec_appendix", "openspec_instructions", "openspec_stage",
+	"evidence_record", "evidence_digest", "evidence_get",
+	preplanContextAction, preplanCheckAction, preplanWriteAction,
 }
 
 // ---------------------------------------------------------------------------
@@ -1372,20 +1385,25 @@ var preplanSections = []string{
 	preplanNonGoalsSection, preplanFlowsSection, preplanDecisionsSection,
 }
 
-// The names of the skeleton sections that the format checker (preplan_format.go)
-// gives its own rules. preplanSections and the checker both read them, so each
-// name has one definition.
+// The section names that code reads by name: the skeleton sections that the
+// format checker (preplan_format.go) gives its own rules, and the two
+// sections that are not in the skeleton. preplanSections, preplanWriteSections
+// and the checker read them, so each name has one definition.
 const (
-	preplanGoalSection     = "Goal"
-	preplanNonGoalsSection = "Non-goals"
-	preplanFlowsSection    = "Flows"
+	preplanGoalSection      = "Goal"
+	preplanNonGoalsSection  = "Non-goals"
+	preplanFlowsSection     = "Flows"
+	preplanDecisionsSection = "Decisions" // its body starts with the table header
+
+	preplanOpenQuestionsSection  = "Open questions"
+	preplanGuardrailCheckSection = "Guardrail check"
 )
+
+// preplanTitlePrefix starts the title line of a topic file.
+const preplanTitlePrefix = "# "
 
 // preplanHeadingPrefix starts each section heading line of a topic file.
 const preplanHeadingPrefix = "## "
-
-// preplanDecisionsSection is the section whose body starts with the table header.
-const preplanDecisionsSection = "Decisions"
 
 // preplanDecisionsHeader is the table header of ## Decisions, with LF line ends.
 const preplanDecisionsHeader = "| # | Decision | Reason |\n|---|---|---|\n"
@@ -1538,7 +1556,7 @@ func preplanFenceRun(line string) string {
 // code. The inserted text uses the first line end of data (CRLF or LF, LF
 // when data has none).
 func addPreplanHeadings(data []byte) (next []byte, added []string, closed string) {
-	eol := preplanEOL(data, preplanLineEnd(data, 0))
+	eol := preplanFileEOL(data)
 	next = data
 	for idx, name := range preplanSections {
 		spans, openFence := preplanSectionSpans(next)
@@ -1580,6 +1598,13 @@ func addPreplanHeadings(data []byte) (next []byte, added []string, closed string
 	return next, added, closed
 }
 
+// preplanFileEOL returns the line end that text added to the topic file data
+// uses: the line end of the first line of data, CRLF or LF (LF when data has
+// no line end).
+func preplanFileEOL(data []byte) string {
+	return preplanEOL(data, preplanLineEnd(data, 0))
+}
+
 // preplanFindSpan returns the index of the first span named name, or -1.
 func preplanFindSpan(spans []preplanSpan, name string) int {
 	for i, s := range spans {
@@ -1604,6 +1629,13 @@ func preplanFindSpan(spans []preplanSpan, name string) int {
 func preplanEmptySections(data []byte) (empty []string, openFence string) {
 	var spans []preplanSpan
 	spans, openFence = preplanSectionSpans(data)
+	return preplanEmptySectionsOf(data, spans), openFence
+}
+
+// preplanEmptySectionsOf is preplanEmptySections for a caller that already
+// holds spans, the preplanSectionSpans of data. It returns the same non-nil
+// list and scans data no second time.
+func preplanEmptySectionsOf(data []byte, spans []preplanSpan) (empty []string) {
 	empty = []string{}
 	for _, name := range preplanSections {
 		i := preplanFindSpan(spans, name)
@@ -1617,7 +1649,7 @@ func preplanEmptySections(data []byte) (empty []string, openFence string) {
 			empty = append(empty, preplanHeadingPrefix+name)
 		}
 	}
-	return empty, openFence
+	return empty
 }
 
 // preplanHasDecisionRow reports whether body, the body of ## Decisions, holds
@@ -1773,7 +1805,7 @@ func preplanMatches(action, dir string, topic preplanTopic) ([]string, error) {
 // preplanSkeleton returns the text of a new topic file: the heading, the
 // status line, the Started line (UTC, RFC 3339) and the empty sections.
 func preplanSkeleton(topic string, started time.Time) string {
-	return "# Preplan: " + topic + "\n\n**Status:** " + preplanStatusInProgress +
+	return preplanTitlePrefix + "Preplan: " + topic + "\n\n**Status:** " + preplanStatusInProgress +
 		"\n\n**Started:** " + started.UTC().Format(time.RFC3339) + "\n" + preplanSkeletonTail
 }
 
@@ -2127,14 +2159,15 @@ func preplanReadTopicFile(action, mainRoot, topic string) (preplanFoundTopic, er
 // preplanNoTopicFile returns the error of a topic with no file in dir. A
 // dangling link at dir or at a folder above it gives an InfraError that names
 // the link and its missing target, with the Suggestion of preplan_context for
-// a folder link. Any other case gives a DomainError with
-// preplanNoFileSuggestion.
+// a folder link, and the *fsx.DanglingLinkError as its Cause. Any other case
+// gives a DomainError with preplanNoFileSuggestion.
 func preplanNoTopicFile(action, topic, dir string) error {
 	if link, target, ok := fsx.FindDanglingLink(dir); ok {
 		dl := &fsx.DanglingLinkError{Link: link, Target: target}
 		return &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("%s: list %s: %s", action, dir, dl.Problem()),
 			Suggestion: dl.Recovery(),
+			Cause:      dl,
 		}
 	}
 	return &mcpserver.DomainError{
@@ -2145,11 +2178,21 @@ func preplanNoTopicFile(action, topic, dir string) error {
 
 // preplanWriteFailure returns the InfraError of a failed write of the topic
 // file in dir. The os error names the operation and the path, so the message
-// adds only the action.
+// adds only the action. The Suggestion fits the error: fs.ErrNotExist (the
+// file went away after the read) gives the Suggestion of a missing topic
+// file (preplanNoFileSuggestionFor), fs.ErrPermission points at the write
+// permission on dir, and any other error also names the free disk space.
 func preplanWriteFailure(action, dir string, err error) error {
+	suggestion := "Check write permission on " + dir + " and free disk space" + preplanRetry(action)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		suggestion = preplanNoFileSuggestionFor(action)
+	case errors.Is(err, fs.ErrPermission):
+		suggestion = "Give your user write permission on " + dir + preplanRetry(action)
+	}
 	return &mcpserver.InfraError{
 		Msg:        fmt.Sprintf("%s: %v", action, err),
-		Suggestion: "Check write permission on " + dir + " and free disk space" + preplanRetry(action),
+		Suggestion: suggestion,
 		Cause:      err,
 	}
 }
@@ -2351,9 +2394,9 @@ func preplanNotRegularError(action, file string, mode fs.FileMode) error {
 // the given guardrail count and proposal counts. A guardrail warning adds
 // " Guardrails unavailable: <warning>." at the end.
 func preplanCheckLine(guardrails, pass, kept, dropped int, warning string) string {
-	line := fmt.Sprintf("%s %d guardrails, %d proposals: %d pass, %d kept, %d dropped. Last check: %s.",
+	line := fmt.Sprintf("%s %d guardrails, %d proposals: %d pass, %d kept, %d dropped. %s%s.",
 		preplanGuardrailCheckPrefix, guardrails, pass+kept+dropped, pass, kept, dropped,
-		preplanNow().UTC().Format(time.RFC3339))
+		preplanLastCheckLabel, preplanNow().UTC().Format(time.RFC3339))
 	if warning != "" {
 		line += " Guardrails unavailable: " + preplanWarningText(warning) + "."
 	}

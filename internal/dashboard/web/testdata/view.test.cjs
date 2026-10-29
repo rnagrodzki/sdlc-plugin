@@ -4126,6 +4126,16 @@ describe('preplanSummaryLine', () => {
     // The fields that are read keep their text.
     assert.ok(meta.includes('0 open questions'));
     assert.ok(meta.includes('gaps: none'));
+    // An unread check is not a topic that was never checked.
+    assert.ok(!meta.includes('not checked'));
+  });
+
+  test('preplanSummaryLine: never checked', () => {
+    // No check time and lastCheck not unread: the topic file has no check line yet.
+    const meta = summaryLine('user-config-autostart', { lastCheckAt: '', unread: [] }).meta;
+    assert.ok(meta.includes('live 3 · kept 1 · dropped 1 · not checked · '), meta);
+    assert.ok(!meta.includes('· checked '), meta);
+    assert.ok(!meta.includes('unreadable'), meta);
   });
 
   test('preplanSummaryLine: goal unread', () => {

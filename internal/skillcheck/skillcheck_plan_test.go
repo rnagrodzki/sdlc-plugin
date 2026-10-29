@@ -541,9 +541,10 @@ func TestPlanSkillsReferenceFilesAreUnmodified(t *testing.T) {
 // fails in one place. The text has no backticks; the row wraps it in them.
 const planSkillsTopicStopSpec = "--spec cannot be used with several topic files. Run /sdlc:plan --spec <name>, or /sdlc:plan with topic files only."
 
-// planSkillsTopicStopNotTopic is the sentence that the Several topic files
-// bullet of plan SKILL.md prints for a path that is not a preplan topic file.
-// It is the second closed-set text of the several-paths stops.
+// planSkillsTopicStopNotTopic is the sentence that the [spec-file-path...] row
+// of plan SKILL.md prints for a path that is not a preplan topic file. It is
+// the second closed-set text of the several-paths stops. The text has no
+// backticks; the row wraps it in them.
 const planSkillsTopicStopNotTopic = "<path> is not a preplan topic file. Run /sdlc:plan with topic files only, or with one requirements file."
 
 // planSkillsTopicBlockNames lists the names that the Preplan topic file block
@@ -586,8 +587,8 @@ var planSkillsTopicBulletWants = map[string][]string{
 		"the smallest cut is all live proposals",
 	},
 	"Several topic files: read each file with the rules above, in argument order.": {
-		"Each path must be a preplan topic file by the rule above. Otherwise stop and print: " + planSkillsTopicStopNotTopic,
-		"run `rm -rf \"<explorePack.outDir>\"` when `explorePack.outDir` is not null",
+		"Step 0 **Flag parsing** already checked that each path is a preplan topic file by the rule above.",
+		"Each of them follows the template condition and the fallback of its single-file rule above",
 		"When two files have decisions that contradict each other, ask one Structured discovery question for each conflict.",
 		"Under --auto, take the decision of the earlier file and add one ## Deviations & assumptions row with asked=no.",
 	},
@@ -623,9 +624,10 @@ func planSkillsTopicBullet(block, start string) (string, bool) {
 
 // planSkillsTopicStopProblems returns one message for each stop sentence of
 // the several-paths flow that content does not hold exactly once, and for a
-// --spec row that does not print planSkillsTopicStopSpec in backticks after
-// "stop and print: ". The sentence of planSkillsTopicStopNotTopic is checked
-// inside its bullet by planSkillsTopicBulletWants.
+// Flag parsing row that does not print its stop sentence in backticks after
+// "stop and print: ": the --spec row prints planSkillsTopicStopSpec and the
+// [spec-file-path...] row prints planSkillsTopicStopNotTopic. Both stops sit
+// in Flag parsing, so they run before plan_prepare makes a run.
 func planSkillsTopicStopProblems(content string) []string {
 	var problems []string
 	for _, sentence := range []string{planSkillsTopicStopSpec, planSkillsTopicStopNotTopic} {
@@ -633,10 +635,31 @@ func planSkillsTopicStopProblems(content string) []string {
 			problems = append(problems, fmt.Sprintf("the stop sentence %q occurs %d times, want 1", sentence, n))
 		}
 	}
-	if want := "stop and print: `" + planSkillsTopicStopSpec + "`"; !strings.Contains(content, want) {
-		problems = append(problems, fmt.Sprintf("the --spec row does not say %q", want))
+	rows := []struct{ start, sentence string }{
+		{"| `--spec` |", planSkillsTopicStopSpec},
+		{"| `[spec-file-path...]` |", planSkillsTopicStopNotTopic},
+	}
+	for _, r := range rows {
+		row, found := planSkillsFlagRow(content, r.start)
+		if !found {
+			problems = append(problems, fmt.Sprintf("no Flag parsing row starts with %q", r.start))
+			continue
+		}
+		if want := "stop and print: `" + r.sentence + "`"; !strings.Contains(row, want) {
+			problems = append(problems, fmt.Sprintf("the row %q does not say %q", r.start, want))
+		}
 	}
 	return problems
+}
+
+// planSkillsFlagRow returns the table line of content that starts with start.
+func planSkillsFlagRow(content, start string) (string, bool) {
+	for _, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, start) {
+			return line, true
+		}
+	}
+	return "", false
 }
 
 // TestPlanSkillPreplanTopicMap checks that the Preplan topic file block of
@@ -648,8 +671,9 @@ func planSkillsTopicStopProblems(content string) []string {
 // say that the Smallest cut: line is not a requirement. The routing claims
 // are checked inside the one bullet that makes them, so a token that also
 // occurs in another bullet cannot satisfy them. The Several topic files
-// bullet is pinned by its start, its check sentence and its conflict
-// sentences, and the --spec row by its stop sentence.
+// bullet is pinned by its start, its sentence about the Flag parsing check,
+// its template-condition sentence and its conflict sentences. The --spec row
+// and the [spec-file-path...] row are pinned by their stop sentences.
 // TestPlanSkillPreplanSectionParity (internal/tools) checks every name of the
 // section list against the block, so a new section that this test does not
 // name still fails there.

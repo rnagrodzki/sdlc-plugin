@@ -1804,8 +1804,10 @@
   }
 
   // The names that a preplan row holds in unread. Each one equals a constant
-  // dashboardPreplanUnread* in internal/tools/dashboard_preplans.go; a test
-  // reads that file and compares the two sets.
+  // dashboardPreplanUnread* in internal/tools/dashboard_preplans.go. The
+  // "preplan unread names" tests of internal/dashboard/web/testdata/view.test.cjs
+  // read those Go constants and compare them with the keys of
+  // PREPLAN_UNREAD_LABELS, which are the values of this table.
   var PREPLAN_UNREAD = {
     goal: 'goal',
     proposals: 'proposals',
@@ -1832,6 +1834,10 @@
 
   // The goal line of a row with an empty goal.
   var PREPLAN_NO_GOAL = 'No goal yet';
+
+  // The check part of a row whose topic file was never checked: lastCheckAt
+  // is '' and unread does not hold lastCheck.
+  var PREPLAN_NOT_CHECKED = 'not checked';
 
   /**
    * @param {*} value a field of a snapshot row
@@ -1932,7 +1938,7 @@
       .join(' · ');
     var meta = [
       part(PREPLAN_UNREAD.proposals, 'live ' + item.live + ' · kept ' + item.kept + ' · dropped ' + item.dropped),
-      part(PREPLAN_UNREAD.lastCheck, 'checked ' + dateLabel(item.lastCheckAt, tz)),
+      part(PREPLAN_UNREAD.lastCheck, item.lastCheckAt === '' ? PREPLAN_NOT_CHECKED : 'checked ' + dateLabel(item.lastCheckAt, tz)),
       part(PREPLAN_UNREAD.openQuestions, item.openQuestions + ' open questions'),
       part(PREPLAN_UNREAD.gaps, 'gaps: ' + (item.gaps.length > 0 ? item.gaps.join(', ') : 'none')),
       part(PREPLAN_UNREAD.smallestCut, 'cut ' + (item.smallestCut === PREPLAN_CUT_SET ? PREPLAN_CUT_SET : PREPLAN_CUT_NOT_SET)),

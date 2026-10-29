@@ -10,7 +10,7 @@ model: sonnet
 
 The sdlc dashboard is one local web page that shows every registered repo's
 pipeline state, session activity, issues, and preplan topic files (Preplans
-tab), without switching sessions or terminals. This skill starts it, reports on it, or stops it through the
+tab, and the Preplans box on the Activity tab), without switching sessions or terminals. This skill starts it, reports on it, or stops it through the
 `dashboard` MCP tool, in one step.
 
 The page can also change files. It has no undo for any change. When the user asks to recover from a wrong change, use this table:

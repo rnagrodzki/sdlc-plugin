@@ -135,7 +135,7 @@ func TestPlanSupportPreplanWriteIntegrationReady(t *testing.T) {
 func TestPlanSupportPreplanWriteIntegrationNoop(t *testing.T) {
 	root, file := preplanIntegrationRepo(t)
 	text, isError := preplanIntegrationCall(t, root, map[string]any{
-		"action": "preplan_write", "topic": "auth flow", "section": "Open questions",
+		"action": "preplan_write", "topic": "auth flow", "section": "Open questions", "content": "",
 	})
 	if isError {
 		t.Fatalf("preplan_write returned an error:\n%s", text)
@@ -156,7 +156,7 @@ func TestPlanSupportPreplanWriteIntegrationRefused(t *testing.T) {
 		t.Fatalf("preplan_write returned no error for a body that breaks P4:\n%s", text)
 	}
 	wantPreplanIntegrationFile(t, file, preplanIntegrationSeed)
-	wantPreplanIntegrationText(t, text, `Section "Decisions" breaks rule P4`, "Fix the content and call preplan_write again with the full section body.")
+	wantPreplanIntegrationText(t, text, `Section "Decisions" breaks rule P4`, `Start the body with the two lines "| # | Decision | Reason |" and "|---|---|---|", or send an empty string, then call preplan_write again.`)
 }
 
 // TestPlanSupportPreplanWriteIntegrationUnknownSection sends a section name

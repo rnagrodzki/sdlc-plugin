@@ -11,6 +11,7 @@
 // The shared registry helpers live in skillcheck_flags_test.go. Every
 // unexported identifier below is prefixed preplanSkills, and the declared
 // Test functions are TestPreplanSkillParity and TestPreplanSkillNoFileEdits.
+// TestPreplanSkillNoFileEdits is a regression guard on exact texts only.
 package skillcheck
 
 import (
@@ -126,16 +127,30 @@ var preplanSkillsForbiddenEdits = []string{
 	"edit the `## Decisions` row",
 }
 
-// TestPreplanSkillNoFileEdits checks that the preplan SKILL.md holds no text
-// of preplanSkillsForbiddenEdits, so no step tells the model to edit the
-// topic file with a file tool, which plan mode refuses.
+// preplanSkillsEditRule lists the texts of the rule that forbids file edits
+// of the topic file. The skill must keep them, so the model still reads the
+// rule.
+var preplanSkillsEditRule = []string{
+	"Change the topic file only through `preplan_context`, `preplan_check` and `preplan_write`.",
+	"Never use the Edit tool or the Write tool on it.",
+}
+
+// TestPreplanSkillNoFileEdits is a regression guard of two kinds. It checks
+// that the preplan SKILL.md holds no text of preplanSkillsForbiddenEdits, the
+// exact phrases of the old skill, and that it holds each text of
+// preplanSkillsEditRule. It does not find a new wording that tells the model
+// to edit the topic file with a file tool, which plan mode refuses.
 func TestPreplanSkillNoFileEdits(t *testing.T) {
 	pluginRoot := executeSkillsRepoRoot(t)
 	skill := executeSkillsReadFile(t, filepath.Join(pluginRoot, "skills", "preplan", "SKILL.md"))
-	forbidden := preplanSkillsForbiddenEdits
-	for _, text := range forbidden {
+	for _, text := range preplanSkillsForbiddenEdits {
 		if strings.Contains(skill, text) {
 			t.Errorf("preplan/SKILL.md holds %q: change the topic file through a plan_support call, not a file edit", text)
+		}
+	}
+	for _, text := range preplanSkillsEditRule {
+		if !strings.Contains(skill, text) {
+			t.Errorf("preplan/SKILL.md does not hold %q: keep the rule that forbids file edits of the topic file", text)
 		}
 	}
 }

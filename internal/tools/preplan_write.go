@@ -23,14 +23,19 @@ import (
 const preplanReadyMax = 4
 
 // preplanReadyRows lists the topic files of a root for the ready list. It is
-// dashboardPreplans, which reads only the first dashboardPreplanHeadMax bytes
-// of each file. Tests replace it to make the list fail or warn.
-var preplanReadyRows = dashboardPreplans
+// dashboardPreplanScan, which reads only the first dashboardPreplanHeadMax
+// bytes of each file and gives each warning its kind. Tests replace it to
+// make the list fail or warn.
+var preplanReadyRows = dashboardPreplanScan
 
-// preplanFolderNotReadPrefix starts the warning that dashboardPreplans gives
-// for a preplan folder that cannot be listed.
-// TestPlanSupportPreplanWriteFolderWarningPrefix pins it to dashboardPreplans.
-const preplanFolderNotReadPrefix = "Preplan folder not read: "
+// The starts of the summary sentences of the ready list. The preplan skill
+// (Step 5) prints each summary sentence that starts with
+// preplanReadyNotePrefix.
+const (
+	preplanReadyNotePrefix = "Ready topic files "
+	preplanReadyNotListed  = preplanReadyNotePrefix + "not listed: "
+	preplanReadyIncomplete = preplanReadyNotePrefix + "may be incomplete: "
+)
 
 // The next texts of preplan_write, one for each outcome. preplanWriteNext
 // picks one.
@@ -50,7 +55,7 @@ const (
 const preplanWriteStatusPart = "Status"
 
 // preplanTitleRe matches the "# " title line of a topic file.
-var preplanTitleRe = regexp.MustCompile(`(?m)^# `)
+var preplanTitleRe = regexp.MustCompile(`(?m)^` + regexp.QuoteMeta(preplanTitlePrefix))
 
 // preplanWriteDescription returns the preplan_write line of the plan_support
 // tool description. The numbers come from the constants that the code uses,
@@ -58,12 +63,14 @@ var preplanTitleRe = regexp.MustCompile(`(?m)^# `)
 func preplanWriteDescription() string {
 	head := strconv.Itoa(dashboardPreplanHeadMax)
 	return "- preplan_write: Replace one section body or the Status line of an existing topic file. " +
-		"Requires topic, and section or topicStatus. Optional: content (with section only). " +
+		"Requires topic, and section with content, or topicStatus. content is required with section and not allowed without it; an empty string counts as content. " +
 		"section, content and topicStatus sent with another action return DomainError. " +
 		"It finds and reads the file as preplan_check does and never creates one. " +
 		"It checks content against the topic-file format rules and refuses a body that breaks one, with the rule id. " +
 		"Before the check it changes each CR LF in content to LF and removes the final line ends; the rules, the " + strconv.Itoa(preplanWriteContentMax) + "-byte limit of rule P1 included, check that value, and the file stores it with the line ends of the file. " +
 		"It replaces the body under the first matching section heading, adds an absent Open questions section after Decisions, and deletes the Open questions or Guardrail check section when content is empty. " +
+		"When section is the last section and a code fence in its body never closes, the replace or the delete runs to the end of the file: it also removes the text after the fence, each ## heading that the fence hides included. " +
+		"summary gives the line count of the old body. " +
 		"It replaces the first Status line in the first " + head + " bytes, else inserts one before the Started line, else after the title line, else as the first line. " +
 		"summary names each extra heading or Status line that stays. " +
 		"It writes a temp file and renames it, and the file keeps its mode. " +
@@ -87,12 +94,16 @@ func preplanWriteFieldError(in PlanSupportIn) error {
 	if in.Action == preplanWriteAction {
 		return nil
 	}
-	for _, f := range []struct{ name, value string }{
-		{"section", in.Section},
-		{"content", in.Content},
-		{"topicStatus", in.TopicStatus},
+	// content counts when it is sent, also as an empty string.
+	for _, f := range []struct {
+		name string
+		sent bool
+	}{
+		{"section", in.Section != ""},
+		{"content", in.Content != nil},
+		{"topicStatus", in.TopicStatus != ""},
 	} {
-		if f.value != "" {
+		if f.sent {
 			return &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("%s: %s is a preplan_write field", in.Action, f.name),
 				Suggestion: fmt.Sprintf("Remove %s, or use action preplan_write.", f.name),
@@ -103,33 +114,38 @@ func preplanWriteFieldError(in PlanSupportIn) error {
 }
 
 // preplanWriteInputError checks the fields of a preplan_write call before
-// any file is read: content needs section, the call writes something, the
-// section and the status are known values, and content passes the format
-// rules of the section (preplanCheckSection). The content rules, the P1 size
-// limit (preplanWriteContentMax) included, check preplanWriteContent of
-// content: the same value that the write stores. The combination rules
-// (content needs section) read content as sent. Each error is a
-// DomainError whose message starts with "preplan_write:"; a broken rule wraps
-// the *preplanFormatError as its Cause.
+// any file is read: content needs section, section needs content (an empty
+// string counts as sent), the call writes something, the section and the
+// status are known values, and content passes the format rules of the
+// section (preplanCheckSection). The content rules, the P1 size limit
+// (preplanWriteContentMax) included, check preplanWriteContent of content:
+// the same value that the write stores. The combination rules read content
+// as sent. Each error is a DomainError whose message starts with
+// "preplan_write:"; a broken rule wraps the *preplanFormatError as its Cause,
+// and its Suggestion (preplanRuleSuggestion) states the accepted form.
 func preplanWriteInputError(in PlanSupportIn) error {
 	const action = preplanWriteAction
 	var msg, suggestion string
 	switch {
-	case in.Section == "" && in.Content != "":
+	case in.Section == "" && in.Content != nil:
 		msg, suggestion = "content needs section", "Add section with the name of the section to write, or remove content."
 	case in.Section == "" && in.TopicStatus == "":
 		msg, suggestion = "nothing to write", "Add section and content, or add topicStatus."
 	case in.Section != "" && !slices.Contains(preplanWriteSections, in.Section):
 		msg = fmt.Sprintf("section %q is not a topic-file section", in.Section)
-		suggestion = fmt.Sprintf("Use one of the %d names in the section field description.", len(preplanWriteSections))
+		suggestion = "Use one of: " + strings.Join(preplanWriteSections, ", ") + "."
+	case in.Section != "" && in.Content == nil:
+		msg = "section needs content"
+		suggestion = "Add content with the full new body of section. Send content as an empty string only to clear the body, or to delete the " +
+			preplanOpenQuestionsSection + " or " + preplanGuardrailCheckSection + " section."
 	case in.TopicStatus != "" && !slices.Contains(PreplanStatuses, in.TopicStatus):
 		msg = fmt.Sprintf("topicStatus %q is not a preplan status", in.TopicStatus)
 		suggestion = "Use " + preplanStatusInProgress + ", " + preplanStatusReadyForPlan + " or " + preplanStatusPaused + "."
 	case in.Section != "":
-		if ferr := preplanCheckSection(in.Section, preplanWriteContent(in.Content)); ferr != nil {
+		if ferr := preplanCheckSection(in.Section, preplanWriteContent(*in.Content)); ferr != nil {
 			return &mcpserver.DomainError{
 				Msg:        action + ": " + ferr.Error(),
-				Suggestion: "Fix the content and call preplan_write again with the full section body.",
+				Suggestion: preplanRuleSuggestion(ferr.Rule),
 				Cause:      ferr,
 			}
 		}
@@ -172,7 +188,10 @@ func planPreplanWrite(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 	if err != nil {
 		return PlanSupportOut{}, err
 	}
-	content := preplanWriteContent(in.Content)
+	var content string
+	if in.Content != nil {
+		content = preplanWriteContent(*in.Content)
+	}
 	edit := &preplanEdit{data: topic.data, written: []string{}}
 	if in.Section != "" {
 		if err := edit.setSection(topic.file, in.Section, content); err != nil {
@@ -261,10 +280,12 @@ func preplanWriteNext(status string, written []string) string {
 // The section name goes into e.written when it replaces, adds or deletes a
 // section: a replace with the same body still counts as written. When the
 // target is the last section and a fence is still open in its body, the
-// replace or the delete runs to the end of the file, and a note says so.
+// replace or the delete runs to the end of the file, and a note says so. A
+// replace or a delete also notes the size of the old body
+// (preplanOldBodyNote).
 func (e *preplanEdit) setSection(file, section, content string) error {
 	spans, openFence := preplanSectionSpans(e.data)
-	eol := preplanEOL(e.data, preplanLineEnd(e.data, 0))
+	eol := preplanFileEOL(e.data)
 	deletable := section == preplanOpenQuestionsSection || section == preplanGuardrailCheckSection
 	i := preplanFindSpan(spans, section)
 	// The last span holds the fence that is still open: its body runs to the
@@ -275,20 +296,21 @@ func (e *preplanEdit) setSection(file, section, content string) error {
 		e.notes = append(e.notes, fmt.Sprintf("Nothing changed in ## %s: the section is absent and content is empty.", section))
 		return nil
 	case i < 0 && section == preplanOpenQuestionsSection:
-		return e.addOpenQuestions(file, spans, openFence, content)
+		return e.addOpenQuestions(file, spans, openFence, content, eol)
 	case i < 0:
 		return preplanSectionNotFound(file, section, preplanNotFoundSuggestion)
 	case deletable && content == "":
+		old := e.data[spans[i].bodyStart:spans[i].bodyEnd]
+		e.notes = append(e.notes, fmt.Sprintf("Deleted the ## %s section.", section), preplanOldBodyNote(old))
 		e.data = slices.Concat(e.data[:spans[i].lineStart], e.data[spans[i].bodyEnd:])
-		e.notes = append(e.notes, fmt.Sprintf("Deleted the ## %s section.", section))
 		if fenceInBody {
 			e.notes = append(e.notes, "The old body held a code fence that never closed, so the write deleted the text up to the end of the file.")
 		}
 	default:
 		s := spans[i]
 		body := preplanBodyText(e.data[:s.bodyStart], content, eol, s.bodyEnd < len(e.data))
+		e.notes = append(e.notes, fmt.Sprintf("Replaced the body of ## %s.", section), preplanOldBodyNote(e.data[s.bodyStart:s.bodyEnd]))
 		e.data = slices.Concat(e.data[:s.bodyStart], []byte(body), e.data[s.bodyEnd:])
-		e.notes = append(e.notes, fmt.Sprintf("Replaced the body of ## %s.", section))
 		if fenceInBody {
 			e.notes = append(e.notes, "The old body held a code fence that never closed, so the write replaced the text up to the end of the file.")
 		}
@@ -303,8 +325,9 @@ func (e *preplanEdit) setSection(file, section, content string) error {
 // addOpenQuestions inserts an Open questions section with content after the
 // body of the first Decisions section. No Decisions section, or a Decisions
 // section that is the last one while a fence is still open (the insert would
-// be code), is the DataError of preplanSectionNotFound.
-func (e *preplanEdit) addOpenQuestions(file string, spans []preplanSpan, openFence, content string) error {
+// be code), is the DataError of preplanSectionNotFound. eol is the line end
+// of the new text (preplanFileEOL).
+func (e *preplanEdit) addOpenQuestions(file string, spans []preplanSpan, openFence, content, eol string) error {
 	k := preplanFindSpan(spans, preplanDecisionsSection)
 	if k < 0 {
 		return preplanSectionNotFound(file, preplanDecisionsSection, preplanNotFoundSuggestion)
@@ -313,7 +336,6 @@ func (e *preplanEdit) addOpenQuestions(file string, spans []preplanSpan, openFen
 	if openFence != "" && at == len(e.data) {
 		return preplanSectionNotFound(file, preplanOpenQuestionsSection, preplanFencedSuggestion)
 	}
-	eol := preplanEOL(e.data, preplanLineEnd(e.data, 0))
 	before := string(e.data[:at])
 	heading := preplanSpacing(before, eol) + preplanHeadingPrefix + preplanOpenQuestionsSection + eol
 	insert := heading + preplanBodyText([]byte(before+heading), content, eol, at < len(e.data))
@@ -345,6 +367,22 @@ func preplanBodyText(before []byte, content, eol string, more bool) string {
 	return b.String()
 }
 
+// preplanOldBodyNote returns the summary sentence of the size of the body
+// that a replace or a delete removes: "The old body had N lines of text.",
+// where N counts the lines that are not blank, with "1 line" for one.
+func preplanOldBodyNote(old []byte) string {
+	n := 0
+	for _, line := range preplanBodyLines(string(old)) {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	if n == 1 {
+		return "The old body had 1 line of text."
+	}
+	return fmt.Sprintf("The old body had %d lines of text.", n)
+}
+
 // preplanSpanCount returns the number of spans named name.
 func preplanSpanCount(spans []preplanSpan, name string) int {
 	n := 0
@@ -359,12 +397,15 @@ func preplanSpanCount(spans []preplanSpan, name string) int {
 // The Suggestions of a section that preplan_write cannot place.
 const (
 	// preplanNotFoundSuggestion is the Suggestion of a skeleton heading that
-	// is absent or hidden by a fence that is still open.
-	preplanNotFoundSuggestion = "Call plan_support preplan_context with the same topic. It adds the heading and closes the fence."
+	// is absent or hidden by a fence that is still open. preplan_context adds
+	// the heading (addPreplanHeadings), so one retry then finds it.
+	preplanNotFoundSuggestion = "Call plan_support preplan_context with the same topic. It adds each absent section heading, and closes a fence that is still open at the end of the file. Then call preplan_write again with the same section and content."
 	// preplanFencedSuggestion is the Suggestion of an Open questions section
 	// whose place, after the last section Decisions, is inside a fence that
-	// is still open.
-	preplanFencedSuggestion = "Call plan_support preplan_context with the same topic. It adds an absent skeleton heading and closes an open fence. Then call preplan_write again with the same section and content."
+	// is still open. preplan_context does not help here: every skeleton
+	// heading is there, so it adds nothing and closes no fence. A Decisions
+	// replace runs to the end of the file and so removes the open fence.
+	preplanFencedSuggestion = "Send the full body of ## Decisions with preplan_write, with the fence closed. The write replaces the text up to the end of the file. Then call preplan_write again with section Open questions and the same content."
 )
 
 // preplanSectionNotFound returns the DataError of a section that is absent
@@ -405,7 +446,7 @@ func (e *preplanEdit) setStatus(status string) {
 // there, else as the first line. The new line uses the first line end of
 // data. Every other byte stays the same.
 func preplanInsertStatus(data []byte, status string) (next []byte, note string) {
-	eol := preplanEOL(data, preplanLineEnd(data, 0))
+	eol := preplanFileEOL(data)
 	line := dashboardPreplanStatusPrefix + " " + status
 	head := preplanHead(data)
 	if loc := dashboardPreplanStartedRe.FindIndex(head); loc != nil {
@@ -432,19 +473,31 @@ func preplanInsertStatus(data []byte, status string) (next []byte, note string) 
 // summary sentences of the list. file is always first, also when the list
 // has no row for it. The other rows with status ready for plan follow in the
 // newest-first order of preplanReadyRows, up to preplanReadyMax entries in
-// all; leftOut counts the ready rows that do not fit. A folder that cannot be
-// listed gives "Ready topic files not listed: <error>." and every other
-// warning of preplanReadyRows goes into the notes as it is.
+// all; leftOut counts the ready rows that do not fit. Only a warning that can
+// change the list gives a note, and each note starts with
+// preplanReadyNotePrefix:
+//
+//   - a folder that cannot be listed: "Ready topic files not listed: <error>."
+//   - a topic file that is not read: "Ready topic files may be incomplete:
+//     <warning>."
+//   - files older than the newest dashboardPreplanLimit: "Ready topic files
+//     may be incomplete: <warning>, and readyLeftOut does not count them."
+//
+// A Started time that does not parse changes only the duration of a row, so
+// it gives no note.
 func preplanReadyList(mainRoot, file string) (files []string, leftOut int, notes []string) {
 	files = []string{file}
 	self := strings.TrimSuffix(filepath.Base(file), ".md")
 	rows, warnings := preplanReadyRows(mainRoot)
 	for _, w := range warnings {
-		if rest, ok := strings.CutPrefix(w, preplanFolderNotReadPrefix); ok {
-			notes = append(notes, "Ready topic files not listed: "+rest+".")
-			continue
+		switch w.kind {
+		case dashboardPreplanWarnFolder:
+			notes = append(notes, preplanReadyNotListed+w.detail+".")
+		case dashboardPreplanWarnFile:
+			notes = append(notes, preplanReadyIncomplete+w.text+".")
+		case dashboardPreplanWarnOlder:
+			notes = append(notes, preplanReadyIncomplete+w.text+", and readyLeftOut does not count them.")
 		}
-		notes = append(notes, w+".")
 	}
 	for _, row := range rows {
 		if row.Status != preplanStatusReadyForPlan || row.Slug == self {

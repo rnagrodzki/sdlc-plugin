@@ -653,3 +653,48 @@ func TestMCPStdio_PreplanWrite(t *testing.T) {
 	}
 	fx.checkFile(t, "after the bad body", want)
 }
+
+// TestMCPStdio_PreplanWriteContentOmittedOrEmpty checks the JSON boundary of
+// the content field: a call with section and no content key is a domain
+// error that leaves the file as it was, and a call with "content": "" is an
+// explicit empty body that clears the Goal body and deletes an Open questions
+// section.
+func TestMCPStdio_PreplanWriteContentOmittedOrEmpty(t *testing.T) {
+	fx := newPreplanWriteFixture(t)
+
+	// The Goal body to clear, and an Open questions section to delete.
+	env := fx.write(t, map[string]any{"section": preplanWriteGoal, "content": preplanWriteGoalBody})
+	if !env.OK {
+		t.Fatalf("Goal write: not ok: code=%s body=%s", env.Code, env.Body)
+	}
+	env = fx.write(t, map[string]any{"section": "Open questions", "content": "- Which provider?"})
+	if !env.OK {
+		t.Fatalf("Open questions write: not ok: code=%s body=%s", env.Code, env.Body)
+	}
+	filled := preplanReadText(t, fx.file)
+
+	// No content key: a domain error, and no write.
+	env = fx.write(t, map[string]any{"section": preplanWriteDecisions})
+	if env.OK || env.Code != preplanWriteDomainCode || !strings.Contains(env.Body, "preplan_write: section needs content") {
+		t.Fatalf("section with no content: want the domain error \"section needs content\", got ok=%v code=%s body:\n%s", env.OK, env.Code, env.Body)
+	}
+	fx.checkFile(t, "after the call with no content", filled)
+
+	// "content": "" deletes the Open questions section.
+	env = fx.write(t, map[string]any{"section": "Open questions", "content": ""})
+	if !env.OK || !strings.Contains(env.Body, "Deleted the ## Open questions section.") {
+		t.Fatalf("Open questions with empty content: want the delete, got ok=%v body:\n%s", env.OK, env.Body)
+	}
+	if got := preplanReadText(t, fx.file); strings.Contains(got, "## Open questions") {
+		t.Errorf("the Open questions section is still in the file:\n%s", got)
+	}
+
+	// "content": "" clears the Goal body and keeps the heading.
+	env = fx.write(t, map[string]any{"section": preplanWriteGoal, "content": ""})
+	if !env.OK {
+		t.Fatalf("Goal with empty content: not ok: code=%s body=%s", env.Code, env.Body)
+	}
+	if got := preplanReadText(t, fx.file); strings.Contains(got, preplanWriteGoalBody) || !strings.Contains(got, "## "+preplanWriteGoal+"\n") {
+		t.Errorf("Goal body not cleared, or heading gone:\n%s", got)
+	}
+}

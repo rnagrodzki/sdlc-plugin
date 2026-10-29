@@ -529,7 +529,7 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				}
 				// preplan_write rewrites one section: check the write stays untracked.
 				if _, err := planSupportCore(root, root, PlanSupportIn{Action: "preplan_write", Topic: "auth flow",
-					Section: "Goal", Content: "Users sign in once."}); err != nil {
+					Section: "Goal", Content: preplanContentPtr("Users sign in once.")}); err != nil {
 					t.Fatalf("preplan_write: %v", err)
 				}
 				topic, err = os.ReadFile(filepath.Join(root, ".sdlc-v2", "preplan", "2026-10-12-auth-flow.md"))
