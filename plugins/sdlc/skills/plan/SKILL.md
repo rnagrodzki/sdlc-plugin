@@ -2,7 +2,7 @@
 name: plan
 description: "Use when writing an implementation plan from requirements, a spec, a design doc, or a user description. ALWAYS use when plan mode is active — this is the designated plan-mode skill. Analyzes scope, maps file structure, decomposes into classified tasks with dependencies, and produces a plan ready for execute. Triggers on: write plan, create plan, plan this, break this into tasks, implementation plan, plan mode."
 user-invocable: true
-argument-hint: "[--auto] [--spec [<change-name>]] [spec-file-path]"
+argument-hint: "[--auto] [--spec [<change-name>]] [spec-file-path...]"
 model: opus
 ---
 
@@ -46,9 +46,9 @@ Example — OpenSpec gate check:
 | Argument | Effect |
 |---|---|
 | `--auto` | Suppresses the questions that have a safe default (each `--auto` rule below names its choice). At the OpenSpec gate check it takes **Create OpenSpec change** |
-| `--spec` | Opts into OpenSpec and skips the gate-check question. Without a name: use the branch-matched change, else ask which active change to use, or offer **Create OpenSpec change** when none exists (see **OpenSpec gate check** below) |
+| `--spec` | Opts into OpenSpec and skips the gate-check question. Without a name: use the branch-matched change, else ask which active change to use, or offer **Create OpenSpec change** when none exists (see **OpenSpec gate check** below). With two or more topic-file paths, stop and print: `--spec cannot be used with several topic files. Run /sdlc:plan --spec <name>, or /sdlc:plan with topic files only.` |
 | `--spec <change-name>` | Plans from the existing change `openspec/changes/<change-name>/`. The name goes to `plan_prepare` as `fromOpenspec` |
-| `[spec-file-path]` | Requirements file. A path into `openspec/changes/<name>/` works the same as `--spec <name>`. A preplan topic file has its own read rule (Step 1 **Preplan topic file**) |
+| `[spec-file-path...]` | Requirements file. A path into `openspec/changes/<name>/` works the same as `--spec <name>`. A preplan topic file has its own read rule (Step 1 **Preplan topic file**). Two or more paths must all be preplan topic files. Split the paths at spaces. A path in double quotes is one path, spaces included |
 
 `--from-openspec <change-name>` is a deprecated alias of `--spec <change-name>`. When it is passed, print this line, then behave exactly as if `--spec <change-name>` had been passed:
 `--from-openspec is deprecated — use --spec <change-name>`
@@ -300,6 +300,7 @@ Call `plan_mark({ marker: "checkpoint", runId: "<runId>", path: "", data: { step
 - `**Guardrail check:**` line — the check record of preplan. It is not a requirement, so do not copy it into the plan. Step 3 (the guardrail-compliance lane) checks the plan against the guardrails again. An older topic file can hold a `## Guardrail check` section instead. Treat it the same way: a `kept — <ids>` row there means the same as a `Kept with warning: <ids>.` note.
 - `## Open questions` — present only when a question has no answer. An older topic file can hold an empty section: it has no question to ask. Each bullet is a scope question with no answer. Ask it in **Structured discovery** below. Under `--auto`, use the **`--auto` suppression** rule there.
 - The `**Status:**` line is the state of preplan. It is not a requirement.
+- Several topic files: read each file with the rules above, in argument order. Each path must be a preplan topic file by the rule above. Otherwise stop and print: <path> is not a preplan topic file. Run /sdlc:plan with topic files only, or with one requirements file. Before this stop, run `rm -rf "<explorePack.outDir>"` when `explorePack.outDir` is not null. Number the R-items across all files. Write one Non-goals bullet and one Smallest cut bullet for each topic, with the topic name first. Write one root problem for each topic in ## Context. When two files have decisions that contradict each other, ask one Structured discovery question for each conflict. Under --auto, take the decision of the earlier file and add one ## Deviations & assumptions row with asked=no. **Source:** lists each path, separated by ", ", unless the OpenSpec gate check sets it. A resumed run takes the paths from the `**Source:**` line of the plan file when that line lists them. Otherwise it takes them from the original request in the session context. If neither holds, ask for the paths as in Step 0 **Gather requirements**. A conflict answer is a D<n> record, so a resumed run does not ask it again.
 
 **Discovery dispatch (full pipeline only, implements R24–R28):**
 
@@ -519,7 +520,7 @@ After the `fromOpenspecDirect` enrichment block, determine which exploration pat
 
 Wait for answers before continuing.
 
-**`--auto` suppression (R65):** When `--auto` is set, suppress the AskUserQuestion above. Pick the most conservative approach autonomously: for approach-pattern ambiguities (triggers a/c), prefer whichever viable option most closely matches existing codebase patterns as a tiebreaker between equally-conservative choices; for scope-boundary or vague-requirement ambiguities (trigger b, or an underspecified goal), default to the narrowest scope that still satisfies the stated requirement. Record the choice in `## Key Decisions` with rationale, and add a `## Deviations & assumptions` row with `asked=no`.
+**`--auto` suppression (R65):** When `--auto` is set, suppress the AskUserQuestion above. Pick the most conservative approach autonomously: for approach-pattern ambiguities (triggers a/c), prefer whichever viable option most closely matches existing codebase patterns as a tiebreaker between equally-conservative choices; for scope-boundary or vague-requirement ambiguities (trigger b, or an underspecified goal), default to the narrowest scope that still satisfies the stated requirement. A conflict between two topic files is the exception: take the choice that the **Several topic files** bullet of the **Preplan topic file** block names, not one of these two defaults. Record the choice in `## Key Decisions` with rationale, and add a `## Deviations & assumptions` row with `asked=no`.
 
 **Codebase exploration (skip for lightweight):** Use read-only tools (Glob, Grep, Read, LSP):
 - Relevant file structure and patterns in affected areas
