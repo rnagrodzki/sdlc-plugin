@@ -107,7 +107,7 @@ rules:
 
 | Hook | Trigger | Handler | Effect |
 |------|---------|---------|--------|
-| `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 5 planIntegrity markers were written. Gates on `done` marker before evaluating; never deletes the state file (see [Plan run lifetime](#plan-run-lifetime)). Falls back to transcript scanning (last 64KB for "Plan mode is active") when no state file found. Always ExitCode 0 (advisory). |
+| `stop-plan-integrity` | `Stop` | `internal/hooks/stop_hooks.go` | Advisory check that all 5 planIntegrity markers were written. Gates on `done` marker before evaluating; never deletes the state file (see [Plan run lifetime](#plan-run-lifetime)). Falls back to transcript scanning (last 64KB for "Plan mode is active") when no state file found. Skips the warning when the transcript, up to 64 MiB, holds a preplan invocation record. Always ExitCode 0 (advisory). |
 | `post-tool-validate` | `PostToolUse` on `Edit\|Write` | `internal/hooks/post_tool_validate.go` | Runs a validator after edits to plan files, `pr-template.md`, dimension files (`.md`), and `.sdlc-v2/config.toml`. The hook runs after the write, so the edit is already saved and stays on disk. A finding goes back to the model as a block reason (`{decision: "block", reason}`). Scope of each validator: a dimension file edit checks the whole `.sdlc-v2/review-dimensions` folder of the active worktree, so a finding in an untouched dimension file is reported too; a `pr-template.md` edit checks the template; a `.sdlc-v2/config.toml` edit checks the guardrails of `plan` and `execute` together, under the project root two folders above the edited file; a plan file edit checks that file. After an edit of a Copilot mirror `.github/instructions/<name>.instructions.md`, the hook adds a note only when `.sdlc-v2/review-dimensions/<name>.md` exists and the mirror has no valid marker line. The note never blocks. |
 | `pipeline-continue` | `PostToolUse` on `Bash\|TodoWrite` | `internal/hooks/pipeline_continue.go` | Signals pipeline-aware hooks that a tool completed during an active pipeline |
 | `stop-pipeline-continue` | `Stop` | `internal/hooks/stop_hooks.go` | Counterpart to `pipeline-continue`; fires on session stop during an active pipeline |
@@ -1050,7 +1050,7 @@ stateDiagram-v2
 1. Finds the plan state file in three steps (`findPlanState`): first the newest plan run of the branch whose `sessionId` is the session of the hook, else the newest plan run of the branch with no `sessionId` (both from `state.PlanRunForSession`, not limited to active runs, so a run that reached `done` is found), else the newest plan run of the branch (`state.LatestPlanRun`).
 2. Calls `planIntegrityFromState`: first checks whether the `done` marker is present. If absent, the plan is still running — returns silently without evaluation or deletion.
 3. Once `done` is present, checks all 5 markers present + `planFilePath` stat, and leaves the state file and its evidence directory on disk — this hook no longer deletes them. Deletion is owned by ship's `cleanup-pipeline` step or the GC TTL sweep; see [Plan run lifetime](#plan-run-lifetime) below.
-4. If no state file found, falls back to `planIntegrityFromTranscript`: scans last 64KB of transcript for "Plan mode is active".
+4. If no state file found, falls back to `planIntegrityFromTranscript`: scans last 64KB of transcript for "Plan mode is active". It skips the warning when the transcript, up to 64 MiB, holds a preplan invocation record.
 5. Advisory only (ExitCode 0 always). Missing markers produce a warning, not a failure.
 
 ### Plan run lifetime
@@ -1094,7 +1094,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | `links_validate` finds broken URLs | 6.5 | Pipeline blocks, surfaces broken URLs to user | **Yes** |
 | `validate({action: "plan_format"})` finds PF failures | 6.6 | Pipeline blocks, surfaces PF findings to user | **Yes** |
 | Session interrupted (Ctrl+C, timeout) | Any | `stop-plan-integrity` hook fires, warns on missing markers | No (advisory) |
-| State file missing at stop time | Stop | Falls back to transcript scanning | No (advisory) |
+| State file missing at stop time | Stop | Falls back to transcript scanning. No warning for a preplan session | No (advisory) |
 
 ---
 
@@ -1149,6 +1149,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | planIntegrity markers (4) | No | `stop_hooks.go` `requiredPlanMarkers` | Hard-coded |
 | Snapshot dimensions (7) | No | `plan_support.go` `PlanSnapshot` | Hard-coded |
 | Transcript scan window (64KB) | No | `stop_hooks.go` | Hard-coded |
+| Preplan transcript scan bound (64 MiB) | No | `stop_hooks.go` `transcriptPreplanScanMax` | Hard-coded |
 
 Every `.sdlc-v2/local.toml` row above also reads `~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`). Order: built-in default < `~/.sdlc/local.toml` < `.sdlc-v2/local.toml`. Tables merge key by key, and a list in the project file replaces the user list.
 

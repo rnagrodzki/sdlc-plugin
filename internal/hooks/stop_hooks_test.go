@@ -579,6 +579,245 @@ func TestStopPlanIntegrity_BranchDoesNotResolve_SkipsEvenTranscriptFallback(t *t
 }
 
 // ---------------------------------------------------------------------------
+// stopPlanIntegrity: preplan session (whole-transcript scan)
+// ---------------------------------------------------------------------------
+
+// preplanCommandRecordFixture is the slash-command record of a preplan
+// invocation. It repeats the production marker text on purpose, so a change
+// of preplanTranscriptMarkers breaks a test.
+const preplanCommandRecordFixture = "<command-name>/sdlc:preplan</command-name>"
+
+// preplanSkillCallFixture is the Skill tool call record of a preplan
+// invocation. It holds the second production marker.
+const preplanSkillCallFixture = `{"type":"tool_use","name":"Skill","input":{"skill":"sdlc:preplan"}}`
+
+// planModeLineFixture is the text that makes the hook consider a warning.
+const planModeLineFixture = "Plan mode is active for this turn\n"
+
+// preplanFillerFixture is more than transcriptTailLimit bytes of text with
+// no preplan marker. It pushes a record out of the 64 KiB tail.
+var preplanFillerFixture = strings.Repeat("filler line with no marker\n", 3000)
+
+// preplanHookWarns runs stopPlanIntegrity on a branch with no plan state and
+// a transcript file that holds content. It reports whether the plan-integrity
+// warning reached stderr.
+func preplanHookWarns(t *testing.T, content string) bool {
+	t.Helper()
+	root := gitFixture(t, "feat/preplan-scan")
+
+	transcriptPath := filepath.Join(root, "transcript.jsonl")
+	mustWriteFile(t, transcriptPath, content)
+
+	var out Output
+	stderrText := captureStderr(t, func() {
+		var err error
+		out, err = stopPlanIntegrity(HookCtx{}, Event{Raw: map[string]any{"transcript_path": transcriptPath}})
+		if err != nil {
+			t.Fatal(err)
+		}
+	})
+	assertSilent(t, out)
+	return strings.Contains(stderrText, "no plan integrity state for branch feat/preplan-scan")
+}
+
+// lowerTranscriptScanMax sets transcriptPreplanScanMax to limit for the
+// test and restores the old value on cleanup.
+func lowerTranscriptScanMax(t *testing.T, limit int64) {
+	t.Helper()
+	orig := transcriptPreplanScanMax
+	transcriptPreplanScanMax = limit
+	t.Cleanup(func() { transcriptPreplanScanMax = orig })
+}
+
+// lowerTranscriptScanBufSize sets transcriptScanBufSize to size for the test
+// and restores the old value on cleanup.
+func lowerTranscriptScanBufSize(t *testing.T, size int) {
+	t.Helper()
+	orig := transcriptScanBufSize
+	transcriptScanBufSize = size
+	t.Cleanup(func() { transcriptScanBufSize = orig })
+}
+
+// TestStopPlanIntegrity_PreplanCommandRecordBeyondTail_NoWarning pins that a
+// preplan command record outside the 64 KiB tail suppresses the warning.
+func TestStopPlanIntegrity_PreplanCommandRecordBeyondTail_NoWarning(t *testing.T) {
+	content := "first record of the transcript\n" + preplanCommandRecordFixture + "\n" + preplanFillerFixture + planModeLineFixture
+	if preplanHookWarns(t, content) {
+		t.Error("warning shown, want none: the transcript holds a preplan command record")
+	}
+}
+
+// TestStopPlanIntegrity_PreplanSkillCallBeyondTail_NoWarning pins that a
+// Skill tool call for sdlc:preplan outside the tail suppresses the warning.
+func TestStopPlanIntegrity_PreplanSkillCallBeyondTail_NoWarning(t *testing.T) {
+	content := "first record of the transcript\n" + preplanSkillCallFixture + "\n" + preplanFillerFixture + planModeLineFixture
+	if preplanHookWarns(t, content) {
+		t.Error("warning shown, want none: the transcript holds a preplan Skill call")
+	}
+}
+
+// TestStopPlanIntegrity_PreplanAbsentBeyondTail_Warns pins that the same
+// transcript without a preplan record still warns.
+func TestStopPlanIntegrity_PreplanAbsentBeyondTail_Warns(t *testing.T) {
+	content := "first record of the transcript\n" + preplanFillerFixture + planModeLineFixture
+	if !preplanHookWarns(t, content) {
+		t.Error("no warning shown, want the plan-integrity warning: no preplan record")
+	}
+}
+
+// TestStopPlanIntegrity_PreplanMarkerSplitAcrossBuffers_NoWarning pins that a
+// marker split across two read buffers matches. The buffer size is 16 bytes
+// and the marker starts at byte 10, so it crosses the boundaries at 16, 32
+// and 48.
+func TestStopPlanIntegrity_PreplanMarkerSplitAcrossBuffers_NoWarning(t *testing.T) {
+	lowerTranscriptScanBufSize(t, 16)
+	content := "0123456789" + preplanCommandRecordFixture + "\n" + planModeLineFixture
+	if preplanHookWarns(t, content) {
+		t.Error("warning shown, want none: the marker is split across read buffers")
+	}
+}
+
+// TestStopPlanIntegrity_PreplanMarkerEndsPastScanBound_Warns pins that a
+// marker which ends 1 byte after the scan bound does not match.
+func TestStopPlanIntegrity_PreplanMarkerEndsPastScanBound_Warns(t *testing.T) {
+	const prefix = "pad\n"
+	lowerTranscriptScanMax(t, int64(len(prefix)+len(preplanCommandRecordFixture)-1))
+	content := prefix + preplanCommandRecordFixture + "\n" + planModeLineFixture
+	if !preplanHookWarns(t, content) {
+		t.Error("no warning shown, want the plan-integrity warning: the marker ends past the scan bound")
+	}
+}
+
+// TestStopPlanIntegrity_PreplanMarkerEndsAtScanBound_NoWarning pins that a
+// marker which ends exactly at the scan bound matches.
+func TestStopPlanIntegrity_PreplanMarkerEndsAtScanBound_NoWarning(t *testing.T) {
+	const prefix = "pad\n"
+	lowerTranscriptScanMax(t, int64(len(prefix)+len(preplanCommandRecordFixture)))
+	content := prefix + preplanCommandRecordFixture + "\n" + planModeLineFixture
+	if preplanHookWarns(t, content) {
+		t.Error("warning shown, want none: the marker ends at the scan bound")
+	}
+}
+
+// preplanBoundaryCases place the command record next to a read-buffer
+// boundary. Each start function gets the boundary offset and the marker
+// length, so no position is a literal. The "ends 1 byte after" case is also
+// the case where the last byte of the marker is the first byte of the next
+// read.
+var preplanBoundaryCases = []struct {
+	name  string
+	start func(boundary, markerLen int) int
+}{
+	{"ends 1 byte before boundary", func(b, n int) int { return b - 1 - n }},
+	{"ends at boundary", func(b, n int) int { return b - n }},
+	{"ends 1 byte after boundary", func(b, n int) int { return b + 1 - n }},
+	{"ends 2 bytes after boundary", func(b, n int) int { return b + 2 - n }},
+	{"starts 1 byte before boundary", func(b, _ int) int { return b - 1 }},
+	{"starts at boundary", func(b, _ int) int { return b }},
+	{"starts 1 byte after boundary", func(b, _ int) int { return b + 1 }},
+}
+
+// TestStopPlanIntegrity_PreplanMarkerAtBufferBoundaries_NoWarning pins that a
+// marker matches wherever it lies next to a read-buffer boundary. It catches
+// an off-by-one in the length of the bytes kept between two reads.
+func TestStopPlanIntegrity_PreplanMarkerAtBufferBoundaries_NoWarning(t *testing.T) {
+	const size = 16
+	lowerTranscriptScanBufSize(t, size)
+	boundary := 4 * size
+	for _, tc := range preplanBoundaryCases {
+		t.Run(tc.name, func(t *testing.T) {
+			padding := strings.Repeat("x", tc.start(boundary, len(preplanCommandRecordFixture)))
+			content := padding + preplanCommandRecordFixture + "\n" + planModeLineFixture
+			if preplanHookWarns(t, content) {
+				t.Errorf("warning shown, want none: the marker is placed so that %s", tc.name)
+			}
+		})
+	}
+}
+
+// TestStopPlanIntegrity_PreplanMarkerAtByteZero_NoWarning pins that a marker
+// at byte 0 of the transcript matches.
+func TestStopPlanIntegrity_PreplanMarkerAtByteZero_NoWarning(t *testing.T) {
+	content := preplanCommandRecordFixture + "\n" + planModeLineFixture
+	if preplanHookWarns(t, content) {
+		t.Error("warning shown, want none: the marker is at byte 0")
+	}
+}
+
+// TestStopPlanIntegrity_PreplanMarkerOnLastLineNoLineFeed_NoWarning pins that
+// a marker on the last line matches when the file has no final line feed.
+func TestStopPlanIntegrity_PreplanMarkerOnLastLineNoLineFeed_NoWarning(t *testing.T) {
+	content := planModeLineFixture + preplanCommandRecordFixture
+	if preplanHookWarns(t, content) {
+		t.Error("warning shown, want none: the marker is on the last line")
+	}
+}
+
+// TestTranscriptHasPreplan_EmptyFile pins that an empty transcript file has
+// no preplan record.
+func TestTranscriptHasPreplan_EmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "transcript.jsonl")
+	mustWriteFile(t, path, "")
+	if transcriptHasPreplan(path, transcriptPreplanScanMax) {
+		t.Error("transcriptHasPreplan = true, want false for an empty file")
+	}
+}
+
+// TestTranscriptHasPreplan_MissingPath pins that a path that does not exist
+// returns false. The open error is not an error value of the hook: the Stop
+// hook exits 0 on every path.
+func TestTranscriptHasPreplan_MissingPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-such-transcript.jsonl")
+	if transcriptHasPreplan(path, transcriptPreplanScanMax) {
+		t.Error("transcriptHasPreplan = true, want false for a missing path")
+	}
+}
+
+// TestTranscriptHasPreplan_FolderPath pins that a folder path returns false.
+// The open of a folder works and the first read fails.
+func TestTranscriptHasPreplan_FolderPath(t *testing.T) {
+	if transcriptHasPreplan(t.TempDir(), transcriptPreplanScanMax) {
+		t.Error("transcriptHasPreplan = true, want false for a folder path")
+	}
+}
+
+// TestLongestPreplanMarker_IsCommandRecordLength pins the buffer overlap of
+// the scan: the longest marker is the command record.
+func TestLongestPreplanMarker_IsCommandRecordLength(t *testing.T) {
+	if got, want := longestPreplanMarker(), len(preplanCommandRecordFixture); got != want {
+		t.Errorf("longestPreplanMarker() = %d, want %d", got, want)
+	}
+}
+
+// BenchmarkTranscriptHasPreplan scans a 64 MiB transcript with no marker, the
+// worst case of the scan bound. It is a measure, not a gate.
+func BenchmarkTranscriptHasPreplan(b *testing.B) {
+	const total = 64 << 20
+	line := strings.Repeat(`{"type":"assistant","message":"lorem ipsum dolor sit amet"}`+"\n", 1<<14)
+	path := filepath.Join(b.TempDir(), "transcript.jsonl")
+	f, err := os.Create(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for written := 0; written < total; written += len(line) {
+		if _, err := f.WriteString(line); err != nil {
+			b.Fatal(err)
+		}
+	}
+	if err := f.Close(); err != nil {
+		b.Fatal(err)
+	}
+
+	b.SetBytes(total)
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if transcriptHasPreplan(path, transcriptPreplanScanMax) {
+			b.Fatal("transcriptHasPreplan = true, want false: the file has no marker")
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // stopPlanIntegrity: evidence directory survival (findPlanState uses
 // state.LatestPlanRun; planIntegrityFromState never deletes a done run's
 // state file or its state.EvidenceDir — see that function's doc comment)
