@@ -4090,7 +4090,10 @@ describe('preplanSummaryLine', () => {
       line.meta,
       'live 3 · kept 1 · dropped 1 · checked ' + view.dateLabel('2026-10-08T13:58:00Z', 'UTC') + ' · 1 open questions · gaps: none · cut set'
     );
-    assert.equal(line.title, 'user config autostart · in progress · ' + view.dateLabel('2026-10-08T14:05:00Z', 'UTC'));
+    assert.equal(
+      line.title,
+      'user config autostart · in progress · ' + view.dateLabel('2026-10-08T14:05:00Z', 'UTC') + ' · ' + fixtureRepo('sdlc-plugin').name
+    );
     assert.equal(line.goal, 'Start the dashboard when the user logs in.');
   });
 
@@ -4159,6 +4162,30 @@ describe('preplanSummaryLine', () => {
 
 // The collector source that holds the unread names and the cut values of a preplan row.
 const GO_FILE = path.join(__dirname, '..', '..', '..', 'tools', 'dashboard_preplans.go');
+
+describe('preplanSummaryLine: the repo in the title', () => {
+  // The same topic file in two repos.
+  const topic = { slug: 'same', topic: 'same topic', status: 'paused', updatedAt: '2026-10-08T10:00:00Z' };
+  const repos = [
+    { root: '/a', name: 'alpha', preplans: [topic] },
+    { root: '/b', name: 'beta', preplans: [topic] },
+  ];
+
+  test('preplanSummaryLine: two repos with the same topic give titles that differ by repo', () => {
+    const [a, b] = view.preplanSummaryItems(repos, new Set()).map((item) => view.preplanSummaryLine(item, 'UTC').title);
+    const when = view.dateLabel(topic.updatedAt, 'UTC');
+    assert.equal(a, 'same topic · paused · ' + when + ' · alpha');
+    assert.equal(b, 'same topic · paused · ' + when + ' · beta');
+    assert.notEqual(a, b);
+  });
+
+  test('preplanSummaryLine: the repo name is the last part of the title, and a repo with no name adds no trailing separator', () => {
+    const [item] = view.preplanSummaryItems([{ root: '/n', name: 'named', preplans: [{ slug: 's', topic: 'T', status: 'paused' }] }], new Set());
+    assert.equal(view.preplanSummaryLine(item, 'UTC').title, 'T · paused · named');
+    const [noName] = view.preplanSummaryItems([{ root: '/n', preplans: [{ slug: 's', topic: 'T', status: 'paused' }] }], new Set());
+    assert.equal(view.preplanSummaryLine(noName, 'UTC').title, 'T · paused');
+  });
+});
 
 describe('preplan unread names', () => {
   // The string constants dashboardPreplanUnread* of the collector.
@@ -4337,6 +4364,20 @@ describe('render activityPanel Preplans box', () => {
     assert.equal(oneByClass(rows[0], 'act-text').textContent, 'Start the dashboard when the user logs in.');
     assert.ok(oneByClass(rows[0], 'act-meta').textContent.startsWith('live 3 · kept 1 · dropped 1 · checked '));
     assert.equal(oneByClass(rows[2], 'act-text').textContent, 'No goal yet');
+  });
+
+  test('activity: preplans box rows of two repos with the same topic show their repo', () => {
+    const topic = { slug: 'same', topic: 'same topic', status: 'paused', updatedAt: '2026-10-08T10:00:00Z' };
+    const box = boxOf([
+      { root: '/a', name: 'alpha', preplans: [topic] },
+      { root: '/b', name: 'beta', preplans: [topic] },
+    ]);
+    const titles = byClass(box, 'act-preplan').map((r) => oneByClass(r, 'pp-name').textContent);
+    assert.equal(titles.length, 2);
+    assert.ok(titles[0].startsWith('same topic · paused · '), titles[0]);
+    assert.ok(titles[0].endsWith(' · alpha'), titles[0]);
+    assert.ok(titles[1].endsWith(' · beta'), titles[1]);
+    assert.notEqual(titles[0], titles[1]);
   });
 
   test('activity: preplans box is the last box, spans the grid row, and is not a button', () => {

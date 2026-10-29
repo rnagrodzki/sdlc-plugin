@@ -836,9 +836,34 @@ var summaryConditionCases = []summaryCase{
 		}},
 	// An unclosed fence in the Goal body runs to the end of the file: every
 	// later heading is code, so the Goal body breaks P3 and the fence is
-	// still open at the end. gaps is unread too, beside goal.
+	// still open at the end. The Decisions and Open questions headings are
+	// hidden in the fence, so their names and gaps are unread too.
 	{"Goal breaks P3", summaryWrite(summaryTopic(map[string]string{preplanGoalSection: "```\nopen fence\n"})),
-		[]string{dashboardPreplanUnreadGoal, dashboardPreplanUnreadGaps}, summaryNoWarning, nil},
+		[]string{dashboardPreplanUnreadGoal, dashboardPreplanUnreadProposals, dashboardPreplanUnreadSmallestCut,
+			dashboardPreplanUnreadOpenQuestions, dashboardPreplanUnreadGaps}, summaryNoWarning, nil},
+	{"fence open before Decisions hides Decisions and Open questions",
+		summaryWrite(summaryTopic(map[string]string{"Problem and benefit": "```\ncode\n"})),
+		[]string{dashboardPreplanUnreadProposals, dashboardPreplanUnreadSmallestCut, dashboardPreplanUnreadOpenQuestions, dashboardPreplanUnreadGaps},
+		summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
+			if row.Goal == "" || row.Live != 0 || row.SmallestCut != dashboardPreplanCutNotSet || row.OpenQuestions != 0 {
+				t.Errorf("row = %+v, want the goal shown, live 0, smallestCut %q, openQuestions 0", row, dashboardPreplanCutNotSet)
+			}
+		}},
+	{"fence open after Decisions hides only Open questions",
+		summaryWrite(strings.Replace(summaryTopic(nil), summaryTestOpenQuestions, "## Notes\n\n```\ncode\n"+summaryTestOpenQuestions, 1)),
+		[]string{dashboardPreplanUnreadOpenQuestions, dashboardPreplanUnreadGaps}, summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
+			if row.Live != 3 || row.SmallestCut != dashboardPreplanCutSet || row.OpenQuestions != 0 {
+				t.Errorf("row = %+v, want live 3, smallestCut %q, openQuestions 0", row, dashboardPreplanCutSet)
+			}
+		}},
+	{"fence open in the head hides Goal",
+		summaryWrite(strings.Replace(summaryTopic(nil), summaryTestCheckLine, summaryTestCheckLine+"```\n", 1)),
+		[]string{dashboardPreplanUnreadGoal, dashboardPreplanUnreadProposals, dashboardPreplanUnreadSmallestCut,
+			dashboardPreplanUnreadOpenQuestions, dashboardPreplanUnreadGaps}, summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
+			if row.Goal != "" || row.LastCheckAt == "" {
+				t.Errorf("goal %q, lastCheckAt %q, want no goal and the check time read from the head", row.Goal, row.LastCheckAt)
+			}
+		}},
 	{"Decisions with distinct counts and no Smallest cut line", summaryWrite(summaryTopic(map[string]string{preplanDecisionsSection: summaryDistinctDecisions})),
 		[]string{}, summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
 			got := [4]any{row.Live, row.Kept, row.Dropped, row.SmallestCut}

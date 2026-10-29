@@ -3,7 +3,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Action dispatch
-The tool SHALL run exactly one operation per call, selected by the `action` field, and SHALL ignore every input field that the selected action does not list.
+The tool SHALL run exactly one operation per call, selected by the `action` field, and SHALL ignore every input field that the selected action does not list, except `section`, `content` and `topicStatus`: a call with another action refuses them (see Requirement: Preplan write input errors).
 
 | Action | Required fields | Optional fields | Result fields | Writes |
 |---|---|---|---|---|
@@ -67,7 +67,7 @@ The `preplan_write` action SHALL refuse a body that breaks P1, P2 or P3 with a `
 | P3 | every code fence opened in the body closes in the body |
 
 #### Scenario: Body too large
-- **WHEN** `content` is 65537 bytes
+- **WHEN** the body of `content` is 65537 bytes after the line ends are normalised (CRLF to LF, final line ends removed)
 - **THEN** the tool returns a `DomainError` that names rule `P1`, 65537 bytes and the limit 65536 bytes
 - **AND** the file bytes are unchanged
 

@@ -293,27 +293,34 @@ func dashboardPreplanSummaries(root string, list []DashboardPreplan) (warnings [
 
 // dashboardPreplanSummarize fills the summary fields of row from data, the
 // whole topic file. Each part adds its unread names in the order of
-// dashboardPreplanUnreadAll. An absent section is not unread: its fields
-// keep their zero values, and Gaps names it when it is a skeleton section.
+// dashboardPreplanUnreadAll.
+//
+// A section heading that is found shows its fields when its body passes the
+// checker, else its names are unread. A heading that is not found depends on
+// the fences: with no fence open at the end of the file the section is
+// absent and not unread (its fields keep their zero values, and Gaps names
+// it when it is a skeleton section); with a fence open at the end, the
+// heading can be hidden inside the fence, so its names are unread.
 func dashboardPreplanSummarize(row *DashboardPreplan, data []byte) {
-	spans, _ := preplanSectionSpans(data)
-	if body, ok := dashboardPreplanSectionBody(data, spans, preplanGoalSection); ok {
-		if preplanCheckSection(preplanGoalSection, body) != nil {
-			row.Unread = append(row.Unread, dashboardPreplanUnreadGoal)
-		} else {
-			row.Goal = dashboardPreview(preplanGoalSentence(body))
-		}
+	spans, openFence := preplanSectionSpans(data)
+	hidden := openFence != "" // a heading that is not found can be inside the fence
+	body, found := dashboardPreplanSectionBody(data, spans, preplanGoalSection)
+	switch {
+	case found && preplanCheckSection(preplanGoalSection, body) == nil:
+		row.Goal = dashboardPreview(preplanGoalSentence(body))
+	case found || hidden:
+		row.Unread = append(row.Unread, dashboardPreplanUnreadGoal)
 	}
-	if body, ok := dashboardPreplanSectionBody(data, spans, preplanDecisionsSection); ok {
-		if preplanCheckSection(preplanDecisionsSection, body) != nil {
-			row.Unread = append(row.Unread, dashboardPreplanUnreadProposals, dashboardPreplanUnreadSmallestCut)
-		} else {
-			sum := preplanSummarizeDecisions(body)
-			row.Live, row.Kept, row.Dropped = sum.Live, sum.Kept, sum.Dropped
-			if sum.CutSet {
-				row.SmallestCut = dashboardPreplanCutSet
-			}
+	body, found = dashboardPreplanSectionBody(data, spans, preplanDecisionsSection)
+	switch {
+	case found && preplanCheckSection(preplanDecisionsSection, body) == nil:
+		sum := preplanSummarizeDecisions(body)
+		row.Live, row.Kept, row.Dropped = sum.Live, sum.Kept, sum.Dropped
+		if sum.CutSet {
+			row.SmallestCut = dashboardPreplanCutSet
 		}
+	case found || hidden:
+		row.Unread = append(row.Unread, dashboardPreplanUnreadProposals, dashboardPreplanUnreadSmallestCut)
 	}
 	// The check line sits in the head, where preplan_check writes it. A
 	// legacy ## Guardrail check section is the old check record: the row
@@ -324,17 +331,18 @@ func dashboardPreplanSummarize(row *DashboardPreplan, data []byte) {
 	} else {
 		row.LastCheckAt = dashboardFormatTime(at)
 	}
-	if body, ok := dashboardPreplanSectionBody(data, spans, preplanOpenQuestionsSection); ok {
-		if preplanCheckSection(preplanOpenQuestionsSection, body) != nil {
-			row.Unread = append(row.Unread, dashboardPreplanUnreadOpenQuestions)
-		} else {
-			row.OpenQuestions = preplanOpenQuestionCount(body)
-		}
+	body, found = dashboardPreplanSectionBody(data, spans, preplanOpenQuestionsSection)
+	switch {
+	case found && preplanCheckSection(preplanOpenQuestionsSection, body) == nil:
+		row.OpenQuestions = preplanOpenQuestionCount(body)
+	case found || hidden:
+		row.Unread = append(row.Unread, dashboardPreplanUnreadOpenQuestions)
 	}
 	// A fence open at the end of the file makes each heading after it count
-	// as absent, so the list is not shown.
-	empty, openFence := preplanEmptySections(data)
-	if openFence != "" {
+	// as absent, so the list is not shown. preplanEmptySections reads the
+	// same spans, so its fence is the fence of hidden.
+	empty, _ := preplanEmptySections(data)
+	if hidden {
 		row.Unread = append(row.Unread, dashboardPreplanUnreadGaps)
 		return
 	}

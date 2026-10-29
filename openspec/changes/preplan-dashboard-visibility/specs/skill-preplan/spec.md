@@ -54,4 +54,4 @@ The stop hook SHALL NOT print `Plan presented but plan was not invoked` when the
 
 #### Scenario: Transcript cannot be read
 - **WHEN** the transcript path is a folder and no plan state file exists
-- **THEN** the stop hook prints the warning
+- **THEN** the stop hook prints no warning, because an unreadable transcript gives no evidence of plan mode

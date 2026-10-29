@@ -1904,9 +1904,12 @@
   }
 
   /**
-   * The three text lines of one Preplans box row. A part whose name is in
-   * item.unread shows its PREPLAN_UNREAD_LABELS text in place of its value,
-   * so an unread field never shows as 0 or as an empty cell.
+   * The three text lines of one Preplans box row. The title is the topic
+   * (the slug when it has no topic), the status, the date of updatedAt and
+   * the repo name, joined by ' · '; an empty part is left out, as in the
+   * rows of the other Activity boxes. A part whose name is in item.unread
+   * shows its PREPLAN_UNREAD_LABELS text in place of its value, so an unread
+   * field never shows as 0 or as an empty cell.
    * @param {object} item one preplanSummaryItems entry
    * @param {string} [tz] IANA time zone for view.dateLabel; undefined is the browser zone
    * @returns {{title: string, goal: string, meta: string}}
@@ -1922,7 +1925,7 @@
       return unread.indexOf(name) !== -1 ? PREPLAN_UNREAD_LABELS[name] : text;
     }
     var goal = part(PREPLAN_UNREAD.goal, item.goal === '' ? PREPLAN_NO_GOAL : item.goal);
-    var title = [item.topic || item.slug, item.status, dateLabel(item.updatedAt, tz)]
+    var title = [item.topic || item.slug, item.status, dateLabel(item.updatedAt, tz), stringOrEmpty(item.repo && item.repo.name)]
       .filter(function (text) {
         return text !== '';
       })

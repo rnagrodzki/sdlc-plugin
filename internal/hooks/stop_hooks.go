@@ -238,7 +238,9 @@ func planIntegrityFromTranscript(event Event, branch string) Output {
 // transcriptHasPreplan streams the first max bytes of path and reports a
 // marker match. It keeps the last len(longest marker)-1 bytes of each
 // buffer, so a marker split across two buffers matches. An open or read
-// error returns false: the warning then shows. The result is a bool, not an
+// error returns false: the warning then shows when the tail of the transcript
+// holds the plan mode text. A transcript whose tail cannot be read never gets
+// here: the hook is silent. The result is a bool, not an
 // error: the Stop hook is advisory and exits 0 on every path, and a scan that
 // fails must give the same result as a scan that finds no marker.
 func transcriptHasPreplan(path string, max int64) bool {

@@ -39,12 +39,16 @@ The snapshot SHALL give each `preplans` row `goal`, `live`, `kept`, `dropped`, `
 - **WHEN** the `## Decisions` body breaks a table rule
 - **THEN** `unread` holds `proposals` and `smallestCut`
 
+#### Scenario: Code fence left open
+- **WHEN** a code fence is open in `## Problem and benefit`, so `## Decisions` and `## Open questions` are hidden
+- **THEN** `unread` holds `proposals`, `smallestCut`, `openQuestions` and `gaps`
+
 #### Scenario: Empty lists
 - **WHEN** a topic file has no gaps and no unread field
 - **THEN** the row encodes `gaps` and `unread` as `[]`, never `null`
 
 ### Requirement: Activity Preplans box rows
-The Preplans box SHALL show one read-only row for each `preplans` row of the repos in scope with topic, status, date, goal, proposal counts, check date, open question count, gaps and cut state. A field named in `unread` SHALL show `unreadable`, never `0` or an empty cell.
+The Preplans box SHALL show one read-only row for each `preplans` row of the repos in scope with topic, status, date, repo name, goal, proposal counts, check date, open question count, gaps and cut state. A field named in `unread` SHALL show `unreadable`, never `0` or an empty cell.
 
 #### Scenario: Unread proposals
 - **WHEN** a row has `unread` `["proposals"]`

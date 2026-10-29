@@ -391,13 +391,15 @@ type DashboardPreplan struct {
 	// topic file leaves every summary field unread and the row stays. A field
 	// shows a value only when its section passes the format checker
 	// (preplan_format.go); otherwise the field keeps its zero value and
-	// Unread names it.
+	// Unread names it. An absent section is not unread, but a section whose
+	// heading is not found while a code fence is open at the end of the file
+	// can be hidden in that fence, so Unread names it.
 	Goal          string `json:"goal"`          // first Goal sentence, redacted, 120 runes; "" when empty
 	Live          int    `json:"live"`          // live ## Decisions rows (neither Dropped: nor Moved:)
 	Kept          int    `json:"kept"`          // live rows whose Reason holds "Kept with warning:"
 	Dropped       int    `json:"dropped"`       // rows that start with "Dropped:"
 	LastCheckAt   string `json:"lastCheckAt"`   // RFC 3339 UTC time of the "Last check:" text; "" when unread
-	OpenQuestions int    `json:"openQuestions"` // bullets of ## Open questions; 0 when the section is absent
+	OpenQuestions int    `json:"openQuestions"` // bullets of ## Open questions; 0 when the section is absent or unread
 	// Gaps names the skeleton sections that are absent or empty, without
 	// "## " (preplanEmptySections, the emptySections list of preplan_check).
 	// It encodes as [], never null.
@@ -406,7 +408,8 @@ type DashboardPreplan struct {
 	// Unread holds one name for each part of the topic file whose summary
 	// is not shown: goal, proposals (live, kept, dropped), smallestCut,
 	// lastCheck (lastCheckAt), openQuestions and gaps. A part is unread when
-	// its section failed the checker or the file was not read. The names
+	// its section failed the checker, its heading can be hidden in a code
+	// fence that is open at the end of the file, or the file was not read. The names
 	// come in the order of dashboardPreplanUnreadAll. It encodes as [],
 	// never null.
 	Unread []string `json:"unread"`
