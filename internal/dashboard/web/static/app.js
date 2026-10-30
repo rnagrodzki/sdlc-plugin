@@ -36,6 +36,8 @@ var ui = {
   scrollTop: 0,
   lastSnapshot: null,
   source: null,
+  stopped: false, // true after the stop request succeeded; the page opens no new stream
+  panelSig: Object.create(null), // panel name -> signature of its last draw
   hash: null, // a pipeline hash that waits for the first snapshot
   // The detail key of the open detail viewer, or null. The viewer reads its
   // item again from each snapshot, so it never holds a row element.
@@ -108,7 +110,10 @@ function setConnection(state) {
   byId('conn-text').textContent = view.connectionText(state);
 }
 
+// Opens the event stream. The light shows connecting until the stream opens
+// or sends its first snapshot.
 function connect() {
+  setConnection('connecting');
   ui.source = new EventSource('/api/events');
   ui.source.addEventListener('open', function () {
     setConnection('open');
@@ -118,8 +123,21 @@ function connect() {
   });
   ui.source.addEventListener('snapshot', function (event) {
     setConnection('snapshot');
-    render(JSON.parse(event.data));
+    render(JSON.parse(event.data), 'frame');
   });
+}
+
+// onVisibility closes the stream while the page is hidden and opens it
+// when the page is visible again.
+function onVisibility() {
+  var action = view.visibilityAction(document.hidden, !!ui.source, !!ui.stopped);
+  if (action === 'close') {
+    ui.source.close();
+    ui.source = null;
+    setConnection('paused');
+  } else if (action === 'open') {
+    connect();
+  }
 }
 
 // --- Scroll and focus kept across a rebuild ----------------------------------
@@ -316,8 +334,11 @@ function attachQueueState(snapshot) {
 }
 
 // Draws one snapshot: the tab title, the header counts, the filter chips, the
-// tab counts, and the four panels. The scroll and focus survive the rebuild.
-function render(snapshot) {
+// tab counts, and the active panel tab. reason is 'frame' for a snapshot
+// event, 'select' for a panel tab select, and absent for a user action, which
+// counts as 'click'. A 'frame' skips the active panel tab when its input did
+// not change (view.panelsToDraw). The scroll and focus survive the rebuild.
+function render(snapshot, reason) {
   attachQueueState(snapshot);
   ui.lastSnapshot = snapshot || { repos: [] };
   var repos = ui.lastSnapshot.repos || [];
@@ -338,10 +359,14 @@ function render(snapshot) {
 
   var now = Date.now();
   var tz = timeZone();
-  renderFeed(ui.lastSnapshot, repos, scope, now, tz);
-  replaceChildren(tabs.preplans.panel, [draw.preplanPanel(document, view, repos, scope, ui)]);
-  replaceChildren(tabs.activity.panel, [draw.activityPanel(document, view, repos, scope, ui)]);
-  replaceChildren(tabs.history.panel, [draw.historyTable(document, view, repos, scope, now, tz, ui)]);
+  var sigs = view.panelSignatures(repos, scope);
+  view.panelsToDraw(reason || 'click', ui.tab, sigs, ui.panelSig).forEach(function (name) {
+    if (name === 'pipelines') renderFeed(ui.lastSnapshot, repos, scope, now, tz);
+    if (name === 'preplans') replaceChildren(tabs.preplans.panel, [draw.preplanPanel(document, view, repos, scope, ui)]);
+    if (name === 'activity') replaceChildren(tabs.activity.panel, [draw.activityPanel(document, view, repos, scope, ui)]);
+    if (name === 'history') replaceChildren(tabs.history.panel, [draw.historyTable(document, view, repos, scope, now, tz, ui)]);
+    ui.panelSig[name] = sigs[name];
+  });
   syncToggleAll();
 
   restoreFocus();
@@ -368,6 +393,8 @@ function selectTab(name, focus) {
   });
   ui.tab = name;
   view.saveTab(storage(), name);
+  // A snapshot event draws only the active panel tab, so the newly selected one draws now.
+  if (changed && ui.lastSnapshot) render(ui.lastSnapshot, 'select');
   syncToggleAll();
   if (changed) stage.scrollTop = 0;
   if (focus) tabs[name].tab.focus();
@@ -465,6 +492,8 @@ function applyHash(hash) {
     ui.hash = hash;
     return;
   }
+  // blocks fills only when the Pipelines tab draws, so the tab is selected first.
+  selectTab('pipelines');
   var block = null;
   for (var i = 0; i < blocks.length; i++) {
     if (blocks[i].pipeline.id === target.pipelineId) {
@@ -473,7 +502,6 @@ function applyHash(hash) {
     }
   }
   if (!block) return;
-  selectTab('pipelines');
   block.node.scrollIntoView({ block: 'start', behavior: 'auto' });
   if (target.station !== null) selectStation(block.key, target.station, true);
 }
@@ -501,6 +529,8 @@ function stopServer() {
       var result = view.stopResult(code);
       if (result === 'stopped') {
         if (ui.source) ui.source.close();
+        ui.source = null;
+        ui.stopped = true;
         byId('stop-btn').disabled = true;
       }
       setConnection(result);
@@ -866,7 +896,8 @@ function clearCache() {
 // --- Wiring ---------------------------------------------------------------------
 
 // Wires the event listeners, starts the one timer for the wait banners, and
-// opens the event stream.
+// opens the event stream. A page that opens hidden shows the paused light and
+// opens the stream at its first visibilitychange to visible.
 function init() {
   view.TAB_NAMES.forEach(function (name, index) {
     var tab = tabs[name].tab;
@@ -1070,7 +1101,9 @@ function init() {
 
   selectTab(ui.tab);
   applyHash(location.hash);
-  connect();
+  document.addEventListener('visibilitychange', onVisibility);
+  if (!document.hidden) connect();
+  else setConnection('paused');
 }
 
 init();

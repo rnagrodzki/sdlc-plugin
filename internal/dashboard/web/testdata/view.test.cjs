@@ -1503,6 +1503,193 @@ describe('connectionText', () => {
   test('returns an empty string for an unknown event', () => {
     assert.equal(view.connectionText('bogus'), '');
   });
+
+  test('returns the connecting and paused texts', () => {
+    assert.equal(view.connectionText('connecting'), 'Connecting…');
+    assert.equal(view.connectionText('paused'), 'Paused while the page is hidden.');
+  });
+
+  test('CONNECTION_STATES equals the data-state values that app.css styles on .conn', () => {
+    const css = fs.readFileSync(path.join(__dirname, '../static/app.css'), 'utf8');
+    const styled = new Set();
+    for (const m of css.matchAll(/\.conn\[data-state="([^"]+)"\]/g)) styled.add(m[1]);
+    assert.deepEqual([...styled].sort(), view.CONNECTION_STATES.slice().sort());
+  });
+
+  test('every setConnection literal in app.js is a CONNECTION_STATES value', () => {
+    const app = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
+    const used = [...app.matchAll(/setConnection\('([^']+)'\)/g)].map((m) => m[1]);
+    assert.deepEqual([...new Set(used)].sort(), ['connecting', 'error', 'open', 'paused', 'snapshot']);
+    used.forEach((state) => assert.ok(view.CONNECTION_STATES.includes(state), state));
+    // The stop flow sets the stopResult value; both values are states too.
+    assert.ok(view.CONNECTION_STATES.includes(view.stopResult(200)));
+    assert.ok(view.CONNECTION_STATES.includes(view.stopResult(0)));
+  });
+});
+
+describe('panelSignatures', () => {
+  // One repo with a value in every field that any panel tab reads.
+  function fullRepo(root) {
+    return {
+      name: 'repo-' + root,
+      root: root,
+      error: '',
+      warnings: ['w1'],
+      loneWaits: [{ sessionId: 's1' }],
+      pipelines: [{ id: 'p1', status: 'running' }],
+      sessions: [{ id: 's1' }],
+      deferred: [{ id: 'd1', priority: 'high' }],
+      learnings: [{ title: 'l1' }],
+      history: [{ runId: 'r1' }],
+      preplans: [{ file: 'a.md', status: 'paused' }],
+    };
+  }
+
+  // A new value for a field, of the same JSON type as in fullRepo.
+  function changed(repo, field) {
+    const value = repo[field];
+    if (Array.isArray(value)) return value.concat([{ added: true }]);
+    return value + '-changed';
+  }
+
+  test('keys equal TAB_NAMES and PANEL_FIELDS keys', () => {
+    const sigs = view.panelSignatures([fullRepo('/a')], new Set());
+    assert.deepEqual(Object.keys(sigs).sort(), view.TAB_NAMES.slice().sort());
+    assert.deepEqual(Object.keys(view.PANEL_FIELDS).sort(), view.TAB_NAMES.slice().sort());
+  });
+
+  test('PANEL_FIELDS lists the fields of each panel tab', () => {
+    assert.deepEqual(view.PANEL_FIELDS, {
+      pipelines: ['name', 'root', 'error', 'warnings', 'loneWaits', 'pipelines', 'sessions'],
+      activity: ['name', 'root', 'deferred', 'learnings'],
+      history: ['name', 'root', 'history'],
+      preplans: ['name', 'root', 'warnings', 'preplans'],
+    });
+  });
+
+  test('a change of one field changes the signature of exactly the panel tabs that list it', () => {
+    const fields = new Set();
+    Object.values(view.PANEL_FIELDS).forEach((list) => list.forEach((f) => fields.add(f)));
+    const before = view.panelSignatures([fullRepo('/a')], new Set());
+    for (const field of fields) {
+      const repo = fullRepo('/a');
+      repo[field] = changed(repo, field);
+      const after = view.panelSignatures([repo], new Set());
+      for (const name of view.TAB_NAMES) {
+        const lists = view.PANEL_FIELDS[name].includes(field);
+        assert.equal(after[name] !== before[name], lists, `field ${field}, panel ${name}`);
+      }
+    }
+  });
+
+  test('a new loneWaits entry changes only pipelines', () => {
+    const repo = fullRepo('/a');
+    const before = view.panelSignatures([repo], new Set());
+    repo.loneWaits = repo.loneWaits.concat([{ sessionId: 's2' }]);
+    const after = view.panelSignatures([repo], new Set());
+    assert.notEqual(after.pipelines, before.pipelines);
+    assert.equal(after.activity, before.activity);
+    assert.equal(after.history, before.history);
+    assert.equal(after.preplans, before.preplans);
+  });
+
+  test('a field that no panel tab reads changes no signature', () => {
+    const repo = fullRepo('/a');
+    const before = view.panelSignatures([repo], new Set());
+    repo.issueCount = 7;
+    assert.deepEqual(view.panelSignatures([repo], new Set()), before);
+  });
+
+  test('equal repo data gives equal signatures', () => {
+    assert.deepEqual(
+      view.panelSignatures([fullRepo('/a')], new Set()),
+      view.panelSignatures([fullRepo('/a')], new Set())
+    );
+  });
+
+  test('a repo out of scope adds nothing; a scope change changes every signature', () => {
+    const a = fullRepo('/a');
+    const b = fullRepo('/b');
+    const onlyA = view.panelSignatures([a], new Set());
+    const scopedA = view.panelSignatures([a, b], new Set(['/a']));
+    assert.deepEqual(scopedA, onlyA);
+    const all = view.panelSignatures([a, b], new Set());
+    for (const name of view.TAB_NAMES) assert.notEqual(all[name], scopedA[name], name);
+    const outOfScope = fullRepo('/b');
+    outOfScope.history = changed(outOfScope, 'history');
+    assert.deepEqual(view.panelSignatures([a, outOfScope], new Set(['/a'])), scopedA);
+  });
+
+  test('no repos gives an empty list for each panel tab', () => {
+    const sigs = view.panelSignatures(undefined, new Set());
+    for (const name of view.TAB_NAMES) assert.equal(sigs[name], '[]');
+  });
+});
+
+describe('panelsToDraw', () => {
+  const sigs = { pipelines: 'P2', activity: 'A1', history: 'H1', preplans: 'R1' };
+
+  test('frame with a changed signature draws the active panel tab', () => {
+    assert.deepEqual(view.panelsToDraw('frame', 'pipelines', sigs, { pipelines: 'P1' }), ['pipelines']);
+  });
+
+  test('frame with the same signature draws nothing', () => {
+    assert.deepEqual(view.panelsToDraw('frame', 'pipelines', sigs, { pipelines: 'P2' }), []);
+  });
+
+  test('click draws the active panel tab, also with the same signature', () => {
+    assert.deepEqual(view.panelsToDraw('click', 'history', sigs, { history: 'H1' }), ['history']);
+    assert.deepEqual(view.panelsToDraw('click', 'history', sigs, { history: 'H0' }), ['history']);
+  });
+
+  test('select draws the active panel tab, also with the same signature', () => {
+    assert.deepEqual(view.panelsToDraw('select', 'activity', sigs, { activity: 'A1' }), ['activity']);
+    assert.deepEqual(view.panelsToDraw('select', 'activity', sigs, { activity: 'A0' }), ['activity']);
+  });
+
+  test('a panel tab with no last draw is drawn, for every reason', () => {
+    for (const reason of ['frame', 'click', 'select']) {
+      assert.deepEqual(view.panelsToDraw(reason, 'preplans', sigs, Object.create(null)), ['preplans'], reason);
+      assert.deepEqual(view.panelsToDraw(reason, 'preplans', sigs, { pipelines: 'P2' }), ['preplans'], reason);
+    }
+  });
+
+  test('the first snapshot draws the active panel tab', () => {
+    const first = view.panelSignatures([], new Set());
+    assert.deepEqual(view.panelsToDraw('frame', 'pipelines', first, Object.create(null)), ['pipelines']);
+  });
+
+  test('only the active panel tab is drawn, never another one', () => {
+    const drawn = { pipelines: 'P0', activity: 'A0', history: 'H0', preplans: 'R0' };
+    for (const active of view.TAB_NAMES) {
+      assert.deepEqual(view.panelsToDraw('frame', active, sigs, drawn), [active]);
+    }
+  });
+});
+
+describe('visibilityAction', () => {
+  test('hidden with an open stream closes it, stopped or not', () => {
+    assert.equal(view.visibilityAction(true, true, false), 'close');
+    assert.equal(view.visibilityAction(true, true, true), 'close');
+  });
+
+  test('hidden with no stream does nothing, stopped or not', () => {
+    assert.equal(view.visibilityAction(true, false, false), 'none');
+    assert.equal(view.visibilityAction(true, false, true), 'none');
+  });
+
+  test('visible with no stream and a running server opens a stream', () => {
+    assert.equal(view.visibilityAction(false, false, false), 'open');
+  });
+
+  test('visible with no stream after a server stop does nothing', () => {
+    assert.equal(view.visibilityAction(false, false, true), 'none');
+  });
+
+  test('visible with an open stream does nothing, stopped or not', () => {
+    assert.equal(view.visibilityAction(false, true, false), 'none');
+    assert.equal(view.visibilityAction(false, true, true), 'none');
+  });
 });
 
 describe('stopRequest', () => {
@@ -3058,6 +3245,25 @@ describe('render tickElapsed', () => {
     const node = fakeDurNode(ASKED, '5m 0s');
     render.tickElapsed(fakeElapsedDoc([], [node]), view, ASKED_MS - 60000);
     assert.equal(node.textContent, '0s');
+  });
+
+  test('a hidden document changes no text and queries no node', () => {
+    const banner = fakeElapsedNode(ASKED, '0s');
+    const dur = fakeDurNode(ASKED, '0s');
+    const doc = fakeElapsedDoc([banner], [dur]);
+    doc.hidden = true;
+    render.tickElapsed(doc, view, ASKED_MS + 26000);
+    assert.equal(banner.textContent, '0s');
+    assert.equal(dur.textContent, '0s');
+    assert.deepEqual(doc.queries, []);
+  });
+
+  test('a visible document (hidden false) rewrites the text', () => {
+    const banner = fakeElapsedNode(ASKED, '0s');
+    const doc = fakeElapsedDoc([banner]);
+    doc.hidden = false;
+    render.tickElapsed(doc, view, ASKED_MS + 26000);
+    assert.equal(banner.textContent, '26s');
   });
 });
 

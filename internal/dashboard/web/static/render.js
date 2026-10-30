@@ -270,11 +270,13 @@
    * Rewrites the text of every `.attn-elapsed` node in doc from its
    * data-asked value and now, and the text of every `.dur-live` node from its
    * data-since value and now. A node whose time is unreadable keeps its text.
+   * While doc.hidden is true it returns at once and changes no text.
    * @param {Document} doc
    * @param {object} view window.sdlcView
    * @param {Date|number} now
    */
   function tickElapsed(doc, view, now) {
+    if (doc.hidden) return;
     var nodes = doc.querySelectorAll('.attn-elapsed');
     for (var i = 0; i < nodes.length; i++) {
       var text = elapsedText(view, nodes[i].getAttribute('data-asked'), now);

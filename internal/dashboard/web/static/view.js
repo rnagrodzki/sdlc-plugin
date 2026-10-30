@@ -63,9 +63,13 @@
 
   var EMPTY_TEXT = 'Nothing is running. Start /sdlc:ship in any repo and it shows here.';
 
+  // The text of each connection light state. The keys are the data-state
+  // values that app.css styles on .conn.
   var CONNECTION_TEXT = {
     open: '',
     snapshot: '',
+    connecting: 'Connecting…',
+    paused: 'Paused while the page is hidden.',
     error: 'Reconnecting…',
     stopped: 'Server stopped. Run /sdlc:dashboard to start it again.',
     'stop-failed': 'The server did not stop. Run /sdlc:dashboard --stop.',
@@ -74,6 +78,14 @@
   var TAB_KEY = 'sdlc-dashboard-tab';
   var REPO_FILTER_KEY = 'sdlc-dashboard-repo-filter';
   var TAB_NAMES = ['pipelines', 'activity', 'history', 'preplans'];
+  // The repo fields that the draw function of each panel tab reads. A
+  // snapshot that changes none of them leaves the panel tab as drawn.
+  var PANEL_FIELDS = {
+    pipelines: ['name', 'root', 'error', 'warnings', 'loneWaits', 'pipelines', 'sessions'],
+    activity: ['name', 'root', 'deferred', 'learnings'],
+    history: ['name', 'root', 'history'],
+    preplans: ['name', 'root', 'warnings', 'preplans'],
+  };
   // The status values of a preplan topic file, in chip order. Must equal
   // tools.PreplanStatuses (TestPreplanStatusParity in server_test.go).
   var PREPLAN_STATUSES = ['in progress', 'ready for plan', 'paused'];
@@ -128,11 +140,68 @@
   }
 
   /**
-   * @param {string} event 'open' | 'error' | 'snapshot' | 'stopped' | 'stop-failed'
+   * @param {string} event 'open' | 'snapshot' | 'connecting' | 'paused' | 'error' | 'stopped' | 'stop-failed'
    * @returns {string} status banner text, '' when nothing should show
    */
   function connectionText(event) {
     return CONNECTION_TEXT[event] || '';
+  }
+
+  /**
+   * Returns one JSON string for each panel tab: the PANEL_FIELDS of each repo
+   * in scope, in snapshot order. Two equal strings mean the panel tab draws
+   * the same repo data.
+   * @param {Array<object>} repos snapshot repos
+   * @param {Set<string>} scope selected repo roots; empty means every repo
+   * @returns {{pipelines: string, activity: string, history: string, preplans: string}}
+   */
+  function panelSignatures(repos, scope) {
+    var sigs = {};
+    TAB_NAMES.forEach(function (name) {
+      var parts = [];
+      (repos || []).forEach(function (repo) {
+        if (!repo || !inScope(scope, repo.root)) return;
+        var part = {};
+        PANEL_FIELDS[name].forEach(function (field) {
+          part[field] = repo[field];
+        });
+        parts.push(part);
+      });
+      sigs[name] = JSON.stringify(parts);
+    });
+    return sigs;
+  }
+
+  /**
+   * Returns the names of the panel tabs to draw: only the active one, or
+   * none. A 'frame' (a snapshot event) skips the active panel tab when its
+   * signature equals the signature of its last draw. A 'click' or a 'select'
+   * always draws it, and so does a panel tab with no last draw.
+   * @param {string} reason 'frame' | 'click' | 'select'
+   * @param {string} active the name of the selected panel tab
+   * @param {object} sigs panelSignatures output
+   * @param {object} drawn panel name -> signature of its last draw
+   * @returns {Array<string>} [active] or []
+   */
+  function panelsToDraw(reason, active, sigs, drawn) {
+    var last = drawn ? drawn[active] : undefined;
+    if (reason === 'frame' && typeof last === 'string' && last === sigs[active]) return [];
+    return [active];
+  }
+
+  /**
+   * Returns what the page does on a visibility change: 'close' the open
+   * stream of a hidden page, 'open' a stream for a visible page that has
+   * none (unless the server was stopped), else 'none'.
+   * @param {boolean} hidden document.hidden
+   * @param {boolean} sourceOpen true when the page holds an event stream
+   * @param {boolean} stopped true after the stop request succeeded
+   * @returns {string} 'close' | 'open' | 'none'
+   */
+  function visibilityAction(hidden, sourceOpen, stopped) {
+    if (hidden) return sourceOpen ? 'close' : 'none';
+    if (sourceOpen || stopped) return 'none';
+    return 'open';
   }
 
   /**
@@ -1979,6 +2048,11 @@
     cutText: cutText,
     emptyText: emptyText,
     connectionText: connectionText,
+    CONNECTION_STATES: Object.keys(CONNECTION_TEXT),
+    PANEL_FIELDS: PANEL_FIELDS,
+    panelSignatures: panelSignatures,
+    panelsToDraw: panelsToDraw,
+    visibilityAction: visibilityAction,
     stopRequest: stopRequest,
     stopResult: stopResult,
     archiveRequest: archiveRequest,

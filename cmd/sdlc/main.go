@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"time"
@@ -118,10 +119,22 @@ func runDashboard(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	lowerServePriority(os.Stderr)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	return web.Serve(ctx, dashboardOptions(port, pluginVersion, cancel, tools.ClearCache))
+}
+
+// dashboardLowerPriority is dashboard.LowerPriority. Tests replace it.
+var dashboardLowerPriority = dashboard.LowerPriority
+
+// lowerServePriority lowers the CPU priority of the server. A failure
+// writes one line to w and never stops the start.
+func lowerServePriority(w io.Writer) {
+	if err := dashboardLowerPriority(); err != nil {
+		fmt.Fprintf(w, "sdlc dashboard: lower priority: %v\n", err)
+	}
 }
 
 // clearCacheFunc is the signature of tools.ClearCache: it clears the cache of

@@ -1,11 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -201,5 +207,78 @@ func TestDashboardOptions_CollectSlim(t *testing.T) {
 	}
 	if c := p.Steps[1]; c.Detail != nil || c.DetailKind != "result" {
 		t.Errorf("commit step detail, detailKind = %+v, %q; want nil, result", c.Detail, c.DetailKind)
+	}
+}
+
+// stubLowerPriority replaces dashboardLowerPriority with a function that
+// returns err and counts its calls. A cleanup restores the production function.
+func stubLowerPriority(t *testing.T, err error) *int {
+	t.Helper()
+	orig := dashboardLowerPriority
+	t.Cleanup(func() { dashboardLowerPriority = orig })
+	calls := 0
+	dashboardLowerPriority = func() error {
+		calls++
+		return err
+	}
+	return &calls
+}
+
+// TestLowerServePriority checks that a failure of the priority function writes
+// one line to the writer and that a success writes nothing.
+func TestLowerServePriority(t *testing.T) {
+	t.Run("failure writes one line", func(t *testing.T) {
+		calls := stubLowerPriority(t, errors.New("boom"))
+		var buf bytes.Buffer
+		lowerServePriority(&buf)
+		if *calls != 1 {
+			t.Errorf("calls = %d, want 1", *calls)
+		}
+		if want := "sdlc dashboard: lower priority: boom\n"; buf.String() != want {
+			t.Errorf("output = %q, want %q", buf.String(), want)
+		}
+	})
+	t.Run("success writes nothing", func(t *testing.T) {
+		calls := stubLowerPriority(t, nil)
+		var buf bytes.Buffer
+		lowerServePriority(&buf)
+		if *calls != 1 {
+			t.Errorf("calls = %d, want 1", *calls)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("output = %q, want none", buf.String())
+		}
+	})
+}
+
+// TestLowerServePriority_RunDashboard checks that "sdlc dashboard serve" lowers
+// the priority after the argument check and before it starts the server. A bad
+// command line returns 2 and does not call the priority function. A port that
+// another program holds returns 3 after one call, so no server starts.
+func TestLowerServePriority_RunDashboard(t *testing.T) {
+	foreign := httptest.NewServer(http.NotFoundHandler())
+	defer foreign.Close()
+	busy := strconv.Itoa(foreign.Listener.Addr().(*net.TCPAddr).Port)
+
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		wantCode  int
+		wantCalls int
+	}{
+		{"no serve word", []string{"status"}, 2, 0},
+		{"bad flag", []string{"serve", "--bogus"}, 2, 0},
+		{"bad port", []string{"serve", "--port", "80"}, 2, 0},
+		{"port held by another program", []string{"serve", "--port", busy}, 3, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := stubLowerPriority(t, nil)
+			if code := runDashboard(tc.args); code != tc.wantCode {
+				t.Errorf("runDashboard(%v) = %d, want %d", tc.args, code, tc.wantCode)
+			}
+			if *calls != tc.wantCalls {
+				t.Errorf("priority calls = %d, want %d", *calls, tc.wantCalls)
+			}
+		})
 	}
 }

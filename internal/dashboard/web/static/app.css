@@ -164,6 +164,8 @@ button { font-family: inherit; }
   animation: livepulse 2.4s ease-in-out infinite;
 }
 .conn[data-state="error"] .conn-lamp { background: var(--signal-amber); }
+.conn[data-state="connecting"] .conn-lamp { background: var(--scan-cyan); }
+.conn[data-state="paused"] .conn-lamp { background: var(--rail); }
 .conn[data-state="stopped"] .conn-lamp,
 .conn[data-state="stop-failed"] .conn-lamp { background: var(--signal-red); }
 
@@ -183,6 +185,8 @@ button { font-family: inherit; }
 }
 #conn-text:empty { display: none; }
 .conn[data-state="error"] #conn-text { color: var(--signal-amber); }
+.conn[data-state="connecting"] #conn-text { color: var(--scan-cyan); }
+.conn[data-state="paused"] #conn-text { color: var(--rail); }
 .conn[data-state="stopped"] #conn-text,
 .conn[data-state="stop-failed"] #conn-text { color: var(--ivory); }
 
