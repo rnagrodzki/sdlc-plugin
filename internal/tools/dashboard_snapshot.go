@@ -505,15 +505,22 @@ type DashboardDeferred struct {
 // one repo entry under the main root. now decides the stalled, 7 day
 // pipeline and 24 h wait and learnings rules; version is copied into the
 // snapshot.
+//
+// The large append-only source files of a repo (evidence lines, runs.jsonl,
+// the learnings log and deferred.json) are parsed again only when their size
+// or modification time changes. After the collect, the parse cache drops the
+// data of each repo that is not in roots.
 func CollectDashboardSnapshot(roots []string, now time.Time, version string) DashboardSnapshot {
 	snap := DashboardSnapshot{
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Version:     version,
 		Repos:       []DashboardRepo{},
 	}
-	for _, root := range dashboardRepoRoots(roots) {
+	repoRoots := dashboardRepoRoots(roots)
+	for _, root := range repoRoots {
 		snap.Repos = append(snap.Repos, collectDashboardRepo(root, now))
 	}
+	pruneDashboardParseCache(repoRoots)
 	return snap
 }
 
@@ -786,14 +793,33 @@ type dashboardEvidenceLine struct {
 // dashboardEvidenceTimes returns, for each branch slug, the newest ts of the
 // CLI and user-input evidence lines of that branch (current and rotated
 // files). MCP invocation lines carry no branch and are not read.
+//
+// The map comes from the parse cache, which is built again when one of the
+// evidence files changes. The map is shared between calls: a caller reads it
+// and never writes to it. A file that cannot be read adds no line, and the
+// cache does not keep that result.
 func dashboardEvidenceTimes(root string) map[string]time.Time {
-	out := map[string]time.Time{}
 	files := []string{
 		cliEvidencePath(root), cliEvidencePath(root) + ".1",
 		userInputPath(root), userInputPath(root) + ".1",
 	}
+	out, _ := dashboardCached(dashboardCacheKey(root, "evidence-times"), files, func() (map[string]time.Time, error) {
+		return dashboardBuildEvidenceTimes(files)
+	})
+	return out
+}
+
+// dashboardBuildEvidenceTimes reads the evidence files and returns, for each
+// branch slug, the newest ts of its lines. The error is the first read error
+// of a file; the map then holds the lines of the other files.
+func dashboardBuildEvidenceTimes(files []string) (map[string]time.Time, error) {
+	out := map[string]time.Time{}
+	var firstErr error
 	for _, f := range files {
-		lines, _ := readJSONLEntries[dashboardEvidenceLine](f, "dashboard evidence")
+		lines, err := readJSONLEntries[dashboardEvidenceLine](f, "dashboard evidence")
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
 		for _, l := range lines {
 			if l.Branch == "" {
 				continue
@@ -808,7 +834,7 @@ func dashboardEvidenceTimes(root string) map[string]time.Time {
 			}
 		}
 	}
-	return out
+	return out, firstErr
 }
 
 // dashboardStatePipeline builds the pipeline of one ship, execute, or plan

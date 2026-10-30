@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -55,8 +54,9 @@ const (
 
 // Timings are package variables so tests can shorten them.
 var (
-	// snapshotPollInterval is how often /api/events collects a snapshot and
-	// compares its hash with the last one sent.
+	// snapshotPollInterval is how often the shared collect loop of the
+	// /api/events streams collects a snapshot and compares its hash with the
+	// last one sent. A loop reads it once, when it starts.
 	snapshotPollInterval = 2 * time.Second
 	// pingInterval is how often /api/events sends an SSE comment line, so
 	// proxies and the browser keep the stream open.
@@ -272,6 +272,7 @@ type handler struct {
 	hosts     [2]string
 	origins   [2]string
 	mux       *http.ServeMux
+	broadcast *broadcaster
 }
 
 func newHandler(ctx context.Context, o Options, token string, pid int, startedAt time.Time, stop func()) *handler {
@@ -293,6 +294,7 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 		origins:   [2]string{"http://127.0.0.1:" + port, "http://localhost:" + port},
 		mux:       http.NewServeMux(),
 	}
+	h.broadcast = newBroadcaster(ctx, h.snapshot)
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		panic(fmt.Sprintf("dashboard web: embedded static dir: %v", err))
@@ -369,9 +371,10 @@ func (h *handler) rootPaths(t time.Time) []string {
 	return paths
 }
 
-// serveEvents streams snapshots as server-sent events: a retry line and the
-// current snapshot at connect, a new snapshot only when its hash changes,
-// and a ping comment every pingInterval.
+// serveEvents streams snapshots as server-sent events: a retry line, then
+// the current snapshot at connect, a new snapshot only when its hash
+// changes, and a ping comment every pingInterval. The snapshots come from
+// the shared collect loop of h.broadcast, which runs while a stream is open.
 func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -387,30 +390,26 @@ func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 	if _, err := fmt.Fprintf(w, "retry: %d\n\n", sseRetryMillis); err != nil {
 		return
 	}
+	flusher.Flush()
 
+	ch, latest := h.broadcast.subscribe()
+	defer h.broadcast.unsubscribe(ch)
 	lastHash := ""
-	send := func() error {
-		data, hash, err := encodeSnapshot(h.snapshot())
-		if err != nil {
-			fmt.Fprintf(stderr, "sdlc dashboard: %v\n", err)
+	send := func(f *frame) error {
+		if f == nil || f.hash == lastHash {
 			return nil
 		}
-		if hash == lastHash {
-			return nil
-		}
-		if _, err := fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data); err != nil {
+		if _, err := fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", f.data); err != nil {
 			return err
 		}
-		lastHash = hash
+		lastHash = f.hash
 		flusher.Flush()
 		return nil
 	}
-	if send() != nil {
+	if send(latest) != nil {
 		return
 	}
 
-	poll := time.NewTicker(snapshotPollInterval)
-	defer poll.Stop()
 	ping := time.NewTicker(pingInterval)
 	defer ping.Stop()
 	for {
@@ -419,8 +418,8 @@ func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-h.ctx.Done():
 			return
-		case <-poll.C:
-			if send() != nil {
+		case f := <-ch:
+			if send(&f) != nil {
 				return
 			}
 		case <-ping.C:
@@ -430,22 +429,6 @@ func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
-}
-
-// encodeSnapshot returns the JSON of s and a hash of s without its
-// GeneratedAt time, which changes at every collect.
-func encodeSnapshot(s tools.DashboardSnapshot) (data []byte, hash string, err error) {
-	data, err = json.Marshal(s)
-	if err != nil {
-		return nil, "", err
-	}
-	s.GeneratedAt = ""
-	stable, err := json.Marshal(s)
-	if err != nil {
-		return nil, "", err
-	}
-	sum := sha256.Sum256(stable)
-	return data, hex.EncodeToString(sum[:]), nil
 }
 
 // guardMutation lets a state-changing request pass only when it comes from

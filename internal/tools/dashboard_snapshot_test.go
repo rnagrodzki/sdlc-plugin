@@ -22,6 +22,7 @@ var dashNow = time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC)
 func dashRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	t.Cleanup(resetDashboardParseCache)
 	if err := os.MkdirAll(filepath.Join(root, paths.DataDir, paths.RunsSubdir), 0o755); err != nil {
 		t.Fatal(err)
 	}
