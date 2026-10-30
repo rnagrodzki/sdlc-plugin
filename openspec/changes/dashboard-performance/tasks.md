@@ -23,7 +23,7 @@ flowchart LR
 
 - [ ] 2.1 Add the shared collect loop for the event stream in internal/dashboard/web/broadcast.go — verify: go test -race ./internal/dashboard/web/ -run 'TestBroadcast|TestEvents|TestServe' <!-- ref:2-1-add-the-shared-collect-loop-for-the-109a5d -->
 - [ ] 2.2 Add the GET run-detail and session-detail routes in internal/dashboard/web/server.go — verify: go test -tags integration ./internal/dashboard/web/ ./cmd/sdlc/ -run 'TestHandler|TestE2E|TestWithToolRoutes|TestDashboardOptions' <!-- ref:2-2-add-the-get-run-detail-and-session-d-66ad14 -->
-- [ ] 2.3 Lower the CPU priority at serve start in internal/dashboard/priority_unix.go and cmd/sdlc/main.go — verify: go test ./internal/dashboard/ ./cmd/sdlc/ -run 'TestLowerPriority|TestLowerServePriority' && GOOS=windows go build ./internal/dashboard/ <!-- ref:2-3-lower-the-cpu-priority-at-serve-star-210256 -->
+- [ ] 2.3 Lower the CPU priority at serve start in internal/dashboard/priority_pgrp.go and cmd/sdlc/main.go — verify: go test ./internal/dashboard/ ./cmd/sdlc/ -run 'TestLowerPriority|TestLowerServePriority' && GOOS=windows go build ./internal/dashboard/ <!-- ref:2-3-lower-the-cpu-priority-at-serve-star-210256 -->
 
 ## 3. Page
 

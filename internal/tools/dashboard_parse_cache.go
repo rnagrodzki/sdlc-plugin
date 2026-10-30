@@ -36,25 +36,35 @@ var dashboardParseCache = struct {
 }{entries: map[string]dashboardCacheEntry{}}
 
 // dashboardCacheKey returns the cache key of the data set name of the repo at
-// root. pruneDashboardParseCache reads the root back as the part before the
-// last "|", so name must not hold a "|".
+// root. dashboardCacheKeyRoot reads the root back as the part before the last
+// "|", so name must not hold a "|".
 func dashboardCacheKey(root, name string) string {
 	return root + "|" + name
 }
 
+// dashboardCacheKeyRoot returns the root part of a key that dashboardCacheKey
+// built. ok is false when key holds no "|".
+func dashboardCacheKeyRoot(key string) (root string, ok bool) {
+	i := strings.LastIndexByte(key, '|')
+	if i < 0 {
+		return "", false
+	}
+	return key[:i], true
+}
+
 // dashboardCached returns the cached value of key when the signature of
-// paths is equal to the stored one. Else it calls build. It stores the
+// files is equal to the stored one. Else it calls build. It stores the
 // result only when err is nil. build runs under the cache lock.
 //
 // build is called, and its value and error are returned unchanged, when
-// os.Stat fails for a path with an error other than "not exist", and when the
-// total size of paths is over dashboardCacheMaxBytes. In both cases the
-// result is not stored. A path that does not exist has size -1.
+// os.Stat fails for a file with an error other than "not exist", and when the
+// total size of files is over dashboardCacheMaxBytes. In both cases the
+// result is not stored. A file that does not exist has size -1.
 //
 // The value is shared between calls. A caller that changes a value of a
 // cached slice or map copies it first.
-func dashboardCached[T any](key string, paths []string, build func() (T, error)) (T, error) {
-	sigs, total, ok := dashboardFileSigs(paths)
+func dashboardCached[T any](key string, files []string, build func() (T, error)) (T, error) {
+	sigs, total, ok := dashboardFileSigs(files)
 
 	dashboardParseCache.Lock()
 	defer dashboardParseCache.Unlock()
@@ -77,14 +87,14 @@ func dashboardCached[T any](key string, paths []string, build func() (T, error))
 	return v, err
 }
 
-// dashboardFileSigs returns the signature of each of paths and the sum of
+// dashboardFileSigs returns the signature of each of files and the sum of
 // their sizes. The signatures are taken before the build, so a file that
 // changes during the build gives a different signature on the next call and
 // the key is built again. ok is false when os.Stat fails for a path with an
 // error other than "not exist".
-func dashboardFileSigs(paths []string) (sigs []dashboardFileSig, total int64, ok bool) {
-	sigs = make([]dashboardFileSig, 0, len(paths))
-	for _, p := range paths {
+func dashboardFileSigs(files []string) (sigs []dashboardFileSig, total int64, ok bool) {
+	sigs = make([]dashboardFileSig, 0, len(files))
+	for _, p := range files {
 		info, err := os.Stat(p)
 		switch {
 		case err == nil:
@@ -99,8 +109,8 @@ func dashboardFileSigs(paths []string) (sigs []dashboardFileSig, total int64, ok
 	return sigs, total, true
 }
 
-// pruneDashboardParseCache drops each key whose root is not in roots.
-// CollectDashboardSnapshot calls it after the collect of all roots.
+// pruneDashboardParseCache drops each key whose root is not in roots, and
+// each key that has no root part.
 func pruneDashboardParseCache(roots []string) {
 	keep := make(map[string]bool, len(roots))
 	for _, r := range roots {
@@ -110,8 +120,7 @@ func pruneDashboardParseCache(roots []string) {
 	dashboardParseCache.Lock()
 	defer dashboardParseCache.Unlock()
 	for key := range dashboardParseCache.entries {
-		i := strings.LastIndexByte(key, '|')
-		if i < 0 || !keep[key[:i]] {
+		if root, ok := dashboardCacheKeyRoot(key); !ok || !keep[root] {
 			delete(dashboardParseCache.entries, key)
 		}
 	}

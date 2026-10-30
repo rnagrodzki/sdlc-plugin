@@ -268,8 +268,19 @@ loads these parts when the user opens the run or the session tile.
   empty lists, not an error. For example, a finished run older than 4 days is
   not shown.
 - For `found: false` the page shows "This run is no longer on disk." or "This
-  session is no longer on disk." For an error answer it shows the message of
-  the error, and the next open of the part sends the request again.
+  session is no longer on disk." The page keeps this answer under the key
+  `<repo>|<id>|<updatedAt>` for a run and `<repo>|<id>|<lastSeen>` for a
+  session. It does not send the request again until the run or the session
+  changes.
+- For an error answer with the body `{"error":{"message"}}`, the page shows
+  that message. For any other failed answer, it shows "The detail cannot be
+  loaded (HTTP N).". Examples are a network failure (N is 0), a plain-text
+  `403` of the Host check, a `405`, and a body with no message. After an
+  error, the next open of the part sends the request again.
+- A read failure gives `500` with the code `DETAIL_READ_FAILED`, and the
+  message and suggestion of the failure. A session detail also fails when an
+  evidence file of the repo cannot be read, so that an unreadable file does
+  not show as a gone session.
 
 ## Archive a run
 
@@ -904,9 +915,25 @@ has no `steps[].detail` and no `issues[]` items, and a session has no
 files, ledger folders, evidence files, and history files of each repo. The
 collector writes no file: it reads what other tools wrote. It keeps only an
 in-memory parse cache of the evidence logs, `runs.jsonl`, the learnings log and
-`deferred.json`. The cache key is the path, size and modification time of each
-file, so a changed file is parsed again. State files, wait records, review
-ledgers and preplans are read again on each call. The Go
+`deferred.json`. State files, wait records, review ledgers and preplans are
+read again on each call. The parse cache works as follows:
+
+- The key is the repo root and the name of one data set, for example
+  `<root>|sessions`. One entry holds the parsed result of a set of files. The
+  sessions set, for example, is the CLI, user-input and MCP evidence files,
+  each with its rotated `.1` file.
+- The signature of an entry is the path, size and modification time of each
+  file of the set. A change to any one file of the set parses the whole set
+  again.
+- An entry is not stored when the files of the set hold more than 32 MiB in
+  total, when `os.Stat` of a file fails with an error other than "not exist",
+  or when a file cannot be read in full. That data set is then parsed on each
+  call.
+- A file that cannot be read adds one repo warning that names the data set
+  and the file.
+- A collect drops the entries of each repo that is no longer a root.
+
+The Go
 types in that file are the full list of fields. The table below lists the
 fields that carry data from other tools, with the JSON key, where the
 collector reads the data, and the tool action that writes it.

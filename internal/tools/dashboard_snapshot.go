@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,8 +41,8 @@ const (
 	// pipeline shows as stalled.
 	dashboardStallAfter = 30 * time.Minute
 	// dashboardPipelineWindow is how long a completed or failed pipeline
-	// stays on the dashboard after its updatedAt. The user asked for 4 days.
-	// The sweep (state.gc.ttlDays, default 7 days) is a separate rule.
+	// stays on the dashboard after its updatedAt. The state sweep
+	// (state.gc.ttlDays) is a separate rule.
 	dashboardPipelineWindow = 4 * 24 * time.Hour
 	// dashboardHistoryWindow is how far back the dashboard lists open waits
 	// and learnings log entries.
@@ -84,7 +85,18 @@ type DashboardRepo struct {
 	Learnings []DashboardLearning `json:"learnings"`
 	Deferred  []DashboardDeferred `json:"deferred"`
 	History   []DashboardRun      `json:"history"` // [] until filled, never null
+
+	// err is the error that set Error, with its type and cause, for a caller
+	// that checks it with errors.Is or errors.As. It is nil when Error is "".
+	err error
+	// sessionsErr is the first read error of the session evidence files. The
+	// sessions then hold the lines that could be read.
+	sessionsErr error
 }
+
+// errDashboardRepoNotFolder is the error of a repo root that exists but is
+// not a folder.
+var errDashboardRepoNotFolder = errors.New("repo path is not a folder")
 
 // DashboardWait is one open wait that matches no shown pipeline.
 type DashboardWait struct {
@@ -443,9 +455,11 @@ type dashboardJoinInfo struct {
 
 // DashboardSession is one Claude Code session seen in the evidence files of
 // a repo. Timeline holds only the newest dashboardSessionTimelineMax events.
-// CommandGroups counts every command of the session, and is [] when the
-// session has no command, never nil. The page snapshot drops both lists.
-// GET /api/session-detail returns them, with [] for an empty list.
+// CommandGroups counts every command of the session. In Go, CommandGroups is
+// [] when the session has no command, never nil. In JSON, omitempty drops an
+// empty list, so a session with no command has no commandGroups key. The page
+// snapshot drops both lists. GET /api/session-detail returns them, with [] for
+// an empty list.
 type DashboardSession struct {
 	ID        string `json:"id"`
 	Active    bool   `json:"active"`
@@ -660,17 +674,24 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	}
 	info, err := os.Stat(root)
 	if err != nil {
-		repo.Error = fmt.Sprintf("repo folder not readable: %v", err)
+		repo.err = fmt.Errorf("repo folder not readable: %w", err)
+		repo.Error = repo.err.Error()
 		return repo
 	}
 	if !info.IsDir() {
-		repo.Error = "repo path is not a folder: " + root
+		repo.err = fmt.Errorf("%w: %s", errDashboardRepoNotFolder, root)
+		repo.Error = repo.err.Error()
 		return repo
 	}
 
-	evidence := dashboardEvidenceTimes(root)
+	evidence, err := dashboardEvidenceTimes(root)
+	if err != nil {
+		// The stalled rule then uses the updatedAt of each run alone.
+		repo.Warnings = append(repo.Warnings, "Branch activity times unread: "+err.Error())
+	}
 	list, err := state.List(root)
 	if err != nil {
+		repo.err = err
 		repo.Error = err.Error()
 	}
 	// Open waits are best effort: an unreadable record folder shows no
@@ -720,19 +741,23 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 		repo.Warnings = append(repo.Warnings, fmt.Sprintf("%d older open waits not shown", older))
 	}
 
-	sessions, learnings, deferred, history := dashboardActivity(root, now)
-	if sessions != nil {
-		repo.Sessions = sessions
+	// An activity source that cannot be read is a warning, never repo.Error:
+	// repo.Error blocks the archive of every run of the repo.
+	act := dashboardActivity(root, now)
+	if act.sessions != nil {
+		repo.Sessions = act.sessions
 	}
-	if learnings != nil {
-		repo.Learnings = learnings
+	if act.learnings != nil {
+		repo.Learnings = act.learnings
 	}
-	if deferred != nil {
-		repo.Deferred = deferred
+	if act.deferred != nil {
+		repo.Deferred = act.deferred
 	}
-	if history != nil {
-		repo.History = history
+	if act.history != nil {
+		repo.History = act.history
 	}
+	repo.sessionsErr = act.sessionsErr
+	repo.Warnings = append(repo.Warnings, act.warnings...)
 
 	// A preplan read problem is a warning, never repo.Error: repo.Error
 	// blocks the archive of every run of the repo.
@@ -871,44 +896,35 @@ type dashboardEvidenceLine struct {
 // The map comes from the parse cache, which is built again when one of the
 // evidence files changes. The map is shared between calls: a caller reads it
 // and never writes to it. A file that cannot be read adds no line, and the
-// cache does not keep that result.
-func dashboardEvidenceTimes(root string) map[string]time.Time {
-	files := []string{
-		cliEvidencePath(root), cliEvidencePath(root) + ".1",
-		userInputPath(root), userInputPath(root) + ".1",
-	}
-	out, _ := dashboardCached(dashboardCacheKey(root, "evidence-times"), files, func() (map[string]time.Time, error) {
+// cache does not keep that result. The error is then the first read error of
+// a file.
+func dashboardEvidenceTimes(root string) (map[string]time.Time, error) {
+	files := append(dashboardRotatedFiles(cliEvidencePath(root)), dashboardRotatedFiles(userInputPath(root))...)
+	return dashboardCached(dashboardCacheKey(root, "evidence-times"), files, func() (map[string]time.Time, error) {
 		return dashboardBuildEvidenceTimes(files)
 	})
-	return out
 }
 
 // dashboardBuildEvidenceTimes reads the evidence files and returns, for each
 // branch slug, the newest ts of its lines. The error is the first read error
 // of a file; the map then holds the lines of the other files.
 func dashboardBuildEvidenceTimes(files []string) (map[string]time.Time, error) {
+	lines, err := dashboardReadJSONLFiles[dashboardEvidenceLine](files, "dashboard evidence")
 	out := map[string]time.Time{}
-	var firstErr error
-	for _, f := range files {
-		lines, err := readJSONLEntries[dashboardEvidenceLine](f, "dashboard evidence")
-		if err != nil && firstErr == nil {
-			firstErr = err
+	for _, l := range lines {
+		if l.Branch == "" {
+			continue
 		}
-		for _, l := range lines {
-			if l.Branch == "" {
-				continue
-			}
-			t, ok := dashboardParseTime(l.TS)
-			if !ok {
-				continue
-			}
-			slug := state.SlugifyBranch(l.Branch)
-			if t.After(out[slug]) {
-				out[slug] = t
-			}
+		t, ok := dashboardParseTime(l.TS)
+		if !ok {
+			continue
+		}
+		slug := state.SlugifyBranch(l.Branch)
+		if t.After(out[slug]) {
+			out[slug] = t
 		}
 	}
-	return out, firstErr
+	return out, err
 }
 
 // dashboardStatePipeline builds the pipeline of one ship, execute, or plan

@@ -70,6 +70,50 @@ func dashCollect(t *testing.T, root string) DashboardRepo {
 	return snap.Repos[0]
 }
 
+// dashSessions returns dashboardSessionsFromEvidence of root at now, and
+// fails the test on a read error.
+func dashSessions(t *testing.T, root string, now time.Time) []DashboardSession {
+	t.Helper()
+	got, err := dashboardSessionsFromEvidence(root, now)
+	if err != nil {
+		t.Fatalf("dashboardSessionsFromEvidence: %v", err)
+	}
+	return got
+}
+
+// dashLearnings returns dashboardRecentLearnings of root at now, and fails
+// the test on a read error.
+func dashLearnings(t *testing.T, root string, now time.Time) []DashboardLearning {
+	t.Helper()
+	got, err := dashboardRecentLearnings(root, now)
+	if err != nil {
+		t.Fatalf("dashboardRecentLearnings: %v", err)
+	}
+	return got
+}
+
+// dashDeferred returns dashboardOpenDeferred of root, and fails the test on a
+// read error.
+func dashDeferred(t *testing.T, root string) []DashboardDeferred {
+	t.Helper()
+	got, err := dashboardOpenDeferred(root)
+	if err != nil {
+		t.Fatalf("dashboardOpenDeferred: %v", err)
+	}
+	return got
+}
+
+// dashRuns returns dashboardRecentRuns of root, and fails the test on a read
+// error.
+func dashRuns(t *testing.T, root string) []DashboardRun {
+	t.Helper()
+	got, err := dashboardRecentRuns(root)
+	if err != nil {
+		t.Fatalf("dashboardRecentRuns: %v", err)
+	}
+	return got
+}
+
 // dashOne collects a snapshot of one root and returns its only pipeline.
 func dashOne(t *testing.T, root string) DashboardPipeline {
 	t.Helper()
@@ -625,8 +669,8 @@ func TestDashboardSnapshot_LinkedWorktreeShowsOnce(t *testing.T) {
 func TestDashboardSnapshot_ListsAreNeverNull(t *testing.T) {
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
-		return nil, nil, nil, nil
+	dashboardActivity = func(string, time.Time) dashboardActivityOut {
+		return dashboardActivityOut{}
 	}
 
 	empty := dashRoot(t)
@@ -655,7 +699,7 @@ func TestDashboardSnapshot_AbsentRepo(t *testing.T) {
 	calls := 0
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
+	dashboardActivity = func(root string, now time.Time) dashboardActivityOut {
 		calls++
 		return orig(root, now)
 	}
@@ -683,15 +727,17 @@ func TestDashboardSnapshot_CallsActivityOncePerRepo(t *testing.T) {
 	calls := map[string]int{}
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
+	dashboardActivity = func(root string, now time.Time) dashboardActivityOut {
 		calls[root]++
 		if !now.Equal(dashNow) {
 			t.Errorf("now = %v, want %v", now, dashNow)
 		}
-		return []DashboardSession{{ID: "s-" + filepath.Base(root), Timeline: []DashboardEvent{}}},
-			[]DashboardLearning{{Heading: "l-" + filepath.Base(root)}},
-			[]DashboardDeferred{{ID: "d-" + filepath.Base(root)}},
-			[]DashboardRun{{Kind: "r-" + filepath.Base(root)}}
+		return dashboardActivityOut{
+			sessions:  []DashboardSession{{ID: "s-" + filepath.Base(root), Timeline: []DashboardEvent{}}},
+			learnings: []DashboardLearning{{Heading: "l-" + filepath.Base(root)}},
+			deferred:  []DashboardDeferred{{ID: "d-" + filepath.Base(root)}},
+			history:   []DashboardRun{{Kind: "r-" + filepath.Base(root)}},
+		}
 	}
 
 	a, b := dashRoot(t), dashRoot(t)

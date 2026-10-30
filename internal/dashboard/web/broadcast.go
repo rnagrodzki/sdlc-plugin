@@ -99,14 +99,14 @@ func (b *broadcaster) unsubscribe(ch chan frame) {
 func (b *broadcaster) run(ctx context.Context, done chan struct{}, interval time.Duration,
 	hash func(tools.DashboardSnapshot) (string, error)) {
 	defer close(done)
-	timer := time.NewTicker(interval)
-	defer timer.Stop()
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
 	for {
 		b.tick(ctx, hash)
 		select {
 		case <-ctx.Done():
 			return
-		case <-timer.C:
+		case <-ticker.C:
 		}
 	}
 }

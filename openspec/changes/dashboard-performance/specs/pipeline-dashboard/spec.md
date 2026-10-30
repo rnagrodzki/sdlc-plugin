@@ -93,6 +93,75 @@ stateDiagram-v2
 - **AND** its last update is 31 min old
 - **THEN** its status is `running`
 
+### Requirement: Session activity
+The snapshot SHALL build one session entry for each non-empty `sessionId` in `cli-executions.jsonl`, `user-inputs.jsonl`, and `mcp-invocations.jsonl` of a repo, with prompt, command, and MCP call counts and a timeline of the newest 50 events. The page snapshot SHALL omit the timeline (Requirement: Page snapshot). `GET /api/session-detail` SHALL return it.
+
+#### Scenario: Active session
+- **WHEN** the newest evidence line of a session is 10 min old
+- **THEN** the session has `active:true`
+
+#### Scenario: Inactive session
+- **WHEN** the newest evidence line of a session is 31 min old
+- **THEN** the session has `active:false`
+
+#### Scenario: Empty session id
+- **WHEN** an evidence line has `sessionId:""` or no `sessionId`
+- **THEN** the line belongs to no session
+
+### Requirement: Empty lists
+The snapshot SHALL write every list as `[]`, never `null`, and SHALL give a repo whose folder is absent an `error` text and empty lists. The session `timeline` and `commandGroups` are the exception: an empty list has no key, and the page snapshot omits both keys (Requirement: Page snapshot).
+
+#### Scenario: Absent repo folder
+- **WHEN** a registered root no longer exists
+- **THEN** the repo entry has a non-empty `error` and `pipelines:[]`
+
+#### Scenario: Session with no command
+- **WHEN** a session has prompts only
+- **THEN** its snapshot entry has no `commandGroups` key
+
+### Requirement: Session command groups
+Each session SHALL carry `commandGroups` over all commands of the session, with `label`, `count`, `share` and one `majority` group. The page snapshot SHALL omit `commandGroups` (Requirement: Page snapshot). `GET /api/session-detail` SHALL return them, with `[]` for a session with no command.
+
+| Programs in the command | Label |
+|---|---|
+| 1 or 2 | the first program |
+| 3 or more | `a + b + c` |
+| none | `(other)` |
+
+#### Scenario: Pipe of three programs
+- **WHEN** a session runs `cat a | grep x | wc -l`
+- **THEN** `commandGroups` has a group with label `cat + grep + wc`
+
+### Requirement: Repo read warnings
+The snapshot SHALL give each repo `warnings`: the read errors that do not block an archive. A read error of the preplan folder, a topic file, `runs.jsonl` or an execute state for plan times SHALL add one warning and SHALL leave `error` empty. A read error of an evidence file, the learnings log, `deferred.json` or `runs.jsonl` for the activity tabs SHALL add one warning that names the source and the file, and SHALL leave `error` empty.
+
+| Source | Warning starts with |
+|---|---|
+| evidence file, for the sessions | `Session evidence unread:` |
+| CLI or user-input evidence file, for the stalled rule | `Branch activity times unread:` |
+| learnings log | `Learnings log unread:` |
+| `deferred.json` | `Deferred items unread:` |
+| `runs.jsonl`, for the History tab | `Run history unread:` |
+
+#### Scenario: Unreadable preplan folder
+- **WHEN** `.sdlc-v2/preplan` cannot be read
+- **THEN** `warnings` has one entry that starts with `preplan folder not read:`
+- **AND** `error` is `""`
+- **AND** a run of the same repo can still be archived
+
+#### Scenario: Deferred file over the size limit
+- **WHEN** `deferred.json` is larger than 8 MiB
+- **THEN** `deferred` is `[]`
+- **AND** `warnings` has one entry that names the file, the 8 MiB limit and the hand fix
+
+#### Scenario: Unreadable learnings log
+- **WHEN** the learnings log exists but cannot be read
+- **THEN** `learnings` is `[]` and `warnings` has one entry that starts with `Learnings log unread:`
+
+#### Scenario: No warnings
+- **WHEN** every read succeeds
+- **THEN** the repo has `"warnings":[]`
+
 ## ADDED Requirements
 
 ### Requirement: Page snapshot
@@ -156,6 +225,11 @@ The server SHALL answer `GET /api/session-detail?repo=<root>&id=<sessionId>` wit
 #### Scenario: Unknown session
 - **WHEN** `id` names no session
 - **THEN** the response is 200 with `"found":false`, `"timeline":[]` and `"commandGroups":[]`
+
+#### Scenario: Unreadable evidence file
+- **WHEN** an evidence file of the repo cannot be read
+- **THEN** the response is 500 with code `DETAIL_READ_FAILED` and a message that names the file
+- **AND** the response is not `"found":false`
 
 ### Requirement: Fresh wait records
 Each collect SHALL read the state files, wait records, review ledgers and preplans again. Each collect SHALL parse an evidence, history, learnings or deferred file again only when its size or modification time changed.

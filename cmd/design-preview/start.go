@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -51,6 +51,14 @@ const (
 	maxMergeFileBytes = 8 << 20
 )
 
+// Modes of the files and folders that the start rule creates.
+const (
+	// newFileMode is the mode of a new page file.
+	newFileMode fs.FileMode = 0o644
+	// newDirMode is the mode of a new folder.
+	newDirMode fs.FileMode = 0o755
+)
+
 // maxBaseBytes is the largest base.json StartRule accepts.
 const maxBaseBytes = 4 << 10
 
@@ -81,10 +89,19 @@ var (
 	writeBaseJSON = fsx.AtomicWriteJSON
 )
 
-// gitBlob returns the raw bytes of path at rev. execx trims its output
-// (internal/execx/execx.go:105-107), so merge reads blobs through this seam.
+// gitBlob returns the raw bytes of path at rev. execx.Run trims its output
+// with strings.TrimSpace, so merge reads blobs through this seam. A failure
+// holds the stderr text of git.
 var gitBlob = func(root, rev, path string) ([]byte, error) {
-	return exec.Command("git", "-C", root, "cat-file", "blob", rev+":"+path).Output()
+	data, err := exec.Command("git", "-C", root, "cat-file", "blob", rev+":"+path).Output()
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if stderr := strings.TrimSpace(string(exitErr.Stderr)); stderr != "" {
+			return nil, fmt.Errorf("%w: %s", err, stderr)
+		}
+	}
+
+	return data, err
 }
 
 // mergeRemoveAll is os.RemoveAll. Tests replace it to fail the clear of stale
@@ -94,8 +111,9 @@ var mergeRemoveAll = os.RemoveAll
 // mergeMkdirTemp is os.MkdirTemp. Tests replace it to fail the backup folder.
 var mergeMkdirTemp = os.MkdirTemp
 
-// mergeOpen is os.Open. Tests replace it to fail the read of a draft file.
-var mergeOpen = os.Open
+// draftReadFile is os.ReadFile. Tests replace it to fail the read of a
+// draft file.
+var draftReadFile = os.ReadFile
 
 // Mode selects how StartRule treats an existing draft.
 type Mode string
@@ -113,16 +131,22 @@ const (
 	ModeMerge Mode = "merge"
 )
 
-// validate returns nil for the four modes and an error that names m for any
-// other value. parseMode and StartRule both call it, so the set and the text
-// are in one place.
+// modes is the set of modes, in the order the texts list them. validate
+// accepts only these, and a test compares usageText and modeFlagUsage with it.
+var modes = []Mode{ModeAuto, ModeFresh, ModeContinue, ModeMerge}
+
+// validate returns nil for a mode in modes and an error that names m and
+// lists modes for any other value.
 func (m Mode) validate() error {
-	switch m {
-	case ModeAuto, ModeFresh, ModeContinue, ModeMerge:
+	if slices.Contains(modes, m) {
 		return nil
 	}
+	names := make([]string, len(modes))
+	for i, mode := range modes {
+		names[i] = string(mode)
+	}
 
-	return fmt.Errorf("unknown mode %q. Allowed: auto, fresh, continue, merge.", string(m))
+	return fmt.Errorf("unknown mode %q. Allowed: %s.", string(m), strings.Join(names, ", "))
 }
 
 // CaseID names the outcome of StartRule.
@@ -401,7 +425,7 @@ func startOwnWork(repoRoot, base string) (bool, error) {
 		return false, err
 	}
 
-	draft, err := startDraftFiles(repoRoot)
+	draft, err := startUnignoredFiles(repoRoot)
 	if err != nil {
 		return false, err
 	}
@@ -489,10 +513,12 @@ func startShippedBlobs(repoRoot, commit string) (map[string]string, error) {
 	return blobs, nil
 }
 
-// startDraftFiles lists the files under staticDir, relative to that folder
-// with slash separators and sorted. It skips each file that git ignores, for
-// example .DS_Store.
-func startDraftFiles(repoRoot string) ([]string, error) {
+// startUnignoredFiles lists the files under staticDir that git does not
+// ignore, relative to that folder with slash separators and sorted. It skips
+// each file that git ignores, for example .DS_Store, so that such a file is
+// not own work. readDraftFiles is the other walk of staticDir: it keeps the
+// ignored files, because a merge replaces the whole folder.
+func startUnignoredFiles(repoRoot string) ([]string, error) {
 	root := filepath.Join(repoRoot, filepath.FromSlash(staticDir))
 
 	var files []string
@@ -582,7 +608,7 @@ func copyShippedToTmp(repoRoot, names string) error {
 	if err := os.RemoveAll(filepath.Join(repoRoot, tmpStaticDir)); err != nil {
 		return pathError(tmpStaticDir, err)
 	}
-	if err := copyMkdirAll(filepath.Join(repoRoot, tmpStaticDir), 0o755); err != nil {
+	if err := copyMkdirAll(filepath.Join(repoRoot, tmpStaticDir), newDirMode); err != nil {
 		return pathError(tmpStaticDir, err)
 	}
 	for _, name := range strings.Split(names, "\x00") {
@@ -597,13 +623,8 @@ func copyShippedToTmp(repoRoot, names string) error {
 		}
 		// Plain writes are enough here: tmpStaticDir becomes visible only
 		// through the rename in swapDraft.
-		dstRel := tmpStaticDir + "/" + rel
-		dst := filepath.Join(repoRoot, filepath.FromSlash(dstRel))
-		if err := copyMkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return pathError(dstRel, err)
-		}
-		if err := copyWriteFile(dst, data, 0o644); err != nil {
-			return pathError(dstRel, err)
+		if err := writeMergeFile(repoRoot, tmpStaticDir+"/"+rel, data, newFileMode); err != nil {
+			return err
 		}
 	}
 
@@ -636,18 +657,24 @@ func swapDraft(repoRoot, head string) error {
 	return nil
 }
 
-// draftFile is one regular file of the draft.
+// draftFile is one regular file of the draft, with its bytes.
 type draftFile struct {
 	rel  string      // relative to staticDir, with slash separators
 	mode fs.FileMode // permission bits
+	data []byte      // the full content of the file
 }
 
-// listDraftFiles lists the regular files under staticDir in walk order. It
-// does not follow a symlink: with refuseSymlinks it returns errDraftSymlink
-// wrapped with the link name, otherwise it skips the link. A staticDir that
-// is a file, and an entry that is not a file, a folder or a symlink, is an
-// error that names it.
-func listDraftFiles(repoRoot string, refuseSymlinks bool) ([]draftFile, error) {
+// readDraftFiles walks staticDir and reads each regular file once, in full,
+// in walk order. The marker check, the backup, the merge copy and the
+// per-file merge all use these bytes, so a file that changes during a merge
+// cannot pass the check with one content and be copied with another. It
+// keeps the files that git ignores, because a merge replaces the whole
+// folder (startUnignoredFiles is the walk that skips them). It does not
+// follow a symlink: with refuseSymlinks it returns errDraftSymlink wrapped
+// with the link name, otherwise it skips the link. A staticDir that is a
+// file, and an entry that is not a file, a folder or a symlink, is an error
+// that names it.
+func readDraftFiles(repoRoot string, refuseSymlinks bool) ([]draftFile, error) {
 	root := mergePath(repoRoot, staticDir)
 
 	var files []draftFile
@@ -670,7 +697,11 @@ func listDraftFiles(repoRoot string, refuseSymlinks bool) ([]draftFile, error) {
 		case !mode.IsRegular():
 			return fmt.Errorf("%s is not a regular file. The draft may hold only files and folders.", name)
 		}
-		files = append(files, draftFile{rel: strings.TrimPrefix(name, staticDir+"/"), mode: mode.Perm()})
+		data, err := draftReadFile(path)
+		if err != nil {
+			return pathError(name, err)
+		}
+		files = append(files, draftFile{rel: strings.TrimPrefix(name, staticDir+"/"), mode: mode.Perm(), data: data})
 		return nil
 	})
 	if err != nil {
@@ -678,18 +709,6 @@ func listDraftFiles(repoRoot string, refuseSymlinks bool) ([]draftFile, error) {
 	}
 
 	return files, nil
-}
-
-// readMergeFile reads at most maxMergeFileBytes+1 bytes of path, so a
-// longer result means the file is over maxMergeFileBytes.
-func readMergeFile(path string) ([]byte, error) {
-	f, err := mergeOpen(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	return io.ReadAll(io.LimitReader(f, maxMergeFileBytes+1))
 }
 
 // isBinary reports whether data holds a NUL byte in its first
@@ -714,30 +733,20 @@ func hasConflictMarker(data []byte) bool {
 	return false
 }
 
-// draftConflictFiles returns the draft files, relative to staticDir and
-// sorted, that hold a line that starts with "<<<<<<< " or ">>>>>>> ".
-// The walk does not follow a symlink. It skips a binary file and reads at
-// most maxMergeFileBytes of a text file. A larger text file is an error.
-func draftConflictFiles(repoRoot string) ([]string, error) {
-	files, err := listDraftFiles(repoRoot, false)
-	if err != nil {
-		return nil, err
-	}
-
+// draftConflictFiles returns the files of files, relative to staticDir and
+// sorted, that hold a line that starts with "<<<<<<< " or ">>>>>>> ". It
+// skips a binary file. A text file over maxMergeFileBytes is an error.
+func draftConflictFiles(files []draftFile) ([]string, error) {
 	found := []string{}
 	for _, f := range files {
-		name := staticDir + "/" + f.rel
-		data, err := readMergeFile(mergePath(repoRoot, name))
-		if err != nil {
-			return nil, pathError(name, err)
-		}
-		if isBinary(data) {
+		if isBinary(f.data) {
 			continue
 		}
-		if len(data) > maxMergeFileBytes {
-			return nil, fmt.Errorf("%s is larger than %d MiB. The marker check cannot read it.", name, maxMergeFileBytes>>20)
+		if len(f.data) > maxMergeFileBytes {
+			tooLarge := &tooLargeError{max: maxMergeFileBytes}
+			return nil, fmt.Errorf("%s/%s is %s. The marker check cannot read it.", staticDir, f.rel, tooLarge.Error())
 		}
-		if hasConflictMarker(data) {
+		if hasConflictMarker(f.data) {
 			found = append(found, f.rel)
 		}
 	}
@@ -746,10 +755,22 @@ func draftConflictFiles(repoRoot string) ([]string, error) {
 	return found, nil
 }
 
-// refuseConflictMarkers returns conflictMarkersError when the draft has
-// markers. Auto, continue and merge call it.
+// refuseConflictMarkers reads the draft without following a symlink and
+// returns the error of refuseMarkersIn for it.
 func refuseConflictMarkers(repoRoot string) error {
-	files, err := draftConflictFiles(repoRoot)
+	files, err := readDraftFiles(repoRoot, false)
+	if err != nil {
+		return err
+	}
+
+	return refuseMarkersIn(files)
+}
+
+// refuseMarkersIn returns conflictMarkersError when a file of files holds
+// conflict markers, and the error of draftConflictFiles when the check
+// cannot run.
+func refuseMarkersIn(draft []draftFile) error {
+	files, err := draftConflictFiles(draft)
 	if err != nil {
 		return err
 	}
@@ -802,8 +823,10 @@ type mergeResult struct {
 }
 
 // startMerge merges the shipped page changes between the base commit and
-// head into the draft. It runs the checks of the exit table first; no file
-// changes before every check passes.
+// head into the draft. It checks first that the draft exists, that base.json
+// names a known commit, that the draft holds no symlink and no conflict
+// marker, and that the shipped page changed. No file changes before every
+// check passes.
 func startMerge(repoRoot, head string, staticExists bool) (Outcome, error) {
 	if !staticExists {
 		return Outcome{}, errNoDraft
@@ -812,11 +835,11 @@ func startMerge(repoRoot, head string, staticExists bool) (Outcome, error) {
 	if err != nil {
 		return Outcome{}, err
 	}
-	files, err := listDraftFiles(repoRoot, true)
+	files, err := readDraftFiles(repoRoot, true)
 	if err != nil {
 		return Outcome{}, err
 	}
-	if err := refuseConflictMarkers(repoRoot); err != nil {
+	if err := refuseMarkersIn(files); err != nil {
 		return Outcome{}, err
 	}
 	needed, err := mergeNeeded(repoRoot, base, head)
@@ -885,19 +908,14 @@ func mergeClearStale(repoRoot string) error {
 	return nil
 }
 
-// mergeCopyTree copies the draft files to dstRel, with the mode of each
-// draft file.
+// mergeCopyTree writes the bytes of the draft files to dstRel, with the mode
+// of each draft file.
 func mergeCopyTree(repoRoot string, files []draftFile, dstRel string) error {
-	if err := copyMkdirAll(mergePath(repoRoot, dstRel), 0o755); err != nil {
+	if err := copyMkdirAll(mergePath(repoRoot, dstRel), newDirMode); err != nil {
 		return pathError(dstRel, err)
 	}
 	for _, f := range files {
-		src := staticDir + "/" + f.rel
-		data, err := copyReadFile(mergePath(repoRoot, src))
-		if err != nil {
-			return pathError(src, err)
-		}
-		if err := writeMergeFile(repoRoot, dstRel+"/"+f.rel, data, f.mode); err != nil {
+		if err := writeMergeFile(repoRoot, dstRel+"/"+f.rel, f.data, f.mode); err != nil {
 			return err
 		}
 	}
@@ -910,7 +928,7 @@ func mergeCopyTree(repoRoot string, files []draftFile, dstRel string) error {
 // file gets mode.
 func writeMergeFile(repoRoot, name string, data []byte, mode fs.FileMode) error {
 	path := mergePath(repoRoot, name)
-	if err := copyMkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := copyMkdirAll(filepath.Dir(path), newDirMode); err != nil {
 		return pathError(name, err)
 	}
 	if err := copyWriteFile(path, data, mode); err != nil {
@@ -935,9 +953,9 @@ func mergeBuild(repoRoot string, in mergeInput) (mergeResult, error) {
 		return mergeResult{}, err
 	}
 
-	job := mergeJob{repoRoot: repoRoot, in: in, baseBlobs: baseBlobs, headBlobs: headBlobs, draft: map[string]bool{}}
+	job := mergeJob{repoRoot: repoRoot, in: in, baseBlobs: baseBlobs, headBlobs: headBlobs, draft: map[string][]byte{}}
 	for _, f := range in.files {
-		job.draft[f.rel] = true
+		job.draft[f.rel] = f.data
 	}
 
 	var res mergeResult
@@ -999,8 +1017,7 @@ const (
 	mergeConflict
 )
 
-// mergeVersion is one version of a page file: absent, or its bytes. A
-// draft version holds at most maxMergeFileBytes+1 bytes.
+// mergeVersion is one version of a page file: absent, or its bytes.
 type mergeVersion struct {
 	data    []byte
 	present bool
@@ -1046,16 +1063,14 @@ type mergeJob struct {
 	in        mergeInput
 	baseBlobs map[string]string // shipped blob ids at the base commit, by path
 	headBlobs map[string]string // shipped blob ids at HEAD, by path
-	draft     map[string]bool   // draft files, relative to staticDir
+	draft     map[string][]byte // bytes of the draft files, by path relative to staticDir
 }
 
 // file merges one shipped file, rel relative to shippedPath, into the copy
 // in tmpStaticDir and returns the action it took.
 func (j mergeJob) file(rel string) (mergeAction, error) {
-	draft, err := j.draftVersion(rel)
-	if err != nil {
-		return 0, err
-	}
+	data, ok := j.draft[rel]
+	draft := mergeVersion{data: data, present: ok}
 	base, err := j.blobVersion(j.in.base, j.baseBlobs, rel)
 	if err != nil {
 		return 0, err
@@ -1076,20 +1091,6 @@ func (j mergeJob) file(rel string) (mergeAction, error) {
 	return action, nil
 }
 
-// draftVersion reads the draft version of rel.
-func (j mergeJob) draftVersion(rel string) (mergeVersion, error) {
-	if !j.draft[rel] {
-		return mergeVersion{}, nil
-	}
-	name := staticDir + "/" + rel
-	data, err := readMergeFile(mergePath(j.repoRoot, name))
-	if err != nil {
-		return mergeVersion{}, pathError(name, err)
-	}
-
-	return mergeVersion{data: data, present: true}, nil
-}
-
 // blobVersion reads the version of rel at rev, whose blob ids are blobs.
 func (j mergeJob) blobVersion(rev string, blobs map[string]string, rel string) (mergeVersion, error) {
 	path := shippedPath + "/" + rel
@@ -1108,7 +1109,7 @@ func (j mergeJob) blobVersion(rev string, blobs map[string]string, rel string) (
 func (j mergeJob) takeHead(rel string, head mergeVersion) error {
 	name := tmpStaticDir + "/" + rel
 	if head.present {
-		return writeMergeFile(j.repoRoot, name, head.data, 0o644)
+		return writeMergeFile(j.repoRoot, name, head.data, newFileMode)
 	}
 	if err := mergeRemoveAll(mergePath(j.repoRoot, name)); err != nil {
 		return pathError(name, err)
@@ -1122,10 +1123,10 @@ func (j mergeJob) takeHead(rel string, head mergeVersion) error {
 // 127 is the conflict count, and any other exit is an error.
 func (j mergeJob) run(rel string, base, head mergeVersion) (mergeAction, error) {
 	baseName, headName := mergeTmpDir+"/base/"+rel, mergeTmpDir+"/head/"+rel
-	if err := writeMergeFile(j.repoRoot, baseName, base.data, 0o644); err != nil {
+	if err := writeMergeFile(j.repoRoot, baseName, base.data, newFileMode); err != nil {
 		return 0, err
 	}
-	if err := writeMergeFile(j.repoRoot, headName, head.data, 0o644); err != nil {
+	if err := writeMergeFile(j.repoRoot, headName, head.data, newFileMode); err != nil {
 		return 0, err
 	}
 
@@ -1154,24 +1155,29 @@ func mergeSwap(repoRoot, backup, head string, clean bool) error {
 		return withBackup(pathError(staticDir, err), backup)
 	}
 	if err := copyRename(tmp, static); err != nil {
-		return mergeRestore(pathError(staticDir, err), backup, [][2]string{{old, static}})
+		return mergeRestore(pathError(staticDir, err), backup, []rename{{from: old, to: static}})
 	}
 	if !clean {
 		return nil
 	}
 	if err := writeBaseJSON(mergePath(repoRoot, baseFile), baseRecord{BaseCommit: head, ShippedPath: shippedPath}); err != nil {
-		return mergeRestore(fmt.Errorf("%s: %w", baseFile, err), backup, [][2]string{{static, tmp}, {old, static}})
+		return mergeRestore(fmt.Errorf("%s: %w", baseFile, err), backup, []rename{{from: static, to: tmp}, {from: old, to: static}})
 	}
 
 	return nil
 }
 
-// mergeRestore runs the renames, each {from, to}, that move the old draft
-// back after stepErr. It returns stepErr with the backup path, or, when a
-// rename fails, both errors and the text that tells how to restore the draft.
-func mergeRestore(stepErr error, backup string, renames [][2]string) error {
+// rename is one folder move of mergeRestore.
+type rename struct {
+	from, to string
+}
+
+// mergeRestore runs the renames that move the old draft back after stepErr.
+// It returns stepErr with the backup path, or, when a rename fails, both
+// errors and the text that tells how to restore the draft.
+func mergeRestore(stepErr error, backup string, renames []rename) error {
 	for _, r := range renames {
-		if err := copyRename(r[0], r[1]); err != nil {
+		if err := copyRename(r.from, r.to); err != nil {
 			return fmt.Errorf("%w. The restore failed too: %w. Restore the draft: copy %s to %s.", stepErr, err, backup, staticDir)
 		}
 	}

@@ -1902,6 +1902,46 @@ func checkDetailRoute(t *testing.T, route detailRoute) {
 		}
 	})
 
+	t.Run("one request reads the clock once", func(t *testing.T) {
+		start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+		var reads []time.Time
+		old := now
+		now = func() time.Time {
+			at := start.Add(time.Duration(len(reads)) * time.Second)
+			reads = append(reads, at)
+			return at
+		}
+		t.Cleanup(func() { now = old })
+		f := &fakeActions{}
+		route.found(f)
+		var rootsAt []time.Time
+		edit := func(o *Options) {
+			roots := o.Roots
+			o.Roots = func(at time.Time) ([]dashboard.Root, error) {
+				rootsAt = append(rootsAt, at)
+				return roots(at)
+			}
+		}
+		h := newDetailHandler(t, f, []string{"/repo/a"}, edit)
+		reads = nil
+		rec := do(h, "GET", detailURL(route.path, "/repo/a", route.id), testHost, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if len(reads) != 1 {
+			t.Fatalf("clock reads = %v; want one", reads)
+		}
+		calls := route.calls(f)
+		if len(calls) != 1 || !calls[0].at.Equal(reads[0]) {
+			t.Errorf("calls = %+v; want one call at %v", calls, reads[0])
+		}
+		for _, at := range rootsAt {
+			if !at.Equal(reads[0]) {
+				t.Errorf("roots time = %v; want %v", at, reads[0])
+			}
+		}
+	})
+
 	t.Run("the function gets the display root that the repo names", func(t *testing.T) {
 		cases := []struct{ name, repo, want string }{
 			{"first repo", "/repo/a", "/repo/a"},
@@ -1997,6 +2037,7 @@ func TestHandler_DetailErrorTable(t *testing.T) {
 		suggestReadLogText    = "Read server.log, fix the named path, then try again."
 		suggestRestartText    = "Restart the dashboard with the current sdlc plugin."
 		toolsErrorText        = "read repo /repo/a: repo folder not readable"
+		typedSuggestionText   = "Check the path that the error names."
 	)
 	longID := strings.Repeat("i", maxDetailID+1)
 	longRepo := detailLongRepo(maxDetailRepo) + "x"
@@ -2033,6 +2074,15 @@ func TestHandler_DetailErrorTable(t *testing.T) {
 		{name: "Options function is nil", unset: true, query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
 			status: 500, code: "NOT_CONFIGURED", suggestion: suggestRestartText},
 		{name: "function returns an error", fail: errors.New(toolsErrorText), query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
+			status: 500, code: "DETAIL_READ_FAILED", message: toolsErrorText, suggestion: suggestReadLogText, wantCalls: 1},
+		{name: "function returns an InfraError", fail: &mcpserver.InfraError{Msg: toolsErrorText, Suggestion: typedSuggestionText},
+			query:  func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
+			status: 500, code: "DETAIL_READ_FAILED", message: toolsErrorText, suggestion: typedSuggestionText, wantCalls: 1},
+		{name: "function returns a DomainError", fail: &mcpserver.DomainError{Msg: toolsErrorText, Suggestion: typedSuggestionText},
+			query:  func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
+			status: 500, code: "DETAIL_READ_FAILED", message: toolsErrorText, suggestion: typedSuggestionText, wantCalls: 1},
+		{name: "function returns an InfraError with no suggestion", fail: &mcpserver.InfraError{Msg: toolsErrorText},
+			query:  func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
 			status: 500, code: "DETAIL_READ_FAILED", message: toolsErrorText, suggestion: suggestReadLogText, wantCalls: 1},
 		{name: "method POST", method: "POST", query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) }, status: 405},
 		{name: "method PUT", method: "PUT", query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) }, status: 405},

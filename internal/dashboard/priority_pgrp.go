@@ -1,5 +1,9 @@
 //go:build darwin || linux
 
+// The build tag is not "unix": syscall.Getpgrp does not exist on solaris,
+// illumos and aix. The file name has no GOOS suffix, because a "_linux"
+// suffix limits a file to linux whatever its build tag says.
+
 package dashboard
 
 import "syscall"

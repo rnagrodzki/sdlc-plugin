@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // detailJSON returns the JSON text of v.
@@ -273,28 +276,72 @@ func TestDashboardDetail_RunWindow(t *testing.T) {
 	}
 }
 
-// TestDashboardDetail_RunCollectError checks a repo that the collect cannot
-// read: an error that names the repo and the cause, and the miss result.
-func TestDashboardDetail_RunCollectError(t *testing.T) {
+// detailCollectErrorCase is one repo that the collect cannot read.
+type detailCollectErrorCase struct {
+	name, root, cause string
+	// domain is true when the error is a DomainError, else an InfraError.
+	domain bool
+	// is is the error that errors.Is finds in the chain of the error.
+	is error
+}
+
+// detailCollectErrorCases returns a repo folder that is gone, a repo path that
+// is a file, and a repo whose runs folder is a file.
+func detailCollectErrorCases(t *testing.T) []detailCollectErrorCase {
+	t.Helper()
 	file := filepath.Join(t.TempDir(), "plain-file")
 	writeFile(t, file, "x")
-	cases := []struct{ name, root, cause string }{
-		{"folder is gone", filepath.Join(t.TempDir(), "gone"), "repo folder not readable"},
-		{"path is a file", file, "repo path is not a folder"},
+	runsFile := dashRoot(t)
+	runs := filepath.Join(runsFile, paths.DataDir, paths.RunsSubdir)
+	if err := os.RemoveAll(runs); err != nil {
+		t.Fatal(err)
 	}
-	for _, c := range cases {
+	writeFile(t, runs, "x")
+	return []detailCollectErrorCase{
+		{name: "folder is gone", root: filepath.Join(t.TempDir(), "gone"), cause: "repo folder not readable", is: fs.ErrNotExist},
+		{name: "path is a file", root: file, cause: "repo path is not a folder", domain: true, is: errDashboardRepoNotFolder},
+		{name: "runs folder is a file", root: runsFile, cause: runs},
+	}
+}
+
+// detailWantCollectError fails the test unless err is the error of c: the
+// error class, an error that names the repo and the cause, the cause in the
+// chain, and the suggestion for a repo that cannot be read.
+func detailWantCollectError(t *testing.T, c detailCollectErrorCase, err error) {
+	t.Helper()
+	var suggestion string
+	var cause error
+	var domain *mcpserver.DomainError
+	var infra *mcpserver.InfraError
+	switch {
+	case c.domain && errors.As(err, &domain):
+		suggestion, cause = domain.Suggestion, domain.Cause
+	case !c.domain && errors.As(err, &infra):
+		suggestion, cause = infra.Suggestion, infra.Cause
+	default:
+		t.Fatalf("err = %v (%T), want a DomainError: %v", err, err, c.domain)
+	}
+	if !strings.Contains(err.Error(), c.root) || !strings.Contains(err.Error(), c.cause) {
+		t.Errorf("err = %q, want it to name %q and %q", err, c.root, c.cause)
+	}
+	if cause == nil {
+		t.Error("error has no cause")
+	}
+	if c.is != nil && !errors.Is(err, c.is) {
+		t.Errorf("errors.Is(err, %v) = false, want true", c.is)
+	}
+	if suggestion != dashboardDetailRepoSuggestion {
+		t.Errorf("suggestion = %q, want %q", suggestion, dashboardDetailRepoSuggestion)
+	}
+}
+
+// TestDashboardDetail_RunCollectError checks a repo that the collect cannot
+// read: the error of each cause, and the miss result.
+func TestDashboardDetail_RunCollectError(t *testing.T) {
+	for _, c := range detailCollectErrorCases(t) {
 		t.Run(c.name, func(t *testing.T) {
 			out, err := DashboardRunDetail(c.root, archShipID, dashNow)
-			var infra *mcpserver.InfraError
-			if !errors.As(err, &infra) {
-				t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
-			}
-			if !strings.Contains(err.Error(), c.root) || !strings.Contains(err.Error(), c.cause) {
-				t.Errorf("err = %q, want it to name %q and %q", err, c.root, c.cause)
-			}
-			if infra.Suggestion == "" {
-				t.Error("error has an empty suggestion")
-			}
+			detailWantCollectError(t, c, err)
 			detailWantRunMiss(t, out, archShipID)
 		})
 	}
@@ -439,29 +486,43 @@ func TestDashboardDetail_SessionMiss(t *testing.T) {
 }
 
 // TestDashboardDetail_SessionCollectError checks a repo that the collect
-// cannot read: an error that names the repo and the cause, and the miss
-// result.
+// cannot read: the error of each cause, and the miss result.
 func TestDashboardDetail_SessionCollectError(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "plain-file")
-	writeFile(t, file, "x")
-	cases := []struct{ name, root, cause string }{
-		{"folder is gone", filepath.Join(t.TempDir(), "gone"), "repo folder not readable"},
-		{"path is a file", file, "repo path is not a folder"},
-	}
-	for _, c := range cases {
+	for _, c := range detailCollectErrorCases(t) {
 		t.Run(c.name, func(t *testing.T) {
 			out, err := DashboardSessionDetail(c.root, "s1", dashNow)
+			detailWantCollectError(t, c, err)
+			detailWantSessionMiss(t, out, "s1")
+		})
+	}
+}
+
+// TestDashboardDetail_SessionEvidenceUnreadable checks an evidence file that
+// cannot be read: an InfraError that names the file, not a miss, for a session
+// that is in the other files and for a session that is in no file.
+func TestDashboardDetail_SessionEvidenceUnreadable(t *testing.T) {
+	for _, id := range []string{"prompt-only", "s1"} {
+		t.Run(id, func(t *testing.T) {
+			root := detailSessionRepo(t)
+			cli := cliEvidencePath(root)
+			if err := os.Remove(cli); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(cli, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			out, err := DashboardSessionDetail(root, id, dashNow)
 			var infra *mcpserver.InfraError
 			if !errors.As(err, &infra) {
 				t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
 			}
-			if !strings.Contains(err.Error(), c.root) || !strings.Contains(err.Error(), c.cause) {
-				t.Errorf("err = %q, want it to name %q and %q", err, c.root, c.cause)
+			if !strings.Contains(err.Error(), cli) || infra.Cause == nil {
+				t.Errorf("err = %q, cause = %v; want it to name %s and carry the cause", err, infra.Cause, cli)
 			}
-			if infra.Suggestion == "" {
-				t.Error("error has an empty suggestion")
+			if infra.Suggestion != dashboardDetailEvidenceSuggestion {
+				t.Errorf("suggestion = %q, want %q", infra.Suggestion, dashboardDetailEvidenceSuggestion)
 			}
-			detailWantSessionMiss(t, out, "s1")
+			detailWantSessionMiss(t, out, id)
 		})
 	}
 }

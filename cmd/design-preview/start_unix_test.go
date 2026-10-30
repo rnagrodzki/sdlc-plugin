@@ -20,7 +20,7 @@ func TestDraftConflictFiles_NamedPipeRefused(t *testing.T) {
 	}
 	before := startSnapshotNoFollow(t, dir)
 	want := staticDir + "/pipe is not a regular file. The draft may hold only files and folders."
-	got, err := draftConflictFiles(dir)
+	got, err := startConflictFiles(dir)
 	if err == nil || err.Error() != want {
 		t.Errorf("draftConflictFiles = %q, %v, want error %q", got, err, want)
 	}

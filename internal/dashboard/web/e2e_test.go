@@ -657,6 +657,9 @@ func TestE2E_DetailRoutes(t *testing.T) {
 			if !strings.Contains(got.Error.Message, goneRoot) || !strings.Contains(got.Error.Message, "repo folder not readable") {
 				t.Errorf("message = %q; want it to name %q and the cause", got.Error.Message, goneRoot)
 			}
+			if want := paths.DataDir + "/" + paths.RunsSubdir; !strings.Contains(got.Error.Suggestion, want) {
+				t.Errorf("suggestion = %q; want the suggestion of the detail call, which names %s", got.Error.Suggestion, want)
+			}
 			if want := "sdlc dashboard: " + route.label + ": " + got.Error.Message + "\n"; logged.String() != want {
 				t.Errorf("server log = %q; want %q", logged.String(), want)
 			}

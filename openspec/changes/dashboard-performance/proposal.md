@@ -79,7 +79,7 @@ flowchart LR
 | `internal/tools/dashboard_detail.go` | internal package | run detail and session detail functions |
 | `internal/dashboard/web/broadcast.go` | internal package | shared collect loop |
 | `internal/dashboard/web/server.go` | internal package | two GET routes, stream subscribes to the loop |
-| `internal/dashboard/priority_unix.go`, `internal/dashboard/priority_other.go` | internal package | nice 10 at serve start |
+| `internal/dashboard/priority_pgrp.go`, `internal/dashboard/priority_other.go` | internal package | nice 10 at serve start |
 | `cmd/sdlc/main.go` | command | slim collect, priority call |
 | `internal/dashboard/web/static/app.js`, `view.js`, `render.js`, `app.css` | page | pause, panel draw, detail on open |
 | `cmd/design-preview/start.go`, `cmd/design-preview/main.go` | command | merge mode, marker check, exit 4 |

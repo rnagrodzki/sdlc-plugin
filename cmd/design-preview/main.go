@@ -43,8 +43,13 @@ const stopGrace = 2 * time.Second
 // readHeaderTimeout is how long the server waits for the headers of a request.
 const readHeaderTimeout = 10 * time.Second
 
-// usageText names the one flag in the flag error lines.
+// usageText names the one flag in the flag error lines. A test compares the
+// list with modes.
 const usageText = "Usage: -mode auto|fresh|continue|merge."
+
+// modeFlagUsage is the description of the -mode flag. A test compares the
+// list with modes.
+const modeFlagUsage = "auto, fresh, continue or merge"
 
 // runConfig holds what main resolves. Tests pass a t.TempDir() git repo and "127.0.0.1:0".
 type runConfig struct {
@@ -89,11 +94,11 @@ func run(args []string, c runConfig, stdout, stderr io.Writer) int {
 }
 
 // parseMode reads the -mode flag from args. Any other flag, any other
-// argument and any value other than auto, fresh, continue or merge is an error.
+// argument and any value that is not in modes is an error.
 func parseMode(args []string) (Mode, error) {
 	flags := flag.NewFlagSet("design-preview", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	value := flags.String("mode", string(ModeAuto), "auto, fresh, continue or merge")
+	value := flags.String("mode", string(ModeAuto), modeFlagUsage)
 	if err := flags.Parse(args); err != nil {
 		return "", fmt.Errorf("%v. %s", err, usageText)
 	}

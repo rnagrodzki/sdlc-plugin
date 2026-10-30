@@ -763,56 +763,54 @@ func (h *handler) serveLearning(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveRunDetail returns the full steps and issues of one run of a registered
-// repo. It only reads, so it needs no token, like the learning route.
+// repo (serveDetail).
 func (h *handler) serveRunDetail(w http.ResponseWriter, r *http.Request) {
-	if h.o.RunDetail == nil {
-		writeNotConfigured(w, "Run detail")
-		return
-	}
-	root, id, ok := h.detailQuery(w, r)
-	if !ok {
-		return
-	}
-	out, err := h.o.RunDetail(root, id, now())
-	if err != nil {
-		fmt.Fprintf(stderr, "sdlc dashboard: run detail: %v\n", err)
-		writeAPIError(w, http.StatusInternalServerError, codeDetailReadFailed, err.Error(), suggestReadLog)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
+	serveDetail(h, w, r, "Run detail", h.o.RunDetail)
 }
 
 // serveSessionDetail returns the timeline and the command groups of one
-// session of a registered repo. It only reads, so it needs no token, like the
-// learning route.
+// session of a registered repo (serveDetail).
 func (h *handler) serveSessionDetail(w http.ResponseWriter, r *http.Request) {
-	if h.o.SessionDetail == nil {
-		writeNotConfigured(w, "Session detail")
+	serveDetail(h, w, r, "Session detail", h.o.SessionDetail)
+}
+
+// serveDetail is the body of a detail route. It only reads, so it needs no
+// token, like the learning route. name names the route in the not-configured
+// error and, in lower case, in the server log. A nil call writes the
+// not-configured error. The query fields pass detailQuery, then call gets the
+// root, the id and the time of the request. An error of call writes the 500
+// error with the message and suggestion of a typed error (apiErrorText).
+func serveDetail[T any](h *handler, w http.ResponseWriter, r *http.Request, name string,
+	call func(root, id string, at time.Time) (T, error)) {
+	if call == nil {
+		writeNotConfigured(w, name)
 		return
 	}
-	root, id, ok := h.detailQuery(w, r)
+	at := now()
+	root, id, ok := h.detailQuery(w, r, at)
 	if !ok {
 		return
 	}
-	out, err := h.o.SessionDetail(root, id, now())
+	out, err := call(root, id, at)
 	if err != nil {
-		fmt.Fprintf(stderr, "sdlc dashboard: session detail: %v\n", err)
-		writeAPIError(w, http.StatusInternalServerError, codeDetailReadFailed, err.Error(), suggestReadLog)
+		fmt.Fprintf(stderr, "sdlc dashboard: %s: %v\n", strings.ToLower(name), err)
+		message, suggestion := apiErrorText(err)
+		writeAPIError(w, http.StatusInternalServerError, codeDetailReadFailed, message, suggestion)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // detailQuery checks the id and repo fields of a detail route. It writes the
-// error and returns false on a bad field. Both detail routes call it. It
-// checks the id first, then the repo. An id longer than maxDetailID bytes and a
-// repo longer than maxDetailRepo bytes are refused before the repo is resolved,
-// so a large query value never reaches the collect. A repo that is not a
-// display root writes the 404 error (displayRoot). The two length messages are
-// built with fmt.Sprintf from the constants. The id and the repo are not
-// trimmed, so the value that passes the check is the value that the route
-// passes on.
-func (h *handler) detailQuery(w http.ResponseWriter, r *http.Request) (root, id string, ok bool) {
+// error and returns false on a bad field. It checks the id first, then the
+// repo. An id longer than maxDetailID bytes and a repo longer than
+// maxDetailRepo bytes are refused before the repo is resolved, so a large
+// query value never reaches the collect. displayRoot resolves the repo at
+// time t: it refuses an empty repo with the 400 error and a repo that is not a
+// display root with the 404 error. The two length messages are built with
+// fmt.Sprintf from the constants. The id and the repo are not trimmed, so the
+// value that passes the check is the value that the route passes on.
+func (h *handler) detailQuery(w http.ResponseWriter, r *http.Request, t time.Time) (root, id string, ok bool) {
 	q := r.URL.Query()
 	id, repo := q.Get("id"), q.Get("repo")
 	switch {
@@ -820,21 +818,19 @@ func (h *handler) detailQuery(w http.ResponseWriter, r *http.Request) (root, id 
 		writeBadRequest(w, "The id field is required")
 	case len(id) > maxDetailID:
 		writeBadRequest(w, fmt.Sprintf("The id field is longer than %d bytes", maxDetailID))
-	case repo == "":
-		writeBadRequest(w, "The repo field is required")
 	case len(repo) > maxDetailRepo:
 		writeBadRequest(w, fmt.Sprintf("The repo field is longer than %d bytes", maxDetailRepo))
 	default:
-		root, ok = h.displayRoot(w, now(), repo)
+		root, ok = h.displayRoot(w, t, repo)
 		return root, id, ok
 	}
 	return "", "", false
 }
 
 // displayRoot resolves repo, the path that the page sent, to the display root
-// it names. It is the one check of the repo field of the archive, clear,
-// delete, status, dismiss, learning and detail routes: an empty repo writes
-// the 400 error, and a repo that is not a display root writes the 404 error.
+// it names. It is the one empty check and the one display root check of the
+// repo field of every route that takes a repo: an empty repo writes the 400
+// error, and a repo that is not a display root writes the 404 error.
 // Both return false, so a mutating route never acts on a path from the page
 // that the dashboard does not show.
 func (h *handler) displayRoot(w http.ResponseWriter, t time.Time, repo string) (string, bool) {
@@ -925,10 +921,23 @@ func writeDeleteError(w http.ResponseWriter, what string, err error) {
 		writeAPIError(w, http.StatusBadRequest, codeBadRequest, de.Msg, suggestion)
 		return
 	}
-	message, suggestion := err.Error(), ""
+	message, suggestion := apiErrorText(err)
+	fmt.Fprintf(stderr, "sdlc dashboard: %s: %v\n", what, err)
+	writeAPIError(w, http.StatusInternalServerError, codeDeleteFailed, message, suggestion)
+}
+
+// apiErrorText returns the message and the suggestion of the error body for
+// err. A DomainError, DataError or InfraError in the chain of err gives its
+// Msg and Suggestion. Any other error gives err.Error(). An empty suggestion
+// becomes suggestReadLog.
+func apiErrorText(err error) (message, suggestion string) {
+	message = err.Error()
+	var de *mcpserver.DomainError
 	var da *mcpserver.DataError
 	var ie *mcpserver.InfraError
 	switch {
+	case errors.As(err, &de):
+		message, suggestion = de.Msg, de.Suggestion
 	case errors.As(err, &da):
 		message, suggestion = da.Msg, da.Suggestion
 	case errors.As(err, &ie):
@@ -937,8 +946,7 @@ func writeDeleteError(w http.ResponseWriter, what string, err error) {
 	if suggestion == "" {
 		suggestion = suggestReadLog
 	}
-	fmt.Fprintf(stderr, "sdlc dashboard: %s: %v\n", what, err)
-	writeAPIError(w, http.StatusInternalServerError, codeDeleteFailed, message, suggestion)
+	return message, suggestion
 }
 
 // writeAPIError writes {"error":{"code","message","suggestion"}} with status.

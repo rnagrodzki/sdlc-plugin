@@ -1357,6 +1357,66 @@ func TestStartMergeFiles(t *testing.T) {
 		}
 	})
 
+	t.Run("two conflicts and one clean merge in one run give one sorted line per conflict", func(t *testing.T) {
+		dir := startRepo(t)
+		for _, rel := range []string{"z.txt", "a/y.txt"} {
+			startCommitShipped(t, dir, rel, "a\n")
+		}
+		startCommitShipped(t, dir, "m.txt", startLines7Base)
+		startRun(t, dir, ModeAuto)
+		base := startHead(t, dir)
+		for _, rel := range []string{"z.txt", "a/y.txt"} {
+			startWrite(t, dir, staticDir+"/"+rel, "d\n")
+		}
+		startWrite(t, dir, staticDir+"/m.txt", startLines7Draft)
+		for _, rel := range []string{"z.txt", "a/y.txt"} {
+			startCommitShipped(t, dir, rel, "h\n")
+		}
+		startCommitShipped(t, dir, "m.txt", startLines7Head)
+
+		out := startRun(t, dir, ModeMerge)
+
+		backup := startOneBackup(t, dir)
+		startAssertOutcome(t, out, CaseMerge, false,
+			"design preview: merge — 2 conflicts. Backup "+backup+".",
+			"design preview: conflict — "+staticDir+"/a/y.txt",
+			"design preview: conflict — "+staticDir+"/z.txt")
+		if !out.Conflicts {
+			t.Error("conflicts = false, want true")
+		}
+		for rel, want := range map[string]string{
+			"z.txt":   startConflictText("d\n", "h\n"),
+			"a/y.txt": startConflictText("d\n", "h\n"),
+			"m.txt":   startLines7Clean,
+		} {
+			if data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(staticDir), filepath.FromSlash(rel))); err != nil || string(data) != want {
+				t.Errorf("%s = %q, %v, want %q", rel, data, err, want)
+			}
+		}
+		if rec := startReadBaseFile(t, dir); rec.BaseCommit != base {
+			t.Errorf("base commit = %s, want the old base %s", rec.BaseCommit, base)
+		}
+	})
+
+	t.Run("a merge reads each draft file once", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		real := draftReadFile
+		reads := map[string]int{}
+		startSwap(t, &draftReadFile, func(path string) ([]byte, error) {
+			reads[path]++
+			return real(path)
+		})
+		startRun(t, dir, ModeMerge)
+		if len(reads) == 0 {
+			t.Fatal("draftReadFile was not called")
+		}
+		for path, n := range reads {
+			if n != 1 {
+				t.Errorf("%s read %d times, want 1", path, n)
+			}
+		}
+	})
+
 	t.Run("stale work folders are removed and the merge is clean", func(t *testing.T) {
 		dir, _ := startMergeWork(t)
 		for _, rel := range []string{mergeTmpDir, tmpStaticDir, oldStaticDir} {
@@ -1433,6 +1493,17 @@ func TestStartMergeDecide(t *testing.T) {
 	}
 }
 
+// startConflictFiles reads the draft of dir as the marker check of auto and
+// continue does, then returns the files with conflict markers.
+func startConflictFiles(dir string) ([]string, error) {
+	files, err := readDraftFiles(dir, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return draftConflictFiles(files)
+}
+
 // TestStartMergeMarkers covers each row of the marker table of
 // draftConflictFiles, its errors, and refuseConflictMarkers.
 func TestStartMergeMarkers(t *testing.T) {
@@ -1468,7 +1539,7 @@ func TestStartMergeMarkers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			startWrite(t, dir, staticDir+"/f.txt", tc.content)
-			got, err := draftConflictFiles(dir)
+			got, err := startConflictFiles(dir)
 			want := []string{}
 			if tc.want {
 				want = []string{"f.txt"}
@@ -1485,7 +1556,7 @@ func TestStartMergeMarkers(t *testing.T) {
 			startWrite(t, dir, staticDir+"/"+rel, marker)
 		}
 		startWrite(t, dir, staticDir+"/c.txt", "clean\n")
-		got, err := draftConflictFiles(dir)
+		got, err := startConflictFiles(dir)
 		if want := []string{"a.txt", "a/x.txt", "b.txt"}; err != nil || !reflect.DeepEqual(got, want) {
 			t.Errorf("draftConflictFiles = %q, %v, want %q", got, err, want)
 		}
@@ -1496,7 +1567,7 @@ func TestStartMergeMarkers(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(dir, filepath.FromSlash(staticDir)), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		got, err := draftConflictFiles(dir)
+		got, err := startConflictFiles(dir)
 		if err != nil || got == nil || len(got) != 0 {
 			t.Errorf("draftConflictFiles = %#v, %v, want an empty result", got, err)
 		}
@@ -1513,7 +1584,7 @@ func TestStartMergeMarkers(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		got, err := draftConflictFiles(dir)
+		got, err := startConflictFiles(dir)
 		if err != nil || len(got) != 0 {
 			t.Errorf("draftConflictFiles = %q, %v, want an empty result", got, err)
 		}
@@ -1525,7 +1596,7 @@ func TestStartMergeMarkers(t *testing.T) {
 		if err := os.Symlink("real", filepath.Join(dir, filepath.FromSlash(staticDir))); err != nil {
 			t.Fatal(err)
 		}
-		got, err := draftConflictFiles(dir)
+		got, err := startConflictFiles(dir)
 		if err != nil || len(got) != 0 {
 			t.Errorf("draftConflictFiles = %q, %v, want an empty result", got, err)
 		}
@@ -1545,7 +1616,7 @@ func TestStartMergeMarkers(t *testing.T) {
 		}, staticDir + " is not a folder. The draft must be a folder."},
 		{"a draft file that cannot be opened", func(t *testing.T, dir string) {
 			startWrite(t, dir, staticDir+"/f.txt", "clean\n")
-			startSwap(t, &mergeOpen, func(string) (*os.File, error) { return nil, errStartInjected })
+			startSwap(t, &draftReadFile, func(string) ([]byte, error) { return nil, errStartInjected })
 		}, staticDir + "/f.txt: " + errStartInjected.Error()},
 	}
 	for _, tc := range errRows {
@@ -1553,9 +1624,12 @@ func TestStartMergeMarkers(t *testing.T) {
 			dir := t.TempDir()
 			tc.setup(t, dir)
 			before := startSnapshotNoFollow(t, dir)
-			got, err := draftConflictFiles(dir)
+			got, err := startConflictFiles(dir)
 			if err == nil || err.Error() != tc.want {
 				t.Errorf("draftConflictFiles = %q, %v, want error %q", got, err, tc.want)
+			}
+			if strings.Contains(tc.want, errStartInjected.Error()) && !errors.Is(err, errStartInjected) {
+				t.Errorf("error %v does not wrap errStartInjected", err)
 			}
 			if after := startSnapshotNoFollow(t, dir); !reflect.DeepEqual(before, after) {
 				t.Errorf("files changed\nbefore: %v\nafter:  %v", before, after)
@@ -1584,14 +1658,14 @@ func TestStartMergeMarkers(t *testing.T) {
 		}
 	})
 
-	t.Run("listDraftFiles refuses a symlink in or as the draft when asked", func(t *testing.T) {
+	t.Run("readDraftFiles refuses a symlink in or as the draft when asked", func(t *testing.T) {
 		dir := t.TempDir()
 		startWrite(t, dir, staticDir+"/a.txt", "a\n")
 		static := filepath.Join(dir, filepath.FromSlash(staticDir))
 		if err := os.Symlink("a.txt", filepath.Join(static, "link.txt")); err != nil {
 			t.Fatal(err)
 		}
-		_, err := listDraftFiles(dir, true)
+		_, err := readDraftFiles(dir, true)
 		if !errors.Is(err, errDraftSymlink) || err.Error() != staticDir+"/link.txt: "+errDraftSymlink.Error() {
 			t.Errorf("symlink in the draft: error = %v, want errDraftSymlink for link.txt", err)
 		}
@@ -1601,7 +1675,7 @@ func TestStartMergeMarkers(t *testing.T) {
 		if err := os.Symlink("real", filepath.Join(other, filepath.FromSlash(staticDir))); err != nil {
 			t.Fatal(err)
 		}
-		_, err = listDraftFiles(other, true)
+		_, err = readDraftFiles(other, true)
 		if !errors.Is(err, errDraftSymlink) || err.Error() != staticDir+": "+errDraftSymlink.Error() {
 			t.Errorf("symlink as the draft: error = %v, want errDraftSymlink for static", err)
 		}
@@ -1926,6 +2000,35 @@ func startFailRename(t *testing.T, calls ...int) {
 
 // TestStartMergeWriteFailures makes each write step of a merge fail through
 // a seam and checks the state of its write-order row.
+// startAssertFolder checks what the folder rel of dir holds after a failed
+// restore: "" is no folder, "draft" is the snapshot draft, and "merged" is
+// the merged copy of startMergeWork (f.txt holds the clean merge text).
+func startAssertFolder(t *testing.T, dir, rel, what string, draft map[string]string) {
+	t.Helper()
+	exists := startExists(dir, rel)
+	switch what {
+	case "":
+		if exists {
+			t.Errorf("%s exists, want no folder", rel)
+		}
+	case "draft":
+		if !exists {
+			t.Errorf("%s is missing, want the draft before the merge", rel)
+			return
+		}
+		if got := startSnapshot(t, filepath.Join(dir, filepath.FromSlash(rel))); !reflect.DeepEqual(got, draft) {
+			t.Errorf("%s = %v, want the draft before the merge %v", rel, got, draft)
+		}
+	case "merged":
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel), "f.txt"))
+		if err != nil || string(data) != startLines7Clean {
+			t.Errorf("%s/f.txt = %q, %v, want the merged text", rel, data, err)
+		}
+	default:
+		t.Fatalf("unknown folder state %q", what)
+	}
+}
+
 func TestStartMergeWriteFailures(t *testing.T) {
 	injected := errStartInjected.Error()
 	// The state after a failure, by its write-order row.
@@ -1954,16 +2057,16 @@ func TestStartMergeWriteFailures(t *testing.T) {
 		{"step 3: the backup folder cannot be made ready", func(t *testing.T, _ string) {
 			startFailMkdir(t, startIsBackupRoot)
 		}, func(b string) string { return b + ": " + injected + ". Backup " + b + "." }, writePartBackup},
-		{"step 3: a draft file cannot be read", func(t *testing.T, dir string) {
-			real := copyReadFile
+		{"check: a draft file cannot be read, so nothing changes", func(t *testing.T, dir string) {
+			real := draftReadFile
 			want := mergePath(dir, staticDir+"/app.css")
-			startSwap(t, &copyReadFile, func(path string) ([]byte, error) {
+			startSwap(t, &draftReadFile, func(path string) ([]byte, error) {
 				if path == want {
 					return nil, errStartInjected
 				}
 				return real(path)
 			})
-		}, func(b string) string { return staticDir + "/app.css: " + injected + ". Backup " + b + "." }, writePartBackup},
+		}, func(string) string { return staticDir + "/app.css: " + injected }, writeNothing},
 		{"step 3: a backup file cannot be written", func(t *testing.T, _ string) {
 			startFailWrite(t, startInBackup("app.css"))
 		}, func(b string) string { return b + "/app.css: " + injected + ". Backup " + b + "." }, writePartBackup},
@@ -1977,17 +2080,6 @@ func TestStartMergeWriteFailures(t *testing.T) {
 		{"step 4: .static.tmp cannot be created", func(t *testing.T, dir string) {
 			startFailMkdir(t, startIsPath(dir, tmpStaticDir))
 		}, func(b string) string { return tmpStaticDir + ": " + injected + ". Backup " + b + "." }, writeFullBackup},
-		{"step 4: a draft file cannot be read for the merge", func(t *testing.T, dir string) {
-			real := mergeOpen
-			// The first open is the marker check; the second is the merge.
-			fail := startNth(2, startIsPath(dir, staticDir+"/app.css"))
-			startSwap(t, &mergeOpen, func(path string) (*os.File, error) {
-				if fail(path) {
-					return nil, errStartInjected
-				}
-				return real(path)
-			})
-		}, func(b string) string { return staticDir + "/app.css: " + injected + ". Backup " + b + "." }, writeFullBackup},
 		{"step 4: a base blob cannot be read", func(t *testing.T, dir string) {
 			real := gitBlob
 			head := startHead(t, dir)
@@ -2057,6 +2149,15 @@ func TestStartMergeWriteFailures(t *testing.T) {
 			return baseFile + ": " + injected + ". The restore failed too: " + injected + ". Restore the draft: copy " + b + " to design/dashboard/static."
 		}, writeRestoreFailed},
 	}
+	// The folders after a failed restore, by row name: what static/,
+	// .static.old/ and .static.tmp/ hold. "draft" is the draft before the
+	// merge, "merged" is the merged copy, and "" is no folder.
+	type restoreDisk struct{ static, old, tmp string }
+	restoreWant := map[string]restoreDisk{
+		"restore: the old draft cannot come back after step 5":    {static: "", old: "draft", tmp: "merged"},
+		"restore: the merged draft cannot move away after step 6": {static: "merged", old: "draft", tmp: ""},
+		"restore: the old draft cannot come back after step 6":    {static: "", old: "draft", tmp: "merged"},
+	}
 	for _, tc := range rows {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, _ := startMergeWork(t)
@@ -2076,8 +2177,14 @@ func TestStartMergeWriteFailures(t *testing.T) {
 			} else {
 				backup = startOneBackup(t, dir)
 			}
-			if want := tc.wantErr(backup); err == nil || err.Error() != want {
+			want := tc.wantErr(backup)
+			if err == nil || err.Error() != want {
 				t.Errorf("error\ngot:  %v\nwant: %s", err, want)
+			}
+			// A row whose text names the injected error must wrap it, so a
+			// %w that becomes %v fails here even when the text stays.
+			if strings.Contains(want, injected) && !errors.Is(err, errStartInjected) {
+				t.Errorf("error %v does not wrap errStartInjected", err)
 			}
 			if tc.state == writeFullBackup || tc.state == writeRestoreFailed {
 				startAssertBackup(t, dir, backup, draftBefore)
@@ -2088,6 +2195,28 @@ func TestStartMergeWriteFailures(t *testing.T) {
 			case writeNoBackup, writePartBackup, writeFullBackup:
 				if after := startDraftState(t, dir); !reflect.DeepEqual(after, stateBefore) {
 					t.Errorf("draft or base changed\nbefore: %v\nafter:  %v", stateBefore, after)
+				}
+			case writeRestoreFailed:
+				// The error wraps two causes: the failed step and the failed rename.
+				multi, ok := err.(interface{ Unwrap() []error })
+				if !ok || len(multi.Unwrap()) != 2 {
+					t.Errorf("error %v does not wrap two causes", err)
+				} else {
+					for i, cause := range multi.Unwrap() {
+						if !errors.Is(cause, errStartInjected) {
+							t.Errorf("cause %d = %v, want errStartInjected", i, cause)
+						}
+					}
+				}
+				disk, ok := restoreWant[tc.name]
+				if !ok {
+					t.Fatalf("no restoreWant entry for %q", tc.name)
+				}
+				for rel, what := range map[string]string{staticDir: disk.static, oldStaticDir: disk.old, tmpStaticDir: disk.tmp} {
+					startAssertFolder(t, dir, rel, what, draftBefore)
+				}
+				if data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(baseFile))); err != nil || string(data) != stateBefore["<base.json>"] {
+					t.Errorf("base.json = %q, %v, want it unchanged", data, err)
 				}
 			}
 		})
@@ -2132,5 +2261,16 @@ func TestStartMergeBytes(t *testing.T) {
 	data, err := gitBlob(dir, "HEAD", shippedPath+"/f.txt")
 	if err != nil || !bytes.Equal(data, []byte(startLines7Head)) {
 		t.Errorf("gitBlob = %q, %v, want %q", data, err, startLines7Head)
+	}
+}
+
+// TestStartMergeBlobError checks that a failed gitBlob keeps the reason
+// that git gives on stderr.
+func TestStartMergeBlobError(t *testing.T) {
+	dir, _ := startMergeWork(t)
+	data, err := gitBlob(dir, "HEAD", shippedPath+"/missing.txt")
+	var exitErr *exec.ExitError
+	if err == nil || !errors.As(err, &exitErr) || !strings.Contains(err.Error(), "fatal:") || !strings.Contains(err.Error(), "missing.txt") {
+		t.Errorf("gitBlob = %q, %v, want an exit error with the git stderr text", data, err)
 	}
 }

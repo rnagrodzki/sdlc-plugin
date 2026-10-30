@@ -552,7 +552,7 @@ func TestDashboardParseCache_SessionActiveUsesNowOfEachCall(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			sessions := dashboardSessionsFromEvidence(f.root, tc.now)
+			sessions := dashSessions(t, f.root, tc.now)
 			if len(sessions) != 1 || sessions[0].Active != tc.want {
 				t.Errorf("sessions = %+v, want one with Active %v", sessions, tc.want)
 			}
@@ -589,7 +589,7 @@ func TestDashboardParseCache_LearningsWindowUsesNowOfEachCall(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := dashboardRecentLearnings(f.root, tc.now); len(got) != tc.want {
+			if got := dashLearnings(t, f.root, tc.now); len(got) != tc.want {
 				t.Errorf("learnings = %+v, want %d", got, tc.want)
 			}
 		})
@@ -709,31 +709,282 @@ func TestDashboardParseCache_ConcurrentCollects(t *testing.T) {
 	}
 }
 
-func TestDashboardParseCache_ReadErrorIsNotStored(t *testing.T) {
-	f := newDashCacheFixture(t)
-	// A directory in place of the runs file: os.Stat works, the read fails.
-	if err := os.Remove(f.runs); err != nil {
+// dashCacheFolderInPlace puts an empty folder in place of the file at path:
+// os.Stat works, and the read of the file fails.
+func dashCacheFolderInPlace(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(f.runs, 0o755); err != nil {
+	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
 
-	if got := dashCollect(t, f.root); len(got.History) != 0 {
-		t.Errorf("history = %+v, want none while runs.jsonl is a folder", got.History)
+// dashCacheWantWarnings fails the test unless warnings holds exactly one text
+// for each of prefixes, in that order, and each text names path.
+func dashCacheWantWarnings(t *testing.T, warnings []string, path string, prefixes ...string) {
+	t.Helper()
+	if len(warnings) != len(prefixes) {
+		t.Fatalf("warnings = %q, want %d with the prefixes %q", warnings, len(prefixes), prefixes)
 	}
-	for _, k := range dashCacheKeys() {
-		if k == dashboardCacheKey(f.root, "history") {
-			t.Errorf("key %q is stored after a read error", k)
+	for i, w := range warnings {
+		if !strings.HasPrefix(w, prefixes[i]) || !strings.Contains(w, path) {
+			t.Errorf("warnings[%d] = %q, want the prefix %q and the path %s", i, w, prefixes[i], path)
 		}
 	}
+}
 
-	// The next collect builds again and shows the file once it is readable.
-	if err := os.Remove(f.runs); err != nil {
+// TestDashboardParseCache_ReadErrorIsNotStored checks each cached source with
+// a file that cannot be read: one repo warning that names the source and the
+// file, no stored key, the rows of the other files, and a build of the key
+// again once the file is readable.
+func TestDashboardParseCache_ReadErrorIsNotStored(t *testing.T) {
+	const (
+		sessionsWarn = "Session evidence unread: "
+		timesWarn    = "Branch activity times unread: "
+	)
+	promptLine := `{"ts":"2026-10-07T09:40:00Z","text":"hi","sessionId":"s2","kind":"prompt","branch":"feat/y"}`
+	mcpLine := `{"ts":"2026-10-07T09:45:00Z","tool":"ship_state","sessionId":"s3"}`
+	cases := []struct {
+		name string
+		// path returns the file that the case breaks.
+		path func(f dashCacheFixture) string
+		// restore is the content of the file once it is readable again. ""
+		// leaves the file missing.
+		restore  string
+		keys     []string // the keys that the read error leaves unstored
+		warnings []string // the warning prefixes, in order
+		// check reads the rows of the collect with the read error.
+		check func(t *testing.T, repo DashboardRepo)
+		// fixed reads the rows of the collect after the restore.
+		fixed func(t *testing.T, repo DashboardRepo)
+	}{
+		{
+			name:     "cli evidence",
+			path:     func(f dashCacheFixture) string { return f.cli },
+			restore:  dashCacheEvidenceLine("2026-10-07T09:50:00Z", "feat/x", "go test", "s1") + "\n",
+			keys:     []string{"sessions", "evidence-times"},
+			warnings: []string{timesWarn, sessionsWarn},
+			check: func(t *testing.T, repo DashboardRepo) {
+				if got := dashSessionIDs(repo); !reflect.DeepEqual(got, []string{"s3", "s2"}) {
+					t.Errorf("sessions = %v, want s3 and s2 from the other files", got)
+				}
+			},
+			fixed: func(t *testing.T, repo DashboardRepo) {
+				if got := dashSessionIDs(repo); !reflect.DeepEqual(got, []string{"s1", "s3", "s2"}) {
+					t.Errorf("sessions = %v, want s1, s3 and s2", got)
+				}
+			},
+		},
+		{
+			name:     "rotated cli evidence",
+			path:     func(f dashCacheFixture) string { return f.cli + ".1" },
+			keys:     []string{"sessions", "evidence-times"},
+			warnings: []string{timesWarn, sessionsWarn},
+			check: func(t *testing.T, repo DashboardRepo) {
+				if got := dashSessionIDs(repo); !reflect.DeepEqual(got, []string{"s1", "s3", "s2"}) {
+					t.Errorf("sessions = %v, want s1 from the current file and s3, s2", got)
+				}
+			},
+		},
+		{
+			name:     "user input evidence",
+			path:     func(f dashCacheFixture) string { return userInputPath(f.root) },
+			restore:  promptLine + "\n",
+			keys:     []string{"sessions", "evidence-times"},
+			warnings: []string{timesWarn, sessionsWarn},
+			check: func(t *testing.T, repo DashboardRepo) {
+				if got := dashSessionIDs(repo); !reflect.DeepEqual(got, []string{"s1", "s3"}) {
+					t.Errorf("sessions = %v, want s1 and s3", got)
+				}
+			},
+		},
+		{
+			name:     "rotated user input evidence",
+			path:     func(f dashCacheFixture) string { return userInputPath(f.root) + ".1" },
+			keys:     []string{"sessions", "evidence-times"},
+			warnings: []string{timesWarn, sessionsWarn},
+		},
+		{
+			name:     "mcp evidence",
+			path:     func(f dashCacheFixture) string { return mcpEvidencePath(f.root) },
+			restore:  mcpLine + "\n",
+			keys:     []string{"sessions"},
+			warnings: []string{sessionsWarn},
+			check: func(t *testing.T, repo DashboardRepo) {
+				if got := dashSessionIDs(repo); !reflect.DeepEqual(got, []string{"s1", "s2"}) {
+					t.Errorf("sessions = %v, want s1 and s2", got)
+				}
+			},
+		},
+		{
+			name:     "rotated mcp evidence",
+			path:     func(f dashCacheFixture) string { return mcpEvidencePath(f.root) + ".1" },
+			keys:     []string{"sessions"},
+			warnings: []string{sessionsWarn},
+		},
+		{
+			name:     "learnings log",
+			path:     func(f dashCacheFixture) string { return f.learning },
+			restore:  "# Log\n\n## 2026-10-07 — plan: first lesson\n- detail\n",
+			keys:     []string{"learnings"},
+			warnings: []string{"Learnings log unread: "},
+			check: func(t *testing.T, repo DashboardRepo) {
+				if len(repo.Learnings) != 0 {
+					t.Errorf("learnings = %+v, want none", repo.Learnings)
+				}
+			},
+			fixed: func(t *testing.T, repo DashboardRepo) {
+				if len(repo.Learnings) != 1 {
+					t.Errorf("learnings = %+v, want 1", repo.Learnings)
+				}
+			},
+		},
+		{
+			name:     "deferred items",
+			path:     func(f dashCacheFixture) string { return f.deferred },
+			restore:  `[{"id":"d1","created":"2026-10-01","source":"s","priority":"high","description":"first item","status":"open"}]`,
+			keys:     []string{"deferred"},
+			warnings: []string{"Deferred items unread: "},
+			check: func(t *testing.T, repo DashboardRepo) {
+				if len(repo.Deferred) != 0 {
+					t.Errorf("deferred = %+v, want none", repo.Deferred)
+				}
+			},
+			fixed: func(t *testing.T, repo DashboardRepo) {
+				if len(repo.Deferred) != 1 {
+					t.Errorf("deferred = %+v, want 1", repo.Deferred)
+				}
+			},
+		},
+		{
+			name:     "run history",
+			path:     func(f dashCacheFixture) string { return f.runs },
+			restore:  `{"ts":"2026-10-07T09:00:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":1000}` + "\n",
+			keys:     []string{"history"},
+			warnings: []string{"Run history unread: "},
+			check: func(t *testing.T, repo DashboardRepo) {
+				if len(repo.History) != 0 {
+					t.Errorf("history = %+v, want none", repo.History)
+				}
+			},
+			fixed: func(t *testing.T, repo DashboardRepo) {
+				if len(repo.History) != 1 {
+					t.Errorf("history = %+v, want 1 row", repo.History)
+				}
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newDashCacheFixture(t)
+			dashWriteJSONL(t, userInputPath(f.root), promptLine)
+			dashWriteJSONL(t, mcpEvidencePath(f.root), mcpLine)
+			path := c.path(f)
+			dashCacheFolderInPlace(t, path)
+
+			repo := dashCollect(t, f.root)
+			if repo.Error != "" {
+				t.Errorf("repo.Error = %q, want none: a read error of an activity source is a warning", repo.Error)
+			}
+			dashCacheWantWarnings(t, repo.Warnings, path, c.warnings...)
+			stored := map[string]bool{}
+			for _, k := range dashCacheKeys() {
+				stored[k] = true
+			}
+			for _, name := range c.keys {
+				if stored[dashboardCacheKey(f.root, name)] {
+					t.Errorf("key %q is stored after a read error", name)
+				}
+			}
+			if c.check != nil {
+				c.check(t, repo)
+			}
+
+			// The next collect builds again and has no warning once the file
+			// is readable.
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if c.restore != "" {
+				f.write(t, path, c.restore)
+			}
+			repo = dashCollect(t, f.root)
+			if len(repo.Warnings) != 0 {
+				t.Errorf("warnings after the restore = %q, want none", repo.Warnings)
+			}
+			if got, want := dashCacheKeys(), dashCacheRootKeys(f.root); !reflect.DeepEqual(got, want) {
+				t.Errorf("keys after the restore = %v, want %v", got, want)
+			}
+			if c.fixed != nil {
+				c.fixed(t, repo)
+			}
+		})
+	}
+}
+
+// dashSessionIDs returns the session ids of repo in their order.
+func dashSessionIDs(repo DashboardRepo) []string {
+	ids := []string{}
+	for _, s := range repo.Sessions {
+		ids = append(ids, s.ID)
+	}
+	return ids
+}
+
+// TestDashboardParseCache_MissingLearningsLogIsNotAnError checks that a
+// learnings log that does not exist gives no learning, no warning, and a
+// stored key.
+func TestDashboardParseCache_MissingLearningsLogIsNotAnError(t *testing.T) {
+	f := newDashCacheFixture(t)
+	if err := os.Remove(f.learning); err != nil {
 		t.Fatal(err)
 	}
-	f.writeLine(t, f.runs, `{"ts":"2026-10-07T09:00:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":1000}`)
-	if got := dashCollect(t, f.root); len(got.History) != 1 {
-		t.Errorf("history = %+v, want 1 row after the file is readable", got.History)
+	repo := dashCollect(t, f.root)
+	if len(repo.Learnings) != 0 || len(repo.Warnings) != 0 {
+		t.Errorf("learnings = %+v, warnings = %q; want none", repo.Learnings, repo.Warnings)
 	}
+	if got, want := dashCacheKeys(), dashCacheRootKeys(f.root); !reflect.DeepEqual(got, want) {
+		t.Errorf("keys = %v, want %v", got, want)
+	}
+}
+
+// TestDashboardParseCache_DeferredWarnings checks the warning texts of a
+// deferred.json that the collect cannot use: a file over the size limit names
+// the file, the limit and the fix, and a file that does not parse names the
+// parse error. Neither result is stored.
+func TestDashboardParseCache_DeferredWarnings(t *testing.T) {
+	t.Run("too large", func(t *testing.T) {
+		f := newDashCacheFixture(t)
+		if err := os.Truncate(f.deferred, history.DeferredFileMax+1); err != nil {
+			t.Fatal(err)
+		}
+		repo := dashCollect(t, f.root)
+		want := fmt.Sprintf("Deferred items unread: %s is larger than %s. Remove resolved items from the file by hand.", f.deferred, dashboardDeleteReadMaxText)
+		if len(repo.Warnings) != 1 || repo.Warnings[0] != want {
+			t.Errorf("warnings = %q, want [%q]", repo.Warnings, want)
+		}
+		if len(repo.Deferred) != 0 {
+			t.Errorf("deferred = %+v, want none", repo.Deferred)
+		}
+		for _, k := range dashCacheKeys() {
+			if k == dashboardCacheKey(f.root, "deferred") {
+				t.Error("deferred key is stored for a file over the size limit")
+			}
+		}
+	})
+	t.Run("does not parse", func(t *testing.T) {
+		f := newDashCacheFixture(t)
+		f.write(t, f.deferred, "{not json")
+		repo := dashCollect(t, f.root)
+		if len(repo.Warnings) != 1 || !strings.HasPrefix(repo.Warnings[0], "Deferred items unread: "+history.ErrDeferredParse.Error()) {
+			t.Errorf("warnings = %q, want one parse warning", repo.Warnings)
+		}
+		for _, k := range dashCacheKeys() {
+			if k == dashboardCacheKey(f.root, "deferred") {
+				t.Error("deferred key is stored for a file that does not parse")
+			}
+		}
+	})
 }

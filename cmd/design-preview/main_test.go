@@ -471,6 +471,28 @@ func TestRun(t *testing.T) {
 	})
 }
 
+// TestModeTexts checks that every text that lists the modes lists exactly
+// modes, in order, and that validate accepts each of them.
+func TestModeTexts(t *testing.T) {
+	names := make([]string, len(modes))
+	for i, m := range modes {
+		names[i] = string(m)
+		if err := m.validate(); err != nil {
+			t.Errorf("validate(%q) = %v, want nil", m, err)
+		}
+	}
+	last := len(names) - 1
+	for _, tc := range []struct{ name, got, want string }{
+		{"usageText", usageText, "Usage: -mode " + strings.Join(names, "|") + "."},
+		{"modeFlagUsage", modeFlagUsage, strings.Join(names[:last], ", ") + " or " + names[last]},
+		{"validate error", Mode("x").validate().Error(), `unknown mode "x". Allowed: ` + strings.Join(names, ", ") + "."},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+}
+
 // TestServeFailure covers the Serve error branch: a listener that is already
 // closed makes Serve fail at once with an error other than ErrServerClosed.
 func TestServeFailure(t *testing.T) {
