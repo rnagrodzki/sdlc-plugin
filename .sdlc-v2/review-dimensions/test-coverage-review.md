@@ -28,7 +28,10 @@ new changes to that same bar:
   on a listing or a file has a test at the cap and a test one past it. In a
   table-driven test every failure row asserts its own cause with `errors.Is`
   or `errors.As`, not only the message; a row that checks the text alone
-  leaves the cause unpinned. Example: a handler with no test for a failed
+  leaves the cause unpinned. A row that injects its failure through a seam
+  uses its own sentinel error and asserts it with `errors.Is`, so a failure
+  at another step cannot pass; a row that checks only that an error came
+  back pins nothing. Example: a handler with no test for a failed
   folder listing and none for an oversize folder.
 - Table-driven tests follow the style already established in sibling
   `_test.go` files in the same package rather than introducing a new
@@ -83,7 +86,11 @@ new changes to that same bar:
 - Multi-step file writes (e.g. atomic writes to two files in sequence) must
   have each failure point tested: first write succeeds/second fails, first
   write fails, and both succeed. Assert the on-disk state after each
-  failure to verify partial writes do not corrupt state.
+  failure to verify partial writes do not corrupt state. A restore or
+  rollback that runs after a failure is a failure point too: each
+  failed-restore test asserts the files on disk (which were restored, which
+  were left, and that no temp or backup file remains), not only the returned
+  error.
 - Fallback branches that contain inner error guards (e.g., a file-write
   fallback that itself checks for read errors) must have test cases
   exercising both the primary failure (triggering the fallback) and the
@@ -150,7 +157,10 @@ new changes to that same bar:
   boundaries or relationships between elements may fail only when two or
   more elements exist. Example: a batch write that refuses several
   sections must be tested with two refused sections, to confirm the
-  recovery message names each one and not only the first.
+  recovery message names each one and not only the first. The same holds
+  for a check that collects what it finds into a list (the conflicts of a
+  merge, the findings of a scan): one test gives it two or more items and
+  asserts that the output names each one, in order, not only the first.
 - A check that reports, counts or drops repeated entries (a duplicate warning,
   a dedupe, a warn-once counter) is tested with a value that repeats three
   times and with copies that are apart in the list, not only with one pair. A
