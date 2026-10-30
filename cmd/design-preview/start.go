@@ -87,7 +87,8 @@ var gitBlob = func(root, rev, path string) ([]byte, error) {
 	return exec.Command("git", "-C", root, "cat-file", "blob", rev+":"+path).Output()
 }
 
-// mergeRemoveAll is os.RemoveAll. Tests replace it to fail write steps 2 and 7.
+// mergeRemoveAll is os.RemoveAll. Tests replace it to fail the clear of stale
+// work folders, the delete in takeHead, and the cleanup after a merge.
 var mergeRemoveAll = os.RemoveAll
 
 // mergeMkdirTemp is os.MkdirTemp. Tests replace it to fail the backup folder.

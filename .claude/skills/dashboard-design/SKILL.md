@@ -98,7 +98,7 @@ The draft has conflict markers. The base commit did not move. The backup folder 
 ## Step 3: URL
 
 1. The serving line has this form: `design preview: serving http://127.0.0.1:<port>/ (pid <pid>)`.
-2. Print the URL and the pid.
+2. Print the URL and the pid. When the output holds the line `design preview: merge — merged <n> files. Base commit <sha>. Backup <path>.`, also print the backup path. Say that a manual copy of the backup folder to `design/dashboard/static` undoes the merge.
 3. Keep the URL, the pid, and the background task id for the stop procedure.
 4. If `design/dashboard/requests.md` does not exist, write the empty log (see the logging rule). The start rule removes the log with a new draft, so a missing log means a new draft or a draft from before the log existed.
 5. If the log has no row, check the draft. Read `base.json` and take `shippedPath`. Run `diff -rq <shippedPath> design/dashboard/static` with Bash. Exit code 1 means the draft differs. This is not an error.

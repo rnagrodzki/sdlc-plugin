@@ -754,7 +754,8 @@ Nine `POST` routes change files: `POST /api/stop`, `POST /api/run-archive`,
 `POST /api/learning-delete`, `POST /api/preplan-status`,
 `POST /api/history-delete` and `POST /api/wait-dismiss`. Each one checks the
 Origin and the token. Every other route is `GET`, including the read-only
-`GET /api/learning`. `GET /` additionally serves `index.html` with its `{{SDLC_TOKEN}}` placeholder
+`GET /api/learning`, `GET /api/run-detail` and `GET /api/session-detail`.
+`GET /` additionally serves `index.html` with its `{{SDLC_TOKEN}}` placeholder
 replaced by this server start's token (`Cache-Control: no-store`, so the
 token is never cached) — only a client that has actually loaded the page has
 ever seen that value.

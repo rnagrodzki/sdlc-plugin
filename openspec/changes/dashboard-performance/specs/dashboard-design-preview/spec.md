@@ -43,7 +43,7 @@ stateDiagram-v2
 
 #### Scenario: Merge with conflicts
 - **WHEN** the draft and HEAD change the same line of `app.js`
-- **THEN** the output has `design preview: merge — 1 conflicts. Backup <path>.` and `design preview: conflict — app.js`
+- **THEN** the output has `design preview: merge — 1 conflicts. Backup <path>.` and `design preview: conflict — design/dashboard/static/app.js`
 - **AND** `design/dashboard/base.json` is unchanged
 - **AND** the process ends with exit 4
 
