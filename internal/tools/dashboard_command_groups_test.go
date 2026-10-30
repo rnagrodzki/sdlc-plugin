@@ -337,8 +337,8 @@ func TestDashboardSessionCommandGroups_ReadFullCommand(t *testing.T) {
 }
 
 // TestDashboardSessionCommandGroups_JSON checks the JSON of a session: the
-// group keys and their order, the share as a number, and [] for a session
-// with no command.
+// group keys and their order, the share as a number, and an empty non-nil
+// CommandGroups slice for a session with no command.
 func TestDashboardSessionCommandGroups_JSON(t *testing.T) {
 	root := dashRoot(t)
 	dashWriteJSONL(t, cliEvidencePath(root),
@@ -347,7 +347,9 @@ func TestDashboardSessionCommandGroups_JSON(t *testing.T) {
 		`{"ts":"2026-10-07T09:10:00Z","text":"hello","sessionId":"prompt-only","kind":"prompt"}`)
 
 	byID := map[string]string{}
+	bySession := map[string]DashboardSession{}
 	for _, s := range dashboardSessionsFromEvidence(root, dashNow) {
+		bySession[s.ID] = s
 		b, err := json.Marshal(s)
 		if err != nil {
 			t.Fatal(err)
@@ -359,8 +361,8 @@ func TestDashboardSessionCommandGroups_JSON(t *testing.T) {
 	if !strings.Contains(byID["with-command"], wantGroup) {
 		t.Errorf("session JSON = %s, want it to contain %s", byID["with-command"], wantGroup)
 	}
-	if !strings.Contains(byID["prompt-only"], `"commandGroups":[]`) {
-		t.Errorf("session JSON = %s, want commandGroups []", byID["prompt-only"])
+	if g := bySession["prompt-only"].CommandGroups; g == nil || len(g) != 0 {
+		t.Errorf("prompt-only CommandGroups = %#v, want an empty non-nil slice", g)
 	}
 	if strings.Contains(byID["with-command"], `"command":`) {
 		t.Errorf("session JSON = %s, want no raw command field", byID["with-command"])

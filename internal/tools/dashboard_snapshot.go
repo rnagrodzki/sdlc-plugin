@@ -113,6 +113,12 @@ type DashboardPipeline struct {
 	SessionID   string              `json:"sessionId"`             // "" when unknown
 	CommitWaves *bool               `json:"commitWaves,omitempty"` // execute and ship only; absent elsewhere
 	Attention   *DashboardAttention `json:"attention,omitempty"`   // absent when no wait is open
+	// IssueCount is the number of issues of the run. Only the page snapshot
+	// (SlimDashboardSnapshot) sets it; absent when the run has no issue.
+	IssueCount int `json:"issueCount,omitempty"`
+	// DetailDeferred is true in the page snapshot on a completed or failed
+	// run: this copy has no step detail and an empty issue list.
+	DetailDeferred bool `json:"detailDeferred,omitempty"`
 	// PlanStartedAt is the start of the plan run that came before a ship
 	// run, RFC 3339. Ship only; absent when the plan time is unknown.
 	PlanStartedAt string            `json:"planStartedAt,omitempty"`
@@ -144,6 +150,9 @@ type DashboardStep struct {
 	StartedAt   string               `json:"startedAt,omitempty"`   // RFC 3339, copied when it parses
 	CompletedAt string               `json:"completedAt,omitempty"` // absent while the step runs
 	Detail      *DashboardStepDetail `json:"detail,omitempty"`
+	// DetailKind is Detail.Kind. Only the page snapshot
+	// (SlimDashboardSnapshot) sets it; absent when the step has no detail.
+	DetailKind string `json:"detailKind,omitempty"`
 }
 
 // DashboardIssue is one problem of a pipeline. Source is "step", "wave",
@@ -435,7 +444,8 @@ type dashboardJoinInfo struct {
 // DashboardSession is one Claude Code session seen in the evidence files of
 // a repo. Timeline holds only the newest dashboardSessionTimelineMax events.
 // CommandGroups counts every command of the session, and is [] when the
-// session has no command, never null.
+// session has no command, never nil. The page snapshot drops both lists.
+// GET /api/session-detail returns them, with [] for an empty list.
 type DashboardSession struct {
 	ID        string `json:"id"`
 	Active    bool   `json:"active"`
@@ -447,8 +457,8 @@ type DashboardSession struct {
 		Commands int `json:"commands"`
 		MCPCalls int `json:"mcpCalls"`
 	} `json:"counts"`
-	Timeline      []DashboardEvent        `json:"timeline"`
-	CommandGroups []DashboardCommandGroup `json:"commandGroups"`
+	Timeline      []DashboardEvent        `json:"timeline,omitempty"`
+	CommandGroups []DashboardCommandGroup `json:"commandGroups,omitempty"`
 }
 
 // DashboardEvent is one timeline entry of a session. Kind is "prompt",
@@ -522,6 +532,70 @@ func CollectDashboardSnapshot(roots []string, now time.Time, version string) Das
 	}
 	pruneDashboardParseCache(repoRoots)
 	return snap
+}
+
+// SlimDashboardSnapshot returns a copy of s for the page. Completed and
+// failed runs lose step detail and issues. Sessions lose timeline and
+// command groups. s is not changed.
+func SlimDashboardSnapshot(s DashboardSnapshot) DashboardSnapshot {
+	if s.Repos == nil {
+		return s
+	}
+	repos := make([]DashboardRepo, len(s.Repos))
+	for i, r := range s.Repos {
+		repos[i] = slimDashboardRepo(r)
+	}
+	s.Repos = repos
+	return s
+}
+
+// slimDashboardRepo returns a copy of r with each pipeline made slim by
+// slimDashboardPipeline and each session without its timeline and command
+// groups. A nil list stays nil. r is not changed.
+func slimDashboardRepo(r DashboardRepo) DashboardRepo {
+	if r.Pipelines != nil {
+		pipelines := make([]DashboardPipeline, len(r.Pipelines))
+		for i, p := range r.Pipelines {
+			pipelines[i] = slimDashboardPipeline(p)
+		}
+		r.Pipelines = pipelines
+	}
+	if r.Sessions != nil {
+		sessions := make([]DashboardSession, len(r.Sessions))
+		for i, s := range r.Sessions {
+			s.Timeline, s.CommandGroups = nil, nil
+			sessions[i] = s
+		}
+		r.Sessions = sessions
+	}
+	return r
+}
+
+// slimDashboardPipeline returns a copy of p for the page. Every run gets
+// IssueCount and the DetailKind of each step with detail. A completed or
+// failed run also loses its step detail, gets an empty non-nil Issues list,
+// and gets DetailDeferred true. p is not changed.
+func slimDashboardPipeline(p DashboardPipeline) DashboardPipeline {
+	finished := p.Status == PipelineCompleted || p.Status == PipelineFailed
+	p.IssueCount = len(p.Issues)
+	if p.Steps != nil {
+		steps := make([]DashboardStep, len(p.Steps))
+		for i, st := range p.Steps {
+			if st.Detail != nil {
+				st.DetailKind = st.Detail.Kind
+				if finished {
+					st.Detail = nil
+				}
+			}
+			steps[i] = st
+		}
+		p.Steps = steps
+	}
+	if finished {
+		p.Issues = []DashboardIssue{}
+		p.DetailDeferred = true
+	}
+	return p
 }
 
 // dashboardRepoRoots cleans roots, drops empty entries, and keeps one root

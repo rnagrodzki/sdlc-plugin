@@ -24,11 +24,12 @@ The log exists because the draft shows only the result. The log keeps what the u
 | Base commit record | `design/dashboard/base.json` (fields `baseCommit`, `shippedPath`) |
 | Status route | `GET http://127.0.0.1:55570/__design/status` |
 | Stop route | `POST http://127.0.0.1:55570/__design/stop` |
-| Start tasks | `task design`, `task design:fresh`, `task design:continue` |
+| Start tasks | `task design`, `task design:fresh`, `task design:continue`, `task design:merge` |
 
 - No step writes run state. There is no worker and no run ledger. The request log is a record of the design, not run state.
 - The only background process is the preview program.
-- Re-entry is safe. `task design` runs the start rule again each time. The start rule keeps a draft that has own work. It asks only in case d.
+- Re-entry is safe. `task design` runs the start rule again each time. The start rule keeps a draft that has own work. It asks only in case d. A draft with conflict markers is refused before case d, and Step 2b asks what to do.
+- A merge copies the draft to a `static.bak-*` folder before it writes. A merge with conflicts leaves the base commit unchanged. `task design`, `task design:merge` and `task design:continue` refuse a draft with conflict markers.
 - The request log stays with the draft. The start rule removes the log when it copies the shipped page (case a, case c, `fresh`). A log with one or more request rows counts as own work, like a changed draft file or a dependency record.
 - The preview program serves `GET /api/*` from the real dashboard. Any other method on `/api/*` answers 405.
 - The preview program adds the marks script to the draft page. Do not add it yourself.
@@ -46,10 +47,12 @@ The first row that matches a line decides the route.
 | Line or event | Next |
 |---|---|
 | `design preview: case d` | Step 2. The process ends with exit 3. This is expected. |
+| `design preview: merge — ` with `conflicts` in the same line | Step 2b. The process ends with exit 4. |
+| `design preview: error — the draft has conflict markers` | Step 2b |
 | `design preview: error — 127.0.0.1:55570 is in use` | Step 1b |
 | `design preview: error` (any other) | Exit E. The error line names the fix. |
 | `design preview: serving` | Step 3 |
-| `design preview: case a`, `case b`, `case c`, `fresh`, `continue` | Keep reading |
+| `design preview: case a`, `case b`, `case c`, `fresh`, `continue`, `merge`, `conflict`, `warning` | Keep reading |
 | The task ends with no row above matched, or 120 s pass with no `serving` line | Exit E (stall) |
 
 ## Step 1b: Old preview program
@@ -59,7 +62,7 @@ The in-use line comes before the start rule. The draft is unchanged.
 1. Run `curl -s http://127.0.0.1:55570/__design/status`.
 2. The answer is JSON with a `dashboard` key. An old preview program runs. Run the stop procedure. Its report line for the old program uses `pid unknown`.
 3. If the stop procedure prints `preview still running`, go to exit E without a second stop procedure. Do not retry.
-4. Run the same task that printed the in-use line once more (`task design`, `task design:fresh` or `task design:continue`) with `run_in_background: true`.
+4. Run the same task that printed the in-use line once more (`task design`, `task design:fresh`, `task design:continue` or `task design:merge`) with `run_in_background: true`.
 5. Follow the marker map. A second in-use line goes to exit E.
 6. Any other answer from the status route, or no answer, is not a preview program. Go to exit E without the stop procedure. Do not stop that process.
 
@@ -69,12 +72,28 @@ Case d means the shipped page changed since the base commit, and the draft has o
 
 1. Show the user the printed commits. They are the lines between the `design preview: case d` line and the `design preview: next` line.
 2. Ask with AskUserQuestion. Offer these options:
+   - Merge (Recommended): copy the draft to a backup folder, merge the shipped page changes into the draft, and keep the own work. It needs a draft with no conflict markers. A merge with conflicts stops and lists the files.
    - Override: discard the draft, its dependency records, and its request log. Copy the shipped page again.
    - Keep: keep the draft and move its base commit to HEAD.
    - Cancel.
-3. Override: run `task design:fresh` with `run_in_background: true`. Then follow the marker map.
-4. Keep: run `task design:continue` with `run_in_background: true`. Then follow the marker map.
-5. Cancel: go to exit S. The process already ended, so there is nothing to stop.
+3. Merge: run `task design:merge` with `run_in_background: true`. Then follow the marker map.
+4. Override: run `task design:fresh` with `run_in_background: true`. Then follow the marker map.
+5. Keep: run `task design:continue` with `run_in_background: true`. Then follow the marker map.
+6. Cancel: go to exit S. The process already ended, so there is nothing to stop.
+
+## Step 2b: Merge conflicts
+
+The draft has conflict markers. The base commit did not move. The backup folder holds the draft from before the merge. A binary file or a file that one side deleted keeps the draft version, with no markers.
+
+1. Show the user the `design preview: conflict` lines or the error line.
+2. Show the backup path, when the output names one. Say that a manual copy of the backup folder to `design/dashboard/static` undoes the merge.
+3. Ask with AskUserQuestion. Offer these options:
+   - Fix with me (Recommended): fix the markers in each listed draft file together.
+   - Override: discard the draft, its dependency records, and its request log. Copy the shipped page again.
+   - Cancel.
+4. Fix with me: edit each listed file until it has no marker line. Then run `task design:continue` with `run_in_background: true`. Then follow the marker map.
+5. Override: run `task design:fresh` with `run_in_background: true`. Then follow the marker map.
+6. Cancel: go to exit S. The draft keeps its markers. The next `task design` refuses the draft and comes back to this step.
 
 ## Step 3: URL
 
@@ -169,7 +188,7 @@ No exit writes state. Every exit runs the stop procedure when a preview program 
 | Exit | When | Action | State write |
 |---|---|---|---|
 | A (approve) | The user approves the design | Run the stop procedure. Then write `requirements.md`. Then hand off to preplan. | none |
-| S (stop or cancel) | The user stops, or cancels in step 2 | Run the stop procedure if a preview program runs. Say the draft stays in the repo. | none |
+| S (stop or cancel) | The user stops, or cancels in step 2 or step 2b | Run the stop procedure if a preview program runs. Say the draft stays in the repo. | none |
 | E (error, stall, or the process ends) | An error line, a stall, or the process ended | Print the last output line. Run the stop procedure if a preview program runs. | none |
 
 ### Exit A: approve

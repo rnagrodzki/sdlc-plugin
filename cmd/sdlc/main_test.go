@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
@@ -139,5 +141,58 @@ func TestDashboardOptions(t *testing.T) {
 	o.Stop()
 	if !stopped {
 		t.Error("Stop does not call the stop function")
+	}
+}
+
+// TestDashboardOptions_CollectSlim checks that the collect function of
+// "sdlc dashboard serve" returns the page snapshot: a completed run has
+// detailDeferred true, no step detail, the detail kind of its commit step,
+// and an empty non-nil issue list.
+func TestDashboardOptions_CollectSlim(t *testing.T) {
+	t.Setenv("SDLC_CACHE_DIR", t.TempDir())
+	root := t.TempDir()
+	runs := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{
+		"branch": "feat/x", "pipelineStatus": "completed", "pipelineCompletedAt": "2026-10-09T07:50:00Z",
+		"steps": []any{
+			map[string]any{"name": "execute", "status": "completed", "startedAt": "2026-10-09T07:00:00Z"},
+			map[string]any{"name": "commit", "status": "completed", "startedAt": "2026-10-09T07:40:00Z",
+				"result": "nothing to commit: the working tree is clean"},
+		},
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(runs, "ship-feat-x-20261009T070000Z.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)
+	mtime := now.Add(-5 * time.Minute)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	o := dashboardOptions(7385, "v-test", func() {}, nil)
+	snap := o.Collect([]string{root}, now)
+	if len(snap.Repos) != 1 || len(snap.Repos[0].Pipelines) != 1 {
+		t.Fatalf("snapshot = %+v, want one repo with one pipeline", snap)
+	}
+	p := snap.Repos[0].Pipelines[0]
+	if p.Status != tools.PipelineCompleted || !p.DetailDeferred {
+		t.Errorf("status, detailDeferred = %q, %v; want completed, true", p.Status, p.DetailDeferred)
+	}
+	if p.Issues == nil || len(p.Issues) != 0 {
+		t.Errorf("issues = %#v, want an empty non-nil slice", p.Issues)
+	}
+	if len(p.Steps) != 2 {
+		t.Fatalf("steps = %+v, want 2", p.Steps)
+	}
+	if c := p.Steps[1]; c.Detail != nil || c.DetailKind != "result" {
+		t.Errorf("commit step detail, detailKind = %+v, %q; want nil, result", c.Detail, c.DetailKind)
 	}
 }
