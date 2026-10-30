@@ -386,7 +386,7 @@
     repoName.setAttribute('title', repo.root);
     side.appendChild(repoName);
 
-    var issues = (pipeline.issues || []).length;
+    var issues = view.issueTotal(pipeline);
     if (issues > 0) side.appendChild(el(doc, 'span', 'issue-chip', plural(issues, 'issue', 'issues')));
 
     side.appendChild(el(doc, 'span', 'pipe-status ' + pipeline.status, pipeline.status));
@@ -1463,11 +1463,15 @@
   };
 
   /**
-   * The tile of one step with a section.
+   * The tile of one step with a section. A step of a finished run whose
+   * detail is not loaded yet (detailKind, no detail) shows the text of the
+   * load state of the run (view.detailText of pipeline.detailEntry) in
+   * place of the body. The tile width follows the detailKind, so it does not
+   * change when the detail loads.
    * @param {Document} doc
    * @param {object} view
-   * @param {{commitWaves?: boolean}} pipeline
-   * @param {{name: string, status: string, detail: object}} step
+   * @param {{commitWaves?: boolean, detailEntry?: object}} pipeline
+   * @param {{name: string, status: string, detail?: object, detailKind?: string}} step
    * @param {number} index the station index of the step
    * @param {boolean} open
    * @param {boolean} selected true for the step of the marked station
@@ -1475,10 +1479,13 @@
    */
   function stepTile(doc, view, pipeline, step, index, open, selected) {
     var detail = step.detail || {};
-    var cls = 'step-sec' + (view.isWideSection(detail) ? ' wide' : '') + (selected ? ' selected' : '');
+    var wide = view.isWideSection(step.detail || { kind: step.detailKind });
+    var cls = 'step-sec' + (wide ? ' wide' : '') + (selected ? ' selected' : '');
     var details = tile(doc, cls, step.name, lampClass(view, step.status), view.sectionMeta(step), open);
     var body = detail.reviewQueue ? reviewQueueBody : TILE_BODIES[detail.kind];
-    if (body) details.appendChild(body(doc, view, detail, pipeline, step));
+    if (!step.detail && step.detailKind) {
+      details.appendChild(el(doc, 'p', 'detail-state', view.detailText(pipeline.detailEntry, 'run')));
+    } else if (body) details.appendChild(body(doc, view, detail, pipeline, step));
     return details;
   }
 
@@ -1508,10 +1515,11 @@
    * first: severity chip, rationale (2 lines at most; the detail viewer shows
    * all of it), and location. The stalled issue shows the age of the last
    * update in place of a location. Each row is a button whose data-detail
-   * key is the pipeline id and the row index.
+   * key is the pipeline id and the row index. The count is view.issueTotal,
+   * so a finished run shows its issueCount before its issue list loads.
    * @param {Document} doc
    * @param {object} view
-   * @param {{issues?: Array, updatedAt?: string}} pipeline
+   * @param {{issues?: Array, issueCount?: number, updatedAt?: string}} pipeline
    * @param {boolean} open
    * @param {Date|number} now
    * @param {string} [tz] IANA time zone; the local zone when absent
@@ -1519,11 +1527,12 @@
    */
   function issuesTile(doc, view, pipeline, open, now, tz) {
     var issues = (pipeline && pipeline.issues) || [];
-    if (issues.length === 0) return null;
+    var total = view.issueTotal(pipeline);
+    if (total === 0) return null;
     var hot = issues.some(function (issue) {
       return issue.severity === 'critical' || issue.severity === 'high';
     });
-    var details = tile(doc, 'step-sec span2', 'issues', hot ? 'failed' : 'running', issues.length + ' open', open);
+    var details = tile(doc, 'step-sec span2', 'issues', hot ? 'failed' : 'running', total + ' open', open);
     // Highest severity first. The row keeps the position of its issue in the list for the detail key.
     view.severityOrder(issues).forEach(function (i) {
       var issue = issues[i];
@@ -1606,7 +1615,9 @@
     var details = tile(doc, 'step-sec span2', 'session', session.active ? 'running' : 'stalled', meta, open);
     var id = el(doc, 'div', 'sec-id', 'id ' + view.shortId(session.id));
     id.setAttribute('title', session.id || '');
-    append(details, [id, commandGroupTable(doc, session.commandGroups)]);
+    append(details, [id, commandGroupTable(doc, session.commandGroups || [])]);
+    // The page snapshot has no timeline; it loads when the tile opens.
+    if (!session.timeline) details.appendChild(el(doc, 'p', 'detail-state', view.detailText(session.detailEntry, 'session')));
     (session.timeline || []).forEach(function (event) {
       details.appendChild(
         append(el(doc, 'div', 'timeline-row'), [

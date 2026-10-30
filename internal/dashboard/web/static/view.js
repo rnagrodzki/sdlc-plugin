@@ -292,6 +292,133 @@
     );
   }
 
+  // --- Finished-run and session detail loads ----------------------------------
+
+  /**
+   * The URL that reads the full steps and issues of one run. The route only
+   * reads, so it needs no token.
+   * @param {{root: string}} repo
+   * @param {{id: string}} run
+   * @returns {string}
+   */
+  function runDetailUrl(repo, run) {
+    return '/api/run-detail?repo=' + encodeURIComponent(repo.root) + '&id=' + encodeURIComponent(run.id);
+  }
+
+  /**
+   * The URL that reads the timeline and command groups of one session.
+   * @param {{root: string}} repo
+   * @param {{id: string}} session
+   * @returns {string}
+   */
+  function sessionDetailUrl(repo, session) {
+    return '/api/session-detail?repo=' + encodeURIComponent(repo.root) + '&id=' + encodeURIComponent(session.id);
+  }
+
+  /**
+   * Returns a copy of run with steps[i].detail and issues from detail (the
+   * body of GET /api/run-detail). A step takes the detail of the step of the
+   * body at the same index when the names are equal, else of the first step
+   * of the body with its name. A step that the body has with no detail loses
+   * its detail and detailKind. A step that the body does not have is kept as
+   * it is. run and detail are not changed.
+   * @param {{steps?: Array, issues?: Array}} run
+   * @param {{steps?: Array, issues?: Array}} detail
+   * @returns {object}
+   */
+  function withRunDetail(run, detail) {
+    var from = (detail && detail.steps) || [];
+    var copy = Object.assign({}, run);
+    copy.steps = (run.steps || []).map(function (step, i) {
+      var src = from[i] && from[i].name === step.name ? from[i] : null;
+      for (var j = 0; !src && j < from.length; j++) {
+        if (from[j] && from[j].name === step.name) src = from[j];
+      }
+      if (!src) return step;
+      var out = Object.assign({}, step);
+      if (src.detail) {
+        out.detail = src.detail;
+      } else {
+        delete out.detail;
+        delete out.detailKind;
+      }
+      return out;
+    });
+    copy.issues = (detail && detail.issues) || [];
+    return copy;
+  }
+
+  /**
+   * Returns a copy of session with timeline and commandGroups from detail
+   * (the body of GET /api/session-detail). session is not changed.
+   * @param {object} session
+   * @param {{timeline?: Array, commandGroups?: Array}} detail
+   * @returns {object}
+   */
+  function withSessionDetail(session, detail) {
+    return Object.assign({}, session, {
+      timeline: (detail && detail.timeline) || [],
+      commandGroups: (detail && detail.commandGroups) || [],
+    });
+  }
+
+  /**
+   * Returns 'fetch' when the page has no entry for a detail key, so it sends
+   * one GET. Any entry (loading, ok, missing, error) gives 'none'.
+   * @param {{state: string}|undefined} entry
+   * @returns {string} 'fetch' | 'none'
+   */
+  function detailAction(entry) {
+    return entry === undefined ? 'fetch' : 'none';
+  }
+
+  /**
+   * Returns the entry of one detail response. 200 with found true is 'ok' and
+   * keeps the body. 200 with found false is 'missing'. Any other answer is
+   * 'error' with the message of the server, else a text with the status.
+   * status 0 is a network failure.
+   * @param {number} status HTTP status, 0 for a network failure
+   * @param {*} json the parsed body, or null
+   * @returns {{state: string, body: (object|null), error: string}}
+   */
+  function detailEntry(status, json) {
+    var body = json && typeof json === 'object' ? json : null;
+    if (status === 200 && body && body.found === true) return { state: 'ok', body: body, error: '' };
+    if (status === 200 && body && body.found === false) return { state: 'missing', body: null, error: '' };
+    return {
+      state: 'error',
+      body: null,
+      error: errorText(body, 'The detail cannot be loaded (HTTP ' + status + ').'),
+    };
+  }
+
+  /**
+   * Returns true when the page removes entry as its part closes: only an
+   * 'error' entry, so the next open sends the GET again.
+   * @param {{state: string}|undefined} entry
+   * @returns {boolean}
+   */
+  function dropOnClose(entry) {
+    return !!entry && entry.state === 'error';
+  }
+
+  /**
+   * Returns the tile text of entry. An undefined entry gives 'Loading…': an
+   * open part always has a GET in flight. An 'ok' entry gives '': the tile
+   * shows the detail.
+   * @param {{state: string, error?: string}|undefined} entry
+   * @param {string} kind 'run' | 'session'
+   * @returns {string}
+   */
+  function detailText(entry, kind) {
+    if (!entry || entry.state === 'loading') return 'Loading…';
+    if (entry.state === 'missing') {
+      return kind === 'session' ? 'This session is no longer on disk.' : 'This run is no longer on disk.';
+    }
+    if (entry.state === 'error') return entry.error || 'The detail cannot be loaded.';
+    return '';
+  }
+
   // --- Detail viewer, archive, and clear: page decisions ---------------------
 
   var BYTES_PER_KB = 1024;
@@ -663,20 +790,22 @@
   // --- Step sections -------------------------------------------------------
 
   /**
-   * A step gets a section only when it has sub-progress (a detail object).
-   * @param {{detail?: object}} step
+   * A step gets a section only when it has sub-progress: a detail object, or
+   * the detailKind of a finished run whose detail is not loaded yet.
+   * @param {{detail?: object, detailKind?: string}} step
    * @returns {boolean}
    */
   function hasSection(step) {
-    return !!(step && step.detail);
+    return !!(step && (step.detail || step.detailKind));
   }
 
   /**
-   * @param {{detail?: {kind: string}}} step
-   * @returns {string} the detail kind, '' when the step has no detail
+   * @param {{detail?: {kind: string}, detailKind?: string}} step
+   * @returns {string} the detail kind, else the detailKind, '' when the step has neither
    */
   function sectionKind(step) {
-    return hasSection(step) ? step.detail.kind || '' : '';
+    if (!hasSection(step)) return '';
+    return (step.detail && step.detail.kind) || step.detailKind || '';
   }
 
   function plural(n, one, many) {
@@ -714,10 +843,10 @@
    * section reads the guardrail count. A
    * result section reads the text before the first colon of the result.
    * @param {{detail?: object}} step
-   * @returns {string} '' when the step has no section
+   * @returns {string} '' when the step has no section or its detail is not loaded
    */
   function sectionMeta(step) {
-    if (!hasSection(step)) return '';
+    if (!hasSection(step) || !step.detail) return '';
     var d = step.detail;
     switch (d.kind) {
       case 'waves': {
@@ -870,7 +999,7 @@
   /**
    * Tiles of a pipeline block: one for each step with a section, one for
    * the issues when there are any, one for the session when there is one.
-   * @param {{steps?: Array, issues?: Array}} pipeline
+   * @param {{steps?: Array, issues?: Array, issueCount?: number}} pipeline
    * @param {object|null} session
    * @returns {number}
    */
@@ -880,9 +1009,22 @@
     for (var i = 0; i < steps.length; i++) {
       if (hasSection(steps[i])) n++;
     }
-    if (pipeline && pipeline.issues && pipeline.issues.length > 0) n++;
+    if (issueTotal(pipeline) > 0) n++;
     if (session) n++;
     return n;
+  }
+
+  /**
+   * Returns run.issueCount when it is a number, else the length of run.issues.
+   * A finished run of the page snapshot has an empty issues list until its
+   * detail loads, so its count comes from issueCount.
+   * @param {{issues?: Array, issueCount?: number}|null|undefined} run
+   * @returns {number} 0 for a null or undefined run
+   */
+  function issueTotal(run) {
+    if (!run) return 0;
+    if (typeof run.issueCount === 'number') return run.issueCount;
+    return (run.issues || []).length;
   }
 
   /**
@@ -2058,6 +2200,15 @@
     archiveRequest: archiveRequest,
     clearRequest: clearRequest,
     learningUrl: learningUrl,
+    runDetailUrl: runDetailUrl,
+    sessionDetailUrl: sessionDetailUrl,
+    withRunDetail: withRunDetail,
+    withSessionDetail: withSessionDetail,
+    detailAction: detailAction,
+    detailEntry: detailEntry,
+    dropOnClose: dropOnClose,
+    detailText: detailText,
+    issueTotal: issueTotal,
     errorText: errorText,
     closeFocusSelector: closeFocusSelector,
     confirmSteps: confirmSteps,

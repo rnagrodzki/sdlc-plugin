@@ -44,6 +44,10 @@ var ui = {
   detail: null,
   detailSig: '', // JSON of the item the viewer shows, so an equal item rebuilds nothing
   detailSeq: 0, // grows on each open and close; a late learning body of an older open is dropped
+  // The detail loads of finished runs and of sessions, by detail key (runKey,
+  // sessionKey). Each value is a view.detailEntry result or {state: 'loading'}.
+  runDetail: new Map(), // root|id|updatedAt -> entry
+  sessionDetail: new Map(), // root|id|lastSeen -> entry
 };
 // The filter and sort state of the tabs: historyOutcome, historySort, and more.
 // render() never resets it, so a data refresh keeps the choice.
@@ -72,7 +76,7 @@ var confirmFlow = null;
 // The text of the confirm dialog when flow.run() throws.
 var CONFIRM_FAILED_TEXT = 'The request could not be sent. Close this dialog and try again.';
 
-// Blocks of the last render: { key, pipeline, node }, in feed order.
+// Blocks of the last render: { key, repo, pipeline, node }, in feed order.
 var blocks = [];
 
 var stage = document.querySelector('.stage');
@@ -303,7 +307,7 @@ function renderFeed(snapshot, repos, scope, now, tz) {
       now: now,
       tz: tz,
     });
-    blocks.push({ key: key, pipeline: p, node: node });
+    blocks.push({ key: key, repo: repo, pipeline: p, node: node });
     nodes.push(node);
   });
 
@@ -328,8 +332,109 @@ function attachQueueState(snapshot) {
       review.detail.queueFilter = (ui.queueFilter && ui.queueFilter[p.id]) || { dim: 'all', src: 'all' };
       review.detail.runLive = p.status === 'running' || p.status === 'stalled';
       var rr = steps.filter(function (s) { return s.name === 'received-review'; })[0];
-      if (rr) delete rr.detail;
+      if (rr) { delete rr.detail; delete rr.detailKind; }
     });
+  });
+}
+
+// The key of the detail load of a finished run: root|id|updatedAt. A run
+// that changes on disk gets a new key, so its detail loads again.
+function runKey(repo, run) {
+  return repo.root + '|' + run.id + '|' + (run.updatedAt || '');
+}
+
+// The key of the detail load of a session: root|id|lastSeen.
+function sessionKey(repo, session) {
+  return repo.root + '|' + session.id + '|' + (session.lastSeen || '');
+}
+
+// Puts the loaded detail into the snapshot before the draw. A finished run
+// with an ok entry is replaced by view.withRunDetail; any other finished run
+// gets its entry (or undefined) as detailEntry, which the step tiles show as
+// text. Sessions follow the same rule with view.withSessionDetail. The queue
+// state and the detail viewer then read the merged run.
+function mergeDetails(snapshot) {
+  ((snapshot && snapshot.repos) || []).forEach(function (repo) {
+    var pipelines = repo.pipelines || [];
+    pipelines.forEach(function (run, i) {
+      if (!run.detailDeferred) return;
+      var entry = ui.runDetail.get(runKey(repo, run));
+      if (entry && entry.state === 'ok') pipelines[i] = view.withRunDetail(run, entry.body);
+      else run.detailEntry = entry;
+    });
+    var sessions = repo.sessions || [];
+    sessions.forEach(function (session, i) {
+      var entry = ui.sessionDetail.get(sessionKey(repo, session));
+      if (entry && entry.state === 'ok') sessions[i] = view.withSessionDetail(session, entry.body);
+      else session.detailEntry = entry;
+    });
+  });
+}
+
+// Stores entry under key and removes the older keys of the same root|id:
+// the keys differ only after the last '|'.
+function storeDetail(cache, key, entry) {
+  var base = key.slice(0, key.lastIndexOf('|'));
+  Array.from(cache.keys()).forEach(function (k) {
+    if (k !== key && k.slice(0, k.lastIndexOf('|')) === base) cache.delete(k);
+  });
+  cache.set(key, entry);
+}
+
+// Sends one GET for key when view.detailAction says so. The entry is
+// 'loading' until the answer comes. An answer whose loading entry was
+// replaced (a newer key, or a drop) is not stored. A stored answer draws the
+// page with reason click, because a frame draw can skip the panel.
+function loadDetail(cache, key, url) {
+  if (view.detailAction(cache.get(key)) !== 'fetch') return;
+  var loading = { state: 'loading' };
+  storeDetail(cache, key, loading);
+  fetchJSON(url).then(function (result) {
+    if (cache.get(key) !== loading) return;
+    cache.set(key, view.detailEntry(result.status, result.body));
+    if (ui.lastSnapshot) render(ui.lastSnapshot, 'click');
+  });
+}
+
+// Starts the detail load of the finished run of block. A run without
+// detailDeferred already has its detail, so it sends nothing.
+function loadRunDetail(block) {
+  if (block.pipeline.detailDeferred !== true) return;
+  loadDetail(ui.runDetail, runKey(block.repo, block.pipeline), view.runDetailUrl(block.repo, block.pipeline));
+}
+
+// Starts the detail load of the session of block: the session that the
+// session tile shows (view.pickSession).
+function loadSessionDetail(block) {
+  var session = view.pickSession(block.pipeline, block.repo.sessions);
+  if (!session) return;
+  loadDetail(ui.sessionDetail, sessionKey(block.repo, session), view.sessionDetailUrl(block.repo, session));
+}
+
+// Removes the entry of key from cache when view.dropOnClose says so (an
+// error), so the next open of the part sends the GET again.
+function dropDetail(cache, key) {
+  if (view.dropOnClose(cache.get(key))) cache.delete(key);
+}
+
+// Runs when the session tile of block closes: drops a failed session load.
+function dropSessionDetail(block) {
+  var session = view.pickSession(block.pipeline, block.repo.sessions);
+  if (session) dropDetail(ui.sessionDetail, sessionKey(block.repo, session));
+}
+
+// loadOpenDetails starts the detail load of each part that the user sees:
+// each expanded block with detailDeferred, and each open session tile.
+// A failed run starts expanded (view.defaultCollapsed), so the call at the
+// end of render loads it. detailAction stops a second GET. The blocks of a
+// hidden Pipelines tab load nothing.
+function loadOpenDetails() {
+  if (ui.tab !== 'pipelines') return;
+  blocks.forEach(function (b) {
+    if (b.node.classList.contains('collapsed')) return;
+    if (b.pipeline.detailDeferred) loadRunDetail(b);
+    var tile = tileOf(b.node, 'session');
+    if (tile && tile.open) loadSessionDetail(b);
   });
 }
 
@@ -339,6 +444,7 @@ function attachQueueState(snapshot) {
 // counts as 'click'. A 'frame' skips the active panel tab when its input did
 // not change (view.panelsToDraw). The scroll and focus survive the rebuild.
 function render(snapshot, reason) {
+  mergeDetails(snapshot);
   attachQueueState(snapshot);
   ui.lastSnapshot = snapshot || { repos: [] };
   var repos = ui.lastSnapshot.repos || [];
@@ -372,6 +478,7 @@ function render(snapshot, reason) {
   restoreFocus();
   restoreScroll();
   refreshDetail();
+  loadOpenDetails();
 
   if (ui.hash !== null) {
     var hash = ui.hash;
@@ -432,6 +539,9 @@ function syncToggleAll() {
   button.hidden = ui.tab !== 'pipelines' || blocks.length === 0;
 }
 
+// Collapses or expands the block of key. An expand starts the detail loads of
+// the parts it shows. A collapse drops a failed load of the run and of its
+// session, so the next expand tries again.
 function setCollapsed(key, collapsed) {
   var block = blockOf(key);
   if (!block) return;
@@ -439,6 +549,12 @@ function setCollapsed(key, collapsed) {
   block.node.classList.toggle('collapsed', collapsed);
   block.node.querySelector('.fold-btn').setAttribute('aria-expanded', String(!collapsed));
   syncToggleAll();
+  if (!collapsed) {
+    loadOpenDetails();
+  } else {
+    dropDetail(ui.runDetail, runKey(block.repo, block.pipeline));
+    dropSessionDetail(block);
+  }
 }
 
 // The tile of a step: a node with data-section set to the step name inside
@@ -947,6 +1063,13 @@ function init() {
       // stays open after the next snapshot once the user opened it.
       var key = view.sectionKey(block.getAttribute('data-key'), tile.getAttribute('data-section'));
       ui.closed[key] = !tile.open;
+      // An open tile may need its detail. A closed session tile drops a failed load.
+      if (tile.open) {
+        loadOpenDetails();
+      } else if (tile.getAttribute('data-section') === 'session') {
+        var owner = blockOf(block.getAttribute('data-key'));
+        if (owner) dropSessionDetail(owner);
+      }
     },
     true
   );
