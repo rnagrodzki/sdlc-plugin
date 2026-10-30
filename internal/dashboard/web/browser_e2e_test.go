@@ -183,11 +183,15 @@ type browserCollector struct {
 	last   tools.DashboardSnapshot
 }
 
+// collect returns the slim page snapshot, like the collector in
+// dashboardOptions of cmd/sdlc/main.go: a finished run has no step detail
+// and a session has no timeline, so the page loads them from the detail
+// routes.
 func (c *browserCollector) collect(roots []string, at time.Time) tools.DashboardSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.frozen {
-		c.last = tools.CollectDashboardSnapshot(roots, at, testVersion)
+		c.last = tools.SlimDashboardSnapshot(tools.CollectDashboardSnapshot(roots, at, testVersion))
 	}
 	return c.last
 }
@@ -459,6 +463,10 @@ const (
 	browserHardenNoWhy = "No rationale recorded."
 	// browserHardenBad is the marker of the run record that is not an object.
 	browserHardenBad = "1 harden record could not be read. The other records show below."
+	// browserHardenBranch and browserHardenSession name the ship run of
+	// browserSeedHardenShip and the session of browserSeedSessionEvidence.
+	browserHardenBranch  = "feat/harden"
+	browserHardenSession = "s-harden"
 )
 
 // browserSeedHardenShip writes a ship run whose harden step has two run
@@ -466,11 +474,11 @@ const (
 // entry that is not an object.
 func browserSeedHardenShip(t *testing.T, root string, now time.Time) {
 	t.Helper()
-	st, err := state.Init(root, "ship", "feat/harden", "s-harden")
+	st, err := state.Init(root, "ship", browserHardenBranch, browserHardenSession)
 	if err != nil {
 		t.Fatal(err)
 	}
-	st.Data["branch"] = "feat/harden"
+	st.Data["branch"] = browserHardenBranch
 	st.Data["startedAt"] = browserTS(now.Add(-30 * time.Minute))
 	st.Data["steps"] = []any{
 		map[string]any{"name": "review", "status": tools.StepCompleted, "startedAt": browserTS(now.Add(-30 * time.Minute)), "completedAt": browserTS(now.Add(-20 * time.Minute))},
@@ -489,6 +497,218 @@ func browserSeedHardenShip(t *testing.T, root string, now time.Time) {
 	if err := state.Write(st); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// What the pause and detail-load test seeds and looks for. Each text differs
+// from the others, so a step cannot pass by reading the wrong source.
+const (
+	// browserFailedBranch, browserFailedSession and browserFailedRationale are
+	// the branch, the session and the harden rationale of browserSeedFailedShip.
+	browserFailedBranch    = "feat/failed"
+	browserFailedSession   = "s-failed"
+	browserFailedRationale = "The failed run broke a rule that no guardrail covers."
+	// browserSeedHistoryBranch is the branch of the History row that exists at
+	// the start. browserLateBranch is the branch of the History row that the
+	// select step writes.
+	browserSeedHistoryBranch = "fix/seed-history"
+	browserLateBranch        = "feat/late-history"
+	// The texts of browserSeedSessionEvidence: the older command, the prompt
+	// between the two commands, and the newer command.
+	browserOldCommand = "go test ./internal/dashboard/..."
+	browserPromptText = "continue with the harden step"
+	browserNewCommand = "task lint"
+)
+
+// browserSeedFailedShip writes a failed ship run. No step has a start time
+// and none is in progress, so the run is not in flight, and the failed harden
+// step makes the run failed. The harden step has one valid run record with the
+// rationale browserFailedRationale. It returns the path of the state file.
+func browserSeedFailedShip(t *testing.T, root string, now time.Time) string {
+	t.Helper()
+	st, err := state.Init(root, "ship", browserFailedBranch, browserFailedSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Data["branch"] = browserFailedBranch
+	st.Data["startedAt"] = browserTS(now.Add(-25 * time.Minute))
+	st.Data["steps"] = []any{
+		map[string]any{"name": "review", "status": tools.StepCompleted},
+		map[string]any{"name": "harden", "status": tools.StepFailed, "error": "harden stopped"},
+	}
+	st.Data["healing"] = map[string]any{"hardened": []any{
+		map[string]any{"phase": "done", "trigger": "cluster:src/session.ts", "classification": "user-code",
+			"applied": []any{
+				map[string]any{"surface": "plan-guardrails", "action": "add", "targetFile": ".sdlc-v2/config.toml",
+					"rationale": browserFailedRationale},
+			},
+			"skipped": 0, "recordedAt": browserTS(now.Add(-6 * time.Minute))},
+	}}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+	return st.Path
+}
+
+// browserFinishShip stamps the ship state of branch in root as completed at
+// the given time, as the cleanup of the ship pipeline does.
+func browserFinishShip(t *testing.T, root, branch string, at time.Time) {
+	t.Helper()
+	st, err := state.Find(root, "ship", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st == nil {
+		t.Fatalf("no ship state for branch %q in %s", branch, root)
+	}
+	st.Data["pipelineStatus"] = "completed"
+	st.Data["pipelineCompletedAt"] = browserTS(at)
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// browserSeedSessionEvidence writes the evidence of session to root: two CLI
+// executions and one prompt on the branch browserHardenBranch, all inside the
+// last hour. The three times differ, so the timeline of the session has three
+// rows, the newest first: browserNewCommand, browserPromptText, then
+// browserOldCommand. It uses the exported writers of the hooks, so the files
+// are the ones that the snapshot reads.
+func browserSeedSessionEvidence(t *testing.T, root, session string, now time.Time) {
+	t.Helper()
+	for _, c := range []struct {
+		at      time.Time
+		command string
+	}{
+		{now.Add(-40 * time.Minute), browserOldCommand},
+		{now.Add(-20 * time.Minute), browserNewCommand},
+	} {
+		err := tools.AppendCLIEvidence(root, tools.CLIEvidenceEntry{
+			Timestamp: browserTS(c.at), Pipeline: "ship", Step: "harden", Branch: browserHardenBranch,
+			Command: c.command, ExitCode: 0, OutputHead: "ok", SessionID: session,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	err := tools.AppendUserInput(root, tools.UserInputEntry{
+		Timestamp: browserTS(now.Add(-30 * time.Minute)), Pipeline: "ship", Step: "harden", Branch: browserHardenBranch,
+		Text: browserPromptText, Kind: tools.UserInputKindPrompt, SessionID: session,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// browserRepoOf returns the repo with the given root from GET /api/snapshot
+// of the server at base. It reports false when the snapshot has no such repo.
+func browserRepoOf(t *testing.T, base, root string) (tools.DashboardRepo, bool) {
+	t.Helper()
+	for _, repo := range browserSnapshotOf(t, base).Repos {
+		if repo.Root == root {
+			return repo, true
+		}
+	}
+	return tools.DashboardRepo{}, false
+}
+
+// browserPipelineOn returns the pipeline of branch in repo. It reports false
+// when the repo has none.
+func browserPipelineOn(repo tools.DashboardRepo, branch string) (tools.DashboardPipeline, bool) {
+	for _, p := range repo.Pipelines {
+		if p.Branch == branch {
+			return p, true
+		}
+	}
+	return tools.DashboardPipeline{}, false
+}
+
+// browserCheckSlimHarden fails the test unless run has the given status and
+// holds its harden step as a deferred detail: no detail, the detail kind
+// harden, and detailDeferred set. The page steps that follow prove nothing
+// when the snapshot already holds the detail.
+func browserCheckSlimHarden(t *testing.T, run tools.DashboardPipeline, status string) {
+	t.Helper()
+	if run.Status != status || !run.DetailDeferred {
+		t.Fatalf("run %q: status %q, detailDeferred %v; want status %q and detailDeferred true", run.Branch, run.Status, run.DetailDeferred, status)
+	}
+	for _, s := range run.Steps {
+		if s.Name != "harden" {
+			continue
+		}
+		if s.Detail != nil || s.DetailKind != "harden" {
+			t.Fatalf("run %q: harden step detail %v, detailKind %q; want no detail and detailKind \"harden\"", run.Branch, s.Detail, s.DetailKind)
+		}
+		return
+	}
+	t.Fatalf("run %q has no harden step", run.Branch)
+}
+
+// browserBlock returns the CSS selector of the pipeline block of the run with
+// the given id.
+func browserBlock(id string) string {
+	return `#feed > [data-id=` + browserJSON(id) + `]`
+}
+
+// browserLaunch serves the dashboard for roots on a local listener, with a
+// browserCollector, and opens it in a new headless Chrome that runs at
+// chrome. It returns the base URL of the server and the page. The server and
+// the browser stop when the test ends, and the log of the server shows when
+// the test fails. The caller calls isolateCacheDir before it writes the seeds.
+func browserLaunch(t *testing.T, chrome string, roots []string) (string, *browserPage) {
+	t.Helper()
+	stderrBuf := captureStderr(t)
+	shortTimings(t, browserSnapshotEvery, time.Second)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	o := browserOptions(ln, roots, &browserCollector{})
+	base := "http://" + ln.Addr().String()
+
+	// Cleanups run last in, first out: the server stops first, then the log is
+	// read, and captureStderr puts the old writer back.
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server stderr:\n%s", stderrBuf.String())
+		}
+	})
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	serveDone := make(chan int, 1)
+	go func() { serveDone <- Serve(serveCtx, o) }()
+	t.Cleanup(func() {
+		stopServe()
+		select {
+		case <-serveDone:
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return at cleanup")
+		}
+	})
+	browserWaitFor(t, "GET /api/health", func() bool {
+		resp, err := http.Get(base + "/api/health")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	})
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.ExecPath(chrome),
+		chromedp.NoSandbox,
+		chromedp.UserDataDir(t.TempDir()),
+		chromedp.WindowSize(1400, 1000),
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	t.Cleanup(cancelAlloc)
+	ctx, cancelCtx := chromedp.NewContext(allocCtx)
+	t.Cleanup(cancelCtx)
+	// Run with no step starts the browser. Later steps use a context with a limit.
+	if err := chromedp.Do(ctx); err != nil {
+		t.Fatalf("start Chrome: %v", err)
+	}
+	return base, &browserPage{t: t, ctx: ctx}
 }
 
 // browserPage drives one Chrome tab. Each method fails the test on an error.
@@ -583,6 +803,20 @@ func (p *browserPage) count(sel string) int {
 func (p *browserPage) text(sel string) string {
 	p.t.Helper()
 	return browserMust[string](p, "text of "+sel, `(function () { var n = document.querySelector(`+browserJSON(sel)+`); return n ? n.textContent : ''; })()`)
+}
+
+// setVisibility makes the page report the visibility state "hidden" or
+// "visible" and sends the visibilitychange event. The test sets the state and
+// sends the event itself, so it does not depend on how the browser reports a
+// tab.
+func (p *browserPage) setVisibility(visibility string) {
+	p.t.Helper()
+	browserMust[bool](p, "set the visibility to "+visibility, `(function () {
+		Object.defineProperty(document, 'visibilityState', {value: `+browserJSON(visibility)+`, configurable: true});
+		Object.defineProperty(document, 'hidden', {value: `+strconv.FormatBool(visibility == "hidden")+`, configurable: true});
+		document.dispatchEvent(new Event('visibilitychange'));
+		return true;
+	})()`)
 }
 
 // listenClose starts to watch the close event of the dialog with the given id.
@@ -1202,4 +1436,230 @@ func TestBrowserE2E_HardenTile(t *testing.T) {
 		return ['execute', 'commit', 'review'].every(function (n) { return names.indexOf(n) !== -1; }) &&
 			!!block.querySelector('details[data-section="review"]') &&
 			block.querySelectorAll('`+hardenTile+`').length === 0;`))
+}
+
+// TestBrowserE2E_DetailLoad drives the real page against the slim snapshot of
+// browserCollector and the two detail routes, in a temp repo with a completed
+// harden ship run, the evidence of its session, and one History row.
+//
+// Steps:
+//  1. hidden-pause: a hidden page closes its event stream (ui.source is null).
+//  2. visible-reopen: a visible page opens a new stream and reaches the
+//     snapshot light.
+//  3. run-detail-load: the completed run starts collapsed and loads nothing;
+//     a click on its head loads the run detail and the harden tile shows the
+//     rationale.
+//  4. failed-run-load: a failed run with a harden step starts expanded; the
+//     reloaded page shows its harden tile with no click, and does not load the
+//     collapsed run.
+//  5. hash-link: a page that opens at the hash of a run, with the History tab
+//     saved, shows the Pipelines tab and the block of the run.
+//  6. session-detail-load: the session tile of the run loads the timeline
+//     when it opens.
+//  7. select-draws-hidden-panel: a History row written while the Pipelines tab
+//     is active is not in the History panel tab until the tab is selected.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_DetailLoad(t *testing.T) {
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+
+	now := time.Now().UTC()
+	repo := t.TempDir()
+	browserSeedHardenShip(t, repo, now)
+	browserFinishShip(t, repo, browserHardenBranch, now.Add(-9*time.Minute))
+	browserSeedSessionEvidence(t, repo, browserHardenSession, now)
+	browserWriteRuns(t, repo, []history.RunRecord{
+		{Timestamp: browserTS(now.Add(-50 * time.Minute)), Skill: "commit", Branch: browserSeedHistoryBranch, Outcome: "success", DurationMs: 30000},
+	})
+	base, page := browserLaunch(t, chrome, []string{repo})
+
+	// The slim snapshot must hold the run without its harden detail and the
+	// session without its timeline, else the page steps below prove nothing.
+	snapRepo, ok := browserRepoOf(t, base, repo)
+	if !ok {
+		t.Fatalf("the snapshot has no repo %s", repo)
+	}
+	hardenRun, ok := browserPipelineOn(snapRepo, browserHardenBranch)
+	if !ok {
+		t.Fatalf("the snapshot has no run for branch %q", browserHardenBranch)
+	}
+	browserCheckSlimHarden(t, hardenRun, tools.PipelineCompleted)
+	var session *tools.DashboardSession
+	for i := range snapRepo.Sessions {
+		if snapRepo.Sessions[i].ID == browserHardenSession {
+			session = &snapRepo.Sessions[i]
+		}
+	}
+	if session == nil || session.Counts.Commands != 2 || session.Counts.Prompts != 1 || len(session.Timeline) != 0 {
+		t.Fatalf("snapshot session %q = %+v; want 2 commands, 1 prompt and no timeline", browserHardenSession, session)
+	}
+
+	const snapshotLight = `document.getElementById('conn').getAttribute('data-state') === 'snapshot'`
+	hardenBlock := browserBlock(hardenRun.ID)
+	// blockCollapsed is a script that is true when the block exists and its
+	// collapsed class equals collapsed.
+	blockCollapsed := func(block string, collapsed bool) string {
+		return `(function () {
+			var b = document.querySelector(` + browserJSON(block) + `);
+			return !!b && b.classList.contains('collapsed') === ` + strconv.FormatBool(collapsed) + `;
+		})()`
+	}
+	// hardenWhys is a script for the rationale texts in the harden tile of the block.
+	hardenWhys := func(block string) string {
+		return `(function () {
+			var tile = document.querySelector(` + browserJSON(block+` details[data-section="harden"]`) + `);
+			return tile ? Array.prototype.map.call(tile.querySelectorAll('.hd-why'), function (n) { return n.textContent; }) : [];
+		})()`
+	}
+	// runDetailIDs returns the run ids in the run detail cache of the page, as JSON.
+	runDetailIDs := func() string {
+		return browserMust[string](page, "the ids in the run detail cache", `JSON.stringify(Array.from(ui.runDetail.keys()).map(function (k) { return k.split('|')[1]; }))`)
+	}
+
+	page.do("open the dashboard", chromedp.Navigate(base+"/"))
+	page.wait("the first snapshot", snapshotLight)
+	page.click("the Pipelines tab", "#tab-pipelines")
+	page.wait("the harden run to start collapsed", blockCollapsed(hardenBlock, true))
+
+	// Step 1: a hidden page closes its stream.
+	t.Log("step hidden-pause")
+	page.setVisibility("hidden")
+	page.wait("the page to close its event stream", `ui.source === null && document.getElementById('conn').getAttribute('data-state') === 'paused'`)
+
+	// Step 2: a visible page opens a new stream. The light is paused until the
+	// new stream sends its first snapshot.
+	t.Log("step visible-reopen")
+	page.setVisibility("visible")
+	page.wait("the light to reach snapshot on a new stream", `ui.source !== null && `+snapshotLight)
+
+	// Step 3: the detail of a completed run loads when its block opens.
+	t.Log("step run-detail-load")
+	if n := browserMust[int](page, "the size of the run detail cache", `ui.runDetail.size`); n != 0 {
+		t.Fatalf("run detail loads before the click = %d; want 0, the run is collapsed", n)
+	}
+	if browserMust[bool](page, "the harden tile before the click", hardenWhys(hardenBlock)+`.indexOf(`+browserJSON(browserHardenRationale)+`) !== -1`) {
+		t.Fatalf("the harden tile holds %q before the click; want it only after the detail load", browserHardenRationale)
+	}
+	page.click("the head of the harden run", hardenBlock+" .fold-btn")
+	page.wait("the harden tile body to hold the rationale", hardenWhys(hardenBlock)+`.indexOf(`+browserJSON(browserHardenRationale)+`) !== -1`)
+	if got, want := runDetailIDs(), browserJSON([]string{hardenRun.ID}); got != want {
+		t.Errorf("run detail loads = %s; want %s, one load of the opened run", got, want)
+	}
+
+	// Step 4: a failed run starts expanded and loads its detail with no click.
+	// The completed run is collapsed after the reload, so it loads nothing.
+	t.Log("step failed-run-load")
+	failedState := browserSeedFailedShip(t, repo, now)
+	var failedRun tools.DashboardPipeline
+	browserWaitFor(t, "the failed run in the snapshot", func() bool {
+		r, ok := browserRepoOf(t, base, repo)
+		if !ok {
+			return false
+		}
+		failedRun, ok = browserPipelineOn(r, browserFailedBranch)
+		return ok
+	})
+	browserCheckSlimHarden(t, failedRun, tools.PipelineFailed)
+	failedBlock := browserBlock(failedRun.ID)
+	page.do("reload the dashboard", chromedp.Reload())
+	page.wait("the first snapshot", snapshotLight)
+	page.wait("the failed run to start expanded", blockCollapsed(failedBlock, false))
+	page.wait("the harden tile body to hold the rationale of the failed run", hardenWhys(failedBlock)+`.indexOf(`+browserJSON(browserFailedRationale)+`) !== -1`)
+	if browserMust[bool](page, "the harden tile of the failed run", hardenWhys(failedBlock)+`.indexOf(`+browserJSON(browserHardenRationale)+`) !== -1`) {
+		t.Errorf("the harden tile of the failed run holds %q; want only its own rationale", browserHardenRationale)
+	}
+	if got, want := runDetailIDs(), browserJSON([]string{failedRun.ID}); got != want {
+		t.Errorf("run detail loads after the reload = %s; want %s, the failed run only", got, want)
+	}
+
+	// Step 5: the hash of a run wins over the saved tab. A failed run always
+	// sorts above a completed run, and its detail loads after the first draw,
+	// so it would push the block of the hash target down after the page
+	// scrolled to it. The test removes the failed run first, so the block of the
+	// harden run is the only block when the page scrolls to it.
+	t.Log("step hash-link")
+	if err := os.Remove(failedState); err != nil {
+		t.Fatal(err)
+	}
+	browserWaitFor(t, "the failed run to leave the snapshot", func() bool {
+		r, ok := browserRepoOf(t, base, repo)
+		if !ok {
+			return false
+		}
+		_, found := browserPipelineOn(r, browserFailedBranch)
+		return !found
+	})
+	page.click("the History tab", "#tab-history")
+	page.wait("the History tab to be saved", `window.sdlcView.loadTab(window.localStorage) === 'history'`)
+	// A change of the hash alone is not a new page load, so the page leaves first.
+	page.do("leave the dashboard", chromedp.Navigate("about:blank"))
+	page.do("open the dashboard at the hash of the harden run", chromedp.Navigate(base+"/#"+hardenRun.ID))
+	page.wait("the Pipelines tab and the block of the harden run in view", `(function () {
+		var block = document.querySelector(`+browserJSON(hardenBlock)+`);
+		if (!block || document.getElementById('tab-pipelines').getAttribute('aria-selected') !== 'true') return false;
+		var stage = document.querySelector('.stage').getBoundingClientRect();
+		var box = block.getBoundingClientRect();
+		return box.height > 0 && box.top < stage.bottom && box.bottom > stage.top;
+	})()`)
+
+	// Step 6: the timeline of a session loads when its tile opens.
+	t.Log("step session-detail-load")
+	sessionTile := hardenBlock + ` details[data-section="session"]`
+	const sessionLoaded = `ui.sessionDetail.size`
+	page.click("the head of the harden run", hardenBlock+" .fold-btn")
+	page.wait("the session tile of the harden run, closed", `(function () {
+		var tile = document.querySelector(`+browserJSON(sessionTile)+`);
+		return !!tile && !tile.open;
+	})()`)
+	if n := browserMust[int](page, "the size of the session detail cache", sessionLoaded); n != 0 {
+		t.Fatalf("session detail loads before the tile opens = %d; want 0", n)
+	}
+	if n := page.count(sessionTile + " .timeline-row"); n != 0 {
+		t.Fatalf("timeline rows before the tile opens = %d; want 0", n)
+	}
+	page.click("the session tile", sessionTile+" > summary")
+	page.wait("the first timeline row", `document.querySelectorAll(`+browserJSON(sessionTile+" .timeline-row")+`).length >= 1`)
+	var rows []struct {
+		Kind string `json:"kind"`
+		Text string `json:"text"`
+	}
+	raw := browserMust[string](page, "read the timeline rows", `JSON.stringify(Array.prototype.map.call(document.querySelectorAll(`+browserJSON(sessionTile+" .timeline-row")+`), function (r) {
+		return { kind: r.querySelector('.t-kind').textContent, text: r.querySelector('.t-text').textContent };
+	}))`)
+	if err := json.Unmarshal([]byte(raw), &rows); err != nil {
+		t.Fatalf("decode the timeline rows %q: %v", raw, err)
+	}
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.Kind+": "+r.Text)
+	}
+	if want := []string{"command: " + browserNewCommand, "prompt: " + browserPromptText, "command: " + browserOldCommand}; !slices.Equal(got, want) {
+		t.Errorf("timeline rows = %q; want %q, the newest first", got, want)
+	}
+
+	// Step 7: the History panel tab is drawn when it is selected. The first
+	// part draws it once, so it holds a stale list while the Pipelines tab is
+	// active.
+	t.Log("step select-draws-hidden-panel")
+	histRow := func(branch string) string {
+		return `#panel-history input[data-hist-pick*=` + browserJSON(branch) + `]`
+	}
+	page.click("the History tab", "#tab-history")
+	page.wait("the seed row in the History panel tab", `document.querySelectorAll(`+browserJSON(histRow(browserSeedHistoryBranch))+`).length === 1`)
+	page.click("the Pipelines tab", "#tab-pipelines")
+	page.wait("the Pipelines tab to be selected", `document.getElementById('tab-pipelines').getAttribute('aria-selected') === 'true'`)
+	browserWriteRuns(t, repo, append(browserRunRows(t, repo), history.RunRecord{
+		Timestamp: browserTS(time.Now()), Skill: "ship", Branch: browserLateBranch, Outcome: "success", DurationMs: 60000,
+	}))
+	page.wait("the new row in the last snapshot of the page", `ui.lastSnapshot.repos.some(function (r) {
+		return (r.history || []).some(function (h) { return h.branch === `+browserJSON(browserLateBranch)+`; });
+	})`)
+	// Two poll intervals: more snapshots arrive while the History panel tab is hidden.
+	time.Sleep(2 * browserSnapshotEvery)
+	if n := page.count(histRow(browserLateBranch)); n != 0 {
+		t.Fatalf("rows of %q in the hidden History panel tab = %d; want 0, a snapshot draws only the active panel tab", browserLateBranch, n)
+	}
+	page.click("the History tab", "#tab-history")
+	page.wait("the new row in the History panel tab", `document.querySelectorAll(`+browserJSON(histRow(browserLateBranch))+`).length === 1`)
 }

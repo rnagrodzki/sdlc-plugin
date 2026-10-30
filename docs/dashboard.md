@@ -69,7 +69,7 @@ For each registered repo, the page shows:
   [Dismiss a wait](#dismiss-a-wait)). The head of a pipeline with a wait
   keeps the repo name in its right group, and its banner bar has no Dismiss
   button. A
-  `completed` or `failed` pipeline drops off the page 7 days after its
+  `completed` or `failed` pipeline drops off the page 4 days after its
   last update. Ship and execute pipelines also carry the worktree path they
   ran in. Some read problems of a repo are warnings: an unread preplan
   folder or topic file, a topic file whose summary is not read, a Started
@@ -87,7 +87,8 @@ For each registered repo, the page shows:
   the repo's evidence files, grouped by session ID, with
   prompt/command/MCP-call counts, a table of command groups (see
   [Session command groups](#session-command-groups)), and a timeline of its
-  newest 50 events. A session's timeline text is redacted and truncated to
+  newest 50 events. The page loads the groups and the timeline when the user
+  opens the tile (see [Detail on open](#detail-on-open)). A session's timeline text is redacted and truncated to
   120 characters before it reaches the page. A session shows as "active" when
   its newest evidence line is less than 30 minutes old.
 - **Activity tab** — the repo's open deferred issues, high priority first,
@@ -150,9 +151,10 @@ opens the block and selects step n of its track, counted from 0. `#activity`,
 `#history` and `#preplans` open that tab.
 
 The page updates itself: it opens a server-sent-events stream
-(`GET /api/events`) that re-collects the snapshot every 2 seconds and pushes
-a new one only when its content actually changed, so an idle page sends no
-data beyond an occasional keep-alive comment.
+(`GET /api/events`). One shared loop collects the snapshot every 2 seconds
+while at least one page is connected. It sends a new snapshot only when its
+content changed. A hidden page closes the stream, and the loop stops when no
+page is connected.
 
 ### Session command groups
 
@@ -199,6 +201,12 @@ The program names go through the same redaction as the timeline text.
 | `/sdlc:dashboard --stop` | The server stops within 2s |
 | Nothing | The server keeps running. It has no idle stop. |
 
+On macOS and Linux the server sets the nice value 10 on its process group at
+start when it leads that group. The detached start always leads its group.
+Another `serve` start gets nice 10 only when it leads its group. When the
+system refuses the change, the server writes one line to `stderr` and the start
+goes on.
+
 The server runs only on macOS and Linux (`internal/dashboard/control.go`'s
 `ErrUnsupported`): a detached process start on any other OS fails outright,
 and there is no fallback mode.
@@ -235,6 +243,34 @@ dialog. Four kinds of row open it:
   example because someone resolved the deferred item, the viewer shows "This
   item is no longer open."
 
+## Detail on open
+
+The page snapshot has no step detail and no issue list for a completed or
+failed run. It has no timeline and no command groups for a session. The page
+loads these parts when the user opens the run or the session tile.
+
+| Route | Query | Returns | Token |
+|---|---|---|---|
+| `GET /api/run-detail` | `repo`, `id` | full steps and issues of one run | no |
+| `GET /api/session-detail` | `repo`, `id` | timeline and command groups of one session | no |
+
+- A `failed` run starts expanded, so the page loads its detail while the
+  Pipelines tab is active. A `completed` run starts collapsed, so the page
+  loads its detail when the user expands it.
+- The server collects the repo again for each call, so the answer is as new
+  as a snapshot taken now.
+- `repo` and `id` are required. `id` is at most 256 bytes and `repo` is at
+  most 4096 bytes. A missing value, or a longer value, gets `400` with the
+  code `BAD_REQUEST`. See the error table in [Security](#security).
+- A good answer is `200`. The run answer is `{"found","id","steps","issues"}`.
+  The session answer is `{"found","id","timeline","commandGroups"}`.
+- A run or a session that the server does not show gives `found: false` and
+  empty lists, not an error. For example, a finished run older than 4 days is
+  not shown.
+- For `found: false` the page shows "This run is no longer on disk." or "This
+  session is no longer on disk." For an error answer it shows the message of
+  the error, and the next open of the part sends the request again.
+
 ## Archive a run
 
 Archive takes a run off the page and keeps its files. It moves them to
@@ -259,7 +295,7 @@ What Archive does:
 - Only a top-level pipeline row can be archived. A run nested in a ship
   block, such as its execute run or its review run, has no archive icon. It moves
   with its ship.
-- A `completed` or `failed` run is a row for 7 days after its last update.
+- A `completed` or `failed` run is a row for 4 days after its last update.
   After that the run is not a row, and its id returns `RUN_NOT_FOUND`.
 - Archive moves the files that hold results. It deletes the working
   folders. Archive does not move them.
@@ -312,7 +348,7 @@ answer has one of five codes:
 | Code | HTTP status | Cause | What to do |
 |---|---|---|---|
 | `BAD_RUN_ID` | 400 | The id is not a bare run name. It has a path part, or it does not start with `ship-`, `execute-`, `plan-`, or `review-`. | Send the id of a pipeline row. |
-| `RUN_NOT_FOUND` | 404 | No pipeline row has this id, or the run has no file on disk. A nested run and a finished run older than 7 days are not rows. | Reload the page. The run is gone. |
+| `RUN_NOT_FOUND` | 404 | No pipeline row has this id, or the run has no file on disk. A nested run and a finished run older than 4 days are not rows. | Reload the page. The run is gone. |
 | `RUN_ACTIVE` | 409 | The row has the status `running`. | Wait until the run ends or stalls. |
 | `CONFIRM_STALLED` | 409 | The row is `stalled`, and the request has no `confirmStalled: true`. | Confirm. Archive removes the resume point. |
 | `ARCHIVE_FAILED` | 500 | A read, a move, or a delete failed. An unexpected error gets this code too. | Read the message. If the message names a link that points nowhere, do the recovery in the message. See [Linked worktrees](getting-started.md#linked-worktrees). Otherwise, fix the permission of the named file, then archive again. |
@@ -756,8 +792,10 @@ so it skips these two checks.
 | `POST /api/history-delete` | Deletes the `runs.jsonl` lines that match the keys. See [Delete History rows](#delete-history-rows). | Same. The body is `{"repo", "rows"}`. `rows` holds 1 to 50 keys `{"kind", "branch", "endedAt"}`. `repo`, `rows`, and `kind` and `endedAt` of each key are required. |
 | `POST /api/wait-dismiss` | Deletes one wait record. See [Dismiss a wait](#dismiss-a-wait). | Same. The body is `{"repo", "kind", "sessionId", "toolUseId"}`. `repo`, `kind` and `sessionId` are required. `kind` is `question` or `permission`. A question needs `toolUseId`. A permission has none. |
 | `GET /api/learning?repo=…&date=…&heading=…` | Returns the text of one learning. See [Detail viewer](#detail-viewer). | No Origin check and no token: the route only reads, like `GET /api/snapshot`. `repo`, `date` and `heading` are required. The text is redacted and cut at 8000 characters. |
+| `GET /api/run-detail?repo=…&id=…` | Returns the full steps and issues of one run. See [Detail on open](#detail-on-open). | No Origin check and no token: the route only reads. `repo` and `id` are required. `id` is at most 256 bytes and `repo` is at most 4096 bytes. A longer value gets `400` with the code `BAD_REQUEST`. |
+| `GET /api/session-detail?repo=…&id=…` | Returns the timeline and command groups of one session. | Same as `run-detail`. |
 
-For the archive, clear, delete, status, dismiss and learning routes, `repo` must be the path of a
+For the archive, clear, delete, status, dismiss, learning, run detail and session detail routes, `repo` must be the path of a
 repo that the page shows. The server compares it with the registered repos,
 where a linked worktree counts as its main repo. Any other path gets `404`,
 and the server does no file work.
@@ -772,12 +810,13 @@ with a wrong method (`405`) answer with plain text. The error answers are:
 | 415 | `BAD_CONTENT_TYPE` | The content type is not `application/json` | Archive, clear, delete, status, dismiss |
 | 413 | `BODY_TOO_LARGE` | The body is over 8 KiB | Archive, clear, delete, status, dismiss |
 | 400 | `BAD_BODY` | The server could not read the body | Archive, clear, delete, status, dismiss |
-| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo` or `slug` is missing, or `slug` is not a file name, or the topic path is a folder (preplan delete). Or `repo` or `id` is missing (deferred delete). Or `repo`, `date` or `heading` is missing (learning delete, or `GET /api/learning`). Or the `slug` or the `status` breaks a rule, or the topic file is gone, a folder or a link (preplan status). Or `rows` is empty or holds more than 50 keys, a key is not valid, or a key matches no line (History delete). Or `kind`, `sessionId` or `toolUseId` breaks a rule (wait dismiss). | Archive, clear, delete, status, dismiss, learning |
-| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, delete, status, dismiss, learning |
-| 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, delete, status, dismiss, learning |
+| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo` or `slug` is missing, or `slug` is not a file name, or the topic path is a folder (preplan delete). Or `repo` or `id` is missing (deferred delete). Or `repo`, `date` or `heading` is missing (learning delete, or `GET /api/learning`). Or `repo` or `id` is missing or too long (run detail, session detail). Or the `slug` or the `status` breaks a rule, or the topic file is gone, a folder or a link (preplan status). Or `rows` is empty or holds more than 50 keys, a key is not valid, or a key matches no line (History delete). Or `kind`, `sessionId` or `toolUseId` breaks a rule (wait dismiss). | Archive, clear, delete, status, dismiss, learning, run detail, session detail |
+| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, delete, status, dismiss, learning, run detail, session detail |
+| 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, delete, status, dismiss, learning, run detail, session detail |
 | 500 | `CLEAR_FAILED` | Clear cannot read the repo folder | Clear |
 | 500 | `DELETE_FAILED` | The file could not be read or written. The suggestion names the fix. | Delete, status, dismiss |
 | 500 | `LEARNING_READ_FAILED` | The server cannot read the learnings log | Learning |
+| 500 | `DETAIL_READ_FAILED` | The server cannot read the repo of the run or the session | Run detail, session detail |
 | 400, 404, 409, 500 | `BAD_RUN_ID`, `RUN_NOT_FOUND`, `RUN_ACTIVE`, `CONFIRM_STALLED`, `ARCHIVE_FAILED` | See [Archive a run](#archive-a-run) | Archive |
 
 An example of an error answer:
@@ -856,10 +895,17 @@ flowchart LR
 
 This section is for plugin contributors. The page reads one JSON snapshot.
 `GET /api/snapshot` returns it, and `GET /api/events` pushes a new one when
-its content changes. `CollectDashboardSnapshot` in
+its content changes. Both send the page snapshot: a completed or failed run
+has no `steps[].detail` and no `issues[]` items, and a session has no
+`timeline` and no `commandGroups`. See [Detail on open](#detail-on-open).
+`CollectDashboardSnapshot` in
 `internal/tools/dashboard_snapshot.go` builds it on each call from the state
 files, ledger folders, evidence files, and history files of each repo. The
-collector stores nothing of its own: it reads what other tools wrote. The Go
+collector writes no file: it reads what other tools wrote. It keeps only an
+in-memory parse cache of the evidence logs, `runs.jsonl`, the learnings log and
+`deferred.json`. The cache key is the path, size and modification time of each
+file, so a changed file is parsed again. State files, wait records, review
+ledgers and preplans are read again on each call. The Go
 types in that file are the full list of fields. The table below lists the
 fields that carry data from other tools, with the JSON key, where the
 collector reads the data, and the tool action that writes it.
@@ -867,6 +913,7 @@ collector reads the data, and the tool action that writes it.
 | Field | Source | Written by |
 |---|---|---|
 | `steps[].detail.kind` | One of `waves`, `dimensions`, `explorers`, `rounds`, `findings`, `guardrails`, `result`, `fixes`, or `harden`. It tells which field of `detail` is filled. | Collector, not stored |
+| `steps[].detailKind` | Page snapshot only. The `kind` of the step detail, also when the page snapshot has no `detail`. Absent when the step has no detail. | Collector (slim step) |
 | `steps[].startedAt`, `steps[].completedAt` | `startedAt` and `completedAt` of a ship step or an execute wave, as RFC 3339 text. No key when the time is absent or does not parse. A running step has no `completedAt`. The `plan` step of a ship block gets its times from `linkedPlan` of the ship state, else from the plan row of `runs.jsonl` (old runs). With neither, it has no times. The steps of a standalone plan or review pipeline have no times. | ship_state step actions; execute_state wave actions; ship_state `complete-step` of `execute` for `linkedPlan` |
 | `steps[].detail.fixes` | `healing.fixProgress[]` of the ship state, in stored order. Each row has `title` (redacted, at most 120 characters), `severity`, `file`, `line` (absent when 0), `status`: `queued`, `fixing`, `fixed`, `failed`, or `deferred`, and `origin` (`local-review` or `pr-comment`, `local-review` when the record has none). A record with an unknown status, severity or origin is skipped. | ship_state `healing_record` kinds `fix-progress` and `fixed`; ship_state `defer` |
 | `steps[].detail.fixes[].origin` | `origin` of the fix record. `local-review` when absent. | received-review |
@@ -891,7 +938,8 @@ collector reads the data, and the tool action that writes it.
 | `commitWaves` | `commitWaves` of the execute state; an absent key counts as `true`. A ship block gets it from its joined execute run. It is absent on a plan block, a review block, and a ship block with no joined execute run. | execute_state `init` |
 | `repos[].history` | The 50 newest rows of `.sdlc-v2/history/runs.jsonl`, newest first. A row gives `kind` (the row's `skill`), `branch`, `outcome`, `startedAt`, `endedAt`, `durationMs`, and `totalMs`. A ship row with a linked plan also gives `planStartedAt` and `planDurationMs` (from `plan_started_at`, `plan_duration_ms`). `totalMs` is `ts` minus `plan_started_at` for such a row, else `durationMs`. A `plan_started_at` that does not parse or is after `ts` counts as no linked plan. `0` means no value. `startedAt` is `started_at`, else `ts` minus `duration_ms`. A line that does not parse is skipped. | ship_state `history_record` (outcome `success`, `failure`, or `partial`); ship_state `fail` (the first `fail` of a run appends a `failure` row); plan_mark `done` (a `plan` row with outcome `done`). `history_record` with `detail.skill` `ship` and `detail.branch`, and `fail`, copy `plan_file`, `plan_started_at`, and `plan_duration_ms` from the ship state `linkedPlan` |
 | `repos[].history[].planPaired`, `.planEndedAt` | A ship row with no valid stored plan time gets the plan time of the newest plan row of its branch that ended before the ship and after the previous ship of that branch. The plan row needs a start that parses, a `duration_ms` above 0, and a start that is not after the ship end. The ship row then gets `planStartedAt`, `planDurationMs`, a `totalMs` that counts from the plan start, `planPaired` set to `true`, and `planEndedAt`, the `ts` of that plan row. Both keys are absent otherwise. The pairing reads every line of `runs.jsonl`, so a plan row outside the newest 50 rows still pairs with a ship row inside them. | Collector, not stored |
-| `repos[].sessions[].commandGroups` | One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
+| `issueCount`, `detailDeferred` | Page snapshot only. `issueCount` is the issue count of the run, absent when 0. `detailDeferred` is true for a completed or failed run, because its page snapshot has no step detail and no issue items. A run with another status loses no detail. | Collector (slim step) |
+| `repos[].sessions[].commandGroups` | Absent in the page snapshot. `GET /api/session-detail` returns it. One `{label, programs[], count, share, majority, lastAt}` for each command group, over every command of the session, not only the newest 50 events. The largest group comes first. `[]` in the detail when the session has no command, never `null`. See [Session command groups](#session-command-groups). | Collector, derived from the command entries of the evidence files |
 | `repos[].deferred[]` | The open items of `.sdlc-v2/history/deferred.json`, high priority first, then oldest first. Each item has `id`, `priority`, `description`, `created`, `source`, `severity`, `file`, `line`, and `reason`. A value that the record lacks is `""`, or `0` for `line`, never `null`. | ship_state `defer` and `deferred_add`; execute_state `issue-draft` |
 | `repos[].warnings` | Read problems that do not block an archive: an unread preplan folder or topic file, a `**Started:**` line that does not parse, a count of topic files older than the newest 100, an unread `runs.jsonl` or execute state for plan times, an unread attention folder (`Attention folder unread: ...`), a count of open waits older than the newest 50 lone waits (`N older open waits not shown`), a topic file of more than 262144 bytes (256 KiB) (`Preplan <slug> summary not read: the file is <n> bytes, the limit is 262144 bytes`, where `<n>` is the size of the file), a link to a regular file in place of a topic file (`Preplan <slug> summary not read: not a regular file`), a summary read that failed (`Preplan <slug> summary not read: <error>`, where `<error>` is the error text of the operating system). Each of these three `summary not read` warnings keeps the row and sets all six `unread` names of `repos[].preplans[]`. `[]` when none, never `null`. | Collector, derived |
 | `repos[].preplans[]` | The newest 100 `.md` files of `.sdlc-v2/preplan/`, newest first, ties by slug. Each item has `slug` (the file name without `.md`), `topic`, `status`, `path`, `updatedAt` (the change time of the file), `durationMs`, `goal`, `live`, `kept`, `dropped`, `lastCheckAt`, `openQuestions`, `gaps`, `smallestCut`, and `unread`. The collector finds `topic`, `status`, and the Started line in the first 4 KiB (4096 bytes) of each file. It ignores the rest of the file for these three. It reads the whole file for the summary fields (`goal` to `unread`), up to 256 KiB (262144 bytes). A file of more than 256 KiB is not read: the row stays, all six `unread` names are set, and the file adds one warning (see `repos[].warnings`). A file that went away after the head read has no row and adds no warning. `topic` is the text after `# Preplan:`, else the slug. `status` is the text after `**Status:**`, else `""`. Both are redacted and cut at 120 characters, like the timeline text. `durationMs` is a number of milliseconds, always present: the change time of the file minus the UTC RFC 3339 time on the `**Started:**` line. A status change or any other edit moves the change time, so the value grows with each change; it is not the time spent on the topic. It is `0` when the file has no Started line, when the line does not parse, or when the start is equal to or later than the change time. A line that does not parse also adds the warning `Preplan <slug> start time not read: "<text>" (expected RFC 3339; duration shown as 0)`. A missing line adds no warning. `[]` when none, never `null`. `goal` is the first sentence of `## Goal` (the text of its first paragraph up to the first period followed by a space, else the whole first paragraph), redacted and cut at 120 characters, and `""` when the section is absent or empty. `live`, `kept`, and `dropped` count the rows of the `## Decisions` table. `live` is every row that starts with neither `Dropped:` nor `Moved:`. `kept` is the live rows whose Reason holds `Kept with warning:`. `dropped` is the rows that start with `Dropped:`. A `Moved:` row is in no count. `lastCheckAt` is the `Last check:` time of the `**Guardrail check:**` line, as a UTC RFC 3339 time, and `""` when unread or never checked. The collector finds that line in the first 4 KiB of the file and ignores the rest of the file for it. `openQuestions` is the number of bullets in `## Open questions`, and `0` when the section is absent. `gaps` names each skeleton section that is absent or empty, without `## `. `smallestCut` is `set` when `## Decisions` has a valid `Smallest cut:` line, else `not set`. `unread` lists the parts that the collector did not read or that failed the check, in this order: `goal`, `proposals` (`live`, `kept`, and `dropped`), `smallestCut`, `lastCheck` (`lastCheckAt`), `openQuestions`, and `gaps`. A section fails the check when its body breaks a rule of the format check that `preplan_write` uses (see [Format rules](skills/preplan.md#format-rules)). `lastCheck` is also unread when the `**Guardrail check:**` line in the first 4 KiB has no valid `Last check:` time, or when the file holds the legacy `## Guardrail check` section. A file with no `**Guardrail check:**` line in the first 4 KiB and no legacy section was never checked: `lastCheck` is not unread and `lastCheckAt` is `""`. A check line that starts after the first 4 KiB counts as no line, as it does for `preplan_check`. A code fence that is open at the end of the file hides each `## ` heading after it. Then `gaps` is unread, and so is each part whose heading is not found: `goal`, `proposals` with `smallestCut`, or `openQuestions`. An absent heading with no open fence is not unread: its fields keep their empty values. The field of an unread part is empty: `""`, `0`, `[]`, or `not set`. `gaps` and `unread` are `[]` when empty, never `null`. | plan_support `preplan_context` (skeleton and Started line), then the preplan skill through `preplan_write` and `preplan_check` |
@@ -1102,8 +1150,8 @@ held rows.
   dimensions. The folder stays until the first execute_state `gc` or
   ship_state `cleanup-pipeline` sweep after 7 days. That sweep removes it.
   7 days is the default of `state.gc.ttlDays`. A completed review leaves the
-  page 7 days after its last update. The sweep removes its folder at about the
-  same age.
+  page 4 days after its last update. With the default TTL, the first sweep
+  after the TTL removes its folder later than that.
 - **Ship stores the explorer summary and the review rounds at cleanup.**
   The explorer findings of a plan run live in its `.evidence` directory, and
   `cleanup-pipeline` deletes that directory with the plan state file. Before
