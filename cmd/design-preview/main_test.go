@@ -264,6 +264,12 @@ func TestRun(t *testing.T) {
 					return "design preview: continue — kept the draft. Base commit " + startHead(t, repo) + "."
 				},
 			},
+			{
+				name:  "merge",
+				args:  []string{"-mode", "merge"},
+				setup: func(t *testing.T, repo string) { startRun(t, repo, ModeAuto) },
+				want:  func(*testing.T, string) string { return "design preview: merge — nothing to merge" },
+			},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -309,6 +315,32 @@ func TestRun(t *testing.T) {
 		runAssertFree(t, addr)
 	})
 
+	t.Run("a merge with conflicts prints its lines, exits 4 without a serving line and closes the listener", func(t *testing.T) {
+		repo := startRepo(t)
+		base := startDraftWithChange(t, repo)
+		startWrite(t, repo, draftDir+"/static/app.css", "body { color: blue; }\n")
+		addr := runFreeAddr(t)
+
+		code, stdout, stderr := runOnce(repo, addr, "-mode", "merge")
+
+		if code != exitMergeConflicts {
+			t.Errorf("exit code = %d, want %d", code, exitMergeConflicts)
+		}
+		backup := startOneBackup(t, repo)
+		want := "design preview: merge — 1 conflicts. Backup " + backup + ".\n" +
+			"design preview: conflict — " + staticDir + "/app.css\n"
+		if stdout != want {
+			t.Errorf("stdout\ngot:  %q\nwant: %q", stdout, want)
+		}
+		if stderr != "" {
+			t.Errorf("stderr = %q, want empty", stderr)
+		}
+		if rec := startReadBaseFile(t, repo); rec.BaseCommit != base {
+			t.Errorf("base commit = %s, want the old base %s", rec.BaseCommit, base)
+		}
+		runAssertFree(t, addr)
+	})
+
 	t.Run("a start-rule error prints its error line, exits 2 and closes the listener", func(t *testing.T) {
 		tests := []struct {
 			name    string
@@ -327,6 +359,15 @@ func TestRun(t *testing.T) {
 				name:    "continue without a draft",
 				args:    []string{"-mode", "continue"},
 				wantErr: errNoDraft,
+			},
+			{
+				name: "continue with conflict markers in the draft",
+				args: []string{"-mode", "continue"},
+				setup: func(t *testing.T, repo string) {
+					startRun(t, repo, ModeAuto)
+					startWrite(t, repo, staticDir+"/app.css", "<<<<<<< draft\n")
+				},
+				wantErr: conflictMarkersError([]string{staticDir + "/app.css"}),
 			},
 		}
 		for _, tc := range tests {
@@ -402,11 +443,11 @@ func TestRun(t *testing.T) {
 			args []string
 			want string
 		}{
-			{"unknown mode", []string{"-mode", "bogus"}, `unknown mode "bogus". Allowed: auto, fresh, continue.`},
-			{"empty mode", []string{"-mode", ""}, `unknown mode "". Allowed: auto, fresh, continue.`},
-			{"mode without a value", []string{"-mode"}, "flag needs an argument: -mode. Usage: -mode auto|fresh|continue."},
-			{"unknown flag", []string{"-port", "1"}, "flag provided but not defined: -port. Usage: -mode auto|fresh|continue."},
-			{"extra argument", []string{"extra"}, `unexpected argument "extra". Usage: -mode auto|fresh|continue.`},
+			{"unknown mode", []string{"-mode", "bogus"}, `unknown mode "bogus". Allowed: auto, fresh, continue, merge.`},
+			{"empty mode", []string{"-mode", ""}, `unknown mode "". Allowed: auto, fresh, continue, merge.`},
+			{"mode without a value", []string{"-mode"}, "flag needs an argument: -mode. Usage: -mode auto|fresh|continue|merge."},
+			{"unknown flag", []string{"-port", "1"}, "flag provided but not defined: -port. Usage: -mode auto|fresh|continue|merge."},
+			{"extra argument", []string{"extra"}, `unexpected argument "extra". Usage: -mode auto|fresh|continue|merge.`},
 		}
 		for _, tc := range tests {
 			t.Run(tc.name, func(t *testing.T) {
@@ -428,6 +469,28 @@ func TestRun(t *testing.T) {
 			})
 		}
 	})
+}
+
+// TestModeTexts checks that every text that lists the modes lists exactly
+// modes, in order, and that validate accepts each of them.
+func TestModeTexts(t *testing.T) {
+	names := make([]string, len(modes))
+	for i, m := range modes {
+		names[i] = string(m)
+		if err := m.validate(); err != nil {
+			t.Errorf("validate(%q) = %v, want nil", m, err)
+		}
+	}
+	last := len(names) - 1
+	for _, tc := range []struct{ name, got, want string }{
+		{"usageText", usageText, "Usage: -mode " + strings.Join(names, "|") + "."},
+		{"modeFlagUsage", modeFlagUsage, strings.Join(names[:last], ", ") + " or " + names[last]},
+		{"validate error", Mode("x").validate().Error(), `unknown mode "x". Allowed: ` + strings.Join(names, ", ") + "."},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
 }
 
 // TestServeFailure covers the Serve error branch: a listener that is already

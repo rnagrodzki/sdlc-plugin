@@ -175,6 +175,20 @@ type fakeActions struct {
 	statusOut  tools.DashboardPreplanStatusOut
 	runsArgs   []fakeRunsCall
 	waitArgs   [][4]string // root, kind, sessionID, toolUseID
+
+	// The run and session detail functions share detailErr.
+	runDetailCalls     []fakeDetailCall
+	runDetailOut       tools.DashboardRunDetailOut
+	sessionDetailCalls []fakeDetailCall
+	sessionDetailOut   tools.DashboardSessionDetailOut
+	detailErr          error
+}
+
+// fakeDetailCall is one call of the RunDetail or SessionDetail function of the
+// fake.
+type fakeDetailCall struct {
+	root, id string
+	at       time.Time
 }
 
 // fakeRunsCall is one call of the DeleteRuns function of the fake.
@@ -242,11 +256,24 @@ func (f *fakeActions) dismissWait(root, kind, sessionID, toolUseID string) (tool
 	return f.delOut, f.delErr
 }
 
-// calls returns the number of calls to all nine functions.
+// runDetail is the RunDetail function of the fake: it records the call.
+func (f *fakeActions) runDetail(root, id string, at time.Time) (tools.DashboardRunDetailOut, error) {
+	f.runDetailCalls = append(f.runDetailCalls, fakeDetailCall{root: root, id: id, at: at})
+	return f.runDetailOut, f.detailErr
+}
+
+// sessionDetail is the SessionDetail function of the fake: it records the call.
+func (f *fakeActions) sessionDetail(root, id string, at time.Time) (tools.DashboardSessionDetailOut, error) {
+	f.sessionDetailCalls = append(f.sessionDetailCalls, fakeDetailCall{root: root, id: id, at: at})
+	return f.sessionDetailOut, f.detailErr
+}
+
+// calls returns the number of calls to all eleven functions.
 func (f *fakeActions) calls() int {
 	return len(f.archiveIn) + len(f.clearRoots) + len(f.learnArgs) +
 		len(f.delPreplan) + len(f.delDeferred) + len(f.delLearning) +
-		len(f.statusArgs) + len(f.runsArgs) + len(f.waitArgs)
+		len(f.statusArgs) + len(f.runsArgs) + len(f.waitArgs) +
+		len(f.runDetailCalls) + len(f.sessionDetailCalls)
 }
 
 // newActionHandler builds a request handler whose archive, clear, learning,
@@ -1743,6 +1770,372 @@ func TestHandler_Learning(t *testing.T) {
 				t.Errorf("the cause was not logged; log = %q", logged.String())
 			}
 		})
+	}
+}
+
+// detailRoute describes one of the two detail routes for the tests that run
+// both of them with the same input.
+type detailRoute struct {
+	name string // name of the subtest
+	path string // path of the route
+	id   string // an id that the fake finds
+	// label is the route name in the line that the server logs on an error.
+	label string
+	// what is the name of the route in the NOT_CONFIGURED message.
+	what string
+	// unset sets the Options function of the route to nil.
+	unset func(o *Options)
+	// found sets the result that the fake returns for id, and returns the exact
+	// text of the 200 body for that result.
+	found func(f *fakeActions) string
+	// calls returns the calls that the fake recorded for the route.
+	calls func(f *fakeActions) []fakeDetailCall
+}
+
+// detailRoutes lists the two detail routes.
+var detailRoutes = []detailRoute{
+	{
+		name: "run detail", path: "/api/run-detail", id: "ship-main-1", label: "run detail", what: "Run detail",
+		unset: func(o *Options) { o.RunDetail = nil },
+		found: func(f *fakeActions) string {
+			f.runDetailOut = tools.DashboardRunDetailOut{
+				Found: true, ID: "ship-main-1",
+				Steps:  []tools.DashboardStep{{Name: "review", Status: "completed", Detail: &tools.DashboardStepDetail{Kind: "dimensions"}}},
+				Issues: []tools.DashboardIssue{},
+			}
+			return `{"found":true,"id":"ship-main-1","steps":[{"name":"review","status":"completed","detail":{"kind":"dimensions"}}],"issues":[]}`
+		},
+		calls: func(f *fakeActions) []fakeDetailCall { return f.runDetailCalls },
+	},
+	{
+		name: "session detail", path: "/api/session-detail", id: "s1", label: "session detail", what: "Session detail",
+		unset: func(o *Options) { o.SessionDetail = nil },
+		found: func(f *fakeActions) string {
+			f.sessionDetailOut = tools.DashboardSessionDetailOut{
+				Found: true, ID: "s1",
+				Timeline:      []tools.DashboardEvent{{At: "2026-10-10T11:59:00Z", Kind: "command", Text: "go test"}},
+				CommandGroups: []tools.DashboardCommandGroup{},
+			}
+			return `{"found":true,"id":"s1","timeline":[{"at":"2026-10-10T11:59:00Z","kind":"command","text":"go test"}],"commandGroups":[]}`
+		},
+		calls: func(f *fakeActions) []fakeDetailCall { return f.sessionDetailCalls },
+	},
+}
+
+// detailURL returns the path of a detail route with the repo and id fields in
+// the query, percent-encoded.
+func detailURL(path, repo, id string) string {
+	return path + "?" + url.Values{"repo": {repo}, "id": {id}}.Encode()
+}
+
+// detailLongRepo returns a repo path of exactly n bytes: n/4 folders named dir.
+func detailLongRepo(n int) string {
+	return strings.Repeat("/dir", n/4)
+}
+
+// newDetailHandler builds a request handler whose RunDetail and SessionDetail
+// are the ones of f, and whose shown repos are roots. edit, when set, changes
+// the Options before the handler is built.
+func newDetailHandler(t *testing.T, f *fakeActions, roots []string, edit func(o *Options)) *handler {
+	t.Helper()
+	o := testOptions(t, &fakeCollector{repo: "a"})
+	o.Roots = func(time.Time) ([]dashboard.Root, error) {
+		shown := make([]dashboard.Root, 0, len(roots))
+		for _, r := range roots {
+			shown = append(shown, dashboard.Root{Root: r})
+		}
+		return shown, nil
+	}
+	o.RunDetail, o.SessionDetail = f.runDetail, f.sessionDetail
+	if edit != nil {
+		edit(&o)
+	}
+	return newHandler(context.Background(), o, testToken, 4242, time.Unix(1000, 0).UTC(), func() {})
+}
+
+// detailFixNow sets the clock of the server to at for the test.
+func detailFixNow(t *testing.T, at time.Time) {
+	t.Helper()
+	old := now
+	now = func() time.Time { return at }
+	t.Cleanup(func() { now = old })
+}
+
+// TestHandler_RunDetail pins GET /api/run-detail: the 200 body, the roots and
+// ids the Options function gets, and the limits of the two query fields.
+func TestHandler_RunDetail(t *testing.T) {
+	checkDetailRoute(t, detailRoutes[0])
+}
+
+// TestHandler_SessionDetail pins GET /api/session-detail: the 200 body, the
+// roots and ids the Options function gets, and the limits of the two query
+// fields.
+func TestHandler_SessionDetail(t *testing.T) {
+	checkDetailRoute(t, detailRoutes[1])
+}
+
+// checkDetailRoute runs the tests of the 200 answer and of the query fields
+// against one detail route. The routes only read, so no request here carries
+// an Origin or a token.
+func checkDetailRoute(t *testing.T, route detailRoute) {
+	t.Run("found passes root, id and time and answers the body", func(t *testing.T) {
+		at := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+		detailFixNow(t, at)
+		f := &fakeActions{}
+		wantBody := route.found(f)
+		rec := do(newDetailHandler(t, f, []string{"/repo/a"}, nil), "GET", detailURL(route.path, "/repo/a", route.id), testHost, nil)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if got := rec.Body.String(); got != wantBody+"\n" {
+			t.Errorf("body = %q; want %q", got, wantBody+"\n")
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q; want no-store", got)
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q; want application/json", got)
+		}
+		if want := []fakeDetailCall{{root: "/repo/a", id: route.id, at: at}}; !reflect.DeepEqual(route.calls(f), want) {
+			t.Errorf("calls = %+v; want %+v", route.calls(f), want)
+		}
+	})
+
+	t.Run("one request reads the clock once", func(t *testing.T) {
+		start := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
+		var reads []time.Time
+		old := now
+		now = func() time.Time {
+			at := start.Add(time.Duration(len(reads)) * time.Second)
+			reads = append(reads, at)
+			return at
+		}
+		t.Cleanup(func() { now = old })
+		f := &fakeActions{}
+		route.found(f)
+		var rootsAt []time.Time
+		edit := func(o *Options) {
+			roots := o.Roots
+			o.Roots = func(at time.Time) ([]dashboard.Root, error) {
+				rootsAt = append(rootsAt, at)
+				return roots(at)
+			}
+		}
+		h := newDetailHandler(t, f, []string{"/repo/a"}, edit)
+		reads = nil
+		rec := do(h, "GET", detailURL(route.path, "/repo/a", route.id), testHost, nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if len(reads) != 1 {
+			t.Fatalf("clock reads = %v; want one", reads)
+		}
+		calls := route.calls(f)
+		if len(calls) != 1 || !calls[0].at.Equal(reads[0]) {
+			t.Errorf("calls = %+v; want one call at %v", calls, reads[0])
+		}
+		for _, at := range rootsAt {
+			if !at.Equal(reads[0]) {
+				t.Errorf("roots time = %v; want %v", at, reads[0])
+			}
+		}
+	})
+
+	t.Run("the function gets the display root that the repo names", func(t *testing.T) {
+		cases := []struct{ name, repo, want string }{
+			{"first repo", "/repo/a", "/repo/a"},
+			{"second repo", "/repo/b", "/repo/b"},
+			{"second repo with a trailing slash is cleaned", "/repo/b/", "/repo/b"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f := &fakeActions{}
+				route.found(f)
+				rec := do(newDetailHandler(t, f, []string{"/repo/a", "/repo/b"}, nil), "GET", detailURL(route.path, tc.repo, route.id), testHost, nil)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+				}
+				calls := route.calls(f)
+				if len(calls) != 1 || calls[0].root != tc.want {
+					t.Errorf("calls = %+v; want one call with root %q", calls, tc.want)
+				}
+			})
+		}
+	})
+
+	t.Run("the id reaches the function unchanged", func(t *testing.T) {
+		for _, id := range []string{" padded id ", "a/b&c=d é", "../x", "%41"} {
+			f := &fakeActions{}
+			route.found(f)
+			rec := do(newDetailHandler(t, f, []string{"/repo/a"}, nil), "GET", detailURL(route.path, "/repo/a", id), testHost, nil)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("id %q: status = %d; want 200 (body %q)", id, rec.Code, rec.Body.String())
+			}
+			if calls := route.calls(f); len(calls) != 1 || calls[0].id != id {
+				t.Errorf("id %q: calls = %+v; want one call with that id", id, calls)
+			}
+		}
+	})
+
+	t.Run("fields at their limit pass", func(t *testing.T) {
+		longRepo := detailLongRepo(maxDetailRepo)
+		if len(longRepo) != maxDetailRepo {
+			t.Fatalf("test repo has %d bytes; want %d", len(longRepo), maxDetailRepo)
+		}
+		cases := []struct{ name, repo, id string }{
+			{"id of maxDetailID bytes", "/repo/a", strings.Repeat("i", maxDetailID)},
+			{"id of maxDetailID bytes with two-byte runes", "/repo/a", strings.Repeat("é", maxDetailID/2)},
+			{"repo of maxDetailRepo bytes", longRepo, route.id},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f := &fakeActions{}
+				route.found(f)
+				rec := do(newDetailHandler(t, f, []string{tc.repo}, nil), "GET", detailURL(route.path, tc.repo, tc.id), testHost, nil)
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+				}
+				calls := route.calls(f)
+				if len(calls) != 1 || calls[0].root != tc.repo || calls[0].id != tc.id {
+					t.Errorf("function got %d call(s); want one call with the root and id of the request", len(calls))
+				}
+			})
+		}
+	})
+
+	t.Run("fields one byte over their limit give 400", func(t *testing.T) {
+		cases := []struct{ name, repo, id, message string }{
+			{"id of maxDetailID+1 bytes", "/repo/a", strings.Repeat("i", maxDetailID+1), "The id field is longer than 256 bytes"},
+			{"id of maxDetailID+2 bytes with two-byte runes", "/repo/a", strings.Repeat("é", maxDetailID/2+1), "The id field is longer than 256 bytes"},
+			{"repo of maxDetailRepo+1 bytes", detailLongRepo(maxDetailRepo) + "x", route.id, "The repo field is longer than 4096 bytes"},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				f := &fakeActions{}
+				rec := do(newDetailHandler(t, f, []string{tc.repo}, nil), "GET", detailURL(route.path, tc.repo, tc.id), testHost, nil)
+				got := wantAPIError(t, rec, http.StatusBadRequest, codeBadRequest)
+				if got.Error.Message != tc.message {
+					t.Errorf("message = %q; want %q", got.Error.Message, tc.message)
+				}
+				if n := len(route.calls(f)); n != 0 {
+					t.Errorf("function made %d calls; want 0", n)
+				}
+			})
+		}
+	})
+}
+
+// TestHandler_DetailErrorTable runs each row of the error table of the two
+// detail routes through both routes and checks the status, the code, the
+// message and the suggestion, that the function is not called when the request
+// fails before it, and the server log.
+func TestHandler_DetailErrorTable(t *testing.T) {
+	const (
+		suggestBadRequestText = "Send the fields shown in the route example."
+		suggestReloadText     = "Reload the page."
+		suggestReadLogText    = "Read server.log, fix the named path, then try again."
+		suggestRestartText    = "Restart the dashboard with the current sdlc plugin."
+		toolsErrorText        = "read repo /repo/a: repo folder not readable"
+		typedSuggestionText   = "Check the path that the error names."
+	)
+	longID := strings.Repeat("i", maxDetailID+1)
+	longRepo := detailLongRepo(maxDetailRepo) + "x"
+	rows := []struct {
+		name       string
+		method     string // "" is GET
+		query      func(r detailRoute) string
+		unset      bool  // the Options function of the route is nil
+		fail       error // the error that the function returns
+		status     int
+		code       string // "" for the 405 row: the mux writes a plain text body
+		message    string // for the unset row: empty, the message names the route
+		suggestion string
+		wantCalls  int
+	}{
+		{name: "id is empty", query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", "") },
+			status: 400, code: "BAD_REQUEST", message: "The id field is required", suggestion: suggestBadRequestText},
+		{name: "id is missing", query: func(r detailRoute) string { return r.path + "?repo=%2Frepo%2Fa" },
+			status: 400, code: "BAD_REQUEST", message: "The id field is required", suggestion: suggestBadRequestText},
+		{name: "id is longer than maxDetailID", query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", longID) },
+			status: 400, code: "BAD_REQUEST", message: "The id field is longer than 256 bytes", suggestion: suggestBadRequestText},
+		{name: "repo is empty", query: func(r detailRoute) string { return detailURL(r.path, "", r.id) },
+			status: 400, code: "BAD_REQUEST", message: "The repo field is required", suggestion: suggestBadRequestText},
+		{name: "repo is missing", query: func(r detailRoute) string { return r.path + "?id=" + url.QueryEscape(r.id) },
+			status: 400, code: "BAD_REQUEST", message: "The repo field is required", suggestion: suggestBadRequestText},
+		{name: "repo is longer than maxDetailRepo", query: func(r detailRoute) string { return detailURL(r.path, longRepo, r.id) },
+			status: 400, code: "BAD_REQUEST", message: "The repo field is longer than 4096 bytes", suggestion: suggestBadRequestText},
+		{name: "no query: the id is checked first", query: func(r detailRoute) string { return r.path },
+			status: 400, code: "BAD_REQUEST", message: "The id field is required", suggestion: suggestBadRequestText},
+		{name: "id too long and repo empty: the id is checked first", query: func(r detailRoute) string { return detailURL(r.path, "", longID) },
+			status: 400, code: "BAD_REQUEST", message: "The id field is longer than 256 bytes", suggestion: suggestBadRequestText},
+		{name: "repo is not a shown repo", query: func(r detailRoute) string { return detailURL(r.path, "/repo/other", r.id) },
+			status: 404, code: "REPO_NOT_FOUND", message: repoNotFoundMessage("/repo/other"), suggestion: suggestReloadText},
+		{name: "Options function is nil", unset: true, query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
+			status: 500, code: "NOT_CONFIGURED", suggestion: suggestRestartText},
+		{name: "function returns an error", fail: errors.New(toolsErrorText), query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
+			status: 500, code: "DETAIL_READ_FAILED", message: toolsErrorText, suggestion: suggestReadLogText, wantCalls: 1},
+		{name: "function returns an InfraError", fail: &mcpserver.InfraError{Msg: toolsErrorText, Suggestion: typedSuggestionText},
+			query:  func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
+			status: 500, code: "DETAIL_READ_FAILED", message: toolsErrorText, suggestion: typedSuggestionText, wantCalls: 1},
+		{name: "function returns a DomainError", fail: &mcpserver.DomainError{Msg: toolsErrorText, Suggestion: typedSuggestionText},
+			query:  func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
+			status: 500, code: "DETAIL_READ_FAILED", message: toolsErrorText, suggestion: typedSuggestionText, wantCalls: 1},
+		{name: "function returns an InfraError with no suggestion", fail: &mcpserver.InfraError{Msg: toolsErrorText},
+			query:  func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) },
+			status: 500, code: "DETAIL_READ_FAILED", message: toolsErrorText, suggestion: suggestReadLogText, wantCalls: 1},
+		{name: "method POST", method: "POST", query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) }, status: 405},
+		{name: "method PUT", method: "PUT", query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) }, status: 405},
+		{name: "method DELETE", method: "DELETE", query: func(r detailRoute) string { return detailURL(r.path, "/repo/a", r.id) }, status: 405},
+	}
+	for _, route := range detailRoutes {
+		for _, row := range rows {
+			t.Run(route.name+"/"+row.name, func(t *testing.T) {
+				logged := captureStderr(t)
+				f := &fakeActions{detailErr: row.fail}
+				route.found(f)
+				var edit func(o *Options)
+				if row.unset {
+					edit = route.unset
+				}
+				method := row.method
+				if method == "" {
+					method = "GET"
+				}
+				rec := do(newDetailHandler(t, f, []string{"/repo/a"}, edit), method, row.query(route), testHost, nil)
+
+				if row.status == http.StatusMethodNotAllowed {
+					if rec.Code != row.status {
+						t.Fatalf("status = %d; want %d (body %q)", rec.Code, row.status, rec.Body.String())
+					}
+					if allow := rec.Header().Get("Allow"); !strings.Contains(allow, "GET") {
+						t.Errorf("Allow = %q; want it to name GET", allow)
+					}
+				} else {
+					body := wantAPIError(t, rec, row.status, row.code)
+					wantMessage := row.message
+					if row.unset {
+						wantMessage = route.what + " is not available on this server"
+					}
+					if body.Error.Message != wantMessage {
+						t.Errorf("message = %q; want %q", body.Error.Message, wantMessage)
+					}
+					if body.Error.Suggestion != row.suggestion {
+						t.Errorf("suggestion = %q; want %q", body.Error.Suggestion, row.suggestion)
+					}
+				}
+				if n := len(route.calls(f)); n != row.wantCalls {
+					t.Errorf("function made %d calls; want %d", n, row.wantCalls)
+				}
+				wantLog := ""
+				if row.fail != nil {
+					wantLog = "sdlc dashboard: " + route.label + ": " + toolsErrorText + "\n"
+				}
+				if logged.String() != wantLog {
+					t.Errorf("server log = %q; want %q", logged.String(), wantLog)
+				}
+			})
+		}
 	}
 }
 

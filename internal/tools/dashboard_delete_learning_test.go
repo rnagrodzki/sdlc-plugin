@@ -343,7 +343,7 @@ func TestDashboardDeleteLearning_DeletesEachSnapshotRow(t *testing.T) {
 	path, _ := learnDelLog(t, root, learnDelOld, learnDelMid, learnDelNew)
 	now := time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC)
 
-	rows := dashboardRecentLearnings(root, now)
+	rows := dashLearnings(t, root, now)
 	if len(rows) != 2 {
 		t.Fatalf("snapshot rows = %d, want 2 (%+v)", len(rows), rows)
 	}
@@ -356,7 +356,7 @@ func TestDashboardDeleteLearning_DeletesEachSnapshotRow(t *testing.T) {
 			t.Errorf("delete %+v: out = %+v, want Deleted", row, out)
 		}
 	}
-	if left := dashboardRecentLearnings(root, now); len(left) != 0 {
+	if left := dashLearnings(t, root, now); len(left) != 0 {
 		t.Errorf("rows left in the snapshot: %+v", left)
 	}
 	learnDelWant(t, path, []byte(learnDelHeader+"\n"+learnDelOld))

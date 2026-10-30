@@ -31,6 +31,18 @@ Several `internal/tools/*.go` files already follow this with their own
 - MCP tool handlers in `internal/tools/**` translate lower-level errors
   into actionable tool-error responses rather than leaking a raw Go error
   string with no remediation hint (see also `mcp-tool-review`).
+- A layer that turns a typed error into another form for the caller (an HTTP
+  response body, a wrapped `error`, a rendered line) carries the `Msg`, the
+  `Suggestion`, the class and the `Cause` across. A conversion that keeps the
+  `Msg` and drops the `Suggestion`, or that maps every class to one status or
+  one text, is a finding: the caller loses the recovery step that the handler
+  wrote. For every route or entry point that serves an error, read the code
+  between the `DomainError`, `InfraError` or `DataError` and the bytes that the
+  caller receives, and check that a test reads the `Suggestion` from the real
+  response. This extends the actionable-response bullet above: that bullet
+  asks a handler to write a remediation hint, not that the hint reach the
+  caller. Example: a detail route set a `Suggestion` on its error and the
+  response held only the message.
 - External-service call sites (`internal/jirakeys`, `internal/ghx`,
   `internal/gitx`) distinguish transient failures (network, rate limit —
   worth retrying) from permanent ones (bad credentials, 404 — not worth
@@ -76,6 +88,20 @@ Several `internal/tools/*.go` files already follow this with their own
   pass that warns while its sibling skips the item with no signal is a finding.
   Prefer one loop that all passes share. Example: a file deleted during a
   snapshot gave a warning in one loop only.
+- A reader or builder that turns a failed read into an empty list, a zero count
+  or `(none)` shows the user a false answer: a page that lists no deferred items
+  because `deferred.json` could not be read looks the same as a store with no
+  items. Only `errors.Is(err, fs.ErrNotExist)` may give the empty result. Any
+  other read error reaches the user as a structured error, or as a warning that
+  names the source, the cause and the value used instead. When several builders
+  read different sources for one output (for example the cache builders of one
+  snapshot), each one treats a read error the same way. A fix at one source that
+  leaves a sibling source dropping the error is a finding: check every source,
+  not only the one that the change names. This extends the benign zero-value
+  bullet and the per-item failure bullet above, which cover terminal sentinels
+  and passes over one set of items. Example: a deferred-items read error shown
+  as an empty backlog, while the other cached sources dropped their read errors
+  too.
 - When handler code calls `os.ReadFile`, `os.Stat`, `filepath.ReadDir`, or
   similar filesystem probes, errors must be classified: use
   `errors.Is(err, fs.ErrNotExist)` to distinguish "file does not exist" from

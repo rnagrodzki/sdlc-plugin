@@ -80,6 +80,9 @@ func (d *proxyDashboard) serve(w http.ResponseWriter, r *http.Request) {
 	case "/api/snapshot":
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = fmt.Fprint(w, proxySnapshotBody)
+	case "/api/run-detail", "/api/session-detail":
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"found":true,"id":%q,"repo":%q}`, r.URL.Query().Get("id"), r.URL.Query().Get("repo"))
 	case "/api/events":
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "data: one\n\n")
@@ -225,6 +228,89 @@ func proxyLivePreview(t *testing.T, build func(port int) http.Handler) string {
 	t.Cleanup(srv.Close)
 
 	return srv.URL
+}
+
+// proxyFirstEventLine opens the event stream at base, reads its first line and
+// closes the stream.
+func proxyFirstEventLine(t *testing.T, base string) string {
+	t.Helper()
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(base + "/api/events")
+	if err != nil {
+		t.Fatalf("GET /api/events: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	first, err := bufio.NewReader(resp.Body).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read first line: %v", err)
+	}
+
+	return first
+}
+
+// TestProxy_RunDetailQuery checks that a run detail GET reaches the dashboard
+// with its query string and that the answer comes back unchanged.
+func TestProxy_RunDetailQuery(t *testing.T) {
+	d := proxyFakeDashboard(t, 0, 0)
+	h := proxyHandler(proxyRecord(d.srv.URL), time.Second)
+
+	rec := serverGet(h, "/api/run-detail?repo=%2Fr&id=x")
+
+	proxyAssertJSON(t, rec, http.StatusOK, `{"found":true,"id":"x","repo":"/r"}`)
+	if n := d.calls.Load(); n != 1 {
+		t.Errorf("dashboard saw %d requests, want 1", n)
+	}
+}
+
+// TestProxy_SessionDetail checks that a session detail GET reaches the
+// dashboard and that the answer comes back unchanged.
+func TestProxy_SessionDetail(t *testing.T) {
+	d := proxyFakeDashboard(t, 0, 0)
+	h := proxyHandler(proxyRecord(d.srv.URL), time.Second)
+
+	rec := serverGet(h, "/api/session-detail?repo=%2Fr&id=s")
+
+	proxyAssertJSON(t, rec, http.StatusOK, `{"found":true,"id":"s","repo":"/r"}`)
+	if n := d.calls.Load(); n != 1 {
+		t.Errorf("dashboard saw %d requests, want 1", n)
+	}
+}
+
+// TestProxy_DetailPostReadOnly checks that a POST to a detail route gives 405
+// PREVIEW_READ_ONLY and never reaches the dashboard.
+func TestProxy_DetailPostReadOnly(t *testing.T) {
+	d := proxyFakeDashboard(t, 0, 0)
+	h := proxyHandler(proxyRecord(d.srv.URL), time.Second)
+
+	rec := serverDo(h, http.MethodPost, "/api/run-detail", serverHost)
+
+	proxyAssertJSON(t, rec, http.StatusMethodNotAllowed, proxyReadOnlyBody)
+	if n := d.calls.Load(); n != 0 {
+		t.Errorf("dashboard saw %d requests, want 0", n)
+	}
+}
+
+// TestProxy_EventsReopen checks that a client that closes the event stream and
+// opens it again reads the first event again as the first line.
+func TestProxy_EventsReopen(t *testing.T) {
+	d := proxyFakeDashboard(t, 0, 0)
+	base := proxyLivePreview(t, func(port int) http.Handler {
+		o := proxyOptions(proxyRecord(d.srv.URL), func() {})
+		o.Port = port
+		return newHandler(o, registerAPI)
+	})
+
+	for i := 1; i <= 2; i++ {
+		if got := proxyFirstEventLine(t, base); got != "data: one\n" {
+			t.Fatalf("stream %d first line = %q, want %q", i, got, "data: one\n")
+		}
+	}
+	if n := d.calls.Load(); n != 2 {
+		t.Errorf("dashboard saw %d requests, want 2", n)
+	}
 }
 
 func TestServerAPI(t *testing.T) {

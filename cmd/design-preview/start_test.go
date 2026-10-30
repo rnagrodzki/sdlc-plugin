@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -10,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 )
@@ -481,7 +484,7 @@ func TestStartRule(t *testing.T) {
 		dir := startRepo(t)
 		startRun(t, dir, ModeAuto)
 		startWrite(t, dir, shippedPath+"/app.css", "body { color: dirty; }\n")
-		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue} {
+		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue, ModeMerge} {
 			startAssertErr(t, dir, mode, "the shipped page has uncommitted changes. Commit or stash them, then run task design again.")
 		}
 	})
@@ -545,7 +548,7 @@ func TestStartRule(t *testing.T) {
 	t.Run("a read failure names the path", func(t *testing.T) {
 		dir := startRepo(t)
 		startWrite(t, dir, "design/dashboard", "not a folder")
-		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue} {
+		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue, ModeMerge} {
 			before := startSnapshot(t, dir)
 			_, err := StartRule(dir, mode)
 			if err == nil || !strings.HasPrefix(err.Error(), "design/dashboard/static: ") {
@@ -557,7 +560,7 @@ func TestStartRule(t *testing.T) {
 
 	t.Run("unknown mode is an error", func(t *testing.T) {
 		dir := startRepo(t)
-		startAssertErr(t, dir, Mode("other"), `unknown mode "other". Allowed: auto, fresh, continue.`)
+		startAssertErr(t, dir, Mode("other"), `unknown mode "other". Allowed: auto, fresh, continue, merge.`)
 	})
 
 	t.Run("copy failure: base.json cannot be removed", func(t *testing.T) {
@@ -791,7 +794,7 @@ func TestStartRuleEdges(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue} {
+		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue, ModeMerge} {
 			_, err := StartRule(dir, mode)
 			if err == nil || !strings.HasPrefix(err.Error(), shippedPath+": ") {
 				t.Errorf("%s: error = %v, want prefix %q", mode, err, shippedPath+": ")
@@ -809,7 +812,7 @@ func TestStartRuleEdges(t *testing.T) {
 			t.Fatal(err)
 		}
 		startGitOut(t, dir, "init", "-q")
-		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue} {
+		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue, ModeMerge} {
 			_, err := StartRule(dir, mode)
 			if err == nil || !strings.HasPrefix(err.Error(), "HEAD: ") {
 				t.Errorf("%s: error = %v, want prefix %q", mode, err, "HEAD: ")
@@ -1113,4 +1116,1161 @@ func TestStartHasRequests(t *testing.T) {
 			t.Errorf("one byte over: error = %v, want prefix %q", err, requestLogFile+": ")
 		}
 	})
+}
+
+// The three versions of the seven-line file of the merge tests. The draft
+// changes line 1 and HEAD changes line 6, so git merge-file merges them clean.
+const (
+	startLines7Base  = "1\n2\n3\n4\n5\n6\n7\n"
+	startLines7Draft = "X\n2\n3\n4\n5\n6\n7\n"
+	startLines7Head  = "1\n2\n3\n4\n5\nY\n7\n"
+	startLines7Clean = "X\n2\n3\n4\n5\nY\n7\n"
+)
+
+// startConflictText is the git merge-file result of draft and head with
+// conflict markers, for one-line files.
+func startConflictText(draft, head string) string {
+	return "<<<<<<< draft\n" + draft + "=======\n" + head + ">>>>>>> HEAD\n"
+}
+
+// startStr returns a pointer to s, for an optional file version.
+func startStr(s string) *string { return &s }
+
+// startCommitDelete deletes one shipped file and commits it.
+func startCommitDelete(t *testing.T, dir, rel string) {
+	t.Helper()
+	startGitOut(t, dir, "rm", "-q", "--", shippedPath+"/"+rel)
+	startGitOut(t, dir, "commit", "-q", "-m", "delete "+rel)
+}
+
+// startBackups returns the backup folders of dir, relative to dir, sorted.
+func startBackups(t *testing.T, dir string) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join(dir, filepath.FromSlash(draftDir), "static.bak-*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	var rels []string
+	for _, m := range matches {
+		rels = append(rels, draftDir+"/"+filepath.Base(m))
+	}
+
+	return rels
+}
+
+// startOneBackup returns the one backup folder of dir. It fails the test when
+// there is not exactly one.
+func startOneBackup(t *testing.T, dir string) string {
+	t.Helper()
+	backups := startBackups(t, dir)
+	if len(backups) != 1 {
+		t.Fatalf("backup folders = %v, want one", backups)
+	}
+
+	return backups[0]
+}
+
+// startDraftState maps each path under static/ to its bytes, and the key
+// "<base.json>" to the bytes of base.json.
+func startDraftState(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	state := startSnapshot(t, filepath.Join(dir, filepath.FromSlash(staticDir)))
+	data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(baseFile)))
+	if err != nil {
+		t.Fatalf("read base.json: %v", err)
+	}
+	state["<base.json>"] = string(data)
+
+	return state
+}
+
+// startAssertBackup fails when the backup folder differs from the draft
+// snapshot draft.
+func startAssertBackup(t *testing.T, dir, backup string, draft map[string]string) {
+	t.Helper()
+	if got := startSnapshot(t, filepath.Join(dir, filepath.FromSlash(backup))); !reflect.DeepEqual(got, draft) {
+		t.Errorf("backup %s\ngot:  %v\nwant: %v", backup, got, draft)
+	}
+}
+
+// startAssertNoWorkFolders fails when a work folder of the merge is left.
+func startAssertNoWorkFolders(t *testing.T, dir string) {
+	t.Helper()
+	for _, rel := range []string{oldStaticDir, mergeTmpDir, tmpStaticDir} {
+		if startExists(dir, rel) {
+			t.Errorf("%s is left after the merge", rel)
+		}
+	}
+}
+
+// startMergeWork creates a draft that changes line 1 of f.txt, then commits
+// a HEAD that changes line 6 of f.txt, changes app.css and deletes
+// js/app.js. A merge of it is clean and merges 3 files. It returns the
+// repo and the base sha.
+func startMergeWork(t *testing.T) (string, string) {
+	t.Helper()
+	dir := startRepo(t)
+	startCommitShipped(t, dir, "f.txt", startLines7Base)
+	startRun(t, dir, ModeAuto)
+	base := startHead(t, dir)
+	startWrite(t, dir, staticDir+"/f.txt", startLines7Draft)
+	startCommitShipped(t, dir, "f.txt", startLines7Head)
+	startCommitShipped(t, dir, "app.css", "body { color: red; }\n")
+	startCommitDelete(t, dir, "js/app.js")
+
+	return dir, base
+}
+
+// startCleanLine is the marker line of a clean merge.
+func startCleanLine(n int, head, backup string) string {
+	return fmt.Sprintf("design preview: merge — merged %d files. Base commit %s. Backup %s.", n, head, backup)
+}
+
+// TestStartMergeFiles runs each row of the per-file merge table through
+// StartRule in merge mode, in a real git repo.
+func TestStartMergeFiles(t *testing.T) {
+	s := startStr
+	rows := []struct {
+		name              string
+		base, draft, head *string // nil: the file is absent
+		want              *string // f.txt in the draft after the merge; nil: absent
+		conflict          bool
+		merged            bool // f.txt counts as a merged file
+	}{
+		{"unchanged on both sides is kept", s("a\n"), s("a\n"), s("a\n"), s("a\n"), false, false},
+		{"changed in HEAD only takes HEAD", s("a\n"), s("a\n"), s("h\n"), s("h\n"), false, true},
+		{"added in HEAD only is added", nil, nil, s("h\n"), s("h\n"), false, true},
+		{"deleted in HEAD only is deleted", s("a\n"), s("a\n"), nil, nil, false, true},
+		{"changed in the draft only is kept", s("a\n"), s("d\n"), s("a\n"), s("d\n"), false, false},
+		{"added in the draft only is kept", nil, s("d\n"), nil, s("d\n"), false, false},
+		{"deleted in the draft only stays deleted", s("a\n"), nil, s("a\n"), nil, false, false},
+		{"the same bytes as HEAD are kept", s("a\n"), s("h\n"), s("h\n"), s("h\n"), false, false},
+		{"deleted on both sides stays deleted", s("a\n"), nil, nil, nil, false, false},
+		{"text changes in other lines merge clean and keep the last line end", s(startLines7Base), s(startLines7Draft), s(startLines7Head), s(startLines7Clean), false, true},
+		{"text changes in the same line conflict", s("a\n"), s("d\n"), s("h\n"), s(startConflictText("d\n", "h\n")), true, false},
+		{"added on both sides with other bytes conflicts", nil, s("d\n"), s("h\n"), s(startConflictText("d\n", "h\n")), true, false},
+		{"binary on both sides conflicts and keeps the draft", s("a\x00\n"), s("d\x00\n"), s("h\x00\n"), s("d\x00\n"), true, false},
+		{"deleted in the draft and changed in HEAD conflicts and stays deleted", s("a\n"), nil, s("h\n"), nil, true, false},
+		{"changed in the draft and deleted in HEAD conflicts and keeps the draft", s("a\n"), s("d\n"), nil, s("d\n"), true, false},
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := startRepo(t)
+			if tc.base != nil {
+				startCommitShipped(t, dir, "f.txt", *tc.base)
+			}
+			startRun(t, dir, ModeAuto)
+			base := startHead(t, dir)
+			draftPath := filepath.Join(dir, filepath.FromSlash(staticDir), "f.txt")
+			if tc.draft == nil {
+				if err := os.Remove(draftPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+					t.Fatal(err)
+				}
+			} else {
+				startWrite(t, dir, staticDir+"/f.txt", *tc.draft)
+			}
+			switch {
+			case tc.head == nil && tc.base != nil:
+				startCommitDelete(t, dir, "f.txt")
+			case tc.head != nil && (tc.base == nil || *tc.head != *tc.base):
+				startCommitShipped(t, dir, "f.txt", *tc.head)
+			}
+			// A file added in HEAD makes the merge run for every row.
+			startCommitShipped(t, dir, "added.txt", "added\n")
+			draftBefore := startSnapshot(t, filepath.Join(dir, filepath.FromSlash(staticDir)))
+
+			out := startRun(t, dir, ModeMerge)
+
+			head := startHead(t, dir)
+			backup := startOneBackup(t, dir)
+			merged := 1
+			if tc.merged {
+				merged++
+			}
+			wantLines, wantBase := []string{startCleanLine(merged, head, backup)}, head
+			if tc.conflict {
+				wantLines = []string{"design preview: merge — 1 conflicts. Backup " + backup + ".", "design preview: conflict — " + staticDir + "/f.txt"}
+				wantBase = base
+			}
+			if !reflect.DeepEqual(out.Lines, wantLines) {
+				t.Errorf("lines\ngot:  %q\nwant: %q", out.Lines, wantLines)
+			}
+			if out.Case != CaseMerge || out.Serve == tc.conflict || out.Conflicts != tc.conflict {
+				t.Errorf("case/serve/conflicts = %q/%v/%v, want merge/%v/%v", out.Case, out.Serve, out.Conflicts, !tc.conflict, tc.conflict)
+			}
+
+			got, err := os.ReadFile(draftPath)
+			switch {
+			case tc.want == nil && !errors.Is(err, fs.ErrNotExist):
+				t.Errorf("f.txt = %q, %v, want no file", got, err)
+			case tc.want != nil && (err != nil || string(got) != *tc.want):
+				t.Errorf("f.txt = %q, %v, want %q", got, err, *tc.want)
+			}
+			if data, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(staticDir), "added.txt")); string(data) != "added\n" {
+				t.Errorf("added.txt = %q, want the HEAD text", data)
+			}
+			if rec := startReadBaseFile(t, dir); rec.BaseCommit != wantBase {
+				t.Errorf("base commit = %s, want %s", rec.BaseCommit, wantBase)
+			}
+			startAssertBackup(t, dir, backup, draftBefore)
+			startAssertNoWorkFolders(t, dir)
+		})
+	}
+
+	t.Run("a merged file and a taken HEAD file keep the mode of the draft file", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		for _, rel := range []string{"f.txt", "app.css"} {
+			if err := os.Chmod(filepath.Join(dir, filepath.FromSlash(staticDir), rel), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		startRun(t, dir, ModeMerge)
+		backup := startOneBackup(t, dir)
+		for _, rel := range []string{staticDir + "/f.txt", staticDir + "/app.css", backup + "/f.txt", backup + "/app.css"} {
+			info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel)))
+			if err != nil || info.Mode().Perm() != 0o600 {
+				t.Errorf("%s: mode %v, %v, want 0600", rel, info.Mode().Perm(), err)
+			}
+		}
+	})
+
+	t.Run("a clean merge leaves the request log and the dependency records, and auto serves the draft next", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		logText := startRequestLog + "| R1 | Show the total time of a run. | — | The head shows a time. | — | applied |\n"
+		deps := `[{"id":"D1","kind":"flow","need":"Open a run.","elements":[]}]`
+		startWrite(t, dir, requestLogFile, logText)
+		startWrite(t, dir, depsFile, deps)
+		startWrite(t, dir, requirementsFile, "# needs\n")
+
+		out := startRun(t, dir, ModeMerge)
+		startAssertOutcome(t, out, CaseMerge, true, startCleanLine(3, startHead(t, dir), startOneBackup(t, dir)))
+		for rel, want := range map[string]string{requestLogFile: logText, depsFile: deps, requirementsFile: "# needs\n"} {
+			if data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel))); err != nil || string(data) != want {
+				t.Errorf("%s = %q, %v, want %q", rel, data, err, want)
+			}
+		}
+		if startExists(dir, staticDir+"/js/app.js") {
+			t.Error("js/app.js is in the draft after HEAD deleted it")
+		}
+		if out := startRun(t, dir, ModeAuto); out.Case != CaseB {
+			t.Errorf("auto after the merge: case = %q, want b", out.Case)
+		}
+	})
+
+	t.Run("two conflicts and one clean merge in one run give one sorted line per conflict", func(t *testing.T) {
+		dir := startRepo(t)
+		for _, rel := range []string{"z.txt", "a/y.txt"} {
+			startCommitShipped(t, dir, rel, "a\n")
+		}
+		startCommitShipped(t, dir, "m.txt", startLines7Base)
+		startRun(t, dir, ModeAuto)
+		base := startHead(t, dir)
+		for _, rel := range []string{"z.txt", "a/y.txt"} {
+			startWrite(t, dir, staticDir+"/"+rel, "d\n")
+		}
+		startWrite(t, dir, staticDir+"/m.txt", startLines7Draft)
+		for _, rel := range []string{"z.txt", "a/y.txt"} {
+			startCommitShipped(t, dir, rel, "h\n")
+		}
+		startCommitShipped(t, dir, "m.txt", startLines7Head)
+
+		out := startRun(t, dir, ModeMerge)
+
+		backup := startOneBackup(t, dir)
+		startAssertOutcome(t, out, CaseMerge, false,
+			"design preview: merge — 2 conflicts. Backup "+backup+".",
+			"design preview: conflict — "+staticDir+"/a/y.txt",
+			"design preview: conflict — "+staticDir+"/z.txt")
+		if !out.Conflicts {
+			t.Error("conflicts = false, want true")
+		}
+		for rel, want := range map[string]string{
+			"z.txt":   startConflictText("d\n", "h\n"),
+			"a/y.txt": startConflictText("d\n", "h\n"),
+			"m.txt":   startLines7Clean,
+		} {
+			if data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(staticDir), filepath.FromSlash(rel))); err != nil || string(data) != want {
+				t.Errorf("%s = %q, %v, want %q", rel, data, err, want)
+			}
+		}
+		if rec := startReadBaseFile(t, dir); rec.BaseCommit != base {
+			t.Errorf("base commit = %s, want the old base %s", rec.BaseCommit, base)
+		}
+	})
+
+	t.Run("a merge reads each draft file once", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		real := draftReadFile
+		reads := map[string]int{}
+		startSwap(t, &draftReadFile, func(path string) ([]byte, error) {
+			reads[path]++
+			return real(path)
+		})
+		startRun(t, dir, ModeMerge)
+		if len(reads) == 0 {
+			t.Fatal("draftReadFile was not called")
+		}
+		for path, n := range reads {
+			if n != 1 {
+				t.Errorf("%s read %d times, want 1", path, n)
+			}
+		}
+	})
+
+	t.Run("stale work folders are removed and the merge is clean", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		for _, rel := range []string{mergeTmpDir, tmpStaticDir, oldStaticDir} {
+			startWrite(t, dir, rel+"/stale.txt", "<<<<<<< stale\n")
+		}
+		out := startRun(t, dir, ModeMerge)
+		startAssertOutcome(t, out, CaseMerge, true, startCleanLine(3, startHead(t, dir), startOneBackup(t, dir)))
+		startAssertNoWorkFolders(t, dir)
+	})
+
+	t.Run("after a merge with conflicts, auto, merge and continue refuse the draft until the fix", func(t *testing.T) {
+		dir := startRepo(t)
+		startRun(t, dir, ModeAuto)
+		startWrite(t, dir, staticDir+"/app.css", "body { color: blue; }\n")
+		startCommitShipped(t, dir, "app.css", "body { color: red; }\n")
+		if out := startRun(t, dir, ModeMerge); !out.Conflicts {
+			t.Fatalf("merge: conflicts = false, want true")
+		}
+		want := conflictMarkersError([]string{staticDir + "/app.css"}).Error()
+		for _, mode := range []Mode{ModeAuto, ModeMerge, ModeContinue} {
+			startAssertErr(t, dir, mode, want)
+		}
+		startWrite(t, dir, staticDir+"/app.css", "body { color: purple; }\n")
+		out := startRun(t, dir, ModeContinue)
+		startAssertOutcome(t, out, CaseContinue, true, "design preview: continue — kept the draft. Base commit "+startHead(t, dir)+".")
+	})
+}
+
+// TestStartMergeDecide covers each arm of mergeDecide and the limits of
+// the binary sniff and the file size.
+func TestStartMergeDecide(t *testing.T) {
+	v := func(data string) mergeVersion { return mergeVersion{data: []byte(data), present: true} }
+	nulAt := func(i int) string {
+		data := []byte(strings.Repeat("x", mergeBinarySniff+10))
+		data[i] = 0
+		return string(data)
+	}
+	sized := func(n int) string { return strings.Repeat("x", n) }
+	var absent mergeVersion
+
+	rows := []struct {
+		name              string
+		draft, base, head mergeVersion
+		want              mergeAction
+	}{
+		{"draft same as base takes HEAD", v("a"), v("a"), v("h"), mergeTakeHead},
+		{"draft and base both absent takes HEAD", absent, absent, v("h"), mergeTakeHead},
+		{"draft same as HEAD keeps", v("h"), v("a"), v("h"), mergeKeep},
+		{"draft and HEAD both absent keeps", absent, v("a"), absent, mergeKeep},
+		{"draft absent and HEAD changed conflicts", absent, v("a"), v("h"), mergeConflict},
+		{"draft changed and HEAD absent conflicts", v("d"), v("a"), absent, mergeConflict},
+		{"text on all sides runs merge-file", v("d"), v("a"), v("h"), mergeRun},
+		{"added on both sides runs merge-file", v("d"), absent, v("h"), mergeRun},
+		{"NUL at mergeBinarySniff-1 in the draft conflicts", v(nulAt(mergeBinarySniff - 1)), v("a"), v("h"), mergeConflict},
+		{"NUL at mergeBinarySniff-1 in the base conflicts", v("d"), v(nulAt(mergeBinarySniff - 1)), v("h"), mergeConflict},
+		{"NUL at mergeBinarySniff-1 in HEAD conflicts", v("d"), v("a"), v(nulAt(mergeBinarySniff - 1)), mergeConflict},
+		{"NUL only at mergeBinarySniff in the draft runs merge-file", v(nulAt(mergeBinarySniff)), v("a"), v("h"), mergeRun},
+		{"NUL only at mergeBinarySniff in the base runs merge-file", v("d"), v(nulAt(mergeBinarySniff)), v("h"), mergeRun},
+		{"NUL only at mergeBinarySniff in HEAD runs merge-file", v("d"), v("a"), v(nulAt(mergeBinarySniff)), mergeRun},
+		{"a draft of maxMergeFileBytes runs merge-file", v(sized(maxMergeFileBytes)), v("a"), v("h"), mergeRun},
+		{"a draft of maxMergeFileBytes+1 conflicts", v(sized(maxMergeFileBytes + 1)), v("a"), v("h"), mergeConflict},
+		{"a base of maxMergeFileBytes runs merge-file", v("d"), v(sized(maxMergeFileBytes)), v("h"), mergeRun},
+		{"a base of maxMergeFileBytes+1 conflicts", v("d"), v(sized(maxMergeFileBytes + 1)), v("h"), mergeConflict},
+		{"a HEAD of maxMergeFileBytes runs merge-file", v("d"), v("a"), v(sized(maxMergeFileBytes)), mergeRun},
+		{"a HEAD of maxMergeFileBytes+1 conflicts", v("d"), v("a"), v(sized(maxMergeFileBytes + 1)), mergeConflict},
+		{"an over-size draft equal to the base is not the same and conflicts", v(sized(maxMergeFileBytes + 1)), v(sized(maxMergeFileBytes + 1)), v("h"), mergeConflict},
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mergeDecide(tc.draft, tc.base, tc.head); got != tc.want {
+				t.Errorf("mergeDecide = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// startConflictFiles reads the draft of dir as the marker check of auto and
+// continue does, then returns the files with conflict markers.
+func startConflictFiles(dir string) ([]string, error) {
+	files, err := readDraftFiles(dir, false)
+	if err != nil {
+		return nil, err
+	}
+
+	return draftConflictFiles(files)
+}
+
+// TestStartMergeMarkers covers each row of the marker table of
+// draftConflictFiles, its errors, and refuseConflictMarkers.
+func TestStartMergeMarkers(t *testing.T) {
+	const marker = "<<<<<<< draft\n"
+	sized := func(n int) string { return marker + strings.Repeat("x", n-len(marker)) }
+	nulAt := func(i, n int) string {
+		data := []byte(sized(n))
+		data[i] = 0
+		return string(data)
+	}
+
+	rows := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{"a line that starts with <<<<<<< ", "a\n<<<<<<< draft\nb\n", true},
+		{"the marker on the first line", "<<<<<<< draft\nb\n", true},
+		{"a line that starts with >>>>>>> ", "a\n>>>>>>> HEAD\nb\n", true},
+		{"the marker on the last line with no line end", "a\n>>>>>>> HEAD", true},
+		{"CRLF line ends", "a\r\n<<<<<<< draft\r\nb\r\n", true},
+		{"an unclosed region", "a\n<<<<<<< draft\nb\n=======\n", true},
+		{"<<<<<<< inside a line", "a <<<<<<< draft\n", false},
+		{"<<<<<<< with no space after it", "<<<<<<<\n", false},
+		{"only ======= lines", "=======\n=======\n", false},
+		{"an empty file", "", false},
+		{"a NUL at mergeBinarySniff-1 is binary and not scanned", nulAt(mergeBinarySniff-1, mergeBinarySniff+10), false},
+		{"a NUL only at mergeBinarySniff is text", nulAt(mergeBinarySniff, mergeBinarySniff+10), true},
+		{"a text file of exactly maxMergeFileBytes", sized(maxMergeFileBytes), true},
+		{"a binary file over maxMergeFileBytes is skipped", nulAt(0, maxMergeFileBytes+10), false},
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			startWrite(t, dir, staticDir+"/f.txt", tc.content)
+			got, err := startConflictFiles(dir)
+			want := []string{}
+			if tc.want {
+				want = []string{"f.txt"}
+			}
+			if err != nil || !reflect.DeepEqual(got, want) {
+				t.Errorf("draftConflictFiles = %q, %v, want %q", got, err, want)
+			}
+		})
+	}
+
+	t.Run("the result is sorted and holds only files with markers", func(t *testing.T) {
+		dir := t.TempDir()
+		for _, rel := range []string{"b.txt", "a/x.txt", "a.txt"} {
+			startWrite(t, dir, staticDir+"/"+rel, marker)
+		}
+		startWrite(t, dir, staticDir+"/c.txt", "clean\n")
+		got, err := startConflictFiles(dir)
+		if want := []string{"a.txt", "a/x.txt", "b.txt"}; err != nil || !reflect.DeepEqual(got, want) {
+			t.Errorf("draftConflictFiles = %q, %v, want %q", got, err, want)
+		}
+	})
+
+	t.Run("an empty draft folder gives an empty result", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(dir, filepath.FromSlash(staticDir)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		got, err := startConflictFiles(dir)
+		if err != nil || got == nil || len(got) != 0 {
+			t.Errorf("draftConflictFiles = %#v, %v, want an empty result", got, err)
+		}
+	})
+
+	t.Run("a marker only behind a symlink is not found", func(t *testing.T) {
+		dir := t.TempDir()
+		startWrite(t, dir, draftDir+"/outside.txt", marker)
+		startWrite(t, dir, draftDir+"/outdir/in.txt", marker)
+		startWrite(t, dir, staticDir+"/clean.txt", "clean\n")
+		static := filepath.Join(dir, filepath.FromSlash(staticDir))
+		for link, target := range map[string]string{"link.txt": "../outside.txt", "linkdir": "../outdir"} {
+			if err := os.Symlink(target, filepath.Join(static, link)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		got, err := startConflictFiles(dir)
+		if err != nil || len(got) != 0 {
+			t.Errorf("draftConflictFiles = %q, %v, want an empty result", got, err)
+		}
+	})
+
+	t.Run("a static folder that is a symlink is not followed", func(t *testing.T) {
+		dir := t.TempDir()
+		startWrite(t, dir, draftDir+"/real/f.txt", marker)
+		if err := os.Symlink("real", filepath.Join(dir, filepath.FromSlash(staticDir))); err != nil {
+			t.Fatal(err)
+		}
+		got, err := startConflictFiles(dir)
+		if err != nil || len(got) != 0 {
+			t.Errorf("draftConflictFiles = %q, %v, want an empty result", got, err)
+		}
+	})
+
+	errRows := []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		want  string
+	}{
+		{"a text file over maxMergeFileBytes", func(t *testing.T, dir string) {
+			startWrite(t, dir, staticDir+"/big.txt", sized(maxMergeFileBytes+1))
+		}, staticDir + "/big.txt is larger than 8 MiB. The marker check cannot read it."},
+		{"no static folder", func(*testing.T, string) {}, staticDir + ": not found"},
+		{"a static path that is a file", func(t *testing.T, dir string) {
+			startWrite(t, dir, staticDir, marker)
+		}, staticDir + " is not a folder. The draft must be a folder."},
+		{"a draft file that cannot be opened", func(t *testing.T, dir string) {
+			startWrite(t, dir, staticDir+"/f.txt", "clean\n")
+			startSwap(t, &draftReadFile, func(string) ([]byte, error) { return nil, errStartInjected })
+		}, staticDir + "/f.txt: " + errStartInjected.Error()},
+	}
+	for _, tc := range errRows {
+		t.Run("error: "+tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tc.setup(t, dir)
+			before := startSnapshotNoFollow(t, dir)
+			got, err := startConflictFiles(dir)
+			if err == nil || err.Error() != tc.want {
+				t.Errorf("draftConflictFiles = %q, %v, want error %q", got, err, tc.want)
+			}
+			if strings.Contains(tc.want, errStartInjected.Error()) && !errors.Is(err, errStartInjected) {
+				t.Errorf("error %v does not wrap errStartInjected", err)
+			}
+			if after := startSnapshotNoFollow(t, dir); !reflect.DeepEqual(before, after) {
+				t.Errorf("files changed\nbefore: %v\nafter:  %v", before, after)
+			}
+		})
+	}
+
+	t.Run("refuseConflictMarkers names each file with markers", func(t *testing.T) {
+		dir := t.TempDir()
+		startWrite(t, dir, staticDir+"/b.txt", marker)
+		startWrite(t, dir, staticDir+"/a.txt", marker)
+		want := "the draft has conflict markers in design/dashboard/static/a.txt, design/dashboard/static/b.txt. Fix them, then run task design:continue."
+		if err := refuseConflictMarkers(dir); err == nil || err.Error() != want {
+			t.Errorf("refuseConflictMarkers = %v, want %q", err, want)
+		}
+	})
+
+	t.Run("refuseConflictMarkers is nil for a clean draft and passes a check error on", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := refuseConflictMarkers(dir); err == nil || err.Error() != staticDir+": not found" {
+			t.Errorf("no draft: refuseConflictMarkers = %v, want the not-found error", err)
+		}
+		startWrite(t, dir, staticDir+"/a.txt", "clean\n")
+		if err := refuseConflictMarkers(dir); err != nil {
+			t.Errorf("clean draft: refuseConflictMarkers = %v, want nil", err)
+		}
+	})
+
+	t.Run("readDraftFiles refuses a symlink in or as the draft when asked", func(t *testing.T) {
+		dir := t.TempDir()
+		startWrite(t, dir, staticDir+"/a.txt", "a\n")
+		static := filepath.Join(dir, filepath.FromSlash(staticDir))
+		if err := os.Symlink("a.txt", filepath.Join(static, "link.txt")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := readDraftFiles(dir, true)
+		if !errors.Is(err, errDraftSymlink) || err.Error() != staticDir+"/link.txt: "+errDraftSymlink.Error() {
+			t.Errorf("symlink in the draft: error = %v, want errDraftSymlink for link.txt", err)
+		}
+
+		other := t.TempDir()
+		startWrite(t, other, draftDir+"/real/a.txt", "a\n")
+		if err := os.Symlink("real", filepath.Join(other, filepath.FromSlash(staticDir))); err != nil {
+			t.Fatal(err)
+		}
+		_, err = readDraftFiles(other, true)
+		if !errors.Is(err, errDraftSymlink) || err.Error() != staticDir+": "+errDraftSymlink.Error() {
+			t.Errorf("symlink as the draft: error = %v, want errDraftSymlink for static", err)
+		}
+	})
+}
+
+// startSnapshotNoFollow maps each path under dir, except .git, to its bytes,
+// a folder to "<dir>" and any other entry, such as a symlink or a named
+// pipe, to its type.
+func startSnapshotNoFollow(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	snap := map[string]string{}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(dir, path)
+		switch {
+		case rel == ".git":
+			return filepath.SkipDir
+		case d.IsDir():
+			snap[rel] = "<dir>"
+		case d.Type().IsRegular():
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			snap[rel] = string(data)
+		default:
+			snap[rel] = d.Type().String()
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	return snap
+}
+
+// TestStartMergeModes runs each input state of the mode table through each
+// mode. A state that gives an error leaves every file as it was.
+func TestStartMergeModes(t *testing.T) {
+	// modeWant is one cell of the table: a case, an error by errors.Is, or
+	// the start of an error text.
+	type modeWant struct {
+		c    CaseID
+		is   error
+		text string
+	}
+	caseOf := func(c CaseID) modeWant { return modeWant{c: c} }
+	is := func(err error) modeWant { return modeWant{is: err} }
+	text := func(s string) modeWant { return modeWant{text: s} }
+	markers := text(conflictMarkersError([]string{staticDir + "/app.css"}).Error())
+
+	draft := func(t *testing.T, dir string) { startRun(t, dir, ModeAuto) }
+	states := []struct {
+		name  string
+		setup func(t *testing.T, dir string)
+		want  map[Mode]modeWant
+	}{
+		{"no static folder", func(*testing.T, string) {}, map[Mode]modeWant{
+			ModeAuto: caseOf(CaseA), ModeFresh: caseOf(CaseFresh), ModeContinue: is(errNoDraft), ModeMerge: is(errNoDraft)}},
+		{"static with conflict markers", func(t *testing.T, dir string) {
+			draft(t, dir)
+			startWrite(t, dir, staticDir+"/app.css", "<<<<<<< draft\n")
+		}, map[Mode]modeWant{
+			ModeAuto: markers, ModeFresh: caseOf(CaseFresh), ModeContinue: markers, ModeMerge: markers}},
+		{"static is a symlink to a folder", func(t *testing.T, dir string) {
+			draft(t, dir)
+			static := filepath.Join(dir, filepath.FromSlash(staticDir))
+			if err := os.Rename(static, filepath.Join(dir, filepath.FromSlash(draftDir), "real")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink("real", static); err != nil {
+				t.Fatal(err)
+			}
+		}, map[Mode]modeWant{
+			ModeAuto: caseOf(CaseB), ModeFresh: caseOf(CaseFresh), ModeContinue: caseOf(CaseContinue), ModeMerge: is(errDraftSymlink)}},
+		{"static holds a symlink", func(t *testing.T, dir string) {
+			draft(t, dir)
+			if err := os.Symlink("app.css", filepath.Join(dir, filepath.FromSlash(staticDir), "link.css")); err != nil {
+				t.Fatal(err)
+			}
+		}, map[Mode]modeWant{
+			ModeAuto: caseOf(CaseB), ModeFresh: caseOf(CaseFresh), ModeContinue: caseOf(CaseContinue), ModeMerge: is(errDraftSymlink)}},
+		{"static is a file", func(t *testing.T, dir string) {
+			startWrite(t, dir, staticDir, "not a folder")
+		}, map[Mode]modeWant{
+			ModeAuto: caseOf(CaseA), ModeFresh: caseOf(CaseFresh), ModeContinue: is(errNoDraft), ModeMerge: is(errNoDraft)}},
+		{"base.json missing", func(t *testing.T, dir string) {
+			draft(t, dir)
+			if err := os.Remove(filepath.Join(dir, filepath.FromSlash(baseFile))); err != nil {
+				t.Fatal(err)
+			}
+		}, map[Mode]modeWant{
+			ModeAuto: is(errMissingBase), ModeFresh: caseOf(CaseFresh), ModeContinue: caseOf(CaseContinue), ModeMerge: is(errMissingBase)}},
+		{"base.json bad", func(t *testing.T, dir string) {
+			draft(t, dir)
+			startWrite(t, dir, baseFile, "{")
+		}, map[Mode]modeWant{
+			ModeAuto: is(errBadBase), ModeFresh: caseOf(CaseFresh), ModeContinue: caseOf(CaseContinue), ModeMerge: is(errBadBase)}},
+		{"base.json over maxBaseBytes", func(t *testing.T, dir string) {
+			draft(t, dir)
+			startWrite(t, dir, baseFile, strings.Repeat(" ", maxBaseBytes+1))
+		}, map[Mode]modeWant{
+			ModeAuto: is(errBadBase), ModeFresh: caseOf(CaseFresh), ModeContinue: caseOf(CaseContinue), ModeMerge: is(errBadBase)}},
+		{"base.json is a folder", func(t *testing.T, dir string) {
+			draft(t, dir)
+			path := filepath.Join(dir, filepath.FromSlash(baseFile))
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, map[Mode]modeWant{
+			ModeAuto: text(baseFile + ": is a directory"), ModeFresh: caseOf(CaseFresh), ModeContinue: text(baseFile + ": "), ModeMerge: text(baseFile + ": is a directory")}},
+		{"dirty shipped page", func(t *testing.T, dir string) {
+			draft(t, dir)
+			startWrite(t, dir, shippedPath+"/app.css", "body { color: dirty; }\n")
+		}, map[Mode]modeWant{
+			ModeAuto: is(errDirty), ModeFresh: is(errDirty), ModeContinue: is(errDirty), ModeMerge: is(errDirty)}},
+	}
+	for _, st := range states {
+		for _, mode := range []Mode{ModeAuto, ModeFresh, ModeContinue, ModeMerge} {
+			t.Run(st.name+"/"+string(mode), func(t *testing.T) {
+				dir := startRepo(t)
+				st.setup(t, dir)
+				want := st.want[mode]
+				before := startSnapshotNoFollow(t, dir)
+				out, err := StartRule(dir, mode)
+				switch {
+				case want.c != "":
+					if err != nil || out.Case != want.c {
+						t.Fatalf("StartRule = %q, %v, want case %q", out.Case, err, want.c)
+					}
+					return
+				case want.is != nil:
+					if !errors.Is(err, want.is) {
+						t.Errorf("error = %v, want %v", err, want.is)
+					}
+				default:
+					if err == nil || !strings.HasPrefix(err.Error(), want.text) {
+						t.Errorf("error = %v, want prefix %q", err, want.text)
+					}
+				}
+				if after := startSnapshotNoFollow(t, dir); !reflect.DeepEqual(before, after) {
+					t.Errorf("files changed\nbefore: %v\nafter:  %v", before, after)
+				}
+			})
+		}
+	}
+}
+
+// TestStartMergeExit covers the exit rows of merge mode that the per-file
+// and mode tests do not reach: nothing to merge, and the git diff failure.
+func TestStartMergeExit(t *testing.T) {
+	t.Run("HEAD equals the base: nothing to merge", func(t *testing.T) {
+		dir := startRepo(t)
+		startRun(t, dir, ModeAuto)
+		before := startSnapshot(t, dir)
+		out := startRun(t, dir, ModeMerge)
+		startAssertOutcome(t, out, CaseMerge, true, "design preview: merge — nothing to merge")
+		startAssertUnchanged(t, dir, before)
+	})
+
+	t.Run("HEAD differs from the base with an unchanged shipped page: nothing to merge", func(t *testing.T) {
+		dir := startRepo(t)
+		startRun(t, dir, ModeAuto)
+		startWrite(t, dir, "README.md", "readme\n")
+		startGitOut(t, dir, "add", "--", "README.md")
+		startGitOut(t, dir, "commit", "-q", "-m", "readme")
+		before := startSnapshot(t, dir)
+		out := startRun(t, dir, ModeMerge)
+		startAssertOutcome(t, out, CaseMerge, true, "design preview: merge — nothing to merge")
+		startAssertUnchanged(t, dir, before)
+	})
+
+	t.Run("a git diff failure is an error and changes nothing", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		startFailGitAllowExit(t, "diff", 2)
+		startAssertErr(t, dir, ModeMerge, shippedPath+": git diff exit 2: boom")
+	})
+
+	t.Run("a symlink in the draft is refused before the marker check", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		startWrite(t, dir, staticDir+"/app.css", "<<<<<<< draft\n")
+		if err := os.Symlink("app.css", filepath.Join(dir, filepath.FromSlash(staticDir), "link.css")); err != nil {
+			t.Fatal(err)
+		}
+		_, err := StartRule(dir, ModeMerge)
+		if !errors.Is(err, errDraftSymlink) {
+			t.Errorf("error = %v, want errDraftSymlink", err)
+		}
+	})
+
+	t.Run("the case d next line names task design:merge", func(t *testing.T) {
+		dir := startRepo(t)
+		startDraftOwnWork(t, dir)
+		out := startRun(t, dir, ModeAuto)
+		const want = "design preview: next — run task design:merge (merge the shipped changes into the draft), task design:fresh (discard the draft) or task design:continue (keep the draft)."
+		if out.Case != CaseD || out.Lines[len(out.Lines)-1] != want {
+			t.Errorf("case d lines = %q, want the last line %q", out.Lines, want)
+		}
+	})
+}
+
+// TestStartMergeBackupDir covers the name of the backup folder and its error.
+func TestStartMergeBackupDir(t *testing.T) {
+	t.Run("two merges in the same second get two folders", func(t *testing.T) {
+		dir := t.TempDir()
+		startWrite(t, dir, staticDir+"/a.txt", "a\n")
+		now := time.Date(2026, 10, 30, 15, 9, 12, 0, time.FixedZone("CET", 3600))
+		first, err1 := mergeBackupDir(dir, now)
+		second, err2 := mergeBackupDir(dir, now)
+		if err1 != nil || err2 != nil {
+			t.Fatalf("mergeBackupDir: %v, %v", err1, err2)
+		}
+		const prefix = draftDir + "/static.bak-20261030T140912Z-"
+		if first == second || !strings.HasPrefix(first, prefix) || !strings.HasPrefix(second, prefix) {
+			t.Errorf("folders = %q, %q, want two names with the prefix %q", first, second, prefix)
+		}
+		for _, rel := range []string{first, second} {
+			if info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(rel))); err != nil || !info.IsDir() {
+				t.Errorf("%s is not a folder: %v", rel, err)
+			}
+		}
+	})
+
+	t.Run("a missing draft folder is an error that names it", func(t *testing.T) {
+		_, err := mergeBackupDir(t.TempDir(), time.Now())
+		if err == nil || err.Error() != draftDir+": not found" {
+			t.Errorf("error = %v, want %q", err, draftDir+": not found")
+		}
+	})
+}
+
+// startNth returns a matcher that is true only on the nth call (1-based)
+// for which match is true.
+func startNth(n int, match func(path string) bool) func(path string) bool {
+	count := 0
+	return func(path string) bool {
+		if !match(path) {
+			return false
+		}
+		count++
+		return count == n
+	}
+}
+
+// startIsPath matches the path of rel under dir, as the merge builds it.
+func startIsPath(dir, rel string) func(path string) bool {
+	want := mergePath(dir, rel)
+	return func(path string) bool { return path == want }
+}
+
+// startInBackup matches the file name under a backup folder.
+func startInBackup(name string) func(path string) bool {
+	return func(path string) bool {
+		return strings.Contains(path, "static.bak-") && filepath.Base(path) == name
+	}
+}
+
+// startIsBackupRoot matches a backup folder itself.
+func startIsBackupRoot(path string) bool {
+	return strings.HasPrefix(filepath.Base(path), "static.bak-")
+}
+
+// startFailWrite makes copyWriteFile fail when fail(path) is true.
+func startFailWrite(t *testing.T, fail func(string) bool) {
+	t.Helper()
+	real := copyWriteFile
+	startSwap(t, &copyWriteFile, func(path string, data []byte, perm os.FileMode) error {
+		if fail(path) {
+			return errStartInjected
+		}
+		return real(path, data, perm)
+	})
+}
+
+// startFailMkdir makes copyMkdirAll fail when fail(path) is true.
+func startFailMkdir(t *testing.T, fail func(string) bool) {
+	t.Helper()
+	real := copyMkdirAll
+	startSwap(t, &copyMkdirAll, func(path string, perm os.FileMode) error {
+		if fail(path) {
+			return errStartInjected
+		}
+		return real(path, perm)
+	})
+}
+
+// startFailRemove makes mergeRemoveAll fail when fail(path) is true.
+func startFailRemove(t *testing.T, fail func(string) bool) {
+	t.Helper()
+	real := mergeRemoveAll
+	startSwap(t, &mergeRemoveAll, func(path string) error {
+		if fail(path) {
+			return errStartInjected
+		}
+		return real(path)
+	})
+}
+
+// startFailRename makes the copyRename calls with the given numbers
+// (1-based) fail.
+func startFailRename(t *testing.T, calls ...int) {
+	t.Helper()
+	real := copyRename
+	count := 0
+	startSwap(t, &copyRename, func(from, to string) error {
+		count++
+		for _, n := range calls {
+			if n == count {
+				return errStartInjected
+			}
+		}
+		return real(from, to)
+	})
+}
+
+// TestStartMergeWriteFailures makes each write step of a merge fail through
+// a seam and checks the state of its write-order row.
+// startAssertFolder checks what the folder rel of dir holds after a failed
+// restore: "" is no folder, "draft" is the snapshot draft, and "merged" is
+// the merged copy of startMergeWork (f.txt holds the clean merge text).
+func startAssertFolder(t *testing.T, dir, rel, what string, draft map[string]string) {
+	t.Helper()
+	exists := startExists(dir, rel)
+	switch what {
+	case "":
+		if exists {
+			t.Errorf("%s exists, want no folder", rel)
+		}
+	case "draft":
+		if !exists {
+			t.Errorf("%s is missing, want the draft before the merge", rel)
+			return
+		}
+		if got := startSnapshot(t, filepath.Join(dir, filepath.FromSlash(rel))); !reflect.DeepEqual(got, draft) {
+			t.Errorf("%s = %v, want the draft before the merge %v", rel, got, draft)
+		}
+	case "merged":
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(rel), "f.txt"))
+		if err != nil || string(data) != startLines7Clean {
+			t.Errorf("%s/f.txt = %q, %v, want the merged text", rel, data, err)
+		}
+	default:
+		t.Fatalf("unknown folder state %q", what)
+	}
+}
+
+func TestStartMergeWriteFailures(t *testing.T) {
+	injected := errStartInjected.Error()
+	// The state after a failure, by its write-order row.
+	const (
+		writeNothing       = iota // no backup, and no file changed
+		writeNoBackup             // no backup; draft and base unchanged
+		writePartBackup           // a backup folder exists; draft and base unchanged
+		writeFullBackup           // the backup holds the draft; draft and base unchanged
+		writeRestoreFailed        // the backup holds the draft; a restore rename failed
+	)
+	rows := []struct {
+		name    string
+		inject  func(t *testing.T, dir string)
+		wantErr func(backup string) string // the error text; backup is "" without a backup
+		state   int                        // the state after the failure
+	}{
+		{"step 2: a stale .merge.tmp cannot be removed", func(t *testing.T, dir string) {
+			startFailRemove(t, startIsPath(dir, mergeTmpDir))
+		}, func(string) string { return mergeTmpDir + ": " + injected }, writeNothing},
+		{"step 2: a stale .static.old cannot be removed", func(t *testing.T, dir string) {
+			startFailRemove(t, startIsPath(dir, oldStaticDir))
+		}, func(string) string { return oldStaticDir + ": " + injected }, writeNothing},
+		{"step 3: the backup folder cannot be created", func(t *testing.T, _ string) {
+			startSwap(t, &mergeMkdirTemp, func(string, string) (string, error) { return "", errStartInjected })
+		}, func(string) string { return draftDir + ": " + injected }, writeNoBackup},
+		{"step 3: the backup folder cannot be made ready", func(t *testing.T, _ string) {
+			startFailMkdir(t, startIsBackupRoot)
+		}, func(b string) string { return b + ": " + injected + ". Backup " + b + "." }, writePartBackup},
+		{"check: a draft file cannot be read, so nothing changes", func(t *testing.T, dir string) {
+			real := draftReadFile
+			want := mergePath(dir, staticDir+"/app.css")
+			startSwap(t, &draftReadFile, func(path string) ([]byte, error) {
+				if path == want {
+					return nil, errStartInjected
+				}
+				return real(path)
+			})
+		}, func(string) string { return staticDir + "/app.css: " + injected }, writeNothing},
+		{"step 3: a backup file cannot be written", func(t *testing.T, _ string) {
+			startFailWrite(t, startInBackup("app.css"))
+		}, func(b string) string { return b + "/app.css: " + injected + ". Backup " + b + "." }, writePartBackup},
+		{"step 4: the base blob list fails", func(t *testing.T, _ string) {
+			startFailGitRun(t, startLsTree(false))
+		}, func(b string) string { return shippedPath + ": " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: the HEAD blob list fails", func(t *testing.T, dir string) {
+			head := startHead(t, dir)
+			startFailGitRun(t, func(args []string) bool { return args[0] == "ls-tree" && args[3] == head })
+		}, func(b string) string { return shippedPath + ": " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: .static.tmp cannot be created", func(t *testing.T, dir string) {
+			startFailMkdir(t, startIsPath(dir, tmpStaticDir))
+		}, func(b string) string { return tmpStaticDir + ": " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: a base blob cannot be read", func(t *testing.T, dir string) {
+			real := gitBlob
+			head := startHead(t, dir)
+			startSwap(t, &gitBlob, func(root, rev, path string) ([]byte, error) {
+				if rev != head {
+					return nil, errStartInjected
+				}
+				return real(root, rev, path)
+			})
+		}, func(b string) string { return shippedPath + "/app.css: " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: a HEAD blob cannot be read", func(t *testing.T, dir string) {
+			real := gitBlob
+			head := startHead(t, dir)
+			startSwap(t, &gitBlob, func(root, rev, path string) ([]byte, error) {
+				if rev == head {
+					return nil, errStartInjected
+				}
+				return real(root, rev, path)
+			})
+		}, func(b string) string { return shippedPath + "/app.css: " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: a HEAD file cannot be written to the copy", func(t *testing.T, dir string) {
+			// The first write is the copy of the draft; the second takes HEAD.
+			startFailWrite(t, startNth(2, startIsPath(dir, tmpStaticDir+"/app.css")))
+		}, func(b string) string { return tmpStaticDir + "/app.css: " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: a file deleted in HEAD cannot be removed from the copy", func(t *testing.T, dir string) {
+			startFailRemove(t, startIsPath(dir, tmpStaticDir+"/js/app.js"))
+		}, func(b string) string { return tmpStaticDir + "/js/app.js: " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: the base copy folder cannot be created", func(t *testing.T, dir string) {
+			startFailMkdir(t, startIsPath(dir, mergeTmpDir+"/base"))
+		}, func(b string) string { return mergeTmpDir + "/base/f.txt: " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: the base copy cannot be written", func(t *testing.T, dir string) {
+			startFailWrite(t, startIsPath(dir, mergeTmpDir+"/base/f.txt"))
+		}, func(b string) string { return mergeTmpDir + "/base/f.txt: " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: the HEAD copy cannot be written", func(t *testing.T, dir string) {
+			startFailWrite(t, startIsPath(dir, mergeTmpDir+"/head/f.txt"))
+		}, func(b string) string { return mergeTmpDir + "/head/f.txt: " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 4: git merge-file exits outside 0 to 127", func(t *testing.T, _ string) {
+			startFailGitAllowExit(t, "merge-file", 255)
+		}, func(b string) string { return staticDir + "/f.txt: git merge-file exit 255: boom. Backup " + b + "." }, writeFullBackup},
+		{"step 4: git merge-file cannot start", func(t *testing.T, _ string) {
+			startFailGitAllowExit(t, "merge-file", -1)
+		}, func(b string) string { return staticDir + "/f.txt: " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 5: static cannot be moved aside", func(t *testing.T, _ string) {
+			startFailRename(t, 1)
+		}, func(b string) string { return staticDir + ": " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 5: the copy cannot be moved in, and the old draft comes back", func(t *testing.T, _ string) {
+			startFailRename(t, 2)
+		}, func(b string) string { return staticDir + ": " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"step 6: base.json cannot be written, and the old draft comes back", func(t *testing.T, _ string) {
+			startSwap(t, &writeBaseJSON, func(string, any) error { return errStartInjected })
+		}, func(b string) string { return baseFile + ": " + injected + ". Backup " + b + "." }, writeFullBackup},
+		{"restore: the old draft cannot come back after step 5", func(t *testing.T, _ string) {
+			startFailRename(t, 2, 3)
+		}, func(b string) string {
+			return staticDir + ": " + injected + ". The restore failed too: " + injected + ". Restore the draft: copy " + b + " to design/dashboard/static."
+		}, writeRestoreFailed},
+		{"restore: the merged draft cannot move away after step 6", func(t *testing.T, _ string) {
+			startSwap(t, &writeBaseJSON, func(string, any) error { return errStartInjected })
+			startFailRename(t, 3)
+		}, func(b string) string {
+			return baseFile + ": " + injected + ". The restore failed too: " + injected + ". Restore the draft: copy " + b + " to design/dashboard/static."
+		}, writeRestoreFailed},
+		{"restore: the old draft cannot come back after step 6", func(t *testing.T, _ string) {
+			startSwap(t, &writeBaseJSON, func(string, any) error { return errStartInjected })
+			startFailRename(t, 4)
+		}, func(b string) string {
+			return baseFile + ": " + injected + ". The restore failed too: " + injected + ". Restore the draft: copy " + b + " to design/dashboard/static."
+		}, writeRestoreFailed},
+	}
+	// The folders after a failed restore, by row name: what static/,
+	// .static.old/ and .static.tmp/ hold. "draft" is the draft before the
+	// merge, "merged" is the merged copy, and "" is no folder.
+	type restoreDisk struct{ static, old, tmp string }
+	restoreWant := map[string]restoreDisk{
+		"restore: the old draft cannot come back after step 5":    {static: "", old: "draft", tmp: "merged"},
+		"restore: the merged draft cannot move away after step 6": {static: "merged", old: "draft", tmp: ""},
+		"restore: the old draft cannot come back after step 6":    {static: "", old: "draft", tmp: "merged"},
+	}
+	for _, tc := range rows {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _ := startMergeWork(t)
+			startWrite(t, dir, oldStaticDir+"/stale.txt", "stale\n")
+			draftBefore := startSnapshot(t, filepath.Join(dir, filepath.FromSlash(staticDir)))
+			stateBefore := startDraftState(t, dir)
+			treeBefore := startSnapshot(t, dir)
+			tc.inject(t, dir)
+
+			_, err := StartRule(dir, ModeMerge)
+
+			backup := ""
+			if tc.state == writeNothing || tc.state == writeNoBackup {
+				if backups := startBackups(t, dir); len(backups) != 0 {
+					t.Errorf("backup folders = %v, want none", backups)
+				}
+			} else {
+				backup = startOneBackup(t, dir)
+			}
+			want := tc.wantErr(backup)
+			if err == nil || err.Error() != want {
+				t.Errorf("error\ngot:  %v\nwant: %s", err, want)
+			}
+			// A row whose text names the injected error must wrap it, so a
+			// %w that becomes %v fails here even when the text stays.
+			if strings.Contains(want, injected) && !errors.Is(err, errStartInjected) {
+				t.Errorf("error %v does not wrap errStartInjected", err)
+			}
+			if tc.state == writeFullBackup || tc.state == writeRestoreFailed {
+				startAssertBackup(t, dir, backup, draftBefore)
+			}
+			switch tc.state {
+			case writeNothing:
+				startAssertUnchanged(t, dir, treeBefore)
+			case writeNoBackup, writePartBackup, writeFullBackup:
+				if after := startDraftState(t, dir); !reflect.DeepEqual(after, stateBefore) {
+					t.Errorf("draft or base changed\nbefore: %v\nafter:  %v", stateBefore, after)
+				}
+			case writeRestoreFailed:
+				// The error wraps two causes: the failed step and the failed rename.
+				multi, ok := err.(interface{ Unwrap() []error })
+				if !ok || len(multi.Unwrap()) != 2 {
+					t.Errorf("error %v does not wrap two causes", err)
+				} else {
+					for i, cause := range multi.Unwrap() {
+						if !errors.Is(cause, errStartInjected) {
+							t.Errorf("cause %d = %v, want errStartInjected", i, cause)
+						}
+					}
+				}
+				disk, ok := restoreWant[tc.name]
+				if !ok {
+					t.Fatalf("no restoreWant entry for %q", tc.name)
+				}
+				for rel, what := range map[string]string{staticDir: disk.static, oldStaticDir: disk.old, tmpStaticDir: disk.tmp} {
+					startAssertFolder(t, dir, rel, what, draftBefore)
+				}
+				if data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(baseFile))); err != nil || string(data) != stateBefore["<base.json>"] {
+					t.Errorf("base.json = %q, %v, want it unchanged", data, err)
+				}
+			}
+		})
+	}
+
+	t.Run("step 7: a work folder that cannot be removed gives one warning line", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		// Step 2 removes each work folder first; the second remove is step 7.
+		fail := map[string]func(string) bool{
+			oldStaticDir: startNth(2, startIsPath(dir, oldStaticDir)),
+			mergeTmpDir:  startNth(2, startIsPath(dir, mergeTmpDir)),
+		}
+		startFailRemove(t, func(path string) bool { return fail[oldStaticDir](path) || fail[mergeTmpDir](path) })
+
+		out := startRun(t, dir, ModeMerge)
+
+		head := startHead(t, dir)
+		startAssertOutcome(t, out, CaseMerge, true,
+			startCleanLine(3, head, startOneBackup(t, dir)),
+			"design preview: warning — could not remove "+oldStaticDir+": "+injected+"; "+mergeTmpDir+": "+injected+". The next merge removes the rest.")
+		if rec := startReadBaseFile(t, dir); rec.BaseCommit != head {
+			t.Errorf("base commit = %s, want HEAD %s", rec.BaseCommit, head)
+		}
+		if data, _ := os.ReadFile(filepath.Join(dir, filepath.FromSlash(staticDir), "f.txt")); string(data) != startLines7Clean {
+			t.Errorf("f.txt = %q, want the merged text", data)
+		}
+	})
+
+	t.Run("a merge after a step 7 failure removes the rest", func(t *testing.T) {
+		dir, _ := startMergeWork(t)
+		startWrite(t, dir, oldStaticDir+"/left.txt", "left\n")
+		startWrite(t, dir, mergeTmpDir+"/left.txt", "left\n")
+		startRun(t, dir, ModeMerge)
+		startAssertNoWorkFolders(t, dir)
+	})
+}
+
+// TestStartMergeBytes checks that merge keeps the raw bytes of a blob,
+// with its last line end, where execx would trim them.
+func TestStartMergeBytes(t *testing.T) {
+	dir, _ := startMergeWork(t)
+	data, err := gitBlob(dir, "HEAD", shippedPath+"/f.txt")
+	if err != nil || !bytes.Equal(data, []byte(startLines7Head)) {
+		t.Errorf("gitBlob = %q, %v, want %q", data, err, startLines7Head)
+	}
+}
+
+// TestStartMergeBlobError checks that a failed gitBlob keeps the reason
+// that git gives on stderr.
+func TestStartMergeBlobError(t *testing.T) {
+	dir, _ := startMergeWork(t)
+	data, err := gitBlob(dir, "HEAD", shippedPath+"/missing.txt")
+	var exitErr *exec.ExitError
+	if err == nil || !errors.As(err, &exitErr) || !strings.Contains(err.Error(), "fatal:") || !strings.Contains(err.Error(), "missing.txt") {
+		t.Errorf("gitBlob = %q, %v, want an exit error with the git stderr text", data, err)
+	}
 }

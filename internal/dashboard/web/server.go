@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
@@ -49,14 +48,22 @@ const (
 	tokenHeader = "X-Sdlc-Token"
 	// maxMutationBody is the largest body guardMutation accepts.
 	maxMutationBody = 8 << 10
+	// maxDetailID is the longest id, in bytes, that a detail route accepts. A
+	// run or session id is far shorter; the limit stops a large query value
+	// before the collect.
+	maxDetailID = 256
+	// maxDetailRepo is the longest repo, in bytes, that a detail route accepts:
+	// the Linux PATH_MAX.
+	maxDetailRepo = 4096
 	// sseRetryMillis is the reconnect delay the page's EventSource uses.
 	sseRetryMillis = 3000
 )
 
 // Timings are package variables so tests can shorten them.
 var (
-	// snapshotPollInterval is how often /api/events collects a snapshot and
-	// compares its hash with the last one sent.
+	// snapshotPollInterval is how often the shared collect loop of the
+	// /api/events streams collects a snapshot and compares its hash with the
+	// last one sent. A loop reads it once, when it starts.
 	snapshotPollInterval = 2 * time.Second
 	// pingInterval is how often /api/events sends an SSE comment line, so
 	// proxies and the browser keep the stream open.
@@ -74,9 +81,9 @@ var (
 
 // Options configures Serve. Every function field is required except Stop,
 // Archive, ClearCache, LearningBody, DeletePreplan, DeleteDeferred,
-// DeleteLearning, SetPreplanStatus, DeleteRuns and DismissWait. A route whose
-// function field is nil answers 500 with a suggestion instead of failing at
-// start.
+// DeleteLearning, SetPreplanStatus, DeleteRuns, DismissWait, RunDetail and
+// SessionDetail. A route whose function field is nil answers 500 with a
+// suggestion instead of failing at start.
 type Options struct {
 	Port    int
 	Version string
@@ -125,14 +132,21 @@ type Options struct {
 	// DismissWait deletes one wait record (production:
 	// tools.DashboardDismissWait). POST /api/wait-dismiss calls it.
 	DismissWait func(root, kind, sessionID, toolUseID string) (tools.DashboardDeleteOut, error)
+	// RunDetail returns the full steps and issues of one run (production:
+	// tools.DashboardRunDetail). GET /api/run-detail calls it.
+	RunDetail func(root, id string, now time.Time) (tools.DashboardRunDetailOut, error)
+	// SessionDetail returns the timeline and command groups of one session
+	// (production: tools.DashboardSessionDetail). GET /api/session-detail calls it.
+	SessionDetail func(root, id string, now time.Time) (tools.DashboardSessionDetailOut, error)
 }
 
 // WithToolRoutes returns o with every route function set to the tools
-// function that production uses: Archive, ClearCache, LearningBody and the
-// delete, status and dismiss functions. ClearCache calls clearCache (production:
-// tools.ClearCache) with dashboard.LogPath(), the file that receives the
-// output of the server when it runs in the background. "sdlc dashboard serve"
-// and the browser e2e test both use it, so a new route is wired in one place.
+// function that production uses: Archive, ClearCache, LearningBody, the
+// delete, status and dismiss functions, and the two detail functions.
+// ClearCache calls clearCache (production: tools.ClearCache) with
+// dashboard.LogPath(), the file that receives the output of the server when it
+// runs in the background. "sdlc dashboard serve" and the browser e2e test both
+// use it, so a new route is wired in one place.
 func WithToolRoutes(o Options, clearCache func(root, serverLog string, now time.Time) (tools.ClearCacheOut, error)) Options {
 	logPath := dashboard.LogPath()
 	o.Archive = tools.ArchiveRun
@@ -146,6 +160,8 @@ func WithToolRoutes(o Options, clearCache func(root, serverLog string, now time.
 	o.SetPreplanStatus = tools.DashboardSetPreplanStatus
 	o.DeleteRuns = tools.DashboardDeleteRuns
 	o.DismissWait = tools.DashboardDismissWait
+	o.RunDetail = tools.DashboardRunDetail
+	o.SessionDetail = tools.DashboardSessionDetail
 	return o
 }
 
@@ -272,6 +288,7 @@ type handler struct {
 	hosts     [2]string
 	origins   [2]string
 	mux       *http.ServeMux
+	broadcast *broadcaster
 }
 
 func newHandler(ctx context.Context, o Options, token string, pid int, startedAt time.Time, stop func()) *handler {
@@ -293,6 +310,7 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 		origins:   [2]string{"http://127.0.0.1:" + port, "http://localhost:" + port},
 		mux:       http.NewServeMux(),
 	}
+	h.broadcast = newBroadcaster(ctx, h.snapshot)
 	static, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		panic(fmt.Sprintf("dashboard web: embedded static dir: %v", err))
@@ -312,6 +330,8 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 	h.mux.HandleFunc("GET /api/events", h.serveEvents)
 	h.mux.HandleFunc("GET /api/health", h.serveHealth)
 	h.mux.HandleFunc("GET /api/learning", h.serveLearning)
+	h.mux.HandleFunc("GET /api/run-detail", h.serveRunDetail)
+	h.mux.HandleFunc("GET /api/session-detail", h.serveSessionDetail)
 	h.mux.HandleFunc("POST /api/stop", h.serveStop)
 	h.mux.HandleFunc("POST /api/run-archive", h.serveRunArchive)
 	h.mux.HandleFunc("POST /api/cache-clear", h.serveCacheClear)
@@ -369,9 +389,10 @@ func (h *handler) rootPaths(t time.Time) []string {
 	return paths
 }
 
-// serveEvents streams snapshots as server-sent events: a retry line and the
-// current snapshot at connect, a new snapshot only when its hash changes,
-// and a ping comment every pingInterval.
+// serveEvents streams snapshots as server-sent events: a retry line, then
+// the current snapshot at connect, a new snapshot only when its hash
+// changes, and a ping comment every pingInterval. The snapshots come from
+// the shared collect loop of h.broadcast, which runs while a stream is open.
 func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -387,30 +408,26 @@ func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 	if _, err := fmt.Fprintf(w, "retry: %d\n\n", sseRetryMillis); err != nil {
 		return
 	}
+	flusher.Flush()
 
+	ch, latest := h.broadcast.subscribe()
+	defer h.broadcast.unsubscribe(ch)
 	lastHash := ""
-	send := func() error {
-		data, hash, err := encodeSnapshot(h.snapshot())
-		if err != nil {
-			fmt.Fprintf(stderr, "sdlc dashboard: %v\n", err)
+	send := func(f *frame) error {
+		if f == nil || f.hash == lastHash {
 			return nil
 		}
-		if hash == lastHash {
-			return nil
-		}
-		if _, err := fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data); err != nil {
+		if _, err := fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", f.data); err != nil {
 			return err
 		}
-		lastHash = hash
+		lastHash = f.hash
 		flusher.Flush()
 		return nil
 	}
-	if send() != nil {
+	if send(latest) != nil {
 		return
 	}
 
-	poll := time.NewTicker(snapshotPollInterval)
-	defer poll.Stop()
 	ping := time.NewTicker(pingInterval)
 	defer ping.Stop()
 	for {
@@ -419,8 +436,8 @@ func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		case <-h.ctx.Done():
 			return
-		case <-poll.C:
-			if send() != nil {
+		case f := <-ch:
+			if send(&f) != nil {
 				return
 			}
 		case <-ping.C:
@@ -430,22 +447,6 @@ func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
-}
-
-// encodeSnapshot returns the JSON of s and a hash of s without its
-// GeneratedAt time, which changes at every collect.
-func encodeSnapshot(s tools.DashboardSnapshot) (data []byte, hash string, err error) {
-	data, err = json.Marshal(s)
-	if err != nil {
-		return nil, "", err
-	}
-	s.GeneratedAt = ""
-	stable, err := json.Marshal(s)
-	if err != nil {
-		return nil, "", err
-	}
-	sum := sha256.Sum256(stable)
-	return data, hex.EncodeToString(sum[:]), nil
 }
 
 // guardMutation lets a state-changing request pass only when it comes from
@@ -498,9 +499,9 @@ func (h *handler) serveStop(w http.ResponseWriter, r *http.Request) {
 	h.stop()
 }
 
-// Codes of the errors that the archive, clear, learning, delete, status and
-// dismiss routes raise themselves. The archive codes of the tools package keep
-// their own constants.
+// Codes of the errors that the archive, clear, learning, delete, status,
+// dismiss and detail routes raise themselves. The archive codes of the tools
+// package keep their own constants.
 const (
 	// codeBadRequest is the code of a body or query that lacks a field.
 	codeBadRequest = "BAD_REQUEST"
@@ -510,6 +511,9 @@ const (
 	codeClearFailed = "CLEAR_FAILED"
 	// codeLearningReadFailed is the code of a failed read of a learning body.
 	codeLearningReadFailed = "LEARNING_READ_FAILED"
+	// codeDetailReadFailed is the code of a failed read of a run or session
+	// detail.
+	codeDetailReadFailed = "DETAIL_READ_FAILED"
 	// codeDeleteFailed is the code of a failed write of a preplan, deferred,
 	// learning, History, wait or status route that is not a bad request. These
 	// routes share it through writeDeleteError. The archive route has its own
@@ -519,8 +523,8 @@ const (
 	codeNotConfigured = "NOT_CONFIGURED"
 )
 
-// Suggestions of the errors that the archive, clear, learning, delete, status
-// and dismiss routes raise themselves.
+// Suggestions of the errors that the archive, clear, learning, delete, status,
+// dismiss and detail routes raise themselves.
 const (
 	// suggestBadRequest is the suggestion for codeBadRequest.
 	suggestBadRequest = "Send the fields shown in the route example."
@@ -758,12 +762,77 @@ func (h *handler) serveLearning(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// serveRunDetail returns the full steps and issues of one run of a registered
+// repo (serveDetail).
+func (h *handler) serveRunDetail(w http.ResponseWriter, r *http.Request) {
+	serveDetail(h, w, r, "Run detail", h.o.RunDetail)
+}
+
+// serveSessionDetail returns the timeline and the command groups of one
+// session of a registered repo (serveDetail).
+func (h *handler) serveSessionDetail(w http.ResponseWriter, r *http.Request) {
+	serveDetail(h, w, r, "Session detail", h.o.SessionDetail)
+}
+
+// serveDetail is the body of a detail route. It only reads, so it needs no
+// token, like the learning route. name names the route in the not-configured
+// error and, in lower case, in the server log. A nil call writes the
+// not-configured error. The query fields pass detailQuery, then call gets the
+// root, the id and the time of the request. An error of call writes the 500
+// error with the message and suggestion of a typed error (apiErrorText).
+func serveDetail[T any](h *handler, w http.ResponseWriter, r *http.Request, name string,
+	call func(root, id string, at time.Time) (T, error)) {
+	if call == nil {
+		writeNotConfigured(w, name)
+		return
+	}
+	at := now()
+	root, id, ok := h.detailQuery(w, r, at)
+	if !ok {
+		return
+	}
+	out, err := call(root, id, at)
+	if err != nil {
+		fmt.Fprintf(stderr, "sdlc dashboard: %s: %v\n", strings.ToLower(name), err)
+		message, suggestion := apiErrorText(err)
+		writeAPIError(w, http.StatusInternalServerError, codeDetailReadFailed, message, suggestion)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// detailQuery checks the id and repo fields of a detail route. It writes the
+// error and returns false on a bad field. It checks the id first, then the
+// repo. An id longer than maxDetailID bytes and a repo longer than
+// maxDetailRepo bytes are refused before the repo is resolved, so a large
+// query value never reaches the collect. displayRoot resolves the repo at
+// time t: it refuses an empty repo with the 400 error and a repo that is not a
+// display root with the 404 error. The two length messages are built with
+// fmt.Sprintf from the constants. The id and the repo are not trimmed, so the
+// value that passes the check is the value that the route passes on.
+func (h *handler) detailQuery(w http.ResponseWriter, r *http.Request, t time.Time) (root, id string, ok bool) {
+	q := r.URL.Query()
+	id, repo := q.Get("id"), q.Get("repo")
+	switch {
+	case id == "":
+		writeBadRequest(w, "The id field is required")
+	case len(id) > maxDetailID:
+		writeBadRequest(w, fmt.Sprintf("The id field is longer than %d bytes", maxDetailID))
+	case len(repo) > maxDetailRepo:
+		writeBadRequest(w, fmt.Sprintf("The repo field is longer than %d bytes", maxDetailRepo))
+	default:
+		root, ok = h.displayRoot(w, t, repo)
+		return root, id, ok
+	}
+	return "", "", false
+}
+
 // displayRoot resolves repo, the path that the page sent, to the display root
-// it names. It is the one check of the repo field of the archive, clear,
-// delete, status, dismiss and learning routes: an empty repo writes the 400
-// error, and a repo that is not a display root writes the 404 error. Both
-// return false, so a mutating route never acts on a path from the page that
-// the dashboard does not show.
+// it names. It is the one empty check and the one display root check of the
+// repo field of every route that takes a repo: an empty repo writes the 400
+// error, and a repo that is not a display root writes the 404 error.
+// Both return false, so a mutating route never acts on a path from the page
+// that the dashboard does not show.
 func (h *handler) displayRoot(w http.ResponseWriter, t time.Time, repo string) (string, bool) {
 	if repo == "" {
 		writeBadRequest(w, "The repo field is required")
@@ -852,10 +921,23 @@ func writeDeleteError(w http.ResponseWriter, what string, err error) {
 		writeAPIError(w, http.StatusBadRequest, codeBadRequest, de.Msg, suggestion)
 		return
 	}
-	message, suggestion := err.Error(), ""
+	message, suggestion := apiErrorText(err)
+	fmt.Fprintf(stderr, "sdlc dashboard: %s: %v\n", what, err)
+	writeAPIError(w, http.StatusInternalServerError, codeDeleteFailed, message, suggestion)
+}
+
+// apiErrorText returns the message and the suggestion of the error body for
+// err. A DomainError, DataError or InfraError in the chain of err gives its
+// Msg and Suggestion. Any other error gives err.Error(). An empty suggestion
+// becomes suggestReadLog.
+func apiErrorText(err error) (message, suggestion string) {
+	message = err.Error()
+	var de *mcpserver.DomainError
 	var da *mcpserver.DataError
 	var ie *mcpserver.InfraError
 	switch {
+	case errors.As(err, &de):
+		message, suggestion = de.Msg, de.Suggestion
 	case errors.As(err, &da):
 		message, suggestion = da.Msg, da.Suggestion
 	case errors.As(err, &ie):
@@ -864,8 +946,7 @@ func writeDeleteError(w http.ResponseWriter, what string, err error) {
 	if suggestion == "" {
 		suggestion = suggestReadLog
 	}
-	fmt.Fprintf(stderr, "sdlc dashboard: %s: %v\n", what, err)
-	writeAPIError(w, http.StatusInternalServerError, codeDeleteFailed, message, suggestion)
+	return message, suggestion
 }
 
 // writeAPIError writes {"error":{"code","message","suggestion"}} with status.

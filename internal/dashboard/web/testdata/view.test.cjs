@@ -1503,6 +1503,193 @@ describe('connectionText', () => {
   test('returns an empty string for an unknown event', () => {
     assert.equal(view.connectionText('bogus'), '');
   });
+
+  test('returns the connecting and paused texts', () => {
+    assert.equal(view.connectionText('connecting'), 'Connecting…');
+    assert.equal(view.connectionText('paused'), 'Paused while the page is hidden.');
+  });
+
+  test('CONNECTION_STATES equals the data-state values that app.css styles on .conn', () => {
+    const css = fs.readFileSync(path.join(__dirname, '../static/app.css'), 'utf8');
+    const styled = new Set();
+    for (const m of css.matchAll(/\.conn\[data-state="([^"]+)"\]/g)) styled.add(m[1]);
+    assert.deepEqual([...styled].sort(), view.CONNECTION_STATES.slice().sort());
+  });
+
+  test('every setConnection literal in app.js is a CONNECTION_STATES value', () => {
+    const app = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
+    const used = [...app.matchAll(/setConnection\('([^']+)'\)/g)].map((m) => m[1]);
+    assert.deepEqual([...new Set(used)].sort(), ['connecting', 'error', 'open', 'paused', 'snapshot']);
+    used.forEach((state) => assert.ok(view.CONNECTION_STATES.includes(state), state));
+    // The stop flow sets the stopResult value; both values are states too.
+    assert.ok(view.CONNECTION_STATES.includes(view.stopResult(200)));
+    assert.ok(view.CONNECTION_STATES.includes(view.stopResult(0)));
+  });
+});
+
+describe('panelSignatures', () => {
+  // One repo with a value in every field that any panel tab reads.
+  function fullRepo(root) {
+    return {
+      name: 'repo-' + root,
+      root: root,
+      error: '',
+      warnings: ['w1'],
+      loneWaits: [{ sessionId: 's1' }],
+      pipelines: [{ id: 'p1', status: 'running' }],
+      sessions: [{ id: 's1' }],
+      deferred: [{ id: 'd1', priority: 'high' }],
+      learnings: [{ title: 'l1' }],
+      history: [{ runId: 'r1' }],
+      preplans: [{ file: 'a.md', status: 'paused' }],
+    };
+  }
+
+  // A new value for a field, of the same JSON type as in fullRepo.
+  function changed(repo, field) {
+    const value = repo[field];
+    if (Array.isArray(value)) return value.concat([{ added: true }]);
+    return value + '-changed';
+  }
+
+  test('keys equal TAB_NAMES and PANEL_FIELDS keys', () => {
+    const sigs = view.panelSignatures([fullRepo('/a')], new Set());
+    assert.deepEqual(Object.keys(sigs).sort(), view.TAB_NAMES.slice().sort());
+    assert.deepEqual(Object.keys(view.PANEL_FIELDS).sort(), view.TAB_NAMES.slice().sort());
+  });
+
+  test('PANEL_FIELDS lists the fields of each panel tab', () => {
+    assert.deepEqual(view.PANEL_FIELDS, {
+      pipelines: ['name', 'root', 'error', 'warnings', 'loneWaits', 'pipelines', 'sessions'],
+      activity: ['name', 'root', 'deferred', 'learnings'],
+      history: ['name', 'root', 'history'],
+      preplans: ['name', 'root', 'warnings', 'preplans'],
+    });
+  });
+
+  test('a change of one field changes the signature of exactly the panel tabs that list it', () => {
+    const fields = new Set();
+    Object.values(view.PANEL_FIELDS).forEach((list) => list.forEach((f) => fields.add(f)));
+    const before = view.panelSignatures([fullRepo('/a')], new Set());
+    for (const field of fields) {
+      const repo = fullRepo('/a');
+      repo[field] = changed(repo, field);
+      const after = view.panelSignatures([repo], new Set());
+      for (const name of view.TAB_NAMES) {
+        const lists = view.PANEL_FIELDS[name].includes(field);
+        assert.equal(after[name] !== before[name], lists, `field ${field}, panel ${name}`);
+      }
+    }
+  });
+
+  test('a new loneWaits entry changes only pipelines', () => {
+    const repo = fullRepo('/a');
+    const before = view.panelSignatures([repo], new Set());
+    repo.loneWaits = repo.loneWaits.concat([{ sessionId: 's2' }]);
+    const after = view.panelSignatures([repo], new Set());
+    assert.notEqual(after.pipelines, before.pipelines);
+    assert.equal(after.activity, before.activity);
+    assert.equal(after.history, before.history);
+    assert.equal(after.preplans, before.preplans);
+  });
+
+  test('a field that no panel tab reads changes no signature', () => {
+    const repo = fullRepo('/a');
+    const before = view.panelSignatures([repo], new Set());
+    repo.issueCount = 7;
+    assert.deepEqual(view.panelSignatures([repo], new Set()), before);
+  });
+
+  test('equal repo data gives equal signatures', () => {
+    assert.deepEqual(
+      view.panelSignatures([fullRepo('/a')], new Set()),
+      view.panelSignatures([fullRepo('/a')], new Set())
+    );
+  });
+
+  test('a repo out of scope adds nothing; a scope change changes every signature', () => {
+    const a = fullRepo('/a');
+    const b = fullRepo('/b');
+    const onlyA = view.panelSignatures([a], new Set());
+    const scopedA = view.panelSignatures([a, b], new Set(['/a']));
+    assert.deepEqual(scopedA, onlyA);
+    const all = view.panelSignatures([a, b], new Set());
+    for (const name of view.TAB_NAMES) assert.notEqual(all[name], scopedA[name], name);
+    const outOfScope = fullRepo('/b');
+    outOfScope.history = changed(outOfScope, 'history');
+    assert.deepEqual(view.panelSignatures([a, outOfScope], new Set(['/a'])), scopedA);
+  });
+
+  test('no repos gives an empty list for each panel tab', () => {
+    const sigs = view.panelSignatures(undefined, new Set());
+    for (const name of view.TAB_NAMES) assert.equal(sigs[name], '[]');
+  });
+});
+
+describe('panelsToDraw', () => {
+  const sigs = { pipelines: 'P2', activity: 'A1', history: 'H1', preplans: 'R1' };
+
+  test('frame with a changed signature draws the active panel tab', () => {
+    assert.deepEqual(view.panelsToDraw('frame', 'pipelines', sigs, { pipelines: 'P1' }), ['pipelines']);
+  });
+
+  test('frame with the same signature draws nothing', () => {
+    assert.deepEqual(view.panelsToDraw('frame', 'pipelines', sigs, { pipelines: 'P2' }), []);
+  });
+
+  test('click draws the active panel tab, also with the same signature', () => {
+    assert.deepEqual(view.panelsToDraw('click', 'history', sigs, { history: 'H1' }), ['history']);
+    assert.deepEqual(view.panelsToDraw('click', 'history', sigs, { history: 'H0' }), ['history']);
+  });
+
+  test('select draws the active panel tab, also with the same signature', () => {
+    assert.deepEqual(view.panelsToDraw('select', 'activity', sigs, { activity: 'A1' }), ['activity']);
+    assert.deepEqual(view.panelsToDraw('select', 'activity', sigs, { activity: 'A0' }), ['activity']);
+  });
+
+  test('a panel tab with no last draw is drawn, for every reason', () => {
+    for (const reason of ['frame', 'click', 'select']) {
+      assert.deepEqual(view.panelsToDraw(reason, 'preplans', sigs, Object.create(null)), ['preplans'], reason);
+      assert.deepEqual(view.panelsToDraw(reason, 'preplans', sigs, { pipelines: 'P2' }), ['preplans'], reason);
+    }
+  });
+
+  test('the first snapshot draws the active panel tab', () => {
+    const first = view.panelSignatures([], new Set());
+    assert.deepEqual(view.panelsToDraw('frame', 'pipelines', first, Object.create(null)), ['pipelines']);
+  });
+
+  test('only the active panel tab is drawn, never another one', () => {
+    const drawn = { pipelines: 'P0', activity: 'A0', history: 'H0', preplans: 'R0' };
+    for (const active of view.TAB_NAMES) {
+      assert.deepEqual(view.panelsToDraw('frame', active, sigs, drawn), [active]);
+    }
+  });
+});
+
+describe('visibilityAction', () => {
+  test('hidden with an open stream closes it, stopped or not', () => {
+    assert.equal(view.visibilityAction(true, true, false), 'close');
+    assert.equal(view.visibilityAction(true, true, true), 'close');
+  });
+
+  test('hidden with no stream does nothing, stopped or not', () => {
+    assert.equal(view.visibilityAction(true, false, false), 'none');
+    assert.equal(view.visibilityAction(true, false, true), 'none');
+  });
+
+  test('visible with no stream and a running server opens a stream', () => {
+    assert.equal(view.visibilityAction(false, false, false), 'open');
+  });
+
+  test('visible with no stream after a server stop does nothing', () => {
+    assert.equal(view.visibilityAction(false, false, true), 'none');
+  });
+
+  test('visible with an open stream does nothing, stopped or not', () => {
+    assert.equal(view.visibilityAction(false, true, false), 'none');
+    assert.equal(view.visibilityAction(false, true, true), 'none');
+  });
 });
 
 describe('stopRequest', () => {
@@ -3058,6 +3245,25 @@ describe('render tickElapsed', () => {
     const node = fakeDurNode(ASKED, '5m 0s');
     render.tickElapsed(fakeElapsedDoc([], [node]), view, ASKED_MS - 60000);
     assert.equal(node.textContent, '0s');
+  });
+
+  test('a hidden document changes no text and queries no node', () => {
+    const banner = fakeElapsedNode(ASKED, '0s');
+    const dur = fakeDurNode(ASKED, '0s');
+    const doc = fakeElapsedDoc([banner], [dur]);
+    doc.hidden = true;
+    render.tickElapsed(doc, view, ASKED_MS + 26000);
+    assert.equal(banner.textContent, '0s');
+    assert.equal(dur.textContent, '0s');
+    assert.deepEqual(doc.queries, []);
+  });
+
+  test('a visible document (hidden false) rewrites the text', () => {
+    const banner = fakeElapsedNode(ASKED, '0s');
+    const doc = fakeElapsedDoc([banner]);
+    doc.hidden = false;
+    render.tickElapsed(doc, view, ASKED_MS + 26000);
+    assert.equal(banner.textContent, '26s');
   });
 });
 
@@ -6203,5 +6409,500 @@ describe('render.js browser global fallback', () => {
       'tickElapsed',
       'wavesBody',
     ]);
+  });
+});
+
+// --- Finished-run and session detail loads ---------------------------------------
+
+// The JS copy of the Go slim rules (tools.SlimDashboardSnapshot), applied to a
+// deep copy of snapshot: every run gets issueCount (left out when 0, as the Go
+// omitempty tag does) and the detailKind of each step with detail; a completed
+// or failed run also loses its step detail, gets an empty issues list and
+// detailDeferred true; each session loses timeline and commandGroups.
+function slimFixture(snapshot) {
+  const copy = JSON.parse(JSON.stringify(snapshot));
+  for (const repo of copy.repos || []) {
+    for (const p of repo.pipelines || []) {
+      const finished = p.status === 'completed' || p.status === 'failed';
+      const n = (p.issues || []).length;
+      if (n > 0) p.issueCount = n;
+      for (const st of p.steps || []) {
+        if (!st.detail) continue;
+        if (st.detail.kind) st.detailKind = st.detail.kind;
+        if (finished) delete st.detail;
+      }
+      if (finished) {
+        p.issues = [];
+        p.detailDeferred = true;
+      }
+    }
+    for (const s of repo.sessions || []) {
+      delete s.timeline;
+      delete s.commandGroups;
+    }
+  }
+  return copy;
+}
+
+const SLIM = slimFixture(FIXTURE);
+
+function slimRepo(name) {
+  const repo = SLIM.repos.find((r) => r.name === name);
+  assert.ok(repo, `slim fixture has no repo ${name}`);
+  return repo;
+}
+
+// The finished runs of the fixture: one completed plan, one failed ship.
+const DONE_PLAN = (p) => p.id === 'plan-main-20261008T070500Z';
+const FAILED_SHIP = (p) => p.id === 'ship-feat-int-4305-http-stat-20261008T093000Z';
+
+// The body of GET /api/run-detail for a fixture run: its full steps and issues.
+function runDetailBody(repoName, match) {
+  const full = fixturePipeline(repoName, match);
+  return { found: true, id: full.id, steps: full.steps, issues: full.issues };
+}
+
+// The body of GET /api/session-detail for a fixture session.
+function sessionDetailBody(repoName, id) {
+  const full = fixtureRepo(repoName).sessions.find((s) => s.id === id);
+  assert.ok(full, `fixture has no session ${id}`);
+  return { found: true, id: id, timeline: full.timeline, commandGroups: full.commandGroups };
+}
+
+describe('slimFixture', () => {
+  test('leaves the fixture file data unchanged', () => {
+    const before = JSON.stringify(FIXTURE);
+    slimFixture(FIXTURE);
+    assert.equal(JSON.stringify(FIXTURE), before);
+    assert.ok(fixtureRepo('sdlc-plugin').sessions.every((s) => Array.isArray(s.timeline)));
+  });
+
+  test('a finished run has no step detail and no issues; a running run keeps both', () => {
+    const failed = slimRepo('identity-service').pipelines.find(FAILED_SHIP);
+    assert.equal(failed.detailDeferred, true);
+    assert.deepEqual(failed.issues, []);
+    assert.equal(failed.issueCount, 2);
+    assert.ok(failed.steps.every((s) => s.detail === undefined));
+    assert.deepEqual(failed.steps.filter((s) => s.detailKind).map((s) => s.detailKind), ['result', 'dimensions', 'harden']);
+    const running = slimRepo('sdlc-plugin').pipelines.find(SHIP);
+    assert.equal(running.detailDeferred, undefined);
+    assert.equal(running.issues.length, 6);
+    assert.equal(stepOf(running, 'review').detail.kind, 'dimensions');
+    assert.equal(stepOf(running, 'review').detailKind, 'dimensions');
+  });
+});
+
+describe('detail state rules', () => {
+  test('detailAction: no entry fetches, every entry state sends nothing more', () => {
+    assert.equal(view.detailAction(undefined), 'fetch');
+    assert.equal(view.detailAction({ state: 'loading' }), 'none');
+    assert.equal(view.detailAction({ state: 'ok', body: {}, error: '' }), 'none');
+    assert.equal(view.detailAction({ state: 'missing', body: null, error: '' }), 'none');
+    assert.equal(view.detailAction({ state: 'error', body: null, error: 'x' }), 'none');
+  });
+
+  test('detailEntry: 200 with found true is ok and keeps the body', () => {
+    const body = { found: true, id: 'r1', steps: [], issues: [] };
+    assert.deepEqual(view.detailEntry(200, body), { state: 'ok', body: body, error: '' });
+    assert.equal(view.detailEntry(200, body).body, body);
+  });
+
+  test('detailEntry: 200 with found false is missing', () => {
+    assert.deepEqual(view.detailEntry(200, { found: false, id: 'r1', steps: [], issues: [] }), { state: 'missing', body: null, error: '' });
+    assert.deepEqual(view.detailEntry(200, { found: false, id: 's1', timeline: [], commandGroups: [] }), {
+      state: 'missing',
+      body: null,
+      error: '',
+    });
+  });
+
+  test('detailEntry: an error body gives the message of the server', () => {
+    const err = (code, message) => ({ error: { code: code, message: message, suggestion: 'Reload the page.' } });
+    assert.deepEqual(view.detailEntry(500, err('DETAIL_READ_FAILED', 'read /r: boom')), { state: 'error', body: null, error: 'read /r: boom' });
+    assert.deepEqual(view.detailEntry(404, err('REPO_NOT_FOUND', 'Repo "/x" is not a repo that the dashboard shows')), {
+      state: 'error',
+      body: null,
+      error: 'Repo "/x" is not a repo that the dashboard shows',
+    });
+    assert.deepEqual(view.detailEntry(400, err('BAD_REQUEST', 'The id field is required')), {
+      state: 'error',
+      body: null,
+      error: 'The id field is required',
+    });
+  });
+
+  test('detailEntry: no message gives the HTTP status text; status 0 is a network failure', () => {
+    assert.deepEqual(view.detailEntry(0, null), { state: 'error', body: null, error: 'The detail cannot be loaded (HTTP 0).' });
+    assert.deepEqual(view.detailEntry(502, null), { state: 'error', body: null, error: 'The detail cannot be loaded (HTTP 502).' });
+    assert.deepEqual(view.detailEntry(500, { error: {} }), { state: 'error', body: null, error: 'The detail cannot be loaded (HTTP 500).' });
+    // A 200 with no JSON object, or with no found field, is not a detail.
+    assert.deepEqual(view.detailEntry(200, null), { state: 'error', body: null, error: 'The detail cannot be loaded (HTTP 200).' });
+    assert.deepEqual(view.detailEntry(200, {}), { state: 'error', body: null, error: 'The detail cannot be loaded (HTTP 200).' });
+    // A 404 with found true is still an error: only a 200 is a detail.
+    assert.equal(view.detailEntry(404, { found: true }).state, 'error');
+  });
+
+  test('dropOnClose: only an error entry is removed on close', () => {
+    assert.equal(view.dropOnClose({ state: 'error', body: null, error: 'x' }), true);
+    assert.equal(view.dropOnClose({ state: 'loading' }), false);
+    assert.equal(view.dropOnClose({ state: 'ok', body: {}, error: '' }), false);
+    assert.equal(view.dropOnClose({ state: 'missing', body: null, error: '' }), false);
+    assert.equal(view.dropOnClose(undefined), false);
+  });
+
+  test('detailText: the tile text of each state', () => {
+    assert.equal(view.detailText(undefined, 'run'), 'Loading…');
+    assert.equal(view.detailText(undefined, 'session'), 'Loading…');
+    assert.equal(view.detailText({ state: 'loading' }, 'run'), 'Loading…');
+    assert.equal(view.detailText({ state: 'loading' }, 'session'), 'Loading…');
+    assert.equal(view.detailText({ state: 'ok', body: {}, error: '' }, 'run'), '');
+    assert.equal(view.detailText(view.detailEntry(200, { found: false }), 'run'), 'This run is no longer on disk.');
+    assert.equal(view.detailText(view.detailEntry(200, { found: false }), 'session'), 'This session is no longer on disk.');
+    assert.equal(view.detailText(view.detailEntry(500, { error: { message: 'boom' } }), 'run'), 'boom');
+    assert.equal(view.detailText(view.detailEntry(0, null), 'session'), 'The detail cannot be loaded (HTTP 0).');
+  });
+
+  // The page keeps one entry for each key root|id|updatedAt. These walks run
+  // the rows of the state table in order with the pure functions.
+  test('open, repeated open while loading, a frame before the answer, then the answer', () => {
+    const cache = new Map();
+    const key = '/r|ship-1|2026-10-08T11:02:15Z';
+    let gets = 0;
+    const open = () => {
+      if (view.detailAction(cache.get(key)) === 'fetch') {
+        gets++;
+        cache.set(key, { state: 'loading' });
+      }
+    };
+    open();
+    assert.equal(gets, 1);
+    open();
+    open();
+    assert.equal(gets, 1, 'a repeated open while loading sends no second GET');
+    // A frame with the same updatedAt arrives before the answer: the tile shows Loading… and sends nothing.
+    const run = JSON.parse(JSON.stringify(slimRepo('identity-service').pipelines.find(FAILED_SHIP)));
+    run.detailEntry = cache.get(key);
+    const tile = render.stepTile(fakeDoc(), view, run, stepOf(run, 'review'), 1, true, false);
+    assert.equal(textOf(oneByClass(tile, 'detail-state')), 'Loading…');
+    open();
+    assert.equal(gets, 1, 'a frame while loading sends no second GET');
+    // The answer arrives.
+    cache.set(key, view.detailEntry(200, runDetailBody('identity-service', FAILED_SHIP)));
+    open();
+    assert.equal(gets, 1, 'a loaded entry sends no GET');
+    assert.equal(cache.get(key).state, 'ok');
+  });
+
+  test('close while loading keeps the entry; close after an error drops it and the next open retries', () => {
+    const cache = new Map();
+    const key = '/r|s1|2026-10-08T14:29:40Z';
+    let gets = 0;
+    const open = () => {
+      if (view.detailAction(cache.get(key)) === 'fetch') {
+        gets++;
+        cache.set(key, { state: 'loading' });
+      }
+    };
+    const close = () => {
+      if (view.dropOnClose(cache.get(key))) cache.delete(key);
+    };
+    open();
+    close();
+    assert.equal(cache.get(key).state, 'loading', 'close while loading keeps the entry');
+    open();
+    assert.equal(gets, 1);
+    cache.set(key, view.detailEntry(500, { error: { message: 'boom' } }));
+    open();
+    assert.equal(gets, 1, 'an error entry is not fetched again while the part is open');
+    close();
+    assert.equal(cache.has(key), false);
+    open();
+    assert.equal(gets, 2, 'the next open after an error sends one GET');
+    cache.set(key, view.detailEntry(200, { found: false }));
+    close();
+    assert.equal(cache.get(key).state, 'missing', 'close keeps a missing entry');
+  });
+
+  test('a new updatedAt is a new key: one GET; the same updatedAt sends nothing', () => {
+    const cache = new Map([['/r|ship-1|T1', view.detailEntry(200, { found: true, steps: [], issues: [] })]]);
+    assert.equal(view.detailAction(cache.get('/r|ship-1|T1')), 'none');
+    assert.equal(view.detailAction(cache.get('/r|ship-1|T2')), 'fetch');
+  });
+});
+
+describe('detail URL builders', () => {
+  test('runDetailUrl encodes the repo root and the run id', () => {
+    assert.equal(view.runDetailUrl({ root: '/r' }, { id: 'ship-main-1' }), '/api/run-detail?repo=%2Fr&id=ship-main-1');
+    assert.equal(view.runDetailUrl({ root: '/a b&c' }, { id: 'x?y' }), '/api/run-detail?repo=%2Fa%20b%26c&id=x%3Fy');
+  });
+
+  test('sessionDetailUrl encodes the repo root and the session id', () => {
+    assert.equal(view.sessionDetailUrl({ root: '/r' }, { id: 's-1' }), '/api/session-detail?repo=%2Fr&id=s-1');
+    assert.equal(view.sessionDetailUrl({ root: '/r#1' }, { id: 'a/b' }), '/api/session-detail?repo=%2Fr%231&id=a%2Fb');
+  });
+
+  test('the two paths are the routes of server.go', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../server.go'), 'utf8');
+    assert.ok(source.includes('"GET /api/run-detail"'));
+    assert.ok(source.includes('"GET /api/session-detail"'));
+  });
+});
+
+describe('withRunDetail and withSessionDetail', () => {
+  test('a merged finished run has the full step detail and issues; the inputs do not change', () => {
+    for (const [repoName, match] of [['identity-service', FAILED_SHIP], ['sdlc-plugin', DONE_PLAN]]) {
+      const slim = slimRepo(repoName).pipelines.find(match);
+      const before = JSON.stringify(slim);
+      const body = runDetailBody(repoName, match);
+      const merged = view.withRunDetail(slim, body);
+      const full = fixturePipeline(repoName, match);
+      assert.notEqual(merged, slim);
+      assert.equal(JSON.stringify(slim), before);
+      assert.deepEqual(merged.issues, full.issues);
+      assert.deepEqual(merged.steps.map((s) => s.detail), full.steps.map((s) => s.detail));
+      // The status, the times and the order of the steps come from the snapshot run.
+      assert.deepEqual(
+        merged.steps.map((s) => [s.name, s.status, s.startedAt, s.completedAt]),
+        slim.steps.map((s) => [s.name, s.status, s.startedAt, s.completedAt])
+      );
+    }
+  });
+
+  test('a step is matched by name when the indexes differ; a step the body does not have is kept', () => {
+    const run = { id: 'r', steps: [{ name: 'a', detailKind: 'result' }, { name: 'b', detailKind: 'waves' }, { name: 'c', detailKind: 'result' }] };
+    const body = { found: true, steps: [{ name: 'b', detail: { kind: 'waves' } }, { name: 'a', detail: { kind: 'result', result: 'ok' } }], issues: null };
+    const merged = view.withRunDetail(run, body);
+    assert.deepEqual(merged.steps[0].detail, { kind: 'result', result: 'ok' });
+    assert.deepEqual(merged.steps[1].detail, { kind: 'waves' });
+    assert.equal(merged.steps[2], run.steps[2]);
+    assert.deepEqual(merged.issues, []);
+  });
+
+  test('a step that the body has with no detail loses its section', () => {
+    const run = { id: 'r', steps: [{ name: 'a', detailKind: 'result' }] };
+    const merged = view.withRunDetail(run, { found: true, steps: [{ name: 'a' }], issues: [] });
+    assert.equal(view.hasSection(merged.steps[0]), false);
+    assert.equal(run.steps[0].detailKind, 'result');
+  });
+
+  test('a merged session has the timeline and the command groups; the input does not change', () => {
+    const id = '5b0e8c1a-2f4d-4c7e-9a31-6d8f0b7e4a12';
+    const slim = slimRepo('sdlc-plugin').sessions.find((s) => s.id === id);
+    const merged = view.withSessionDetail(slim, sessionDetailBody('sdlc-plugin', id));
+    const full = fixtureRepo('sdlc-plugin').sessions.find((s) => s.id === id);
+    assert.deepEqual(merged, full);
+    assert.equal(slim.timeline, undefined);
+    assert.deepEqual(view.withSessionDetail(slim, { found: true }), Object.assign({}, slim, { timeline: [], commandGroups: [] }));
+  });
+});
+
+describe('a slim finished run on the page', () => {
+  test('issueTotal reads issueCount, else the issues list; no run gives 0', () => {
+    assert.equal(view.issueTotal(null), 0);
+    assert.equal(view.issueTotal(undefined), 0);
+    assert.equal(view.issueTotal({}), 0);
+    assert.equal(view.issueTotal({ issues: [{}, {}] }), 2);
+    assert.equal(view.issueTotal({ issues: [], issueCount: 3 }), 3);
+    assert.equal(view.issueTotal({ issues: [{}], issueCount: 0 }), 0);
+  });
+
+  test('sectionKind gives the detailKind and sectionMeta gives an empty text', () => {
+    const slim = slimRepo('identity-service').pipelines.find(FAILED_SHIP);
+    const full = fixturePipeline('identity-service', FAILED_SHIP);
+    slim.steps.forEach((step, i) => {
+      assert.equal(view.hasSection(step), view.hasSection(full.steps[i]), step.name);
+      assert.equal(view.sectionKind(step), view.sectionKind(full.steps[i]), step.name);
+      assert.equal(view.sectionMeta(step), '', step.name);
+    });
+    assert.equal(view.sectionKind(stepOf(slim, 'harden')), 'harden');
+    assert.equal(view.defaultStationIndex(slim.steps), view.defaultStationIndex(full.steps));
+  });
+
+  test('the steps, step times and states show with no detail loaded', () => {
+    for (const [repoName, match] of [['identity-service', FAILED_SHIP], ['sdlc-plugin', DONE_PLAN]]) {
+      // The fixture steps have no times, so the first two steps get times here.
+      const full = JSON.parse(JSON.stringify(fixturePipeline(repoName, match)));
+      full.steps[0].startedAt = '2026-10-08T09:30:00Z';
+      full.steps[0].completedAt = '2026-10-08T09:42:30Z';
+      full.steps[1].startedAt = '2026-10-08T09:42:30Z';
+      full.steps[1].completedAt = '2026-10-08T09:44:00Z';
+      const slim = slimFixture({ repos: [{ root: '/r', pipelines: [full] }] }).repos[0].pipelines[0];
+      assert.equal(slim.detailDeferred, true);
+      const a = render.stationTrack(fakeDoc(), view, slim, 0, FIXTURE_NOW);
+      const b = render.stationTrack(fakeDoc(), view, full, 0, FIXTURE_NOW);
+      assert.equal(textOf(a), textOf(b));
+      assert.deepEqual(a.children.map((n) => n.className), b.children.map((n) => n.className));
+      // Each station names its step and shows its state glyph.
+      assert.deepEqual(a.children.map((n) => n.attrs.title.split(', ')[0]), full.steps.map((s) => s.name));
+      assert.deepEqual(byClass(a, 'glyph').map((n) => n.className), full.steps.map((s) => 'glyph ' + s.status));
+      assert.equal(byClass(a, 'dur').length, 2, `${repoName}: want 2 step times`);
+    }
+  });
+
+  test('stepTile shows the detailText of the run entry and no body', () => {
+    const slim = Object.assign({}, slimRepo('identity-service').pipelines.find(FAILED_SHIP));
+    const step = stepOf(slim, 'review');
+    const text = (entry) => {
+      slim.detailEntry = entry;
+      const t = render.stepTile(fakeDoc(), view, slim, step, 1, true, false);
+      assert.equal(byClass(t, 'dim-grid').length, 0);
+      return textOf(oneByClass(t, 'detail-state'));
+    };
+    assert.equal(text(undefined), 'Loading…');
+    assert.equal(text({ state: 'loading' }), 'Loading…');
+    assert.equal(text(view.detailEntry(200, { found: false })), 'This run is no longer on disk.');
+    assert.equal(text(view.detailEntry(404, { error: { message: 'Repo "/x" is not a repo that the dashboard shows' } })), 'Repo "/x" is not a repo that the dashboard shows');
+    assert.equal(text(view.detailEntry(0, null)), 'The detail cannot be loaded (HTTP 0).');
+  });
+
+  test('a slim step tile has the width of its loaded tile', () => {
+    const slim = slimRepo('identity-service').pipelines.find(FAILED_SHIP);
+    const full = fixturePipeline('identity-service', FAILED_SHIP);
+    for (const name of ['commit', 'review', 'harden']) {
+      const a = render.stepTile(fakeDoc(), view, slim, stepOf(slim, name), 0, true, false);
+      const b = render.stepTile(fakeDoc(), view, full, stepOf(full, name), 0, true, false);
+      assert.equal(a.className, b.className, name);
+    }
+  });
+
+  test('a merged run draws the same step tiles and issues tile as the full run', () => {
+    for (const [repoName, match] of [['identity-service', FAILED_SHIP], ['sdlc-plugin', DONE_PLAN]]) {
+      const slim = slimRepo(repoName).pipelines.find(match);
+      const merged = view.withRunDetail(slim, runDetailBody(repoName, match));
+      const full = fixturePipeline(repoName, match);
+      const state = { key: 'k', closed: {}, selected: 0 };
+      const a = render.stepTiles(fakeDoc(), view, merged, state);
+      const b = render.stepTiles(fakeDoc(), view, full, state);
+      assert.deepEqual(a.map(textOf), b.map(textOf));
+      assert.equal(a.some((t) => byClass(t, 'detail-state').length > 0), false);
+      const ia = render.issuesTile(fakeDoc(), view, merged, true, FIXTURE_NOW, 'UTC');
+      const ib = render.issuesTile(fakeDoc(), view, full, true, FIXTURE_NOW, 'UTC');
+      assert.equal(ia === null ? null : textOf(ia), ib === null ? null : textOf(ib));
+    }
+  });
+
+  test('a finished run with issueCount 3 shows 3 issues before the load', () => {
+    const slim = Object.assign({}, slimRepo('identity-service').pipelines.find(FAILED_SHIP), { issueCount: 3 });
+    const repo = slimRepo('identity-service');
+    const head = render.blockHead(fakeDoc(), view, repo, slim, false, 0, FIXTURE_NOW);
+    assert.equal(textOf(oneByClass(head, 'issue-chip')), '3 issues');
+    const tile = render.issuesTile(fakeDoc(), view, slim, true, FIXTURE_NOW, 'UTC');
+    assert.equal(textOf(oneByClass(tile, 'sec-meta')), '3 open');
+    assert.equal(byClass(tile, 'issue-row').length, 0);
+    // 3 step tiles, the issues tile, and no session.
+    assert.equal(view.tileCount(slim, null), 4);
+    assert.equal(view.tileCount(Object.assign({}, slim, { issueCount: undefined }), null), 3);
+  });
+
+  test('the fixture block of a slim failed run shows the issue chip with the slim count', () => {
+    const repo = slimRepo('identity-service');
+    const p = repo.pipelines.find(FAILED_SHIP);
+    const block = render.pipelineBlock(fakeDoc(), view, repo, p, { collapsed: false, closed: {}, now: FIXTURE_NOW, tz: 'UTC' });
+    assert.equal(textOf(oneByClass(block, 'issue-chip')), '2 issues');
+    // The 3 step tiles with a detailKind and the session tile show a state text.
+    assert.equal(byClass(block, 'detail-state').length, 4);
+    assert.equal(textOf(tileByName(block, 'review')).endsWith('Loading…'), true);
+  });
+});
+
+describe('a slim session tile', () => {
+  const ID = '5b0e8c1a-2f4d-4c7e-9a31-6d8f0b7e4a12';
+
+  test('shows the detailText of its entry and no timeline row before the load', () => {
+    const slim = Object.assign({}, slimRepo('sdlc-plugin').sessions.find((s) => s.id === ID));
+    const text = (entry) => {
+      slim.detailEntry = entry;
+      const t = render.sessionTile(fakeDoc(), view, slim, true, 'UTC');
+      assert.equal(byClass(t, 'timeline-row').length, 0);
+      assert.equal(byClass(t, 'cmd-groups').length, 0);
+      return textOf(oneByClass(t, 'detail-state'));
+    };
+    assert.equal(text(undefined), 'Loading…');
+    assert.equal(text({ state: 'loading' }), 'Loading…');
+    assert.equal(text(view.detailEntry(200, { found: false })), 'This session is no longer on disk.');
+    assert.equal(text(view.detailEntry(500, { error: { message: 'boom' } })), 'boom');
+  });
+
+  test('a merged session shows the timeline and the command groups of the full session', () => {
+    const slim = slimRepo('sdlc-plugin').sessions.find((s) => s.id === ID);
+    const merged = view.withSessionDetail(slim, sessionDetailBody('sdlc-plugin', ID));
+    const full = fixtureRepo('sdlc-plugin').sessions.find((s) => s.id === ID);
+    const a = render.sessionTile(fakeDoc(), view, merged, true, 'UTC');
+    const b = render.sessionTile(fakeDoc(), view, full, true, 'UTC');
+    assert.equal(textOf(a), textOf(b));
+    assert.equal(byClass(a, 'detail-state').length, 0);
+    assert.equal(byClass(a, 'timeline-row').length, full.timeline.length);
+    assert.ok(full.timeline.length > 0);
+  });
+});
+
+describe('detail kinds', () => {
+  // The Detail.Kind values that the Go code emits: the dashboardKind constants
+  // of internal/tools/dashboard_snapshot.go, the only values that
+  // DashboardStepDetail.Kind takes (grep "Kind: *dashboardKind" and "Kind = " in internal/tools).
+  const GO_DETAIL_KINDS = ['dimensions', 'explorers', 'findings', 'fixes', 'guardrails', 'harden', 'result', 'rounds', 'waves'];
+
+  test('the dashboardKind constants of the Go code equal the verified list', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../../tools/dashboard_snapshot.go'), 'utf8');
+    const kinds = [...source.matchAll(/\bdashboardKind[A-Z]\w*\s*=\s*"(\w+)"/g)].map((m) => m[1]);
+    assert.deepEqual(kinds.slice().sort(), GO_DETAIL_KINDS);
+  });
+
+  test('the TILE_BODIES keys equal the Go detail kinds', () => {
+    assert.deepEqual(Object.keys(render.TILE_BODIES).sort(), GO_DETAIL_KINDS);
+  });
+
+  test('each detailKind of the slim fixture is a Go kind and sectionKind returns it', () => {
+    const seen = new Set();
+    for (const repo of SLIM.repos) {
+      for (const p of repo.pipelines || []) {
+        for (const st of p.steps || []) {
+          if (!st.detailKind) continue;
+          assert.ok(GO_DETAIL_KINDS.includes(st.detailKind), st.detailKind);
+          assert.equal(view.sectionKind(st), st.detailKind);
+          seen.add(st.detailKind);
+        }
+      }
+    }
+    assert.ok(seen.size >= 5);
+  });
+});
+
+describe('app.js detail load wiring', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../static/app.js'), 'utf8');
+  // The text of the top-level function that starts with sig, up to its closing brace at column 0.
+  function body(sig) {
+    const start = app.indexOf(sig);
+    assert.ok(start >= 0, `app.js has no ${sig}`);
+    return app.slice(start, app.indexOf('\n}\n', start));
+  }
+
+  test('render merges the details first and starts the loads after the draw', () => {
+    const r = body('function render(');
+    assert.ok(r.indexOf('mergeDetails(snapshot);') >= 0);
+    assert.ok(r.indexOf('mergeDetails(snapshot);') < r.indexOf('attachQueueState(snapshot);'));
+    assert.ok(r.indexOf('refreshDetail();') < r.indexOf('loadOpenDetails();'));
+  });
+
+  test('loadDetail sends a GET only on fetch and drops an answer whose loading entry was replaced', () => {
+    const l = body('function loadDetail(');
+    assert.ok(l.includes("if (view.detailAction(cache.get(key)) !== 'fetch') return;"));
+    assert.ok(l.includes('if (cache.get(key) !== loading) return;'));
+    assert.ok(l.includes('view.detailEntry(result.status, result.body)'));
+    assert.ok(l.includes("render(ui.lastSnapshot, 'click')"));
+  });
+
+  test('loadRunDetail needs detailDeferred; setCollapsed loads on expand and drops on collapse', () => {
+    assert.ok(body('function loadRunDetail(').includes('if (block.pipeline.detailDeferred !== true) return;'));
+    const s = body('function setCollapsed(');
+    assert.ok(s.includes('loadOpenDetails();'));
+    assert.ok(s.includes('dropDetail(ui.runDetail'));
+    assert.ok(body('function dropDetail(').includes('view.dropOnClose(cache.get(key))'));
+  });
+
+  test('the caches are Maps and the blocks keep their repo', () => {
+    assert.ok(app.includes('runDetail: new Map(),'));
+    assert.ok(app.includes('sessionDetail: new Map(),'));
+    assert.ok(app.includes('blocks.push({ key: key, repo: repo, pipeline: p, node: node });'));
   });
 });

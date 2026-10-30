@@ -248,7 +248,7 @@ func TestDashboardDeleteRuns_DeletesEachSnapshotRow(t *testing.T) {
 	root := t.TempDir()
 	path, _ := runsDelFile(t, root, runsDelPlanFeatX+runsDelShipFeatX+runsDelMalformed+runsDelNoBranch)
 
-	rows := dashboardRecentRuns(root)
+	rows := dashRuns(t, root)
 	if len(rows) != 3 {
 		t.Fatalf("snapshot rows = %d, want 3 (%+v)", len(rows), rows)
 	}
@@ -263,7 +263,7 @@ func TestDashboardDeleteRuns_DeletesEachSnapshotRow(t *testing.T) {
 	if out.Message != "Deleted 3 History rows." {
 		t.Errorf("message = %q", out.Message)
 	}
-	if left := dashboardRecentRuns(root); len(left) != 0 {
+	if left := dashRuns(t, root); len(left) != 0 {
 		t.Errorf("rows left in the snapshot: %+v", left)
 	}
 	runsDelWant(t, path, []byte(runsDelMalformed))
@@ -757,7 +757,7 @@ func TestDashboardDeleteRuns_EverySnapshotRowIsDeletable(t *testing.T) {
 		runsDelPlanFeatX + runsDelShipFeatX
 	path, _ := runsDelFile(t, root, content)
 
-	shown := dashboardRecentRuns(root)
+	shown := dashRuns(t, root)
 	if len(shown) != 2 {
 		t.Fatalf("snapshot rows = %+v, want only the plan and ship rows", shown)
 	}

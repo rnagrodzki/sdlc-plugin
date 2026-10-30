@@ -46,7 +46,7 @@ func TestDashboardActivity_Sessions(t *testing.T) {
 			`{"ts":"2026-10-07T08:10:00Z","tool":"ship_prepare","sessionId":""}`, // empty sessionId: dropped
 		)
 
-		sessions := dashboardSessionsFromEvidence(root, dashNow)
+		sessions := dashSessions(t, root, dashNow)
 		if len(sessions) != 2 {
 			t.Fatalf("sessions = %d, want 2: %+v", len(sessions), sessions)
 		}
@@ -83,7 +83,7 @@ func TestDashboardActivity_Sessions(t *testing.T) {
 	t.Run("an mcp event with no matching branch leaves session branch empty", func(t *testing.T) {
 		root := dashRoot(t)
 		dashWriteJSONL(t, mcpEvidencePath(root), `{"ts":"2026-10-07T09:55:00Z","tool":"execute_state","sessionId":"solo"}`)
-		sessions := dashboardSessionsFromEvidence(root, dashNow)
+		sessions := dashSessions(t, root, dashNow)
 		if len(sessions) != 1 || sessions[0].Branch != "" {
 			t.Fatalf("sessions = %+v, want one session with empty branch", sessions)
 		}
@@ -98,7 +98,7 @@ func TestDashboardActivity_Sessions(t *testing.T) {
 		}
 		dashWriteJSONL(t, cliEvidencePath(root), lines...)
 
-		sessions := dashboardSessionsFromEvidence(root, dashNow)
+		sessions := dashSessions(t, root, dashNow)
 		if len(sessions) != 1 {
 			t.Fatalf("sessions = %d, want 1", len(sessions))
 		}
@@ -124,7 +124,7 @@ func TestDashboardActivity_Sessions(t *testing.T) {
 		dashWriteJSONL(t, userInputPath(root),
 			`{"ts":"2026-10-07T09:00:00Z","text":"Bearer verysecrettoken123 `+long+`","sessionId":"s1","kind":"prompt"}`,
 		)
-		sessions := dashboardSessionsFromEvidence(root, dashNow)
+		sessions := dashSessions(t, root, dashNow)
 		if len(sessions) != 1 || len(sessions[0].Timeline) != 1 {
 			t.Fatalf("sessions = %+v", sessions)
 		}
@@ -145,7 +145,7 @@ func TestDashboardActivity_Sessions(t *testing.T) {
 
 	t.Run("no evidence files gives no sessions", func(t *testing.T) {
 		root := dashRoot(t)
-		sessions := dashboardSessionsFromEvidence(root, dashNow)
+		sessions := dashSessions(t, root, dashNow)
 		if len(sessions) != 0 {
 			t.Errorf("sessions = %+v, want none", sessions)
 		}
@@ -171,7 +171,7 @@ func TestDashboardActivity_Learnings(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		got := dashboardRecentLearnings(root, dashNow)
+		got := dashLearnings(t, root, dashNow)
 		if len(got) != 3 {
 			t.Fatalf("learnings = %d, want 3: %+v", len(got), got)
 		}
@@ -211,7 +211,7 @@ func TestDashboardActivity_Learnings(t *testing.T) {
 
 	t.Run("missing learnings log gives no entries", func(t *testing.T) {
 		root := dashRoot(t)
-		got := dashboardRecentLearnings(root, dashNow)
+		got := dashLearnings(t, root, dashNow)
 		if got != nil {
 			t.Errorf("learnings = %+v, want nil", got)
 		}
@@ -230,7 +230,7 @@ func TestDashboardActivity_Learnings(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		got := dashboardRecentLearnings(root, dashNow)
+		got := dashLearnings(t, root, dashNow)
 		if len(got) != 1 {
 			t.Fatalf("learnings = %d, want 1: %+v", len(got), got)
 		}
@@ -296,7 +296,7 @@ func TestDashboardLearningBody_LongHeadingMatchesSnapshotHeading(t *testing.T) {
 	writeFile(t, learningsLogPath(root), "# SDLC Execution Learnings\n\n"+
 		"## 2026-10-07 — execute: "+strings.Repeat("y", 200)+"\n- long heading detail\n")
 
-	rows := dashboardRecentLearnings(root, dashNow)
+	rows := dashLearnings(t, root, dashNow)
 	if len(rows) != 1 {
 		t.Fatalf("learnings = %d, want 1: %+v", len(rows), rows)
 	}
@@ -468,7 +468,7 @@ func TestDashboardActivity_Deferred(t *testing.T) {
 		}
 	}
 
-	got := dashboardOpenDeferred(root)
+	got := dashDeferred(t, root)
 	var ids []string
 	for _, d := range got {
 		ids = append(ids, d.ID)
@@ -502,7 +502,7 @@ func TestDashboardActivity_Deferred_CarriesMetadata(t *testing.T) {
 		}
 	}
 
-	got := dashboardOpenDeferred(root)
+	got := dashDeferred(t, root)
 	want := []DashboardDeferred{
 		{
 			ID: "d-full", Priority: history.PriorityHigh, Description: "full item",
@@ -541,9 +541,12 @@ func TestDashboardActivity_Deferred_CarriesMetadata(t *testing.T) {
 
 func TestDashboardActivity_NoEvidenceNoLearningsNoDeferred(t *testing.T) {
 	root := dashRoot(t)
-	sessions, learnings, deferred, history := collectActivity(root, dashNow)
-	if len(sessions) != 0 || len(learnings) != 0 || len(deferred) != 0 || len(history) != 0 {
-		t.Errorf("collectActivity on an empty repo = %+v %+v %+v %+v, want all empty", sessions, learnings, deferred, history)
+	got := collectActivity(root, dashNow)
+	if len(got.sessions) != 0 || len(got.learnings) != 0 || len(got.deferred) != 0 || len(got.history) != 0 {
+		t.Errorf("collectActivity on an empty repo = %+v, want all empty", got)
+	}
+	if got.sessionsErr != nil || len(got.warnings) != 0 {
+		t.Errorf("collectActivity on an empty repo: sessionsErr %v, warnings %q; want none", got.sessionsErr, got.warnings)
 	}
 }
 
@@ -569,7 +572,7 @@ func TestDashboardActivity_History_MapsFields(t *testing.T) {
 		`{"ts":"not-a-time","skill":"review","branch":"feat/d","outcome":"success","duration_ms":5000}`,
 	)
 
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	want := []DashboardRun{
 		{Kind: "review", Branch: "feat/d", Outcome: "success", StartedAt: "", EndedAt: "not-a-time", DurationMs: 5000, TotalMs: 5000},
 		{Kind: "plan", Branch: "feat/c", Outcome: "partial", StartedAt: "", EndedAt: "2026-10-07T11:00:00Z", DurationMs: 0, TotalMs: 0},
@@ -674,7 +677,7 @@ func TestDashboardActivity_History_PlanAndTotalTimes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := dashRoot(t)
 			dashWriteRuns(t, root, tc.line)
-			got := dashboardRecentRuns(root)
+			got := dashRuns(t, root)
 			if len(got) != 1 {
 				t.Fatalf("history rows = %d, want 1: %+v", len(got), got)
 			}
@@ -693,7 +696,7 @@ func TestDashboardActivity_History_PlanFieldsEncode(t *testing.T) {
 		`{"ts":"2026-10-10T09:40:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":3600000,"plan_started_at":"2026-10-10T08:20:00Z","plan_duration_ms":4800000}`,
 		`{"ts":"2026-10-10T10:00:00Z","skill":"plan","branch":"feat/b","outcome":"done","duration_ms":60000}`,
 	)
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	if len(got) != 2 {
 		t.Fatalf("history rows = %d, want 2: %+v", len(got), got)
 	}
@@ -737,7 +740,7 @@ func TestDashboardActivity_History_CapsAtLimitNewestFirst(t *testing.T) {
 	}
 	dashWriteRuns(t, root, lines...)
 
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	if len(got) != dashboardHistoryLimit {
 		t.Fatalf("history rows = %d, want %d", len(got), dashboardHistoryLimit)
 	}
@@ -765,7 +768,7 @@ func TestDashboardActivity_History_FailureAndLaterSuccessBothShow(t *testing.T) 
 		`{"ts":"2026-10-07T10:00:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":2000}`,
 	)
 
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	if len(got) != 2 || got[0].Outcome != "success" || got[1].Outcome != "failure" {
 		t.Errorf("history = %+v, want the later success first and the earlier failure second", got)
 	}
@@ -785,7 +788,7 @@ func TestDashboardActivity_History_SkipsCorruptLine(t *testing.T) {
 	lines = append(lines, `{"ts":"2026-10-07T09:30:00Z","skill":`, `{"ts":"2026-10-07T10:00:00Z","skill":"ship","branch":"newest","outcome":"success","duration_ms":1}`)
 	dashWriteRuns(t, root, lines...)
 
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	if len(got) != dashboardHistoryLimit {
 		t.Fatalf("history rows = %d, want %d (corrupt line skipped, not counted)", len(got), dashboardHistoryLimit)
 	}
@@ -802,7 +805,7 @@ func TestDashboardActivity_History_SkipsCorruptLine(t *testing.T) {
 func TestDashboardActivity_History_MissingOrEmptyFile(t *testing.T) {
 	t.Run("missing runs.jsonl", func(t *testing.T) {
 		root := dashRoot(t)
-		if got := dashboardRecentRuns(root); len(got) != 0 {
+		if got := dashRuns(t, root); len(got) != 0 {
 			t.Errorf("history = %+v, want none", got)
 		}
 		repo := dashCollect(t, root)
@@ -820,7 +823,7 @@ func TestDashboardActivity_History_MissingOrEmptyFile(t *testing.T) {
 		if err := os.WriteFile(path, nil, 0o644); err != nil {
 			t.Fatal(err)
 		}
-		if got := dashboardRecentRuns(root); len(got) != 0 {
+		if got := dashRuns(t, root); len(got) != 0 {
 			t.Errorf("history = %+v, want none", got)
 		}
 		b, err := json.Marshal(dashCollect(t, root))
@@ -861,7 +864,7 @@ func TestDashboardActivity_History_PairsPlanTimes(t *testing.T) {
 		`{"ts":"2026-10-10T14:20:00Z","skill":"ship","branch":"feat/x","outcome":"success","duration_ms":1200000}`,
 	)
 
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	want := []DashboardRun{
 		{
 			Kind: "ship", Branch: "feat/x", Outcome: "success",
@@ -1022,7 +1025,7 @@ func TestDashboardActivity_History_PairingRules(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := dashRoot(t)
 			dashWriteRuns(t, root, tc.lines...)
-			got := dashboardRecentRuns(root)
+			got := dashRuns(t, root)
 			if len(got) != len(tc.lines) {
 				t.Fatalf("history rows = %d, want %d: %+v", len(got), len(tc.lines), got)
 			}
@@ -1055,7 +1058,7 @@ func TestDashboardActivity_History_PairingKeepsStoredPlanFields(t *testing.T) {
 		`{"ts":"2026-10-10T12:10:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":600000}`,
 	)
 
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	if len(got) != 3 {
 		t.Fatalf("history rows = %d, want 3: %+v", len(got), got)
 	}
@@ -1081,7 +1084,7 @@ func TestDashboardActivity_History_PairsPlanRowOutsideLimit(t *testing.T) {
 	lines = append(lines, `{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`)
 	dashWriteRuns(t, root, lines...)
 
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	if len(got) != dashboardHistoryLimit {
 		t.Fatalf("history rows = %d, want %d", len(got), dashboardHistoryLimit)
 	}
@@ -1108,7 +1111,7 @@ func TestDashboardActivity_History_PairedFieldsEncode(t *testing.T) {
 		`{"ts":"2026-10-10T11:30:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":1800000}`,
 		`{"ts":"2026-10-10T12:10:00Z","skill":"ship","branch":"feat/a","outcome":"success","duration_ms":600000}`,
 	)
-	got := dashboardRecentRuns(root)
+	got := dashRuns(t, root)
 	if len(got) != 3 {
 		t.Fatalf("history rows = %d, want 3: %+v", len(got), got)
 	}

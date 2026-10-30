@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"time"
@@ -118,10 +119,22 @@ func runDashboard(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
+	lowerServePriority(os.Stderr)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	return web.Serve(ctx, dashboardOptions(port, pluginVersion, cancel, tools.ClearCache))
+}
+
+// dashboardLowerPriority is dashboard.LowerPriority. Tests replace it.
+var dashboardLowerPriority = dashboard.LowerPriority
+
+// lowerServePriority lowers the CPU priority of the server. A failure
+// writes one line to w and never stops the start.
+func lowerServePriority(w io.Writer) {
+	if err := dashboardLowerPriority(); err != nil {
+		fmt.Fprintf(w, "sdlc dashboard: lower priority: %v\n", err)
+	}
 }
 
 // clearCacheFunc is the signature of tools.ClearCache: it clears the cache of
@@ -132,7 +145,8 @@ type clearCacheFunc func(root, serverLog string, now time.Time) (tools.ClearCach
 // for plugin version v. stop ends the server. clearCache is tools.ClearCache
 // in production; the cache clear route calls it with dashboard.LogPath(), the
 // file that receives the output of this server when it runs in the
-// background. web.WithToolRoutes sets the route functions.
+// background. web.WithToolRoutes sets the route functions. The collect
+// function returns the slim page snapshot (tools.SlimDashboardSnapshot).
 func dashboardOptions(port int, v string, stop func(), clearCache clearCacheFunc) web.Options {
 	return web.WithToolRoutes(web.Options{
 		Port:    port,
@@ -141,7 +155,7 @@ func dashboardOptions(port int, v string, stop func(), clearCache clearCacheFunc
 		Stop:    stop,
 		Roots:   dashboard.Roots,
 		Collect: func(roots []string, now time.Time) tools.DashboardSnapshot {
-			return tools.CollectDashboardSnapshot(roots, now, v)
+			return tools.SlimDashboardSnapshot(tools.CollectDashboardSnapshot(roots, now, v))
 		},
 		Listen: net.Listen,
 		Health: dashboard.DefaultDeps().Health,

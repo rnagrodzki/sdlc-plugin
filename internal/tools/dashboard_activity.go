@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -48,11 +49,54 @@ var dashboardLearningRunTagRe = regexp.MustCompile(`(?m)^<!--[ \t]*sdlc:run=(\S+
 // dashboardHistoryLimit is the number of runs.jsonl rows the History tab shows.
 const dashboardHistoryLimit = 50
 
+// dashboardActivityOut is the result of collectActivity.
+type dashboardActivityOut struct {
+	sessions  []DashboardSession
+	learnings []DashboardLearning
+	deferred  []DashboardDeferred
+	history   []DashboardRun
+	// sessionsErr is the first read error of the session evidence files. The
+	// sessions then hold the lines that could be read. A detail route reads it,
+	// so that a session it cannot read is not reported as gone.
+	sessionsErr error
+	// warnings holds one text for each source that could not be read. The text
+	// names the source and the file.
+	warnings []string
+}
+
 // collectActivity returns the sessions, learnings, deferred items, and run
 // history of the repo at root for the dashboard snapshot (see
-// dashboard_snapshot.go for the full contract and the result types).
-func collectActivity(root string, now time.Time) (sessions []DashboardSession, learnings []DashboardLearning, deferred []DashboardDeferred, history []DashboardRun) {
-	return dashboardSessionsFromEvidence(root, now), dashboardRecentLearnings(root, now), dashboardOpenDeferred(root), dashboardRecentRuns(root)
+// dashboard_snapshot.go for the full contract and the result types). A source
+// that cannot be read adds one warning and gives the rows that could be read,
+// or none.
+func collectActivity(root string, now time.Time) dashboardActivityOut {
+	var out dashboardActivityOut
+	out.sessions, out.sessionsErr = dashboardSessionsFromEvidence(root, now)
+	if out.sessionsErr != nil {
+		out.warnings = append(out.warnings, "Session evidence unread: "+out.sessionsErr.Error())
+	}
+	var err error
+	if out.learnings, err = dashboardRecentLearnings(root, now); err != nil {
+		out.warnings = append(out.warnings, "Learnings log unread: "+err.Error())
+	}
+	if out.deferred, err = dashboardOpenDeferred(root); err != nil {
+		out.warnings = append(out.warnings, dashboardDeferredWarning(root, err))
+	}
+	if out.history, err = dashboardRecentRuns(root); err != nil {
+		out.warnings = append(out.warnings, "Run history unread: "+err.Error())
+	}
+	return out
+}
+
+// dashboardDeferredWarning returns the repo warning for err, the read error of
+// the deferred.json file of root. A file over the size limit gets its own text
+// with the fix, because the read error does not name the file path.
+func dashboardDeferredWarning(root string, err error) string {
+	if errors.Is(err, history.ErrDeferredTooLarge) {
+		path := history.NewFileWriter(paths.HistoryDir(root)).DeferredPath()
+		return fmt.Sprintf("Deferred items unread: %s is larger than %s. Remove resolved items from the file by hand.", path, dashboardDeleteReadMaxText)
+	}
+	return "Deferred items unread: " + err.Error()
 }
 
 // dashboardEvent is one evidence line reduced to what a session timeline
@@ -72,14 +116,88 @@ type dashboardSessionAgg struct {
 	events []dashboardEvent
 }
 
-// dashboardSessionsFromEvidence groups the CLI, user-input, and MCP evidence
-// lines of root by sessionId and returns one DashboardSession per non-empty
-// id, newest session (by lastSeen) first.
-func dashboardSessionsFromEvidence(root string, now time.Time) []DashboardSession {
+// dashboardSessionsFromEvidence returns one DashboardSession per non-empty
+// sessionId in the CLI, user-input, and MCP evidence lines of root, newest
+// session (by lastSeen) first. The sessions come from the parse cache, which
+// is built again when one of the evidence files changes. Active is set for
+// each call from now, on a copy of the cached slice.
+//
+// A session whose evidence cannot be read in full is built from the lines
+// that could be read, and the cache does not keep it. The error is then the
+// first read error of an evidence file.
+func dashboardSessionsFromEvidence(root string, now time.Time) ([]DashboardSession, error) {
+	cached, err := dashboardCached(dashboardCacheKey(root, "sessions"), dashboardSessionFiles(root), func() ([]DashboardSession, error) {
+		return dashboardBuildSessions(root)
+	})
+	sessions := slices.Clone(cached)
+	for i := range sessions {
+		if last, ok := dashboardParseTime(sessions[i].LastSeen); ok {
+			sessions[i].Active = now.Sub(last) < dashboardSessionActiveWithin
+		}
+	}
+	return sessions, err
+}
+
+// dashboardSessionReaders is the evidence sources of dashboardBuildSessions:
+// for each, the path of its current file and the reader of its files.
+// dashboardSessionFiles builds the cache signature from the same list, so a
+// source that is added here is also in the signature.
+var dashboardSessionReaders = []struct {
+	base func(root string) string
+	read func(files []string) ([]dashboardEvent, error)
+}{
+	{cliEvidencePath, dashboardCLIEvents},
+	{userInputPath, dashboardPromptEvents},
+	{mcpEvidencePath, dashboardMCPEvents},
+}
+
+// dashboardSessionFiles returns the evidence files that dashboardBuildSessions
+// reads: the files of each source of dashboardSessionReaders.
+func dashboardSessionFiles(root string) []string {
+	var files []string
+	for _, r := range dashboardSessionReaders {
+		files = append(files, dashboardRotatedFiles(r.base(root))...)
+	}
+	return files
+}
+
+// dashboardRotatedFiles returns base and its rotated ".1" file, the files of
+// one evidence log.
+func dashboardRotatedFiles(base string) []string {
+	return []string{base, base + ".1"}
+}
+
+// dashboardReadJSONLFiles reads each of files with readJSONLEntries and
+// returns their entries in file order. The error is the first read error of a
+// file; the entries then hold the lines of the other files.
+func dashboardReadJSONLFiles[T any](files []string, label string) ([]T, error) {
+	var out []T
+	var firstErr error
+	for _, f := range files {
+		entries, err := readJSONLEntries[T](f, label)
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		out = append(out, entries...)
+	}
+	return out, firstErr
+}
+
+// dashboardBuildSessions groups the CLI, user-input, and MCP evidence lines
+// of root by sessionId and returns one DashboardSession per non-empty id,
+// newest session (by lastSeen) first. Active is not set: it depends on the
+// time of each call. The error is the first read error of an evidence file;
+// the sessions then hold the lines that could be read.
+func dashboardBuildSessions(root string) ([]DashboardSession, error) {
 	var events []dashboardEvent
-	events = append(events, dashboardCLIEvents(root)...)
-	events = append(events, dashboardPromptEvents(root)...)
-	events = append(events, dashboardMCPEvents(root)...)
+	var firstErr error
+	for _, r := range dashboardSessionReaders {
+		got, err := r.read(dashboardRotatedFiles(r.base(root)))
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		events = append(events, got...)
+	}
 
 	var order []string
 	byID := map[string]*dashboardSessionAgg{}
@@ -119,7 +237,6 @@ func dashboardSessionsFromEvidence(root string, now time.Time) []DashboardSessio
 		first, last := a.events[0].at, a.events[len(a.events)-1].at
 		s.FirstSeen = dashboardFormatTime(first)
 		s.LastSeen = dashboardFormatTime(last)
-		s.Active = now.Sub(last) < dashboardSessionActiveWithin
 
 		// Group every command of the session, before the timeline cap drops
 		// the oldest events.
@@ -133,85 +250,82 @@ func dashboardSessionsFromEvidence(root string, now time.Time) []DashboardSessio
 	}
 
 	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].LastSeen > sessions[j].LastSeen })
-	return sessions
+	return sessions, firstErr
 }
 
-// dashboardCLIEvents reads root's CLI evidence (current and rotated ".1"
-// file) and reduces each entry with a sessionId and a parsable timestamp to
-// a "command" dashboardEvent.
-func dashboardCLIEvents(root string) []dashboardEvent {
+// dashboardCLIEvents reads the CLI evidence files and reduces each entry with
+// a sessionId and a parsable timestamp to a "command" dashboardEvent. The
+// error is the first read error of a file; the events then hold the lines of
+// the other files.
+func dashboardCLIEvents(files []string) ([]dashboardEvent, error) {
+	entries, err := dashboardReadJSONLFiles[CLIEvidenceEntry](files, "dashboard cli evidence")
 	var out []dashboardEvent
-	for _, f := range []string{cliEvidencePath(root), cliEvidencePath(root) + ".1"} {
-		entries, _ := readJSONLEntries[CLIEvidenceEntry](f, "dashboard cli evidence")
-		for _, e := range entries {
-			t, ok := dashboardParseTime(e.Timestamp)
-			if !ok || e.SessionID == "" {
-				continue
-			}
-			out = append(out, dashboardEvent{
-				sessionID: e.SessionID,
-				at:        t,
-				kind:      "command",
-				text:      dashboardPreview(e.Command),
-				branch:    e.Branch,
-				command:   e.Command,
-			})
+	for _, e := range entries {
+		t, ok := dashboardParseTime(e.Timestamp)
+		if !ok || e.SessionID == "" {
+			continue
 		}
+		out = append(out, dashboardEvent{
+			sessionID: e.SessionID,
+			at:        t,
+			kind:      "command",
+			text:      dashboardPreview(e.Command),
+			branch:    e.Branch,
+			command:   e.Command,
+		})
 	}
-	return out
+	return out, err
 }
 
-// dashboardPromptEvents reads root's user-input evidence (current and
-// rotated ".1" file) and reduces each entry with a sessionId and a parsable
-// timestamp to a "prompt" dashboardEvent. Both UserInputKindPrompt and
-// UserInputKindAnswer entries map to "prompt": the timeline's kind enum has
-// no separate "answer" value.
-func dashboardPromptEvents(root string) []dashboardEvent {
+// dashboardPromptEvents reads the user-input evidence files and reduces each
+// entry with a sessionId and a parsable timestamp to a "prompt"
+// dashboardEvent. Both UserInputKindPrompt and UserInputKindAnswer entries
+// map to "prompt": the timeline's kind enum has no separate "answer" value.
+// The error is the first read error of a file; the events then hold the lines
+// of the other files.
+func dashboardPromptEvents(files []string) ([]dashboardEvent, error) {
+	entries, err := dashboardReadJSONLFiles[UserInputEntry](files, "dashboard user input evidence")
 	var out []dashboardEvent
-	for _, f := range []string{userInputPath(root), userInputPath(root) + ".1"} {
-		entries, _ := readJSONLEntries[UserInputEntry](f, "dashboard user input evidence")
-		for _, e := range entries {
-			t, ok := dashboardParseTime(e.Timestamp)
-			if !ok || e.SessionID == "" {
-				continue
-			}
-			out = append(out, dashboardEvent{
-				sessionID: e.SessionID,
-				at:        t,
-				kind:      "prompt",
-				text:      dashboardPreview(e.Text),
-				branch:    e.Branch,
-			})
+	for _, e := range entries {
+		t, ok := dashboardParseTime(e.Timestamp)
+		if !ok || e.SessionID == "" {
+			continue
 		}
+		out = append(out, dashboardEvent{
+			sessionID: e.SessionID,
+			at:        t,
+			kind:      "prompt",
+			text:      dashboardPreview(e.Text),
+			branch:    e.Branch,
+		})
 	}
-	return out
+	return out, err
 }
 
-// dashboardMCPEvents reads root's MCP invocation evidence (current and
-// rotated ".1" file) and reduces each entry with a sessionId and a parsable
-// timestamp to an "mcp" dashboardEvent. MCP evidence carries no branch.
-func dashboardMCPEvents(root string) []dashboardEvent {
+// dashboardMCPEvents reads the MCP invocation evidence files and reduces each
+// entry with a sessionId and a parsable timestamp to an "mcp"
+// dashboardEvent. MCP evidence carries no branch. The error is the first read
+// error of a file; the events then hold the lines of the other files.
+func dashboardMCPEvents(files []string) ([]dashboardEvent, error) {
+	entries, err := dashboardReadJSONLFiles[MCPEvidenceEntry](files, "dashboard mcp evidence")
 	var out []dashboardEvent
-	for _, f := range []string{mcpEvidencePath(root), mcpEvidencePath(root) + ".1"} {
-		entries, _ := readJSONLEntries[MCPEvidenceEntry](f, "dashboard mcp evidence")
-		for _, e := range entries {
-			t, ok := dashboardParseTime(e.Timestamp)
-			if !ok || e.SessionID == "" {
-				continue
-			}
-			text := e.Tool
-			if e.SkillContext != "" {
-				text += " [" + e.SkillContext + "]"
-			}
-			out = append(out, dashboardEvent{
-				sessionID: e.SessionID,
-				at:        t,
-				kind:      "mcp",
-				text:      dashboardPreview(text),
-			})
+	for _, e := range entries {
+		t, ok := dashboardParseTime(e.Timestamp)
+		if !ok || e.SessionID == "" {
+			continue
 		}
+		text := e.Tool
+		if e.SkillContext != "" {
+			text += " [" + e.SkillContext + "]"
+		}
+		out = append(out, dashboardEvent{
+			sessionID: e.SessionID,
+			at:        t,
+			kind:      "mcp",
+			text:      dashboardPreview(text),
+		})
 	}
-	return out
+	return out, err
 }
 
 // dashboardPreview redacts (telemetry.Redact) and truncates (telemetry.TruncateRunes)
@@ -230,17 +344,24 @@ func dashboardPreview(s string) string {
 // An entry with no parsable ISO date anywhere in its text is skipped: there
 // is no way to confirm it falls in the window.
 //
+// The split entries of the log come from the parse cache, which is built
+// again when the log changes. The window rule uses the now of each call. A
+// missing log gives nil and no error. A log that cannot be read gives nil and
+// the read error.
+//
 // The entry date is day-granularity only (no time of day), so "within the
 // window" is a date-string comparison against the inclusive range
 // [today - window, today] rather than a duration check against a
 // midnight-parsed timestamp — the latter would drop an entry from
 // yesterday evening even though it is well inside the last 24h.
-func dashboardRecentLearnings(root string, now time.Time) []DashboardLearning {
-	data, err := os.ReadFile(learningsLogPath(root))
+func dashboardRecentLearnings(root string, now time.Time) ([]DashboardLearning, error) {
+	logPath := learningsLogPath(root)
+	entries, err := dashboardCached(dashboardCacheKey(root, "learnings"), []string{logPath}, func() ([]string, error) {
+		return dashboardLearningEntries(logPath)
+	})
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	_, entries := learningsSplitEntries(string(data))
 
 	today := now.UTC().Format("2006-01-02")
 	oldest := now.Add(-dashboardHistoryWindow).UTC().Format("2006-01-02")
@@ -272,7 +393,22 @@ func dashboardRecentLearnings(root string, now time.Time) []DashboardLearning {
 	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
 		out[i], out[j] = out[j], out[i]
 	}
-	return out
+	return out, nil
+}
+
+// dashboardLearningEntries reads the learnings log at path and returns its
+// entries, split as learningsSplitEntries splits them. A log that does not
+// exist gives no entries and no error.
+func dashboardLearningEntries(path string) ([]string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	_, entries := learningsSplitEntries(string(data))
+	return entries, nil
 }
 
 // dashboardLearningHeading returns entry's "## <date> — <heading>" text when
@@ -376,8 +512,22 @@ func dashboardFindLearning(entries []string, date, heading string) int {
 // OpenDeferred directly: DeferredByPriority applies the identical
 // StatusOpen filter internally and also does the priority grouping this
 // function needs, so a separate OpenDeferred call first would be redundant.
-func dashboardOpenDeferred(root string) []DashboardDeferred {
-	issues, _ := history.NewFileWriter(paths.HistoryDir(root)).ListDeferred()
+//
+// The rows come from the parse cache, which is built again when
+// deferred.json changes. A file that cannot be read or parsed gives nil and
+// the error of ListDeferred, and the cache does not keep that result.
+func dashboardOpenDeferred(root string) ([]DashboardDeferred, error) {
+	w := history.NewFileWriter(paths.HistoryDir(root))
+	return dashboardCached(dashboardCacheKey(root, "deferred"), []string{w.DeferredPath()}, func() ([]DashboardDeferred, error) {
+		return dashboardBuildDeferred(w)
+	})
+}
+
+// dashboardBuildDeferred lists the open deferred issues of w as
+// DashboardDeferred rows, high priority first. The error is the error of
+// ListDeferred; the rows are then nil.
+func dashboardBuildDeferred(w *history.FileWriter) ([]DashboardDeferred, error) {
+	issues, err := w.ListDeferred()
 	groups := history.DeferredByPriority(issues)
 
 	var out []DashboardDeferred
@@ -398,7 +548,7 @@ func dashboardOpenDeferred(root string) []DashboardDeferred {
 			})
 		}
 	}
-	return out
+	return out, err
 }
 
 // dashboardRecentRuns returns the newest dashboardHistoryLimit rows of root's
@@ -410,9 +560,22 @@ func dashboardOpenDeferred(root string) []DashboardDeferred {
 // a ship row inside them. A row with an empty skill or ts (for example a
 // null line or {}) is skipped like a corrupt line: DashboardDeleteRuns cannot
 // name it, so the page must not show it.
-func dashboardRecentRuns(root string) []DashboardRun {
+//
+// The rows come from the parse cache, which is built again when runs.jsonl
+// changes. A file that cannot be read gives nil and the read error, and the
+// cache does not keep that result.
+func dashboardRecentRuns(root string) ([]DashboardRun, error) {
 	path := history.NewFileWriter(paths.HistoryDir(root)).RunsPath()
-	records, _ := readJSONLEntries[history.RunRecord](path, "dashboard run history")
+	return dashboardCached(dashboardCacheKey(root, "history"), []string{path}, func() ([]DashboardRun, error) {
+		return dashboardBuildRuns(path)
+	})
+}
+
+// dashboardBuildRuns reads the runs.jsonl file at path and returns the rows
+// that dashboardRecentRuns returns. The error is the read error of the file;
+// the rows are then nil.
+func dashboardBuildRuns(path string) ([]DashboardRun, error) {
+	records, err := readJSONLEntries[history.RunRecord](path, "dashboard run history")
 	runs := make([]DashboardRun, 0, len(records))
 	for _, r := range records {
 		if r.Skill == "" || r.Timestamp == "" {
@@ -429,7 +592,7 @@ func dashboardRecentRuns(root string) []DashboardRun {
 	for i := len(runs) - 1; i >= 0; i-- {
 		out = append(out, runs[i])
 	}
-	return out
+	return out, err
 }
 
 // dashboardPairPlans fills PlanStartedAt, PlanDurationMs, TotalMs,

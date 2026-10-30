@@ -22,6 +22,7 @@ var dashNow = time.Date(2026, 10, 7, 10, 0, 0, 0, time.UTC)
 func dashRoot(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	t.Cleanup(resetDashboardParseCache)
 	if err := os.MkdirAll(filepath.Join(root, paths.DataDir, paths.RunsSubdir), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -67,6 +68,50 @@ func dashCollect(t *testing.T, root string) DashboardRepo {
 		t.Fatalf("repos = %d, want 1", len(snap.Repos))
 	}
 	return snap.Repos[0]
+}
+
+// dashSessions returns dashboardSessionsFromEvidence of root at now, and
+// fails the test on a read error.
+func dashSessions(t *testing.T, root string, now time.Time) []DashboardSession {
+	t.Helper()
+	got, err := dashboardSessionsFromEvidence(root, now)
+	if err != nil {
+		t.Fatalf("dashboardSessionsFromEvidence: %v", err)
+	}
+	return got
+}
+
+// dashLearnings returns dashboardRecentLearnings of root at now, and fails
+// the test on a read error.
+func dashLearnings(t *testing.T, root string, now time.Time) []DashboardLearning {
+	t.Helper()
+	got, err := dashboardRecentLearnings(root, now)
+	if err != nil {
+		t.Fatalf("dashboardRecentLearnings: %v", err)
+	}
+	return got
+}
+
+// dashDeferred returns dashboardOpenDeferred of root, and fails the test on a
+// read error.
+func dashDeferred(t *testing.T, root string) []DashboardDeferred {
+	t.Helper()
+	got, err := dashboardOpenDeferred(root)
+	if err != nil {
+		t.Fatalf("dashboardOpenDeferred: %v", err)
+	}
+	return got
+}
+
+// dashRuns returns dashboardRecentRuns of root, and fails the test on a read
+// error.
+func dashRuns(t *testing.T, root string) []DashboardRun {
+	t.Helper()
+	got, err := dashboardRecentRuns(root)
+	if err != nil {
+		t.Fatalf("dashboardRecentRuns: %v", err)
+	}
+	return got
 }
 
 // dashOne collects a snapshot of one root and returns its only pipeline.
@@ -520,16 +565,24 @@ func TestDashboardSnapshot_HistoryWindow(t *testing.T) {
 	}{
 		{"completed after 25 h still shows", "ship-feat-x-20261006T090000Z.json",
 			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, 25 * time.Hour, true},
-		{"completed within 7 d shows", "ship-feat-x-20261006T090000Z.json",
-			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, 7*24*time.Hour - time.Hour, true},
-		{"completed older than 7 d is hidden", "ship-feat-x-20261006T090000Z.json",
-			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, 7*24*time.Hour + time.Hour, false},
+		{"completed within the window shows", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, dashboardPipelineWindow - time.Hour, true},
+		{"completed at the window limit shows", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, dashboardPipelineWindow, true},
+		{"completed 1 ns past the window is hidden", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, dashboardPipelineWindow + time.Nanosecond, false},
+		{"completed older than the window is hidden", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"pipelineStatus": "completed", "steps": dashSteps(StepCompleted)}, dashboardPipelineWindow + time.Hour, false},
 		{"failed after 25 h still shows", "ship-feat-x-20261006T090000Z.json",
 			map[string]any{"steps": []any{map[string]any{"name": "pr", "status": StepFailed}}}, 25 * time.Hour, true},
-		{"failed older than 7 d is hidden", "ship-feat-x-20261006T090000Z.json",
-			map[string]any{"steps": []any{map[string]any{"name": "pr", "status": StepFailed}}}, 7*24*time.Hour + time.Hour, false},
-		{"running older than 7 d shows as stalled", "ship-feat-x-20261006T090000Z.json",
-			map[string]any{"steps": dashSteps(StepInProgress)}, 8 * 24 * time.Hour, true},
+		{"failed at the window limit shows", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"steps": []any{map[string]any{"name": "pr", "status": StepFailed}}}, dashboardPipelineWindow, true},
+		{"failed 1 ns past the window is hidden", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"steps": []any{map[string]any{"name": "pr", "status": StepFailed}}}, dashboardPipelineWindow + time.Nanosecond, false},
+		{"failed older than the window is hidden", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"steps": []any{map[string]any{"name": "pr", "status": StepFailed}}}, dashboardPipelineWindow + time.Hour, false},
+		{"running older than the window shows as stalled", "ship-feat-x-20261006T090000Z.json",
+			map[string]any{"steps": dashSteps(StepInProgress)}, 2 * dashboardPipelineWindow, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -616,8 +669,8 @@ func TestDashboardSnapshot_LinkedWorktreeShowsOnce(t *testing.T) {
 func TestDashboardSnapshot_ListsAreNeverNull(t *testing.T) {
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(string, time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
-		return nil, nil, nil, nil
+	dashboardActivity = func(string, time.Time) dashboardActivityOut {
+		return dashboardActivityOut{}
 	}
 
 	empty := dashRoot(t)
@@ -646,7 +699,7 @@ func TestDashboardSnapshot_AbsentRepo(t *testing.T) {
 	calls := 0
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
+	dashboardActivity = func(root string, now time.Time) dashboardActivityOut {
 		calls++
 		return orig(root, now)
 	}
@@ -674,15 +727,17 @@ func TestDashboardSnapshot_CallsActivityOncePerRepo(t *testing.T) {
 	calls := map[string]int{}
 	orig := dashboardActivity
 	t.Cleanup(func() { dashboardActivity = orig })
-	dashboardActivity = func(root string, now time.Time) ([]DashboardSession, []DashboardLearning, []DashboardDeferred, []DashboardRun) {
+	dashboardActivity = func(root string, now time.Time) dashboardActivityOut {
 		calls[root]++
 		if !now.Equal(dashNow) {
 			t.Errorf("now = %v, want %v", now, dashNow)
 		}
-		return []DashboardSession{{ID: "s-" + filepath.Base(root), Timeline: []DashboardEvent{}}},
-			[]DashboardLearning{{Heading: "l-" + filepath.Base(root)}},
-			[]DashboardDeferred{{ID: "d-" + filepath.Base(root)}},
-			[]DashboardRun{{Kind: "r-" + filepath.Base(root)}}
+		return dashboardActivityOut{
+			sessions:  []DashboardSession{{ID: "s-" + filepath.Base(root), Timeline: []DashboardEvent{}}},
+			learnings: []DashboardLearning{{Heading: "l-" + filepath.Base(root)}},
+			deferred:  []DashboardDeferred{{ID: "d-" + filepath.Base(root)}},
+			history:   []DashboardRun{{Kind: "r-" + filepath.Base(root)}},
+		}
 	}
 
 	a, b := dashRoot(t), dashRoot(t)

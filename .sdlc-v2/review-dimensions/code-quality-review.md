@@ -322,10 +322,13 @@ Review Go source changes for baseline code quality in this module
   `shipShortSHA` and `shortSHA`), and reuse it. A handler that hand-writes
   logic a shared core helper already performs (for example step completion
   instead of `shipCompleteStepCore`) is a finding. The check also covers
-  helpers that the same change adds: two new helpers with the same body, or
-  that differ only in a name or a message string, are a finding. Merge them
-  into one helper with a parameter. This extends the existing-function check
-  above. Example: `guardReadError` and `mirrorReadError`, added in one diff.
+  helpers and handlers that the same change adds: two new functions with the
+  same body, or that differ only in a name, a message string, a key or one
+  called function (for example two handlers that load a record by a
+  different key), are a finding, even when each one is short or serves its
+  own route. Merge them into one function with a parameter that each caller
+  passes. This extends the existing-function check above. Example:
+  `guardReadError` and `mirrorReadError`, added in one diff.
 - A split of an oversize function does not end the size rule. Each helper that
   the split creates meets the same limits as the function (about 100 lines,
   about 10 return statements): count the lines and the returns of each new
@@ -341,6 +344,17 @@ Review Go source changes for baseline code quality in this module
   one function and compare whole helper bodies. Example: a validation loop for
   surface, action and target file copied into three helpers, two helpers of 85
   and 90 lines with 11 and 13 returns, and a three-branch switch written twice.
+- A list that a second site types again beside the code that reads the same
+  members (the files that a cache signature covers, the keys of a copy step, the
+  columns of a row builder) is built from the list that the reader uses, or a
+  test compares the two lists. A signature that misses a member keeps a stale
+  cache after that member changes, and nothing reports it. The read loop over
+  that list is written once and called from each builder, as the loop-and-check
+  rule above asks; a copy in each builder is a finding even when the change
+  splits no function. This extends the closed-set bullet above, which names only
+  a doc comment or a struct tag. Example: the file list of a cache signature
+  typed apart from the loop that reads a rotated file set, and that loop copied
+  into four builders.
 - A parse, format or normalization of a value that the project stores in a known
   layout (a timestamp line, a dated file name, a stored heading) must call the
   helper that already reads or writes that layout. Before writing `time.Parse`,

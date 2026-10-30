@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -472,4 +474,195 @@ func TestE2E_StatusHistoryAndWaitRoutes(t *testing.T) {
 			t.Errorf("permission dismiss: out = %+v, permission %v, q2 %v; want only the permission record gone", out, exists(perm), exists(q2))
 		}
 	})
+}
+
+// e2eExecID is the id of the run that the detail test seeds: the name of its
+// execute state file without .json.
+const e2eExecID = "execute-feat-x-20261010T113000Z"
+
+// e2eSeedRunAndSession writes one execute run with a failed task and one
+// session with three commands to root, through the files that the collect
+// reads. The state file is one minute old at e2eFixedNow, so the run is neither
+// stalled nor out of the window.
+func e2eSeedRunAndSession(t *testing.T, root string) {
+	t.Helper()
+	state, err := json.Marshal(map[string]any{
+		"branch":      "feat/x",
+		"startedAt":   "2026-10-10T11:30:00Z",
+		"commitWaves": false,
+		"waves": []any{map[string]any{
+			"number": 1, "status": tools.StepCompleted, "committedSha": "abc1234",
+			"tasks": []any{map[string]any{"id": "4", "status": tools.StepFailed, "error": "go vet failed"}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(root, paths.DataDir, paths.RunsSubdir, e2eExecID+".json")
+	e2eWriteFile(t, statePath, string(state))
+	fresh := e2eFixedNow.Add(-time.Minute)
+	if err := os.Chtimes(statePath, fresh, fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	var lines string
+	for i, cmd := range []string{"git log -1", "go test ./...", "go vet ./..."} {
+		at := e2eFixedNow.Add(-time.Duration(3-i) * time.Minute).Format(time.RFC3339)
+		line, err := json.Marshal(map[string]string{"ts": at, "branch": "feat/x", "command": cmd, "sessionId": "s1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		lines += string(line) + "\n"
+	}
+	e2eWriteFile(t, filepath.Join(root, paths.DataDir, paths.EvidenceSubdir, "cli-executions.jsonl"), lines)
+}
+
+// e2eMarshal returns the JSON text of v.
+func e2eMarshal(t *testing.T, v any) string {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// TestE2E_DetailRoutes runs GET /api/run-detail and GET /api/session-detail
+// against the real tools functions on a temp repo. The answer for a seeded run
+// and a seeded session equals the row of the full snapshot of the same repo.
+// An id that no run or session has is a 200 with empty lists, a repo that the
+// dashboard does not show is a 404, and a repo folder that cannot be read is a
+// 500 with a log line.
+func TestE2E_DetailRoutes(t *testing.T) {
+	detailFixNow(t, e2eFixedNow)
+
+	repoRoot := t.TempDir()
+	e2eSeedRunAndSession(t, repoRoot)
+	goneRoot := filepath.Join(t.TempDir(), "gone")
+
+	o := testOptions(t, &fakeCollector{})
+	o.Roots = func(time.Time) ([]dashboard.Root, error) {
+		return []dashboard.Root{{Root: repoRoot, LastSeen: e2eFixedNow}, {Root: goneRoot, LastSeen: e2eFixedNow}}, nil
+	}
+	o.RunDetail = tools.DashboardRunDetail
+	o.SessionDetail = tools.DashboardSessionDetail
+	h := newHandler(context.Background(), o, testToken, 4242, e2eFixedNow, func() {})
+
+	repo := e2eSnapshotRepo(t, repoRoot)
+	var run tools.DashboardPipeline
+	for _, p := range repo.Pipelines {
+		if p.ID == e2eExecID {
+			run = p
+		}
+	}
+	var session tools.DashboardSession
+	for _, s := range repo.Sessions {
+		if s.ID == "s1" {
+			session = s
+		}
+	}
+	if len(run.Steps) == 0 || len(run.Issues) == 0 || len(session.Timeline) == 0 || len(session.CommandGroups) == 0 {
+		t.Fatalf("seed: run steps %d, issues %d, session events %d, command groups %d; want all four to be above 0",
+			len(run.Steps), len(run.Issues), len(session.Timeline), len(session.CommandGroups))
+	}
+
+	get := func(t *testing.T, route, repoPath, id string) *httptest.ResponseRecorder {
+		t.Helper()
+		return do(h, "GET", detailURL(route, repoPath, id), testHost, nil)
+	}
+
+	t.Run("run found equals the snapshot row", func(t *testing.T) {
+		rec := get(t, "/api/run-detail", repoRoot, e2eExecID)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q; want no-store", got)
+		}
+		var out tools.DashboardRunDetailOut
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode body %q: %v", rec.Body.String(), err)
+		}
+		if !out.Found || out.ID != e2eExecID {
+			t.Errorf("found, id = %v, %q; want true, %q", out.Found, out.ID, e2eExecID)
+		}
+		if got, want := e2eMarshal(t, out.Steps), e2eMarshal(t, run.Steps); got != want {
+			t.Errorf("steps = %s; want %s", got, want)
+		}
+		if got, want := e2eMarshal(t, out.Issues), e2eMarshal(t, run.Issues); got != want {
+			t.Errorf("issues = %s; want %s", got, want)
+		}
+		if !strings.Contains(rec.Body.String(), "go vet failed") {
+			t.Errorf("body = %q; want the error text of the failed task", rec.Body.String())
+		}
+	})
+
+	t.Run("session found equals the snapshot row", func(t *testing.T) {
+		rec := get(t, "/api/session-detail", repoRoot, "s1")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("Cache-Control = %q; want no-store", got)
+		}
+		var out tools.DashboardSessionDetailOut
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode body %q: %v", rec.Body.String(), err)
+		}
+		if !out.Found || out.ID != "s1" {
+			t.Errorf("found, id = %v, %q; want true, s1", out.Found, out.ID)
+		}
+		if got, want := e2eMarshal(t, out.Timeline), e2eMarshal(t, session.Timeline); got != want {
+			t.Errorf("timeline = %s; want %s", got, want)
+		}
+		if got, want := e2eMarshal(t, out.CommandGroups), e2eMarshal(t, session.CommandGroups); got != want {
+			t.Errorf("commandGroups = %s; want %s", got, want)
+		}
+	})
+
+	misses := []struct{ name, route, id, want string }{
+		{"run id that no run has", "/api/run-detail", "no-such-run", `{"found":false,"id":"no-such-run","steps":[],"issues":[]}`},
+		{"run id with a path part", "/api/run-detail", "../../etc/passwd", `{"found":false,"id":"../../etc/passwd","steps":[],"issues":[]}`},
+		{"session id that no session has", "/api/session-detail", "nobody", `{"found":false,"id":"nobody","timeline":[],"commandGroups":[]}`},
+		{"session id with a path part", "/api/session-detail", "../s1", `{"found":false,"id":"../s1","timeline":[],"commandGroups":[]}`},
+	}
+	for _, m := range misses {
+		t.Run(m.name+" is a 200 with empty lists", func(t *testing.T) {
+			rec := get(t, m.route, repoRoot, m.id)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d; want 200 (body %q)", rec.Code, rec.Body.String())
+			}
+			if got := strings.TrimSuffix(rec.Body.String(), "\n"); got != m.want {
+				t.Errorf("body = %q; want %q", got, m.want)
+			}
+		})
+	}
+
+	for _, route := range []string{"/api/run-detail", "/api/session-detail"} {
+		t.Run(route+" with a repo that is not shown is a 404", func(t *testing.T) {
+			other := t.TempDir()
+			rec := get(t, route, other, "s1")
+			got := wantAPIError(t, rec, http.StatusNotFound, codeRepoNotFound)
+			if want := repoNotFoundMessage(other); got.Error.Message != want {
+				t.Errorf("message = %q; want %q", got.Error.Message, want)
+			}
+		})
+	}
+
+	for _, route := range detailRoutes {
+		t.Run(route.name+" with a repo folder that cannot be read is a 500", func(t *testing.T) {
+			logged := captureStderr(t)
+			rec := get(t, route.path, goneRoot, route.id)
+			got := wantAPIError(t, rec, http.StatusInternalServerError, codeDetailReadFailed)
+			if !strings.Contains(got.Error.Message, goneRoot) || !strings.Contains(got.Error.Message, "repo folder not readable") {
+				t.Errorf("message = %q; want it to name %q and the cause", got.Error.Message, goneRoot)
+			}
+			if want := paths.DataDir + "/" + paths.RunsSubdir; !strings.Contains(got.Error.Suggestion, want) {
+				t.Errorf("suggestion = %q; want the suggestion of the detail call, which names %s", got.Error.Suggestion, want)
+			}
+			if want := "sdlc dashboard: " + route.label + ": " + got.Error.Message + "\n"; logged.String() != want {
+				t.Errorf("server log = %q; want %q", logged.String(), want)
+			}
+		})
+	}
 }

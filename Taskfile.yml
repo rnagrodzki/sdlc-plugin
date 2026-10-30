@@ -93,6 +93,11 @@ tasks:
     cmds:
       - go run ./cmd/design-preview -mode continue
 
+  design:merge:
+    desc: Merge the shipped page changes into the design draft, then serve
+    cmds:
+      - go run ./cmd/design-preview -mode merge
+
   git:clear:
     desc: Delete local branches whose upstream is gone (prunes after fetch, skips current branch)
     cmds:

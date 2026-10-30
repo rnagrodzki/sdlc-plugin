@@ -1,15 +1,23 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
@@ -77,9 +85,10 @@ func TestForbidMark3LabsMCPGo(t *testing.T) {
 }
 
 // TestDashboardOptions pins the wiring of "sdlc dashboard serve": the archive,
-// learning, three delete, preplan status, History delete and wait dismiss
-// routes call the tools functions, and the cache clear route passes the root,
-// the time and dashboard.LogPath() to the clear function.
+// learning, three delete, preplan status, History delete, wait dismiss, run
+// detail and session detail routes call the tools functions, and the cache
+// clear route passes the root, the time and dashboard.LogPath() to the clear
+// function.
 func TestDashboardOptions(t *testing.T) {
 	t.Setenv("SDLC_CACHE_DIR", t.TempDir())
 
@@ -119,6 +128,12 @@ func TestDashboardOptions(t *testing.T) {
 	if o.DismissWait == nil || reflect.ValueOf(o.DismissWait).Pointer() != reflect.ValueOf(tools.DashboardDismissWait).Pointer() {
 		t.Error("DismissWait is not tools.DashboardDismissWait")
 	}
+	if o.RunDetail == nil || reflect.ValueOf(o.RunDetail).Pointer() != reflect.ValueOf(tools.DashboardRunDetail).Pointer() {
+		t.Error("RunDetail is not tools.DashboardRunDetail")
+	}
+	if o.SessionDetail == nil || reflect.ValueOf(o.SessionDetail).Pointer() != reflect.ValueOf(tools.DashboardSessionDetail).Pointer() {
+		t.Error("SessionDetail is not tools.DashboardSessionDetail")
+	}
 	if o.ClearCache == nil {
 		t.Fatal("ClearCache is nil")
 	}
@@ -139,5 +154,131 @@ func TestDashboardOptions(t *testing.T) {
 	o.Stop()
 	if !stopped {
 		t.Error("Stop does not call the stop function")
+	}
+}
+
+// TestDashboardOptions_CollectSlim checks that the collect function of
+// "sdlc dashboard serve" returns the page snapshot: a completed run has
+// detailDeferred true, no step detail, the detail kind of its commit step,
+// and an empty non-nil issue list.
+func TestDashboardOptions_CollectSlim(t *testing.T) {
+	t.Setenv("SDLC_CACHE_DIR", t.TempDir())
+	root := t.TempDir()
+	runs := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(runs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	state := map[string]any{
+		"branch": "feat/x", "pipelineStatus": "completed", "pipelineCompletedAt": "2026-10-09T07:50:00Z",
+		"steps": []any{
+			map[string]any{"name": "execute", "status": "completed", "startedAt": "2026-10-09T07:00:00Z"},
+			map[string]any{"name": "commit", "status": "completed", "startedAt": "2026-10-09T07:40:00Z",
+				"result": "nothing to commit: the working tree is clean"},
+		},
+	}
+	b, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(runs, "ship-feat-x-20261009T070000Z.json")
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 9, 8, 0, 0, 0, time.UTC)
+	mtime := now.Add(-5 * time.Minute)
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+
+	o := dashboardOptions(7385, "v-test", func() {}, nil)
+	snap := o.Collect([]string{root}, now)
+	if len(snap.Repos) != 1 || len(snap.Repos[0].Pipelines) != 1 {
+		t.Fatalf("snapshot = %+v, want one repo with one pipeline", snap)
+	}
+	p := snap.Repos[0].Pipelines[0]
+	if p.Status != tools.PipelineCompleted || !p.DetailDeferred {
+		t.Errorf("status, detailDeferred = %q, %v; want completed, true", p.Status, p.DetailDeferred)
+	}
+	if p.Issues == nil || len(p.Issues) != 0 {
+		t.Errorf("issues = %#v, want an empty non-nil slice", p.Issues)
+	}
+	if len(p.Steps) != 2 {
+		t.Fatalf("steps = %+v, want 2", p.Steps)
+	}
+	if c := p.Steps[1]; c.Detail != nil || c.DetailKind != "result" {
+		t.Errorf("commit step detail, detailKind = %+v, %q; want nil, result", c.Detail, c.DetailKind)
+	}
+}
+
+// stubLowerPriority replaces dashboardLowerPriority with a function that
+// returns err and counts its calls. A cleanup restores the production function.
+func stubLowerPriority(t *testing.T, err error) *int {
+	t.Helper()
+	orig := dashboardLowerPriority
+	t.Cleanup(func() { dashboardLowerPriority = orig })
+	calls := 0
+	dashboardLowerPriority = func() error {
+		calls++
+		return err
+	}
+	return &calls
+}
+
+// TestLowerServePriority checks that a failure of the priority function writes
+// one line to the writer and that a success writes nothing.
+func TestLowerServePriority(t *testing.T) {
+	t.Run("failure writes one line", func(t *testing.T) {
+		calls := stubLowerPriority(t, errors.New("boom"))
+		var buf bytes.Buffer
+		lowerServePriority(&buf)
+		if *calls != 1 {
+			t.Errorf("calls = %d, want 1", *calls)
+		}
+		if want := "sdlc dashboard: lower priority: boom\n"; buf.String() != want {
+			t.Errorf("output = %q, want %q", buf.String(), want)
+		}
+	})
+	t.Run("success writes nothing", func(t *testing.T) {
+		calls := stubLowerPriority(t, nil)
+		var buf bytes.Buffer
+		lowerServePriority(&buf)
+		if *calls != 1 {
+			t.Errorf("calls = %d, want 1", *calls)
+		}
+		if buf.Len() != 0 {
+			t.Errorf("output = %q, want none", buf.String())
+		}
+	})
+}
+
+// TestLowerServePriority_RunDashboard checks that "sdlc dashboard serve" lowers
+// the priority after the argument check and before it starts the server. A bad
+// command line returns 2 and does not call the priority function. A port that
+// another program holds returns 3 after one call, so no server starts.
+func TestLowerServePriority_RunDashboard(t *testing.T) {
+	foreign := httptest.NewServer(http.NotFoundHandler())
+	defer foreign.Close()
+	busy := strconv.Itoa(foreign.Listener.Addr().(*net.TCPAddr).Port)
+
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		wantCode  int
+		wantCalls int
+	}{
+		{"no serve word", []string{"status"}, 2, 0},
+		{"bad flag", []string{"serve", "--bogus"}, 2, 0},
+		{"bad port", []string{"serve", "--port", "80"}, 2, 0},
+		{"port held by another program", []string{"serve", "--port", busy}, 3, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := stubLowerPriority(t, nil)
+			if code := runDashboard(tc.args); code != tc.wantCode {
+				t.Errorf("runDashboard(%v) = %d, want %d", tc.args, code, tc.wantCode)
+			}
+			if *calls != tc.wantCalls {
+				t.Errorf("priority calls = %d, want %d", *calls, tc.wantCalls)
+			}
+		})
 	}
 }

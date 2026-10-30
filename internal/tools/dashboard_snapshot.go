@@ -2,6 +2,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,9 +41,9 @@ const (
 	// pipeline shows as stalled.
 	dashboardStallAfter = 30 * time.Minute
 	// dashboardPipelineWindow is how long a completed or failed pipeline
-	// stays on the dashboard after its updatedAt. It matches the default
-	// state.gc.ttlDays (7 days), after which the state file is swept.
-	dashboardPipelineWindow = 7 * 24 * time.Hour
+	// stays on the dashboard after its updatedAt. The state sweep
+	// (state.gc.ttlDays) is a separate rule.
+	dashboardPipelineWindow = 4 * 24 * time.Hour
 	// dashboardHistoryWindow is how far back the dashboard lists open waits
 	// and learnings log entries.
 	dashboardHistoryWindow = 24 * time.Hour
@@ -84,7 +85,18 @@ type DashboardRepo struct {
 	Learnings []DashboardLearning `json:"learnings"`
 	Deferred  []DashboardDeferred `json:"deferred"`
 	History   []DashboardRun      `json:"history"` // [] until filled, never null
+
+	// err is the error that set Error, with its type and cause, for a caller
+	// that checks it with errors.Is or errors.As. It is nil when Error is "".
+	err error
+	// sessionsErr is the first read error of the session evidence files. The
+	// sessions then hold the lines that could be read.
+	sessionsErr error
 }
+
+// errDashboardRepoNotFolder is the error of a repo root that exists but is
+// not a folder.
+var errDashboardRepoNotFolder = errors.New("repo path is not a folder")
 
 // DashboardWait is one open wait that matches no shown pipeline.
 type DashboardWait struct {
@@ -113,6 +125,12 @@ type DashboardPipeline struct {
 	SessionID   string              `json:"sessionId"`             // "" when unknown
 	CommitWaves *bool               `json:"commitWaves,omitempty"` // execute and ship only; absent elsewhere
 	Attention   *DashboardAttention `json:"attention,omitempty"`   // absent when no wait is open
+	// IssueCount is the number of issues of the run. Only the page snapshot
+	// (SlimDashboardSnapshot) sets it; absent when the run has no issue.
+	IssueCount int `json:"issueCount,omitempty"`
+	// DetailDeferred is true in the page snapshot on a completed or failed
+	// run: this copy has no step detail and an empty issue list.
+	DetailDeferred bool `json:"detailDeferred,omitempty"`
 	// PlanStartedAt is the start of the plan run that came before a ship
 	// run, RFC 3339. Ship only; absent when the plan time is unknown.
 	PlanStartedAt string            `json:"planStartedAt,omitempty"`
@@ -144,6 +162,9 @@ type DashboardStep struct {
 	StartedAt   string               `json:"startedAt,omitempty"`   // RFC 3339, copied when it parses
 	CompletedAt string               `json:"completedAt,omitempty"` // absent while the step runs
 	Detail      *DashboardStepDetail `json:"detail,omitempty"`
+	// DetailKind is Detail.Kind. Only the page snapshot
+	// (SlimDashboardSnapshot) sets it; absent when the step has no detail.
+	DetailKind string `json:"detailKind,omitempty"`
 }
 
 // DashboardIssue is one problem of a pipeline. Source is "step", "wave",
@@ -434,8 +455,11 @@ type dashboardJoinInfo struct {
 
 // DashboardSession is one Claude Code session seen in the evidence files of
 // a repo. Timeline holds only the newest dashboardSessionTimelineMax events.
-// CommandGroups counts every command of the session, and is [] when the
-// session has no command, never null.
+// CommandGroups counts every command of the session. In Go, CommandGroups is
+// [] when the session has no command, never nil. In JSON, omitempty drops an
+// empty list, so a session with no command has no commandGroups key. The page
+// snapshot drops both lists. GET /api/session-detail returns them, with [] for
+// an empty list.
 type DashboardSession struct {
 	ID        string `json:"id"`
 	Active    bool   `json:"active"`
@@ -447,8 +471,8 @@ type DashboardSession struct {
 		Commands int `json:"commands"`
 		MCPCalls int `json:"mcpCalls"`
 	} `json:"counts"`
-	Timeline      []DashboardEvent        `json:"timeline"`
-	CommandGroups []DashboardCommandGroup `json:"commandGroups"`
+	Timeline      []DashboardEvent        `json:"timeline,omitempty"`
+	CommandGroups []DashboardCommandGroup `json:"commandGroups,omitempty"`
 }
 
 // DashboardEvent is one timeline entry of a session. Kind is "prompt",
@@ -502,19 +526,90 @@ type DashboardDeferred struct {
 // CollectDashboardSnapshot reads the pipeline state of every repo in roots
 // and returns the dashboard snapshot. Roots that name the same repo (a
 // linked worktree's runs/ folder is a symlink to the main worktree's) give
-// one repo entry under the main root. now decides the stalled, 7 day
-// pipeline and 24 h wait and learnings rules; version is copied into the
+// one repo entry under the main root. now decides the stalled, pipeline
+// window and 24 h wait and learnings rules; version is copied into the
 // snapshot.
+//
+// The large append-only source files of a repo (evidence lines, runs.jsonl,
+// the learnings log and deferred.json) are parsed again only when their size
+// or modification time changes. After the collect, the parse cache drops the
+// data of each repo that is not in roots.
 func CollectDashboardSnapshot(roots []string, now time.Time, version string) DashboardSnapshot {
 	snap := DashboardSnapshot{
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Version:     version,
 		Repos:       []DashboardRepo{},
 	}
-	for _, root := range dashboardRepoRoots(roots) {
+	repoRoots := dashboardRepoRoots(roots)
+	for _, root := range repoRoots {
 		snap.Repos = append(snap.Repos, collectDashboardRepo(root, now))
 	}
+	pruneDashboardParseCache(repoRoots)
 	return snap
+}
+
+// SlimDashboardSnapshot returns a copy of s for the page. Completed and
+// failed runs lose step detail and issues. Sessions lose timeline and
+// command groups. s is not changed.
+func SlimDashboardSnapshot(s DashboardSnapshot) DashboardSnapshot {
+	if s.Repos == nil {
+		return s
+	}
+	repos := make([]DashboardRepo, len(s.Repos))
+	for i, r := range s.Repos {
+		repos[i] = slimDashboardRepo(r)
+	}
+	s.Repos = repos
+	return s
+}
+
+// slimDashboardRepo returns a copy of r with each pipeline made slim by
+// slimDashboardPipeline and each session without its timeline and command
+// groups. A nil list stays nil. r is not changed.
+func slimDashboardRepo(r DashboardRepo) DashboardRepo {
+	if r.Pipelines != nil {
+		pipelines := make([]DashboardPipeline, len(r.Pipelines))
+		for i, p := range r.Pipelines {
+			pipelines[i] = slimDashboardPipeline(p)
+		}
+		r.Pipelines = pipelines
+	}
+	if r.Sessions != nil {
+		sessions := make([]DashboardSession, len(r.Sessions))
+		for i, s := range r.Sessions {
+			s.Timeline, s.CommandGroups = nil, nil
+			sessions[i] = s
+		}
+		r.Sessions = sessions
+	}
+	return r
+}
+
+// slimDashboardPipeline returns a copy of p for the page. Every run gets
+// IssueCount and the DetailKind of each step with detail. A completed or
+// failed run also loses its step detail, gets an empty non-nil Issues list,
+// and gets DetailDeferred true. p is not changed.
+func slimDashboardPipeline(p DashboardPipeline) DashboardPipeline {
+	finished := p.Status == PipelineCompleted || p.Status == PipelineFailed
+	p.IssueCount = len(p.Issues)
+	if p.Steps != nil {
+		steps := make([]DashboardStep, len(p.Steps))
+		for i, st := range p.Steps {
+			if st.Detail != nil {
+				st.DetailKind = st.Detail.Kind
+				if finished {
+					st.Detail = nil
+				}
+			}
+			steps[i] = st
+		}
+		p.Steps = steps
+	}
+	if finished {
+		p.Issues = []DashboardIssue{}
+		p.DetailDeferred = true
+	}
+	return p
 }
 
 // dashboardRepoRoots cleans roots, drops empty entries, and keeps one root
@@ -579,17 +674,24 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 	}
 	info, err := os.Stat(root)
 	if err != nil {
-		repo.Error = fmt.Sprintf("repo folder not readable: %v", err)
+		repo.err = fmt.Errorf("repo folder not readable: %w", err)
+		repo.Error = repo.err.Error()
 		return repo
 	}
 	if !info.IsDir() {
-		repo.Error = "repo path is not a folder: " + root
+		repo.err = fmt.Errorf("%w: %s", errDashboardRepoNotFolder, root)
+		repo.Error = repo.err.Error()
 		return repo
 	}
 
-	evidence := dashboardEvidenceTimes(root)
+	evidence, err := dashboardEvidenceTimes(root)
+	if err != nil {
+		// The stalled rule then uses the updatedAt of each run alone.
+		repo.Warnings = append(repo.Warnings, "Branch activity times unread: "+err.Error())
+	}
 	list, err := state.List(root)
 	if err != nil {
+		repo.err = err
 		repo.Error = err.Error()
 	}
 	// Open waits are best effort: an unreadable record folder shows no
@@ -639,19 +741,23 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 		repo.Warnings = append(repo.Warnings, fmt.Sprintf("%d older open waits not shown", older))
 	}
 
-	sessions, learnings, deferred, history := dashboardActivity(root, now)
-	if sessions != nil {
-		repo.Sessions = sessions
+	// An activity source that cannot be read is a warning, never repo.Error:
+	// repo.Error blocks the archive of every run of the repo.
+	act := dashboardActivity(root, now)
+	if act.sessions != nil {
+		repo.Sessions = act.sessions
 	}
-	if learnings != nil {
-		repo.Learnings = learnings
+	if act.learnings != nil {
+		repo.Learnings = act.learnings
 	}
-	if deferred != nil {
-		repo.Deferred = deferred
+	if act.deferred != nil {
+		repo.Deferred = act.deferred
 	}
-	if history != nil {
-		repo.History = history
+	if act.history != nil {
+		repo.History = act.history
 	}
+	repo.sessionsErr = act.sessionsErr
+	repo.Warnings = append(repo.Warnings, act.warnings...)
 
 	// A preplan read problem is a warning, never repo.Error: repo.Error
 	// blocks the archive of every run of the repo.
@@ -786,29 +892,39 @@ type dashboardEvidenceLine struct {
 // dashboardEvidenceTimes returns, for each branch slug, the newest ts of the
 // CLI and user-input evidence lines of that branch (current and rotated
 // files). MCP invocation lines carry no branch and are not read.
-func dashboardEvidenceTimes(root string) map[string]time.Time {
+//
+// The map comes from the parse cache, which is built again when one of the
+// evidence files changes. The map is shared between calls: a caller reads it
+// and never writes to it. A file that cannot be read adds no line, and the
+// cache does not keep that result. The error is then the first read error of
+// a file.
+func dashboardEvidenceTimes(root string) (map[string]time.Time, error) {
+	files := append(dashboardRotatedFiles(cliEvidencePath(root)), dashboardRotatedFiles(userInputPath(root))...)
+	return dashboardCached(dashboardCacheKey(root, "evidence-times"), files, func() (map[string]time.Time, error) {
+		return dashboardBuildEvidenceTimes(files)
+	})
+}
+
+// dashboardBuildEvidenceTimes reads the evidence files and returns, for each
+// branch slug, the newest ts of its lines. The error is the first read error
+// of a file; the map then holds the lines of the other files.
+func dashboardBuildEvidenceTimes(files []string) (map[string]time.Time, error) {
+	lines, err := dashboardReadJSONLFiles[dashboardEvidenceLine](files, "dashboard evidence")
 	out := map[string]time.Time{}
-	files := []string{
-		cliEvidencePath(root), cliEvidencePath(root) + ".1",
-		userInputPath(root), userInputPath(root) + ".1",
-	}
-	for _, f := range files {
-		lines, _ := readJSONLEntries[dashboardEvidenceLine](f, "dashboard evidence")
-		for _, l := range lines {
-			if l.Branch == "" {
-				continue
-			}
-			t, ok := dashboardParseTime(l.TS)
-			if !ok {
-				continue
-			}
-			slug := state.SlugifyBranch(l.Branch)
-			if t.After(out[slug]) {
-				out[slug] = t
-			}
+	for _, l := range lines {
+		if l.Branch == "" {
+			continue
+		}
+		t, ok := dashboardParseTime(l.TS)
+		if !ok {
+			continue
+		}
+		slug := state.SlugifyBranch(l.Branch)
+		if t.After(out[slug]) {
+			out[slug] = t
 		}
 	}
-	return out
+	return out, err
 }
 
 // dashboardStatePipeline builds the pipeline of one ship, execute, or plan
