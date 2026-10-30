@@ -40,9 +40,9 @@ const (
 	// pipeline shows as stalled.
 	dashboardStallAfter = 30 * time.Minute
 	// dashboardPipelineWindow is how long a completed or failed pipeline
-	// stays on the dashboard after its updatedAt. It matches the default
-	// state.gc.ttlDays (7 days), after which the state file is swept.
-	dashboardPipelineWindow = 7 * 24 * time.Hour
+	// stays on the dashboard after its updatedAt. The user asked for 4 days.
+	// The sweep (state.gc.ttlDays, default 7 days) is a separate rule.
+	dashboardPipelineWindow = 4 * 24 * time.Hour
 	// dashboardHistoryWindow is how far back the dashboard lists open waits
 	// and learnings log entries.
 	dashboardHistoryWindow = 24 * time.Hour
@@ -502,8 +502,8 @@ type DashboardDeferred struct {
 // CollectDashboardSnapshot reads the pipeline state of every repo in roots
 // and returns the dashboard snapshot. Roots that name the same repo (a
 // linked worktree's runs/ folder is a symlink to the main worktree's) give
-// one repo entry under the main root. now decides the stalled, 7 day
-// pipeline and 24 h wait and learnings rules; version is copied into the
+// one repo entry under the main root. now decides the stalled, pipeline
+// window and 24 h wait and learnings rules; version is copied into the
 // snapshot.
 //
 // The large append-only source files of a repo (evidence lines, runs.jsonl,

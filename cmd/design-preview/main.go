@@ -33,6 +33,8 @@ const (
 	exitError = 2
 	// exitDraftHeld is the code of case d: nothing changed and nothing is served.
 	exitDraftHeld = 3
+	// exitMergeConflicts is the code of a merge with conflicts: nothing is served.
+	exitMergeConflicts = 4
 )
 
 // stopGrace is how long Stop waits for active connections before it closes them.
@@ -42,7 +44,7 @@ const stopGrace = 2 * time.Second
 const readHeaderTimeout = 10 * time.Second
 
 // usageText names the one flag in the flag error lines.
-const usageText = "Usage: -mode auto|fresh|continue."
+const usageText = "Usage: -mode auto|fresh|continue|merge."
 
 // runConfig holds what main resolves. Tests pass a t.TempDir() git repo and "127.0.0.1:0".
 type runConfig struct {
@@ -52,8 +54,9 @@ type runConfig struct {
 }
 
 // run is main without os.Exit. Order: parse -mode, listen on c.Addr, StartRule,
-// serve until Stop. Exit codes: 0 stopped, 2 error, 3 case d. Marker lines and
-// the serving line go to stdout. Error lines go to stderr.
+// serve until Stop. Exit codes: 0 stopped, 2 error, 3 case d, 4 merge
+// conflicts. Marker lines and the serving line go to stdout. Error lines go
+// to stderr.
 func run(args []string, c runConfig, stdout, stderr io.Writer) int {
 	mode, err := parseMode(args)
 	if err != nil {
@@ -75,6 +78,9 @@ func run(args []string, c runConfig, stdout, stderr io.Writer) int {
 	for _, line := range outcome.Lines {
 		fmt.Fprintln(stdout, line)
 	}
+	if outcome.Conflicts {
+		return exitMergeConflicts
+	}
 	if !outcome.Serve {
 		return exitDraftHeld
 	}
@@ -83,11 +89,11 @@ func run(args []string, c runConfig, stdout, stderr io.Writer) int {
 }
 
 // parseMode reads the -mode flag from args. Any other flag, any other
-// argument and any value other than auto, fresh or continue is an error.
+// argument and any value other than auto, fresh, continue or merge is an error.
 func parseMode(args []string) (Mode, error) {
 	flags := flag.NewFlagSet("design-preview", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	value := flags.String("mode", string(ModeAuto), "auto, fresh or continue")
+	value := flags.String("mode", string(ModeAuto), "auto, fresh, continue or merge")
 	if err := flags.Parse(args); err != nil {
 		return "", fmt.Errorf("%v. %s", err, usageText)
 	}

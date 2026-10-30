@@ -392,6 +392,41 @@ func TestArchiveRun_StatusGate(t *testing.T) {
 	})
 }
 
+// TestArchiveRun_PipelineWindow checks that a completed ship archives at the
+// exact limit of the pipeline window and gives RUN_NOT_FOUND past it, because
+// the row is gone from the snapshot.
+func TestArchiveRun_PipelineWindow(t *testing.T) {
+	cases := []struct {
+		name     string
+		age      time.Duration
+		archived bool
+	}{
+		{"at the window limit", dashboardPipelineWindow, true},
+		{"past the window", dashboardPipelineWindow + time.Hour, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := archShipFixture(t, PipelineCompleted, dashNow.Add(-c.age))
+			_, err := archRun(root, archShipID, false)
+			if c.archived {
+				if err != nil {
+					t.Fatalf("ArchiveRun: %v", err)
+				}
+				if !ccExists(filepath.Join(archDir(root, archShipID), archShipFile)) {
+					t.Errorf("ship state not archived")
+				}
+				return
+			}
+			if code := archCode(t, err); code != ArchiveRunNotFound {
+				t.Errorf("code = %q, want %q", code, ArchiveRunNotFound)
+			}
+			if ccExists(archData(root, paths.RunArchiveSubdir)) || !ccExists(archData(root, "runs", archShipFile)) {
+				t.Errorf("a refused archive changed a file")
+			}
+		})
+	}
+}
+
 // TestArchiveRun_BadAndUnknownID checks that a bad id gives BAD_RUN_ID, an
 // unknown or nested id gives RUN_NOT_FOUND, and neither changes a file.
 func TestArchiveRun_BadAndUnknownID(t *testing.T) {
