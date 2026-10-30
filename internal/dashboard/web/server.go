@@ -48,6 +48,13 @@ const (
 	tokenHeader = "X-Sdlc-Token"
 	// maxMutationBody is the largest body guardMutation accepts.
 	maxMutationBody = 8 << 10
+	// maxDetailID is the longest id, in bytes, that a detail route accepts. A
+	// run or session id is far shorter; the limit stops a large query value
+	// before the collect.
+	maxDetailID = 256
+	// maxDetailRepo is the longest repo, in bytes, that a detail route accepts:
+	// the Linux PATH_MAX.
+	maxDetailRepo = 4096
 	// sseRetryMillis is the reconnect delay the page's EventSource uses.
 	sseRetryMillis = 3000
 )
@@ -74,9 +81,9 @@ var (
 
 // Options configures Serve. Every function field is required except Stop,
 // Archive, ClearCache, LearningBody, DeletePreplan, DeleteDeferred,
-// DeleteLearning, SetPreplanStatus, DeleteRuns and DismissWait. A route whose
-// function field is nil answers 500 with a suggestion instead of failing at
-// start.
+// DeleteLearning, SetPreplanStatus, DeleteRuns, DismissWait, RunDetail and
+// SessionDetail. A route whose function field is nil answers 500 with a
+// suggestion instead of failing at start.
 type Options struct {
 	Port    int
 	Version string
@@ -125,14 +132,21 @@ type Options struct {
 	// DismissWait deletes one wait record (production:
 	// tools.DashboardDismissWait). POST /api/wait-dismiss calls it.
 	DismissWait func(root, kind, sessionID, toolUseID string) (tools.DashboardDeleteOut, error)
+	// RunDetail returns the full steps and issues of one run (production:
+	// tools.DashboardRunDetail). GET /api/run-detail calls it.
+	RunDetail func(root, id string, now time.Time) (tools.DashboardRunDetailOut, error)
+	// SessionDetail returns the timeline and command groups of one session
+	// (production: tools.DashboardSessionDetail). GET /api/session-detail calls it.
+	SessionDetail func(root, id string, now time.Time) (tools.DashboardSessionDetailOut, error)
 }
 
 // WithToolRoutes returns o with every route function set to the tools
-// function that production uses: Archive, ClearCache, LearningBody and the
-// delete, status and dismiss functions. ClearCache calls clearCache (production:
-// tools.ClearCache) with dashboard.LogPath(), the file that receives the
-// output of the server when it runs in the background. "sdlc dashboard serve"
-// and the browser e2e test both use it, so a new route is wired in one place.
+// function that production uses: Archive, ClearCache, LearningBody, the
+// delete, status and dismiss functions, and the two detail functions.
+// ClearCache calls clearCache (production: tools.ClearCache) with
+// dashboard.LogPath(), the file that receives the output of the server when it
+// runs in the background. "sdlc dashboard serve" and the browser e2e test both
+// use it, so a new route is wired in one place.
 func WithToolRoutes(o Options, clearCache func(root, serverLog string, now time.Time) (tools.ClearCacheOut, error)) Options {
 	logPath := dashboard.LogPath()
 	o.Archive = tools.ArchiveRun
@@ -146,6 +160,8 @@ func WithToolRoutes(o Options, clearCache func(root, serverLog string, now time.
 	o.SetPreplanStatus = tools.DashboardSetPreplanStatus
 	o.DeleteRuns = tools.DashboardDeleteRuns
 	o.DismissWait = tools.DashboardDismissWait
+	o.RunDetail = tools.DashboardRunDetail
+	o.SessionDetail = tools.DashboardSessionDetail
 	return o
 }
 
@@ -314,6 +330,8 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 	h.mux.HandleFunc("GET /api/events", h.serveEvents)
 	h.mux.HandleFunc("GET /api/health", h.serveHealth)
 	h.mux.HandleFunc("GET /api/learning", h.serveLearning)
+	h.mux.HandleFunc("GET /api/run-detail", h.serveRunDetail)
+	h.mux.HandleFunc("GET /api/session-detail", h.serveSessionDetail)
 	h.mux.HandleFunc("POST /api/stop", h.serveStop)
 	h.mux.HandleFunc("POST /api/run-archive", h.serveRunArchive)
 	h.mux.HandleFunc("POST /api/cache-clear", h.serveCacheClear)
@@ -481,9 +499,9 @@ func (h *handler) serveStop(w http.ResponseWriter, r *http.Request) {
 	h.stop()
 }
 
-// Codes of the errors that the archive, clear, learning, delete, status and
-// dismiss routes raise themselves. The archive codes of the tools package keep
-// their own constants.
+// Codes of the errors that the archive, clear, learning, delete, status,
+// dismiss and detail routes raise themselves. The archive codes of the tools
+// package keep their own constants.
 const (
 	// codeBadRequest is the code of a body or query that lacks a field.
 	codeBadRequest = "BAD_REQUEST"
@@ -493,6 +511,9 @@ const (
 	codeClearFailed = "CLEAR_FAILED"
 	// codeLearningReadFailed is the code of a failed read of a learning body.
 	codeLearningReadFailed = "LEARNING_READ_FAILED"
+	// codeDetailReadFailed is the code of a failed read of a run or session
+	// detail.
+	codeDetailReadFailed = "DETAIL_READ_FAILED"
 	// codeDeleteFailed is the code of a failed write of a preplan, deferred,
 	// learning, History, wait or status route that is not a bad request. These
 	// routes share it through writeDeleteError. The archive route has its own
@@ -502,8 +523,8 @@ const (
 	codeNotConfigured = "NOT_CONFIGURED"
 )
 
-// Suggestions of the errors that the archive, clear, learning, delete, status
-// and dismiss routes raise themselves.
+// Suggestions of the errors that the archive, clear, learning, delete, status,
+// dismiss and detail routes raise themselves.
 const (
 	// suggestBadRequest is the suggestion for codeBadRequest.
 	suggestBadRequest = "Send the fields shown in the route example."
@@ -741,12 +762,81 @@ func (h *handler) serveLearning(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// serveRunDetail returns the full steps and issues of one run of a registered
+// repo. It only reads, so it needs no token, like the learning route.
+func (h *handler) serveRunDetail(w http.ResponseWriter, r *http.Request) {
+	if h.o.RunDetail == nil {
+		writeNotConfigured(w, "Run detail")
+		return
+	}
+	root, id, ok := h.detailQuery(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.o.RunDetail(root, id, now())
+	if err != nil {
+		fmt.Fprintf(stderr, "sdlc dashboard: run detail: %v\n", err)
+		writeAPIError(w, http.StatusInternalServerError, codeDetailReadFailed, err.Error(), suggestReadLog)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// serveSessionDetail returns the timeline and the command groups of one
+// session of a registered repo. It only reads, so it needs no token, like the
+// learning route.
+func (h *handler) serveSessionDetail(w http.ResponseWriter, r *http.Request) {
+	if h.o.SessionDetail == nil {
+		writeNotConfigured(w, "Session detail")
+		return
+	}
+	root, id, ok := h.detailQuery(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.o.SessionDetail(root, id, now())
+	if err != nil {
+		fmt.Fprintf(stderr, "sdlc dashboard: session detail: %v\n", err)
+		writeAPIError(w, http.StatusInternalServerError, codeDetailReadFailed, err.Error(), suggestReadLog)
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// detailQuery checks the id and repo fields of a detail route. It writes the
+// error and returns false on a bad field. Both detail routes call it. It
+// checks the id first, then the repo. An id longer than maxDetailID bytes and a
+// repo longer than maxDetailRepo bytes are refused before the repo is resolved,
+// so a large query value never reaches the collect. A repo that is not a
+// display root writes the 404 error (displayRoot). The two length messages are
+// built with fmt.Sprintf from the constants. The id and the repo are not
+// trimmed, so the value that passes the check is the value that the route
+// passes on.
+func (h *handler) detailQuery(w http.ResponseWriter, r *http.Request) (root, id string, ok bool) {
+	q := r.URL.Query()
+	id, repo := q.Get("id"), q.Get("repo")
+	switch {
+	case id == "":
+		writeBadRequest(w, "The id field is required")
+	case len(id) > maxDetailID:
+		writeBadRequest(w, fmt.Sprintf("The id field is longer than %d bytes", maxDetailID))
+	case repo == "":
+		writeBadRequest(w, "The repo field is required")
+	case len(repo) > maxDetailRepo:
+		writeBadRequest(w, fmt.Sprintf("The repo field is longer than %d bytes", maxDetailRepo))
+	default:
+		root, ok = h.displayRoot(w, now(), repo)
+		return root, id, ok
+	}
+	return "", "", false
+}
+
 // displayRoot resolves repo, the path that the page sent, to the display root
 // it names. It is the one check of the repo field of the archive, clear,
-// delete, status, dismiss and learning routes: an empty repo writes the 400
-// error, and a repo that is not a display root writes the 404 error. Both
-// return false, so a mutating route never acts on a path from the page that
-// the dashboard does not show.
+// delete, status, dismiss, learning and detail routes: an empty repo writes
+// the 400 error, and a repo that is not a display root writes the 404 error.
+// Both return false, so a mutating route never acts on a path from the page
+// that the dashboard does not show.
 func (h *handler) displayRoot(w http.ResponseWriter, t time.Time, repo string) (string, bool) {
 	if repo == "" {
 		writeBadRequest(w, "The repo field is required")

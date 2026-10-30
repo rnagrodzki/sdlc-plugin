@@ -79,9 +79,10 @@ func TestForbidMark3LabsMCPGo(t *testing.T) {
 }
 
 // TestDashboardOptions pins the wiring of "sdlc dashboard serve": the archive,
-// learning, three delete, preplan status, History delete and wait dismiss
-// routes call the tools functions, and the cache clear route passes the root,
-// the time and dashboard.LogPath() to the clear function.
+// learning, three delete, preplan status, History delete, wait dismiss, run
+// detail and session detail routes call the tools functions, and the cache
+// clear route passes the root, the time and dashboard.LogPath() to the clear
+// function.
 func TestDashboardOptions(t *testing.T) {
 	t.Setenv("SDLC_CACHE_DIR", t.TempDir())
 
@@ -120,6 +121,12 @@ func TestDashboardOptions(t *testing.T) {
 	}
 	if o.DismissWait == nil || reflect.ValueOf(o.DismissWait).Pointer() != reflect.ValueOf(tools.DashboardDismissWait).Pointer() {
 		t.Error("DismissWait is not tools.DashboardDismissWait")
+	}
+	if o.RunDetail == nil || reflect.ValueOf(o.RunDetail).Pointer() != reflect.ValueOf(tools.DashboardRunDetail).Pointer() {
+		t.Error("RunDetail is not tools.DashboardRunDetail")
+	}
+	if o.SessionDetail == nil || reflect.ValueOf(o.SessionDetail).Pointer() != reflect.ValueOf(tools.DashboardSessionDetail).Pointer() {
+		t.Error("SessionDetail is not tools.DashboardSessionDetail")
 	}
 	if o.ClearCache == nil {
 		t.Fatal("ClearCache is nil")
