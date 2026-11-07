@@ -16,13 +16,17 @@ package openspec
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"math/rand/v2"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -75,6 +79,72 @@ func (e *StagedByOtherPlanError) Error() string {
 
 func (e *StagedByOtherPlanError) Unwrap() error { return ErrStagedByOtherPlan }
 
+// ErrStagingLocked is returned by Stage when the lock file
+// <stagingRoot>/.sdlc-v2/openspec-staging/<change>.lock exists and is younger
+// than stagingLockStaleAfter: another Stage call for the same change is
+// running. The wrapping error names the lock path (see StagingLockPath).
+// Stage then writes nothing.
+var ErrStagingLocked = errors.New("openspec stage: staging is locked by another stage")
+
+// stagingLockStaleAfter is the lock age from which Stage treats a lock as
+// left by a crashed stage: it deletes the lock and takes it again.
+const stagingLockStaleAfter = 10 * time.Minute
+
+// ErrStageManifestTooLarge is returned by ReadStageManifest (and so by every
+// reader of stage.json that uses it) when stage.json is over
+// stageManifestMaxBytes.
+var ErrStageManifestTooLarge = errors.New("stage.json too large")
+
+// stageManifestMaxBytes is the size limit of a stage.json that
+// ReadStageManifest reads (1 MiB).
+const stageManifestMaxBytes = 1 << 20
+
+// Test seams for the persisted IO of Stage. Production code uses the os
+// functions.
+var (
+	stageRename     = os.Rename    // the two renames and the move-back of the old staging
+	stageRemoveLock = os.Remove    // the lock delete at the end of a stage
+	stageRemoveAll  = os.RemoveAll // the crash-leftover delete and RemoveAll(old)
+	stageWriteFile  = os.WriteFile // the file and stage.json writes into the temp folder
+	stageOpenLock   = os.OpenFile  // the O_CREATE|O_EXCL lock create
+)
+
+// StageIOError is the error Stage returns when a persisted IO step under the
+// staging root fails. Op is "lock" (the lock create or its Stat), "read" (the
+// list of the openspec-staging folder), "remove" (the delete of a crash
+// leftover), "write" (a write into the temp folder) or "rename". Path is the file or folder of the failed step; To is the rename
+// target (rename only). Dir is the openspec-staging folder. When Stage
+// returns a StageIOError, the staging of the change is unchanged and the lock
+// that this call took is deleted.
+type StageIOError struct {
+	Op   string
+	Path string
+	To   string
+	Dir  string
+	Err  error
+}
+
+func (e *StageIOError) Error() string {
+	if e.Op == "rename" {
+		return fmt.Sprintf("openspec stage: rename %s to %s: %v", e.Path, e.To, e.Err)
+	}
+	return fmt.Sprintf("openspec stage: %s %s: %v", e.Op, e.Path, e.Err)
+}
+
+func (e *StageIOError) Unwrap() error { return e.Err }
+
+// StagingLockPath returns the lock file that Stage uses for change:
+// <stagingRoot>/.sdlc-v2/openspec-staging/<change>.lock.
+func StagingLockPath(stagingRoot, change string) string {
+	return filepath.Join(stagingParentDir(stagingRoot), change+".lock")
+}
+
+// stagingParentDir returns <stagingRoot>/.sdlc-v2/openspec-staging, the
+// folder that holds the staging folders, the lock files and the temp folders.
+func stagingParentDir(stagingRoot string) string {
+	return filepath.Join(stagingRoot, paths.DataDir, paths.OpenspecStagingSubdir)
+}
+
 // StageManifestFile is the manifest file name written at the root of a
 // change's staging directory.
 const StageManifestFile = "stage.json"
@@ -111,6 +181,9 @@ type StageManifest struct {
 // Replaced is true when a staging directory of the change existed before
 // this call and Stage replaced it, false when Stage created it. PlanPath is
 // the planPath written to stage.json (the owner key of the staging).
+// Warnings holds one line for each cleanup step that failed after the new
+// staging was in place: "old staging <path> not deleted: <err>" and
+// "lock <path> not deleted: <err>". The stage itself succeeded.
 type StageResult struct {
 	StagingDir     string
 	Files          []StagedFile
@@ -118,6 +191,7 @@ type StageResult struct {
 	ValidateOutput string
 	Replaced       bool
 	PlanPath       string
+	Warnings       []string
 }
 
 // ArtifactGuide is the authoring guidance for one artifact of a change,
@@ -191,9 +265,24 @@ func PrepareInstructions(activeRoot, change string) (schema string, guides []Art
 // (ErrInvalidChangeName), each file path against the outputPath patterns the
 // CLI reports for a temp change (ErrPathNotAllowed), the planPath of an
 // existing stage.json of the change (ErrStagedByOtherPlan), and the copy of
-// the current specs (ErrTargetSpec). A failed validation is not an error: the
-// result has Valid false and the CLI output, and stage.json has no
-// validatedAt. now defaults to time.Now when nil.
+// the current specs (ErrTargetSpec).
+//
+// Each artifact that the CLI lists for the schema must match a staged file.
+// A missing artifact, like a failed validation, is not an error: the result
+// has Valid false, ValidateOutput starts with one "missing artifact
+// <outputPath>" line for each gap, and stage.json has no validatedAt.
+//
+// The write claims the staging atomically. Stage creates the lock file
+// <change>.lock next to the staging folders with O_CREATE|O_EXCL
+// (ErrStagingLocked when a lock younger than stagingLockStaleAfter exists;
+// an older lock is deleted and taken again). Under the lock it checks the
+// owner again, deletes the .tmp-<change>-<n> and .old-<change>-<n> folders
+// that a crashed stage left, writes the files and stage.json into a new
+// .tmp-<change>-<n> folder, and renames that folder into place (an existing
+// staging folder moves aside to .old-<change>-<n> first and is deleted
+// after). A failed IO step returns a *StageIOError, keeps the staging of the
+// change unchanged and deletes the lock. now defaults to time.Now when nil;
+// it is also the clock of the lock age.
 func Stage(activeRoot, stagingRoot, change string, files []StageFile, planPath string, now func() time.Time) (StageResult, error) {
 	if now == nil {
 		now = time.Now
@@ -228,38 +317,9 @@ func Stage(activeRoot, stagingRoot, change string, files []StageFile, planPath s
 		return StageResult{}, err
 	}
 
-	// All checks passed: replace the staging dir as a whole, so a file
-	// dropped since the previous staging disappears.
-	stagingRel := StagingDirRel(change)
-	stagingDir := filepath.Join(stagingRoot, filepath.FromSlash(stagingRel))
-	replaced, err := dirExists(stagingDir)
-	if err != nil {
-		return StageResult{}, err
-	}
-	if err := os.RemoveAll(stagingDir); err != nil {
-		return StageResult{}, fmt.Errorf("openspec stage: clear %s: %w", stagingDir, err)
-	}
-	staged := make([]StagedFile, 0, len(files))
-	for _, f := range files {
-		if err := writeFile(filepath.Join(stagingDir, filepath.FromSlash(f.Path)), f.Content); err != nil {
-			return StageResult{}, err
-		}
-		sum := sha256.Sum256([]byte(f.Content))
-		staged = append(staged, StagedFile{Path: f.Path, SHA256: hex.EncodeToString(sum[:])})
-	}
-	manifest := StageManifest{
-		Change:   change,
-		Schema:   status.SchemaName,
-		PlanPath: planPath,
-		Files:    staged,
-	}
-	manifestPath := filepath.Join(stagingDir, StageManifestFile)
-	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
-		return StageResult{}, err
-	}
-
 	// Validate a copy of the staged change inside the temp change dir that
-	// `openspec new change` created (it keeps its .openspec.yaml).
+	// `openspec new change` created (it keeps its .openspec.yaml). This
+	// writes nothing under stagingRoot, so it runs before the lock.
 	tmpChangeDir := filepath.Join(tmp, "openspec", "changes", change)
 	for _, f := range files {
 		if err := writeFile(filepath.Join(tmpChangeDir, filepath.FromSlash(f.Path)), f.Content); err != nil {
@@ -273,24 +333,267 @@ func Stage(activeRoot, stagingRoot, change string, files []StageFile, planPath s
 		}
 		return StageResult{}, fmt.Errorf("openspec validate %s --strict: %w", change, err)
 	}
-	output := strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n"))
+	var lines []string
+	missing := missingArtifacts(status.Artifacts, files)
+	for _, m := range missing {
+		lines = append(lines, "missing artifact "+m)
+	}
+	if out := strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n")); out != "" {
+		lines = append(lines, out)
+	}
 
-	result := StageResult{StagingDir: stagingRel, Files: staged, Valid: exit == 0, ValidateOutput: output, Replaced: replaced, PlanPath: planPath}
-	if result.Valid {
+	staged := make([]StagedFile, 0, len(files))
+	for _, f := range files {
+		sum := sha256.Sum256([]byte(f.Content))
+		staged = append(staged, StagedFile{Path: f.Path, SHA256: hex.EncodeToString(sum[:])})
+	}
+	manifest := StageManifest{
+		Change:   change,
+		Schema:   status.SchemaName,
+		PlanPath: planPath,
+		Files:    staged,
+	}
+	valid := exit == 0 && len(missing) == 0
+	if valid {
 		manifest.ValidatedAt = now().UTC().Format(time.RFC3339)
-		if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
-			return StageResult{}, err
+	}
+
+	lock, err := acquireStagingLock(stagingRoot, change, now)
+	if err != nil {
+		return StageResult{}, err
+	}
+	replaced, warnings, err := writeStagingLocked(stagingRoot, change, files, manifest)
+	if rmErr := stageRemoveLock(lock); rmErr != nil && err == nil {
+		warnings = append(warnings, fmt.Sprintf("lock %s not deleted: %v", lock, rmErr))
+	}
+	if err != nil {
+		return StageResult{}, err
+	}
+	return StageResult{
+		StagingDir:     StagingDirRel(change),
+		Files:          staged,
+		Valid:          valid,
+		ValidateOutput: strings.Join(lines, "\n"),
+		Replaced:       replaced,
+		PlanPath:       planPath,
+		Warnings:       warnings,
+	}, nil
+}
+
+// missingArtifacts returns the outputPath of each artifact that no staged
+// file matches, in the CLI's artifacts order. An artifact with no outputPath
+// is skipped.
+func missingArtifacts(artifacts []ArtifactStatus, files []StageFile) []string {
+	var missing []string
+	for _, a := range artifacts {
+		if a.OutputPath == "" {
+			continue
+		}
+		found := false
+		for _, f := range files {
+			if matchOutputPath(a.OutputPath, f.Path) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			missing = append(missing, a.OutputPath)
 		}
 	}
-	return result, nil
+	return missing
+}
+
+// acquireStagingLock creates the openspec-staging folder when it is missing
+// and creates the lock file of change there with O_CREATE|O_EXCL. A lock
+// that exists and is younger than stagingLockStaleAfter (by now) returns an
+// error that wraps ErrStagingLocked and names the lock. An older lock is
+// deleted and created once more; a second clash returns ErrStagingLocked
+// too. Any other failure returns a *StageIOError with Op "lock".
+func acquireStagingLock(stagingRoot, change string, now func() time.Time) (string, error) {
+	dir := stagingParentDir(stagingRoot)
+	lock := StagingLockPath(stagingRoot, change)
+	lockErr := func(p string, err error) error {
+		return &StageIOError{Op: "lock", Path: p, Dir: dir, Err: err}
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", lockErr(dir, err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		f, err := stageOpenLock(lock, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+		if err == nil {
+			_, werr := fmt.Fprintf(f, "pid %d\n", os.Getpid())
+			if cerr := f.Close(); werr == nil {
+				werr = cerr
+			}
+			if werr != nil {
+				_ = os.Remove(lock)
+				return "", lockErr(lock, werr)
+			}
+			return lock, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", lockErr(lock, err)
+		}
+		info, err := os.Stat(lock)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue // the other stage released the lock meanwhile
+		}
+		if err != nil {
+			return "", lockErr(lock, err)
+		}
+		if attempt > 0 || now().Sub(info.ModTime()) < stagingLockStaleAfter {
+			break
+		}
+		if err := os.Remove(lock); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return "", lockErr(lock, err)
+		}
+	}
+	return "", fmt.Errorf("%w: %s", ErrStagingLocked, lock)
+}
+
+// writeStagingLocked runs the steps of Stage that need the lock: the owner
+// check (*StagedByOtherPlanError), the delete of crash leftovers, the write
+// of files and manifest into a new temp folder, and the renames that put the
+// temp folder into place. It returns whether a staging folder existed before
+// and the warnings of a failed delete of the old staging. On error the
+// staging of the change is unchanged and the temp folder is removed.
+func writeStagingLocked(stagingRoot, change string, files []StageFile, manifest StageManifest) (replaced bool, warnings []string, err error) {
+	if other := stagedPlanPath(stagingRoot, change); other != "" && manifest.PlanPath != "" &&
+		!SamePlanPath(other, manifest.PlanPath) {
+		return false, nil, &StagedByOtherPlanError{PlanPath: other}
+	}
+	dir := stagingParentDir(stagingRoot)
+	if err := removeStagingLeftovers(dir, change); err != nil {
+		return false, nil, err
+	}
+	stagingDir := filepath.Join(stagingRoot, filepath.FromSlash(StagingDirRel(change)))
+	replaced, err = dirExists(stagingDir)
+	if err != nil {
+		return false, nil, err
+	}
+
+	tmpDir, err := writeStagingTemp(dir, change, files, manifest)
+	if err != nil {
+		return false, nil, err
+	}
+	old := ""
+	if replaced {
+		old = filepath.Join(dir, ".old-"+change+"-"+stageSuffix())
+		if err := stageRename(stagingDir, old); err != nil {
+			_ = os.RemoveAll(tmpDir)
+			return false, nil, &StageIOError{Op: "rename", Path: stagingDir, To: old, Dir: dir, Err: err}
+		}
+	}
+	if err := stageRename(tmpDir, stagingDir); err != nil {
+		ioErr := error(&StageIOError{Op: "rename", Path: tmpDir, To: stagingDir, Dir: dir, Err: err})
+		if old != "" {
+			if backErr := stageRename(old, stagingDir); backErr != nil {
+				ioErr = errors.Join(ioErr, &StageIOError{Op: "rename", Path: old, To: stagingDir, Dir: dir, Err: backErr})
+			}
+		}
+		_ = os.RemoveAll(tmpDir)
+		return false, nil, ioErr
+	}
+	if old != "" {
+		if err := stageRemoveAll(old); err != nil {
+			warnings = append(warnings, fmt.Sprintf("old staging %s not deleted: %v", old, err))
+		}
+	}
+	return replaced, warnings, nil
+}
+
+// writeStagingTemp creates a new .tmp-<change>-<n> folder in dir and writes
+// each file and stage.json (indented JSON plus a newline) into it. On error
+// the temp folder is removed and a *StageIOError with Op "write" is returned.
+func writeStagingTemp(dir, change string, files []StageFile, manifest StageManifest) (string, error) {
+	var tmpDir string
+	for attempt := 0; ; attempt++ {
+		tmpDir = filepath.Join(dir, ".tmp-"+change+"-"+stageSuffix())
+		err := os.Mkdir(tmpDir, 0o755)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) || attempt >= 9 {
+			return "", &StageIOError{Op: "write", Path: tmpDir, Dir: dir, Err: err}
+		}
+	}
+	fail := func(p string, err error) (string, error) {
+		_ = os.RemoveAll(tmpDir)
+		return "", &StageIOError{Op: "write", Path: p, Dir: dir, Err: err}
+	}
+	for _, f := range files {
+		p := filepath.Join(tmpDir, filepath.FromSlash(f.Path))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			return fail(filepath.Dir(p), err)
+		}
+		if err := stageWriteFile(p, []byte(f.Content), 0o644); err != nil {
+			return fail(p, err)
+		}
+	}
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return fail(filepath.Join(tmpDir, StageManifestFile), err)
+	}
+	p := filepath.Join(tmpDir, StageManifestFile)
+	if err := stageWriteFile(p, append(data, '\n'), 0o644); err != nil {
+		return fail(p, err)
+	}
+	return tmpDir, nil
+}
+
+// removeStagingLeftovers deletes each .tmp-<change>-<n> and .old-<change>-<n>
+// folder in dir, where <n> is all digits: the temp and old folders of a
+// stage of change that crashed. A folder of another change never matches,
+// because a change name holds a letter or a hyphen after the prefix. A missing
+// dir deletes nothing. A failed list returns a *StageIOError with Op "read";
+// a failed delete returns one with Op "remove".
+func removeStagingLeftovers(dir, change string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return &StageIOError{Op: "read", Path: dir, Dir: dir, Err: err}
+	}
+	for _, e := range entries {
+		if !isStagingLeftover(e.Name(), change) {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		if err := stageRemoveAll(p); err != nil {
+			return &StageIOError{Op: "remove", Path: p, Dir: dir, Err: err}
+		}
+	}
+	return nil
+}
+
+// isStagingLeftover reports whether name is ".tmp-<change>-<n>" or
+// ".old-<change>-<n>" with <n> one or more digits.
+func isStagingLeftover(name, change string) bool {
+	for _, prefix := range []string{".tmp-" + change + "-", ".old-" + change + "-"} {
+		rest, ok := strings.CutPrefix(name, prefix)
+		if !ok || rest == "" {
+			continue
+		}
+		if strings.Trim(rest, "0123456789") == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// stageSuffix returns a random decimal suffix for a temp or old folder name.
+func stageSuffix() string {
+	return strconv.FormatUint(rand.Uint64(), 10)
 }
 
 // checkStageInput runs the checks of Stage that need no openspec CLI, in
 // this order: the change name (ErrInvalidChangeName), a non-empty file list,
 // the syntax of each file path (ErrPathNotAllowed), and the owner of an
-// existing staging (*StagedByOtherPlanError). The owner check is skipped when
-// planPath is empty or the existing stage.json names no owner (see
-// stagedPlanPath). It writes nothing.
+// existing staging (*StagedByOtherPlanError, compared with SamePlanPath).
+// The owner check is skipped when planPath is empty or the existing
+// stage.json names no owner (see stagedPlanPath). It writes nothing and takes
+// no lock; Stage checks the owner again under the lock.
 func checkStageInput(stagingRoot, change string, files []StageFile, planPath string) error {
 	if !ValidChangeName(change) {
 		return fmt.Errorf("%w: %q", ErrInvalidChangeName, change)
@@ -302,24 +605,69 @@ func checkStageInput(stagingRoot, change string, files []StageFile, planPath str
 		return err
 	}
 	if other := stagedPlanPath(stagingRoot, change); other != "" && planPath != "" &&
-		filepath.Clean(other) != filepath.Clean(planPath) {
+		!SamePlanPath(other, planPath) {
 		return &StagedByOtherPlanError{PlanPath: other}
 	}
 	return nil
 }
 
 // stagedPlanPath returns the planPath of the existing stage.json of
-// change, read with readStageManifest. It returns "" when the file is
-// missing, cannot be read, cannot be parsed, lists a bad file path, or has
-// no planPath. Such a staging has no owner to compare, so a new stage
-// replaces it.
+// change, read with ReadStageManifest. It returns "" when the file is
+// missing, cannot be read, is over stageManifestMaxBytes, cannot be parsed,
+// lists a bad file path, or has no planPath. Such a staging has no owner to
+// compare, so a new stage replaces it.
 func stagedPlanPath(stagingRoot, change string) string {
 	stagingDir := filepath.Join(stagingRoot, filepath.FromSlash(StagingDirRel(change)))
-	manifest, err := readStageManifest(stagingDir)
+	manifest, err := ReadStageManifest(stagingDir)
 	if err != nil {
 		return ""
 	}
 	return manifest.PlanPath
+}
+
+// ReadStageManifest reads <stagingDir>/stage.json with the checks of
+// readStageManifest. A stage.json over stageManifestMaxBytes returns an
+// error that wraps ErrStageManifestTooLarge, with the text "stage.json is
+// <n> bytes, limit 1048576 bytes"; nothing else is read then.
+func ReadStageManifest(stagingDir string) (StageManifest, error) {
+	p := filepath.Join(stagingDir, StageManifestFile)
+	if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() && info.Size() > stageManifestMaxBytes {
+		return StageManifest{}, fmt.Errorf("%w: stage.json is %d bytes, limit %d bytes", ErrStageManifestTooLarge, info.Size(), stageManifestMaxBytes)
+	}
+	return readStageManifest(stagingDir)
+}
+
+// MissingFiles returns the path of each manifest file that is not a regular
+// file under dir (missing, a folder, or not readable by Stat), in manifest
+// order. It returns nil when every file exists.
+func MissingFiles(manifest StageManifest, dir string) []string {
+	var missing []string
+	for _, f := range manifest.Files {
+		info, err := os.Stat(filepath.Join(dir, filepath.FromSlash(f.Path)))
+		if err != nil || !info.Mode().IsRegular() {
+			missing = append(missing, f.Path)
+		}
+	}
+	return missing
+}
+
+// SamePlanPath reports whether a and b name the same plan file. Each path is
+// made absolute and its symlinks are resolved; when that fails (for example,
+// the file does not exist), the absolute cleaned path is used. Stage and
+// Materialize use it for the owner check of a staging.
+func SamePlanPath(a, b string) bool {
+	return resolvePlanPath(a) == resolvePlanPath(b)
+}
+
+func resolvePlanPath(p string) string {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return filepath.Clean(p)
+	}
+	if real, err := filepath.EvalSymlinks(abs); err == nil {
+		return real
+	}
+	return abs
 }
 
 // newTempChange creates a temp directory holding a copy of

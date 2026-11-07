@@ -1885,6 +1885,17 @@ func stubOpenspecForStage(t *testing.T, validateExit int) {
 	stubOpenspecCLI(t, cases)
 }
 
+// psAllArtifacts returns one staged file for each artifact that
+// psStageStatusJSON lists, with proposal as the proposal.md content.
+func psAllArtifacts(proposal string) []openspec.StageFile {
+	return []openspec.StageFile{
+		{Path: "proposal.md", Content: proposal},
+		{Path: "specs/widget/spec.md", Content: "# Spec\n"},
+		{Path: "design.md", Content: "# Design\n"},
+		{Path: "tasks.md", Content: "# Tasks\n"},
+	}
+}
+
 // newOpenspecStageFixture creates a git repo seeded by setup_init (the
 // managed .gitignore blocks), with openspec/config.yaml, all committed.
 // Optional configToml replaces .sdlc-v2/config.toml before the commit.
@@ -2158,7 +2169,7 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 	})
 
 	t.Run("errors", func(t *testing.T) {
-		proposal := []openspec.StageFile{{Path: "proposal.md", Content: "# P\n"}}
+		proposal := psAllArtifacts("# P\n")
 		for _, tc := range []struct {
 			name           string
 			noCLI          bool
@@ -2237,6 +2248,8 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 				in: PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget", Files: []openspec.StageFile{
 					{Path: "proposal.md", Content: "# P\n"},
 					{Path: "specs/user-auth/spec.md", Content: "## ADDED Requirements\n"},
+					{Path: "design.md", Content: "# D\n"},
+					{Path: "tasks.md", Content: "# T\n"},
 				}},
 				wantClass:      "infra",
 				wantMsgPrefix:  "openspec_stage: openspec stage: target spec: ",
@@ -2260,6 +2273,8 @@ func TestPlanSupportOpenspecStage(t *testing.T) {
 				in: PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget", Files: []openspec.StageFile{
 					{Path: "proposal.md", Content: "# P\n"},
 					{Path: "specs/user-auth/spec.md", Content: "## MODIFIED Requirements\n"},
+					{Path: "design.md", Content: "# D\n"},
+					{Path: "tasks.md", Content: "# T\n"},
 				}},
 				wantClass:      "domain",
 				wantMsgPrefix:  "openspec_stage: openspec stage: target spec: too large: ",
@@ -2327,7 +2342,7 @@ func TestPlanSupportOpenspecStage_OtherPlanNamesMainStaging(t *testing.T) {
 	_, err := planSupportCore(mainRoot, activeRoot, PlanSupportIn{
 		Action:     "openspec_stage",
 		ChangeName: "add-widget",
-		Files:      []openspec.StageFile{{Path: "proposal.md", Content: "# new\n"}},
+		Files:      psAllArtifacts("# new\n"),
 		PlanPath:   "/plans/b.md",
 	})
 	if err == nil {
@@ -2413,7 +2428,7 @@ func TestPlanSupportOpenspecStage_OtherPlan(t *testing.T) {
 			out, err := planSupportCore(root, root, PlanSupportIn{
 				Action:     "openspec_stage",
 				ChangeName: "add-widget",
-				Files:      []openspec.StageFile{{Path: "proposal.md", Content: "# new\n"}},
+				Files:      psAllArtifacts("# new\n"),
 				PlanPath:   tc.planPath,
 			})
 
@@ -2476,6 +2491,140 @@ func TestPlanSupportOpenspecStage_OtherPlan(t *testing.T) {
 				t.Errorf("stage.json planPath = %q, want %q", manifest.PlanPath, tc.planPath)
 			}
 		})
+	}
+}
+
+// TestPlanSupportOpenspecStage_MissingArtifact verifies that a stage without
+// a schema artifact stages the files but reports valid false, a
+// "missing artifact <outputPath>" line in validateOutput, the fix next text,
+// and no validatedAt.
+func TestPlanSupportOpenspecStage_MissingArtifact(t *testing.T) {
+	stubOpenspecForStage(t, 0)
+	root := newOpenspecStageFixture(t, "")
+	files := psAllArtifacts("# P\n")
+	files = append(files[:2], files[3]) // drop design.md
+
+	out, err := planSupportCore(root, root, PlanSupportIn{
+		Action:     "openspec_stage",
+		ChangeName: "add-widget",
+		Files:      files,
+		PlanPath:   "/plans/a.md",
+	})
+	if err != nil {
+		t.Fatalf("openspec_stage: %v", err)
+	}
+	if out.Valid == nil || *out.Valid {
+		t.Errorf("Valid = %v, want false", out.Valid)
+	}
+	if want := "missing artifact design.md\nChange 'add-widget' is valid"; out.ValidateOutput != want {
+		t.Errorf("ValidateOutput = %q, want %q", out.ValidateOutput, want)
+	}
+	if out.Next != "Fix the artifacts using validateOutput and call openspec_stage again." {
+		t.Errorf("Next = %q", out.Next)
+	}
+	raw, err := os.ReadFile(filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget", openspec.StageManifestFile))
+	if err != nil {
+		t.Fatalf("read stage.json: %v", err)
+	}
+	var manifest openspec.StageManifest
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatalf("decode stage.json: %v", err)
+	}
+	if manifest.ValidatedAt != "" || len(manifest.Files) != len(files) {
+		t.Errorf("stage.json = %+v, want %d files and no validatedAt", manifest, len(files))
+	}
+}
+
+// TestPlanSupportOpenspecStage_Locked verifies that a fresh lock of the change
+// maps to a DomainError with the lock Suggestion, and that the call writes
+// no staging folder.
+func TestPlanSupportOpenspecStage_Locked(t *testing.T) {
+	stubOpenspecForStage(t, 0)
+	root := newOpenspecStageFixture(t, "")
+	lock := openspec.StagingLockPath(root, "add-widget")
+	writeFile(t, lock, "pid 1\n")
+
+	_, err := planSupportCore(root, root, PlanSupportIn{
+		Action:     "openspec_stage",
+		ChangeName: "add-widget",
+		Files:      psAllArtifacts("# P\n"),
+		PlanPath:   "/plans/a.md",
+	})
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if got := errorClassOf(err); got != "domain" {
+		t.Errorf("error class = %q, want domain (err %v)", got, err)
+	}
+	if want := "openspec_stage: openspec stage: staging is locked by another stage: " + lock; err.Error() != want {
+		t.Errorf("err.Error() = %q, want %q", err.Error(), want)
+	}
+	if !errors.Is(err, openspec.ErrStagingLocked) {
+		t.Errorf("errors.Is(err, ErrStagingLocked) = false (err %v)", err)
+	}
+	wantSuggestion := `Another openspec_stage call for "add-widget" is running. Wait for it to finish, or delete ` + lock + ` if no stage runs, then call openspec_stage again.`
+	if got := suggestionOf(err); got != wantSuggestion {
+		t.Errorf("Suggestion = %q, want %q", got, wantSuggestion)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("a locked call created the staging dir (stat err %v)", err)
+	}
+}
+
+// TestPlanSupportOpenspecStage_IOErrorMapping verifies the InfraError and
+// Suggestion of each openspec.StageIOError operation.
+func TestPlanSupportOpenspecStage_IOErrorMapping(t *testing.T) {
+	const dir = "/repo/.sdlc-v2/openspec-staging"
+	in := PlanSupportIn{Action: "openspec_stage", ChangeName: "add-widget"}
+	for _, tc := range []struct {
+		name           string
+		err            *openspec.StageIOError
+		wantMsg        string
+		wantSuggestion string
+	}{
+		{"lock", &openspec.StageIOError{Op: "lock", Path: dir + "/add-widget.lock", Dir: dir, Err: fs.ErrPermission},
+			"openspec_stage: openspec stage: lock " + dir + "/add-widget.lock: permission denied",
+			"Fix write access to " + dir + ", then call openspec_stage again."},
+		{"rename", &openspec.StageIOError{Op: "rename", Path: dir + "/add-widget", To: dir + "/.old-add-widget-1", Dir: dir, Err: fs.ErrPermission},
+			"openspec_stage: openspec stage: rename " + dir + "/add-widget to " + dir + "/.old-add-widget-1: permission denied",
+			"Fix write access to " + dir + ", then call openspec_stage again."},
+		{"write", &openspec.StageIOError{Op: "write", Path: dir + "/.tmp-add-widget-1/stage.json", Dir: dir, Err: fs.ErrPermission},
+			"openspec_stage: openspec stage: write " + dir + "/.tmp-add-widget-1/stage.json: permission denied",
+			"Fix write access to " + dir + ", then call openspec_stage again."},
+		{"remove", &openspec.StageIOError{Op: "remove", Path: dir + "/.tmp-add-widget-1", Dir: dir, Err: fs.ErrPermission},
+			"openspec_stage: openspec stage: remove " + dir + "/.tmp-add-widget-1: permission denied",
+			"Delete " + dir + "/.tmp-add-widget-1 by hand, then call openspec_stage again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := mapOpenspecError("openspec_stage", "/repo", in, tc.err)
+			if got := errorClassOf(err); got != "infra" {
+				t.Errorf("error class = %q, want infra (err %v)", got, err)
+			}
+			if err.Error() != tc.wantMsg {
+				t.Errorf("err.Error() = %q, want %q", err.Error(), tc.wantMsg)
+			}
+			if got := suggestionOf(err); got != tc.wantSuggestion {
+				t.Errorf("Suggestion = %q, want %q", got, tc.wantSuggestion)
+			}
+		})
+	}
+}
+
+// TestPlanSupportOpenspecStage_WarningsText verifies the summary text of the
+// cleanup warnings of a stage that succeeded.
+func TestPlanSupportOpenspecStage_WarningsText(t *testing.T) {
+	const lock = "/repo/.sdlc-v2/openspec-staging/add-widget.lock"
+	got := stageWarningsText([]string{
+		"old staging /repo/.sdlc-v2/openspec-staging/.old-add-widget-1 not deleted: permission denied",
+		"lock " + lock + " not deleted: permission denied",
+	}, lock)
+	want := " Warning: old staging /repo/.sdlc-v2/openspec-staging/.old-add-widget-1 not deleted: permission denied." +
+		" Warning: lock " + lock + " not deleted: permission denied. Delete " + lock + " before the next openspec_stage call."
+	if got != want {
+		t.Errorf("stageWarningsText = %q, want %q", got, want)
+	}
+	if got := stageWarningsText(nil, lock); got != "" {
+		t.Errorf("stageWarningsText(nil) = %q, want empty", got)
 	}
 }
 

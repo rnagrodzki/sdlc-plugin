@@ -120,6 +120,15 @@ Loads the proposal, delta specs, and task list from
   (`/sdlc:openspec-save --plan <path>`). It saves the OpenSpec change as its own
   PR before you ship the code. Without that header line, the menu has no such
   entry.
+- **The OpenSpec stage refuses an incomplete or busy change.** `openspec_stage`
+  needs one file for each artifact that the OpenSpec schema lists. A missing
+  artifact gives `valid: false` and a `missing artifact <outputPath>` line in
+  `validateOutput`, so the skill fixes the artifacts and stages again. Each
+  stage takes the lock `.sdlc-v2/openspec-staging/<change>.lock`, writes into a
+  temp folder and renames it into place. A second stage of the same change
+  while the lock is younger than 10 minutes gets `staging is locked by another
+  stage`. Wait for the first stage to finish, or delete the lock file when no
+  stage runs.
 - **`plan_prepare` always runs first, but it only resumes state when asked.**
   The skill's first action is always a `plan_prepare(...)` call. By default it
   starts a fresh run. Pass `resume: true` and the `runId` to reuse that run instead —

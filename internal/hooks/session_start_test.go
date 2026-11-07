@@ -2080,6 +2080,25 @@ func TestSessionStartWorktreeLinks(t *testing.T) {
 		}
 	})
 
+	t.Run("openspec-staging is linked in a linked worktree", func(t *testing.T) {
+		mainRoot := realPath(t, t.TempDir())
+		activeRoot := realPath(t, t.TempDir())
+		withMainRoot(t, mainRoot)
+		withActiveRoot(t, activeRoot)
+
+		if got := worktreeLinkPhase(); got != nil {
+			t.Fatalf("worktreeLinkPhase() = %q, want nil", got)
+		}
+		linkPath := filepath.Join(activeRoot, paths.DataDir, paths.OpenspecStagingSubdir)
+		target, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf("Readlink(openspec-staging): %v", err)
+		}
+		if want := filepath.Join(mainRoot, paths.DataDir, paths.OpenspecStagingSubdir); target != want {
+			t.Errorf("openspec-staging target = %q, want %q", target, want)
+		}
+	})
+
 	t.Run("existing real entry is kept, not replaced", func(t *testing.T) {
 		mainRoot := realPath(t, t.TempDir())
 		activeRoot := realPath(t, t.TempDir())

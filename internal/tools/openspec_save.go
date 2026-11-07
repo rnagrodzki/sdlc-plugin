@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
@@ -35,11 +34,6 @@ type OpenspecSaveOut struct {
 	Summary       string   `json:"summary" jsonschema_description:"One sentence that names the change, the branch and the count of staged files."`
 	Next          string   `json:"next" jsonschema_description:"The next step for the caller, for example to run the commit skill and then the pr skill."`
 }
-
-// openspecSavedHeaderRe matches the plan header line openspec_save writes
-// after a save: **OpenSpec-Saved:** openspec/changes/<change>/ (branch <b>).
-// Group 1 is the change name, group 2 the optional branch name.
-var openspecSavedHeaderRe = regexp.MustCompile(`(?m)^\*\*OpenSpec-Saved:\*\*[ \t]*openspec/changes/([^\s/]+)/?(?:[ \t]*\(branch[ \t]+([^\s)]+)\))?[ \t\r]*$`)
 
 // openspecSaveMaxListedPaths caps how many dirty paths the status guard
 // names in its Suggestion.
@@ -179,7 +173,7 @@ func openspecSaveReadPlan(path string) (string, error) {
 // with both headers, or with an invalid change name is a DomainError.
 func openspecSaveHeader(plan string) (change, branch string, saved bool, err error) {
 	stagedChange, hasStaging := openspec.StagedChangeFromPlan(plan)
-	savedMatch := openspecSavedHeaderRe.FindStringSubmatch(plan)
+	savedMatch := openspec.SavedHeaderRe.FindStringSubmatch(plan)
 	saved = savedMatch != nil
 	switch {
 	case !hasStaging && !saved:

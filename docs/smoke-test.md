@@ -89,6 +89,7 @@ retry this step with `/clear`.
 - [ ] start a session in `../wt`
 - [ ] in the main worktree, `.sdlc-v2/run-archive/` exists again
 - [ ] `ls ../wt/.sdlc-v2/run-archive` succeeds (the link resolves)
+- [ ] `.sdlc-v2/openspec-staging` in `../wt` is a symlink to `.sdlc-v2/openspec-staging` of the main worktree
 
 ## Pass criteria
 

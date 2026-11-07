@@ -2549,6 +2549,33 @@ func TestStrayStateAcceptsLinks(t *testing.T) {
 	}
 }
 
+// TestStrayStateAcceptsStagingLink pins that the openspec-staging link into
+// the main worktree's .sdlc-v2/ is not stray.
+func TestStrayStateAcceptsStagingLink(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir()
+
+	mainDataDir := filepath.Join(mainRoot, paths.DataDir)
+	if err := os.MkdirAll(filepath.Join(mainDataDir, paths.OpenspecStagingSubdir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(activeDataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(mainDataDir, paths.OpenspecStagingSubdir), filepath.Join(activeDataDir, paths.OpenspecStagingSubdir)); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for the openspec-staging link, got %+v", findings)
+	}
+}
+
 // TestStrayStateWrongLinkTarget pins F-worktree-state-links-8: a
 // linked-state-named entry that is a symlink, but points somewhere other
 // than the main worktree's .sdlc-v2/<name>, is still reported stray --

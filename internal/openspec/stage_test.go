@@ -467,7 +467,7 @@ func TestStage_CopiesTargetSpecs(t *testing.T) {
 		gitCommitAll(t, root)
 		t.Setenv("STUB_REQUIRE_SPEC", "user-auth")
 
-		res, err := Stage(root, root, "add-widget", stageFiles(false), "", fixedNow)
+		res, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow)
 		if err != nil {
 			t.Fatalf("Stage: %v", err)
 		}
@@ -534,7 +534,7 @@ func TestStage_CopiesTargetSpecs(t *testing.T) {
 func TestStage_NewCapabilityNoTarget(t *testing.T) {
 	root, log := setupStageRepo(t)
 
-	res, err := Stage(root, root, "add-widget", stageFiles(false), "", fixedNow)
+	res, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow)
 	if err != nil {
 		t.Fatalf("Stage: %v (a new capability has no target spec)", err)
 	}
@@ -690,6 +690,7 @@ func TestStage_RealCLIOmittedScenario(t *testing.T) {
 				"## What Changes\n- Record the worker name in the dispatch metadata.\n\n" +
 				"## Capabilities\n\n### Modified Capabilities\n- `widget`: record the worker name\n\n## Impact\n- None.\n"},
 			{Path: "specs/widget/spec.md", Content: spec},
+			{Path: "design.md", Content: "## Context\nThe dispatch metadata gets one more field.\n\n## Decisions\n- Store the worker name next to the attempt count.\n"},
 			{Path: "tasks.md", Content: "## 1. Work\n- [ ] 1.1 Record the worker name\n"},
 		}
 	}
@@ -871,4 +872,455 @@ func TestStage_OwnerCheckUsesStagingRoot(t *testing.T) {
 			t.Fatalf("active-root staging changed:\nbefore %v\nafter  %v", before, after)
 		}
 	})
+}
+
+// TestStage_MissingArtifact checks that a stage without a schema artifact is
+// a validation result: Valid false, one "missing artifact <outputPath>" line
+// for each gap, the files still staged, and no validatedAt.
+func TestStage_MissingArtifact(t *testing.T) {
+	root, _ := setupStageRepo(t)
+	files := []StageFile{{Path: "proposal.md", Content: "# Proposal\n"}}
+
+	res, err := Stage(root, root, "add-widget", files, "/plans/p.md", fixedNow)
+	if err != nil {
+		t.Fatalf("Stage: %v (a missing artifact is a result, not an error)", err)
+	}
+	if res.Valid {
+		t.Fatalf("Valid = true, want false; output %q", res.ValidateOutput)
+	}
+	wantLines := []string{"missing artifact specs/**/*.md", "missing artifact design.md", "missing artifact tasks.md", "Change 'add-widget' is valid"}
+	if got := strings.Split(res.ValidateOutput, "\n"); !reflect.DeepEqual(got, wantLines) {
+		t.Fatalf("ValidateOutput lines = %q, want %q", got, wantLines)
+	}
+	m := readManifest(t, root, "add-widget")
+	if m.ValidatedAt != "" {
+		t.Fatalf("ValidatedAt = %q, want empty with a missing artifact", m.ValidatedAt)
+	}
+	if len(m.Files) != 1 || m.Files[0].Path != "proposal.md" {
+		t.Fatalf("manifest files = %+v, want proposal.md only", m.Files)
+	}
+}
+
+// TestStage_ConcurrentOwners runs two Stage calls for one change with two plan
+// paths at the same time (run it under -race). Exactly one succeeds; the other
+// gets *StagedByOtherPlanError or ErrStagingLocked, and the staging belongs to
+// the winner.
+func TestStage_ConcurrentOwners(t *testing.T) {
+	root, _ := setupStageRepo(t)
+	plans := []string{"/plans/a.md", "/plans/b.md"}
+	errs := make([]error, len(plans))
+	start := make(chan struct{})
+	done := make(chan int)
+	for i, p := range plans {
+		go func(i int, p string) {
+			<-start
+			_, errs[i] = Stage(root, root, "add-widget", stageFiles(true), p, fixedNow)
+			done <- i
+		}(i, p)
+	}
+	close(start)
+	<-done
+	<-done
+
+	winner := -1
+	for i, err := range errs {
+		if err == nil {
+			if winner != -1 {
+				t.Fatalf("both stages succeeded, want one")
+			}
+			winner = i
+			continue
+		}
+		var staged *StagedByOtherPlanError
+		if !errors.As(err, &staged) && !errors.Is(err, ErrStagingLocked) {
+			t.Fatalf("stage %d err = %v, want StagedByOtherPlanError or ErrStagingLocked", i, err)
+		}
+	}
+	if winner == -1 {
+		t.Fatalf("no stage succeeded: %v", errs)
+	}
+	if m := readManifest(t, root, "add-widget"); m.PlanPath != plans[winner] {
+		t.Fatalf("stage.json planPath = %q, want the winner %q", m.PlanPath, plans[winner])
+	}
+	assertMissing(t, StagingLockPath(root, "add-widget"))
+}
+
+// stagingParent returns <root>/.sdlc-v2/openspec-staging.
+func stagingParent(root string) string {
+	return filepath.Join(root, ".sdlc-v2", "openspec-staging")
+}
+
+// writeLock creates the lock of add-widget under root with mtime at.
+func writeLock(t *testing.T, root string, at time.Time) string {
+	t.Helper()
+	lock := StagingLockPath(root, "add-widget")
+	mustWrite(t, lock, "pid 1\n")
+	if err := os.Chtimes(lock, at, at); err != nil {
+		t.Fatalf("chtimes lock: %v", err)
+	}
+	return lock
+}
+
+// TestStage_Lock covers the lock rows: a stale lock is taken over, a fresh
+// lock or a stray folder of the lock name refuses with ErrStagingLocked, a
+// lock create error is a *StageIOError, and a fresh repo gets the folder.
+func TestStage_Lock(t *testing.T) {
+	t.Run("lock age at the limit", func(t *testing.T) {
+		root, _ := setupStageRepo(t)
+		lock := writeLock(t, root, fixedNow().Add(-stagingLockStaleAfter))
+		res, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow)
+		if err != nil || !res.Valid {
+			t.Fatalf("Stage = %+v, %v; want a valid stage after the stale lock", res, err)
+		}
+		assertMissing(t, lock)
+	})
+
+	t.Run("lock age just below", func(t *testing.T) {
+		root, _ := setupStageRepo(t)
+		lock := writeLock(t, root, fixedNow().Add(-stagingLockStaleAfter+time.Second))
+		_, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow)
+		if !errors.Is(err, ErrStagingLocked) || !strings.Contains(err.Error(), lock) {
+			t.Fatalf("Stage err = %v, want ErrStagingLocked naming %s", err, lock)
+		}
+		assertMissing(t, filepath.Join(stagingParent(root), "add-widget"))
+		if _, err := os.Stat(lock); err != nil {
+			t.Fatalf("the fresh lock of another stage was deleted: %v", err)
+		}
+	})
+
+	t.Run("name clash", func(t *testing.T) {
+		root, _ := setupStageRepo(t)
+		if err := os.MkdirAll(StagingLockPath(root, "add-widget"), 0o755); err != nil {
+			t.Fatalf("mkdir stray lock folder: %v", err)
+		}
+		_, err := Stage(root, root, "add-widget", stageFiles(true), "", time.Now)
+		if !errors.Is(err, ErrStagingLocked) {
+			t.Fatalf("Stage err = %v, want ErrStagingLocked", err)
+		}
+	})
+
+	t.Run("lock create other error", func(t *testing.T) {
+		root, _ := setupStageRepo(t)
+		orig := stageOpenLock
+		t.Cleanup(func() { stageOpenLock = orig })
+		stageOpenLock = func(string, int, os.FileMode) (*os.File, error) { return nil, os.ErrPermission }
+		_, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow)
+		var ioErr *StageIOError
+		if !errors.As(err, &ioErr) || ioErr.Op != "lock" || !errors.Is(err, os.ErrPermission) {
+			t.Fatalf("Stage err = %v, want a lock StageIOError wrapping ErrPermission", err)
+		}
+		if want := "openspec stage: lock " + StagingLockPath(root, "add-widget") + ": "; !strings.HasPrefix(err.Error(), want) {
+			t.Fatalf("err = %q, want prefix %q", err, want)
+		}
+		assertMissing(t, filepath.Join(stagingParent(root), "add-widget"))
+	})
+
+	t.Run("fresh repo", func(t *testing.T) {
+		root, _ := setupStageRepo(t)
+		assertMissing(t, stagingParent(root))
+		res, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow)
+		if err != nil || !res.Valid {
+			t.Fatalf("Stage = %+v, %v; want a valid stage", res, err)
+		}
+		entries, err := os.ReadDir(stagingParent(root))
+		if err != nil {
+			t.Fatalf("read staging parent: %v", err)
+		}
+		if len(entries) != 1 || entries[0].Name() != "add-widget" {
+			t.Fatalf("staging parent entries = %v, want only add-widget (no lock, temp or old folder)", entries)
+		}
+	})
+}
+
+// stageSeamFixture stages add-widget once (so a staging to keep exists),
+// then returns the root, the staging dir and its snapshot.
+func stageSeamFixture(t *testing.T) (root, stagingDir string, before map[string]string) {
+	t.Helper()
+	root, _ = setupStageRepo(t)
+	if _, err := Stage(root, root, "add-widget", stageFiles(true), "/plans/p.md", fixedNow); err != nil {
+		t.Fatalf("first Stage: %v", err)
+	}
+	stagingDir = filepath.Join(stagingParent(root), "add-widget")
+	return root, stagingDir, snapshot(t, stagingDir)
+}
+
+// assertOnlyStaging checks that the staging parent holds only the add-widget
+// folder plus the names in extra: no lock and no temp or old folder.
+func assertOnlyStaging(t *testing.T, root string, extra ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(stagingParent(root))
+	if err != nil {
+		t.Fatalf("read staging parent: %v", err)
+	}
+	want := append([]string{"add-widget"}, extra...)
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	if len(got) != len(want) {
+		t.Fatalf("staging parent entries = %v, want %v", got, want)
+	}
+	for _, w := range want {
+		found := false
+		for _, g := range got {
+			found = found || g == w
+		}
+		if !found {
+			t.Fatalf("staging parent entries = %v, want %v", got, want)
+		}
+	}
+}
+
+// TestStage_IOFailures forces each IO failure row through its seam and checks
+// the result of the row.
+func TestStage_IOFailures(t *testing.T) {
+	newFiles := []StageFile{
+		{Path: "proposal.md", Content: "# New proposal\n"},
+		{Path: "specs/user-auth/spec.md", Content: "# Spec\n"},
+		{Path: "design.md", Content: "# Design\n"},
+		{Path: "tasks.md", Content: "# Tasks\n"},
+	}
+
+	t.Run("crash leftovers", func(t *testing.T) {
+		root, _ := setupStageRepo(t)
+		parent := stagingParent(root)
+		for _, d := range []string{".tmp-add-widget-1", ".old-add-widget-2", ".tmp-add-widget-x-3"} {
+			mustWrite(t, filepath.Join(parent, d, "proposal.md"), "left\n")
+		}
+		res, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow)
+		if err != nil || !res.Valid {
+			t.Fatalf("Stage = %+v, %v; want a valid stage", res, err)
+		}
+		// .tmp-add-widget-x-3 belongs to change add-widget-x and stays.
+		assertOnlyStaging(t, root, ".tmp-add-widget-x-3")
+	})
+
+	t.Run("leftover delete fails", func(t *testing.T) {
+		root, stagingDir, before := stageSeamFixture(t)
+		leftover := filepath.Join(stagingParent(root), ".tmp-add-widget-1")
+		mustWrite(t, filepath.Join(leftover, "proposal.md"), "left\n")
+		orig := stageRemoveAll
+		t.Cleanup(func() { stageRemoveAll = orig })
+		stageRemoveAll = func(p string) error {
+			if p == leftover {
+				return os.ErrPermission
+			}
+			return orig(p)
+		}
+		_, err := Stage(root, root, "add-widget", newFiles, "/plans/p.md", fixedNow)
+		var ioErr *StageIOError
+		if !errors.As(err, &ioErr) || ioErr.Op != "remove" || ioErr.Path != leftover {
+			t.Fatalf("Stage err = %v, want a remove StageIOError for %s", err, leftover)
+		}
+		if want := "openspec stage: remove " + leftover + ": "; !strings.HasPrefix(err.Error(), want) {
+			t.Fatalf("err = %q, want prefix %q", err, want)
+		}
+		if after := snapshot(t, stagingDir); !reflect.DeepEqual(before, after) {
+			t.Fatalf("staging changed:\nbefore %v\nafter  %v", before, after)
+		}
+		assertOnlyStaging(t, root, ".tmp-add-widget-1")
+	})
+
+	t.Run("temp write fails", func(t *testing.T) {
+		root, stagingDir, before := stageSeamFixture(t)
+		orig := stageWriteFile
+		t.Cleanup(func() { stageWriteFile = orig })
+		stageWriteFile = func(p string, data []byte, perm os.FileMode) error {
+			if filepath.Base(p) == StageManifestFile {
+				return os.ErrPermission
+			}
+			return orig(p, data, perm)
+		}
+		_, err := Stage(root, root, "add-widget", newFiles, "/plans/p.md", fixedNow)
+		var ioErr *StageIOError
+		if !errors.As(err, &ioErr) || ioErr.Op != "write" || filepath.Base(ioErr.Path) != StageManifestFile {
+			t.Fatalf("Stage err = %v, want a write StageIOError for stage.json", err)
+		}
+		if !strings.HasPrefix(err.Error(), "openspec stage: write ") {
+			t.Fatalf("err = %q, want prefix %q", err, "openspec stage: write ")
+		}
+		if after := snapshot(t, stagingDir); !reflect.DeepEqual(before, after) {
+			t.Fatalf("staging changed:\nbefore %v\nafter  %v", before, after)
+		}
+		assertOnlyStaging(t, root)
+	})
+
+	t.Run("first rename fails", func(t *testing.T) {
+		root, stagingDir, before := stageSeamFixture(t)
+		orig := stageRename
+		t.Cleanup(func() { stageRename = orig })
+		calls := 0
+		stageRename = func(from, to string) error {
+			calls++
+			if calls == 1 {
+				return os.ErrPermission
+			}
+			return orig(from, to)
+		}
+		_, err := Stage(root, root, "add-widget", newFiles, "/plans/p.md", fixedNow)
+		var ioErr *StageIOError
+		if !errors.As(err, &ioErr) || ioErr.Op != "rename" || ioErr.Path != stagingDir {
+			t.Fatalf("Stage err = %v, want a rename StageIOError for %s", err, stagingDir)
+		}
+		if after := snapshot(t, stagingDir); !reflect.DeepEqual(before, after) {
+			t.Fatalf("staging changed:\nbefore %v\nafter  %v", before, after)
+		}
+		assertOnlyStaging(t, root)
+	})
+
+	t.Run("second rename fails", func(t *testing.T) {
+		root, stagingDir, before := stageSeamFixture(t)
+		orig := stageRename
+		t.Cleanup(func() { stageRename = orig })
+		calls := 0
+		stageRename = func(from, to string) error {
+			calls++
+			if calls == 2 {
+				return os.ErrPermission
+			}
+			return orig(from, to)
+		}
+		_, err := Stage(root, root, "add-widget", newFiles, "/plans/p.md", fixedNow)
+		var ioErr *StageIOError
+		if !errors.As(err, &ioErr) || ioErr.Op != "rename" || ioErr.To != stagingDir {
+			t.Fatalf("Stage err = %v, want a rename StageIOError into %s", err, stagingDir)
+		}
+		if calls != 3 {
+			t.Fatalf("stageRename calls = %d, want 3 (aside, into place, move back)", calls)
+		}
+		if after := snapshot(t, stagingDir); !reflect.DeepEqual(before, after) {
+			t.Fatalf("staging not moved back:\nbefore %v\nafter  %v", before, after)
+		}
+		assertOnlyStaging(t, root)
+	})
+
+	t.Run("old delete fails", func(t *testing.T) {
+		root, stagingDir, _ := stageSeamFixture(t)
+		orig := stageRemoveAll
+		t.Cleanup(func() { stageRemoveAll = orig })
+		oldPrefix := filepath.Join(stagingParent(root), ".old-add-widget-")
+		stageRemoveAll = func(p string) error {
+			if strings.HasPrefix(p, oldPrefix) {
+				return os.ErrPermission
+			}
+			return orig(p)
+		}
+		res, err := Stage(root, root, "add-widget", newFiles, "/plans/p.md", fixedNow)
+		if err != nil || !res.Valid || !res.Replaced {
+			t.Fatalf("Stage = %+v, %v; want a valid replacing stage", res, err)
+		}
+		if len(res.Warnings) != 1 || !strings.HasPrefix(res.Warnings[0], "old staging "+oldPrefix) || !strings.Contains(res.Warnings[0], " not deleted: ") {
+			t.Fatalf("Warnings = %q, want one old-staging line", res.Warnings)
+		}
+		if got := snapshot(t, stagingDir)["proposal.md"]; got != "# New proposal\n" {
+			t.Fatalf("staged proposal.md = %q, want the new content", got)
+		}
+		// The next stage removes the old folder as a crash leftover.
+		stageRemoveAll = orig
+		if _, err := Stage(root, root, "add-widget", newFiles, "/plans/p.md", fixedNow); err != nil {
+			t.Fatalf("next Stage: %v", err)
+		}
+		assertOnlyStaging(t, root)
+	})
+
+	t.Run("lock delete fails", func(t *testing.T) {
+		root, _ := setupStageRepo(t)
+		orig := stageRemoveLock
+		t.Cleanup(func() { stageRemoveLock = orig })
+		stageRemoveLock = func(string) error { return os.ErrPermission }
+		res, err := Stage(root, root, "add-widget", stageFiles(true), "", fixedNow)
+		if err != nil || !res.Valid {
+			t.Fatalf("Stage = %+v, %v; want a valid stage", res, err)
+		}
+		lock := StagingLockPath(root, "add-widget")
+		want := "lock " + lock + " not deleted: " + os.ErrPermission.Error()
+		if len(res.Warnings) != 1 || res.Warnings[0] != want {
+			t.Fatalf("Warnings = %q, want [%q]", res.Warnings, want)
+		}
+	})
+}
+
+func TestReadStageManifest(t *testing.T) {
+	// manifestOfSize returns a valid stage.json of exactly n bytes.
+	manifestOfSize := func(n int) string {
+		base := `{"change":"add-widget","planPath":"/plans/a.md","files":[{"path":"proposal.md"}]}`
+		return base[:len(base)-1] + strings.Repeat(" ", n-len(base)) + "}"
+	}
+
+	t.Run("manifest at the cap", func(t *testing.T) {
+		root := t.TempDir()
+		writeStageManifestRaw(t, root, "add-widget", manifestOfSize(stageManifestMaxBytes))
+		m, err := ReadStageManifest(filepath.Join(root, filepath.FromSlash(StagingDirRel("add-widget"))))
+		if err != nil || m.PlanPath != "/plans/a.md" {
+			t.Fatalf("ReadStageManifest = %+v, %v; want planPath /plans/a.md", m, err)
+		}
+	})
+
+	t.Run("manifest over the cap", func(t *testing.T) {
+		root := t.TempDir()
+		writeStageManifestRaw(t, root, "add-widget", manifestOfSize(stageManifestMaxBytes+1))
+		_, err := ReadStageManifest(filepath.Join(root, filepath.FromSlash(StagingDirRel("add-widget"))))
+		if !errors.Is(err, ErrStageManifestTooLarge) {
+			t.Fatalf("ReadStageManifest err = %v, want ErrStageManifestTooLarge", err)
+		}
+		if want := "stage.json is 1048577 bytes, limit 1048576 bytes"; !strings.Contains(err.Error(), want) {
+			t.Fatalf("err = %q, want it to contain %q", err, want)
+		}
+		// An oversized stage.json names no owner for the stage owner check.
+		if got := stagedPlanPath(root, "add-widget"); got != "" {
+			t.Fatalf("stagedPlanPath = %q, want empty", got)
+		}
+	})
+
+	t.Run("missing stage.json", func(t *testing.T) {
+		if _, err := ReadStageManifest(t.TempDir()); err == nil {
+			t.Fatal("ReadStageManifest err = nil, want a read error")
+		}
+	})
+}
+
+func TestMissingFiles(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite(t, filepath.Join(dir, "proposal.md"), "# P\n")
+	mustWrite(t, filepath.Join(dir, "specs", "a", "spec.md"), "# S\n")
+	if err := os.MkdirAll(filepath.Join(dir, "design.md"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	manifest := StageManifest{Files: []StagedFile{
+		{Path: "proposal.md"}, {Path: "design.md"}, {Path: "specs/a/spec.md"}, {Path: "tasks.md"},
+	}}
+	if got, want := MissingFiles(manifest, dir), []string{"design.md", "tasks.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("MissingFiles = %q, want %q", got, want)
+	}
+	if got := MissingFiles(StageManifest{Files: []StagedFile{{Path: "proposal.md"}}}, dir); got != nil {
+		t.Fatalf("MissingFiles = %q, want nil", got)
+	}
+}
+
+func TestSamePlanPath(t *testing.T) {
+	dir := t.TempDir()
+	plan := filepath.Join(dir, "p.md")
+	mustWrite(t, plan, "# Plan\n")
+	link := filepath.Join(dir, "link.md")
+	if err := os.Symlink(plan, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+	cases := []struct {
+		name string
+		a, b string
+		want bool
+	}{
+		{"same path", "/r/p.md", "/r/p.md", true},
+		{"dot segment", "/r/x/../p.md", "/r/p.md", true},
+		{"link", link, plan, true},
+		{"missing file", "/r/gone.md", "/r/gone.md", true},
+		{"other file", "/r/a.md", "/r/b.md", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := SamePlanPath(tc.a, tc.b); got != tc.want {
+				t.Errorf("SamePlanPath(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
 }

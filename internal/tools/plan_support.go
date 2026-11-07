@@ -323,7 +323,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
 - openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a temp copy of openspec/config.yaml. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing in the repository; a missing openspec CLI returns InfraError.
-- openspec_stage: Write the authored artifacts to `+stagingFolderText("<changeName>")+` (replaces the whole directory), so a run in any worktree of the repo finds them, and validate them in a temp copy of the active worktree. When the main worktree cannot be resolved, it writes under the active worktree and the summary holds a warning; a git output over the size cap while it resolves the main worktree is an InfraError. Requires changeName, files. Optional: planPath. Returns stagingDir (relative to stagingRoot), stagingRoot (absolute path of the main worktree, or of the fallback root), files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). The summary names the absolute staging folder. A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. A current spec that cannot be read returns InfraError.
+- openspec_stage: Write the authored artifacts to `+stagingFolderText("<changeName>")+` (replaces the whole directory), so a run in any worktree of the repo finds them, and validate them in a temp copy of the active worktree. When the main worktree cannot be resolved, it writes under the active worktree and the summary holds a warning; a git output over the size cap while it resolves the main worktree is an InfraError. Requires changeName, files. Optional: planPath. Returns stagingDir (relative to stagingRoot), stagingRoot (absolute path of the main worktree, or of the fallback root), files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). The summary names the absolute staging folder. A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. The stage takes the lock <changeName>.lock next to the staging dirs, writes into a temp dir and renames it into place; a lock younger than 10 minutes returns DomainError 'staging is locked by another stage' and writes nothing. Each artifact that openspec status lists for the schema must be in files: a missing one gives valid false, a 'missing artifact <outputPath>' line in validateOutput, and no validatedAt. A current spec that cannot be read returns InfraError.
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Each write sets updatedAt (UTC). A write to a writer file that has no startedAt sets startedAt to that updatedAt; later writes keep it. A file written before startedAt existed, or an unreadable file that this call replaces, gets startedAt at this later write, so its startedAt can be later than the writer's real start. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record (writerId, status, itemCount, fileBytes, briefPath, startedAt, updatedAt). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
@@ -1209,7 +1209,25 @@ func requireActiveRoot(action, contentRoot string) error {
 // matching DomainError or InfraError.
 func mapOpenspecError(action, mainRoot string, in PlanSupportIn, err error) error {
 	var staged *openspec.StagedByOtherPlanError
+	var stageIO *openspec.StageIOError
 	switch {
+	case errors.Is(err, openspec.ErrStagingLocked):
+		lock := openspec.StagingLockPath(mainRoot, in.ChangeName)
+		return &mcpserver.DomainError{
+			Msg:        action + ": " + err.Error(),
+			Suggestion: fmt.Sprintf("Another openspec_stage call for %q is running. Wait for it to finish, or delete %s if no stage runs, then call openspec_stage again.", in.ChangeName, lock),
+			Cause:      err,
+		}
+	case errors.As(err, &stageIO):
+		suggestion := fmt.Sprintf("Fix write access to %s, then call openspec_stage again.", stageIO.Dir)
+		if stageIO.Op == "remove" {
+			suggestion = fmt.Sprintf("Delete %s by hand, then call openspec_stage again.", stageIO.Path)
+		}
+		return &mcpserver.InfraError{
+			Msg:        action + ": " + err.Error(),
+			Suggestion: suggestion,
+			Cause:      err,
+		}
 	case errors.Is(err, openspec.ErrInvalidChangeName):
 		return &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("%s: invalid changeName %q", action, in.ChangeName),
@@ -1343,7 +1361,22 @@ func openspecStage(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportO
 		out.Summary = fmt.Sprintf("Staged %d file(s) for OpenSpec change %q in %s; validation failed.", len(res.Files), in.ChangeName, absDir)
 		out.Next = "Fix the artifacts using validateOutput and call openspec_stage again."
 	}
+	out.Summary += stageWarningsText(res.Warnings, openspec.StagingLockPath(mainRoot, in.ChangeName))
 	return out, nil
+}
+
+// stageWarningsText turns the cleanup warnings of openspec.Stage into summary
+// text: one " Warning: <line>." per warning. The lock warning also tells the
+// caller to delete lock before the next openspec_stage call.
+func stageWarningsText(warnings []string, lock string) string {
+	var b strings.Builder
+	for _, w := range warnings {
+		b.WriteString(" Warning: " + w + ".")
+		if strings.HasPrefix(w, "lock ") {
+			b.WriteString(" Delete " + lock + " before the next openspec_stage call.")
+		}
+	}
+	return b.String()
 }
 
 // ---------------------------------------------------------------------------

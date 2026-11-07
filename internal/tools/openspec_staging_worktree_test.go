@@ -419,6 +419,8 @@ func TestPlanSupport_RegisteredStageMainRootFailure(t *testing.T) {
 		"changeName": stagingChange,
 		"files": []map[string]any{
 			{"path": "proposal.md", "content": "# Proposal\n"},
+			{"path": "specs/widget/spec.md", "content": "# Spec\n"},
+			{"path": "design.md", "content": "# Design\n"},
 			{"path": "tasks.md", "content": stagingTasks},
 		},
 	}
