@@ -246,3 +246,26 @@ func Instructions(dir, artifact, change string) (ArtifactInstructions, error) {
 	}
 	return result, nil
 }
+
+// ValidateStrict runs `openspec validate <change> --strict` through runCLI and
+// returns what the CLI printed and its exit code. A non-zero exit is not an
+// error: the caller decides what a failed validation means. output is stdout,
+// followed by stderr on a new line when stderr is not empty. err is
+// ErrCLINotFound when the binary is absent, else a wrapped exec error.
+func ValidateStrict(dir, change string) (output string, exit int, err error) {
+	stdout, stderr, exit, err := runCLI(dir, "validate", change, "--strict")
+	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return "", 0, ErrCLINotFound
+		}
+		return "", 0, fmt.Errorf("openspec validate %s --strict: %w", change, err)
+	}
+	output = strings.TrimSpace(stdout)
+	if detail := strings.TrimSpace(stderr); detail != "" {
+		if output != "" {
+			output += "\n"
+		}
+		output += detail
+	}
+	return output, exit, nil
+}

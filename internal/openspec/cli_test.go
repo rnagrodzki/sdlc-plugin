@@ -379,3 +379,71 @@ func TestValidChangeName(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// ValidateStrict
+// ---------------------------------------------------------------------------
+
+func TestValidateStrict_Exit0(t *testing.T) {
+	dir := withStubPath(t)
+	stubOpenspecDispatch(t, dir, map[string]cliStub{
+		"validate add-widget --strict": {stdout: "Change 'add-widget' is valid"},
+	})
+
+	out, exit, err := ValidateStrict(t.TempDir(), "add-widget")
+	if err != nil {
+		t.Fatalf("ValidateStrict: err = %v, want nil", err)
+	}
+	if exit != 0 {
+		t.Errorf("exit = %d, want 0", exit)
+	}
+	if out != "Change 'add-widget' is valid" {
+		t.Errorf("output = %q", out)
+	}
+}
+
+// TestValidateStrict_Exit1 checks that a failed validation returns the exit
+// code and the output, not an error.
+func TestValidateStrict_Exit1(t *testing.T) {
+	dir := withStubPath(t)
+	stubOpenspecDispatch(t, dir, map[string]cliStub{
+		"validate add-widget --strict": {stdout: "proposal.md: missing Why section", exit: 1},
+	})
+
+	out, exit, err := ValidateStrict(t.TempDir(), "add-widget")
+	if err != nil {
+		t.Fatalf("ValidateStrict: err = %v, want nil for a non-zero exit", err)
+	}
+	if exit != 1 {
+		t.Errorf("exit = %d, want 1", exit)
+	}
+	if out != "proposal.md: missing Why section" {
+		t.Errorf("output = %q", out)
+	}
+}
+
+func TestValidateStrict_CLIMissing(t *testing.T) {
+	withStubPath(t) // empty PATH: `openspec` does not resolve
+
+	_, _, err := ValidateStrict(t.TempDir(), "add-widget")
+	if !errors.Is(err, ErrCLINotFound) {
+		t.Fatalf("ValidateStrict: err = %v, want ErrCLINotFound", err)
+	}
+}
+
+// TestValidateStrict_StderrAppended checks that stderr follows stdout.
+func TestValidateStrict_StderrAppended(t *testing.T) {
+	prev := runCLI
+	runCLI = func(dir string, args ...string) (string, string, int, error) {
+		return "out line\n", "err line\n", 1, nil
+	}
+	t.Cleanup(func() { runCLI = prev })
+
+	out, exit, err := ValidateStrict(t.TempDir(), "add-widget")
+	if err != nil || exit != 1 {
+		t.Fatalf("ValidateStrict: exit = %d, err = %v", exit, err)
+	}
+	if out != "out line\nerr line" {
+		t.Errorf("output = %q, want stdout then stderr", out)
+	}
+}
