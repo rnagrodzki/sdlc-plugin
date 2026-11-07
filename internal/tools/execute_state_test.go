@@ -10417,3 +10417,89 @@ func TestExecState_LedgerSkip_ToolSurface(t *testing.T) {
 		t.Errorf("action enum %v does not contain ledger_skip", schema.Properties["action"].Enum)
 	}
 }
+
+// TestExecuteInitOpenspecHeaders: init refuses a plan that names an OpenSpec
+// change whose artifacts are not authored. The DomainError carries the
+// message and the suggestion, and no execute-state file is written. Plans with
+// a Saved line, a Staging line or only a Source line pass the check.
+func TestExecuteInitOpenspecHeaders(t *testing.T) {
+	t.Run("refused", func(t *testing.T) {
+		cases := []struct {
+			name           string
+			plan           string
+			wantMsg        string
+			wantSuggestion string
+		}{
+			{
+				name:           "create only",
+				plan:           "# Plan\n\n**Source:** openspec/changes/add-widget/\n**OpenSpec-Create:** add-widget\n",
+				wantMsg:        `names OpenSpec change "add-widget" (**OpenSpec-Create:**), but its artifacts are not authored`,
+				wantSuggestion: "Run /sdlc:plan on the plan again to finish the OpenSpec authoring, or remove the **OpenSpec-Create:** and **Source:** lines to ship without OpenSpec.",
+			},
+			{
+				name:           "staging with TBD appendix",
+				plan:           matPlanHeaders("add-widget") + "\n## OpenSpec Appendix\n\n[TBD: authored at the end of Step 6]\n",
+				wantMsg:        `names OpenSpec change "add-widget", but its OpenSpec Appendix starts with [TBD`,
+				wantSuggestion: "Run /sdlc:plan on the plan again to finish the OpenSpec authoring.",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				root := t.TempDir()
+				initGitFixture(t, root)
+				seedInitConfig(t, root)
+				planPath := filepath.Join(root, "plan.md")
+				writeFile(t, planPath, tc.plan)
+
+				_, err := executeState(root, root, ExecuteStateIn{
+					Action:   "init",
+					Branch:   "feat/test",
+					Quality:  "standard",
+					PlanPath: planPath,
+				}, fixedClock(testNow))
+				de, ok := err.(*mcpserver.DomainError)
+				if !ok {
+					t.Fatalf("err = %T (%v), want *mcpserver.DomainError", err, err)
+				}
+				if !strings.Contains(de.Msg, tc.wantMsg) || !strings.Contains(de.Msg, planPath) {
+					t.Errorf("Msg = %q, want it to contain %q and the plan path", de.Msg, tc.wantMsg)
+				}
+				if de.Suggestion != tc.wantSuggestion {
+					t.Errorf("Suggestion = %q, want %q", de.Suggestion, tc.wantSuggestion)
+				}
+				st, findErr := state.Find(root, "execute", "feat/test")
+				if findErr != nil {
+					t.Fatalf("state.Find: %v", findErr)
+				}
+				if st != nil {
+					t.Fatalf("execute state file exists at %s after a refusal; want none", st.Path)
+				}
+			})
+		}
+	})
+
+	t.Run("passes", func(t *testing.T) {
+		plans := map[string]string{
+			"saved":       "# Plan\n\n**OpenSpec-Create:** add-widget\n**OpenSpec-Saved:** openspec/changes/add-widget/ (branch feat/test)\n",
+			"source only": "# Plan\n\n**Source:** conversation context\n",
+		}
+		for name, plan := range plans {
+			t.Run(name, func(t *testing.T) {
+				root := t.TempDir()
+				initGitFixture(t, root)
+				seedInitConfig(t, root)
+				planPath := filepath.Join(root, "plan.md")
+				writeFile(t, planPath, plan)
+
+				if _, err := executeState(root, root, ExecuteStateIn{
+					Action:   "init",
+					Branch:   "feat/test",
+					Quality:  "standard",
+					PlanPath: planPath,
+				}, fixedClock(testNow)); err != nil {
+					t.Fatalf("init: %v", err)
+				}
+			})
+		}
+	})
+}

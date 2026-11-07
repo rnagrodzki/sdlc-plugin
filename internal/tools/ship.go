@@ -382,6 +382,12 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			planContent = string(content)
 		}
 	}
+	// A plan that names an OpenSpec change whose artifacts are not authored
+	// is refused here, before any write. An unreadable plan leaves
+	// planContent empty, so the check is skipped.
+	for _, p := range openspec.CheckPlanHeaders(planContent) {
+		errors = append(errors, shipOpenspecHeaderMessage(in.PlanFile, p, true))
+	}
 	warnings = append(warnings, resolveShipOpenspecChange(merged, sources, in.OpenspecChange, planContent)...)
 
 	// Surface non-benign version config read errors (corrupted file, I/O).
@@ -742,6 +748,33 @@ func tomlTypeName(v any) string {
 	default:
 		return fmt.Sprintf("%T", v)
 	}
+}
+
+// shipOpenspecHeaderMessage returns the error text for a plan whose OpenSpec
+// header lines show that its artifacts are not authored. With withSuggestion
+// true the suggestion is appended, for callers whose error list holds only
+// strings (ship_prepare). execute_state init passes false and sets the
+// DomainError Suggestion from shipOpenspecHeaderSuggestion.
+func shipOpenspecHeaderMessage(planFile string, p openspec.PlanHeaderProblem, withSuggestion bool) string {
+	var msg string
+	switch p.Kind {
+	case openspec.PlanHeaderAppendixTBD:
+		msg = fmt.Sprintf("plan %s names OpenSpec change %q, but its OpenSpec Appendix starts with [TBD: the OpenSpec authoring did not finish", planFile, p.Change)
+	default:
+		msg = fmt.Sprintf("plan %s names OpenSpec change %q (**OpenSpec-Create:**), but its artifacts are not authored: the plan has no **OpenSpec-Staging:** or **OpenSpec-Saved:** line", planFile, p.Change)
+	}
+	if withSuggestion {
+		msg += ". " + shipOpenspecHeaderSuggestion(p)
+	}
+	return msg
+}
+
+// shipOpenspecHeaderSuggestion returns the fix for a plan header problem.
+func shipOpenspecHeaderSuggestion(p openspec.PlanHeaderProblem) string {
+	if p.Kind == openspec.PlanHeaderAppendixTBD {
+		return "Run /sdlc:plan on the plan again to finish the OpenSpec authoring."
+	}
+	return "Run /sdlc:plan on the plan again to finish the OpenSpec authoring, or remove the **OpenSpec-Create:** and **Source:** lines to ship without OpenSpec."
 }
 
 // resolveShipOpenspecChange sets merged["openspecChange"] and
@@ -1612,7 +1645,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 // tools.
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
-		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing.",
+		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. A plan with an **OpenSpec-Create:** line and no **OpenSpec-Staging:** or **OpenSpec-Saved:** line, or with such a line and an OpenSpec Appendix that starts with [TBD, is refused in errors before any write. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing.",
 		mcpserver.Annotations{
 			Title:       "Prepare ship pipeline run",
 			ReadOnly:    false,

@@ -552,6 +552,20 @@ need to open OpenSpec files separately.
   live in `<MAIN_ROOT>/.sdlc-v2/openspec-staging/<name>/`, the staging folder of the main worktree
   (the `stagingRoot` that `openspec_stage` returned).
 
+**PF15 (OpenSpec handoff rule).** `validate` with `action: "plan_format"` and `handoff: true` adds
+PF15. The plan skill sets `handoff` at the handoff only (Step 6.6), never during edits. PF15 returns
+one error finding for the first case that matches:
+
+| PF15 case | Fix |
+|---|---|
+| Plan has `**OpenSpec-Create:**` and no `**OpenSpec-Staging:**` line | Run Create-flow authoring, then Step 6.6 again. |
+| Appendix body starts with `[TBD` | Same. |
+| Staging folder has no readable `stage.json` | Call `openspec_stage` again with all artifacts, then Step 6.6 again. |
+| `stage.json` has no `validatedAt` | Fix the artifacts that `validateOutput` names, call `openspec_stage` again, then Step 6.6 again. |
+| A staged file is gone | Call `openspec_stage` again with all artifacts, then Step 6.6 again. |
+
+The staging cases apply only to a plan with a Staging line and no `**OpenSpec-Saved:**` line.
+
 **Nested-fence safety (N+1 backticks):** delta-spec fragments reproduced here are themselves
 markdown containing fenced code blocks (scenario snippets, requirement bodies). A plain 3-backtick
 outer fence would terminate early at the first 3-backtick run inside the quoted content. Before

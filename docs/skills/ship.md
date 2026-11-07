@@ -47,6 +47,15 @@ disk (in both `openspec/changes/<name>/` and the archive) — the same check as
 `verify-openspec`, with the same message. Outside `--auto`, it asks before
 archiving a change whose `tasks.md` still has unchecked boxes.
 
+`ship_prepare` refuses a plan that names an OpenSpec change but whose
+artifacts are not authored. This applies to a plan with an
+`**OpenSpec-Create:**` line and no `**OpenSpec-Staging:**` or
+`**OpenSpec-Saved:**` line. It also applies to a plan with such a line whose
+OpenSpec Appendix starts with `[TBD`. The refusal is an entry in `errors`, and
+no state file is written. Run `/sdlc:plan` on the plan again to finish the
+authoring, or remove the `**OpenSpec-Create:**` and `**Source:**` lines to ship
+without OpenSpec.
+
 The `commit` step first stages the changes (everything except the `.sdlc-v2/`
 data directory) and checks the working tree. When changes are staged, `/ship`
 runs [/commit](commit.md). When the tree is clean, the step completes at once

@@ -3157,3 +3157,78 @@ func TestShipPrepareOpenspecChangeFromPlan(t *testing.T) {
 		})
 	}
 }
+
+// TestShipPrepareOpenspecHeaders: a plan that names an OpenSpec change whose
+// artifacts are not authored is refused in errors with the suggestion
+// appended, and no ship state file is written. Plans with a Saved line, a
+// Staging line, or only a Source line pass the check.
+func TestShipPrepareOpenspecHeaders(t *testing.T) {
+	cases := []struct {
+		name      string
+		plan      string
+		wantError []string // substrings of the single expected error; nil means no error
+	}{
+		{
+			name: "create only is refused",
+			plan: "# Plan\n\n**Source:** openspec/changes/add-widget/\n**OpenSpec-Create:** add-widget\n",
+			wantError: []string{
+				`names OpenSpec change "add-widget" (**OpenSpec-Create:**), but its artifacts are not authored`,
+				"Run /sdlc:plan on the plan again to finish the OpenSpec authoring, or remove the **OpenSpec-Create:** and **Source:** lines",
+			},
+		},
+		{
+			name: "staging with TBD appendix is refused",
+			plan: matPlanHeaders("add-widget") + "\n## OpenSpec Appendix\n\n[TBD: authored at the end of Step 6]\n",
+			wantError: []string{
+				`names OpenSpec change "add-widget", but its OpenSpec Appendix starts with [TBD`,
+				"Run /sdlc:plan on the plan again to finish the OpenSpec authoring.",
+			},
+		},
+		{
+			name: "saved line passes",
+			plan: "# Plan\n\n**OpenSpec-Create:** add-widget\n**OpenSpec-Saved:** openspec/changes/add-widget/ (branch feat/openspec)\n",
+		},
+		{
+			name: "source only passes",
+			plan: "# Plan\n\n**Source:** conversation context\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, planPath := shipMaterializeFixture(t, tc.plan)
+			out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath, DryRun: true})
+			if err != nil {
+				t.Fatalf("shipPrepare: %v", err)
+			}
+			if tc.wantError == nil {
+				for _, e := range out.Errors {
+					if strings.Contains(e, "OpenSpec") {
+						t.Errorf("unexpected OpenSpec error: %q", e)
+					}
+				}
+				return
+			}
+			if len(out.Errors) != 1 {
+				t.Fatalf("Errors = %v, want exactly one", out.Errors)
+			}
+			for _, want := range tc.wantError {
+				if !strings.Contains(out.Errors[0], want) {
+					t.Errorf("Errors[0] = %q, want it to contain %q", out.Errors[0], want)
+				}
+			}
+			if !strings.Contains(out.Errors[0], planPath) {
+				t.Errorf("Errors[0] = %q, want the plan path %q", out.Errors[0], planPath)
+			}
+			if out.StateFile != "" {
+				t.Errorf("StateFile = %q, want none", out.StateFile)
+			}
+			st, findErr := state.Find(dir, "ship", "feat/openspec")
+			if findErr != nil {
+				t.Fatalf("state.Find: %v", findErr)
+			}
+			if st != nil {
+				t.Fatalf("ship state file exists at %s after a refusal; want none", st.Path)
+			}
+		})
+	}
+}
