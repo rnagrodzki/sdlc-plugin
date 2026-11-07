@@ -2,6 +2,7 @@ package tools
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 )
@@ -890,4 +892,166 @@ func TestOpenspecSaveMaterializeError(t *testing.T) {
 			}
 		})
 	}
+}
+
+// afterSaveAdd replaces openspecSaveGit for the test so that fn runs in the
+// repo after each real `git add`. The returned func restores the original.
+func afterSaveAdd(t *testing.T, fn func(dir string)) (restore func()) {
+	t.Helper()
+	orig := openspecSaveGit
+	restore = func() { openspecSaveGit = orig }
+	t.Cleanup(restore)
+	openspecSaveGit = func(dir string, args ...string) (string, error) {
+		out, err := orig(dir, args...)
+		if err == nil && len(args) > 0 && args[0] == "add" {
+			fn(dir)
+		}
+		return out, err
+	}
+	return restore
+}
+
+// TestOpenspecSave_IndexCheck covers the check after git add: a manifest
+// file that is missing on disk or not in the index, and an untracked file.
+func TestOpenspecSave_IndexCheck(t *testing.T) {
+	const dir = "openspec/changes/add-widget/"
+	wantMsgs := func(t *testing.T, err error, wants ...string) *mcpserver.DomainError {
+		t.Helper()
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %T (%v), want *mcpserver.DomainError", err, err)
+		}
+		for _, w := range wants {
+			if !strings.Contains(de.Msg, w) {
+				t.Errorf("Msg = %q, want it to contain %q", de.Msg, w)
+			}
+		}
+		if strings.Contains(de.Msg, ".openspec.yaml") {
+			t.Errorf("Msg = %q, must not name .openspec.yaml", de.Msg)
+		}
+		return de
+	}
+
+	t.Run("missing on disk", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		afterSaveAdd(t, func(d string) {
+			if err := os.Remove(filepath.Join(d, filepath.FromSlash(dir), "proposal.md")); err != nil {
+				t.Fatal(err)
+			}
+		})
+		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		de := wantMsgs(t, err, `1 file(s) of change "add-widget"`, dir+"proposal.md")
+		if !strings.HasPrefix(de.Suggestion, "Delete "+dir+",") || !strings.Contains(de.Suggestion, "/sdlc:plan") {
+			t.Errorf("Suggestion = %q, want the stage-again text", de.Suggestion)
+		}
+		if got := readSaveFile(t, planPath); got != matPlanHeaders(saveChange) {
+			t.Errorf("plan changed:\n%s", got)
+		}
+	})
+
+	t.Run("not in index", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		afterSaveAdd(t, func(d string) {
+			runGit(t, d, "rm", "--cached", "-q", "--", dir+"proposal.md")
+		})
+		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		de := wantMsgs(t, err, "1 file(s)", dir+"proposal.md")
+		if want := "Run git add " + dir + " and call openspec_save again."; !strings.HasPrefix(de.Suggestion, want) {
+			t.Errorf("Suggestion = %q, want it to start with %q", de.Suggestion, want)
+		}
+	})
+
+	t.Run("untracked file with manifest", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		afterSaveAdd(t, func(d string) {
+			writeFile(t, filepath.Join(d, filepath.FromSlash(dir), "extra.md"), "x\n")
+		})
+		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		de := wantMsgs(t, err, "1 file(s)", dir+"extra.md")
+		if !strings.HasPrefix(de.Suggestion, "Run git add ") {
+			t.Errorf("Suggestion = %q, want the git add text", de.Suggestion)
+		}
+	})
+
+	t.Run("missing wins over untracked", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		afterSaveAdd(t, func(d string) {
+			base := filepath.Join(d, filepath.FromSlash(dir))
+			if err := os.Remove(filepath.Join(base, "proposal.md")); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(base, "extra.md"), "x\n")
+		})
+		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		de := wantMsgs(t, err, "2 file(s)", dir+"proposal.md", dir+"extra.md")
+		if !strings.HasPrefix(de.Suggestion, "Delete ") {
+			t.Errorf("Suggestion = %q, want the stage-again text", de.Suggestion)
+		}
+	})
+
+	t.Run("retry passes after git add, untracked file still fails", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		// The hook adds a new untracked file after each git add. Each retry
+		// stages the file of the call before, then meets a new one.
+		calls := 0
+		restore := afterSaveAdd(t, func(d string) {
+			calls++
+			writeFile(t, filepath.Join(d, filepath.FromSlash(dir), "extra"+strconv.Itoa(calls)+".md"), "x\n")
+		})
+		for i := 1; i <= 2; i++ {
+			_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+			// The second call has no manifest: staging is gone, so only the
+			// untracked check runs and it still finds the file.
+			wantMsgs(t, err, "1 file(s)", dir+"extra"+strconv.Itoa(i)+".md")
+		}
+		restore()
+		out, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		if err != nil {
+			t.Fatalf("third openspecSave: %v", err)
+		}
+		if out.Materialized != "already" || !slices.Contains(out.StagedFiles, dir+"extra2.md") {
+			t.Errorf("out = %+v, want already with extra2.md staged", out)
+		}
+		if !strings.Contains(readSaveFile(t, planPath), saveSavedLine) {
+			t.Error("plan header not rewritten on the passing call")
+		}
+	})
+
+	t.Run("clean save", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		out, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		if err != nil || len(out.Warnings) != 0 {
+			t.Fatalf("openspecSave = %+v, %v; want no warning and no error", out, err)
+		}
+	})
+}
+
+// TestOpenspecSave_LsFilesFails covers a failed git ls-files and an output
+// over the execx cap.
+func TestOpenspecSave_LsFilesFails(t *testing.T) {
+	t.Run("failure", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		failSaveGitOn(t, "ls-files")
+		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		ie := wantSaveInfra(t, err, "Fix the git repository state and call openspec_save again.")
+		if !strings.Contains(ie.Msg, "git ls-files openspec/changes/add-widget/: ") {
+			t.Errorf("Msg = %q, want the git ls-files text", ie.Msg)
+		}
+	})
+	t.Run("output cap", func(t *testing.T) {
+		root, planPath := saveFixture(t)
+		orig := openspecSaveGit
+		t.Cleanup(func() { openspecSaveGit = orig })
+		openspecSaveGit = func(dir string, args ...string) (string, error) {
+			if len(args) > 0 && args[0] == "ls-files" {
+				return "", fmt.Errorf("execx: git ls-files: %w", execx.ErrOutputCap)
+			}
+			return orig(dir, args...)
+		}
+		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+		ie := wantSaveInfra(t, err, "Remove the large untracked files under openspec/changes/add-widget/")
+		if !strings.Contains(ie.Msg, "output over the limit of 52428800 bytes") {
+			t.Errorf("Msg = %q, want the output limit text", ie.Msg)
+		}
+	})
 }

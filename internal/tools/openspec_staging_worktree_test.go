@@ -190,6 +190,197 @@ func TestOpenspecStaging_SecondWorktree(t *testing.T) {
 	})
 }
 
+// stagingRepo3 is a main worktree and three linked worktrees of one repository.
+type stagingRepo3 struct {
+	stagingRepo
+	c string // third linked worktree
+}
+
+// newStagingRepo3 is newStagingRepo plus a third linked worktree C on its own
+// branch.
+func newStagingRepo3(t *testing.T) stagingRepo3 {
+	t.Helper()
+	r := newStagingRepo(t)
+	c := filepath.Join(t.TempDir(), "wt-c")
+	runGit(t, r.main, "worktree", "add", "-b", "feat/c", c)
+	return stagingRepo3{stagingRepo: r, c: c}
+}
+
+// stubOpenspecForStageAny installs one `openspec` PATH stub for both openspec_stage
+// (`new change`, `status`, `validate`) and Materialize (`new change`,
+// `validate`). Unlike stubOpenspecForStage it accepts any change name.
+func stubOpenspecForStageAny(t *testing.T) {
+	t.Helper()
+	binDir := t.TempDir()
+	statusFile := filepath.Join(binDir, "status.json")
+	if err := os.WriteFile(statusFile, []byte(psStageStatusJSON), 0o644); err != nil {
+		t.Fatalf("write status stub: %v", err)
+	}
+	script := "#!/bin/sh\n" +
+		"case \"$1 $2\" in\n" +
+		"  \"new change\")\n" +
+		"    mkdir -p \"openspec/changes/$3\" && : > \"openspec/changes/$3/.openspec.yaml\"\n" +
+		"    echo \"Created change '$3'\"\n" +
+		"    exit 0 ;;\n" +
+		"  \"status --change\")\n" +
+		"    sed \"s/add-widget/$3/\" '" + statusFile + "'\n" +
+		"    exit 0 ;;\n" +
+		"esac\n" +
+		"case \"$1\" in\n" +
+		"  validate)\n" +
+		"    echo \"Change '$2' is valid\"\n" +
+		"    exit 0 ;;\n" +
+		"esac\n" +
+		"exit 1\n"
+	if err := os.WriteFile(filepath.Join(binDir, "openspec"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write openspec stub: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// stageChangeFromWorktree runs openspec_stage for change as a session in the linked
+// worktree active, with planPath as the owner of the staging folder.
+func stageChangeFromWorktree(r stagingRepo3, active, change, planPath string) error {
+	_, err := planSupportCore(r.main, active, PlanSupportIn{
+		Action:     "openspec_stage",
+		ChangeName: change,
+		Files: []openspec.StageFile{
+			{Path: "proposal.md", Content: "# Proposal\n"},
+			{Path: "specs/widget/spec.md", Content: "# Spec\n"},
+			{Path: "design.md", Content: "# Design\n"},
+			{Path: "tasks.md", Content: stagingTasks},
+		},
+		PlanPath: planPath,
+	})
+	return err
+}
+
+// namedStagingPlan writes a plan file for change in a folder outside every
+// worktree and returns its path.
+func namedStagingPlan(t *testing.T, change string) string {
+	t.Helper()
+	planPath := filepath.Join(t.TempDir(), "plan-"+change+".md")
+	writeFile(t, planPath, matPlanHeaders(change))
+	return planPath
+}
+
+// stagingDirOf returns the staging folder of change under the main worktree.
+func stagingDirOf(r stagingRepo3, change string) string {
+	return filepath.Join(r.main, ".sdlc-v2", "openspec-staging", change)
+}
+
+// TestOpenspecStagingParallel uses real git worktrees to check that plans
+// staged in parallel in three linked worktrees do not touch each other. It
+// has no t.Parallel: the stub sets PATH.
+func TestOpenspecStagingParallel(t *testing.T) {
+	t.Run("distinct names", func(t *testing.T) {
+		r := newStagingRepo3(t)
+		stubOpenspecForStageAny(t)
+		worktrees := map[string]string{"a": r.a, "b": r.b, "c": r.c}
+		plans := map[string]string{}
+		for change, wt := range worktrees {
+			plans[change] = namedStagingPlan(t, change)
+			if err := stageChangeFromWorktree(r, wt, change, plans[change]); err != nil {
+				t.Fatalf("stage %s in %s: %v", change, wt, err)
+			}
+		}
+		for change := range worktrees {
+			if _, err := os.Stat(stagingDirOf(r, change)); err != nil {
+				t.Fatalf("staging folder of %s missing: %v", change, err)
+			}
+		}
+
+		// Each ship_prepare materializes its own change in its own worktree
+		// and leaves the staging folders of the other two plans.
+		for _, change := range []string{"b", "a", "c"} {
+			wt := worktrees[change]
+			out, err := shipPrepare(r.main, wt, ShipPrepareIn{SkipConfigCheck: true, PlanFile: plans[change]})
+			if err != nil {
+				t.Fatalf("shipPrepare %s: %v", change, err)
+			}
+			if len(out.Errors) != 0 {
+				t.Fatalf("shipPrepare %s Errors = %v, want empty", change, out.Errors)
+			}
+			if out.Openspec == nil || *out.Openspec != (ShipOpenspecOut{Change: change, Materialized: "created"}) {
+				t.Fatalf("shipPrepare %s Openspec = %+v, want {%s created}", change, out.Openspec, change)
+			}
+			if _, err := os.Stat(filepath.Join(wt, "openspec", "changes", change, "tasks.md")); err != nil {
+				t.Errorf("tasks.md of %s missing in %s: %v", change, wt, err)
+			}
+			if _, err := os.Stat(stagingDirOf(r, change)); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("staging folder of %s still exists (stat err %v), want it gone", change, err)
+			}
+			for other := range worktrees {
+				if other == change {
+					continue
+				}
+				if _, err := os.Stat(filepath.Join(wt, "openspec", "changes", other)); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("change %s exists in %s (stat err %v), want none", other, wt, err)
+				}
+			}
+			delete(worktrees, change)
+			for left := range worktrees {
+				if _, err := os.Stat(stagingDirOf(r, left)); err != nil {
+					t.Errorf("staging folder of %s missing after materialize of %s: %v", left, change, err)
+				}
+			}
+		}
+	})
+
+	t.Run("same name", func(t *testing.T) {
+		r := newStagingRepo3(t)
+		stubOpenspecForStageAny(t)
+		planA := namedStagingPlan(t, "x")
+		planB := namedStagingPlan(t, "x")
+		if err := stageChangeFromWorktree(r, r.a, "x", planA); err != nil {
+			t.Fatalf("stage x for plan A: %v", err)
+		}
+
+		err := stageChangeFromWorktree(r, r.b, "x", planB)
+		var staged *openspec.StagedByOtherPlanError
+		if !errors.As(err, &staged) {
+			t.Fatalf("stage x for plan B err = %v, want *openspec.StagedByOtherPlanError", err)
+		}
+		if staged.PlanPath != planA {
+			t.Errorf("owner = %q, want plan A %q", staged.PlanPath, planA)
+		}
+		if !strings.Contains(err.Error(), "staged by another plan") {
+			t.Errorf("err = %q, want it to hold %q", err, "staged by another plan")
+		}
+		if _, err := os.Stat(stagingDirOf(r, "x")); err != nil {
+			t.Errorf("staging folder of x missing after the refused stage: %v", err)
+		}
+	})
+
+	t.Run("rerun", func(t *testing.T) {
+		r := newStagingRepo3(t)
+		stubOpenspecForStageAny(t)
+		planA := namedStagingPlan(t, "a")
+		if err := stageChangeFromWorktree(r, r.a, "a", planA); err != nil {
+			t.Fatalf("stage a: %v", err)
+		}
+		out, err := shipPrepare(r.main, r.a, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planA})
+		if err != nil {
+			t.Fatalf("shipPrepare in W1: %v", err)
+		}
+		if len(out.Errors) != 0 {
+			t.Fatalf("shipPrepare in W1 Errors = %v, want empty", out.Errors)
+		}
+
+		// The staging folder is gone and the change is only in W1.
+		out, err = shipPrepare(r.main, r.b, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planA})
+		if err != nil {
+			t.Fatalf("shipPrepare in W2: %v", err)
+		}
+		if len(out.Errors) != 1 || !strings.Contains(out.Errors[0], "already ran in another worktree") {
+			t.Fatalf("shipPrepare in W2 Errors = %q, want one error holding %q", out.Errors, "already ran in another worktree")
+		}
+		if _, err := os.Stat(filepath.Join(r.b, "openspec", "changes", "a")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("change a exists in W2 (stat err %v), want none", err)
+		}
+	})
+}
+
 // saveRootsFixture builds a git repo on main with one commit, an `openspec`
 // CLI stub on PATH, and a plan file outside the repo with the Staging header.
 // It stages nothing. It returns the repo root and the plan path.

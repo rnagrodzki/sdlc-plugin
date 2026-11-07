@@ -208,8 +208,11 @@ func TestMaterialize_AlreadySameSHA(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	if want := (MaterializeResult{Change: "add-widget", Materialized: "already"}); res != want {
+	if want := (MaterializeResult{Change: "add-widget", Materialized: "already"}); withoutManifest(res) != want {
 		t.Fatalf("result = %+v, want %+v", res, want)
+	}
+	if res.Manifest == nil || len(res.Manifest.Files) == 0 {
+		t.Errorf("res.Manifest = %+v, want the stage.json that rule 4 read", res.Manifest)
 	}
 	assertMissing(t, staging)
 	if after := snapshot(t, target); !reflect.DeepEqual(before, after) {
@@ -446,8 +449,11 @@ func TestMaterialize_Created(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	if want := (MaterializeResult{Change: "add-widget", Materialized: "created"}); res != want {
+	if want := (MaterializeResult{Change: "add-widget", Materialized: "created"}); withoutManifest(res) != want {
 		t.Fatalf("result = %+v, want %+v", res, want)
+	}
+	if res.Manifest == nil || len(res.Manifest.Files) == 0 {
+		t.Errorf("res.Manifest = %+v, want the stage.json that rule 4 or rule 8 read", res.Manifest)
 	}
 	if n := stubCalls(t, log); n != 2 {
 		t.Fatalf("stub calls = %d, want 2 (new change, validate)", n)
@@ -612,8 +618,11 @@ func TestMaterialize_FromStagingRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	if want := (MaterializeResult{Change: "add-widget", Materialized: "created"}); res != want {
+	if want := (MaterializeResult{Change: "add-widget", Materialized: "created"}); withoutManifest(res) != want {
 		t.Fatalf("result = %+v, want %+v", res, want)
+	}
+	if res.Manifest == nil || len(res.Manifest.Files) == 0 {
+		t.Errorf("res.Manifest = %+v, want the stage.json that rule 4 or rule 8 read", res.Manifest)
 	}
 	got := snapshot(t, filepath.Join(active, "openspec", "changes", "add-widget"))
 	for _, f := range files {
@@ -640,8 +649,11 @@ func TestMaterialize_FallbackActiveRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	if want := (MaterializeResult{Change: "add-widget", Materialized: "created"}); res != want {
+	if want := (MaterializeResult{Change: "add-widget", Materialized: "created"}); withoutManifest(res) != want {
 		t.Fatalf("result = %+v, want %+v", res, want)
+	}
+	if res.Manifest == nil || len(res.Manifest.Files) == 0 {
+		t.Errorf("res.Manifest = %+v, want the stage.json that rule 4 or rule 8 read", res.Manifest)
 	}
 	got := snapshot(t, filepath.Join(active, "openspec", "changes", "add-widget"))
 	for _, f := range files {
@@ -695,8 +707,11 @@ func TestMaterialize_TargetAndMainStagingPresent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
-	if want := (MaterializeResult{Change: "add-widget", Materialized: "already"}); res != want {
+	if want := (MaterializeResult{Change: "add-widget", Materialized: "already"}); withoutManifest(res) != want {
 		t.Fatalf("result = %+v, want %+v", res, want)
+	}
+	if res.Manifest == nil || len(res.Manifest.Files) == 0 {
+		t.Errorf("res.Manifest = %+v, want the stage.json that rule 4 or rule 8 read", res.Manifest)
 	}
 	assertMissing(t, main)
 	assertUnchanged(t, target, targetBefore)
@@ -935,4 +950,11 @@ func TestMaterialize_ValidateFailsRollsBackStagingRoot(t *testing.T) {
 		t.Fatalf("index not empty after rollback: %s", out)
 	}
 	assertGitClean(t, active)
+}
+
+// withoutManifest returns res with a nil Manifest, so a test can compare the
+// other fields with ==.
+func withoutManifest(res MaterializeResult) MaterializeResult {
+	res.Manifest = nil
+	return res
 }

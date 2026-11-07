@@ -103,6 +103,9 @@ func ReplaceStagingHeader(planContent, line string) (replaced string, ok bool) {
 type MaterializeResult struct {
 	Change       string `json:"change"`
 	Materialized string `json:"materialized"` // "created" | "already"; "" when rule 1
+	// Manifest is the stage.json that rule 4 and rule 8 read. It is nil on
+	// rule 1 and rule 3, which read no manifest.
+	Manifest *StageManifest `json:"-"`
 }
 
 // Materialize applies the first matching rule for the change staged by
@@ -165,6 +168,7 @@ func Materialize(activeRoot, stagingRoot, planContent, planPath string) (Materia
 	if err := checkStageOwner(change, manifest, planPath); err != nil {
 		return MaterializeResult{}, err
 	}
+	result.Manifest = &manifest
 
 	if targetExists {
 		bad, err := firstMismatch(manifest, targetDir)

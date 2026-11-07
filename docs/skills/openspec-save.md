@@ -153,3 +153,15 @@ for release intent and for approval of the PR text.
 - **Save with the plan that staged the change.** When the `stage.json` of the
   staging folder names another plan file, the tool returns a `domain` error that
   names the owner plan, and no file changes.
+- **The tool checks the files after `git add`.** It checks that each file of
+  `stage.json` is on disk and in the git index. It also checks that no file
+  under `openspec/changes/<change>/` is untracked. `.openspec.yaml` is never
+  reported. A gap returns a `domain` error that names each path, and the plan
+  header stays `**OpenSpec-Staging:**`:
+    - A file is not in the index, or is untracked: run `git add
+      openspec/changes/<change>/` and run `/openspec-save` again.
+    - A file is missing on disk: delete `openspec/changes/<change>/`, keep the
+      `**OpenSpec-Staging:**` header in the plan, and run `/sdlc:plan` to stage
+      the change again.
+  After a first call, the staging folder is gone. A second call checks only for
+  untracked files.

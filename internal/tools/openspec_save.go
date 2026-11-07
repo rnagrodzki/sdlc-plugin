@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
@@ -348,6 +350,9 @@ func openspecSaveApply(dirs openspecSaveDirs, planPath, plan, change string) (Op
 	if _, err := openspecSaveGit(workDir, "add", "--", changeDir); err != nil {
 		return OpenspecSaveOut{}, openspecSaveGitInfraError("git add "+changeDir, err)
 	}
+	if err := openspecSaveCheckIndex(workDir, changeDir, res.Manifest); err != nil {
+		return OpenspecSaveOut{}, err
+	}
 
 	savedLine := fmt.Sprintf("**OpenSpec-Saved:** %s (branch %s)", changeDir, target)
 	rewritten, ok := openspec.ReplaceStagingHeader(plan, savedLine)
@@ -432,6 +437,98 @@ func openspecSaveStagedFiles(workDir, changeDir string) ([]string, error) {
 	for _, line := range strings.Split(out, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
 			files = append(files, line)
+		}
+	}
+	return files, nil
+}
+
+// openspecSaveLsFilesLimit is the output cap of execx.Run in bytes (its
+// default, 50 MiB). execx.ErrOutputCap carries no byte count, so the
+// InfraError for a `git ls-files` overflow names this value.
+const openspecSaveLsFilesLimit = 52428800
+
+// openspecSaveCheckIndex runs after `git add` on changeDir. It returns a
+// DomainError that names each repo-relative path of the change that is
+// missing on disk, not in the git index, or untracked. The first two checks
+// need the manifest of the stage.json that Materialize read; with a nil
+// manifest (the change was materialized by an earlier call) only the check
+// for untracked files runs. A file that is missing on disk gets the
+// Suggestion to stage the change again: a new stage is the only fix for a
+// lost file. .openspec.yaml is never reported.
+func openspecSaveCheckIndex(workDir, changeDir string, manifest *openspec.StageManifest) error {
+	var missing, unstaged []string
+	if manifest != nil {
+		for _, p := range openspec.MissingFiles(*manifest, filepath.Join(workDir, filepath.FromSlash(changeDir))) {
+			missing = append(missing, changeDir+p)
+		}
+		cached, err := openspecSaveLsFiles(workDir, changeDir, "--cached")
+		if err != nil {
+			return err
+		}
+		for _, f := range manifest.Files {
+			p := changeDir + f.Path
+			if !slices.Contains(cached, p) && !slices.Contains(missing, p) {
+				unstaged = append(unstaged, p)
+			}
+		}
+	}
+	untracked, err := openspecSaveLsFiles(workDir, changeDir, "--others", "--exclude-standard")
+	if err != nil {
+		return err
+	}
+
+	bad := slices.Concat(missing, unstaged)
+	for _, p := range untracked {
+		if p != changeDir+".openspec.yaml" && !slices.Contains(bad, p) {
+			bad = append(bad, p)
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+
+	change := path.Base(strings.TrimSuffix(changeDir, "/"))
+	suggestion := fmt.Sprintf("Run git add %s and call openspec_save again.", changeDir)
+	if len(missing) > 0 {
+		suggestion = fmt.Sprintf("Delete %s, put back the **OpenSpec-Staging:** header, and run /sdlc:plan to stage the change again.", changeDir)
+	}
+	listed, extra := bad, ""
+	if len(bad) > openspecSaveMaxListedPaths {
+		listed = bad[:openspecSaveMaxListedPaths]
+		extra = fmt.Sprintf(" and %d more", len(bad)-openspecSaveMaxListedPaths)
+	}
+	return &mcpserver.DomainError{
+		Msg: fmt.Sprintf("openspec_save: %d file(s) of change %q are missing or not in the git index: %s%s",
+			len(bad), change, strings.Join(listed, ", "), extra),
+		Suggestion: suggestion,
+	}
+}
+
+// openspecSaveLsFiles returns the repo-relative paths that `git ls-files
+// <flags> -- changeDir` lists. It passes -z, so a path with unusual
+// characters is not quoted. A failure is an InfraError; an output over the
+// execx cap gets its own Suggestion.
+func openspecSaveLsFiles(workDir, changeDir string, flags ...string) ([]string, error) {
+	args := slices.Concat([]string{"ls-files", "-z"}, flags, []string{"--", changeDir})
+	out, err := openspecSaveGit(workDir, args...)
+	if err != nil {
+		if errors.Is(err, execx.ErrOutputCap) {
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("openspec_save: git ls-files %s: output over the limit of %d bytes", changeDir, openspecSaveLsFilesLimit),
+				Suggestion: fmt.Sprintf("Remove the large untracked files under %s, then call openspec_save again.", changeDir),
+				Cause:      err,
+			}
+		}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("openspec_save: git ls-files %s: %s", changeDir, err),
+			Suggestion: "Fix the git repository state and call openspec_save again.",
+			Cause:      err,
+		}
+	}
+	var files []string
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			files = append(files, p)
 		}
 	}
 	return files, nil

@@ -62,6 +62,20 @@ an entry in `errors` that names the owner plan, and no file changes. Run ship
 with the owner plan, or pick another change name in the plan header and run
 `/sdlc:plan` again. Only a run of the owner plan deletes the staging folder.
 
+When a run names an OpenSpec change, `ship_prepare` also checks for a shared
+spec. The name comes from the staging header, the `**Source:**` header or
+`--openspec-change`. `ship_prepare` compares the `specs/<capability>/` folders
+of the change with those of every other active change and every other staged
+change. Each shared capability gives one entry in `warnings`. The entry names
+both changes and the capability. The warning gives you time to agree a merge
+order with the other plan. A change that `ship_prepare` cannot read adds one
+warning and does not stop the call.
+
+For the same named change, `ship_prepare` stores the HEAD sha as
+`openspecBaseHead` in the ship state file. Later steps use it to find the
+archived changes that a rebase brought in. A dry run stores nothing. When
+`git rev-parse HEAD` fails, `ship_prepare` adds a warning and stores no key.
+
 The `commit` step first stages the changes (everything except the `.sdlc-v2/`
 data directory) and checks the working tree. When changes are staged, `/ship`
 runs [/commit](commit.md). When the tree is clean, the step completes at once
