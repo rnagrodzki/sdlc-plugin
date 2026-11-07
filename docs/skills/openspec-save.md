@@ -150,3 +150,6 @@ for release intent and for approval of the PR text.
   reports the branch.
 - **Do not edit the plan header by hand.** The tool rewrites it. A plan with both
   an `**OpenSpec-Staging:**` and an `**OpenSpec-Saved:**` line is an error.
+- **Save with the plan that staged the change.** When the `stage.json` of the
+  staging folder names another plan file, the tool returns a `domain` error that
+  names the owner plan, and no file changes.

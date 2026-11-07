@@ -149,7 +149,7 @@ func TestReplaceStagingHeader(t *testing.T) {
 // Rule 1.
 func TestMaterialize_NoHeader(t *testing.T) {
 	root, log := setupStageRepo(t)
-	res, err := Materialize(root, root, "# Plan\n\nno staging header\n")
+	res, err := Materialize(root, root, "# Plan\n\nno staging header\n", "")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestMaterialize_NoHeader(t *testing.T) {
 // Rule 2.
 func TestMaterialize_InvalidChangeName(t *testing.T) {
 	root, log := setupStageRepo(t)
-	_, err := Materialize(root, root, matPlan("Bad_Name"))
+	_, err := Materialize(root, root, matPlan("Bad_Name"), "")
 	if !errors.Is(err, ErrInvalidChangeName) || !errors.Is(err, ErrMaterialize) {
 		t.Fatalf("err = %v, want ErrInvalidChangeName and ErrMaterialize", err)
 	}
@@ -182,7 +182,7 @@ func TestMaterialize_AlreadyNoStaging(t *testing.T) {
 	target := writeTarget(t, root, "add-widget", stageFiles(false))
 	before := snapshot(t, target)
 
-	res, err := Materialize(root, root, matPlan("add-widget"))
+	res, err := Materialize(root, root, matPlan("add-widget"), "")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestMaterialize_AlreadySameSHA(t *testing.T) {
 	staging := writeStaging(t, root, "add-widget", stageFiles(true))
 	before := snapshot(t, target)
 
-	res, err := Materialize(root, root, matPlan("add-widget"))
+	res, err := Materialize(root, root, matPlan("add-widget"), "")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestMaterialize_TargetDiffers(t *testing.T) {
 			staging := writeStaging(t, root, "add-widget", stageFiles(false))
 			targetBefore, stagingBefore := snapshot(t, target), snapshot(t, staging)
 
-			_, err := Materialize(root, root, matPlan("add-widget"))
+			_, err := Materialize(root, root, matPlan("add-widget"), "")
 			if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "openspec change add-widget already exists and differs from staging") {
 				t.Fatalf("err = %v, want differs-from-staging ErrMaterialize", err)
 			}
@@ -260,7 +260,7 @@ func TestMaterialize_TargetDiffers(t *testing.T) {
 // Rule 6.
 func TestMaterialize_BothMissing(t *testing.T) {
 	root, log := setupStageRepo(t)
-	_, err := Materialize(root, root, matPlan("add-widget"))
+	_, err := Materialize(root, root, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) {
 		t.Fatalf("err = %v, want ErrMaterialize", err)
 	}
@@ -268,10 +268,132 @@ func TestMaterialize_BothMissing(t *testing.T) {
 	if !strings.Contains(err.Error(), want) {
 		t.Fatalf("err = %q, want it to name %q", err, want)
 	}
+	if hint := "If this plan already ran in another worktree, the change is on the branch of that worktree."; !strings.HasSuffix(err.Error(), hint) {
+		t.Fatalf("err = %q, want it to end with %q", err, hint)
+	}
 	if n := stubCalls(t, log); n != 0 {
 		t.Fatalf("stub calls = %d, want 0", n)
 	}
 	assertMissing(t, filepath.Join(root, "openspec", "changes"))
+}
+
+// setStagePlanPath rewrites the planPath of the stage.json of change.
+func setStagePlanPath(t *testing.T, root, change, planPath string) {
+	t.Helper()
+	m := readManifest(t, root, change)
+	m.PlanPath = planPath
+	p := filepath.Join(root, ".sdlc-v2", "openspec-staging", change, StageManifestFile)
+	if err := fsx.AtomicWriteJSON(p, m); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Owner check on the rule 4 and the rule 8 paths: a staging that belongs to
+// another plan gives a *StagingOwnerError and changes no file.
+func TestMaterialize_OwnerMismatch(t *testing.T) {
+	for _, withTarget := range []bool{true, false} {
+		name := "rule 8 path"
+		if withTarget {
+			name = "rule 4 path"
+		}
+		t.Run(name, func(t *testing.T) {
+			root, log := setupStageRepo(t)
+			owner := filepath.Join(t.TempDir(), "plan-a.md")
+			other := filepath.Join(t.TempDir(), "plan-b.md")
+			mustWrite(t, owner, "# Plan A\n")
+			mustWrite(t, other, "# Plan B\n")
+			var target string
+			var targetBefore map[string]string
+			if withTarget {
+				target = writeTarget(t, root, "add-widget", stageFiles(true))
+				targetBefore = snapshot(t, target)
+			}
+			staging := writeStaging(t, root, "add-widget", stageFiles(true))
+			setStagePlanPath(t, root, "add-widget", owner)
+			stagingBefore := snapshot(t, staging)
+
+			_, err := Materialize(root, root, matPlan("add-widget"), other)
+			var oe *StagingOwnerError
+			if !errors.As(err, &oe) || !errors.Is(err, ErrMaterialize) {
+				t.Fatalf("err = %v, want *StagingOwnerError wrapping ErrMaterialize", err)
+			}
+			if oe.Change != "add-widget" || oe.Owner != owner || oe.PlanPath != other {
+				t.Fatalf("owner error = %+v", oe)
+			}
+			want := `openspec materialize: staging of "add-widget" belongs to plan ` + owner + ", not " + other
+			if err.Error() != want {
+				t.Fatalf("err = %q, want %q", err, want)
+			}
+			if after := snapshot(t, staging); !reflect.DeepEqual(stagingBefore, after) {
+				t.Fatalf("staging changed: %v", after)
+			}
+			if withTarget {
+				if after := snapshot(t, target); !reflect.DeepEqual(targetBefore, after) {
+					t.Fatalf("target changed: %v", after)
+				}
+			} else {
+				assertMissing(t, filepath.Join(root, "openspec", "changes", "add-widget"))
+			}
+			if n := stubCalls(t, log); n != 0 {
+				t.Fatalf("stub calls = %d, want 0", n)
+			}
+		})
+	}
+}
+
+// The owner check is skipped for an empty plan path or a stage.json with no
+// planPath, and passes for the same plan named through a symlink.
+func TestMaterialize_OwnerCheckSkippedOrSame(t *testing.T) {
+	owner := filepath.Join(t.TempDir(), "plan-a.md")
+	mustWrite(t, owner, "# Plan A\n")
+	link := filepath.Join(t.TempDir(), "plan-link.md")
+	if err := os.Symlink(owner, link); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct{ staged, call string }{
+		"empty plan path":         {staged: owner, call: ""},
+		"stage.json no planPath":  {staged: "", call: filepath.Join(t.TempDir(), "plan-b.md")},
+		"same plan under symlink": {staged: owner, call: link},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			root, _ := setupStageRepo(t)
+			writeTarget(t, root, "add-widget", stageFiles(true))
+			staging := writeStaging(t, root, "add-widget", stageFiles(true))
+			setStagePlanPath(t, root, "add-widget", tc.staged)
+
+			res, err := Materialize(root, root, matPlan("add-widget"), tc.call)
+			if err != nil {
+				t.Fatalf("Materialize: %v", err)
+			}
+			if res.Materialized != MaterializedAlready {
+				t.Fatalf("result = %+v, want already", res)
+			}
+			assertMissing(t, staging)
+		})
+	}
+}
+
+// Materialize reads stage.json with ReadStageManifest, so the size cap
+// applies and nothing changes.
+func TestMaterialize_StageManifestTooLarge(t *testing.T) {
+	root, log := setupStageRepo(t)
+	staging := writeStaging(t, root, "add-widget", stageFiles(true))
+	big := strings.Repeat(" ", (1<<20)+1)
+	mustWrite(t, filepath.Join(staging, StageManifestFile), "{}"+big)
+	before := snapshot(t, staging)
+
+	_, err := Materialize(root, root, matPlan("add-widget"), "")
+	if !errors.Is(err, ErrStageManifestTooLarge) {
+		t.Fatalf("err = %v, want ErrStageManifestTooLarge", err)
+	}
+	if after := snapshot(t, staging); !reflect.DeepEqual(before, after) {
+		t.Fatalf("staging changed")
+	}
+	assertMissing(t, filepath.Join(root, "openspec", "changes", "add-widget"))
+	if n := stubCalls(t, log); n != 0 {
+		t.Fatalf("stub calls = %d, want 0", n)
+	}
 }
 
 // Rule 7.
@@ -280,7 +402,7 @@ func TestMaterialize_StagedFileHashMismatch(t *testing.T) {
 	staging := writeStaging(t, root, "add-widget", stageFiles(false))
 	mustWrite(t, filepath.Join(staging, "specs", "user-auth", "spec.md"), "# Spec (edited after validation)\n")
 
-	_, err := Materialize(root, root, matPlan("add-widget"))
+	_, err := Materialize(root, root, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "staged file specs/user-auth/spec.md changed after validation") {
 		t.Fatalf("err = %v, want changed-after-validation ErrMaterialize", err)
 	}
@@ -302,7 +424,7 @@ func TestMaterialize_RejectsUnsafeManifestPath(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			_, err := Materialize(root, root, matPlan("add-widget"))
+			_, err := Materialize(root, root, matPlan("add-widget"), "")
 			if !errors.Is(err, ErrMaterialize) || !errors.Is(err, ErrPathNotAllowed) {
 				t.Fatalf("err = %v, want ErrMaterialize and ErrPathNotAllowed", err)
 			}
@@ -320,7 +442,7 @@ func TestMaterialize_Created(t *testing.T) {
 	files := stageFiles(true)
 	staging := writeStaging(t, root, "add-widget", files)
 
-	res, err := Materialize(root, root, matPlan("add-widget"))
+	res, err := Materialize(root, root, matPlan("add-widget"), "")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -359,7 +481,7 @@ func TestMaterialize_Created(t *testing.T) {
 	}
 
 	before := snapshot(t, target)
-	res, err = Materialize(root, root, matPlan("add-widget"))
+	res, err = Materialize(root, root, matPlan("add-widget"), "")
 	if err != nil {
 		t.Fatalf("second Materialize: %v", err)
 	}
@@ -382,7 +504,7 @@ func TestMaterialize_CLINotFoundAtNewChange(t *testing.T) {
 	stagingBefore := snapshot(t, staging)
 	withStubPath(t) // PATH now holds only an empty dir: no openspec binary
 
-	_, err := Materialize(root, root, matPlan("add-widget"))
+	_, err := Materialize(root, root, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrCLINotFound) {
 		t.Fatalf("err = %v, want ErrCLINotFound", err)
 	}
@@ -413,7 +535,7 @@ exit 1
 		t.Fatalf("write openspec stub: %v", err)
 	}
 
-	_, err := Materialize(root, root, matPlan("add-widget"))
+	_, err := Materialize(root, root, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrCLINotFound) {
 		t.Fatalf("err = %v, want ErrCLINotFound", err)
 	}
@@ -433,7 +555,7 @@ func TestMaterialize_ValidateFailsRollsBack(t *testing.T) {
 	staging := writeStaging(t, root, "add-widget", stageFiles(false))
 	stagingBefore := snapshot(t, staging)
 
-	_, err := Materialize(root, root, matPlan("add-widget"))
+	_, err := Materialize(root, root, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "proposal.md missing Why section") {
 		t.Fatalf("err = %v, want ErrMaterialize carrying the CLI output", err)
 	}
@@ -486,7 +608,7 @@ func TestMaterialize_FromStagingRoot(t *testing.T) {
 	main := writeStaging(t, stagingRoot, "add-widget", files)
 	old, oldBefore := oldActiveStaging(t, active)
 
-	res, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	res, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -514,7 +636,7 @@ func TestMaterialize_FallbackActiveRoot(t *testing.T) {
 	files := stageFiles(true)
 	old := writeStaging(t, active, "add-widget", files)
 
-	res, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	res, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -540,7 +662,7 @@ func TestMaterialize_BothMissingNamesBothPaths(t *testing.T) {
 	active, log := setupStageRepo(t)
 	stagingRoot := t.TempDir()
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) {
 		t.Fatalf("err = %v, want ErrMaterialize", err)
 	}
@@ -569,7 +691,7 @@ func TestMaterialize_TargetAndMainStagingPresent(t *testing.T) {
 	old, oldBefore := oldActiveStaging(t, active)
 	targetBefore := snapshot(t, target)
 
-	res, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	res, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -593,7 +715,7 @@ func TestMaterialize_NoFallbackWhenTargetExists(t *testing.T) {
 	old, oldBefore := oldActiveStaging(t, active)
 	targetBefore := snapshot(t, target)
 
-	res, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	res, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
@@ -631,7 +753,7 @@ func TestMaterialize_MainStagingStatErrorNoFallback(t *testing.T) {
 	mustWrite(t, filepath.Join(stagingRoot, ".sdlc-v2"), "not a dir\n")
 	old, oldBefore := oldActiveStaging(t, active)
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	assertInfraNoFallback(t, err, "openspec materialize: stat "+filepath.Join(stagingRoot, ".sdlc-v2"), active, log, old, oldBefore)
 }
 
@@ -643,7 +765,7 @@ func TestMaterialize_MainStagingIsFileNoFallback(t *testing.T) {
 	mustWrite(t, mainPath, "not a dir\n")
 	old, oldBefore := oldActiveStaging(t, active)
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	assertInfraNoFallback(t, err, "openspec materialize: read "+filepath.Join(mainPath, StageManifestFile), active, log, old, oldBefore)
 }
 
@@ -661,7 +783,7 @@ func TestMaterialize_FallbackStatError(t *testing.T) {
 	}
 	mustWrite(t, activeData, "not a dir\n")
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if err == nil || errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "openspec materialize: stat "+activeData) {
 		t.Fatalf("err = %v, want an infrastructure stat error (not ErrMaterialize) for %s", err, activeData)
 	}
@@ -694,7 +816,7 @@ func TestMaterialize_MainStagingBadManifestNoFallback(t *testing.T) {
 			mainBefore := snapshot(t, main)
 			old, oldBefore := oldActiveStaging(t, active)
 
-			_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+			_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 			assertInfraNoFallback(t, err, "openspec materialize: read "+filepath.Join(main, StageManifestFile), active, log, old, oldBefore)
 			assertUnchanged(t, main, mainBefore)
 		})
@@ -714,7 +836,7 @@ func TestMaterialize_TargetDiffersStagingRoot(t *testing.T) {
 	staging := writeStaging(t, stagingRoot, "add-widget", stageFiles(false))
 	targetBefore, stagingBefore := snapshot(t, target), snapshot(t, staging)
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "openspec change add-widget already exists and differs from staging") {
 		t.Fatalf("err = %v, want differs-from-staging ErrMaterialize", err)
 	}
@@ -734,7 +856,7 @@ func TestMaterialize_StagedFileHashMismatchStagingRoot(t *testing.T) {
 	mustWrite(t, filepath.Join(staging, "tasks.md"), "# Tasks (edited after validation)\n")
 	stagingBefore := snapshot(t, staging)
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "staged file tasks.md changed after validation") {
 		t.Fatalf("err = %v, want changed-after-validation ErrMaterialize", err)
 	}
@@ -755,7 +877,7 @@ func TestMaterialize_StagedFileHashMismatchFallback(t *testing.T) {
 	mustWrite(t, filepath.Join(staging, "tasks.md"), "# Tasks (edited after validation)\n")
 	stagingBefore := snapshot(t, staging)
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "staged file tasks.md changed after validation") {
 		t.Fatalf("err = %v, want changed-after-validation ErrMaterialize", err)
 	}
@@ -779,7 +901,7 @@ func TestMaterialize_RejectsUnsafeManifestPathStagingRoot(t *testing.T) {
 	}
 	stagingBefore := snapshot(t, staging)
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) || !errors.Is(err, ErrPathNotAllowed) {
 		t.Fatalf("err = %v, want ErrMaterialize and ErrPathNotAllowed", err)
 	}
@@ -800,7 +922,7 @@ func TestMaterialize_ValidateFailsRollsBackStagingRoot(t *testing.T) {
 	staging := writeStaging(t, stagingRoot, "add-widget", stageFiles(false))
 	stagingBefore := snapshot(t, staging)
 
-	_, err := Materialize(active, stagingRoot, matPlan("add-widget"))
+	_, err := Materialize(active, stagingRoot, matPlan("add-widget"), "")
 	if !errors.Is(err, ErrMaterialize) || !strings.Contains(err.Error(), "proposal.md missing Why section") {
 		t.Fatalf("err = %v, want ErrMaterialize carrying the CLI output", err)
 	}

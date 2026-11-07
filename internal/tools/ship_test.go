@@ -3061,6 +3061,43 @@ func TestShipPrepareMaterialize_TargetDiffers(t *testing.T) {
 	}
 }
 
+// TestShipPrepareMaterialize_OwnerMismatch: a staging whose stage.json names
+// another plan lands in errors with the owner Suggestion appended. No
+// ship-state file is written and no file changes.
+func TestShipPrepareMaterialize_OwnerMismatch(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, matPlanHeaders("add-widget"))
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, dir, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+	owner := filepath.Join(dir, "plan-a.md")
+	setMaterializeStagePlanPath(t, dir, "add-widget", owner)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	want := `openspec materialize: staging of "add-widget" belongs to plan ` + owner + ", not " + planPath +
+		" Run ship or execute with the plan " + owner + ", or pick another change name in the plan header and run /sdlc:plan again."
+	if len(out.Errors) != 1 || out.Errors[0] != want {
+		t.Fatalf("Errors = %q, want [%q]", out.Errors, want)
+	}
+	if out.StateFile != "" || out.Openspec != nil {
+		t.Errorf("StateFile = %q, Openspec = %+v, want both empty", out.StateFile, out.Openspec)
+	}
+	st, findErr := state.Find(dir, "ship", "feat/openspec")
+	if findErr != nil {
+		t.Fatalf("state.Find: %v", findErr)
+	}
+	if st != nil {
+		t.Fatalf("ship state file exists at %s after owner error; want none", st.Path)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", "openspec-staging", "add-widget", "tasks.md")); err != nil {
+		t.Errorf("staging tasks.md: %v, want it kept", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "openspec", "changes", "add-widget")); !os.IsNotExist(err) {
+		t.Errorf("change dir stat = %v, want not exist", err)
+	}
+}
+
 // TestShipPrepareMaterialize_DryRun: dryRun reports materialized:"dry-run"
 // and Materialize writes nothing — the target dir does not exist and the
 // staging dir is untouched.

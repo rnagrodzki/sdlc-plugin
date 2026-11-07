@@ -326,7 +326,7 @@ func openspecSaveApply(dirs openspecSaveDirs, planPath, plan, change string) (Op
 	changeDir := openspecSaveChangeDir(change)
 	target := "openspec/" + change
 
-	res, err := openspec.Materialize(workDir, dirs.stagingRoot(), plan)
+	res, err := openspec.Materialize(workDir, dirs.stagingRoot(), plan, planPath)
 	if err != nil {
 		return OpenspecSaveOut{}, openspecSaveMaterializeError(err)
 	}
@@ -505,6 +505,13 @@ func openspecSaveMaterializeError(err error) error {
 	})
 }
 
+// materializeOwnerSuggestion is the Suggestion for a staging that belongs to
+// another plan. ship_prepare appends it to its error string; execute_state
+// init and openspec_save return it through materializeError.
+func materializeOwnerSuggestion(e *openspec.StagingOwnerError) string {
+	return fmt.Sprintf("Run ship or execute with the plan %s, or pick another change name in the plan header and run /sdlc:plan again.", e.Owner)
+}
+
 // materializeErrorText is the caller wording materializeError puts into
 // each error. execute_state init (mapMaterializeError) and openspec_save
 // (openspecSaveMaterializeError) each pass their own.
@@ -519,9 +526,14 @@ type materializeErrorText struct {
 // materializeError maps an openspec.Materialize failure to a typed error.
 // A missing CLI (ErrCLINotFound) is an InfraError. An invalid change name
 // (ErrInvalidChangeName) and every other rule failure (ErrMaterialize) are
-// DomainErrors. Any other failure (filesystem errors, a failed git add) is
-// an InfraError. See mapMaterializeError for the rule list.
+// DomainErrors. A staging that belongs to another plan
+// (*openspec.StagingOwnerError) is a DomainError with the owner Suggestion; it
+// is matched before ErrMaterialize, which it wraps. A stage.json over the size
+// cap (ErrStageManifestTooLarge) is a DataError. Any other failure
+// (filesystem errors, a failed git add) is an InfraError. See
+// mapMaterializeError for the rule list.
 func materializeError(err error, text materializeErrorText) error {
+	var owner *openspec.StagingOwnerError
 	switch {
 	case errors.Is(err, openspec.ErrCLINotFound):
 		return &mcpserver.InfraError{
@@ -533,6 +545,18 @@ func materializeError(err error, text materializeErrorText) error {
 		return &mcpserver.DomainError{
 			Msg:        text.MsgPrefix + err.Error(),
 			Suggestion: openspecNameSuggestion,
+			Cause:      err,
+		}
+	case errors.As(err, &owner):
+		return &mcpserver.DomainError{
+			Msg:        text.MsgPrefix + err.Error(),
+			Suggestion: materializeOwnerSuggestion(owner),
+			Cause:      err,
+		}
+	case errors.Is(err, openspec.ErrStageManifestTooLarge):
+		return &mcpserver.DataError{
+			Msg:        text.MsgPrefix + err.Error(),
+			Suggestion: "Run openspec_stage again to write a new stage.json.",
 			Cause:      err,
 		}
 	case errors.Is(err, openspec.ErrMaterialize):

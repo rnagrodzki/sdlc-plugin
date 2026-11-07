@@ -56,6 +56,12 @@ no state file is written. Run `/sdlc:plan` on the plan again to finish the
 authoring, or remove the `**OpenSpec-Create:**` and `**Source:**` lines to ship
 without OpenSpec.
 
+`ship_prepare` also refuses a plan whose staging folder belongs to another
+plan. The `stage.json` of that folder names another plan file. The refusal is
+an entry in `errors` that names the owner plan, and no file changes. Run ship
+with the owner plan, or pick another change name in the plan header and run
+`/sdlc:plan` again. Only a run of the owner plan deletes the staging folder.
+
 The `commit` step first stages the changes (everything except the `.sdlc-v2/`
 data directory) and checks the working tree. When changes are staged, `/ship`
 runs [/commit](commit.md). When the tree is clean, the step completes at once

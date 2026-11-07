@@ -190,7 +190,7 @@ func TestOpenspecSave_CreatesBranchAndSaves(t *testing.T) {
 	if !strings.Contains(plan, "**Source:** openspec/changes/add-widget/\n") {
 		t.Errorf("plan lost its other lines:\n%s", plan)
 	}
-	res, err := openspec.Materialize(root, root, plan)
+	res, err := openspec.Materialize(root, root, plan, "")
 	if err != nil || res != (openspec.MaterializeResult{}) {
 		t.Errorf("Materialize(rewritten plan) = %+v, %v; want zero result, nil", res, err)
 	}
@@ -633,6 +633,26 @@ func TestOpenspecSave_MaterializeFailsOnChangeBranch(t *testing.T) {
 	}
 }
 
+// TestOpenspecSave_OwnerMismatch covers a staging whose stage.json names
+// another plan: Materialize refuses it with the owner Suggestion, the
+// staging stays, the plan keeps its Staging line and no change dir exists.
+func TestOpenspecSave_OwnerMismatch(t *testing.T) {
+	root, planPath := saveFixture(t)
+	runGit(t, root, "switch", "-c", saveTarget)
+	owner := filepath.Join(t.TempDir(), "plan-a.md")
+	setMaterializeStagePlanPath(t, root, saveChange, owner)
+
+	_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
+	de := wantSaveDomain(t, err, "Run ship or execute with the plan "+owner+", or pick another change name in the plan header and run /sdlc:plan again.")
+	if want := "openspec_save: openspec materialize: staging of \"" + saveChange + "\" belongs to plan " + owner + ", not " + planPath; de.Msg != want {
+		t.Errorf("Msg = %q, want %q", de.Msg, want)
+	}
+	assertSaveUntouched(t, root, planPath, saveTarget)
+	if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging", saveChange, "tasks.md")); err != nil {
+		t.Errorf("staging tasks.md: %v, want it kept", err)
+	}
+}
+
 // TestOpenspecSave_StampFails covers a failure of the third write: the
 // change dir already exists (Materialize returns already) with a read-only
 // tasks.md, so the ref stamp fails before git add and before the plan
@@ -835,6 +855,8 @@ func TestOpenspecSaveMaterializeError(t *testing.T) {
 		{"cli not found", openspec.ErrCLINotFound, false, openspecSaveCLISuggestion},
 		{"invalid name", openspec.ErrInvalidChangeName, true, openspecNameSuggestion},
 		{"rule error", openspec.ErrMaterialize, true, "call openspec_save again"},
+		{"owner", &openspec.StagingOwnerError{Change: saveChange, Owner: "/plans/a.md", PlanPath: "/plans/b.md"}, true,
+			"Run ship or execute with the plan /plans/a.md, or pick another change name in the plan header and run /sdlc:plan again."},
 		{"other failure", errors.New("disk full"), false, "then call openspec_save again."},
 	}
 	for _, tc := range cases {

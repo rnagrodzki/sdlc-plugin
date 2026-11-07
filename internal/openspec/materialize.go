@@ -32,6 +32,28 @@ import (
 // filesystem errors, `git add` failures) do not wrap it.
 var ErrMaterialize = errors.New("openspec materialize")
 
+// StagingOwnerError is returned by Materialize when the stage.json of the
+// staging dir names another plan file (Owner) than the plan of this call
+// (PlanPath). Materialize then changes no file: the staging dir and the
+// target stay as they were. errors.Is(err, ErrMaterialize) is true for it;
+// read the fields with errors.As.
+type StagingOwnerError struct {
+	Change   string
+	Owner    string
+	PlanPath string
+}
+
+func (e *StagingOwnerError) Error() string {
+	return fmt.Sprintf("%s: staging of %q belongs to plan %s, not %s", ErrMaterialize.Error(), e.Change, e.Owner, e.PlanPath)
+}
+
+func (e *StagingOwnerError) Unwrap() error { return ErrMaterialize }
+
+// rule6Hint ends the rule 6 error: a plan that already materialized in
+// another worktree has its change on the branch of that worktree, and its
+// staging dir is gone.
+const rule6Hint = "If this plan already ran in another worktree, the change is on the branch of that worktree."
+
 // stagingHeaderRe matches the whole plan header line written after a
 // successful stage:
 // **OpenSpec-Staging:** .sdlc-v2/openspec-staging/<change>/
@@ -101,11 +123,18 @@ type MaterializeResult struct {
 //     validate <change> --strict`, `git add openspec/changes/<change>/`,
 //     delete the staging dir; "created"
 //
+// Before rules 4 to 8, the stage.json planPath is compared with planPath by
+// SamePlanPath. Another plan returns a *StagingOwnerError and changes no
+// file, so a run deletes only the staging dir of its own plan. An empty
+// planPath, or a stage.json with no planPath, skips this owner check, as
+// Stage does. stage.json is read with ReadStageManifest, so its size cap
+// (ErrStageManifestTooLarge) applies here too.
+//
 // On any rule-8 failure the target dir is removed and the staging dir is
 // kept. A failed validation returns an ErrMaterialize error carrying the CLI
 // output. The .openspec.yaml file `openspec new change` creates is never
 // overwritten. See ErrMaterialize for which errors wrap it.
-func Materialize(activeRoot, stagingRoot, planContent string) (MaterializeResult, error) {
+func Materialize(activeRoot, stagingRoot, planContent, planPath string) (MaterializeResult, error) {
 	change, ok := StagedChangeFromPlan(planContent)
 	if !ok {
 		return MaterializeResult{}, nil // rule 1
@@ -129,8 +158,11 @@ func Materialize(activeRoot, stagingRoot, planContent string) (MaterializeResult
 		return result, nil // rule 3
 	}
 
-	manifest, err := readStageManifest(stagingDir)
+	manifest, err := ReadStageManifest(stagingDir)
 	if err != nil {
+		return MaterializeResult{}, err
+	}
+	if err := checkStageOwner(change, manifest, planPath); err != nil {
 		return MaterializeResult{}, err
 	}
 
@@ -200,7 +232,19 @@ func resolveStagingDir(activeRoot, stagingRoot, change string, targetExists bool
 	if len(checked) > 1 {
 		noun = "staging dirs " + strings.Join(checked, " and ") + " are"
 	}
-	return "", false, fmt.Errorf("%w: openspec/changes/%s/ does not exist and the %s missing", ErrMaterialize, change, noun)
+	return "", false, fmt.Errorf("%w: openspec/changes/%s/ does not exist and the %s missing. %s", ErrMaterialize, change, noun, rule6Hint)
+}
+
+// checkStageOwner returns a *StagingOwnerError when the stage.json planPath
+// and planPath name different plan files (compared with SamePlanPath). It
+// returns nil when either path is empty: such a staging has no owner to
+// compare, as in Stage. change is the change name from the plan header; it
+// names the staging in the error.
+func checkStageOwner(change string, manifest StageManifest, planPath string) error {
+	if manifest.PlanPath == "" || planPath == "" || SamePlanPath(manifest.PlanPath, planPath) {
+		return nil
+	}
+	return &StagingOwnerError{Change: change, Owner: manifest.PlanPath, PlanPath: planPath}
 }
 
 // firstMismatch returns the path of the first stage.json file whose SHA-256
