@@ -819,3 +819,15 @@ With two or more paths, the skill SHALL read each preplan topic file in argument
 #### Scenario: Path that is not a topic file
 - **WHEN** the second path is `README.md`
 - **THEN** the skill stops and prints `README.md is not a preplan topic file. Run /sdlc:plan with topic files only, or with one requirements file.`
+
+### Requirement: Handoff validation adds the OpenSpec rule
+The skill SHALL pass `handoff: true` in the Step 6.6 `plan_format` call and in the rejected-handoff rerun, and SHALL NOT pass it in the Step 2 format pre-check. A PF15 finding stops the run before Step 7, so the skill does not call ExitPlanMode.
+
+#### Scenario: Unauthored change at Step 6.6
+- **WHEN** the Step 6.6 `plan_format` call returns a PF15 finding
+- **THEN** the skill shows the finding and its `fix`
+- **AND** the skill does not call ExitPlanMode
+
+#### Scenario: Format pre-check
+- **WHEN** the Step 2 format pre-check runs on a plan with `**OpenSpec-Create:**`
+- **THEN** the call has no `handoff` field and returns no PF15 finding
