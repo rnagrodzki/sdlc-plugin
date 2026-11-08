@@ -33,6 +33,7 @@ severity: medium
 
 - `docs/skills/*.md` content that is intentionally more general or example-driven than SKILL.md's terse procedural prose.
 - Internal SKILL.md implementation detail (state file paths, internal helper names) with no user-facing doc obligation.
+- A docs page entry, row or sentence that describes one step of a SKILL.md flow (a consent gate, a verify or archive step, a run-end report) covers the whole set that the step has, or says that it names only some members. Read the SKILL.md step and the tool result that it routes on, and list four things. (1) Each condition that opens the gate, for example an unchecked box and a missing artifact. (2) Each outcome that the tool can return. (3) Each exit, including the error exit and the failure exit. (4) Each mode that changes the result, such as a dry run or a resume, and each stored value that the page names, with the step that reads it. Compare the list with the page. An entry that names one member of several, a trigger that is narrower than the SKILL.md condition, a mode difference that the page leaves out (for example a dry run that shows no shared-spec warnings), or a stored value with no named reader is a finding. This extends the closed-set bullet and the exit bullet above, which compare the lists and the exits that a page states, to an entry that describes part of a set with no list. Example: a page that says the archive consent gate asks about open boxes only, when the step asks in other states too.
 
 ## Cross-references
 
