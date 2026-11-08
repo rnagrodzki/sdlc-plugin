@@ -41,11 +41,21 @@ default. Optionally verify CI and wait for automated reviewer feedback.
 
 `archive-openspec` archives the OpenSpec change named by `--openspec-change`
 or the plan's `**Source:**` header (or an auto-detected active change). It
-skips when no change is named or detected, and when the change is already
-archived. It fails and stops the pipeline when the named change is missing on
-disk (in both `openspec/changes/<name>/` and the archive) — the same check as
-`verify-openspec`, with the same message. Outside `--auto`, it asks before
-archiving a change whose `tasks.md` still has unchecked boxes.
+skips when no change is named or detected. It calls the `ship_state` actions
+`openspec-check` and `openspec-tasks`. The tools do the file checks, the
+validation and the `tasks.md` box count. The skill does not run them itself.
+
+- The change is already archived: the step completes with the result
+  `already archived`.
+- The named change is missing on disk, lacks an artifact, or fails
+  `openspec validate --strict`: the action writes the fail row and the
+  pipeline stops. The missing-on-disk message is the same as in
+  `verify-openspec`.
+- Outside `--auto`, the step asks before it archives a change whose
+  `tasks.md` still has unchecked boxes. Under `--auto`, the step skips the
+  question and marks the open boxes done with `openspec-tasks`.
+- A declined question records the decision `user declined archive` and skips
+  the step.
 
 `ship_prepare` refuses a plan that names an OpenSpec change but whose
 artifacts are not authored. This applies to a plan with an
@@ -102,7 +112,9 @@ Opt-in steps — set them to true in your project's step table with `/setup` (or
 them via `--steps`):
 
 - `verify-openspec` — Validates the current implementation against an active
-  OpenSpec change before archiving. Skipped automatically if there is no
+  OpenSpec change before archiving. It calls the `ship_state` action
+  `openspec-check`, which checks the files and runs the strict validation.
+  Skipped automatically if there is no
   active change, even when configured. Fails and stops the pipeline when the
   plan names a change that is missing on disk. When the plan has an
   `**OpenSpec-Saved:**` line, the failure message tells you to merge the
@@ -300,7 +312,7 @@ automatically by every run and read back automatically on resume.
 ### End-of-run summary
 
 After the last step, `/ship` prints the step table, the decisions log and the
-deferred findings. Three parts of that summary are worth knowing about:
+deferred findings. Four parts of that summary are worth knowing about:
 
 - **Review ledger.** When the review step ran, the summary closes with one
   ledger that accounts for *every* finding the review produced — how many
@@ -323,6 +335,12 @@ deferred findings. Three parts of that summary are worth knowing about:
   or never checked in) or names a worker that may still be running, `/ship`
   records each one as a decision before the review step completes. The decisions log in this
   summary lists them.
+
+- **OpenSpec change still active.** When the run names an OpenSpec change and
+  `openspec/changes/<change>/` still exists at run end, the decisions log
+  holds one more entry: `OpenSpec change <change> is still active in
+  openspec/changes/<change>/. Archive it with openspec archive <change>.`
+  The entry belongs to the `archive-openspec` step.
 
 - **Deferred follow-ups (Step 10b).** After the summary, `/ship` checks for
   deferred items that are still open — review findings that were saved rather
