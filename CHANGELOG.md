@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.12] - 2026-11-08
+
+### RC 1
+
+- Dashboard server uses less CPU: one shared collect loop, and large files are parsed again only after a change.
+- Dashboard page snapshot is much smaller. Run and session detail load when the user opens them, through two new routes: GET /api/run-detail and GET /api/session-detail.
+- A hidden dashboard tab closes its stream, and the server runs at a lower CPU priority.
+- Finished runs show for 4 days instead of 7 days.
+- Design preview adds a merge mode. It backs up the draft and refuses drafts that contain conflict markers.
+
+### RC 2
+
+- Refuse a plan with unauthored OpenSpec artifacts before execute starts
+- Add PF15 plan handoff rule and atomic, owner-checked OpenSpec staging
+- Check saved OpenSpec files on disk and in the git index
+- Add openspec-check and openspec-tasks actions to ship_state and use them in the ship skill
+- Report a named OpenSpec change that is still active at run end
+- Add review checks for tests, MCP tools, and docs
+
 ## [0.4.11] - 2026-10-29
 
 ### RC 1
