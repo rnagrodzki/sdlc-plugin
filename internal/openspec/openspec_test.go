@@ -602,3 +602,93 @@ func TestDetectActiveChangesCLI_StatusFailure(t *testing.T) {
 		t.Errorf("info = %+v, want Present=true with no active changes", info)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// SyncTasks
+// ---------------------------------------------------------------------------
+
+func TestSyncTasks(t *testing.T) {
+	bq := "```"
+	cases := []struct {
+		name        string
+		in          string
+		want        string
+		wantChanged []TaskLine
+		before      TaskCounts
+		after       TaskCounts
+		wantFence   int // line of the open fence; 0 means no error
+	}{
+		{"open box", "# T\n- [ ] a\n", "# T\n- [x] a\n",
+			[]TaskLine{{2, "- [x] a"}}, TaskCounts{0, 1}, TaskCounts{1, 1}, 0},
+		{"nested box", "  - [ ] nested\n", "  - [x] nested\n",
+			[]TaskLine{{1, "  - [x] nested"}}, TaskCounts{0, 1}, TaskCounts{1, 1}, 0},
+		{"done box", "- [X] b\n", "- [X] b\n",
+			[]TaskLine{}, TaskCounts{1, 1}, TaskCounts{1, 1}, 0},
+		{"box in fence", bq + "\n- [ ] c\n" + bq + "\n", bq + "\n- [ ] c\n" + bq + "\n",
+			[]TaskLine{}, TaskCounts{0, 0}, TaskCounts{0, 0}, 0},
+		{"last line without newline", "- [x] a\n- [ ] d", "- [x] a\n- [x] d",
+			[]TaskLine{{2, "- [x] d"}}, TaskCounts{1, 2}, TaskCounts{2, 2}, 0},
+		{"no box", "# T\ntext\n", "# T\ntext\n",
+			[]TaskLine{}, TaskCounts{0, 0}, TaskCounts{0, 0}, 0},
+		{"empty", "", "", []TaskLine{}, TaskCounts{0, 0}, TaskCounts{0, 0}, 0},
+		{"crlf", "- [ ] a\r\n", "- [x] a\r\n",
+			[]TaskLine{{1, "- [x] a\r"}}, TaskCounts{0, 1}, TaskCounts{1, 1}, 0},
+		{"fence 3 spaces", "   " + bq + "\n- [ ] a\n   " + bq + "\n", "   " + bq + "\n- [ ] a\n   " + bq + "\n",
+			[]TaskLine{}, TaskCounts{0, 0}, TaskCounts{0, 0}, 0},
+		{"fence 4 spaces is no fence", "    " + bq + "\n- [ ] a\n", "    " + bq + "\n- [x] a\n",
+			[]TaskLine{{2, "- [x] a"}}, TaskCounts{0, 1}, TaskCounts{1, 1}, 0},
+		{"fence tilde", "~~~\n- [ ] a\n~~~\n", "~~~\n- [ ] a\n~~~\n",
+			[]TaskLine{}, TaskCounts{0, 0}, TaskCounts{0, 0}, 0},
+		{"box after a closed fence", bq + "\n- [ ] a\n" + bq + "\n- [ ] b\n", bq + "\n- [ ] a\n" + bq + "\n- [x] b\n",
+			[]TaskLine{{4, "- [x] b"}}, TaskCounts{0, 1}, TaskCounts{1, 1}, 0},
+		{"fence mixed close", bq + "\n- [ ] a\n~~~\n", "", nil, TaskCounts{}, TaskCounts{}, 1},
+		{"fence short close", bq + "`\n- [ ] a\n" + bq + "\n", "", nil, TaskCounts{}, TaskCounts{}, 1},
+		{"fence open at line 7", "# T\n- [ ] a\n\n\n\n\n" + bq + "\n- [ ] b\n", "", nil, TaskCounts{}, TaskCounts{}, 7},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, changed, before, after, err := SyncTasks(tc.in)
+			if tc.wantFence > 0 {
+				var fe *OpenFenceError
+				if !errors.As(err, &fe) || fe.Line != tc.wantFence {
+					t.Fatalf("err = %v, want OpenFenceError at line %d", err, tc.wantFence)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if out != tc.want {
+				t.Errorf("out = %q, want %q", out, tc.want)
+			}
+			if changed == nil || len(changed) != len(tc.wantChanged) {
+				t.Fatalf("changed = %#v, want %#v", changed, tc.wantChanged)
+			}
+			for i := range changed {
+				if changed[i] != tc.wantChanged[i] {
+					t.Errorf("changed[%d] = %#v, want %#v", i, changed[i], tc.wantChanged[i])
+				}
+			}
+			if before != tc.before || after != tc.after {
+				t.Errorf("before = %+v after = %+v, want %+v %+v", before, after, tc.before, tc.after)
+			}
+			// A second sync finds no open box.
+			_, again, b2, _, err := SyncTasks(out)
+			if err != nil || len(again) != 0 || b2.Total != b2.Done {
+				t.Errorf("second sync: err = %v changed = %v before = %+v, want no open box", err, again, b2)
+			}
+		})
+	}
+}
+
+func TestSyncTasks_ParityWithCountTasks(t *testing.T) {
+	in := "# T\n- [ ] a\n  - [x] b\n- [X] c\ntext - [ ] no\n\t- [ ] d\n- [ ]e\n"
+	done, total := countTasks(in)
+	_, _, before, _, err := SyncTasks(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Done != done || before.Total != total {
+		t.Errorf("SyncTasks before = %+v, countTasks = %d/%d", before, done, total)
+	}
+}

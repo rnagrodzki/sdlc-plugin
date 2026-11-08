@@ -652,3 +652,369 @@ func TestShipStateOpenspecCheck_ParityWithAnalyzeChange(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// openspec-tasks
+// ---------------------------------------------------------------------------
+
+// osTasks calls openspec-tasks through the dispatcher.
+func osTasks(t *testing.T, dir, branch, step string, detail map[string]any) (shipOpenspecTasksOut, error) {
+	t.Helper()
+	d := map[string]any{"branch": branch}
+	for k, v := range detail {
+		d[k] = v
+	}
+	out, err := shipState(dir, dir, ShipStateIn{Action: "openspec-tasks", Step: step, Detail: d},
+		fixedNow(time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)))
+	if err != nil {
+		return shipOpenspecTasksOut{}, err
+	}
+	res, ok := out.(shipOpenspecTasksOut)
+	if !ok {
+		t.Fatalf("openspec-tasks output = %T, want shipOpenspecTasksOut", out)
+	}
+	return res, nil
+}
+
+// osTasksFixture builds the openspec-check fixture on archive-openspec with
+// the named change and writes content as its tasks.md. It returns the path of
+// tasks.md.
+func osTasksFixture(t *testing.T, content string) (dir, path, branch, tasks string) {
+	t.Helper()
+	dir, path, branch = osCheckFixture(t, "archive-openspec", osNamed("add-widget"))
+	tasks = filepath.Join(dir, "openspec", "changes", "add-widget", "tasks.md")
+	writeFile(t, tasks, content)
+	return dir, path, branch, tasks
+}
+
+func osReadFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// osWantTasksErr checks the type, message and suggestion of err.
+func osWantTasksErr(t *testing.T, err error, kind, msg, suggestion string) {
+	t.Helper()
+	var gotMsg, gotSug string
+	switch kind {
+	case "domain":
+		var e *mcpserver.DomainError
+		if !errors.As(err, &e) {
+			t.Fatalf("err = %v, want DomainError", err)
+		}
+		gotMsg, gotSug = e.Msg, e.Suggestion
+	case "data":
+		var e *mcpserver.DataError
+		if !errors.As(err, &e) {
+			t.Fatalf("err = %v, want DataError", err)
+		}
+		gotMsg, gotSug = e.Msg, e.Suggestion
+	case "infra":
+		var e *mcpserver.InfraError
+		if !errors.As(err, &e) {
+			t.Fatalf("err = %v, want InfraError", err)
+		}
+		gotMsg, gotSug = e.Msg, e.Suggestion
+	}
+	if gotMsg != msg || gotSug != suggestion {
+		t.Errorf("msg = %q, suggestion = %q\nwant msg = %q, suggestion = %q", gotMsg, gotSug, msg, suggestion)
+	}
+}
+
+const osTasksSample = "# Tasks\n- [ ] 1.1 a\n  - [x] 1.2 b\n```\n- [ ] fenced\n```\n- [ ] 2.1 c\n"
+
+func TestShipStateOpenspecTasks_CountOnlyWritesNothing(t *testing.T) {
+	for _, detail := range []map[string]any{nil, {"sync": false}} {
+		dir, path, branch, tasks := osTasksFixture(t, osTasksSample)
+		out, err := osTasks(t, dir, branch, "archive-openspec", detail)
+		if err != nil {
+			t.Fatalf("detail %v: %v", detail, err)
+		}
+		if out.Change != "add-widget" || out.Written || len(out.Changed) != 0 || out.Changed == nil {
+			t.Errorf("out = %+v, want change add-widget, written false, changed []", out)
+		}
+		want := openspec.TaskCounts{Done: 1, Total: 3}
+		if out.Before != want || out.After != want {
+			t.Errorf("before = %+v after = %+v, want %+v", out.Before, out.After, want)
+		}
+		wantNext := "Ask for archive consent (skip the question under flags.auto). On consent, " +
+			"call openspec-tasks with detail.sync true, then run openspec archive add-widget."
+		if out.Next != wantNext {
+			t.Errorf("next = %q, want %q", out.Next, wantNext)
+		}
+		if got := osReadFile(t, tasks); got != osTasksSample {
+			t.Errorf("tasks.md changed to %q", got)
+		}
+		osAssertOpen(t, path, "archive-openspec")
+	}
+}
+
+func TestShipStateOpenspecTasks_CountOnlyNoOpenBox(t *testing.T) {
+	dir, _, branch, _ := osTasksFixture(t, "- [x] a\n- [X] b\n")
+	out, err := osTasks(t, dir, branch, "archive-openspec", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Ask for archive consent (skip the question under flags.auto). On consent, run openspec archive add-widget."
+	if out.Next != want {
+		t.Errorf("next = %q, want %q", out.Next, want)
+	}
+}
+
+func TestShipStateOpenspecTasks_Sync(t *testing.T) {
+	dir, path, branch, tasks := osTasksFixture(t, "# T\n\n\n- [ ] a\n- [x] b\n- [ ] c")
+	if err := os.Chmod(tasks, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	out, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantChanged := []openspec.TaskLine{{Number: 4, Text: "- [x] a"}, {Number: 6, Text: "- [x] c"}}
+	if !reflect.DeepEqual(out.Changed, wantChanged) {
+		t.Errorf("changed = %+v, want %+v", out.Changed, wantChanged)
+	}
+	if !out.Written || out.Before != (openspec.TaskCounts{Done: 1, Total: 3}) || out.After != (openspec.TaskCounts{Done: 3, Total: 3}) {
+		t.Errorf("out = %+v", out)
+	}
+	if out.Next != "Run openspec archive add-widget." {
+		t.Errorf("next = %q", out.Next)
+	}
+	if got := osReadFile(t, tasks); got != "# T\n\n\n- [x] a\n- [x] b\n- [x] c" {
+		t.Errorf("tasks.md = %q", got)
+	}
+	if info, _ := os.Stat(tasks); info.Mode().Perm() != 0o640 {
+		t.Errorf("mode = %v, want 0640", info.Mode().Perm())
+	}
+	entries, _ := os.ReadDir(filepath.Dir(tasks))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("temp file %s left behind", e.Name())
+		}
+	}
+	osAssertOpen(t, path, "archive-openspec")
+
+	// Rerun: no open box, nothing written.
+	again, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Written || len(again.Changed) != 0 || again.Before.Total != again.Before.Done {
+		t.Errorf("rerun = %+v, want no open box and no write", again)
+	}
+	count, err := osTasks(t, dir, branch, "archive-openspec", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count.Before != (openspec.TaskCounts{Done: 3, Total: 3}) {
+		t.Errorf("count after sync = %+v, want 3/3", count.Before)
+	}
+}
+
+func TestShipStateOpenspecTasks_NoFileOrNoBox(t *testing.T) {
+	t.Run("absent", func(t *testing.T) {
+		dir, _, branch, tasks := osTasksFixture(t, "x")
+		if err := os.Remove(tasks); err != nil {
+			t.Fatal(err)
+		}
+		out, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Written || out.Before != (openspec.TaskCounts{}) || out.After != (openspec.TaskCounts{}) || out.Changed == nil {
+			t.Errorf("out = %+v", out)
+		}
+		if _, err := os.Stat(tasks); !os.IsNotExist(err) {
+			t.Errorf("tasks.md exists after the call: %v", err)
+		}
+	})
+	t.Run("no box", func(t *testing.T) {
+		dir, _, branch, tasks := osTasksFixture(t, "# T\ntext\n")
+		out, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.Written || out.Before != (openspec.TaskCounts{}) {
+			t.Errorf("out = %+v", out)
+		}
+		if got := osReadFile(t, tasks); got != "# T\ntext\n" {
+			t.Errorf("tasks.md = %q", got)
+		}
+	})
+}
+
+func TestShipStateOpenspecTasks_ChangeNameRows(t *testing.T) {
+	long129 := strings.Repeat("a", 129)
+	cases := []struct {
+		name       string
+		flags      map[string]any
+		detail     map[string]any
+		wantMsg    string
+		suggestion string
+	}{
+		{"no change", map[string]any{}, nil,
+			"openspec-tasks: no OpenSpec change named",
+			`Call skip with reason "no active OpenSpec change".`},
+		{"mismatch", osNamed("one"), map[string]any{"change": "two"},
+			`openspec-tasks: detail.change "two" differs from the named change "one"`,
+			`Omit detail.change, or pass "one".`},
+		{"too long", osNamed(long129), nil,
+			"openspec-tasks: change name is 129 bytes, limit 128 bytes",
+			"Pass a change name of 128 bytes or fewer."},
+		{"invalid name", osNamed("Bad_Name"), nil,
+			`openspec-tasks: invalid change name "Bad_Name"`,
+			"Pass a name of lower-case letters, digits and single hyphens."},
+		{"invalid detail name", map[string]any{}, map[string]any{"change": "../x"},
+			`openspec-tasks: invalid change name "../x"`,
+			"Pass a name of lower-case letters, digits and single hyphens."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, path, branch := osCheckFixture(t, "archive-openspec", tc.flags)
+			_, err := osTasks(t, dir, branch, "archive-openspec", tc.detail)
+			osWantTasksErr(t, err, "domain", tc.wantMsg, tc.suggestion)
+			osAssertOpen(t, path, "archive-openspec")
+		})
+	}
+}
+
+func TestShipStateOpenspecTasks_StepRows(t *testing.T) {
+	t.Run("other step", func(t *testing.T) {
+		dir, _, branch := osCheckFixture(t, "archive-openspec", osNamed("add-widget"))
+		_, err := osTasks(t, dir, branch, "verify-openspec", nil)
+		osWantTasksErr(t, err, "domain", `openspec-tasks: step "verify-openspec" has no task sync`,
+			"Call openspec-tasks with step archive-openspec.")
+	})
+	t.Run("not in progress", func(t *testing.T) {
+		dir, _, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+		_, err := osTasks(t, dir, branch, "archive-openspec", nil)
+		osWantTasksErr(t, err, "domain", `openspec-tasks: step "archive-openspec" is pending, not in_progress`,
+			"Call begin-step for archive-openspec first, then call openspec-tasks again.")
+	})
+}
+
+func TestShipStateOpenspecTasks_SizeRows(t *testing.T) {
+	pad := func(n int) string { return "- [ ] a\n" + strings.Repeat("x", n-len("- [ ] a\n")) }
+	t.Run("exact limit", func(t *testing.T) {
+		dir, _, branch, tasks := osTasksFixture(t, pad(tasksFileMaxBytes))
+		out, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !out.Written || out.Before.Total != 1 {
+			t.Errorf("out = %+v", out)
+		}
+		if got := osReadFile(t, tasks); !strings.HasPrefix(got, "- [x] a\n") || len(got) != tasksFileMaxBytes {
+			t.Errorf("tasks.md has %d bytes, prefix %q", len(got), got[:8])
+		}
+	})
+	t.Run("over limit", func(t *testing.T) {
+		content := pad(tasksFileMaxBytes + 1)
+		dir, _, branch, tasks := osTasksFixture(t, content)
+		_, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+		osWantTasksErr(t, err, "data", "tasks.md is 1048577 bytes, limit 1048576 bytes",
+			"Split tasks.md below 1048576 bytes, then call openspec-tasks again.")
+		if got := osReadFile(t, tasks); got != content {
+			t.Error("tasks.md changed")
+		}
+	})
+}
+
+func TestShipStateOpenspecTasks_NotRegularFile(t *testing.T) {
+	const want = "Replace openspec/changes/add-widget/tasks.md with a regular file."
+	t.Run("symlink", func(t *testing.T) {
+		dir, _, branch, tasks := osTasksFixture(t, "x")
+		target := filepath.Join(dir, "elsewhere.md")
+		writeFile(t, target, "- [ ] a\n")
+		if err := os.Remove(tasks); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, tasks); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		_, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+		osWantTasksErr(t, err, "data", "tasks.md is not a regular file", want)
+		if got := osReadFile(t, target); got != "- [ ] a\n" {
+			t.Errorf("link target changed to %q", got)
+		}
+	})
+	t.Run("folder", func(t *testing.T) {
+		dir, _, branch, tasks := osTasksFixture(t, "x")
+		if err := os.Remove(tasks); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Mkdir(tasks, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_, err := osTasks(t, dir, branch, "archive-openspec", nil)
+		osWantTasksErr(t, err, "data", "tasks.md is not a regular file", want)
+	})
+}
+
+func TestShipStateOpenspecTasks_OpenFence(t *testing.T) {
+	content := "# T\n- [ ] a\n\n\n\n\n```\n- [ ] b\n"
+	dir, path, branch, tasks := osTasksFixture(t, content)
+	_, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+	osWantTasksErr(t, err, "data", "tasks.md has an open code fence at line 7",
+		"Close the code fence at line 7 of tasks.md, then call openspec-tasks again.")
+	if got := osReadFile(t, tasks); got != content {
+		t.Error("tasks.md changed")
+	}
+	osAssertOpen(t, path, "archive-openspec")
+}
+
+func TestShipStateOpenspecTasks_ReadWriteSeams(t *testing.T) {
+	const suggestion = "Fix access to openspec/changes/add-widget/tasks.md, then call openspec-tasks again."
+	boom := errors.New("boom")
+	t.Run("read fails", func(t *testing.T) {
+		dir, _, branch, _ := osTasksFixture(t, "- [ ] a\n")
+		old := openspecTasksRead
+		openspecTasksRead = func(string) ([]byte, error) { return nil, boom }
+		t.Cleanup(func() { openspecTasksRead = old })
+		_, err := osTasks(t, dir, branch, "archive-openspec", nil)
+		osWantTasksErr(t, err, "infra", "openspec-tasks: boom", suggestion)
+		if !errors.Is(err, boom) {
+			t.Errorf("err = %v, want cause boom", err)
+		}
+	})
+	t.Run("write fails", func(t *testing.T) {
+		dir, path, branch, tasks := osTasksFixture(t, "- [ ] a\n")
+		old := openspecTasksWrite
+		openspecTasksWrite = func(string, []byte) error { return boom }
+		t.Cleanup(func() { openspecTasksWrite = old })
+		_, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+		osWantTasksErr(t, err, "infra", "openspec-tasks: boom", suggestion)
+		if got := osReadFile(t, tasks); got != "- [ ] a\n" {
+			t.Errorf("tasks.md = %q, want unchanged", got)
+		}
+		osAssertOpen(t, path, "archive-openspec")
+	})
+	t.Run("write seam not called for count only", func(t *testing.T) {
+		dir, _, branch, _ := osTasksFixture(t, "- [ ] a\n")
+		old := openspecTasksWrite
+		openspecTasksWrite = func(string, []byte) error { t.Error("write called"); return nil }
+		t.Cleanup(func() { openspecTasksWrite = old })
+		if _, err := osTasks(t, dir, branch, "archive-openspec", nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestShipStateOpenspecTasks_ParityWithAnalyzeChange checks that the count of
+// a file without a fence equals the count of AnalyzeChange.
+func TestShipStateOpenspecTasks_ParityWithAnalyzeChange(t *testing.T) {
+	dir, _, branch, _ := osTasksFixture(t, "- [ ] a\n  - [x] b\n- [X] c\n\t- [ ] d\n")
+	osWriteChange(t, dir, "add-widget", true, "demo")
+	out, err := osTasks(t, dir, branch, "archive-openspec", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := openspec.AnalyzeChange(filepath.Join(dir, "openspec", "changes", "add-widget"), "add-widget")
+	if out.Before.Done != info.TasksDone || out.Before.Total != info.TasksTotal {
+		t.Errorf("before = %+v, AnalyzeChange = %d/%d", out.Before, info.TasksDone, info.TasksTotal)
+	}
+}

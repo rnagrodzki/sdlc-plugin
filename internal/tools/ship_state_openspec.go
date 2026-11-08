@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -422,4 +423,154 @@ func shipOpenspecOverlapSpecs(overlaps []shipSpecOverlap) []string {
 // shipOpenspecRunsDir is the folder of the ship state files, for error text.
 func shipOpenspecRunsDir() string {
 	return filepath.ToSlash(filepath.Join(paths.DataDir, "runs")) + "/"
+}
+
+// ---------------------------------------------------------------------------
+// Action: openspec-tasks
+// ---------------------------------------------------------------------------
+
+// tasksFileMaxBytes is the largest tasks.md, in bytes, that openspec-tasks
+// reads. The action writes the file, so it caps the read.
+const tasksFileMaxBytes = 1 << 20
+
+// Test seams of openspec-tasks.
+var (
+	openspecTasksRead = os.ReadFile
+	// openspecTasksWrite replaces path through a temp file and a rename. It
+	// keeps the mode of the file that it replaces.
+	openspecTasksWrite = func(path string, data []byte) error {
+		perm := os.FileMode(0o644)
+		if info, err := os.Stat(path); err == nil {
+			perm = info.Mode().Perm()
+		}
+		return fsx.AtomicWriteBytesPerm(path, data, perm)
+	}
+)
+
+// shipOpenspecTasksOut is the output of the openspec-tasks action.
+type shipOpenspecTasksOut struct {
+	Change  string              `json:"change" jsonschema_description:"Name of the OpenSpec change whose tasks.md was counted."`
+	Before  openspec.TaskCounts `json:"before" jsonschema_description:"Boxes of tasks.md before the call, outside code fences."`
+	After   openspec.TaskCounts `json:"after" jsonschema_description:"Boxes of tasks.md after the call; equal to before when detail.sync is not true."`
+	Changed []openspec.TaskLine `json:"changed" jsonschema_description:"Each line that the sync changed, with its line number; empty when none."`
+	Written bool                `json:"written" jsonschema_description:"True when the call replaced tasks.md."`
+	Next    string              `json:"next" jsonschema_description:"What the caller does next."`
+}
+
+// shipStateOpenspecTasks implements the openspec-tasks action. It counts the
+// task boxes of openspec/changes/<change>/tasks.md outside code fences. With
+// detail.sync true it marks each open box done and replaces the file through
+// a temp file. Without detail.sync it writes nothing. A tasks.md that is
+// absent or has no box gives counts of 0 and writes nothing.
+func shipStateOpenspecTasks(root, workDir string, in ShipStateIn) (any, error) {
+	step := in.Step
+	if step != "archive-openspec" {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("openspec-tasks: step %q has no task sync", step),
+			Suggestion: "Call openspec-tasks with step archive-openspec.",
+		}
+	}
+	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
+	if err != nil {
+		return nil, err
+	}
+	entry := shipFindStepEntry(st.Data, step)
+	if entry == nil {
+		return nil, &mcpserver.DataError{
+			Msg:        fmt.Sprintf("openspec-tasks: no %s step in the ship state", step),
+			Suggestion: "Run ship_state read to list the steps. Call openspec-tasks only for a pipeline that has this step.",
+		}
+	}
+	if status, _ := entry["status"].(string); status != "in_progress" {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("openspec-tasks: step %q is %s, not in_progress", step, status),
+			Suggestion: fmt.Sprintf("Call begin-step for %s first, then call openspec-tasks again.", step),
+		}
+	}
+	change, err := shipOpenspecResolveChange("openspec-tasks", st.Data, in.Detail)
+	if err != nil {
+		return nil, err
+	}
+	sync := detailBool(in.Detail, "sync")
+
+	out := shipOpenspecTasksOut{Change: change, Changed: []openspec.TaskLine{}}
+	tasksPath := filepath.Join(workDir, "openspec", "changes", change, "tasks.md")
+	display := filepath.ToSlash(filepath.Join("openspec", "changes", change, "tasks.md"))
+	infra := func(err error) error {
+		return &mcpserver.InfraError{
+			Msg:        "openspec-tasks: " + err.Error(),
+			Suggestion: fmt.Sprintf("Fix access to %s, then call openspec-tasks again.", display),
+			Cause:      err,
+		}
+	}
+
+	info, err := os.Lstat(tasksPath)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		out.Next = shipOpenspecTasksNext(change, false, false)
+		return out, nil
+	case err != nil:
+		return nil, infra(err)
+	case !info.Mode().IsRegular():
+		return nil, &mcpserver.DataError{
+			Msg:        "tasks.md is not a regular file",
+			Suggestion: fmt.Sprintf("Replace %s with a regular file.", display),
+		}
+	case info.Size() > tasksFileMaxBytes:
+		return nil, shipOpenspecTasksTooBig(info.Size())
+	}
+	raw, err := openspecTasksRead(tasksPath)
+	if err != nil {
+		return nil, infra(err)
+	}
+	if len(raw) > tasksFileMaxBytes {
+		return nil, shipOpenspecTasksTooBig(int64(len(raw)))
+	}
+
+	synced, changed, before, after, err := openspec.SyncTasks(string(raw))
+	var fenceErr *openspec.OpenFenceError
+	if errors.As(err, &fenceErr) {
+		return nil, &mcpserver.DataError{
+			Msg:        fenceErr.Error(),
+			Suggestion: fmt.Sprintf("Close the code fence at line %d of tasks.md, then call openspec-tasks again.", fenceErr.Line),
+			Cause:      err,
+		}
+	}
+	if err != nil {
+		return nil, infra(err)
+	}
+	out.Before = before
+	out.After = before
+	if sync && len(changed) > 0 {
+		if err := openspecTasksWrite(tasksPath, []byte(synced)); err != nil {
+			return nil, infra(err)
+		}
+		out.After = after
+		out.Changed = changed
+		out.Written = true
+	}
+	out.Next = shipOpenspecTasksNext(change, sync, before.Total > before.Done)
+	return out, nil
+}
+
+// shipOpenspecTasksTooBig is the DataError of a tasks.md over the size cap.
+func shipOpenspecTasksTooBig(size int64) error {
+	return &mcpserver.DataError{
+		Msg:        fmt.Sprintf("tasks.md is %d bytes, limit %d bytes", size, tasksFileMaxBytes),
+		Suggestion: fmt.Sprintf("Split tasks.md below %d bytes, then call openspec-tasks again.", tasksFileMaxBytes),
+	}
+}
+
+// shipOpenspecTasksNext is the next text of openspec-tasks. The archive
+// consent gate stays in the skill, so a count without sync asks for consent.
+func shipOpenspecTasksNext(change string, sync, hasOpen bool) string {
+	const consent = "Ask for archive consent (skip the question under flags.auto). On consent, "
+	switch {
+	case sync:
+		return "Run openspec archive " + change + "."
+	case hasOpen:
+		return consent + "call openspec-tasks with detail.sync true, then run openspec archive " + change + "."
+	default:
+		return consent + "run openspec archive " + change + "."
+	}
 }

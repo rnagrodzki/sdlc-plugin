@@ -386,6 +386,99 @@ func countTasks(content string) (done, total int) {
 	return done, total
 }
 
+// TaskLine is one line of tasks.md that SyncTasks changed. Number counts from
+// 1. Text is the line after the change.
+type TaskLine struct {
+	Number int    `json:"number" jsonschema_description:"Line number in tasks.md, counted from 1."`
+	Text   string `json:"text" jsonschema_description:"The line after the change."`
+}
+
+// TaskCounts is the count of task checkboxes of a tasks.md.
+type TaskCounts struct {
+	Done  int `json:"done" jsonschema_description:"Boxes that are checked."`
+	Total int `json:"total" jsonschema_description:"All boxes, checked and open."`
+}
+
+// OpenFenceError reports a code fence that opens at Line and never closes.
+type OpenFenceError struct {
+	Line int
+}
+
+func (e *OpenFenceError) Error() string {
+	return fmt.Sprintf("tasks.md has an open code fence at line %d", e.Line)
+}
+
+// fenceRun returns the fence character and the length of the fence run when
+// line starts with up to 3 spaces and then 3 or more backticks or tildes. The
+// rest of the line is returned as tail. ok is false for any other line.
+func fenceRun(line string) (char byte, n int, tail string, ok bool) {
+	i := 0
+	for i < len(line) && i < 3 && line[i] == ' ' {
+		i++
+	}
+	if i >= len(line) || (line[i] != '`' && line[i] != '~') {
+		return 0, 0, "", false
+	}
+	char = line[i]
+	j := i
+	for j < len(line) && line[j] == char {
+		j++
+	}
+	if j-i < 3 {
+		return 0, 0, "", false
+	}
+	return char, j - i, line[j:], true
+}
+
+// SyncTasks marks each open task checkbox of content done, outside code
+// fences. out is the new content: it differs from content only in the changed
+// lines, and it keeps the line ends and the missing final newline of content.
+// changed lists each changed line with its number. before counts the boxes of
+// content and after counts the boxes of out. A fence still open at the end of
+// content returns *OpenFenceError.
+//
+// A fence opens at a line of 3 or more backticks or tildes with up to 3
+// leading spaces. It closes at the next line of the same character, at least
+// as many times, with up to 3 leading spaces and nothing after the run but
+// white space. The boxes are matched by taskCheckboxRe, so the counts agree
+// with countTasks for a content without a fence.
+func SyncTasks(content string) (out string, changed []TaskLine, before, after TaskCounts, err error) {
+	lines := strings.Split(content, "\n")
+	changed = []TaskLine{}
+	var fenceChar byte
+	fenceLen, fenceLine := 0, 0
+	for i, raw := range lines {
+		if fenceLen > 0 {
+			if c, n, tail, ok := fenceRun(raw); ok && c == fenceChar && n >= fenceLen && strings.TrimSpace(tail) == "" {
+				fenceLen = 0
+			}
+			continue
+		}
+		if c, n, _, ok := fenceRun(raw); ok {
+			fenceChar, fenceLen, fenceLine = c, n, i+1
+			continue
+		}
+		m := taskCheckboxRe.FindStringSubmatch(raw)
+		if m == nil {
+			continue
+		}
+		before.Total++
+		after.Total++
+		if strings.ToLower(m[2]) == "x" {
+			before.Done++
+			after.Done++
+			continue
+		}
+		lines[i] = m[1] + "- [x] " + m[3]
+		changed = append(changed, TaskLine{Number: i + 1, Text: lines[i]})
+		after.Done++
+	}
+	if fenceLen > 0 {
+		return "", []TaskLine{}, TaskCounts{}, TaskCounts{}, &OpenFenceError{Line: fenceLine}
+	}
+	return strings.Join(lines, "\n"), changed, before, after, nil
+}
+
 // AnalyzeChange mirrors lib/openspec.js's analyzeChange.
 func AnalyzeChange(changeDir, name string) OpenspecChangeInfo {
 	hasProposal := fsFileExists(filepath.Join(changeDir, "proposal.md"))
