@@ -3237,6 +3237,178 @@ func TestShipState_CleanupPipeline_ValidTerminalStampsThenRunsGC(t *testing.T) {
 	}
 }
 
+// cleanupOpenspecFixture builds a ship state on its own branch with every step
+// terminal and flags.openspecChange set to change (no flags when empty). It
+// returns the project dir, the state file path and the branch.
+func cleanupOpenspecFixture(t *testing.T, name, change string) (dir, path, branch string) {
+	t.Helper()
+	dir = t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	branch = "feat/cleanup-openspec-" + name
+	checkoutBranch(t, dir, branch)
+	path = shipStateInitFixture(t, dir, branch)
+	for _, step := range []string{"execute", "commit", "review", "received-review", "commit-fixes", "version", "pr"} {
+		setStepStatus(t, path, step, "skipped", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+	}
+	if change != "" {
+		data := readStateData(t, path)
+		data["flags"] = map[string]any{"openspecChange": change}
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if err := os.WriteFile(path, raw, 0o644); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	return dir, path, branch
+}
+
+func cleanupOpenspecRun(t *testing.T, dir, branch string) map[string]any {
+	t.Helper()
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "cleanup-pipeline",
+		Detail: map[string]any{"branch": branch},
+	}, fixedNow(time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("cleanup-pipeline: %v", err)
+	}
+	m, ok := out.(map[string]any)
+	if !ok {
+		t.Fatalf("output = %#v, want map[string]any", out)
+	}
+	return m
+}
+
+func cleanupOpenspecDecisions(t *testing.T, path string) []any {
+	t.Helper()
+	d, _ := readStateData(t, path)["decisions"].([]any)
+	return d
+}
+
+// A named change still in openspec/changes/<c>/ returns stillActive true and
+// adds one decision entry in the same write as the stamp.
+func TestShipStateCleanupPipelineOpenspec_StillActive(t *testing.T) {
+	dir, path, branch := cleanupOpenspecFixture(t, "active", "my-change")
+	if err := os.MkdirAll(filepath.Join(dir, "openspec", "changes", "my-change"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := cleanupOpenspecRun(t, dir, branch)
+
+	got, ok := m["openspec"].(map[string]any)
+	if !ok {
+		t.Fatalf("openspec = %#v, want map", m["openspec"])
+	}
+	want := map[string]any{"change": "my-change", "stillActive": true, "path": "openspec/changes/my-change/"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("openspec = %#v, want %#v", got, want)
+	}
+	if _, has := m["warnings"]; has {
+		t.Errorf("warnings = %#v, want key absent", m["warnings"])
+	}
+	decisions := cleanupOpenspecDecisions(t, path)
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %#v, want 1 entry", decisions)
+	}
+	wantDecision := map[string]any{
+		"step":     "archive-openspec",
+		"decision": "OpenSpec change my-change is still active in openspec/changes/my-change/. Archive it with openspec archive my-change.",
+		"at":       "2026-03-01T00:00:00Z",
+	}
+	if !reflect.DeepEqual(decisions[0], wantDecision) {
+		t.Errorf("decision = %#v, want %#v", decisions[0], wantDecision)
+	}
+	if status := readStateData(t, path)["pipelineStatus"]; status != "completed" {
+		t.Errorf("pipelineStatus = %v, want completed (decision shares the stamp write)", status)
+	}
+}
+
+// An archived change returns stillActive false and adds no decision.
+func TestShipStateCleanupPipelineOpenspec_Archived(t *testing.T) {
+	dir, path, branch := cleanupOpenspecFixture(t, "archived", "my-change")
+	if err := os.MkdirAll(filepath.Join(dir, "openspec", "changes", "archive", "2026-03-01-my-change"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := cleanupOpenspecRun(t, dir, branch)
+
+	got, ok := m["openspec"].(map[string]any)
+	if !ok {
+		t.Fatalf("openspec = %#v, want map", m["openspec"])
+	}
+	if got["stillActive"] != false || got["change"] != "my-change" {
+		t.Errorf("openspec = %#v, want change my-change and stillActive false", got)
+	}
+	if d := cleanupOpenspecDecisions(t, path); len(d) != 0 {
+		t.Errorf("decisions = %#v, want none", d)
+	}
+}
+
+// No named change returns no openspec key.
+func TestShipStateCleanupPipelineOpenspec_NoChange(t *testing.T) {
+	dir, path, branch := cleanupOpenspecFixture(t, "none", "")
+	m := cleanupOpenspecRun(t, dir, branch)
+
+	if _, has := m["openspec"]; has {
+		t.Errorf("openspec = %#v, want key absent", m["openspec"])
+	}
+	if _, has := m["warnings"]; has {
+		t.Errorf("warnings = %#v, want key absent", m["warnings"])
+	}
+	if d := cleanupOpenspecDecisions(t, path); len(d) != 0 {
+		t.Errorf("decisions = %#v, want none", d)
+	}
+}
+
+// A stat error adds a warning and never fails the call.
+func TestShipStateCleanupPipelineOpenspec_StatError(t *testing.T) {
+	dir, path, branch := cleanupOpenspecFixture(t, "staterr", "my-change")
+	orig := cleanupOpenspecStat
+	cleanupOpenspecStat = func(string) (os.FileInfo, error) { return nil, errors.New("boom") }
+	t.Cleanup(func() { cleanupOpenspecStat = orig })
+
+	m := cleanupOpenspecRun(t, dir, branch)
+
+	if _, has := m["openspec"]; has {
+		t.Errorf("openspec = %#v, want key absent on a stat error", m["openspec"])
+	}
+	warnings, _ := m["warnings"].([]string)
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "OpenSpec report skipped: ") || !strings.Contains(warnings[0], "boom") {
+		t.Errorf("warnings = %#v, want one OpenSpec report skipped line holding the error", m["warnings"])
+	}
+	if d := cleanupOpenspecDecisions(t, path); len(d) != 0 {
+		t.Errorf("decisions = %#v, want none", d)
+	}
+	if status := readStateData(t, path)["pipelineStatus"]; status != "completed" {
+		t.Errorf("pipelineStatus = %v, want completed", status)
+	}
+}
+
+// An invalid change name adds a warning and no stat runs.
+func TestShipStateCleanupPipelineOpenspec_InvalidName(t *testing.T) {
+	dir, path, branch := cleanupOpenspecFixture(t, "badname", "../escape")
+	called := false
+	orig := cleanupOpenspecStat
+	cleanupOpenspecStat = func(string) (os.FileInfo, error) { called = true; return nil, errors.New("must not run") }
+	t.Cleanup(func() { cleanupOpenspecStat = orig })
+
+	m := cleanupOpenspecRun(t, dir, branch)
+
+	if called {
+		t.Error("cleanupOpenspecStat ran for an invalid change name")
+	}
+	if _, has := m["openspec"]; has {
+		t.Errorf("openspec = %#v, want key absent", m["openspec"])
+	}
+	warnings, _ := m["warnings"].([]string)
+	if len(warnings) != 1 || !strings.HasPrefix(warnings[0], "OpenSpec report skipped: ") {
+		t.Errorf("warnings = %#v, want one OpenSpec report skipped line", m["warnings"])
+	}
+	if d := cleanupOpenspecDecisions(t, path); len(d) != 0 {
+		t.Errorf("decisions = %#v, want none", d)
+	}
+}
+
 // TestShipState_CleanupPipeline_IssueSummary proves the pipeline-completion
 // action attaches a grouped issueSummary (with hardenSuggestion, since "fail"
 // records an error-severity issue) when issues[] is non-empty on the stamped
