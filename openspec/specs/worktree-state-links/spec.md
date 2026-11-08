@@ -14,11 +14,12 @@ In a linked worktree, the system SHALL make each entry in the "Link" column a sy
 | `reports/` | `local.toml`, `local.json`, `config.json`, `*.bak` (config) |
 | `history/` | `jira-templates/` (user templates) |
 | `evidence/` | `execution/` (legacy, migrated into `runs/`) |
-| `learnings/` | `openspec-staging/` (written and read under the main worktree directly, so no link is needed) |
-| `reviews/` | `plan-template.md`, `pr-template.md` (setup-written templates) |
-| `state/` | `scratch/`, `backups/` (no code writes them; never created) |
+| `learnings/` | `plan-template.md`, `pr-template.md` (setup-written templates) |
+| `reviews/` | `scratch/`, `backups/` (no code writes them; never created) |
+| `state/` | |
 | `preplan/` | |
 | `run-archive/` | |
+| `openspec-staging/` | |
 | `timings.json` | |
 
 - Every `.sdlc-v2/` entry the MCP server or hooks write is in exactly one of the two columns.
@@ -37,8 +38,12 @@ In a linked worktree, the system SHALL make each entry in the "Link" column a sy
 - **THEN** both are symlinks to the same entries under `<main-worktree>/.sdlc-v2/`
 
 #### Scenario: Staging folder is not linked
+- **WHEN** a session starts in the main worktree and `.sdlc-v2/openspec-staging` is a real folder
+- **THEN** `.sdlc-v2/openspec-staging` stays a real folder, not a symlink
+
+#### Scenario: Staging folder is linked in a linked worktree
 - **WHEN** a session starts in a linked worktree that has no `.sdlc-v2/openspec-staging`
-- **THEN** no `.sdlc-v2/openspec-staging` symlink is created in the linked worktree
+- **THEN** `.sdlc-v2/openspec-staging` is a symlink whose target is `<main-worktree>/.sdlc-v2/openspec-staging`
 
 ### Requirement: Link creation trigger
 The SessionStart hook SHALL create missing links whenever the session's active worktree is a linked worktree, and SHALL create no link in the main worktree. The main worktree is the checkout whose `.git` is a folder.

@@ -72,17 +72,15 @@ const (
 var LinkedStateEntries = []string{
 	RunsSubdir, ReportsSubdir, HistorySubdir, EvidenceSubdir,
 	LearningsSubdir, ReviewsSubdir, StateArtifactsSubdir, TimingsFile,
-	PreplanSubdir, RunArchiveSubdir,
+	PreplanSubdir, RunArchiveSubdir, OpenspecStagingSubdir,
 }
 
 // UnlinkedStateEntries are the DataDir entries that are never linked: tracked
 // config, user-written templates, legacy locations, and branch-local state.
-// openspec-staging is not linked either: openspec_stage writes it under the
-// main worktree directly, and Materialize reads it from there.
 var UnlinkedStateEntries = []string{
 	ConfigFile, GitignoreFile, ReviewDimensionsSubdir, LocalConfigFile,
 	LegacyLocalJSONFile, LegacyConfigJSONFile, JiraTemplatesSubdir, LegacyExecutionSubdir,
-	OpenspecStagingSubdir, PlanTemplateFile, PRTemplateFile, ScratchSubdir, BackupsSubdir,
+	PlanTemplateFile, PRTemplateFile, ScratchSubdir, BackupsSubdir,
 }
 
 // ProjectDir returns the absolute path to the SDLC data directory for a

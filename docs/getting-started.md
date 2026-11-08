@@ -154,6 +154,7 @@ linked worktree, so they stay visible and live without a new session:
 - `timings.json`
 - `preplan`
 - `run-archive`
+- `openspec-staging`
 
 `.sdlc-v2/config.toml` is never linked or symlinked — each worktree keeps its
 own real config file.

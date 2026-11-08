@@ -410,3 +410,12 @@ Review Go source changes for baseline code quality in this module
   This extends the rule above that a failure travels as an `error` value, not
   as a `string`. Example: a ready-list check that matched the text of a warning
   to decide that a file was ready.
+- New code of a feature goes in the file that already holds that feature's
+  code. A new function, type or constant that serves a feature with its own
+  file in the package (a sibling file named for the feature, or code that it
+  calls or that calls it) is a finding when the change adds it to a general or
+  dispatch file instead. Check the file of each new symbol against the files
+  of the code that it calls and that calls it. Move it to the feature file, or
+  state why it stays. This extends the handler-file rule above, which asks that
+  each tool's logic stays separable. Example: a run-end report added to the
+  general ship state file while the OpenSpec code lives in its own file.

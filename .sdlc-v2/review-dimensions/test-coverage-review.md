@@ -202,6 +202,17 @@ new changes to that same bar:
   changed limit cannot leave the test passing. When the real limit is too
   costly to reach, lower it through an injectable seam. A test far from the
   boundary (an empty input, or many times the limit) does not pin it.
+- A validator or pattern that accepts a range of forms (a hash of 40 or 64
+  hex digits, a name pattern, a length range) is tested at the shortest
+  accepted form, the longest accepted form, one form below, one form
+  above, and a character of the wrong class, each built from the constants
+  of the pattern. A test with one accepted form leaves the bounds unpinned.
+  Code that cuts text to a byte or rune cap has a test whose cut falls
+  inside a multi-byte character and a test with invalid UTF-8, each
+  asserting the exact result and the warning. Every row of a table-driven
+  test runs in its own `t.Run` with a name that states the row, so a
+  failure names the row. This extends the limit-boundary bullet above to
+  format ranges and cuts.
 - A test checks the error of every call it uses to inspect state (for
   example `os.ReadDir` or `os.ReadFile`). A discarded error makes a failed
   inspection read as an empty result, and the assertion passes for the

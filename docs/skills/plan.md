@@ -120,6 +120,23 @@ Loads the proposal, delta specs, and task list from
   (`/sdlc:openspec-save --plan <path>`). It saves the OpenSpec change as its own
   PR before you ship the code. Without that header line, the menu has no such
   entry.
+- **The OpenSpec stage refuses an incomplete or busy change.** `openspec_stage`
+  needs one file for each artifact that the OpenSpec schema lists. A missing
+  artifact gives `valid: false` and a `missing artifact <outputPath>` line in
+  `validateOutput`, so the skill fixes the artifacts and stages again. Each
+  stage takes the lock `.sdlc-v2/openspec-staging/<change>.lock`, writes into a
+  temp folder and renames it into place. A second stage of the same change
+  while the lock is younger than 10 minutes gets `staging is locked by another
+  stage`. Wait for the first stage to finish, or delete the lock file when no
+  stage runs.
+- **PF15 refuses the handoff when OpenSpec authoring is not finished.** The
+  skill passes `handoff:true` at the Step 6.6 format gate and in the rerun
+  after a rejected handoff. PF15 finds a `**OpenSpec-Create:**` line with no
+  `**OpenSpec-Staging:**` line, an Appendix that still starts with `[TBD`, and a
+  staged change with a missing `stage.json`, a missing `validatedAt` or a
+  missing staged file. Each finding has a `fix` text. Follow it, then the skill
+  runs the gate again. No finding means Step 7 runs. A plan with no OpenSpec
+  header line passes PF15.
 - **`plan_prepare` always runs first, but it only resumes state when asked.**
   The skill's first action is always a `plan_prepare(...)` call. By default it
   starts a fresh run. Pass `resume: true` and the `runId` to reuse that run instead —
@@ -428,7 +445,8 @@ contrast of 4.5:1 or more. No pastel fills.
 
 - `validate({action:"plan_format"})` runs **PF13** (style limits) and
   **PF14** (diagram colors, whole file) on every call, with every other
-  plan-format check; `final:true` adds PF9 and PF10. A PF13 or PF14
+  plan-format check; `final:true` adds PF9 and PF10. `handoff:true`
+  (Step 6.6 and the rejected-handoff rerun only) adds PF15. A PF13 or PF14
   failure blocks the plan at handoff.
 - The PostToolUse hook runs **PF14** on every plan-file edit, on the
   edited text only. It does not run PF13.

@@ -21,7 +21,7 @@ Seven MCP tools are called directly by the plan skill pipeline.
 | `plan_mark` | `internal/tools/plan.go` `RegisterPlanTools` | Write planIntegrity markers (`skillInvoked`, `plan-file`, `guardrailsEvaluated`, `critiqueRan`, `done`), append `guardrailResults`/`criticalDecisions`, upsert a `review-round` row, replace the `review-outcome` answers (`reviewOutcome`), or replace the `checkpoint` progress marker. `checkpoint` also adds the first `{step, iteration, at}` of each step and iteration to the top-level `stepTimes` list (max 64). Every call also refreshes `data.planTiming` (run start to the plan file's last edit); `done` additionally appends a `history.RunRecord` to `.sdlc-v2/history/runs.jsonl` and returns the Step 7 `timing` report and a `next` text |
 | `plan_explore_prepare` | `internal/tools/plan_explore.go` `RegisterPlanExploreTools` | Build standalone explore pack (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry sample, recent plans) |
 | `plan_support` | `internal/tools/plan_support.go` `RegisterPlanSupportTools` | Twelve actions: `merge_results`, `material_snapshot`, `material_compare`, `openspec_appendix`, `openspec_instructions`, `openspec_stage`, `evidence_record`, `evidence_digest`, `evidence_get`, `preplan_context`, `preplan_check`, `preplan_write` |
-| `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Eleven actions (9 today + `plan_style` + `plan_gates`); plan pipeline uses `plan_format` (PF1-PF14), `plan_style` and `plan_gates` |
+| `validate` | `internal/tools/validators.go` `RegisterValidateTools` | Eleven actions (9 today + `plan_style` + `plan_gates`); plan pipeline uses `plan_format` (PF1-PF15), `plan_style` and `plan_gates` |
 | `links_validate` | `internal/tools/links.go` `RegisterLinksTools` | URL extraction + HTTP validation with line tracking |
 | `execute_state` | `internal/tools/execute_state.go` `RegisterExecuteStateTools` | Ledger operations (review skill; plan uses the evidence store instead — see [Evidence store and compaction recovery](#evidence-store-and-compaction-recovery)) |
 
@@ -980,7 +980,7 @@ are spliced as a `## Suggested Review Dimensions` advisory block in Step 4.
 **G18 note:** `go-gates` also reports the G18 floor (a Contract with no code
 block, table or diagram). G18 stays with `content-coverage`.
 
-### PF1-PF14 Format Checks
+### PF1-PF15 Format Checks
 
 All checks implemented in `internal/tools/validators.go` under the
 `plan_format` action.
@@ -1001,6 +1001,7 @@ All checks implemented in `internal/tools/validators.go` under the
 | PF12 | Contract shape keys (from `plan.tasks.contractShape`) | `checkPF12` | No |
 | PF13 | Plan style limits from [planStyle] (prose share, paragraph/list length, sentence length, jargon share, banned phrases, STE rules) | `checkPF13` | No |
 | PF14 | Mermaid classDef/style colors text color + contrast >=4.5:1 (whole file in `plan_format`; edited text only in the PostToolUse hook) | `checkPF14` | No |
+| PF15 | OpenSpec handoff rule: Create header with no Staging line, a Staging line with an Appendix starting with `[TBD`, an invalid staged change name, staging folder with no readable `stage.json`, no `validatedAt`, or a missing staged file. A plan with an `**OpenSpec-Saved:**` line passes every case. Runs only with `handoff: true` (plan skill Step 6.6, and the second `validate` call after a rejected handoff); not in `planBlockingChecks` or the hook | `checkPF15` | No (needs `handoff`) |
 
 PF9 and PF10 are gated behind `final: true` because the Verification
 Scorecard and template sections are written in Step 7, after all revisions.
@@ -1144,7 +1145,7 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | Lens focus categories | No | `plan.go` `buildLensReviewers()` | Hard-coded |
 | Complexity thresholds (1/2-3/4+) | No | `plan.go` `ComplexityRouting` | Hard-coded |
 | Max review iterations (`reviewLoop.maxRounds`, 5) | No | `plan.go` `maxReviewRounds` | Hard-coded |
-| PF checks (PF1-PF14) | No | `validators.go` | Hard-coded (PF11/PF12/PF13 are parameterized) |
+| PF checks (PF1-PF15) | No | `validators.go` | Hard-coded (PF11/PF12/PF13 are parameterized) |
 | G1-G22 gate definitions | No | Lane prompt `.md` files | Hard-coded |
 | planIntegrity markers (4) | No | `stop_hooks.go` `requiredPlanMarkers` | Hard-coded |
 | Snapshot dimensions (7) | No | `plan_support.go` `PlanSnapshot` | Hard-coded |

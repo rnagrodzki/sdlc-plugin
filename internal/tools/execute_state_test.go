@@ -925,6 +925,66 @@ func stubOpenspecForMaterialize(t *testing.T) {
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
+// setMaterializeStagePlanPath rewrites the planPath (owner key) of the
+// stage.json that writeMaterializeStaging wrote for change.
+func setMaterializeStagePlanPath(t *testing.T, root, change, planPath string) {
+	t.Helper()
+	p := filepath.Join(root, ".sdlc-v2", "openspec-staging", change, openspec.StageManifestFile)
+	var m openspec.StageManifest
+	if err := fsx.ReadJSON(p, &m); err != nil {
+		t.Fatalf("read stage.json: %v", err)
+	}
+	m.PlanPath = planPath
+	if err := fsx.AtomicWriteJSON(p, m); err != nil {
+		t.Fatalf("write stage.json: %v", err)
+	}
+}
+
+// TestExecuteInitMaterialize_OwnerMismatch: a staging whose stage.json names
+// another plan makes init return a DomainError with the owner Suggestion. No
+// state file is written, the staging stays, and no change dir is created.
+func TestExecuteInitMaterialize_OwnerMismatch(t *testing.T) {
+	root := t.TempDir()
+	initGitFixture(t, root)
+	seedInitConfig(t, root)
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, root, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+	owner := filepath.Join(root, "plan-a.md")
+	setMaterializeStagePlanPath(t, root, "add-widget", owner)
+	planPath := filepath.Join(root, "plan.md")
+	writeFile(t, planPath, matPlanHeaders("add-widget"))
+
+	_, err := executeState(root, root, ExecuteStateIn{
+		Action:   "init",
+		Branch:   "feat/test",
+		Quality:  "standard",
+		PlanPath: planPath,
+	}, fixedClock(testNow))
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+	}
+	if want := "belongs to plan " + owner + ", not " + planPath; !strings.Contains(de.Msg, want) {
+		t.Errorf("Msg = %q, want it to contain %q", de.Msg, want)
+	}
+	if want := "Run ship or execute with the plan " + owner + ", or pick another change name in the plan header and run /sdlc:plan again."; de.Suggestion != want {
+		t.Errorf("Suggestion = %q, want %q", de.Suggestion, want)
+	}
+	st, findErr := state.Find(root, "execute", "feat/test")
+	if findErr != nil {
+		t.Fatalf("find state: %v", findErr)
+	}
+	if st != nil {
+		t.Errorf("init wrote a state file at %s, want none", st.Path)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging", "add-widget", "tasks.md")); err != nil {
+		t.Errorf("staging tasks.md: %v, want it kept", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "openspec", "changes", "add-widget")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("change dir stat = %v, want not exist", err)
+	}
+}
+
 // TestMapMaterializeError pins every branch of mapMaterializeError: the
 // error class, Msg, Suggestion, and that Cause keeps the original error.
 func TestMapMaterializeError(t *testing.T) {
@@ -932,6 +992,7 @@ func TestMapMaterializeError(t *testing.T) {
 		name           string
 		err            error
 		wantDomain     bool
+		wantData       bool
 		wantMsg        string
 		wantSuggestion string
 	}{
@@ -956,6 +1017,20 @@ func TestMapMaterializeError(t *testing.T) {
 			wantSuggestion: "Fix the staged change as the message describes",
 		},
 		{
+			name:           "staging owned by another plan",
+			err:            &openspec.StagingOwnerError{Change: "add-widget", Owner: "/plans/a.md", PlanPath: "/plans/b.md"},
+			wantDomain:     true,
+			wantMsg:        `init: openspec materialize: staging of "add-widget" belongs to plan /plans/a.md, not /plans/b.md`,
+			wantSuggestion: "Run ship or execute with the plan /plans/a.md, or pick another change name in the plan header and run /sdlc:plan again.",
+		},
+		{
+			name:           "stage.json too large",
+			err:            fmt.Errorf("%w: stage.json is 2000000 bytes, limit 1048576 bytes", openspec.ErrStageManifestTooLarge),
+			wantData:       true,
+			wantMsg:        "init: stage.json too large: stage.json is 2000000 bytes, limit 1048576 bytes",
+			wantSuggestion: "Run openspec_stage again to write a new stage.json.",
+		},
+		{
 			name:           "unknown error",
 			err:            errors.New("permission denied"),
 			wantMsg:        "init: openspec materialize: permission denied",
@@ -967,7 +1042,13 @@ func TestMapMaterializeError(t *testing.T) {
 			got := mapMaterializeError(tc.err)
 			var msg, suggestion string
 			var cause error
-			if tc.wantDomain {
+			if tc.wantData {
+				de, ok := got.(*mcpserver.DataError)
+				if !ok {
+					t.Fatalf("got %T, want *mcpserver.DataError", got)
+				}
+				msg, suggestion, cause = de.Msg, de.Suggestion, de.Cause
+			} else if tc.wantDomain {
 				de, ok := got.(*mcpserver.DomainError)
 				if !ok {
 					t.Fatalf("got %T, want *mcpserver.DomainError", got)
@@ -10416,4 +10497,90 @@ func TestExecState_LedgerSkip_ToolSurface(t *testing.T) {
 	if !hasSkip {
 		t.Errorf("action enum %v does not contain ledger_skip", schema.Properties["action"].Enum)
 	}
+}
+
+// TestExecuteInitOpenspecHeaders: init refuses a plan that names an OpenSpec
+// change whose artifacts are not authored. The DomainError carries the
+// message and the suggestion, and no execute-state file is written. Plans with
+// a Saved line, a Staging line or only a Source line pass the check.
+func TestExecuteInitOpenspecHeaders(t *testing.T) {
+	t.Run("refused", func(t *testing.T) {
+		cases := []struct {
+			name           string
+			plan           string
+			wantMsg        string
+			wantSuggestion string
+		}{
+			{
+				name:           "create only",
+				plan:           "# Plan\n\n**Source:** openspec/changes/add-widget/\n**OpenSpec-Create:** add-widget\n",
+				wantMsg:        `names OpenSpec change "add-widget" (**OpenSpec-Create:**), but its artifacts are not authored`,
+				wantSuggestion: "Run /sdlc:plan on the plan again to finish the OpenSpec authoring, or remove the **OpenSpec-Create:** and **Source:** lines to ship without OpenSpec.",
+			},
+			{
+				name:           "staging with TBD appendix",
+				plan:           matPlanHeaders("add-widget") + "\n## OpenSpec Appendix\n\n[TBD: authored at the end of Step 6]\n",
+				wantMsg:        `names OpenSpec change "add-widget", but its OpenSpec Appendix starts with [TBD`,
+				wantSuggestion: "Run /sdlc:plan on the plan again to finish the OpenSpec authoring.",
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				root := t.TempDir()
+				initGitFixture(t, root)
+				seedInitConfig(t, root)
+				planPath := filepath.Join(root, "plan.md")
+				writeFile(t, planPath, tc.plan)
+
+				_, err := executeState(root, root, ExecuteStateIn{
+					Action:   "init",
+					Branch:   "feat/test",
+					Quality:  "standard",
+					PlanPath: planPath,
+				}, fixedClock(testNow))
+				de, ok := err.(*mcpserver.DomainError)
+				if !ok {
+					t.Fatalf("err = %T (%v), want *mcpserver.DomainError", err, err)
+				}
+				if !strings.Contains(de.Msg, tc.wantMsg) || !strings.Contains(de.Msg, planPath) {
+					t.Errorf("Msg = %q, want it to contain %q and the plan path", de.Msg, tc.wantMsg)
+				}
+				if de.Suggestion != tc.wantSuggestion {
+					t.Errorf("Suggestion = %q, want %q", de.Suggestion, tc.wantSuggestion)
+				}
+				st, findErr := state.Find(root, "execute", "feat/test")
+				if findErr != nil {
+					t.Fatalf("state.Find: %v", findErr)
+				}
+				if st != nil {
+					t.Fatalf("execute state file exists at %s after a refusal; want none", st.Path)
+				}
+			})
+		}
+	})
+
+	t.Run("passes", func(t *testing.T) {
+		plans := map[string]string{
+			"saved":       "# Plan\n\n**OpenSpec-Create:** add-widget\n**OpenSpec-Saved:** openspec/changes/add-widget/ (branch feat/test)\n",
+			"source only": "# Plan\n\n**Source:** conversation context\n",
+		}
+		for name, plan := range plans {
+			t.Run(name, func(t *testing.T) {
+				root := t.TempDir()
+				initGitFixture(t, root)
+				seedInitConfig(t, root)
+				planPath := filepath.Join(root, "plan.md")
+				writeFile(t, planPath, plan)
+
+				if _, err := executeState(root, root, ExecuteStateIn{
+					Action:   "init",
+					Branch:   "feat/test",
+					Quality:  "standard",
+					PlanPath: planPath,
+				}, fixedClock(testNow)); err != nil {
+					t.Fatalf("init: %v", err)
+				}
+			})
+		}
+	})
 }

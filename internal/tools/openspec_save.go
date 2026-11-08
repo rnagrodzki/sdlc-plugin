@@ -4,8 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
-	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
@@ -35,11 +36,6 @@ type OpenspecSaveOut struct {
 	Summary       string   `json:"summary" jsonschema_description:"One sentence that names the change, the branch and the count of staged files."`
 	Next          string   `json:"next" jsonschema_description:"The next step for the caller, for example to run the commit skill and then the pr skill."`
 }
-
-// openspecSavedHeaderRe matches the plan header line openspec_save writes
-// after a save: **OpenSpec-Saved:** openspec/changes/<change>/ (branch <b>).
-// Group 1 is the change name, group 2 the optional branch name.
-var openspecSavedHeaderRe = regexp.MustCompile(`(?m)^\*\*OpenSpec-Saved:\*\*[ \t]*openspec/changes/([^\s/]+)/?(?:[ \t]*\(branch[ \t]+([^\s)]+)\))?[ \t\r]*$`)
 
 // openspecSaveMaxListedPaths caps how many dirty paths the status guard
 // names in its Suggestion.
@@ -179,7 +175,7 @@ func openspecSaveReadPlan(path string) (string, error) {
 // with both headers, or with an invalid change name is a DomainError.
 func openspecSaveHeader(plan string) (change, branch string, saved bool, err error) {
 	stagedChange, hasStaging := openspec.StagedChangeFromPlan(plan)
-	savedMatch := openspecSavedHeaderRe.FindStringSubmatch(plan)
+	savedMatch := openspec.SavedHeaderRe.FindStringSubmatch(plan)
 	saved = savedMatch != nil
 	switch {
 	case !hasStaging && !saved:
@@ -332,7 +328,7 @@ func openspecSaveApply(dirs openspecSaveDirs, planPath, plan, change string) (Op
 	changeDir := openspecSaveChangeDir(change)
 	target := "openspec/" + change
 
-	res, err := openspec.Materialize(workDir, dirs.stagingRoot(), plan)
+	res, err := openspec.Materialize(workDir, dirs.stagingRoot(), plan, planPath)
 	if err != nil {
 		return OpenspecSaveOut{}, openspecSaveMaterializeError(err)
 	}
@@ -353,6 +349,9 @@ func openspecSaveApply(dirs openspecSaveDirs, planPath, plan, change string) (Op
 	}
 	if _, err := openspecSaveGit(workDir, "add", "--", changeDir); err != nil {
 		return OpenspecSaveOut{}, openspecSaveGitInfraError("git add "+changeDir, err)
+	}
+	if err := openspecSaveCheckIndex(workDir, changeDir, res.Manifest); err != nil {
+		return OpenspecSaveOut{}, err
 	}
 
 	savedLine := fmt.Sprintf("**OpenSpec-Saved:** %s (branch %s)", changeDir, target)
@@ -443,6 +442,102 @@ func openspecSaveStagedFiles(workDir, changeDir string) ([]string, error) {
 	return files, nil
 }
 
+// openspecSaveLsFilesLimit is the output cap of execx.Run in bytes (its
+// default, 50 MiB). execx.ErrOutputCap carries no byte count, so the
+// InfraError for a `git ls-files` overflow names this value.
+const openspecSaveLsFilesLimit = 52428800
+
+// openspecSaveCheckIndex runs after `git add` on changeDir. It returns a
+// DomainError that names each repo-relative path of the change that is
+// missing on disk, not in the git index, or untracked. The first two checks
+// need the manifest of the stage.json that Materialize read; with a nil
+// manifest (the change was materialized by an earlier call) only the check
+// for untracked files runs. A file that is missing on disk gets the
+// Suggestion to stage the change again: a new stage is the only fix for a
+// lost file. .openspec.yaml is never reported.
+func openspecSaveCheckIndex(workDir, changeDir string, manifest *openspec.StageManifest) error {
+	var missing, unstaged []string
+	if manifest != nil {
+		for _, p := range openspec.MissingFiles(*manifest, filepath.Join(workDir, filepath.FromSlash(changeDir))) {
+			missing = append(missing, changeDir+p)
+		}
+		cached, err := openspecSaveLsFiles(workDir, changeDir, "--cached")
+		if err != nil {
+			return err
+		}
+		for _, f := range manifest.Files {
+			p := changeDir + f.Path
+			if !slices.Contains(cached, p) && !slices.Contains(missing, p) {
+				unstaged = append(unstaged, p)
+			}
+		}
+	}
+	untracked, err := openspecSaveLsFiles(workDir, changeDir, "--others", "--exclude-standard")
+	if err != nil {
+		return err
+	}
+
+	bad := slices.Concat(missing, unstaged)
+	for _, p := range untracked {
+		if p != changeDir+".openspec.yaml" && !slices.Contains(bad, p) {
+			bad = append(bad, p)
+		}
+	}
+	if len(bad) == 0 {
+		return nil
+	}
+
+	change := path.Base(strings.TrimSuffix(changeDir, "/"))
+	// The tool already ran git add on changeDir, so a file that is still out
+	// of the index is kept out by a .gitignore rule, or was written after the
+	// add. Neither Suggestion asks for a git command or a plan edit by hand:
+	// the openspec-save skill forbids both.
+	suggestion := fmt.Sprintf("The tool ran git add on %s, and these files are still not in the index. A .gitignore rule that matches them, or a file written after the add, causes this. Fix the cause, then run /sdlc:openspec-save again.", changeDir)
+	if len(missing) > 0 {
+		suggestion = fmt.Sprintf("Delete %s, then run /sdlc:plan on the plan to stage the change again. The plan keeps its **OpenSpec-Staging:** line, because the save stopped before the header rewrite.", changeDir)
+	}
+	listed, extra := bad, ""
+	if len(bad) > openspecSaveMaxListedPaths {
+		listed = bad[:openspecSaveMaxListedPaths]
+		extra = fmt.Sprintf(" and %d more", len(bad)-openspecSaveMaxListedPaths)
+	}
+	return &mcpserver.DomainError{
+		Msg: fmt.Sprintf("openspec_save: %d file(s) of change %q are missing or not in the git index: %s%s",
+			len(bad), change, strings.Join(listed, ", "), extra),
+		Suggestion: suggestion,
+	}
+}
+
+// openspecSaveLsFiles returns the repo-relative paths that `git ls-files
+// <flags> -- changeDir` lists. It passes -z, so a path with unusual
+// characters is not quoted. A failure is an InfraError; an output over the
+// execx cap gets its own Suggestion.
+func openspecSaveLsFiles(workDir, changeDir string, flags ...string) ([]string, error) {
+	args := slices.Concat([]string{"ls-files", "-z"}, flags, []string{"--", changeDir})
+	out, err := openspecSaveGit(workDir, args...)
+	if err != nil {
+		if errors.Is(err, execx.ErrOutputCap) {
+			return nil, &mcpserver.InfraError{
+				Msg:        fmt.Sprintf("openspec_save: git ls-files %s: output over the limit of %d bytes", changeDir, openspecSaveLsFilesLimit),
+				Suggestion: fmt.Sprintf("Remove the large untracked files under %s, then call openspec_save again.", changeDir),
+				Cause:      err,
+			}
+		}
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("openspec_save: git ls-files %s: %s", changeDir, err),
+			Suggestion: "Fix the git repository state and call openspec_save again.",
+			Cause:      err,
+		}
+	}
+	var files []string
+	for _, p := range strings.Split(out, "\x00") {
+		if p != "" {
+			files = append(files, p)
+		}
+	}
+	return files, nil
+}
+
 // openspecSaveStatusPaths returns the path of each `git status --porcelain`
 // line. For a rename line ("R  old -> new") it returns the new path.
 func openspecSaveStatusPaths(status string) []string {
@@ -511,6 +606,13 @@ func openspecSaveMaterializeError(err error) error {
 	})
 }
 
+// materializeOwnerSuggestion is the Suggestion for a staging that belongs to
+// another plan. ship_prepare appends it to its error string; execute_state
+// init and openspec_save return it through materializeError.
+func materializeOwnerSuggestion(e *openspec.StagingOwnerError) string {
+	return fmt.Sprintf("Run ship or execute with the plan %s, or pick another change name in the plan header and run /sdlc:plan again.", e.Owner)
+}
+
 // materializeErrorText is the caller wording materializeError puts into
 // each error. execute_state init (mapMaterializeError) and openspec_save
 // (openspecSaveMaterializeError) each pass their own.
@@ -525,9 +627,14 @@ type materializeErrorText struct {
 // materializeError maps an openspec.Materialize failure to a typed error.
 // A missing CLI (ErrCLINotFound) is an InfraError. An invalid change name
 // (ErrInvalidChangeName) and every other rule failure (ErrMaterialize) are
-// DomainErrors. Any other failure (filesystem errors, a failed git add) is
-// an InfraError. See mapMaterializeError for the rule list.
+// DomainErrors. A staging that belongs to another plan
+// (*openspec.StagingOwnerError) is a DomainError with the owner Suggestion; it
+// is matched before ErrMaterialize, which it wraps. A stage.json over the size
+// cap (ErrStageManifestTooLarge) is a DataError. Any other failure
+// (filesystem errors, a failed git add) is an InfraError. See
+// mapMaterializeError for the rule list.
 func materializeError(err error, text materializeErrorText) error {
+	var owner *openspec.StagingOwnerError
 	switch {
 	case errors.Is(err, openspec.ErrCLINotFound):
 		return &mcpserver.InfraError{
@@ -539,6 +646,18 @@ func materializeError(err error, text materializeErrorText) error {
 		return &mcpserver.DomainError{
 			Msg:        text.MsgPrefix + err.Error(),
 			Suggestion: openspecNameSuggestion,
+			Cause:      err,
+		}
+	case errors.As(err, &owner):
+		return &mcpserver.DomainError{
+			Msg:        text.MsgPrefix + err.Error(),
+			Suggestion: materializeOwnerSuggestion(owner),
+			Cause:      err,
+		}
+	case errors.Is(err, openspec.ErrStageManifestTooLarge):
+		return &mcpserver.DataError{
+			Msg:        text.MsgPrefix + err.Error(),
+			Suggestion: "Run openspec_stage again to write a new stage.json.",
 			Cause:      err,
 		}
 	case errors.Is(err, openspec.ErrMaterialize):

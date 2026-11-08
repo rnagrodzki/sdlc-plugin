@@ -1183,7 +1183,7 @@ After link verification passes, run the deterministic plan format validator. PF9
 Call:
 
 ```
-validate({ action: "plan_format", file: "$plan_path", final: <FINAL_FLAG>, template: "$TEMPLATE_PATH" })
+validate({ action: "plan_format", file: "$plan_path", final: <FINAL_FLAG>, template: "$TEMPLATE_PATH", handoff: true })
 → { findings: [{ id, severity, message, path }] }
 ```
 
@@ -1243,7 +1243,7 @@ Then call ExitPlanMode. Do NOT invoke execute, ship, or openspec-save in this tu
 **Rejected handoff with feedback (Create flow only — the plan file has an `**OpenSpec-Staging:**` header line):** If the user rejects ExitPlanMode with feedback, work from the plan file only. Do not read or write the run state. The run is closed after `done`: `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true, runId: "<runId>" })` fails with `plan run <runId> is done`, and a new `plan_mark` or `evidence_record` call changes the record of a finished run. The state file stays on disk until ship's cleanup step or the GC TTL sweep removes it. The GC TTL sweep keeps the newest plan file of a branch that still exists, even past the TTL.
 1. Change the plan file for the feedback.
 2. Run **Create-flow authoring** steps 1–4 again from the changed plan file. Pass all artifact files to `openspec_stage`. The attempt counter starts at 0.
-3. Call `links_validate` and `validate({ action: "plan_format", file: "<plan file path>", final: true, template: "<template.activeTemplatePath>" })`. Fix each finding as Step 6.5 and Step 6.6 say. Make no `plan_mark` call and no `evidence_record` call.
+3. Call `links_validate` and `validate({ action: "plan_format", file: "<plan file path>", final: true, template: "<template.activeTemplatePath>", handoff: true })`. Fix each finding as Step 6.5 and Step 6.6 say. Make no `plan_mark` call and no `evidence_record` call.
 4. Announce the plan path again, then call ExitPlanMode.
 
 If this rule stops before step 4, the user can give the feedback again. Steps 2 to 4 are safe to repeat: `openspec_stage` replaces the whole staging directory (a `staged by another plan` refusal writes nothing; follow the rule of **Create-flow authoring** item 3 for it), and **Create-flow authoring** step 4 replaces the appendix. For a plan without an `**OpenSpec-Staging:**` header line, this rule does not apply.

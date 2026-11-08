@@ -44,7 +44,7 @@ import (
 // empty-string distinction for reason/error/result, are preserved without
 // literal typed struct fields (see detailIntPtr below).
 type ShipStateIn struct {
-	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=commit-check,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record,enum=harden_clusters,enum=report" jsonschema_description:"Operation to perform: init, begin-step, complete-step, commit-check, start (legacy), complete (legacy), skip, fail, decide, defer, healing_record, harden_clusters, report, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
+	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=commit-check,enum=openspec-check,enum=openspec-tasks,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record,enum=harden_clusters,enum=report" jsonschema_description:"Operation to perform: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start (legacy), complete (legacy), skip, fail, decide, defer, healing_record, harden_clusters, report, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
 	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, merge, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, deferredId (kind fixed: the deferred row to resolve; the deferredFindings entries with it get fixedInRun:true), status, phase, trigger, classification, applied (at most 100 entries {surface, action, targetFile, rationale?, patch?}; rationale at most 600 runes; a patch over 1536 bytes is cut and gets patchCut:true, which the caller never sends), skipped, held (optional, at most 100 entries {surface, action, targetFile, reason, deferredId?}; [] is valid; reason is one of pending-stored | pending-not-stored | not-processed; deferredId is a non-empty string, required for reason pending-stored and absent for the other reasons; entries can share one deferredId; not checked against the harden summary or the deferred items; a longer list or a bad entry is a DomainError and writes nothing), branch; harden_clusters reads findings, branch. Each finding may also carry line, deferredId and fixedInRun. report reads write, format, branch; deferred_add reads id, description, created, source, priority, merge (true to merge into the open item with the same id)). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session. init also uses it to keep older ship runs of the branch: a run that is not a dry-run and whose non-empty sessionId differs from this non-empty value is kept. When either value is empty, a sibling run that is not completed is deleted."`
@@ -640,6 +640,10 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 		return shipStateCompleteStep(root, workDir, in, now)
 	case "commit-check":
 		return shipStateCommitCheck(root, workDir, in, now)
+	case "openspec-check":
+		return shipStateOpenspecCheck(root, workDir, in, now)
+	case "openspec-tasks":
+		return shipStateOpenspecTasks(root, workDir, in)
 	case "skip":
 		return shipStateSkip(root, workDir, in, now)
 	case "fail":
@@ -693,7 +697,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 
 	default:
 		return nil, unknownActionError("ship_state action", in.Action, "",
-			"pass one of: init, begin-step, complete-step, commit-check, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli, healing_record, harden_clusters, report (start and complete are legacy aliases of begin-step and complete-step)")
+			"pass one of: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli, healing_record, harden_clusters, report (start and complete are legacy aliases of begin-step and complete-step)")
 	}
 }
 
@@ -1510,6 +1514,65 @@ func shipFailDurationMs(startedAt string, now time.Time) int64 {
 	return d.Milliseconds()
 }
 
+// shipApplyFail sets the fail row on a step entry in memory: status "failed",
+// the error value when hasErr, state key lastFailedStep, one ship-fail issue,
+// and the historyFailureRecorded flag. It returns true for the first fail of
+// the run, the only one that appends a history row. It does not write the
+// state.
+func shipApplyFail(data, step map[string]any, stepName string, errVal any, hasErr bool, failedAt time.Time) (firstFail bool) {
+	step["status"] = "failed"
+	var detail string
+	if hasErr {
+		step["error"] = errVal
+		if s, isStr := errVal.(string); isStr {
+			detail = s
+		} else {
+			detail = fmt.Sprint(errVal)
+		}
+	}
+
+	data["lastFailedStep"] = stepName
+	execAppendIssue(data, StateIssue{
+		Step:      stepName,
+		Severity:  "error",
+		Category:  "ship-fail",
+		Summary:   fmt.Sprintf("Step %s failed", stepName),
+		Detail:    detail,
+		Timestamp: failedAt.UTC().Format(time.RFC3339),
+	})
+
+	recorded, _ := data["historyFailureRecorded"].(bool)
+	firstFail = !recorded
+	if firstFail {
+		data["historyFailureRecorded"] = true
+	}
+	return firstFail
+}
+
+// shipAppendFailHistory appends the failure row of the first fail of a run to
+// runs.jsonl. A failed append does not fail the caller: the warnings name the
+// history_record call that adds the row.
+func shipAppendFailHistory(root string, data map[string]any, failedAt time.Time) []string {
+	var warnings []string
+	startedAt := dashboardStr(data["startedAt"])
+	rec := history.RunRecord{
+		Timestamp:  failedAt.UTC().Format(time.RFC3339),
+		Skill:      "ship",
+		Branch:     dashboardStr(data["branch"]),
+		Outcome:    "failure",
+		DurationMs: shipFailDurationMs(startedAt, failedAt),
+		StartedAt:  startedAt,
+	}
+	if w := shipHistoryPlanFields(&rec, data); w != "" {
+		warnings = append(warnings, w)
+	}
+	if err := shipHistoryAppendFunc(root, rec); err != nil {
+		warnings = append(warnings, "Failure history row not written to "+paths.DataDir+"/history/runs.jsonl: "+err.Error()+
+			`. To add it, call ship_state history_record with detail.skill "ship" and detail.outcome "failure".`)
+	}
+	return warnings
+}
+
 // shipStateFail marks a step failed and records the issue. The first fail of a
 // run also appends one failure row to runs.jsonl, so the dashboard can show a
 // run that never reached cleanup. It sets historyFailureRecorded before the
@@ -1535,33 +1598,9 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 			Suggestion: "Run ship_state read and pass one of the step names listed under steps, then retry ship_state fail.",
 		}
 	}
-	step["status"] = "failed"
-	var detail string
-	if v, ok := in.Detail["error"]; ok {
-		step["error"] = v
-		if s, isStr := v.(string); isStr {
-			detail = s
-		} else {
-			detail = fmt.Sprint(v)
-		}
-	}
-
+	errVal, hasErr := in.Detail["error"]
 	failedAt := now()
-	st.Data["lastFailedStep"] = in.Step
-	execAppendIssue(st.Data, StateIssue{
-		Step:      in.Step,
-		Severity:  "error",
-		Category:  "ship-fail",
-		Summary:   fmt.Sprintf("Step %s failed", in.Step),
-		Detail:    detail,
-		Timestamp: failedAt.UTC().Format(time.RFC3339),
-	})
-
-	recorded, _ := st.Data["historyFailureRecorded"].(bool)
-	firstFail := !recorded
-	if firstFail {
-		st.Data["historyFailureRecorded"] = true
-	}
+	firstFail := shipApplyFail(st.Data, step, in.Step, errVal, hasErr, failedAt)
 
 	if err := shipStateWriteFunc(st); err != nil {
 		return nil, &mcpserver.InfraError{
@@ -1575,22 +1614,7 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 	// the row but never writes a second one.
 	var warnings []string
 	if firstFail {
-		startedAt := dashboardStr(st.Data["startedAt"])
-		rec := history.RunRecord{
-			Timestamp:  failedAt.UTC().Format(time.RFC3339),
-			Skill:      "ship",
-			Branch:     dashboardStr(st.Data["branch"]),
-			Outcome:    "failure",
-			DurationMs: shipFailDurationMs(startedAt, failedAt),
-			StartedAt:  startedAt,
-		}
-		if w := shipHistoryPlanFields(&rec, st.Data); w != "" {
-			warnings = append(warnings, w)
-		}
-		if err := shipHistoryAppendFunc(root, rec); err != nil {
-			warnings = append(warnings, "Failure history row not written to "+paths.DataDir+"/history/runs.jsonl: "+err.Error()+
-				`. To add it, call ship_state history_record with detail.skill "ship" and detail.outcome "failure".`)
-		}
+		warnings = shipAppendFailHistory(root, st.Data, failedAt)
 	}
 
 	pos, total := shipStepPosition(st.Data, in.Step)
@@ -3781,49 +3805,23 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 	}
 	ttlDays := resolveGCTTLDays(root, detailIntPtr(in.Detail, "ttlDays"))
 
-	var currentRun map[string]any
-	var issueSummary *IssueSummary
-	runStamped := false
+	var stamp shipCleanupStamp
 	switch {
 	case force:
-		currentRun = map[string]any{"cleaned": false, "preservedReason": "force"}
+		stamp.currentRun = map[string]any{"cleaned": false, "preservedReason": "force"}
 	case st == nil:
-		currentRun = map[string]any{"valid": true, "cleaned": false, "reason": "no-state-file"}
+		stamp.currentRun = map[string]any{"valid": true, "cleaned": false, "reason": "no-state-file"}
 	default:
-		valid, violations := shipValidatePipelineContract(st.Data)
-		if !valid {
-			return nil, &mcpserver.DataError{
-				Msg: fmt.Sprintf(
-					"pipeline contract violation: %d step(s) not in terminal state (%s) — state file preserved",
-					len(violations), shipFormatViolations(violations)),
-				Suggestion: "Complete, skip, or fail each step listed above so it reaches a terminal state, then retry ship_state cleanup-pipeline.",
-			}
+		if stamp, err = shipCleanupStampRun(workDir, st, now); err != nil {
+			return nil, err
 		}
-		completedAt := now().UTC().Format(time.RFC3339)
-		st.Data["pipelineStatus"] = "completed"
-		st.Data["pipelineCompletedAt"] = completedAt
-		if err := state.Write(st); err != nil {
-			return nil, &mcpserver.InfraError{
-				Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
-				Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state cleanup-pipeline.",
-				Cause:      err,
-			}
-		}
-		runStamped = true
-		currentRun = map[string]any{
-			"valid":               true,
-			"cleaned":             true,
-			"pipelineStatus":      "completed",
-			"pipelineCompletedAt": completedAt,
-		}
-		issueSummary = execIssueSummaryFull(st.Data)
 	}
 
 	// Plan-run deletion runs only after a successful stamp: force and
 	// no-state-file never stamp, and a contract violation or a failed stamp
 	// write has already returned above.
 	planRun := ShipPlanRunCleanup{Reason: shipPlanRunReasonNotStamped}
-	if runStamped {
+	if stamp.stamped {
 		planRun = shipDeleteReportedPlanRun(root, branch, st)
 	}
 
@@ -3835,7 +3833,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 	})
 	if err != nil {
 		msg := fmt.Sprintf("gc sweep over %s: %s", stateDir, err.Error())
-		if runStamped {
+		if stamp.stamped {
 			msg = fmt.Sprintf("run is already marked completed; only the gc sweep over %s failed: %s", stateDir, err.Error())
 		}
 		return nil, &mcpserver.InfraError{
@@ -3848,7 +3846,7 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 	reapResult := execReapRunDirectories(stateDir, ttlDays, false, now)
 
 	out := map[string]any{
-		"currentRun": currentRun,
+		"currentRun": stamp.currentRun,
 		"gc": map[string]any{
 			"ship":    bucketGCByPrefix(rpt, "ship"),
 			"execute": bucketGCByPrefix(rpt, "execute"),
@@ -3860,10 +3858,75 @@ func shipStateCleanupPipeline(root, workDir string, in ShipStateIn, now func() t
 		"ttlDays":     ttlDays,
 		"planRun":     planRun,
 	}
-	if issueSummary != nil {
-		out["issueSummary"] = issueSummary
-	}
+	stamp.addOutputKeys(out)
 	return out, nil
+}
+
+// shipCleanupStamp is the result of the stamp phase of cleanup-pipeline.
+// stamped is true only after the stamp write succeeded. The pointer and map
+// fields stay nil when the phase did not produce them.
+type shipCleanupStamp struct {
+	currentRun     map[string]any
+	stamped        bool
+	issueSummary   *IssueSummary
+	openspecReport map[string]any
+	warnings       []string
+}
+
+// addOutputKeys adds the optional output keys of the stamp phase to out:
+// issueSummary, openspec and warnings, each only when it has a value.
+func (s shipCleanupStamp) addOutputKeys(out map[string]any) {
+	if s.issueSummary != nil {
+		out["issueSummary"] = s.issueSummary
+	}
+	if s.openspecReport != nil {
+		out["openspec"] = s.openspecReport
+	}
+	if len(s.warnings) > 0 {
+		out["warnings"] = s.warnings
+	}
+}
+
+// shipCleanupStampRun checks the pipeline contract of st and stamps the run
+// completed in one state write, together with the run-end OpenSpec decision.
+// A contract violation is a DataError and a failed write is an InfraError;
+// neither writes anything.
+func shipCleanupStampRun(workDir string, st *state.State, now func() time.Time) (shipCleanupStamp, error) {
+	valid, violations := shipValidatePipelineContract(st.Data)
+	if !valid {
+		return shipCleanupStamp{}, &mcpserver.DataError{
+			Msg: fmt.Sprintf(
+				"pipeline contract violation: %d step(s) not in terminal state (%s) — state file preserved",
+				len(violations), shipFormatViolations(violations)),
+			Suggestion: "Complete, skip, or fail each step listed above so it reaches a terminal state, then retry ship_state cleanup-pipeline.",
+		}
+	}
+	var stamp shipCleanupStamp
+	completedAt := now().UTC().Format(time.RFC3339)
+	st.Data["pipelineStatus"] = "completed"
+	st.Data["pipelineCompletedAt"] = completedAt
+	// The OpenSpec decision goes into the same write as the stamp.
+	var openspecWarning string
+	stamp.openspecReport, openspecWarning = shipCleanupOpenspecReport(workDir, st.Data, now())
+	if openspecWarning != "" {
+		stamp.warnings = append(stamp.warnings, openspecWarning)
+	}
+	if err := state.Write(st); err != nil {
+		return shipCleanupStamp{}, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state cleanup-pipeline.",
+			Cause:      err,
+		}
+	}
+	stamp.stamped = true
+	stamp.currentRun = map[string]any{
+		"valid":               true,
+		"cleaned":             true,
+		"pipelineStatus":      "completed",
+		"pipelineCompletedAt": completedAt,
+	}
+	stamp.issueSummary = execIssueSummaryFull(st.Data)
+	return stamp, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -4629,6 +4692,8 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - begin-step: Begin execution of a step (preferred over start). Requires step. Returns narration with progress, ETA, dispatch instruction, todos, and alreadyDone (true when ship_verify_side_effect already recorded this step's side effect in the sideEffects journal — a resumed pipeline can skip redoing it). Optional: detail.branch, detail.stateFile, detail.detail.
 - complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, issue summary, warnings, and linkedPlan. Side effect: complete-step of execute (outcome not failure) reads the execute state planPath and the plan state it names, then saves linkedPlan {planFile, startedAt, completedAt} once; a later call keeps the first object. linkedPlan in the output is the value that the ship state holds after the call (saved or kept), and is absent when no linked plan run was found. A failed lookup, a plan run with no valid start time (nothing saved), and a done mark that is not RFC 3339 (completedAt left out) each add one warnings entry and never fail the step. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
 - commit-check: Decide the commit step from the working tree. Requires: (none). Optional: detail.branch. Side effects: staging (git add -A -- ':!.sdlc-v2/' in the active worktree stages every change, untracked files that are not gitignored included; then git diff --cached --name-only counts the staged paths); the first call of a run stores HEAD in state key commitBaseHead, and later calls keep it. Dirty tree: returns {clean:false, stagedCount} and changes no step. Clean tree with HEAD equal to commitBaseHead: appends one decide entry and does what complete-step does for the commit step, with result "`+commitNothingPrefix+`: execute committed N wave commit(s)" (N = non-empty waves[].committedSha of this branch's execute state) or "`+commitNothingPrefix+`: the working tree is clean" (N = 0). Clean tree with HEAD not equal to commitBaseHead: records HEAD in the side-effect journal (sideEffects, kind sha) and does what complete-step does for the commit step, with result "committed <short sha>". Returns clean, stagedCount, waveCommits, stepCompleted, result, todos and display (when stepCompleted), warnings, next. Errors: a failed git call is a git InfraError; a commit step that is not in_progress is a step-state DomainError; a pipeline with no commit step, or a commitBaseHead that is not a string, is a DataError.
+- openspec-check: Check the OpenSpec change of the run for verify-openspec or archive-openspec. Requires: step (verify-openspec | archive-openspec, in_progress). Optional: detail.change (only when flags.openspecChange is empty), detail.branch. Reads: flags.openspecChange, openspecBaseHead, linkedPlan.planFile (for the missing-artifacts next text), openspec/changes/. Side effects: runs openspec validate --strict; on missing-on-disk, missing-artifacts or invalid it writes the fail row of the step, as the fail action does. Returns change, outcome (ok | archived | missing-on-disk | missing-artifacts | invalid), missing, validateOutput (cut at 16384 bytes, with a warning when cut), overlaps (filled only for outcome invalid; empty for every other outcome), warnings, next. Errors: a step other than verify-openspec or archive-openspec, a step that is not in_progress, a bad change name, a detail.change or detail.branch that is not a string, or any detail.sync key is a DomainError; a pipeline with no entry for the step is a DataError; a failed state write, a failed read of the change files other than a missing path, a missing openspec CLI, or a validate output over the execx cap is an InfraError.
+- openspec-tasks: Count, and on request sync, the tasks.md checkboxes of the OpenSpec change for archive-openspec. Requires: step (archive-openspec, in_progress). Optional: detail.sync (true rewrites each open box outside code fences; absent or false writes nothing), detail.change (as openspec-check). Reads: flags.openspecChange, openspec/changes/<change>/tasks.md. Side effects: with detail.sync true, replaces tasks.md through a temp file. Returns change, before, after, changed, written, warnings, next. An absent tasks.md and a tasks.md with no box each return counts 0, write nothing, and add one warning that names the case. Read policy: unlike openspec-check and AnalyzeChange, a tasks.md that is a symlink or another non-regular file is refused, because the temp-file rename would replace the link; a tasks.md over 1 MiB is refused, because the action reads it whole to rewrite it. Errors: a step other than archive-openspec, a step that is not in_progress, a bad change name, a detail.change or detail.branch that is not a string, or a detail.sync that is not a boolean is a DomainError; a pipeline with no archive-openspec entry, a non-regular tasks.md, a tasks.md over 1 MiB, or an unclosed code fence (the message names the line) is a DataError; a failed read or write of tasks.md is an InfraError.
 - start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
 - complete: (Legacy) Complete a step. Requires step. Returns narration with timing, warnings, and linkedPlan. Same linkedPlan side effect and output as complete-step. Optional: detail.branch, detail.result, detail.detail.
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
@@ -4640,7 +4705,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. reviewLedger and reportData.deferredFindings (a count) skip each deferredFindings entry with fixedInRun:true; the state's own data.deferredFindings array in the same response is not filtered and keeps those entries. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, healing records, this run's execute state (only when the execute step completed) and its linked plan run, the review run ledger of this ship run (for the Review waves section), CLI evidence, user input and learnings, and render it. Its deferredFindings list leaves out each entry with fixedInRun:true (the fix is counted under healing.fixed). Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
-- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary and the plan review rounds (when the plan run has any) into ship state planReviewRounds, in one ship state write. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary and review rounds not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?, exploreSummaryCount?, reviewRoundsCount?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary and review rounds not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". exploreSummaryCount and reviewRoundsCount are present only after the copy write succeeded: the number of entries ship state now holds in planExploreSummary and planReviewRounds. Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
+- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary and the plan review rounds (when the plan run has any) into ship state planReviewRounds, in one ship state write. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary and review rounds not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?, exploreSummaryCount?, reviewRoundsCount?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary and review rounds not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". exploreSummaryCount and reviewRoundsCount are present only after the copy write succeeded: the number of entries ship state now holds in planExploreSummary and planReviewRounds. When flags.openspecChange names a change, the output holds openspec {change, stillActive, path}; when the change is still in openspec/changes/<change>/, the stamp write adds one decisions[] entry for step archive-openspec. When that report is skipped (an invalid change name, or a stat error other than a missing path), the output has no openspec key and holds warnings, a list with one "OpenSpec report skipped: <cause>" line; with no skip the warnings key is absent. Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.

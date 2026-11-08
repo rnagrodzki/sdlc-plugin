@@ -382,6 +382,12 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			planContent = string(content)
 		}
 	}
+	// A plan that names an OpenSpec change whose artifacts are not authored
+	// is refused here, before any write. An unreadable plan leaves
+	// planContent empty, so the check is skipped.
+	for _, p := range openspec.CheckPlanHeaders(planContent) {
+		errors = append(errors, shipOpenspecHeaderMessage(in.PlanFile, p), shipOpenspecHeaderSuggestion(p))
+	}
 	warnings = append(warnings, resolveShipOpenspecChange(merged, sources, in.OpenspecChange, planContent)...)
 
 	// Surface non-benign version config read errors (corrupted file, I/O).
@@ -542,16 +548,34 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		if in.DryRun {
 			out.Openspec = &ShipOpenspecOut{Change: change, Materialized: "dry-run"}
 		} else {
-			res, mErr := openspec.Materialize(activeRoot, cfgRoot, planContent)
+			res, mErr := openspec.Materialize(activeRoot, cfgRoot, planContent, in.PlanFile)
 			if mErr != nil {
 				// mapMaterializeError is shared with execute_state init, whose
-				// messages carry an "init: " prefix; drop it here. The mapped
-				// error's Suggestion has no slot in the []string errors list.
+				// messages carry an "init: " prefix; drop it here. The owner
+				// case adds its Suggestion as the next element of the errors
+				// list, never spliced into the message.
 				out.Errors = append(out.Errors, strings.TrimPrefix(mapMaterializeError(mErr).Error(), "init: "))
+				var owner *openspec.StagingOwnerError
+				if stderrors.As(mErr, &owner) {
+					out.Errors = append(out.Errors, materializeOwnerSuggestion(owner))
+				}
 				out.Next = shipPrepareNext(out)
 				return out, nil
 			}
 			out.Openspec = &ShipOpenspecOut{Change: res.Change, Materialized: res.Materialized}
+		}
+	}
+
+	// Any named change (staged, **Source:** or --openspec-change) gets the
+	// overlap warnings and the stored start commit. A dry run touches nothing.
+	var baseHead string
+	if name, _ := merged["openspecChange"].(string); name != "" && !in.DryRun {
+		overlaps, skipped := openspec.CapabilityOverlaps(activeRoot, cfgRoot, name)
+		out.Warnings = append(out.Warnings, shipOverlapWarnings(name, overlaps, skipped)...)
+		if h, hErr := shipPrepareRevParse(activeRoot); hErr != nil {
+			out.Warnings = append(out.Warnings, "openspecBaseHead not stored: git rev-parse HEAD: "+hErr.Error()+". ship_state openspec-check will report no overlaps.")
+		} else {
+			baseHead = h
 		}
 	}
 
@@ -586,6 +610,9 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	st.Data["steps"] = scaffold
 	st.Data["decisions"] = []any{}
 	st.Data["deferredFindings"] = []any{}
+	if baseHead != "" {
+		st.Data["openspecBaseHead"] = baseHead
+	}
 
 	if err := state.Write(st); err != nil {
 		return ShipPrepareOut{}, &mcpserver.InfraError{
@@ -607,18 +634,18 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 // outside this map (config validity is a warning, not an error — see
 // shipPrepare's step-name validation above) falls back to its bare name.
 var shipStepDescriptions = map[string]string{
-	"execute":             "Run the plan's execution waves",
-	"commit":              "Commit the executed changes",
-	"review":              "Run automated code review",
-	"harden":              "Harden guardrails/dimensions from review findings and commit them",
-	"received-review":     "Fix or defer review findings at or above reviewThreshold",
-	"commit-fixes":        "Commit review-fix changes",
-	"verify-openspec":     "Verify OpenSpec change docs are in sync",
-	"archive-openspec":    "Archive completed OpenSpec change docs",
-	"pr":                  "Open the pull request",
-	"verify-pipeline":     "Wait for CI/pipeline checks to pass",
-	"await-remote-review": "Wait for remote reviewer approval",
-	"learnings-commit":    "Commit captured learnings",
+	"execute":                    "Run the plan's execution waves",
+	"commit":                     "Commit the executed changes",
+	"review":                     "Run automated code review",
+	"harden":                     "Harden guardrails/dimensions from review findings and commit them",
+	"received-review":            "Fix or defer review findings at or above reviewThreshold",
+	"commit-fixes":               "Commit review-fix changes",
+	shipmeta.StepVerifyOpenspec:  "Verify OpenSpec change docs are in sync",
+	shipmeta.StepArchiveOpenspec: "Archive completed OpenSpec change docs",
+	"pr":                         "Open the pull request",
+	"verify-pipeline":            "Wait for CI/pipeline checks to pass",
+	"await-remote-review":        "Wait for remote reviewer approval",
+	"learnings-commit":           "Commit captured learnings",
 }
 
 // shipReceivedReviewCondition is the trigger text of the seeded
@@ -744,6 +771,26 @@ func tomlTypeName(v any) string {
 	}
 }
 
+// shipOpenspecHeaderMessage returns the error text for a plan whose OpenSpec
+// header lines show that its artifacts are not authored. The fix is
+// shipOpenspecHeaderSuggestion: ship_prepare appends it to its errors list as
+// the next element, and execute_state init sets it as the DomainError
+// Suggestion.
+func shipOpenspecHeaderMessage(planFile string, p openspec.PlanHeaderProblem) string {
+	if p.Kind == openspec.PlanHeaderAppendixTBD {
+		return fmt.Sprintf("plan %s names OpenSpec change %q, but its OpenSpec Appendix starts with [TBD: the OpenSpec authoring did not finish", planFile, p.Change)
+	}
+	return fmt.Sprintf("plan %s names OpenSpec change %q (**OpenSpec-Create:**), but its artifacts are not authored: the plan has no **OpenSpec-Staging:** or **OpenSpec-Saved:** line", planFile, p.Change)
+}
+
+// shipOpenspecHeaderSuggestion returns the fix for a plan header problem.
+func shipOpenspecHeaderSuggestion(p openspec.PlanHeaderProblem) string {
+	if p.Kind == openspec.PlanHeaderAppendixTBD {
+		return "Run /sdlc:plan on the plan again to finish the OpenSpec authoring."
+	}
+	return "Run /sdlc:plan on the plan again to finish the OpenSpec authoring, or remove the **OpenSpec-Create:** and **Source:** lines to ship without OpenSpec."
+}
+
 // resolveShipOpenspecChange sets merged["openspecChange"] and
 // sources["openspecChange"]: an explicit input wins ("cli"), else the plan's
 // **Source:** openspec/changes/<name>/ header ("plan"), else nil with no
@@ -768,6 +815,33 @@ func resolveShipOpenspecChange(merged map[string]any, sources map[string]string,
 		merged["openspecChange"], sources["openspecChange"] = planChange, sourcePlan
 	default:
 		merged["openspecChange"] = nil
+	}
+	return warnings
+}
+
+// shipPrepareRevParse returns the HEAD sha of the repository at dir. Tests
+// replace it to make git rev-parse fail without a broken repository.
+var shipPrepareRevParse = func(dir string) (string, error) {
+	out, err := execx.Run("git", []string{"rev-parse", "HEAD"}, execx.Options{Dir: dir})
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// shipOverlapWarnings turns the result of openspec.CapabilityOverlaps into
+// ship_prepare warnings: one per pair of capability and other change, and one
+// per other change that could not be read.
+func shipOverlapWarnings(change string, overlaps []openspec.CapabilityOverlap, skipped []string) []string {
+	var warnings []string
+	for _, o := range overlaps {
+		warnings = append(warnings, fmt.Sprintf(
+			"OpenSpec change %q and %s change %q both edit specs/%s/. Merge order decides which delta must be rebased.",
+			change, o.Source, o.OtherChange, o.Capability))
+	}
+	for _, s := range skipped {
+		warnings = append(warnings, "OpenSpec overlap check skipped change "+s+
+			". Shared specs with that change are not reported. No action is needed to ship; to get the check, fix read access to that change folder and call ship_prepare again.")
 	}
 	return warnings
 }
@@ -1612,7 +1686,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 // tools.
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
-		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing.",
+		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. A plan with an **OpenSpec-Create:** line and no **OpenSpec-Staging:** or **OpenSpec-Saved:** line, or with such a line and an OpenSpec Appendix that starts with [TBD, is refused in errors before any write. A staging folder whose stage.json names another plan is refused in errors, and no file changes. When an OpenSpec change is named, it warns about each capability spec that another active or staged change also edits, and stores HEAD as openspecBaseHead in the state file (not on dryRun); a failed git rev-parse HEAD adds a warning and stores no key. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing.",
 		mcpserver.Annotations{
 			Title:       "Prepare ship pipeline run",
 			ReadOnly:    false,

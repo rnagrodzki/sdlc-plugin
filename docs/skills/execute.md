@@ -105,6 +105,12 @@ file — you do not need to pass it again.
 
 - **The plan file path is required.** The skill never guesses which plan to
   execute. Always pass it explicitly (except when resuming).
+- **An unauthored OpenSpec plan is refused.** `execute_state` init fails, and
+  writes no state file, for a plan that has an `**OpenSpec-Create:**` line and
+  no `**OpenSpec-Staging:**` or `**OpenSpec-Saved:**` line, or that has a
+  `**OpenSpec-Staging:**` line and an OpenSpec Appendix that starts with `[TBD`.
+  A plan with an `**OpenSpec-Saved:**` line is never refused by this check. Run
+  `/sdlc:plan` on the plan again to finish the OpenSpec authoring.
 - **Branch handling.** If you are on the default branch (e.g., `main`) or the
   configured base branch (`[git] baseBranch`), the skill creates a feature
   branch automatically. If you are already on a feature branch, it runs in

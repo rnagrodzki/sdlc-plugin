@@ -14,6 +14,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/commstyle"
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
@@ -2549,6 +2550,33 @@ func TestStrayStateAcceptsLinks(t *testing.T) {
 	}
 }
 
+// TestStrayStateAcceptsStagingLink pins that the openspec-staging link into
+// the main worktree's .sdlc-v2/ is not stray.
+func TestStrayStateAcceptsStagingLink(t *testing.T) {
+	mainRoot := t.TempDir()
+	activeRoot := t.TempDir()
+
+	mainDataDir := filepath.Join(mainRoot, paths.DataDir)
+	if err := os.MkdirAll(filepath.Join(mainDataDir, paths.OpenspecStagingSubdir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	activeDataDir := filepath.Join(activeRoot, paths.DataDir)
+	if err := os.MkdirAll(activeDataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(mainDataDir, paths.OpenspecStagingSubdir), filepath.Join(activeDataDir, paths.OpenspecStagingSubdir)); err != nil {
+		t.Fatal(err)
+	}
+
+	findings, err := findStrayStateEntries(mainRoot, activeRoot)
+	if err != nil {
+		t.Fatalf("findStrayStateEntries: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Fatalf("expected no findings for the openspec-staging link, got %+v", findings)
+	}
+}
+
 // TestStrayStateWrongLinkTarget pins F-worktree-state-links-8: a
 // linked-state-named entry that is a symlink, but points somewhere other
 // than the main worktree's .sdlc-v2/<name>, is still reported stray --
@@ -2956,6 +2984,7 @@ func TestPlanFormatFixesAreSelfContained(t *testing.T) {
 			SteHits:    []commstyle.SteHit{{Rule: "ing-form", Text: "starting", Line: 92}},
 		}), true},
 		{"PF14 diagram contrast", checkPF14("```mermaid\nclassDef new fill:#d4f7d4\n```\n"), true},
+		{"PF15 handoff rule", checkPF15(t.TempDir(), "**OpenSpec-Create:** add-widget\n"), true},
 	}
 
 	seen := map[string]bool{}
@@ -2988,7 +3017,7 @@ func TestPlanFormatFixesAreSelfContained(t *testing.T) {
 	}
 
 	// Every check that can fail is covered. PF8 does not exist in this format.
-	for _, id := range []string{"PF1", "PF2", "PF3", "PF4", "PF5", "PF6", "PF7", "PF9", "PF10", "PF11", "PF12", "PF13", "PF14"} {
+	for _, id := range []string{"PF1", "PF2", "PF3", "PF4", "PF5", "PF6", "PF7", "PF9", "PF10", "PF11", "PF12", "PF13", "PF14", "PF15"} {
 		if !seen[id] {
 			t.Errorf("no failure case for %s in TestPlanFormatFixesAreSelfContained", id)
 		}
@@ -3587,5 +3616,232 @@ func TestValidateIn_PlanStyleDescriptions(t *testing.T) {
 	f, _ := typ.FieldByName("Action")
 	if !strings.Contains(f.Tag.Get("jsonschema"), "enum=plan_style") {
 		t.Errorf("Action enum lacks plan_style: %q", f.Tag.Get("jsonschema"))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// plan_format PF15 (handoff rule)
+// ---------------------------------------------------------------------------
+
+const pf15Change = "add-widget"
+
+const pf15StagingHeader = "\n**OpenSpec-Staging:** .sdlc-v2/openspec-staging/" + pf15Change + "/\n"
+
+// pf15Root returns a project root with plan.md = goodPlan + extra.
+func pf15Root(t *testing.T, extra string) string {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan+extra)
+	return root
+}
+
+// pf15Stage stages the add-widget change under root with the stubbed CLI. It
+// leaves out the design artifact when withDesign is false, so Stage writes a
+// stage.json with no validatedAt.
+func pf15Stage(t *testing.T, root string, withDesign bool) {
+	t.Helper()
+	stubOpenspecForStage(t, 0)
+	files := psAllArtifacts("# Proposal\n")
+	if !withDesign {
+		var kept []openspec.StageFile
+		for _, f := range files {
+			if f.Path != "design.md" {
+				kept = append(kept, f)
+			}
+		}
+		files = kept
+	}
+	if _, err := planSupportCore(root, root, PlanSupportIn{
+		Action:     "openspec_stage",
+		ChangeName: pf15Change,
+		Files:      files,
+		PlanPath:   filepath.Join(root, "plan.md"),
+	}); err != nil {
+		t.Fatalf("openspec_stage: %v", err)
+	}
+}
+
+func pf15Handoff(t *testing.T, root string) []discovery.Finding {
+	t.Helper()
+	return runValidate(t, root, ValidateIn{Action: "plan_format", File: "plan.md", Handoff: true}).Findings
+}
+
+func TestPF15_FindingRows(t *testing.T) {
+	const (
+		fixAuthor   = "Run Create-flow authoring (plan skill, end of Step 6), then Step 6.6 again."
+		fixRestage  = `Call openspec_stage for "add-widget" again with all artifacts, then Step 6.6 again.`
+		fixValidate = "Fix the artifacts that validateOutput names, call openspec_stage again, then Step 6.6 again."
+	)
+	stagingPath := func(root string) string {
+		return filepath.Join(root, ".sdlc-v2", "openspec-staging", pf15Change)
+	}
+	cases := []struct {
+		name    string
+		setup   func(t *testing.T) string
+		message func(root string) string // exact message, or a prefix when prefix is true
+		prefix  bool
+		fix     string
+	}{
+		{
+			name: "create-not-authored",
+			setup: func(t *testing.T) string {
+				return pf15Root(t, "\n**OpenSpec-Create:** add-widget\n")
+			},
+			message: func(string) string {
+				return `PF15: OpenSpec change "add-widget" is not authored: the plan has **OpenSpec-Create:** and no **OpenSpec-Staging:** line`
+			},
+			fix: fixAuthor,
+		},
+		{
+			name: "appendix-tbd",
+			setup: func(t *testing.T) string {
+				return pf15Root(t, pf15StagingHeader+"\n## OpenSpec Appendix\n\n[TBD: filled after staging]\n")
+			},
+			message: func(string) string { return `PF15: OpenSpec Appendix of "add-widget" starts with [TBD` },
+			fix:     fixAuthor,
+		},
+		{
+			name: "no stage.json",
+			setup: func(t *testing.T) string {
+				return pf15Root(t, pf15StagingHeader)
+			},
+			message: func(root string) string {
+				return "PF15: staging folder " + root + "/.sdlc-v2/openspec-staging/add-widget/ has no stage.json"
+			},
+			fix: fixRestage,
+		},
+		{
+			name: "stage.json parse error",
+			setup: func(t *testing.T) string {
+				root := pf15Root(t, pf15StagingHeader)
+				writeFile(t, filepath.Join(stagingPath(root), "stage.json"), "{not json")
+				return root
+			},
+			message: func(string) string { return `PF15: cannot read stage.json of "add-widget": ` },
+			prefix:  true,
+			fix:     fixRestage,
+		},
+		{
+			name: "no validatedAt after Stage with a missing artifact",
+			setup: func(t *testing.T) string {
+				root := newOpenspecStageFixture(t, "")
+				writeFile(t, filepath.Join(root, "plan.md"), goodPlan+pf15StagingHeader)
+				pf15Stage(t, root, false)
+				return root
+			},
+			message: func(string) string {
+				return `PF15: staging of "add-widget" is not validated (stage.json has no validatedAt)`
+			},
+			fix: fixValidate,
+		},
+		{
+			name: "staged file gone",
+			setup: func(t *testing.T) string {
+				root := newOpenspecStageFixture(t, "")
+				writeFile(t, filepath.Join(root, "plan.md"), goodPlan+pf15StagingHeader)
+				pf15Stage(t, root, true)
+				for _, p := range []string{"design.md", "tasks.md"} {
+					if err := os.Remove(filepath.Join(stagingPath(root), p)); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return root
+			},
+			message: func(string) string { return `PF15: staging of "add-widget" is missing design.md, tasks.md` },
+			fix:     fixRestage,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := tc.setup(t)
+			f := onlyFinding(t, pf15Handoff(t, root), "PF15")
+			if f.Severity != "error" {
+				t.Errorf("severity = %q, want error", f.Severity)
+			}
+			want := tc.message(root)
+			if tc.prefix {
+				if !strings.HasPrefix(f.Message, want) {
+					t.Errorf("message = %q, want prefix %q", f.Message, want)
+				}
+			} else if f.Message != want {
+				t.Errorf("message = %q, want %q", f.Message, want)
+			}
+			if f.Fix != tc.fix {
+				t.Errorf("fix = %q, want %q", f.Fix, tc.fix)
+			}
+		})
+	}
+}
+
+func TestPF15_ValidStagingReturnsNoFinding(t *testing.T) {
+	root := newOpenspecStageFixture(t, "")
+	writeFile(t, filepath.Join(root, "plan.md"), goodPlan+pf15StagingHeader)
+	pf15Stage(t, root, true)
+	if got := findingsByID(pf15Handoff(t, root), "PF15"); len(got) != 0 {
+		t.Errorf("fully staged change reported PF15: %+v", got)
+	}
+}
+
+func TestPF15_SavedLineSkipsStagingCases(t *testing.T) {
+	saved := "\n**OpenSpec-Saved:** openspec/changes/add-widget/ (branch feat/x)\n"
+	root := pf15Root(t, saved+pf15StagingHeader)
+	if got := findingsByID(pf15Handoff(t, root), "PF15"); len(got) != 0 {
+		t.Errorf("Saved line plus Staging line reported PF15: %+v", got)
+	}
+}
+
+func TestPF15_PlanWithoutOpenspecHeadersPasses(t *testing.T) {
+	root := pf15Root(t, "")
+	if got := findingsByID(pf15Handoff(t, root), "PF15"); len(got) != 0 {
+		t.Errorf("plan with no OpenSpec header reported PF15: %+v", got)
+	}
+}
+
+func TestPF15_HandoffInputTable(t *testing.T) {
+	// A bare plan has no Verification Scorecard, so PF9 fails when final is set.
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "plan.md"), "# Plan\n\n**OpenSpec-Create:** add-widget\n")
+	run := func(in ValidateIn) []discovery.Finding {
+		in.Action, in.File = "plan_format", "plan.md"
+		return runValidate(t, root, in).Findings
+	}
+	count := func(fs []discovery.Finding, id string) int { return len(findingsByID(fs, id)) }
+
+	t.Run("handoff and final", func(t *testing.T) {
+		fs := run(ValidateIn{Handoff: true, Final: true})
+		if count(fs, "PF15") != 1 || count(fs, "PF9") != 1 {
+			t.Errorf("want PF15 and PF9, got %+v", fs)
+		}
+	})
+	t.Run("handoff without final", func(t *testing.T) {
+		fs := run(ValidateIn{Handoff: true})
+		if count(fs, "PF15") != 1 || count(fs, "PF9") != 0 || count(fs, "PF10") != 0 {
+			t.Errorf("want PF15 and no PF9 or PF10, got %+v", fs)
+		}
+	})
+	t.Run("no handoff", func(t *testing.T) {
+		if fs := run(ValidateIn{Final: true}); count(fs, "PF15") != 0 {
+			t.Errorf("handoff false reported PF15: %+v", fs)
+		}
+	})
+	t.Run("handoff with another action", func(t *testing.T) {
+		_, err := validate(root, ValidateIn{Action: "plan_style", File: "plan.md", Handoff: true})
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %v, want DomainError", err)
+		}
+		if de.Msg != "handoff applies only to plan_format" || de.Suggestion != "Remove handoff, or call validate with action plan_format." {
+			t.Errorf("DomainError = %+v", de)
+		}
+	})
+}
+
+func TestPF15_NotInPlanBlockingChecks(t *testing.T) {
+	// A plan that PF15 rejects must still give no PF15 check here: the
+	// PostToolUse hook blocks on planBlockingChecks and must not stop an edit.
+	for _, c := range planBlockingChecks(t.TempDir(), goodPlan+"\n**OpenSpec-Create:** add-widget\n") {
+		if c.id == "PF15" {
+			t.Fatalf("planBlockingChecks holds PF15: %+v", c)
+		}
 	}
 }

@@ -102,6 +102,20 @@ Several `internal/tools/*.go` files already follow this with their own
   and passes over one set of items. Example: a deferred-items read error shown
   as an empty backlog, while the other cached sources dropped their read errors
   too.
+- A helper that answers a yes-or-no question about a file or folder from
+  `os.Stat`, `os.ReadDir` or a similar probe (a folder check, an archive check,
+  an artifact check) and returns `false` or an empty list for every error is a
+  finding. Only `errors.Is(err, fs.ErrNotExist)` may give the negative answer.
+  Any other error (permission denied, an I/O error, a path that runs through a
+  file) reaches the caller as an `error`, or as a warning that names the path,
+  the cause and the value used instead. A caller that then reports 'not a
+  folder', 'no archive' or 'artifact missing' tells the user a false cause. The
+  same holds for the `os.Stat` that reads the old mode before a rewrite: an
+  ignored stat error resets the mode with no signal. This extends the
+  reader-or-builder bullet above, which names readers and builders and not
+  yes-or-no predicates. Example: a folder check that mapped every stat error to
+  'not a folder', and an archive check that read every `ReadDir` error as 'no
+  archive'.
 - When handler code calls `os.ReadFile`, `os.Stat`, `filepath.ReadDir`, or
   similar filesystem probes, errors must be classified: use
   `errors.Is(err, fs.ErrNotExist)` to distinguish "file does not exist" from
@@ -171,6 +185,21 @@ When handler code reads configuration via `config.Read`, `config.ReadSection`, o
 ## Type assertion error handling in critical paths
 
 When handler code performs a type assertion on a value that could be of the wrong type, use the two-result form: `value, ok := interfaceValue.(ConcreteType)`. Never drop the `ok` result in code paths where the type matters. If `ok` is false, the operation has failed and must be propagated as an error (DomainError, InfraError, or DataError with actionable Suggestion), not silently treated as a zero-value or absent result. Example: `validateCheckpointData` incorrectly dropped the `ok` result from a type assertion, causing incorrect behavior to pass undetected. Every type assertion in MCP handler logic must check and handle the false case explicitly.
+
+- A small accessor that reads a key from a decoded map or an `any` value
+  (for example a string or bool getter over a `detail` map) and returns the zero
+  value both for a missing key and for a value of the wrong type is the same
+  defect as a type assertion that drops `ok`. The caller cannot tell 'absent'
+  from 'wrong type'. For a key that decides an action (a sync flag, a change
+  name, a branch), the code uses a form that reports the wrong type: the call is
+  refused with a `DomainError` that names the key, the type found and the type
+  expected, or the output carries a warning with the same three facts and the
+  value used instead. A test passes each wrong type (a string for a bool, a
+  number for a string) and asserts the refusal or the warning. This extends the
+  type-assertion section above, which names the two-result assertion and not the
+  helper that wraps it. Example: a sync flag read with a bool accessor that
+  ignored a string value, and a change name read with a string accessor that
+  turned a number into an empty name.
 
 ## Error-swallowing pattern in MCP handler operations
 

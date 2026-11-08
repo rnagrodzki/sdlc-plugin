@@ -176,6 +176,15 @@ those same guardrails:
   maximum-value bullet above, which names count and size inputs only. Example:
   a healing record whose `applied[]` list and `rationale` text had no maximum,
   a `deferredId` stored untrimmed, and a patch cut with no warning.
+- Code that cuts text to a byte or rune cap (the output of a validator, a
+  stored note, a message) takes the cap from one named constant and cuts at a
+  rune boundary: a cut never falls inside a multi-byte character, and valid
+  UTF-8 stays valid. The cut is reported: a warning names the field, the limit
+  and the part dropped. A cut with a typed-in cap, a cut that splits a
+  character, or a cut with no warning is a finding. This extends the
+  cut-with-no-warning bullet above, which names stored inputs and not output
+  text, and does not name the rune boundary. Example: a validator output cut at
+  a literal byte count that split a multi-byte character and added no warning.
 - A JSON-encoded collection input (for example `plannedWavesJson`) MUST
   document its omitted-field behavior and each input the handler rejects (an
   empty array when entries are required, duplicate IDs, partial coverage of

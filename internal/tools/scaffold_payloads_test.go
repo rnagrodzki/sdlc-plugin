@@ -85,7 +85,7 @@ func TestPayloads_SchemaChecksums(t *testing.T) {
 	expected := map[string]string{
 		"sdlc-local.schema.json":       "fc00a37411200eb4de81cdc3260cf027daab1dcbf53da312ceec04394f3c1228",
 		"execute-state.schema.json":    "0f09e9b6aad20a2875478e1d334b3e25e12cd2918fe00d45ea59297dfaaf2ef8",
-		"ship-state.schema.json":       "2d6165e3ddf1f7e37d74faafe022abe88e61838b64bad88bdf2f043cb79d5bdc",
+		"ship-state.schema.json":       "307d275beb6ab1f2be5ce3ac180a62be30a8eb4794f6b96de009808d08c51184",
 		"review-dimension.schema.json": "5b02617f32c1d1b21b16597e2799cfee795896ae4f1983812e19f65bbc1cec3b",
 		"plugin.schema.json":           "c774282b3c8c54fc7418b767c5043353e11f65138b0be010cef8d57a6270fa67",
 	}

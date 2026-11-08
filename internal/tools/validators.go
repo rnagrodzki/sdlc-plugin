@@ -67,7 +67,9 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/discovery"
 	"github.com/rnagrodzki/sdlc-plugin/internal/frontmatter"
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/prtemplate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -90,6 +92,10 @@ type ValidateIn struct {
 	// Final requests the stricter plan_format checks (PF9/PF10), matching
 	// the JS --final flag.
 	Final bool `json:"final,omitempty" jsonschema_description:"Requests the stricter plan_format checks (PF9/PF10). Used by the plan_format action."`
+	// Handoff turns on PF15, the OpenSpec handoff rule. It is a separate
+	// input from Final because PF15 must not block edits in the middle of a
+	// run, and because the callers of plan_format set Final differently.
+	Handoff bool `json:"handoff,omitempty" jsonschema_description:"plan_format only; true with another action returns DomainError: true adds PF15, the OpenSpec handoff rule (Create header with no Staging line, Appendix that starts with [TBD, staging folder with no readable stage.json, no validatedAt, or a missing staged file). The plan skill sets it at the handoff only."`
 	// Template is the plan template path: plan_format reads it for PF10's
 	// required sections and PF13's measured (narrative) sections; plan_style
 	// reads it for the measured sections.
@@ -158,11 +164,11 @@ func RegisterValidateTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "validate",
 		`Run a deterministic validator against the project.
 
-Pass "action" to select the validator. Each action uses a subset of the input fields (unlisted fields are ignored). Returns structured findings (id, severity, message, path, fix) for FAILED checks only — an empty findings list means every check passed. "fix" carries the accepted shape inline and is set on every plan_format and plan_style failure (PF1-PF14) and on every guardrails failure (the repair step); the other actions leave it empty.
+Pass "action" to select the validator. Each action uses a subset of the input fields (unlisted fields are ignored). Returns structured findings (id, severity, message, path, fix) for FAILED checks only — an empty findings list means every check passed. "fix" carries the accepted shape inline and is set on every plan_format and plan_style failure (PF1-PF15) and on every guardrails failure (the repair step); the other actions leave it empty.
 
 validate only reports; the calling skill step decides the next action from findings and styleReport.
 
-- plan_format: Check a plan .md against PF1-PF7, PF11, PF12, PF13 (style limits from [style] and [planStyle]) and PF14 (Mermaid diagram color contrast, whole file), plus PF9 and PF10 when final is true. Requires file. Optional: final (adds the scorecard check PF9 and, with template, the section check PF10), template (plan template path: its required sections for PF10 and its narrative sections for PF13; omit it to skip PF10 and measure Context, Research Findings, Key Decisions and Final Shape). A file over `+maxPlanFileText+` returns a DomainError that names the size and the limit.
+- plan_format: Check a plan .md against PF1-PF7, PF11, PF12, PF13 (style limits from [style] and [planStyle]) and PF14 (Mermaid diagram color contrast, whole file), plus PF9 and PF10 when final is true, plus PF15 (OpenSpec handoff rule) when handoff is true. Requires file. Optional: final (adds the scorecard check PF9 and, with template, the section check PF10), handoff (adds PF15; the plan skill sets it at the handoff only), template (plan template path: its required sections for PF10 and its narrative sections for PF13; omit it to skip PF10 and measure Context, Research Findings, Key Decisions and Final Shape). A file over `+maxPlanFileText+` returns a DomainError that names the size and the limit.
 - plan_style: Measure a plan against the [planStyle] limits (and the strict STE rules when writingStandard is ste). Requires file. Optional: template (narrative sections to measure). Returns findings (PF13 failures) and styleReport on every call, pass or fail; styleReport.instructions lists the custom plan instructions for the handoff self-check. A file over `+maxPlanFileText+` returns a DomainError that names the size and the limit.
 - plan_gates: Check a plan .md against the count and lookup gates G3, G4, G8, G9, G10 and G12, plus the G18 floor (a Contract with no code block, table or diagram). Requires file. No optional fields. Reads the plan file (`+maxPlanFileText+` limit) and stats each Modify path. Both resolve against the ACTIVE worktree (a relative file path too); an unresolvable active worktree is an infrastructure error, never a silent fallback. Writes nothing. Returns findings with id G3, G4, G8, G9, G10, G12 or G18 and path = the plan file. Severity: G8 and G9 are warning; G3, G4, G10, G12 and G18 are error, except the G10 warnings for a task with no **Files:** block and for a Create, Modify or Test bullet with no path. Findings are sorted by gate number, then task number, then message. A Modify path that the plan text makes impossible to check (a parent is a file, a name too long, a symbolic link loop) is a G10 error finding; any other failed check of a Modify path (for example permission denied) returns an infrastructure error. A file with no "### Task N:" heading returns a DomainError: no gate was checked.
 - discovery: Check the project's discovery artifacts (PD1-PD16). No inputs.
@@ -245,6 +251,9 @@ func validate(root string, in ValidateIn) (ValidateOut, error) {
 		style    *StyleReport
 		err      error
 	)
+	if in.Handoff && in.Action != "plan_format" {
+		return ValidateOut{}, &mcpserver.DomainError{Msg: "handoff applies only to plan_format", Suggestion: "Remove handoff, or call validate with action plan_format."}
+	}
 	switch in.Action {
 	case "plan_format":
 		findings, err = validatePlanFormat(root, in)
@@ -480,6 +489,9 @@ func validatePlanFormat(root string, in ValidateIn) ([]discovery.Finding, error)
 	// must not run PF13, and runs PF14 on the edited text only.
 	checks := planBlockingChecks(root, content)
 	checks = append(checks, checkPF13(style, rep), checkPF14(content))
+	if in.Handoff {
+		checks = append(checks, checkPF15(root, content))
+	}
 
 	if in.Final {
 		checks = append(checks, checkPF9(content))
@@ -559,6 +571,70 @@ const pf14Fix = `Use classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stro
 // fences for a readable text color.
 func checkPF14(content string) pfCheck {
 	return pf14FromHits(commstyle.MermaidContrast(content))
+}
+
+// Kinds of fix text that pf15Fix returns.
+const (
+	pf15FixAuthor   = "author"
+	pf15FixRestage  = "restage"
+	pf15FixValidate = "validate"
+)
+
+// pf15Fix returns the next instruction for a PF15 failure of kind.
+func pf15Fix(kind, change string) string {
+	switch kind {
+	case pf15FixAuthor:
+		return "Run Create-flow authoring (plan skill, end of Step 6), then Step 6.6 again."
+	case pf15FixValidate:
+		return "Fix the artifacts that validateOutput names, call openspec_stage again, then Step 6.6 again."
+	default:
+		return fmt.Sprintf("Call openspec_stage for %q again with all artifacts, then Step 6.6 again.", change)
+	}
+}
+
+// checkPF15 is the OpenSpec handoff rule. It runs only when the caller sets
+// handoff (see ValidateIn.Handoff), never in planBlockingChecks or the hook.
+// The header cases come from openspec.CheckPlanHeaders. The staging cases
+// apply only to a plan with a Staging header and no Saved line; root is the
+// main worktree, where Stage writes the staging folder. Every stage.json read
+// error is a finding, never a tool error: the validator only reports.
+func checkPF15(root, content string) pfCheck {
+	if problems := openspec.CheckPlanHeaders(content); len(problems) > 0 {
+		p := problems[0]
+		if p.Kind == openspec.PlanHeaderAppendixTBD {
+			return pfFail("PF15", fmt.Sprintf("PF15: OpenSpec Appendix of %q starts with [TBD", p.Change), pf15Fix(pf15FixAuthor, p.Change))
+		}
+		return pfFail("PF15", fmt.Sprintf("PF15: OpenSpec change %q is not authored: the plan has **OpenSpec-Create:** and no **OpenSpec-Staging:** line", p.Change), pf15Fix(pf15FixAuthor, p.Change))
+	}
+
+	plan := stripFences(content)
+	if openspec.SavedHeaderRe.MatchString(plan) {
+		return pfPass("PF15", "OpenSpec handoff rule met")
+	}
+	change, ok := openspec.StagedChangeFromPlan(plan)
+	if !ok {
+		return pfPass("PF15", "OpenSpec handoff rule met")
+	}
+
+	restage := pf15Fix(pf15FixRestage, change)
+	if !openspec.ValidChangeName(change) {
+		return pfFail("PF15", fmt.Sprintf("PF15: cannot read stage.json of %q: not a valid change name", change), restage)
+	}
+	stagingDir := filepath.Join(root, filepath.FromSlash(openspec.StagingDirRel(change)))
+	manifest, err := openspec.ReadStageManifest(stagingDir)
+	switch {
+	case errors.Is(err, fsx.ErrNotFound):
+		return pfFail("PF15", fmt.Sprintf("PF15: staging folder %s/%s has no stage.json", root, openspec.StagingDirRel(change)), restage)
+	case err != nil:
+		return pfFail("PF15", fmt.Sprintf("PF15: cannot read stage.json of %q: %v", change, err), restage)
+	}
+	if manifest.ValidatedAt == "" {
+		return pfFail("PF15", fmt.Sprintf("PF15: staging of %q is not validated (stage.json has no validatedAt)", change), pf15Fix(pf15FixValidate, change))
+	}
+	if missing := openspec.MissingFiles(manifest, stagingDir); len(missing) > 0 {
+		return pfFail("PF15", fmt.Sprintf("PF15: staging of %q is missing %s", change, strings.Join(missing, ", ")), restage)
+	}
+	return pfPass("PF15", "OpenSpec handoff rule met")
 }
 
 // pf14FromHits renders contrast hits as the PF14 check, one

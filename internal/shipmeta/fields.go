@@ -20,6 +20,13 @@ import (
 //	const MAX_WAVE_TIMEOUT_SECONDS = 3600; // Monitor.timeout_ms caps at 3600000 ms
 const MaxWaveTimeoutSeconds = 3600
 
+// Names of the two OpenSpec steps. Code that names one of these steps uses
+// the constant, so a rename changes one place.
+const (
+	StepVerifyOpenspec  = "verify-openspec"
+	StepArchiveOpenspec = "archive-openspec"
+)
+
 // CanonicalSteps lists the pipeline step names that may appear as keys of
 // the ship.steps / ship.quick tables or in --steps, in the fixed pipeline
 // order (harden runs after archive-openspec). The plugin owns this
@@ -30,7 +37,7 @@ const MaxWaveTimeoutSeconds = 3600
 // "cleanup" is a synthetic terminal step appended unconditionally by the
 // pipeline and is never user-configurable — see ReservedSteps.
 var CanonicalSteps = []string{
-	"execute", "commit", "review", "verify-openspec", "archive-openspec",
+	"execute", "commit", "review", StepVerifyOpenspec, StepArchiveOpenspec,
 	"harden", "pr", "verify-pipeline", "await-remote-review",
 	"learnings-commit",
 }
@@ -167,7 +174,7 @@ type shipBuiltInDefaultsT struct {
 // default and the runtime fallback, kept from the JS config-migrations this
 // table was ported from.
 var ShipBuiltInDefaults = shipBuiltInDefaultsT{
-	Steps:                       []string{"execute", "commit", "review", "archive-openspec", "pr", "learnings-commit"},
+	Steps:                       []string{"execute", "commit", "review", StepArchiveOpenspec, "pr", "learnings-commit"},
 	Bump:                        "patch",
 	Draft:                       false,
 	Auto:                        false,

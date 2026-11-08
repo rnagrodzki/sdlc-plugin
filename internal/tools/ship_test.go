@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"syscall"
@@ -3061,6 +3062,46 @@ func TestShipPrepareMaterialize_TargetDiffers(t *testing.T) {
 	}
 }
 
+// TestShipPrepareMaterialize_OwnerMismatch: a staging whose stage.json names
+// another plan lands in errors with the owner Suggestion appended. No
+// ship-state file is written and no file changes.
+func TestShipPrepareMaterialize_OwnerMismatch(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, matPlanHeaders("add-widget"))
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, dir, "add-widget", map[string]string{"tasks.md": "- [ ] First task\n"})
+	owner := filepath.Join(dir, "plan-a.md")
+	setMaterializeStagePlanPath(t, dir, "add-widget", owner)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	// The message and its Suggestion are two elements of the errors list.
+	want := []string{
+		`openspec materialize: staging of "add-widget" belongs to plan ` + owner + ", not " + planPath,
+		"Run ship or execute with the plan " + owner + ", or pick another change name in the plan header and run /sdlc:plan again.",
+	}
+	if !reflect.DeepEqual(out.Errors, want) {
+		t.Fatalf("Errors = %q, want %q", out.Errors, want)
+	}
+	if out.StateFile != "" || out.Openspec != nil {
+		t.Errorf("StateFile = %q, Openspec = %+v, want both empty", out.StateFile, out.Openspec)
+	}
+	st, findErr := state.Find(dir, "ship", "feat/openspec")
+	if findErr != nil {
+		t.Fatalf("state.Find: %v", findErr)
+	}
+	if st != nil {
+		t.Fatalf("ship state file exists at %s after owner error; want none", st.Path)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", "openspec-staging", "add-widget", "tasks.md")); err != nil {
+		t.Errorf("staging tasks.md: %v, want it kept", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "openspec", "changes", "add-widget")); !os.IsNotExist(err) {
+		t.Errorf("change dir stat = %v, want not exist", err)
+	}
+}
+
 // TestShipPrepareMaterialize_DryRun: dryRun reports materialized:"dry-run"
 // and Materialize writes nothing — the target dir does not exist and the
 // staging dir is untouched.
@@ -3155,5 +3196,252 @@ func TestShipPrepareOpenspecChangeFromPlan(t *testing.T) {
 				t.Errorf("mismatch warning present = %v, want %v; warnings = %v", hasWarning, tc.wantWarning, out.Warnings)
 			}
 		})
+	}
+}
+
+// TestShipPrepareOpenspecHeaders: a plan that names an OpenSpec change whose
+// artifacts are not authored is refused in errors, with the message and the
+// suggestion as two elements, and no ship state file is written. Plans with a
+// Saved line, a Staging line, or only a Source line pass the check.
+func TestShipPrepareOpenspecHeaders(t *testing.T) {
+	cases := []struct {
+		name      string
+		plan      string
+		wantError []string // the expected errors list: message, then suggestion; nil means no error
+	}{
+		{
+			name: "create only is refused",
+			plan: "# Plan\n\n**Source:** openspec/changes/add-widget/\n**OpenSpec-Create:** add-widget\n",
+			wantError: []string{
+				`plan <plan> names OpenSpec change "add-widget" (**OpenSpec-Create:**), but its artifacts are not authored: the plan has no **OpenSpec-Staging:** or **OpenSpec-Saved:** line`,
+				"Run /sdlc:plan on the plan again to finish the OpenSpec authoring, or remove the **OpenSpec-Create:** and **Source:** lines to ship without OpenSpec.",
+			},
+		},
+		{
+			name: "staging with TBD appendix is refused",
+			plan: matPlanHeaders("add-widget") + "\n## OpenSpec Appendix\n\n[TBD: authored at the end of Step 6]\n",
+			wantError: []string{
+				`plan <plan> names OpenSpec change "add-widget", but its OpenSpec Appendix starts with [TBD: the OpenSpec authoring did not finish`,
+				"Run /sdlc:plan on the plan again to finish the OpenSpec authoring.",
+			},
+		},
+		{
+			name: "saved line passes",
+			plan: "# Plan\n\n**OpenSpec-Create:** add-widget\n**OpenSpec-Saved:** openspec/changes/add-widget/ (branch feat/openspec)\n",
+		},
+		{
+			name: "source only passes",
+			plan: "# Plan\n\n**Source:** conversation context\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, planPath := shipMaterializeFixture(t, tc.plan)
+			out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath, DryRun: true})
+			if err != nil {
+				t.Fatalf("shipPrepare: %v", err)
+			}
+			if tc.wantError == nil {
+				for _, e := range out.Errors {
+					if strings.Contains(e, "OpenSpec") {
+						t.Errorf("unexpected OpenSpec error: %q", e)
+					}
+				}
+				return
+			}
+			want := []string{strings.Replace(tc.wantError[0], "<plan>", planPath, 1), tc.wantError[1]}
+			if !reflect.DeepEqual(out.Errors, want) {
+				t.Fatalf("Errors = %q, want %q", out.Errors, want)
+			}
+			if out.StateFile != "" {
+				t.Errorf("StateFile = %q, want none", out.StateFile)
+			}
+			st, findErr := state.Find(dir, "ship", "feat/openspec")
+			if findErr != nil {
+				t.Fatalf("state.Find: %v", findErr)
+			}
+			if st != nil {
+				t.Fatalf("ship state file exists at %s after a refusal; want none", st.Path)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ship_prepare: overlap warning and openspecBaseHead
+// ---------------------------------------------------------------------------
+
+// shipOverlapHead returns the HEAD sha of the git repo at dir.
+func shipOverlapHead(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// shipOverlapState returns the ship state Data of the feat/openspec branch.
+func shipOverlapState(t *testing.T, dir string) map[string]any {
+	t.Helper()
+	st, err := state.Find(dir, "ship", "feat/openspec")
+	if err != nil || st == nil {
+		t.Fatalf("state.Find = %v, %v; want a ship state", st, err)
+	}
+	return st.Data
+}
+
+func shipOverlapWarningsOf(out ShipPrepareOut) []string {
+	var got []string
+	for _, w := range out.Warnings {
+		if strings.Contains(w, "OpenSpec overlap") || strings.Contains(w, "both edit specs/") || strings.Contains(w, "openspecBaseHead") {
+			got = append(got, w)
+		}
+	}
+	return got
+}
+
+// TestShipPrepareOverlap_WarnsAndStoresBaseHead: a staged plan whose change
+// shares a capability with one active and one staged change gets one warning
+// for each pair, and the state holds HEAD as openspecBaseHead.
+func TestShipPrepareOverlap_WarnsAndStoresBaseHead(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, matPlanHeaders("add-widget"))
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, dir, "add-widget", map[string]string{
+		"tasks.md":            "- [ ] First task\n",
+		"specs/ship/spec.md":  "x",
+		"specs/other/spec.md": "x",
+	})
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "active-one", "specs", "ship", "spec.md"), "x")
+	writeMaterializeStaging(t, dir, "staged-two", map[string]string{"specs/other/spec.md": "x"})
+	head := shipOverlapHead(t, dir)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	want := []string{
+		`OpenSpec change "add-widget" and staged change "staged-two" both edit specs/other/. Merge order decides which delta must be rebased.`,
+		`OpenSpec change "add-widget" and active change "active-one" both edit specs/ship/. Merge order decides which delta must be rebased.`,
+	}
+	if got := shipOverlapWarningsOf(out); !reflect.DeepEqual(got, want) {
+		t.Fatalf("overlap warnings = %q, want %q", got, want)
+	}
+	if got := shipOverlapState(t, dir)["openspecBaseHead"]; got != head {
+		t.Errorf("openspecBaseHead = %v, want %s", got, head)
+	}
+}
+
+// TestShipPrepareOverlap_NoSharedCapability: no shared capability gives no
+// overlap warning, and openspecBaseHead is still stored.
+func TestShipPrepareOverlap_NoSharedCapability(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, matPlanHeaders("add-widget"))
+	stubOpenspecForMaterialize(t)
+	writeMaterializeStaging(t, dir, "add-widget", map[string]string{"specs/ship/spec.md": "x"})
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "active-one", "specs", "plan", "spec.md"), "x")
+	head := shipOverlapHead(t, dir)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if got := shipOverlapWarningsOf(out); len(got) != 0 {
+		t.Fatalf("overlap warnings = %q, want none", got)
+	}
+	if got := shipOverlapState(t, dir)["openspecBaseHead"]; got != head {
+		t.Errorf("openspecBaseHead = %v, want %s", got, head)
+	}
+}
+
+// TestShipPrepareOverlap_OpenspecChangeInput: a change named only by the
+// openspecChange input (no plan header) gets the warning and the key.
+func TestShipPrepareOverlap_OpenspecChangeInput(t *testing.T) {
+	dir, _ := shipMaterializeFixture(t, "# Plan\n")
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "mine", "specs", "ship", "spec.md"), "x")
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "active-one", "specs", "ship", "spec.md"), "x")
+	head := shipOverlapHead(t, dir)
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, OpenspecChange: "mine"})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	want := []string{`OpenSpec change "mine" and active change "active-one" both edit specs/ship/. Merge order decides which delta must be rebased.`}
+	if got := shipOverlapWarningsOf(out); !reflect.DeepEqual(got, want) {
+		t.Fatalf("overlap warnings = %q, want %q", got, want)
+	}
+	if got := shipOverlapState(t, dir)["openspecBaseHead"]; got != head {
+		t.Errorf("openspecBaseHead = %v, want %s", got, head)
+	}
+}
+
+// TestShipPrepareOverlap_DryRun: a dry run adds no overlap warning and stores
+// no openspecBaseHead.
+func TestShipPrepareOverlap_DryRun(t *testing.T) {
+	dir, _ := shipMaterializeFixture(t, "# Plan\n")
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "mine", "specs", "ship", "spec.md"), "x")
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "active-one", "specs", "ship", "spec.md"), "x")
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, OpenspecChange: "mine", DryRun: true})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if got := shipOverlapWarningsOf(out); len(got) != 0 {
+		t.Fatalf("overlap warnings = %q, want none on a dry run", got)
+	}
+	if _, ok := shipOverlapState(t, dir)["openspecBaseHead"]; ok {
+		t.Error("openspecBaseHead stored on a dry run, want no key")
+	}
+}
+
+// TestShipPrepareOverlap_NoChangeNamed: no named change stores no key.
+func TestShipPrepareOverlap_NoChangeNamed(t *testing.T) {
+	dir, planPath := shipMaterializeFixture(t, "# Plan\n\n**Source:** conversation context\n")
+
+	if _, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, PlanFile: planPath}); err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	if _, ok := shipOverlapState(t, dir)["openspecBaseHead"]; ok {
+		t.Error("openspecBaseHead stored with no named change, want no key")
+	}
+}
+
+// TestShipPrepareOverlap_RevParseFails: a failed git rev-parse HEAD adds one
+// warning and stores no key. The call still succeeds.
+func TestShipPrepareOverlap_RevParseFails(t *testing.T) {
+	dir, _ := shipMaterializeFixture(t, "# Plan\n")
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "mine", "specs", "ship", "spec.md"), "x")
+	prev := shipPrepareRevParse
+	shipPrepareRevParse = func(string) (string, error) { return "", errors.New("boom") }
+	t.Cleanup(func() { shipPrepareRevParse = prev })
+
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true, OpenspecChange: "mine"})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	want := []string{"openspecBaseHead not stored: git rev-parse HEAD: boom. ship_state openspec-check will report no overlaps."}
+	if got := shipOverlapWarningsOf(out); !reflect.DeepEqual(got, want) {
+		t.Fatalf("warnings = %q, want %q", got, want)
+	}
+	if len(out.Errors) != 0 || out.StateFile == "" {
+		t.Errorf("Errors = %v, StateFile = %q, want no errors and a state file", out.Errors, out.StateFile)
+	}
+	if _, ok := shipOverlapState(t, dir)["openspecBaseHead"]; ok {
+		t.Error("openspecBaseHead stored after a failed rev-parse, want no key")
+	}
+}
+
+// TestShipOverlapWarnings_SkippedEntry: an unreadable other change maps to
+// one warning with the documented text.
+func TestShipOverlapWarnings_SkippedEntry(t *testing.T) {
+	got := shipOverlapWarnings("mine", nil, []string{`"broken": permission denied`})
+	want := []string{`OpenSpec overlap check skipped change "broken": permission denied. ` +
+		"Shared specs with that change are not reported. No action is needed to ship; to get the check, fix read access to that change folder and call ship_prepare again."}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("warnings = %q, want %q", got, want)
 	}
 }
