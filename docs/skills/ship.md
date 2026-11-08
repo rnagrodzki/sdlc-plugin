@@ -47,28 +47,40 @@ validation and the `tasks.md` box count. The skill does not run them itself.
 
 - The change is already archived: the step completes with the result
   `already archived`.
-- The named change is missing on disk, lacks an artifact, or fails
+- The named change is missing on disk, lacks `proposal.md` or a
+  `specs/*/spec.md` file (missing artifacts), or fails
   `openspec validate --strict`: the action writes the fail row and the
-  pipeline stops. The missing-on-disk message is the same as in
-  `verify-openspec`.
-- Outside `--auto`, the step asks before it archives a change whose
-  `tasks.md` still has unchecked boxes. Under `--auto`, the step skips the
-  question and marks the open boxes done with `openspec-tasks`.
+  pipeline stops. The step prints the next action, the validate output, and
+  the specs that a newer archived change edited (when there are any). The
+  missing-on-disk message is the same as in `verify-openspec`.
+- Outside `--auto`, the step asks for consent before every archive, also when
+  all boxes of `tasks.md` are checked. With consent, it marks the open boxes
+  done with `openspec-tasks` (when there are any), then archives. Under
+  `--auto`, the step skips the question and does the same.
 - A declined question records the decision `user declined archive` and skips
   the step.
+- `openspec-check` or `openspec-tasks` returns an error: the step fails with
+  the error text and prints the Suggestion. Fix the cause it names, then run
+  `/sdlc:ship --resume`.
+- `openspec archive` exits non-zero: the step fails with the CLI output. Fix
+  the cause, then run `/sdlc:ship --resume`. The resumed step starts again,
+  and the box sync finds no open box.
 
 `ship_prepare` refuses a plan that names an OpenSpec change but whose
 artifacts are not authored. This applies to a plan with an
 `**OpenSpec-Create:**` line and no `**OpenSpec-Staging:**` or
-`**OpenSpec-Saved:**` line. It also applies to a plan with such a line whose
-OpenSpec Appendix starts with `[TBD`. The refusal is an entry in `errors`, and
-no state file is written. Run `/sdlc:plan` on the plan again to finish the
+`**OpenSpec-Saved:**` line. It also applies to a plan with an
+`**OpenSpec-Staging:**` line whose OpenSpec Appendix starts with `[TBD`. A plan
+with an `**OpenSpec-Saved:**` line is never refused by this check. The refusal
+is two entries in `errors`: the message, then the fix. No state file is
+written. Run `/sdlc:plan` on the plan again to finish the
 authoring, or remove the `**OpenSpec-Create:**` and `**Source:**` lines to ship
 without OpenSpec.
 
 `ship_prepare` also refuses a plan whose staging folder belongs to another
 plan. The `stage.json` of that folder names another plan file. The refusal is
-an entry in `errors` that names the owner plan, and no file changes. Run ship
+two entries in `errors`: the message that names the owner plan, then the fix.
+No file changes. Run ship
 with the owner plan, or pick another change name in the plan header and run
 `/sdlc:plan` again. Only a run of the owner plan deletes the staging folder.
 
@@ -79,12 +91,21 @@ of the change with those of every other active change and every other staged
 change. Each shared capability gives one entry in `warnings`. The entry names
 both changes and the capability. The warning gives you time to agree a merge
 order with the other plan. A change that `ship_prepare` cannot read adds one
-warning and does not stop the call.
+warning, with the read error, and does not stop the call. No action is needed
+to ship. A dry run (`--dry-run`) runs no shared-spec check, so it shows none of
+these warnings.
 
 For the same named change, `ship_prepare` stores the HEAD sha as
-`openspecBaseHead` in the ship state file. Later steps use it to find the
-archived changes that a rebase brought in. A dry run stores nothing. When
+`openspecBaseHead` in the ship state file. A dry run stores nothing. When
 `git rev-parse HEAD` fails, `ship_prepare` adds a warning and stores no key.
+
+The only consumer is `openspec-check` (in `verify-openspec` and
+`archive-openspec`), and only for the outcome `invalid`. It then returns
+`overlaps`: each spec of the change that an archived change edited since
+`openspecBaseHead`, for example after a rebase brought that archived change
+in. With overlaps, the next action is to rebase the deltas of the change on
+the new text of those specs. With no `openspecBaseHead` key, or a value that is
+not a full commit sha, `openspec-check` skips this check and adds a warning.
 
 The `commit` step first stages the changes (everything except the `.sdlc-v2/`
 data directory) and checks the working tree. When changes are staged, `/ship`
@@ -115,11 +136,14 @@ them via `--steps`):
   OpenSpec change before archiving. It calls the `ship_state` action
   `openspec-check`, which checks the files and runs the strict validation.
   Skipped automatically if there is no
-  active change, even when configured. Fails and stops the pipeline when the
-  plan names a change that is missing on disk. When the plan has an
-  `**OpenSpec-Saved:**` line, the failure message tells you to merge the
-  OpenSpec PR (branch `openspec/<change>`) first, update the branch from the
-  default branch, and run `/ship --plan <plan-file>` again.
+  active change, even when configured. Completes when the change is already
+  archived. Fails and stops the pipeline for three outcomes: the change is
+  missing on disk, the change lacks `proposal.md` or a `specs/*/spec.md` file
+  (missing artifacts), or `openspec validate --strict` fails (invalid). For a
+  change missing on disk with an `**OpenSpec-Saved:**` line in the plan, the
+  failure message tells you to merge the OpenSpec PR (branch
+  `openspec/<change>`) first, update the branch from the default branch, and
+  run `/ship --plan <plan-file>` again.
 - `harden` — Groups the review findings into clusters and runs `/harden` on
   each one. It commits the guardrail, review-dimension, and Copilot-instruction
   edits as a separate commit before the PR. Then it runs one fix pass for the

@@ -205,7 +205,7 @@
     "openspecBaseHead": {
       "type": "string",
       "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$",
-      "description": "HEAD sha at ship_prepare when a change is named. ship_state openspec-check lists archived changes added since this commit."
+      "description": "HEAD sha at ship_prepare when a change is named. Absent on a dry run and when git rev-parse HEAD fails. For outcome invalid, ship_state openspec-check reports the specs of the named change that archived changes edited since this commit."
     },
     "linkedPlan": {
       "type": "object",

@@ -913,6 +913,14 @@ func afterSaveAdd(t *testing.T, fn func(dir string)) (restore func()) {
 
 // TestOpenspecSave_IndexCheck covers the check after git add: a manifest
 // file that is missing on disk or not in the index, and an untracked file.
+// saveIndexSuggestion is the Suggestion of the index check for a file that
+// is on disk but not in the index.
+func saveIndexSuggestion(dir string) string {
+	return "The tool ran git add on " + dir + ", and these files are still not in the index. " +
+		"A .gitignore rule that matches them, or a file written after the add, causes this. " +
+		"Fix the cause, then run /sdlc:openspec-save again."
+}
+
 func TestOpenspecSave_IndexCheck(t *testing.T) {
 	const dir = "openspec/changes/add-widget/"
 	wantMsgs := func(t *testing.T, err error, wants ...string) *mcpserver.DomainError {
@@ -941,8 +949,10 @@ func TestOpenspecSave_IndexCheck(t *testing.T) {
 		})
 		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
 		de := wantMsgs(t, err, `1 file(s) of change "add-widget"`, dir+"proposal.md")
-		if !strings.HasPrefix(de.Suggestion, "Delete "+dir+",") || !strings.Contains(de.Suggestion, "/sdlc:plan") {
-			t.Errorf("Suggestion = %q, want the stage-again text", de.Suggestion)
+		want := "Delete " + dir + ", then run /sdlc:plan on the plan to stage the change again. The plan keeps its **OpenSpec-Staging:** line, because the save stopped before the header rewrite."
+		// The branch note of openspecSaveNoteBranch follows the Suggestion.
+		if !strings.HasPrefix(de.Suggestion, want) {
+			t.Errorf("Suggestion = %q, want it to start with %q", de.Suggestion, want)
 		}
 		if got := readSaveFile(t, planPath); got != matPlanHeaders(saveChange) {
 			t.Errorf("plan changed:\n%s", got)
@@ -956,8 +966,11 @@ func TestOpenspecSave_IndexCheck(t *testing.T) {
 		})
 		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
 		de := wantMsgs(t, err, "1 file(s)", dir+"proposal.md")
-		if want := "Run git add " + dir + " and call openspec_save again."; !strings.HasPrefix(de.Suggestion, want) {
+		if want := saveIndexSuggestion(dir); !strings.HasPrefix(de.Suggestion, want) {
 			t.Errorf("Suggestion = %q, want it to start with %q", de.Suggestion, want)
+		}
+		if strings.Contains(de.Suggestion, "git add "+dir+" and") || strings.Contains(de.Suggestion, "Run git add") {
+			t.Errorf("Suggestion = %q, must not ask for git add by hand", de.Suggestion)
 		}
 	})
 
@@ -968,8 +981,8 @@ func TestOpenspecSave_IndexCheck(t *testing.T) {
 		})
 		_, err := openspecSave(root, OpenspecSaveIn{PlanPath: planPath})
 		de := wantMsgs(t, err, "1 file(s)", dir+"extra.md")
-		if !strings.HasPrefix(de.Suggestion, "Run git add ") {
-			t.Errorf("Suggestion = %q, want the git add text", de.Suggestion)
+		if want := saveIndexSuggestion(dir); !strings.HasPrefix(de.Suggestion, want) {
+			t.Errorf("Suggestion = %q, want it to start with %q", de.Suggestion, want)
 		}
 	})
 

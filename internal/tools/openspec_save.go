@@ -488,9 +488,13 @@ func openspecSaveCheckIndex(workDir, changeDir string, manifest *openspec.StageM
 	}
 
 	change := path.Base(strings.TrimSuffix(changeDir, "/"))
-	suggestion := fmt.Sprintf("Run git add %s and call openspec_save again.", changeDir)
+	// The tool already ran git add on changeDir, so a file that is still out
+	// of the index is kept out by a .gitignore rule, or was written after the
+	// add. Neither Suggestion asks for a git command or a plan edit by hand:
+	// the openspec-save skill forbids both.
+	suggestion := fmt.Sprintf("The tool ran git add on %s, and these files are still not in the index. A .gitignore rule that matches them, or a file written after the add, causes this. Fix the cause, then run /sdlc:openspec-save again.", changeDir)
 	if len(missing) > 0 {
-		suggestion = fmt.Sprintf("Delete %s, put back the **OpenSpec-Staging:** header, and run /sdlc:plan to stage the change again.", changeDir)
+		suggestion = fmt.Sprintf("Delete %s, then run /sdlc:plan on the plan to stage the change again. The plan keeps its **OpenSpec-Staging:** line, because the save stopped before the header rewrite.", changeDir)
 	}
 	listed, extra := bad, ""
 	if len(bad) > openspecSaveMaxListedPaths {

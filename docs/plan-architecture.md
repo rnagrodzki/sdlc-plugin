@@ -1001,7 +1001,7 @@ All checks implemented in `internal/tools/validators.go` under the
 | PF12 | Contract shape keys (from `plan.tasks.contractShape`) | `checkPF12` | No |
 | PF13 | Plan style limits from [planStyle] (prose share, paragraph/list length, sentence length, jargon share, banned phrases, STE rules) | `checkPF13` | No |
 | PF14 | Mermaid classDef/style colors text color + contrast >=4.5:1 (whole file in `plan_format`; edited text only in the PostToolUse hook) | `checkPF14` | No |
-| PF15 | OpenSpec handoff rule: Create header with no Staging line, Appendix starting with `[TBD`, staging folder with no readable `stage.json`, no `validatedAt`, or a missing staged file. Runs only with `handoff: true` (plan skill Step 6.6); not in `planBlockingChecks` or the hook | `checkPF15` | No (needs `handoff`) |
+| PF15 | OpenSpec handoff rule: Create header with no Staging line, a Staging line with an Appendix starting with `[TBD`, an invalid staged change name, staging folder with no readable `stage.json`, no `validatedAt`, or a missing staged file. A plan with an `**OpenSpec-Saved:**` line passes every case. Runs only with `handoff: true` (plan skill Step 6.6, and the second `validate` call after a rejected handoff); not in `planBlockingChecks` or the hook | `checkPF15` | No (needs `handoff`) |
 
 PF9 and PF10 are gated behind `final: true` because the Verification
 Scorecard and template sections are written in Step 7, after all revisions.

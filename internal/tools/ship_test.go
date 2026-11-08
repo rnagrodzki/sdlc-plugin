@@ -3076,10 +3076,13 @@ func TestShipPrepareMaterialize_OwnerMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("shipPrepare: %v", err)
 	}
-	want := `openspec materialize: staging of "add-widget" belongs to plan ` + owner + ", not " + planPath +
-		" Run ship or execute with the plan " + owner + ", or pick another change name in the plan header and run /sdlc:plan again."
-	if len(out.Errors) != 1 || out.Errors[0] != want {
-		t.Fatalf("Errors = %q, want [%q]", out.Errors, want)
+	// The message and its Suggestion are two elements of the errors list.
+	want := []string{
+		`openspec materialize: staging of "add-widget" belongs to plan ` + owner + ", not " + planPath,
+		"Run ship or execute with the plan " + owner + ", or pick another change name in the plan header and run /sdlc:plan again.",
+	}
+	if !reflect.DeepEqual(out.Errors, want) {
+		t.Fatalf("Errors = %q, want %q", out.Errors, want)
 	}
 	if out.StateFile != "" || out.Openspec != nil {
 		t.Errorf("StateFile = %q, Openspec = %+v, want both empty", out.StateFile, out.Openspec)
@@ -3197,28 +3200,28 @@ func TestShipPrepareOpenspecChangeFromPlan(t *testing.T) {
 }
 
 // TestShipPrepareOpenspecHeaders: a plan that names an OpenSpec change whose
-// artifacts are not authored is refused in errors with the suggestion
-// appended, and no ship state file is written. Plans with a Saved line, a
-// Staging line, or only a Source line pass the check.
+// artifacts are not authored is refused in errors, with the message and the
+// suggestion as two elements, and no ship state file is written. Plans with a
+// Saved line, a Staging line, or only a Source line pass the check.
 func TestShipPrepareOpenspecHeaders(t *testing.T) {
 	cases := []struct {
 		name      string
 		plan      string
-		wantError []string // substrings of the single expected error; nil means no error
+		wantError []string // the expected errors list: message, then suggestion; nil means no error
 	}{
 		{
 			name: "create only is refused",
 			plan: "# Plan\n\n**Source:** openspec/changes/add-widget/\n**OpenSpec-Create:** add-widget\n",
 			wantError: []string{
-				`names OpenSpec change "add-widget" (**OpenSpec-Create:**), but its artifacts are not authored`,
-				"Run /sdlc:plan on the plan again to finish the OpenSpec authoring, or remove the **OpenSpec-Create:** and **Source:** lines",
+				`plan <plan> names OpenSpec change "add-widget" (**OpenSpec-Create:**), but its artifacts are not authored: the plan has no **OpenSpec-Staging:** or **OpenSpec-Saved:** line`,
+				"Run /sdlc:plan on the plan again to finish the OpenSpec authoring, or remove the **OpenSpec-Create:** and **Source:** lines to ship without OpenSpec.",
 			},
 		},
 		{
 			name: "staging with TBD appendix is refused",
 			plan: matPlanHeaders("add-widget") + "\n## OpenSpec Appendix\n\n[TBD: authored at the end of Step 6]\n",
 			wantError: []string{
-				`names OpenSpec change "add-widget", but its OpenSpec Appendix starts with [TBD`,
+				`plan <plan> names OpenSpec change "add-widget", but its OpenSpec Appendix starts with [TBD: the OpenSpec authoring did not finish`,
 				"Run /sdlc:plan on the plan again to finish the OpenSpec authoring.",
 			},
 		},
@@ -3246,16 +3249,9 @@ func TestShipPrepareOpenspecHeaders(t *testing.T) {
 				}
 				return
 			}
-			if len(out.Errors) != 1 {
-				t.Fatalf("Errors = %v, want exactly one", out.Errors)
-			}
-			for _, want := range tc.wantError {
-				if !strings.Contains(out.Errors[0], want) {
-					t.Errorf("Errors[0] = %q, want it to contain %q", out.Errors[0], want)
-				}
-			}
-			if !strings.Contains(out.Errors[0], planPath) {
-				t.Errorf("Errors[0] = %q, want the plan path %q", out.Errors[0], planPath)
+			want := []string{strings.Replace(tc.wantError[0], "<plan>", planPath, 1), tc.wantError[1]}
+			if !reflect.DeepEqual(out.Errors, want) {
+				t.Fatalf("Errors = %q, want %q", out.Errors, want)
 			}
 			if out.StateFile != "" {
 				t.Errorf("StateFile = %q, want none", out.StateFile)
@@ -3443,7 +3439,8 @@ func TestShipPrepareOverlap_RevParseFails(t *testing.T) {
 // one warning with the documented text.
 func TestShipOverlapWarnings_SkippedEntry(t *testing.T) {
 	got := shipOverlapWarnings("mine", nil, []string{`"broken": permission denied`})
-	want := []string{`OpenSpec overlap check skipped change "broken": permission denied`}
+	want := []string{`OpenSpec overlap check skipped change "broken": permission denied. ` +
+		"Shared specs with that change are not reported. No action is needed to ship; to get the check, fix read access to that change folder and call ship_prepare again."}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("warnings = %q, want %q", got, want)
 	}

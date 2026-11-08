@@ -8,10 +8,13 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -110,6 +113,12 @@ func osStubValidate(t *testing.T, change, stdout string, exit int) {
 }
 
 func osNamed(change string) map[string]any { return map[string]any{"openspecChange": change} }
+
+// Full texts of the overlap warnings.
+const (
+	osAbsentBaseWarning    = "overlap check skipped: openspecBaseHead is absent from the ship state"
+	osMalformedBaseWarning = "overlap check skipped: openspecBaseHead is not a full commit sha"
+)
 
 // osAssertOpen checks that the step is still in_progress with no error.
 func osAssertOpen(t *testing.T, path, step string) {
@@ -226,6 +235,75 @@ func TestShipStateOpenspecCheck_OutcomeMissingOnDisk(t *testing.T) {
 	}
 }
 
+// TestShipStateOpenspecCheck_MissingOnDiskWithoutPlan pins the full text of
+// the missing-on-disk message when the state has no linked plan: the
+// <plan-file> placeholder stays.
+func TestShipStateOpenspecCheck_MissingOnDiskWithoutPlan(t *testing.T) {
+	dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+
+	out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
+	}
+	want := `OpenSpec change "add-widget" named by the plan is missing on disk. ` +
+		`If the plan has an **OpenSpec-Saved:** line, merge the OpenSpec PR (branch openspec/add-widget) first. ` +
+		`Then update this branch from the default branch and run /sdlc:ship --plan <plan-file> again. ` +
+		`Otherwise, run /sdlc:ship --plan <plan-file> again so ship_prepare materializes it, or remove the **Source:** line from the plan to ship without OpenSpec.`
+	if out.Outcome != "missing-on-disk" || out.Next != want {
+		t.Errorf("out = %+v, want missing-on-disk with next\n%s", out, want)
+	}
+	osAssertFailed(t, path, "verify-openspec", want)
+}
+
+// TestShipStateOpenspecCheck_SpecsIsFile checks that a specs path that is a
+// file reads as no specs (missing-artifacts), not as a read error.
+func TestShipStateOpenspecCheck_SpecsIsFile(t *testing.T) {
+	dir, _, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+	osWriteChange(t, dir, "add-widget", true)
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "add-widget", "specs"), "not a folder")
+
+	out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
+	}
+	if out.Outcome != "missing-artifacts" || !reflect.DeepEqual(out.Missing, []string{"specs/*/spec.md"}) {
+		t.Errorf("out = %+v, want missing-artifacts with specs/*/spec.md", out)
+	}
+}
+
+// TestShipStateOpenspecCheck_ArchiveEntryIsFile checks that a file with the
+// name of an archive folder is not an archived change.
+func TestShipStateOpenspecCheck_ArchiveEntryIsFile(t *testing.T) {
+	dir, _, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "archive", "2026-10-30-add-widget"), "a file")
+
+	out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
+	}
+	if out.Outcome != "missing-on-disk" {
+		t.Errorf("outcome = %q, want missing-on-disk", out.Outcome)
+	}
+}
+
+// TestShipStateOpenspecCheck_ActiveAndArchived checks that an active folder
+// wins over an archive folder of the same change: the change is checked,
+// not reported as archived.
+func TestShipStateOpenspecCheck_ActiveAndArchived(t *testing.T) {
+	dir, _, branch := osCheckFixture(t, "archive-openspec", osNamed("add-widget"))
+	osWriteChange(t, dir, "add-widget", true, "widget")
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "archive", "2026-10-30-add-widget", "proposal.md"), "# P\n")
+	osStubValidate(t, "add-widget", "valid", 0)
+
+	out, err := osCheck(t, dir, branch, "archive-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
+	}
+	if out.Outcome != "ok" || out.Next != "Call openspec-tasks for archive-openspec." {
+		t.Errorf("out = %+v, want ok", out)
+	}
+}
+
 func TestShipStateOpenspecCheck_OutcomeMissingArtifacts(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -299,10 +377,49 @@ func TestShipStateOpenspecCheck_OutcomeInvalid(t *testing.T) {
 		t.Errorf("overlaps = %v, want none", out.Overlaps)
 	}
 	// No openspecBaseHead in this state: one warning, no overlap check.
-	if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "openspecBaseHead is absent") {
-		t.Errorf("warnings = %v, want one absent-base warning", out.Warnings)
+	if !reflect.DeepEqual(out.Warnings, []string{osAbsentBaseWarning}) {
+		t.Errorf("warnings = %q, want [%q]", out.Warnings, osAbsentBaseWarning)
 	}
 	osAssertFailed(t, path, "verify-openspec", "openspec validate add-widget --strict failed")
+}
+
+// TestShipStateOpenspecCheck_AbsentBaseForms checks that a key that is
+// absent, a JSON null and an empty string each give the absent-base warning
+// and never reach git.
+func TestShipStateOpenspecCheck_AbsentBaseForms(t *testing.T) {
+	cases := map[string]func(t *testing.T, path string){
+		"key absent":   func(*testing.T, string) {},
+		"null":         func(t *testing.T, path string) { osSetStateKeys(t, path, map[string]any{"openspecBaseHead": nil}) },
+		"empty string": func(t *testing.T, path string) { osSetStateKeys(t, path, map[string]any{"openspecBaseHead": ""}) },
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+			osWriteChange(t, dir, "add-widget", true, "widget")
+			setup(t, path)
+			osStubValidate(t, "add-widget", "bad", 1)
+			osNoGit(t)
+
+			out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+			if err != nil {
+				t.Fatalf("openspec-check: %v", err)
+			}
+			if !reflect.DeepEqual(out.Warnings, []string{osAbsentBaseWarning}) {
+				t.Errorf("warnings = %q, want [%q]", out.Warnings, osAbsentBaseWarning)
+			}
+		})
+	}
+}
+
+// osNoGit makes any git call of the overlap check fail the test.
+func osNoGit(t *testing.T) {
+	t.Helper()
+	prev := shipCommitCheckGit
+	shipCommitCheckGit = func(d string, args ...string) (string, error) {
+		t.Errorf("git called with %v, want no git call", args)
+		return "", nil
+	}
+	t.Cleanup(func() { shipCommitCheckGit = prev })
 }
 
 // ---------------------------------------------------------------------------
@@ -341,6 +458,211 @@ func TestShipStateOpenspecCheck_InvalidWithOverlaps(t *testing.T) {
 	}
 }
 
+// TestShipStateOpenspecCheck_OverlapsSortedAndDeduped feeds the git seam
+// two archive folders for one spec, two files of one archive folder for one
+// spec, and a second spec. Each pair of spec and folder is listed once,
+// sorted by spec and then by folder, and next names each spec once.
+func TestShipStateOpenspecCheck_OverlapsSortedAndDeduped(t *testing.T) {
+	dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+	osWriteChange(t, dir, "add-widget", true, "widget", "gadget")
+	osSetStateKeys(t, path, map[string]any{"openspecBaseHead": strings.Repeat("c", 40)})
+	osStubValidate(t, "add-widget", "delta does not apply", 1)
+	diff := strings.Join([]string{
+		"openspec/changes/archive/2026-11-03-b/specs/widget/spec.md",
+		"openspec/changes/archive/2026-11-03-b/specs/widget/extra.md",
+		"openspec/changes/archive/2026-11-01-a/specs/widget/spec.md",
+		"openspec/changes/archive/2026-11-02-c/specs/gadget/spec.md",
+	}, "\n")
+	prev := shipCommitCheckGit
+	shipCommitCheckGit = func(d string, args ...string) (string, error) { return diff, nil }
+	t.Cleanup(func() { shipCommitCheckGit = prev })
+
+	out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
+	}
+	wantOverlaps := []shipSpecOverlap{
+		{Spec: "openspec/specs/gadget/spec.md", Change: "2026-11-02-c"},
+		{Spec: "openspec/specs/widget/spec.md", Change: "2026-11-01-a"},
+		{Spec: "openspec/specs/widget/spec.md", Change: "2026-11-03-b"},
+	}
+	if !reflect.DeepEqual(out.Overlaps, wantOverlaps) {
+		t.Errorf("overlaps = %+v, want %+v", out.Overlaps, wantOverlaps)
+	}
+	wantNext := "Rebase the deltas of add-widget on the new text of openspec/specs/gadget/spec.md, openspec/specs/widget/spec.md, then run openspec validate add-widget --strict."
+	if out.Next != wantNext {
+		t.Errorf("next = %q, want %q", out.Next, wantNext)
+	}
+}
+
+// TestShipStateOpenspecCheck_OverlapDecoys adds, after the base commit, one
+// path for each filter of the overlap check. Each one differs from a true
+// overlap in one property only, so none of them is an overlap.
+func TestShipStateOpenspecCheck_OverlapDecoys(t *testing.T) {
+	dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+	osWriteChange(t, dir, "add-widget", true, "widget")
+	oldSpec := filepath.Join(dir, "openspec", "changes", "archive", "2026-10-01-old", "specs", "widget", "spec.md")
+	writeFile(t, oldSpec, "# S\n")
+	gitCommit(t, dir, "archive old")
+	osSetStateKeys(t, path, map[string]any{"openspecBaseHead": osGitHead(t, dir)})
+
+	archive := filepath.Join(dir, "openspec", "changes", "archive", "2026-11-02-x")
+	writeFile(t, oldSpec, "# S changed\n")                                                                  // modified, not added
+	writeFile(t, filepath.Join(archive, "proposal.md"), "# P\n")                                            // archive file outside specs/
+	writeFile(t, filepath.Join(archive, "notes", "widget", "spec.md"), "# S\n")                             // not under specs/
+	writeFile(t, filepath.Join(dir, "openspec", "specs", "widget", "spec.md"), "# S\n")                     // main spec, not archive
+	writeFile(t, filepath.Join(dir, "openspec", "changes", "other", "specs", "widget", "spec.md"), "# S\n") // active change
+	gitCommit(t, dir, "decoys")
+	osStubValidate(t, "add-widget", "bad", 1)
+
+	out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
+	}
+	if len(out.Overlaps) != 0 || len(out.Warnings) != 0 {
+		t.Errorf("overlaps = %+v, warnings = %q, want none", out.Overlaps, out.Warnings)
+	}
+	if out.Next != "Fix the errors in validateOutput, then run /sdlc:ship --resume." {
+		t.Errorf("next = %q", out.Next)
+	}
+}
+
+// TestShipStateOpenspecCheck_OverlapsOnlyForInvalid checks that an ok
+// result runs no overlap check: overlaps stay empty even with a base sha.
+func TestShipStateOpenspecCheck_OverlapsOnlyForInvalid(t *testing.T) {
+	dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+	osWriteChange(t, dir, "add-widget", true, "widget")
+	osSetStateKeys(t, path, map[string]any{"openspecBaseHead": strings.Repeat("d", 40)})
+	osStubValidate(t, "add-widget", "valid", 0)
+	osNoGit(t)
+
+	out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
+	}
+	if out.Outcome != "ok" || len(out.Overlaps) != 0 || len(out.Warnings) != 0 {
+		t.Errorf("out = %+v, want ok with no overlaps and no warnings", out)
+	}
+}
+
+// TestShipStateOpenspecCheck_OwnSpecsUnreadable checks that a failed read of
+// the specs of the change gives a warning, not a silent empty overlap list.
+func TestShipStateOpenspecCheck_OwnSpecsUnreadable(t *testing.T) {
+	dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+	osWriteChange(t, dir, "add-widget", true, "widget")
+	osSetStateKeys(t, path, map[string]any{"openspecBaseHead": strings.Repeat("e", 40)})
+	osStubValidate(t, "add-widget", "bad", 1)
+	specs := filepath.Join(dir, "openspec", "changes", "add-widget", "specs")
+	prev := shipCommitCheckGit
+	shipCommitCheckGit = func(d string, args ...string) (string, error) {
+		// The probes of the outcome already ran: deny the specs folder now.
+		osDenyReadDir(t, specs)
+		return "", nil
+	}
+	t.Cleanup(func() { shipCommitCheckGit = prev })
+
+	out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
+	}
+	want := "overlap check skipped: read the specs of the change: open " + specs + ": permission denied"
+	if !reflect.DeepEqual(out.Warnings, []string{want}) {
+		t.Errorf("warnings = %q, want [%q]", out.Warnings, want)
+	}
+}
+
+// osDenied is the error of a probe that file permissions refuse.
+func osDenied(op, path string) error {
+	return &os.PathError{Op: op, Path: path, Err: syscall.EACCES}
+}
+
+// osDenyReadDir makes the folder listing of the OpenSpec probes fail with
+// permission denied for path. Other paths are listed as usual.
+func osDenyReadDir(t *testing.T, path string) {
+	t.Helper()
+	prev := shipOpenspecReadDirFunc
+	shipOpenspecReadDirFunc = func(p string) ([]os.DirEntry, error) {
+		if p == path {
+			return nil, osDenied("open", p)
+		}
+		return prev(p)
+	}
+	t.Cleanup(func() { shipOpenspecReadDirFunc = prev })
+}
+
+// osDenyStat makes the stat call of the OpenSpec probes fail with
+// permission denied for path. Other paths are read as usual.
+func osDenyStat(t *testing.T, path string) {
+	t.Helper()
+	prev := shipOpenspecStatFunc
+	shipOpenspecStatFunc = func(p string) (os.FileInfo, error) {
+		if p == path {
+			return nil, osDenied("stat", p)
+		}
+		return prev(p)
+	}
+	t.Cleanup(func() { shipOpenspecStatFunc = prev })
+}
+
+// TestShipStateOpenspecCheck_ProbeErrors checks that a probe error other
+// than a missing path is an InfraError that names the path and keeps the
+// cause, and that it writes no fail row.
+func TestShipStateOpenspecCheck_ProbeErrors(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, dir string) string // returns the denied path
+		deny  func(t *testing.T, path string)
+		op    string
+	}{
+		{"change folder stat", func(t *testing.T, dir string) string {
+			osWriteChange(t, dir, "add-widget", true, "widget")
+			return filepath.Join(dir, "openspec", "changes", "add-widget")
+		}, osDenyStat, "stat"},
+		{"archive folder list", func(t *testing.T, dir string) string {
+			return filepath.Join(dir, "openspec", "changes", "archive")
+		}, osDenyReadDir, "open"},
+		{"archive entry stat", func(t *testing.T, dir string) string {
+			p := filepath.Join(dir, "openspec", "changes", "archive", "2026-10-30-add-widget")
+			writeFile(t, filepath.Join(p, "proposal.md"), "# P\n")
+			return p
+		}, osDenyStat, "stat"},
+		{"proposal stat", func(t *testing.T, dir string) string {
+			osWriteChange(t, dir, "add-widget", true, "widget")
+			return filepath.Join(dir, "openspec", "changes", "add-widget", "proposal.md")
+		}, osDenyStat, "stat"},
+		{"specs folder list", func(t *testing.T, dir string) string {
+			osWriteChange(t, dir, "add-widget", true, "widget")
+			return filepath.Join(dir, "openspec", "changes", "add-widget", "specs")
+		}, osDenyReadDir, "open"},
+		{"spec file stat", func(t *testing.T, dir string) string {
+			osWriteChange(t, dir, "add-widget", true, "widget")
+			return filepath.Join(dir, "openspec", "changes", "add-widget", "specs", "widget", "spec.md")
+		}, osDenyStat, "stat"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, path, branch := osCheckFixture(t, "archive-openspec", osNamed("add-widget"))
+			denied := tc.setup(t, dir)
+			tc.deny(t, denied)
+			stubOpenspecCLI(t, nil) // validate must not run
+
+			_, err := osCheck(t, dir, branch, "archive-openspec", nil)
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("err = %v, want InfraError", err)
+			}
+			wantMsg := "openspec-check: " + tc.op + " " + denied + ": permission denied"
+			if ie.Msg != wantMsg || ie.Suggestion != "Fix read access to the path in the message, then call openspec-check again." {
+				t.Errorf("msg = %q, suggestion = %q, want msg %q", ie.Msg, ie.Suggestion, wantMsg)
+			}
+			if !errors.Is(err, syscall.EACCES) {
+				t.Errorf("err = %v, want cause EACCES", err)
+			}
+			osAssertOpen(t, path, "archive-openspec")
+		})
+	}
+}
+
 // TestShipStateOpenspecCheck_ArchiveBeforeBaseIsNoOverlap checks that an
 // archive folder that exists at the base commit is not an overlap.
 func TestShipStateOpenspecCheck_ArchiveBeforeBaseIsNoOverlap(t *testing.T) {
@@ -367,6 +689,9 @@ func TestShipStateOpenspecCheck_BadBaseHeadNeverReachesGit(t *testing.T) {
 		"upper case":    strings.Repeat("A", 40),
 		"not a string":  42,
 		"option-shaped": "--output=/x",
+		"41 hex":        strings.Repeat("a", 41),
+		"63 hex":        strings.Repeat("a", 63),
+		"65 hex":        strings.Repeat("a", 65),
 	}
 	for name, base := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -374,12 +699,7 @@ func TestShipStateOpenspecCheck_BadBaseHeadNeverReachesGit(t *testing.T) {
 			osWriteChange(t, dir, "add-widget", true, "widget")
 			osSetStateKeys(t, path, map[string]any{"openspecBaseHead": base})
 			osStubValidate(t, "add-widget", "bad", 1)
-			prev := shipCommitCheckGit
-			shipCommitCheckGit = func(d string, args ...string) (string, error) {
-				t.Errorf("git called with %v, want no git call", args)
-				return "", nil
-			}
-			t.Cleanup(func() { shipCommitCheckGit = prev })
+			osNoGit(t)
 
 			out, err := osCheck(t, dir, branch, "verify-openspec", nil)
 			if err != nil {
@@ -388,8 +708,38 @@ func TestShipStateOpenspecCheck_BadBaseHeadNeverReachesGit(t *testing.T) {
 			if out.Outcome != "invalid" || len(out.Overlaps) != 0 {
 				t.Errorf("out = %+v, want invalid with no overlaps", out)
 			}
-			if len(out.Warnings) != 1 || !strings.Contains(out.Warnings[0], "not a full commit sha") {
-				t.Errorf("warnings = %v, want one malformed-base warning", out.Warnings)
+			if !reflect.DeepEqual(out.Warnings, []string{osMalformedBaseWarning}) {
+				t.Errorf("warnings = %q, want [%q]", out.Warnings, osMalformedBaseWarning)
+			}
+		})
+	}
+}
+
+// TestShipStateOpenspecCheck_FullShaFormsReachGit checks that a SHA-1 (40
+// hex) and a SHA-256 (64 hex) base both pass the pattern and reach git.
+func TestShipStateOpenspecCheck_FullShaFormsReachGit(t *testing.T) {
+	for _, n := range []int{40, 64} {
+		t.Run(fmt.Sprintf("%d hex", n), func(t *testing.T) {
+			base := strings.Repeat("b", n)
+			dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+			osWriteChange(t, dir, "add-widget", true, "widget")
+			osSetStateKeys(t, path, map[string]any{"openspecBaseHead": base})
+			osStubValidate(t, "add-widget", "bad", 1)
+			var gotArgs []string
+			prev := shipCommitCheckGit
+			shipCommitCheckGit = func(d string, args ...string) (string, error) { gotArgs = args; return "", nil }
+			t.Cleanup(func() { shipCommitCheckGit = prev })
+
+			out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+			if err != nil {
+				t.Fatalf("openspec-check: %v", err)
+			}
+			wantArgs := []string{"diff", "--name-only", "--diff-filter=A", base + "..HEAD"}
+			if !reflect.DeepEqual(gotArgs, wantArgs) {
+				t.Errorf("git args = %q, want %q", gotArgs, wantArgs)
+			}
+			if len(out.Warnings) != 0 {
+				t.Errorf("warnings = %q, want none", out.Warnings)
 			}
 		})
 	}
@@ -461,6 +811,10 @@ func TestShipStateOpenspecCheck_ChangeNameRows(t *testing.T) {
 			`openspec-check: invalid change name "grp/demo"`,
 			"Pass a name of lower-case letters, digits and single hyphens."},
 		{"sync", osNamed("add-widget"), map[string]any{"sync": true},
+			"openspec-check: detail.sync applies only to openspec-tasks",
+			"Remove detail.sync."},
+		// The key is refused whatever its value.
+		{"sync false", osNamed("add-widget"), map[string]any{"sync": false},
 			"openspec-check: detail.sync applies only to openspec-tasks",
 			"Remove detail.sync."},
 	}
@@ -543,33 +897,150 @@ func TestShipStateOpenspecCheck_StepRows(t *testing.T) {
 			t.Errorf("msg = %q, suggestion = %q", de.Msg, de.Suggestion)
 		}
 	})
+	t.Run("no step entry", func(t *testing.T) {
+		dir, path, branch := osCheckFixture(t, "archive-openspec", osNamed("add-widget"))
+		setSteps(t, path, "archive-openspec")
+		_, err := osCheck(t, dir, branch, "verify-openspec", nil)
+		osWantTasksErr(t, err, "data", "openspec-check: no verify-openspec step in the ship state",
+			"Run ship_state read to list the steps. Call openspec-check only for a pipeline that has this step.")
+	})
+	t.Run("no ship state", func(t *testing.T) {
+		dir, _, _ := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+		_, err := osCheck(t, dir, "feat/none", "verify-openspec", nil)
+		osWantTasksErr(t, err, "data", `no ship state found for branch "feat/none"`,
+			"Run ship_state init with detail.branch set to this branch before calling other ship_state actions.")
+		if !errors.Is(err, errNoShipState) {
+			t.Errorf("err = %v, want cause errNoShipState", err)
+		}
+	})
+}
+
+// TestShipStateOpenspec_WrongTypedDetail checks that a detail value of the
+// wrong type is a DomainError in both actions, never read as absent.
+func TestShipStateOpenspec_WrongTypedDetail(t *testing.T) {
+	cases := []struct {
+		name   string
+		action string
+		flags  map[string]any
+		detail map[string]any
+		msg    string
+		sug    string
+	}{
+		{"check change number", "openspec-check", map[string]any{}, map[string]any{"change": 5},
+			"openspec-check: detail.change must be a string, got float64",
+			"Pass detail.change as a JSON string, or omit the key entirely. Pass the OpenSpec change name."},
+		{"check change ignored when named", "openspec-check", osNamed("add-widget"), map[string]any{"change": true},
+			"openspec-check: detail.change must be a string, got bool",
+			"Pass detail.change as a JSON string, or omit the key entirely. Pass the OpenSpec change name."},
+		{"check branch object", "openspec-check", osNamed("add-widget"), map[string]any{"branch": map[string]any{}},
+			"openspec-check: detail.branch must be a string, got map[string]interface {}",
+			"Pass detail.branch as a JSON string, or omit the key entirely. Pass the branch name, or omit it for the current branch."},
+		{"tasks change number", "openspec-tasks", map[string]any{}, map[string]any{"change": 5},
+			"openspec-tasks: detail.change must be a string, got float64",
+			"Pass detail.change as a JSON string, or omit the key entirely. Pass the OpenSpec change name."},
+		{"tasks sync string", "openspec-tasks", osNamed("add-widget"), map[string]any{"sync": "true"},
+			"openspec-tasks: detail.sync must be a boolean, got string",
+			"Pass detail.sync as the JSON boolean true or false (not a string or number), or omit the key entirely. true marks each open box done; omit it to count only."},
+		{"tasks sync number", "openspec-tasks", osNamed("add-widget"), map[string]any{"sync": 1},
+			"openspec-tasks: detail.sync must be a boolean, got float64",
+			"Pass detail.sync as the JSON boolean true or false (not a string or number), or omit the key entirely. true marks each open box done; omit it to count only."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, path, branch := osCheckFixture(t, "archive-openspec", tc.flags)
+			tasks := filepath.Join(dir, "openspec", "changes", "add-widget", "tasks.md")
+			writeFile(t, tasks, "- [ ] a\n")
+			d := map[string]any{"branch": branch}
+			for k, v := range tc.detail {
+				d[k] = v
+			}
+			// JSON numbers decode as float64, as they do from a real call.
+			raw, _ := json.Marshal(d)
+			var decoded map[string]any
+			if err := json.Unmarshal(raw, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			_, err := shipState(dir, dir, ShipStateIn{Action: tc.action, Step: "archive-openspec", Detail: decoded},
+				fixedNow(time.Date(2026, 1, 1, 0, 5, 0, 0, time.UTC)))
+			osWantTasksErr(t, err, "domain", tc.msg, tc.sug)
+			if got := osReadFile(t, tasks); got != "- [ ] a\n" {
+				t.Errorf("tasks.md changed to %q", got)
+			}
+			osAssertOpen(t, path, "archive-openspec")
+		})
+	}
 }
 
 func TestShipStateOpenspecCheck_ValidateOutputCut(t *testing.T) {
-	marker := "[validate output cut at 16384 bytes]"
+	// "é" is 2 bytes. 16383 ASCII bytes and then "é" put the cap of 16384
+	// bytes inside the character, so the cut moves back to byte 16383.
+	split := strings.Repeat("x", 16383) + "é" + "tail"
 	for _, tc := range []struct {
-		name string
-		size int
-		cut  bool
-	}{{"exact limit", 16384, false}, {"one over", 16385, true}} {
+		name    string
+		body    string
+		exit    int
+		want    string
+		warning string
+	}{
+		{"exact limit", strings.Repeat("x", 16384), 0, strings.Repeat("x", 16384), ""},
+		{"one over", strings.Repeat("x", 16385), 0,
+			strings.Repeat("x", 16384) + "\n[validate output cut at 16384 of 16385 bytes]",
+			"validateOutput is cut: openspec validate printed 16385 bytes, limit 16384 bytes"},
+		{"character across the cap", split, 0,
+			strings.Repeat("x", 16383) + "\n[validate output cut at 16383 of 16389 bytes]",
+			"validateOutput is cut: openspec validate printed 16389 bytes, limit 16384 bytes"},
+		{"cut on an invalid result", strings.Repeat("y", 16390), 1,
+			strings.Repeat("y", 16384) + "\n[validate output cut at 16384 of 16390 bytes]",
+			"validateOutput is cut: openspec validate printed 16390 bytes, limit 16384 bytes"},
+	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir, _, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
 			osWriteChange(t, dir, "add-widget", true, "widget")
-			body := strings.Repeat("x", tc.size)
-			osStubValidate(t, "add-widget", body, 0)
+			osStubValidate(t, "add-widget", tc.body, tc.exit)
 
 			out, err := osCheck(t, dir, branch, "verify-openspec", nil)
 			if err != nil {
 				t.Fatalf("openspec-check: %v", err)
 			}
-			want := body
-			if tc.cut {
-				want = body[:16384] + marker
+			if out.ValidateOutput != tc.want {
+				t.Errorf("validateOutput: len = %d, want %d, tail %q", len(out.ValidateOutput), len(tc.want), osTail(out.ValidateOutput))
 			}
-			if out.ValidateOutput != want {
-				t.Errorf("validateOutput: len = %d, want %d (cut = %v)", len(out.ValidateOutput), len(want), tc.cut)
+			if !utf8.ValidString(out.ValidateOutput) {
+				t.Error("validateOutput is not valid UTF-8: the cut split a character")
+			}
+			var wantWarnings []string
+			if tc.warning != "" {
+				wantWarnings = append(wantWarnings, tc.warning)
+			}
+			if tc.exit != 0 {
+				wantWarnings = append(wantWarnings, osAbsentBaseWarning)
+			}
+			if !reflect.DeepEqual(out.Warnings, append([]string{}, wantWarnings...)) {
+				t.Errorf("warnings = %q, want %q", out.Warnings, wantWarnings)
 			}
 		})
+	}
+}
+
+// osTail returns the last 60 bytes of s, for failure messages.
+func osTail(s string) string {
+	if len(s) <= 60 {
+		return s
+	}
+	return s[len(s)-60:]
+}
+
+// TestShipStateOpenspecCheck_ValidateOutputTagNamesTheCap ties the
+// jsonschema_description of ValidateOutput to shipOpenspecValidateMaxBytes,
+// so the tag cannot go stale when the constant changes.
+func TestShipStateOpenspecCheck_ValidateOutputTagNamesTheCap(t *testing.T) {
+	f, ok := reflect.TypeOf(shipOpenspecCheckOut{}).FieldByName("ValidateOutput")
+	if !ok {
+		t.Fatal("no ValidateOutput field")
+	}
+	want := fmt.Sprintf("cut at %d bytes", shipOpenspecValidateMaxBytes)
+	if tag := f.Tag.Get("jsonschema_description"); !strings.Contains(tag, want) {
+		t.Errorf("tag = %q, want it to contain %q", tag, want)
 	}
 }
 
@@ -578,21 +1049,83 @@ func TestShipStateOpenspecCheck_ValidateOutputCut(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestShipStateOpenspecCheck_FailRowWriteFails(t *testing.T) {
-	dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
-	prev := shipStateWriteFunc
-	shipStateWriteFunc = func(*state.State) error { return errors.New("disk full") }
-	t.Cleanup(func() { shipStateWriteFunc = prev })
+	cases := map[string]func(t *testing.T, dir string){
+		"missing-on-disk": func(*testing.T, string) {},
+		"missing-artifacts": func(t *testing.T, dir string) {
+			osWriteChange(t, dir, "add-widget", false, "widget")
+		},
+		"invalid": func(t *testing.T, dir string) {
+			osWriteChange(t, dir, "add-widget", true, "widget")
+			osStubValidate(t, "add-widget", "bad", 1)
+		},
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+			setup(t, dir)
+			diskFull := errors.New("disk full")
+			useShipStateWrite(t, func(*state.State) error { return diskFull })
+			useShipHistoryAppend(t, func(string, history.RunRecord) error {
+				t.Error("history row appended after a failed state write")
+				return nil
+			})
 
-	_, err := osCheck(t, dir, branch, "verify-openspec", nil) // missing-on-disk: fail row
-	var ie *mcpserver.InfraError
-	if !errors.As(err, &ie) {
-		t.Fatalf("err = %v, want InfraError", err)
+			_, err := osCheck(t, dir, branch, "verify-openspec", nil)
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("err = %v, want InfraError", err)
+			}
+			if ie.Msg != "openspec-check: write ship state: disk full" ||
+				ie.Suggestion != "Fix write access to .sdlc-v2/runs/, then call openspec-check again." {
+				t.Errorf("msg = %q, suggestion = %q", ie.Msg, ie.Suggestion)
+			}
+			if !errors.Is(err, diskFull) {
+				t.Errorf("err = %v, want cause diskFull", err)
+			}
+			osAssertOpen(t, path, "verify-openspec")
+		})
 	}
-	if ie.Msg != "openspec-check: write ship state: disk full" ||
-		ie.Suggestion != "Fix write access to .sdlc-v2/runs/, then call openspec-check again." {
-		t.Errorf("msg = %q, suggestion = %q", ie.Msg, ie.Suggestion)
+}
+
+// TestShipStateOpenspecCheck_FirstFailHistoryWarnings checks the history row
+// of the first fail: a failed append adds its warning after the overlap
+// warning, and a second failing call appends no row and adds no warning.
+func TestShipStateOpenspecCheck_FirstFailHistoryWarnings(t *testing.T) {
+	dir, _, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+	osWriteChange(t, dir, "add-widget", true, "widget")
+	osStubValidate(t, "add-widget", "bad", 1)
+	appends := 0
+	useShipHistoryAppend(t, func(string, history.RunRecord) error {
+		appends++
+		return errors.New("history locked")
+	})
+
+	out, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("openspec-check: %v", err)
 	}
-	osAssertOpen(t, path, "verify-openspec")
+	wantHistory := "Failure history row not written to .sdlc-v2/history/runs.jsonl: history locked" +
+		`. To add it, call ship_state history_record with detail.skill "ship" and detail.outcome "failure".`
+	if !reflect.DeepEqual(out.Warnings, []string{osAbsentBaseWarning, wantHistory}) {
+		t.Errorf("warnings = %q, want [%q %q]", out.Warnings, osAbsentBaseWarning, wantHistory)
+	}
+
+	// The step is failed now; a resumed run begins it again and fails again.
+	_, err = shipState(dir, dir, ShipStateIn{Action: "begin-step", Step: "verify-openspec", Detail: map[string]any{"branch": branch}},
+		fixedNow(time.Date(2026, 1, 1, 0, 6, 0, 0, time.UTC)))
+	if err != nil {
+		t.Fatalf("begin-step: %v", err)
+	}
+	again, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	if err != nil {
+		t.Fatalf("second openspec-check: %v", err)
+	}
+	if !reflect.DeepEqual(again.Warnings, []string{osAbsentBaseWarning}) {
+		t.Errorf("second warnings = %q, want only the overlap warning", again.Warnings)
+	}
+	if appends != 1 {
+		t.Errorf("history appends = %d, want 1", appends)
+	}
 }
 
 func TestShipStateOpenspecCheck_CLIMissing(t *testing.T) {
@@ -605,8 +1138,76 @@ func TestShipStateOpenspecCheck_CLIMissing(t *testing.T) {
 	if !errors.As(err, &ie) {
 		t.Fatalf("err = %v, want InfraError", err)
 	}
-	if ie.Suggestion != "Install the openspec CLI, then call openspec-check again." {
-		t.Errorf("suggestion = %q", ie.Suggestion)
+	if ie.Msg != "openspec-check: "+openspec.ErrCLINotFound.Error() ||
+		ie.Suggestion != "Install the openspec CLI, then call openspec-check again." {
+		t.Errorf("msg = %q, suggestion = %q", ie.Msg, ie.Suggestion)
+	}
+	if !errors.Is(err, openspec.ErrCLINotFound) {
+		t.Errorf("err = %v, want cause ErrCLINotFound", err)
+	}
+	osAssertOpen(t, path, "verify-openspec")
+}
+
+// TestShipStateOpenspecInfraError covers each arm of the InfraError of a
+// failed validate call: missing CLI, output over the cap, and any other
+// failure.
+func TestShipStateOpenspecInfraError(t *testing.T) {
+	capErr := fmt.Errorf("openspec validate add-widget --strict: %w", fmt.Errorf("execx: openspec: %w", execx.ErrOutputCap))
+	otherErr := fmt.Errorf("openspec validate add-widget --strict: %w", errors.New("exec format error"))
+	cases := []struct {
+		name       string
+		err        error
+		sentinel   error
+		suggestion string
+	}{
+		{"cli missing", openspec.ErrCLINotFound, openspec.ErrCLINotFound,
+			"Install the openspec CLI, then call openspec-check again."},
+		{"output cap", capErr, execx.ErrOutputCap,
+			"Run openspec validate add-widget --strict in a terminal to read the output, fix the change, then call openspec-check again."},
+		{"other", otherErr, otherErr,
+			"Check the openspec CLI with openspec --version, then call openspec-check again."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := shipOpenspecInfraError("add-widget", tc.err)
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("err = %v, want InfraError", err)
+			}
+			if ie.Msg != "openspec-check: "+tc.err.Error() || ie.Suggestion != tc.suggestion {
+				t.Errorf("msg = %q, suggestion = %q, want suggestion %q", ie.Msg, ie.Suggestion, tc.suggestion)
+			}
+			if !errors.Is(err, tc.sentinel) {
+				t.Errorf("err = %v, want cause %v", err, tc.sentinel)
+			}
+		})
+	}
+}
+
+// TestShipStateOpenspecCheck_ValidateExecFails runs the check with a
+// validate call that fails before the CLI exits. The InfraError gets the
+// generic CLI Suggestion and writes no fail row.
+func TestShipStateOpenspecCheck_ValidateExecFails(t *testing.T) {
+	dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+	osWriteChange(t, dir, "add-widget", true, "widget")
+	// A file with no #! line and no machine code: exec fails with ENOEXEC.
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "openspec"), []byte("\x00\x01not a program"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	_, err := osCheck(t, dir, branch, "verify-openspec", nil)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %v, want InfraError", err)
+	}
+	if !strings.HasPrefix(ie.Msg, "openspec-check: openspec validate add-widget --strict: ") ||
+		ie.Suggestion != "Check the openspec CLI with openspec --version, then call openspec-check again." {
+		t.Errorf("msg = %q, suggestion = %q", ie.Msg, ie.Suggestion)
+	}
+	if !errors.Is(err, syscall.ENOEXEC) {
+		t.Errorf("err = %v, want cause ENOEXEC", err)
 	}
 	osAssertOpen(t, path, "verify-openspec")
 }
@@ -627,7 +1228,8 @@ func TestShipStateOpenspecCheck_ParityWithAnalyzeChange(t *testing.T) {
 				t.Fatal(err)
 			}
 			if err := os.Symlink(filepath.Base(p), p); err != nil {
-				t.Skipf("symlink: %v", err)
+				t.Skipf("UNTESTED on this host: a change path that is a link loop must read as missing-on-disk. "+
+					"The host cannot create a symlink (%v); run this test on a host that can.", err)
 			}
 		},
 	}
@@ -728,28 +1330,33 @@ func osWantTasksErr(t *testing.T, err error, kind, msg, suggestion string) {
 const osTasksSample = "# Tasks\n- [ ] 1.1 a\n  - [x] 1.2 b\n```\n- [ ] fenced\n```\n- [ ] 2.1 c\n"
 
 func TestShipStateOpenspecTasks_CountOnlyWritesNothing(t *testing.T) {
-	for _, detail := range []map[string]any{nil, {"sync": false}} {
-		dir, path, branch, tasks := osTasksFixture(t, osTasksSample)
-		out, err := osTasks(t, dir, branch, "archive-openspec", detail)
-		if err != nil {
-			t.Fatalf("detail %v: %v", detail, err)
-		}
-		if out.Change != "add-widget" || out.Written || len(out.Changed) != 0 || out.Changed == nil {
-			t.Errorf("out = %+v, want change add-widget, written false, changed []", out)
-		}
-		want := openspec.TaskCounts{Done: 1, Total: 3}
-		if out.Before != want || out.After != want {
-			t.Errorf("before = %+v after = %+v, want %+v", out.Before, out.After, want)
-		}
-		wantNext := "Ask for archive consent (skip the question under flags.auto). On consent, " +
-			"call openspec-tasks with detail.sync true, then run openspec archive add-widget."
-		if out.Next != wantNext {
-			t.Errorf("next = %q, want %q", out.Next, wantNext)
-		}
-		if got := osReadFile(t, tasks); got != osTasksSample {
-			t.Errorf("tasks.md changed to %q", got)
-		}
-		osAssertOpen(t, path, "archive-openspec")
+	for name, detail := range map[string]map[string]any{"no sync key": nil, "sync false": {"sync": false}} {
+		t.Run(name, func(t *testing.T) {
+			dir, path, branch, tasks := osTasksFixture(t, osTasksSample)
+			out, err := osTasks(t, dir, branch, "archive-openspec", detail)
+			if err != nil {
+				t.Fatalf("openspec-tasks: %v", err)
+			}
+			if out.Change != "add-widget" || out.Written || len(out.Changed) != 0 || out.Changed == nil {
+				t.Errorf("out = %+v, want change add-widget, written false, changed []", out)
+			}
+			if out.Warnings == nil || len(out.Warnings) != 0 {
+				t.Errorf("warnings = %#v, want a non-nil empty list", out.Warnings)
+			}
+			want := openspec.TaskCounts{Done: 1, Total: 3}
+			if out.Before != want || out.After != want {
+				t.Errorf("before = %+v after = %+v, want %+v", out.Before, out.After, want)
+			}
+			wantNext := "Ask for archive consent (skip the question under flags.auto). On consent, " +
+				"call openspec-tasks with detail.sync true, then run openspec archive add-widget."
+			if out.Next != wantNext {
+				t.Errorf("next = %q, want %q", out.Next, wantNext)
+			}
+			if got := osReadFile(t, tasks); got != osTasksSample {
+				t.Errorf("tasks.md changed to %q", got)
+			}
+			osAssertOpen(t, path, "archive-openspec")
+		})
 	}
 }
 
@@ -816,35 +1423,55 @@ func TestShipStateOpenspecTasks_Sync(t *testing.T) {
 }
 
 func TestShipStateOpenspecTasks_NoFileOrNoBox(t *testing.T) {
-	t.Run("absent", func(t *testing.T) {
-		dir, _, branch, tasks := osTasksFixture(t, "x")
-		if err := os.Remove(tasks); err != nil {
-			t.Fatal(err)
-		}
-		out, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if out.Written || out.Before != (openspec.TaskCounts{}) || out.After != (openspec.TaskCounts{}) || out.Changed == nil {
-			t.Errorf("out = %+v", out)
-		}
-		if _, err := os.Stat(tasks); !os.IsNotExist(err) {
-			t.Errorf("tasks.md exists after the call: %v", err)
-		}
-	})
-	t.Run("no box", func(t *testing.T) {
-		dir, _, branch, tasks := osTasksFixture(t, "# T\ntext\n")
-		out, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if out.Written || out.Before != (openspec.TaskCounts{}) {
-			t.Errorf("out = %+v", out)
-		}
-		if got := osReadFile(t, tasks); got != "# T\ntext\n" {
-			t.Errorf("tasks.md = %q", got)
-		}
-	})
+	const consentNext = "Ask for archive consent (skip the question under flags.auto). On consent, run openspec archive add-widget."
+	const syncNext = "Run openspec archive add-widget."
+	cases := []struct {
+		name    string
+		content string // "" removes tasks.md
+		sync    bool
+		warning string
+		next    string
+	}{
+		{"absent, count", "", false, "tasks.md is absent: there is no box to count or sync", consentNext},
+		{"absent, sync", "", true, "tasks.md is absent: there is no box to count or sync", syncNext},
+		{"no box, count", "# T\ntext\n", false, "tasks.md has no task box: there is nothing to sync", consentNext},
+		{"no box, sync", "# T\ntext\n", true, "tasks.md has no task box: there is nothing to sync", syncNext},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir, _, branch, tasks := osTasksFixture(t, tc.content)
+			if tc.content == "" {
+				if err := os.Remove(tasks); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var detail map[string]any
+			if tc.sync {
+				detail = map[string]any{"sync": true}
+			}
+			out, err := osTasks(t, dir, branch, "archive-openspec", detail)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.Written || out.Before != (openspec.TaskCounts{}) || out.After != (openspec.TaskCounts{}) ||
+				out.Changed == nil || len(out.Changed) != 0 {
+				t.Errorf("out = %+v, want counts 0, no change, no write", out)
+			}
+			if !reflect.DeepEqual(out.Warnings, []string{tc.warning}) {
+				t.Errorf("warnings = %q, want [%q]", out.Warnings, tc.warning)
+			}
+			if out.Next != tc.next {
+				t.Errorf("next = %q, want %q", out.Next, tc.next)
+			}
+			if tc.content == "" {
+				if _, err := os.Stat(tasks); !os.IsNotExist(err) {
+					t.Errorf("tasks.md exists after the call: %v", err)
+				}
+			} else if got := osReadFile(t, tasks); got != tc.content {
+				t.Errorf("tasks.md = %q", got)
+			}
+		})
+	}
 }
 
 func TestShipStateOpenspecTasks_ChangeNameRows(t *testing.T) {
@@ -934,7 +1561,8 @@ func TestShipStateOpenspecTasks_NotRegularFile(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := os.Symlink(target, tasks); err != nil {
-			t.Skipf("symlink: %v", err)
+			t.Skipf("UNTESTED on this host: a tasks.md that is a symlink must be refused with a DataError and its target left unchanged. "+
+				"The host cannot create a symlink (%v); run this test on a host that can.", err)
 		}
 		_, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
 		osWantTasksErr(t, err, "data", "tasks.md is not a regular file", want)
@@ -1017,4 +1645,153 @@ func TestShipStateOpenspecTasks_ParityWithAnalyzeChange(t *testing.T) {
 	if out.Before.Done != info.TasksDone || out.Before.Total != info.TasksTotal {
 		t.Errorf("before = %+v, AnalyzeChange = %d/%d", out.Before, info.TasksDone, info.TasksTotal)
 	}
+}
+
+func TestShipStateOpenspecTasks_StateRows(t *testing.T) {
+	t.Run("no step entry", func(t *testing.T) {
+		dir, path, branch := osCheckFixture(t, "verify-openspec", osNamed("add-widget"))
+		setSteps(t, path, "verify-openspec")
+		_, err := osTasks(t, dir, branch, "archive-openspec", nil)
+		osWantTasksErr(t, err, "data", "openspec-tasks: no archive-openspec step in the ship state",
+			"Run ship_state read to list the steps. Call openspec-tasks only for a pipeline that has this step.")
+	})
+	t.Run("no ship state", func(t *testing.T) {
+		dir, _, _ := osCheckFixture(t, "archive-openspec", osNamed("add-widget"))
+		_, err := osTasks(t, dir, "feat/none", "archive-openspec", nil)
+		osWantTasksErr(t, err, "data", `no ship state found for branch "feat/none"`,
+			"Run ship_state init with detail.branch set to this branch before calling other ship_state actions.")
+		if !errors.Is(err, errNoShipState) {
+			t.Errorf("err = %v, want cause errNoShipState", err)
+		}
+	})
+}
+
+// TestShipStateOpenspecTasks_ReadGrewPastCap checks the size guard after the
+// read: a tasks.md that was small at Lstat and over the cap at read is
+// refused and not written.
+func TestShipStateOpenspecTasks_ReadGrewPastCap(t *testing.T) {
+	dir, path, branch, tasks := osTasksFixture(t, "- [ ] a\n")
+	old := openspecTasksRead
+	openspecTasksRead = func(string) ([]byte, error) {
+		return []byte("- [ ] a\n" + strings.Repeat("x", tasksFileMaxBytes)), nil
+	}
+	t.Cleanup(func() { openspecTasksRead = old })
+
+	_, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+	osWantTasksErr(t, err, "data", "tasks.md is 1048584 bytes, limit 1048576 bytes",
+		"Split tasks.md below 1048576 bytes, then call openspec-tasks again.")
+	if got := osReadFile(t, tasks); got != "- [ ] a\n" {
+		t.Errorf("tasks.md changed to %q", got)
+	}
+	osAssertOpen(t, path, "archive-openspec")
+}
+
+// TestShipStateOpenspecTasks_LstatFails checks that an Lstat error other than
+// a missing file is an InfraError with its cause. Here the change folder is
+// a file, so the Lstat of tasks.md fails with ENOTDIR.
+func TestShipStateOpenspecTasks_LstatFails(t *testing.T) {
+	dir, path, branch := osCheckFixture(t, "archive-openspec", osNamed("add-widget"))
+	changeDir := filepath.Join(dir, "openspec", "changes", "add-widget")
+	writeFile(t, changeDir, "not a folder")
+
+	_, err := osTasks(t, dir, branch, "archive-openspec", nil)
+	osWantTasksErr(t, err, "infra", "openspec-tasks: lstat "+filepath.Join(changeDir, "tasks.md")+": not a directory",
+		"Fix access to openspec/changes/add-widget/tasks.md, then call openspec-tasks again.")
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("err = %v, want cause ENOTDIR", err)
+	}
+	osAssertOpen(t, path, "archive-openspec")
+}
+
+// TestShipStateOpenspecTasks_WriteFailsKeepsCause checks that the InfraError
+// of a failed write keeps its cause.
+func TestShipStateOpenspecTasks_WriteFailsKeepsCause(t *testing.T) {
+	dir, _, branch, _ := osTasksFixture(t, "- [ ] a\n")
+	boom := errors.New("boom")
+	old := openspecTasksWrite
+	openspecTasksWrite = func(string, []byte) error { return boom }
+	t.Cleanup(func() { openspecTasksWrite = old })
+
+	_, err := osTasks(t, dir, branch, "archive-openspec", map[string]any{"sync": true})
+	if !errors.Is(err, boom) {
+		t.Errorf("err = %v, want cause boom", err)
+	}
+}
+
+// TestOpenspecTasksWrite_DefaultSeam runs the real write seam. A rename that
+// fails after the temp file exists leaves no temp file and keeps the target.
+// A stat error other than a missing file is returned before any write, and a
+// missing file takes the mode 0644.
+func TestOpenspecTasksWrite_DefaultSeam(t *testing.T) {
+	t.Run("rename fails", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "tasks.md")
+		// A folder that is not empty: the rename of a file onto it fails.
+		writeFile(t, filepath.Join(target, "keep.md"), "kept\n")
+
+		err := openspecTasksWrite(target, []byte("- [x] a\n"))
+		if err == nil || !strings.Contains(err.Error(), "fsx: rename temp file into place for "+target) {
+			t.Fatalf("err = %v, want the rename error", err)
+		}
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			if strings.Contains(e.Name(), ".tmp-") {
+				t.Errorf("temp file %s left behind", e.Name())
+			}
+		}
+		if got := osReadFile(t, filepath.Join(target, "keep.md")); got != "kept\n" {
+			t.Errorf("target content changed to %q", got)
+		}
+	})
+	t.Run("stat fails", func(t *testing.T) {
+		dir := t.TempDir()
+		parent := filepath.Join(dir, "file")
+		writeFile(t, parent, "x")
+		err := openspecTasksWrite(filepath.Join(parent, "tasks.md"), []byte("- [x] a\n"))
+		if !errors.Is(err, syscall.ENOTDIR) {
+			t.Fatalf("err = %v, want the ENOTDIR stat error", err)
+		}
+	})
+	t.Run("missing file takes 0644", func(t *testing.T) {
+		target := filepath.Join(t.TempDir(), "tasks.md")
+		if err := openspecTasksWrite(target, []byte("- [x] a\n")); err != nil {
+			t.Fatal(err)
+		}
+		if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0o644 {
+			t.Errorf("stat = %v, %v, want mode 0644", info, err)
+		}
+	})
+}
+
+// TestShipCleanupOpenspecReport_StatSplit checks that the run-end report
+// reads a missing folder, a path under a file and a link loop as not active,
+// and gives a warning only for another stat error.
+func TestShipCleanupOpenspecReport_StatSplit(t *testing.T) {
+	data := func() map[string]any { return map[string]any{"flags": osNamed("add-widget")} }
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	for name, statErr := range map[string]error{
+		"missing":   &os.PathError{Op: "stat", Path: "p", Err: syscall.ENOENT},
+		"not a dir": &os.PathError{Op: "stat", Path: "p", Err: syscall.ENOTDIR},
+		"link loop": &os.PathError{Op: "stat", Path: "p", Err: syscall.ELOOP},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prev := shipOpenspecStatFunc
+			shipOpenspecStatFunc = func(string) (os.FileInfo, error) { return nil, statErr }
+			t.Cleanup(func() { shipOpenspecStatFunc = prev })
+			report, warning := shipCleanupOpenspecReport(t.TempDir(), data(), now)
+			want := map[string]any{"change": "add-widget", "stillActive": false, "path": "openspec/changes/add-widget/"}
+			if warning != "" || !reflect.DeepEqual(report, want) {
+				t.Errorf("report = %v, warning = %q, want %v and no warning", report, warning, want)
+			}
+		})
+	}
+	t.Run("denied", func(t *testing.T) {
+		prev := shipOpenspecStatFunc
+		shipOpenspecStatFunc = func(p string) (os.FileInfo, error) { return nil, osDenied("stat", "p") }
+		t.Cleanup(func() { shipOpenspecStatFunc = prev })
+		report, warning := shipCleanupOpenspecReport(t.TempDir(), data(), now)
+		if report != nil || warning != "OpenSpec report skipped: stat openspec/changes/add-widget/: stat p: permission denied" {
+			t.Errorf("report = %v, warning = %q", report, warning)
+		}
+	})
 }

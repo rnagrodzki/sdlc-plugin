@@ -3363,9 +3363,9 @@ func TestShipStateCleanupPipelineOpenspec_NoChange(t *testing.T) {
 // A stat error adds a warning and never fails the call.
 func TestShipStateCleanupPipelineOpenspec_StatError(t *testing.T) {
 	dir, path, branch := cleanupOpenspecFixture(t, "staterr", "my-change")
-	orig := cleanupOpenspecStat
-	cleanupOpenspecStat = func(string) (os.FileInfo, error) { return nil, errors.New("boom") }
-	t.Cleanup(func() { cleanupOpenspecStat = orig })
+	orig := shipOpenspecStatFunc
+	shipOpenspecStatFunc = func(string) (os.FileInfo, error) { return nil, errors.New("boom") }
+	t.Cleanup(func() { shipOpenspecStatFunc = orig })
 
 	m := cleanupOpenspecRun(t, dir, branch)
 
@@ -3388,14 +3388,14 @@ func TestShipStateCleanupPipelineOpenspec_StatError(t *testing.T) {
 func TestShipStateCleanupPipelineOpenspec_InvalidName(t *testing.T) {
 	dir, path, branch := cleanupOpenspecFixture(t, "badname", "../escape")
 	called := false
-	orig := cleanupOpenspecStat
-	cleanupOpenspecStat = func(string) (os.FileInfo, error) { called = true; return nil, errors.New("must not run") }
-	t.Cleanup(func() { cleanupOpenspecStat = orig })
+	orig := shipOpenspecStatFunc
+	shipOpenspecStatFunc = func(string) (os.FileInfo, error) { called = true; return nil, errors.New("must not run") }
+	t.Cleanup(func() { shipOpenspecStatFunc = orig })
 
 	m := cleanupOpenspecRun(t, dir, branch)
 
 	if called {
-		t.Error("cleanupOpenspecStat ran for an invalid change name")
+		t.Error("shipOpenspecStatFunc ran for an invalid change name")
 	}
 	if _, has := m["openspec"]; has {
 		t.Errorf("openspec = %#v, want key absent", m["openspec"])

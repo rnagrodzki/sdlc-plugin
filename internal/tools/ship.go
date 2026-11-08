@@ -386,7 +386,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	// is refused here, before any write. An unreadable plan leaves
 	// planContent empty, so the check is skipped.
 	for _, p := range openspec.CheckPlanHeaders(planContent) {
-		errors = append(errors, shipOpenspecHeaderMessage(in.PlanFile, p, true))
+		errors = append(errors, shipOpenspecHeaderMessage(in.PlanFile, p), shipOpenspecHeaderSuggestion(p))
 	}
 	warnings = append(warnings, resolveShipOpenspecChange(merged, sources, in.OpenspecChange, planContent)...)
 
@@ -551,15 +551,14 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			res, mErr := openspec.Materialize(activeRoot, cfgRoot, planContent, in.PlanFile)
 			if mErr != nil {
 				// mapMaterializeError is shared with execute_state init, whose
-				// messages carry an "init: " prefix; drop it here. The mapped
-				// error's Suggestion has no slot in the []string errors list,
-				// so the owner case appends its Suggestion to the message.
-				msg := strings.TrimPrefix(mapMaterializeError(mErr).Error(), "init: ")
+				// messages carry an "init: " prefix; drop it here. The owner
+				// case adds its Suggestion as the next element of the errors
+				// list, never spliced into the message.
+				out.Errors = append(out.Errors, strings.TrimPrefix(mapMaterializeError(mErr).Error(), "init: "))
 				var owner *openspec.StagingOwnerError
 				if stderrors.As(mErr, &owner) {
-					msg += " " + materializeOwnerSuggestion(owner)
+					out.Errors = append(out.Errors, materializeOwnerSuggestion(owner))
 				}
-				out.Errors = append(out.Errors, msg)
 				out.Next = shipPrepareNext(out)
 				return out, nil
 			}
@@ -635,18 +634,18 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 // outside this map (config validity is a warning, not an error — see
 // shipPrepare's step-name validation above) falls back to its bare name.
 var shipStepDescriptions = map[string]string{
-	"execute":             "Run the plan's execution waves",
-	"commit":              "Commit the executed changes",
-	"review":              "Run automated code review",
-	"harden":              "Harden guardrails/dimensions from review findings and commit them",
-	"received-review":     "Fix or defer review findings at or above reviewThreshold",
-	"commit-fixes":        "Commit review-fix changes",
-	"verify-openspec":     "Verify OpenSpec change docs are in sync",
-	"archive-openspec":    "Archive completed OpenSpec change docs",
-	"pr":                  "Open the pull request",
-	"verify-pipeline":     "Wait for CI/pipeline checks to pass",
-	"await-remote-review": "Wait for remote reviewer approval",
-	"learnings-commit":    "Commit captured learnings",
+	"execute":                    "Run the plan's execution waves",
+	"commit":                     "Commit the executed changes",
+	"review":                     "Run automated code review",
+	"harden":                     "Harden guardrails/dimensions from review findings and commit them",
+	"received-review":            "Fix or defer review findings at or above reviewThreshold",
+	"commit-fixes":               "Commit review-fix changes",
+	shipmeta.StepVerifyOpenspec:  "Verify OpenSpec change docs are in sync",
+	shipmeta.StepArchiveOpenspec: "Archive completed OpenSpec change docs",
+	"pr":                         "Open the pull request",
+	"verify-pipeline":            "Wait for CI/pipeline checks to pass",
+	"await-remote-review":        "Wait for remote reviewer approval",
+	"learnings-commit":           "Commit captured learnings",
 }
 
 // shipReceivedReviewCondition is the trigger text of the seeded
@@ -773,22 +772,15 @@ func tomlTypeName(v any) string {
 }
 
 // shipOpenspecHeaderMessage returns the error text for a plan whose OpenSpec
-// header lines show that its artifacts are not authored. With withSuggestion
-// true the suggestion is appended, for callers whose error list holds only
-// strings (ship_prepare). execute_state init passes false and sets the
-// DomainError Suggestion from shipOpenspecHeaderSuggestion.
-func shipOpenspecHeaderMessage(planFile string, p openspec.PlanHeaderProblem, withSuggestion bool) string {
-	var msg string
-	switch p.Kind {
-	case openspec.PlanHeaderAppendixTBD:
-		msg = fmt.Sprintf("plan %s names OpenSpec change %q, but its OpenSpec Appendix starts with [TBD: the OpenSpec authoring did not finish", planFile, p.Change)
-	default:
-		msg = fmt.Sprintf("plan %s names OpenSpec change %q (**OpenSpec-Create:**), but its artifacts are not authored: the plan has no **OpenSpec-Staging:** or **OpenSpec-Saved:** line", planFile, p.Change)
+// header lines show that its artifacts are not authored. The fix is
+// shipOpenspecHeaderSuggestion: ship_prepare appends it to its errors list as
+// the next element, and execute_state init sets it as the DomainError
+// Suggestion.
+func shipOpenspecHeaderMessage(planFile string, p openspec.PlanHeaderProblem) string {
+	if p.Kind == openspec.PlanHeaderAppendixTBD {
+		return fmt.Sprintf("plan %s names OpenSpec change %q, but its OpenSpec Appendix starts with [TBD: the OpenSpec authoring did not finish", planFile, p.Change)
 	}
-	if withSuggestion {
-		msg += ". " + shipOpenspecHeaderSuggestion(p)
-	}
-	return msg
+	return fmt.Sprintf("plan %s names OpenSpec change %q (**OpenSpec-Create:**), but its artifacts are not authored: the plan has no **OpenSpec-Staging:** or **OpenSpec-Saved:** line", planFile, p.Change)
 }
 
 // shipOpenspecHeaderSuggestion returns the fix for a plan header problem.
@@ -848,7 +840,8 @@ func shipOverlapWarnings(change string, overlaps []openspec.CapabilityOverlap, s
 			change, o.Source, o.OtherChange, o.Capability))
 	}
 	for _, s := range skipped {
-		warnings = append(warnings, "OpenSpec overlap check skipped change "+s)
+		warnings = append(warnings, "OpenSpec overlap check skipped change "+s+
+			". Shared specs with that change are not reported. No action is needed to ship; to get the check, fix read access to that change folder and call ship_prepare again.")
 	}
 	return warnings
 }

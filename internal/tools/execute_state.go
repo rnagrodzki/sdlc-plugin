@@ -2420,7 +2420,7 @@ func execActionInit(root, workDir string, in ExecuteStateIn, now func() time.Tim
 		// An unauthored plan is refused before any write.
 		if probs := openspec.CheckPlanHeaders(planContent); len(probs) > 0 {
 			return nil, &mcpserver.DomainError{
-				Msg:        shipOpenspecHeaderMessage(in.PlanPath, probs[0], false),
+				Msg:        shipOpenspecHeaderMessage(in.PlanPath, probs[0]),
 				Suggestion: shipOpenspecHeaderSuggestion(probs[0]),
 			}
 		}

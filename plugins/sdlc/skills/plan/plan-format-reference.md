@@ -553,18 +553,23 @@ need to open OpenSpec files separately.
   (the `stagingRoot` that `openspec_stage` returned).
 
 **PF15 (OpenSpec handoff rule).** `validate` with `action: "plan_format"` and `handoff: true` adds
-PF15. The plan skill sets `handoff` at the handoff only (Step 6.6), never during edits. PF15 returns
-one error finding for the first case that matches:
+PF15. The plan skill sets `handoff` in two places only, never during edits: the handoff (Step 6.6),
+and the second `validate` call after a rejected handoff with feedback (step 3 of "Rejected handoff
+with feedback"). A plan with an `**OpenSpec-Saved:**` line passes PF15: no case below applies to it.
+For every other plan, PF15 returns one error finding for the first case that matches:
 
 | PF15 case | Fix |
 |---|---|
 | Plan has `**OpenSpec-Create:**` and no `**OpenSpec-Staging:**` line | Run Create-flow authoring, then Step 6.6 again. |
-| Appendix body starts with `[TBD` | Same. |
-| Staging folder has no readable `stage.json` | Call `openspec_stage` again with all artifacts, then Step 6.6 again. |
+| Plan has a `**OpenSpec-Staging:**` line and its Appendix body starts with `[TBD` | Same. |
+| The staged change name is not a valid change name | Call `openspec_stage` again with all artifacts, then Step 6.6 again. |
+| Staging folder has no `stage.json` | Same. |
+| `stage.json` cannot be read (a read error, a file over the size limit, or bad JSON) | Same. |
 | `stage.json` has no `validatedAt` | Fix the artifacts that `validateOutput` names, call `openspec_stage` again, then Step 6.6 again. |
 | A staged file is gone | Call `openspec_stage` again with all artifacts, then Step 6.6 again. |
 
-The staging cases apply only to a plan with a Staging line and no `**OpenSpec-Saved:**` line.
+The cases after the second one apply only to a plan with a Staging line. A plan with no Create line
+and no Staging line passes PF15.
 
 **Nested-fence safety (N+1 backticks):** delta-spec fragments reproduced here are themselves
 markdown containing fenced code blocks (scenario snippets, requirement bodies). A plain 3-backtick
