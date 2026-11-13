@@ -1,0 +1,966 @@
+<title>sdlc Site Looks</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400..700&family=Geist+Mono:wght@400;500&family=Hanken+Grotesk:wght@400;500;600&display=swap">
+<style>
+/* Layout: a quiet chooser bar, then one site page at a time in the locked look
+   (look B, palette Bone amber). Flows use the pill-on-a-wire shape of the dashboard.
+   Single theme by choice: the brief fixes a light dim theme. */
+:root{
+  --c-bg:#ECEDEF; --c-ink:#1A1F24; --c-muted:#56606A; --c-line:#C6CBD1; --c-surface:#FFFFFF;
+  --chrome:"Hanken Grotesk",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono-sys:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{background:var(--c-bg);color:var(--c-ink);font-family:var(--chrome);font-size:16px;line-height:1.5}
+.wrap{max-width:1200px;margin-inline:auto;padding-left:max(clamp(16px,4vw,40px),env(safe-area-inset-left,0px));padding-right:max(clamp(16px,4vw,40px),env(safe-area-inset-right,0px))}
+
+/* chooser */
+.chooser{padding-block:22px 18px}
+.chooser-in{display:flex;flex-wrap:wrap;gap:14px 40px;align-items:end;justify-content:space-between}
+.chooser-title{margin:0;font-size:1.125rem;font-weight:600}
+.chooser-lede{margin:2px 0 0;color:var(--c-muted);font-size:.9375rem;max-width:62ch}
+.tabs{display:flex;flex-wrap:wrap;gap:4px;padding:4px;background:var(--c-surface);border:1px solid var(--c-line);border-radius:10px}
+.tab{font:inherit;font-size:.9375rem;font-weight:500;padding:8px 16px;border:0;border-radius:7px;background:transparent;color:var(--c-muted);cursor:pointer}
+.tab[aria-selected="true"]{background:var(--c-ink);color:#fff}
+.tab:focus-visible{outline:2px solid var(--c-ink);outline-offset:2px}
+
+/* spec strip */
+.spec{padding-block:22px 44px}
+.spec-list{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:20px 32px;margin:0}
+.spec-list dt{font-size:.8125rem;color:var(--c-muted);margin-bottom:6px}
+.spec-list dd{margin:0;font-size:.9375rem}
+.sw{display:flex;gap:6px;flex-wrap:wrap}
+.sw i{width:28px;height:28px;border-radius:6px;border:1px solid var(--c-line)}
+
+/* ---------- the site, locked look ---------- */
+.site{
+  --bg:#E6E2DA; --ink:#1F1A14; --muted:#5A5247; --accent:#8F4A08; --on-accent:#FFFFFF;
+  --line:rgba(31,26,20,.14); --shade:rgba(31,26,20,.42);
+  --glass:rgba(255,255,255,.56); --glass-edge:rgba(255,255,255,.85);
+  --f1:rgba(225,150,60,.28); --f2:rgba(60,190,140,.2);
+  --go:#1E7F5A; --go-lit:#46C98A;
+  --display:"Geist",system-ui,sans-serif; --body:"Geist",system-ui,sans-serif; --mono:"Geist Mono",var(--mono-sys);
+  --r-panel:18px; --r-ctl:999px;
+  position:relative;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--body);border-block:1px solid var(--c-line);
+}
+.site-in{position:relative;z-index:1;padding-block:22px 64px;display:flex;flex-direction:column;gap:44px}
+.field{position:absolute;border-radius:50%;z-index:0;filter:blur(70px)}
+.f1{width:540px;height:540px;right:-90px;top:30px;background:var(--f1)}
+.f2{width:420px;height:420px;right:30%;top:280px;background:var(--f2)}
+.f3{width:480px;height:480px;left:-120px;top:760px;background:var(--f1)}
+.nav{display:flex;flex-wrap:wrap;align-items:center;gap:10px 28px}
+.brand{font-family:var(--display);font-weight:700;font-size:1.3125rem;letter-spacing:-.02em;margin-right:auto}
+.nav-link{color:var(--muted);font-size:.9375rem}
+.nav-link.is-here{color:var(--ink);font-weight:500}
+.glass{background:var(--glass);border:1px solid var(--glass-edge);-webkit-backdrop-filter:blur(16px) saturate(150%);backdrop-filter:blur(16px) saturate(150%);box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 20px 44px -26px var(--shade)}
+.star{font:inherit;font-size:.9375rem;font-weight:500;color:var(--ink);padding:7px 15px;border-radius:var(--r-ctl);cursor:pointer}
+.h1{font-family:var(--display);margin:0;text-wrap:balance;font-size:clamp(2.25rem,5vw,3.75rem);line-height:1.04;letter-spacing:-.04em;font-weight:600}
+.h2{font-family:var(--display);margin:0;font-size:clamp(1.5rem,3vw,2.125rem);line-height:1.1;letter-spacing:-.03em;font-weight:600;text-wrap:balance}
+.sub{margin:0;color:var(--muted);font-size:1.125rem;line-height:1.55;max-width:54ch}
+.cmd-label{margin:0 0 8px;font-size:.8125rem;color:var(--muted)}
+.cmd{border-radius:var(--r-panel);padding:12px 12px 12px 18px;display:flex;gap:16px;align-items:center}
+.cmd-lines{flex:1;min-width:0;overflow-x:auto;font-family:var(--mono);font-size:.8125rem;line-height:1.75;white-space:nowrap}
+.cmd-lines span{display:block}
+.copy{flex:none;font:inherit;font-size:.875rem;font-weight:600;border:0;border-radius:var(--r-ctl);padding:9px 17px;background:var(--accent);color:var(--on-accent);cursor:pointer}
+.copy:focus-visible,.star:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.block{display:flex;flex-direction:column;gap:20px}
+.block-head{display:flex;flex-wrap:wrap;gap:8px 40px;align-items:end;justify-content:space-between}
+.block-text{margin:0;color:var(--muted);max-width:46ch}
+
+/* home */
+.hero{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);gap:40px 64px;align-items:center}
+.lead{display:flex;flex-direction:column;gap:22px}
+.run{border-radius:var(--r-panel);padding:20px 22px}
+.run-head{display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;padding-bottom:14px;border-bottom:1px solid var(--line)}
+.tag{font-size:.75rem;font-weight:600;border:1px solid currentColor;color:var(--muted);border-radius:999px;padding:2px 10px}
+.run-branch{font-family:var(--mono);font-size:.8125rem}
+.run-time{margin-left:auto;font-family:var(--mono);font-size:.8125rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.run-rows{list-style:none;margin:0;padding:4px 0 0;display:flex;flex-direction:column}
+.run-row{display:grid;grid-template-columns:20px minmax(0,1fr) auto;gap:6px 12px;align-items:center;padding:10px 0;font-size:.9375rem;border-top:1px solid var(--line)}
+.run-row:first-child{border-top:0}
+.st{width:16px;height:16px;border-radius:50%;justify-self:center;position:relative}
+.st-done{background:var(--accent)}
+.st-done::after{content:"";position:absolute;left:5.5px;top:2.5px;width:4px;height:8px;border:solid var(--on-accent);border-width:0 2px 2px 0;transform:rotate(45deg)}
+.st-run{border:2px solid rgba(143,74,8,.25);border-top-color:var(--accent);animation:spin 1.8s linear infinite}
+.st-wait{border:2px solid rgba(31,26,20,.3)}
+@keyframes spin{to{transform:rotate(360deg)}}
+.run-name{font-weight:500}
+.run-cmd{display:block;font-family:var(--mono);font-weight:400;font-size:.75rem;color:var(--muted)}
+.run-val{font-family:var(--mono);font-size:.8125rem;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right}
+.is-wait .run-name{color:var(--muted)}
+.bar{grid-column:2/4;height:4px;border-radius:2px;background:var(--line);overflow:hidden}
+.bar-fill{display:block;height:100%;width:66.6%;background:var(--accent);border-radius:2px}
+.run-foot{margin:0;padding-top:12px;border-top:1px solid var(--line);font-size:.8125rem;color:var(--muted)}
+.shot{margin:0;border-radius:var(--r-panel);padding:10px}
+.shot-img{display:block;width:100%;height:auto;aspect-ratio:1440/730;object-fit:cover;object-position:top;border-radius:10px}
+.shot-cap{display:flex;flex-wrap:wrap;gap:6px 16px;justify-content:space-between;padding:10px 8px 2px;font-size:.8125rem;color:var(--muted)}
+.ver{font-family:var(--mono)}
+.changes{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:28px 32px;margin:0;padding:0;list-style:none}
+.change-title{font-family:var(--display);font-size:1.0625rem;font-weight:600;margin:0 0 6px;color:var(--accent)}
+.change-text{margin:0;color:var(--muted);font-size:.9375rem}
+
+/* shared flow shape: a pill on a wire, as on the dashboard */
+.pill{display:block;width:36px;height:20px;border-radius:999px;border:2px solid var(--accent);background:var(--bg);position:relative;flex:none}
+.pill::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:var(--accent)}
+.is-opt .pill{border-style:dashed}
+.is-opt .pill::after{background:transparent;border:1.5px solid var(--accent);width:7px;height:7px;margin:-3.5px 0 0 -3.5px}
+.is-you .pill{background:var(--accent)}
+.is-you .pill::after{background:var(--on-accent)}
+
+/* skill page */
+.crumb{margin:0;font-size:.875rem;color:var(--muted)}
+.sk-head{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:24px 56px;align-items:end}
+.sk-lead{display:flex;flex-direction:column;gap:16px}
+.sk-h1{font-family:var(--mono);font-weight:500;margin:0;font-size:clamp(2rem,4.6vw,3.25rem);line-height:1.05;letter-spacing:-.04em}
+.sk-body{display:grid;grid-template-columns:minmax(0,300px) minmax(0,1fr);gap:32px 56px;align-items:start}
+.fact-k{font-size:.8125rem;color:var(--muted)}
+.fact-v{margin:2px 0 0;font-size:.9375rem;font-weight:500}
+.fact-v code,.seq-text code,.hand code,.sup-name{font-family:var(--mono);font-size:.875em}
+.seq-wrap{display:flex;flex-direction:column;gap:18px}
+.legend{display:flex;flex-wrap:wrap;gap:8px 22px;font-size:.8125rem;color:var(--muted);margin:0;padding:0;list-style:none}
+.legend li{display:flex;align-items:center;gap:8px}
+.legend .pill{width:28px;height:16px}
+.seq{list-style:none;margin:0;padding:0;position:relative;display:flex;flex-direction:column;gap:26px}
+.seq::before{content:"";position:absolute;left:17px;top:12px;bottom:12px;width:2px;background:var(--accent);opacity:.35}
+.seq-step{position:relative;display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:4px 18px;align-items:start}
+.seq-step .pill{margin-top:3px}
+.seq-name{font-size:1.0625rem;font-weight:600;display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin:0}
+.who{font-size:.75rem;font-weight:500;padding:2px 9px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:rgba(255,255,255,.5)}
+.seq-text{margin:4px 0 0;color:var(--muted);font-size:.9375rem;max-width:60ch}
+.seq-time{font-family:var(--mono);font-size:.8125rem;color:var(--muted);font-variant-numeric:tabular-nums;white-space:nowrap;padding-top:5px;text-align:right}
+.note{margin:0;font-size:.8125rem;color:var(--muted)}
+
+/* all skills page */
+.map{border-radius:var(--r-panel);padding:26px 22px 22px;overflow-x:auto}
+.hand-wrap{overflow-x:auto}
+.hand{width:100%;min-width:600px;border-collapse:collapse;font-size:.9375rem}
+.hand th{text-align:left;font-weight:500;font-size:.8125rem;color:var(--muted);padding:0 16px 10px 0}
+.hand td{padding:11px 16px 11px 0;border-top:1px solid var(--line);vertical-align:top}
+.hand code{color:var(--accent);font-weight:500}
+.hand-what{color:var(--muted)}
+.sup{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:24px 32px;margin:0;padding:0;list-style:none}
+.sup-name{display:block;font-size:.9375rem;font-weight:500;color:var(--accent);margin-bottom:4px}
+.sup-text{margin:0;color:var(--muted);font-size:.9375rem}
+
+@media (max-width:900px){
+  .hero,.sk-head,.sk-body{grid-template-columns:minmax(0,1fr)}
+  .changes{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .sup{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .spec-list{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media (max-width:520px){
+  .changes,.sup,.spec-list{grid-template-columns:minmax(0,1fr)}
+  .cmd{flex-direction:column;align-items:stretch}
+  .seq-step{grid-template-columns:36px minmax(0,1fr)}
+  .seq-time{grid-column:2;text-align:left;padding-top:0}
+}
+@media (prefers-reduced-motion:reduce){.st-run{animation:none}}
+
+/* ---------- motion and interaction on the flow pages ---------- */
+[hidden]{display:none!important}
+@keyframes swap{from{opacity:0;transform:translateY(6px)}}
+@keyframes flow{to{stroke-dashoffset:-14}}
+
+/* skill page: the command types itself once */
+.sk-h1{letter-spacing:-.02em}
+.typed{display:inline-block;overflow:hidden;white-space:nowrap;vertical-align:bottom;width:calc(10ch - .2em);animation:type 1.1s steps(10) .2s both}
+@keyframes type{from{width:0}}
+.caret{display:inline-block;width:.45ch;height:.92em;margin-left:.08em;vertical-align:-.1em;background:var(--accent);animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.facts-row{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px 32px;margin:0;padding:20px 0;border-block:1px solid var(--line)}
+
+/* controls */
+.controls{display:flex;flex-wrap:wrap;gap:10px 18px;align-items:center}
+.switch{position:relative;display:inline-flex;align-items:center;gap:10px;font-size:.875rem;cursor:pointer;user-select:none}
+.switch input{position:absolute;opacity:0;width:1px;height:1px}
+.switch-ui{width:38px;height:22px;border-radius:999px;background:rgba(31,26,20,.22);position:relative;transition:background .2s}
+.switch-ui::after{content:"";position:absolute;top:3px;left:3px;width:16px;height:16px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(31,26,20,.3);transition:transform .2s}
+.switch input:checked + .switch-ui{background:var(--accent)}
+.switch input:checked + .switch-ui::after{transform:translateX(16px)}
+.switch input:focus-visible + .switch-ui{outline:2px solid var(--accent);outline-offset:2px}
+.ghost{font:inherit;font-size:.875rem;font-weight:500;color:var(--ink);padding:7px 15px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.5);cursor:pointer;transition:background .2s,transform .2s}
+.ghost:hover{background:rgba(255,255,255,.9);transform:translateY(-1px)}
+.ghost:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* time bar: one part for each step, as wide as its time */
+.time{border-radius:var(--r-panel);padding:18px 18px 14px;display:flex;flex-direction:column;gap:12px}
+.time-bar{display:flex;gap:3px;height:56px}
+.seg{flex:0 1 0;min-width:0;border:0;padding:8px 9px;border-radius:7px;background-color:rgba(143,74,8,.24);cursor:pointer;overflow:hidden;white-space:nowrap;text-align:left;color:var(--ink);font:500 .75rem var(--body);transition:flex-grow .9s cubic-bezier(.2,.7,.2,1),opacity .25s,background-color .25s,color .25s,min-width .4s,padding .4s,transform .2s}
+.seg.is-in{min-width:9px}
+.seg.is-opt{background-image:repeating-linear-gradient(135deg,transparent 0 6px,rgba(255,255,255,.4) 6px 8px)}
+.seg:hover{background-color:rgba(143,74,8,.42);transform:translateY(-3px)}
+.seg.is-now{background-color:var(--accent);color:var(--on-accent);box-shadow:0 10px 22px -10px var(--accent)}
+.seg.is-off{min-width:0;padding-inline:0;opacity:0;margin-left:-3px;pointer-events:none}
+.seg:focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.time-foot{display:flex;flex-wrap:wrap;gap:6px 20px;justify-content:space-between;font-size:.8125rem;color:var(--muted);margin:0}
+.time-foot strong{color:var(--ink);font-family:var(--mono);font-weight:500}
+
+/* the run plays down the wire */
+.sk-body{grid-template-columns:minmax(0,1fr) minmax(0,340px)}
+.seq{gap:4px}
+.seq::before{left:29px;top:26px;bottom:26px}
+.seq-fill{position:absolute;left:29px;top:26px;width:2px;height:0;background:var(--accent);transition:height .7s cubic-bezier(.3,.7,.2,1)}
+.seq-dot{position:absolute;left:23px;top:20px;width:14px;height:14px;border-radius:50%;background:var(--accent);box-shadow:0 0 0 6px rgba(143,74,8,.16),0 0 20px 2px rgba(225,150,60,.95);transition:transform .7s cubic-bezier(.3,.7,.2,1);z-index:2;pointer-events:none}
+.seq-step{display:block}
+.seq-btn{display:grid;grid-template-columns:36px minmax(0,1fr) auto;gap:4px 18px;align-items:start;width:100%;padding:12px;border:1px solid transparent;border-radius:14px;background:transparent;font:inherit;color:inherit;text-align:left;cursor:pointer;position:relative;z-index:1;transition:background .25s,border-color .25s,box-shadow .25s,transform .25s}
+.seq-btn:hover{background:rgba(255,255,255,.38);transform:translateX(3px)}
+.seq-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.seq-main{display:block;transition:opacity .3s}
+.seq-name{display:flex}
+.seq-text{display:block}
+.seq-step .pill{transition:background .3s,transform .3s,box-shadow .3s}
+.seq-step.is-done .pill{background:var(--accent)}
+.seq-step.is-done .pill::after{background:var(--on-accent);border-color:var(--on-accent)}
+.seq-step.is-now .seq-btn{background:var(--glass);border-color:var(--glass-edge);box-shadow:inset 0 1px 0 rgba(255,255,255,.6),0 18px 36px -24px var(--shade)}
+.seq-step.is-now .pill{transform:scale(1.12);box-shadow:0 0 0 5px rgba(143,74,8,.14)}
+.seq-step:not(.is-done):not(.is-now) .seq-main,.seq-step:not(.is-done):not(.is-now) .seq-time{opacity:.5}
+
+/* the panel that follows the run */
+.now{position:sticky;top:16px;border-radius:var(--r-panel);padding:24px;display:flex;flex-direction:column;gap:12px}
+.now-count{margin:0;font-size:.8125rem;color:var(--muted);font-variant-numeric:tabular-nums}
+.now-name{margin:0;font-family:var(--display);font-size:1.75rem;font-weight:600;letter-spacing:-.03em;line-height:1.1}
+.now-wholine{margin:0}
+.now-time{margin:8px 0 0;font-family:var(--mono);font-size:2.5rem;font-weight:500;letter-spacing:-.05em;line-height:1;color:var(--accent);font-variant-numeric:tabular-nums}
+.now-share{margin:0;font-size:.8125rem;color:var(--muted)}
+.now-io{display:grid;grid-template-columns:minmax(0,1fr) 28px minmax(0,1fr);gap:10px;align-items:center;margin-top:6px;padding-top:16px;border-top:1px solid var(--line)}
+.io-k{display:block;font-size:.75rem;color:var(--muted)}
+.io-v{display:block;font-size:.9375rem;font-weight:500}
+.io-arrow{height:2px;background:var(--accent);position:relative;opacity:.75}
+.io-arrow::after{content:"";position:absolute;right:-2px;top:-4px;border:5px solid transparent;border-left-color:var(--accent);border-right:0}
+.now.swap > *{animation:swap .35s ease both}
+
+/* all skills page: the live map. The pipeline is a loop: harden closes it back to plan. */
+.map{padding:16px 14px 14px;overflow:visible}
+.map-scroll{overflow-x:auto}
+.map-svg{display:block;width:100%;min-width:900px;height:auto}
+.lg-loop{display:block;width:28px;border-top:3px solid var(--go);border-radius:2px}
+.lg-lamp{display:block;width:20px;height:10px;margin:0 4px;border-radius:5px;background:var(--go-lit);box-shadow:0 0 0 4px var(--ink)}
+svg .node{cursor:pointer;outline:none}
+svg .node:focus-visible .n-pill,svg .node:focus-visible .dash-r,svg .node:focus-visible .chip-r,svg .node:focus-visible .h-r{stroke:var(--ink);stroke-width:3.5;stroke-dasharray:none}
+
+/* the track */
+.track{fill:none;stroke:rgba(143,74,8,.24);stroke-width:8;stroke-linecap:round}
+.wseg{fill:none;stroke:var(--accent);stroke-width:8;stroke-linecap:round;stroke-dasharray:101;stroke-dashoffset:101;transition:stroke-dashoffset .55s cubic-bezier(.3,.7,.2,1)}
+.wseg.on{stroke-dashoffset:0}
+.sleeve{fill:none;stroke:url(#zoneg);stroke-width:60;stroke-linecap:round;opacity:.7;transition:opacity .3s}
+.sel-ship .sleeve{opacity:1}
+.loop{fill:none;stroke:var(--go);stroke-width:4;stroke-linecap:round;opacity:.6;transition:opacity .25s,stroke-width .25s}
+.loop.on{opacity:1;stroke-width:6}
+.loop-head{fill:var(--go);opacity:.75;transition:opacity .25s}
+.loop.on + .loop-head{opacity:1}
+
+/* one chip on the track for each step */
+.station{transform-box:fill-box;transform-origin:center;transition:transform .3s cubic-bezier(.3,1.5,.5,1)}
+.n-pill{fill:#FFFDF9;stroke:var(--accent);stroke-width:2.5;filter:drop-shadow(0 6px 7px rgba(31,26,20,.18));transition:fill .25s,stroke-opacity .25s,filter .3s}
+.is-opt .n-pill{stroke-dasharray:6 4}
+.n-dot{fill:var(--accent);transition:fill .25s,opacity .25s}
+.is-opt .n-dot{fill:#FFFDF9;stroke:var(--accent);stroke-width:1.5}
+.n-name{font:600 15px var(--body);letter-spacing:-.01em;fill:var(--ink);text-anchor:middle;transition:fill .25s}
+.station:hover{transform:translateY(-3px)}
+.station:hover .n-pill{fill:#F6DFC0}
+.station.is-rel .n-pill{fill:#F6DFC0}
+.has-sel .station:not(.is-sel):not(.is-rel) .n-pill{stroke-opacity:.55}
+.has-sel .station:not(.is-sel):not(.is-rel) .n-dot{opacity:.55}
+.has-sel .station:not(.is-sel):not(.is-rel) .n-name{fill:var(--muted)}
+.station.is-sel{transform:scale(1.1)}
+.station.is-sel .n-pill{fill:var(--accent);stroke-dasharray:none;filter:drop-shadow(0 0 12px rgba(225,150,60,.95))}
+.station.is-sel .n-dot{fill:var(--on-accent);stroke:none}
+.station.is-sel .n-name{fill:var(--on-accent)}
+.station.ping .n-pill{animation:glow .9s ease-out}
+@keyframes glow{0%,25%{filter:drop-shadow(0 0 14px rgba(225,150,60,1));fill:#F6DFC0}}
+
+/* the ship label on the track */
+.chip-r{fill:#FFFDF9;stroke:rgba(143,74,8,.3);transition:fill .25s}
+.chip-t{font:500 12.5px var(--body);fill:var(--ink);text-anchor:middle;transition:fill .25s}
+.chip-t .mono,.h-t .mono{font-family:var(--mono)}
+.chip-t .mono{fill:var(--accent);transition:fill .25s}
+.n-ship:hover .chip-r{fill:#F6DFC0}
+.n-ship.is-sel .chip-r{fill:var(--accent)}
+.n-ship.is-sel .chip-t,.n-ship.is-sel .chip-t .mono{fill:var(--on-accent)}
+
+/* the dashboard in the middle of the loop, with one lamp for each step */
+.n-dash{transform-box:fill-box;transform-origin:center;transition:transform .3s cubic-bezier(.3,1.5,.5,1)}
+.n-dash:hover{transform:translateY(-3px)}
+.dash-r{fill:var(--ink);stroke:var(--ink);stroke-width:2.5;filter:drop-shadow(0 16px 18px rgba(31,26,20,.3));transition:stroke .25s}
+.n-dash.is-sel .dash-r{stroke:var(--go-lit)}
+.d-text{font:500 13.5px var(--body);fill:rgba(255,255,255,.78);text-anchor:middle}
+.d-cmd{font-family:var(--mono);fill:#F5E4C8}
+.d-wire{stroke:rgba(255,255,255,.2);stroke-width:3;stroke-linecap:round}
+.lamp{fill:#6E655A;transition:fill .4s}
+.lamp.lit,.sel-dashboard .lamp{fill:var(--go-lit);filter:drop-shadow(0 0 5px var(--go-lit))}
+
+/* harden, on the way back */
+.n-harden{transform-box:fill-box;transform-origin:center;transition:transform .3s cubic-bezier(.3,1.5,.5,1)}
+.n-harden:hover{transform:translateY(-3px)}
+.h-r{fill:#FFFDF9;stroke:var(--go);stroke-width:2.5;filter:drop-shadow(0 8px 9px rgba(31,26,20,.16));transition:fill .25s,filter .3s}
+.h-t{font:500 13.5px var(--body);fill:var(--ink);text-anchor:middle;transition:fill .25s}
+.h-t .mono{fill:var(--go);transition:fill .25s}
+.n-harden:hover .h-r,.n-harden.is-rel .h-r{fill:#DDF1E8}
+.n-harden.is-sel .h-r{fill:var(--go);filter:drop-shadow(0 0 12px rgba(70,201,138,.9))}
+.n-harden.is-sel .h-t,.n-harden.is-sel .h-t .mono{fill:#FFFFFF}
+.n-harden.ping .h-r{animation:glow-go .9s ease-out}
+@keyframes glow-go{0%,25%{filter:drop-shadow(0 0 14px rgba(70,201,138,1));fill:#DDF1E8}}
+
+/* the signal that travels the loop */
+.pulse{pointer-events:none;filter:drop-shadow(0 0 7px rgba(225,150,60,.95))}
+.p-halo{fill:rgba(225,150,60,.4)}
+.p-core{fill:var(--accent);stroke:#FFFDF9;stroke-width:2}
+.pulse.is-loop{filter:drop-shadow(0 0 7px rgba(70,201,138,.95))}
+.pulse.is-loop .p-halo{fill:rgba(70,201,138,.4)}
+.pulse.is-loop .p-core{fill:var(--go)}
+
+/* the map draws itself one time */
+@keyframes draw100{from{stroke-dashoffset:101}}
+@keyframes pop{from{opacity:0;transform:translateY(10px) scale(.6)}}
+@keyframes fade{from{opacity:0}}
+.intro .track{stroke-dasharray:101;animation:draw100 1.3s cubic-bezier(.4,.6,.2,1) both}
+.intro .station{animation:pop .5s cubic-bezier(.3,1.5,.5,1) both;animation-delay:calc(var(--i) * 120ms + 80ms)}
+.intro .sleeve{animation:fade .7s ease .7s both}
+.intro .n-ship{animation:fade .5s ease 1s both}
+.intro .n-dash{animation:pop .6s cubic-bezier(.3,1.5,.5,1) .5s both}
+.intro .loop{stroke-dasharray:101;animation:draw100 .9s cubic-bezier(.4,.6,.2,1) 1.3s both}
+.intro .loop-head{animation:fade .3s ease 2.1s both}
+.intro .n-harden{animation:pop .5s cubic-bezier(.3,1.5,.5,1) 1.7s both}
+
+/* what the selected skill gets and hands over */
+.sk-detail{display:grid;grid-template-columns:minmax(0,1fr) 34px minmax(0,1.2fr) 34px minmax(0,1fr);gap:14px;align-items:start;margin:6px 8px 4px}
+.sd-k{margin:0 0 8px;font-size:.75rem;color:var(--muted)}
+.sd-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.sd-item{display:block;width:100%;padding:10px 14px;border-radius:12px;border:1px solid var(--glass-edge);background:rgba(255,255,255,.5);font:inherit;color:inherit;text-align:left}
+button.sd-item{cursor:pointer;transition:background .2s,transform .2s,border-color .2s}
+button.sd-item:hover{background:#FFFDF9;border-color:rgba(143,74,8,.4);transform:translateY(-2px)}
+button.sd-item:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sd-what{display:block;font-size:.9375rem;font-weight:500}
+.sd-who{display:block;font-size:.8125rem;color:var(--muted)}
+button.sd-item .sd-who{color:var(--accent)}
+.sd-mid{padding:20px 24px;border-radius:16px;background:#FFFDF9;box-shadow:0 0 0 1px rgba(255,255,255,.9),0 22px 40px -26px var(--shade)}
+.sd-name{margin:0;font-family:var(--mono);font-size:clamp(1.375rem,2.4vw,1.75rem);font-weight:500;letter-spacing:-.03em;color:var(--accent);overflow-wrap:anywhere}
+.sd-name:focus{outline:none}
+.sd-does{margin:8px 0 0;color:var(--muted);font-size:.9375rem;line-height:1.5}
+.sd-arrow{height:2px;background:var(--accent);position:relative;opacity:.7;margin-top:56px}
+.sd-arrow::after{content:"";position:absolute;right:-2px;top:-4px;border:5px solid transparent;border-left-color:var(--accent);border-right:0}
+.sk-detail.swap > *{animation:swap .3s ease both}
+
+/* the handover table: one strip for each handover */
+.hand{min-width:640px;border-collapse:separate;border-spacing:0 6px}
+.hand th{padding:0 18px 2px}
+.hand td{padding:12px 18px;border-top:0;vertical-align:middle;background:rgba(255,255,255,.4);transition:background .25s}
+.hand td:first-child{border-radius:14px 0 0 14px}
+.hand td:last-child{border-radius:0 14px 14px 0}
+.hand tbody tr{transition:opacity .25s,transform .3s cubic-bezier(.3,.7,.2,1)}
+.hand tbody tr:hover td{background:rgba(255,255,255,.7)}
+.hand tbody tr.is-on{transform:translateX(6px)}
+.hand tbody tr.is-on td{background:#FFFDF9;box-shadow:0 14px 24px -20px var(--shade)}
+.hand-to{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.hand-to::before{content:"";flex:none;width:18px;height:2px;margin-right:6px;background:var(--accent);opacity:.6}
+.chip{white-space:nowrap;font:500 .8125rem var(--mono);color:var(--accent);padding:3px 10px;border-radius:999px;border:1px solid rgba(143,74,8,.3);background:#FFFDF9;cursor:pointer;transition:background .2s,color .2s,transform .2s}
+.chip:hover{background:var(--accent);color:var(--on-accent);transform:translateY(-1px)}
+.chip:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+/* skills around the pipeline: one tile for each skill */
+.sup{gap:14px}
+.sup li{display:flex}
+.sup-btn{display:flex;flex-direction:column;gap:4px;width:100%;padding:16px 18px;border:1px solid var(--glass-edge);border-radius:16px;background:rgba(255,255,255,.38);box-shadow:0 14px 28px -24px var(--shade);font:inherit;color:inherit;text-align:left;cursor:pointer;transition:background .2s,border-color .2s,box-shadow .2s,transform .25s cubic-bezier(.3,1.5,.5,1)}
+.sup-btn:hover{background:rgba(255,255,255,.72);transform:translateY(-4px)}
+.sup-btn.is-sel{background:#FFFDF9;border-color:var(--accent);box-shadow:0 0 0 3px rgba(143,74,8,.14),0 18px 30px -22px var(--shade)}
+.sup-btn.is-rel{background:rgba(255,255,255,.72);border-color:rgba(143,74,8,.35)}
+.sup-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sup-name{margin-bottom:0}
+.sup-text{display:block}
+
+@media (max-width:900px){
+  .facts-row{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .now{position:static;order:-1}
+  .sk-detail{grid-template-columns:minmax(0,1fr)}
+  .sd-arrow{display:none}
+}
+@media (max-width:520px){
+  .facts-row{grid-template-columns:minmax(0,1fr)}
+  .seq-btn{grid-template-columns:36px minmax(0,1fr)}
+}
+@media (prefers-reduced-motion:reduce){
+  .typed,.caret,.sel-dashboard .beam,.now.swap > *,.sk-detail.swap > *{animation:none}
+  .seg,.seq-dot,.seq-fill,.seq-btn,.sup-btn,.ghost,.chip,.sd-item,.wseg,.n-pill,.h-r,.hand tbody tr{transition:none}
+}
+</style>
+
+<header class="chooser wrap">
+  <div class="chooser-in">
+    <div>
+      <p class="chooser-title">sdlc site looks</p>
+      <p class="chooser-lede">Three pages of the site in the locked look: look B with the palette Bone amber. The Skill page plays a run. On the All skills page, select a skill.</p>
+    </div>
+    <div class="tabs" role="tablist" aria-label="Page">
+      <button class="tab" id="tab-home" role="tab" data-page="home" aria-controls="panel-home" aria-selected="true">Home</button>
+      <button class="tab" id="tab-skill" role="tab" data-page="skill" aria-controls="panel-skill" aria-selected="false">Skill page</button>
+      <button class="tab" id="tab-skills" role="tab" data-page="skills" aria-controls="panel-skills" aria-selected="false">All skills</button>
+    </div>
+  </div>
+</header>
+
+<!-- ============ HOME ============ -->
+<div id="panel-home" role="tabpanel" aria-labelledby="tab-home">
+  <section class="site">
+    <span class="field f1" aria-hidden="true"></span><span class="field f2" aria-hidden="true"></span><span class="field f3" aria-hidden="true"></span>
+    <div class="site-in wrap">
+      <nav class="nav" aria-label="Site">
+        <span class="brand">sdlc</span>
+        <span class="nav-link is-here">Flow</span><span class="nav-link">Skills</span><span class="nav-link">Docs</span><span class="nav-link">Release notes</span>
+        <button class="star glass" id="star-home" type="button">Star on GitHub</button>
+      </nav>
+      <div class="hero">
+        <div class="lead">
+          <h1 class="h1">One pipeline from idea to merged pull request.</h1>
+          <p class="sub">sdlc is a plugin for Claude Code. It plans the work, builds it in waves, commits, reviews, opens the pull request and checks CI. You watch every run on one dashboard.</p>
+          <div>
+            <p class="cmd-label">Install in Claude Code</p>
+            <div class="cmd glass">
+              <code class="cmd-lines"><span>/plugin marketplace add rnagrodzki/sdlc-plugin</span><span>/plugin install sdlc@sdlc-plugin</span></code>
+              <button class="copy" id="copy-install" type="button" data-copy="/plugin marketplace add rnagrodzki/sdlc-plugin&#10;/plugin install sdlc@sdlc-plugin">Copy</button>
+            </div>
+          </div>
+        </div>
+        <div class="run glass">
+          <div class="run-head">
+            <span class="tag">Sample run</span>
+            <span class="run-branch">feat/gh-pages</span>
+            <span class="run-time">6 h 12 min</span>
+          </div>
+          <ol class="run-rows">
+            <li class="run-row"><span class="st st-done"></span><span class="run-name">Preplan<span class="run-cmd">/sdlc:preplan</span></span><span class="run-val">20 decisions</span></li>
+            <li class="run-row"><span class="st st-done"></span><span class="run-name">Plan<span class="run-cmd">/sdlc:plan</span></span><span class="run-val">14 tasks</span></li>
+            <li class="run-row"><span class="st st-done"></span><span class="run-name">Execute<span class="run-cmd">/sdlc:execute</span></span><span class="run-val">3 of 3 waves</span></li>
+            <li class="run-row"><span class="st st-done"></span><span class="run-name">Commit<span class="run-cmd">/sdlc:commit</span></span><span class="run-val">done</span></li>
+            <li class="run-row"><span class="st st-run"></span><span class="run-name">Review<span class="run-cmd">/sdlc:review</span></span><span class="run-val">4 of 6 dimensions</span><span class="bar"><span class="bar-fill"></span></span></li>
+            <li class="run-row is-wait"><span class="st st-wait"></span><span class="run-name">Pull request<span class="run-cmd">/sdlc:pr</span></span><span class="run-val">waits</span></li>
+            <li class="run-row is-wait"><span class="st st-wait"></span><span class="run-name">Verify<span class="run-cmd">/sdlc:verify-pipeline</span></span><span class="run-val">waits</span></li>
+          </ol>
+          <p class="run-foot">/sdlc:ship runs execute to pull request in one command, and can verify CI. Harden turns a failed run into a new guardrail for the next plan.</p>
+        </div>
+      </div>
+      <div class="block">
+        <div class="block-head">
+          <h2 class="h2">Every run on one page.</h2>
+          <p class="block-text">The dashboard shows each pipeline step by step, with the time of every step and the open issues.</p>
+        </div>
+        <figure class="shot glass">
+          <img class="shot-img" src="DASHBOARD_DATA_URI" width="1440" height="730" alt="The sdlc dashboard with three finished pipelines of the sdlc-plugin repository: one ship run with ten steps and two plan runs with five steps each.">
+          <figcaption class="shot-cap"><span>The dashboard with three finished pipelines</span><span class="ver">sdlc v0.4.12</span></figcaption>
+        </figure>
+      </div>
+      <ul class="changes">
+        <li><h2 class="change-title">Dashboard</h2><p class="change-text">One page shows every pipeline in every repository: progress, session activity and issues.</p></li>
+        <li><h2 class="change-title">Stats</h2><p class="change-text">Each run records how long every step took.</p></li>
+        <li><h2 class="change-title">Harden</h2><p class="change-text">After a failed run, harden proposes a new guardrail, so the same failure does not return.</p></li>
+        <li><h2 class="change-title">Long runs</h2><p class="change-text">A pipeline can run for hours or days. A stopped run resumes where it stopped.</p></li>
+      </ul>
+    </div>
+  </section>
+</div>
+
+<!-- ============ SKILL PAGE ============ -->
+<div id="panel-skill" role="tabpanel" aria-labelledby="tab-skill" hidden>
+  <section class="site">
+    <span class="field f1" aria-hidden="true"></span><span class="field f2" aria-hidden="true"></span><span class="field f3" aria-hidden="true"></span>
+    <div class="site-in wrap">
+      <nav class="nav" aria-label="Site">
+        <span class="brand">sdlc</span>
+        <span class="nav-link">Flow</span><span class="nav-link is-here">Skills</span><span class="nav-link">Docs</span><span class="nav-link">Release notes</span>
+        <button class="star glass" id="star-skill" type="button">Star on GitHub</button>
+      </nav>
+      <div class="sk-head">
+        <div class="sk-lead">
+          <p class="crumb">Skills / ship</p>
+          <h1 class="sk-h1"><span class="typed">/sdlc:ship</span><span class="caret" aria-hidden="true"></span></h1>
+          <p class="sub">Runs the full pipeline in one command: it builds a plan, commits, reviews and opens the pull request. It can also check CI.</p>
+        </div>
+        <div>
+          <p class="cmd-label">Run it with a plan file</p>
+          <div class="cmd glass">
+            <code class="cmd-lines"><span>/sdlc:ship --plan &lt;path&gt;</span></code>
+            <button class="copy" id="copy-ship" type="button" data-copy="/sdlc:ship --plan ">Copy</button>
+          </div>
+        </div>
+      </div>
+      <dl class="facts-row">
+        <div><dt class="fact-k">Starts from</dt><dd class="fact-v">A plan file, or changes that you already have</dd></div>
+        <div><dt class="fact-k">Ends with</dt><dd class="fact-v">An open pull request and a run report</dd></div>
+        <div><dt class="fact-k">Asks you</dt><dd class="fact-v">Before each step. <code>--auto</code> skips the questions.</dd></div>
+        <div><dt class="fact-k">After a stop</dt><dd class="fact-v"><code>/sdlc:ship --resume</code> continues the stopped run.</dd></div>
+      </dl>
+      <div class="block">
+        <div class="block-head">
+          <h2 class="h2">Where the time goes</h2>
+          <div class="controls">
+            <label class="switch" for="opt-toggle"><input type="checkbox" id="opt-toggle" checked><span class="switch-ui"></span>Optional steps</label>
+            <button class="ghost" id="play" type="button">Replay the run</button>
+          </div>
+        </div>
+        <div class="time glass">
+          <div class="time-bar" id="time-bar" role="group" aria-label="Time of each step"></div>
+          <p class="time-foot"><span>Total <strong id="time-total">2h 19m 2s</strong>. Select a part to see its step.</span><span>Times from one real run, <span class="ver">sdlc v0.4.12</span></span></p>
+        </div>
+      </div>
+      <div class="sk-body">
+        <div class="seq-wrap">
+          <div class="block-head">
+            <h2 class="h2">What it does, step by step</h2>
+            <ul class="legend">
+              <li class="is-you"><span class="pill"></span>You act</li>
+              <li><span class="pill"></span>Always runs</li>
+              <li class="is-opt"><span class="pill"></span>Optional or conditional</li>
+            </ul>
+          </div>
+          <ol class="seq" id="seq">
+            <span class="seq-fill" aria-hidden="true"></span><span class="seq-dot" aria-hidden="true"></span>
+            <li class="seq-step is-you" data-name="Start the pipeline" data-who="You" data-secs="0" data-in="A plan file" data-out="The command"><button class="seq-btn" type="button" id="step-0"><span class="pill"></span><span class="seq-main"><span class="seq-name">Start the pipeline <span class="who">You</span></span><span class="seq-text">Run the command with a plan file. With no plan, ship starts from the changes that you already have.</span></span><span class="seq-time"></span></button></li>
+            <li class="seq-step" data-name="Prepare the run" data-who="Tool" data-secs="0" data-in="The plan and the settings" data-out="The run state"><button class="seq-btn" type="button" id="step-1"><span class="pill"></span><span class="seq-main"><span class="seq-name">Prepare the run <span class="who">Tool</span></span><span class="seq-text"><code>ship_prepare</code> checks the plan and the settings, then writes the run state. A stopped run resumes from this state.</span></span><span class="seq-time"></span></button></li>
+            <li class="seq-step" data-name="Execute" data-who="Agent" data-secs="1451" data-in="The plan" data-out="The changed files"><button class="seq-btn" type="button" id="step-2"><span class="pill"></span><span class="seq-main"><span class="seq-name">Execute <span class="who">Agent</span></span><span class="seq-text">Builds the plan wave by wave and verifies each wave.</span></span><span class="seq-time">24m 11s</span></button></li>
+            <li class="seq-step" data-name="Commit" data-who="Agent" data-secs="2" data-in="The changed files" data-out="The commit"><button class="seq-btn" type="button" id="step-3"><span class="pill"></span><span class="seq-main"><span class="seq-name">Commit <span class="who">Agent</span></span><span class="seq-text">Writes a commit message in the style of the project, then commits.</span></span><span class="seq-time">2s</span></button></li>
+            <li class="seq-step" data-name="Review" data-who="Agent" data-secs="556" data-in="The diff" data-out="The findings"><button class="seq-btn" type="button" id="step-4"><span class="pill"></span><span class="seq-main"><span class="seq-name">Review <span class="who">Agent</span></span><span class="seq-text">Reviews the diff in each review dimension, for example security, performance and docs.</span></span><span class="seq-time">9m 16s</span></button></li>
+            <li class="seq-step is-opt" data-name="Received review" data-who="Agent" data-secs="1502" data-in="The findings" data-out="The fixes and the deferred items"><button class="seq-btn" type="button" id="step-5"><span class="pill"></span><span class="seq-main"><span class="seq-name">Received review <span class="who">Agent</span></span><span class="seq-text">Works through the findings. It verifies each one, then fixes it or defers it.</span></span><span class="seq-time">25m 2s</span></button></li>
+            <li class="seq-step is-opt" data-name="OpenSpec check and archive" data-who="Inline" data-secs="30" data-in="The OpenSpec change of the plan" data-out="The archived change"><button class="seq-btn" type="button" id="step-6"><span class="pill"></span><span class="seq-main"><span class="seq-name">OpenSpec check and archive <span class="who">Inline</span></span><span class="seq-text">Validates the OpenSpec change of the plan and archives it. The step skips when the plan names no change.</span></span><span class="seq-time">30s</span></button></li>
+            <li class="seq-step is-opt" data-name="Harden" data-who="Inline" data-secs="1035" data-in="Repeated review findings" data-out="New guardrails"><button class="seq-btn" type="button" id="step-7"><span class="pill"></span><span class="seq-main"><span class="seq-name">Harden <span class="who">Inline</span></span><span class="seq-text">Turns repeated review findings into guardrail and review dimension edits, so the next run finds them earlier.</span></span><span class="seq-time">17m 15s</span></button></li>
+            <li class="seq-step" data-name="Pull request" data-who="Agent" data-secs="3596" data-in="The commits" data-out="The open pull request"><button class="seq-btn" type="button" id="step-8"><span class="pill"></span><span class="seq-main"><span class="seq-name">Pull request <span class="who">Agent</span></span><span class="seq-text">Writes the description from the commits and opens the pull request.</span></span><span class="seq-time">59m 56s</span></button></li>
+            <li class="seq-step is-opt" data-name="Verify pipeline" data-who="Agent" data-secs="170" data-in="A failed CI run" data-out="A fix or a proposal"><button class="seq-btn" type="button" id="step-9"><span class="pill"></span><span class="seq-main"><span class="seq-name">Verify pipeline <span class="who">Agent</span></span><span class="seq-text">Reads a failed CI run, then applies a small fix or proposes one.</span></span><span class="seq-time">2m 50s</span></button></li>
+            <li class="seq-step is-opt" data-name="Remote review" data-who="Inline" data-secs="0" data-none="not in this run" data-in="The open pull request" data-out="The comments of the reviewer"><button class="seq-btn" type="button" id="step-10"><span class="pill"></span><span class="seq-main"><span class="seq-name">Remote review <span class="who">Inline</span></span><span class="seq-text">Waits for an automated reviewer, for example Copilot, to answer on the pull request. Its comments go to received review.</span></span><span class="seq-time">not in this run</span></button></li>
+          </ol>
+        </div>
+        <aside class="now glass" id="now" aria-live="polite">
+          <p class="now-count" id="now-count">Step 1 of 11</p>
+          <p class="now-name" id="now-name">Start the pipeline</p>
+          <p class="now-wholine"><span class="who" id="now-who">You</span></p>
+          <p class="now-time" id="now-time">no wait</p>
+          <p class="now-share" id="now-share">This step has no measured time</p>
+          <div class="now-io">
+            <div><span class="io-k">Gets</span><span class="io-v" id="now-in">A plan file</span></div>
+            <span class="io-arrow" aria-hidden="true"></span>
+            <div><span class="io-k">Hands over</span><span class="io-v" id="now-out">The command</span></div>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ============ ALL SKILLS ============ -->
+<div id="panel-skills" role="tabpanel" aria-labelledby="tab-skills" hidden>
+  <section class="site">
+    <span class="field f1" aria-hidden="true"></span><span class="field f2" aria-hidden="true"></span><span class="field f3" aria-hidden="true"></span>
+    <div class="site-in wrap">
+      <nav class="nav" aria-label="Site">
+        <span class="brand">sdlc</span>
+        <span class="nav-link">Flow</span><span class="nav-link is-here">Skills</span><span class="nav-link">Docs</span><span class="nav-link">Release notes</span>
+        <button class="star glass" id="star-skills" type="button">Star on GitHub</button>
+      </nav>
+      <div class="lead">
+        <h1 class="h1">How the skills work together.</h1>
+        <p class="sub">Each skill does one job and hands its result to the next skill. Select a skill to see what it gets and what it hands over.</p>
+        <ul class="legend" aria-label="Legend of the map">
+          <li><span class="pill" aria-hidden="true"></span>A step that always runs</li>
+          <li class="is-opt"><span class="pill" aria-hidden="true"></span>An optional step</li>
+          <li><span class="lg-loop" aria-hidden="true"></span>What a failed run teaches the pipeline</li>
+          <li><span class="lg-lamp" aria-hidden="true"></span>The dashboard sees the step</li>
+        </ul>
+      </div>
+      <div class="map glass">
+        <div class="map-scroll">
+          <svg class="map-svg" id="map-svg" viewBox="0 0 1120 372" role="group" aria-label="Map of the pipeline">
+            <defs><linearGradient id="zoneg" gradientUnits="userSpaceOnUse" x1="340" y1="0" x2="1030" y2="0"><stop offset="0" stop-color="#E1963C" stop-opacity=".3"/><stop offset="1" stop-color="#3CBE8C" stop-opacity=".3"/></linearGradient></defs>
+            <path id="map-route" d="M84 194 L236 194 A130 130 0 0 1 366 64 L886 64 A130 130 0 0 1 1016.0 194.0 A130 130 0 0 1 886 324 L366 324 A130 130 0 0 1 236 194" fill="none" stroke="none"/>
+            <path class="sleeve" d="M352 64 L886 64 A130 130 0 0 1 988.4 274.0"/>
+            <path class="track" pathLength="100" d="M84 194 L236 194 A130 130 0 0 1 366 64 L886 64 A130 130 0 0 1 998.6 259.0"/>
+            <path class="wseg" pathLength="100" data-a="preplan" data-b="plan" d="M84 194 L236 194"/>
+            <path class="wseg" pathLength="100" data-a="plan" data-b="execute" d="M236 194 A130 130 0 0 1 366 64 L396 64"/>
+            <path class="wseg" pathLength="100" data-a="execute" data-b="commit" d="M396 64 L546 64"/>
+            <path class="wseg" pathLength="100" data-a="commit" data-b="review" d="M546 64 L696 64"/>
+            <path class="wseg" pathLength="100" data-a="review" data-b="received-review" d="M696 64 L850 64"/>
+            <path class="wseg" pathLength="100" data-a="received-review" data-b="pr" d="M850 64 L886 64 A130 130 0 0 1 998.6 129.0"/>
+            <path class="wseg" pathLength="100" data-a="pr" data-b="verify-pipeline" d="M998.6 129.0 A130 130 0 0 1 1016.0 194.0"/>
+            <path class="wseg" pathLength="100" data-a="verify-pipeline" data-b="remote-review" d="M1016.0 194.0 A130 130 0 0 1 998.6 259.0"/>
+            <path class="loop" id="map-loop" pathLength="100" d="M998.6 259.0 A130 130 0 0 1 886 324 L366 324 A130 130 0 0 1 243.1 236.3"/>
+            <polygon class="loop-head" points="238.8,221 251.8,233.9 234.4,238.7"/>
+            <g class="node n-ship" data-skill="ship" tabindex="0" role="button" aria-label="ship">
+              <rect class="chip-r" x="474" y="97" width="304" height="30" rx="15"/>
+              <text class="chip-t" x="626" y="117"><tspan class="mono">/sdlc:ship</tspan><tspan dx="7">runs this part in one command</tspan></text>
+            </g>
+            <g class="node n-dash" data-skill="dashboard" tabindex="0" role="button" aria-label="dashboard">
+              <rect class="dash-r" x="416" y="158" width="420" height="96" rx="24"/>
+              <text class="d-text" x="626" y="197"><tspan class="d-cmd">/sdlc:dashboard</tspan><tspan dx="9">watches every run</tspan></text>
+              <line class="d-wire" x1="470" y1="226" x2="782" y2="226"/>
+              <rect class="lamp" x="459.0" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="493.7" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="528.3" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="563.0" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="597.7" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="632.3" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="667.0" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="701.7" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="736.3" y="221" width="22" height="10" rx="5"/><rect class="lamp" x="771.0" y="221" width="22" height="10" rx="5"/>
+            </g>
+            <g class="pulse" id="map-pulse" aria-hidden="true" hidden><circle class="p-halo" r="15"/><circle class="p-core" r="6"/></g>
+            <g class="node station" data-skill="preplan" data-x="84" data-y="194" style="--i:0" tabindex="0" role="button" aria-label="Preplan"><rect class="n-pill" x="31.0" y="175" width="106" height="38" rx="19"/><circle class="n-dot" cx="52.0" cy="194" r="5"/><text class="n-name" x="93" y="199">Preplan</text></g>
+            <g class="node station" data-skill="plan" data-x="236" data-y="194" style="--i:1" tabindex="0" role="button" aria-label="Plan"><rect class="n-pill" x="194.0" y="175" width="84" height="38" rx="19"/><circle class="n-dot" cx="215.0" cy="194" r="5"/><text class="n-name" x="245" y="199">Plan</text></g>
+            <g class="node station" data-skill="execute" data-x="396" data-y="64" style="--i:2" tabindex="0" role="button" aria-label="Execute"><rect class="n-pill" x="341.0" y="45" width="110" height="38" rx="19"/><circle class="n-dot" cx="362.0" cy="64" r="5"/><text class="n-name" x="405" y="69">Execute</text></g>
+            <g class="node station" data-skill="commit" data-x="546" data-y="64" style="--i:3" tabindex="0" role="button" aria-label="Commit"><rect class="n-pill" x="492.0" y="45" width="108" height="38" rx="19"/><circle class="n-dot" cx="513.0" cy="64" r="5"/><text class="n-name" x="555" y="69">Commit</text></g>
+            <g class="node station" data-skill="review" data-x="696" data-y="64" style="--i:4" tabindex="0" role="button" aria-label="Review"><rect class="n-pill" x="644.0" y="45" width="104" height="38" rx="19"/><circle class="n-dot" cx="665.0" cy="64" r="5"/><text class="n-name" x="705" y="69">Review</text></g>
+            <g class="node station is-opt" data-skill="received-review" data-x="850" data-y="64" style="--i:5" tabindex="0" role="button" aria-label="Received review"><rect class="n-pill" x="766.0" y="45" width="168" height="38" rx="19"/><circle class="n-dot" cx="787.0" cy="64" r="5"/><text class="n-name" x="859" y="69">Received review</text></g>
+            <g class="node station" data-skill="pr" data-x="998.6" data-y="129.0" style="--i:6" tabindex="0" role="button" aria-label="Pull request"><rect class="n-pill" x="930.6" y="110.0" width="136" height="38" rx="19"/><circle class="n-dot" cx="951.6" cy="129.0" r="5"/><text class="n-name" x="1007.6" y="134.0">Pull request</text></g>
+            <g class="node station is-opt" data-skill="verify-pipeline" data-x="1016.0" data-y="194.0" style="--i:7" tabindex="0" role="button" aria-label="Verify pipeline"><rect class="n-pill" x="940.0" y="175.0" width="152" height="38" rx="19"/><circle class="n-dot" cx="961.0" cy="194.0" r="5"/><text class="n-name" x="1025.0" y="199.0">Verify pipeline</text></g>
+            <g class="node station is-opt" data-skill="remote-review" data-x="998.6" data-y="259.0" style="--i:8" tabindex="0" role="button" aria-label="Remote review"><rect class="n-pill" x="919.6" y="240.0" width="158" height="38" rx="19"/><circle class="n-dot" cx="940.6" cy="259.0" r="5"/><text class="n-name" x="1007.6" y="264.0">Remote review</text></g>
+            <g class="node n-harden" data-skill="harden" data-x="626" data-y="324" tabindex="0" role="button" aria-label="harden">
+              <rect class="h-r" x="416" y="304" width="420" height="40" rx="20"/>
+              <text class="h-t" x="626" y="329"><tspan class="mono">/sdlc:harden</tspan><tspan dx="8">turns a failed run into a new guardrail</tspan></text>
+            </g>
+          </svg>
+        </div>
+        <div class="sk-detail" id="sk-detail" aria-live="polite">
+          <div><p class="sd-k">Gets</p><ul class="sd-list" id="sd-gets"><li><span class="sd-item"><span class="sd-what">The commit</span><span class="sd-who">from commit</span></span></li></ul></div>
+          <span class="sd-arrow" aria-hidden="true"></span>
+          <div class="sd-mid"><p class="sd-name" id="sd-name" tabindex="-1">/sdlc:review</p><p class="sd-does" id="sd-does">Reviews the diff in each review dimension, for example security, performance and docs.</p></div>
+          <span class="sd-arrow" aria-hidden="true"></span>
+          <div><p class="sd-k">Hands over</p><ul class="sd-list" id="sd-gives"><li><span class="sd-item"><span class="sd-what">The findings</span><span class="sd-who">to received-review</span></span></li></ul></div>
+        </div>
+      </div>
+      <div class="block">
+        <h2 class="h2">What each skill hands over</h2>
+        <div class="hand-wrap">
+          <table class="hand" id="hand">
+            <thead><tr><th scope="col">From</th><th scope="col">Hands over</th><th scope="col">To</th></tr></thead>
+            <tbody>
+              <tr data-s="preplan plan"><td><button class="chip" type="button" data-go="preplan">preplan</button></td><td class="hand-what">The topic file with the checked decisions</td><td><span class="hand-to"><button class="chip" type="button" data-go="plan">plan</button></span></td></tr>
+              <tr data-s="plan execute ship"><td><button class="chip" type="button" data-go="plan">plan</button></td><td class="hand-what">The plan file with tasks and their dependencies</td><td><span class="hand-to"><button class="chip" type="button" data-go="execute">execute</button></span></td></tr>
+              <tr data-s="plan openspec-save"><td><button class="chip" type="button" data-go="plan">plan</button></td><td class="hand-what">The staged OpenSpec change</td><td><span class="hand-to"><button class="chip" type="button" data-go="openspec-save">openspec-save</button></span></td></tr>
+              <tr data-s="execute commit ship"><td><button class="chip" type="button" data-go="execute">execute</button></td><td class="hand-what">The changed files, verified wave by wave</td><td><span class="hand-to"><button class="chip" type="button" data-go="commit">commit</button></span></td></tr>
+              <tr data-s="commit review ship"><td><button class="chip" type="button" data-go="commit">commit</button></td><td class="hand-what">The commit</td><td><span class="hand-to"><button class="chip" type="button" data-go="review">review</button></span></td></tr>
+              <tr data-s="review received-review ship"><td><button class="chip" type="button" data-go="review">review</button></td><td class="hand-what">The findings in each review dimension</td><td><span class="hand-to"><button class="chip" type="button" data-go="received-review">received-review</button></span></td></tr>
+              <tr data-s="received-review deferred"><td><button class="chip" type="button" data-go="received-review">received-review</button></td><td class="hand-what">The findings that it did not fix</td><td><span class="hand-to"><button class="chip" type="button" data-go="deferred">deferred</button></span></td></tr>
+              <tr data-s="pr verify-pipeline ship"><td><button class="chip" type="button" data-go="pr">pr</button></td><td class="hand-what">The open pull request</td><td><span class="hand-to"><button class="chip" type="button" data-go="verify-pipeline">verify-pipeline</button></span></td></tr>
+              <tr data-s="remote-review received-review ship"><td><button class="chip" type="button" data-go="remote-review">await-remote-review</button></td><td class="hand-what">The comments of the automated reviewer</td><td><span class="hand-to"><button class="chip" type="button" data-go="received-review">received-review</button></span></td></tr>
+              <tr data-s="harden verify-pipeline"><td>A failed run</td><td class="hand-what">The failure text</td><td><span class="hand-to"><button class="chip" type="button" data-go="harden">harden</button></span></td></tr>
+              <tr data-s="harden plan execute review"><td><button class="chip" type="button" data-go="harden">harden</button></td><td class="hand-what">New guardrails and review dimensions</td><td><span class="hand-to"><button class="chip" type="button" data-go="plan">plan</button><button class="chip" type="button" data-go="execute">execute</button><button class="chip" type="button" data-go="review">review</button></span></td></tr>
+              <tr data-s="dashboard"><td>Every run</td><td class="hand-what">The run state: steps, times and issues</td><td><span class="hand-to"><button class="chip" type="button" data-go="dashboard">dashboard</button></span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="block">
+        <h2 class="h2">Skills around the pipeline</h2>
+        <ul class="sup">
+          <li><button class="sup-btn node" type="button" id="sup-setup" data-skill="setup" data-sup="1"><span class="sup-name">/sdlc:setup</span><span class="sup-text">Writes the project settings: pipeline steps, guardrails and review dimensions.</span></button></li>
+          <li><button class="sup-btn node" type="button" id="sup-dashboard" data-skill="dashboard" data-sup="1"><span class="sup-name">/sdlc:dashboard</span><span class="sup-text">Shows every pipeline of every repository on one local page.</span></button></li>
+          <li><button class="sup-btn node" type="button" id="sup-deferred" data-skill="deferred" data-sup="1"><span class="sup-name">/sdlc:deferred</span><span class="sup-text">Lists the findings that earlier runs left open. It files them as GitHub issues or closes them.</span></button></li>
+          <li><button class="sup-btn node" type="button" id="sup-jira" data-skill="jira" data-sup="1"><span class="sup-name">/sdlc:jira</span><span class="sup-text">Creates, reads and updates the Jira issues of your work.</span></button></li>
+          <li><button class="sup-btn node" type="button" id="sup-openspec-save" data-skill="openspec-save" data-sup="1"><span class="sup-name">/sdlc:openspec-save</span><span class="sup-text">Saves the OpenSpec change of a plan as its own pull request.</span></button></li>
+          <li><button class="sup-btn node" type="button" id="sup-error-report" data-skill="error-report" data-sup="1"><span class="sup-name">/sdlc:error-report</span><span class="sup-text">Proposes a GitHub issue when a skill hits a tool error.</span></button></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="spec wrap">
+  <dl class="spec-list">
+    <div><dt>Palette, Bone amber</dt><dd class="sw"><i style="background:#E6E2DA"></i><i style="background:#1F1A14"></i><i style="background:#5A5247"></i><i style="background:#8F4A08"></i><i style="background:#E1963C"></i><i style="background:#3CBE8C"></i><i style="background:#1E7F5A"></i></dd></div>
+    <div><dt>Type</dt><dd>Geist for headings and text, Geist Mono for commands and run values.</dd></div>
+    <div><dt>Shape</dt><dd>Glass panels with an 18px radius, pill buttons, a pill on a wire for each flow step.</dd></div>
+    <div><dt>Motion</dt><dd>Flows play and answer a click. One load sequence on each page. All motion stops for reduced motion.</dd></div>
+  </dl>
+</div>
+
+<script>
+var sdlcStart = {};
+var sdlcReduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+
+/* Skill page: the run plays down the list, and the time bar follows it. */
+(function () {
+  var seq = document.getElementById('seq');
+  if (!seq) return;
+  var steps = [].slice.call(seq.querySelectorAll('.seq-step'));
+  var bar = document.getElementById('time-bar');
+  var fill = seq.querySelector('.seq-fill');
+  var dot = seq.querySelector('.seq-dot');
+  var now = document.getElementById('now');
+  var toggle = document.getElementById('opt-toggle');
+  var cur = 0, timer = null, started = false;
+
+  function set(id, text) { document.getElementById(id).textContent = text; }
+  function fmt(s) {
+    var h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), r = s % 60;
+    return (h ? h + 'h ' : '') + (m || h ? m + 'm ' : '') + r + 's';
+  }
+  function live() { return steps.filter(function (li) { return !li.hidden; }); }
+  function total() { return live().reduce(function (a, li) { return a + (+li.dataset.secs); }, 0); }
+
+  var segs = steps.map(function (li, i) {
+    var s = +li.dataset.secs;
+    if (!s) return null;
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.id = 'seg-' + i;
+    b.className = 'seg' + (li.classList.contains('is-opt') ? ' is-opt' : '');
+    b.setAttribute('aria-label', li.dataset.name + ', ' + fmt(s));
+    b.addEventListener('click', function () { stop(); select(i); });
+    bar.appendChild(b);
+    return b;
+  });
+
+  function layout() {
+    var t = total();
+    steps.forEach(function (li, i) {
+      var b = segs[i];
+      if (!b) return;
+      var off = li.hidden, s = +li.dataset.secs;
+      b.classList.toggle('is-off', off);
+      b.classList.toggle('is-in', !off);
+      b.style.flexGrow = off ? 0 : s;
+      b.textContent = !off && s / t > 0.09 ? li.dataset.name : '';
+      b.tabIndex = off ? -1 : 0;
+    });
+    set('time-total', fmt(t));
+  }
+
+  function place() {
+    var y = steps[cur].offsetTop + 25;
+    dot.style.transform = 'translateY(' + (y - 27) + 'px)';
+    fill.style.height = Math.max(0, y - 26) + 'px';
+  }
+  function select(i) {
+    cur = i;
+    var t = total(), L = live(), li = steps[i], secs = +li.dataset.secs;
+    steps.forEach(function (s, k) {
+      s.classList.toggle('is-now', k === i);
+      s.classList.toggle('is-done', k < i);
+      if (segs[k]) segs[k].classList.toggle('is-now', k === i);
+    });
+    place();
+    var pct = secs / t * 100;
+    set('now-count', 'Step ' + (L.indexOf(li) + 1) + ' of ' + L.length);
+    set('now-name', li.dataset.name);
+    set('now-who', li.dataset.who);
+    set('now-time', secs ? fmt(secs) : (li.dataset.none || 'no wait'));
+    set('now-share', li.dataset.none ? 'The measured run did not use this step' : !secs ? 'This step has no measured time' : pct < 1 ? 'Under 1% of the run' : Math.round(pct) + '% of the run');
+    set('now-in', li.dataset.in);
+    set('now-out', li.dataset.out);
+    now.classList.remove('swap');
+    void now.offsetWidth;
+    now.classList.add('swap');
+  }
+
+  function stop() { if (timer) { clearInterval(timer); timer = null; } }
+  function run() {
+    stop();
+    var L = live(), k = 0;
+    select(steps.indexOf(L[0]));
+    timer = setInterval(function () {
+      k++;
+      if (k >= L.length) { stop(); return; }
+      select(steps.indexOf(L[k]));
+    }, 1100);
+  }
+  function last() { var L = live(); return steps.indexOf(L[L.length - 1]); }
+
+  steps.forEach(function (li, i) {
+    li.querySelector('.seq-btn').addEventListener('click', function () { stop(); select(i); });
+  });
+  toggle.addEventListener('change', function () {
+    stop();
+    steps.forEach(function (li) { if (li.classList.contains('is-opt')) li.hidden = !toggle.checked; });
+    layout();
+    select(steps[cur].hidden ? last() : cur);
+  });
+  document.getElementById('play').addEventListener('click', function () { if (sdlcReduce) select(last()); else run(); });
+  window.addEventListener('resize', function () { if (started) place(); });
+
+  sdlcStart.skill = function () {
+    if (started) { place(); return; }
+    started = true;
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        layout();
+        if (sdlcReduce) select(last()); else run();
+      });
+    });
+  };
+})();
+
+/* All skills page: a live map. Select a skill to see what it gets and what it hands over. */
+(function () {
+  var panel = document.getElementById('panel-skills');
+  var svg = document.getElementById('map-svg');
+  if (!svg) return;
+  var PIPE = ['preplan', 'plan', 'execute', 'commit', 'review', 'received-review', 'pr', 'verify-pipeline', 'remote-review'];
+  var SK = {
+    'preplan': { does: 'Shapes an idea into a topic file. It checks each proposal against the plan guardrails.', gets: [['An idea', 'you', []]], gives: [['The topic file', 'plan', ['plan']]] },
+    'plan': { does: 'Splits a requirement into tasks with their dependencies.', gets: [['The topic file', 'preplan', ['preplan']], ['New guardrails', 'harden', ['harden']]], gives: [['The plan file', 'execute', ['execute']], ['The staged OpenSpec change', 'openspec-save', ['openspec-save']]] },
+    'execute': { does: 'Runs the plan wave by wave and verifies each wave.', gets: [['The plan file', 'plan', ['plan']], ['New guardrails', 'harden', ['harden']]], gives: [['The changed files', 'commit', ['commit']]] },
+    'commit': { does: 'Writes a commit message in the style of the project, then commits.', gets: [['The changed files', 'execute', ['execute']]], gives: [['The commit', 'review', ['review']]] },
+    'review': { does: 'Reviews the diff in each review dimension, for example security, performance and docs.', gets: [['The commit', 'commit', ['commit']], ['New review dimensions', 'harden', ['harden']]], gives: [['The findings', 'received-review', ['received-review']]] },
+    'received-review': { does: 'Works through the findings. It verifies each one, then fixes it or defers it.', gets: [['The findings', 'review', ['review']], ['The comments of an automated reviewer', 'the remote review step', ['remote-review']]], gives: [['The fixes', 'pr', ['pr']], ['The findings that it did not fix', 'deferred', ['deferred']]] },
+    'pr': { does: 'Writes the description from the commits and opens the pull request.', gets: [['The commits of the branch', 'received-review', ['received-review']]], gives: [['The open pull request', 'verify-pipeline', ['verify-pipeline']]] },
+    'verify-pipeline': { does: 'Reads a failed CI run, then applies a small fix or proposes one.', gets: [['The open pull request', 'pr', ['pr']]], gives: [['The pull request after the CI check', 'the remote review step', ['remote-review']], ['The failure text of a failed run', 'harden', ['harden']]] },
+    'remote-review': { name: 'await-remote-review', does: 'A step of /sdlc:ship, not a skill of its own. It waits for an automated reviewer, for example Copilot, to answer on the pull request.', gets: [['The pull request after the CI check', 'verify-pipeline', ['verify-pipeline']]], gives: [['The comments of the reviewer', 'received-review', ['received-review']]] },
+    'harden': { does: 'Turns a failed run into new guardrails and review dimensions, so the same failure does not return.', gets: [['The failure text', 'a failed run', ['verify-pipeline']]], gives: [['New guardrails', 'plan and execute', ['plan', 'execute']], ['New review dimensions', 'review', ['review']]] },
+    'ship': { does: 'Runs the pipeline from execute to the remote review in one command. It continues a stopped run.', gets: [['The plan file', 'plan', ['plan']]], gives: [['The order to run', 'each step of this part', PIPE.slice(2)], ['The open pull request', 'you', []]] },
+    'dashboard': { does: 'Shows every pipeline of every repository on one local page.', gets: [['The run state: steps, times and issues', 'every run', PIPE]], gives: [['A live view of every pipeline', 'you', []]] },
+    'setup': { does: 'Writes the project settings: pipeline steps, guardrails and review dimensions.', gets: [['Your answers', 'you', []]], gives: [['The project settings', 'every skill', PIPE]] },
+    'deferred': { does: 'Lists the findings that earlier runs left open. It files them as GitHub issues or closes them.', gets: [['The findings that were not fixed', 'received-review', ['received-review']]], gives: [['GitHub issues', 'your backlog', []]] },
+    'jira': { does: 'Creates, reads and updates the Jira issues of your work.', gets: [['Your request', 'you', []]], gives: [['Jira issues', 'your tracker', []]] },
+    'openspec-save': { does: 'Saves the OpenSpec change of a plan as its own branch, commit and pull request.', gets: [['The staged OpenSpec change', 'plan', ['plan']]], gives: [['A pull request for the change', 'you', []]] },
+    'error-report': { does: 'Proposes a GitHub issue when a skill hits a tool error.', gets: [['A tool error', 'any skill', []]], gives: [['A GitHub issue draft', 'you', []]] }
+  };
+  var nodes = [].slice.call(panel.querySelectorAll('[data-skill]'));
+  var table = document.getElementById('hand');
+  var rows = [].slice.call(table.tBodies[0].rows);
+  var detail = document.getElementById('sk-detail');
+  var wsegs = [].slice.call(svg.querySelectorAll('.wseg'));
+  var loop = document.getElementById('map-loop');
+  var route = document.getElementById('map-route');
+  var pulse = document.getElementById('map-pulse');
+  var lamps = [].slice.call(svg.querySelectorAll('.lamp'));
+  var stations = PIPE.map(function (k) { return svg.querySelector('.station[data-skill="' + k + '"]'); });
+  var hardenNode = svg.querySelector('.n-harden');
+
+  /* An item that names one skill is a button that selects that skill. */
+  function item(x, dir) {
+    var inner = '<span class="sd-what">' + x[0] + '</span><span class="sd-who">' + dir + ' ' + x[1] + '</span>';
+    if (x[2].length === 1) return '<li><button class="sd-item" type="button" data-go="' + x[2][0] + '">' + inner + '</button></li>';
+    return '<li><span class="sd-item">' + inner + '</span></li>';
+  }
+  function pick(key, scroll) {
+    var d = SK[key];
+    if (!d) return;
+    var rel = {};
+    d.gets.concat(d.gives).forEach(function (x) { x[2].forEach(function (k) { rel[k] = 1; }); });
+    nodes.forEach(function (n) {
+      var k = n.dataset.skill;
+      n.classList.toggle('is-sel', k === key);
+      n.classList.toggle('is-rel', !!rel[k]);
+    });
+    svg.classList.add('has-sel');
+    svg.classList.toggle('sel-dashboard', key === 'dashboard');
+    svg.classList.toggle('sel-ship', key === 'ship');
+    wsegs.forEach(function (s) {
+      var a = s.dataset.a, b = s.dataset.b;
+      var on = key === 'ship' ? (!!rel[a] && !!rel[b]) : ((a === key && !!rel[b]) || (b === key && !!rel[a]));
+      s.classList.toggle('on', on);
+    });
+    loop.classList.toggle('on', key === 'harden' || !!rel.harden);
+    rows.forEach(function (r) { r.classList.toggle('is-on', (' ' + r.dataset.s + ' ').indexOf(' ' + key + ' ') > -1); });
+    document.getElementById('sd-name').textContent = d.name || '/sdlc:' + key;
+    document.getElementById('sd-does').textContent = d.does;
+    document.getElementById('sd-gets').innerHTML = d.gets.map(function (x) { return item(x, 'from'); }).join('');
+    document.getElementById('sd-gives').innerHTML = d.gives.map(function (x) { return item(x, 'to'); }).join('');
+    detail.classList.remove('swap');
+    void detail.offsetWidth;
+    detail.classList.add('swap');
+    if (scroll) detail.scrollIntoView({ block: 'nearest', behavior: sdlcReduce ? 'auto' : 'smooth' });
+  }
+
+  nodes.forEach(function (n) {
+    var go = function () { pick(n.dataset.skill, !!n.dataset.sup); };
+    n.addEventListener('click', go);
+    if (n.tagName.toLowerCase() === 'g') {
+      n.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go(); }
+      });
+    }
+  });
+  /* A skill name in the panel or in the table selects that skill. */
+  panel.addEventListener('click', function (e) {
+    var b = e.target.closest ? e.target.closest('[data-go]') : null;
+    if (!b) return;
+    var inTable = table.contains(b);
+    pick(b.dataset.go, inTable);
+    if (!inTable) document.getElementById('sd-name').focus({ preventScroll: true });
+  });
+
+  /* The signal travels the loop. Each step and its lamp answer when the signal passes. */
+  var SPEED = 185, total = 0, greenFrom = 0, marks = [], raf = 0, t0 = 0, last = 0, started = false, live = false;
+  function flash(el, cls, ms) {
+    if (!el) return;
+    el.classList.remove(cls);
+    void el.getBoundingClientRect();
+    el.classList.add(cls);
+    setTimeout(function () { el.classList.remove(cls); }, ms);
+  }
+  /* The route length that is nearest to a point. The first match wins, so plan gets its first pass. */
+  function locate(x, y) {
+    var best = 0, bd = Infinity;
+    for (var l = 0; l <= total; l += 3) {
+      var p = route.getPointAtLength(l), q = (p.x - x) * (p.x - x) + (p.y - y) * (p.y - y);
+      if (q < bd - 1) { bd = q; best = l; }
+    }
+    return best;
+  }
+  function measure() {
+    total = route.getTotalLength();
+    marks = stations.map(function (st, i) {
+      return { d: locate(+st.dataset.x, +st.dataset.y), hit: function () { flash(st, 'ping', 900); flash(lamps[i], 'lit', 1400); } };
+    });
+    greenFrom = marks[marks.length - 1].d + 12;
+    marks.push({ d: locate(+hardenNode.dataset.x, +hardenNode.dataset.y), hit: function () { flash(hardenNode, 'ping', 900); flash(lamps[stations.length], 'lit', 1400); } });
+    marks.push({ d: total - 10, hit: function () { flash(stations[1], 'ping', 900); } });
+  }
+  function tick(now) {
+    if (panel.hidden) { raf = 0; return; }
+    if (!t0) { t0 = now; last = 0; }
+    var d = ((now - t0) / 1000 * SPEED) % total;
+    var p = route.getPointAtLength(d);
+    pulse.setAttribute('transform', 'translate(' + p.x.toFixed(1) + ' ' + p.y.toFixed(1) + ')');
+    pulse.style.opacity = Math.min(1, Math.min(d, total - d) / 36).toFixed(2);
+    pulse.classList.toggle('is-loop', d > greenFrom);
+    var n = 0;
+    while (n < marks.length && marks[n].d <= d) n++;
+    if (n < last) last = 0;
+    for (; last < n; last++) marks[last].hit();
+    raf = requestAnimationFrame(tick);
+  }
+  function run() {
+    if (raf || !live) return;
+    t0 = 0;
+    pulse.removeAttribute('hidden');
+    raf = requestAnimationFrame(tick);
+  }
+
+  sdlcStart.skills = function () {
+    if (started) { run(); return; }
+    started = true;
+    if (sdlcReduce) { pick('review'); return; }
+    measure();
+    svg.classList.add('intro');
+    setTimeout(function () {
+      svg.classList.remove('intro');
+      if (!panel.querySelector('.is-sel')) pick('review');
+      live = true;
+      run();
+    }, 2500);
+  };
+})();
+
+(function () {
+  var tabs = [].slice.call(document.querySelectorAll('.tab'));
+  function show(id) {
+    tabs.forEach(function (t) {
+      var on = t.dataset.page === id;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.tabIndex = on ? 0 : -1;
+      document.getElementById('panel-' + t.dataset.page).hidden = !on;
+    });
+    try { localStorage.setItem('sdlc-page', id); } catch (e) {}
+    if (sdlcStart[id]) sdlcStart[id]();
+  }
+  tabs.forEach(function (t, i) {
+    t.addEventListener('click', function () { show(t.dataset.page); });
+    t.addEventListener('keydown', function (e) {
+      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+      var n = (i + (e.key === 'ArrowRight' ? 1 : tabs.length - 1)) % tabs.length;
+      tabs[n].focus();
+      show(tabs[n].dataset.page);
+    });
+  });
+  var want = (location.hash || '').replace('#', '');
+  if (!want) { try { want = localStorage.getItem('sdlc-page'); } catch (e) {} }
+  show(want && document.getElementById('panel-' + want) ? want : 'home');
+
+  [].forEach.call(document.querySelectorAll('.copy'), function (b) {
+    b.addEventListener('click', function () {
+      var done = function () { b.textContent = 'Copied'; setTimeout(function () { b.textContent = 'Copy'; }, 1600); };
+      var fail = function () { b.textContent = 'Select the text'; setTimeout(function () { b.textContent = 'Copy'; }, 2200); };
+      try { navigator.clipboard.writeText(b.dataset.copy).then(done, fail); } catch (e) { fail(); }
+    });
+  });
+})();
+</script>

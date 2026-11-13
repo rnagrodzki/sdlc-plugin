@@ -1,7 +1,7 @@
 # tool-openspec-enrich Specification
 
 ## Purpose
-`openspec_enrich` adds, updates, or removes an sdlc-managed `context:` block in `openspec/config.yaml` that points contributors to `/plan`, `/execute`, and `/ship`. The `setup` skill's `setup-openspec` sub-flow calls it. Output follows docs/mcp-output-contract.md.
+`openspec_enrich` adds, updates, or removes an sdlc-managed `context:` block in `openspec/config.yaml` that points contributors to `/plan`, `/execute`, and `/ship`. The `setup` skill's `setup-openspec` sub-flow calls it. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

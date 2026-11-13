@@ -1,7 +1,7 @@
 # tool-execute-state Specification
 
 ## Purpose
-`execute_state` is the MCP tool that owns the persisted state of one wave-based execute run: waves, task rows, worker dispatch state, ledger, drift, and the end-of-run report. The execute and ship skills (and review/plan for the ledger) call it once per step. Output follows docs/mcp-output-contract.md.
+`execute_state` is the MCP tool that owns the persisted state of one wave-based execute run: waves, task rows, worker dispatch state, ledger, drift, and the end-of-run report. The execute and ship skills (and review/plan for the ledger) call it once per step. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

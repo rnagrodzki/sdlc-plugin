@@ -50,7 +50,7 @@ verify_pipeline_classify({logs: LOGS[, check_name: NAME, conclusion: CONCLUSION]
 
 `check_name`/`conclusion` are optional passthrough context — pass them when known (e.g. from a `poll_await({target: "pipeline"})` `failed_checks` entry's `name`/`state`) so the tool echoes them back for correlation; they do not affect classification.
 
-The result is Markdown, not JSON (see `docs/mcp-output-contract.md`). Read these fields from it: `category` (one of the seven below), `signals` (every matched pattern as `<prefix>:<pattern>`; `(none)` when nothing matched), and `check_name`/`conclusion`, which appear only when you passed them.
+The result is Markdown, not JSON (see `docs/internal/mcp-output-contract.md`). Read these fields from it: `category` (one of the seven below), `signals` (every matched pattern as `<prefix>:<pattern>`; `(none)` when nothing matched), and `check_name`/`conclusion`, which appear only when you passed them.
 
 The seven categories are: `lint`, `test-failure`, `type-error`, `build-error`, `dependency`, `infra`, `unknown` (R2).
 

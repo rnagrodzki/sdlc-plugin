@@ -6,7 +6,7 @@ This document describes how the `/execute` skill supervises a running wave:
 what counts as a heartbeat, the ceilings that turn silence into a failure,
 what a reclaim actually does, and how retries carry partial work forward. For
 the user-facing skill definition, see
-[`plugins/sdlc/skills/execute/SKILL.md`](../plugins/sdlc/skills/execute/SKILL.md).
+[`plugins/sdlc/skills/execute/SKILL.md`](../../plugins/sdlc/skills/execute/SKILL.md).
 Everything here is server-driven: the calling skill never computes elapsed
 time or classifies a stall itself — it calls `execute_state({action:
 "wave-await"})` and follows the returned `next` instruction verbatim.

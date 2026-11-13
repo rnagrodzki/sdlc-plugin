@@ -68,7 +68,7 @@ var sectionBulletRE = regexp.MustCompile(`^- (\w+): (.*)$`)
 
 // renderedSection returns the "- key: value" bullets directly under the
 // "## <heading>" line of a rendered tool result (render rules 4 and 5 in
-// docs/mcp-output-contract.md: root scalars go under "## Fields", a nested
+// docs/internal/mcp-output-contract.md: root scalars go under "## Fields", a nested
 // struct or map gets its own "## <key>" section). Returns nil when the
 // heading is absent.
 func renderedSection(body, heading string) map[string]string {

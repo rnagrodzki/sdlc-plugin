@@ -49,7 +49,7 @@ For end-to-end automation, use one of the pipeline skills:
 
 ## Links to full documentation
 
-- Plugin overview: [`../README.md`](../README.md)
+- Plugin overview: [`../../README.md`](../../README.md)
 - Getting started: [`../getting-started.md`](../getting-started.md)
-- Smoke test (verification checklist): [`../smoke-test.md`](../smoke-test.md)
+- Smoke test (verification checklist): [`../internal/smoke-test.md`](../internal/smoke-test.md)
 - Configuration reference: [`../versioning.md`](../versioning.md)

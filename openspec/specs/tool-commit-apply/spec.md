@@ -1,7 +1,7 @@
 # tool-commit-apply Specification
 
 ## Purpose
-`commit_apply` creates one git commit with a given message from the tracked working-tree changes plus anything already staged, and returns the new SHA. The `commit` skill calls it after user approval. Output follows docs/mcp-output-contract.md.
+`commit_apply` creates one git commit with a given message from the tracked working-tree changes plus anything already staged, and returns the new SHA. The `commit` skill calls it after user approval. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # tool-links-validate Specification
 
 ## Purpose
-`links_validate` extracts every http(s) URL from one file and checks each one: GitHub issue/PR identity and existence, Atlassian Jira host match, and generic HTTP(S) reachability. Skills such as `commit` call it as a hard gate before publishing text that holds links. Output follows docs/mcp-output-contract.md.
+`links_validate` extracts every http(s) URL from one file and checks each one: GitHub issue/PR identity and existence, Atlassian Jira host match, and generic HTTP(S) reachability. Skills such as `commit` call it as a hard gate before publishing text that holds links. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

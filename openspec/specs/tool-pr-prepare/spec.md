@@ -1,7 +1,7 @@
 # tool-pr-prepare Specification
 
 ## Purpose
-MCP tool `pr_prepare` runs the preflight checks for the `pr` skill and returns the context the skill needs to draft a pull request (auth state, branch state, commits, PR template, version diagnostics). Output follows docs/mcp-output-contract.md.
+MCP tool `pr_prepare` runs the preflight checks for the `pr` skill and returns the context the skill needs to draft a pull request (auth state, branch state, commits, PR template, version diagnostics). Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

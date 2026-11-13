@@ -1,7 +1,7 @@
 # tool-plan-support Specification
 
 ## Purpose
-`plan_support` is an internal multi-action MCP tool that the `sdlc:plan` skill calls to merge review results, detect material plan changes, build an OpenSpec appendix, and keep a per-run evidence store for resume after context compaction. Output follows docs/mcp-output-contract.md.
+`plan_support` is an internal multi-action MCP tool that the `sdlc:plan` skill calls to merge review results, detect material plan changes, build an OpenSpec appendix, and keep a per-run evidence store for resume after context compaction. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

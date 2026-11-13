@@ -1,7 +1,7 @@
 # tool-commit-prepare Specification
 
 ## Purpose
-`commit_prepare` gathers read-only commit context (staged, unstaged and untracked files, diffs, recent commits, commit config, branch data) for the `commit` skill. It also writes the whole result to a JSON manifest file so the skill can hand a path to `sdlc:commit-orchestrator`. Output follows docs/mcp-output-contract.md.
+`commit_prepare` gathers read-only commit context (staged, unstaged and untracked files, diffs, recent commits, commit config, branch data) for the `commit` skill. It also writes the whole result to a JSON manifest file so the skill can hand a path to `sdlc:commit-orchestrator`. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

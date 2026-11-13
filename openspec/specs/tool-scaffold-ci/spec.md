@@ -1,7 +1,7 @@
 # tool-scaffold-ci Specification
 
 ## Purpose
-`scaffold_ci` copies the plugin's embedded CI scripts and GitHub workflow files into a user project and reports branch protection that affects release pushes. It is registered as internal to sdlc skills; `setup_write_sections` runs the same scaffold with `force` off after it writes the `version` section, and `validate` action `ci_script_drift` points to it as the fix for drift. Output follows docs/mcp-output-contract.md.
+`scaffold_ci` copies the plugin's embedded CI scripts and GitHub workflow files into a user project and reports branch protection that affects release pushes. It is registered as internal to sdlc skills; `setup_write_sections` runs the same scaffold with `force` off after it writes the `version` section, and `validate` action `ci_script_drift` points to it as the fix for drift. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

@@ -1,7 +1,7 @@
 # tool-migrate Specification
 
 ## Purpose
-`migrate` runs one legacy migration per call: config schema check, import from the old `.sdlc/` plugin directory, or move of the old `.sdlc-v2/execution/` state layout to `.sdlc-v2/runs/`. The `setup` skill calls it during its migration step. Output follows docs/mcp-output-contract.md.
+`migrate` runs one legacy migration per call: config schema check, import from the old `.sdlc/` plugin directory, or move of the old `.sdlc-v2/execution/` state layout to `.sdlc-v2/runs/`. The `setup` skill calls it during its migration step. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

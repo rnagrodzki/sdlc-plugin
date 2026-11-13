@@ -248,7 +248,7 @@ type ShipVerifySideEffectIn struct {
 // ShipVerifySideEffectOut is the output for the ship_verify_side_effect tool.
 //
 // Expected has no omitempty on purpose. The renderer drops an omitempty field
-// whose value is empty (rule 14 in docs/mcp-output-contract.md), so a
+// whose value is empty (rule 14 in docs/internal/mcp-output-contract.md), so a
 // has-side-effect check with no caller-supplied Expected would hide the
 // "expected" line. Without omitempty it renders `- expected: (none)`.
 type ShipVerifySideEffectOut struct {

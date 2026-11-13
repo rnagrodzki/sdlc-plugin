@@ -32,9 +32,9 @@ context: |
   Hard contracts (read the doc before specifying tool changes):
     - MCP output: Markdown text only, no JSON envelope. Root `Next` field renders
       as the `**Next:**` line. Errors are DomainError / InfraError / DataError
-      with a Suggestion. See docs/mcp-output-contract.md.
+      with a Suggestion. See docs/internal/mcp-output-contract.md.
     - Every tool declares mcpserver.Annotations; a new tool adds its entry to
-      internal/tools/annotations_test.go. See docs/mcp-tool-annotations.md.
+      internal/tools/annotations_test.go. See docs/internal/mcp-tool-annotations.md.
     - Every exported field on an *In struct has a jsonschema_description that
       states the encoding (plain text or JSON) and gives an example value.
       Closed sets also get a jsonschema enum tag.

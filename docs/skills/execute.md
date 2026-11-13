@@ -31,7 +31,7 @@ verification after each wave and automatic recovery from failures.
 | `--branch <name>` | Create and check out this branch before executing. | auto-derived |
 | `--wave-timeout <s>` | Max seconds a single wave can run. Also used as each task's total-runtime ceiling when the server classifies still-open tasks. | `1800` |
 | `--commit-waves <true\|false>` | Commit each wave separately. Forwarded by `/ship` only when `ship.execute.commitWaves` is set. | `execute.commitWaves` in `config.toml`, else `true` |
-| `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled, and a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. See [Execute wave supervision](../execute-wave-supervision.md). | `60` |
+| `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled, and a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. See [Execute wave supervision](../internal/execute-wave-supervision.md). | `60` |
 
 ### Quality tiers
 
@@ -98,7 +98,7 @@ file — you do not need to pass it again.
 
 ## See also
 
-- [Execute wave supervision](../execute-wave-supervision.md) — how heartbeats,
+- [Execute wave supervision](../internal/execute-wave-supervision.md) — how heartbeats,
   the three ceilings, reclaim, and retries actually work.
 
 ## Tips and gotchas

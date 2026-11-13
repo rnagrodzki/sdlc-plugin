@@ -1,7 +1,7 @@
 # tool-prepare-orchestrator Specification
 
 ## Purpose
-`prepare_orchestrator` pre-computes the JSON manifest that the `harden-orchestrator` or `error-report-orchestrator` subagent reads, selected by `mode`. It is internal: the `harden` and `error-report` skills call it. Output follows docs/mcp-output-contract.md.
+`prepare_orchestrator` pre-computes the JSON manifest that the `harden-orchestrator` or `error-report-orchestrator` subagent reads, selected by `mode`. It is internal: the `harden` and `error-report` skills call it. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

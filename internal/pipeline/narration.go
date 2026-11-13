@@ -27,7 +27,7 @@ type NextAction struct {
 //
 // Display is authoritative for user-facing rendering: callers (and
 // SKILL.md instructions) render Display verbatim. Its render:"raw" tag makes
-// the renderer emit it unfenced (rule 10 in docs/mcp-output-contract.md).
+// the renderer emit it unfenced (rule 10 in docs/internal/mcp-output-contract.md).
 // Summary is a shorter form intended for speech / Key Decisions logs, not
 // for markdown rendering.
 type Narration struct {

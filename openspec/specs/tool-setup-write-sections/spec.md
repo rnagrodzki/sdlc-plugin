@@ -1,7 +1,7 @@
 # tool-setup-write-sections Specification
 
 ## Purpose
-`setup_write_sections` writes caller-assembled field values into one or more sections of `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml`. The `setup` skill and its sub-flows call it after collecting answers. Output follows docs/mcp-output-contract.md.
+`setup_write_sections` writes caller-assembled field values into one or more sections of `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml`. The `setup` skill and its sub-flows call it after collecting answers. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

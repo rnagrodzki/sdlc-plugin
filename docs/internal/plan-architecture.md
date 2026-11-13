@@ -5,7 +5,7 @@
 > This document describes the internals of the `/plan` skill as implemented in
 > the sdlc plugin. Every tool name, gate ID, format check, config key, and
 > state marker was verified against source. For the user-facing skill
-> definition, see [`plugins/sdlc/skills/plan/SKILL.md`](../plugins/sdlc/skills/plan/SKILL.md).
+> definition, see [`plugins/sdlc/skills/plan/SKILL.md`](../../plugins/sdlc/skills/plan/SKILL.md).
 
 ---
 
@@ -210,7 +210,7 @@ under Claude Code plan mode, which must not modify tracked files.
 `plan_prepare` does write — the plan state file and `<runId>.evidence/guardrails.md`,
 both under gitignored `.sdlc-v2/runs/` — but never a tracked file, which is
 what lets it stay `ReadOnly:true` in its MCP annotations (see
-docs/mcp-tool-annotations.md) and therefore callable in plan mode at all. A
+docs/internal/mcp-tool-annotations.md) and therefore callable in plan mode at all. A
 call without `resume` or `resolveTemplate` also starts a new run and
 best-effort deletes the evidence directories of older runs of the branch
 that are not kept (not done, not written in the last 24 hours, and with no

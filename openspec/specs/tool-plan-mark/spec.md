@@ -1,7 +1,7 @@
 # tool-plan-mark Specification
 
 ## Purpose
-`plan_mark` is an internal MCP tool the plan skill calls to record progress in the current branch's plan state file: integrity markers, structured results, and the step checkpoint used for resume. Output follows docs/mcp-output-contract.md.
+`plan_mark` is an internal MCP tool the plan skill calls to record progress in the current branch's plan state file: integrity markers, structured results, and the step checkpoint used for resume. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

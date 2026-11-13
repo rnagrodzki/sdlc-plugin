@@ -1,7 +1,7 @@
 # tool-jira Specification
 
 ## Purpose
-The `jira` MCP tool manages the local Jira project cache, the per-project description templates, link checks with markdown-to-ADF conversion, and the critique/approval artifacts of the `jira` skill. It never calls the Jira API; the `jira` skill is its caller. Output follows docs/mcp-output-contract.md.
+The `jira` MCP tool manages the local Jira project cache, the per-project description templates, link checks with markdown-to-ADF conversion, and the critique/approval artifacts of the `jira` skill. It never calls the Jira API; the `jira` skill is its caller. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

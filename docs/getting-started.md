@@ -4,7 +4,7 @@ This is the onboarding path: install the plugin, set up a project, and learn
 which command to run at each stage of a change. For how the plugin works
 internally (launcher, binary cache, tool list, config schema), see
 [`README.md`](../README.md). For a step-by-step verification checklist after
-install, see [`smoke-test.md`](smoke-test.md).
+install, see [`smoke-test.md`](internal/smoke-test.md).
 
 ## Prerequisites
 
@@ -213,7 +213,7 @@ run end-to-end without stopping. Field reference: `README.md`
 
 ## Next steps
 
-- Run through [`smoke-test.md`](smoke-test.md) to confirm the install works
+- Run through [`smoke-test.md`](internal/smoke-test.md) to confirm the install works
   end to end.
 - [Skill Reference](skills/README.md) — detailed docs for every slash command.
 - Hit an error? `README.md` → "Troubleshooting" covers launcher and
