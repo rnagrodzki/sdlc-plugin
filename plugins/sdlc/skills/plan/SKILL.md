@@ -97,7 +97,7 @@ Resume table (the **Session recovery** rule selects one row):
 | match, `step 0`, no `**OpenSpec-Create:**` and no `**OpenSpec-Staging:**` line | skip the first `plan_prepare` call; call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true, runId: "<runId of the Resume with: line>" })` to reload the run and its `openspec` fields; redo the OpenSpec gate check from that output (Create, if chosen, starts fresh at its step a) and complexity routing; make the template-resolution call with the resulting flags and the same `runId` (no `resume` — it reuses that run); write the template only if the plan file is empty; when Skip or Use existing change was chosen, apply **Header cleanup** (in **OpenSpec gate check** below); continue Step 0 at the `plan-file` marker |
 | match, `step 1` | If the checkpoint has no `expectedWriters`: **Post-compact resume** block above, item 5 (start again when the index has no `R1` item; else continue at **Re-anchor**). Otherwise: **Post-compact resume** block above. Keep every explorer that shows `done` in the writers table and use its recorded items. Keep polling an explorer that runs and is not listed. For a listed missing or stalled explorer, wait one poll cycle, then force-progress past it per the POLL rule's **Stopping a skipped writer**: the SCOPE dimension list is not stored, so it is not re-dispatched. Then continue CRITIQUE and CONSOLIDATE. When Gate A applies, reuse its recorded result or dispatch it again (block above, step 5) |
 | match, step ≥ 2 | **Post-compact resume** block above |
-| resume `plan_prepare` returns `no active plan run`, `plan run <runId> not found`, `plan run <runId> is done` or `plan run <runId> has no skillInvoked marker` | print `No active plan run to resume — starting a new plan.`; ignore the `Active plan (post-compact):` line for the rest of the session; normal Step 0 |
+| resume `plan_prepare` returns `no active plan run`, `plan run <runId> not found`, `plan run <runId> is done`, `plan run <runId> is stopped` or `plan run <runId> has no skillInvoked marker` | print `No active plan run to resume — starting a new plan.`; ignore the `Active plan (post-compact):` line for the rest of the session; normal Step 0 |
 | `Active plan (post-compact):` line, but no `Resume with:` line with a `runId` value | ignore the `Active plan (post-compact):` line for the rest of the session; normal Step 0 |
 | `evidence_digest` returns an error | print the error; stop; tell the user to re-invoke `/sdlc:plan` to start fresh |
 | `runId` empty or `(none)` | stop: `plan needs a git repository to track its run` |
@@ -265,7 +265,7 @@ Naming convention: `YYYY-MM-DD-<feature-name>.md`. Create the directory if neede
 - **GC orphan sweep** — `ship --gc` and `execute --gc` sweep stale `plan-*` markers (TTL-expired or branch-deleted) alongside `ship-*` and `execute-*` files; the JSON output includes a `plan` bucket alongside `ship` and `execute`.
 - **Evidence cleanup** — ship's `cleanup-pipeline` step deletes the linked plan run with its `<main-worktree>/.sdlc-v2/runs/<runId>.evidence/` only when the stamp landed and the ship report file exists, after it copies the explorer summary and the review rounds into ship state (the **Terminal cleanup** section of `ship/SKILL.md`, `planRun.deleted`). Otherwise the GC TTL sweep removes them, except the newest plan file of a branch that still exists, which the sweep keeps even past the TTL; `execute_state` gc reaps abandoned `runs/` subdirectories after the TTL.
 
-**Run ID on every call:** pass `runId` in every `plan_mark` call and every reuse call of `plan_prepare`. Another plan session can use the same branch, so a call with no `runId` can reach the run of that session. If any call returns `plan run <runId> not found` in the middle of a run, or a reuse `plan_prepare` call returns `plan run <runId> is done` or `plan run <runId> has no skillInvoked marker`, tell the user that the run state is gone. Before the restart, stop the agents of this run:
+**Run ID on every call:** pass `runId` in every `plan_mark` call and every reuse call of `plan_prepare`. Another plan session can use the same branch, so a call with no `runId` can reach the run of that session. If any call returns `plan run <runId> not found` in the middle of a run, or a reuse `plan_prepare` call returns `plan run <runId> is done`, `plan run <runId> is stopped` or `plan run <runId> has no skillInvoked marker`, tell the user that the run state is gone. For `plan run <runId> is stopped`, tell the user that the run is stopped and start a new plan. Before the restart, stop the agents of this run:
 1. Call `TaskStop` for each background task ID that this session still holds (for example, a Step 1 explorer that still runs). If a `TaskStop` call fails, or a task ID is no longer known, print `Warning: <writerId> not stopped, it can still run.`
 2. Print the writer ids that the `notStopped` list of the last `dispatch-status` item names, with the same warning. Use the list that this session holds; do not read the run state, because it is gone.
 
@@ -1143,7 +1143,7 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
   |---|---|
   | 0 open findings (the last fix pass fixed every blocking issue) | ask no question. Do not call `review-outcome`. Create-flow authoring, then Step 6.5 |
   | every answer `accepted` or `rejected` | Create-flow authoring, then Step 6.5 |
-  | a batch has a `stop` answer | no later batch. Record the outcome. Offer harden (interactive only). Then stop and report the open findings |
+  | a batch has a `stop` answer | no later batch. Record the outcome: the `review-outcome` call also writes the stopped marker. Offer harden (interactive only). Then stop and report the open findings |
   | more than 200 open findings | ask no question. Do not call `review-outcome`. Stop and report the open findings |
   | AskUserQuestion unavailable, with 1 to 200 open findings | stop and report the open findings |
 
@@ -1283,13 +1283,17 @@ List the `openspec-save` line only when the plan file header has an `**OpenSpec-
 
 Then call ExitPlanMode. Do NOT invoke execute, ship, or openspec-save in this turn — they run after the user accepts in the next turn.
 
-**Rejected handoff with feedback (Create flow only — the plan file has an `**OpenSpec-Staging:**` header line):** If the user rejects ExitPlanMode with feedback, work from the plan file only. Do not read or write the run state. The run is closed after `done`: `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true, runId: "<runId>" })` fails with `plan run <runId> is done`, and a new `plan_mark` or `evidence_record` call changes the record of a finished run. The state file stays on disk until ship's cleanup step or the GC TTL sweep removes it. The GC TTL sweep keeps the newest plan file of a branch that still exists, even past the TTL.
-1. Change the plan file for the feedback.
-2. Run **Create-flow authoring** steps 1–4 again from the changed plan file. Pass all artifact files to `openspec_stage`. The attempt counter starts at 0.
-3. Call `links_validate` and `validate({ action: "plan_format", file: "<plan file path>", final: true, template: "<template.activeTemplatePath>", handoff: true })`. Fix each finding as Step 6.5 and Step 6.6 say. Make no `plan_mark` call and no `evidence_record` call.
-4. Announce the plan path again, then call ExitPlanMode.
+**Rejected handoff with feedback (every plan, plan mode and normal mode):** If the user rejects ExitPlanMode with feedback, or replies to the Workflow Continuation menu with a change request, this rule takes the point After handoff of the route table. Work from the plan file only. Do not read or write the run state. The run is closed after `done`: `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true, runId: "<runId>" })` fails with `plan run <runId> is done`, and a new `plan_mark` or `evidence_record` call changes the record of a finished run. The state file stays on disk until ship's cleanup step or the GC TTL sweep removes it. The GC TTL sweep keeps the newest plan file of a branch that still exists, even past the TTL.
+1. Change the plan file for the feedback. Record no `D<n>` item, because the run is done.
+2. Ask the conclude question (point After handoff).
+   - **Conclude:** do steps 3 to 5.
+   - **Change more:** wait for the next message, apply it to the plan file, and ask again.
+   - **Stop:** end. The plan file stays as it is. Make no state call.
+3. Only for a plan with an `**OpenSpec-Staging:**` header line: run **Create-flow authoring** steps 1–4 again from the changed plan file. Pass all artifact files to `openspec_stage`. The attempt counter starts at 0.
+4. For every plan, call `links_validate` and `validate({ action: "plan_format", file: "<plan file path>", final: true, template: "<template.activeTemplatePath>", handoff: true })`. Fix each finding as the gate fix rules of **Conclude routes** say. Make no `plan_mark` call and no `evidence_record` call. Count the fix tries in the conversation, not in `gate-tries`, because the run is done. After 3 failed tries, show the findings and end. The plan file stays.
+5. Announce the plan path again. In plan mode, call ExitPlanMode. In normal mode, present the Workflow Continuation menu again.
 
-If this rule stops before step 4, the user can give the feedback again. Steps 2 to 4 are safe to repeat: `openspec_stage` replaces the whole staging directory (a `staged by another plan` refusal writes nothing; follow the rule of **Create-flow authoring** item 3 for it), and **Create-flow authoring** step 4 replaces the appendix. For a plan without an `**OpenSpec-Staging:**` header line, this rule does not apply.
+If this rule stops before step 5, the user can give the feedback again. For a staging plan, steps 3 to 5 are safe to repeat: `openspec_stage` replaces the whole staging directory (a `staged by another plan` refusal writes nothing; follow the rule of **Create-flow authoring** item 3 for it), and **Create-flow authoring** step 4 replaces the appendix.
 
 **Normal mode:** Announce the plan path, then present the Workflow Continuation menu (see below). Prepend any advisory output from the wrapper above the menu's `ship` / `execute` / `done` lines.
 
@@ -1304,6 +1308,7 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 | Plan reviewer loop exceeds `reviewLoop.maxRounds` (5) iterations | Surface to user for guidance |
 | Requirements are contradictory | Flag specific contradictions, ask user to resolve |
 | User approves but output path fails | Retry with a different path; offer to print plan to screen |
+| User stops the plan | The stop rule of the conclude question |
 | The plan stops with an error after Step 1 dispatched background explorers | Call `TaskStop` for each background task ID that this session still holds. If a `TaskStop` call fails, or a task ID is no longer known, print `Warning: <writerId> not stopped, it can still run.` Then print the error. |
 
 ## DO NOT
@@ -1318,7 +1323,7 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 - Put plans in plugin-branded directories (no `docs/superpowers/plans/`)
 - Ignore plan mode's designated file path when plan mode is active — always write to it
 - Use TodoWrite for lightweight plans — it adds overhead without value
-- Prompt the user at Step 0 session-recovery or Step 4 — those steps are autonomous (single-touchpoint at Step 7, implements R22/R23)
+- Prompt the user on the skill's own initiative at Step 0 session-recovery or Step 4 — those steps are autonomous (single-touchpoint at Step 7, implements R22/R23). A reply to a user message can come at any step.
 - Treat G19 findings as advisory — G19 is error-severity and blocks plan approval
 
 ## Gotchas
@@ -1368,7 +1373,7 @@ Select:
 
 Show the `openspec-save` line only when the plan file header has an `**OpenSpec-Staging:**` line. Without that line, leave the line out. Replace `<path>` with the plan file path and `<change>` with the change name from the staging path, and do not print the bracketed note. Keep the branch condition in the line, for the same reason as in plan mode.
 
-On selection, invoke the chosen skill using the Skill tool. For `openspec-save`, pass `--plan <path>` with the plan file path. On "done", end without further action.
+On selection, invoke the chosen skill using the Skill tool. For `openspec-save`, pass `--plan <path>` with the plan file path. On "done", end without further action. A reply that asks for a change takes the point After handoff of the route table.
 
 ## See Also
 
