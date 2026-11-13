@@ -702,3 +702,65 @@ func TestDashboardPlan_ReviewDetailHasTotalsLimitAndOutcomes(t *testing.T) {
 		}
 	})
 }
+
+func TestDashboardPlan_StoppedRunIsFailed(t *testing.T) {
+	C, P, F := StepCompleted, StepPending, StepFailed
+	integrity := func(extra map[string]any) map[string]any {
+		m := map[string]any{"skillInvoked": "2026-10-07T09:00:00Z", "stopped": "2026-10-07T09:30:00Z"}
+		for k, v := range extra {
+			m[k] = v
+		}
+		return m
+	}
+	cases := []struct {
+		name      string
+		step      string
+		integrity map[string]any
+		statuses  []string
+		status    string
+		issues    []DashboardIssue
+		completed *string
+		progress  DashboardProgress
+	}{
+		{"stopped at the format gate", "6.6", integrity(nil),
+			[]string{C, C, C, C, F}, PipelineFailed,
+			[]DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user at finalize", Ref: "finalize"}},
+			dashboardStrPtr("2026-10-07T09:30:00Z"),
+			DashboardProgress{Done: 4, Total: 5, Current: "finalize", Label: "finalize (5 of 5)"}},
+		{"stopped at review", "4", integrity(nil),
+			[]string{C, C, C, F, P}, PipelineFailed,
+			[]DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user at review", Ref: "review"}},
+			dashboardStrPtr("2026-10-07T09:30:00Z"),
+			DashboardProgress{Done: 3, Total: 5, Current: "review", Label: "review (4 of 5)"}},
+		{"stopped at unknown step", "9", integrity(nil),
+			[]string{P, P, P, P, P}, PipelineFailed,
+			[]DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user"}},
+			dashboardStrPtr("2026-10-07T09:30:00Z"),
+			DashboardProgress{Done: 0, Total: 5, Label: "0 of 5 steps"}},
+		{"done and stopped", "7", integrity(map[string]any{"done": "2026-10-07T09:40:00Z"}),
+			[]string{C, C, C, C, C}, PipelineCompleted, nil,
+			dashboardStrPtr("2026-10-07T09:40:00Z"),
+			DashboardProgress{Done: 5, Total: 5, Label: "5 of 5 steps"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := dashRoot(t)
+			p := dashPlanState(t, root, tc.step, map[string]any{"planIntegrity": tc.integrity})
+			if got := dashStepStatuses(p); !reflect.DeepEqual(got, tc.statuses) {
+				t.Errorf("statuses = %v, want %v", got, tc.statuses)
+			}
+			if p.Status != tc.status {
+				t.Errorf("status = %q, want %q", p.Status, tc.status)
+			}
+			if !reflect.DeepEqual(p.Issues, tc.issues) && (len(p.Issues) != 0 || len(tc.issues) != 0) {
+				t.Errorf("issues = %+v, want %+v", p.Issues, tc.issues)
+			}
+			if p.CompletedAt == nil || *p.CompletedAt != *tc.completed {
+				t.Errorf("completedAt = %v, want %v", p.CompletedAt, *tc.completed)
+			}
+			if p.Progress != tc.progress {
+				t.Errorf("progress = %+v, want %+v", p.Progress, tc.progress)
+			}
+		})
+	}
+}

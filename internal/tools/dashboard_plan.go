@@ -34,6 +34,9 @@ var dashboardPlanStations = []struct {
 // dashboardPlanStations. The station that holds checkpoint.step is in
 // progress, the stations before it are completed. A plan whose
 // planIntegrity.done is set is completed and shows every station completed.
+// A plan that has planIntegrity.stopped and no done is failed: the station of
+// the saved step is failed, the later stations are pending, and the pipeline
+// has one issue "Stopped by the user at <station>".
 // The setup station shows data.guardrailCounts, the explore station lists the
 // run's explorers, and the review station lists data.reviewRounds with their
 // totals, the repair-limit flag and data.reviewOutcome; a station with
@@ -48,6 +51,8 @@ func dashboardPlan(p *DashboardPipeline, st *state.State) {
 	}
 	p.SessionID = dashboardStr(data["sessionId"])
 	doneValue, isDone := integrity["done"]
+	stoppedValue, isStopped := integrity["stopped"]
+	isStopped = isStopped && !isDone
 
 	checkpoint, _ := data["checkpoint"].(map[string]any)
 	cur := dashboardPlanStationIndex(dashboardStr(checkpoint["step"]))
@@ -59,6 +64,8 @@ func dashboardPlan(p *DashboardPipeline, st *state.State) {
 		switch {
 		case isDone || i < cur:
 			status = StepCompleted
+		case i == cur && isStopped:
+			status = StepFailed
 		case i == cur:
 			status = StepInProgress
 		}
@@ -91,6 +98,10 @@ func dashboardPlan(p *DashboardPipeline, st *state.State) {
 		p.Progress.Label = dashboardStepLabel(p.Progress)
 		return
 	}
+	if isStopped {
+		dashboardPlanStopped(p, cur, dashboardStr(stoppedValue))
+		return
+	}
 	p.Status = PipelineRunning
 	if cur < 0 {
 		p.Progress.Label = dashboardStepLabel(p.Progress)
@@ -104,6 +115,26 @@ func dashboardPlan(p *DashboardPipeline, st *state.State) {
 	} else {
 		p.Progress.Label = fmt.Sprintf("%s (%d of %d)", name, cur+1, p.Progress.Total)
 	}
+}
+
+// dashboardPlanStopped fills p for a plan run that the user stopped: status
+// failed, completedAt the stopped time, and one issue that names the station
+// at cur. A cur of -1 (unknown step) gives the issue without a station.
+func dashboardPlanStopped(p *DashboardPipeline, cur int, stopped string) {
+	p.Status = PipelineFailed
+	p.CompletedAt = dashboardStrPtr(stopped)
+	text := "Stopped by the user"
+	ref := ""
+	if cur >= 0 {
+		ref = dashboardPlanStations[cur].name
+		text = "Stopped by the user at " + ref
+		p.Progress.Done = cur
+		p.Progress.Current = ref
+		p.Progress.Label = fmt.Sprintf("%s (%d of %d)", ref, cur+1, p.Progress.Total)
+	} else {
+		p.Progress.Label = dashboardStepLabel(p.Progress)
+	}
+	p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "info", Text: text, Ref: ref})
 }
 
 // dashboardPlanStationIndex returns the index in dashboardPlanStations of

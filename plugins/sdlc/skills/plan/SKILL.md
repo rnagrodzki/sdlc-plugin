@@ -277,6 +277,53 @@ Replace `<resolved-plan-path>` with the actual absolute path: in plan mode it is
 
 Call `plan_mark({ marker: "checkpoint", runId: "<runId>", path: "", data: { step: "0", iteration: 0 } })`.
 
+**Conclude question:** One AskUserQuestion that asks if the plan is complete. Frame it by the decision-framing rule. Restate these facts first:
+- the current step (`checkpoint.step`) and its name
+- the steps that are left
+- the open findings, or `none`
+- the plan file path
+
+Ask: "Is this all? Conclude the plan?" Options:
+1. **Conclude (Recommended)** — the action of the route table below.
+2. **Change more** — the skill waits for your next change. No step runs.
+3. **Stop** — end the plan now. The plan file stays as it is.
+
+A free-text answer is one more change. Apply it, then ask again.
+After 3 failed gate tries, the question has no **Conclude** option. It offers only **Change more** and **Stop**.
+Under `--auto`, or when AskUserQuestion is not available, take **Conclude**. At a gate, after the third failed try, take **Stop**.
+
+**Conclude routes:** Each point changes only what the options do.
+
+| Point | Trigger | Conclude | Change more | Stop |
+|---|---|---|---|---|
+| Before run | a user message before the first `plan_prepare` call | no question. Add the message to the request | — | — |
+| Mid-run | a user message in Steps 1 to 7, before the done marker, that answers no skill question | continue at `checkpoint.step`. Run every step that is left. Step 7 writes done | wait for the next message. Apply it. Ask again | the conclude stop rule. Print the plan path and the step. End |
+| Gate | Step 6.5 `results[]` has a status that is not `ok`, or Step 6.6 `findings` is not empty, and no user message waits | fix each finding. Run the same gate again. Add one try to `gate-tries`. With findings after 3 tries: ask again with no Conclude option | apply the change. Set `gate-tries` to 0. Run Step 6.5 again | the conclude stop rule. Print the findings. End |
+| After handoff | a reply to the Step 7 handoff that asks for a change | Step 7 **Rejected handoff with feedback** rule | wait, apply, ask again | end. The plan file stays. No state call |
+
+A user message that arrives while a gate has findings takes the Mid-run row. The question then lists the gate findings as open findings.
+
+Value sources of the routes:
+
+| Value | Set by | Format | Missing | Unknown |
+|---|---|---|---|---|
+| `--auto` | Step 0 flag parsing | flag present or absent | absent: interactive | — |
+| AskUserQuestion | the tool list of the session | available or not | not available: take Conclude | — |
+| gate result | `links_validate` `results[].status`, `validate` `findings[]` | tool output | a tool error: print it, then ask the conclude question | a status other than `ok` counts as a finding |
+| `material` | `material_compare` | boolean | an error: treat as material | — |
+| `gate-tries` | `main` evidence item, body `{"step":"6.6","tries":2}` | step and count | absent: 0 | a body that is not this JSON: 0 |
+
+Read `gate-tries` with `plan_support({ action: "evidence_get", runId: "<runId>", ids: ["gate-tries"] })`. Write it with `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "gate-tries", summary: "<step>: <tries> tries", body: "<the JSON object>" }] })`. A resume after a compaction reads the stored count and does not start again at 0.
+
+Gate fix rules: the skill removes a broken URL and keeps its link text. A URL that the user gave replaces it. The fix never uses text from the linked page. A format finding gets its `fix` text.
+
+**User message mid-run:** Call `plan_support({ action: "material_snapshot", filePath: "<plan file path>" })` and keep its `snapshotPath`. Apply the message: to the requirements before Step 2, to the plan file from Step 2 on. Record a `D<n>` item. From Step 3 on, call `plan_support({ action: "material_compare", filePath: "<plan file path>", snapshotPath: "<that snapshotPath>" })`. If `material` is true and review rounds are left, set `materialChangeDetected = true`. Then ask the conclude question.
+
+**Conclude stop rule:** Run these steps in this order:
+1. Call `plan_mark({ marker: "stopped", runId: "<runId>", path: "" })`. On an error, print it. Tell the user that the run shows as running until the 24-hour prune.
+2. Call `TaskStop` for each Step 1 explorer that still runs. For a failed `TaskStop`, or an explorer with no known task ID, print `Warning: <writerId> not stopped, it can still run.` Add the id to `notStopped` in `dispatch-status`.
+3. Print the `notStopped` ids, the plan path and the step. End.
+
 ## Step 1 (CONSUME): Requirements Discovery and Exploration
 
 **Checkpoint:** First, call `plan_mark({ marker: "checkpoint", runId: "<runId>", path: "", data: { step: "1", iteration: 0 } })`. The full path calls the step 1 checkpoint again before the explorer dispatch, with `expectedWriters`. Do not make this first call when the step 1 checkpoint already has `expectedWriters` (a resume): the call replaces the checkpoint and drops the stored `expectedWriters`.
@@ -1161,9 +1208,7 @@ links_validate({ file: "$plan_path", offline: false })
 `expectedRepo` and `jiraSite` are auto-derived by the tool from the project's git remote and `~/.sdlc-cache/jira/` — the skill MUST NOT construct that context itself.
 
 If any `results[]` entry has a non-`ok` `status`:
-- Do NOT proceed to Step 7 (Handoff). The plan is not ready.
-- Surface the violation list verbatim to the user.
-- Stop. Do not retry. Do not edit URLs without user input. Do not bypass.
+- Do not go to Step 7 with findings. Show the violations. Ask the conclude question (point Gate).
 
 On all-clear, proceed to Step 7. Pass `offline: true` (replacing the old `SDLC_LINKS_OFFLINE=1` env var) to skip network reachability while keeping context-aware checks (GitHub identity match, Atlassian host match) — use in sandboxed CI.
 
@@ -1190,9 +1235,7 @@ validate({ action: "plan_format", file: "$plan_path", final: <FINAL_FLAG>, templ
 `file` is required on every call (the tool's own doc comment names it as the plan_format target) — do not drop it chasing a shorthand example that omits it. Omit `template` when `TEMPLATE_PATH` is unset rather than passing an empty string.
 
 If `findings` is non-empty:
-- Do NOT proceed to Step 7 (Handoff). The plan is not ready.
-- Surface every finding (`id`, `severity`, `message`, `path`) verbatim to the user.
-- Stop. Do not retry. Do not auto-edit. Do not bypass.
+- Do not go to Step 7 with findings. Show every finding. Ask the conclude question (point Gate).
 
 If `findings` is empty, the plan passed every applicable PF check — proceed to Step 7.
 
