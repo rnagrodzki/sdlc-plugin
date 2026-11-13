@@ -546,3 +546,215 @@ func preplanLastCheck(head string) (at time.Time, ok bool) {
 	}
 	return parsed.UTC(), true
 }
+
+// The rule ids of preplanStructureFindings, in the order of the findings.
+const (
+	preplanRuleOpenFence      = "open-fence"
+	preplanRuleEmptySection   = "empty-section"
+	preplanRuleDecisionsTable = "decisions-table"
+	preplanRuleCutNotLive     = "cut-not-live"
+	preplanRuleMovedNoAsk     = "moved-no-question"
+	preplanRuleFlowNoProposal = "flow-no-proposal"
+)
+
+// preplanFlowMarkRe finds the class mark of a new or changed node in a mermaid
+// line, for example "A2[Check]:::changed".
+var preplanFlowMarkRe = regexp.MustCompile(`:::(?:new|changed)\b`)
+
+// preplanStructureFinding is one structure finding of a topic file.
+type preplanStructureFinding struct {
+	Rule    string `json:"rule"`    // one of the 6 rule ids below
+	Section string `json:"section"` // "## Goal" ... "## Decisions", "## Open questions", or "" for open-fence
+	Row     string `json:"row"`     // "#3", or "" when the rule has no row
+	Detail  string `json:"detail"`  // one plain sentence for the report
+}
+
+// preplanStructureFindings returns the structure findings of a topic file.
+// It reads only data. It never returns nil.
+//
+// The rules run in this order, and the findings keep it: open-fence,
+// empty-section (in preplanSections order), decisions-table, cut-not-live (by
+// row id), moved-no-question, flow-no-proposal. The rules read the section
+// spans of preplanSectionSpans, so a heading after an unclosed fence counts
+// as absent, as in preplanEmptySectionsOf. CRLF and LF line ends give the same
+// findings.
+//
+// When the ## Decisions table does not parse, decisions-table fires once, and
+// cut-not-live and moved-no-question do not run. flow-no-proposal still runs,
+// and it counts 0 live rows. The rules moved-no-question and flow-no-proposal
+// compare counts of rules, not matches of text. "Smallest cut: all." never
+// fires cut-not-live.
+func preplanStructureFindings(data []byte) []preplanStructureFinding {
+	findings := []preplanStructureFinding{}
+	spans, openFence := preplanSectionSpans(data)
+	body := func(name string) (text string, found bool) {
+		i := preplanFindSpan(spans, name)
+		if i < 0 {
+			return "", false
+		}
+		return string(data[spans[i].bodyStart:spans[i].bodyEnd]), true
+	}
+
+	if openFence != "" {
+		findings = append(findings, preplanStructureFinding{
+			Rule: preplanRuleOpenFence,
+			Detail: fmt.Sprintf("A code fence that starts with %s never closes. Each section after it counts as absent.",
+				openFence),
+		})
+	}
+	for _, heading := range preplanEmptySectionsOf(data, spans) {
+		findings = append(findings, preplanStructureFinding{
+			Rule:    preplanRuleEmptySection,
+			Section: heading,
+			Detail:  fmt.Sprintf("Section %s is empty.", heading),
+		})
+	}
+
+	decisions, _ := body(preplanDecisionsSection)
+	lines := preplanBodyLines(decisions)
+	rows, after, tableOK := preplanDecisionTable(lines)
+	decisionsHeading := preplanHeadingPrefix + preplanDecisionsSection
+	if !tableOK && !preplanBlank(lines) {
+		findings = append(findings, preplanStructureFinding{
+			Rule:    preplanRuleDecisionsTable,
+			Section: decisionsHeading,
+			Detail:  "The " + decisionsHeading + " table does not parse. The cut and moved checks did not run.",
+		})
+	}
+
+	live, moved := 0, 0
+	for _, cells := range rows {
+		switch {
+		case len(cells) < 3:
+		case strings.HasPrefix(cells[1], preplanMovedPrefix):
+			moved++
+		case preplanRowLive(cells[1]):
+			live++
+		}
+	}
+	if tableOK {
+		findings = append(findings, preplanCutFindings(rows, lines[after:])...)
+		questions, _ := body(preplanOpenQuestionsSection)
+		if bullets := preplanOpenQuestionCount(questions); moved > bullets {
+			findings = append(findings, preplanStructureFinding{
+				Rule:    preplanRuleMovedNoAsk,
+				Section: preplanHeadingPrefix + preplanOpenQuestionsSection,
+				Detail: fmt.Sprintf("%s with %s, but %s%s holds %s.",
+					preplanCountVerb(moved, "row", "starts", "start"), preplanMovedPrefix,
+					preplanHeadingPrefix, preplanOpenQuestionsSection, preplanCount(bullets, "bullet")),
+			})
+		}
+	}
+
+	if flows, found := body(preplanFlowsSection); found && live == 0 && preplanFlowsMarkNodes(flows) {
+		findings = append(findings, preplanStructureFinding{
+			Rule:    preplanRuleFlowNoProposal,
+			Section: preplanHeadingPrefix + preplanFlowsSection,
+			Detail:  "## Flows marks new or changed steps, but no live proposal exists.",
+		})
+	}
+	return findings
+}
+
+// preplanCount returns "1 row" or "2 rows": n and the noun, with an "s" after
+// the noun for any n other than 1.
+func preplanCount(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return strconv.Itoa(n) + " " + noun + "s"
+}
+
+// preplanCountVerb returns preplanCount and the verb that agrees with it:
+// "1 row starts" or "2 rows start".
+func preplanCountVerb(n int, noun, one, many string) string {
+	if n == 1 {
+		return preplanCount(n, noun) + " " + one
+	}
+	return preplanCount(n, noun) + " " + many
+}
+
+// preplanCutFindings returns the cut-not-live findings. rows are the rows of
+// the parsed ## Decisions table and tail holds the lines after the table. Only
+// the first Smallest cut line counts. Each id of it that names no row, or a row
+// that starts with "Dropped:" or "Moved:", gives one finding. The findings
+// come in ascending row id, one for each id. A row with fewer than 3 cells, or
+// with an id that is not a positive whole number, is no row. When two rows have
+// the same id, the first one counts.
+func preplanCutFindings(rows [][]string, tail []string) []preplanStructureFinding {
+	var ids []int
+	for _, line := range tail {
+		m := preplanSmallestCutRe.FindStringSubmatch(strings.TrimSpace(line))
+		if m == nil {
+			continue
+		}
+		if m[1] != "all" {
+			for _, field := range strings.Split(m[1], ", ") {
+				if id, ok := preplanParseID(strings.TrimPrefix(field, "#")); ok {
+					ids = append(ids, id)
+				}
+			}
+		}
+		break
+	}
+	slices.Sort(ids)
+	ids = slices.Compact(ids)
+
+	decision := map[int]string{}
+	for _, cells := range rows {
+		if len(cells) < 3 {
+			continue
+		}
+		if id, ok := preplanParseID(cells[0]); ok {
+			if _, seen := decision[id]; !seen {
+				decision[id] = cells[1]
+			}
+		}
+	}
+
+	var findings []preplanStructureFinding
+	for _, id := range ids {
+		row := "#" + strconv.Itoa(id)
+		text, isRow := decision[id]
+		var detail string
+		switch {
+		case !isRow:
+			detail = fmt.Sprintf("Smallest cut names %s, but no row %s exists.", row, row)
+		case preplanRowLive(text):
+			continue
+		default:
+			marker := preplanDroppedPrefix
+			if strings.HasPrefix(text, preplanMovedPrefix) {
+				marker = preplanMovedPrefix
+			}
+			detail = fmt.Sprintf("Smallest cut names %s, but row %s starts with %s.", row, row, marker)
+		}
+		findings = append(findings, preplanStructureFinding{
+			Rule:    preplanRuleCutNotLive,
+			Section: preplanHeadingPrefix + preplanDecisionsSection,
+			Row:     row,
+			Detail:  detail,
+		})
+	}
+	return findings
+}
+
+// preplanFlowsMarkNodes reports whether the body of ## Flows holds a node with
+// a ":::new" or ":::changed" mark inside a mermaid fence. A mark in other
+// text is no node.
+func preplanFlowsMarkNodes(body string) bool {
+	open, mermaid := "", false
+	for _, line := range preplanBodyLines(body) {
+		next := preplanFenceStep(open, line)
+		switch {
+		case open == "" && next != "":
+			mermaid = strings.TrimSpace(line[len(next):]) == "mermaid"
+		case open != "" && next != "":
+			if mermaid && preplanFlowMarkRe.MatchString(line) {
+				return true
+			}
+		}
+		open = next
+	}
+	return false
+}

@@ -791,3 +791,341 @@ func TestPreplanLastCheckReadsCheckLine(t *testing.T) {
 		}
 	}
 }
+
+// structureIdeaVerificationTopic is a copy of the topic file
+// 2026-11-13-idea-verification.md of this change. It is a real file that
+// passes every structure rule. Each backtick that is not part of a fence is a
+// quoted string in the concatenation, because a raw string holds no backtick.
+var structureIdeaVerificationTopic = fenced(`# Preplan: Idea verification
+
+**Status:** ready for plan
+
+**Started:** 2026-11-13T15:57:30Z
+
+**Guardrail check:** 60 guardrails, 9 proposals: 8 pass, 1 kept, 0 dropped. Last check: 2026-11-13T16:23:58Z.
+
+## Goal
+
+A run with no dialogue challenges incoming requirements. The requirements come from a topic file, another requirements file, a Jira ticket or a GitHub issue. The run reports only findings: open questions, guardrail violations, inconsistencies between proposals, flows and decisions, and conflicts with OpenSpec. It changes nothing and asks no question.
+
+## Problem and benefit
+
+Root problem: requirements reach ` + "`" + `/sdlc:plan` + "`" + ` with gaps and contradictions. Nothing checks them before the plan run starts, so the plan run finds them late or does not find them.
+
+Who gains: a person who has requirements in a topic file, another requirements file, a Jira ticket or a GitHub issue, and wants to start ` + "`" + `/sdlc:plan` + "`" + `.
+
+Measure: the number of requirement problems that the check reports before a plan run starts.
+
+Baseline: 0 for a run with no person, because no such check exists today.
+
+Cost of no change: a plan run starts on requirements with gaps. The gaps show late, in the plan run or after it, or they stay.
+
+## Users and effect
+
+User: a person who has requirements in a topic file, another requirements file, a Jira ticket or a GitHub issue, and runs the new skill by hand, before ` + "`" + `/sdlc:plan` + "`" + `.
+
+What changes: the person gets one report with the problems of the requirements. The person answers no question, and the source of the requirements stays as it is.
+
+What fails today: the person must read the whole text to find gaps, or must start a preplan dialogue, which changes the status and the topic file. If the person does neither, the plan run starts with the gaps.
+
+## Risk if wrong
+
+Worst failure: the report shows a problem that does not exist. The person who runs the check loses time, or changes requirements that were correct.
+
+Lesser failure: the report shows no problem, but the requirements hold one. The person starts the plan run with the gap, as today.
+
+## Non-goals
+
+- Offered, not picked: a headless mode of ` + "`" + `/sdlc:preplan` + "`" + `.
+- Offered, not picked: ` + "`" + `/sdlc:plan` + "`" + ` starts the check at its start for each topic file.
+
+## Flows
+
+'''mermaid
+flowchart LR
+  subgraph Before
+    B1["Person has requirements: topic file, requirements file, Jira ticket or GitHub issue"] --> B2["Person reads the text by hand, or does no check"]
+    B2 --> B3["Person starts the plan run"]
+  end
+  subgraph After
+    A1["Person has requirements: topic file, requirements file, Jira ticket or GitHub issue"] --> A2["Person runs /sdlc:verify-requirements"]:::new
+    A2 --> A3["Skill reads the requirements, the plan guardrails and OpenSpec"]:::new
+    A3 --> A4["Skill prints the report of findings"]:::new
+    A4 --> A5["Person corrects the requirements, or starts the plan run"]:::changed
+  end
+  classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px
+  classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
+'''
+
+Before:
+1. The person has requirements in a topic file, a requirements file, a Jira ticket or a GitHub issue.
+2. The person reads the text by hand, or does no check.
+3. The person starts the plan run with ` + "`" + `/sdlc:plan` + "`" + `.
+
+After:
+1. The person has requirements in a topic file, a requirements file, a Jira ticket or a GitHub issue.
+2. The person runs ` + "`" + `/sdlc:verify-requirements` + "`" + ` with one input and states its kind (new).
+3. The skill reads the requirements, the plan guardrails and OpenSpec. It changes no file, no ticket and no issue, and asks no question (new).
+4. The skill prints the report of findings (new).
+5. The person corrects the requirements at their source, for a topic file in ` + "`" + `/sdlc:preplan` + "`" + `, or starts the plan run with ` + "`" + `/sdlc:plan` + "`" + ` (changed: the person decides with the report).
+
+## Decisions
+
+| # | Decision | Reason |
+|---|---|---|
+| 1 | A new skill verifies one topic file with no dialogue. It is separate from ` + "`" + `/sdlc:preplan` + "`" + `. | Preplan creates the topic file, adds headings and sets the status on every run. A mode in the same skill text can ask a question or change the status in a run that must only report. Kept with warning: dry. |
+| 2 | The report holds findings only. Three kinds come from the topic file and the plan guardrails: open questions, guardrail violations, and inconsistencies between proposals, flows and decisions. Proposal #5 adds one more kind. Proposal #6 defines an inconsistency. | The caller needs the problems of the requirements, not a new dialogue. |
+| 3 | The run changes no file and asks no question. | The person wants a report, not a dialogue. The topic file and its status stay valid for the next preplan or plan run. |
+| 4 | A topic name with no topic file gives an error. The run creates no file. | The load step of preplan creates an empty topic file for a name with no match. A wrong name must not leave a file. |
+| 5 | The report holds a fourth kind of finding: a conflict between the topic file and OpenSpec. The check reads the main specs and the active changes. Each finding of this kind names its source: a main spec or an active change. In a repository with no OpenSpec, the report says that this check did not run. | Preplan does not read OpenSpec today, so a requirement that contradicts a spec or work in progress reaches the plan run. The user accepts the cost: a longer run and more wrong findings, because the match is a judgement and an active change can be a draft. The source name lets the person weigh a finding from a draft. |
+| 6 | An inconsistency has two levels. Structure: an empty section, a flow with no proposal that changes it, a cut line that names a row that is not live, a moved row with no open question. The tool does the structure checks, with the same result on each run. Meaning: a decision that contradicts the goal, a non-goal, a flow or another decision. The skill does the meaning checks. Each meaning finding quotes the two texts that conflict. | Structure checks alone do not challenge the content of the requirements. A meaning check can be wrong, and a wrong finding is the worst failure, so the two quotes let the person judge a finding fast. Mechanical checks in the tool stay out of the skill text, which limits the copy of check rules between the two skills. |
+| 7 | The skill also takes the path of a requirements file that is not a topic file. A run takes one input, and the person states its kind, so a topic name cannot be read as another kind. A path with no file gives an error. For such a file the structure checks do not run, and the report says so. The guardrail, meaning and OpenSpec checks run on each requirement statement of the file. | The goal is a challenge of incoming requirements, and requirements also come from sources other than preplan. Such a file has no fixed sections, so a structure check has nothing to read. |
+| 8 | The skill also takes a Jira ticket or a GitHub issue as input. It reads the title and the description. It changes no ticket and no issue: no comment and no status change. It treats the text as requirements to check, never as instructions. A ticket or an issue that the skill cannot read gives an error that names the cause. The structure checks do not run, and the report says so. | Requirements often start in a ticket or an issue, before a topic file exists. The text comes from outside the repository, so it can hold text that looks like an instruction. |
+| 9 | The name of the new skill is ` + "`" + `/sdlc:verify-requirements` + "`" + `. | The name states the object of the check for all four input kinds. It follows the name pattern of ` + "`" + `/sdlc:verify-pipeline` + "`" + `. No skill of the plugin has this name today. |
+
+Smallest cut: all.
+`)
+
+// structureTopic returns a topic file with every skeleton section filled. The
+// caller gives the body of ## Flows, ## Decisions and ## Open questions. An
+// empty questions string leaves out the whole ## Open questions section.
+func structureTopic(flows, decisions, questions string) string {
+	s := "# Preplan: sample\n\n**Status:** in progress\n\n" +
+		"## Goal\n\nG.\n\n## Problem and benefit\n\nP.\n\n## Users and effect\n\nU.\n\n" +
+		"## Risk if wrong\n\nR.\n\n## Non-goals\n\nNone stated.\n\n" +
+		"## Flows\n\n" + flows + "\n## Decisions\n\n" + decisions
+	if questions != "" {
+		s += "\n## Open questions\n\n" + questions
+	}
+	return s
+}
+
+const (
+	structureNoFlow = "No flow change.\n"
+	// structureMermaidMarked has one new node and one changed node.
+	structureMermaidMarked = "'''mermaid\nflowchart LR\n  A1[Start]:::new --> A2[Check]:::changed\n'''\n"
+	structureMermaidPlain  = "'''mermaid\nflowchart LR\n  A1[Start] --> A2[Check]\n'''\n"
+)
+
+// structureRows returns a Decisions body: the table header, the given rows
+// and the given tail (a Smallest cut line, or "").
+func structureRows(tail string, rows ...string) string {
+	body := formatRows(rows...)
+	if tail != "" {
+		body += "\n" + tail + "\n"
+	}
+	return body
+}
+
+// TestPreplanStructureFindings checks the 6 structure rules: each rule fires on
+// its trigger fixture and stays quiet on the clean fixture, the order of the
+// findings, the skip of the cut and moved rules for a table that does not
+// parse, and the same findings for CRLF and for no final line end.
+func TestPreplanStructureFindings(t *testing.T) {
+	liveRow := "| 1 | A live proposal. | Reason. |"
+	droppedRow := "| 2 | Dropped: Old idea. | Out of scope. Dropped by: G1. |"
+	movedRow := func(id int) string {
+		return fmt.Sprintf("| %d | Moved: Later idea %d. | Asked later. |", id, id)
+	}
+	sec := func(name string) string { return "## " + name }
+	finding := func(rule, section, row, detail string) preplanStructureFinding {
+		return preplanStructureFinding{Rule: rule, Section: section, Row: row, Detail: detail}
+	}
+
+	cases := []struct {
+		name string
+		data string
+		want []preplanStructureFinding
+	}{
+		{"clean fixture", formatRealTopicFile, nil},
+		{"clean fixture with the plain mermaid and no question section",
+			structureTopic(fenced(structureMermaidPlain), structureRows("Smallest cut: all.", liveRow), ""), nil},
+		{"no flow change with 0 live rows",
+			structureTopic(structureNoFlow, structureRows("", droppedRow), ""), nil},
+
+		// open-fence
+		{"open-fence at the end of the file",
+			structureTopic(structureNoFlow, structureRows("", liveRow), "- Q?\n\n'''text\nnever closes\n"),
+			[]preplanStructureFinding{finding("open-fence", "", "",
+				"A code fence that starts with ``` never closes. Each section after it counts as absent.")}},
+		{"open-fence hides the sections after it",
+			"# T\n\n## Goal\n\nG.\n\n## Problem and benefit\n\nP.\n\n## Users and effect\n\nU.\n\n" +
+				"## Risk if wrong\n\n~~~~\nR.\n\n## Non-goals\n\nNone stated.\n",
+			[]preplanStructureFinding{
+				finding("open-fence", "", "", "A code fence that starts with ~~~~ never closes. Each section after it counts as absent."),
+				finding("empty-section", sec("Non-goals"), "", "Section ## Non-goals is empty."),
+				finding("empty-section", sec("Flows"), "", "Section ## Flows is empty."),
+				finding("empty-section", sec("Decisions"), "", "Section ## Decisions is empty."),
+			}},
+
+		// empty-section
+		{"empty-section blank body",
+			strings.Replace(formatRealTopicFile, "## Risk if wrong\n\n| Failure | Who fails | Effect |\n|---|---|---|\n| The summary shows wrong content | Reader | A wrong idea is picked |\n\n",
+				"## Risk if wrong\n\n   \n\n", 1),
+			[]preplanStructureFinding{finding("empty-section", sec("Risk if wrong"), "", "Section ## Risk if wrong is empty.")}},
+		{"empty-section absent heading",
+			strings.Replace(formatRealTopicFile, "## Users and effect\n", "### Users and effect\n", 1),
+			[]preplanStructureFinding{finding("empty-section", sec("Users and effect"), "", "Section ## Users and effect is empty.")}},
+		{"empty-section table with no row",
+			structureTopic(structureNoFlow, formatDecisionsHead, ""),
+			[]preplanStructureFinding{finding("empty-section", sec("Decisions"), "", "Section ## Decisions is empty.")}},
+		{"empty-section keeps the skeleton order",
+			"# T\n\n## Decisions\n\n" + formatDecisionsHead + "\n## Goal\n\n",
+			[]preplanStructureFinding{
+				finding("empty-section", sec("Goal"), "", "Section ## Goal is empty."),
+				finding("empty-section", sec("Problem and benefit"), "", "Section ## Problem and benefit is empty."),
+				finding("empty-section", sec("Users and effect"), "", "Section ## Users and effect is empty."),
+				finding("empty-section", sec("Risk if wrong"), "", "Section ## Risk if wrong is empty."),
+				finding("empty-section", sec("Non-goals"), "", "Section ## Non-goals is empty."),
+				finding("empty-section", sec("Flows"), "", "Section ## Flows is empty."),
+				finding("empty-section", sec("Decisions"), "", "Section ## Decisions is empty."),
+			}},
+
+		// decisions-table
+		{"decisions-table fires once and skips the cut and moved rules",
+			structureTopic(structureNoFlow,
+				"| Wrong | Header |\n|---|---|\n| 1 | Moved: A. | r |\n| 2 | Dropped: B. | r |\n\nSmallest cut: #9.\n", ""),
+			[]preplanStructureFinding{finding("decisions-table", sec("Decisions"), "",
+				"The ## Decisions table does not parse. The cut and moved checks did not run.")}},
+		{"decisions-table with text and no table gives empty-section too",
+			structureTopic(structureNoFlow, "TBD.\n", ""),
+			[]preplanStructureFinding{
+				finding("empty-section", sec("Decisions"), "", "Section ## Decisions is empty."),
+				finding("decisions-table", sec("Decisions"), "",
+					"The ## Decisions table does not parse. The cut and moved checks did not run."),
+			}},
+		{"decisions-table does not stop flow-no-proposal",
+			structureTopic(fenced(structureMermaidMarked), "| Wrong | Header |\n|---|---|\n| 1 | A. | r |\n", ""),
+			[]preplanStructureFinding{
+				finding("decisions-table", sec("Decisions"), "",
+					"The ## Decisions table does not parse. The cut and moved checks did not run."),
+				finding("flow-no-proposal", sec("Flows"), "",
+					"## Flows marks new or changed steps, but no live proposal exists."),
+			}},
+
+		// cut-not-live
+		{"cut-not-live dropped row (the example of the plan)",
+			structureTopic(structureNoFlow, structureRows("Smallest cut: #1, #2.", liveRow, droppedRow), ""),
+			[]preplanStructureFinding{finding("cut-not-live", sec("Decisions"), "#2",
+				"Smallest cut names #2, but row #2 starts with Dropped:.")}},
+		{"cut-not-live moved row with its question, and a missing row",
+			structureTopic(structureNoFlow, structureRows("Smallest cut: #1, #3, #7.", liveRow, droppedRow, movedRow(3)), "- Q?\n"),
+			[]preplanStructureFinding{
+				finding("cut-not-live", sec("Decisions"), "#3", "Smallest cut names #3, but row #3 starts with Moved:."),
+				finding("cut-not-live", sec("Decisions"), "#7", "Smallest cut names #7, but no row #7 exists."),
+			}},
+		{"cut-not-live comes in row id order, not number text order",
+			structureTopic(structureNoFlow, structureRows("Smallest cut: #10, #9, #2.", liveRow), ""),
+			[]preplanStructureFinding{
+				finding("cut-not-live", sec("Decisions"), "#2", "Smallest cut names #2, but no row #2 exists."),
+				finding("cut-not-live", sec("Decisions"), "#9", "Smallest cut names #9, but no row #9 exists."),
+				finding("cut-not-live", sec("Decisions"), "#10", "Smallest cut names #10, but no row #10 exists."),
+			}},
+		{"cut-not-live never fires for Smallest cut all",
+			structureTopic(structureNoFlow, structureRows("Smallest cut: all.", liveRow, droppedRow), ""), nil},
+		{"cut-not-live does not fire for live ids",
+			structureTopic(structureNoFlow, structureRows("Smallest cut: #1.", liveRow, droppedRow), ""), nil},
+
+		// moved-no-question
+		{"moved-no-question 2 rows and 1 bullet",
+			structureTopic(structureNoFlow, structureRows("", liveRow, movedRow(2), movedRow(3)), "- Q?\n"),
+			[]preplanStructureFinding{finding("moved-no-question", sec("Open questions"), "",
+				"2 rows start with Moved:, but ## Open questions holds 1 bullet.")}},
+		{"moved-no-question 1 row and an absent section",
+			structureTopic(structureNoFlow, structureRows("", liveRow, movedRow(2)), ""),
+			[]preplanStructureFinding{finding("moved-no-question", sec("Open questions"), "",
+				"1 row starts with Moved:, but ## Open questions holds 0 bullets.")}},
+		{"moved-no-question counts bullets, not text",
+			structureTopic(structureNoFlow, structureRows("", liveRow, movedRow(2), movedRow(3)), "Moved: a question in prose.\n- One.\n- Two.\n"),
+			nil},
+
+		// flow-no-proposal
+		{"flow-no-proposal when all rows are dropped",
+			structureTopic(fenced(structureMermaidMarked), structureRows("", droppedRow), ""),
+			[]preplanStructureFinding{finding("flow-no-proposal", sec("Flows"), "",
+				"## Flows marks new or changed steps, but no live proposal exists.")}},
+		{"flow-no-proposal with a moved row only and a changed node",
+			structureTopic("'''mermaid\nflowchart LR\n  A[Check]:::changed\n'''\n", structureRows("", movedRow(1)), "- Q?\n"),
+			[]preplanStructureFinding{finding("flow-no-proposal", sec("Flows"), "",
+				"## Flows marks new or changed steps, but no live proposal exists.")}},
+		{"flow-no-proposal does not fire with a live row",
+			structureTopic(fenced(structureMermaidMarked), structureRows("", liveRow), ""), nil},
+		{"flow-no-proposal does not fire for a mark outside a mermaid fence",
+			structureTopic("The mark :::new is text.\n\n'''text\nA:::changed\n'''\n", structureRows("", droppedRow), ""), nil},
+		{"flow-no-proposal does not fire for a longer class name",
+			structureTopic("'''mermaid\nflowchart LR\n  A:::newer\n'''\n", structureRows("", droppedRow), ""), nil},
+
+		// order
+		{"findings keep rule order",
+			structureTopic(fenced(structureMermaidMarked)+"\n",
+				structureRows("Smallest cut: #2, #3.", droppedRow, movedRow(3), movedRow(4)), "- Q?\n"),
+			[]preplanStructureFinding{
+				finding("cut-not-live", sec("Decisions"), "#2", "Smallest cut names #2, but row #2 starts with Dropped:."),
+				finding("cut-not-live", sec("Decisions"), "#3", "Smallest cut names #3, but row #3 starts with Moved:."),
+				finding("moved-no-question", sec("Open questions"), "", "2 rows start with Moved:, but ## Open questions holds 1 bullet."),
+				finding("flow-no-proposal", sec("Flows"), "", "## Flows marks new or changed steps, but no live proposal exists."),
+			}},
+		{"findings keep rule order with empty-section first",
+			strings.Replace(structureTopic(structureNoFlow, structureRows("Smallest cut: #2.", liveRow, droppedRow), ""),
+				"## Goal\n\nG.\n", "## Goal\n\n", 1),
+			[]preplanStructureFinding{
+				finding("empty-section", sec("Goal"), "", "Section ## Goal is empty."),
+				finding("cut-not-live", sec("Decisions"), "#2", "Smallest cut names #2, but row #2 starts with Dropped:."),
+			}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := tc.want
+			if want == nil {
+				want = []preplanStructureFinding{}
+			}
+			text := fenced(tc.data)
+			variants := []struct{ name, data string }{
+				{"LF", text},
+				{"CRLF", strings.ReplaceAll(text, "\n", "\r\n")},
+				{"no final line end", strings.TrimRight(text, "\n")},
+			}
+			for _, v := range variants {
+				got := preplanStructureFindings([]byte(v.data))
+				if got == nil {
+					t.Fatalf("%s: got nil, want a non-nil list", v.name)
+				}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("%s: findings = %+v\nwant %+v", v.name, got, want)
+				}
+			}
+		})
+	}
+}
+
+// TestPreplanStructureFindingsRealTopicFile checks that a copy of the real
+// topic file 2026-11-13-idea-verification.md gives an empty, non-nil list, in
+// LF form and in CRLF form.
+func TestPreplanStructureFindingsRealTopicFile(t *testing.T) {
+	for name, data := range map[string]string{
+		"LF":   structureIdeaVerificationTopic,
+		"CRLF": strings.ReplaceAll(structureIdeaVerificationTopic, "\n", "\r\n"),
+	} {
+		got := preplanStructureFindings([]byte(data))
+		if got == nil || len(got) != 0 {
+			t.Errorf("%s: findings = %#v, want an empty, non-nil list", name, got)
+		}
+	}
+}
+
+// TestPreplanStructureFindingsEmptyInput checks the non-nil list and the
+// fields of a finding for input with no section at all.
+func TestPreplanStructureFindingsEmptyInput(t *testing.T) {
+	for _, data := range [][]byte{nil, {}} {
+		got := preplanStructureFindings(data)
+		if len(got) != len(preplanSections) {
+			t.Fatalf("findings = %+v, want one empty-section finding for each of %d sections", got, len(preplanSections))
+		}
+		for i, f := range got {
+			if f.Rule != "empty-section" || f.Section != "## "+preplanSections[i] || f.Row != "" {
+				t.Errorf("finding %d = %+v", i, f)
+			}
+		}
+	}
+}
