@@ -43,7 +43,7 @@ const (
 // tool (planSupportActions). Each field is consumed by one or more actions
 // (noted in comments).
 type PlanSupportIn struct {
-	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=openspec_instructions,enum=openspec_stage,enum=evidence_record,enum=evidence_digest,enum=evidence_get,enum=preplan_context,enum=preplan_check,enum=preplan_write" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"openspec_instructions\", \"openspec_stage\", \"evidence_record\", \"evidence_digest\", \"evidence_get\", \"preplan_context\", \"preplan_check\", or \"preplan_write\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError."`
+	Action string `json:"action" jsonschema:"enum=merge_results,enum=material_snapshot,enum=material_compare,enum=openspec_appendix,enum=openspec_instructions,enum=openspec_stage,enum=evidence_record,enum=evidence_digest,enum=evidence_get,enum=preplan_context,enum=preplan_check,enum=preplan_write,enum=verify_requirements_context" jsonschema_description:"Selects the operation: \"merge_results\", \"material_snapshot\", \"material_compare\", \"openspec_appendix\", \"openspec_instructions\", \"openspec_stage\", \"evidence_record\", \"evidence_digest\", \"evidence_get\", \"preplan_context\", \"preplan_check\", \"preplan_write\", or \"verify_requirements_context\". Each action reads only the subset of fields listed in the tool description; unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError. An action other than verify_requirements_context that gets verifyKind or verifyValue returns DomainError, and verify_requirements_context with topic returns DomainError."`
 
 	// merge_results
 	LaneResults   []LaneResult `json:"laneResults,omitempty" jsonschema_description:"merge_results only: outcomes from each review lane to merge. At least one of laneResults or lensResults is required."`
@@ -91,6 +91,11 @@ type PlanSupportIn struct {
 	Section     string  `json:"section,omitempty" jsonschema:"enum=Goal,enum=Problem and benefit,enum=Users and effect,enum=Risk if wrong,enum=Non-goals,enum=Flows,enum=Decisions,enum=Open questions,enum=Guardrail check" jsonschema_description:"preplan_write only. One of: Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions, Open questions, Guardrail check. Omit it to write only the status. Example: Decisions"`
 	Content     *string `json:"content,omitempty" jsonschema_description:"preplan_write only. Required with section, not allowed without section. The full new body of section, at most 65536 bytes; a larger body is rejected by rule P1; the body is stored without its final line ends and with the line ends of the file. An empty string clears the body, and deletes the Open questions or Guardrail check section. Outside a code fence no line starts with # or ## (P2), and each code fence closes (P3). Decisions is blank, or the two lines | # | Decision | Reason | and |---|---|---|, then rows of 3 cells, then at most one Smallest cut: line (P4-P7). Non-goals is None stated. or - bullets (P8). Open questions is - bullets (P9). Flows is No flow change. or a mermaid fence (P10). Guardrail check takes only an empty string (P11). Example: Ship the login page first."`
 	TopicStatus string  `json:"topicStatus,omitempty" jsonschema:"enum=in progress,enum=ready for plan,enum=paused" jsonschema_description:"preplan_write only. The new Status line value: in progress, ready for plan or paused. Example: ready for plan"`
+
+	// verify_requirements_context only. Another action that gets one of these
+	// fields returns DomainError (verifyFieldError).
+	VerifyKind  string `json:"verifyKind,omitempty" jsonschema:"enum=topic,enum=file,enum=jira,enum=issue" jsonschema_description:"verify_requirements_context only (required): the kind of verifyValue: topic, file, jira or issue. Example: topic"`
+	VerifyValue string `json:"verifyValue,omitempty" jsonschema_description:"verify_requirements_context only (required): a topic name, a file path (relative paths start at the active worktree), a Jira key or a GitHub issue number, at most 4096 bytes. Example: idea verification"`
 }
 
 // EvidenceItem is one evidence entry of a writer, stored in
@@ -221,6 +226,16 @@ type PlanSupportOut struct {
 	Written         *[]string `json:"written,omitempty" jsonschema_description:"preplan_write only: the parts that this call wrote, the section name and/or Status. (none) on a no-op. Absent on other actions. Example: [Decisions, Status]"`
 	ReadyTopicFiles *[]string `json:"readyTopicFiles,omitempty" jsonschema_description:"preplan_write only, with topicStatus ready for plan: absolute paths of this topic file first, then up to 3 other ready topic files, newest first. Never empty. Absent otherwise. Example: [/repo/.sdlc-v2/preplan/2026-10-29-auth-flow.md]"`
 	ReadyLeftOut    *int      `json:"readyLeftOut,omitempty" jsonschema_description:"preplan_write only, with topicStatus ready for plan: the count of other ready topic files that are not in readyTopicFiles. 0 still renders. Absent otherwise. Example: 0"`
+
+	// verify_requirements_context (Guardrails above is also set by this
+	// action). Each pointer list renders (none) when empty.
+	VerifyKind        string                     `json:"verifyKind,omitempty"`
+	VerifySource      string                     `json:"verifySource,omitempty"`      // topic file path, file path, "INT-4571" or "#42"
+	StructureChecks   string                     `json:"structureChecks,omitempty"`   // "ran" | "not run: <reason>"
+	StructureFindings *[]preplanStructureFinding `json:"structureFindings,omitempty"` // topic only
+	OpenQuestions     *[]string                  `json:"openQuestions,omitempty"`     // topic only: the ## Open questions bullets
+	GuardrailsStatus  string                     `json:"guardrailsStatus,omitempty"`  // "loaded: 60" | "unavailable: <warning>"
+	JiraProject       string                     `json:"jiraProject,omitempty"`       // jira only
 }
 
 // LaneResult represents the outcome of a single review lane.
@@ -316,7 +331,7 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_support",
 		`INTERNAL — called by sdlc skills only. Plan support utilities.
 
-Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError):
+Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError; and verifyKind and verifyValue: an action other than verify_requirements_context that gets one of them returns DomainError):
 
 - merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch. Lane status must be pass or fail, and every issue severity must be blocking or advisory; any other value fails with a DomainError and nothing is merged. Every issue in allIssues carries an "id" field: "f-" plus the first 8 hex chars of sha256(gateId|lower(trim(summary))). The same gate and summary always give the same id. An "id" in the input is ignored.
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
@@ -396,6 +411,9 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 	if err := preplanWriteFieldError(in); err != nil {
 		return PlanSupportOut{}, err
 	}
+	if err := verifyFieldError(in); err != nil {
+		return PlanSupportOut{}, err
+	}
 	switch in.Action {
 	case "merge_results":
 		return mergeResults(in)
@@ -421,6 +439,8 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 		return planPreplanCheck(mainRoot, in)
 	case preplanWriteAction:
 		return planPreplanWrite(mainRoot, in)
+	case verifyRequirementsContextAction:
+		return planVerifyRequirementsContext(mainRoot, contentRoot, in)
 	default:
 		last := len(planSupportActions) - 1
 		return PlanSupportOut{}, unknownActionError("action", in.Action,
@@ -438,6 +458,7 @@ var planSupportActions = []string{
 	"openspec_appendix", "openspec_instructions", "openspec_stage",
 	"evidence_record", "evidence_digest", "evidence_get",
 	preplanContextAction, preplanCheckAction, preplanWriteAction,
+	verifyRequirementsContextAction,
 }
 
 // ---------------------------------------------------------------------------
@@ -1466,8 +1487,10 @@ func buildPreplanSkeletonTail() string {
 // the section order come from the constants that the code uses
 // (preplanSections, preplanDirMax, dashboardDeleteReadMaxText,
 // dashboardPreplanHeadMax, preplanCountMax), so the text cannot go stale;
-// TestPreplanToolDescription pins it. The preplan_write line comes from
-// preplanWriteDescription. It is called once, at registration.
+// TestPreplanToolDescription pins it. The verify_requirements_context line
+// comes from verifyRequirementsContextDescription and the preplan_write line,
+// the last one, from preplanWriteDescription. It is called once, at
+// registration.
 func preplanToolDescription() string {
 	sections := strconv.Itoa(len(preplanSections))
 	order := strings.Join(preplanSections, ", ")
@@ -1497,6 +1520,7 @@ func preplanToolDescription() string {
 		"Returns preplanFile, guardrailCheckLine, emptySections (the ## headings of the " + sections + " skeleton sections, " + order + ", that are absent or hold only blank lines, in skeleton order; Decisions is empty when its table has no row below the header and separator rows, where a row is a line that starts with | after its leading spaces; (none) when every section has content), " +
 		"summary (added or replaced, the old line, the count of other check lines that stay in the file, the empty sections, and a code fence that is still open at the end of the file, which makes each ## heading after it count as absent), next. " +
 		"A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over " + dashboardDeleteReadMaxText + " or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was. A dangling link at the preplan folder returns InfraError.\n" +
+		verifyRequirementsContextDescription() + "\n" +
 		preplanWriteDescription()
 }
 
@@ -2135,13 +2159,16 @@ const preplanGoneSuggestion = "Run /sdlc:preplan again: the topic file went away
 
 // preplanRetry returns the end of a Suggestion that a second call can fix:
 // preplanCheckAgain for preplan_check, preplanWriteAgain for preplan_write,
-// preplanRunAgain for every other action.
+// verifyRunAgain for verify_requirements_context, preplanRunAgain for every
+// other action.
 func preplanRetry(action string) string {
 	switch action {
 	case preplanCheckAction:
 		return preplanCheckAgain
 	case preplanWriteAction:
 		return preplanWriteAgain
+	case verifyRequirementsContextAction:
+		return verifyRunAgain
 	}
 	return preplanRunAgain
 }
@@ -2459,9 +2486,16 @@ func preplanCheckSummary(name, prior, warning string, next []byte, empty []strin
 		summary += " Empty sections: " + strings.Join(empty, ", ") + "."
 	}
 	if openFence != "" {
-		summary += fmt.Sprintf(" A %s fence is still open at the end of the file, so each ## heading after it counts as absent.", openFence)
+		summary += " " + preplanOpenFenceWarning(openFence)
 	}
 	return summary
+}
+
+// preplanOpenFenceWarning returns the summary warning of a code fence that is
+// still open at the end of a topic file. preplan_check and
+// verify_requirements_context share it, so the two give the same text.
+func preplanOpenFenceWarning(openFence string) string {
+	return fmt.Sprintf("A %s fence is still open at the end of the file, so each ## heading after it counts as absent.", openFence)
 }
 
 // preplanWarningText makes the guardrail warning fit on the check line: one
