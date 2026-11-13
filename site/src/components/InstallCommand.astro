@@ -1,0 +1,78 @@
+---
+// The install command box of the reference (site-preview.src.html:416-422).
+// The text mirrors README.md:19-22.
+interface Props {
+  lines?: string[];
+  label?: string;
+}
+const {
+  lines = ['/plugin marketplace add rnagrodzki/sdlc-plugin', '/plugin install sdlc@sdlc-plugin'],
+  label = 'Install in Claude Code',
+} = Astro.props;
+---
+
+<div class="install" data-install>
+  <p class="cmd-label">{label}</p>
+  <div class="cmd glass">
+    <code class="cmd-lines" data-install-lines>{lines.map((line) => <span>{line}</span>)}</code>
+    <button class="copy" type="button" data-copy-button data-copy={lines.join('\n')}>Copy</button>
+  </div>
+  <span class="sr-only" role="status" aria-live="polite" data-copy-status></span>
+</div>
+
+<script>
+  import '../scripts/copy.ts';
+</script>
+
+<style>
+  .cmd-label {
+    margin: 0 0 var(--space-8);
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .cmd {
+    border-radius: var(--r-panel);
+    padding: var(--space-12) var(--space-12) var(--space-12) var(--space-18);
+    display: flex;
+    gap: var(--space-16);
+    align-items: center;
+  }
+  .cmd-lines {
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    line-height: var(--leading-code);
+    white-space: nowrap;
+  }
+  .cmd-lines span {
+    display: block;
+  }
+  .copy {
+    flex: none;
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    border: 0;
+    border-radius: var(--r-ctl);
+    padding: var(--space-9) var(--space-17);
+    background: var(--accent);
+    color: var(--on-accent);
+    cursor: pointer;
+  }
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  @media (max-width: 520px) {
+    .cmd {
+      flex-direction: column;
+      align-items: stretch;
+    }
+  }
+</style>

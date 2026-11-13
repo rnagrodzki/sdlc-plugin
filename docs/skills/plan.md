@@ -26,6 +26,30 @@ or a plain description.
 | `--spec [<change-name>]` | Opts into OpenSpec and skips the gate-check question. With a name: plan from that existing change (`openspec/changes/<change-name>/`). Without one: use the branch-matched change, else ask which active change to use, or offer to create a new one. | off |
 | `--from-openspec <name>` | Deprecated alias of `--spec <name>`, kept for one release. Prints a deprecation notice. | none |
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0: Mode and setup | skill | Detects plan mode, gathers the requirements, runs the OpenSpec gate check, routes the plan by scope and writes the plan file skeleton. | The plan file skeleton and the routing | no | always |
+| Step 1: Requirements and exploration | agent | Asks the discovery questions and explores the codebase with background explorers. | The recorded requirements and findings | no | always. A lightweight plan (2-3 files) skips the exploration |
+| Step 2: Decompose into tasks | skill | Splits the requirements into tasks with complexity, risk and dependencies. | The task list in the plan file | no | always |
+| Step 3: Critique the plan | agent | Checks the plan with the gate checks and the review lanes. | A list of issues | no | always |
+| Step 4: Improve and approve | skill | Fixes the issues of Step 3 and shows the plan to the user. | The revised plan | no | always |
+| Step 5: Review loop | agent | Reviews the plan with several lenses in rounds until it has no blocking issue. | The review verdict and the Verification Scorecard | yes | full pipeline only. A lightweight plan skips it |
+| Step 6: Apply review fixes | skill | Fixes each blocking issue of the review. In the OpenSpec Create flow it also authors the change files before Step 6.5. | The fixed plan | no | the review found blocking issues, or the plan uses the OpenSpec Create flow |
+| Step 6.5: Link verification | tool | Checks every URL in the plan with `links_validate`. This is a hard gate. | The link check result | no | always |
+| Step 6.6: Format validation | tool | Checks the plan structure with `validate`. This is a hard gate. | The format check result | no | always |
+| Step 7: Handoff | skill | Marks the run done, prints the timing and the style report, and offers to run `/ship` or `/execute`. | The plan file path | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/plan`, from a spec file, `--spec`, or a description of the requirements. |
+| Ends | After Step 7. The plan file is final and the skill offers to run `/ship` or `/execute` with it. |
+| Asks the user | When no requirements are given, at the OpenSpec gate check, at a scope split, when the plan is shown, and at the end. With `--auto`, a `CRITICAL` Gate A verdict still blocks, and the per-finding questions at the review-loop limit still ask. |
+| Resume | No resume flag. After a context compaction the skill reloads the run from its saved checkpoint and continues at the saved step. |
+
 ## Preplan topic file
 
 A topic file from [`/preplan`](preplan.md) is a requirements file. The plan

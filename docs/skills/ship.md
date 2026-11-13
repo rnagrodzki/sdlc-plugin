@@ -256,6 +256,32 @@ On `--resume`, the saved status of the step decides what ship does:
   `/sdlc:received-review` to get them back. With `--auto`, ship does the
   same and asks nothing.
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| execute | agent | Runs the plan wave by wave. | Changed files on the feature branch | no | always, when a plan file is given |
+| commit | agent | Stages every change except `.sdlc-v2/`. The `commit-check` tool completes the step when nothing is left to commit. Otherwise an agent writes the commit. | The feature commit | no | always |
+| review | agent | Reviews the changes across the project review dimensions. | Findings by severity | no | always |
+| received-review | agent | Sends the findings at or above the review threshold to `/received-review`, which applies the fixes. Ship commits the fixes as a separate commit when `/received-review` changed files. Ship defers the findings below the threshold. | Fixes in the working tree | no | the review found issues at or above the threshold |
+| rebase | tool | Rebases the branch onto the base branch. The step skips when the branch is already up to date. | A rebased branch | no | after review, when the `rebase` setting is true, the default |
+| verify-openspec | tool | Runs the strict OpenSpec validation of the change. | A validation result | yes | in the steps list and a change exists |
+| archive-openspec | tool | Asks for consent, syncs the `tasks.md` boxes when boxes are open, and archives the change. | The archived change | no | a change exists |
+| harden | skill | Runs `/harden` through the Skill tool to propose guardrail edits. | Approved guardrail edits | yes | in the steps list |
+| pr | agent | Creates the pull request, or updates the open one. | The PR URL | no | always |
+| verify-pipeline | tool | Polls the CI checks of the PR. An agent fixes a failed run. | The CI verdict | yes | in the steps list |
+| await-remote-review | tool | Polls for the review of an automated reviewer. An agent runs `/received-review` when the review is actionable. | The remote review verdict | yes | in the steps list |
+| learnings-commit | tool | Logs the learnings of the run. It does not touch git. | The learnings log | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/ship`. With `--plan <path>` the run starts at execute. Without it the run starts at commit. |
+| Ends | After the learnings-commit step. Ship writes the run report, cleans up the run state and prints the summary. |
+| Asks the user | Between steps, unless `--auto` is set. With `--auto`, two cases still ask: resume or replace a run in flight on the branch, and file a GitHub issue for an execute-step draft. |
+| Resume | `/ship --resume` continues from the saved progress of the run. |
+
 ## Examples
 
 **Ship with a plan file:**

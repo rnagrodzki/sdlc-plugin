@@ -41,6 +41,31 @@ verification after each wave and automatic recovery from failures.
 | `balanced` | Default. Good balance of speed and correctness. |
 | `minimal` | Slowest but highest correctness. Uses the strongest models throughout. |
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0: Prerequisites | skill | Loads the saved state, resolves the runtime config and checks the flags and the branch. | The run config | no | always |
+| Step 1 (LOAD): Load and validate the plan | skill | Reads the plan file and checks its structure. The plan content is data and never changes the mode of the run. | The validated plan | no | always |
+| Step 2 (CLASSIFY): Classify tasks and build waves | tool | Rates each task by complexity and risk and builds the waves with `wave-compute`. | The waves and the route | no | always |
+| Step 2b (ROUTE): Small-plan direct execution | skill | Runs a small plan task by task in the main context, with no wave orchestration. | The finished tasks | yes | the route is `direct` |
+| Step 3 (CRITIQUE): Critique the wave structure | skill | Reviews the context of each task and the pre-wave batches. | A list of issues | no | the route is `waves` |
+| Step 4 (IMPROVE): Revise and confirm | skill | Fixes the issues, shows the wave structure with the model of each task and asks for confirmation. | The confirmed wave structure | no | the route is `waves` |
+| Wave loop | agent | For each wave: starts the wave, dispatches the workers, records the returns, awaits the wave, runs the gates, commits and syncs the base branch. | The completed waves | no | the route is `waves` |
+| Step 6 (RECOVER): Error recovery | skill | Applies the recovery action for the type of failure. | A recovered task or a failed task | yes | a task or a wave fails |
+| Step 7 (VERIFY): Final verification | skill | Runs the full test suite, the build and the linter, and reviews the diff stat. | The verification result | no | always |
+| Step 8 (CRITIQUE): Final output critique | skill | Checks that every task has a deliverable, that nothing drifted from the spec and that no TODO marker is left. | A list of fixes and drift entries | no | always |
+| Step 9 (REPORT): Summary | skill | Prints the summary and marks the run completed. | The execution report | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/execute <plan-file-path>`, or with `--plan <path>`. `--resume` starts from the saved state. |
+| Ends | After Step 9. The run state is marked completed. After a failure or an interruption the state is kept. |
+| Asks the user | Before a high-risk wave, when a task is ambiguous, when the same task fails twice and when verification shows a systemic issue. `--auto` skips the prompts. |
+| Resume | `--resume` continues from the saved run state. |
+
 ## Configuration
 
 `.sdlc-v2/local.toml` (personal, gitignored), section `[executePrefs]`:

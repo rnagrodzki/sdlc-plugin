@@ -1,0 +1,81 @@
+---
+import { Font } from 'astro:assets';
+import { SITE, BASE } from '../../site.config.mjs';
+import Nav from '../components/Nav.astro';
+import Footer from '../components/Footer.astro';
+import '../styles/tokens.css';
+import '../styles/base.css';
+
+interface Props {
+  title: string; // page title and og:title
+  description: string; // meta description and og:description
+  current?: 'home' | 'features' | 'skills' | 'docs' | 'releases';
+}
+const { title, description, current } = Astro.props;
+
+// One shared image for every page (Task 25 makes it).
+const ogImage = `${SITE}${BASE}/og/default.png`;
+const pageUrl = new URL(Astro.url.pathname, SITE).href;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="sdlc" />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:url" content={pageUrl} />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="sitemap" href={`${BASE}/sitemap-index.xml`} />
+    <Font cssVariable="--font-geist" preload={[{ weight: 400, style: 'normal', subset: 'latin' }, { weight: 600, style: 'normal', subset: 'latin' }]} />
+    <Font cssVariable="--font-geist-mono" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to the content</a>
+    <Nav current={current} />
+    <main id="main"><slot /></main>
+    <Footer />
+  </body>
+</html>
+
+<style is:global>
+  /* The page width of the reference (.wrap) and the glass surface (.glass). */
+  .wrap {
+    max-width: 1200px;
+    margin-inline: auto;
+    padding-left: max(clamp(16px, 4vw, 40px), env(safe-area-inset-left, 0px));
+    padding-right: max(clamp(16px, 4vw, 40px), env(safe-area-inset-right, 0px));
+  }
+  .glass {
+    background: var(--glass);
+    border: 1px solid var(--glass-edge);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    backdrop-filter: blur(var(--glass-blur)) saturate(150%);
+    box-shadow:
+      inset 0 1px 0 var(--white-60),
+      0 20px 44px -26px var(--shade);
+  }
+  .skip-link {
+    position: absolute;
+    left: var(--space-16);
+    top: var(--space-8);
+    z-index: 10;
+    padding: var(--space-8) var(--space-14);
+    border-radius: var(--r-ctl);
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: var(--text-md);
+    font-weight: var(--weight-semibold);
+    text-decoration: none;
+    transform: translateY(-300%);
+  }
+  .skip-link:focus {
+    transform: none;
+  }
+</style>

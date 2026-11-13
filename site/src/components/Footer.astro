@@ -1,0 +1,64 @@
+---
+// The footer is new: it uses only existing tokens and components.
+import { BASE, REPO_BLOB_URL } from '../../site.config.mjs';
+import InstallCommand from './InstallCommand.astro';
+import StarLink from './StarLink.astro';
+
+const repoUrl = REPO_BLOB_URL.replace(/\/blob\/[^/]+$/, '');
+const links = [
+  { label: 'Docs', href: `${BASE}/docs/` },
+  { label: 'Skills', href: `${BASE}/skills/` },
+  { label: 'Releases', href: `${BASE}/releases/` },
+  { label: 'GitHub', href: repoUrl },
+];
+---
+
+<footer class="wrap site-foot">
+  <div class="foot-in">
+    <InstallCommand />
+    <div class="foot-side">
+      <StarLink />
+      <nav class="foot-links" aria-label="Footer">
+        {links.map((link) => <a href={link.href}>{link.label}</a>)}
+      </nav>
+    </div>
+  </div>
+</footer>
+
+<style>
+  .site-foot {
+    margin-top: var(--space-64);
+    padding-block: var(--space-32) var(--space-44);
+    border-top: 1px solid var(--line);
+  }
+  .foot-in {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-24) var(--space-32);
+  }
+  .foot-in > :global(.install) {
+    flex: 1 1 28rem;
+    max-width: 38rem;
+  }
+  .foot-side {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-14) var(--space-28);
+  }
+  .foot-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-10) var(--space-20);
+  }
+  .foot-links a {
+    color: var(--muted);
+    font-size: var(--text-md);
+    text-decoration: none;
+  }
+  .foot-links a:hover {
+    color: var(--ink);
+  }
+</style>

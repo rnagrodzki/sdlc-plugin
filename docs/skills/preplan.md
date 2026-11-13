@@ -37,6 +37,26 @@ The topic must be on one line. It must have 1 to 50 characters and at least
 one ASCII letter or digit. If the topic is not valid, the skill prints the
 error and stops. It creates no file.
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0: Announce and take the topic | skill | Prints the announce line and takes the topic from the argument. It asks for the topic when the argument is empty. | The topic name | no | always |
+| Step 1: Load the guardrails and the topic file | tool | Calls `preplan_context` to load the plan guardrails and to create the topic file, or to add the absent section headings. | The guardrails and the topic file path | no | always |
+| Step 2: Read the topic file | skill | Reads the topic file, sets the status to `in progress` and converts an old-form file. | The gaps in the topic file | no | always |
+| Step 3: Ask one question | skill | Asks one question about the first gap and writes the answer into its section. | An updated topic file section | no | until no section is empty or the user is done |
+| Step 4: Check the proposals against the guardrails | skill | Checks each live proposal against the guardrails. It reworks or drops a proposal that breaks an `error` guardrail. | A topic file with a `**Guardrail check:**` line | no | after each Step 3 answer |
+| Step 5: Hand off to plan | skill | Sets the status to `ready for plan` and asks what to do next: start `/sdlc:plan`, start a new idea, or stop. | A topic file with the status `ready for plan` | no | the check passes with no empty section |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/preplan [topic]`. The skill creates or reopens the topic file of the topic. |
+| Ends | After Step 5, when the user starts plan, starts a new idea or stops. The user can cancel at any step, and the status becomes `paused`. |
+| Asks the user | One question at a time, for the topic when it is absent and then for each gap in the topic file. |
+| Resume | Run `/preplan <topic>` again. The topic file is the only state, so the skill continues from it. |
+
 ## Topic file
 
 The skill changes the file only through `plan_support` tool calls, never

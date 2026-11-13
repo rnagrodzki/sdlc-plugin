@@ -1,0 +1,64 @@
+---
+// The site nav of the reference (site-preview.src.html:407-411), as links.
+import { BASE } from '../../site.config.mjs';
+import StarLink from './StarLink.astro';
+
+interface Props {
+  current?: 'home' | 'features' | 'skills' | 'docs' | 'releases';
+}
+const { current } = Astro.props;
+
+const items = [
+  { label: 'Flow', href: `${BASE}/`, key: 'home' },
+  { label: 'Skills', href: `${BASE}/skills/`, key: 'skills' },
+  { label: 'Docs', href: `${BASE}/docs/`, key: 'docs' },
+  { label: 'Release notes', href: `${BASE}/releases/`, key: 'releases' },
+] as const;
+---
+
+<header class="wrap nav-head">
+  <nav class="nav" aria-label="Site">
+    <a class="brand" href={`${BASE}/`}>sdlc</a>
+    {
+      items.map((item) => (
+        <a class:list={['nav-link', { 'is-here': item.key === current }]} href={item.href} aria-current={item.key === current ? 'page' : undefined}>
+          {item.label}
+        </a>
+      ))
+    }
+    <StarLink />
+  </nav>
+</header>
+
+<style>
+  .nav-head {
+    padding-block: var(--space-22) var(--space-44);
+  }
+  .nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-10) var(--space-28);
+  }
+  .brand {
+    font-family: var(--font-display);
+    font-weight: var(--weight-bold);
+    font-size: var(--text-brand);
+    letter-spacing: var(--tracking-2);
+    margin-right: auto;
+    color: inherit;
+    text-decoration: none;
+  }
+  .nav-link {
+    color: var(--muted);
+    font-size: var(--text-md);
+    text-decoration: none;
+  }
+  .nav-link:hover {
+    color: var(--ink);
+  }
+  .nav-link.is-here {
+    color: var(--ink);
+    font-weight: var(--weight-medium);
+  }
+</style>
