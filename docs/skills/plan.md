@@ -139,6 +139,7 @@ Loads the proposal, delta specs, and task list from
 
 ## Related skills
 
+- [/verify-requirements](verify-requirements.md) — check the requirements before a plan run.
 - [/execute](execute.md) — Takes the plan file this skill produces and
   implements it wave by wave.
 - [/ship](ship.md) — Runs `/execute` as its first step, so it consumes plan

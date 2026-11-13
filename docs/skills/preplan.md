@@ -385,3 +385,8 @@ there.
 
 Use this after you chose "Stop" at the handoff, or when the plan skill
 stopped with an error.
+
+## Related skills
+
+- [/verify-requirements](verify-requirements.md) — Checks a topic file with no dialogue and prints a report of findings.
+- [/plan](plan.md) — Plan the work after the topic file is ready.
