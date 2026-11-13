@@ -117,10 +117,11 @@ tasks:
       - npm test
 
   site:build:
-    desc: Build the site
+    desc: Build the site and scan the output
     dir: site
     cmds:
       - npm run build
+      - npm run verify
 
   git:clear:
     desc: Delete local branches whose upstream is gone (prunes after fetch, skips current branch)

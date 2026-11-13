@@ -47,11 +47,26 @@ reference.
 ## Checksums (SHA-256)
 
 ```
-556f668f18cf1acb6ce69b9be7449a71e91e34a5fd53ed39071d390d0bc91a4d  site-preview.src.html
+2986f77c7779c269b458e5c7d55d7298fb7a5a05f0c90d468b78e40ca7ea053b  site-preview.src.html
 e93645394bd480038a42f1e1f7a3e0b895d9881f9c0f5c1efe70a06530c7f919  dashboard.png
 ```
 
 A file with another checksum is not the approved reference.
+
+## Contrast fixes
+
+The plan checked each color pair against WCAG 2.2 AA (#17). Five pairs were
+below the target. The user approved these fixes. Each fix keeps the hue and
+changes only the lightness or the alpha. The checksum above includes them.
+`site/src/lib/tokens.test.mjs` checks each pair that the site uses.
+
+| Pair (reference rule) | Target | Before | After | Fix |
+|---|---|---|---|---|
+| Accent text on the amber field `#E5CDAE` (`.change-title`) | 4.5:1 | 4.34:1 | 4.67:1 | New token `--accent-on-field: #884608` |
+| `--go` text on `#DDF1E8` (`.h-t .mono`) | 4.5:1 | 4.20:1 | 4.67:1 | New token `--go-text: #1C7754` |
+| Inactive steps with `opacity:.5` (`.seq-step:not(.is-done):not(.is-now)`) | 4.5:1 | 2.16-3.12:1 | 6.88:1 | `color: var(--muted)` and no opacity |
+| Switch off track on the panel `#F4F2EF` (`.switch-ui`) | 3:1 | 1.58:1 | 3.24:1 | Track alpha `.22` to `.5` |
+| Time-bar part edge on the panel (`.seg`) | 3:1 | 1.43:1 | 3.24:1 | 1px inset edge `rgba(143,74,8,.7)`; the fill stays |
 
 ## Rules for the plan and for each task
 

@@ -9,6 +9,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "verify": "node scripts/check-dist.mjs",
     "test": "node --test \"src/lib/*.test.mjs\""
   },
   "dependencies": {
