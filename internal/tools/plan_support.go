@@ -236,6 +236,8 @@ type PlanSupportOut struct {
 	OpenQuestions     *[]string                  `json:"openQuestions,omitempty"`     // topic only: the ## Open questions bullets
 	GuardrailsStatus  string                     `json:"guardrailsStatus,omitempty"`  // "loaded: 60" | "unavailable: <warning>"
 	JiraProject       string                     `json:"jiraProject,omitempty"`       // jira only
+	IssueTitle        string                     `json:"issueTitle,omitempty"`        // issue only, data
+	IssueBody         string                     `json:"issueBody,omitempty"`         // issue only, data
 
 	// verify_requirements_context, every kind: the OpenSpec lists of the
 	// active worktree.
@@ -367,7 +369,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 			Title:      "Plan support and evidence store",
 			ReadOnly:   true,
 			Idempotent: true,
-			OpenWorld:  false,
+			OpenWorld:  true,
 		},
 		func(ctx mcpserver.Ctx, in PlanSupportIn) (PlanSupportOut, error) {
 			// An unresolved active worktree stays empty: the openspec_*
