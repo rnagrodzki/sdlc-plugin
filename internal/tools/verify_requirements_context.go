@@ -3,11 +3,18 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
 )
 
 // verifyRequirementsContextAction is the plan_support action that returns the
@@ -132,6 +139,8 @@ func verifyInputError(in PlanSupportIn) error {
 //  3. loadGuardrails(mainRoot) gives the guardrails and guardrailsStatus. A
 //     bad config does not fail the call: guardrailsStatus reads
 //     "unavailable: <warning>", and summary names the warning.
+//  4. verifyOpenspec(contentRoot) gives the OpenSpec lists of the active
+//     worktree. A read failure is a warning, never an error.
 func planVerifyRequirementsContext(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	if err := verifyInputError(in); err != nil {
 		return PlanSupportOut{}, err
@@ -146,10 +155,7 @@ func planVerifyRequirementsContext(mainRoot, contentRoot string, in PlanSupportI
 	case verifyKindJira:
 		out, err = verifyJira(in.VerifyValue)
 	case verifyKindFile:
-		err = &mcpserver.DomainError{
-			Msg:        verifyRequirementsContextAction + ": verifyKind file is not built yet",
-			Suggestion: "Use verifyKind topic or jira.",
-		}
+		out, err = verifyFile(contentRoot, in.VerifyValue)
 	default: // verifyKindIssue
 		err = &mcpserver.DomainError{
 			Msg:        verifyRequirementsContextAction + ": verifyKind issue is not built yet",
@@ -169,6 +175,12 @@ func planVerifyRequirementsContext(mainRoot, contentRoot string, in PlanSupportI
 		out.GuardrailsStatus = "unavailable: " + text
 		out.Summary += " Guardrails unavailable: " + text + "."
 	}
+
+	status, mainSpecs, changes, warnings := verifyOpenspec(contentRoot)
+	out.OpenspecStatus = status
+	out.OpenspecMainSpecs = &mainSpecs
+	out.OpenspecActiveChanges = &changes
+	out.OpenspecWarnings = &warnings
 	return out, nil
 }
 
@@ -240,4 +252,291 @@ func verifyJira(value string) (PlanSupportOut, error) {
 		StructureChecks: "not run: the input is a Jira ticket",
 		JiraProject:     project,
 	}, nil
+}
+
+// verifyPreplanFirstLine is the start of the first line of a preplan topic
+// file.
+const verifyPreplanFirstLine = "# Preplan:"
+
+// verifyFirstLineMaxBytes is how many bytes verifyFile reads to see the first
+// line of a file. A longer first line counts as it is cut.
+const verifyFirstLineMaxBytes = 4096
+
+// verifyFile checks that value is a regular file of at most
+// dashboardDeleteReadMax bytes. A relative value starts at contentRoot (the
+// active worktree). It follows a link, because a requirements file can be a
+// link. It reads only the first verifyFirstLineMaxBytes bytes, to find out if
+// the file is a preplan topic file, and returns no file text.
+//
+//   - no file at the path, or a link whose target is absent: DomainError.
+//   - a folder, a pipe, a device or a socket: DomainError.
+//   - a file over the size limit: DataError.
+//   - any other stat or read failure: InfraError.
+func verifyFile(contentRoot, value string) (PlanSupportOut, error) {
+	const action = verifyRequirementsContextAction
+	path := strings.TrimSpace(value)
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(contentRoot, path)
+	}
+	path = filepath.Clean(path)
+
+	infraErr := func(err error) error {
+		return &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("%s: cannot read %s: %s", action, path, verifyCause(err)),
+			Suggestion: "Check the file permissions" + verifyRunAgain,
+			Cause:      err,
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
+			return PlanSupportOut{}, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("%s: no file at %s", action, path),
+				Suggestion: "Check the path. A relative path starts at the active worktree: " + contentRoot + ".",
+				Cause:      err,
+			}
+		}
+		return PlanSupportOut{}, infraErr(err)
+	}
+	if info.IsDir() {
+		return PlanSupportOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("%s: %s is a folder, not a file", action, path),
+			Suggestion: "Pass the path of one requirements file.",
+		}
+	}
+	if !info.Mode().IsRegular() {
+		return PlanSupportOut{}, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("%s: %s is not a regular file", action, path),
+			Suggestion: "Pass the path of one requirements file.",
+		}
+	}
+	if info.Size() > dashboardDeleteReadMax {
+		return PlanSupportOut{}, &mcpserver.DataError{
+			Msg: fmt.Sprintf("%s: %s is %d bytes; the limit is %d bytes (%s)",
+				action, path, info.Size(), dashboardDeleteReadMax, dashboardDeleteReadMaxText),
+			Suggestion: "Split the requirements into smaller files and check each one.",
+		}
+	}
+
+	head, err := verifyReadHead(path)
+	if err != nil {
+		return PlanSupportOut{}, infraErr(err)
+	}
+	summary := fmt.Sprintf("Checked the file %s: a regular file of %d bytes.", path, info.Size())
+	if first, _, _ := strings.Cut(string(head), "\n"); strings.HasPrefix(first, verifyPreplanFirstLine) {
+		name := strings.TrimSpace(strings.TrimPrefix(first, verifyPreplanFirstLine))
+		summary += " This file is a preplan topic file. Run /sdlc:verify-requirements --topic " + name + " to also run the structure checks."
+	}
+	return PlanSupportOut{
+		Summary:         summary,
+		Next:            "Read verifySource with the Read tool, in pages when it is large. Then run " + verifyAnalysisChecks,
+		VerifySource:    path,
+		StructureChecks: "not run: the input is not a topic file",
+	}, nil
+}
+
+// verifyReadHead returns the first verifyFirstLineMaxBytes bytes of the file
+// at path, or fewer when the file is shorter.
+func verifyReadHead(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	head, err := io.ReadAll(io.LimitReader(f, verifyFirstLineMaxBytes))
+	if err != nil {
+		return nil, err
+	}
+	return head, nil
+}
+
+// verifyCause returns the text of err without the operation and the path of
+// an *fs.PathError, for example "permission denied".
+func verifyCause(err error) string {
+	var pe *fs.PathError
+	if errors.As(err, &pe) {
+		return pe.Err.Error()
+	}
+	return err.Error()
+}
+
+// The limits of the OpenSpec lists.
+const (
+	// verifyOpenspecMaxPaths is the most spec paths that the lists hold in
+	// total, the main specs and the specs of the active changes together.
+	verifyOpenspecMaxPaths = 1000
+	// verifySpecMaxBytes is the most bytes that the action reads from one spec.
+	verifySpecMaxBytes = 1 << 20
+)
+
+// verifyOpenspecAbsent is the openspecStatus of a repo with no OpenSpec.
+const verifyOpenspecAbsent = "not present: openspec/config.yaml not found"
+
+var (
+	// verifyRequirementHeadingRe matches "### Requirement: <name>".
+	verifyRequirementHeadingRe = regexp.MustCompile(`^### Requirement:[ \t]*(\S.*?)[ \t]*$`)
+	// verifyDeltaSectionRe matches "## ADDED Requirements" and the other three.
+	verifyDeltaSectionRe = regexp.MustCompile(`^##[ \t]+(ADDED|MODIFIED|REMOVED|RENAMED)[ \t]+Requirements[ \t]*$`)
+)
+
+// verifySpecHeadings returns the requirement headings of one spec, in file
+// order, never nil. A delta spec (delta true) prefixes each heading with the
+// section that holds it: "ADDED: <name>". A heading inside a code fence does
+// not count.
+func verifySpecHeadings(data []byte, delta bool) []string {
+	headings := []string{}
+	section, fence := "", ""
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimRight(line, "\r")
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			marker := trimmed[:3]
+			switch {
+			case fence == "":
+				fence = marker
+			case fence == marker:
+				fence = ""
+			}
+			continue
+		}
+		if fence != "" {
+			continue
+		}
+		if m := verifyDeltaSectionRe.FindStringSubmatch(line); m != nil {
+			section = m[1]
+			continue
+		}
+		if strings.HasPrefix(line, "## ") {
+			section = ""
+			continue
+		}
+		if m := verifyRequirementHeadingRe.FindStringSubmatch(line); m != nil {
+			if delta && section != "" {
+				headings = append(headings, section+": "+m[1])
+			} else {
+				headings = append(headings, m[1])
+			}
+		}
+	}
+	return headings
+}
+
+// verifySpecCollector lists spec files under contentRoot and reads their
+// headings. It holds the shared budget of verifyOpenspecMaxPaths paths and the
+// warning lines.
+type verifySpecCollector struct {
+	contentRoot string
+	paths       int
+	full        bool
+	warnings    []string
+}
+
+func (c *verifySpecCollector) warn(rel string, cause string) {
+	c.warnings = append(c.warnings, rel+": not read: "+cause)
+}
+
+// listDir returns the entry names of the folder rel (a slash path under the
+// repo root), sorted. A folder that does not exist gives no names and no
+// warning. Any other failure gives one warning and no names.
+func (c *verifySpecCollector) listDir(rel string) []string {
+	entries, err := os.ReadDir(filepath.Join(c.contentRoot, filepath.FromSlash(rel)))
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			c.warn(rel, verifyCause(err))
+		}
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	return names
+}
+
+// specsIn returns the specs of the folder dir (such as "openspec/specs"): one
+// for each <dir>/<capability>/spec.md. A path past the budget adds one
+// warning, once, and is not listed.
+func (c *verifySpecCollector) specsIn(dir string, delta bool) []VerifyOpenspecSpec {
+	specs := []VerifyOpenspecSpec{}
+	for _, name := range c.listDir(dir) {
+		rel := dir + "/" + name + "/spec.md"
+		if _, err := os.Stat(filepath.Join(c.contentRoot, filepath.FromSlash(rel))); err != nil &&
+			(errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR)) {
+			continue
+		}
+		if c.paths >= verifyOpenspecMaxPaths {
+			if !c.full {
+				c.full = true
+				c.warnings = append(c.warnings, fmt.Sprintf("openspec: more than %d spec paths; the first %d are listed", verifyOpenspecMaxPaths, verifyOpenspecMaxPaths))
+			}
+			return specs
+		}
+		c.paths++
+		specs = append(specs, c.readSpec(rel, delta))
+	}
+	return specs
+}
+
+// readSpec returns the spec at rel with its headings. A spec that is not a
+// regular file, is over verifySpecMaxBytes, or cannot be read is listed with
+// no headings and one warning.
+func (c *verifySpecCollector) readSpec(rel string, delta bool) VerifyOpenspecSpec {
+	spec := VerifyOpenspecSpec{Path: rel, Requirements: []string{}}
+	path := filepath.Join(c.contentRoot, filepath.FromSlash(rel))
+	info, err := os.Stat(path)
+	if err != nil {
+		c.warn(rel, verifyCause(err))
+		return spec
+	}
+	if !info.Mode().IsRegular() {
+		c.warn(rel, "not a regular file")
+		return spec
+	}
+	if info.Size() > verifySpecMaxBytes {
+		c.warn(rel, fmt.Sprintf("%d bytes; the limit is %d bytes", info.Size(), verifySpecMaxBytes))
+		return spec
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		c.warn(rel, verifyCause(err))
+		return spec
+	}
+	spec.Requirements = verifySpecHeadings(data, delta)
+	return spec
+}
+
+// verifyOpenspec returns the OpenSpec status, the main specs and the active
+// changes of the repo at contentRoot, each with its requirement headings, and
+// the warning lines. It reads only. openspec.DetectActiveChanges gives the
+// status and the names of the active changes (it skips archive and needs
+// proposal.md). All four results are never nil. A repo with no
+// openspec/config.yaml gives verifyOpenspecAbsent and empty lists.
+func verifyOpenspec(contentRoot string) (string, []VerifyOpenspecSpec, []VerifyOpenspecChange, []string) {
+	info := openspec.DetectActiveChanges(contentRoot)
+	if !info.Present {
+		return verifyOpenspecAbsent, []VerifyOpenspecSpec{}, []VerifyOpenspecChange{}, []string{}
+	}
+	c := &verifySpecCollector{contentRoot: contentRoot, warnings: []string{}}
+
+	// DetectActiveChanges ignores a failure to list the changes folder, so
+	// the action lists the folder itself to report the failure.
+	c.listDir("openspec/changes")
+
+	mainSpecs := c.specsIn("openspec/specs", false)
+
+	names := make([]string, 0, len(info.ActiveChanges))
+	for _, ch := range info.ActiveChanges {
+		names = append(names, ch.Name)
+	}
+	sort.Strings(names)
+	changes := make([]VerifyOpenspecChange, 0, len(names))
+	for _, name := range names {
+		base := "openspec/changes/" + name
+		changes = append(changes, VerifyOpenspecChange{
+			Name:     name,
+			Proposal: base + "/proposal.md",
+			Specs:    c.specsIn(base+"/specs", true),
+		})
+	}
+	return "present", mainSpecs, changes, c.warnings
 }

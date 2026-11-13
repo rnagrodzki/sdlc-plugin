@@ -236,6 +236,26 @@ type PlanSupportOut struct {
 	OpenQuestions     *[]string                  `json:"openQuestions,omitempty"`     // topic only: the ## Open questions bullets
 	GuardrailsStatus  string                     `json:"guardrailsStatus,omitempty"`  // "loaded: 60" | "unavailable: <warning>"
 	JiraProject       string                     `json:"jiraProject,omitempty"`       // jira only
+
+	// verify_requirements_context, every kind: the OpenSpec lists of the
+	// active worktree.
+	OpenspecStatus        string                  `json:"openspecStatus,omitempty"`        // "present" | "not present: openspec/config.yaml not found"
+	OpenspecMainSpecs     *[]VerifyOpenspecSpec   `json:"openspecMainSpecs,omitempty"`     // openspec/specs/<cap>/spec.md, sorted
+	OpenspecActiveChanges *[]VerifyOpenspecChange `json:"openspecActiveChanges,omitempty"` // sorted by name
+	OpenspecWarnings      *[]string               `json:"openspecWarnings,omitempty"`      // "<path>: not read: <cause>"
+}
+
+// VerifyOpenspecSpec is one OpenSpec spec file with its requirement headings.
+type VerifyOpenspecSpec struct {
+	Path         string   `json:"path"`         // repo-relative
+	Requirements []string `json:"requirements"` // "Topic file start" (main) or "ADDED: Topic file start" (delta); never nil
+}
+
+// VerifyOpenspecChange is one active OpenSpec change with its delta specs.
+type VerifyOpenspecChange struct {
+	Name     string               `json:"name"`
+	Proposal string               `json:"proposal"` // openspec/changes/<name>/proposal.md
+	Specs    []VerifyOpenspecSpec `json:"specs"`    // openspec/changes/<name>/specs/<cap>/spec.md; never nil
 }
 
 // LaneResult represents the outcome of a single review lane.

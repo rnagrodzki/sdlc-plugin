@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"sort"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -112,7 +113,6 @@ func TestVerifyRequirementsContextInputs(t *testing.T) {
 		{"jira key with a leading zero", verifyIn("jira", "INT-0571"), "domain", "verify_requirements_context: INT-0571 is not a Jira key", jiraSuggestion},
 		{"jira key with a lower-case project", verifyIn("jira", "int-4571"), "domain", "verify_requirements_context: int-4571 is not a Jira key", jiraSuggestion},
 		{"jira key with an 11-digit number", verifyIn("jira", "INT-12345678901"), "domain", "verify_requirements_context: INT-12345678901 is not a Jira key", jiraSuggestion},
-		{"file kind before Task 3", verifyIn("file", "docs/req.md"), "domain", "verify_requirements_context: verifyKind file is not built yet", "Use verifyKind topic or jira."},
 		{"issue kind before Task 4", verifyIn("issue", "42"), "domain", "verify_requirements_context: verifyKind issue is not built yet", "Use verifyKind topic, file or jira."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -587,4 +587,405 @@ func TestVerifyRequirementsContextWritesNothing(t *testing.T) {
 			}
 		})
 	}
+}
+
+// verifyTruncated creates a file of size bytes (a sparse file) at path.
+func verifyTruncated(t *testing.T, path string, size int64) {
+	t.Helper()
+	writeFile(t, path, "# Requirements\n")
+	if err := os.Truncate(path, size); err != nil {
+		t.Fatalf("truncate %s: %v", path, err)
+	}
+}
+
+// TestVerifyRequirementsContextFile covers each row of the file table.
+func TestVerifyRequirementsContextFile(t *testing.T) {
+	const action = "verify_requirements_context: "
+	const passSuggestion = "Pass the path of one requirements file."
+
+	pathSuggestion := func(root string) string {
+		return "Check the path. A relative path starts at the active worktree: " + root + "."
+	}
+
+	t.Run("no file at a relative path", func(t *testing.T) {
+		mainRoot, activeRoot := t.TempDir(), t.TempDir()
+		// A file with this name under the main root must not count.
+		writeFile(t, filepath.Join(mainRoot, "docs", "req.md"), "# Requirements\n")
+		_, err := planSupportCore(mainRoot, activeRoot, verifyIn("file", "docs/req.md"))
+		wantVerifyErr(t, err, "domain", action+"no file at "+filepath.Join(activeRoot, "docs", "req.md"), pathSuggestion(activeRoot))
+	})
+
+	t.Run("no file at an absolute path", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "absent.md")
+		_, err := planSupportCore(root, root, verifyIn("file", path))
+		wantVerifyErr(t, err, "domain", action+"no file at "+path, pathSuggestion(root))
+	})
+
+	t.Run("a path through a file", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "plain.md"), "x")
+		path := filepath.Join(root, "plain.md", "child.md")
+		_, err := planSupportCore(root, root, verifyIn("file", path))
+		wantVerifyErr(t, err, "domain", action+"no file at "+path, pathSuggestion(root))
+	})
+
+	t.Run("a link whose target is absent", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "dangling.md")
+		if err := os.Symlink(filepath.Join(root, "gone.md"), path); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		_, err := planSupportCore(root, root, verifyIn("file", "dangling.md"))
+		wantVerifyErr(t, err, "domain", action+"no file at "+path, pathSuggestion(root))
+	})
+
+	t.Run("a folder", func(t *testing.T) {
+		root := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		_, err := planSupportCore(root, root, verifyIn("file", "docs"))
+		wantVerifyErr(t, err, "domain", action+filepath.Join(root, "docs")+" is a folder, not a file", passSuggestion)
+	})
+
+	t.Run("a pipe", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "pipe")
+		if err := syscall.Mkfifo(path, 0o644); err != nil {
+			t.Skipf("mkfifo: %v", err)
+		}
+		_, err := planSupportCore(root, root, verifyIn("file", "pipe"))
+		wantVerifyErr(t, err, "domain", action+path+" is not a regular file", passSuggestion)
+	})
+
+	t.Run("a link to a pipe", func(t *testing.T) {
+		root := t.TempDir()
+		pipe := filepath.Join(root, "pipe")
+		if err := syscall.Mkfifo(pipe, 0o644); err != nil {
+			t.Skipf("mkfifo: %v", err)
+		}
+		link := filepath.Join(root, "link")
+		if err := os.Symlink(pipe, link); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		_, err := planSupportCore(root, root, verifyIn("file", "link"))
+		wantVerifyErr(t, err, "domain", action+link+" is not a regular file", passSuggestion)
+	})
+
+	t.Run("exactly the size limit passes and one byte more fails", func(t *testing.T) {
+		root := t.TempDir()
+		verifyTruncated(t, filepath.Join(root, "exact.md"), dashboardDeleteReadMax)
+		verifyTruncated(t, filepath.Join(root, "over.md"), dashboardDeleteReadMax+1)
+
+		out, err := planSupportCore(root, root, verifyIn("file", "exact.md"))
+		if err != nil {
+			t.Fatalf("a file of exactly %d bytes: %v", dashboardDeleteReadMax, err)
+		}
+		if out.VerifySource != filepath.Join(root, "exact.md") {
+			t.Errorf("verifySource = %q", out.VerifySource)
+		}
+
+		_, err = planSupportCore(root, root, verifyIn("file", "over.md"))
+		wantVerifyErr(t, err, "data",
+			fmt.Sprintf("%s%s is %d bytes; the limit is 8388608 bytes (8 MiB)", action, filepath.Join(root, "over.md"), dashboardDeleteReadMax+1),
+			"Split the requirements into smaller files and check each one.")
+	})
+
+	t.Run("a file that cannot be read", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads every file")
+		}
+		root := t.TempDir()
+		path := filepath.Join(root, "secret.md")
+		writeFile(t, path, "# Requirements\n")
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+		_, err := planSupportCore(root, root, verifyIn("file", "secret.md"))
+		wantVerifyErr(t, err, "infra", action+"cannot read "+path+": permission denied",
+			"Check the file permissions, then run /sdlc:verify-requirements again.")
+	})
+
+	t.Run("a regular file", func(t *testing.T) {
+		mainRoot, activeRoot := t.TempDir(), t.TempDir()
+		writeFile(t, filepath.Join(activeRoot, "docs", "req.md"), "# Requirements\n\nThe user can log in.\n")
+		out, err := planSupportCore(mainRoot, activeRoot, verifyIn("file", "docs/req.md"))
+		if err != nil {
+			t.Fatalf("verify_requirements_context: %v", err)
+		}
+		want := filepath.Join(activeRoot, "docs", "req.md")
+		if out.VerifyKind != "file" || out.VerifySource != want {
+			t.Errorf("verifyKind, verifySource = %q, %q, want file, %q", out.VerifyKind, out.VerifySource, want)
+		}
+		if out.StructureChecks != "not run: the input is not a topic file" {
+			t.Errorf("structureChecks = %q", out.StructureChecks)
+		}
+		if out.StructureFindings != nil || out.OpenQuestions != nil {
+			t.Errorf("structureFindings and openQuestions must be absent for file")
+		}
+		if strings.Contains(out.Summary, "preplan topic file") {
+			t.Errorf("summary names a topic file for a plain file: %q", out.Summary)
+		}
+		if out.GuardrailsStatus != "loaded: 0" {
+			t.Errorf("guardrailsStatus = %q, want loaded: 0", out.GuardrailsStatus)
+		}
+	})
+
+	t.Run("an absolute path outside both roots", func(t *testing.T) {
+		root, elsewhere := t.TempDir(), t.TempDir()
+		path := filepath.Join(elsewhere, "req.md")
+		writeFile(t, path, "# Requirements\n")
+		out, err := planSupportCore(root, root, verifyIn("file", path))
+		if err != nil {
+			t.Fatalf("verify_requirements_context: %v", err)
+		}
+		if out.VerifySource != path {
+			t.Errorf("verifySource = %q, want %q", out.VerifySource, path)
+		}
+	})
+
+	t.Run("a link to a regular file", func(t *testing.T) {
+		root := t.TempDir()
+		target := filepath.Join(root, "real.md")
+		writeFile(t, target, "# Requirements\n")
+		if err := os.Symlink(target, filepath.Join(root, "link.md")); err != nil {
+			t.Skipf("symlink: %v", err)
+		}
+		out, err := planSupportCore(root, root, verifyIn("file", "link.md"))
+		if err != nil {
+			t.Fatalf("a link to a file: %v", err)
+		}
+		if out.VerifySource != filepath.Join(root, "link.md") {
+			t.Errorf("verifySource = %q", out.VerifySource)
+		}
+	})
+
+	t.Run("a preplan topic file", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "topic.md"), "# Preplan: auth flow\n\n## Goal\n")
+		out, err := planSupportCore(root, root, verifyIn("file", "topic.md"))
+		if err != nil {
+			t.Fatalf("verify_requirements_context: %v", err)
+		}
+		const hint = "This file is a preplan topic file. Run /sdlc:verify-requirements --topic auth flow to also run the structure checks."
+		if !strings.Contains(out.Summary, hint) {
+			t.Errorf("summary = %q, want it to hold %q", out.Summary, hint)
+		}
+		if out.StructureChecks != "not run: the input is not a topic file" {
+			t.Errorf("structureChecks = %q", out.StructureChecks)
+		}
+	})
+
+	t.Run("a first line that only holds the marker later", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, "req.md"), "# Requirements\n# Preplan: x\n")
+		out, err := planSupportCore(root, root, verifyIn("file", "req.md"))
+		if err != nil {
+			t.Fatalf("verify_requirements_context: %v", err)
+		}
+		if strings.Contains(out.Summary, "preplan topic file") {
+			t.Errorf("summary = %q", out.Summary)
+		}
+	})
+}
+
+// verifyOpenspecRoot writes openspec/config.yaml under root.
+func verifyOpenspecRoot(t *testing.T, root string) {
+	t.Helper()
+	writeFile(t, filepath.Join(root, "openspec", "config.yaml"), "schema: spec-driven\n")
+}
+
+// verifyOpenspecOut calls the file kind (any kind returns the lists) and
+// returns the OpenSpec fields.
+func verifyOpenspecOut(t *testing.T, mainRoot, activeRoot string) PlanSupportOut {
+	t.Helper()
+	out, err := planSupportCore(mainRoot, activeRoot, verifyIn("jira", "INT-1"))
+	if err != nil {
+		t.Fatalf("verify_requirements_context: %v", err)
+	}
+	if out.OpenspecMainSpecs == nil || out.OpenspecActiveChanges == nil || out.OpenspecWarnings == nil {
+		t.Fatalf("openspec lists must be set: %v %v %v", out.OpenspecMainSpecs, out.OpenspecActiveChanges, out.OpenspecWarnings)
+	}
+	return out
+}
+
+// TestVerifyRequirementsContextOpenspec covers the OpenSpec lists.
+func TestVerifyRequirementsContextOpenspec(t *testing.T) {
+	t.Run("no config.yaml", func(t *testing.T) {
+		root := t.TempDir()
+		// Specs exist, but with no config.yaml the repo has no OpenSpec.
+		writeFile(t, filepath.Join(root, "openspec", "specs", "a", "spec.md"), "### Requirement: A\n")
+		out := verifyOpenspecOut(t, root, root)
+		if out.OpenspecStatus != "not present: openspec/config.yaml not found" {
+			t.Errorf("openspecStatus = %q", out.OpenspecStatus)
+		}
+		if len(*out.OpenspecMainSpecs) != 0 || len(*out.OpenspecActiveChanges) != 0 || len(*out.OpenspecWarnings) != 0 {
+			t.Errorf("lists must be empty: %v %v %v", *out.OpenspecMainSpecs, *out.OpenspecActiveChanges, *out.OpenspecWarnings)
+		}
+	})
+
+	t.Run("main spec, active change and archive", func(t *testing.T) {
+		mainRoot, root := t.TempDir(), t.TempDir()
+		verifyOpenspecRoot(t, root)
+		writeFile(t, filepath.Join(root, "openspec", "specs", "skill-preplan", "spec.md"),
+			"# skill-preplan\n\n## Requirements\n\n### Requirement: Topic file start\nbody\n\n### Requirement: One question at a time\nbody\n")
+		writeFile(t, filepath.Join(root, "openspec", "specs", "alpha", "spec.md"), "### Requirement: Alpha\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "zeta", "proposal.md"), "# zeta\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "zeta", "specs", "skill-preplan", "spec.md"),
+			"## ADDED Requirements\n\n### Requirement: Added one\n\n## MODIFIED Requirements\n\n### Requirement: Modified one\n\n"+
+				"## REMOVED Requirements\n\n### Requirement: Removed one\n\n## RENAMED Requirements\n\n### Requirement: Renamed one")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "zeta", "specs", "empty", "spec.md"), "# no headings\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "beta", "proposal.md"), "# beta\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "no-proposal", "specs", "x", "spec.md"), "### Requirement: X\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "archive", "old", "proposal.md"), "# old\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "archive", "old", "specs", "x", "spec.md"), "### Requirement: Old\n")
+		// The main root holds an OpenSpec too; it must not count.
+		verifyOpenspecRoot(t, mainRoot)
+		writeFile(t, filepath.Join(mainRoot, "openspec", "specs", "other", "spec.md"), "### Requirement: Other\n")
+
+		out := verifyOpenspecOut(t, mainRoot, root)
+		if out.OpenspecStatus != "present" {
+			t.Errorf("openspecStatus = %q, want present", out.OpenspecStatus)
+		}
+		wantMain := []VerifyOpenspecSpec{
+			{Path: "openspec/specs/alpha/spec.md", Requirements: []string{"Alpha"}},
+			{Path: "openspec/specs/skill-preplan/spec.md", Requirements: []string{"Topic file start", "One question at a time"}},
+		}
+		if !reflect.DeepEqual(*out.OpenspecMainSpecs, wantMain) {
+			t.Errorf("main specs = %+v, want %+v", *out.OpenspecMainSpecs, wantMain)
+		}
+		wantChanges := []VerifyOpenspecChange{
+			{Name: "beta", Proposal: "openspec/changes/beta/proposal.md", Specs: []VerifyOpenspecSpec{}},
+			{Name: "zeta", Proposal: "openspec/changes/zeta/proposal.md", Specs: []VerifyOpenspecSpec{
+				{Path: "openspec/changes/zeta/specs/empty/spec.md", Requirements: []string{}},
+				{Path: "openspec/changes/zeta/specs/skill-preplan/spec.md", Requirements: []string{
+					"ADDED: Added one", "MODIFIED: Modified one", "REMOVED: Removed one", "RENAMED: Renamed one",
+				}},
+			}},
+		}
+		if !reflect.DeepEqual(*out.OpenspecActiveChanges, wantChanges) {
+			t.Errorf("active changes = %+v, want %+v", *out.OpenspecActiveChanges, wantChanges)
+		}
+		if len(*out.OpenspecWarnings) != 0 {
+			t.Errorf("warnings = %v, want none", *out.OpenspecWarnings)
+		}
+	})
+
+	t.Run("a heading in a code fence does not count", func(t *testing.T) {
+		got := verifySpecHeadings([]byte("```\n### Requirement: Fenced\n```\n### Requirement: Real\n"), false)
+		if !reflect.DeepEqual(got, []string{"Real"}) {
+			t.Errorf("headings = %v, want [Real]", got)
+		}
+	})
+
+	t.Run("the size limit of one spec", func(t *testing.T) {
+		root := t.TempDir()
+		verifyOpenspecRoot(t, root)
+		heading := "### Requirement: Fits\n"
+		exact := heading + strings.Repeat("x", verifySpecMaxBytes-len(heading))
+		writeFile(t, filepath.Join(root, "openspec", "specs", "exact", "spec.md"), exact)
+		writeFile(t, filepath.Join(root, "openspec", "specs", "over", "spec.md"), exact+"x")
+		out := verifyOpenspecOut(t, root, root)
+		want := []VerifyOpenspecSpec{
+			{Path: "openspec/specs/exact/spec.md", Requirements: []string{"Fits"}},
+			{Path: "openspec/specs/over/spec.md", Requirements: []string{}},
+		}
+		if !reflect.DeepEqual(*out.OpenspecMainSpecs, want) {
+			t.Errorf("main specs = %+v, want %+v", *out.OpenspecMainSpecs, want)
+		}
+		wantWarn := []string{fmt.Sprintf("openspec/specs/over/spec.md: not read: %d bytes; the limit is %d bytes", verifySpecMaxBytes+1, verifySpecMaxBytes)}
+		if !reflect.DeepEqual(*out.OpenspecWarnings, wantWarn) {
+			t.Errorf("warnings = %v, want %v", *out.OpenspecWarnings, wantWarn)
+		}
+	})
+
+	t.Run("a spec that cannot be read", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root reads every file")
+		}
+		root := t.TempDir()
+		verifyOpenspecRoot(t, root)
+		path := filepath.Join(root, "openspec", "specs", "locked", "spec.md")
+		writeFile(t, path, "### Requirement: Locked\n")
+		if err := os.Chmod(path, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+		out := verifyOpenspecOut(t, root, root)
+		want := []VerifyOpenspecSpec{{Path: "openspec/specs/locked/spec.md", Requirements: []string{}}}
+		if !reflect.DeepEqual(*out.OpenspecMainSpecs, want) {
+			t.Errorf("main specs = %+v, want %+v", *out.OpenspecMainSpecs, want)
+		}
+		wantWarn := []string{"openspec/specs/locked/spec.md: not read: permission denied"}
+		if !reflect.DeepEqual(*out.OpenspecWarnings, wantWarn) {
+			t.Errorf("warnings = %v, want %v", *out.OpenspecWarnings, wantWarn)
+		}
+	})
+
+	t.Run("a specs folder that cannot be listed", func(t *testing.T) {
+		root := t.TempDir()
+		verifyOpenspecRoot(t, root)
+		writeFile(t, filepath.Join(root, "openspec", "specs"), "not a folder")
+		out := verifyOpenspecOut(t, root, root)
+		if len(*out.OpenspecMainSpecs) != 0 {
+			t.Errorf("main specs = %v, want none", *out.OpenspecMainSpecs)
+		}
+		if len(*out.OpenspecWarnings) != 1 || !strings.HasPrefix((*out.OpenspecWarnings)[0], "openspec/specs: not read: ") {
+			t.Errorf("warnings = %v, want one openspec/specs line", *out.OpenspecWarnings)
+		}
+	})
+
+	t.Run("a changes folder that cannot be listed", func(t *testing.T) {
+		root := t.TempDir()
+		verifyOpenspecRoot(t, root)
+		writeFile(t, filepath.Join(root, "openspec", "specs", "a", "spec.md"), "### Requirement: A\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes"), "not a folder")
+		out := verifyOpenspecOut(t, root, root)
+		if len(*out.OpenspecActiveChanges) != 0 {
+			t.Errorf("active changes = %v, want none", *out.OpenspecActiveChanges)
+		}
+		if len(*out.OpenspecMainSpecs) != 1 {
+			t.Errorf("main specs = %v, want 1", *out.OpenspecMainSpecs)
+		}
+		if len(*out.OpenspecWarnings) != 1 || !strings.HasPrefix((*out.OpenspecWarnings)[0], "openspec/changes: not read: ") {
+			t.Errorf("warnings = %v, want one openspec/changes line", *out.OpenspecWarnings)
+		}
+	})
+
+	t.Run("no specs folder and no changes folder", func(t *testing.T) {
+		root := t.TempDir()
+		verifyOpenspecRoot(t, root)
+		out := verifyOpenspecOut(t, root, root)
+		if out.OpenspecStatus != "present" || len(*out.OpenspecWarnings) != 0 {
+			t.Errorf("status %q, warnings %v", out.OpenspecStatus, *out.OpenspecWarnings)
+		}
+	})
+
+	t.Run("the path limit", func(t *testing.T) {
+		build := func(n int) string {
+			root := t.TempDir()
+			verifyOpenspecRoot(t, root)
+			for i := 0; i < n; i++ {
+				writeFile(t, filepath.Join(root, "openspec", "specs", fmt.Sprintf("cap-%04d", i), "spec.md"), "### Requirement: R\n")
+			}
+			return root
+		}
+		root := build(verifyOpenspecMaxPaths)
+		out := verifyOpenspecOut(t, root, root)
+		if len(*out.OpenspecMainSpecs) != verifyOpenspecMaxPaths || len(*out.OpenspecWarnings) != 0 {
+			t.Errorf("at the limit: %d specs, warnings %v", len(*out.OpenspecMainSpecs), *out.OpenspecWarnings)
+		}
+
+		root = build(verifyOpenspecMaxPaths + 1)
+		out = verifyOpenspecOut(t, root, root)
+		if len(*out.OpenspecMainSpecs) != verifyOpenspecMaxPaths {
+			t.Errorf("past the limit: %d specs, want %d", len(*out.OpenspecMainSpecs), verifyOpenspecMaxPaths)
+		}
+		want := []string{fmt.Sprintf("openspec: more than %d spec paths; the first %d are listed", verifyOpenspecMaxPaths, verifyOpenspecMaxPaths)}
+		if !reflect.DeepEqual(*out.OpenspecWarnings, want) {
+			t.Errorf("warnings = %v, want %v", *out.OpenspecWarnings, want)
+		}
+	})
 }
