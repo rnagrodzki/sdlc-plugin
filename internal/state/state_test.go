@@ -2319,6 +2319,8 @@ func TestIsActivePlanRun(t *testing.T) {
 		{"no skillInvoked", &State{Data: map[string]any{"planIntegrity": map[string]any{}}}, false},
 		{"skillInvoked", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x"}}}, true},
 		{"skillInvoked and done", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x", "done": "y"}}}, false},
+		{"skillInvoked and stopped", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x", "stopped": "y"}}}, false},
+		{"skillInvoked and stopped with a non-string value", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x", "stopped": true}}}, false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2349,6 +2351,32 @@ func TestIsDonePlanRun(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := IsDonePlanRun(tc.st); got != tc.want {
 				t.Fatalf("IsDonePlanRun = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestIsStoppedPlanRun covers the stopped marker: present with any value is
+// stopped; a nil state, no planIntegrity, or a planIntegrity that is not an
+// object is not stopped. A done marker alone does not count as stopped.
+func TestIsStoppedPlanRun(t *testing.T) {
+	tests := []struct {
+		name string
+		st   *State
+		want bool
+	}{
+		{"nil state", nil, false},
+		{"no planIntegrity", &State{Data: map[string]any{}}, false},
+		{"planIntegrity not an object", &State{Data: map[string]any{"planIntegrity": "stopped"}}, false},
+		{"no stopped", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x"}}}, false},
+		{"done only", &State{Data: map[string]any{"planIntegrity": map[string]any{"skillInvoked": "x", "done": "y"}}}, false},
+		{"stopped", &State{Data: map[string]any{"planIntegrity": map[string]any{"stopped": "2026-11-13T16:30:00Z"}}}, true},
+		{"stopped with a non-string value", &State{Data: map[string]any{"planIntegrity": map[string]any{"stopped": nil}}}, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsStoppedPlanRun(tc.st); got != tc.want {
+				t.Fatalf("IsStoppedPlanRun = %v, want %v", got, tc.want)
 			}
 		})
 	}

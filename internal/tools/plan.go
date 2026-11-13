@@ -1548,7 +1548,8 @@ func planRunForMark(mainRoot, branch, runID string) (*state.State, error) {
 // planRunForReuse returns the run that a resolveTemplate or resume call
 // reuses. Every error is typed. With runID set: planRunByID(runID), and a
 // DomainError when that run is not active (state.IsActivePlanRun): "is
-// done" when state.IsDonePlanRun, else "has no skillInvoked marker"
+// stopped" when state.IsStoppedPlanRun, "is done" when
+// state.IsDonePlanRun, else "has no skillInvoked marker"
 // (planIntegrity missing, null, of another type, or without skillInvoked).
 // With runID empty: ActivePlanRun(branch), which returns nil when the branch
 // has no active run, and an InfraError that names the unreadable path when
@@ -1572,6 +1573,12 @@ func planRunForReuse(mainRoot, branch, runID string) (*state.State, error) {
 	}
 	if state.IsActivePlanRun(st) {
 		return st, nil
+	}
+	if state.IsStoppedPlanRun(st) {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("plan run %s is stopped", runID),
+			Suggestion: planRunNewRunSuggestion,
+		}
 	}
 	if state.IsDonePlanRun(st) {
 		return nil, &mcpserver.DomainError{
@@ -1988,6 +1995,12 @@ func planPrepareCore(mainRoot, contentRoot string, in PlanPrepareIn) (PlanPrepar
 // "reviewOutcome", a PlanReviewOutcome that holds the user's answer to
 // each finding still open at the review-loop limit. Like "checkpoint", it
 // replaces its key on every call and returns a Next.
+//
+// "stopped" is an eleventh kind: a terminal timestamp marker in
+// planIntegrity, like "done", that records a user stop. Unlike the other
+// timestamp markers it keeps its first time on a repeat call. It is refused
+// on a done run, and a "done" call on a stopped run is refused. A
+// "review-outcome" call with a "stop" choice stamps it in the same write.
 var validMarkers = map[string]bool{
 	"plan-file":           true,
 	"skillInvoked":        true,
@@ -1999,6 +2012,7 @@ var validMarkers = map[string]bool{
 	"checkpoint":          true,
 	"review-round":        true,
 	"review-outcome":      true,
+	"stopped":             true,
 }
 
 // structuredDataMarkers maps a plan_mark structured-data marker name to the
@@ -2250,19 +2264,39 @@ type PlanOutcomeFinding struct {
 // choice is "stop". The handler picks one, so the caller does not branch.
 const (
 	reviewOutcomeNext     = "Outcome stored. No choice is stop: run Create-flow authoring (Create flow only), then Step 6.5."
-	reviewOutcomeStopNext = "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."
+	reviewOutcomeStopNext = "Outcome stored. The run is stopped. Offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."
 )
+
+// reviewOutcomeHasStop reports whether at least one finding of o has the
+// "stop" choice.
+func reviewOutcomeHasStop(o PlanReviewOutcome) bool {
+	for _, f := range o.Findings {
+		if f.Choice == outcomeChoiceStop {
+			return true
+		}
+	}
+	return false
+}
 
 // reviewOutcomeNextFor returns the Next of a successful "review-outcome"
 // call for the stored outcome o.
 func reviewOutcomeNextFor(o PlanReviewOutcome) string {
-	for _, f := range o.Findings {
-		if f.Choice == outcomeChoiceStop {
-			return reviewOutcomeStopNext
-		}
+	if reviewOutcomeHasStop(o) {
+		return reviewOutcomeStopNext
 	}
 	return reviewOutcomeNext
 }
+
+// stoppedNext is the Next of a successful "stopped" plan_mark call.
+const stoppedNext = "Run stopped. Print the plan file path and the step. End the plan. Do not hand off the plan."
+
+// stoppedOnDoneSuggestion and doneOnStoppedSuggestion are the Suggestions
+// of the DomainErrors for a "stopped" call on a done run and a "done" call
+// on a stopped run.
+const (
+	stoppedOnDoneSuggestion = "The run is closed. Do not write stopped after done."
+	doneOnStoppedSuggestion = "The user stopped this run. Start a new plan run."
+)
 
 // PlanRoundLens is the verdict of one review lens in a PlanReviewRound.
 type PlanRoundLens struct {
@@ -2733,7 +2767,7 @@ func appendPlanRunRecord(mainRoot, branch string, st *state.State) error {
 
 // PlanMarkIn is the input for the plan_mark tool.
 type PlanMarkIn struct {
-	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint,enum=review-round,enum=review-outcome" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data). \"review-round\" records one plan review round in reviewRounds and replaces the entry with the same round (requires data {round, mergedStatus, found, fixed, lenses}; findings optional). \"review-outcome\" replaces reviewOutcome with the user's answers to the findings open at the review-loop limit (requires data {findings})."`
+	Marker string         `json:"marker" jsonschema:"enum=plan-file,enum=skillInvoked,enum=guardrailsEvaluated,enum=critiqueRan,enum=done,enum=guardrailResults,enum=criticalDecisions,enum=checkpoint,enum=review-round,enum=review-outcome,enum=stopped" jsonschema_description:"Checkpoint marker: \"plan-file\", \"skillInvoked\", \"guardrailsEvaluated\", \"critiqueRan\", or the terminal \"done\" marker stamp the current timestamp into planIntegrity; \"guardrailResults\" and \"criticalDecisions\" instead append data's array payload to their own state key. \"checkpoint\" replaces the progress checkpoint (requires data). \"review-round\" records one plan review round in reviewRounds and replaces the entry with the same round (requires data {round, mergedStatus, found, fixed, lenses}; findings optional). \"review-outcome\" replaces reviewOutcome with the user's answers to the findings open at the review-loop limit (requires data {findings}); a \"stop\" choice also stamps planIntegrity.stopped in the same write (on a done run it only adds a warning). \"stopped\" stamps the time of a user stop. Refused on a done run (DomainError 'plan run <runId> is done; stopped not recorded'). A done call on a stopped run is refused (DomainError 'plan run <runId> is stopped; done not recorded'). A repeat stopped call keeps the first time."`
 	Path   string         `json:"path" jsonschema_description:"Plan file path to record. Only used (and required) when marker is \"plan-file\"."`
 	RunID  string         `json:"runId,omitempty" jsonschema_description:"Run ID from plan_prepare (runId). Pass it on every call: the marker goes to that run. Without it, the newest plan run of the current branch is used, which can belong to another session on the same branch. Example: plan-main-20261026T084445Z"`
 	Data   map[string]any `json:"data,omitempty" jsonschema_description:"Structured payload for the \"guardrailResults\" marker ({results:[{id,status,detail}]}) or the \"criticalDecisions\" marker ({decisions:[{key,choice,rejected,reason}]}; rejected is [{option,why}], defaults to [] when omitted; the tool always sets at to the call time, overwriting any caller-supplied value). For \"checkpoint\": JSON object {step: string, one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"; iteration: integer >= 0; expectedWriters: JSON array of writer IDs (max 32)}. Example: {\"step\":\"3\",\"iteration\":1,\"expectedWriters\":[\"lane-static-structural-r1\"]}. Replaced, not appended. For \"review-round\": JSON object, every key required except findings: {round: integer >= 1; mergedStatus: \"Approved\" or \"Issues Found\" (exact text); found: integer >= 0, blocking issues found in the round; fixed: integer >= 0, blocking issues fixed; lenses: JSON array (max 32) of {name: lens name, letters, digits, '.', '_', '-'; verdict: \"Approved\" or \"Issues Found\"}; findings (optional): JSON array (max 200) of {id: the merge_results allIssues id, \"f-\" plus 8 lower-case hex characters; fixed: boolean}}. Example: {\"round\":2,\"mergedStatus\":\"Issues Found\",\"found\":4,\"fixed\":4,\"lenses\":[{\"name\":\"architecture\",\"verdict\":\"Approved\"},{\"name\":\"risk\",\"verdict\":\"Issues Found\"}],\"findings\":[{\"id\":\"f-3a9c1e07\",\"fixed\":true}]}. Replaces the entry with the same round; max 20 rounds stored. For \"review-outcome\": JSON object {findings: JSON array, 1 to 200 entries, of {id: the merge_results allIssues id; text: string, max 200 characters; choice: \"accepted\", \"rejected\", or \"stop\"; reason: string, max 200 characters, \"\" when there is none}}, all 4 entry keys required. Pass every answered finding on every call: the call replaces the stored reviewOutcome. Example: {\"findings\":[{\"id\":\"f-9d01aa42\",\"text\":\"Missing test for the stop route\",\"choice\":\"accepted\",\"reason\":\"Covered by the flow walk task\"}]}. Ignored for every other marker."`
@@ -2747,8 +2781,8 @@ type PlanMarkOut struct {
 	// RunID is the run that the marker went to: the runId input, or the
 	// newest plan run of the branch when runId was omitted.
 	RunID    string   `json:"runId"`
-	Next     string   `json:"next,omitempty"`                // checkpoint, review-outcome and done only
-	Warnings []string `json:"warnings,omitempty"`            // checkpoint: step time not recorded; done: history or evidence read failed; the marker itself was saved
+	Next     string   `json:"next,omitempty"`                // checkpoint, review-outcome, stopped and done only
+	Warnings []string `json:"warnings,omitempty"`            // checkpoint: step time not recorded; done: history or evidence read failed; review-outcome: stopped not recorded on a done run; the marker itself was saved
 	Timing   string   `json:"timing,omitempty" render:"raw"` // done only: the Step 7 timing report
 	// StepTime is checkpoint only: what the call did to stepTimes.
 	StepTime *PlanStepTimeResult `json:"stepTime,omitempty"`
@@ -2782,9 +2816,16 @@ func planMark(mainRoot, contentRoot string, in PlanMarkIn) (PlanMarkOut, error) 
 		return PlanMarkOut{}, err
 	}
 
+	// A repeat "stopped" call writes nothing new: the run keeps its first
+	// stop time and its state file is left as it is.
+	repeatStop := in.Marker == "stopped" && state.IsStoppedPlanRun(st)
+
 	out := PlanMarkOut{OK: true, Marker: in.Marker, Path: st.Path, RunID: state.RunID(st)}
 	if err := applyPlanMark(st, mainRoot, in, payload, &out); err != nil {
 		return PlanMarkOut{}, err
+	}
+	if repeatStop {
+		return out, nil
 	}
 	if err := writePlanMarkState(st, contentRoot, in.Marker); err != nil {
 		return PlanMarkOut{}, err
@@ -2855,7 +2896,13 @@ func validatePlanMarkInput(in PlanMarkIn) (planMarkPayload, error) {
 //   - review-round upserts its entry into reviewRounds by round. No Next.
 //   - review-outcome replaces reviewOutcome with this call's full list. Its
 //     Next is reviewOutcomeStopNext when any choice is "stop", else
-//     reviewOutcomeNext.
+//     reviewOutcomeNext. A "stop" choice also stamps planIntegrity.stopped
+//     in the same write (stampStopped); on a done run it adds a warning
+//     instead.
+//   - stopped stamps planIntegrity.stopped once (a repeat call keeps the
+//     first time) and returns stoppedNext. It is a DomainError on a done
+//     run.
+//   - done is a DomainError on a stopped run; else it stamps as below.
 //   - the structured-data markers (structuredDataMarkers) append to their own
 //     top-level state key and never touch planIntegrity. No Next.
 //   - every other marker stamps the current time into planIntegrity;
@@ -2879,7 +2926,31 @@ func applyPlanMark(st *state.State, mainRoot string, in PlanMarkIn, p planMarkPa
 	case "review-outcome":
 		st.Data["reviewOutcome"] = p.reviewOutcome
 		out.Next = reviewOutcomeNextFor(p.reviewOutcome)
+		if reviewOutcomeHasStop(p.reviewOutcome) {
+			if state.IsDonePlanRun(st) {
+				out.Warnings = append(out.Warnings, fmt.Sprintf("plan run %s is done; stopped not recorded", out.RunID))
+			} else {
+				stampStopped(st)
+			}
+		}
 		return nil
+	case "stopped":
+		if state.IsDonePlanRun(st) {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("plan run %s is done; stopped not recorded", out.RunID),
+				Suggestion: stoppedOnDoneSuggestion,
+			}
+		}
+		stampStopped(st)
+		out.Next = stoppedNext
+		return nil
+	case "done":
+		if state.IsStoppedPlanRun(st) {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("plan run %s is stopped; done not recorded", out.RunID),
+				Suggestion: doneOnStoppedSuggestion,
+			}
+		}
 	}
 
 	if dataKey, isStructured := structuredDataMarkers[in.Marker]; isStructured {
@@ -2907,6 +2978,20 @@ func applyPlanMark(st *state.State, mainRoot string, in PlanMarkIn, p planMarkPa
 		st.Data["planFilePath"] = in.Path
 	}
 	return nil
+}
+
+// stampStopped stamps planIntegrity.stopped with the current UTC time. A
+// run that is already stopped keeps its first time.
+func stampStopped(st *state.State) {
+	if state.IsStoppedPlanRun(st) {
+		return
+	}
+	integrity, ok := st.Data["planIntegrity"].(map[string]any)
+	if !ok {
+		integrity = map[string]any{}
+	}
+	integrity["stopped"] = time.Now().UTC().Format(time.RFC3339)
+	st.Data["planIntegrity"] = integrity
 }
 
 // writePlanMarkState refreshes the plan timing and writes st. A failed write
@@ -2948,7 +3033,7 @@ var planMarkDataMarkers = map[string]bool{
 func RegisterPlanTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_prepare",
 		"Prepare OpenSpec detection, guardrails, explore-pack discovery, and G17/lane/lens dispatch metadata for plan, plus gateChecks (the Step 3 gate checks that start no sub-agent). "+
-			"Writes the plan state file and <runId>.evidence/guardrails.md and style-guide.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes the older runs of the branch that are not done, not written in the last "+strconv.Itoa(int(state.PlanRunLiveWindow.Hours()))+" hours and not stamped by another session, with their evidence. Optional: resume (post-compact recovery; reuses the run, implies resolveTemplate, and fails when none exists); runId (the runId of the first call; a resume or resolveTemplate call reuses that run, not the newest run of the branch; a first call ignores it). A resume or resolveTemplate call with runId returns DomainError 'plan run <runId> not found' when the run does not exist, DomainError 'plan run <runId> is done' for a done run, DomainError 'plan run <runId> has no skillInvoked marker' for a run that is not active, and InfraError for an unreadable state file; it never starts a new run. Returns runId, guardrailsFile, styleGuideFile and next. A failed state read, state write, guardrails write or style guide write returns an infrastructure error; the evidence cleanup is best-effort.",
+			"Writes the plan state file and <runId>.evidence/guardrails.md and style-guide.md under gitignored .sdlc-v2/runs/. A call without resume or resolveTemplate starts a new run and deletes the older runs of the branch that are not done, not written in the last "+strconv.Itoa(int(state.PlanRunLiveWindow.Hours()))+" hours and not stamped by another session, with their evidence. Optional: resume (post-compact recovery; reuses the run, implies resolveTemplate, and fails when none exists); runId (the runId of the first call; a resume or resolveTemplate call reuses that run, not the newest run of the branch; a first call ignores it). A resume or resolveTemplate call with runId returns DomainError 'plan run <runId> not found' when the run does not exist, DomainError 'plan run <runId> is done' for a done run, DomainError 'plan run <runId> is stopped' for a stopped run, DomainError 'plan run <runId> has no skillInvoked marker' for a run that is not active, and InfraError for an unreadable state file; it never starts a new run. Returns runId, guardrailsFile, styleGuideFile and next. A failed state read, state write, guardrails write or style guide write returns an infrastructure error; the evidence cleanup is best-effort.",
 		mcpserver.Annotations{
 			Title:      "Prepare plan state and template",
 			ReadOnly:   true,
@@ -2977,14 +3062,15 @@ func RegisterPlanTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "plan_mark",
-		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the plan state file that runId names (the newest plan run of the current branch when runId is absent), append structured data (guardrailResults, criticalDecisions) to it, replace the progress checkpoint (checkpoint), record a review round (review-round), or store the answers to the findings open at the review-loop limit (review-outcome). "+
+		"INTERNAL — called by sdlc skills only. Write a plan-integrity checkpoint marker (plan-file, skillInvoked, guardrailsEvaluated, critiqueRan, done) into the plan state file that runId names (the newest plan run of the current branch when runId is absent), record a user stop (stopped), append structured data (guardrailResults, criticalDecisions) to it, replace the progress checkpoint (checkpoint), record a review round (review-round), or store the answers to the findings open at the review-loop limit (review-outcome). "+
 			"Optional on every marker: runId (the runId that plan_prepare returned; pass it so that a second plan session on the same branch does not get this write). A runId with no state file, or that is not a plan run ID, returns DomainError 'plan run <runId> not found'; an unreadable state file returns InfraError. A done run is accepted. "+
 			"checkpoint: replace the progress checkpoint. Requires data.step (one of \"0\", \"1\", \"2\", \"3\", \"4\", \"5\", \"6\", \"6.5\", \"6.6\", \"7\"). Optional: data.iteration, data.expectedWriters. Returns next: the step-continuation sentence, plus the full custom plan instructions text (from [planStyle].instructions) when any are configured, plus a last-round sentence when step is \"5\" and iteration reaches the review-loop limit (plan_prepare's reviewLoop.maxRounds). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError. "+
 			"The first checkpoint of each step and iteration also adds {step, iteration, at} to the top-level stepTimes list, and the checkpoint returns stepTime {step, iteration, at, status}: status is added, kept (an earlier entry owns the time; at is its time) or not recorded. "+
 			"When stepTimes already holds "+strconv.Itoa(maxStepTimesStored)+" entries, the checkpoint is still saved, no entry is added, status is not recorded and the checkpoint returns a warning. A stepTimes value that is not a list is kept, status is not recorded, and the checkpoint returns a warning. "+
 			"review-round — Requires: data.round, data.mergedStatus, data.found, data.fixed, data.lenses. Optional: data.findings (max 200 {id, fixed}). Replaces the row with the same round. Returns no next. "+
-			"review-outcome — Requires: data.findings (1 to 200 {id, text, choice, reason}; choice is accepted, rejected, or stop). Pass every answered finding on every call: each call replaces the stored reviewOutcome. Returns next. Invalid input returns DomainError and writes nothing. "+
-			"Markers other than checkpoint, review-outcome and done return no next: the call only records state; continue the current SKILL.md step. "+
+			"review-outcome — Requires: data.findings (1 to 200 {id, text, choice, reason}; choice is accepted, rejected, or stop). Pass every answered finding on every call: each call replaces the stored reviewOutcome. A stop choice also stamps planIntegrity.stopped in the same write (a stopped run keeps its first time; a done run gets no stamp and the warning 'plan run <runId> is done; stopped not recorded'). Returns next. Invalid input returns DomainError and writes nothing. "+
+			"stopped — stamps the time of a user stop into planIntegrity.stopped and returns next. A repeat call keeps the first time and writes nothing. Refused on a done run: DomainError 'plan run <runId> is done; stopped not recorded'. A done call on a stopped run is refused: DomainError 'plan run <runId> is stopped; done not recorded'. Any other marker on a stopped run is accepted. "+
+			"Markers other than checkpoint, review-outcome and done return no next, except stopped, which returns next. A call with no next only records state; continue the current SKILL.md step. "+
 			"The done marker also appends the plan's timing (start to last plan-file edit) to .sdlc-v2/history/runs.jsonl; a failed append returns ok with warnings set. Repeating done appends another history record. "+
 			"The done marker also returns timing: the Step 7 timing report (total, the time of each step, the "+strconv.Itoa(planTimingTopAgents)+" slowest agents). It reads planIntegrity, stepTimes and the run's evidence writer files (<runId>.evidence/*.json). Absent data shows as unknown in its line. An evidence folder that cannot be listed adds the warning \"Timing: cannot read evidence: <error>\"; each skipped writer file or stepTimes entry adds one warning; done still returns ok.",
 		mcpserver.Annotations{

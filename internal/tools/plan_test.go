@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/pelletier/go-toml/v2"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
@@ -3576,7 +3578,7 @@ func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
 			t.Errorf("PlanMarkIn.Marker jsonschema tag missing enum=%s: %q", marker, tag)
 		}
 	}
-	if want := 10; len(validMarkers) != want {
+	if want := 11; len(validMarkers) != want {
 		t.Fatalf("len(validMarkers) = %d, want %d (update this test if the marker set intentionally grows)", len(validMarkers), want)
 	}
 }
@@ -4046,7 +4048,7 @@ func TestPlanMark_ReviewOutcome_ReplacesEachCall(t *testing.T) {
 	if out.Next != reviewOutcomeStopNext {
 		t.Errorf("Next with a stop choice = %q, want %q", out.Next, reviewOutcomeStopNext)
 	}
-	if want := "Outcome stored. A choice is stop: offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; reviewOutcomeStopNext != want {
+	if want := "Outcome stored. The run is stopped. Offer harden when interactive, then end the run and report the open findings. Do not hand off the plan."; reviewOutcomeStopNext != want {
 		t.Errorf("reviewOutcomeStopNext = %q, want %q", reviewOutcomeStopNext, want)
 	}
 	if got := storedReviewOutcome(t, dir); !reflect.DeepEqual(got, []any{stop}) {
@@ -4691,4 +4693,237 @@ func listStateFiles(t *testing.T, root string) []string {
 		}
 	}
 	return names
+}
+
+// ---------------------------------------------------------------------------
+// stopped marker
+// ---------------------------------------------------------------------------
+
+// stoppedTestRun is the plan run ID that the stopped-marker tests seed.
+const stoppedTestRun = "plan-main-20260105T000000Z"
+
+// stoppedTestFirstStop is the stop time that a seeded stopped run holds.
+const stoppedTestFirstStop = "2020-01-02T00:00:00Z"
+
+// stoppedTestSeed returns the state data of a seeded run: "active" has only
+// skillInvoked, "stopped" adds stopped, "done" adds done.
+func stoppedTestSeed(kind string) map[string]any {
+	integrity := map[string]any{"skillInvoked": "2020-01-01T00:00:00Z"}
+	switch kind {
+	case "stopped":
+		integrity["stopped"] = stoppedTestFirstStop
+	case "done":
+		integrity["done"] = "2020-01-02T00:00:00Z"
+	}
+	return map[string]any{"planIntegrity": integrity}
+}
+
+// stoppedTestIntegrity returns planIntegrity of the seeded run.
+func stoppedTestIntegrity(t *testing.T, dir string) map[string]any {
+	t.Helper()
+	var doc map[string]any
+	if err := json.Unmarshal(planTestReadRun(t, dir, stoppedTestRun), &doc); err != nil {
+		t.Fatal(err)
+	}
+	integrity, ok := doc["planIntegrity"].(map[string]any)
+	if !ok {
+		t.Fatalf("planIntegrity missing or wrong type: %v", doc["planIntegrity"])
+	}
+	return integrity
+}
+
+// TestPlanMark_Stopped_CombinationRules covers one row of the plan_mark
+// combination table for the stopped marker in each case.
+func TestPlanMark_Stopped_CombinationRules(t *testing.T) {
+	stopOutcome := map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceStop)}}
+	doneOnStop := "plan run " + stoppedTestRun + " is done; stopped not recorded"
+
+	tests := []struct {
+		name      string
+		seed      string
+		in        PlanMarkIn
+		wantErr   string // planTestErrResult of the call
+		wantSugg  string // Suggestion of the DomainError
+		wantNext  string
+		wantWarn  []string
+		unchanged bool // the state file keeps its bytes
+		// wantStopped: "new" (a fresh RFC 3339 time), "first" (the seeded
+		// time), or "absent".
+		wantStopped string
+		wantOutcome bool // reviewOutcome is stored
+	}{
+		{name: "active run, stopped", seed: "active", in: PlanMarkIn{Marker: "stopped"},
+			wantErr: "ok", wantNext: stoppedNext, wantStopped: "new"},
+		{name: "stopped run, stopped", seed: "stopped", in: PlanMarkIn{Marker: "stopped"},
+			wantErr: "ok", wantNext: stoppedNext, unchanged: true, wantStopped: "first"},
+		{name: "done run, stopped", seed: "done", in: PlanMarkIn{Marker: "stopped"},
+			wantErr: "domain: " + doneOnStop, wantSugg: "The run is closed. Do not write stopped after done.", unchanged: true, wantStopped: "absent"},
+		{name: "stopped run, done", seed: "stopped", in: PlanMarkIn{Marker: "done"},
+			wantErr: "domain: plan run " + stoppedTestRun + " is stopped; done not recorded", wantSugg: "The user stopped this run. Start a new plan run.", unchanged: true, wantStopped: "first"},
+		{name: "stopped run, other marker", seed: "stopped", in: PlanMarkIn{Marker: "critiqueRan"},
+			wantErr: "ok", wantStopped: "first"},
+		{name: "active run, review-outcome with stop", seed: "active", in: PlanMarkIn{Marker: "review-outcome", Data: stopOutcome},
+			wantErr: "ok", wantNext: reviewOutcomeStopNext, wantStopped: "new", wantOutcome: true},
+		{name: "stopped run, review-outcome with stop", seed: "stopped", in: PlanMarkIn{Marker: "review-outcome", Data: stopOutcome},
+			wantErr: "ok", wantNext: reviewOutcomeStopNext, wantStopped: "first", wantOutcome: true},
+		{name: "done run, review-outcome with stop", seed: "done", in: PlanMarkIn{Marker: "review-outcome", Data: stopOutcome},
+			wantErr: "ok", wantNext: reviewOutcomeStopNext, wantWarn: []string{doneOnStop}, wantStopped: "absent", wantOutcome: true},
+		{name: "active run, review-outcome without stop", seed: "active",
+			in:      PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)}}},
+			wantErr: "ok", wantNext: reviewOutcomeNext, wantStopped: "absent", wantOutcome: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := planTestGitRepo(t, "main")
+			planTestSeedRun(t, dir, stoppedTestRun, stoppedTestSeed(tc.seed))
+			before := planTestReadRun(t, dir, stoppedTestRun)
+
+			in := tc.in
+			in.RunID = stoppedTestRun
+			start := time.Now().UTC().Truncate(time.Second)
+			out, err := planMark(dir, dir, in)
+			if got := planTestErrResult(err); got != tc.wantErr {
+				t.Fatalf("result = %q, want %q", got, tc.wantErr)
+			}
+			if err != nil {
+				if got := planTestErrSuggestion(err); got != tc.wantSugg {
+					t.Errorf("Suggestion = %q, want %q", got, tc.wantSugg)
+				}
+			} else {
+				if out.Next != tc.wantNext {
+					t.Errorf("Next = %q, want %q", out.Next, tc.wantNext)
+				}
+				if !reflect.DeepEqual(out.Warnings, tc.wantWarn) {
+					t.Errorf("Warnings = %q, want %q", out.Warnings, tc.wantWarn)
+				}
+			}
+
+			after := planTestReadRun(t, dir, stoppedTestRun)
+			if tc.unchanged && string(after) != string(before) {
+				t.Errorf("run file changed:\nbefore=%s\nafter=%s", before, after)
+			}
+
+			integrity := stoppedTestIntegrity(t, dir)
+			stopped, has := integrity["stopped"]
+			switch tc.wantStopped {
+			case "absent":
+				if has {
+					t.Errorf("planIntegrity.stopped = %v, want absent", stopped)
+				}
+			case "first":
+				if stopped != stoppedTestFirstStop {
+					t.Errorf("planIntegrity.stopped = %v, want the first time %q", stopped, stoppedTestFirstStop)
+				}
+			case "new":
+				s, _ := stopped.(string)
+				at, perr := time.Parse(time.RFC3339, s)
+				if perr != nil {
+					t.Fatalf("planIntegrity.stopped = %v, want an RFC 3339 time: %v", stopped, perr)
+				}
+				if at.Before(start) || !strings.HasSuffix(s, "Z") {
+					t.Errorf("planIntegrity.stopped = %q, want a UTC time at or after %s", s, start.Format(time.RFC3339))
+				}
+			}
+
+			var doc map[string]any
+			if err := json.Unmarshal(after, &doc); err != nil {
+				t.Fatal(err)
+			}
+			if _, has := doc["reviewOutcome"]; has != tc.wantOutcome {
+				t.Errorf("reviewOutcome stored = %v, want %v", has, tc.wantOutcome)
+			}
+			if tc.in.Marker == "critiqueRan" {
+				if _, has := integrity["critiqueRan"]; !has {
+					t.Error("planIntegrity.critiqueRan missing: a stopped run must accept other markers")
+				}
+			}
+		})
+	}
+}
+
+// TestPlanMark_StoppedNextText pins the Next text of a stopped call.
+func TestPlanMark_StoppedNextText(t *testing.T) {
+	if want := "Run stopped. Print the plan file path and the step. End the plan. Do not hand off the plan."; stoppedNext != want {
+		t.Errorf("stoppedNext = %q, want %q", stoppedNext, want)
+	}
+}
+
+// TestPlanPrepare_RunIDStoppedNotReused verifies a resume or resolveTemplate
+// call with the runId of a stopped run returns "is stopped" with the new-run
+// Suggestion, and leaves the run file as it is. A run with both done and
+// stopped also gives "is stopped": the stopped check comes first.
+func TestPlanPrepare_RunIDStoppedNotReused(t *testing.T) {
+	for seedName, seed := range map[string]map[string]any{
+		"stopped":          stoppedTestSeed("stopped"),
+		"stopped and done": {"planIntegrity": map[string]any{"skillInvoked": "x", "stopped": "y", "done": "z"}},
+	} {
+		for mode, in := range map[string]PlanPrepareIn{
+			"resume":          {SkipConfigCheck: true, Resume: true, RunID: stoppedTestRun},
+			"resolveTemplate": {SkipConfigCheck: true, ResolveTemplate: true, RunID: stoppedTestRun},
+		} {
+			t.Run(seedName+"/"+mode, func(t *testing.T) {
+				dir := planTestTemplateRepo(t)
+				planTestSeedRun(t, dir, stoppedTestRun, seed)
+				before := planTestReadRun(t, dir, stoppedTestRun)
+
+				_, err := runPlanPrepare(t, dir, dir, in)
+				if got, want := planTestErrResult(err), "domain: plan run "+stoppedTestRun+" is stopped"; got != want {
+					t.Fatalf("result = %q, want %q", got, want)
+				}
+				if got := planTestErrSuggestion(err); got != planRunNewRunSuggestion {
+					t.Errorf("Suggestion = %q, want %q", got, planRunNewRunSuggestion)
+				}
+				if after := planTestReadRun(t, dir, stoppedTestRun); string(after) != string(before) {
+					t.Errorf("run file changed:\nbefore=%s\nafter=%s", before, after)
+				}
+			})
+		}
+	}
+}
+
+// TestPlanTools_DescriptionsNameStopped verifies the plan_mark and
+// plan_prepare descriptions name the stopped marker and its errors.
+func TestPlanTools_DescriptionsNameStopped(t *testing.T) {
+	s := mcpserver.New("test", "0.0.0-test")
+	RegisterPlanTools(s)
+
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	c, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil).Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+	resp, err := c.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	desc := map[string]string{}
+	for _, tool := range resp.Tools {
+		desc[tool.Name] = tool.Description
+	}
+
+	for tool, wants := range map[string][]string{
+		"plan_mark": {
+			"record a user stop (stopped)",
+			"'plan run <runId> is done; stopped not recorded'",
+			"'plan run <runId> is stopped; done not recorded'",
+			"A stop choice also stamps planIntegrity.stopped in the same write",
+		},
+		"plan_prepare": {"DomainError 'plan run <runId> is stopped' for a stopped run"},
+	} {
+		for _, want := range wants {
+			if !strings.Contains(desc[tool], want) {
+				t.Errorf("%s description does not contain %q", tool, want)
+			}
+		}
+	}
+
+	f, _ := reflect.TypeOf(PlanMarkIn{}).FieldByName("Marker")
+	if d := f.Tag.Get("jsonschema_description"); !strings.Contains(d, `"stopped" stamps the time of a user stop. Refused on a done run`) {
+		t.Errorf("PlanMarkIn.Marker description does not name stopped: %q", d)
+	}
 }

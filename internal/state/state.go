@@ -653,6 +653,20 @@ func IsDonePlanRun(st *State) bool {
 	return hasDone
 }
 
+// IsStoppedPlanRun reports whether st has the stopped marker:
+// data.planIntegrity is an object that has a "stopped" key (any value, the
+// same rule as IsDonePlanRun). A nil st, a missing planIntegrity, or a
+// planIntegrity that is not an object is not stopped. IsActivePlanRun uses
+// it.
+func IsStoppedPlanRun(st *State) bool {
+	if st == nil {
+		return false
+	}
+	integrity, _ := st.Data["planIntegrity"].(map[string]any)
+	_, hasStopped := integrity["stopped"]
+	return hasStopped
+}
+
 // PlanRunLiveWindow is how long a plan run that is not done stays live after
 // its last state write. A write to another plan run of the branch never
 // deletes a live run. The post-compact banner uses the same window.
@@ -802,8 +816,8 @@ func LatestPlanRun(root, branch string) (*State, error) {
 }
 
 // ActivePlanRun returns LatestPlanRun's run for branch only when it is
-// mid-flight: planIntegrity.skillInvoked is set and planIntegrity.done is
-// absent (the plan SKILL.md stamps "done" right before ExitPlanMode; see
+// mid-flight: planIntegrity.skillInvoked is set and planIntegrity.done and
+// planIntegrity.stopped are absent (the plan SKILL.md stamps "done" right before ExitPlanMode; see
 // plan.go's validMarkers and stop_hooks.go's planIntegrityFromState for the
 // same convention). Otherwise it returns (nil, nil) — including when
 // LatestPlanRun itself returns (nil, nil). A LatestPlanRun error passes
@@ -824,8 +838,9 @@ func ActivePlanRun(root, branch string) (*State, error) {
 }
 
 // IsActivePlanRun reports whether st is mid-flight: planIntegrity has
-// skillInvoked and has no done. ActivePlanRun and PlanRunForSession use it,
-// and the stamp hook calls it. A nil st is not active.
+// skillInvoked and has neither done nor stopped. ActivePlanRun and
+// PlanRunForSession use it, and the stamp hook calls it. A nil st is not
+// active.
 func IsActivePlanRun(st *State) bool {
 	if st == nil {
 		return false
@@ -834,7 +849,7 @@ func IsActivePlanRun(st *State) bool {
 	if _, hasSkillInvoked := integrity["skillInvoked"]; !hasSkillInvoked {
 		return false
 	}
-	return !IsDonePlanRun(st)
+	return !IsDonePlanRun(st) && !IsStoppedPlanRun(st)
 }
 
 // planRunFile names one plan run file of runs/: its run ID and branch slug.
