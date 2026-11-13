@@ -9,7 +9,7 @@ Default severity: high
 
 ## Verification Checklist
 - A route leaves a step at its end, or names where the rest of the step goes. Each routes-table row names exactly one target step, and zero results and an errored check each have a row.
-- A resume rule reads a missing record as 'not started' only if the dispatch follows the record write. Running workers are stopped or adopted, and a value a later step reads after context compaction is saved in a checkpoint.
+- A resume rule reads a missing record as 'not started' only if the dispatch follows the record write. Running workers are stopped or adopted, a stop rule names the record that lists running workers, and a value a later step reads after context compaction is saved in a checkpoint.
 - A failed check, lane or retry limit is reported as failed, never as passed or fixed. Its gates are listed as unchecked, and a tool warning is shown to the user.
 - A retry changes an input or waits on a condition. A call that fails the same way each time is not retried unchanged.
 - A rule worded never, only or always is not broken by any step. A step that deletes or rewrites data that a later step reads says what the later step does when the data is gone, and a value derived from that data is recomputed or asked again.
@@ -18,3 +18,5 @@ Default severity: high
 - Each answer option of a prompt, including one that skips every item, declines or stops, has a next step and writes the same records as the other routes, and each later clean exit is reachable after it. A rule that says nothing changes before approval lists every step that changes something without an answer, and a skip or stop answer states what it does to work that an earlier rule approved.
 - A step that changes one record with two or more tool calls states the record after a failed or interrupted later call and how the next entry detects it, or it makes one call.
 - A sentence or bullet holds one rule with one condition; two rules that apply to different cases are split. A step with a skip decision, a tool call and a record write states their order, and says whether the record is written when the skip fires.
+- A counter, flag or note in a checkpoint or run record that serves two or more gates, lanes or items holds one value for each of them. A field keyed by a step name that two gates share is a finding.
+- A paragraph, rule, table row or list that names the writers of a stored value, the routes into a stop, the steps that a flag changes (an Arguments row for `--auto`) or the errors a resume flow can return names every one, or says that it names only some. Grep for each route and compare.

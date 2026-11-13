@@ -441,7 +441,7 @@ The skill SHALL snapshot the plan with `plan_support({action: "material_snapshot
 - **AND** `laneResults` holds the fixed `dimension-coverage` entry
 
 ### Requirement: Hard gates before handoff
-The skill SHALL pass two hard gates before Step 7. On failure it SHALL show the findings verbatim and stop, with no retry, auto-edit, or bypass.
+The skill SHALL pass two hard gates before Step 7. On failure it SHALL show the findings verbatim and ask the conclude question at the Gate point. It SHALL not go to Step 7 with findings.
 
 | Gate | Call | Fails when |
 |---|---|---|
@@ -453,7 +453,7 @@ The skill SHALL pass two hard gates before Step 7. On failure it SHALL show the 
 
 #### Scenario: Broken link
 - **WHEN** `links_validate` returns a result with status other than `ok`
-- **THEN** the skill lists the violations and stops before Step 7
+- **THEN** the skill lists the violations and asks the conclude question before Step 7
 
 ### Requirement: Handoff
 The skill SHALL call `plan_mark({marker: "done"})` and then hand off without running `execute` or `ship` in the same turn.
@@ -604,7 +604,7 @@ On a resume, the skill SHALL read the Create state from the plan header line and
 - **AND** it stages nothing before Step 6 ends
 
 ### Requirement: OpenSpec files authored again after rejected handoff
-When the user rejects the plan-mode handoff with feedback and the plan header has an `**OpenSpec-Staging:**` line, the skill SHALL change the plan for the feedback, author all OpenSpec files again from the changed plan file, and stage them with all files before the next handoff.
+When the user rejects the plan-mode handoff with feedback, or replies with a change in normal mode, the skill SHALL change the plan for the feedback and ask the conclude question. On Conclude, a plan with an `**OpenSpec-Staging:**` line SHALL author all OpenSpec files again from the changed plan file and stage them with all files before the next handoff.
 
 - The skill reads and writes no plan run state on this path. It makes no `plan_mark` call and no `evidence_record` call.
 - It calls `links_validate` and `validate` with action `plan_format` and `final: true` before the next ExitPlanMode.
@@ -619,6 +619,7 @@ When the user rejects the plan-mode handoff with feedback and the plan header ha
 #### Scenario: Plan without staging
 - **WHEN** the user rejects ExitPlanMode and the plan header has no `**OpenSpec-Staging:**` line
 - **THEN** the skill calls no `openspec_*` action
+- **AND** the skill asks the conclude question
 
 ### Requirement: Review round record
 At each exit of a Step 5 review round, the skill SHALL call `plan_mark` marker `review-round` with the round, status, found, fixed, and lens verdicts. A failed call SHALL not stop the skill.
@@ -831,3 +832,64 @@ The skill SHALL pass `handoff: true` in the Step 6.6 `plan_format` call and in t
 #### Scenario: Format pre-check
 - **WHEN** the Step 2 format pre-check runs on a plan with `**OpenSpec-Create:**`
 - **THEN** the call has no `handoff` field and returns no PF15 finding
+
+### Requirement: Conclude question
+The skill SHALL ask one conclude question, "Is this all? Conclude the plan?", with the options Conclude (Recommended), Change more and Stop. Before it asks, it SHALL restate the current step, the steps that are left, the open findings and the plan file path.
+
+#### Scenario: Free-text answer
+- **WHEN** the user answers the conclude question with free text
+- **THEN** the skill applies the text as one more change
+- **AND** the skill asks the conclude question again
+
+#### Scenario: Auto mode
+- **WHEN** `--auto` is set
+- **THEN** the skill takes Conclude with no question
+
+### Requirement: Conclude question points
+The skill SHALL ask the conclude question at three points only: a user message before the done marker, findings at Step 6.5 or Step 6.6, and a change request after the Step 7 handoff.
+
+#### Scenario: Mid-run message, Conclude
+- **WHEN** a user message in Steps 1 to 7 before the done marker answers no skill question
+- **AND** the user picks Conclude
+- **THEN** the skill continues at the saved step and runs every step that is left
+
+#### Scenario: Gate findings, Conclude
+- **WHEN** Step 6.6 returns findings and the user picks Conclude
+- **THEN** the skill fixes the findings, runs Step 6.6 again and counts one try
+
+#### Scenario: Gate findings, Change more
+- **WHEN** a gate has findings and the user picks Change more
+- **THEN** the skill applies the next change and runs Step 6.5 again
+
+#### Scenario: After handoff, Stop
+- **WHEN** the user asks for a change after the handoff and then picks Stop
+- **THEN** the skill ends with no state call and the plan file stays as it is
+
+#### Scenario: Message during gate findings
+- **WHEN** a user message arrives while a gate has findings
+- **THEN** the skill uses the mid-run point
+- **AND** the question lists the gate findings as open findings
+
+### Requirement: Gate fix limit
+At a gate, the skill SHALL make at most 3 fix tries for each gate and SHALL store the count, so a resume after a compaction keeps it.
+
+#### Scenario: Third try fails in an interactive run
+- **WHEN** the gate still has findings after 3 tries
+- **THEN** the conclude question has no Conclude option
+- **AND** it offers only Change more and Stop
+
+#### Scenario: Third try fails under auto
+- **WHEN** `--auto` is set and the gate still has findings after 3 tries
+- **THEN** the skill takes Stop and prints the findings
+
+### Requirement: Conclude stop rule
+When the user picks Stop before the done marker, the skill SHALL call `plan_mark` with marker `stopped` and the run ID, SHALL stop each Step 1 explorer that still runs, and SHALL print the plan file path and the step.
+
+#### Scenario: Explorer not stopped
+- **WHEN** `TaskStop` fails for an explorer
+- **THEN** the skill prints `Warning: <writerId> not stopped, it can still run.`
+- **AND** the skill adds the writer ID to `notStopped`
+
+#### Scenario: Marker call fails
+- **WHEN** the `stopped` call returns an error
+- **THEN** the skill prints the error and ends the plan

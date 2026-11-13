@@ -378,9 +378,17 @@ Review Go source changes for baseline code quality in this module
   package for it. A second inline copy is a finding, even when each copy is one
   line. A new function that differs from an existing one only in a label, a
   constant or a type is a finding: give the existing function a parameter.
-  This extends the helper-duplication and stored-layout rules above. Example:
-  one default for an empty reason written at four sites, and a flag read inline
-  beside the helper that reads it.
+  The helper checks the shape of the value, not only that the key exists: a
+  predicate that tests presence of a marker key, or any non-nil value, reads an
+  empty string, an empty map and a value of the wrong type as set. The helper
+  states which shapes count (for example a non-empty string) and treats every
+  other shape as not set or as a `DataError`. Each reader of the key, such as a
+  dashboard view, gets a test with an empty value and a wrong-typed value. A
+  predicate that accepts any value is a finding. This extends the
+  helper-duplication and stored-layout rules above. Example: one default for an
+  empty reason written at four sites, a flag read inline beside the helper that
+  reads it, and `IsStoppedPlanRun` that accepted any `planIntegrity.stopped`
+  value.
 - Zero-argument clock reads (for example `now()`) count as the same inputs
   for the redundant-recomputation rule. Read the clock once per handler and
   reuse the value, so one record carries one timestamp.
@@ -419,3 +427,20 @@ Review Go source changes for baseline code quality in this module
   state why it stays. This extends the handler-file rule above, which asks that
   each tool's logic stays separable. Example: a run-end report added to the
   general ship state file while the OpenSpec code lives in its own file.
+- A change that adds a variant (a state, a status, a stop cause, a kind, an
+  error) beside an existing one is checked against every site that handles the
+  existing variant. Grep the package, the tool and field descriptions,
+  SKILL.md and the docs for the name, the constant and the predicate of the
+  existing variant. A site that the change leaves unchanged and that gives a
+  wrong answer for the new variant is a finding: a field description or a doc
+  comment table that omits it, a text such as 'a done run is accepted', a
+  message that says 'the run is stopped' on a path that also reaches the old
+  state, a test that asserts only the old variant. A new function or block
+  that copies the body of the existing variant's code (a predicate, a stamp
+  block, a message builder) is a finding: give the existing code a parameter.
+  A rule for the variant that is decided in two or more functions is a
+  finding: it lives in one named helper. This extends the helper-duplication
+  bullet, which compares bodies, and the doc-comment completeness bullet,
+  which compares one comment with its code. Example: a stopped marker added
+  beside a done marker with a copied predicate, an enum text that omitted it,
+  and a repeat-stop rule spread over three functions.
