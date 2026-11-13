@@ -1908,6 +1908,26 @@ func TestActivePlanRun_Done_ReturnsNilNil(t *testing.T) {
 	}
 }
 
+func TestActivePlanRun_Stopped_ReturnsNilNil(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	stoppedData := `{"planIntegrity":{"skillInvoked":"2026-09-29T11:00:00Z","stopped":"2026-09-29T11:05:00Z"}}`
+	if err := os.WriteFile(filepath.Join(dir, "plan-feat-20260929T110000Z.json"), []byte(stoppedData), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	st, err := ActivePlanRun(root, "feat")
+	if err != nil {
+		t.Fatalf("ActivePlanRun: unexpected error %v", err)
+	}
+	if st != nil {
+		t.Fatalf("ActivePlanRun returned non-nil for a stopped run: %+v", st)
+	}
+}
+
 func TestActivePlanRun_NoSkillInvoked_ReturnsNilNil(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
@@ -2402,8 +2422,9 @@ type planRunForSessionCase struct {
 // table for branch "feat".
 func planRunForSessionCases() []planRunForSessionCase {
 	const (
-		active  = `"planIntegrity":{"skillInvoked":"x"}`
-		doneRun = `"planIntegrity":{"skillInvoked":"x","done":"y"}`
+		active     = `"planIntegrity":{"skillInvoked":"x"}`
+		doneRun    = `"planIntegrity":{"skillInvoked":"x","done":"y"}`
+		stoppedRun = `"planIntegrity":{"skillInvoked":"x","stopped":"y"}`
 	)
 	stale := PlanRunLiveWindow + time.Minute
 	const (
@@ -2473,6 +2494,16 @@ func planRunForSessionCases() []planRunForSessionCase {
 			{"plan-feat-other-20260929T130000Z", `{"sessionId":"S",` + active + `}`, 0},
 		}, "S", true, ""},
 		{"no run file for the branch", nil, "S", true, ""},
+		{"own run is stopped, active only", []planRunFixture{
+			{r1, `{"sessionId":"S",` + stoppedRun + `}`, 0},
+		}, "S", true, ""},
+		{"empty session, active only: stopped newest run is skipped", []planRunFixture{
+			{r1, `{"sessionId":"T",` + active + `}`, 0},
+			{r2, `{"sessionId":"V",` + stoppedRun + `}`, 0},
+		}, "", true, r1},
+		{"own run is stopped, not active only", []planRunFixture{
+			{r1, `{"sessionId":"S",` + stoppedRun + `}`, 0},
+		}, "S", false, r1},
 	}
 }
 

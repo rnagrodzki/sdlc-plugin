@@ -721,31 +721,58 @@ func TestDashboardPlan_StoppedRunIsFailed(t *testing.T) {
 		issues    []DashboardIssue
 		completed *string
 		progress  DashboardProgress
+		extra     map[string]any // more state keys; overrides the defaults
 	}{
 		{"stopped at the format gate", "6.6", integrity(nil),
 			[]string{C, C, C, C, F}, PipelineFailed,
 			[]DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user at finalize", Ref: "finalize"}},
 			dashboardStrPtr("2026-10-07T09:30:00Z"),
-			DashboardProgress{Done: 4, Total: 5, Current: "finalize", Label: "finalize (5 of 5)"}},
+			DashboardProgress{Done: 4, Total: 5, Current: "finalize", Label: "finalize (5 of 5)"}, nil},
 		{"stopped at review", "4", integrity(nil),
 			[]string{C, C, C, F, P}, PipelineFailed,
 			[]DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user at review", Ref: "review"}},
 			dashboardStrPtr("2026-10-07T09:30:00Z"),
-			DashboardProgress{Done: 3, Total: 5, Current: "review", Label: "review (4 of 5)"}},
+			DashboardProgress{Done: 3, Total: 5, Current: "review", Label: "review (4 of 5)"}, nil},
 		{"stopped at unknown step", "9", integrity(nil),
 			[]string{P, P, P, P, P}, PipelineFailed,
 			[]DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user"}},
 			dashboardStrPtr("2026-10-07T09:30:00Z"),
-			DashboardProgress{Done: 0, Total: 5, Label: "0 of 5 steps"}},
+			DashboardProgress{Done: 0, Total: 5, Label: "0 of 5 steps"}, nil},
 		{"done and stopped", "7", integrity(map[string]any{"done": "2026-10-07T09:40:00Z"}),
 			[]string{C, C, C, C, C}, PipelineCompleted, nil,
 			dashboardStrPtr("2026-10-07T09:40:00Z"),
-			DashboardProgress{Done: 5, Total: 5, Label: "5 of 5 steps"}},
+			DashboardProgress{Done: 5, Total: 5, Label: "5 of 5 steps"}, nil},
+		{"stopped with no checkpoint", "", integrity(nil),
+			[]string{P, P, P, P, P}, PipelineFailed,
+			[]DashboardIssue{{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user"}},
+			dashboardStrPtr("2026-10-07T09:30:00Z"),
+			DashboardProgress{Done: 0, Total: 5, Label: "0 of 5 steps"},
+			map[string]any{"checkpoint": nil}},
+		{"stopped value is not a string", "4", integrity(map[string]any{"stopped": 42}),
+			[]string{C, C, C, F, P}, PipelineFailed,
+			[]DashboardIssue{
+				{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user at review", Ref: "review"},
+				{Source: dashboardSourceState, Severity: "medium", Text: dashboardPlanStopTimeUnknown},
+			},
+			nil,
+			DashboardProgress{Done: 3, Total: 5, Current: "review", Label: "review (4 of 5)"}, nil},
+		{"stopped value is empty", "4", integrity(map[string]any{"stopped": ""}),
+			[]string{C, C, C, F, P}, PipelineFailed,
+			[]DashboardIssue{
+				{Source: dashboardSourceState, Severity: "info", Text: "Stopped by the user at review", Ref: "review"},
+				{Source: dashboardSourceState, Severity: "medium", Text: dashboardPlanStopTimeUnknown},
+			},
+			nil,
+			DashboardProgress{Done: 3, Total: 5, Current: "review", Label: "review (4 of 5)"}, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := dashRoot(t)
-			p := dashPlanState(t, root, tc.step, map[string]any{"planIntegrity": tc.integrity})
+			extra := map[string]any{"planIntegrity": tc.integrity}
+			for k, v := range tc.extra {
+				extra[k] = v
+			}
+			p := dashPlanState(t, root, tc.step, extra)
 			if got := dashStepStatuses(p); !reflect.DeepEqual(got, tc.statuses) {
 				t.Errorf("statuses = %v, want %v", got, tc.statuses)
 			}
@@ -755,8 +782,8 @@ func TestDashboardPlan_StoppedRunIsFailed(t *testing.T) {
 			if !reflect.DeepEqual(p.Issues, tc.issues) && (len(p.Issues) != 0 || len(tc.issues) != 0) {
 				t.Errorf("issues = %+v, want %+v", p.Issues, tc.issues)
 			}
-			if p.CompletedAt == nil || *p.CompletedAt != *tc.completed {
-				t.Errorf("completedAt = %v, want %v", p.CompletedAt, *tc.completed)
+			if !reflect.DeepEqual(p.CompletedAt, tc.completed) {
+				t.Errorf("completedAt = %v, want %v", p.CompletedAt, tc.completed)
 			}
 			if p.Progress != tc.progress {
 				t.Errorf("progress = %+v, want %+v", p.Progress, tc.progress)

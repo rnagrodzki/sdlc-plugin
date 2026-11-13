@@ -2088,13 +2088,18 @@ func TestPlanPrepare_ResumeImpliesResolveTemplate(t *testing.T) {
 }
 
 // TestPlanPrepare_ResumeNoActiveRun verifies resume:true fails with a
-// DomainError when there is no run, or the latest run is done.
+// DomainError when there is no run, or the latest run is done or stopped.
 func TestPlanPrepare_ResumeNoActiveRun(t *testing.T) {
 	cases := map[string]func(t *testing.T, dir string){
 		"no run": func(t *testing.T, dir string) {},
 		"done run": func(t *testing.T, dir string) {
 			planTestSeedRun(t, dir, "plan-main-20200101T000000Z", map[string]any{
 				"planIntegrity": map[string]any{"skillInvoked": "x", "done": "y"},
+			})
+		},
+		"stopped run": func(t *testing.T, dir string) {
+			planTestSeedRun(t, dir, "plan-main-20200101T000000Z", map[string]any{
+				"planIntegrity": map[string]any{"skillInvoked": "x", "stopped": "y"},
 			})
 		},
 	}
@@ -3563,10 +3568,10 @@ func TestPlanMark_Checkpoint_UsesLatestPlanRunExactSlug(t *testing.T) {
 }
 
 // TestPlanMark_InputSchema_ListsCheckpointEnum verifies the plan_mark input
-// schema's "marker" field declares all of validMarkers (10 entries,
-// including "checkpoint", "review-round" and "review-outcome") as a
-// jsonschema enum, keeping
-// the MCP tool schema in sync with the marker set planMark actually accepts.
+// schema's "marker" field declares all of validMarkers (11 entries,
+// including "checkpoint", "review-round", "review-outcome" and "stopped") as
+// a jsonschema enum, keeping the MCP tool schema in sync with the marker set
+// planMark actually accepts.
 func TestPlanMark_InputSchema_ListsCheckpointEnum(t *testing.T) {
 	f, ok := reflect.TypeOf(PlanMarkIn{}).FieldByName("Marker")
 	if !ok {
@@ -4750,12 +4755,13 @@ func TestPlanMark_Stopped_CombinationRules(t *testing.T) {
 		// wantStopped: "new" (a fresh RFC 3339 time), "first" (the seeded
 		// time), or "absent".
 		wantStopped string
-		wantOutcome bool // reviewOutcome is stored
+		wantOutcome bool   // reviewOutcome is stored
+		wantStop    string // out.Stopped.Status; "" means out.Stopped is nil
 	}{
 		{name: "active run, stopped", seed: "active", in: PlanMarkIn{Marker: "stopped"},
-			wantErr: "ok", wantNext: stoppedNext, wantStopped: "new"},
+			wantErr: "ok", wantNext: stoppedNext, wantStopped: "new", wantStop: stopStatusStamped},
 		{name: "stopped run, stopped", seed: "stopped", in: PlanMarkIn{Marker: "stopped"},
-			wantErr: "ok", wantNext: stoppedNext, unchanged: true, wantStopped: "first"},
+			wantErr: "ok", wantNext: stoppedNext, unchanged: true, wantStopped: "first", wantStop: stopStatusKept},
 		{name: "done run, stopped", seed: "done", in: PlanMarkIn{Marker: "stopped"},
 			wantErr: "domain: " + doneOnStop, wantSugg: "The run is closed. Do not write stopped after done.", unchanged: true, wantStopped: "absent"},
 		{name: "stopped run, done", seed: "stopped", in: PlanMarkIn{Marker: "done"},
@@ -4763,14 +4769,17 @@ func TestPlanMark_Stopped_CombinationRules(t *testing.T) {
 		{name: "stopped run, other marker", seed: "stopped", in: PlanMarkIn{Marker: "critiqueRan"},
 			wantErr: "ok", wantStopped: "first"},
 		{name: "active run, review-outcome with stop", seed: "active", in: PlanMarkIn{Marker: "review-outcome", Data: stopOutcome},
-			wantErr: "ok", wantNext: reviewOutcomeStopNext, wantStopped: "new", wantOutcome: true},
+			wantErr: "ok", wantNext: reviewOutcomeStopNext, wantStopped: "new", wantOutcome: true, wantStop: stopStatusStamped},
 		{name: "stopped run, review-outcome with stop", seed: "stopped", in: PlanMarkIn{Marker: "review-outcome", Data: stopOutcome},
-			wantErr: "ok", wantNext: reviewOutcomeStopNext, wantStopped: "first", wantOutcome: true},
+			wantErr: "ok", wantNext: reviewOutcomeStopNext, wantStopped: "first", wantOutcome: true, wantStop: stopStatusKept},
 		{name: "done run, review-outcome with stop", seed: "done", in: PlanMarkIn{Marker: "review-outcome", Data: stopOutcome},
-			wantErr: "ok", wantNext: reviewOutcomeStopNext, wantWarn: []string{doneOnStop}, wantStopped: "absent", wantOutcome: true},
+			wantErr: "ok", wantNext: reviewOutcomeStopOnDoneNext, wantWarn: []string{doneOnStop}, wantStopped: "absent", wantOutcome: true, wantStop: stopStatusNotRecorded},
 		{name: "active run, review-outcome without stop", seed: "active",
 			in:      PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)}}},
 			wantErr: "ok", wantNext: reviewOutcomeNext, wantStopped: "absent", wantOutcome: true},
+		{name: "stopped run, review-outcome without stop", seed: "stopped",
+			in:      PlanMarkIn{Marker: "review-outcome", Data: map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceAccepted)}}},
+			wantErr: "ok", wantNext: reviewOutcomeNext, wantStopped: "first", wantOutcome: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -4796,6 +4805,7 @@ func TestPlanMark_Stopped_CombinationRules(t *testing.T) {
 				if !reflect.DeepEqual(out.Warnings, tc.wantWarn) {
 					t.Errorf("Warnings = %q, want %q", out.Warnings, tc.wantWarn)
 				}
+				planTestCheckStopResult(t, out.Stopped, tc.wantStop, stoppedTestIntegrity(t, dir))
 			}
 
 			after := planTestReadRun(t, dir, stoppedTestRun)
@@ -4836,6 +4846,62 @@ func TestPlanMark_Stopped_CombinationRules(t *testing.T) {
 				if _, has := integrity["critiqueRan"]; !has {
 					t.Error("planIntegrity.critiqueRan missing: a stopped run must accept other markers")
 				}
+			}
+		})
+	}
+}
+
+// planTestCheckStopResult checks out.Stopped against want (a stop status,
+// or "" for nil). For "stamped" and "kept", At must be the stored
+// planIntegrity.stopped; for "not recorded", At must be empty.
+func planTestCheckStopResult(t *testing.T, got *PlanStopResult, want string, integrity map[string]any) {
+	t.Helper()
+	if want == "" {
+		if got != nil {
+			t.Errorf("Stopped = %+v, want nil", *got)
+		}
+		return
+	}
+	if got == nil {
+		t.Fatalf("Stopped = nil, want status %q", want)
+	}
+	if got.Status != want {
+		t.Errorf("Stopped.Status = %q, want %q", got.Status, want)
+	}
+	wantAt, _ := integrity["stopped"].(string)
+	if want == stopStatusNotRecorded {
+		wantAt = ""
+	}
+	if got.At != wantAt {
+		t.Errorf("Stopped.At = %q, want %q", got.At, wantAt)
+	}
+}
+
+// TestPlanMark_Stopped_NoRunIDAndBadIntegrity verifies a stopped call with
+// no runId reaches the newest run of the branch, and that a missing
+// planIntegrity, or one that is not an object, gets a new object with the
+// stop time.
+func TestPlanMark_Stopped_NoRunIDAndBadIntegrity(t *testing.T) {
+	for name, seed := range map[string]map[string]any{
+		"missing planIntegrity":    {"sessionId": "s1"},
+		"planIntegrity not a map":  {"planIntegrity": "broken"},
+		"planIntegrity null value": {"planIntegrity": nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := planTestGitRepo(t, "main")
+			planTestSeedRun(t, dir, stoppedTestRun, seed)
+
+			out, err := planMark(dir, dir, PlanMarkIn{Marker: "stopped"})
+			if err != nil {
+				t.Fatalf("planMark: %v", err)
+			}
+			if out.RunID != stoppedTestRun {
+				t.Errorf("RunID = %q, want the newest run %q", out.RunID, stoppedTestRun)
+			}
+			integrity := stoppedTestIntegrity(t, dir)
+			planTestCheckStopResult(t, out.Stopped, stopStatusStamped, integrity)
+			if _, err := time.Parse(time.RFC3339, out.Stopped.At); err != nil {
+				t.Errorf("Stopped.At = %q, want an RFC 3339 time: %v", out.Stopped.At, err)
 			}
 		})
 	}

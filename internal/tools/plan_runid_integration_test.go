@@ -181,3 +181,33 @@ func TestPlanRunIDIntegration_Errors(t *testing.T) {
 		t.Errorf("state files = %v, want only the done run (no new run)", files)
 	}
 }
+
+// TestPlanMark_ReviewOutcomeStopOnDone_RegisteredTool calls the registered
+// plan_mark tool with a stop choice on a done run and checks the rendered
+// warning, next and stopped status.
+func TestPlanMark_ReviewOutcomeStopOnDone_RegisteredTool(t *testing.T) {
+	dir := planTestGitRepo(t, "main")
+	planTestSeedRun(t, dir, stoppedTestRun, stoppedTestSeed("done"))
+
+	res, text := callRegisteredPlanTool(t, dir, "plan_mark", map[string]any{
+		"marker": "review-outcome",
+		"runId":  stoppedTestRun,
+		"path":   "",
+		"data":   map[string]any{"findings": []any{outcomeFinding("f-9d01aa42", outcomeChoiceStop)}},
+	})
+	if res.IsError {
+		t.Fatalf("plan_mark returned an error:\n%s", text)
+	}
+	for _, want := range []string{
+		"plan run " + stoppedTestRun + " is done; stopped not recorded",
+		reviewOutcomeStopOnDoneNext,
+		stopStatusNotRecorded,
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("plan_mark text does not contain %q:\n%s", want, text)
+		}
+	}
+	if _, has := stoppedTestIntegrity(t, dir)["stopped"]; has {
+		t.Error("planIntegrity.stopped is set on a done run")
+	}
+}

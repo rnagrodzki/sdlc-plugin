@@ -36,14 +36,14 @@ var dashboardPlanStations = []struct {
 // planIntegrity.done is set is completed and shows every station completed.
 // A plan that has planIntegrity.stopped and no done is failed: the station of
 // the saved step is failed, the later stations are pending, and the pipeline
-// has one issue "Stopped by the user at <station>".
+// has the issue "Stopped by the user at <station>" (see dashboardPlanStopped).
 // The setup station shows data.guardrailCounts, the explore station lists the
 // run's explorers, and the review station lists data.reviewRounds with their
 // totals, the repair-limit flag and data.reviewOutcome; a station with
 // nothing to show has no detail.
 func dashboardPlan(p *DashboardPipeline, st *state.State) {
 	data := st.Data
-	integrity, _ := data["planIntegrity"].(map[string]any)
+	integrity, _ := data[state.PlanIntegrityKey].(map[string]any)
 	p.StartedAt = dashboardStr(integrity["skillInvoked"])
 	if p.StartedAt == "" {
 		intent, _ := data["creationIntent"].(map[string]any)
@@ -51,8 +51,7 @@ func dashboardPlan(p *DashboardPipeline, st *state.State) {
 	}
 	p.SessionID = dashboardStr(data["sessionId"])
 	doneValue, isDone := integrity["done"]
-	stoppedValue, isStopped := integrity["stopped"]
-	isStopped = isStopped && !isDone
+	isStopped := !isDone && state.IsStoppedPlanRun(st)
 
 	checkpoint, _ := data["checkpoint"].(map[string]any)
 	cur := dashboardPlanStationIndex(dashboardStr(checkpoint["step"]))
@@ -99,7 +98,7 @@ func dashboardPlan(p *DashboardPipeline, st *state.State) {
 		return
 	}
 	if isStopped {
-		dashboardPlanStopped(p, cur, dashboardStr(stoppedValue))
+		dashboardPlanStopped(p, cur, integrity[state.PlanStoppedKey])
 		return
 	}
 	p.Status = PipelineRunning
@@ -113,16 +112,29 @@ func dashboardPlan(p *DashboardPipeline, st *state.State) {
 	if name == dashboardPlanStationReview {
 		p.Progress.Label = fmt.Sprintf("round %d of %d", min(len(rounds)+1, maxReviewRounds), maxReviewRounds)
 	} else {
-		p.Progress.Label = fmt.Sprintf("%s (%d of %d)", name, cur+1, p.Progress.Total)
+		p.Progress.Label = dashboardPlanStationLabel(cur, p.Progress.Total)
 	}
 }
 
+// dashboardPlanStationLabel is the progress label of the station at cur:
+// "<station> (<cur+1> of <total>)".
+func dashboardPlanStationLabel(cur, total int) string {
+	return fmt.Sprintf("%s (%d of %d)", dashboardPlanStations[cur].name, cur+1, total)
+}
+
+// dashboardPlanStopTimeUnknown is the text of the issue for a stopped value
+// that is not a non-empty string.
+const dashboardPlanStopTimeUnknown = "Stop time unknown: planIntegrity.stopped is not a timestamp"
+
 // dashboardPlanStopped fills p for a plan run that the user stopped: status
 // failed, completedAt the stopped time, and one issue that names the station
-// at cur. A cur of -1 (unknown step) gives the issue without a station.
-func dashboardPlanStopped(p *DashboardPipeline, cur int, stopped string) {
+// at cur. A cur of -1 (no checkpoint, or an unknown step) gives the issue
+// without a station. A stopped value that is not a non-empty string leaves
+// completedAt unset and adds a second issue, dashboardPlanStopTimeUnknown.
+func dashboardPlanStopped(p *DashboardPipeline, cur int, stopped any) {
 	p.Status = PipelineFailed
-	p.CompletedAt = dashboardStrPtr(stopped)
+	at, _ := stopped.(string)
+	p.CompletedAt = dashboardStrPtr(at)
 	text := "Stopped by the user"
 	ref := ""
 	if cur >= 0 {
@@ -130,11 +142,14 @@ func dashboardPlanStopped(p *DashboardPipeline, cur int, stopped string) {
 		text = "Stopped by the user at " + ref
 		p.Progress.Done = cur
 		p.Progress.Current = ref
-		p.Progress.Label = fmt.Sprintf("%s (%d of %d)", ref, cur+1, p.Progress.Total)
+		p.Progress.Label = dashboardPlanStationLabel(cur, p.Progress.Total)
 	} else {
 		p.Progress.Label = dashboardStepLabel(p.Progress)
 	}
-	p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: "info", Text: text, Ref: ref})
+	p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: dashboardSeverityInfo, Text: text, Ref: ref})
+	if at == "" {
+		p.Issues = append(p.Issues, DashboardIssue{Source: dashboardSourceState, Severity: dashboardSeverity("warning"), Text: dashboardPlanStopTimeUnknown})
+	}
 }
 
 // dashboardPlanStationIndex returns the index in dashboardPlanStations of

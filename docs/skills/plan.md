@@ -22,7 +22,7 @@ or a plain description.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `[spec-file-path...]` | Path to a requirements or spec file to plan from. A path into `openspec/changes/<name>/` selects that change, same as `--spec <name>`. Two or more paths must all be preplan topic files. Put a path with spaces in double quotes. `--spec` with two or more paths stops the plan. | none |
-| `--auto` | Skip interactive prompts. Picks conservative defaults. Two prompts stay: a Gate A `CRITICAL` verdict still blocks, and the per-finding questions at the review-loop limit are still asked (only the harden offer is left out). At the Step 6.5 and 6.6 gates, `--auto` takes Conclude: it fixes the findings and runs the gate again, 3 tries, then it takes Stop (`plan_mark` `stopped`) and reports the findings. | off |
+| `--auto` | Skip interactive prompts. Picks conservative defaults. Two prompts stay: a Gate A `CRITICAL` verdict still blocks, and the per-finding questions at the review-loop limit are still asked (only the harden offer is left out). `--auto` (or a session with no AskUserQuestion) takes Conclude at every conclude question: at the Mid-run and After handoff points, and at the Step 6.5 and 6.6 gates. At a gate it fixes the findings and runs the gate again, 3 tries, then it takes Stop (`plan_mark` `stopped`) and reports the findings. | off |
 | `--spec [<change-name>]` | Opts into OpenSpec and skips the gate-check question. With a name: plan from that existing change (`openspec/changes/<change-name>/`). Without one: use the branch-matched change, else ask which active change to use, or offer to create a new one. | off |
 | `--from-openspec <name>` | Deprecated alias of `--spec <name>`, kept for one release. Prints a deprecation notice. | none |
 
@@ -87,14 +87,31 @@ and asks again. Each point changes only what the options do:
 | Point | Trigger | Conclude | Change more | Stop |
 |---|---|---|---|---|
 | Before run | a user message before the first `plan_prepare` call | no question. Add the message to the request | — | — |
-| Mid-run | a user message in Steps 1 to 7, before the done marker, that answers no skill question | continue at `checkpoint.step`. Run every step that is left. Step 7 writes done | wait for the next message. Apply it. Ask again | the conclude stop rule. Print the plan path and the step. End |
-| Gate | Step 6.5 `results[]` has a status that is not `ok`, or Step 6.6 `findings` is not empty, and no user message waits | fix each finding. Run the same gate again. Add one try to `gate-tries`. With findings after 3 tries: ask again with no Conclude option | apply the change. Set `gate-tries` to 0. Run Step 6.5 again | the conclude stop rule. Print the findings. End |
+| Mid-run | a user message after the first `plan_prepare` call (Steps 0 to 7), before the done marker, that answers no skill question | continue at `checkpoint.step`. After a material change at Step 6.5, 6.6 or 7, continue at Step 5 with the next round. Run every step that is left. Step 7 writes done | wait for the next message. Apply it. Ask again | the conclude stop rule. Print the plan path and the step. End |
+| Gate | Step 6.5 `results[]` has a status that is not `ok`, Step 6.6 `findings` is not empty, or the gate tool returns an error, and no user message waits | fix each finding. Run the same gate again. Add one try to `gate-tries`. With findings or an error after 3 tries: ask again with no Conclude option | apply the change. Set `gate-tries` to 0. Run Step 6.5 again | the conclude stop rule. Print the findings. End |
 | After handoff | a reply to the Step 7 handoff that asks for a change | the **Rejected handoff with feedback** rule of Step 7 | wait, apply, ask again | end. The plan file stays. No state call |
 
-The stop rule writes `plan_mark({ marker: "stopped" })`, stops each Step 1
-explorer that still runs, and prints the plan path and the step. The
-dashboard shows a stopped run as ended. After the handoff the run is already
-done, so a rejected handoff makes no state call.
+`gate-tries` is the `main` evidence item `gate-tries` with the body
+`{"step":"6.6","tries":2}`. `step` is the gate, `6.5` or `6.6`. The count
+starts at 0. It goes back to 0 when the stored `step` is not the gate that
+failed. A gate tool error counts as one try. A resume after a compaction
+reads the stored count back.
+
+The stop rule has three steps:
+
+1. It writes `plan_mark({ marker: "stopped" })`. On an error, it prints the
+   error and tells you that the run shows as running until the 24-hour
+   prune.
+2. It stops each Step 1 explorer that still runs. For a failed `TaskStop`,
+   or an explorer with no known task ID, it prints a warning and adds the id
+   to `notStopped` in `dispatch-status`.
+3. It prints the `notStopped` ids, the plan path and the step.
+
+The Step 5 review-limit routes also run the stop rule: a `stop` answer, more
+than 200 open findings, and AskUserQuestion not available. When the
+`stopped` marker is written, the dashboard shows the run with status
+`failed` and the issue `Stopped by the user at <station>`. After the handoff
+the run is already done, so a rejected handoff makes no state call.
 
 ## Examples
 
@@ -150,7 +167,7 @@ Loads the proposal, delta specs, and task list from
   stage runs.
 - **PF15 refuses the handoff when OpenSpec authoring is not finished.** The
   skill passes `handoff:true` at the Step 6.6 format gate and in the rerun
-  after a rejected handoff. PF15 finds a `**OpenSpec-Create:**` line with no
+  after a rejected handoff (every plan, after you pick Conclude). PF15 finds a `**OpenSpec-Create:**` line with no
   `**OpenSpec-Staging:**` line, an Appendix that still starts with `[TBD`, and a
   staged change with a missing `stage.json`, a missing `validatedAt` or a
   missing staged file. Each finding has a `fix` text. Follow it, then the skill
@@ -183,7 +200,10 @@ Loads the proposal, delta specs, and task list from
   same section and planning continues. Gate A does not run for a plan
   without OpenSpec, or for a change the skill creates (Create OpenSpec
   change). That change is authored from the reviewed plan at the end of
-  Step 6, and authored again when you reject the plan with feedback.
+  Step 6. When you reject the handoff with feedback and then pick Conclude,
+  a plan with an `**OpenSpec-Staging:**` line authors the change again. Every
+  plan then runs the link and format checks again. After 3 failed tries the
+  skill shows the findings and ends.
 - **Staging a created change can stop the skill.** The skill stages the
   authored files with `openspec_stage`. These exits apply:
   - `staged by another plan`: another plan file staged this change name.
@@ -265,8 +285,8 @@ Loads the proposal, delta specs, and task list from
 
 - What you see: `Active plan (post-compact): step <n>, branch <b>; plan file: <path>` in the session context, followed by a line that tells Claude to invoke the sdlc:plan skill first when the skill instructions are not in context, and a `Resume with:` line. The banner shows only for a run that was written in the last 24 hours (`state.PlanRunLiveWindow`).
 - What the skill does: reloads the run with `plan_prepare` (resume mode, with the `runId` of the `Resume with:` line), reads the evidence digest, then resumes at the saved step; it does not clear the plan file.
-- When the saved run is gone: if the resume call returns `no active plan run`, `plan run <runId> not found`, `plan run <runId> is done` or `plan run <runId> has no skillInvoked marker`, the skill prints "No active plan run to resume — starting a new plan.", ignores the `Active plan (post-compact):` line for the rest of the session, and starts a new plan.
-- When the run disappears in the middle of a plan: if a call returns `plan run <runId> not found` (or a reuse `plan_prepare` call returns `is done` or `has no skillInvoked marker`), the skill tells you that the run state is gone. It stops the background agents that it still holds, names each agent that it could not stop, and starts a new plan with no `runId`.
+- When the saved run is gone: if the resume call returns `no active plan run`, `plan run <runId> not found`, `plan run <runId> is done`, `plan run <runId> is stopped` or `plan run <runId> has no skillInvoked marker`, the skill prints "No active plan run to resume — starting a new plan.", ignores the `Active plan (post-compact):` line for the rest of the session, and starts a new plan.
+- When the run disappears in the middle of a plan: if a call returns `plan run <runId> not found` (or a reuse `plan_prepare` call returns `is done` or `has no skillInvoked marker`), the skill tells you that the run state is gone. If a reuse `plan_prepare` call returns `plan run <runId> is stopped`, the skill tells you that the run is stopped: its state stays on disk until it is pruned, but the run cannot continue. In both cases, it stops the background agents that it still holds, names each agent that it could not stop, and starts a new plan with no `runId`.
 - Where evidence lives: <main-worktree>/.sdlc-v2/runs/<runId>.evidence/. Ship's `cleanup-pipeline` step deletes the plan run and its evidence only when the ship run links a plan run and the ship report file exists on disk. Otherwise the GC sweep removes them after the TTL. The GC sweep keeps the newest plan state file of a branch that still exists, even past the TTL; `execute_state` gc reaps the evidence directory after the TTL.
 - A second plan session on the same branch keeps its own run and its own evidence. A new run of the branch deletes an older run only when that run is not done, was not written in the last 24 hours (`state.PlanRunLiveWindow`), and has no `sessionId` that differs from the writer's.
 
@@ -488,6 +508,9 @@ contrast of 4.5:1 or more. No pastel fills.
   its fix pass, records the round, and then asks one question for each open
   finding: accepted, rejected, or stop. It stores the answers with
   `plan_mark` `review-outcome` and does not start a 6th round.
+  Two calls write the `stopped` marker: the `review-outcome` call with a
+  `stop` answer (same write), and the `plan_mark` `stopped` call of the
+  conclude stop rule. A repeat keeps the first stop time.
   Each review round is recorded with `plan_mark` `review-round` for the
   dashboard. A failed record call does not stop the skill. A plan with fewer than 8 tasks uses one reviewer, on the model that did not write the plan. The skill still sends the output of that
   reviewer through `merge_results` as one lens named `all`, so the record has
