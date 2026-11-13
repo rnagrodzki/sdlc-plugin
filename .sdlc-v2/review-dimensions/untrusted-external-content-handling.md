@@ -53,11 +53,11 @@ injection through content an LLM reads and might act on.
   failure manifest, `error-report`'s issue draft) must be treated as this
   project's own structured output, not re-validated as untrusted — do not
   over-flag internally-generated manifests under this dimension.
+- A skill step that prints, relays or stores text it did not write (a line copied from a spec or topic file, an issue or PR body, a Jira field, the stderr or error text of gh or another external tool, a fragment of the user's own input) must show it inside a fence or a quote that the text cannot close, and must label it as external text. Plain double quotes around text that can itself hold quotes do not delimit it. A later step of the same run reads the printed output, so a verbatim print without a delimiter is a finding even when no action is taken on it in that step.
 
 ## What NOT to flag
 
-- Content fetched and then only shown verbatim to the user for their own
-  judgment, with no autonomous action taken on it.
+- Content fetched and then shown to the user for their own judgment, with no autonomous action taken on it, when the output delimits it as external text (quoted or fenced).
 - A skill's own prose that quotes an example of untrusted input for
   illustration (e.g. this file's own description above).
 - Structured data from this project's own MCP tools (manifests, state

@@ -46,3 +46,4 @@ both builds the `sdlc` MCP server and ships it as
   fields and enum options must be mirrored in template comments and
   default values; verify manually or by validating template TOML against
   the JSON schema.
+- A shipped `plugins/sdlc/skills/**/SKILL.md` and its sibling runtime files hold only what the running skill needs: steps, routes, tool calls and the rules the model must follow. Rule-to-source traces, design rationale, review-finding history and other contributor content belong under `docs/`. A table or section that maps each rule to the code or spec that proves it is a finding: it costs tokens on every run and goes stale with no compile error. Example: a rule trace table inside a skill that only a contributor reads.
