@@ -98,6 +98,30 @@ tasks:
     cmds:
       - go run ./cmd/design-preview -mode merge
 
+  site:install:
+    desc: Install the site dependencies
+    dir: site
+    cmds:
+      - npm ci
+
+  site:dev:
+    desc: Serve the site with live reload
+    dir: site
+    cmds:
+      - npm run dev
+
+  site:test:
+    desc: Run the site unit tests
+    dir: site
+    cmds:
+      - npm test
+
+  site:build:
+    desc: Build the site
+    dir: site
+    cmds:
+      - npm run build
+
   git:clear:
     desc: Delete local branches whose upstream is gone (prunes after fetch, skips current branch)
     cmds:

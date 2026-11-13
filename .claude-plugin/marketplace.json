@@ -8,7 +8,8 @@
   "plugins": [
     {
       "name": "sdlc",
-      "source": "./plugins/sdlc"
+      "source": "./plugins/sdlc",
+      "homepage": "https://rnagrodzki.github.io/sdlc-plugin/"
     }
   ]
 }
