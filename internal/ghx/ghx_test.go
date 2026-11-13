@@ -183,6 +183,61 @@ func TestIssueView(t *testing.T) {
 	}
 }
 
+// TestIssueViewJSON checks the argument list and the stdout of a good run, an
+// *ExitError with the exit code and the whole stderr for a non-zero exit,
+// ErrGHNotFound for a missing gh, and a refused number that starts with "-".
+func TestIssueViewJSON(t *testing.T) {
+	t.Run("ok", func(t *testing.T) {
+		argsFile := filepath.Join(t.TempDir(), "args.txt")
+		cleanup := stubGH(t, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" > %q\nprintf '%%s' '{\"title\":\"T\",\"body\":\"B\"}'\n", argsFile))
+		defer cleanup()
+
+		out, err := IssueViewJSON(".", "42", "title,body")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if out != `{"title":"T","body":"B"}` {
+			t.Errorf("stdout = %q", out)
+		}
+		raw, readErr := os.ReadFile(argsFile)
+		if readErr != nil {
+			t.Fatalf("read recorded args: %v", readErr)
+		}
+		if got := strings.Join(strings.Split(strings.TrimSpace(string(raw)), "\n"), " "); got != "issue view 42 --json title,body" {
+			t.Errorf("gh args = %q", got)
+		}
+	})
+	t.Run("non-zero exit", func(t *testing.T) {
+		cleanup := stubGH(t, "#!/bin/sh\nprintf 'GraphQL: Could not resolve to an issue\\nsecond line\\n' >&2\nexit 1\n")
+		defer cleanup()
+
+		_, err := IssueViewJSON(".", "999", "title,body")
+		var exitErr *ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("expected *ExitError, got: %v", err)
+		}
+		if exitErr.ExitCode != 1 || exitErr.Stderr != "GraphQL: Could not resolve to an issue\nsecond line" {
+			t.Errorf("ExitError = %+v", exitErr)
+		}
+		if errors.Is(err, ErrGHNotFound) {
+			t.Errorf("a non-zero exit must not match ErrGHNotFound: %v", err)
+		}
+	})
+	t.Run("missing gh", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		if _, err := IssueViewJSON(".", "42", "title,body"); !errors.Is(err, ErrGHNotFound) {
+			t.Errorf("expected ErrGHNotFound, got: %v", err)
+		}
+	})
+	t.Run("flag-like number", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		_, err := IssueViewJSON(".", "-x", "title,body")
+		if err == nil || errors.Is(err, ErrGHNotFound) {
+			t.Errorf("expected a refusal before gh runs, got: %v", err)
+		}
+	})
+}
+
 // TestIssueList_PassesArgsAndParsesIssues checks that IssueList runs gh with
 // the exact argument list (one --label flag for each label, state open, the
 // limit and the JSON field list) and decodes the JSON array into Issue values

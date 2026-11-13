@@ -100,6 +100,7 @@ Each stage of a change maps to one skill. Run them in order, or let
 | Stage | Skill | When to use it |
 |---|---|---|
 | Preplan | [`/preplan`](skills/preplan.md) | Shape an idea into a topic file, with each proposal checked against the plan guardrails. Pass the file to `/plan`. |
+| Check requirements (optional) | [`/verify-requirements`](skills/verify-requirements.md) | Optional, before `/plan`: find gaps and conflicts in a topic file, a file, a Jira ticket or a GitHub issue, with no dialogue. |
 | Plan | `/plan` | Turn a requirement, spec, or description into a task-decomposed implementation plan. |
 | Save the spec | `/openspec-save <plan-file>` | After `/plan` staged an OpenSpec change, save it as its own branch, commit, and PR. Merge that PR first, then run `/ship` on a new branch from the default branch. |
 | Execute | `/execute <plan-file>` | Implement a plan file wave by wave, with per-wave verification. |

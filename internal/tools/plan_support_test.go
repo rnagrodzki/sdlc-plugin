@@ -5571,6 +5571,10 @@ func TestPreplanCheckEmptySectionsOverMCP(t *testing.T) {
 // description, word for word.
 const preplanWriteDescriptionPinned = "- preplan_write: Replace one section body or the Status line of an existing topic file. Requires topic, and section with content, or topicStatus. content is required with section and not allowed without it; an empty string counts as content. section, content and topicStatus sent with another action return DomainError. It finds and reads the file as preplan_check does and never creates one. It checks content against the topic-file format rules and refuses a body that breaks one, with the rule id. Before the check it changes each CR LF in content to LF and removes the final line ends; the rules, the 65536-byte limit of rule P1 included, check that value, and the file stores it with the line ends of the file. It replaces the body under the first matching section heading, adds an absent Open questions section after Decisions, and deletes the Open questions or Guardrail check section when content is empty. When section is the last section and a code fence in its body never closes, the replace or the delete runs to the end of the file: it also removes the text after the fence, each ## heading that the fence hides included. summary gives the line count of the old body. It replaces the first Status line in the first 4096 bytes, else inserts one before the Started line, else after the title line, else as the first line. summary names each extra heading or Status line that stays. It writes a temp file and renames it, and the file keeps its mode. topicStatus ready for plan also lists the preplan folder and reads the first 4096 bytes of each other topic file there (the newest 100). It returns readyTopicFiles (this file first, then up to 3 other ready files, newest first) and readyLeftOut. A failed list or head read of another file does not fail the call: summary names it. Returns preplanFile, written, readyTopicFiles, readyLeftOut, summary, next. A bad input or a broken rule returns DomainError and writes nothing. A missing file, a link or a file that is not regular returns DomainError. Two matching files, a file over 8 MiB, a write that would make it larger than 8 MiB, or a section heading that is absent or hidden by an open fence returns DataError. A list failure of the preplan folder, or a preplan folder that holds more than 10000 names, returns InfraError. An Lstat, read or write failure of the topic file returns InfraError and leaves the file as it was. A dangling link at the preplan folder returns InfraError."
 
+// verifyRequirementsContextDescriptionPinned is the verify_requirements_context
+// line of the tool description, word for word.
+const verifyRequirementsContextDescriptionPinned = "- verify_requirements_context: Return the fixed facts for one requirements check, and write nothing. Requires verifyKind (topic, file, jira or issue) and verifyValue (at most 4096 bytes). topic, section, content and topicStatus return DomainError; other fields are ignored. topic: finds the topic file as preplan_check does (a topic file that is a link is refused), never creates one (a missing file is a DomainError that points to no create step), and returns structureFindings (rules open-fence, empty-section, decisions-table, cut-not-live, moved-no-question, flow-no-proposal) and openQuestions. file: follows links and checks that the path is a regular file of at most 8 MiB; a relative path starts at the active worktree, and the path is not limited to the worktree; it reads only the first 4096 bytes and returns no file text. jira: checks the key format and returns jiraProject. issue: verifyValue is 1 to 10 digits with no leading zero (stricter than the fromIssue input of prepare_orchestrator, which allows leading zeros); runs gh issue view <n> --json title,body in the active worktree and returns issueTitle and issueBody as data; a blank title with a blank body returns DomainError, and a blank body alone is accepted (fromIssue refuses a blank body). summary holds a status sentence, then the warnings: an open code fence and Open questions lines that are not - bullets (topic), an empty file and a hint when a file is a preplan topic file (file), and guardrails that cannot load. Every kind returns the plan guardrails with guardrailsStatus, and the OpenSpec main specs and active changes of the active worktree, each with its requirement headings (at most 1000 spec paths in total, at most 1048576 bytes read from each spec); each gap (a spec or folder that cannot be read, an open code fence, a spec with no requirement heading, the path limit) is one line in openspecWarnings. A bad input, a missing file, a topic file that is a link or not regular, a file that is not regular, or an issue that does not exist returns DomainError; two matching topic files or a file over 8 MiB returns DataError; a list or read failure, a missing or unauthenticated gh, a gh failure, gh output over the output limit, or bad gh output returns InfraError. Every error has a Suggestion."
+
 // preplanDescriptionIdents are the Go identifiers that the preplan lines of
 // the tool description must not name: the calling model cannot resolve them.
 var preplanDescriptionIdents = []string{
@@ -5606,6 +5610,9 @@ func TestPreplanToolDescription(t *testing.T) {
 	}
 	if !strings.HasSuffix(desc, "\n"+preplanWriteDescriptionPinned) {
 		t.Errorf("preplanToolDescription does not end with the pinned preplan_write line:\n%s", desc)
+	}
+	if !strings.HasSuffix(desc, "\n"+verifyRequirementsContextDescriptionPinned+"\n"+preplanWriteDescriptionPinned) {
+		t.Errorf("preplanToolDescription does not hold the pinned verify_requirements_context line before the preplan_write line:\n%s", desc)
 	}
 	for _, ident := range preplanDescriptionIdents {
 		if strings.Contains(desc, ident) {
@@ -6312,7 +6319,7 @@ func TestPreplanWriteFieldDescriptions(t *testing.T) {
 	if content := field("Content").Tag.Get("jsonschema_description"); !strings.Contains(content, "at most "+strconv.Itoa(preplanWriteContentMax)+" bytes") {
 		t.Errorf("content description %q does not state %d bytes", content, preplanWriteContentMax)
 	}
-	if action := field("Action").Tag.Get("jsonschema"); !strings.HasSuffix(action, ",enum="+preplanWriteAction) {
+	if action := field("Action").Tag.Get("jsonschema"); !strings.Contains(action+",", ",enum="+preplanWriteAction+",") {
 		t.Errorf("action enum tag %q lacks %s", action, preplanWriteAction)
 	}
 }
@@ -6549,6 +6556,9 @@ func TestPlanSupportActionList(t *testing.T) {
 	}
 	if got, want := f.Tag.Get("jsonschema"), "enum="+strings.Join(planSupportActions, ",enum="); got != want {
 		t.Errorf("action enum tag = %q, want %q", got, want)
+	}
+	if last := planSupportActions[len(planSupportActions)-1]; last != verifyRequirementsContextAction {
+		t.Errorf("last action = %q, want %q", last, verifyRequirementsContextAction)
 	}
 	desc := f.Tag.Get("jsonschema_description")
 	_, err := planSupportCore(t.TempDir(), t.TempDir(), PlanSupportIn{Action: "no_such_action"})

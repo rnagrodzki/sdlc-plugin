@@ -115,6 +115,17 @@ new changes to that same bar:
   least one test case sets both fields in the same fixture and asserts the
   merged result; tests that set one field at a time do not show how the two
   interact.
+- A handler action that serves several kinds of input (a kind, a mode, a
+  source type) is tested kind by kind. Each kind has one test that calls the
+  registered tool, not only the helper, and that asserts the full Summary of
+  that kind. This holds when the action only reads. Each refusal, skip or
+  unavailable branch that several kinds can reach has one test for each kind
+  that reaches it; a test of two kinds out of four leaves the other two
+  unpinned. Count the kinds in the code and the kinds in the test, and
+  confirm that the two numbers match. Example: a guardrails-unavailable
+  branch that is tested for two of its four kinds. This extends the
+  discriminating-inputs bullet above from a bool or an enum parameter to each
+  kind of an action.
 - Every rejection branch of an input check needs its own test: a test for
   a nil `wave` does not cover the separate `wave < 1` branch. For an
   error-classification switch (e.g. a helper mapping sentinel errors to
@@ -195,6 +206,18 @@ new changes to that same bar:
   removed: a decoy that an earlier condition already rejects does not cover
   the later one. Example: a decoy name meant to fail a date check that also
   fails the suffix check.
+- A classifier that tries checks in order (an if chain, a switch with
+  overlapping cases, a list of patterns, a mapper of an error or of stderr
+  text to a typed error or a message) has tests that pin the order. For each
+  pair of arms that one input can match both of, one test gives an input
+  that matches both and asserts that the earlier arm wins: its class, its
+  Msg and its Suggestion. For each later arm, one decoy row satisfies every
+  condition of that arm and no condition of an earlier arm, so the later arm
+  alone decides the outcome. A test set where each input matches one arm
+  passes when two arms are swapped. Confirm that the tests fail when two
+  arms are swapped. This extends the decoy bullet above and the
+  error-classification-switch bullet. Example: an issue-view error mapper
+  with no decoy rows for the order of its arms.
 - A limit, cap or maximum count is tested on both sides of its boundary: one
   case exactly at the limit (accepted) and one case at limit+1 (rejected,
   and the error text names the limit and the value). Derive both inputs

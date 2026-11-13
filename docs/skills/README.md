@@ -6,6 +6,7 @@ This directory contains user-facing documentation for each SDLC plugin skill. Fo
 
 ### Planning
 - [`preplan`](preplan.md) — Shape an idea into a topic file, with each proposal checked against the plan guardrails, before you plan it.
+- [`verify-requirements`](verify-requirements.md) — Check requirements from a topic file, a file, a Jira ticket or a GitHub issue, and report the findings before you plan.
 - [`plan`](plan.md) — Decompose a requirement into an implementation plan with tasks and dependencies.
 - [`openspec-save`](openspec-save.md) — Save the OpenSpec change that plan staged as its own branch, commit, and PR. Merge it first, then ship.
 

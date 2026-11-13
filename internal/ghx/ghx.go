@@ -162,6 +162,35 @@ func IssueView(dir string, key string) (string, error) {
 	return run(dir, "issue", "view", key)
 }
 
+// IssueViewJSON returns the stdout of `gh issue view <number> --json <fields>`
+// run inside dir. It does not parse the output.
+//
+// Errors:
+//   - a number that starts with "-": a plain error, gh is not run.
+//   - gh missing from PATH: wraps ErrGHNotFound.
+//   - stdout over the execx output cap: wraps execx.ErrOutputCap.
+//   - gh exits non-zero (no auth, no issue, no network): *ExitError with the
+//     exit code and the stderr text of gh.
+//   - gh cannot start for another reason: a plain error that wraps the start
+//     error.
+func IssueViewJSON(dir, number, fields string) (string, error) {
+	if err := validatePositionalArg(number, "IssueViewJSON"); err != nil {
+		return "", err
+	}
+	args := []string{"issue", "view", number, "--json", fields}
+	stdout, stderr, exitCode, err := execx.RunAllowExit(ghCmd, args, execx.Options{Dir: dir})
+	if err != nil {
+		if isBinaryNotFound(err) {
+			return "", fmt.Errorf("%w: %w", ErrGHNotFound, err)
+		}
+		return "", fmt.Errorf("ghx: IssueViewJSON: %w", err)
+	}
+	if exitCode != 0 {
+		return "", &ExitError{Command: "gh issue view", ExitCode: exitCode, Stderr: stderr}
+	}
+	return stdout, nil
+}
+
 // Issue is one entry of the JSON array that `gh issue list --json
 // number,title,url` prints.
 type Issue struct {
