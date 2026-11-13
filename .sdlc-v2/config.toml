@@ -290,6 +290,15 @@ be cross-checked with a second independent method (e.g. a broader wildcard \
 grep across all file extensions, or LSP findReferences) to catch call sites \
 the primary search terms miss."""
 
+[plan.guardrails.feature-change-updates-site-pages]
+severity = "error"
+description = """
+A plan that adds, removes or changes a user-facing feature of the plugin \
+must include a task that updates the matching product page entry in \
+site/src/data/features.mjs and the docs page under docs/ that its claims \
+link to. A feature with no product page needs the docs page task only. \
+A removed feature also removes its product page claims."""
+
 [plan.guardrails.refactoring-includes-doc-sweep]
 severity = "warning"
 description = """
@@ -437,7 +446,7 @@ schema."""
 
 [execute.guardrails.execute-handler-nil-normalization]
 severity = "error"
-description = "MCP tool output is Markdown. The renderer prints a nil or empty slice, map, pointer, or string as `(none)`, so a handler does not need to turn nil into an empty collection before returning. Verify these at execute time, not just in the plan's stated contract: (1) a field the reader must see even when it is empty has no `omitempty` or `omitzero` tag, because the renderer drops a tagged field whose value is the zero value (rule 14 in docs/mcp-output-contract.md); (2) no code or test depends on the difference between nil and empty in tool output, because the reader cannot tell them apart; (3) no test expects JSON `null` in tool output; (4) a field the caller acts on has a test that calls the registered MCP tool and asserts the rendered line, such as `(none)` for an empty list; a test of the Go struct alone does not pin the rendering. Values written to a persisted JSON state file are different: normalize nil there, because a `null` can break a later reader that type-asserts a slice."
+description = "MCP tool output is Markdown. The renderer prints a nil or empty slice, map, pointer, or string as `(none)`, so a handler does not need to turn nil into an empty collection before returning. Verify these at execute time, not just in the plan's stated contract: (1) a field the reader must see even when it is empty has no `omitempty` or `omitzero` tag, because the renderer drops a tagged field whose value is the zero value (rule 14 in docs/internal/mcp-output-contract.md); (2) no code or test depends on the difference between nil and empty in tool output, because the reader cannot tell them apart; (3) no test expects JSON `null` in tool output; (4) a field the caller acts on has a test that calls the registered MCP tool and asserts the rendered line, such as `(none)` for an empty list; a test of the Go struct alone does not pin the rendering. Values written to a persisted JSON state file are different: normalize nil there, because a `null` can break a later reader that type-asserts a slice."
 
 [execute.guardrails.spec-compliance-literal-contract-diff]
 severity = "error"
@@ -543,7 +552,7 @@ same permission class as the operation it precedes."""
 
 [execute.guardrails.mcp-tool-annotation-reason-call-graph-verified]
 severity = "warning"
-description = 'Before marking done a task that adds or changes an MCP tool annotation (e.g. read-only, idempotent) with a reason string explaining why it is safe, verify the reason against an actual call-graph/reference search of the handler -- a plausible-sounding reason string is not evidence the annotation is correct. A tool annotation covers every action of the tool: when the task adds an action to an annotated tool, run the same search for the new action and check each side effect it has (a file write, a rename, a delete). An annotation that fits the old actions but not the new one fails the task, unless docs/mcp-tool-annotations.md names an exception that covers the action.'
+description = 'Before marking done a task that adds or changes an MCP tool annotation (e.g. read-only, idempotent) with a reason string explaining why it is safe, verify the reason against an actual call-graph/reference search of the handler -- a plausible-sounding reason string is not evidence the annotation is correct. A tool annotation covers every action of the tool: when the task adds an action to an annotated tool, run the same search for the new action and check each side effect it has (a file write, a rename, a delete). An annotation that fits the old actions but not the new one fails the task, unless docs/internal/mcp-tool-annotations.md names an exception that covers the action.'
 
 [execute.guardrails.nested-dispatch-runtime-stop]
 severity = "warning"
