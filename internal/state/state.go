@@ -645,12 +645,37 @@ func isDonePlanRun(path string) bool {
 // planIntegrity, or a planIntegrity that is not an object is not done.
 // isDonePlanRun and IsActivePlanRun use it.
 func IsDonePlanRun(st *State) bool {
-	if st == nil {
-		return false
-	}
-	integrity, _ := st.Data["planIntegrity"].(map[string]any)
-	_, hasDone := integrity["done"]
+	_, hasDone := PlanIntegrityValue(st, "done")
 	return hasDone
+}
+
+// PlanIntegrityKey is the data key that holds the plan-integrity markers.
+const PlanIntegrityKey = "planIntegrity"
+
+// PlanStoppedKey is the planIntegrity key of a user stop. It is also the
+// name of the plan_mark marker that writes it.
+const PlanStoppedKey = "stopped"
+
+// PlanIntegrityValue returns the value of key in data.planIntegrity and
+// whether the key is present. A nil st, a missing planIntegrity, or a
+// planIntegrity that is not an object has no key.
+func PlanIntegrityValue(st *State, key string) (any, bool) {
+	if st == nil {
+		return nil, false
+	}
+	integrity, _ := st.Data[PlanIntegrityKey].(map[string]any)
+	v, ok := integrity[key]
+	return v, ok
+}
+
+// IsStoppedPlanRun reports whether st has the stopped marker:
+// data.planIntegrity is an object that has a "stopped" key (any value, the
+// same rule as IsDonePlanRun). A nil st, a missing planIntegrity, or a
+// planIntegrity that is not an object is not stopped. IsActivePlanRun uses
+// it.
+func IsStoppedPlanRun(st *State) bool {
+	_, hasStopped := PlanIntegrityValue(st, PlanStoppedKey)
+	return hasStopped
 }
 
 // PlanRunLiveWindow is how long a plan run that is not done stays live after
@@ -802,10 +827,10 @@ func LatestPlanRun(root, branch string) (*State, error) {
 }
 
 // ActivePlanRun returns LatestPlanRun's run for branch only when it is
-// mid-flight: planIntegrity.skillInvoked is set and planIntegrity.done is
-// absent (the plan SKILL.md stamps "done" right before ExitPlanMode; see
-// plan.go's validMarkers and stop_hooks.go's planIntegrityFromState for the
-// same convention). Otherwise it returns (nil, nil) — including when
+// mid-flight: planIntegrity.skillInvoked is set and planIntegrity.done and
+// planIntegrity.stopped are absent (the plan SKILL.md stamps "done" right
+// before ExitPlanMode; see plan.go's validMarkers and stop_hooks.go's
+// planIntegrityFromState for the same convention). Otherwise it returns (nil, nil) — including when
 // LatestPlanRun itself returns (nil, nil). A LatestPlanRun error passes
 // through unchanged.
 func ActivePlanRun(root, branch string) (*State, error) {
@@ -824,17 +849,14 @@ func ActivePlanRun(root, branch string) (*State, error) {
 }
 
 // IsActivePlanRun reports whether st is mid-flight: planIntegrity has
-// skillInvoked and has no done. ActivePlanRun and PlanRunForSession use it,
-// and the stamp hook calls it. A nil st is not active.
+// skillInvoked and has neither done nor stopped. ActivePlanRun and
+// PlanRunForSession use it, and the stamp hook calls it. A nil st is not
+// active.
 func IsActivePlanRun(st *State) bool {
-	if st == nil {
+	if _, hasSkillInvoked := PlanIntegrityValue(st, "skillInvoked"); !hasSkillInvoked {
 		return false
 	}
-	integrity, _ := st.Data["planIntegrity"].(map[string]any)
-	if _, hasSkillInvoked := integrity["skillInvoked"]; !hasSkillInvoked {
-		return false
-	}
-	return !IsDonePlanRun(st)
+	return !IsDonePlanRun(st) && !IsStoppedPlanRun(st)
 }
 
 // planRunFile names one plan run file of runs/: its run ID and branch slug.
@@ -884,8 +906,9 @@ func planRunsNewestFirst(root string) ([]planRunFile, error) {
 // PlanRunForSession returns the newest plan run of branch whose sessionId
 // is sessionID. When no run has that sessionId, it returns the newest run
 // with no sessionId. With sessionID empty, it returns the newest run.
-// activeOnly limits the search to active runs: skillInvoked set, done not
-// set (the ActivePlanRun rule), and file time inside PlanRunLiveWindow.
+// activeOnly limits the search to active runs: skillInvoked set, done and
+// stopped not set (the ActivePlanRun rule), and file time inside
+// PlanRunLiveWindow.
 // "Newest" is the newest filename timestamp, as in LatestPlanRun. A
 // candidate that LoadRun cannot read is skipped, so one bad sibling does
 // not hide the run of this session. A ReadDir failure other than a missing

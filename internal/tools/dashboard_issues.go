@@ -24,6 +24,9 @@ const (
 // that changed each minute would send a new snapshot to every client.
 const dashboardStalledText = "no update for 30+ min"
 
+// dashboardSeverityInfo is the lowest severity of the dashboard.
+const dashboardSeverityInfo = "info"
+
 // dashboardSeverity maps a severity of a state file or a review ledger to the
 // severity values of the dashboard. A value of dimensions.ValidSeverities stays
 // as it is. "error" gives "high" and "warning" gives "medium". Any other value,
@@ -37,7 +40,7 @@ func dashboardSeverity(s string) string {
 	case s == "warning":
 		return "medium"
 	}
-	return "info"
+	return dashboardSeverityInfo
 }
 
 // dashboardStepIssue is the issue of a failed ship step. Its ref is the name

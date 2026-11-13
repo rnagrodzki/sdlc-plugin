@@ -95,6 +95,29 @@ severity: high
   the second write replaces the value, appends to it or is refused. A second
   write with no stated outcome that leaves two values in one field is a
   finding.
+- **One key, one source.** A counter, flag or note in a checkpoint or run
+  record that serves two or more gates, lanes or items must hold one value
+  for each of them. A single field keyed by a step name that two gates share
+  cannot tell their counts apart, and a retry limit that reads it then fires
+  for the wrong gate. Name the key that each gate reads and the step that
+  writes it. A shared key with no way to tell the sources apart is a
+  finding. A checkpoint or run-record field that a step reads or writes
+  (for example a retry count such as `gate-tries`) states, where it is first
+  used, where it is stored (the tool call and the field, or the file) and
+  its format with one literal sample. A field with no stated storage place
+  or no format sample is a finding.
+- **Route and writer list completeness.** A paragraph, rule, table row or
+  list in a SKILL.md that names the writers of a stored value (for example
+  the routes that write a `stopped` marker), the routes that reach a stop or
+  exit, the steps that a flag changes (for example an Arguments row for
+  `--auto`), or the errors a resume flow can return must name every one.
+  Grep SKILL.md for each route that writes the value, reaches the stop,
+  reads the flag or makes the call, and compare the grep with the text. A
+  text that names one member of several and does not say that it names only
+  some is a finding, also when each named member is right. This extends
+  Shared-record field parity, which checks the fields that routes write, and
+  Re-entry and error-route coverage, which checks that each route exists, to
+  the prose that lists them.
 - **Stopped-worker output.** Output from a stopped, abandoned, or
   never-reported worker must not feed a consolidation or merge step
   unless that step labels it partial.
@@ -103,6 +126,15 @@ severity: high
   worker that cannot be stopped still counts toward any wave or
   concurrency cap. A cleanup step that follows an earlier failed stop must
   retry that stop before it lists the worker as not stopped.
+- **Running-worker selection.** A stop or cleanup rule that acts only on
+  the workers that still run (for example a conclude or stop rule that ends
+  the explorers still in flight) must name the record that tells which ones
+  run: a dispatch list with task IDs, a status or ledger field, or a poll
+  result. It must also say what the rule does with a worker that has no
+  record. A rule that says 'stop the workers that still run' and names no
+  source for that set is a finding. This extends Resource cleanup and
+  Stop-failure fallback, which check that each worker ends, not how the rule
+  picks the set.
 - **Dispatch without task ID.** An Agent dispatch that returns no task ID
   is a worker that cleanup cannot end. The flow must list it as missing
   or unterminated.

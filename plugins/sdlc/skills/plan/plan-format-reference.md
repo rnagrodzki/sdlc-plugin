@@ -554,7 +554,7 @@ need to open OpenSpec files separately.
 
 **PF15 (OpenSpec handoff rule).** `validate` with `action: "plan_format"` and `handoff: true` adds
 PF15. The plan skill sets `handoff` in two places only, never during edits: the handoff (Step 6.6),
-and the second `validate` call after a rejected handoff with feedback (step 3 of "Rejected handoff
+and the second `validate` call after a rejected handoff with feedback (step 4 of "Rejected handoff
 with feedback"). A plan with an `**OpenSpec-Saved:**` line passes PF15: no case below applies to it.
 For every other plan, PF15 returns one error finding for the first case that matches:
 

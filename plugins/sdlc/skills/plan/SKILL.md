@@ -97,7 +97,7 @@ Resume table (the **Session recovery** rule selects one row):
 | match, `step 0`, no `**OpenSpec-Create:**` and no `**OpenSpec-Staging:**` line | skip the first `plan_prepare` call; call `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true, runId: "<runId of the Resume with: line>" })` to reload the run and its `openspec` fields; redo the OpenSpec gate check from that output (Create, if chosen, starts fresh at its step a) and complexity routing; make the template-resolution call with the resulting flags and the same `runId` (no `resume` — it reuses that run); write the template only if the plan file is empty; when Skip or Use existing change was chosen, apply **Header cleanup** (in **OpenSpec gate check** below); continue Step 0 at the `plan-file` marker |
 | match, `step 1` | If the checkpoint has no `expectedWriters`: **Post-compact resume** block above, item 5 (start again when the index has no `R1` item; else continue at **Re-anchor**). Otherwise: **Post-compact resume** block above. Keep every explorer that shows `done` in the writers table and use its recorded items. Keep polling an explorer that runs and is not listed. For a listed missing or stalled explorer, wait one poll cycle, then force-progress past it per the POLL rule's **Stopping a skipped writer**: the SCOPE dimension list is not stored, so it is not re-dispatched. Then continue CRITIQUE and CONSOLIDATE. When Gate A applies, reuse its recorded result or dispatch it again (block above, step 5) |
 | match, step ≥ 2 | **Post-compact resume** block above |
-| resume `plan_prepare` returns `no active plan run`, `plan run <runId> not found`, `plan run <runId> is done` or `plan run <runId> has no skillInvoked marker` | print `No active plan run to resume — starting a new plan.`; ignore the `Active plan (post-compact):` line for the rest of the session; normal Step 0 |
+| resume `plan_prepare` returns `no active plan run`, `plan run <runId> not found`, `plan run <runId> is done`, `plan run <runId> is stopped` or `plan run <runId> has no skillInvoked marker` | print `No active plan run to resume — starting a new plan.`; ignore the `Active plan (post-compact):` line for the rest of the session; normal Step 0 |
 | `Active plan (post-compact):` line, but no `Resume with:` line with a `runId` value | ignore the `Active plan (post-compact):` line for the rest of the session; normal Step 0 |
 | `evidence_digest` returns an error | print the error; stop; tell the user to re-invoke `/sdlc:plan` to start fresh |
 | `runId` empty or `(none)` | stop: `plan needs a git repository to track its run` |
@@ -159,7 +159,7 @@ Write the item after each lane merge (Step 3, the Step 4 lane re-dispatch, a Ste
 2. Keep its lists. After a lane merge, replace `lanes`. Add each new id to `inlineFallback` or `notStopped`.
 3. Write the whole item back: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "dispatch-status", summary: "<F> failed, <N> not returned, <S> skipped lanes; <I> inline; <T> not stopped", body: "<the JSON object>" }] })`. If a call fails, print the error and continue: Step 7 then prints `unknown`. The error `plan run <runId> not found` is the exception: follow **Run ID on every call**, which stops the held tasks and prints the `notStopped` ids before it starts a new plan.
 
-**Decision records:** After each AskUserQuestion answer, once `runId` exists (answers given before the first `plan_prepare` call are recorded right after it), record the decision: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "D<n>", summary: "<question → chosen option>" }] })`. The per-finding questions at the review limit (Step 5) are the exception: `review-outcome` stores those answers, so they get no `D<n>` record.
+**Decision records:** After each AskUserQuestion answer, once `runId` exists (answers given before the first `plan_prepare` call are recorded right after it), record the decision: `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "D<n>", summary: "<question → chosen option>" }] })`. The per-finding questions at the review limit (Step 5) are the exception: `review-outcome` stores those answers, so they get no `D<n>` record. The conclude question gets a `D<n>` record like any other question, except at the point After handoff: the run is done there, so it gets no `D<n>` record.
 
 Every `main` `evidence_record` call (brief, R-items, `F-main-<n>`, `D<n>`, `S3-guardrail-findings`, `dispatch-status`, `<writerId>-inline-fallback`, and any other `main` item) runs alone, never in parallel with another `main` call: two parallel upserts of `main.json` would lose one write.
 
@@ -265,9 +265,9 @@ Naming convention: `YYYY-MM-DD-<feature-name>.md`. Create the directory if neede
 - **GC orphan sweep** — `ship --gc` and `execute --gc` sweep stale `plan-*` markers (TTL-expired or branch-deleted) alongside `ship-*` and `execute-*` files; the JSON output includes a `plan` bucket alongside `ship` and `execute`.
 - **Evidence cleanup** — ship's `cleanup-pipeline` step deletes the linked plan run with its `<main-worktree>/.sdlc-v2/runs/<runId>.evidence/` only when the stamp landed and the ship report file exists, after it copies the explorer summary and the review rounds into ship state (the **Terminal cleanup** section of `ship/SKILL.md`, `planRun.deleted`). Otherwise the GC TTL sweep removes them, except the newest plan file of a branch that still exists, which the sweep keeps even past the TTL; `execute_state` gc reaps abandoned `runs/` subdirectories after the TTL.
 
-**Run ID on every call:** pass `runId` in every `plan_mark` call and every reuse call of `plan_prepare`. Another plan session can use the same branch, so a call with no `runId` can reach the run of that session. If any call returns `plan run <runId> not found` in the middle of a run, or a reuse `plan_prepare` call returns `plan run <runId> is done` or `plan run <runId> has no skillInvoked marker`, tell the user that the run state is gone. Before the restart, stop the agents of this run:
-1. Call `TaskStop` for each background task ID that this session still holds (for example, a Step 1 explorer that still runs). If a `TaskStop` call fails, or a task ID is no longer known, print `Warning: <writerId> not stopped, it can still run.`
-2. Print the writer ids that the `notStopped` list of the last `dispatch-status` item names, with the same warning. Use the list that this session holds; do not read the run state, because it is gone.
+**Run ID on every call:** pass `runId` in every `plan_mark` call and every reuse call of `plan_prepare`. Another plan session can use the same branch, so a call with no `runId` can reach the run of that session. If any call returns `plan run <runId> not found` in the middle of a run, or a reuse `plan_prepare` call returns `plan run <runId> is done` or `plan run <runId> has no skillInvoked marker`, tell the user that the run state is gone. If a reuse `plan_prepare` call returns `plan run <runId> is stopped`, tell the user that the run is stopped: its state stays on disk until it is pruned, but the run cannot continue. In both cases, start a new plan. Before the restart, stop the agents of this run:
+1. Call `TaskStop` for each background task ID that this session still holds (for example, a Step 1 explorer that still runs). If a `TaskStop` call fails (for example, an ownership or authorization error when this session is itself a nested agent), or a task ID is no longer known, do not retry. Print `Warning: <writerId> not stopped, it can still run.`
+2. Print the writer ids that the `notStopped` list of the last `dispatch-status` item names, with the same warning. Use the list that this session holds; do not read the run state.
 
 Then start a new plan: ignore the `Active plan (post-compact):` line for the rest of the session, run Step 0 normally, and make its first `plan_prepare` call with no `runId`, no `resume` and no `resolveTemplate`. This rule wins over a step-local rule for this error, such as "print the error and continue" or the Step 1 **Error fallback**. The `plan-file` marker call is the exception: its errors stay swallowed (see the planFile marker rule above and the sentence under the call below).
 
@@ -276,6 +276,55 @@ Call `plan_mark({ marker: "plan-file", runId: "<runId>", path: <resolved-plan-pa
 Replace `<resolved-plan-path>` with the actual absolute path: in plan mode it is the designated plan file path extracted at the top of Step 0; in normal mode it is the path resolved above (from `plansDirectory` or the default fallback). Errors from this call are swallowed — marker writes must not block plan creation.
 
 Call `plan_mark({ marker: "checkpoint", runId: "<runId>", path: "", data: { step: "0", iteration: 0 } })`.
+
+**Conclude question:** One AskUserQuestion that asks if the plan is complete. Frame it by the decision-framing rule. Restate these facts first:
+- the current step (`checkpoint.step`) and its name
+- the steps that are left
+- the open findings, or `none`
+- the plan file path
+
+At the point After handoff, the run is done: do not read the run state. The step is `7` (handoff), no steps are left, and the open findings are the gate findings of the last check in this conversation, or `none`.
+
+Ask: "Is this all? Conclude the plan?" Options:
+1. **Conclude (Recommended)** — the action of the route table below.
+2. **Change more** — the skill waits for your next change. No step runs.
+3. **Stop** — end the plan now. The plan file stays as it is.
+
+A free-text answer is one more change. Apply it, then ask again.
+After 3 failed gate tries, the question has no **Conclude** option. It offers only **Change more** and **Stop**.
+Under `--auto`, or when AskUserQuestion is not available, take **Conclude**. At a gate, after the third failed try, take **Stop**.
+
+**Conclude routes:** Each point changes only what the options do.
+
+| Point | Trigger | Conclude | Change more | Stop |
+|---|---|---|---|---|
+| Before run | a user message before the first `plan_prepare` call | no question. Add the message to the request | — | — |
+| Mid-run | a user message after the first `plan_prepare` call (Steps 0 to 7), before the done marker, that answers no skill question | continue at `checkpoint.step` (the current Step 0 point when no checkpoint exists). When `materialChangeDetected` is true and `checkpoint.step` is `6.5`, `6.6` or `7`, continue at Step 5 with the next round instead. Run every step that is left. Step 7 writes done | wait for the next message. Apply it. Ask again. Step 1 explorers keep running while the skill waits | the conclude stop rule. Print the plan path and the step. End |
+| Gate | Step 6.5 `results[]` has a status that is not `ok`, Step 6.6 `findings` is not empty, or the gate tool returns an error, and no user message waits | fix each finding (a tool error has no fix). Run the same gate again. Add one try to `gate-tries`. With findings or an error after 3 tries: ask again with no Conclude option | apply the change. Set `gate-tries` to 0. Run Step 6.5 again | the conclude stop rule. Print the findings. End |
+| After handoff | a reply to the Step 7 handoff that asks for a change | Step 7 **Rejected handoff with feedback** rule | wait, apply, ask again | end. The plan file stays. No state call |
+
+A user message that arrives while a gate has findings takes the Mid-run row. The question then lists the gate findings as open findings.
+
+Value sources of the routes:
+
+| Value | Set by | Format | Missing | Unknown |
+|---|---|---|---|---|
+| `--auto` | Step 0 flag parsing | flag present or absent | absent: interactive | — |
+| AskUserQuestion | the tool list of the session | available or not | not available: take Conclude | — |
+| gate result | `links_validate` `results[].status`, `validate` `findings[]` | tool output | a tool error: print it, then ask the conclude question. On **Conclude**, the error counts as one try | a status other than `ok` counts as a finding |
+| `material` | `material_compare` | boolean | an error: treat as material | — |
+| `gate-tries` | `main` evidence item, body `{"step":"6.6","tries":2}` (`step` is the gate, `6.5` or `6.6`) | step and count | absent: 0 | a body that is not this JSON: 0. A stored `step` that is not the failing gate: 0 |
+
+Read `gate-tries` with `plan_support({ action: "evidence_get", runId: "<runId>", ids: ["gate-tries"] })`. Write it with `plan_support({ action: "evidence_record", runId: "<runId>", writerId: "main", items: [{ id: "gate-tries", summary: "<step>: <tries> tries", body: "<the JSON object>" }] })`. A resume after a compaction reads the stored count and does not start again at 0.
+
+Gate fix rules: the skill removes a broken URL and keeps its link text. A URL that the user gave replaces it. The fix never uses text from the linked page. A format finding gets its `fix` text (every `plan_format` finding carries a `fix`; see Step 6.6).
+
+**User message mid-run:** Call `plan_support({ action: "material_snapshot", filePath: "<plan file path>" })` and keep its `snapshotPath`. Apply the message: to the requirements before Step 2, to the plan file from Step 2 on. Record a `D<n>` item for the message. From Step 3 on, call `plan_support({ action: "material_compare", filePath: "<plan file path>", snapshotPath: "<that snapshotPath>" })`. If `material` is true and review rounds are left, set `materialChangeDetected = true`. Then ask the conclude question.
+
+**Conclude stop rule:** Run these steps in this order:
+1. Call `plan_mark({ marker: "stopped", runId: "<runId>", path: "" })`. A run that is already stopped keeps its first time. On an error, print it. Tell the user that the run shows as running until the 24-hour prune.
+2. Call `TaskStop` for each Step 1 explorer that still runs. An explorer still runs when it is in the `expectedWriters` of the step 1 checkpoint and the writers table of `evidence_digest` (`statusOnly: true`) does not show it `done`. After a compaction, no task ID is known: print the warning below for each such explorer and make no `TaskStop` call. For a failed `TaskStop` (for example, an ownership or authorization error when this session is itself a nested agent), do not retry. For a failed `TaskStop`, or an explorer with no known task ID, print `Warning: <writerId> not stopped, it can still run.` Add the id to `notStopped` in `dispatch-status`. The `dispatch-status` write stays allowed on a stopped run. If it fails, print the error and continue.
+3. Print the `notStopped` ids of the `dispatch-status` list that this session holds, the plan path and the step. End.
 
 ## Step 1 (CONSUME): Requirements Discovery and Exploration
 
@@ -1090,19 +1139,19 @@ After the merge step, assemble the `## Verification Scorecard` section in the pl
   stop     — end planning now. No hand-off. Ask no later batch
   ```
 
-  Then call `plan_mark({ marker: "review-outcome", runId: "<runId>", path: "", data: { findings: [{ id, text, choice, reason }, …] } })` once, with only the answered findings. After a batch with a `stop` answer, the findings of later batches are not answered and are not sent; the `stop` finding is sent. `id` is the finding's `allIssues` `id`. `text` is the finding text that the user saw, cut to 200 characters. `reason` is the user's reason, cut to 200 characters, or `""`. Then follow the returned `next`. The tool returns one of two texts. With no `stop` choice, it says to run Create-flow authoring (Create flow only), then Step 6.5. With a `stop` choice, it says to offer harden when interactive, then end the run and report the open findings. Both texts match the route table below. Each `accepted` finding gets one row in `## Deviations & assumptions` with `asked=yes`.
+  Then call `plan_mark({ marker: "review-outcome", runId: "<runId>", path: "", data: { findings: [{ id, text, choice, reason }, …] } })` once, with only the answered findings. After a batch with a `stop` answer, the findings of later batches are not answered and are not sent; the `stop` finding is sent. `id` is the finding's `allIssues` `id`. `text` is the finding text that the user saw, cut to 200 characters. `reason` is the user's reason, cut to 200 characters, or `""`. Then follow the returned `next`. The tool returns one of three texts. With no `stop` choice, it says to run Create-flow authoring (Create flow only), then Step 6.5. With a `stop` choice, it says that the run is stopped, to offer harden when interactive, then to end the run and report the open findings. With a `stop` choice on a run that is already done, it says that stopped is not recorded and to report the open findings. The texts match the route table below. Each `accepted` finding gets one row in `## Deviations & assumptions` with `asked=yes`.
 
   | Route (Step 5 at round 5, Issues Found) | Next |
   |---|---|
   | 0 open findings (the last fix pass fixed every blocking issue) | ask no question. Do not call `review-outcome`. Create-flow authoring, then Step 6.5 |
   | every answer `accepted` or `rejected` | Create-flow authoring, then Step 6.5 |
-  | a batch has a `stop` answer | no later batch. Record the outcome. Offer harden (interactive only). Then stop and report the open findings |
-  | more than 200 open findings | ask no question. Do not call `review-outcome`. Stop and report the open findings |
-  | AskUserQuestion unavailable, with 1 to 200 open findings | stop and report the open findings |
+  | a batch has a `stop` answer | no later batch. Record the outcome: the `review-outcome` call also writes the stopped marker. Offer harden (interactive only). Then run the conclude stop rule (its step 1 keeps the first stop time) and report the open findings |
+  | more than 200 open findings | ask no question. Do not call `review-outcome`. Run the conclude stop rule and report the open findings |
+  | AskUserQuestion unavailable, with 1 to 200 open findings | run the conclude stop rule and report the open findings |
 
   A run that resumes at Step 6 after the outcome call asks the questions again. The new `review-outcome` call replaces the stored outcome. If the `review-outcome` call returns an error, print it, fix the arguments, and call once more. If the second call also fails, print the error and act on the answers: the stored outcome is display data only. The error `plan run <runId> not found` is the exception: follow **Run ID on every call**, which stops the held tasks and prints the `notStopped` ids before it starts a new plan.
 
-  On the `stop` route only, offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval), then stop. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after <reviewLoop.maxRounds> iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19. **`--auto` does not suppress these questions** — only the **harden** option is left out. The plan is handed off with open blocking issues only when no answer is `stop`. When AskUserQuestion is unavailable and 1 to 200 findings are open, stop and report the open blocking issues.
+  On the `stop` route only, offer **harden** (run `/harden` to analyze why this failed and propose stronger guardrails / dimensions / instructions that would catch it earlier next time — opt-in, no surface is edited without your approval; consequence: proposes preventive changes only, nothing is edited without a separate approval), then stop. When the user selects **harden** (interactive mode only — suppressed when `--auto` is set), dispatch `Skill(harden)` with `--failure-text "Plan reviewer loop did not converge after <reviewLoop.maxRounds> iterations. Outstanding issues: <union-of-blocking-issues-across-all-lenses>"`, `--skill plan`, `--step "Step 5 — review loop"`, `--operation "reviewer-loop max iterations"`. Implements R19. **`--auto` does not suppress these questions** — only the **harden** option is left out. The plan is handed off with open blocking issues only when no answer is `stop`. When AskUserQuestion is unavailable and 1 to 200 findings are open, run the conclude stop rule and report the open blocking issues.
 
 ## Step 6 (IMPROVE): Apply Review Fixes
 
@@ -1161,9 +1210,7 @@ links_validate({ file: "$plan_path", offline: false })
 `expectedRepo` and `jiraSite` are auto-derived by the tool from the project's git remote and `~/.sdlc-cache/jira/` — the skill MUST NOT construct that context itself.
 
 If any `results[]` entry has a non-`ok` `status`:
-- Do NOT proceed to Step 7 (Handoff). The plan is not ready.
-- Surface the violation list verbatim to the user.
-- Stop. Do not retry. Do not edit URLs without user input. Do not bypass.
+- Do not go to Step 7 with findings. Show the violations. Ask the conclude question (point Gate).
 
 On all-clear, proceed to Step 7. Pass `offline: true` (replacing the old `SDLC_LINKS_OFFLINE=1` env var) to skip network reachability while keeping context-aware checks (GitHub identity match, Atlassian host match) — use in sandboxed CI.
 
@@ -1184,15 +1231,13 @@ Call:
 
 ```
 validate({ action: "plan_format", file: "$plan_path", final: <FINAL_FLAG>, template: "$TEMPLATE_PATH", handoff: true })
-→ { findings: [{ id, severity, message, path }] }
+→ { findings: [{ id, severity, message, path, fix }] }
 ```
 
 `file` is required on every call (the tool's own doc comment names it as the plan_format target) — do not drop it chasing a shorthand example that omits it. Omit `template` when `TEMPLATE_PATH` is unset rather than passing an empty string.
 
 If `findings` is non-empty:
-- Do NOT proceed to Step 7 (Handoff). The plan is not ready.
-- Surface every finding (`id`, `severity`, `message`, `path`) verbatim to the user.
-- Stop. Do not retry. Do not auto-edit. Do not bypass.
+- Do not go to Step 7 with findings. Show every finding. Ask the conclude question (point Gate).
 
 If `findings` is empty, the plan passed every applicable PF check — proceed to Step 7.
 
@@ -1240,13 +1285,17 @@ List the `openspec-save` line only when the plan file header has an `**OpenSpec-
 
 Then call ExitPlanMode. Do NOT invoke execute, ship, or openspec-save in this turn — they run after the user accepts in the next turn.
 
-**Rejected handoff with feedback (Create flow only — the plan file has an `**OpenSpec-Staging:**` header line):** If the user rejects ExitPlanMode with feedback, work from the plan file only. Do not read or write the run state. The run is closed after `done`: `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true, runId: "<runId>" })` fails with `plan run <runId> is done`, and a new `plan_mark` or `evidence_record` call changes the record of a finished run. The state file stays on disk until ship's cleanup step or the GC TTL sweep removes it. The GC TTL sweep keeps the newest plan file of a branch that still exists, even past the TTL.
-1. Change the plan file for the feedback.
-2. Run **Create-flow authoring** steps 1–4 again from the changed plan file. Pass all artifact files to `openspec_stage`. The attempt counter starts at 0.
-3. Call `links_validate` and `validate({ action: "plan_format", file: "<plan file path>", final: true, template: "<template.activeTemplatePath>", handoff: true })`. Fix each finding as Step 6.5 and Step 6.6 say. Make no `plan_mark` call and no `evidence_record` call.
-4. Announce the plan path again, then call ExitPlanMode.
+**Rejected handoff with feedback (every plan, plan mode and normal mode):** If the user rejects ExitPlanMode with feedback, or replies to the Workflow Continuation menu with a change request, this rule takes the point After handoff of the route table. Work from the plan file only. Do not read or write the run state. The run is closed after `done`: `plan_prepare({ resume: true, resolveTemplate: true, skipConfigCheck: true, runId: "<runId>" })` fails with `plan run <runId> is done`, and a new `plan_mark` or `evidence_record` call changes the record of a finished run. The state file stays on disk until ship's cleanup step or the GC TTL sweep removes it. The GC TTL sweep keeps the newest plan file of a branch that still exists, even past the TTL.
+1. Change the plan file for the feedback. Record no `D<n>` item, because the run is done.
+2. Ask the conclude question (point After handoff).
+   - **Conclude:** do steps 3 to 5.
+   - **Change more:** wait for the next message, apply it to the plan file, and ask again.
+   - **Stop:** end. The plan file stays as it is. Make no state call.
+3. Only for a plan with an `**OpenSpec-Staging:**` header line: run **Create-flow authoring** steps 1–4 again from the changed plan file. Pass all artifact files to `openspec_stage`. The attempt counter starts at 0.
+4. For every plan, call `links_validate` and `validate({ action: "plan_format", file: "<plan file path>", final: true, template: "<template.activeTemplatePath>", handoff: true })`. Fix each finding as the gate fix rules of **Conclude routes** say. Make no `plan_mark` call and no `evidence_record` call. Count the fix tries in the conversation, not in `gate-tries`, because the run is done. After 3 failed tries, show the findings and end. The plan file stays.
+5. Announce the plan path again. In plan mode, call ExitPlanMode. In normal mode, present the Workflow Continuation menu again.
 
-If this rule stops before step 4, the user can give the feedback again. Steps 2 to 4 are safe to repeat: `openspec_stage` replaces the whole staging directory (a `staged by another plan` refusal writes nothing; follow the rule of **Create-flow authoring** item 3 for it), and **Create-flow authoring** step 4 replaces the appendix. For a plan without an `**OpenSpec-Staging:**` header line, this rule does not apply.
+If this rule stops before step 5, the user can give the feedback again. For a staging plan, steps 3 to 5 are safe to repeat: `openspec_stage` replaces the whole staging directory (a `staged by another plan` refusal writes nothing; follow the rule of **Create-flow authoring** item 3 for it), and **Create-flow authoring** step 4 replaces the appendix.
 
 **Normal mode:** Announce the plan path, then present the Workflow Continuation menu (see below). Prepend any advisory output from the wrapper above the menu's `ship` / `execute` / `done` lines.
 
@@ -1261,7 +1310,8 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 | Plan reviewer loop exceeds `reviewLoop.maxRounds` (5) iterations | Surface to user for guidance |
 | Requirements are contradictory | Flag specific contradictions, ask user to resolve |
 | User approves but output path fails | Retry with a different path; offer to print plan to screen |
-| The plan stops with an error after Step 1 dispatched background explorers | Call `TaskStop` for each background task ID that this session still holds. If a `TaskStop` call fails, or a task ID is no longer known, print `Warning: <writerId> not stopped, it can still run.` Then print the error. |
+| User stops the plan | The stop rule of the conclude question |
+| The plan stops with an error after Step 1 dispatched background explorers | Call `TaskStop` for each background task ID that this session still holds. If a `TaskStop` call fails (for example, an ownership or authorization error when this session is itself a nested agent), or a task ID is no longer known, do not retry. Print `Warning: <writerId> not stopped, it can still run.` Then print the error. |
 
 ## DO NOT
 
@@ -1275,7 +1325,7 @@ Do NOT report the plan as "validated" on format-floor PASS alone. Format floor =
 - Put plans in plugin-branded directories (no `docs/superpowers/plans/`)
 - Ignore plan mode's designated file path when plan mode is active — always write to it
 - Use TodoWrite for lightweight plans — it adds overhead without value
-- Prompt the user at Step 0 session-recovery or Step 4 — those steps are autonomous (single-touchpoint at Step 7, implements R22/R23)
+- Prompt the user on the skill's own initiative at Step 0 session-recovery or Step 4 — those steps are autonomous (single-touchpoint at Step 7, implements R22/R23). A reply to a user message can come at any step.
 - Treat G19 findings as advisory — G19 is error-severity and blocks plan approval
 
 ## Gotchas
@@ -1325,7 +1375,7 @@ Select:
 
 Show the `openspec-save` line only when the plan file header has an `**OpenSpec-Staging:**` line. Without that line, leave the line out. Replace `<path>` with the plan file path and `<change>` with the change name from the staging path, and do not print the bracketed note. Keep the branch condition in the line, for the same reason as in plan mode.
 
-On selection, invoke the chosen skill using the Skill tool. For `openspec-save`, pass `--plan <path>` with the plan file path. On "done", end without further action.
+On selection, invoke the chosen skill using the Skill tool. For `openspec-save`, pass `--plan <path>` with the plan file path. On "done", end without further action. A reply that asks for a change takes the point After handoff of the route table.
 
 ## See Also
 
