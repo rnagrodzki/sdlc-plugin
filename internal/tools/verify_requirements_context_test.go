@@ -3,17 +3,24 @@ package tools
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 )
 
 // verifyIn returns a verify_requirements_context input.
@@ -36,6 +43,16 @@ func wantVerifyErr(t *testing.T, err error, class, msg, suggestion string) {
 	}
 	if got := suggestionOf(err); got != suggestion {
 		t.Errorf("Suggestion = %q, want %q", got, suggestion)
+	}
+}
+
+// wantVerifyErrIs is wantVerifyErr, and it also checks that err wraps cause
+// (errors.Is): the Cause of the tool error keeps the error it reports.
+func wantVerifyErrIs(t *testing.T, err error, class, msg, suggestion string, cause error) {
+	t.Helper()
+	wantVerifyErr(t, err, class, msg, suggestion)
+	if !errors.Is(err, cause) {
+		t.Errorf("errors.Is(err, %v) = false, want true (err %#v)", cause, err)
 	}
 }
 
@@ -288,13 +305,20 @@ func TestVerifyRequirementsContextCombinations(t *testing.T) {
 // TestVerifyRequirementsContextParity calls preplan_check and the topic kind
 // of verify_requirements_context for each input state of the parity table.
 // Each "same" row gives the same class, the same message and the same
-// Suggestion. The retry text at the end of a Suggestion names the action
-// (preplanRetry), so a preplan_check Suggestion that ends with
-// preplanCheckAgain ends with verifyRunAgain for the new action.
+// Suggestion, but for the rerun text. The rerun text names the skill of the
+// action: a preplan_check Suggestion that ends with preplanCheckAgain ends
+// with verifyRunAgain for the new action, "Then run /sdlc:preplan again."
+// (preplanRunSkillAgain) names /sdlc:verify-requirements, and the rerun text
+// of preplanNotRegularError tells the user to make a new topic file with
+// /sdlc:preplan, because the new action never creates one.
+// TestVerifyRequirementsContextTopicSuggestions pins each new text in full.
 func TestVerifyRequirementsContextParity(t *testing.T) {
 	skeleton := preplanSkeletonFor("auth flow")
 	sameSuggestion := func(check string) string {
-		return strings.ReplaceAll(check, preplanCheckAgain, verifyRunAgain)
+		check = strings.ReplaceAll(check, preplanCheckAgain, verifyRunAgain)
+		check = strings.ReplaceAll(check, "Then run /sdlc:preplan again.", "Then run /sdlc:verify-requirements again.")
+		return strings.ReplaceAll(check, preplanRunAgain+" preplan_context then creates a new topic file.",
+			", then run /sdlc:preplan to make a new topic file, and run /sdlc:verify-requirements again.")
 	}
 	sameMsg := func(check string) string {
 		return strings.ReplaceAll(check, preplanCheckAction, verifyRequirementsContextAction)
@@ -511,30 +535,52 @@ func TestVerifyRequirementsContextParity(t *testing.T) {
 
 // TestVerifyRequirementsContextGuardrailsUnavailable checks that a bad config
 // gives guardrailsStatus "unavailable: <warning>" and the call still
-// succeeds, for each kind that is built.
+// succeeds, for each of the four kinds. The summary is the status sentence of
+// the kind, then " Guardrails unavailable: <warning>.".
 func TestVerifyRequirementsContextGuardrailsUnavailable(t *testing.T) {
-	for _, in := range []PlanSupportIn{verifyIn("topic", "auth flow"), verifyIn("jira", "INT-4571")} {
-		t.Run(in.VerifyKind, func(t *testing.T) {
+	for _, tc := range []struct {
+		in     PlanSupportIn
+		status func(root string) string // the status sentence of the kind
+	}{
+		{verifyIn("topic", "auth flow"), func(string) string {
+			return "Read auth-flow.md: 7 structure finding(s), 0 open question(s)."
+		}},
+		{verifyIn("file", "docs/req.md"), func(root string) string {
+			return "Checked the file " + filepath.Join(root, "docs", "req.md") + ": a regular file of 15 bytes."
+		}},
+		{verifyIn("jira", "INT-4571"), func(string) string {
+			return "Checked the Jira key INT-4571 of project INT. The tool does not read Jira."
+		}},
+		{verifyIn("issue", "42"), func(string) string {
+			return "Read GitHub issue #42. The title and the body come back as data."
+		}},
+	} {
+		t.Run(tc.in.VerifyKind, func(t *testing.T) {
+			stubVerifyIssueView(t, func(dir, number string) (string, error) { return `{"title":"T","body":"B"}`, nil })
 			root := t.TempDir()
 			writeFile(t, filepath.Join(root, ".sdlc-v2", "config.toml"), "[plan\nguardrails = [\n")
 			writePreplanTopic(t, root, "auth-flow.md", preplanSkeletonFor("auth flow"))
+			writeFile(t, filepath.Join(root, "docs", "req.md"), "# Requirements\n")
 			_, warning := loadGuardrails(root)
 			if warning == "" {
 				t.Fatal("loadGuardrails gave no warning for a malformed config")
 			}
-			out, err := planSupportCore(root, root, in)
+			text := preplanWarningText(warning)
+			if !strings.HasPrefix(text, "Failed to read plan config: ") {
+				t.Fatalf("warning = %q, want the loadGuardrails read warning", text)
+			}
+			out, err := planSupportCore(root, root, tc.in)
 			if err != nil {
 				t.Fatalf("verify_requirements_context: %v", err)
 			}
-			want := "unavailable: " + preplanWarningText(warning)
-			if out.GuardrailsStatus != want {
+			if want := "unavailable: " + text; out.GuardrailsStatus != want {
 				t.Errorf("guardrailsStatus = %q, want %q", out.GuardrailsStatus, want)
 			}
-			if !strings.HasPrefix(out.GuardrailsStatus, "unavailable: Failed to read plan config: ") {
-				t.Errorf("guardrailsStatus = %q, want the loadGuardrails read warning", out.GuardrailsStatus)
+			if len(out.Guardrails) != 0 {
+				t.Errorf("guardrails = %v, want none", out.Guardrails)
 			}
-			if !strings.Contains(out.Summary, "Guardrails unavailable: "+preplanWarningText(warning)+".") {
-				t.Errorf("summary = %q, want it to name the warning", out.Summary)
+			if want := tc.status(root) + " Guardrails unavailable: " + text + "."; out.Summary != want {
+				t.Errorf("summary = %q\nwant      %q", out.Summary, want)
 			}
 		})
 	}
@@ -613,14 +659,14 @@ func TestVerifyRequirementsContextFile(t *testing.T) {
 		// A file with this name under the main root must not count.
 		writeFile(t, filepath.Join(mainRoot, "docs", "req.md"), "# Requirements\n")
 		_, err := planSupportCore(mainRoot, activeRoot, verifyIn("file", "docs/req.md"))
-		wantVerifyErr(t, err, "domain", action+"no file at "+filepath.Join(activeRoot, "docs", "req.md"), pathSuggestion(activeRoot))
+		wantVerifyErrIs(t, err, "domain", action+"no file at "+filepath.Join(activeRoot, "docs", "req.md"), pathSuggestion(activeRoot), fs.ErrNotExist)
 	})
 
 	t.Run("no file at an absolute path", func(t *testing.T) {
 		root := t.TempDir()
 		path := filepath.Join(root, "absent.md")
 		_, err := planSupportCore(root, root, verifyIn("file", path))
-		wantVerifyErr(t, err, "domain", action+"no file at "+path, pathSuggestion(root))
+		wantVerifyErrIs(t, err, "domain", action+"no file at "+path, pathSuggestion(root), fs.ErrNotExist)
 	})
 
 	t.Run("a path through a file", func(t *testing.T) {
@@ -628,17 +674,41 @@ func TestVerifyRequirementsContextFile(t *testing.T) {
 		writeFile(t, filepath.Join(root, "plain.md"), "x")
 		path := filepath.Join(root, "plain.md", "child.md")
 		_, err := planSupportCore(root, root, verifyIn("file", path))
-		wantVerifyErr(t, err, "domain", action+"no file at "+path, pathSuggestion(root))
+		wantVerifyErrIs(t, err, "domain", action+"no file at "+path, pathSuggestion(root), syscall.ENOTDIR)
 	})
 
 	t.Run("a link whose target is absent", func(t *testing.T) {
 		root := t.TempDir()
 		path := filepath.Join(root, "dangling.md")
 		if err := os.Symlink(filepath.Join(root, "gone.md"), path); err != nil {
-			t.Skipf("symlink: %v", err)
+			t.Skipf("symlink not available (%v): the dangling-link branch of verifyFile is untested", err)
 		}
 		_, err := planSupportCore(root, root, verifyIn("file", "dangling.md"))
-		wantVerifyErr(t, err, "domain", action+"no file at "+path, pathSuggestion(root))
+		wantVerifyErrIs(t, err, "domain", action+"no file at "+path, pathSuggestion(root), fs.ErrNotExist)
+	})
+
+	// A stat failure that is not an absent path is an InfraError with the
+	// cause of the stat error.
+	t.Run("a path with a name over the name limit", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, strings.Repeat("a", 300)+".md")
+		_, err := planSupportCore(root, root, verifyIn("file", path))
+		wantVerifyErrIs(t, err, "infra", action+"cannot read "+path+": "+syscall.ENAMETOOLONG.Error(),
+			"Check the file permissions, then run /sdlc:verify-requirements again.", syscall.ENAMETOOLONG)
+	})
+
+	t.Run("a link loop", func(t *testing.T) {
+		root := t.TempDir()
+		a, b := filepath.Join(root, "a.md"), filepath.Join(root, "b.md")
+		if err := os.Symlink(b, a); err != nil {
+			t.Skipf("symlink not available (%v): the link-loop branch of verifyFile is untested", err)
+		}
+		if err := os.Symlink(a, b); err != nil {
+			t.Fatal(err)
+		}
+		_, err := planSupportCore(root, root, verifyIn("file", "a.md"))
+		wantVerifyErrIs(t, err, "infra", action+"cannot read "+a+": "+syscall.ELOOP.Error(),
+			"Check the file permissions, then run /sdlc:verify-requirements again.", syscall.ELOOP)
 	})
 
 	t.Run("a folder", func(t *testing.T) {
@@ -654,7 +724,7 @@ func TestVerifyRequirementsContextFile(t *testing.T) {
 		root := t.TempDir()
 		path := filepath.Join(root, "pipe")
 		if err := syscall.Mkfifo(path, 0o644); err != nil {
-			t.Skipf("mkfifo: %v", err)
+			t.Skipf("mkfifo not available (%v): the pipe-at-path branch of verifyFile is untested", err)
 		}
 		_, err := planSupportCore(root, root, verifyIn("file", "pipe"))
 		wantVerifyErr(t, err, "domain", action+path+" is not a regular file", passSuggestion)
@@ -664,11 +734,11 @@ func TestVerifyRequirementsContextFile(t *testing.T) {
 		root := t.TempDir()
 		pipe := filepath.Join(root, "pipe")
 		if err := syscall.Mkfifo(pipe, 0o644); err != nil {
-			t.Skipf("mkfifo: %v", err)
+			t.Skipf("mkfifo not available (%v): the link-to-a-pipe branch of verifyFile is untested", err)
 		}
 		link := filepath.Join(root, "link")
 		if err := os.Symlink(pipe, link); err != nil {
-			t.Skipf("symlink: %v", err)
+			t.Skipf("symlink not available (%v): the link-to-a-pipe branch of verifyFile is untested", err)
 		}
 		_, err := planSupportCore(root, root, verifyIn("file", "link"))
 		wantVerifyErr(t, err, "domain", action+link+" is not a regular file", passSuggestion)
@@ -693,9 +763,42 @@ func TestVerifyRequirementsContextFile(t *testing.T) {
 			"Split the requirements into smaller files and check each one.")
 	})
 
-	t.Run("a file that cannot be read", func(t *testing.T) {
+	// The seam rows force the read failure, so the InfraError branch of the
+	// head read runs as root too. The mode-0 row checks the real open error.
+	t.Run("a file that cannot be opened (seam)", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "secret.md")
+		writeFile(t, path, "# Requirements\n")
+		var opened string
+		swapPreplanSeam(t, &verifyOpenFile, func(name string) (io.ReadCloser, error) {
+			opened = name
+			return nil, &fs.PathError{Op: "open", Path: name, Err: syscall.EACCES}
+		})
+		_, err := planSupportCore(root, root, verifyIn("file", "secret.md"))
+		wantVerifyErrIs(t, err, "infra", action+"cannot read "+path+": permission denied",
+			"Check the file permissions, then run /sdlc:verify-requirements again.", syscall.EACCES)
+		if opened != path {
+			t.Errorf("verifyOpenFile got %q, want %q", opened, path)
+		}
+	})
+
+	t.Run("a file whose read fails after the open (seam)", func(t *testing.T) {
+		root := t.TempDir()
+		path := filepath.Join(root, "req.md")
+		writeFile(t, path, "# Requirements\n")
+		r := &verifyFailReader{err: syscall.EIO}
+		swapPreplanSeam(t, &verifyOpenFile, func(string) (io.ReadCloser, error) { return r, nil })
+		_, err := planSupportCore(root, root, verifyIn("file", "req.md"))
+		wantVerifyErrIs(t, err, "infra", action+"cannot read "+path+": "+syscall.EIO.Error(),
+			"Check the file permissions, then run /sdlc:verify-requirements again.", syscall.EIO)
+		if !r.closed {
+			t.Error("the file was not closed after the failed read")
+		}
+	})
+
+	t.Run("a file with mode 0", func(t *testing.T) {
 		if os.Geteuid() == 0 {
-			t.Skip("root reads every file")
+			t.Skip("running as root, which opens a mode-0 file: the real permission-denied open of verifyFile is untested (the seam row covers the InfraError branch)")
 		}
 		root := t.TempDir()
 		path := filepath.Join(root, "secret.md")
@@ -705,8 +808,8 @@ func TestVerifyRequirementsContextFile(t *testing.T) {
 		}
 		t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
 		_, err := planSupportCore(root, root, verifyIn("file", "secret.md"))
-		wantVerifyErr(t, err, "infra", action+"cannot read "+path+": permission denied",
-			"Check the file permissions, then run /sdlc:verify-requirements again.")
+		wantVerifyErrIs(t, err, "infra", action+"cannot read "+path+": permission denied",
+			"Check the file permissions, then run /sdlc:verify-requirements again.", fs.ErrPermission)
 	})
 
 	t.Run("a regular file", func(t *testing.T) {
@@ -752,7 +855,7 @@ func TestVerifyRequirementsContextFile(t *testing.T) {
 		target := filepath.Join(root, "real.md")
 		writeFile(t, target, "# Requirements\n")
 		if err := os.Symlink(target, filepath.Join(root, "link.md")); err != nil {
-			t.Skipf("symlink: %v", err)
+			t.Skipf("symlink not available (%v): the link-to-a-file branch of verifyFile is untested", err)
 		}
 		out, err := planSupportCore(root, root, verifyIn("file", "link.md"))
 		if err != nil {
@@ -765,31 +868,81 @@ func TestVerifyRequirementsContextFile(t *testing.T) {
 
 	t.Run("a preplan topic file", func(t *testing.T) {
 		root := t.TempDir()
-		writeFile(t, filepath.Join(root, "topic.md"), "# Preplan: auth flow\n\n## Goal\n")
+		content := "# Preplan: auth flow\n\n## Goal\n"
+		writeFile(t, filepath.Join(root, "topic.md"), content)
 		out, err := planSupportCore(root, root, verifyIn("file", "topic.md"))
 		if err != nil {
 			t.Fatalf("verify_requirements_context: %v", err)
 		}
-		const hint = "This file is a preplan topic file. Run /sdlc:verify-requirements --topic auth flow to also run the structure checks."
-		if !strings.Contains(out.Summary, hint) {
-			t.Errorf("summary = %q, want it to hold %q", out.Summary, hint)
+		want := fmt.Sprintf("Checked the file %s: a regular file of %d bytes. ", filepath.Join(root, "topic.md"), len(content)) +
+			`This file is a preplan topic file. Run /sdlc:verify-requirements --topic "auth flow" to also run the structure checks.`
+		if out.Summary != want {
+			t.Errorf("summary = %q\nwant      %q", out.Summary, want)
 		}
 		if out.StructureChecks != "not run: the input is not a topic file" {
 			t.Errorf("structureChecks = %q", out.StructureChecks)
 		}
 	})
+}
 
-	t.Run("a first line that only holds the marker later", func(t *testing.T) {
-		root := t.TempDir()
-		writeFile(t, filepath.Join(root, "req.md"), "# Requirements\n# Preplan: x\n")
-		out, err := planSupportCore(root, root, verifyIn("file", "req.md"))
-		if err != nil {
-			t.Fatalf("verify_requirements_context: %v", err)
-		}
-		if strings.Contains(out.Summary, "preplan topic file") {
-			t.Errorf("summary = %q", out.Summary)
-		}
-	})
+// verifyFailReader is an io.ReadCloser whose Read fails with err. It records
+// the Close call.
+type verifyFailReader struct {
+	err    error
+	closed bool
+}
+
+func (r *verifyFailReader) Read([]byte) (int, error) { return 0, r.err }
+func (r *verifyFailReader) Close() error             { r.closed = true; return nil }
+
+// TestVerifyRequirementsContextFileSummary pins the full summary of the file
+// kind for the head read: the empty-file and white-space notes and the
+// topic-file hint, at the 4096-byte boundary of the head read.
+func TestVerifyRequirementsContextFileSummary(t *testing.T) {
+	hint := func(name string) string {
+		return fmt.Sprintf(" This file is a preplan topic file. Run /sdlc:verify-requirements --topic %q to also run the structure checks.", name)
+	}
+	const marker = "# Preplan: "
+	longName := strings.Repeat("n", verifyFirstLineMaxBytes-len(marker)) // the first line is exactly 4096 bytes
+	for _, tc := range []struct {
+		name, content, extra string
+	}{
+		{"an empty file", "", " The file is empty."},
+		{"only white space", " \n\t\r\n  ", " The file holds only white space."},
+		{"white space of exactly the head size", strings.Repeat(" ", verifyFirstLineMaxBytes), " The file holds only white space."},
+		// The head read sees 4096 spaces of a longer file: it cannot tell
+		// that the rest is white space too, so it says nothing.
+		{"white space one byte over the head size", strings.Repeat(" ", verifyFirstLineMaxBytes+1), ""},
+		{"white space then text", "  \n\n# Requirements\n", ""},
+		{"a plain first line", "# Requirements\n# Preplan: x\n", ""},
+		{"a CRLF first line", "# Preplan: auth flow\r\n\r\n## Goal\r\n", hint("auth flow")},
+		{"no line end", "# Preplan: auth flow", hint("auth flow")},
+		{"spaces and tabs around the name", "# Preplan:\t  auth flow \t\n", hint("auth flow")},
+		{"an empty name", "# Preplan:\n## Goal\n", ""},
+		{"a blank name", "# Preplan:   \t\n", ""},
+		{"a name with a quote", "# Preplan: say \"hi\" now\n", hint(`say "hi" now`)},
+		{"no space after the colon", "# Preplan:auth\n", hint("auth")},
+		{"the marker with a leading space", " # Preplan: auth\n", ""},
+		{"a first line of exactly 4096 bytes", marker + longName + "\nmore\n", hint(longName)},
+		// A first line over the head size counts as it is cut: the name
+		// loses its last byte.
+		{"a first line one byte over 4096 bytes", marker + longName + "x\nmore\n", hint(longName)},
+		{"a first line far over 4096 bytes", marker + longName + strings.Repeat("y", 5000), hint(longName)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "req.md")
+			writeFile(t, path, tc.content)
+			out, err := planSupportCore(root, root, verifyIn("file", "req.md"))
+			if err != nil {
+				t.Fatalf("verify_requirements_context: %v", err)
+			}
+			want := fmt.Sprintf("Checked the file %s: a regular file of %d bytes.", path, len(tc.content)) + tc.extra
+			if out.Summary != want {
+				t.Errorf("summary = %.300q\nwant      %.300q", out.Summary, want)
+			}
+		})
+	}
 }
 
 // verifyOpenspecRoot writes openspec/config.yaml under root.
@@ -869,14 +1022,18 @@ func TestVerifyRequirementsContextOpenspec(t *testing.T) {
 		if !reflect.DeepEqual(*out.OpenspecActiveChanges, wantChanges) {
 			t.Errorf("active changes = %+v, want %+v", *out.OpenspecActiveChanges, wantChanges)
 		}
-		if len(*out.OpenspecWarnings) != 0 {
-			t.Errorf("warnings = %v, want none", *out.OpenspecWarnings)
+		// A spec with no requirement heading is listed with an empty list
+		// and one warning, so the empty list does not read as nothing to
+		// compare.
+		wantWarn := []string{"openspec/changes/zeta/specs/empty/spec.md: no requirement heading found"}
+		if !reflect.DeepEqual(*out.OpenspecWarnings, wantWarn) {
+			t.Errorf("warnings = %q, want %q", *out.OpenspecWarnings, wantWarn)
 		}
 	})
 
 	t.Run("a heading in a code fence does not count", func(t *testing.T) {
-		got := verifySpecHeadings([]byte("```\n### Requirement: Fenced\n```\n### Requirement: Real\n"), false)
-		if !reflect.DeepEqual(got, []string{"Real"}) {
+		got, open := verifySpecHeadings([]byte("```\n### Requirement: Fenced\n```\n### Requirement: Real\n"), false)
+		if !reflect.DeepEqual(got, []string{"Real"}) || open != 0 {
 			t.Errorf("headings = %v, want [Real]", got)
 		}
 	})
@@ -902,9 +1059,44 @@ func TestVerifyRequirementsContextOpenspec(t *testing.T) {
 		}
 	})
 
-	t.Run("a spec that cannot be read", func(t *testing.T) {
+	t.Run("a spec whose read fails (seam)", func(t *testing.T) {
+		root := t.TempDir()
+		verifyOpenspecRoot(t, root)
+		locked := filepath.Join(root, "openspec", "specs", "locked", "spec.md")
+		writeFile(t, locked, "### Requirement: Locked\n")
+		writeFile(t, filepath.Join(root, "openspec", "specs", "odd", "spec.md"), "### Requirement: Odd\n")
+		writeFile(t, filepath.Join(root, "openspec", "specs", "ok", "spec.md"), "### Requirement: Ok\n")
+		read := verifyReadFile
+		swapPreplanSeam(t, &verifyReadFile, func(name string) ([]byte, error) {
+			switch filepath.Base(filepath.Dir(name)) {
+			case "locked":
+				return nil, &fs.PathError{Op: "open", Path: name, Err: syscall.EACCES}
+			case "odd":
+				return nil, errors.New("disk gone")
+			}
+			return read(name)
+		})
+		out := verifyOpenspecOut(t, root, root)
+		want := []VerifyOpenspecSpec{
+			{Path: "openspec/specs/locked/spec.md", Requirements: []string{}},
+			{Path: "openspec/specs/odd/spec.md", Requirements: []string{}},
+			{Path: "openspec/specs/ok/spec.md", Requirements: []string{"Ok"}},
+		}
+		if !reflect.DeepEqual(*out.OpenspecMainSpecs, want) {
+			t.Errorf("main specs = %+v, want %+v", *out.OpenspecMainSpecs, want)
+		}
+		wantWarn := []string{
+			"openspec/specs/locked/spec.md: not read: permission denied",
+			"openspec/specs/odd/spec.md: not read: disk gone",
+		}
+		if !reflect.DeepEqual(*out.OpenspecWarnings, wantWarn) {
+			t.Errorf("warnings = %q, want %q", *out.OpenspecWarnings, wantWarn)
+		}
+	})
+
+	t.Run("a spec with mode 0", func(t *testing.T) {
 		if os.Geteuid() == 0 {
-			t.Skip("root reads every file")
+			t.Skip("running as root, which reads a mode-0 file: the real permission-denied read of readSpec is untested (the seam row covers the warning)")
 		}
 		root := t.TempDir()
 		verifyOpenspecRoot(t, root)
@@ -1000,9 +1192,10 @@ func stubVerifyIssueView(t *testing.T, fn func(dir, number string) (string, erro
 	t.Cleanup(func() { verifyIssueView = old })
 }
 
-// ghStderr returns an error that has the shape of an execx.Run failure of gh.
-func ghStderr(number, stderr string) error {
-	return fmt.Errorf("execx: gh issue view %s --json title,body: exit status 1: %s", number, stderr)
+// ghExit returns the error that ghx.IssueViewJSON returns when gh exits with
+// code and prints stderr.
+func ghExit(code int, stderr string) *ghx.ExitError {
+	return &ghx.ExitError{Command: "gh issue view", ExitCode: code, Stderr: stderr}
 }
 
 // TestVerifyRequirementsContextIssue covers the issue kind with the fake seam.
@@ -1095,10 +1288,24 @@ func TestVerifyRequirementsContextIssue(t *testing.T) {
 	numberMsg := fmt.Sprintf("verify_requirements_context: verifyValue must be a GitHub issue number of 1 to %d digits with no leading zero", verifyIssueNumberMaxDigits)
 	const numberSuggestion = "Pass only the digits of the issue number, for example 42."
 	const rerun = ", then run /sdlc:verify-requirements again."
+	errNotInstalled := fmt.Errorf("%w: %w", ghx.ErrGHNotFound, &exec.Error{Name: "gh", Err: exec.ErrNotFound})
+	errOutputCap := fmt.Errorf("ghx: IssueViewJSON: %w", fmt.Errorf("execx: gh issue view 42 --json title,body: %w", execx.ErrOutputCap))
+	errPlain := fmt.Errorf("ghx: IssueViewJSON: %w", errors.New("fork/exec gh: resource temporarily unavailable\nsecond line"))
+	const (
+		notInstalledMsg = "verify_requirements_context: the gh CLI is not installed"
+		notInstalledSug = "Install gh and run gh auth login" + rerun
+		authMsg         = "verify_requirements_context: gh is not authenticated"
+		authSug         = "Run gh auth login" + rerun
+		notFoundSug     = "Check the issue number in the GitHub repository of the active worktree."
+		failedSug       = "Run gh issue view 42 to see the cause" + rerun
+		failedMsg       = "verify_requirements_context: gh issue view 42 failed: "
+	)
+	long := strings.Repeat("e", verifyCutMaxBytes+50)
 	for _, tc := range []struct {
 		name         string
 		value        string
 		seamErr      error
+		cause        error // the error that the Cause must wrap; nil uses seamErr
 		seamOut      string
 		class        string
 		msg          string
@@ -1111,42 +1318,57 @@ func TestVerifyRequirementsContextIssue(t *testing.T) {
 		{name: "number with a sign", value: "-1", class: "domain", msg: numberMsg, wantSuggestn: numberSuggestion},
 		{name: "number with a space inside", value: "4 2", class: "domain", msg: numberMsg, wantSuggestn: numberSuggestion},
 		{name: "number over the digit limit", value: strings.Repeat("1", verifyIssueNumberMaxDigits+1), class: "domain", msg: numberMsg, wantSuggestn: numberSuggestion},
-		{
-			name: "gh not found", value: "42", class: "infra",
-			seamErr:      fmt.Errorf("execx: gh issue view 42 --json title,body: %w", &exec.Error{Name: "gh", Err: exec.ErrNotFound}),
-			msg:          "verify_requirements_context: the gh CLI is not installed",
-			wantSuggestn: "Install gh and run gh auth login" + rerun,
-		},
-		{
-			name: "gh not authenticated", value: "42", class: "infra",
-			seamErr:      ghStderr("42", "To get started with GitHub CLI, please run:  gh auth login"),
-			msg:          "verify_requirements_context: gh is not authenticated",
-			wantSuggestn: "Run gh auth login" + rerun,
-		},
-		{
-			name: "gh auth in the stderr", value: "42", class: "infra",
-			seamErr:      ghStderr("42", "authentication required"),
-			msg:          "verify_requirements_context: gh is not authenticated",
-			wantSuggestn: "Run gh auth login" + rerun,
-		},
-		{
-			name: "issue could not be resolved", value: "999", class: "domain",
-			seamErr:      ghStderr("999", "GraphQL: Could not resolve to an Issue with the number of 999."),
-			msg:          "verify_requirements_context: issue #999 not found in this repository",
-			wantSuggestn: "Check the issue number in the GitHub repository of the active worktree.",
-		},
-		{
-			name: "issue not found", value: "999", class: "domain",
-			seamErr:      ghStderr("999", "issue not found"),
-			msg:          "verify_requirements_context: issue #999 not found in this repository",
-			wantSuggestn: "Check the issue number in the GitHub repository of the active worktree.",
-		},
-		{
-			name: "other gh failure", value: "42", class: "infra",
-			seamErr:      ghStderr("42", "HTTP 502: bad gateway"),
-			msg:          "verify_requirements_context: gh issue view 42 failed: HTTP 502: bad gateway",
-			wantSuggestn: "Run gh issue view 42 to see the cause" + rerun,
-		},
+
+		// gh missing.
+		{name: "gh not found (ghx.ErrGHNotFound)", value: "42", class: "infra", seamErr: errNotInstalled, cause: ghx.ErrGHNotFound,
+			msg: notInstalledMsg, wantSuggestn: notInstalledSug},
+		{name: "gh not found (exec.ErrNotFound alone)", value: "42", class: "infra",
+			seamErr: fmt.Errorf("execx: gh issue view 42 --json title,body: %w", &exec.Error{Name: "gh", Err: exec.ErrNotFound}), cause: exec.ErrNotFound,
+			msg: notInstalledMsg, wantSuggestn: notInstalledSug},
+
+		// gh printed too much.
+		{name: "output over the cap", value: "42", class: "infra", seamErr: errOutputCap, cause: execx.ErrOutputCap,
+			msg:          "verify_requirements_context: gh issue view 42 printed more than the output limit",
+			wantSuggestn: "Copy the requirements of issue #42 into a file, then run /sdlc:verify-requirements --file <path>."},
+
+		// gh not authenticated: exit code 4, or "gh auth login" in stderr.
+		{name: "exit 4 with the login text", value: "42", class: "infra",
+			seamErr: ghExit(4, "To get started with GitHub CLI, please run:  gh auth login\n"), msg: authMsg, wantSuggestn: authSug},
+		{name: "exit 4 with unrelated stderr", value: "42", class: "infra", seamErr: ghExit(4, "HTTP 502: bad gateway"), msg: authMsg, wantSuggestn: authSug},
+		{name: "exit 4 wins over the not-found text", value: "42", class: "infra",
+			seamErr: ghExit(4, "GraphQL: Could not resolve to an Issue with the number of 42."), msg: authMsg, wantSuggestn: authSug},
+		{name: "exit 1 with gh auth login in stderr", value: "42", class: "infra",
+			seamErr: ghExit(1, "error: try authenticating with:  GH AUTH LOGIN"), msg: authMsg, wantSuggestn: authSug},
+
+		// The issue does not exist.
+		{name: "issue could not be resolved", value: "999", class: "domain",
+			seamErr: ghExit(1, "GraphQL: Could not resolve to an Issue with the number of 999. (repository.issue)"),
+			msg:     "verify_requirements_context: issue #999 not found in this repository", wantSuggestn: notFoundSug},
+		{name: "not-found text in upper case", value: "999", class: "domain",
+			seamErr: ghExit(1, "COULD NOT RESOLVE TO AN ISSUE"),
+			msg:     "verify_requirements_context: issue #999 not found in this repository", wantSuggestn: notFoundSug},
+
+		// Decoys: text that looks like auth or not found, but is not the
+		// pattern, is a generic gh failure that quotes the first line.
+		{name: "decoy: authentication required", value: "42", class: "infra",
+			seamErr: ghExit(1, "authentication required"), msg: failedMsg + "authentication required", wantSuggestn: failedSug},
+		{name: "decoy: authentication failed, repository not found", value: "42", class: "infra",
+			seamErr: ghExit(1, "authentication failed: repository not found"), msg: failedMsg + "authentication failed: repository not found", wantSuggestn: failedSug},
+		{name: "decoy: issue not found", value: "42", class: "infra",
+			seamErr: ghExit(1, "issue not found"), msg: failedMsg + "issue not found", wantSuggestn: failedSug},
+		{name: "decoy: DNS error", value: "42", class: "infra",
+			seamErr: ghExit(1, "dial tcp: lookup api.github.com: no such host"), msg: failedMsg + "dial tcp: lookup api.github.com: no such host", wantSuggestn: failedSug},
+		{name: "other gh failure", value: "42", class: "infra",
+			seamErr: ghExit(1, "HTTP 502: bad gateway"), msg: failedMsg + "HTTP 502: bad gateway", wantSuggestn: failedSug},
+		{name: "multi-line stderr quotes the first non-blank line", value: "42", class: "infra",
+			seamErr: ghExit(1, "\n  \t\n  HTTP 502: bad gateway  \nprivate-org/secret-repo\n"), msg: failedMsg + "HTTP 502: bad gateway", wantSuggestn: failedSug},
+		{name: "blank stderr", value: "42", class: "infra",
+			seamErr: ghExit(1, " \n\t\n"), msg: failedMsg + "no error text", wantSuggestn: failedSug},
+		{name: "stderr over the quote limit is cut", value: "42", class: "infra",
+			seamErr: ghExit(1, long+"\n"), msg: failedMsg + long[:verifyCutMaxBytes] + "...", wantSuggestn: failedSug},
+		{name: "a plain error uses its own first line", value: "42", class: "infra",
+			seamErr: errPlain, msg: failedMsg + "ghx: IssueViewJSON: fork/exec gh: resource temporarily unavailable", wantSuggestn: failedSug},
+
 		{
 			name: "stdout is not JSON", value: "42", class: "infra", seamOut: "not json",
 			msg:          "verify_requirements_context: gh issue view 42 returned invalid JSON",
@@ -1162,7 +1384,21 @@ func TestVerifyRequirementsContextIssue(t *testing.T) {
 			root := t.TempDir()
 			stubVerifyIssueView(t, func(dir, number string) (string, error) { return tc.seamOut, tc.seamErr })
 			_, err := planSupportCore(root, root, verifyIn("issue", tc.value))
-			wantVerifyErr(t, err, tc.class, tc.msg, tc.wantSuggestn)
+			cause := tc.cause
+			if cause == nil {
+				cause = tc.seamErr
+			}
+			if cause == nil {
+				wantVerifyErr(t, err, tc.class, tc.msg, tc.wantSuggestn)
+			} else {
+				wantVerifyErrIs(t, err, tc.class, tc.msg, tc.wantSuggestn, cause)
+			}
+			if tc.seamOut == "not json" {
+				var syntaxErr *json.SyntaxError
+				if !errors.As(err, &syntaxErr) {
+					t.Errorf("err = %#v, want a *json.SyntaxError Cause", err)
+				}
+			}
 		})
 	}
 
@@ -1270,4 +1506,618 @@ func TestVerifyRequirementsContextIssueParity(t *testing.T) {
 			}
 		})
 	}
+}
+
+// verifyLoop makes a link loop at path: path points to a second link next to
+// it, and that link points back to path. It skips the test when the platform
+// has no symlinks; untested names the state that the skip leaves untested.
+func verifyLoop(t *testing.T, path, untested string) {
+	t.Helper()
+	other := path + ".loop"
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, path); err != nil {
+		t.Skipf("symlink not available (%v): %s is untested", err, untested)
+	}
+	if err := os.Symlink(path, other); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestVerifySpecHeadings covers the heading and fence rules of one spec: the
+// full list and the line of an open fence.
+func TestVerifySpecHeadings(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		data     string
+		delta    bool
+		want     []string
+		openLine int
+	}{
+		{"empty", "", false, []string{}, 0},
+		{"CRLF line ends", "### Requirement: A\r\nbody\r\n### Requirement: B\r\n", false, []string{"A", "B"}, 0},
+		{"CRLF in a delta spec", "## ADDED Requirements\r\n\r\n### Requirement: A\r\n", true, []string{"ADDED: A"}, 0},
+		{"no final line end", "### Requirement: A\n### Requirement: B", false, []string{"A", "B"}, 0},
+		{"spaces and tabs around the name", "### Requirement:  \tA name \t\n", false, []string{"A name"}, 0},
+		{"a heading with no name", "### Requirement:\n### Requirement:   \n### Requirement: A\n", false, []string{"A"}, 0},
+		{"a tilde fence", "~~~\n### Requirement: X\n~~~\n### Requirement: Y\n", false, []string{"Y"}, 0},
+		{"a backtick fence with an info string", "```markdown\n### Requirement: X\n```\n### Requirement: Y\n", false, []string{"Y"}, 0},
+		{"an open fence at the end", "### Requirement: A\n\n```\n### Requirement: B\n", false, []string{"A"}, 3},
+		{"an open fence on the last line", "### Requirement: A\n```", false, []string{"A"}, 2},
+		{"a tilde run does not close a backtick fence", "```\n### Requirement: X\n~~~\n### Requirement: Y\n", false, []string{}, 1},
+		{"a shorter run does not close the fence", "````\n### Requirement: X\n```\n### Requirement: Y\n", false, []string{}, 1},
+		{"a longer run closes the fence", "```\n### Requirement: X\n`````\n### Requirement: Y\n", false, []string{"Y"}, 0},
+		{"a closing run with text does not close", "```\n### Requirement: X\n``` js\n### Requirement: Y\n", false, []string{}, 1},
+		{"a closing run with spaces after it closes", "```\n### Requirement: X\n```  \t\n### Requirement: Y\n", false, []string{"Y"}, 0},
+		{"the line of the second open fence", "```\na\n```\n### Requirement: A\n~~~~\n### Requirement: B\n", false, []string{"A"}, 5},
+		{"a delta heading before any section", "### Requirement: A\n## ADDED Requirements\n### Requirement: B\n", true, []string{"A", "ADDED: B"}, 0},
+		{"## Other ends the delta section", "## ADDED Requirements\n### Requirement: A\n## Other\n### Requirement: B\n", true, []string{"ADDED: A", "B"}, 0},
+		{"a delta heading with text after it ends the section", "## REMOVED Requirements\n### Requirement: A\n## REMOVED Requirements (old)\n### Requirement: B\n", true, []string{"REMOVED: A", "B"}, 0},
+		{"each delta section", "## ADDED Requirements\n### Requirement: A\n## MODIFIED Requirements\n### Requirement: M\n## REMOVED Requirements\n### Requirement: R\n## RENAMED Requirements\n### Requirement: N\n", true,
+			[]string{"ADDED: A", "MODIFIED: M", "REMOVED: R", "RENAMED: N"}, 0},
+		{"a delta section in lower case is no section", "## added Requirements\n### Requirement: A\n", true, []string{"A"}, 0},
+		{"delta false on a delta spec", "## ADDED Requirements\n### Requirement: A\n", false, []string{"A"}, 0},
+		{"duplicate names are both kept", "### Requirement: A\n### Requirement: A\n", false, []string{"A", "A"}, 0},
+		{"1 to 3 spaces before a heading count, 4 do not",
+			" ### Requirement: One\n  ### Requirement: Two\n   ### Requirement: Three\n    ### Requirement: Four\n", false,
+			[]string{"One", "Two", "Three"}, 0},
+		{"3 spaces before a delta section count", "   ## ADDED Requirements\n### Requirement: A\n", true, []string{"ADDED: A"}, 0},
+		{"3 spaces before a fence count", "   ```\n### Requirement: X\n   ```\n### Requirement: Y\n", false, []string{"Y"}, 0},
+		{"4 spaces before a fence is no fence", "    ```\n### Requirement: X\n", false, []string{"X"}, 0},
+		{"a tab before a heading is no heading", "\t### Requirement: X\n", false, []string{}, 0},
+		{"#### is no requirement heading", "#### Requirement: X\n", false, []string{}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, openLine := verifySpecHeadings([]byte(tc.data), tc.delta)
+			if got == nil {
+				t.Fatal("headings = nil, want a non-nil list")
+			}
+			if !reflect.DeepEqual(got, tc.want) || openLine != tc.openLine {
+				t.Errorf("headings, openFenceLine = %q, %d, want %q, %d", got, openLine, tc.want, tc.openLine)
+			}
+		})
+	}
+}
+
+// TestVerifyRequirementsContextOpenspecLayout covers the stat rules of the
+// OpenSpec lists: config.yaml, the active changes and each spec.md. It
+// checks the full lists and the full warning slice.
+func TestVerifyRequirementsContextOpenspecLayout(t *testing.T) {
+	loopText := syscall.ELOOP.Error()
+
+	t.Run("specs and changes that are not regular", func(t *testing.T) {
+		root := t.TempDir()
+		verifyOpenspecRoot(t, root)
+		specs := filepath.Join(root, "openspec", "specs")
+		changes := filepath.Join(root, "openspec", "changes")
+		if err := os.MkdirAll(filepath.Join(specs, "a-folder", "spec.md"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		verifyLoop(t, filepath.Join(specs, "b-loop", "spec.md"), "the link-loop branch of readSpec")
+		if err := os.MkdirAll(filepath.Join(specs, "c-none"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(specs, "README.md"), "# specs\n")
+		writeFile(t, filepath.Join(specs, "d-ok", "spec.md"), "### Requirement: Ok\n")
+
+		writeFile(t, filepath.Join(changes, "archive", "old", "proposal.md"), "# old\n")
+		verifyLoop(t, filepath.Join(changes, "p-loop", "proposal.md"), "the link-loop branch of activeChanges")
+		writeFile(t, filepath.Join(changes, "p-loop", "specs", "x", "spec.md"), "### Requirement: X\n")
+		writeFile(t, filepath.Join(changes, "q-none", "specs", "x", "spec.md"), "### Requirement: X\n")
+		if err := os.MkdirAll(filepath.Join(changes, "r-dir", "proposal.md"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(changes, "s-ok", "proposal.md"), "# s\n")
+		writeFile(t, filepath.Join(changes, "s-ok", "specs", "cap", "spec.md"), "## ADDED Requirements\n### Requirement: S\n")
+		writeFile(t, filepath.Join(changes, "notes.md"), "# notes\n")
+
+		out := verifyOpenspecOut(t, root, root)
+		if out.OpenspecStatus != "present" {
+			t.Errorf("openspecStatus = %q, want present", out.OpenspecStatus)
+		}
+		wantMain := []VerifyOpenspecSpec{
+			{Path: "openspec/specs/a-folder/spec.md", Requirements: []string{}},
+			{Path: "openspec/specs/b-loop/spec.md", Requirements: []string{}},
+			{Path: "openspec/specs/d-ok/spec.md", Requirements: []string{"Ok"}},
+		}
+		if !reflect.DeepEqual(*out.OpenspecMainSpecs, wantMain) {
+			t.Errorf("main specs = %+v, want %+v", *out.OpenspecMainSpecs, wantMain)
+		}
+		wantChanges := []VerifyOpenspecChange{{Name: "s-ok", Proposal: "openspec/changes/s-ok/proposal.md", Specs: []VerifyOpenspecSpec{
+			{Path: "openspec/changes/s-ok/specs/cap/spec.md", Requirements: []string{"ADDED: S"}},
+		}}}
+		if !reflect.DeepEqual(*out.OpenspecActiveChanges, wantChanges) {
+			t.Errorf("active changes = %+v, want %+v", *out.OpenspecActiveChanges, wantChanges)
+		}
+		wantWarn := []string{
+			"openspec/specs/a-folder/spec.md: not read: not a regular file",
+			"openspec/specs/b-loop/spec.md: not read: " + loopText,
+			"openspec/changes/p-loop/proposal.md: not read: " + loopText,
+		}
+		if !reflect.DeepEqual(*out.OpenspecWarnings, wantWarn) {
+			t.Errorf("warnings = %q, want %q", *out.OpenspecWarnings, wantWarn)
+		}
+	})
+
+	t.Run("a config.yaml that cannot be checked", func(t *testing.T) {
+		root := t.TempDir()
+		verifyLoop(t, filepath.Join(root, "openspec", "config.yaml"), "the config.yaml stat-failure branch of verifyOpenspec")
+		writeFile(t, filepath.Join(root, "openspec", "specs", "a", "spec.md"), "### Requirement: A\n")
+		out := verifyOpenspecOut(t, root, root)
+		if out.OpenspecStatus != "present" {
+			t.Errorf("openspecStatus = %q, want present", out.OpenspecStatus)
+		}
+		wantMain := []VerifyOpenspecSpec{{Path: "openspec/specs/a/spec.md", Requirements: []string{"A"}}}
+		if !reflect.DeepEqual(*out.OpenspecMainSpecs, wantMain) {
+			t.Errorf("main specs = %+v, want %+v", *out.OpenspecMainSpecs, wantMain)
+		}
+		wantWarn := []string{"openspec/config.yaml: not read: " + loopText}
+		if !reflect.DeepEqual(*out.OpenspecWarnings, wantWarn) {
+			t.Errorf("warnings = %q, want %q", *out.OpenspecWarnings, wantWarn)
+		}
+	})
+
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, root string)
+	}{
+		{"a config.yaml that is a folder", func(t *testing.T, root string) {
+			if err := os.MkdirAll(filepath.Join(root, "openspec", "config.yaml"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, filepath.Join(root, "openspec", "specs", "a", "spec.md"), "### Requirement: A\n")
+		}},
+		{"an openspec path that is a file", func(t *testing.T, root string) {
+			writeFile(t, filepath.Join(root, "openspec"), "not a folder\n")
+		}},
+		{"a dangling config.yaml link", func(t *testing.T, root string) {
+			if err := os.MkdirAll(filepath.Join(root, "openspec"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(root, "gone.yaml"), filepath.Join(root, "openspec", "config.yaml")); err != nil {
+				t.Skipf("symlink not available (%v): the dangling config.yaml branch of verifyOpenspec is untested", err)
+			}
+			writeFile(t, filepath.Join(root, "openspec", "specs", "a", "spec.md"), "### Requirement: A\n")
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			tc.setup(t, root)
+			out := verifyOpenspecOut(t, root, root)
+			if out.OpenspecStatus != "not present: openspec/config.yaml not found" {
+				t.Errorf("openspecStatus = %q", out.OpenspecStatus)
+			}
+			if len(*out.OpenspecMainSpecs) != 0 || len(*out.OpenspecActiveChanges) != 0 || len(*out.OpenspecWarnings) != 0 {
+				t.Errorf("lists = %v %v %q, want all empty", *out.OpenspecMainSpecs, *out.OpenspecActiveChanges, *out.OpenspecWarnings)
+			}
+		})
+	}
+}
+
+// TestVerifyRequirementsContextOpenspecBudget checks that the main specs and
+// the specs of the active changes share one budget of verifyOpenspecMaxPaths
+// paths, and that the limit gives one warning in total.
+func TestVerifyRequirementsContextOpenspecBudget(t *testing.T) {
+	capWarn := []string{fmt.Sprintf("openspec: more than %d spec paths; the first %d are listed", verifyOpenspecMaxPaths, verifyOpenspecMaxPaths)}
+	build := func(t *testing.T, mainSpecs int, changes map[string]int) string {
+		t.Helper()
+		root := t.TempDir()
+		verifyOpenspecRoot(t, root)
+		for i := 0; i < mainSpecs; i++ {
+			writeFile(t, filepath.Join(root, "openspec", "specs", fmt.Sprintf("cap-%04d", i), "spec.md"), "### Requirement: R\n")
+		}
+		for name, n := range changes {
+			writeFile(t, filepath.Join(root, "openspec", "changes", name, "proposal.md"), "# "+name+"\n")
+			for i := 0; i < n; i++ {
+				writeFile(t, filepath.Join(root, "openspec", "changes", name, "specs", fmt.Sprintf("d-%d", i), "spec.md"), "## ADDED Requirements\n### Requirement: D\n")
+			}
+		}
+		return root
+	}
+	changeSpecs := func(name string, n int) VerifyOpenspecChange {
+		c := VerifyOpenspecChange{Name: name, Proposal: "openspec/changes/" + name + "/proposal.md", Specs: []VerifyOpenspecSpec{}}
+		for i := 0; i < n; i++ {
+			c.Specs = append(c.Specs, VerifyOpenspecSpec{Path: fmt.Sprintf("openspec/changes/%s/specs/d-%d/spec.md", name, i), Requirements: []string{"ADDED: D"}})
+		}
+		return c
+	}
+
+	for _, tc := range []struct {
+		name         string
+		mainSpecs    int
+		changes      map[string]int
+		wantMain     int
+		wantChanges  []VerifyOpenspecChange
+		wantWarnings []string
+	}{
+		{"exactly the limit across main and change specs", verifyOpenspecMaxPaths - 2, map[string]int{"c1": 2},
+			verifyOpenspecMaxPaths - 2, []VerifyOpenspecChange{changeSpecs("c1", 2)}, []string{}},
+		{"the limit runs out inside a change", verifyOpenspecMaxPaths - 1, map[string]int{"c1": 2, "c2": 1},
+			verifyOpenspecMaxPaths - 1, []VerifyOpenspecChange{changeSpecs("c1", 1), changeSpecs("c2", 0)}, capWarn},
+		{"the limit runs out inside the main specs", verifyOpenspecMaxPaths + 1, map[string]int{"c1": 1},
+			verifyOpenspecMaxPaths, []VerifyOpenspecChange{changeSpecs("c1", 0)}, capWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := build(t, tc.mainSpecs, tc.changes)
+			out := verifyOpenspecOut(t, root, root)
+			if got := len(*out.OpenspecMainSpecs); got != tc.wantMain {
+				t.Errorf("main specs = %d, want %d", got, tc.wantMain)
+			}
+			if !reflect.DeepEqual(*out.OpenspecActiveChanges, tc.wantChanges) {
+				t.Errorf("active changes = %+v, want %+v", *out.OpenspecActiveChanges, tc.wantChanges)
+			}
+			if !reflect.DeepEqual(*out.OpenspecWarnings, tc.wantWarnings) {
+				t.Errorf("warnings = %q, want %q", *out.OpenspecWarnings, tc.wantWarnings)
+			}
+		})
+	}
+}
+
+// TestVerifyOpenQuestions covers the bullet rule of ## Open questions: the
+// questions, the other lines, and the summary warning of the topic kind.
+func TestVerifyOpenQuestions(t *testing.T) {
+	head := "# Preplan: auth flow\n\n## Goal\n\nG.\n\n"
+	long := strings.Repeat("x", verifyCutMaxBytes+20)
+	for _, tc := range []struct {
+		name          string
+		data          string
+		wantQuestions []string
+		wantOther     []string
+		warning       string // the summary text after the status sentence
+	}{
+		{"- bullets", head + "## Open questions\n\n- A?\n-   B?  \n", []string{"A?", "B?"}, nil, ""},
+		{"* bullets are other lines", head + "## Open questions\n\n- A?\n* B?\n", []string{"A?"}, []string{"* B?"},
+			` ## Open questions holds 1 line that is not "- " bullets; the first is: "* B?".`},
+		{"nested bullets are other lines", head + "## Open questions\n\n- A?\n  - A1?\n\t- A2?\n", []string{"A?"}, []string{"  - A1?", "\t- A2?"},
+			` ## Open questions holds 2 lines that are not "- " bullets; the first is: "- A1?".`},
+		{"prose and numbered lines are other lines", head + "## Open questions\n\nNone yet.\n1. Who?\n", []string{}, []string{"None yet.", "1. Who?"},
+			` ## Open questions holds 2 lines that are not "- " bullets; the first is: "None yet.".`},
+		{"an empty bullet is an empty question", head + "## Open questions\n\n- \n- A?\n", []string{"", "A?"}, nil, ""},
+		{"a dash with no space is another line", head + "## Open questions\n\n-\n", []string{}, []string{"-"},
+			` ## Open questions holds 1 line that is not "- " bullets; the first is: "-".`},
+		{"CRLF line ends", strings.ReplaceAll(head+"## Open questions\n\n- A?\n* B?\n", "\n", "\r\n"), []string{"A?"}, []string{"* B?"},
+			` ## Open questions holds 1 line that is not "- " bullets; the first is: "* B?".`},
+		{"no final line end", head + "## Open questions\n\n- A?\n- B?", []string{"A?", "B?"}, nil, ""},
+		{"the section ends at the next heading", head + "## Open questions\n\n- A?\n\n## Later\n\n* not a question\n", []string{"A?"}, nil, ""},
+		{"a long other line is cut in the summary", head + "## Open questions\n\n" + long + "\n", []string{}, []string{long},
+			fmt.Sprintf(` ## Open questions holds 1 line that is not "- " bullets; the first is: %q.`, long[:verifyCutMaxBytes]+"...")},
+		{"no section", head, []string{}, nil, ""},
+		{"a section hidden by an open fence", head + "```\n## Open questions\n\n- A?\n", []string{}, nil,
+			" A ``` fence is still open at the end of the file, so each ## heading after it counts as absent."},
+		{"the first of two sections counts", head + "## Open questions\n\n- A?\n\n## Open questions\n\n- B?\n* C?\n", []string{"A?"}, nil, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(tc.data)
+			spans, _ := preplanSectionSpans(data)
+			questions, other := verifyOpenQuestions(data, spans)
+			if questions == nil || !reflect.DeepEqual(questions, tc.wantQuestions) || !reflect.DeepEqual(other, tc.wantOther) {
+				t.Errorf("questions, other = %q, %q, want %q, %q", questions, other, tc.wantQuestions, tc.wantOther)
+			}
+
+			root := t.TempDir()
+			writePreplanTopic(t, root, "auth-flow.md", tc.data)
+			out, err := planSupportCore(root, root, verifyIn("topic", "auth flow"))
+			if err != nil {
+				t.Fatalf("verify_requirements_context: %v", err)
+			}
+			if out.OpenQuestions == nil || !reflect.DeepEqual(*out.OpenQuestions, tc.wantQuestions) {
+				t.Errorf("openQuestions = %v, want %q", out.OpenQuestions, tc.wantQuestions)
+			}
+			findings := len(preplanStructureFindings(data))
+			want := fmt.Sprintf("Read auth-flow.md: %d structure finding(s), %d open question(s).", findings, len(tc.wantQuestions)) + tc.warning
+			if out.Summary != want {
+				t.Errorf("summary = %q\nwant      %q", out.Summary, want)
+			}
+		})
+	}
+}
+
+// TestVerifyRequirementsContextTopicSummary pins the full summary of the
+// topic kind with every warning, in order: the status sentence, the open
+// fence, the Open questions lines, then the guardrails.
+func TestVerifyRequirementsContextTopicSummary(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".sdlc-v2", "config.toml"), "[plan\nguardrails = [\n")
+	_, warning := loadGuardrails(root)
+	// The fence opens inside ## Open questions, so the section keeps its
+	// lines: the bullet, the star line and the fenced lines.
+	content := preplanSkeletonFor("auth flow") + "\n## Open questions\n\n- Who?\n* star\n```\nopen\n"
+	file := writePreplanTopic(t, root, "2026-11-13-auth-flow.md", content)
+	out, err := planSupportCore(root, root, verifyIn("topic", "auth flow"))
+	if err != nil {
+		t.Fatalf("verify_requirements_context: %v", err)
+	}
+	want := "Read 2026-11-13-auth-flow.md: 8 structure finding(s), 1 open question(s)." +
+		" A ``` fence is still open at the end of the file, so each ## heading after it counts as absent." +
+		` ## Open questions holds 3 lines that are not "- " bullets; the first is: "* star".` +
+		" Guardrails unavailable: " + preplanWarningText(warning) + "."
+	if out.Summary != want {
+		t.Errorf("summary = %q\nwant      %q", out.Summary, want)
+	}
+	if out.VerifySource != file {
+		t.Errorf("verifySource = %q, want %q", out.VerifySource, file)
+	}
+}
+
+// TestVerifyRequirementsContextInputSchema checks the jsonschema descriptions
+// of the two input fields: both start with "Plain text", and the byte limit of
+// verifyValue is verifyValueMaxBytes.
+func TestVerifyRequirementsContextInputSchema(t *testing.T) {
+	typ := reflect.TypeOf(PlanSupportIn{})
+	for _, name := range []string{"VerifyKind", "VerifyValue"} {
+		f, ok := typ.FieldByName(name)
+		if !ok {
+			t.Fatalf("PlanSupportIn has no field %s", name)
+		}
+		if desc := f.Tag.Get("jsonschema_description"); !strings.HasPrefix(desc, "Plain text") {
+			t.Errorf("%s description = %q, want it to start with \"Plain text\"", name, desc)
+		}
+	}
+	f, _ := typ.FieldByName("VerifyValue")
+	m := regexp.MustCompile(`at most ([0-9]+) bytes`).FindAllStringSubmatch(f.Tag.Get("jsonschema_description"), -1)
+	if len(m) != 1 || m[0][1] != strconv.Itoa(verifyValueMaxBytes) {
+		t.Errorf("VerifyValue description limits = %q, want one \"at most %d bytes\"", m, verifyValueMaxBytes)
+	}
+}
+
+// TestVerifyRequirementsContextTopicSuggestions pins the full message and
+// Suggestion of each topic find error of verify_requirements_context: each
+// Suggestion names /sdlc:verify-requirements, and none points to a step that
+// creates a topic file through this action. A check row pins the preplan_check
+// text of the same state, so the new texts do not change the old ones
+// (TestPreplanWriteFolderListErrors pins the preplan_write list texts).
+func TestVerifyRequirementsContextTopicSuggestions(t *testing.T) {
+	const verifyRerun = ", then run /sdlc:preplan to make a new topic file, and run /sdlc:verify-requirements again."
+	const checkRerun = ", then run /sdlc:preplan again. preplan_context then creates a new topic file."
+	skeleton := preplanSkeletonFor("auth flow")
+
+	type want struct {
+		class, msg, suggestion string
+		cause                  error // nil: no Cause check
+	}
+	for _, tc := range []struct {
+		name  string
+		setup func(t *testing.T, root, dir, file string)
+		// verify and check return the wanted error of each action; a nil
+		// check skips the preplan_check row.
+		verify func(dir, file string) want
+		check  func(dir, file string) want
+	}{
+		{
+			name: "the preplan folder cannot be listed",
+			setup: func(t *testing.T, root, dir, file string) {
+				writeFile(t, filepath.Join(root, ".sdlc-v2"), "not a folder\n")
+			},
+			verify: func(dir, file string) want {
+				return want{"infra", "verify_requirements_context: list: open " + dir + ": not a directory",
+					"Make " + dir + " a folder that you can read: remove or rename the file or link at that path, or give your user read permission. Then run /sdlc:verify-requirements again.",
+					syscall.ENOTDIR}
+			},
+			check: func(dir, file string) want {
+				return want{"infra", "preplan_check: list: open " + dir + ": not a directory",
+					"Make " + dir + " a folder that you can read: remove or rename the file or link at that path, or give your user read permission. Then run /sdlc:preplan again.",
+					syscall.ENOTDIR}
+			},
+		},
+		{
+			name: "the preplan folder holds more than preplanDirMax names",
+			setup: func(t *testing.T, root, dir, file string) {
+				swapPreplanSeam(t, &preplanDirMax, 2)
+				writeFile(t, file, skeleton)
+				writeFile(t, filepath.Join(dir, "b.md"), "# Preplan: b\n")
+				writeFile(t, filepath.Join(dir, "c.md"), "# Preplan: c\n")
+			},
+			verify: func(dir, file string) want {
+				return want{"infra", "verify_requirements_context: list " + dir + ": the folder holds more than 2 names",
+					"Move old topic files out of " + dir + " until it holds at most 2 names. Then run /sdlc:verify-requirements again.", errPreplanDirFull}
+			},
+			check: func(dir, file string) want {
+				return want{"infra", "preplan_check: list " + dir + ": the folder holds more than 2 names",
+					"Move old topic files out of " + dir + " until it holds at most 2 names. Then run /sdlc:preplan again.", errPreplanDirFull}
+			},
+		},
+		{
+			name: "2 matching files",
+			setup: func(t *testing.T, root, dir, file string) {
+				writeFile(t, file, skeleton)
+				writeFile(t, filepath.Join(dir, "2026-10-01-auth-flow.md"), skeleton)
+			},
+			verify: func(dir, file string) want {
+				return want{"data", `verify_requirements_context: topic "auth flow" matches 2 topic files in ` + dir + ": 2026-10-01-auth-flow.md, auth-flow.md",
+					"Rename or delete one of: 2026-10-01-auth-flow.md, auth-flow.md. Then run /sdlc:verify-requirements again.", nil}
+			},
+			check: func(dir, file string) want {
+				return want{"data", `preplan_check: topic "auth flow" matches 2 topic files in ` + dir + ": 2026-10-01-auth-flow.md, auth-flow.md",
+					"Rename or delete one of: 2026-10-01-auth-flow.md, auth-flow.md. Then run /sdlc:preplan again.", nil}
+			},
+		},
+		{
+			name: "no topic file",
+			setup: func(t *testing.T, root, dir, file string) {
+				writeFile(t, filepath.Join(dir, "other.md"), "# Preplan: other\n")
+			},
+			verify: func(dir, file string) want {
+				return want{"domain", `verify_requirements_context: no topic file for topic "auth flow" in ` + dir,
+					"Check the topic name against the files in .sdlc-v2/preplan/. For a file outside that folder, run /sdlc:verify-requirements --file <path>.", nil}
+			},
+			check: func(dir, file string) want {
+				return want{"domain", `preplan_check: no topic file for topic "auth flow" in ` + dir,
+					"Run plan_support with action preplan_context and this topic first.", nil}
+			},
+		},
+		{
+			name: "the topic file goes away after the listing",
+			setup: func(t *testing.T, root, dir, file string) {
+				writeFile(t, file, skeleton)
+				swapPreplanSeam(t, &preplanLstat, func(name string) (fs.FileInfo, error) {
+					return nil, &fs.PathError{Op: "lstat", Path: name, Err: fs.ErrNotExist}
+				})
+			},
+			verify: func(dir, file string) want {
+				return want{"domain", "verify_requirements_context: lstat " + file + ": file does not exist",
+					"Check the topic name against the files in .sdlc-v2/preplan/. For a file outside that folder, run /sdlc:verify-requirements --file <path>.", fs.ErrNotExist}
+			},
+		},
+		{
+			name: "the topic file cannot be read",
+			setup: func(t *testing.T, root, dir, file string) {
+				writeFile(t, file, skeleton)
+				swapPreplanSeam(t, &preplanReadFile, func(name string) ([]byte, error) {
+					return nil, &fs.PathError{Op: "open", Path: name, Err: syscall.EACCES}
+				})
+			},
+			verify: func(dir, file string) want {
+				return want{"infra", "verify_requirements_context: open " + file + ": permission denied",
+					"Give your user read permission on " + file + ", then run /sdlc:verify-requirements again.", syscall.EACCES}
+			},
+		},
+		{
+			name: "the topic file is a folder",
+			setup: func(t *testing.T, root, dir, file string) {
+				if err := os.MkdirAll(file, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			verify: func(dir, file string) want {
+				return want{"domain", "verify_requirements_context: " + file + " is a folder, not a regular file", "Remove or rename " + file + verifyRerun, nil}
+			},
+			check: func(dir, file string) want {
+				return want{"domain", "preplan_check: " + file + " is a folder, not a regular file", "Remove or rename " + file + checkRerun, nil}
+			},
+		},
+		{
+			name: "the topic file is a link to a file",
+			setup: func(t *testing.T, root, dir, file string) {
+				target := filepath.Join(root, "target.md")
+				writeFile(t, target, skeleton)
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, file); err != nil {
+					t.Skipf("symlink not available (%v): the link Suggestions of the topic kind are untested", err)
+				}
+			},
+			verify: func(dir, file string) want {
+				return want{"domain", "verify_requirements_context: " + file + " is a symlink, not a regular file",
+					"Replace the link " + file + " with a copy of the file it points to, then run /sdlc:verify-requirements again.", nil}
+			},
+			check: func(dir, file string) want {
+				return want{"domain", "preplan_check: " + file + " is a symlink, not a regular file",
+					"Replace the link " + file + " with a copy of the file it points to, then call preplan_check again.", nil}
+			},
+		},
+		{
+			name: "the topic file is a link loop",
+			setup: func(t *testing.T, root, dir, file string) {
+				verifyLoop(t, file, "the link-loop Suggestion of the topic kind")
+			},
+			verify: func(dir, file string) want {
+				return want{"domain", "verify_requirements_context: " + file + " is a symlink whose target cannot be read: stat " + file + ": " + syscall.ELOOP.Error(),
+					"Remove the link with rm " + file + verifyRerun, syscall.ELOOP}
+			},
+			check: func(dir, file string) want {
+				return want{"domain", "preplan_check: " + file + " is a symlink whose target cannot be read: stat " + file + ": " + syscall.ELOOP.Error(),
+					"Remove the link with rm " + file + checkRerun, syscall.ELOOP}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			noPreplanCheckWrite(t)
+			for _, action := range []string{verifyRequirementsContextAction, preplanCheckAction} {
+				get := tc.verify
+				in := verifyIn("topic", "auth flow")
+				if action == preplanCheckAction {
+					if tc.check == nil {
+						continue
+					}
+					get = tc.check
+					in = preplanCheckIn("auth flow", 1, 0, 0)
+				}
+				t.Run(action, func(t *testing.T) {
+					root := t.TempDir()
+					dir := filepath.Join(root, ".sdlc-v2", "preplan")
+					file := filepath.Join(dir, "auth-flow.md")
+					tc.setup(t, root, dir, file)
+					_, err := planSupportCore(root, root, in)
+					w := get(dir, file)
+					if w.cause == nil {
+						wantVerifyErr(t, err, w.class, w.msg, w.suggestion)
+					} else {
+						wantVerifyErrIs(t, err, w.class, w.msg, w.suggestion, w.cause)
+					}
+				})
+			}
+		})
+	}
+}
+
+// verifyRegisteredGuardrails is the rendered guardrails part of the plan
+// guardrails that setup_init writes.
+const verifyRegisteredGuardrails = "## guardrails[0]\n- description: Plans must not include steps that skip or disable CI checks.\n- id: no-ci-bypass\n- severity: error\n\n" +
+	"## guardrails[1]\n- description: Every task that creates or modifies source code must include corresponding test cases.\n- id: test-coverage-required\n- severity: error\n"
+
+// TestVerifyRequirementsContextRegistered calls the registered plan_support
+// tool over an in-memory MCP session from inside a git repo, through the real
+// handler and the renderer. The first call gets only empty lists, which render
+// "(none)"; the second gets a line in every OpenSpec list. Each rendered text
+// is pinned in full.
+func TestVerifyRequirementsContextRegistered(t *testing.T) {
+	// The tool resolves the roots through git, which gives the path with its
+	// links resolved (/var is a link to /private/var on macOS).
+	root, err := filepath.EvalSymlinks(newOpenspecStageFixture(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	topic := structureTopic(fenced(structureMermaidPlain), structureRows("Smallest cut: all.", "| 1 | A live proposal. | Reason. |"), "")
+	topicFile := writePreplanTopic(t, root, "2026-11-13-sample.md", topic)
+	t.Chdir(root)
+
+	t.Run("empty lists render (none)", func(t *testing.T) {
+		res, text := callRegisteredTool(t, RegisterPlanSupportTools, "plan_support", map[string]any{
+			"action": "verify_requirements_context", "verifyKind": "topic", "verifyValue": "sample",
+		})
+		if res.IsError {
+			t.Fatalf("the call failed:\n%s", text)
+		}
+		want := "# plan_support — ok\n\n" +
+			"**Next:** Read verifySource. Copy structureFindings and openQuestions into the report, then run the guardrail, meaning and OpenSpec checks.\n\n" +
+			"## Summary\nRead 2026-11-13-sample.md: 0 structure finding(s), 0 open question(s).\n\n" +
+			"## Fields\n- material: false\n- triggers: (none)\n- verifyKind: topic\n- verifySource: " + topicFile + "\n" +
+			"- structureChecks: ran\n- openQuestions: (none)\n- guardrailsStatus: loaded: 2\n- openspecStatus: present\n- openspecWarnings: (none)\n\n" +
+			verifyRegisteredGuardrails +
+			"\n## structureFindings\n(none)\n\n## openspecMainSpecs\n(none)\n\n## openspecActiveChanges\n(none)\n"
+		if text != want {
+			t.Errorf("rendered text =\n%s\nwant\n%s", text, want)
+		}
+	})
+
+	t.Run("every OpenSpec list holds a line", func(t *testing.T) {
+		writeFile(t, filepath.Join(root, "docs", "req.md"), "# Requirements\n")
+		writeFile(t, filepath.Join(root, "openspec", "specs", "auth", "spec.md"), "### Requirement: Login\n### Requirement: Logout\n")
+		writeFile(t, filepath.Join(root, "openspec", "specs", "empty", "spec.md"), "# empty\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "add-mfa", "proposal.md"), "# add-mfa\n")
+		writeFile(t, filepath.Join(root, "openspec", "changes", "add-mfa", "specs", "auth", "spec.md"), "## ADDED Requirements\n### Requirement: MFA\n")
+		res, text := callRegisteredTool(t, RegisterPlanSupportTools, "plan_support", map[string]any{
+			"action": "verify_requirements_context", "verifyKind": "file", "verifyValue": "docs/req.md",
+		})
+		if res.IsError {
+			t.Fatalf("the call failed:\n%s", text)
+		}
+		file := filepath.Join(root, "docs", "req.md")
+		want := "# plan_support — ok\n\n" +
+			"**Next:** Read verifySource with the Read tool, in pages when it is large. Then run the guardrail, meaning and OpenSpec checks.\n\n" +
+			"## Summary\nChecked the file " + file + ": a regular file of 15 bytes.\n\n" +
+			"## Fields\n- material: false\n- triggers: (none)\n- verifyKind: file\n- verifySource: " + file + "\n" +
+			"- structureChecks: not run: the input is not a topic file\n- guardrailsStatus: loaded: 2\n- openspecStatus: present\n" +
+			"- openspecWarnings:\n  - openspec/specs/empty/spec.md: no requirement heading found\n\n" +
+			verifyRegisteredGuardrails +
+			"\n## openspecMainSpecs[0]\n- path: openspec/specs/auth/spec.md\n- requirements:\n  - Login\n  - Logout\n\n" +
+			"## openspecMainSpecs[1]\n- path: openspec/specs/empty/spec.md\n- requirements: (none)\n\n" +
+			"## openspecActiveChanges[0]\n- name: add-mfa\n- proposal: openspec/changes/add-mfa/proposal.md\n\n" +
+			"### openspecActiveChanges[0].specs[0]\n- path: openspec/changes/add-mfa/specs/auth/spec.md\n- requirements:\n  - ADDED: MFA\n"
+		if text != want {
+			t.Errorf("rendered text =\n%s\nwant\n%s", text, want)
+		}
+	})
 }

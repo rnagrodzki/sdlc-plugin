@@ -1,8 +1,9 @@
 // Package skillcheck cross-checks the verify-requirements skill against the
 // places that describe it: its frontmatter, the Flags table in
 // docs/skills/verify-requirements.md, and the live MCP registry. It also
-// checks that the skill stays read-only: the tokens of the ## DO NOT section
-// must show nowhere else in SKILL.md.
+// checks that the skill stays read-only: the ## DO NOT section must list each
+// tool and action of the live registry that the skill does not call, and
+// these tokens must show nowhere else in SKILL.md.
 //
 // The shared helpers live in skillcheck_flags_test.go. The Flags table parser
 // and the argument tokenizer come from skillcheck_preplan_test.go. Every
@@ -132,44 +133,91 @@ func TestVerifyRequirementsSkillParity(t *testing.T) {
 	})
 }
 
-// verifyRequirementsWriteTokenRes holds one whole-word pattern for each token
-// that the skill must never use outside its ## DO NOT section. The match is
-// case-sensitive. The token "gh " matches a gh command only: a word boundary
-// before "gh" keeps words such as "through " from matching.
-var verifyRequirementsWriteTokenRes = func() map[string]*regexp.Regexp {
-	words := []string{
-		"Edit", "Write", "NotebookEdit", "AskUserQuestion",
-		"plan_prepare", "plan_mark", "jira save",
-		"preplan_context", "preplan_check", "preplan_write", "evidence_record", "openspec_stage",
-		"addCommentToJiraIssue", "editJiraIssue", "transitionJiraIssue", "createJiraIssue",
-	}
-	res := map[string]*regexp.Regexp{}
-	for _, w := range words {
-		res[w] = regexp.MustCompile(`\b` + regexp.QuoteMeta(w) + `\b`)
-	}
-	res["gh "] = regexp.MustCompile(`\bgh\s`)
-	return res
-}()
+// verifyRequirementsAllowed maps each sdlc tool that the skill calls to the
+// one action that the skill may call on it. Every other action of these
+// tools, and every other tool of the live registry, must show in the
+// ## DO NOT section of the skill.
+var verifyRequirementsAllowed = map[string]string{
+	"plan_support": "verify_requirements_context",
+	"jira":         "load",
+}
 
-// verifyRequirementsWriteTokens returns the sorted write tokens that the skill
-// text holds outside its "## DO NOT" section. The section runs from the
-// "## DO NOT" heading to the next "## " heading or the end of the text.
-func verifyRequirementsWriteTokens(skill string) []string {
-	var outside []string
+// verifyRequirementsActionPrefix is the text in front of an action token of
+// an allowed tool. The jira actions are common words ("check", "save"), so
+// their tokens carry the tool name: "jira save".
+var verifyRequirementsActionPrefix = map[string]string{
+	"plan_support": "",
+	"jira":         "jira ",
+}
+
+// verifyRequirementsPinnedTokens are the tokens that the live sdlc registry
+// does not give: the harness tools, the dashboard tool (registered outside
+// executeSkillsListTools), the Atlassian write tools and the gh command.
+var verifyRequirementsPinnedTokens = []string{
+	"Edit", "Write", "NotebookEdit", "AskUserQuestion", "Bash", "Skill", "Agent",
+	"dashboard",
+	"addOrEditJiraIssueComment", "editJiraIssue", "transitionJiraIssue", "createJiraIssue",
+	"createConfluenceContent", "updateConfluenceContent", "executeWrite", "executeDestructive", "addGraphContext",
+	"gh ",
+}
+
+// verifyRequirementsRegistryTokens returns the sorted tokens that the
+// registry gives: each tool that is not in verifyRequirementsAllowed, and
+// each action of an allowed tool other than its allowed action.
+func verifyRequirementsRegistryTokens(reg flagParityRegistry) []string {
+	var tokens []string
+	for tool := range reg.tools {
+		if _, used := verifyRequirementsAllowed[tool]; !used {
+			tokens = append(tokens, tool)
+		}
+	}
+	for tool, allowed := range verifyRequirementsAllowed {
+		for action := range reg.actions[tool] {
+			if action != allowed {
+				tokens = append(tokens, verifyRequirementsActionPrefix[tool]+action)
+			}
+		}
+	}
+	sort.Strings(tokens)
+	return tokens
+}
+
+// verifyRequirementsTokenRe returns the whole-word, case-sensitive pattern of
+// token. The token "gh " matches a gh command only: a word boundary before
+// "gh" keeps words such as "through " from matching.
+func verifyRequirementsTokenRe(token string) *regexp.Regexp {
+	if token == "gh " {
+		return regexp.MustCompile(`\bgh\s`)
+	}
+	return regexp.MustCompile(`\b` + regexp.QuoteMeta(token) + `\b`)
+}
+
+// verifyRequirementsSplitDoNot returns the text of the "## DO NOT" section
+// and the text outside it. The section runs from the "## DO NOT" heading to
+// the next "## " heading or the end of the text.
+func verifyRequirementsSplitDoNot(skill string) (inside, outside string) {
+	var in, out []string
 	inDoNot := false
 	for _, line := range strings.Split(skill, "\n") {
 		if strings.HasPrefix(line, "## ") {
 			inDoNot = strings.TrimSpace(strings.TrimPrefix(line, "## ")) == "DO NOT"
 		}
-		if !inDoNot {
-			outside = append(outside, line)
+		if inDoNot {
+			in = append(in, line)
+		} else {
+			out = append(out, line)
 		}
 	}
-	text := strings.Join(outside, "\n")
+	return strings.Join(in, "\n"), strings.Join(out, "\n")
+}
 
+// verifyRequirementsWriteTokens returns the sorted tokens that the skill text
+// holds outside its "## DO NOT" section.
+func verifyRequirementsWriteTokens(skill string, tokens []string) []string {
+	_, outside := verifyRequirementsSplitDoNot(skill)
 	var found []string
-	for tok, re := range verifyRequirementsWriteTokenRes {
-		if re.MatchString(text) {
+	for _, tok := range tokens {
+		if verifyRequirementsTokenRe(tok).MatchString(outside) {
 			found = append(found, tok)
 		}
 	}
@@ -177,9 +225,27 @@ func verifyRequirementsWriteTokens(skill string) []string {
 	return found
 }
 
-// TestVerifyRequirementsSkillReadOnly checks that no write token of the skill
-// shows outside the ## DO NOT section of verify-requirements/SKILL.md.
+// verifyRequirementsMissingTokens returns the sorted tokens that the
+// "## DO NOT" section of the skill text does not hold.
+func verifyRequirementsMissingTokens(skill string, tokens []string) []string {
+	inside, _ := verifyRequirementsSplitDoNot(skill)
+	var missing []string
+	for _, tok := range tokens {
+		if !verifyRequirementsTokenRe(tok).MatchString(inside) {
+			missing = append(missing, tok)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
+// TestVerifyRequirementsSkillReadOnly checks the ## DO NOT section of
+// verify-requirements/SKILL.md: it holds every token (each registry tool and
+// action that the skill does not call, and each pinned token), and no token
+// shows outside it.
 func TestVerifyRequirementsSkillReadOnly(t *testing.T) {
+	fixtureTokens := []string{"Edit", "NotebookEdit", "preplan_write", "jira save", "editJiraIssue", "gh "}
+
 	t.Run("helper_fixtures", func(t *testing.T) {
 		cases := []struct {
 			label string
@@ -198,9 +264,30 @@ func TestVerifyRequirementsSkillReadOnly(t *testing.T) {
 			{"atlassian write", "## Step 1\nCall editJiraIssue\n## DO NOT\n", []string{"editJiraIssue"}},
 		}
 		for _, c := range cases {
-			if got := verifyRequirementsWriteTokens(c.input); !reflect.DeepEqual(got, c.want) {
+			if got := verifyRequirementsWriteTokens(c.input, fixtureTokens); !reflect.DeepEqual(got, c.want) {
 				t.Errorf("%s: tokens = %v, want %v", c.label, got, c.want)
 			}
+		}
+
+		full := "## Step 1\nRead\n## DO NOT\n`Edit`, `NotebookEdit`, `preplan_write`, `jira save`, `editJiraIssue`, `gh `\n"
+		if got := verifyRequirementsMissingTokens(full, fixtureTokens); got != nil {
+			t.Errorf("section with every token: missing = %v, want none", got)
+		}
+		short := "## DO NOT\n`Edit`, `NotebookEdit`, `preplan_write`, `editJiraIssue`, `gh `\n## Notes\njira save\n"
+		if got, want := verifyRequirementsMissingTokens(short, fixtureTokens), []string{"jira save"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("section with no jira save: missing = %v, want %v", got, want)
+		}
+
+		reg := flagParityRegistry{
+			tools: map[string]bool{"plan_support": true, "jira": true, "foo_tool": true},
+			actions: map[string]map[string]bool{
+				"plan_support": {"verify_requirements_context": true, "preplan_write": true},
+				"jira":         {"load": true, "save": true},
+				"foo_tool":     {"bar": true},
+			},
+		}
+		if got, want := verifyRequirementsRegistryTokens(reg), []string{"foo_tool", "jira save", "preplan_write"}; !reflect.DeepEqual(got, want) {
+			t.Errorf("fixture registry tokens = %v, want %v", got, want)
 		}
 	})
 
@@ -210,8 +297,31 @@ func TestVerifyRequirementsSkillReadOnly(t *testing.T) {
 		if !strings.Contains(skill, "\n## DO NOT\n") {
 			t.Fatal("verify-requirements/SKILL.md has no \"## DO NOT\" section")
 		}
-		for _, tok := range verifyRequirementsWriteTokens(skill) {
-			t.Errorf("verify-requirements/SKILL.md holds the write token %q outside the ## DO NOT section", tok)
+
+		registryTokens := verifyRequirementsRegistryTokens(flagParityBuildRegistry(t))
+		have := map[string]bool{}
+		for _, tok := range registryTokens {
+			have[tok] = true
+		}
+		// The live registry must give the write actions and write tools that
+		// the skill must never call, and never the actions that it calls.
+		for _, tok := range []string{"preplan_write", "openspec_stage", "jira save", "jira clear", "execute_state", "openspec_save"} {
+			if !have[tok] {
+				t.Errorf("registry tokens %v do not hold %q", registryTokens, tok)
+			}
+		}
+		for _, tok := range []string{"plan_support", "jira", "verify_requirements_context", "jira load"} {
+			if have[tok] {
+				t.Errorf("registry tokens hold %q, which the skill calls", tok)
+			}
+		}
+
+		tokens := append(append([]string{}, registryTokens...), verifyRequirementsPinnedTokens...)
+		for _, tok := range verifyRequirementsMissingTokens(skill, tokens) {
+			t.Errorf("verify-requirements/SKILL.md ## DO NOT section does not list %q", tok)
+		}
+		for _, tok := range verifyRequirementsWriteTokens(skill, tokens) {
+			t.Errorf("verify-requirements/SKILL.md holds the token %q outside the ## DO NOT section", tok)
 		}
 	})
 }

@@ -1003,6 +1003,47 @@ func TestPreplanStructureFindings(t *testing.T) {
 					"## Flows marks new or changed steps, but no live proposal exists."),
 			}},
 
+		{"decisions-table fires for a row with 2 cells",
+			structureTopic(structureNoFlow, structureRows("Smallest cut: all.", liveRow, "| 2 | Only two |"), ""),
+			[]preplanStructureFinding{finding("decisions-table", sec("Decisions"), "#2",
+				"Table row 2 has 2 cells, not 3. The live, moved and cut checks skip it.")}},
+		{"decisions-table for a row with 1 cell and no id has no row label",
+			structureTopic(structureNoFlow, structureRows("", "| x |", liveRow), ""),
+			[]preplanStructureFinding{finding("decisions-table", sec("Decisions"), "",
+				"Table row 1 has 1 cell, not 3. The live, moved and cut checks skip it.")}},
+		{"a short Moved row counts for no moved check",
+			structureTopic(structureNoFlow, structureRows("", liveRow, "| 2 | Moved: Later. |"), ""),
+			[]preplanStructureFinding{finding("decisions-table", sec("Decisions"), "#2",
+				"Table row 2 has 2 cells, not 3. The live, moved and cut checks skip it.")}},
+		{"a short live row counts as no live proposal",
+			structureTopic(fenced(structureMermaidMarked), structureRows("", "| 1 | A live proposal. |"), ""),
+			[]preplanStructureFinding{
+				finding("decisions-table", sec("Decisions"), "#1", "Table row 1 has 2 cells, not 3. The live, moved and cut checks skip it."),
+				finding("flow-no-proposal", sec("Flows"), "", "## Flows marks new or changed steps, but no live proposal exists."),
+			}},
+		{"a cut that names a short row names no row",
+			structureTopic(structureNoFlow, structureRows("Smallest cut: #2.", liveRow, "| 2 | Short |"), ""),
+			[]preplanStructureFinding{
+				finding("decisions-table", sec("Decisions"), "#2", "Table row 2 has 2 cells, not 3. The live, moved and cut checks skip it."),
+				finding("cut-not-live", sec("Decisions"), "#2", "Smallest cut names #2, but no row #2 exists."),
+			}},
+		{"decisions-table fires for a Smallest cut line with no colon",
+			structureTopic(structureNoFlow, structureRows("Smallest cut #2", liveRow), ""),
+			[]preplanStructureFinding{finding("decisions-table", sec("Decisions"), "",
+				`The line "Smallest cut #2" does not parse. The cut check skips it.`)}},
+		{"decisions-table fires for a Smallest cut line in lower case, then a good line counts",
+			structureTopic(structureNoFlow, structureRows("smallest cut: #1\nSmallest cut: #5.", liveRow), ""),
+			[]preplanStructureFinding{
+				finding("decisions-table", sec("Decisions"), "", `The line "smallest cut: #1" does not parse. The cut check skips it.`),
+				finding("cut-not-live", sec("Decisions"), "#5", "Smallest cut names #5, but no row #5 exists."),
+			}},
+		{"decisions-table quotes the trimmed line",
+			structureTopic(structureNoFlow, structureRows("  SMALLEST CUT: all  ", liveRow), ""),
+			[]preplanStructureFinding{finding("decisions-table", sec("Decisions"), "",
+				`The line "SMALLEST CUT: all" does not parse. The cut check skips it.`)}},
+		{"a line that does not start with Smallest cut is no cut line",
+			structureTopic(structureNoFlow, structureRows("The Smallest cut is row 1.", liveRow), ""), nil},
+
 		// cut-not-live
 		{"cut-not-live dropped row (the example of the plan)",
 			structureTopic(structureNoFlow, structureRows("Smallest cut: #1, #2.", liveRow, droppedRow), ""),
@@ -1094,6 +1135,37 @@ func TestPreplanStructureFindings(t *testing.T) {
 				if !reflect.DeepEqual(got, want) {
 					t.Errorf("%s: findings = %+v\nwant %+v", v.name, got, want)
 				}
+			}
+		})
+	}
+}
+
+// TestPreplanMermaidLines checks the fence walk of preplanMermaidLines: found
+// and the lines inside each mermaid fence.
+func TestPreplanMermaidLines(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		lines      []string
+		wantFound  bool
+		wantInside []string
+	}{
+		{"a closed mermaid fence", []string{"text", "```mermaid", "A:::new", "B", "```", "after"}, true, []string{"A:::new", "B"}},
+		{"an unclosed mermaid fence holds every later line", []string{"```mermaid", "A", "", "B"}, true, []string{"A", "", "B"}},
+		{"an empty mermaid fence", []string{"```mermaid", "```"}, true, nil},
+		{"a fence that is not mermaid", []string{"```text", "A:::new", "```"}, false, nil},
+		{"a fence with no info string", []string{"```", "A:::new", "```"}, false, nil},
+		{"the info string in another case is not mermaid", []string{"```Mermaid", "A", "```"}, false, nil},
+		{"spaces around the info string", []string{"~~~  mermaid  ", "A", "~~~"}, true, []string{"A"}},
+		{"only the mermaid fence of two counts", []string{"```text", "x", "```", "~~~mermaid", "y", "~~~", "z"}, true, []string{"y"}},
+		{"two mermaid fences", []string{"```mermaid", "a", "```", "```mermaid", "b", "```"}, true, []string{"a", "b"}},
+		{"a shorter run inside the fence is a line", []string{"````mermaid", "a", "```", "b", "````"}, true, []string{"a", "```", "b"}},
+		{"an indented fence is no fence", []string{"  ```mermaid", "A", "  ```"}, false, nil},
+		{"no lines", nil, false, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			found, inside := preplanMermaidLines(tc.lines)
+			if found != tc.wantFound || !reflect.DeepEqual(inside, tc.wantInside) {
+				t.Errorf("found, inside = %v, %q, want %v, %q", found, inside, tc.wantFound, tc.wantInside)
 			}
 		})
 	}

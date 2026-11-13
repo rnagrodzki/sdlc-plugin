@@ -52,6 +52,11 @@ var preplanDecisionsHeaderLines = strings.Split(strings.TrimSuffix(preplanDecisi
 // or "Smallest cut: #1, #3.". It does not check that the ids are live.
 var preplanSmallestCutRe = regexp.MustCompile(`^Smallest cut: (all|#[0-9]+(?:, #[0-9]+)*)\.$`)
 
+// preplanSmallestCutLabel starts every Smallest cut line. A line that starts
+// with it in any letter case, but that preplanSmallestCutRe does not match, is
+// a Smallest cut line that does not parse.
+const preplanSmallestCutLabel = "Smallest cut"
+
 // preplanLastCheckLabel comes before the time in a Guardrail check line.
 // preplanCheckLine writes it and preplanLastCheckRe reads it.
 const preplanLastCheckLabel = "Last check: "
@@ -183,11 +188,10 @@ func preplanCheckFences(lines []string) *preplanFormatError {
 }
 
 // preplanFenceStep returns the fence state after line. open is the run that
-// opened the current fence, or "" outside a fence. It holds the close rule of
-// preplanSectionSpans: a fence closes at a line that holds only a run of the
-// same character, at least as long as the opening run, then spaces or tabs.
-// preplanSectionSpans, preplanCheckFences and preplanCheckFlows call it once
-// for each line.
+// opened the current fence, or "" outside a fence. It holds the CommonMark
+// close rule: a fence closes at a line that holds only a run of the same
+// character, at least as long as the opening run, then spaces or tabs. Call
+// it once for each line, in order.
 func preplanFenceStep(open, line string) (next string) {
 	run := preplanFenceRun(line)
 	if open == "" {
@@ -409,18 +413,12 @@ func preplanCheckFlows(lines []string) *preplanFormatError {
 	if strings.TrimSpace(strings.Join(lines, "\n")) == preplanNoFlowChange {
 		return nil
 	}
-	open, mermaid := "", false
 	for i, line := range lines {
-		next := preplanFenceStep(open, line)
-		if open == "" && next != "" && strings.TrimSpace(line[len(next):]) == "mermaid" {
-			mermaid = true
-		}
-		open = next
 		if preplanBadClassDef(line) {
 			return preplanRuleError("P10", "classDef on line %d is not allowed", i+1)
 		}
 	}
-	if !mermaid {
+	if mermaid, _ := preplanMermaidLines(lines); !mermaid {
 		return preplanRuleError("P10", "the body is not %q and holds no mermaid fence", preplanNoFlowChange)
 	}
 	return nil
@@ -516,13 +514,22 @@ func preplanGoalSentence(body string) string {
 
 // preplanOpenQuestionCount counts the bullets of an ## Open questions body.
 func preplanOpenQuestionCount(body string) int {
-	n := 0
+	bullets, _ := preplanBullets(body)
+	return len(bullets)
+}
+
+// preplanBullets reads a body of "- " bullets. bullets holds the trimmed text
+// of each line that starts with "- ", in order. other holds each line that is
+// not blank and does not start with "- ", for example "* x", "  - x" or "1. x".
+func preplanBullets(body string) (bullets, other []string) {
 	for _, line := range preplanBodyLines(body) {
-		if strings.HasPrefix(line, "- ") {
-			n++
+		if text, ok := strings.CutPrefix(line, "- "); ok {
+			bullets = append(bullets, strings.TrimSpace(text))
+		} else if strings.TrimSpace(line) != "" {
+			other = append(other, line)
 		}
 	}
-	return n
+	return bullets, other
 }
 
 // preplanLastCheck returns the "Last check:" time, in UTC, of the first
@@ -563,7 +570,7 @@ var preplanFlowMarkRe = regexp.MustCompile(`:::(?:new|changed)\b`)
 
 // preplanStructureFinding is one structure finding of a topic file.
 type preplanStructureFinding struct {
-	Rule    string `json:"rule"`    // one of the 6 rule ids below
+	Rule    string `json:"rule"`    // one of the preplanRule* constants
 	Section string `json:"section"` // "## Goal" ... "## Decisions", "## Open questions", or "" for open-fence
 	Row     string `json:"row"`     // "#3", or "" when the rule has no row
 	Detail  string `json:"detail"`  // one plain sentence for the report
@@ -581,12 +588,21 @@ type preplanStructureFinding struct {
 //
 // When the ## Decisions table does not parse, decisions-table fires once, and
 // cut-not-live and moved-no-question do not run. flow-no-proposal still runs,
-// and it counts 0 live rows. The rules moved-no-question and flow-no-proposal
-// compare counts of rules, not matches of text. "Smallest cut: all." never
-// fires cut-not-live.
+// and it counts 0 live rows. When the table parses, decisions-table also fires
+// once for each row with fewer than 3 cells (no count holds such a row) and
+// once for each line after the table that starts with "Smallest cut" but does
+// not parse. The rules moved-no-question and flow-no-proposal compare counts
+// of rules, not matches of text. "Smallest cut: all." never fires
+// cut-not-live.
 func preplanStructureFindings(data []byte) []preplanStructureFinding {
-	findings := []preplanStructureFinding{}
 	spans, openFence := preplanSectionSpans(data)
+	return preplanStructureFindingsOf(data, spans, openFence)
+}
+
+// preplanStructureFindingsOf is preplanStructureFindings for spans and
+// openFence that the caller already got from preplanSectionSpans(data).
+func preplanStructureFindingsOf(data []byte, spans []preplanSpan, openFence string) []preplanStructureFinding {
+	findings := []preplanStructureFinding{}
 	body := func(name string) (text string, found bool) {
 		i := preplanFindSpan(spans, name)
 		if i < 0 {
@@ -623,9 +639,16 @@ func preplanStructureFindings(data []byte) []preplanStructureFinding {
 	}
 
 	live, moved := 0, 0
-	for _, cells := range rows {
+	for n, cells := range rows {
 		switch {
 		case len(cells) < 3:
+			findings = append(findings, preplanStructureFinding{
+				Rule:    preplanRuleDecisionsTable,
+				Section: decisionsHeading,
+				Row:     preplanRowLabel(cells),
+				Detail: fmt.Sprintf("Table row %d has %s, not 3. The live, moved and cut checks skip it.",
+					n+1, preplanCount(len(cells), "cell")),
+			})
 		case strings.HasPrefix(cells[1], preplanMovedPrefix):
 			moved++
 		case preplanRowLive(cells[1]):
@@ -633,6 +656,17 @@ func preplanStructureFindings(data []byte) []preplanStructureFinding {
 		}
 	}
 	if tableOK {
+		for _, line := range lines[after:] {
+			text := strings.TrimSpace(line)
+			if len(text) >= len(preplanSmallestCutLabel) && strings.EqualFold(text[:len(preplanSmallestCutLabel)], preplanSmallestCutLabel) &&
+				!preplanSmallestCutRe.MatchString(text) {
+				findings = append(findings, preplanStructureFinding{
+					Rule:    preplanRuleDecisionsTable,
+					Section: decisionsHeading,
+					Detail:  fmt.Sprintf("The line %q does not parse. The cut check skips it.", text),
+				})
+			}
+		}
 		findings = append(findings, preplanCutFindings(rows, lines[after:])...)
 		questions, _ := body(preplanOpenQuestionsSection)
 		if bullets := preplanOpenQuestionCount(questions); moved > bullets {
@@ -647,13 +681,25 @@ func preplanStructureFindings(data []byte) []preplanStructureFinding {
 	}
 
 	if flows, found := body(preplanFlowsSection); found && live == 0 && preplanFlowsMarkNodes(flows) {
+		flowsHeading := preplanHeadingPrefix + preplanFlowsSection
 		findings = append(findings, preplanStructureFinding{
 			Rule:    preplanRuleFlowNoProposal,
-			Section: preplanHeadingPrefix + preplanFlowsSection,
-			Detail:  "## Flows marks new or changed steps, but no live proposal exists.",
+			Section: flowsHeading,
+			Detail:  flowsHeading + " marks new or changed steps, but no live proposal exists.",
 		})
 	}
 	return findings
+}
+
+// preplanRowLabel returns "#<id>" for a row whose first cell is a positive
+// whole number, else "".
+func preplanRowLabel(cells []string) string {
+	if len(cells) > 0 {
+		if id, ok := preplanParseID(cells[0]); ok {
+			return "#" + strconv.Itoa(id)
+		}
+	}
+	return ""
 }
 
 // preplanCount returns "1 row" or "2 rows": n and the noun, with an "s" after
@@ -743,18 +789,26 @@ func preplanCutFindings(rows [][]string, tail []string) []preplanStructureFindin
 // a ":::new" or ":::changed" mark inside a mermaid fence. A mark in other
 // text is no node.
 func preplanFlowsMarkNodes(body string) bool {
+	_, inside := preplanMermaidLines(preplanBodyLines(body))
+	return slices.ContainsFunc(inside, preplanFlowMarkRe.MatchString)
+}
+
+// preplanMermaidLines walks lines with preplanFenceStep. found reports whether
+// a fence opens with the info string "mermaid". inside holds the lines between
+// the open line and the close line of each mermaid fence, in order; an
+// unclosed mermaid fence holds every line after its open line.
+func preplanMermaidLines(lines []string) (found bool, inside []string) {
 	open, mermaid := "", false
-	for _, line := range preplanBodyLines(body) {
+	for _, line := range lines {
 		next := preplanFenceStep(open, line)
 		switch {
 		case open == "" && next != "":
 			mermaid = strings.TrimSpace(line[len(next):]) == "mermaid"
-		case open != "" && next != "":
-			if mermaid && preplanFlowMarkRe.MatchString(line) {
-				return true
-			}
+			found = found || mermaid
+		case open != "" && next != "" && mermaid:
+			inside = append(inside, line)
 		}
 		open = next
 	}
-	return false
+	return found, inside
 }
