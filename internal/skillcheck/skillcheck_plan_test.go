@@ -855,3 +855,146 @@ func TestPlanSkillCreateFlowResumeRestage(t *testing.T) {
 		}
 	}
 }
+
+// planSkillsConcludeWants maps a block start to the strings it must hold.
+var planSkillsConcludeWants = map[string][]string{
+	"**Conclude question:**": {
+		`"Is this all? Conclude the plan?"`,
+		"**Conclude (Recommended)**", "**Change more**", "**Stop**",
+		"A free-text answer is one more change.",
+		"After 3 failed gate tries, the question has no **Conclude** option.",
+		"Under `--auto`, or when AskUserQuestion is not available, take **Conclude**.",
+	},
+	"**Conclude routes:**": {
+		"| Before run |", "| Mid-run |", "| Gate |", "| After handoff |",
+		"`gate-tries`",
+	},
+	"**Conclude stop rule:**": {
+		`plan_mark({ marker: "stopped", runId: "<runId>", path: "" })`,
+		"`notStopped`",
+	},
+	"**Rejected handoff with feedback": {"(every plan, plan mode and normal mode)"},
+	"**Run ID on every call:**":        {"plan run <runId> is stopped"},
+}
+
+// planSkillsConcludeForbidden holds strings that must not be anywhere in
+// plan/SKILL.md.
+var planSkillsConcludeForbidden = []string{
+	"Stop. Do not retry.",
+	"(Create flow only — the plan file has an `**OpenSpec-Staging:**` header line)",
+}
+
+// planSkillBlock returns the text of the block that starts at start: from
+// start to the next line that starts with "**" or "## ", or to the end of
+// content. start must begin a line: a mention of it inside a table row or a
+// sentence does not count. A blank line does not end the block, because a
+// block can hold a table. The bool is false when no line starts with start.
+func planSkillBlock(content, start string) (string, bool) {
+	from := -1
+	if strings.HasPrefix(content, start) {
+		from = 0
+	} else if i := strings.Index(content, "\n"+start); i >= 0 {
+		from = i + 1
+	}
+	if from < 0 {
+		return "", false
+	}
+	block := content[from:]
+	// Search for the next block start after the first line of the block.
+	nl := strings.Index(block, "\n")
+	if nl < 0 {
+		return block, true
+	}
+	rest := block[nl:]
+	for _, marker := range []string{"\n**", "\n## "} {
+		if end := strings.Index(rest, marker); end >= 0 {
+			rest = rest[:end]
+		}
+	}
+	return block[:nl] + rest, true
+}
+
+// planSkillConcludeProblems returns one message for each unmet pin:
+// a block start that is not in content, a wanted string that is not in its
+// block, and a forbidden string that is anywhere in content.
+func planSkillConcludeProblems(content string, wants map[string][]string, forbidden []string) []string {
+	var problems []string
+	for start, strs := range wants {
+		block, ok := planSkillBlock(content, start)
+		if !ok {
+			problems = append(problems, fmt.Sprintf("no %q block found", start))
+			continue
+		}
+		for _, want := range strs {
+			if !strings.Contains(block, want) {
+				problems = append(problems, fmt.Sprintf("block %q does not contain %q", start, want))
+			}
+		}
+	}
+	for _, f := range forbidden {
+		if strings.Contains(content, f) {
+			problems = append(problems, fmt.Sprintf("contains the removed text %q", f))
+		}
+	}
+	slices.Sort(problems)
+	return problems
+}
+
+// TestPlanSkillConcludeQuestion pins the conclude question in plan/SKILL.md:
+// the question, the route table, the stop rule, the Step 7 feedback rule and
+// the stopped-run error. It also forbids the removed gate stop text.
+func TestPlanSkillConcludeQuestion(t *testing.T) {
+	rel := "skills/plan/SKILL.md"
+	data, err := os.ReadFile(filepath.Join(planSkillsRepoRoot(t), rel))
+	if err != nil {
+		t.Fatalf("read %s: %v", rel, err)
+	}
+	for _, p := range planSkillConcludeProblems(string(data), planSkillsConcludeWants, planSkillsConcludeForbidden) {
+		t.Errorf("%s: %s", rel, p)
+	}
+}
+
+// TestPlanSkillConcludeQuestionGuards checks the pin helpers on small texts:
+// a missing block start, a block at the end of the text, a missing wanted
+// string and a forbidden string.
+func TestPlanSkillConcludeQuestionGuards(t *testing.T) {
+	wants := map[string][]string{"**A:**": {"alpha"}}
+
+	t.Run("block start missing", func(t *testing.T) {
+		got := planSkillConcludeProblems("**B:** alpha", wants, nil)
+		if len(got) != 1 || !strings.Contains(got[0], `no "**A:**" block found`) {
+			t.Errorf("got %v, want one missing-block message", got)
+		}
+	})
+	t.Run("block at the end of the text is read in full", func(t *testing.T) {
+		text := "intro\n**A:** first\n\n| row |\nalpha"
+		if got := planSkillConcludeProblems(text, wants, nil); len(got) != 0 {
+			t.Errorf("got %v, want none", got)
+		}
+	})
+	t.Run("start inside a line is not a block start", func(t *testing.T) {
+		got := planSkillConcludeProblems("| row | see **A:** alpha |", wants, nil)
+		if len(got) != 1 || !strings.Contains(got[0], `no "**A:**" block found`) {
+			t.Errorf("got %v, want one missing-block message", got)
+		}
+	})
+	t.Run("block stops at the next bold line", func(t *testing.T) {
+		text := "**A:** first\n**B:** alpha"
+		got := planSkillConcludeProblems(text, wants, nil)
+		if len(got) != 1 || !strings.Contains(got[0], `does not contain "alpha"`) {
+			t.Errorf("got %v, want one missing-string message", got)
+		}
+	})
+	t.Run("block stops at the next heading", func(t *testing.T) {
+		text := "**A:** first\n## Step 1\nalpha"
+		if got := planSkillConcludeProblems(text, wants, nil); len(got) != 1 {
+			t.Errorf("got %v, want one missing-string message", got)
+		}
+	})
+	t.Run("forbidden string", func(t *testing.T) {
+		got := planSkillConcludeProblems("**A:** alpha\nStop. Do not retry.", wants, []string{"Stop. Do not retry."})
+		if len(got) != 1 || !strings.Contains(got[0], "removed text") {
+			t.Errorf("got %v, want one forbidden-string message", got)
+		}
+	})
+}

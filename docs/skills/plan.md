@@ -22,7 +22,7 @@ or a plain description.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `[spec-file-path...]` | Path to a requirements or spec file to plan from. A path into `openspec/changes/<name>/` selects that change, same as `--spec <name>`. Two or more paths must all be preplan topic files. Put a path with spaces in double quotes. `--spec` with two or more paths stops the plan. | none |
-| `--auto` | Skip interactive prompts. Picks conservative defaults. Two prompts stay: a Gate A `CRITICAL` verdict still blocks, and the per-finding questions at the review-loop limit are still asked (only the harden offer is left out). | off |
+| `--auto` | Skip interactive prompts. Picks conservative defaults. Two prompts stay: a Gate A `CRITICAL` verdict still blocks, and the per-finding questions at the review-loop limit are still asked (only the harden offer is left out). At the Step 6.5 and 6.6 gates, `--auto` takes Conclude: it fixes the findings and runs the gate again, 3 tries, then it takes Stop (`plan_mark` `stopped`) and reports the findings. | off |
 | `--spec [<change-name>]` | Opts into OpenSpec and skips the gate-check question. With a name: plan from that existing change (`openspec/changes/<change-name>/`). Without one: use the branch-matched change, else ask which active change to use, or offer to create a new one. | off |
 | `--from-openspec <name>` | Deprecated alias of `--spec <name>`, kept for one release. Prints a deprecation notice. | none |
 
@@ -76,6 +76,25 @@ from that header.
 The plan checks the paths before it starts a run. If a path is not a topic
 file, the plan stops and prints the path. `--spec`, with or without a change
 name, also stops the plan when it comes with two or more paths.
+
+## Conclude question
+
+The skill asks "Is this all? Conclude the plan?" at each point where a run
+can end open. The options are **Conclude (Recommended)**, **Change more** and
+**Stop**. A free-text answer counts as one more change: the skill applies it
+and asks again. Each point changes only what the options do:
+
+| Point | Trigger | Conclude | Change more | Stop |
+|---|---|---|---|---|
+| Before run | a user message before the first `plan_prepare` call | no question. Add the message to the request | — | — |
+| Mid-run | a user message in Steps 1 to 7, before the done marker, that answers no skill question | continue at `checkpoint.step`. Run every step that is left. Step 7 writes done | wait for the next message. Apply it. Ask again | the conclude stop rule. Print the plan path and the step. End |
+| Gate | Step 6.5 `results[]` has a status that is not `ok`, or Step 6.6 `findings` is not empty, and no user message waits | fix each finding. Run the same gate again. Add one try to `gate-tries`. With findings after 3 tries: ask again with no Conclude option | apply the change. Set `gate-tries` to 0. Run Step 6.5 again | the conclude stop rule. Print the findings. End |
+| After handoff | a reply to the Step 7 handoff that asks for a change | the **Rejected handoff with feedback** rule of Step 7 | wait, apply, ask again | end. The plan file stays. No state call |
+
+The stop rule writes `plan_mark({ marker: "stopped" })`, stops each Step 1
+explorer that still runs, and prints the plan path and the step. The
+dashboard shows a stopped run as ended. After the handoff the run is already
+done, so a rejected handoff makes no state call.
 
 ## Examples
 

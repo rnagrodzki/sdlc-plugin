@@ -154,13 +154,19 @@ flowchart TD
 
     S6_5["Step 6.5 - Link Verification"]
     S6_5 --> link_ok{All OK?}
-    link_ok -->|fail| BLOCK2["Block - surface broken URLs"]
+    link_ok -->|fail| CONCLUDE{Conclude question}
     link_ok -->|pass| S6_6
 
     S6_6["Step 6.6 - Format Validation"]
     S6_6 --> fmt_ok{All OK?}
-    fmt_ok -->|fail| BLOCK3["Block - surface PF findings"]
+    fmt_ok -->|fail| CONCLUDE
     fmt_ok -->|pass| S7["Step 7 - Handoff"]
+
+    CONCLUDE -->|"Conclude (3 tries)"| FIX["Fix findings, run the same gate again"]
+    FIX -->|from 6.5| link_ok
+    FIX -->|from 6.6| fmt_ok
+    CONCLUDE -->|Change more| S6_5
+    CONCLUDE -->|Stop| STOPPED["plan_mark stopped, end"]
 ```
 
 ### Step 0: Mode Detection and Setup
@@ -824,10 +830,9 @@ never in parallel with another `main` write, since two parallel upserts of
   (`appendPlanRunRecord` in `internal/tools/plan.go`) — this file lives
   outside `runs/` under `.sdlc-v2/history/`, so it survives the state file's
   own eventual removal (ship's `cleanup-pipeline` step or the GC TTL sweep —
-  see [Plan run lifetime](#plan-run-lifetime)). A revised plan (a second
-  `done` after a rejected ExitPlanMode) appends a newer record rather than
-  replacing the first; readers take the latest `skill:"plan"` record for the
-  branch. A failed append is non-fatal: the call still returns `ok: true`,
+  see [Plan run lifetime](#plan-run-lifetime)). A revised plan after
+  a rejected ExitPlanMode makes no state call, so the first record stays;
+  readers take the latest `skill:"plan"` record for the branch. A failed append is non-fatal: the call still returns `ok: true`,
   with the error named in `warning`. After `plan_mark({marker: "done", runId})`,
   the Stop hook (`internal/hooks/stop_hooks.go`, `planIntegrityFromState`)
   reads the state file once and evaluates the five markers, but it does
@@ -1024,6 +1029,8 @@ stateDiagram-v2
     PlanFileSet --> GuardrailsEvaluated: plan_mark("guardrailsEvaluated")
     GuardrailsEvaluated --> CritiqueRan: plan_mark("critiqueRan")
     CritiqueRan --> Done: plan_mark("done") (Step 7)
+    SkillInvoked --> Stopped: plan_mark("stopped") or review-outcome stop
+    Stopped --> [*]: Not active; no hook warning
     Done --> Kept: Stop hook reads once, evaluates, does not delete
     Kept --> Removed: ship cleanup-pipeline or GC TTL sweep
     CritiqueRan --> Waiting: Stop fires before "done"
@@ -1043,6 +1050,7 @@ stateDiagram-v2
 | `guardrailsEvaluated` | `plan_mark` (explicit) | 3 | Gate evaluation completed |
 | `critiqueRan` | `plan_mark` (explicit) | 3 | Critique merge barrier passed |
 | `done` | `plan_mark` (explicit) | 7 | Plan completed; gates stop-hook evaluation (the hook reads and evaluates but no longer deletes — see [Plan run lifetime](#plan-run-lifetime)) |
+| `stopped` | `plan_mark` (explicit), or `plan_mark` `review-outcome` with a `stop` choice | any | The user stopped the plan. Refused after `done`. A second call keeps the first time. A stopped run is not active: `plan_prepare` with `resume` refuses it, and `done` after `stopped` is refused. The Stop hook does not warn for it. The dashboard shows it as an ended run |
 
 ### Stop Hook Behavior
 
@@ -1092,8 +1100,8 @@ A `done` plan run's state file is not deleted the moment it finishes — it is k
 | Material change after Step 6 fixes | 6 | Re-dispatch from Step 3 (full pipeline re-evaluation) | No (loop) |
 | Non-material change after Step 6 fixes | 6 | Re-dispatch from Step 5 only | No (loop) |
 | Round `reviewLoop.maxRounds` (5) ends with blocking issues | 5-6 | Last fix pass runs; then one question per open finding (`accepted` / `rejected` / `stop`). Hand-off only when no answer is `stop`. Stops with no hand-off on a `stop` answer, on more than 200 open findings, or when AskUserQuestion is unavailable. 0 open findings: proceeds to Step 6.5 | **Yes** |
-| `links_validate` finds broken URLs | 6.5 | Pipeline blocks, surfaces broken URLs to user | **Yes** |
-| `validate({action: "plan_format"})` finds PF failures | 6.6 | Pipeline blocks, surfaces PF findings to user | **Yes** |
+| `links_validate` finds broken URLs | 6.5 | Conclude question, 3 fix tries, `--auto` stops with `stopped` | **Yes** |
+| `validate({action: "plan_format"})` finds PF failures | 6.6 | Conclude question, 3 fix tries, `--auto` stops with `stopped` | **Yes** |
 | Session interrupted (Ctrl+C, timeout) | Any | `stop-plan-integrity` hook fires, warns on missing markers | No (advisory) |
 | State file missing at stop time | Stop | Falls back to transcript scanning. No warning when the first 64 MiB of the transcript hold a preplan marker | No (advisory) |
 
