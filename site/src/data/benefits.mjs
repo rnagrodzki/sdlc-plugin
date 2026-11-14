@@ -26,6 +26,11 @@ export const benefits = [
     skills: ['ship', 'commit', 'pr'],
   },
   {
+    title: 'Your follow-up steps, run for you',
+    text: 'Write the steps you repeat after a run in config, such as a ticket move or a channel post. Ship runs each one after its step and reports the result.',
+    skills: ['ship', 'commit', 'pr'],
+  },
+  {
     title: 'Output in the style of your project',
     text: 'The commit message follows the style of your history. The pull request text covers every commit, and a section with no evidence gets `N/A`.',
     skills: ['commit', 'pr'],
