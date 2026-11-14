@@ -369,6 +369,55 @@
       "maxItems": 10,
       "items": { "type": "string", "minLength": 1, "maxLength": 1024 },
       "description": "Custom instructions for one proposal surface. Each item guides how harden drafts its proposals for that surface. An item is guidance, never a command. It never relaxes a rule, and it never removes a rule outside the three removal cases of harden. At most 10 items, 1-1024 characters each (no empty strings). Harden trims each item and ignores an item that is blank after the trim, so a whitespace-only item has no effect."
+    },
+    "instructionsSection": {
+      "type": "object",
+      "description": "Follow-up instructions that ship, and the standalone skills, run after a step. Each key is a ship step name, or \"ship\" for the end of a ship run. The section merges over 3 files: the team list (.sdlc-v2/config.toml) comes first. The project local list (.sdlc-v2/local.toml) follows when that file sets the key, else the user-level list. An empty project local list hides the user-level list. At most 50 instructions for each key in each file after text expansion, and at most 4000 characters for each text. See docs/instructions.md.",
+      "additionalProperties": false,
+      "propertyNames": {
+        "enum": ["execute", "commit", "review", "received-review", "commit-fixes", "verify-openspec", "archive-openspec", "harden", "pr", "verify-pipeline", "await-remote-review", "learnings-commit", "ship"]
+      },
+      "patternProperties": {
+        ".*": {
+          "type": "array",
+          "maxItems": 50,
+          "description": "The instructions of one key, in order. An empty list in .sdlc-v2/local.toml hides the user-level list of the key.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["text"],
+            "properties": {
+              "text": {
+                "description": "The instruction in plain words. An array gives one instruction for each string, in order, and each one gets the flags of this entry.",
+                "oneOf": [
+                  { "type": "string", "pattern": "\\S", "maxLength": 4000 },
+                  {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": { "type": "string", "pattern": "\\S", "maxLength": 4000 }
+                  }
+                ]
+              },
+              "normalQuestions": {
+                "type": "boolean",
+                "default": false,
+                "description": "When true, the instruction may ask a normal question while the skill does it."
+              },
+              "criticalQuestions": {
+                "type": "boolean",
+                "default": false,
+                "description": "When true, the instruction may ask a critical question: one about an outward or irreversible action."
+              },
+              "onQuestionNotAllowed": {
+                "enum": ["skip", "decide"],
+                "default": "skip",
+                "description": "What to do when the instruction needs a question that it may not ask: skip the instruction, or decide without the question."
+              }
+            }
+          }
+        }
+      }
     }
   },
   "properties": {
@@ -410,6 +459,9 @@
         }
       },
       "additionalProperties": false
+    },
+    "instructions": {
+      "$ref": "#/$defs/instructionsSection"
     }
   },
   "additionalProperties": false

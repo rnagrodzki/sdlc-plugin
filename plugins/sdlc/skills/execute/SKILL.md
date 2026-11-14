@@ -1,8 +1,8 @@
 ---
 name: execute
-description: "Use when the user wants to execute an implementation plan with adaptive intelligence — classifies tasks by complexity and risk, builds optimized dependency waves, critiques wave structure before dispatch, verifies results after each wave, and recovers from failures without stopping. Self-contained: no external sub-skills required. Triggers on: execute plan, run plan, implement plan, autonomous execution, execute this plan. Requires an explicit plan file — a positional path or `--plan <path>` — at invocation (or a resumable state file, see `--resume`); it is never inferred from conversation context, even when a plan was just discussed or accepted in this session (R41)."
+description: "Use when the user wants to execute an implementation plan with adaptive intelligence — classifies tasks by complexity and risk, builds optimized dependency waves, critiques wave structure before dispatch, verifies results after each wave, and recovers from failures without stopping. Self-contained: no external sub-skills required. Triggers on: execute plan, run plan, implement plan, autonomous execution, execute this plan. Requires an explicit plan file — a positional path or `--plan <path>` — at invocation (or a resumable state file, see `--resume`); it is never inferred from conversation context, even when a plan was just discussed or accepted in this session (R41). Use --no-instructions to skip the execute instructions of the config; ship passes it on each dispatch."
 user-invocable: true
-argument-hint: "<plan-file-path> [--quality full|balanced|minimal] [--resume] [--rebase auto|skip|prompt] [--auto] [--branch <name>] [--plan <path>] [--wave-timeout <seconds>] [--wave-interval <seconds>] [--commit-waves true|false]"
+argument-hint: "<plan-file-path> [--quality full|balanced|minimal] [--resume] [--rebase auto|skip|prompt] [--auto] [--branch <name>] [--plan <path>] [--wave-timeout <seconds>] [--wave-interval <seconds>] [--commit-waves true|false] [--no-instructions]"
 model: sonnet
 ---
 
@@ -30,6 +30,18 @@ If the system context contains "Plan mode is active":
 Call `execute_state({ action: "resolve-config", branch: "<current branch>", quality: "<--quality value, omit when the flag was absent>", auto: <true only when --auto was passed>, commitWaves: "<--commit-waves value, omit when the flag was absent>" })`.
 
 Store from the response: `auto` as EXECUTE_AUTO, `quality` as EXECUTE_QUALITY (may be empty), `highRiskAutoApprove` as EXECUTE_HIGH_RISK_AUTO, `commitWaves` as EXECUTE_COMMIT_WAVES — the response's `commitWaves` is a JSON boolean; store it as the string `"true"`/`"false"` (matching `--commit-waves`'s own value shape), since that is the form `init` (below) expects. Print one line: `Execute config: auto=<EXECUTE_AUTO> (<sources.auto>), quality=<EXECUTE_QUALITY or "prompt"> (<sources.quality>), highRiskAutoApprove=<EXECUTE_HIGH_RISK_AUTO> (<sources.highRiskAutoApprove>), commitWaves=<EXECUTE_COMMIT_WAVES> (<sources.commitWaves>)`. Surface any `warnings` verbatim (this includes the notice when personal keys were moved from `.sdlc-v2/config.toml` to `.sdlc-v2/local.toml`). If the call returns an error (a personal key that could not be moved automatically), show its message and suggestion, then stop. Do not fall back to defaults.
+
+**Resolve instructions — the third action of this skill, immediately after resolve-config:** Skip this item when `--no-instructions` was passed. Otherwise run:
+
+```
+instructions_resolve({ key: "execute" }) → INSTRUCTIONS
+```
+
+Keep `INSTRUCTIONS` for Step 9a. The list is empty when the config has none. This call only checks the config before the first wave: the run state of the list comes from `execute_state` in Step 9a.
+
+**On tool error (a DataError for bad config content, or an InfraError):** print the error message and its suggestion, then stop before Step 1. No wave ran and no state was written. The user fixes the config and runs `/execute` again.
+
+**Parse `--no-instructions`:** read it from your own invocation arguments, like `--auto`. It is independent of `--auto`, `--commit-waves`, `--resume` and every other flag: each flag applies. It skips the Resolve instructions item above and Step 9a. Ship passes `--no-instructions` on each dispatch, a `--resume` dispatch too. A standalone `--resume` without the flag runs the rest of the list.
 
 Do NOT read `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml` to obtain these four values — this call is their only sanctioned source. The tool resolves both files from the main worktree root (`worktree.MainRoot()`), not the current directory, so a nested execute dispatch (for example from `/ship`) or a run inside a linked worktree reads the same `.sdlc-v2/local.toml` as the top-level session, and gets the same `highRiskAutoApprove` and `auto`. EXECUTE_AUTO suppresses prompts about the user's intent. It must never be used to override a guardrail failure — that is a rule this skill follows (see the DO NOT list at the end of this file), not a check the tool enforces: the `decide` action is an append-only recorder that writes whatever decision it is given, `override` included, without inspecting any auto state.
 
@@ -290,6 +302,12 @@ The only other commits in a run are merge commits made by the tool itself in `##
 6. Load `context` (`completedTaskIds`, `filesAdded`/`filesModified`, `interfacesCreated`, `decisionsFromPriorWaves`) into the resumed session's understanding. Load `quality` from state with explicit three-way branching: if `sources.quality == "cli"` (an explicit `--quality` was passed), use EXECUTE_QUALITY; else if `state.quality` is non-empty (the tier stamped when this run was initialized), use `state.quality`; else use EXECUTE_QUALITY (config or auto default), which is empty only when EXECUTE_AUTO is false and no config set a tier — prompt for the tier in that one case.
 7. Resume from the first wave with status `in_progress` or `pending`, per `willRedo`/`willSkip` on the briefing.
 
+**All tasks done, open instruction records.** An interrupt during Step 9a, or after the last wave and before the first `instructions-next` call, leaves the run with no `cleanup` call, so the run stays unfinished. The `read` result then has no `resumeBriefing`, because every task is done. Use this table for that case:
+
+| `read` result on `--resume` | Action |
+|---|---|
+| `runStatus` is not `"completed"`, every `plannedTaskIds` entry is in `context.completedTaskIds`, and either the state has no `instructions` key (the first `instructions-next` call seeds it) or an `instructions` record has status `pending` or `running` | Skip steps 3-7 above, the waves and Steps 7-8. Run Step 9a: `instructions-next` turns the running record into failed and returns the next open record. Then run the Completion call (`cleanup`) of Step 9 and print the summary line. With `--no-instructions`, skip Step 9a and call `cleanup`. |
+
 The small-plan direct-execution path (Step 2b) never writes a state file or commits per-wave, so it never produces a `committedSha` to reconcile here.
 
 **Post-compact recovery.** In addition to explicit `--resume`, scan the session-start system-reminder for `Active execution (post-compact):`:
@@ -369,7 +387,45 @@ Base sync aborted at wave <N>: conflicts left for ship rebase
 
 **Issue summary.** `wave-start`/`wave-done`/`wave-fail` each already return a rolling `issueCount`/`issueHighlights` as the run progresses. The completion action below (`cleanup`) additionally returns a full `issueSummary` — `total`, `byCategory` counts, `items`, a pre-rendered `display` block, and `hardenSuggestion` — whenever `issues[]` is non-empty. Render `issueSummary.display` verbatim, then append `issueSummary.hardenSuggestion` when present (set only when at least one `severity:"error"` issue exists). When `issueSummary` is absent from the response (empty `issues[]`), render nothing — no "0 issues" noise.
 
-**Completion:** `execute_state({ action: "cleanup" })` stamps `runStatus:"completed"` and `runCompletedAt` on the state file — it does **not** delete it. The file (with its `issues[]`) stays on disk, findable via later reads (e.g. `/harden`), until `gc`'s TTL sweep eventually prunes it; only the per-run working directory (fact sheets, progress markers) and the ledger directory are actually removed by `cleanup` itself. Print: `Run complete — state stamped runStatus:"completed".`, then the issue summary described above.
+### Step 9a: Run instructions
+
+Skip this step when `--no-instructions` was passed. Run it only when all tasks completed, before the Completion call (`cleanup`) below. A wave `cancel`, a failed or partial run (Step 6) or an interrupt before Step 9 runs no instruction: no record is seeded or closed, and the state stays resumable.
+
+Read [`../ship/instructions-run.md`](../ship/instructions-run.md) and follow its "Loop with run state" section. The run mode is EXECUTE_AUTO, the auto value of `resolve-config` (Step 0). The loop uses these calls:
+
+```
+loop: execute_state({ action: "instructions-next" })
+        instruction (none) → leave the loop
+        instruction rec    → do rec.text with the question rules
+                           → execute_state({ action: "instruction-record", instructionNumber: rec.number, instructionStatus: "done" | "failed" | "not run", instructionOutcome: "<one line>" })
+                           → loop
+      a record call error → print one warning line, continue the loop
+```
+
+The first `instructions-next` call seeds the execute list from the config. The tool owns the order of the list. A failed instruction never fails the run. An instruction from config may commit, push, run git or gh commands, or call a skill: it is not part of the plan execution.
+
+**Small-plan direct route (Step 2b).** This route writes no state file, so `instructions-next` has no state to read. Follow the "Loop without run state" section of the same file instead: run each instruction of `INSTRUCTIONS.instructions` in order, with the run mode EXECUTE_AUTO, and keep the status and outcome in the session.
+
+After the Completion call below, print the summary line. With count 0, print no instructions line:
+
+```text
+Instructions (execute): N total, X done, Y failed, Z not run.
+- `execute #1 (team) failed: <one line of cause>`
+```
+
+If the list stops before its end (an interrupt), do not call `cleanup`. A record stays running and the run stays in flight. Print:
+`Execution state preserved at <main-worktree>/.sdlc-v2/runs/execute-<branch>-<timestamp>.json — use --resume to run the open instructions.`
+A `--resume` run turns the running record into failed, runs the rest of the list, then calls `cleanup` (see `## Resume`).
+
+| Exit route | List runs | State write | Next instruction |
+|---|---|---|---|
+| resolve error (Step 0) | no | none | print the error and its suggestion, stop. The user fixes the config. |
+| wave `cancel` (`## Wave loop` stage 1) | no | existing, state stays resumable | the "Execution state preserved at ..." line |
+| failed or partial run (Step 6) | no | existing. Records stay pending. | the "Execution state preserved at ..." line |
+| all tasks completed (Step 9) | yes, before `cleanup` | records through `execute_state` | `cleanup`, then the summary line |
+| Step 9a interrupted | partial | a record stays running, no `cleanup` | `--resume` runs the open records, then calls `cleanup` |
+
+**Completion:** `execute_state({ action: "cleanup" })` stamps `runStatus:"completed"` and `runCompletedAt` on the state file — it does **not** delete it. The file (with its `issues[]`) stays on disk, findable via later reads (e.g. `/harden`), until `gc`'s TTL sweep eventually prunes it; only the per-run working directory (fact sheets, progress markers) and the ledger directory are actually removed by `cleanup` itself. Print: `Run complete — state stamped runStatus:"completed".`, then the issue summary described above, then the Step 9a summary line. Call `cleanup` only after Step 9a ends: the in-flight state covers the list, and `cleanup` ends it.
 
 On failure or interruption (not all tasks completed), `cleanup` is not called at all — the state file is simply left as-is, still resumable. Print:
 `Execution state preserved at <main-worktree>/.sdlc-v2/runs/execute-<branch>-<timestamp>.json — use --resume to continue.`
@@ -407,8 +463,8 @@ On failure or interruption (not all tasks completed), `cleanup` is not called at
 - Skip final verification
 - Rely on the dispatch prompt for task detail — the worker calls `task-context` itself for the fact sheet; don't paste the full task text into the prompt as a substitute
 - Execute more than 2 retries on any single task
-- Commit or push outside `## Commits` — the only commits are `wave-commit`'s, the manual commit `wave-commit` itself orders when `execute.commitWaves` is false, and the merge commits made by `base-sync` / `base-sync-resolve`; workspace derivation is automatic (`branch`/`continue`), not an ad-hoc decision
-- Hand any part of plan execution to another skill, or call any other skill through the Skill tool — this skill runs the plan itself. The only allowed Skill-tool calls are these two plugin skills, each only after the user picks it: `Skill("harden", ...)` when the user chooses `harden` at a guardrail check (wave-loop stage 1 or 6) or at a Step 6 escalation, and the `error-report` skill when the user accepts the GitHub-issue offer at a Step 6 escalation (`./recovering-from-failures.md`). Neither is needed to run a plan. Naming skills as pointers for the user (`## What's Next`, `## See Also`) is fine
+- Commit or push outside `## Commits`, except an instruction from config in Step 9a — the only commits are `wave-commit`'s, the manual commit `wave-commit` itself orders when `execute.commitWaves` is false, and the merge commits made by `base-sync` / `base-sync-resolve`; workspace derivation is automatic (`branch`/`continue`), not an ad-hoc decision
+- Hand any part of plan execution to another skill, or call any other skill through the Skill tool — this skill runs the plan itself. The only allowed Skill-tool calls are these two plugin skills, each only after the user picks it: `Skill("harden", ...)` when the user chooses `harden` at a guardrail check (wave-loop stage 1 or 6) or at a Step 6 escalation, and the `error-report` skill when the user accepts the GitHub-issue offer at a Step 6 escalation (`./recovering-from-failures.md`). Neither is needed to run a plan. An instruction from config in Step 9a may call a skill: it runs after the plan, not as part of it. Naming skills as pointers for the user (`## What's Next`, `## See Also`) is fine
 - Split a wave's Agent fan-out across more than one message, or dispatch a wave worker with `run_in_background: false` (stage 7's single base-sync conflict agent is not a wave worker and runs in the foreground)
 - Assume `cleanup` deletes the state file — it stamps `runStatus`; only `gc`'s TTL sweep removes the file
 - Write state files for small-plan direct execution (≤ 3 tasks)
@@ -446,6 +502,7 @@ On failure or interruption (not all tasks completed), `cleanup` is not called at
 ## What's Next
 
 Common follow-ups: `/commit`, `/review`, `/pr`.
+The `Instructions (execute): …` line names each failed or skipped instruction. `--resume` runs the open ones.
 
 If the plan was OpenSpec-sourced (`openspecSpecs` loaded in Step 1), extract the change name from the plan header and validate directly via Bash (no MCP tool or Go port exists for this):
 ```bash

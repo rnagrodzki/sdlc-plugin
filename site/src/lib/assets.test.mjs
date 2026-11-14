@@ -53,8 +53,8 @@ test('assets.json has the dashboard-main image with its own version', () => {
   assert.ok(fs.existsSync(new URL(`../../${asset.file}`, import.meta.url)), `${asset.file} exists`);
 });
 
-test('features lists the 4 final slugs, each with a summary and a description', () => {
-  assert.deepEqual(features.map((f) => f.slug), ['dashboard', 'stats', 'harden', 'long-pipelines']);
+test('features lists the 5 final slugs, each with a summary and a description', () => {
+  assert.deepEqual(features.map((f) => f.slug), ['customize', 'dashboard', 'stats', 'harden', 'long-pipelines']);
   for (const feature of features) {
     assert.ok(feature.summary && feature.summary !== '…', `${feature.slug} summary`);
     assert.ok(feature.description && feature.description !== '…', `${feature.slug} description`);

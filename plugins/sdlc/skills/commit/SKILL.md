@@ -1,8 +1,8 @@
 ---
 name: commit
-description: "Use this skill when committing changes, creating a git commit, or generating a commit message. Analyzes the staged diff and recent commit history to generate a message matching the project's style, then commits after user confirmation. Commits tracked changes (modified and deleted files, except those under the .sdlc-v2 data directory) together with whatever is already staged; never stages untracked files, never stashes, never amends. At least one file must be staged first. Arguments: [--scope <scope>] [--type <type>] [--auto] [--force-default-branch]. Use --auto to skip interactive approval. Triggers on: commit changes, create commit, write commit message, git commit, smart commit, commit staged, stage and commit."
+description: "Use this skill when committing changes, creating a git commit, or generating a commit message. Analyzes the staged diff and recent commit history to generate a message matching the project's style, then commits after user confirmation. Commits tracked changes (modified and deleted files, except those under the .sdlc-v2 data directory) together with whatever is already staged; never stages untracked files, never stashes, never amends. At least one file must be staged first. Arguments: [--scope <scope>] [--type <type>] [--auto] [--force-default-branch] [--push] [--no-instructions]. Use --auto to skip interactive approval. Use --push to push the branch after the commit (best effort). Use --no-instructions to skip the commit instructions of the config. Triggers on: commit changes, create commit, write commit message, git commit, smart commit, commit staged, stage and commit."
 user-invocable: true
-argument-hint: "[--scope <scope>] [--type <type>] [--auto] [--force-default-branch]"
+argument-hint: "[--scope <scope>] [--type <type>] [--auto] [--force-default-branch] [--push] [--no-instructions]"
 model: haiku
 ---
 
@@ -33,6 +33,11 @@ Concretely:
 - `--auto` still works, but purely as your own interpretation of the skill's invocation
   arguments. `commit_prepare` takes no auto input and always returns `flags.auto: false`
   in this port — ignore that field.
+- `--push` and `--no-instructions` are read from your own invocation arguments, like `--auto`.
+  They are independent of each other and of `--auto`. `--push` with `--force-default-branch`:
+  the second flag is a no-op, and the push still skips the default branch with a warning.
+  `--push` sends `push: true` to `commit_apply` (Step 5). `--no-instructions` skips Step 0a
+  and Step 7.
 
 ## When to Use This Skill
 
@@ -48,6 +53,22 @@ If the system context contains "Plan mode is active":
 
 1. Announce: "This skill requires write operations (git commit). Exit plan mode first, then re-invoke `/commit`."
 2. Stop. Do not proceed to subsequent steps.
+
+---
+
+### Step 0a — Resolve instructions
+
+Skip this step when `--no-instructions` was passed. Otherwise, before any other call, run:
+
+```
+instructions_resolve({ key: "commit" }) → INSTRUCTIONS
+```
+
+Keep `INSTRUCTIONS.instructions` for Step 7. The list is empty when the config has none.
+
+**On tool error (a DataError for bad config content, or an InfraError):** print the error
+message and its suggestion, then stop before Step 0. No step ran. The user fixes the config
+and runs `/commit` again.
 
 ---
 
@@ -265,8 +286,8 @@ Options:
 2. Call the commit tool:
 
    ```
-   commit_apply({ message: MESSAGE, skipConfigCheck: false, sessionID: "" })
-   # the result carries a `- sha: <sha>` bullet
+   commit_apply({ message: MESSAGE, skipConfigCheck: false, sessionID: "", push: <true — only when --push was passed> })
+   # the result carries a `- sha: <sha>` bullet, plus `warnings` when the push was skipped or failed
    ```
 
    **On tool error:** show the error to the user and stop.
@@ -303,10 +324,46 @@ Show the result:
 (Use the first 7 characters of `sha` in place of `a1b2c3d`. Quote `summary` as returned —
 do not recompute the file count or invent a diff stat; `commit_apply` returns neither.)
 
+**Push warnings:** When the result has `warnings` (only with `--push`), print each warning after
+the result block, verbatim. A push warning never fails the commit: the commit landed. Example:
+`push skipped: main is the default branch`.
+
+After the warnings, print the next action for each kind once:
+
+| Warning | Kind | Next action |
+|---|---|---|
+| skipped: default branch | by design | none; push by hand only on purpose |
+| skipped: no remote `origin` | permanent | add the `origin` remote, then `git push -u origin HEAD` |
+| skipped: cannot read the current branch or remote `origin` | unknown | read the error, fix the repository, then push |
+| failed (`auth`) | permanent | fix the credentials (`gh auth status`, SSH key), then push |
+| failed (`rejected`) | permanent | fetch and integrate the remote commits, then push |
+| failed (`network`) | transient | push again later |
+| failed (`no-remote`) or (`other`) | unknown | read the message, fix the cause, then push |
+
+A warning that starts with `default-branch check skipped:` means the push ran with no default-branch check. Tell the user to confirm that the branch is not the default branch.
+
 **When either skipped list is non-empty:** if the result carries a `**Next:**` line, follow
 it verbatim. If it does not, tell the user to `git add <the listed paths>` and run `/commit`
 again — and say plainly that this creates a **second** commit, because the first one already
 landed.
+
+### Step 7 — Run instructions
+
+Skip this step when `--no-instructions` was passed, or when `INSTRUCTIONS.count` is 0.
+Run it only after Step 6 shows a landed commit. A cancel at Step 5 or a tool error in
+Step 0 to Step 6 ends the skill with no list run.
+
+Read [`../ship/instructions-run.md`](../ship/instructions-run.md) and follow its "Loop without run state"
+section. The run mode comes from the `--auto` token of the arguments of this skill. Run each
+instruction of `INSTRUCTIONS.instructions` in order, in this session. Then print the summary line:
+
+```text
+Instructions (commit): N total, X done, Y failed, Z not run.
+- `commit #1 (team) failed: <one line of cause>`
+```
+
+There is no run state to write. If the list stops before its end (an interrupt), print:
+`Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.`
 
 ---
 
@@ -353,6 +410,7 @@ landed.
 | `commit_apply` tool error (pre-commit hook) | Show the error; inform user there is no stash to restore; suggest fixing the hook and retrying | No — hook failure is expected |
 | `commit_apply` tool error (other) | Show the error | Yes, if it looks like a defect rather than a user/config issue |
 | `links_validate` reports violations | Show the violation list, stop, do not retry automatically | No — user needs to fix the links |
+| `instructions_resolve` tool error (Step 0a) | Show the error and its suggestion, stop before Step 0 | No — the user fixes the config |
 
 When invoking `error-report`, provide:
 - **Skill**: commit
@@ -394,6 +452,7 @@ learnings_log({action: "append", entry: "## YYYY-MM-DD — commit: <brief summar
 After completing the commit, common follow-ups include:
 - `/review` — review the changes
 - `/pr` — create a pull request
+- the `Instructions (commit): …` line names each failed or skipped instruction. Run it by hand if you need it.
 
 ## See Also
 

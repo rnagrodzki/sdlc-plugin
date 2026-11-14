@@ -142,7 +142,7 @@ type worktreeSkillsException struct {
 // individually against this repo's current file content (not assumed from
 // a prior report) before being added here. Keyed by "relative/path:line".
 var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
-	"skills/execute/SKILL.md:189": {
+	"skills/execute/SKILL.md:201": {
 		contains: "pipeline-continue",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook writing CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
@@ -162,7 +162,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 		contains: "hook records",
 		reason:   `narrates the automatic "pipeline-continue" PostToolUse hook recording CLI evidence -- no LLM Read/Write/Glob call on this line`,
 	},
-	"skills/ship/config-format.md:134": {
+	"skills/ship/config-format.md:136": {
 		contains: "a per-step automation policy read independently",
 		reason:   `schema doc describing what ship_state{action:"next"} reads internally -- not an LLM instruction`,
 	},
@@ -179,7 +179,7 @@ var worktreeSkillsDescriptiveNoAction = map[string]worktreeSkillsException{
 // instruction elsewhere. Each entry was verified individually against this
 // repo's current file content. Keyed by "relative/path:line".
 var worktreeSkillsProhibitionMisses = map[string]worktreeSkillsException{
-	"skills/execute/SKILL.md:340": {
+	"skills/execute/SKILL.md:358": {
 		contains: "never append to",
 		reason:   `"never append to .sdlc-v2/learnings/log.md directly" -- prohibited verb is "append" (not in the read|write|glob alternation), and "write" appears earlier in the same line (in "a later write would land outside it"), before "never"`,
 	},

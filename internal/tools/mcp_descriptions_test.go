@@ -29,6 +29,7 @@ var configSuffixRE = regexp.MustCompile(`Optional\. Defaults to config \S+\. Pas
 var inputTypes = map[string]reflect.Type{
 	"dimensions_render_instructions": reflect.TypeOf(DimensionsRenderInstructionsIn{}),
 	"learnings_log":                  reflect.TypeOf(LearningsLogIn{}),
+	"instructions_resolve":           reflect.TypeOf(InstructionsResolveIn{}),
 	"commit_prepare":                 reflect.TypeOf(CommitPrepareIn{}),
 	"commit_apply":                   reflect.TypeOf(CommitApplyIn{}),
 	"plan_support":                   reflect.TypeOf(PlanSupportIn{}),
@@ -118,6 +119,7 @@ func TestMCPToolParameterDescriptions(t *testing.T) {
 	RegisterShipTools(s)
 	RegisterPlanSupportTools(s)
 	RegisterLearningsTools(s)
+	RegisterInstructionsTools(s)
 
 	ctx := context.Background()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()

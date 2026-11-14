@@ -1,21 +1,23 @@
 ---
 // The Home page. The hero and the dashboard block come from the reference
 // (site-preview.src.html:403-458, ref-home.jpeg). The stack, the workflow,
-// the self-healing section, the other benefits and the skill list are new:
-// they use only existing tokens.
+// the customization section, the self-healing section, the other benefits and
+// the skill list are new: they use only existing tokens.
 //
 // The order of the page:
 //   1. hero: the result, the install command, the stack and a sample run
 //   2. the recommended workflow: 4 commands
-//   3. what makes the pipeline different: it heals and it learns
-//   4. the dashboard
-//   5. the other benefits
-//   6. each skill, as a direct link
+//   3. the customization: the rules and the follow-up actions of the project
+//   4. what makes the pipeline different: it heals and it learns
+//   5. the dashboard
+//   6. the other benefits
+//   7. each skill, as a direct link
 import BaseLayout from '../layouts/BaseLayout.astro';
 import InstallCommand from '../components/InstallCommand.astro';
 import StackStrip from '../components/StackStrip.astro';
 import RunPanel from '../components/RunPanel.astro';
 import WorkflowSteps from '../components/WorkflowSteps.astro';
+import Customize from '../components/Customize.astro';
 import Pillars from '../components/Pillars.astro';
 import MediaFrame from '../components/MediaFrame.astro';
 import BenefitGrid from '../components/BenefitGrid.astro';
@@ -27,7 +29,7 @@ import { isRoutable } from '../lib/assets.mjs';
 import { readSkillMap } from '../lib/skill-map.mjs';
 
 const sub =
-  'sdlc is a plugin for Claude Code. Four commands take an idea to a reviewed pull request. The pipeline repairs its own failures and learns from each run.';
+  'sdlc is a plugin for Claude Code. Four commands take an idea to a reviewed pull request. The pipeline follows your rules, repairs its own failures and learns from each run.';
 
 // The product pages that show the dashboard. A feature with no claims has no page and no link.
 const dashboardPages = features.filter((f) => ['dashboard', 'stats'].includes(f.slug) && isRoutable(f));
@@ -54,6 +56,13 @@ const skillCount = readSkillMap().length;
         <p class="block-text">Four skills take an idea to a pull request. Each skill offers the next one.</p>
       </div>
       <WorkflowSteps />
+    </section>
+    <section class="block" aria-labelledby="customize-heading">
+      <div class="block-head">
+        <h2 class="h2" id="customize-heading">Your rules, in your words, at every step.</h2>
+        <p class="block-text">Tell the pipeline how your team works. You write plain text in a config file, not code. Each run follows your rules and does your follow-up actions.</p>
+      </div>
+      <Customize />
     </section>
     <section class="block" aria-labelledby="pillars-heading">
       <div class="block-head">

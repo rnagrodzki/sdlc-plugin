@@ -1,5 +1,6 @@
-// The other benefits of the Home page: the benefits that the workflow panel
-// and the self-healing section do not show. Each one names the skills that
+// The other benefits of the Home page: the benefits that the workflow panel,
+// the customization section (src/data/customize.mjs) and the self-healing
+// section do not show. Each one names the skills that
 // give it, and Home links each name to its skill page. A text may hold `code`
 // spans.
 // src/lib/home-data.test.mjs checks each skill name against the skill map of

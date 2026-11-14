@@ -14,6 +14,7 @@ This command prints the review plan for a comparison with `develop`. It starts n
 |---|---|---|
 | `--base <branch>` | Compares against this branch instead of the auto-detected base branch. | auto-detected |
 | `--dry-run` | Prints the review plan and stops. The skill passes it to `review_prepare` as `dryRun: true`, so the run writes no ledger. | off |
+| `--no-instructions` | Do not run the follow-up instructions of the skill. Ship passes this flag, because ship runs the lists itself. | off |
 
 The skill has no other flag. It does not accept `--committed`, `--staged`, `--working`, `--worktree`, `--set-default` or `--dimensions`. The scope and the dimensions are settings, not flags.
 
@@ -110,6 +111,29 @@ These fields describe the input of the review: what is reviewed and with which d
 This project uses its own review dimensions. The dimension `.sdlc-v2/review-dimensions/skill-doc-drift.md` checks that each `docs/skills/*.md` file agrees with its `SKILL.md` file: the steps, the tool calls, the flags and the mandatory gates. One such gate is the state-first Step 1 of [execute](../execute.md) and [plan](../plan.md).
 
 Copy this pattern when you want each review of your project to catch a difference between the docs and the implementation.
+
+## Follow-up instructions
+
+`/sdlc:review` runs the `review` list of the `[instructions]` config at the end of a run, for example a line in your notes with the finding count. [Follow-up instructions](../../instructions.md) has the config, the merge rule and the question rules.
+
+| Run | Flow |
+|---|---|
+| Before | Step 0 → … → Step 9 cleanup |
+| After | Step 0a resolve → Step 0 → … → Step 9 cleanup → Step 10 run the list → summary line |
+
+- The list runs only after Step 7 gives a verdict, and not with `--dry-run`.
+- The run mode is always interactive, because the skill has no `--auto` flag.
+- A failed instruction does not change the verdict.
+- An empty list prints no instructions line.
+
+| Exit route | List runs | What you see |
+|---|---|---|
+| config error at Step 0a | no | the config error. No step starts. Fix the config, then run the skill again. |
+| `--dry-run` | no | the review plan |
+| `--no-instructions` | no | the review only |
+| a tool or worker error | no | the error, then the Step 9 cleanup |
+| Step 7 gives a verdict | yes, after Step 9 | `Instructions (review): N total, D done, F failed, S not run.` |
+| you interrupt the list | partial | `Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.` |
 
 ## Tips
 

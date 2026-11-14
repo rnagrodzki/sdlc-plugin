@@ -104,6 +104,7 @@ func shipSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterSetupWriteTools(srv)
 	tools.RegisterLearningsTools(srv)
+	tools.RegisterInstructionsTools(srv)
 
 	mcpSrv := srv.MCPServer()
 
@@ -359,7 +360,144 @@ func TestShipSkillsStepActionCrossCheck(t *testing.T) {
 // TestShipSkillsStepActionCrossCheck cannot catch a dropped or misspelled
 // commit-check, because begin-step in the same section satisfies it.
 func TestShipSkillActionsAreRegistered(t *testing.T) {
-	flagParityAssertToolsResolve(t, "ship", "ship_state:commit-check")
+	flagParityAssertToolsResolve(t, "ship", "ship_state:commit-check",
+		"ship_state:instructions-next", "ship_state:instruction-record")
+}
+
+// shipSkillsDispatchRe matches a line of ship/SKILL.md that dispatches a
+// skill: an Agent dispatch ("Agent → <skill>") or a Skill tool call.
+var shipSkillsDispatchRe = regexp.MustCompile(`Agent → |Skill\(`)
+
+// shipSkillsNoPushRe matches the "no --push" notes next to the harden and
+// verify-pipeline commit dispatches. They name the flag but do not pass it.
+var shipSkillsNoPushRe = regexp.MustCompile("no `?--push`?")
+
+// TestShipSkillsInstructionLists pins the instruction lists of the ship
+// skill: the 7g loop after each step and on the commit-check route, the
+// received-review and commit-fixes lists of item 8, the 9-pre ship list
+// before the report, the instruction summary of item 10, and the resume
+// handler that runs the open lists first.
+func TestShipSkillsInstructionLists(t *testing.T) {
+	root := shipSkillsRepoRoot(t)
+	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
+	loop, ok := shipSkillsSection(content, "## Step loop")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "## Step loop" section`)
+	}
+	for _, pin := range []string{
+		"  g. **7g instruction loop.**",
+		`ship_state({action:"instructions-next", detail:{key}})`,
+		`ship_state({action:"instruction-record", detail:{key, instructionNumber:<record.number>`,
+		"Skip c2 and d for that step. Print each entry of the `commit-check` `warnings`, then run (g) for key `commit`.",
+		"(g) follows (d), so the resumed step still runs its open list.",
+		"so a failed step skips all later lists, the `ship` list included.",
+		"(g) does not run: `skip` sweeps the records of that step.",
+		// The route table.
+		"| step complete | 7d | 7g |",
+		"| commit-check `stepCompleted: true` | 7c | 7g (skips c2 and d only) |",
+		"| `alreadyDone` on resume | 7b | 7d, then 7g |",
+		"| next returns `(none)` | 7g | 7a of the next step, or item 8, or 9-pre after the last step |",
+		"| next returns a record | 7g | 7g |",
+		"| 9-pre done | 9-pre | 9a |",
+		// The exit table.
+		"| config error at prepare | none (no state) |",
+		"| `--dry-run` | records seeded, none run |",
+		"| a step fails after a commit push | `fail` sweeps | Error Recovery table. Ship does not undo the push.",
+		"| record call error | none (warning) | continue the loop |",
+		"| interrupt during 7g | the record stays running |",
+		"| interrupt during the commit-fixes list | the record stays running |",
+		"| success | done, failed or not run | item 10 summary |",
+		// Item 8.
+		"After received-review's `complete-step` (rows 2 to 6), run the 7g loop for key `received-review`.",
+		"run the 7g loop for key `commit-fixes`.",
+		`ship_state({action:"instruction-record", detail:{key:"commit-fixes", instructionAll:true, instructionStatus:"not run", instructionOutcome:"step did not run"}})`,
+		"The received-review list does not run again",
+		// 9-pre and item 10.
+		"**9-pre. Ship list.** After the last step of item 7 (and item 8 when it runs last), run the 7g loop for key `ship`.",
+		"print `Ship instructions: <total> total, <done> done, <failed> failed, <notRun> not run.`",
+		"Then print each record warning kept from 7g, item 8 and 9-pre, one line each.",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md Step loop", loop, pin)
+	}
+	if pre, report := strings.Index(loop, "**9-pre. Ship list.**"), strings.Index(loop, "**9a. Run report.**"); pre < 0 || report < 0 || pre > report {
+		t.Errorf("skills/ship/SKILL.md: 9-pre (at %d) must come before 9a (at %d)", pre, report)
+	}
+
+	commit, ok := shipSkillsSection(content, "### commit")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "### commit" section`)
+	}
+	hardenSkillsAssertOnce(t, "skills/ship/SKILL.md commit section", commit,
+		"print each `warnings` entry, run 7g for key commit, then go to the next step.")
+
+	entry := shipSkillsReadFile(t, root, "skills/ship/entry-modes.md")
+	for _, pin := range []string{
+		"### Open lists first",
+		"read → for each steps[] entry with status completed, in steps[] order: 7g loop {key:<step name>}",
+		`→ when received-review is completed: 7g loop {key:"commit-fixes"}`,
+		"→ resume at resumeBriefing.next, or 9-pre (SKILL.md) when resumeBriefing.next is absent (every step is done)",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/entry-modes.md", entry, pin)
+	}
+}
+
+// TestShipSkillsDispatchFlags checks the flags of each skill dispatch of the
+// ship skill. Every dispatch line passes --no-instructions, because ship runs
+// each list itself. In the Steps section only the commit and commit-fixes
+// dispatches pass --push: the harden commits and the verify-pipeline fix
+// commit do not push. Both received-review dispatch shapes of reference.md
+// pass --no-instructions.
+func TestShipSkillsDispatchFlags(t *testing.T) {
+	root := shipSkillsRepoRoot(t)
+	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
+
+	dispatches, steps := 0, false
+	section := ""
+	var pushSections []string
+	for i, line := range strings.Split(content, "\n") {
+		if strings.HasPrefix(line, "## ") {
+			steps = strings.TrimSpace(line) == "## Steps"
+		}
+		if strings.HasPrefix(line, "### ") {
+			section = strings.TrimSpace(line)
+		}
+		if !shipSkillsDispatchRe.MatchString(line) {
+			continue
+		}
+		dispatches++
+		if !strings.Contains(line, "--no-instructions") {
+			t.Errorf("skills/ship/SKILL.md:%d: dispatch line has no --no-instructions:\n%s", i+1, line)
+		}
+		if steps && strings.Contains(shipSkillsNoPushRe.ReplaceAllString(line, ""), "--push") {
+			pushSections = append(pushSections, section)
+		}
+	}
+	if dispatches < 12 {
+		t.Errorf("skills/ship/SKILL.md: found %d dispatch lines, want at least 12", dispatches)
+	}
+	want := []string{"### commit", "### commit-fixes (conditional)"}
+	if strings.Join(pushSections, "|") != strings.Join(want, "|") {
+		t.Errorf("skills/ship/SKILL.md Steps: --push dispatches in sections %v, want %v", pushSections, want)
+	}
+
+	gates, ok := shipSkillsSection(content, "## Decisions & gates")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "## Decisions & gates" section`)
+	}
+	for _, pin := range []string{
+		"`fix-applied` → commit `--auto --no-instructions` (no `--push`: the manual-push pause stays)",
+		"then dispatch `commit` again with `--auto --push --no-instructions`",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md Decisions & gates", gates, pin)
+	}
+
+	reference := shipSkillsReadFile(t, root, "skills/ship/reference.md")
+	for _, pin := range []string{
+		"/sdlc:received-review [--pr <N>] [--auto] [--no-harden] --no-instructions\n",
+		"/sdlc:received-review [--auto] --no-harden --no-instructions\n",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/reference.md", reference, pin)
+	}
 }
 
 // shipSkillsBashBlockRe extracts the content of every ```bash ... ``` fenced

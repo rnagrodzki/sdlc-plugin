@@ -27,7 +27,8 @@ shows an example.
 | `--error-type <type>` | Category of error, if known. | — |
 | `--user-intent <text>` | What the user was trying to accomplish. | — |
 | `--args-string <text>` | The invocation arguments that led to the failure. | — |
-| `--auto` | Run without prompts, and list each applied proposal under "Auto-accepted" in the output. Two callers pass it: [`/sdlc:received-review --auto`](../received-review.md), when its Step 11.6 dispatches `/sdlc:harden` (subagent dispatch, where `AskUserQuestion` is not available), and [`/sdlc:ship --auto`](../ship.md)'s own `harden` step, which forwards the flag because the run is unattended. Applies add, strengthen and consolidate, and the repairs and dead-reference removals that the plugin's own checks prove. Merges, covered-by removals and unproven repairs or removals wait as one deferred item for each rule section (see [Auto mode and pending edits](#auto-mode-and-pending-edits)). Each edit is still validated, and `/sdlc:harden` reverts it on failure. Custom instructions still apply (see [Custom instructions](./custom-instructions.md)). Never files an `error-report` issue. Not valid with `--from-learnings`. | off |
+| `--auto` | Run without prompts, and list each applied proposal under "Auto-accepted" in the output. Two callers pass it: [`/sdlc:received-review --auto`](../received-review.md), when its Step 11.6 dispatches `/sdlc:harden` (subagent dispatch, where `AskUserQuestion` is not available), and [`/sdlc:ship --auto`](../ship.md)'s own `harden` step, which forwards the flag because the run is unattended. Applies add, strengthen and consolidate, and the repairs and dead-reference removals that the plugin's own checks prove. Merges, covered-by removals and unproven repairs or removals wait as one deferred item for each rule section (see [Auto mode and pending edits](#auto-mode-and-pending-edits)). Each edit is still validated, and `/sdlc:harden` reverts it on failure. Custom instructions still apply (see [Custom instructions](./custom-instructions.md)). Never files an `error-report` issue. Not valid with `--from-learnings`. A follow-up instruction can still ask a critical question (see [Follow-up instructions](#follow-up-instructions)). | off |
+| `--no-instructions` | Do not run the follow-up instructions of the skill. Ship passes this flag, because ship runs the lists itself. Independent of `--auto`. No effect with `--from-learnings`, because that mode runs no list. See [Follow-up instructions](#follow-up-instructions). | off |
 
 ## Pre-flight findings
 
@@ -76,8 +77,8 @@ repair deleted. The line is left out when nothing was deleted.
 
 ## Auto mode and pending edits
 
-With `--auto`, `/sdlc:harden` asks nothing. The action of each proposal decides
-what happens:
+With `--auto`, `/sdlc:harden` asks nothing about a proposal. The action of each
+proposal decides what happens:
 
 | Proposal | Without `--auto` | With `--auto` |
 |----------|------------------|---------------|
@@ -278,3 +279,36 @@ undone stops the run in the same way: `/sdlc:harden` prints the old
 same way: the dimension file stays written and validated, and `/sdlc:harden`
 asks you to fix the mirror by hand. A refused mirror update is not a failed
 update. It does not stop the run (see [Copilot mirrors](#copilot-mirrors)).
+
+## Follow-up instructions
+
+`/sdlc:harden` runs the `harden` list of the `[instructions]` config at the
+end of a successful run, for example a post to a team channel. This list is
+not the `[harden.instructions]` table: see [Custom
+instructions](./custom-instructions.md#not-the-same-as-follow-up-instructions).
+[Follow-up instructions](../../instructions.md) has the config, the merge rule
+and the question rules.
+
+| Run | Flow |
+|---|---|
+| Before | Step 0 → … → Step 7 learning capture |
+| After | Step 0 (with the resolve) → … → Step 7 learning capture → Step 8 run the list → summary line |
+
+- The list runs only after Step 7 ends a successful run, in interactive and
+  `--auto` mode.
+- The run mode is the `--auto` flag of this run. Under `--auto`, a critical
+  question that the `criticalQuestions` flag allows is the one prompt of the
+  run. With no way to ask (a subagent run), the question is not allowed, and
+  `onQuestionNotAllowed` applies.
+- A failed instruction does not fail the run. An empty list prints no
+  instructions line.
+
+| Exit route | List runs | What you see |
+|---|---|---|
+| config error in Step 0 | no | the error and its fix. No step after Step 0 starts. Fix the config, then run the skill again. |
+| `--from-learnings` | no. The list belongs to a failure run. | the end of the triage run |
+| `--no-instructions` | no | the end of the run |
+| a stop in Step 5 (cancel or halt) | no | the existing text of that stop |
+| the plugin-defect route (Step 6) | no | the existing text of that route |
+| Step 7 ends a successful run | yes | `Instructions (harden): N total, X done, Y failed, Z not run.` |
+| you interrupt the list | partial | `Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.` |

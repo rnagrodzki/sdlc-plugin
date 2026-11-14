@@ -1,0 +1,305 @@
+---
+// The customization section of Home. It reads src/data/customize.mjs. The
+// follow-up instructions are the main block, with 2 sample config files. The
+// other settings are cards below it. Each skill name is a link to its skill
+// page, and each `doc` is a link to its docs page. The block links to its
+// product page only when the feature entry has claims.
+import fs from 'node:fs';
+import path from 'node:path';
+import { BASE, REPO_BLOB_URL } from '../../site.config.mjs';
+import { customizations, customizeNote, followUps } from '../data/customize.mjs';
+import { features } from '../data/features.mjs';
+import { isRoutable } from '../lib/assets.mjs';
+import { resolveDocHref } from '../lib/doc-links.mjs';
+import { listPublished } from '../lib/published-paths.mjs';
+import { inlineParts } from '../lib/sequence-state.mjs';
+import { skillHref } from '../lib/skill-map.mjs';
+
+// A `doc` is a repository path, so it resolves from the repository root.
+// A `doc` that names a missing docs file stops the build.
+const publishedPaths = listPublished(path.resolve('..'), fs);
+const docHref = (doc) => resolveDocHref(doc, { fromPath: 'README.md', publishedPaths, base: BASE, repoBlobUrl: REPO_BLOB_URL });
+
+const feature = features.find((f) => f.slug === followUps.feature);
+const productPage = feature && isRoutable(feature) ? feature : undefined;
+---
+
+<div class="custom">
+  <div class="follow island">
+    <div class="follow-text">
+      <p class="follow-kicker">{followUps.kicker}</p>
+      <h3 class="follow-title">{followUps.title}</h3>
+      <p class="follow-lead">{followUps.lead}</p>
+      <ul class="follow-points">
+        {followUps.points.map((point) => <li>{point}</li>)}
+      </ul>
+      <ul class="chips" aria-label="Skills">
+        {
+          followUps.skills.map((name) => (
+            <li>
+              <a class="skill-chip" href={skillHref(name, BASE)}>
+                /sdlc:{name}
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+      <ul class="doc-links">
+        <li>
+          <a href={docHref(followUps.doc)}>{followUps.docLabel}</a>
+        </li>
+        {
+          productPage && (
+            <li>
+              <a href={`${BASE}/features/${productPage.slug}/`}>{productPage.title}</a>
+            </li>
+          )
+        }
+      </ul>
+    </div>
+    <div class="samples">
+      {
+        followUps.samples.map((sample) => (
+          <figure class="sample">
+            <figcaption class="sample-head">
+              <code>{sample.file}</code>
+              <span>{sample.who}</span>
+            </figcaption>
+            <pre class="sample-code"><code>{sample.code}</code></pre>
+          </figure>
+        ))
+      }
+    </div>
+  </div>
+  <ul class="options">
+    {
+      customizations.map((item) => (
+        <li class="option island">
+          <h3 class="option-title">{item.title}</h3>
+          <p class="option-text">
+            {inlineParts(item.text).map((part) => (part.kind === 'code' ? <code>{part.value}</code> : part.value))}
+          </p>
+          <ul class="doc-links">
+            {item.docs.map((link) => (
+              <li>
+                <a href={docHref(link.doc)}>{link.label}</a>
+              </li>
+            ))}
+          </ul>
+          <ul class="chips" aria-label="Skills">
+            {item.skills.map((name) => (
+              <li>
+                <a class="skill-chip" href={skillHref(name, BASE)}>
+                  /sdlc:{name}
+                </a>
+              </li>
+            ))}
+          </ul>
+        </li>
+      ))
+    }
+  </ul>
+  <div class="custom-note">
+    <p>
+      {inlineParts(customizeNote.text).map((part) => (part.kind === 'code' ? <code>{part.value}</code> : part.value))}
+    </p>
+    <ul class="doc-links">
+      {
+        customizeNote.docs.map((link) => (
+          <li>
+            <a href={docHref(link.doc)}>{link.label}</a>
+          </li>
+        ))
+      }
+    </ul>
+  </div>
+</div>
+
+<style>
+  .custom {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+  }
+  /* The main block: the text on the left, the sample config files on the right. */
+  .follow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: var(--space-28) var(--space-40);
+    padding: var(--space-24) var(--space-24) var(--space-22);
+  }
+  .follow-text {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+  }
+  /* The name of the block, as a filled label. */
+  .follow-kicker {
+    align-self: flex-start;
+    margin: 0;
+    padding: var(--space-2) var(--space-10);
+    border-radius: var(--r-ctl);
+    background: var(--accent);
+    color: var(--on-accent);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-semibold);
+  }
+  .follow-title {
+    font-family: var(--font-display);
+    margin: 0;
+    font-size: var(--text-2xl);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    font-weight: var(--weight-semibold);
+    text-wrap: balance;
+  }
+  .follow-lead {
+    margin: 0;
+    font-size: var(--text-base);
+    color: var(--muted);
+  }
+  .follow-points {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--text-md);
+  }
+  .follow-points li {
+    position: relative;
+    padding-left: var(--space-22);
+  }
+  /* The check before each point. */
+  .follow-points li::before {
+    content: '';
+    position: absolute;
+    left: var(--space-4);
+    top: var(--space-4);
+    width: var(--space-5);
+    height: var(--space-10);
+    border: solid var(--accent);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    margin: 0;
+    padding: var(--space-4) 0 0;
+    list-style: none;
+  }
+  .doc-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4) var(--space-16);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+  .doc-links a {
+    color: var(--accent-on-field);
+    text-underline-offset: var(--space-3);
+  }
+  .samples {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+    min-width: 0;
+  }
+  .sample {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+    margin: 0;
+    min-width: 0;
+  }
+  .sample-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-4) var(--space-10);
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .sample-head code {
+    color: var(--ink);
+    font-weight: var(--weight-medium);
+  }
+  /* A sample file. A long line wraps, so the page never scrolls sideways. */
+  .sample-code {
+    margin: 0;
+    padding: var(--space-14) var(--space-16);
+    border: 1px solid var(--line);
+    border-radius: var(--r-12);
+    background: var(--paper);
+    font-size: var(--text-xs);
+    line-height: var(--leading-code);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .options {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-16);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .option {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    padding: var(--space-20) var(--space-22);
+  }
+  .option-title {
+    font-family: var(--font-display);
+    margin: 0;
+    font-size: var(--text-xl);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-2);
+    font-weight: var(--weight-semibold);
+    text-wrap: balance;
+  }
+  .option-text {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-md);
+  }
+  .option-text code,
+  .custom-note code {
+    font-size: var(--text-code);
+  }
+  /* The skill names stay at the bottom of each card. */
+  .option .chips {
+    margin-top: auto;
+  }
+  .custom-note {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-6) var(--space-16);
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+  .custom-note p {
+    margin: 0;
+  }
+  @media (max-width: 900px) {
+    .follow {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .options {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 560px) {
+    .options {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

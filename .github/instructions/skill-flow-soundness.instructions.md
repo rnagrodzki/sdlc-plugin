@@ -20,3 +20,4 @@ Default severity: high
 - A sentence or bullet holds one rule with one condition; two rules that apply to different cases are split. A step with a skip decision, a tool call and a record write states their order, and says whether the record is written when the skip fires.
 - A counter, flag or note in a checkpoint or run record that serves two or more gates, lanes or items holds one value for each of them. A field keyed by a step name that two gates share is a finding.
 - A paragraph, rule, table row or list that names the writers of a stored value, the routes into a stop, the steps that a flag changes (an Arguments row for `--auto`) or the errors a resume flow can return names every one, or says that it names only some. Grep for each route and compare.
+- A resume or restart step names how it finds each stored list or record that it reads, and says what it does with a list that an earlier exit swept.

@@ -99,3 +99,4 @@ The role `pipeline` marks a skill that is a stage on the path from an idea to a 
 - Getting started: [`../getting-started.md`](../getting-started.md)
 - Smoke test (verification checklist): [`../internal/smoke-test.md`](../internal/smoke-test.md)
 - Configuration reference: [`../versioning.md`](../versioning.md)
+- Follow-up instructions: [`../instructions.md`](../instructions.md)

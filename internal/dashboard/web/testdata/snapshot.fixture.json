@@ -150,7 +150,11 @@
                 ]
               }
             },
-            { "name": "commit", "status": "completed" },
+            { "name": "commit", "status": "completed",
+              "instructions": [
+                { "key": "commit", "number": 1, "source": "team", "text": "Run the formatter on the staged files", "status": "done", "outcome": "Formatted 4 files" },
+                { "key": "commit", "number": 2, "source": "personal", "text": "Add the ticket id to the commit body", "status": "failed", "outcome": "No ticket id on the branch name" }
+              ] },
             {
               "name": "review",
               "status": "completed",
@@ -283,8 +287,14 @@
               }
             },
             { "name": "commit-fixes", "status": "skipped" },
-            { "name": "harden", "status": "in_progress", "startedAt": "2026-10-08T12:49:41Z" },
-            { "name": "pr", "status": "pending" },
+            { "name": "harden", "status": "in_progress", "startedAt": "2026-10-08T12:49:41Z",
+              "instructions": [
+                { "key": "harden", "number": 1, "source": "team", "text": "Post the proposed guardrail edits to the team channel before you apply them", "status": "running" }
+              ] },
+            { "name": "pr", "status": "pending",
+              "instructions": [
+                { "key": "pr", "number": 1, "source": "team", "text": "Move the Jira ticket to In Review", "status": "pending" }
+              ] },
             { "name": "verify-pipeline", "status": "pending" },
             { "name": "await-remote-review", "status": "pending" },
             { "name": "learnings-commit", "status": "pending" }
@@ -347,6 +357,10 @@
             "header": "Harden",
             "text": "Apply the 2 proposed guardrail edits to the review dimensions?"
           },
+          "endInstructions": [
+            { "key": "ship", "number": 1, "source": "team", "text": "Post the PR link in the release channel", "status": "pending" }
+          ],
+          "endLabel": "end of run (ship)",
           "planStartedAt": "2026-10-08T07:05:00Z"
         },
         {

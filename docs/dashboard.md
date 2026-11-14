@@ -50,7 +50,10 @@ For each registered repo, the page shows:
   ship run, the fixes of the received-review step when the run has no
   review queue, the harden edits, run records and held proposals of a ship
   harden step, or the result of a commit step with nothing to
-  commit. Each issue has a severity, a location (the file and line of a
+  commit. Each step tile lists its instructions, one row for each (see
+  [Which step carries which detail](#which-step-carries-which-detail)). A run
+  with instructions that belong to no step has an end group after the last
+  tile. Each issue has a severity, a location (the file and line of a
   review finding, else the step, wave, or task it came from), and a
   reason. The issues tile lists issues from critical to info and shows at
   most 2 lines of each text. A click on an issue opens the full text in
@@ -903,6 +906,23 @@ flowchart LR
   classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
 ```
 
+### Changed flow 4 (instructions)
+
+A step tile lists the instructions of its key. An end group follows the last
+tile. The text form below shows one step and the end group. The lines under
+`After` are the rows that the page adds.
+
+```text
+Before:
+[done]    pr        PR #123 created
+After:
+[done]    pr        PR #123 created
+            [failed]   pr #1 (team)              Move the Jira ticket ...      Jira transition 'In Review' not found ...
+            [running]  pr #2 (project local)     Open the PR URL in my browser.
+          end of run (ship)
+            [pending]  ship #1 (team)            Post the PR link and the CI result ...
+```
+
 ## Snapshot contract
 
 This section is for plugin contributors. The page reads one JSON snapshot.
@@ -955,6 +975,9 @@ collector reads the data, and the tool action that writes it.
 | `steps[].detail.reviewTotals` (`found`, `fixed`, `deferred`, `unaccounted`) | Ship state: `healing.reviewTotal`, `healing.fixed[]` with origin `local-review`, and `deferredFindings[]` without `fixedInRun:true`. `unaccounted` is `found` minus `fixed` minus `deferred`. | ship_state `healing_record` (kinds `review-total` and `fixed`), ship_state `defer` |
 | `steps[].detail.findings` | The `findings` text of one completed dimension file, for a review run that has its own block. | execute_state `ledger_checkout` |
 | `steps[].detail.result` | The `result` of the ship `commit` step, when it starts with `nothing to commit`. | ship_state `commit-check` |
+| `DashboardStep.instructions` (`steps[].instructions`) | The records of the ship state `instructions` whose `key` names the step, in list order. A `commit-fixes` record goes to the `received-review` step. Each item has `key`, `number`, `source`, `text`, `status` and `outcome`. A damaged list (a record with a missing or wrong-type field, or a status outside `pending`, `running`, `done`, `failed` and `not run`) lists no record: the block gets one issue with the ref `instructions` that names the damage and says the page shows no instruction of this run. Absent when the run has no record. It is not part of `detail`, so a completed or failed run keeps it in the page snapshot. | ship_prepare, ship_state `instructions-next`, `instruction-record` |
+| `DashboardPipeline.endInstructions` (`endInstructions`) | In a ship block: the records with the key `ship`, then the records whose key names no step of the block. In an execute block: the records of the execute state. Same item shape as `steps[].instructions`. Absent when the run has no record. | ship_prepare, ship_state and execute_state `instructions-next`, `instruction-record` |
+| `DashboardPipeline.endLabel` (`endLabel`) | `end of run (ship)` for a ship block, `end of run (execute)` for an execute block. Absent when `endInstructions` is absent. | Collector, not stored |
 | `steps[].detail.guardrails` | `guardrailCounts` of the plan state: `total`, `error`, and `warning`. | `plan_prepare` |
 | `steps[].detail.explorers` | In a plan block: the `explore-*` writers of the plan run's evidence store. In a ship block: the `planExploreSummary` of the ship state, and `rounds` from its `planReviewRounds`. | plan_support `evidence_record`; ship_state `cleanup-pipeline` for `planExploreSummary` and `planReviewRounds` |
 | `steps[].detail.rounds`, `.maxRounds` | `reviewRounds` of the plan state. In a ship block: `planReviewRounds` of the ship state, which holds the same rows. `maxRounds` is the review-loop limit of the plan skill, not a stored value. | plan_mark `review-round`; ship_state `cleanup-pipeline` for `planReviewRounds` |
@@ -1118,6 +1141,20 @@ Two consumers keep the entry:
   completed run means that the fix pass stopped.
   The `harden` step has `harden` when the ship state holds
   `healing.hardened` or a decision of step `harden`.
+- **Instructions** — a ship or execute block only. Plan and review blocks
+  have none. A step of a ship block gets the records of its key in
+  `instructions`. The `received-review` step also gets the `commit-fixes`
+  records. A step with records is a tile, also when it has no `detail`. The
+  records of the key `ship` go to `endInstructions`, with the label `end of
+  run (ship)`. A record whose key names no step of the block goes there too.
+  A standalone execute block gets its records in `endInstructions`, with the
+  label `end of run (execute)`. An execute run that a ship run started has
+  no records, because ship passes `--no-instructions` to it. Each row shows a
+  lamp for the status, the label `<key> #<number> (<source>)`, the text cut
+  to 60 characters, and the outcome. The `title` of the text holds the full
+  text. The page sets the text and the outcome as text, never as markup.
+  A damaged `instructions` list shows no row. The block then gets one
+  issue with the ref `instructions` that names the damage.
 
 ### How runs join a ship block
 

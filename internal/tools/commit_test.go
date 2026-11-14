@@ -575,6 +575,94 @@ func TestCommitApply_Happy(t *testing.T) {
 	}
 }
 
+// stubPushBestEffort replaces the push seam for one test and records the dir it was called with.
+func stubPushBestEffort(t *testing.T, pushed bool, warning string) *[]string {
+	t.Helper()
+	calls := &[]string{}
+	orig := pushBestEffort
+	pushBestEffort = func(dir string) (bool, string) {
+		*calls = append(*calls, dir)
+		return pushed, warning
+	}
+	t.Cleanup(func() { pushBestEffort = orig })
+	return calls
+}
+
+// stageNewFile creates a repository with one commit and one staged new file.
+func stageNewFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	writeRepoFile(t, dir, "new.txt", "new")
+	runGit(t, dir, "add", "new.txt")
+	return dir
+}
+
+func TestCommitApply_PushOmittedDoesNotPush(t *testing.T) {
+	calls := stubPushBestEffort(t, true, "")
+	dir := stageNewFile(t)
+	out, err := commitApply(dir, dir, CommitApplyIn{Message: "feat: x", SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("commitApply: %v", err)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("push seam called %d time(s), want 0", len(*calls))
+	}
+	if out.Pushed || out.Warnings != nil {
+		t.Errorf("want pushed=false and no warnings, got pushed=%v warnings=%v", out.Pushed, out.Warnings)
+	}
+}
+
+func TestCommitApply_PushRequested(t *testing.T) {
+	tests := []struct {
+		name         string
+		pushed       bool
+		warning      string
+		wantWarnings []string
+	}{
+		{"push works", true, "", nil},
+		{"push skipped", false, "push skipped: main is the default branch", []string{"push skipped: main is the default branch"}},
+		{"auth failure", false, pushFailedWarning("auth", "Authentication failed"), []string{pushFailedWarning("auth", "Authentication failed")}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := stubPushBestEffort(t, tc.pushed, tc.warning)
+			dir := stageNewFile(t)
+			out, err := commitApply(dir, dir, CommitApplyIn{Message: "feat: x", SkipConfigCheck: true, Push: true})
+			if err != nil {
+				t.Fatalf("commitApply: %v", err)
+			}
+			if len(*calls) != 1 || (*calls)[0] != dir {
+				t.Errorf("push seam calls = %v, want one call with %q", *calls, dir)
+			}
+			if out.SHA == "" || out.SHA != gitOutTrim(t, dir, "rev-parse", "HEAD") {
+				t.Errorf("SHA must equal HEAD, got %q", out.SHA)
+			}
+			if out.Pushed != tc.pushed {
+				t.Errorf("Pushed = %v, want %v", out.Pushed, tc.pushed)
+			}
+			if strings.Join(out.Warnings, "|") != strings.Join(tc.wantWarnings, "|") {
+				t.Errorf("Warnings = %v, want %v", out.Warnings, tc.wantWarnings)
+			}
+		})
+	}
+}
+
+func TestCommitApply_CommitFailureDoesNotPush(t *testing.T) {
+	calls := stubPushBestEffort(t, true, "")
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	_, err := commitApply(dir, dir, CommitApplyIn{Message: "chore: nothing", SkipConfigCheck: true, Push: true})
+	if err == nil {
+		t.Fatal("expected an error when nothing is staged")
+	}
+	if len(*calls) != 0 {
+		t.Errorf("push seam called %d time(s) after a failed commit, want 0", len(*calls))
+	}
+}
+
 // TestCommitApply_EmptyMessage verifies commit_apply rejects empty messages.
 func TestCommitApply_EmptyMessage(t *testing.T) {
 	dir := t.TempDir()

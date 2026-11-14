@@ -22,6 +22,7 @@ each of the two flags.
 | `--base <branch>` | Sets the base branch of the new PR. | the default branch of the repository |
 | `--auto` | Skips the publish question and marks the run as unattended. It needs a release level from the caller. | off |
 | `--skip-approval` | Skips only the publish question. It does not mark the run as unattended. | off |
+| `--no-instructions` | Do not run the follow-up instructions of the skill. Ship passes this flag, because ship runs the lists itself. | off |
 
 - `--draft` and `--base` apply only when the skill creates a new PR.
   `gh pr edit` cannot make an open PR a draft or change its base. Use
@@ -40,6 +41,43 @@ updates its title and description. If not, the skill creates a new PR.
 The skill does not know which case applies before the publish, so the publish
 question is the same for both. The result line tells you:
 `Pull request created: <url>` or `Pull request updated: <url>`.
+
+## Push
+
+Before it creates or updates the PR, the skill pushes the branch when the
+branch has no upstream or has commits that the upstream does not have. After
+the PR, it runs the pr list of the
+[follow-up instructions](../../instructions.md).
+
+| Part of the run | Before | After |
+|---|---|---|
+| Publish | plain push, then create or update | lease push when the branch is on the remote, then create or update, then the instruction list, then the summary line |
+
+| Push | When | Failure result |
+|---|---|---|
+| commit step of `/sdlc:ship` | after the commit, not on the default branch | warning `push failed (<kind>): <stderr>. The commit is kept and is not on the remote.` The step succeeds. |
+| commit-fixes step of `/sdlc:ship` | after the commit, not on the default branch | the same warning. The step succeeds. |
+| pr, tracking ref exists | lease push with the tracking commit | error `remote branch <branch> changed since the last push. pr stopped.` Fix: `Fetch the branch, review the other commits, integrate them, then run the pr step again.` |
+| pr, no tracking ref | plain push (`git push -u origin HEAD`) | the existing infrastructure error `git push: <error>`. The fix depends on the failure kind: check the credentials (`auth`), check the network (`network`), add the `origin` remote (`no-remote`), fetch and integrate the remote commits (`rejected`), or push by hand (`other`). |
+
+The lease push replaces the remote branch after a rebase. A commit that
+another person pushed is never lost: the lease is rejected, and no PR is
+created or edited.
+
+The summary line after the PR:
+
+```text
+Instructions (pr): 2 total, 1 done, 1 failed, 0 not run.
+- `pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.`
+```
+
+| Exit | The list runs | What you see |
+|---|---|---|
+| `--no-instructions`, or the list is empty | no | no instructions line |
+| a config error in `[instructions]` | no | the error and its fix. The skill stops before `pr_prepare`. |
+| `cancel`, a rejected lease, or another error before the PR result | no | the error, or nothing for `cancel` |
+| the PR was created or updated | yes | the instructions line |
+| the run stops in the middle of the list | partly | `Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.` |
 
 ## The release decision
 
@@ -95,6 +133,8 @@ how CI reads the label and the markers.
 | The preflight check fails | Each error. | Correct the cause, then run the skill again. |
 | `--auto` with no release level | An error that names `/sdlc:ship`. | Run `/sdlc:ship`. |
 | A link fails the link check | Each failed link with its `url`, `line`, `reason` and `detail`. | Decide how to correct the link. The skill changes no URL without your input. See [Link check](./description.md#link-check). |
+| The `[instructions]` config has an error | The error, with the file, the field and the fix. | Correct the config file, then run the skill again. |
+| The remote branch changed since the last push | `remote branch <branch> changed since the last push. pr stopped.` No PR is created or edited. | Fetch the branch, review the other commits, integrate them, then run the skill again. |
 | The publish fails | The error. The skill offers the drafted title and description. | Correct the cause, or create the PR by hand with the drafted text. |
 | You answer `cancel` | Nothing more. | Run the skill again when you are ready. |
 

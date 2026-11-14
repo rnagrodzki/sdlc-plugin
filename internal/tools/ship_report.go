@@ -57,12 +57,15 @@ type ShipRunReportOut struct {
 	reviewWaves      *shipReviewWaves    // review run plan of this ship run; nil when the Review waves section has only a note
 	reviewWavesNote  string              // why reviewWaves is nil; empty means no review ledger matched this run
 	Decisions        []string            `json:"decisions"`
-	LinkedLearnings  int                 `json:"linkedLearnings"`
-	Display          string              `json:"display" render:"raw"` // pre-rendered report; emitted verbatim, never fenced
-	Path             string              `json:"path,omitempty"`
-	Written          bool                `json:"written"`
-	Skipped          bool                `json:"skipped,omitempty"`
-	Next             string              `json:"next"`
+	// InstructionSummary counts the instruction records of the run. Its lines
+	// are [] when no record failed, did not run or was decided.
+	InstructionSummary instrSummaryOut `json:"instructionSummary"`
+	LinkedLearnings    int             `json:"linkedLearnings"`
+	Display            string          `json:"display" render:"raw"` // pre-rendered report; emitted verbatim, never fenced
+	Path               string          `json:"path,omitempty"`
+	Written            bool            `json:"written"`
+	Skipped            bool            `json:"skipped,omitempty"`
+	Next               string          `json:"next"`
 }
 
 // ShipPlanTiming is the plan run's timing, read from the history store.
@@ -262,9 +265,18 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 		CLIEvidence:      []CLIEvidenceEntry{},
 		UserInputs:       []UserInputEntry{},
 		Decisions:        rd.Decisions,
+
+		InstructionSummary: rd.InstructionSummary,
 	}
 	if raw, ok := data["issues"].([]any); ok {
 		out.Issues = append(out.Issues, raw...)
+	}
+	for _, w := range rd.Warnings {
+		out.Issues = append(out.Issues, map[string]any{
+			"severity": "warning",
+			"category": "cross-read",
+			"summary":  w,
+		})
 	}
 	if raw, ok := data["deferredFindings"].([]any); ok {
 		out.Deferred = append(out.Deferred, openDeferred(raw)...)
@@ -605,6 +617,7 @@ func renderShipReportMarkdown(out ShipRunReportOut) string {
 	renderShipReportGuardrailHits(w, out.GuardrailHits)
 	renderShipReportCLIEvidence(w, out.CLIEvidence)
 	renderShipReportDecisions(w, out.Decisions)
+	renderShipReportInstructions(w, out.InstructionSummary)
 	renderShipReportLearnings(w, out.LinkedLearnings)
 	return w.b.String()
 }
@@ -1659,6 +1672,20 @@ func renderShipReportDecisions(w *shipReportWriter, decisions []string) {
 	}
 	for _, l := range lines {
 		w.line("- %s", l)
+	}
+}
+
+// renderShipReportInstructions renders the instruction summary: the totals line
+// and one line for each failed, not run or decided record. It writes nothing
+// when the run has no record.
+func renderShipReportInstructions(w *shipReportWriter, sum instrSummaryOut) {
+	if sum.Total == 0 {
+		return
+	}
+	w.heading("Instructions")
+	w.line("Ship instructions: %d total, %d done, %d failed, %d not run.", sum.Total, sum.Done, sum.Failed, sum.NotRun)
+	for _, l := range sum.Lines {
+		w.line("- %s", shipReportFlat(l, 0)) // the outcome limit already bounds the line
 	}
 }
 

@@ -104,6 +104,7 @@ func reviewSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterSetupWriteTools(srv)
 	tools.RegisterLearningsTools(srv)
+	tools.RegisterInstructionsTools(srv)
 
 	mcpSrv := srv.MCPServer()
 
@@ -506,5 +507,55 @@ func TestReviewSkillRunPlanText(t *testing.T) {
 		if hit := reviewSkillsForbiddenRe.FindString(text); hit != "" {
 			t.Errorf("%s: still holds the retired ID rule wording %q", name, hit)
 		}
+	}
+}
+
+// TestReviewSkillInstructionsText pins the standalone instructions steps of
+// the review skill: the flag, the resolve call before Step 0, the list after
+// Step 9 and the routes that run no list.
+func TestReviewSkillInstructionsText(t *testing.T) {
+	skill := reviewSkillsReadSkill(t)
+
+	hint := flagParityHintFlags(skill)
+	if !hint["--no-instructions"] {
+		t.Error("skills/review/SKILL.md: argument-hint does not list --no-instructions")
+	}
+	if hint["--auto"] {
+		t.Error("skills/review/SKILL.md: review has no --auto flag, its list runs in interactive mode")
+	}
+
+	for _, want := range []string{
+		"## Step 0a — Resolve instructions",
+		`instructions_resolve({ key: "review" })`,
+		"## Step 10 — Run instructions",
+		"Instructions (review): N total, D done, F failed, S not run.",
+		"Run the remaining instructions by hand.",
+		"| resolve error (Step 0a) |",
+		"| Step 9 done, Step 7 gave a verdict, no `--dry-run`, no `--no-instructions` |",
+		"| Step 10 interrupted |",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Errorf("skills/review/SKILL.md: missing %q", want)
+		}
+	}
+
+	order := []string{
+		"## Step 0a — Resolve instructions",
+		"## Step 0 — Run `review_prepare`",
+		"## Step 9 — Cleanup",
+		"## Step 10 — Run instructions",
+		"## Routes",
+	}
+	last := -1
+	for _, h := range order {
+		i := strings.Index(skill, h)
+		if i < 0 {
+			t.Errorf("skills/review/SKILL.md: missing heading %q", h)
+			continue
+		}
+		if i < last {
+			t.Errorf("skills/review/SKILL.md: heading %q is out of order", h)
+		}
+		last = i
 	}
 }

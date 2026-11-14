@@ -1486,7 +1486,75 @@
     if (!step.detail && step.detailKind) {
       details.appendChild(el(doc, 'p', 'detail-state', view.detailText(pipeline.detailEntry, 'run')));
     } else if (body) details.appendChild(body(doc, view, detail, pipeline, step));
+    var rows = instructionRows(doc, step.instructions);
+    if (rows) details.appendChild(rows);
     return details;
+  }
+
+  // The longest instruction text a row shows. The title attribute holds the full text.
+  var INSTRUCTION_TEXT_MAX = 60;
+
+  // Instruction status -> lamp class. "not run" has a space, so its class has a dash.
+  var LAMP_BY_INSTRUCTION = {
+    pending: 'lamp-pending',
+    running: 'lamp-running',
+    done: 'lamp-done',
+    failed: 'lamp-failed',
+    'not run': 'lamp-not-run',
+  };
+
+  /**
+   * One instruction row: lamp, label, short text, outcome. The text and the
+   * outcome go in with textContent and setAttribute, never as markup.
+   * @param {Document} doc
+   * @param {{key: string, number: number, source: string, text: string, status: string, outcome?: string}} item
+   * @returns {Element} div.instr-row
+   */
+  function instructionRow(doc, item) {
+    var text = String(item.text == null ? '' : item.text);
+    var shown = text.length > INSTRUCTION_TEXT_MAX ? text.slice(0, INSTRUCTION_TEXT_MAX) + '…' : text;
+    var status = String(item.status == null ? '' : item.status);
+    var lampCls = Object.prototype.hasOwnProperty.call(LAMP_BY_INSTRUCTION, status) ? LAMP_BY_INSTRUCTION[status] : 'lamp-pending';
+    var row = el(doc, 'div', 'instr-row');
+    row.setAttribute('data-status', status);
+    var textNode = el(doc, 'span', 'instr-text', shown);
+    textNode.setAttribute('title', text);
+    var parts = [lamp(doc, lampCls), el(doc, 'span', 'instr-label', item.key + ' #' + item.number + ' (' + item.source + ')'), textNode];
+    if (item.outcome) {
+      var outcome = el(doc, 'span', 'instr-outcome', item.outcome);
+      outcome.setAttribute('title', item.outcome);
+      parts.push(outcome);
+    }
+    return append(row, parts);
+  }
+
+  /**
+   * The instruction rows of a step: one row for each record, in list order.
+   * @param {Document} doc
+   * @param {Array<object>} [instructions] the instructions of a step
+   * @returns {Element|null} div.instr-list, null when there are no records
+   */
+  function instructionRows(doc, instructions) {
+    if (!instructions || instructions.length === 0) return null;
+    var list = el(doc, 'div', 'instr-list');
+    for (var i = 0; i < instructions.length; i++) {
+      if (instructions[i]) list.appendChild(instructionRow(doc, instructions[i]));
+    }
+    return list;
+  }
+
+  /**
+   * The end group of a run: its label, then the rows of the instructions that
+   * belong to no step. It shows after the last step tile.
+   * @param {Document} doc
+   * @param {{endInstructions?: Array, endLabel?: string}} pipeline
+   * @returns {Element|null} div.end-group, null when the run has no end instructions
+   */
+  function endGroup(doc, pipeline) {
+    var rows = instructionRows(doc, pipeline && pipeline.endInstructions);
+    if (!rows) return null;
+    var group = el(doc, 'div', 'end-group');
+    return append(group, [el(doc, 'div', 'end-label', pipeline.endLabel || 'end of run'), rows]);
   }
 
   /**
@@ -1659,6 +1727,7 @@
 
     var detail = append(el(doc, 'div', 'step-detail'), stepTiles(doc, view, pipeline, { key: key, closed: closed, selected: selected }));
     append(detail, [
+      endGroup(doc, pipeline),
       issuesTile(doc, view, pipeline, tileOpen(closed, view.sectionKey(key, 'issues'), true), now, tz),
       sessionTile(doc, view, session, tileOpen(closed, view.sectionKey(key, 'session'), false), tz),
     ]);
@@ -2291,6 +2360,9 @@
     emptyState: emptyState,
     TILE_BODIES: TILE_BODIES,
     stepTile: stepTile,
+    instructionRows: instructionRows,
+    endGroup: endGroup,
+    INSTRUCTION_TEXT_MAX: INSTRUCTION_TEXT_MAX,
     stepTiles: stepTiles,
     wavesBody: wavesBody,
     dimensionsBody: dimensionsBody,

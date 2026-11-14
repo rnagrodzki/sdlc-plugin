@@ -7,7 +7,7 @@ Find why a CI check failed on your pull request and get a proposed fix, or a min
 A CI check fails on your pull request. You open the run, search the log and decide what kind of failure it is.
 `/sdlc:verify-pipeline` reads the failure log, puts the failure in a category and gives you a diagnosis with a suggested patch.
 With `--auto`, it edits the source files for a lint failure, a test failure or a type error.
-You commit and push the fix. The skill never does.
+You commit and push the fix. The skill never does, unless a follow-up instruction of your config asks for it.
 
 ## Example
 
@@ -30,25 +30,27 @@ When the skill finds no log (no `--pr` and no `--logs`, no failed check, or `gh`
 - **No search for the log.** With `--pr` alone, the skill finds the first failed check and gets its failure log with `gh`.
 - **The kind of failure, named.** Each log gets 1 of 7 categories: `lint`, `test-failure`, `type-error`, `build-error`, `dependency`, `infra` or `unknown`.
 - **A small fix, not a refactor.** With `--auto`, the skill makes the minimal edit for a `lint`, `test-failure` or `type-error` failure.
-- **Control of your git history.** The skill never runs `git commit`, `git push` or `git tag`, and it changes no file outside the project root.
+- **Control of your git history.** The skill never runs `git commit`, `git push` or `git tag`, and it changes no file outside the project root. A follow-up instruction of your config is the one exception to both rules.
 - **CI fixes inside a ship run.** `/sdlc:ship` runs the skill when its CI poll fails under `automation.mode: auto`, then commits a fix that the skill applied.
 
 ## Steps
 
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
-| Step 1: CONSUME — parse args, load logs (R1, R6) | tool | Reads `--pr`, `--logs` and `--auto`. With `--pr` only, it gets the failing check log with `gh`. It stops with an `abort` verdict when no log is found. | The log text | no | always |
+| Step 1: CONSUME — parse args, load logs (R1, R6) | tool | Reads `--pr`, `--logs`, `--auto` and `--no-instructions`. With `--pr` only, it gets the failing check log with `gh`. It stops with an `abort` verdict when no log is found. | The log text | no | always |
+| Step 1b: Resolve instructions | tool | Gets the verify-pipeline list of the `[instructions]` config. A config error stops the run with no verdict line. | The list | yes | `--no-instructions` is not set |
 | Step 2: CLASSIFY — invoke the classification tool (R2) | tool | Calls `verify_pipeline_classify` with the log text. | The category and the matched signals | no | always |
 | Step 3: PROPOSE OR APPLY (R3, R4, R9) | skill | For `lint`, `test-failure` and `type-error` with `--auto`, it edits the source files. For every other case it writes a proposal. It runs no `git commit` or `git push`. | The fix or the proposal | no | always |
 | Step 4: VERDICT — single JSON line on stdout (R5) | skill | Prints one JSON line: `fix-applied`, `proposal` or `abort`. | The verdict line for the caller | no | always |
+| Step 5: Run instructions | skill | Runs each instruction of the list after the JSON line, then prints `Instructions (verify-pipeline): …`. | The summary line | yes | a standalone run with the verdict `fix-applied` or `proposal`, and the list is not empty |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
 | Starts | With `/sdlc:verify-pipeline`. `--pr <number>` or `--logs <path-or-string>` is required. `/sdlc:ship` runs it when a CI poll fails under `automation.mode: auto`. |
-| Ends | After Step 4 prints the verdict line. |
-| Asks the user | Nothing. The skill has no prompt. |
+| Ends | After Step 5 prints the instructions line, or after Step 4 prints the verdict line when no list runs. A config error at Step 1b stops the run with no verdict line. |
+| Asks the user | Nothing in Steps 1 to 4. An instruction asks only when its question flags allow it. |
 | Resume | none |
 
 ## More examples
@@ -71,7 +73,8 @@ The skill reads the log from the file. A value that is not a file path is the lo
 
 ## Reference
 
-- [Flags and verdicts](./verify-pipeline/flags-and-verdicts.md): the 3 flags, the source of the log, the 7 categories, the 3 verdict lines, the stop reasons, the ship run and the limits.
+- [Flags and verdicts](./verify-pipeline/flags-and-verdicts.md): the 4 flags, the source of the log, the 7 categories, the 3 verdict lines, the stop reasons, the ship run, the limits and the follow-up instructions.
+- [Follow-up instructions](../instructions.md): the `[instructions]` config, the merge rule, the question rules and the summary line.
 
 ## Related skills
 

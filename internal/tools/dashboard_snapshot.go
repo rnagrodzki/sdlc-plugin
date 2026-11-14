@@ -133,8 +133,16 @@ type DashboardPipeline struct {
 	DetailDeferred bool `json:"detailDeferred,omitempty"`
 	// PlanStartedAt is the start of the plan run that came before a ship
 	// run, RFC 3339. Ship only; absent when the plan time is unknown.
-	PlanStartedAt string            `json:"planStartedAt,omitempty"`
-	join          dashboardJoinInfo // not serialized; read by dashboardJoinRuns
+	PlanStartedAt string `json:"planStartedAt,omitempty"`
+	// EndInstructions holds the instruction records that belong to no step:
+	// the ship records of a ship run, and the records of a standalone execute
+	// run. Absent when the run has none, or when its instructions key is
+	// damaged.
+	EndInstructions []DashboardInstruction `json:"endInstructions,omitempty"`
+	// EndLabel names the group of EndInstructions: "end of run (ship)" or
+	// "end of run (execute)". Absent when EndInstructions is absent.
+	EndLabel string            `json:"endLabel,omitempty"`
+	join     dashboardJoinInfo // not serialized; read by dashboardJoinRuns
 }
 
 // DashboardAttention is the open wait of a running pipeline: the run waits
@@ -165,6 +173,21 @@ type DashboardStep struct {
 	// DetailKind is Detail.Kind. Only the page snapshot
 	// (SlimDashboardSnapshot) sets it; absent when the step has no detail.
 	DetailKind string `json:"detailKind,omitempty"`
+	// Instructions holds the instruction records of this step. They have their
+	// own field because Detail holds one kind only. Absent when the step has
+	// none.
+	Instructions []DashboardInstruction `json:"instructions,omitempty"`
+}
+
+// DashboardInstruction is one instruction record of a run. Status is one of
+// pending, running, done, failed, or not run.
+type DashboardInstruction struct {
+	Key     string `json:"key"`
+	Number  int    `json:"number"`
+	Source  string `json:"source"`
+	Text    string `json:"text"`
+	Status  string `json:"status"`
+	Outcome string `json:"outcome,omitempty"`
 }
 
 // DashboardIssue is one problem of a pipeline. Source is "step", "wave",
@@ -957,6 +980,7 @@ func dashboardStatePipeline(st *state.State, evidence map[string]time.Time) (Das
 		p.Worktree = dashboardStr(data["worktree"])
 		updated = dashboardLatest(updated, dashboardExecute(&p, st))
 		dashboardExecuteSteps(&p, st)
+		dashboardAttachExecuteInstructions(&p, data)
 		dashboardStateIssues(&p, data)
 	case "plan":
 		dashboardPlan(&p, st)

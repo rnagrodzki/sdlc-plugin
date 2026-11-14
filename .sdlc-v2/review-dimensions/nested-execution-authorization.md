@@ -35,3 +35,4 @@ severity: high
   call that needs a dispatched name or ID, verify each dispatch passes that
   name or ID. A fallback that targets workers the dispatch never named is a
   finding, and each such worker must be listed as not stopped.
+- **Step coverage and shared rows.** Check each step of a flow that starts or waits on a worker, not only each entry point. A wait or poll step (for example a step that waits for a remote review) needs the same stop and nested-authorization rule as the dispatch step it follows. A shared row or table (an exit-path table) that points to a stop rule must be true for every step it covers: grep each covered step for that rule. A pointer to a rule that some covered steps lack is a finding. An Agent dispatch that returns no task ID is recorded in the run record as a worker that may still run, and the exit row lists it.

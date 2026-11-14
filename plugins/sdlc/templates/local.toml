@@ -177,3 +177,30 @@
 # [dashboard]
 # autoStart = false   # start the local dashboard when a Claude session starts
 # port = 7385         # 1024-65535, loopback only
+
+# ─── Follow-up instructions (optional — delete if not using) ───────
+# Your own follow-up instructions, run after the team list of the same key
+# in .sdlc-v2/config.toml. See docs/instructions.md.
+# Keys (any other key is rejected): execute, commit, review, received-review,
+# commit-fixes, verify-openspec, archive-openspec, harden, pr, verify-pipeline,
+# await-remote-review, learnings-commit, ship (end of a ship run).
+# text is required: a non-blank string, or an array of 1-50 non-blank strings.
+# Max 50 instructions for each key after text expansion, 4000 characters each.
+# Defaults: normalQuestions = false, criticalQuestions = false, onQuestionNotAllowed = "skip".
+# Edit this section by hand. The /setup skill does not manage it.
+# A key set in .sdlc-v2/local.toml replaces the user-level list of that key.
+# An empty list in .sdlc-v2/local.toml hides the user-level list for that key
+# (in the user-level file, an empty list hides nothing):
+# [instructions]
+# harden = []
+#
+# [[instructions.ship]]
+# text = ["Add the PR link to ~/notes/shipped.md."]
+# normalQuestions = false        # ask a normal question while doing it
+# criticalQuestions = false      # ask a critical (outward or irreversible) question
+# onQuestionNotAllowed = "skip"  # "skip" | "decide"
+#
+# The same section as one inline table. TOML puts a bare key in the table above it,
+# so this line is valid only above the first [table] header of the file, and only
+# when the file has no [instructions] header:
+# instructions = { ship = [ { text = "Add the PR link to ~/notes/shipped.md." } ] }

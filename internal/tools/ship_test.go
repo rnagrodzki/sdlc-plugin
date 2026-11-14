@@ -17,6 +17,7 @@ import (
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -3443,5 +3444,206 @@ func TestShipOverlapWarnings_SkippedEntry(t *testing.T) {
 		"Shared specs with that change are not reported. No action is needed to ship; to get the check, fix read access to that change folder and call ship_prepare again."}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("warnings = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ship_prepare instructions
+// ---------------------------------------------------------------------------
+
+// shipPrepareInstructionsFixture runs shipPrepare in a fresh git fixture on a
+// feature branch with the given team and project local config text. An empty
+// string writes no file. $SDLC_USER_CONFIG points at a missing file, so the
+// tests never read the user-level config of the machine.
+func shipPrepareInstructionsFixture(t *testing.T, team, local string, in ShipPrepareIn) (ShipPrepareOut, string) {
+	t.Helper()
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "no-user-config.toml"))
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/instructions")
+	if team != "" {
+		writeFile(t, filepath.Join(dir, paths.DataDir, paths.ConfigFile), team)
+	}
+	if local != "" {
+		writeFile(t, filepath.Join(dir, paths.DataDir, paths.LocalConfigFile), local)
+	}
+	in.SkipConfigCheck = true
+	out, err := shipPrepare(dir, dir, in)
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	return out, dir
+}
+
+// seededInstructionKeys returns "key#number" for each seeded record, in order.
+func seededInstructionKeys(t *testing.T, stateFile string) []string {
+	t.Helper()
+	data := readStateData(t, stateFile)
+	raw, ok := data["instructions"].([]any)
+	if !ok {
+		t.Fatalf("state key instructions = %v, want a list", data["instructions"])
+	}
+	keys := []string{}
+	for _, r := range raw {
+		rec := r.(map[string]any)
+		keys = append(keys, fmt.Sprintf("%v#%v", rec["key"], rec["number"]))
+	}
+	return keys
+}
+
+func TestShipPrepare_InstructionsSeedRunKeysOnly(t *testing.T) {
+	team := `
+[[instructions.pr]]
+text = "pr one"
+
+[[instructions.harden]]
+text = "harden is not a step"
+
+[[instructions.ship]]
+text = "ship one"
+
+[[instructions.commit-fixes]]
+text = "fix one"
+
+[[instructions.received-review]]
+text = "rr one"
+`
+	out, _ := shipPrepareInstructionsFixture(t, team, "", ShipPrepareIn{})
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	// Canonical key order. harden is off by default, so it is not seeded.
+	want := []string{"received-review#1", "commit-fixes#1", "pr#1", "ship#1"}
+	if got := seededInstructionKeys(t, out.StateFile); !slices.Equal(got, want) {
+		t.Errorf("seeded = %v, want %v", got, want)
+	}
+
+	validate := shipStateSchemaValidator(t)
+	if err := validate(readStateData(t, out.StateFile)); err != nil {
+		t.Errorf("seeded state does not validate against ship-state.schema.json: %v", err)
+	}
+}
+
+func TestShipPrepare_InstructionsStepsOnlyReceivedReviewNeedsReview(t *testing.T) {
+	team := `
+[[instructions.received-review]]
+text = "rr"
+
+[[instructions.commit-fixes]]
+text = "cf"
+
+[[instructions.pr]]
+text = "p"
+`
+	out, _ := shipPrepareInstructionsFixture(t, team, "", ShipPrepareIn{Steps: []string{"commit", "pr"}})
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	if got, want := seededInstructionKeys(t, out.StateFile), []string{"pr#1"}; !slices.Equal(got, want) {
+		t.Errorf("seeded = %v, want %v", got, want)
+	}
+}
+
+func TestShipPrepare_InstructionsNoneWritesEmptyList(t *testing.T) {
+	out, _ := shipPrepareInstructionsFixture(t, "", "", ShipPrepareIn{})
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	data := readStateData(t, out.StateFile)
+	assertJSONEmptyList(t, data, "instructions")
+}
+
+func TestShipPrepare_InstructionsConfigErrorStopsRun(t *testing.T) {
+	out, dir := shipPrepareInstructionsFixture(t, "", "[[instructions.deploy]]\ntext = \"x\"\n", ShipPrepareIn{})
+	hits := errorsContaining(out.Errors, "ship: config error, no step started.\n")
+	if len(hits) != 1 || len(out.Errors) != 1 {
+		t.Fatalf("Errors = %v, want exactly one config error entry", out.Errors)
+	}
+	if !strings.Contains(hits[0], "instructions.deploy") {
+		t.Errorf("error does not name the field instructions.deploy: %q", hits[0])
+	}
+	if out.StateFile != "" {
+		t.Errorf("StateFile = %q, want empty", out.StateFile)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, paths.DataDir, paths.RunsSubdir, "ship-*.json"))
+	if len(matches) != 0 {
+		t.Errorf("ship state files = %v, want none", matches)
+	}
+}
+
+// TestShipPrepare_InstructionsUnreadableFileStopsRun checks that an
+// infra-kind error (the user-level file is a folder) is named as a file that
+// cannot be read, not as a config error, and writes no state.
+func TestShipPrepare_InstructionsUnreadableFileStopsRun(t *testing.T) {
+	userDir := filepath.Join(t.TempDir(), "user-config-folder")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.UserConfigPathEnv, userDir)
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/instructions")
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	hits := errorsContaining(out.Errors, "ship: a config file cannot be read, no step started.\n")
+	if len(hits) != 1 || len(errorsContaining(out.Errors, "config error")) != 0 {
+		t.Fatalf("Errors = %v, want one cannot-be-read entry and no config error entry", out.Errors)
+	}
+	if !strings.Contains(hits[0], "Fix: make the file readable.") {
+		t.Errorf("error does not carry the fix: %q", hits[0])
+	}
+	if out.StateFile != "" {
+		t.Errorf("StateFile = %q, want empty", out.StateFile)
+	}
+}
+
+func TestShipPrepare_InstructionsDryRunSeeds(t *testing.T) {
+	out, _ := shipPrepareInstructionsFixture(t, "[[instructions.pr]]\ntext = \"p\"\n", "", ShipPrepareIn{DryRun: true})
+	if len(out.Errors) != 0 {
+		t.Fatalf("Errors = %v, want empty", out.Errors)
+	}
+	if got, want := seededInstructionKeys(t, out.StateFile), []string{"pr#1"}; !slices.Equal(got, want) {
+		t.Errorf("seeded = %v, want %v", got, want)
+	}
+}
+
+// TestInstructionStatusMatchesSchema proves that the status enum of the
+// instruction records in ship-state.schema.json and execute-state.schema.json
+// equals the status constants.
+func TestInstructionStatusMatchesSchema(t *testing.T) {
+	for _, name := range []string{"ship-state.schema.json", "execute-state.schema.json"} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "schemas", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var schema struct {
+				Properties struct {
+					Instructions struct {
+						Items struct {
+							Properties struct {
+								Status struct {
+									Enum []string `json:"enum"`
+								} `json:"status"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"instructions"`
+				} `json:"properties"`
+			}
+			if err := json.Unmarshal(raw, &schema); err != nil {
+				t.Fatal(err)
+			}
+			got := slices.Clone(schema.Properties.Instructions.Items.Properties.Status.Enum)
+			want := []string{instrPending, instrRunning, instrDone, instrFailed, instrNotRun}
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("schema status enum = %v, want %v", got, want)
+			}
+		})
 	}
 }

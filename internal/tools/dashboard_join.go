@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
@@ -114,6 +115,90 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 			plan.Detail.Rounds, plan.Detail.MaxRounds = rounds, maxReviewRounds
 		}
 		dashboardInsertPlanStation(p, plan)
+	}
+	// Last, so each step the records can name is in p.Steps.
+	dashboardAttachShipInstructions(p, data)
+}
+
+// Group labels of the end instruction list (DashboardPipeline.EndLabel).
+const (
+	dashboardEndLabelShip    = "end of run (ship)"
+	dashboardEndLabelExecute = "end of run (execute)"
+)
+
+// dashboardInstructionRef is the Ref of an issue about the instruction
+// records of a state.
+const dashboardInstructionRef = "instructions"
+
+// dashboardInstructionRows reads data.instructions into rows, in list order.
+// It returns no row when the key is absent. A damaged list (instrRecords
+// fails: not a list of records, or one record with a bad key, number or
+// status) gives no row and one issue that names the damage. instrRecords
+// checks that each status is a record status, which matters because the page
+// puts the status into a CSS class name.
+func dashboardInstructionRows(data map[string]any) ([]DashboardInstruction, []DashboardIssue) {
+	records, err := instrRecords(data)
+	if err != nil {
+		return nil, []DashboardIssue{{
+			Source:   dashboardSourceState,
+			Severity: "medium",
+			Text:     err.Error() + " — the page shows no instruction of this run",
+			Ref:      dashboardInstructionRef,
+		}}
+	}
+	var rows []DashboardInstruction
+	for _, rec := range records {
+		rows = append(rows, DashboardInstruction{
+			Key:     instrString(rec, instrFieldKey),
+			Number:  instrInt(rec, instrFieldNumber),
+			Source:  instrString(rec, instrFieldSource),
+			Text:    instrString(rec, instrFieldText),
+			Status:  instrString(rec, instrFieldStatus),
+			Outcome: instrString(rec, instrFieldOutcome),
+		})
+	}
+	return rows, nil
+}
+
+// dashboardAttachShipInstructions maps the records of a ship state to the
+// steps of p. A record goes to the step named by its key. A commit-fixes
+// record goes to the received-review step. The ship records go to
+// EndInstructions, then the records whose key names no step. EndLabel is set
+// only when EndInstructions is not empty. An issue about damaged records goes
+// to p.Issues.
+func dashboardAttachShipInstructions(p *DashboardPipeline, data map[string]any) {
+	var shipRows, otherRows []DashboardInstruction
+	rows, issues := dashboardInstructionRows(data)
+	p.Issues = append(p.Issues, issues...)
+	for _, row := range rows {
+		target := row.Key
+		switch row.Key {
+		case config.InstructionKeyShip:
+			shipRows = append(shipRows, row)
+			continue
+		case config.InstructionKeyCommitFixes:
+			target = dashboardShipStepReceivedReview
+		}
+		if step := dashboardStepNamed(p, target); step != nil {
+			step.Instructions = append(step.Instructions, row)
+			continue
+		}
+		otherRows = append(otherRows, row)
+	}
+	if end := append(shipRows, otherRows...); len(end) > 0 {
+		p.EndInstructions, p.EndLabel = end, dashboardEndLabelShip
+	}
+}
+
+// dashboardAttachExecuteInstructions puts the records of an execute state in
+// EndInstructions. An execute run that nests under a ship run is dropped by
+// dashboardJoinRuns, and its rows with it: ship passes --no-instructions, so
+// such a run has no record. An issue about damaged records goes to p.Issues.
+func dashboardAttachExecuteInstructions(p *DashboardPipeline, data map[string]any) {
+	rows, issues := dashboardInstructionRows(data)
+	p.Issues = append(p.Issues, issues...)
+	if len(rows) > 0 {
+		p.EndInstructions, p.EndLabel = rows, dashboardEndLabelExecute
 	}
 }
 

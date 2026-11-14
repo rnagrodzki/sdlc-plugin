@@ -32,6 +32,7 @@ Runs the fastest quality tier without stopping for confirmation.
 | `--wave-timeout <s>` | Max seconds a single wave can run. Also the total-runtime ceiling of each task when the server classifies the tasks that are still open. | `1800` |
 | `--commit-waves <true\|false>` | Commit each wave separately. `/sdlc:ship` forwards this flag only when `ship.execute.commitWaves` is set. | `execute.commitWaves` in `config.toml`, else `true` |
 | `--wave-interval <s>` | Seconds between the liveness polls of a wave. A worker with no heartbeat for 10x this value (default 600s) counts as stalled. A worker that never answers the reclaim fails after max(5x this value, 300s) (default 300s). See [Execute wave supervision](../../internal/execute-wave-supervision.md). | `60` |
+| `--no-instructions` | Do not run the follow-up instructions of the skill. Ship passes this flag, because ship runs the lists itself. See [Follow-up instructions](#follow-up-instructions). | off |
 
 ### Quality tiers
 
@@ -73,5 +74,32 @@ quality = "balanced"
 **Old key location.** If `auto`, `quality` or `highRiskAutoApprove` is still under `[execute]` in `config.toml`, the skill moves it to `[executePrefs]` in `local.toml`, keeps all comments, and warns you to commit the `config.toml` change. If `local.toml` already has a different value, or the file layout is unusual, the skill stops and tells you what to move by hand.
 
 **`executePrefs` and `automation`.** Both sections are in `.sdlc-v2/local.toml`, and they do different jobs. `automation.mode` gates whether `/sdlc:ship` hands control to `/sdlc:execute`. `executePrefs` governs the prompts inside `/sdlc:execute` once it has control.
+
+## Follow-up instructions
+
+When all tasks completed, a standalone run does the execute list of the
+[follow-up instructions](../../instructions.md) before it marks the run
+completed. The run mode of each instruction is the auto mode that the skill
+resolves at its start.
+
+| Part of the run | Before | After |
+|---|---|---|
+| End of a run | Step 9 report, then cleanup | Step 9 report, then the Step 9a list, then cleanup, then the summary line |
+
+```text
+Instructions (execute): 2 total, 1 done, 1 failed, 0 not run.
+- `execute #1 (team) failed: <cause>`
+```
+
+The run state keeps each result. A small plan that runs directly writes no
+state: the skill runs the list in the session and keeps no record.
+
+| Exit | The list runs | Next |
+|---|---|---|
+| a config error in `[instructions]` at Step 0 | no | the error and its fix. No wave runs and no state is written. Correct the file, then run the skill again. |
+| a wave `cancel` | no | the state stays resumable |
+| a failed or partial run | no | the state stays resumable, and the instructions stay pending |
+| all tasks completed | yes, before cleanup | cleanup, then the summary line |
+| the run stops in the middle of the list | partly | the state stays in flight. `--resume` marks the running instruction `failed` with `result not recorded, not run again`, runs the rest of the list, then marks the run completed. |
 
 Back to the overview: [/sdlc:execute](../execute.md#more-examples).

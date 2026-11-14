@@ -87,6 +87,7 @@ func planSkillsListTools(t *testing.T) []*mcp.Tool {
 	tools.RegisterPlanExploreTools(srv)
 	tools.RegisterJiraTools(srv)
 	tools.RegisterLearningsTools(srv)
+	tools.RegisterInstructionsTools(srv)
 	tools.RegisterPlanTools(srv)
 	tools.RegisterMigrateTools(srv)
 	tools.RegisterPRTools(srv)

@@ -201,35 +201,37 @@ func prPrepareNext(out PRPrepareOut) string {
 // prPrepareCore, prApplyCore, and their helpers. Tests inject mocks through
 // prRuntime; production code uses defaultPRRuntime.
 type prRuntime struct {
-	ghPRForBranch       func(dir string) ghx.PRMetadata
-	ghPRCreate          func(dir, title, body string, opts prCreateOpts) (string, error)
-	ghPREdit            func(dir string, num int, title, body string) (string, error)
-	ghLabelList         func(dir string) ([]string, error)
-	ghLabelCreate       func(dir, name, color, desc string) error
-	ghAuthProbe         func(dir, host string) ghx.AuthProbeResult
-	ghRepoAccessProbe   func(dir, owner, repo, host string) ghx.RepoAccessResult
-	ghGetAccounts       func(dir, host string) ([]ghx.Account, error)
-	gitCurrentBranch    func(dir string) (string, error)
-	gitStatus           func(dir string) (string, error)
-	gitFetchTags        func(dir string) error
-	gitTagList          func(dir string) ([]string, error)
-	gitAllSemverTags    func(dir string) ([]string, error)
-	gitDefaultBranch    func(dir string) (string, error)
-	gitBaseBranch       func(dir, configured string) (string, error)
-	gitTagsAtHead       func(dir string) ([]string, error)
-	execRun             func(name string, args []string, opts execx.Options) (string, error)
-	configRead          func(root string) (*config.Config, error)
-	configReadSection   func(root, section string) (map[string]any, error)
-	versionDetect       func(root, path, fileType string) (*version.VersionFile, error)
-	configMigrateVerify func(root string) error
-	configMoveKeys      func(root string) ([]string, error)
-	branchValidate      func(current, expected string) branch.BranchGuardResult
-	jiraExtract         func(branchName string) string
-	templateResolve     func(root string) (*prtemplate.Template, error)
-	gitPushSetUpstream  func(dir, remote string) error
-	gitHasUpstream      func(dir string) (bool, error)
-	gitCommitsAhead     func(dir string) (int, error)
-	gitLogSinceTag      func(dir string) ([]string, error)
+	ghPRForBranch         func(dir string) ghx.PRMetadata
+	ghPRCreate            func(dir, title, body string, opts prCreateOpts) (string, error)
+	ghPREdit              func(dir string, num int, title, body string) (string, error)
+	ghLabelList           func(dir string) ([]string, error)
+	ghLabelCreate         func(dir, name, color, desc string) error
+	ghAuthProbe           func(dir, host string) ghx.AuthProbeResult
+	ghRepoAccessProbe     func(dir, owner, repo, host string) ghx.RepoAccessResult
+	ghGetAccounts         func(dir, host string) ([]ghx.Account, error)
+	gitCurrentBranch      func(dir string) (string, error)
+	gitStatus             func(dir string) (string, error)
+	gitFetchTags          func(dir string) error
+	gitTagList            func(dir string) ([]string, error)
+	gitAllSemverTags      func(dir string) ([]string, error)
+	gitDefaultBranch      func(dir string) (string, error)
+	gitBaseBranch         func(dir, configured string) (string, error)
+	gitTagsAtHead         func(dir string) ([]string, error)
+	execRun               func(name string, args []string, opts execx.Options) (string, error)
+	configRead            func(root string) (*config.Config, error)
+	configReadSection     func(root, section string) (map[string]any, error)
+	versionDetect         func(root, path, fileType string) (*version.VersionFile, error)
+	configMigrateVerify   func(root string) error
+	configMoveKeys        func(root string) ([]string, error)
+	branchValidate        func(current, expected string) branch.BranchGuardResult
+	jiraExtract           func(branchName string) string
+	templateResolve       func(root string) (*prtemplate.Template, error)
+	gitPushSetUpstream    func(dir, remote string) error
+	gitRemoteTrackingSHA  func(dir, remote, branchName string) (string, bool, error)
+	gitPushForceWithLease func(dir, remote string, lease gitx.Lease) error
+	gitHasUpstream        func(dir string) (bool, error)
+	gitCommitsAhead       func(dir string) (int, error)
+	gitLogSinceTag        func(dir string) ([]string, error)
 }
 
 // defaultPRRuntime wires prRuntime to the real package-level implementations.
@@ -260,11 +262,13 @@ var defaultPRRuntime = prRuntime{
 	jiraExtract: func(branchName string) string {
 		return detectJiraTicket(branchName, nil)
 	},
-	templateResolve:    prtemplate.Resolve,
-	gitPushSetUpstream: gitx.PushSetUpstream,
-	gitHasUpstream:     gitx.HasUpstream,
-	gitCommitsAhead:    gitx.CommitsAhead,
-	gitLogSinceTag:     prGitLogSinceTag,
+	templateResolve:       prtemplate.Resolve,
+	gitPushSetUpstream:    gitx.Push,
+	gitRemoteTrackingSHA:  gitx.RemoteTrackingSHA,
+	gitPushForceWithLease: gitx.PushForceWithLease,
+	gitHasUpstream:        gitx.HasUpstream,
+	gitCommitsAhead:       gitx.CommitsAhead,
+	gitLogSinceTag:        prGitLogSinceTag,
 }
 
 // buildAuthDiagnosticsWith synthesizes the PRAuthDiagnostics block for a
@@ -971,6 +975,74 @@ type ReleaseIntentInfo struct {
 	NotesInBody   bool     `json:"notesInBody"`
 }
 
+// pushWithLease pushes the current branch for pr_apply. With a remote-tracking
+// ref the push uses --force-with-lease with that commit, so a rebased branch
+// can replace the remote branch and a commit of another person is never lost.
+// With no tracking ref it is a plain push -u. A rejected lease is a
+// DomainError; any other push failure, a rejected plain push included, is an
+// InfraError whose Suggestion follows the PushError kind.
+func pushWithLease(rt prRuntime, workDir, remote string) error {
+	branchName, err := rt.gitCurrentBranch(workDir)
+	if err != nil {
+		return &mcpserver.InfraError{
+			Msg:        "git push: reading the current branch: " + err.Error(),
+			Cause:      err,
+			Suggestion: "Verify the repository is in a valid git state, then retry pr_apply.",
+		}
+	}
+	sha, ok, err := rt.gitRemoteTrackingSHA(workDir, remote, branchName)
+	if err != nil {
+		return &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("cannot read the remote-tracking ref of %s: %s", branchName, err),
+			Cause:      err,
+			Suggestion: "Check the git repository, then run the pr step again.",
+		}
+	}
+	if ok {
+		err = rt.gitPushForceWithLease(workDir, remote, gitx.Lease{Branch: branchName, ExpectedSHA: sha})
+	} else {
+		err = rt.gitPushSetUpstream(workDir, remote)
+	}
+	if err == nil {
+		return nil
+	}
+	var pe *gitx.PushError
+	if ok && errors.As(err, &pe) && pe.Kind == gitx.PushKindRejected {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("remote branch %s changed since the last push. pr stopped.", branchName),
+			Cause:      err,
+			Suggestion: "Fetch the branch, review the other commits, integrate them, then run the pr step again.",
+		}
+	}
+	return &mcpserver.InfraError{
+		Msg:        "git push: " + err.Error(),
+		Cause:      err,
+		Suggestion: pushFailureSuggestion(err),
+	}
+}
+
+// pushFailureSuggestion returns the recovery step for a failed pr_apply push.
+// The step follows the PushError kind; an error that is not a PushError gets
+// the manual-push step.
+func pushFailureSuggestion(err error) string {
+	var pe *gitx.PushError
+	if !errors.As(err, &pe) {
+		return "Push the current branch manually (git push -u origin HEAD), then retry pr_apply."
+	}
+	switch pe.Kind {
+	case gitx.PushKindAuth:
+		return "Check the git credentials for origin (gh auth status, or the SSH key), then retry pr_apply."
+	case gitx.PushKindNetwork:
+		return "Check the network connection to origin, then retry pr_apply."
+	case gitx.PushKindNoRemote:
+		return "Add the origin remote (git remote add origin <url>), then retry pr_apply."
+	case gitx.PushKindRejected:
+		return "Fetch the remote branch, integrate its commits, then retry pr_apply."
+	default:
+		return "Push the current branch manually (git push -u origin HEAD), then retry pr_apply."
+	}
+}
+
 // prApplyCore creates a PR for the current branch, or edits the existing
 // one, mirroring pr.js's detectPrMode collapsed to its two data-driven
 // modes (exists → update, else → create). pr.js's --update-force flag has
@@ -1149,12 +1221,8 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		needsPush = ahead > 0
 	}
 	if needsPush {
-		if err := rt.gitPushSetUpstream(workDir, "origin"); err != nil {
-			return PRApplyOut{}, &mcpserver.InfraError{
-				Msg:        "git push: " + err.Error(),
-				Cause:      err,
-				Suggestion: "Push the current branch manually (git push -u origin HEAD), then retry pr_apply.",
-			}
+		if err := pushWithLease(rt, workDir, pushRemote); err != nil {
+			return PRApplyOut{}, err
 		}
 	}
 
@@ -1725,6 +1793,7 @@ func RegisterPRTools(s *mcpserver.Server) {
 		"Creates a PR for the current branch, or edits the existing one, via gh pr create/gh pr edit (KD14 executor tool). Pushes the branch "+
 			"first when needed (no upstream, or upstream behind HEAD); skips the push when upstream is already caught up, to avoid firing "+
 			"heavy pre-push hooks unnecessarily. "+
+			"When the branch has a remote-tracking ref, the push uses --force-with-lease with that commit. A rejected lease returns a DomainError and creates no PR. With no tracking ref, the push is a plain push. "+
 			"draft and base apply only when a new PR is created (gh pr create --draft / --base <branch>); when an open PR is "+
 			"updated instead, gh pr edit cannot change either one, so they are ignored and named in warnings. "+
 			"releaseLevel is required unless skipReleaseCheck is true — an empty releaseLevel without skipReleaseCheck is rejected so release "+

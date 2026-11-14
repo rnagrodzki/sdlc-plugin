@@ -26,7 +26,7 @@ The skill starts the server when it is not active, opens the page in your defaul
 
 ## What you get
 
-- See every registered repo on one page: pipeline state, session activity, issues and preplan topic files, without a switch of session or terminal.
+- See every registered repo on one page: pipeline state with the status of each follow-up instruction, session activity, issues and preplan topic files, without a switch of session or terminal.
 - Run the command again at no risk: when a server of the current version is active, you get the same address and no second server.
 - Check or stop the server with one flag: `--status` reports the address, the pid and the version, and `--stop` ends the server.
 - Work over SSH: `--no-open` starts the server and prints the address, and opens no browser.

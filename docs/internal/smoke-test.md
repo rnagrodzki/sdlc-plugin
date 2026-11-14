@@ -39,7 +39,7 @@ inspector if it has one.
 
 Expect: tools prefixed `mcp__plugin_sdlc_sdlc__`, e.g.
 `mcp__plugin_sdlc_sdlc__commit_prepare`, `mcp__plugin_sdlc_sdlc__pr_prepare`.
-33 tools total (see README "Tool surface" table for the full list).
+34 tools total (see README "Tool surface" table for the full list).
 
 If no tools appear: this is the step that triggers the cold-cache binary
 download (the MCP connect path has a 60s budget, unlike hooks). Wait a few
@@ -56,6 +56,13 @@ Expect:
 - `commit_prepare` runs and returns a manifest / diff summary.
 - A commit message is produced and a real `git commit` happens.
 - `git log -1` shows the new commit with the expected message.
+
+Push check: on a feature branch with an `origin` remote, run
+`/sdlc:commit --push` with an uncommitted change.
+
+Expect:
+- The commit lands, and the output has no push warning.
+- `git status -sb` shows the branch even with `origin` (no `ahead` count).
 
 ## 5. One hook firing (SessionStart banner)
 
@@ -78,6 +85,7 @@ retry this step with `/clear`.
 - [ ] `/sdlc:ship --plan <file>` → `openspec/changes/<name>/` committed, validated, archived
 - [ ] `.sdlc-v2/reports/ship-<runId>-report.md` has `## Planning` and `## Timeline`
 - [ ] `.sdlc-v2/runs/plan-*.json` for this plan is gone after ship
+- [ ] instruction check: add `[[instructions.ship]]` with `text = "Print the PR number."` to `.sdlc-v2/local.toml` (no other `ship` instruction in `.sdlc-v2/config.toml`), then run ship → the summary has `Ship instructions: 1 total, 1 done, 0 failed, 0 not run.`
 
 ## 7. Linked worktree state
 
