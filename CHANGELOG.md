@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.5.0] - 2026-11-14
+
+### RC 1
+
+- Plan skill asks "Is this all? Conclude the plan?" at mid-run messages, at the link and format gates, and after handoff.
+- New `stopped` run marker in `plan_mark`: refused on done runs, excluded from active runs, and reuse fails with "plan run <runId> is stopped".
+- The link and format gates retry a fix up to 3 times before the question applies.
+- The review-limit stop and handoff feedback use the same conclude stop rule.
+- Dashboard shows a stopped run as failed with "Stopped by the user at <station>".
+
+### RC 2
+
+Add the verify-requirements skill and the verify_requirements_context action of plan_support. The skill checks a requirements source (topic file, file, Jira ticket or GitHub issue) against the project before planning and changes nothing.
+
+### RC 3
+
+- Add a GitHub Pages product and docs site built with Astro, with Home, dashboard, stats, harden and long-pipelines pages.
+- Add overview and reference pages for every skill, plus an all-skills page, release notes and an Open Graph image.
+- Rewrite the skill docs under docs/skills/ in an example-first style.
+- Add a GitHub Actions workflow that builds and deploys the site, and CI guardrails for the build surface and tracked paths.
+- Move contributor docs under docs/internal and link the README and marketplace to the site.
+
 ## [0.4.12] - 2026-11-08
 
 ### RC 1
