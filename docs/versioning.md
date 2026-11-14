@@ -209,7 +209,9 @@ Four CI scripts handle the release pipeline. All live under `.github/scripts/` a
 
 Matching workflow files live under `.github/workflows/`.
 
-**To scaffold CI workflows:** Run `/setup` which offers CI scaffolding, or call `scaffold_ci` directly. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
+**To scaffold CI workflows:** Configure the `version` section in `/setup` to create missing files. When a CI script is outdated or missing, `/setup` lists it and asks before it updates it. You can also call `scaffold_ci` directly.
+
+**To update outdated CI scripts:** Run `/setup`. Step 3c asks before it updates a script that is `outdated` or `missing`. Or call `scaffold_ci({updateOutdated: true})` directly. It overwrites only scripts whose installed version is below the bundled version, migrates legacy `.js` files and creates missing files. Current files stay unchanged. `scaffold_ci({force: true})` overwrites every existing file. Do not pass both inputs: the tool returns an error. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
 
 ### Delivery Method (`method`)
 
@@ -286,7 +288,7 @@ straight from step 1 to step 2.
    pattern. Classic branch protection instead needs the automation identity
    exempted from the rule directly (an admin-override alone may not cover
    it).
-5. Run `scaffold_ci` (or `/setup`) to install/refresh the workflows and
+5. Run `scaffold_ci` (or `/setup`, which asks before it updates outdated files) to install/refresh the workflows and
    their token chain, and check its `protection` report for what it still
    sees configured.
 6. Trigger a real release, or dispatch **SDLC Promote Release**, and confirm
@@ -620,7 +622,7 @@ The project's `.sdlc-v2/config.toml` still has a `version` section in the pre-re
 
 Check:
 1. Does the PR have a `release:*` label? No label = no release.
-2. Are CI workflows scaffolded? Run `scaffold_ci` to add them.
+2. Are CI workflows scaffolded and current? Run `/setup`, or call `scaffold_ci({updateOutdated: true})` to add missing files and update outdated ones.
 3. Did `verify-release-intent.cjs` pass? Check the PR checks tab.
 4. Are the `<!-- release-notes-start/end -->` markers in the PR body?
 

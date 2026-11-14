@@ -230,3 +230,31 @@ func TestCIScriptDrift_LinkedWorktree_CurrentAfterScaffold_MainStillMissing(t *t
 		t.Errorf("main worktree must not report current/outdated scripts; it was never scaffolded:\n%s", textMain)
 	}
 }
+
+// TestScaffoldCI_RegisteredHandler_UpdateOutdatedInput proves the registered
+// tool accepts updateOutdated and maps force plus updateOutdated to a
+// domain error.
+func TestScaffoldCI_RegisteredHandler_UpdateOutdatedInput(t *testing.T) {
+	_, linkedDir := scaffoldWorktreeFixture(t)
+
+	res, text := callRegisteredScaffoldCI(t, linkedDir, map[string]any{"force": true, "updateOutdated": true})
+	if !res.IsError {
+		t.Fatalf("force plus updateOutdated must be an error result:\n%s", text)
+	}
+	if !strings.Contains(text, "force and updateOutdated cannot both be true") {
+		t.Errorf("error must name the conflict:\n%s", text)
+	}
+	if scaffoldFileExists(filepath.Join(linkedDir, scaffoldManifest[0].Dest)) {
+		t.Error("no file may be written on the conflict error")
+	}
+
+	res, text = callRegisteredScaffoldCI(t, linkedDir, map[string]any{"updateOutdated": true})
+	if res.IsError {
+		t.Fatalf("updateOutdated alone returned an error:\n%s", text)
+	}
+	for _, entry := range scaffoldManifest {
+		if !scaffoldFileExists(filepath.Join(linkedDir, entry.Dest)) {
+			t.Errorf("file %s: missing file must be created by updateOutdated", entry.Dest)
+		}
+	}
+}

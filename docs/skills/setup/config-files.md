@@ -53,9 +53,13 @@ When setup finds legacy or outdated config, it asks whether to migrate before it
 
 `/sdlc:setup`, and each skill that calls `setup_prepare`, compares each installed CI scaffold script and workflow with the version that the plugin bundles. The result is `ciScriptDrift`: one entry for each scaffolded script, flagged `current`, `outdated` or `missing`, with the installed version and the current version.
 
-The summary of a setup run lists each script that is not `current`.
+Step 3c of `/sdlc:setup` asks `Update the CI scripts listed above?` when a script is `outdated` or `missing`. The step runs on every route that reaches the summary, also when you select no section. `--force` and `--only` do not skip it. The summary lists each script that is still not `current`.
 
-- **Update all of them:** run `scaffold_ci({force: true})`. It overwrites the outdated scripts with the bundled versions.
+When the drift check cannot read a script, `setup_prepare` returns `ciScriptDriftError`. The summary then prints `CI script check failed: <error>` in place of the list.
+
+- **Update outdated and missing scripts:** run `scaffold_ci({updateOutdated: true})`. It overwrites only the outdated scripts, migrates legacy `.js` files and creates missing scripts. It leaves current scripts unchanged.
+- **Overwrite all scripts:** run `scaffold_ci({force: true})`. It overwrites every existing script, also the current ones.
+- **Do not pass both:** `scaffold_ci` returns the error `force and updateOutdated cannot both be true`.
 - **Check drift only:** call `validate({action: "ci_script_drift"})`. It does not touch the sections of `/sdlc:setup`.
 
 Back to the [/sdlc:setup overview](../setup.md).

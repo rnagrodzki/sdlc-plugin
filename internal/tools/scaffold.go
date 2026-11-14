@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
@@ -90,8 +92,24 @@ var scaffoldManifest = []scaffoldManifestEntry{
 
 // ScaffoldCIIn is the input for the scaffold_ci tool.
 type ScaffoldCIIn struct {
-	Force bool `json:"force,omitempty" jsonschema_description:"Overwrite existing CI scripts and workflow files that already exist in the project, instead of skipping them."`
+	Force          bool `json:"force,omitempty" jsonschema_description:"Overwrite every CI script and workflow file that already exists, current ones too, and migrate legacy .js files. Local edits in current files are lost. Cannot be combined with updateOutdated."`
+	UpdateOutdated bool `json:"updateOutdated,omitempty" jsonschema_description:"Overwrite only the CI files whose installed version is below the bundled version, migrate legacy .js files and create missing files. Current files stay unchanged. Cannot be combined with force."`
 }
+
+// scaffoldOptions holds the overwrite modes of scaffoldCIWith. At most one of
+// the two fields may be true.
+type scaffoldOptions struct {
+	Force          bool
+	UpdateOutdated bool
+}
+
+// maxInstalledCIFileBytes is the read limit for one installed CI file. The
+// largest bundled payload is far below it, so a larger file is not a plugin
+// CI file.
+const maxInstalledCIFileBytes = 1 << 20
+
+// ciFileTooLargeSuggestion is the recovery text for errCIFileTooLarge (1 MiB = maxInstalledCIFileBytes).
+const ciFileTooLargeSuggestion = "The installed file is larger than 1 MiB, so it is not a plugin CI file. Restore the file with git or delete it. Then run the same call again."
 
 // ScaffoldFileReport describes the result for a single manifest entry.
 type ScaffoldFileReport struct {
@@ -144,6 +162,8 @@ func scaffoldExtractVersion(content string, re *regexp.Regexp) int {
 // ciScriptDrift (a pure comparison used by setup_prepare and the
 // "ci_script_drift" validate action). The returned error, when non-nil, is
 // already formatted as "read <path>: <cause>" so callers can use it as-is.
+// An installed file above maxInstalledCIFileBytes gives a *mcpserver.DataError
+// that is already complete, so callers return it unchanged.
 func scaffoldEntryVersions(root string, entry scaffoldManifestEntry, srcContent []byte) (currentVersion int, installedVersion *int, destExists, legacyExists bool, destPath, legacyPath string, err error) {
 	currentVersion = scaffoldExtractVersion(string(srcContent), entry.VersionRegex)
 
@@ -155,18 +175,20 @@ func scaffoldEntryVersions(root string, entry scaffoldManifestEntry, srcContent 
 		legacyExists = scaffoldFileExists(legacyPath)
 	}
 
+	readPath := ""
 	switch {
 	case destExists:
-		content, rerr := os.ReadFile(destPath)
-		if rerr != nil {
-			return currentVersion, nil, destExists, legacyExists, destPath, legacyPath, fmt.Errorf("read %s: %w", destPath, rerr)
-		}
-		v := scaffoldExtractVersion(string(content), entry.VersionRegex)
-		installedVersion = &v
+		readPath = destPath
 	case legacyExists:
-		content, rerr := os.ReadFile(legacyPath)
+		readPath = legacyPath
+	}
+	if readPath != "" {
+		content, rerr := readInstalledCIFile(readPath)
+		if derr := ciFileTooLargeError(fmt.Sprintf("check installed version of CI script %s: read %s: file is larger than %d bytes", entry.Dest, readPath, maxInstalledCIFileBytes), rerr); derr != nil {
+			return currentVersion, nil, destExists, legacyExists, destPath, legacyPath, derr
+		}
 		if rerr != nil {
-			return currentVersion, nil, destExists, legacyExists, destPath, legacyPath, fmt.Errorf("read %s: %w", legacyPath, rerr)
+			return currentVersion, nil, destExists, legacyExists, destPath, legacyPath, fmt.Errorf("read %s: %w", readPath, rerr)
 		}
 		v := scaffoldExtractVersion(string(content), entry.VersionRegex)
 		installedVersion = &v
@@ -175,12 +197,59 @@ func scaffoldEntryVersions(root string, entry scaffoldManifestEntry, srcContent 
 	return currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, nil
 }
 
+// errCIFileTooLarge marks an installed CI file above
+// maxInstalledCIFileBytes.
+var errCIFileTooLarge = errors.New("installed CI file is larger than the read limit")
+
+// ciFileTooLargeError returns a DataError when err wraps errCIFileTooLarge, else nil.
+// scaffold_ci, setup_prepare and validate all reach it through the shared read.
+func ciFileTooLargeError(msg string, err error) error {
+	if !errors.Is(err, errCIFileTooLarge) {
+		return nil
+	}
+	return &mcpserver.DataError{Msg: msg, Suggestion: ciFileTooLargeSuggestion, Cause: err}
+}
+
+// readInstalledCIFile reads at most maxInstalledCIFileBytes of the file at
+// path. A file of exactly that size is read in full. A larger file gives
+// errCIFileTooLarge.
+func readInstalledCIFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxInstalledCIFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxInstalledCIFileBytes {
+		return nil, errCIFileTooLarge
+	}
+	return data, nil
+}
+
+// scaffoldVersionReadError turns the error of scaffoldEntryVersions into the
+// error a tool returns. A *mcpserver.DataError passes through unchanged. Any
+// other error becomes an InfraError with the given retry text.
+func scaffoldVersionReadError(entry scaffoldManifestEntry, verr error, suggestion string) error {
+	var de *mcpserver.DataError
+	if errors.As(verr, &de) {
+		return verr
+	}
+	return &mcpserver.InfraError{
+		Msg:        fmt.Sprintf("check installed version of CI script %s: %s", entry.Dest, verr.Error()),
+		Suggestion: suggestion,
+		Cause:      verr,
+	}
+}
+
 // ciScriptDrift is a read-only version comparison (Task 3, R2) over the same
 // scaffoldManifest scaffoldCI installs from. It never writes files —
-// scaffold_ci({force:true}) is the remediation surfaced by both
+// scaffold_ci({updateOutdated:true}) is the remediation surfaced by both
 // SetupPrepareOut.CIScriptDrift and the "ci_script_drift" validate action.
-// A legacy (.js) file is reported as "outdated" (it always needs --force to
-// migrate); an entry with neither file installed is reported as "missing"
+// A legacy (.js) file is reported as "outdated" (it always needs an overwrite
+// mode to migrate); an entry with neither file installed is reported as "missing"
 // rather than folded into "outdated", so callers can distinguish "never
 // scaffolded" from "stale".
 func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
@@ -199,11 +268,8 @@ func ciScriptDrift(root string) ([]CIScriptDriftEntry, error) {
 
 		currentVersion, installedVersion, destExists, legacyExists, _, _, verr := scaffoldEntryVersions(root, entry, srcContent)
 		if verr != nil {
-			return nil, &mcpserver.InfraError{
-				Msg:        fmt.Sprintf("check installed version of CI script %s: %s", entry.Dest, verr.Error()),
-				Suggestion: "Check read permission on the CI script file named in the message above, then re-run the same setup_prepare or validate call.",
-				Cause:      verr,
-			}
+			return nil, scaffoldVersionReadError(entry, verr,
+				"Check read permission on the CI script file named in the message above, then re-run the same setup_prepare or validate call.")
 		}
 
 		installed := 0
@@ -274,8 +340,23 @@ func validateSecretName(name string) error {
 	return nil
 }
 
-// scaffoldCI is the core logic, separated for testability.
+// scaffoldCI runs scaffoldCIWith with the real git and gh binaries. The
+// force flag selects the force mode. setup_write_sections calls it with false.
 func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
+	return scaffoldCIWith(root, scaffoldOptions{Force: force}, execx.Run)
+}
+
+// scaffoldCIWith is the core logic of scaffold_ci. Tests pass a fake execRun
+// for the branch protection check.
+func scaffoldCIWith(root string, opts scaffoldOptions, execRun scaffoldExecFunc) (ScaffoldCIOut, error) {
+	if opts.Force && opts.UpdateOutdated {
+		return ScaffoldCIOut{}, &mcpserver.DomainError{
+			Msg:        "force and updateOutdated cannot both be true",
+			Suggestion: "Pass only one of the two inputs. Use updateOutdated true to update outdated files and keep current ones. Use force true to rewrite every file. Then run scaffold_ci again.",
+		}
+	}
+	force := opts.Force
+	updateOutdated := opts.UpdateOutdated
 	payloads := Payloads()
 
 	// pushAuth.secretName is read tolerantly (raw section, not the
@@ -322,21 +403,18 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 
 		currentVersion, installedVersion, destExists, legacyExists, destPath, legacyPath, verr := scaffoldEntryVersions(root, entry, srcContent)
 		if verr != nil {
-			return ScaffoldCIOut{}, &mcpserver.InfraError{
-				Msg:        fmt.Sprintf("check installed version of CI script %s: %s", entry.Dest, verr.Error()),
-				Suggestion: "Check read permission on the CI script file named in the message above, then retry scaffold_ci.",
-				Cause:      verr,
-			}
+			return ScaffoldCIOut{}, scaffoldVersionReadError(entry, verr,
+				"Check read permission on the CI script file named in the message above, then retry scaffold_ci.")
 		}
 
 		// Determine action (write mode, not check-only).
 		var action string
-		if !destExists && legacyExists && force {
+		if !destExists && legacyExists && (force || updateOutdated) {
 			// Migration: delete legacy .js, install new .cjs.
 			if err := os.Remove(legacyPath); err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{
 					Msg:        fmt.Sprintf("remove legacy %s: %s", legacyPath, err.Error()),
-					Suggestion: fmt.Sprintf("Delete %s by hand or make its folder writable. Then run scaffold_ci again with force true.", legacyPath),
+					Suggestion: fmt.Sprintf("Delete %s by hand or make its folder writable. Then run scaffold_ci again with the same input.", legacyPath),
 					Cause:      err,
 				}
 			}
@@ -344,16 +422,20 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		} else if !destExists && legacyExists {
 			action = "outdated"
 			warnings = append(warnings,
-				fmt.Sprintf("Legacy file found: %s → use --force to migrate to %s", entry.LegacyDest, entry.Dest))
+				fmt.Sprintf("Legacy file found: %s → run scaffold_ci with updateOutdated true to migrate to %s", entry.LegacyDest, entry.Dest))
 		} else if !destExists {
 			action = "created"
 		} else if force {
 			action = "overwritten"
 		} else if installedVersion != nil && *installedVersion < currentVersion {
-			action = "outdated"
-			warnings = append(warnings,
-				fmt.Sprintf("%s is outdated (installed: v%d, current: v%d). Use --force to update.",
-					entry.Dest, *installedVersion, currentVersion))
+			if updateOutdated {
+				action = "overwritten"
+			} else {
+				action = "outdated"
+				warnings = append(warnings,
+					fmt.Sprintf("%s is outdated (installed: v%d, current: v%d). Run scaffold_ci with updateOutdated true to update.",
+						entry.Dest, *installedVersion, currentVersion))
+			}
 		} else {
 			action = "skipped"
 		}
@@ -367,10 +449,10 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 					Cause:      err,
 				}
 			}
-			if err := os.WriteFile(destPath, srcContent, 0644); err != nil {
+			if err := fsx.AtomicWriteBytesPerm(destPath, srcContent, 0644); err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{
 					Msg:        fmt.Sprintf("write %s: %s", destPath, err.Error()),
-					Suggestion: fmt.Sprintf("Check write permission on %s and free disk space on the project root. Then run scaffold_ci again.", destPath),
+					Suggestion: fmt.Sprintf("Check write permission on %s and its folder, and free disk space on the project root. Then run scaffold_ci again.", destPath),
 					Cause:      err,
 				}
 			}
@@ -389,7 +471,7 @@ func scaffoldCI(root string, force bool) (ScaffoldCIOut, error) {
 		warnings = []string{}
 	}
 
-	protection := checkBranchProtection(root, execx.Run)
+	protection := checkBranchProtection(root, execRun)
 
 	return ScaffoldCIOut{
 		Root:       root,
@@ -588,7 +670,7 @@ func verifyTagAncestry(root, tag string) (VerifyTagAncestryOut, error) {
 // server.
 func RegisterScaffoldTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "scaffold_ci",
-		"INTERNAL — called by sdlc skills only. Deterministically copies CI scripts and workflow files into a user project from embedded payloads. Writes into the active git worktree (git rev-parse --show-toplevel) and returns that path as root.",
+		"INTERNAL — called by sdlc skills only. Deterministically copies CI scripts and workflow files into a user project from embedded payloads. Writes into the active git worktree (git rev-parse --show-toplevel) and returns that path as root. Inputs force and updateOutdated cannot both be true: force rewrites every file, updateOutdated rewrites only outdated files and creates missing ones.",
 		mcpserver.Annotations{
 			Title:       "Scaffold CI workflow files",
 			ReadOnly:    false,
@@ -605,7 +687,7 @@ func RegisterScaffoldTools(s *mcpserver.Server) {
 					Cause:      err,
 				}
 			}
-			return scaffoldCI(root, in.Force)
+			return scaffoldCIWith(root, scaffoldOptions{Force: in.Force, UpdateOutdated: in.UpdateOutdated}, execx.Run)
 		},
 	)
 

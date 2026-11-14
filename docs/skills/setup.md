@@ -42,15 +42,16 @@ The skill creates `.sdlc-v2/` and its two commented config files when they are a
 | Step 2b: Save-target question | user | Asks where to save personal settings: per section, this project, or the user profile. | The save target for the run | no | a selected section is stored in `local.toml` |
 | Step 3: Dispatch loop | skill | Configures each selected section in order: prints the section header and options, asks one question for each field, or follows the sub-flow of the section. Shows a diff preview, asks the user to confirm it and writes the config files with `setup_write_sections`. | The written config sections | no | at least one section is selected |
 | Step 3b: Validate written config | tool | Reads the config again and checks that each written section now shows as set. It warns and offers a retry when a section does not. | The validation result | no | at least one section was written |
-| Step 4: Summary | skill | Shows the files created, updated or migrated, and the CI scripts that need an update. | The setup summary | no | always |
+| Step 3c: CI script update | user | Lists each CI script that is `outdated` or `missing` and asks `Update the CI scripts listed above?` with `Update (Recommended)` and `Skip`. On `Update` it calls `scaffold_ci({updateOutdated: true})` and then `setup_prepare({skipConfigCheck: true})` for fresh drift. | The updated CI scripts and the fresh drift result | yes | a CI script is `outdated` or `missing`. `--force` and `--only` do not skip it |
+| Step 4: Summary | skill | Shows the files created, updated or migrated, and the CI scripts that still need an update. It prints `CI script check failed: <error>` when the drift check fails. | The setup summary | no | always |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
 | Starts | With `/sdlc:setup`, with or without a flag. The skill stops when plan mode is active. |
-| Ends | After Step 4 prints the summary. When the user selects no section, the run goes to Step 4 and changes nothing. |
-| Asks the user | At the section menu, at the migration question, at the save-target question, for each field of each selected section, and at the diff preview before the write. |
+| Ends | After Step 4 prints the summary. When the user selects no section, the run goes to Step 3c and changes no config file. |
+| Asks the user | At the section menu, at the migration question, at the save-target question, for each field of each selected section, at the diff preview before the write, and at the CI script update question. |
 | Resume | none |
 
 ## More examples

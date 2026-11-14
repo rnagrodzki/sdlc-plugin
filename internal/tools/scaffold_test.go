@@ -1078,3 +1078,443 @@ func TestEnrichConfig_MissingFile(t *testing.T) {
 		t.Errorf("expected action 'missing', got %q", out.Action)
 	}
 }
+
+// --- updateOutdated, atomic write and read limit tests ---
+
+// noGhExec is a scaffoldExecFunc that fails every call, so the branch
+// protection check degrades to a note and no real git or gh binary runs.
+func noGhExec(name string, args []string, opts execx.Options) (string, error) {
+	return "", errors.New("exec disabled in test")
+}
+
+// scaffoldActions maps each file path of out to its action.
+func scaffoldActions(out ScaffoldCIOut) map[string]string {
+	m := map[string]string{}
+	for _, f := range out.Files {
+		m[f.Path] = f.Action
+	}
+	return m
+}
+
+// TestScaffoldCI_UpdateOutdated_UpdatesOutdatedKeepsCurrent verifies the
+// updateOutdated mode rewrites only the file below the bundled version and
+// leaves a current file with a local edit alone.
+func TestScaffoldCI_UpdateOutdated_UpdatesOutdatedKeepsCurrent(t *testing.T) {
+	root := t.TempDir()
+	if _, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec); err != nil {
+		t.Fatalf("scaffoldCIWith (create): %v", err)
+	}
+
+	outdatedRel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	if err := os.WriteFile(filepath.Join(root, outdatedRel), []byte("# release-on-main-version: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	currentRel := filepath.Join(".github", "workflows", "check-changelog.yml")
+	edited := string(Payloads()["check-changelog.yml"]) + "# local edit\n"
+	if err := os.WriteFile(filepath.Join(root, currentRel), []byte(edited), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := scaffoldCIWith(root, scaffoldOptions{UpdateOutdated: true}, noGhExec)
+	if err != nil {
+		t.Fatalf("scaffoldCIWith (updateOutdated): %v", err)
+	}
+	actions := scaffoldActions(out)
+	if actions[outdatedRel] != "overwritten" {
+		t.Errorf("%s: expected 'overwritten', got %q", outdatedRel, actions[outdatedRel])
+	}
+	for _, entry := range scaffoldManifest {
+		if entry.Dest != outdatedRel && actions[entry.Dest] != "skipped" {
+			t.Errorf("%s: expected 'skipped', got %q", entry.Dest, actions[entry.Dest])
+		}
+	}
+	if len(out.Warnings) != 0 {
+		t.Errorf("expected no warnings, got %v", out.Warnings)
+	}
+
+	got, err := os.ReadFile(filepath.Join(root, currentRel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != edited {
+		t.Errorf("%s: local edit must stay in a current file", currentRel)
+	}
+	got, err = os.ReadFile(filepath.Join(root, outdatedRel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(Payloads()["release-on-main.yml"]) {
+		t.Errorf("%s: expected the bundled content after the update", outdatedRel)
+	}
+}
+
+// TestScaffoldCI_UpdateOutdated_SecondRunSkips verifies the mode is
+// idempotent: a fresh project is created, then every file is skipped.
+func TestScaffoldCI_UpdateOutdated_SecondRunSkips(t *testing.T) {
+	root := t.TempDir()
+
+	out, err := scaffoldCIWith(root, scaffoldOptions{UpdateOutdated: true}, noGhExec)
+	if err != nil {
+		t.Fatalf("scaffoldCIWith (first): %v", err)
+	}
+	for _, f := range out.Files {
+		if f.Action != "created" {
+			t.Errorf("first run %s: expected 'created', got %q", f.Path, f.Action)
+		}
+	}
+
+	out, err = scaffoldCIWith(root, scaffoldOptions{UpdateOutdated: true}, noGhExec)
+	if err != nil {
+		t.Fatalf("scaffoldCIWith (second): %v", err)
+	}
+	for _, f := range out.Files {
+		if f.Action != "skipped" {
+			t.Errorf("second run %s: expected 'skipped', got %q", f.Path, f.Action)
+		}
+	}
+}
+
+// TestScaffoldCI_UpdateOutdated_MigratesLegacy verifies updateOutdated
+// migrates a legacy .js file like force does.
+func TestScaffoldCI_UpdateOutdated_MigratesLegacy(t *testing.T) {
+	root := t.TempDir()
+	legacy := filepath.Join(root, ".github", "scripts", "check-changelog.js")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("const CHECK_CHANGELOG_SCRIPT_VERSION = 1;\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := scaffoldCIWith(root, scaffoldOptions{UpdateOutdated: true}, noGhExec)
+	if err != nil {
+		t.Fatalf("scaffoldCIWith: %v", err)
+	}
+	rel := filepath.Join(".github", "scripts", "check-changelog.cjs")
+	if got := scaffoldActions(out)[rel]; got != "migrated" {
+		t.Errorf("%s: expected 'migrated', got %q", rel, got)
+	}
+	if scaffoldFileExists(legacy) {
+		t.Error("legacy file should have been deleted")
+	}
+	if !scaffoldFileExists(filepath.Join(root, rel)) {
+		t.Error("new file should exist after migration")
+	}
+}
+
+// TestScaffoldCI_NoMode_WarningsNameUpdateOutdated verifies the default mode
+// reports an outdated file and a legacy file with the updateOutdated fix text.
+func TestScaffoldCI_NoMode_WarningsNameUpdateOutdated(t *testing.T) {
+	root := t.TempDir()
+	if _, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec); err != nil {
+		t.Fatalf("scaffoldCIWith (create): %v", err)
+	}
+	outdatedRel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	if err := os.WriteFile(filepath.Join(root, outdatedRel), []byte("# release-on-main-version: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	legacy := filepath.Join(root, ".github", "scripts", "check-changelog.js")
+	if err := os.Remove(filepath.Join(root, ".github", "scripts", "check-changelog.cjs")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("const CHECK_CHANGELOG_SCRIPT_VERSION = 1;\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec)
+	if err != nil {
+		t.Fatalf("scaffoldCIWith: %v", err)
+	}
+	joined := strings.Join(out.Warnings, "\n")
+	for _, want := range []string{
+		outdatedRel + " is outdated (installed: v1, current: v",
+		"Run scaffold_ci with updateOutdated true to update.",
+		"Legacy file found: " + filepath.Join(".github", "scripts", "check-changelog.js") + " → run scaffold_ci with updateOutdated true to migrate to ",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("warnings must contain %q, got:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "--force") {
+		t.Errorf("warnings must not name --force, got:\n%s", joined)
+	}
+}
+
+// TestScaffoldCI_ForceAndUpdateOutdated_DomainError verifies both inputs
+// together give a DomainError before any file is read or written.
+func TestScaffoldCI_ForceAndUpdateOutdated_DomainError(t *testing.T) {
+	root := t.TempDir()
+
+	_, err := scaffoldCIWith(root, scaffoldOptions{Force: true, UpdateOutdated: true}, noGhExec)
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if de.Msg != "force and updateOutdated cannot both be true" {
+		t.Errorf("unexpected message %q", de.Msg)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, ".github")); !os.IsNotExist(statErr) {
+		t.Errorf(".github must not exist after the conflict error, stat err: %v", statErr)
+	}
+}
+
+// TestScaffoldCI_AtomicWrite_FailureKeepsOldContent verifies a failed write
+// in a read-only folder gives an InfraError and keeps the old file content.
+func TestScaffoldCI_AtomicWrite_FailureKeepsOldContent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	root := t.TempDir()
+	if _, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec); err != nil {
+		t.Fatalf("scaffoldCIWith (create): %v", err)
+	}
+	workflows := filepath.Join(root, ".github", "workflows")
+	target := filepath.Join(workflows, "release-on-main.yml")
+	old := []byte("# release-on-main-version: 1\n")
+	if err := os.WriteFile(target, old, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(workflows, 0555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(workflows, 0755) })
+
+	_, err := scaffoldCIWith(root, scaffoldOptions{UpdateOutdated: true}, noGhExec)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if !strings.HasPrefix(ie.Msg, "write ") {
+		t.Errorf("message must start with 'write ', got %q", ie.Msg)
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(old) {
+		t.Errorf("old content must stay after a failed write, got %q", got)
+	}
+}
+
+// ciFileOfSize returns CI file content of exactly size bytes that starts with
+// a version 1 marker for release-on-main.yml.
+func ciFileOfSize(size int) []byte {
+	head := "# release-on-main-version: 1\n"
+	return []byte(head + strings.Repeat("x", size-len(head)))
+}
+
+// TestScaffoldCI_ReadLimit_AtLimitIsRead verifies a file of exactly 1 MiB is
+// read and gets an action.
+func TestScaffoldCI_ReadLimit_AtLimitIsRead(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	if err := os.MkdirAll(filepath.Dir(filepath.Join(root, rel)), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, rel), ciFileOfSize(1048576), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec)
+	if err != nil {
+		t.Fatalf("scaffoldCIWith: %v", err)
+	}
+	if got := scaffoldActions(out)[rel]; got != "outdated" {
+		t.Errorf("%s: expected 'outdated', got %q", rel, got)
+	}
+}
+
+// TestScaffoldCI_ReadLimit_AboveLimitIsDataError verifies a file of 1 MiB
+// plus one byte gives a DataError in force, updateOutdated and default mode,
+// in ciScriptDrift too, and stays unchanged.
+func TestScaffoldCI_ReadLimit_AboveLimitIsDataError(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := ciFileOfSize(1048577)
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	const suggestion = "The installed file is larger than 1 MiB, so it is not a plugin CI file. Restore the file with git or delete it. Then run the same call again."
+	check := func(name string, err error) {
+		t.Helper()
+		var de *mcpserver.DataError
+		if !errors.As(err, &de) {
+			t.Errorf("%s: expected *mcpserver.DataError, got %T: %v", name, err, err)
+			return
+		}
+		if de.Suggestion != suggestion {
+			t.Errorf("%s: unexpected suggestion %q", name, de.Suggestion)
+		}
+		if !strings.HasPrefix(de.Msg, "check installed version of CI script "+rel+": ") || !strings.Contains(de.Msg, "larger than 1048576 bytes") {
+			t.Errorf("%s: unexpected message %q", name, de.Msg)
+		}
+	}
+	for name, opts := range map[string]scaffoldOptions{
+		"default":        {},
+		"force":          {Force: true},
+		"updateOutdated": {UpdateOutdated: true},
+	} {
+		_, err := scaffoldCIWith(root, opts, noGhExec)
+		check(name, err)
+	}
+	_, err := ciScriptDrift(root)
+	check("ciScriptDrift", err)
+
+	got, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != string(content) {
+		t.Error("the oversize file must stay unchanged")
+	}
+}
+
+// TestScaffoldUpdateOutdatedMarkerEdges verifies the two version-marker edges
+// of the updateOutdated mode: a file with no marker counts as version 1 and is
+// overwritten, and an installed version above the bundled one is skipped.
+func TestScaffoldUpdateOutdatedMarkerEdges(t *testing.T) {
+	root := t.TempDir()
+	if _, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec); err != nil {
+		t.Fatalf("scaffoldCIWith (create): %v", err)
+	}
+	noMarkerRel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	if err := os.WriteFile(filepath.Join(root, noMarkerRel), []byte("name: no marker\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	aboveRel := filepath.Join(".github", "workflows", "check-changelog.yml")
+	above := "# check-changelog-version: 999\n"
+	if err := os.WriteFile(filepath.Join(root, aboveRel), []byte(above), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := scaffoldCIWith(root, scaffoldOptions{UpdateOutdated: true}, noGhExec)
+	if err != nil {
+		t.Fatalf("scaffoldCIWith: %v", err)
+	}
+	actions := scaffoldActions(out)
+	if actions[noMarkerRel] != "overwritten" {
+		t.Errorf("%s: expected 'overwritten', got %q", noMarkerRel, actions[noMarkerRel])
+	}
+	if actions[aboveRel] != "skipped" {
+		t.Errorf("%s: expected 'skipped', got %q", aboveRel, actions[aboveRel])
+	}
+	got, err := os.ReadFile(filepath.Join(root, aboveRel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != above {
+		t.Errorf("%s: a file above the bundled version must stay unchanged", aboveRel)
+	}
+}
+
+// TestScaffoldCIScriptDriftActionValues verifies each ciScriptDrift action is
+// one of current, outdated or missing for every file state.
+func TestScaffoldCIScriptDriftActionValues(t *testing.T) {
+	root := t.TempDir()
+	valid := map[string]bool{"current": true, "outdated": true, "missing": true}
+	check := func(label string) map[string]string {
+		t.Helper()
+		entries, err := ciScriptDrift(root)
+		if err != nil {
+			t.Fatalf("%s: ciScriptDrift: %v", label, err)
+		}
+		m := map[string]string{}
+		for _, e := range entries {
+			if !valid[e.Action] {
+				t.Errorf("%s: %s has action %q", label, e.Script, e.Action)
+			}
+			m[e.Script] = e.Action
+		}
+		return m
+	}
+
+	if m := check("empty project"); m[filepath.Join(".github", "workflows", "release-on-main.yml")] != "missing" {
+		t.Errorf("empty project: expected 'missing', got %v", m)
+	}
+	if _, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec); err != nil {
+		t.Fatalf("scaffoldCIWith: %v", err)
+	}
+	for script, action := range check("fresh project") {
+		if action != "current" {
+			t.Errorf("fresh project: %s expected 'current', got %q", script, action)
+		}
+	}
+	outdatedRel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	if err := os.WriteFile(filepath.Join(root, outdatedRel), []byte("# release-on-main-version: 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if m := check("outdated"); m[outdatedRel] != "outdated" {
+		t.Errorf("outdated: expected 'outdated', got %q", m[outdatedRel])
+	}
+}
+
+// TestScaffoldReadLimitLegacyPath verifies the read limit applies to the
+// legacy .js path: a file of exactly the limit is read, a larger one gives a
+// DataError.
+func TestScaffoldReadLimitLegacyPath(t *testing.T) {
+	legacyRel := filepath.Join(".github", "scripts", "check-changelog.js")
+	for _, tc := range []struct {
+		name    string
+		size    int
+		wantErr bool
+	}{
+		{"at limit", maxInstalledCIFileBytes, false},
+		{"above limit", maxInstalledCIFileBytes + 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, legacyRel)
+			if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+				t.Fatal(err)
+			}
+			content := append([]byte("const CHECK_CHANGELOG_SCRIPT_VERSION = 1;\n"), make([]byte, tc.size)...)[:tc.size]
+			if err := os.WriteFile(path, content, 0644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec)
+			var de *mcpserver.DataError
+			if tc.wantErr {
+				if !errors.As(err, &de) {
+					t.Fatalf("expected *mcpserver.DataError, got %T: %v", err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("scaffoldCIWith: %v", err)
+			}
+		})
+	}
+}
+
+// TestScaffoldReadersAgreeOnLargeFile verifies scaffold_ci, the drift read of
+// setup_prepare and validate give the same DataError for a file above the limit.
+func TestScaffoldReadersAgreeOnLargeFile(t *testing.T) {
+	root := t.TempDir()
+	rel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	path := filepath.Join(root, rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, ciFileOfSize(maxInstalledCIFileBytes+1), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, scaffoldErr := scaffoldCIWith(root, scaffoldOptions{}, noGhExec)
+	_, driftErr := ciScriptDrift(root)
+	_, validateErr := validateCIScriptDrift(root)
+	for name, err := range map[string]error{"scaffoldCIWith": scaffoldErr, "ciScriptDrift": driftErr, "validateCIScriptDrift": validateErr} {
+		var de *mcpserver.DataError
+		if !errors.As(err, &de) {
+			t.Errorf("%s: expected *mcpserver.DataError, got %T: %v", name, err, err)
+			continue
+		}
+		if de.Suggestion != ciFileTooLargeSuggestion {
+			t.Errorf("%s: unexpected suggestion %q", name, de.Suggestion)
+		}
+	}
+}

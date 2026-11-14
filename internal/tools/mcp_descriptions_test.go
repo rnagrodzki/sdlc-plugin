@@ -371,6 +371,7 @@ func TestOptionalInputFieldsNotRequired(t *testing.T) {
 		{"openspec_enrich", "remove"},
 		{"migrate", "dryRun"},
 		{"scaffold_ci", "force"},
+		{"scaffold_ci", "updateOutdated"},
 	}
 	for _, tc := range cases {
 		fields, ok := required[tc.tool]
