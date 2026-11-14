@@ -22,8 +22,8 @@ export const features = [
     media: ['dashboard-stats'],
     claims: [
       { text: 'The dashboard lists the duration of each finished run, with the plan and ship time', doc: 'docs/dashboard.md#what-it-shows' },
-      { text: 'A run report records the step timings, the review waves and the self-healing changes of a run', doc: 'docs/skills/ship.md#run-report' },
-      { text: 'Learnings stats count the recorded lessons by category and by skill', doc: 'docs/skills/harden.md#learnings-stats' },
+      { text: 'A run report records the step timings, the review waves and the self-healing changes of a run', doc: 'docs/skills/ship/state-and-trace.md#run-report' },
+      { text: 'Learnings stats count the recorded lessons by category and by skill', doc: 'docs/skills/harden/learnings.md#learnings-stats' },
     ],
   },
   {
@@ -33,9 +33,9 @@ export const features = [
     description: 'Harden analyzes a pipeline failure and proposes approved edits to the guardrails, so the same class of failure is caught earlier next time.',
     media: ['dashboard-main'],
     claims: [
-      { text: 'Harden triages the learnings of earlier runs and proposes guardrail edits', doc: 'docs/skills/harden.md#learnings-triage' },
-      { text: 'A lesson that recurs 3 times becomes a skill recommendation, with a priority', doc: 'docs/skills/harden.md#skill-recommendations' },
-      { text: 'Each run keeps one record of its hardening in the ship state, and the dashboard shows it', doc: 'docs/skills/harden.md#ship-state-record' },
+      { text: 'Harden triages the learnings of earlier runs and proposes guardrail edits', doc: 'docs/skills/harden/learnings.md#learnings-triage' },
+      { text: 'A lesson that recurs 3 times becomes a skill recommendation, with a priority', doc: 'docs/skills/harden/learnings.md#skill-recommendations' },
+      { text: 'Each run keeps one record of its hardening in the ship state, and the dashboard shows it', doc: 'docs/skills/harden/ship-state-record.md' },
     ],
   },
   {
@@ -45,8 +45,8 @@ export const features = [
     description: 'Ship keeps the state of each step on disk, so a stopped run resumes at the step where it stopped.',
     media: ['dashboard-long-run', 'dashboard-ship-detail'],
     claims: [
-      { text: 'Ship saves the state of each step, so a stopped run resumes where it stopped', doc: 'docs/skills/ship.md#state-and-resolution-trace' },
-      { text: 'A plan run recovers after the compaction of the session context', doc: 'docs/skills/plan.md#recovery-after-compaction' },
+      { text: 'Ship saves the state of each step, so a stopped run resumes where it stopped', doc: 'docs/skills/ship/state-and-trace.md#state-and-resolution-trace' },
+      { text: 'A plan run recovers after the compaction of the session context', doc: 'docs/skills/plan/conclude-and-recovery.md#recovery-after-compaction' },
       { text: 'The dashboard keeps the plan times of a run after the cleanup of the plan state', doc: 'docs/dashboard.md#lifetime-of-the-source-data' },
     ],
   },

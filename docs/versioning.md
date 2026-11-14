@@ -135,7 +135,7 @@ The pre-redesign flat shape (top-level `mode`, string `versionFile`, `changelogM
 
 Releases are **never created during the ship pipeline**. Version diagnostics (release readiness, bump level, and notes) are computed during PR preparation and validation. Actual version bumps, tags, and changelog writes happen **post-merge via CI**.
 
-When you run `/ship`, the resolved `[version]` config section is snapshotted into the pipeline's saved state file at flag-resolution time (for diagnosability, not because a release happens there) — see [`skills/ship.md`](skills/ship.md#state-and-resolution-trace) for exactly what's recorded and how to read it back.
+When you run `/ship`, the resolved `[version]` config section is snapshotted into the pipeline's saved state file at flag-resolution time (for diagnosability, not because a release happens there) — see [`skills/ship.md`](skills/ship/state-and-trace.md#state-and-resolution-trace) for exactly what's recorded and how to read it back.
 
 ### Pre-Merge Safety: verify-release-intent
 
