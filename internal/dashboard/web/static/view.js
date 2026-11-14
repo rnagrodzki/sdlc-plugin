@@ -790,13 +790,14 @@
   // --- Step sections -------------------------------------------------------
 
   /**
-   * A step gets a section only when it has sub-progress: a detail object, or
-   * the detailKind of a finished run whose detail is not loaded yet.
-   * @param {{detail?: object, detailKind?: string}} step
+   * A step gets a section only when it has sub-progress: a detail object, the
+   * detailKind of a finished run whose detail is not loaded yet, or at least
+   * one instruction record.
+   * @param {{detail?: object, detailKind?: string, instructions?: Array}} step
    * @returns {boolean}
    */
   function hasSection(step) {
-    return !!(step && (step.detail || step.detailKind));
+    return !!(step && (step.detail || step.detailKind || (step.instructions && step.instructions.length > 0)));
   }
 
   /**

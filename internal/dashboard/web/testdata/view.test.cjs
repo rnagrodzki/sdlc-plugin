@@ -642,6 +642,11 @@ describe('hasSection / sectionKind', () => {
     assert.equal(view.hasSection(null), false);
   });
 
+  test('hasSection is true for a step with instructions and false for an empty list', () => {
+    assert.equal(view.hasSection({ instructions: [{ key: 'pr', number: 1 }] }), true);
+    assert.equal(view.hasSection({ instructions: [] }), false);
+  });
+
   test('sectionKind returns the detail kind, or empty with no detail', () => {
     assert.equal(view.sectionKind({ detail: { kind: 'rounds' } }), 'rounds');
     assert.equal(view.sectionKind({}), '');
@@ -4258,8 +4263,9 @@ function fixtureBlock(repoName, match, state) {
   return render.pipelineBlock(fakeDoc(), view, repo, p, s);
 }
 
+// The tiles of a block. The end group of instructions is a div, not a tile, so it is left out.
 function tilesOf(block) {
-  return oneByClass(block, 'step-detail').children;
+  return oneByClass(block, 'step-detail').children.filter((c) => !classesOf(c).includes('end-group'));
 }
 
 function tileByName(block, name) {
@@ -4712,9 +4718,11 @@ describe('render tiles from the shared fixture', () => {
     }
   });
 
-  test('tiles follow track order, then issues, then session; skipped and harden steps give no tile', () => {
+  test('tiles follow track order, then issues, then session; a step with no detail and no instruction gives no tile', () => {
     const block = fixtureBlock('sdlc-plugin', SHIP);
-    assert.deepEqual(tilesOf(block).map((t) => t.attrs['data-section']), ['plan', 'execute', 'review', 'received-review', 'issues', 'session']);
+    assert.deepEqual(tilesOf(block).map((t) => t.attrs['data-section']), [
+      'plan', 'execute', 'commit', 'review', 'received-review', 'harden', 'pr', 'issues', 'session',
+    ]);
   });
 
   test('a ship execute tile: three waves, committed with the short sha, a task with no name shows its id only', () => {
@@ -6375,6 +6383,7 @@ describe('render.js browser global fallback', () => {
     const run = new Function('module', source);
     run.call(fakeRoot);
     assert.deepEqual(Object.keys(fakeRoot.sdlcRender).sort(), [
+      'INSTRUCTION_TEXT_MAX',
       'TILE_BODIES',
       'activityPanel',
       'attentionRows',
@@ -6386,6 +6395,7 @@ describe('render.js browser global fallback', () => {
       'el',
       'elapsedText',
       'emptyState',
+      'endGroup',
       'explorersBody',
       'filterChips',
       'findingRow',
@@ -6394,6 +6404,7 @@ describe('render.js browser global fallback', () => {
       'hardenBody',
       'headerTotals',
       'historyTable',
+      'instructionRows',
       'issuesTile',
       'loneWaitCard',
       'packDimensionGrid',
@@ -6409,6 +6420,90 @@ describe('render.js browser global fallback', () => {
       'tickElapsed',
       'wavesBody',
     ]);
+  });
+});
+
+// --- render.js: instruction rows and the end group -------------------------------
+
+describe('instruction rows and end group', () => {
+  const doc = () => fakeDoc();
+  const MAX = render.INSTRUCTION_TEXT_MAX;
+  const rec = (extra) => Object.assign({ key: 'pr', number: 1, source: 'team', text: 'Move the ticket', status: 'pending' }, extra);
+
+  test('INSTRUCTION_TEXT_MAX is 60', () => {
+    assert.equal(MAX, 60);
+  });
+
+  test('instructionRows gives null for no records', () => {
+    assert.equal(render.instructionRows(doc(), undefined), null);
+    assert.equal(render.instructionRows(doc(), []), null);
+  });
+
+  test('a row shows a lamp, the label, the text and the outcome', () => {
+    const list = render.instructionRows(doc(), [rec({ status: 'failed', outcome: 'No ticket id' })]);
+    const row = oneByClass(list, 'instr-row');
+    assert.ok(classesOf(oneByClass(row, 'lamp')).includes('lamp-failed'));
+    assert.equal(oneByClass(row, 'instr-label').textContent, 'pr #1 (team)');
+    assert.equal(oneByClass(row, 'instr-text').textContent, 'Move the ticket');
+    assert.equal(oneByClass(row, 'instr-outcome').textContent, 'No ticket id');
+  });
+
+  test('each status has its lamp class; not run has a dash', () => {
+    const cls = { pending: 'lamp-pending', running: 'lamp-running', done: 'lamp-done', failed: 'lamp-failed', 'not run': 'lamp-not-run' };
+    for (const [status, want] of Object.entries(cls)) {
+      const row = oneByClass(render.instructionRows(doc(), [rec({ status })]), 'instr-row');
+      assert.ok(classesOf(oneByClass(row, 'lamp')).includes(want), status);
+    }
+  });
+
+  test('text at the limit is whole, text over the limit is cut with an ellipsis, the title has the full text', () => {
+    const atLimit = 'a'.repeat(MAX);
+    const over = 'b'.repeat(MAX + 1);
+    const rows = byClass(render.instructionRows(doc(), [rec({ text: atLimit }), rec({ number: 2, text: over })]), 'instr-text');
+    assert.equal(rows[0].textContent, atLimit);
+    assert.equal(rows[0].attrs.title, atLimit);
+    assert.equal(rows[1].textContent, 'b'.repeat(MAX) + '…');
+    assert.equal(rows[1].attrs.title, over);
+  });
+
+  test('markup in the text and the outcome stays text', () => {
+    const evil = '<img src=x onerror=alert(1)>';
+    const list = render.instructionRows(doc(), [rec({ text: evil, outcome: evil })]);
+    const all = findAll(list, () => true);
+    assert.equal(oneByClass(list, 'instr-text').textContent, evil);
+    assert.equal(oneByClass(list, 'instr-outcome').textContent, evil);
+    assert.equal(all.filter((n) => n.tagName === 'img').length, 0);
+    for (const n of all) {
+      for (const k of Object.keys(n.attrs)) assert.ok(!/^on/.test(k), `attribute ${k}`);
+    }
+  });
+
+  test('endGroup gives null with no end instructions, else its label and rows', () => {
+    assert.equal(render.endGroup(doc(), { endInstructions: [] }), null);
+    const g = render.endGroup(doc(), { endInstructions: [rec({ key: 'ship' })], endLabel: 'end of run (ship)' });
+    assert.equal(oneByClass(g, 'end-label').textContent, 'end of run (ship)');
+    assert.equal(byClass(g, 'instr-row').length, 1);
+  });
+
+  test('the fixture: the rows are under their step tiles and the end group follows the last tile', () => {
+    const block = fixtureBlock('sdlc-plugin', SHIP);
+    const p = fixturePipeline('sdlc-plugin', SHIP);
+    for (const name of ['commit', 'harden', 'pr']) {
+      const rows = byClass(tileByName(block, name), 'instr-row');
+      assert.equal(rows.length, stepOf(p, name).instructions.length, name);
+    }
+    const kids = oneByClass(block, 'step-detail').children;
+    const idx = kids.findIndex((c) => classesOf(c).includes('end-group'));
+    assert.ok(idx > 0);
+    assert.equal(kids[idx - 1].attrs['data-section'], 'pr');
+    assert.equal(oneByClass(kids[idx], 'end-label').textContent, p.endLabel);
+    assert.equal(byClass(kids[idx], 'instr-row').length, p.endInstructions.length);
+  });
+
+  test('a step with instructions and no detail gives a tile with the rows and no empty body', () => {
+    const t = render.stepTile(doc(), view, {}, { name: 'pr', status: 'pending', instructions: [rec()] }, 0, true, false);
+    assert.equal(t.attrs['data-section'], 'pr');
+    assert.equal(byClass(t, 'instr-row').length, 1);
   });
 });
 
