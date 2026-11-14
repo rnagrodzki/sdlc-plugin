@@ -65,6 +65,34 @@ const pageUrl = new URL(Astro.url.pathname, SITE).href;
       inset 0 1px 0 var(--white-60),
       0 20px 44px -26px var(--shade);
   }
+  /* An island: a light card on the page. */
+  .island {
+    border: 1px solid var(--glass-edge);
+    border-radius: var(--r-16);
+    background: var(--white-60);
+    box-shadow: 0 14px 28px -24px var(--shade);
+  }
+  /* A skill name that links to its skill page. */
+  .skill-chip {
+    display: inline-block;
+    white-space: nowrap;
+    font-family: var(--font-mono);
+    font-weight: var(--weight-medium);
+    font-size: var(--text-xs);
+    color: var(--accent);
+    padding: var(--space-3) var(--space-10);
+    border-radius: var(--r-ctl);
+    border: 1px solid var(--accent-30);
+    background: var(--paper);
+    text-decoration: none;
+    transition:
+      background var(--dur-200),
+      color var(--dur-200);
+  }
+  .skill-chip:hover {
+    background: var(--accent);
+    color: var(--on-accent);
+  }
   /* A rendered Mermaid diagram (scripts/mermaid.ts). It scrolls in its own frame on a phone. */
   .mermaid-diagram {
     overflow-x: auto;

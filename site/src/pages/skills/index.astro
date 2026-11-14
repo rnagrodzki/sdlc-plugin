@@ -13,6 +13,7 @@ import HandoverTable from '../../components/HandoverTable.astro';
 import SkillTiles from '../../components/SkillTiles.astro';
 import { BASE } from '../../../site.config.mjs';
 import { parseSteps, parseTableUnder } from '../../lib/steps-table.mjs';
+import { skillMap } from '../../lib/skill-map.mjs';
 import { FIXED_SKILLS, HARDEN_LANE_ID, SHIP_ID, nodeFor, skillNodeNames } from '../../lib/selection.mjs';
 
 const docsDir = path.resolve('../docs/skills');
@@ -20,9 +21,8 @@ const read = (file: string) => fs.readFileSync(path.join(docsDir, file), 'utf8')
 const readme = read('README.md');
 
 const shipSteps = parseSteps(read('ship.md')).steps;
-const skills = parseTableUnder(readme, '## Skill map').map((r) => ({ name: r.Skill, role: r.Role, summary: r.Summary }));
+const skills = skillMap(readme);
 const handovers = parseTableUnder(readme, '## Handovers') as Array<{ From: string; To: string; 'Hands over': string }>;
-if (skills.length === 0) throw new Error('docs/skills/README.md: no table under "## Skill map"');
 if (handovers.length === 0) throw new Error('docs/skills/README.md: no table under "## Handovers"');
 
 const stepNames = shipSteps.map((s) => s.name);

@@ -1,7 +1,13 @@
 ---
 // The glass run panel of the reference Home (site-preview.src.html:424-440).
 // A sample run, not live data: the label says so. Only the step in progress
-// moves, and it stops under reduced motion.
+// moves, and it stops under reduced motion. Each row links to its skill page.
+import { BASE } from '../../site.config.mjs';
+import { skillHref } from '../lib/skill-map.mjs';
+
+/** The skill page of a command such as `/sdlc:plan`. */
+const pageOf = (cmd: string) => skillHref(cmd.replace('/sdlc:', ''), BASE);
+
 type StepState = 'done' | 'run' | 'wait';
 interface Step {
   name: string;
@@ -35,10 +41,10 @@ const stateText: Record<StepState, string> = { done: 'Done', run: 'In progress',
       steps.map((step) => (
         <li class:list={['run-row', { 'is-wait': step.state === 'wait' }]}>
           <span class:list={['st', `st-${step.state}`]} role="img" aria-label={stateText[step.state]} />
-          <span class="run-name">
+          <a class="run-name" href={pageOf(step.cmd)}>
             {step.name}
             <span class="run-cmd">{step.cmd}</span>
-          </span>
+          </a>
           <span class="run-val">{step.value}</span>
           {step.progress && (
             <span class="bar" aria-hidden="true">
@@ -50,7 +56,8 @@ const stateText: Record<StepState, string> = { done: 'Done', run: 'In progress',
     }
   </ol>
   <p class="run-foot">
-    /sdlc:ship runs execute to pull request in one command, and can verify CI. Harden turns a failed run into a new guardrail for the next plan.
+    <a href={pageOf('/sdlc:ship')}>/sdlc:ship</a> runs execute to pull request in one command, and can verify CI.
+    <a href={pageOf('/sdlc:harden')}>Harden</a> turns a failed run into a new guardrail for the next plan.
   </p>
 </div>
 
@@ -141,6 +148,16 @@ const stateText: Record<StepState, string> = { done: 'Done', run: 'In progress',
   }
   .run-name {
     font-weight: var(--weight-medium);
+    color: inherit;
+    text-decoration: none;
+  }
+  .run-name:hover .run-cmd {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: var(--space-3);
+  }
+  .run-foot a {
+    text-underline-offset: var(--space-3);
   }
   .run-cmd {
     display: block;

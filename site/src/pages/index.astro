@@ -1,36 +1,102 @@
 ---
-// The Home page of the reference (site-preview.src.html:403-458, ref-home.jpeg).
+// The Home page. The hero and the dashboard block come from the reference
+// (site-preview.src.html:403-458, ref-home.jpeg). The stack, the workflow,
+// the self-healing section, the other benefits and the skill list are new:
+// they use only existing tokens.
+//
+// The order of the page:
+//   1. hero: the result, the install command, the stack and a sample run
+//   2. the recommended workflow: 4 commands
+//   3. what makes the pipeline different: it heals and it learns
+//   4. the dashboard
+//   5. the other benefits
+//   6. each skill, as a direct link
 import BaseLayout from '../layouts/BaseLayout.astro';
 import InstallCommand from '../components/InstallCommand.astro';
+import StackStrip from '../components/StackStrip.astro';
 import RunPanel from '../components/RunPanel.astro';
+import WorkflowSteps from '../components/WorkflowSteps.astro';
+import Pillars from '../components/Pillars.astro';
 import MediaFrame from '../components/MediaFrame.astro';
-import ChangeRow from '../components/ChangeRow.astro';
+import BenefitGrid from '../components/BenefitGrid.astro';
+import SkillIndex from '../components/SkillIndex.astro';
+import { BASE } from '../../site.config.mjs';
+import { features } from '../data/features.mjs';
+import { workflow } from '../data/workflow.mjs';
+import { isRoutable } from '../lib/assets.mjs';
+import { readSkillMap } from '../lib/skill-map.mjs';
 
 const sub =
-  'sdlc is a plugin for Claude Code. It plans the work, builds it in waves, commits, reviews, opens the pull request and checks CI. You watch every run on one dashboard.';
+  'sdlc is a plugin for Claude Code. Four commands take an idea to a reviewed pull request. The pipeline repairs its own failures and learns from each run.';
+
+// The product pages that show the dashboard. A feature with no claims has no page and no link.
+const dashboardPages = features.filter((f) => ['dashboard', 'stats'].includes(f.slug) && isRoutable(f));
+const skillCount = readSkillMap().length;
 ---
 
-<BaseLayout title="sdlc: one pipeline from idea to merged pull request" description={sub} current="home">
+<BaseLayout title="sdlc: from an idea to a reviewed pull request" description={sub} current="home">
   <div class="fields" aria-hidden="true">
     <span class="field f1"></span><span class="field f2"></span><span class="field f3"></span>
   </div>
   <div class="home wrap">
     <div class="hero">
       <div class="lead">
-        <h1 class="h1">One pipeline from idea to merged pull request.</h1>
+        <h1 class="h1">Give it an idea. Get a reviewed pull request.</h1>
         <p class="sub">{sub}</p>
         <InstallCommand />
+        <StackStrip />
       </div>
       <RunPanel />
     </div>
+    <section class="block" aria-labelledby="workflow-heading">
+      <div class="block-head">
+        <h2 class="h2" id="workflow-heading">The workflow: {workflow.length} commands.</h2>
+        <p class="block-text">Four skills take an idea to a pull request. Each skill offers the next one.</p>
+      </div>
+      <WorkflowSteps />
+    </section>
+    <section class="block" aria-labelledby="pillars-heading">
+      <div class="block-head">
+        <h2 class="h2" id="pillars-heading">Use it more. Maintain it less.</h2>
+        <p class="block-text">sdlc is self-healing and self-learning. It repairs a failed run, turns a failure into a guardrail, and keeps its own rules current while you work.</p>
+      </div>
+      <Pillars />
+    </section>
     <section class="block" aria-labelledby="dashboard-heading">
       <div class="block-head">
         <h2 class="h2" id="dashboard-heading">Every run on one page.</h2>
         <p class="block-text">The dashboard shows each pipeline step by step, with the time of every step and the open issues.</p>
       </div>
       <MediaFrame assetId="dashboard-main" />
+      {
+        dashboardPages.length > 0 && (
+          <ul class="more">
+            {dashboardPages.map((feature) => (
+              <li>
+                <a href={`${BASE}/features/${feature.slug}/`}>{feature.title}</a>
+              </li>
+            ))}
+          </ul>
+        )
+      }
     </section>
-    <ChangeRow />
+    <section class="block" aria-labelledby="benefits-heading">
+      <div class="block-head">
+        <h2 class="h2" id="benefits-heading">What else you get.</h2>
+        <p class="block-text">Each benefit names the skills that give it. Select a skill to read its page.</p>
+      </div>
+      <BenefitGrid />
+    </section>
+    <section class="block" aria-labelledby="skills-heading">
+      <div class="block-head">
+        <h2 class="h2" id="skills-heading">All {skillCount} skills.</h2>
+        <p class="block-text">
+          The workflow needs {workflow.length} of them. Use the others to run one step by hand.
+          <a href={`${BASE}/skills/`}>See how the skills work together</a>.
+        </p>
+      </div>
+      <SkillIndex core={workflow.map((step) => step.skill)} />
+    </section>
   </div>
 </BaseLayout>
 
@@ -76,7 +142,7 @@ const sub =
   .home {
     display: flex;
     flex-direction: column;
-    gap: var(--space-44);
+    gap: var(--space-64);
   }
   .hero {
     display: grid;
@@ -117,19 +183,37 @@ const sub =
   .block {
     display: flex;
     flex-direction: column;
-    gap: var(--space-20);
+    gap: var(--space-28);
   }
+  /* The heading of a section, with its intro text below it. */
   .block-head {
     display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-8) var(--space-40);
-    align-items: end;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: var(--space-10);
   }
   .block-text {
     margin: 0;
     color: var(--muted);
-    max-width: 46ch;
+    font-size: var(--text-xl);
+    line-height: var(--leading-sub);
+    max-width: 62ch;
+  }
+  .block-text a {
+    text-underline-offset: var(--space-3);
+  }
+  .more {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8) var(--space-28);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+  }
+  .more a {
+    color: var(--accent);
+    text-underline-offset: var(--space-3);
   }
   @media (max-width: 900px) {
     .hero {
