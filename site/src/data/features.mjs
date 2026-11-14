@@ -1,8 +1,26 @@
-// The 4 workflow changes of the Home page and their product pages.
+// The 5 workflow changes of the Home page and their product pages.
 // The slugs are final: routes and links use them. The titles are draft copy.
 // Tasks 15 and 24 fill `claims` and `media`. An entry gets a product page only
 // when it has 1 or more claims (isRoutable in src/lib/assets.mjs).
 export const features = [
+  {
+    slug: 'customize',
+    title: 'Run it by your rules',
+    summary: 'You write your rules and your follow-up actions in plain text. Each run follows them.',
+    description: 'A follow-up instruction is an action in plain text that the agent does after a step, after a ship run or after a skill. Guardrails, review dimensions, templates and style settings shape the other parts of a run.',
+    media: [],
+    claims: [
+      { text: 'Write a follow-up action as one sentence in config, and each ship run does it after the step that you name', doc: 'docs/instructions.md#what-it-does' },
+      { text: '13 lists: one for each of the 10 pipeline steps, 2 for the review fixes and 1 for the end of the run', doc: 'docs/instructions.md#keys' },
+      { text: 'A team list in the committed config, and your own list in a local file, for one project or for all your projects', doc: 'docs/instructions.md#where-to-write-them' },
+      { text: 'Each instruction sets which questions the agent can ask, and what the agent does when it cannot ask', doc: 'docs/instructions.md#questions-while-an-instruction-runs' },
+      { text: 'A failed instruction never fails the step or the run, and the run summary names it', doc: 'docs/instructions.md#what-you-see' },
+      { text: 'The lists also run after 7 skills that you run alone', doc: 'docs/instructions.md#keys' },
+      { text: 'Plan instructions reach each step and each sub-agent of a plan run', doc: 'docs/skills/plan/writing-style.md#custom-plan-instructions' },
+      { text: 'Harden instructions shape the proposals for each of the 4 hardening surfaces', doc: 'docs/skills/harden/custom-instructions.md' },
+      { text: 'Guardrails, review dimensions, templates and the pipeline steps are settings of your project', doc: 'docs/skills/setup/flags-and-sections.md#section-ids' },
+    ],
+  },
   {
     slug: 'dashboard',
     title: 'See every pipeline at once',
@@ -11,6 +29,7 @@ export const features = [
     media: ['dashboard-main'],
     claims: [
       { text: 'Live progress of each run in every registered repository', doc: 'docs/dashboard.md#what-it-shows' },
+      { text: 'Each step lists its follow-up instructions, one row for each, with the status of each instruction', doc: 'docs/instructions.md#what-you-see' },
       { text: 'Open it with one command', doc: 'docs/skills/dashboard.md' },
     ],
   },

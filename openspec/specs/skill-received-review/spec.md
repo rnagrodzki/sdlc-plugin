@@ -567,3 +567,14 @@ A finding skipped at the Step 10 prompt SHALL get no `fix-progress` call, no fix
 - **WHEN** the user answers `skip` while one finding is pre-approved
 - **THEN** each prompted finding gets no fix, no `fix-progress` call, no `defer` record and no reply
 - **AND** the ledger counts each prompted finding in `skipped at Step 10`
+
+### Requirement: Standalone instructions
+Without `--no-instructions`, the skill SHALL call `instructions_resolve` with key `received-review` before Step 0, and SHALL run the list after Step 12.5 with its own `--auto` mode.
+
+#### Scenario: Cancel
+- **WHEN** the user cancels at Step 10
+- **THEN** no instruction runs
+
+#### Scenario: Ship dispatch
+- **WHEN** ship dispatches the skill with `--no-instructions`
+- **THEN** the skill does not call `instructions_resolve`

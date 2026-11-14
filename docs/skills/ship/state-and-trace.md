@@ -43,11 +43,16 @@ records, alongside the resolved pipeline flags:
 - **`binaryVersion`** — the sdlc binary's build metadata (plugin version,
   commit, build time), so a state file can be traced back to the binary
   that produced it.
+- **`instructions`** — one record for each follow-up instruction of the
+  run: key, number, source, text, question flags, status (`pending`,
+  `running`, `done`, `failed` or `not run`), outcome, and start and end
+  times. See [Follow-up instructions](../../instructions.md).
 - **`reportData`** — step counts (total/completed/pending/skipped/failed),
   duration, decisions, deferred-finding count, bump provenance, the
   self-healing record (`healing`: fixed findings, fix progress of each
-  finding, and harden runs, `{}` when none were recorded), and the review
-  ledger (below), computed on the fly each time state is read (not
+  finding, and harden runs, `{}` when none were recorded), the instruction
+  summary (`instructionSummary`: total, done, failed, notRun, and one line
+  for each record), and the review ledger (below), computed on the fly each time state is read (not
   persisted to disk). This lets the final pipeline report be rendered from
   already-computed values instead of re-deriving them from raw step/decision
   arrays.
@@ -58,7 +63,7 @@ automatically by every run and read back automatically on resume.
 ## End-of-run summary
 
 After the last step, ship prints the step table, the decisions log and the
-deferred findings. Four parts of that summary are worth knowing about:
+deferred findings. Five parts of that summary are worth knowing about:
 
 - **Review ledger.** When the review step ran, the summary closes with one
   ledger that accounts for *every* finding the review produced — how many
@@ -87,6 +92,18 @@ deferred findings. Four parts of that summary are worth knowing about:
   holds one more entry: `OpenSpec change <change> is still active in
   openspec/changes/<change>/. Archive it with openspec archive <change>.`
   The entry belongs to the `archive-openspec` step.
+
+- **Instructions.** When the run has
+  [follow-up instructions](../../instructions.md), the summary has one totals
+  line, then one line for each instruction that failed, did not run, or ran
+  with an answer that the agent decided:
+
+      Ship instructions: 6 total, 4 done, 1 failed, 1 not run.
+      - `pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.`
+
+  Each line is in an inline code span, because an outcome can quote outside
+  text. A run with no instruction prints no instructions line. A failed instruction
+  does not change the result of the run.
 
 - **Deferred follow-ups.** After the summary, ship checks for deferred items
   that are still open — review findings that were saved rather than fixed,
@@ -144,6 +161,9 @@ deletes the linked plan run that the report still needs to read.
   active, so a correction or a choice made mid-run is visible after the run
   ends. An old or injected turn (for example an editor notification) is
   filtered out of that list and never counted.
+- In the Markdown report, an `## Instructions` section with the same lines as the summary: the totals
+  line and one line for each failed, not run or decided instruction. A run
+  with no instruction has no such section.
 
 **The Review waves table.** It has one row for each dimension the review
 planned, with its wave, status, findings, and duration. It is read from the

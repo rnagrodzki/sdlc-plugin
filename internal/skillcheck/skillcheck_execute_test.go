@@ -82,6 +82,7 @@ func executeSkillsListTools(t *testing.T) []*mcp.Tool {
 	tools.RegisterExecuteStateTools(srv)
 	tools.RegisterJiraTools(srv)
 	tools.RegisterLearningsTools(srv)
+	tools.RegisterInstructionsTools(srv)
 	tools.RegisterLinksTools(srv)
 	tools.RegisterMCPFailureTools(srv)
 	tools.RegisterMigrateTools(srv)
@@ -377,4 +378,86 @@ func TestExecuteSkillsHighRiskGateLabels(t *testing.T) {
 			t.Errorf("%s: %s", path, got)
 		}
 	})
+}
+
+// executeSkillsHeadingOrder fails the test when a heading in order is missing
+// from content or comes before the heading listed above it.
+func executeSkillsHeadingOrder(t *testing.T, label, content string, order []string) {
+	t.Helper()
+	last := -1
+	for _, h := range order {
+		i := strings.Index(content, h)
+		if i < 0 {
+			t.Errorf("%s: missing heading %q", label, h)
+			continue
+		}
+		if i < last {
+			t.Errorf("%s: heading %q is out of order", label, h)
+		}
+		last = i
+	}
+}
+
+// TestExecuteSkillsInstructionsText pins the standalone instructions steps of
+// the execute skill: the flag, the resolve call in Step 0 after
+// resolve-config, the Step 9a list before the cleanup call, the resume rule
+// for an interrupted list and the exit routes.
+func TestExecuteSkillsInstructionsText(t *testing.T) {
+	const label = "skills/execute/SKILL.md"
+	skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "execute", "SKILL.md"))
+
+	if !flagParityHintFlags(skill)["--no-instructions"] {
+		t.Errorf("%s: argument-hint does not list --no-instructions", label)
+	}
+	if !flagParityFlagSet(flagParityFrontmatterField(skill, "description"))["--no-instructions"] {
+		t.Errorf("%s: description does not name --no-instructions", label)
+	}
+
+	for _, want := range []string{
+		`instructions_resolve({ key: "execute" })`,
+		"stop before Step 1. No wave ran and no state was written.",
+		"### Step 9a: Run instructions",
+		`execute_state({ action: "instructions-next" })`,
+		`execute_state({ action: "instruction-record", instructionNumber: rec.number, instructionStatus:`,
+		"The run mode is EXECUTE_AUTO, the auto value of `resolve-config` (Step 0).",
+		"Instructions (execute): N total, X done, Y failed, Z not run.",
+		"If the list stops before its end (an interrupt), do not call `cleanup`.",
+		"**All tasks done, open instruction records.**",
+		"an `instructions` record has status `pending` or `running`",
+		"Then run the Completion call (`cleanup`) of Step 9",
+		"| resolve error (Step 0) | no |",
+		"| wave `cancel` (`## Wave loop` stage 1) | no |",
+		"| failed or partial run (Step 6) | no | existing. Records stay pending. |",
+		"| all tasks completed (Step 9) | yes, before `cleanup` |",
+		"| Step 9a interrupted | partial |",
+		"The `Instructions (execute): …` line names each failed or skipped instruction. `--resume` runs the open ones.",
+		"except an instruction from config in Step 9a",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Errorf("%s: missing %q", label, want)
+		}
+	}
+
+	// Step 0: resolve-config first, then the instructions resolve call.
+	resolveConfig := strings.Index(skill, `execute_state({ action: "resolve-config"`)
+	resolveInstr := strings.Index(skill, `instructions_resolve({ key: "execute" })`)
+	if resolveConfig < 0 || resolveInstr < 0 || resolveInstr < resolveConfig {
+		t.Errorf("%s: the instructions_resolve call must follow the resolve-config call in Step 0", label)
+	}
+
+	executeSkillsHeadingOrder(t, label, skill, []string{
+		"## Step 0: Prerequisites",
+		"## Step 1 (LOAD)",
+		"\n## Resume\n",
+		"## Step 9 (REPORT): Summary",
+		"### Step 9a: Run instructions",
+		"## Quality Gates",
+	})
+
+	// The list runs before cleanup: the Completion paragraph follows Step 9a.
+	step9a := strings.Index(skill, "### Step 9a: Run instructions")
+	completion := strings.Index(skill, "**Completion:** `execute_state({ action: \"cleanup\" })`")
+	if step9a < 0 || completion < 0 || completion < step9a {
+		t.Errorf("%s: the Completion call (cleanup) must come after Step 9a", label)
+	}
 }

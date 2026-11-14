@@ -446,3 +446,14 @@ For each worker that the skill stops, the skill SHALL call `execute_state` `ledg
 - **WHEN** a worker stalls twice and `TaskStop` fails
 - **THEN** the skill calls `ledger_skip` with reason `unstopped`
 - **AND** the review comment names the worker as possibly still running
+
+### Requirement: Standalone instructions
+Without `--no-instructions`, the skill SHALL call `instructions_resolve` with key `review` before Step 0, and SHALL run the list in interactive mode after Step 9.
+
+#### Scenario: Dry run
+- **WHEN** `--dry-run` is given
+- **THEN** no instruction runs
+
+#### Scenario: Success
+- **WHEN** the review posts its verdict
+- **THEN** the skill runs the list and prints `Instructions (review): …`

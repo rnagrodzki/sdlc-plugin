@@ -2,7 +2,7 @@
 name: received-review
 description: "Use this skill when responding to code review feedback on a pull request or inline reviewer comments. Covers reading, verifying, evaluating, and responding to reviewer comments with a dual self-critique gate — prevents performative agreement and ensures technical rigor. Can be launched manually or automatically after /review. Triggers on: process review feedback, respond to review, handle review comments, address PR feedback, fix review findings, received-review."
 user-invocable: true
-argument-hint: "[--pr <number>] [--auto] [--no-harden]"
+argument-hint: "[--pr <number>] [--auto] [--no-harden] [--no-instructions]"
 model: opus
 ---
 
@@ -49,6 +49,28 @@ There is no per-user configuration surface for auto-harden-by-default in this po
 Step 10 pre-approves the "agree, will fix" findings with a listed severity. `--auto`,
 described in Steps 10–12 below, is parsed directly from this invocation's own `$ARGUMENTS`
 and has one meaning throughout: skip the confirmation prompt for "agree, will fix" items.
+
+---
+
+## Step 0a — Resolve instructions
+
+Parse `--no-instructions` from this invocation's own `$ARGUMENTS`; store it as a boolean for Step 13. The flag is independent of `--no-harden` and of `--auto`: both still apply.
+
+With `--no-instructions` (for example when `/ship` dispatches this skill): do not call `instructions_resolve`. Go to Step 0. Step 13 runs no list.
+
+Without `--no-instructions`:
+
+```
+instructions_resolve({ key: "received-review" })
+→ { key, count, instructions, summary, next }
+```
+
+Keep `instructions` for Step 13.
+
+**On tool error:** print the error message of the tool as it is. It names the config problem and
+its fix. Say that no step started. Stop. Run no Step 0 to Step 13 step. The user fixes the
+config, then runs `/received-review` again. The rule that Step 1a continues after some problems does not apply here:
+this step is separate and it stops.
 
 ---
 
@@ -445,6 +467,8 @@ Options:
 - **implement** — post responses to PR and apply code changes
 - **edit** — modify the plan before proceeding
 - **skip** — discard the prompted findings, make no changes for them
+
+When A is 0 and the user selects **skip**, the run is cancelled. Run no Step 13 list.
 
 **implement** runs Step 11 for the pre-approved findings and the prompted findings.
 
@@ -886,6 +910,37 @@ skipped thread as `skipped at Step 10 — no reply`, run no further verification
 proceed to report.
 
 Best-effort: if `received_review_verify` itself fails (bad PR, no remote, gh not authed), note the failure and proceed to report anyway — do not block skill completion on this check.
+
+---
+
+## Step 13 — Run instructions
+
+This step runs only when all of these are true:
+
+- Step 12.5 has finished, or Step 12.5 was skipped for a run with no PR number.
+- The user did not cancel at the Step 10 prompt. A cancel is the choice **skip** at that prompt when A is 0: the run then makes no change and posts no reply.
+- `--no-instructions` was not passed.
+
+A run that stopped on a tool error or a worker error runs no list. It ends with the existing text of its error route.
+
+When `instructions` from Step 0a is empty (`count` is 0), print no instructions line. End.
+
+Otherwise run the list. Follow [`../ship/instructions-run.md`](../ship/instructions-run.md), section "Loop without run state".
+The run mode is the `--auto` token of this invocation's own `$ARGUMENTS`: with `--auto`, the run is `--auto`. Without it, the run is interactive.
+Run each instruction in the main session, in the order of the list. Never dispatch an Agent for an instruction.
+The list is not a harden run: `--no-harden` does not skip it.
+
+Print the summary line after the list ends:
+
+```
+Instructions (received-review): N total, D done, F failed, S not run.
+```
+
+A failed instruction never fails the run. When the user interrupts the list, print this line and end:
+
+```
+Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.
+```
 
 ---
 

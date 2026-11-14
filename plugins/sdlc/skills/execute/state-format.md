@@ -67,7 +67,8 @@ If there is only one worktree entry (no linked worktrees), the main working tree
   "plannedWaves": [{ "number": 0, "taskIds": ["1"] }, { "number": 1, "taskIds": ["2", "3"] }, ... ],
   "waves": [ ... ],
   "context": { ... },
-  "issues": [ ... ]
+  "issues": [ ... ],
+  "instructions": [ ... ]
 }
 ```
 
@@ -90,6 +91,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
 | `worktree`   | string \| absent | Absolute realpath of the active worktree at init. Optional, absent on pre-#501 state files. Display/diagnostic metadata only—does not affect state file location keying or resume behavior. Used to scope the session-start banner to the active worktree. |
 | `context`    | object        | Accumulated cross-wave context enabling fresh-session resume (see below).            |
 | `issues`     | array \| absent | Accumulated non-fatal problems recorded during the run — guardrail violations, wave failures, spec-compliance findings, and similar. See [`issues` Array](#issues-array) below. Absent until the first issue is appended. |
+| `instructions` | array \| absent | One record for each `execute` instruction of the `[instructions]` config section, in a standalone run. The first `instructions-next` call seeds it; a state file that has none is not seeded yet. Absent when the config has no `execute` instruction. See [`instructions` Array](#instructions-array) below. |
 | `runStatus`  | string \| absent | `"completed"` once `cleanup` has stamped the run terminal. Absent for a run still in progress or never explicitly cleaned up. See [Cleanup](#cleanup) below — `cleanup` no longer deletes the state file, it stamps this field instead. |
 | `runCompletedAt` | string \| absent | ISO 8601 UTC timestamp written alongside `runStatus:"completed"` by `cleanup`. Absent under the same conditions as `runStatus`. |
 
@@ -287,6 +289,40 @@ non-empty: `{total, byCategory, items, display, hardenSuggestion?}`. `display` i
 (`Run /harden --failure-text '<up to 3 error summaries>' to strengthen guardrails.`), not an
 automatic `/harden` run. `issueSummary` is response-only — it is never written to the state file.
 `execute/SKILL.md`'s Step 9 report renders it.
+
+---
+
+## `instructions` Array
+
+The records have the same shape as the `instructions` records of the ship state (see `ship/state-format.md`), and the same helpers write them (`internal/tools/instruction_records.go`). Every record has the key `execute`.
+
+| Field | Values |
+|---|---|
+| key, number, source, text | from config |
+| normalQuestions, criticalQuestions, onQuestionNotAllowed | from config |
+| status | pending, running, done, failed, not run |
+| outcome | result line, error, question not allowed, decided, step failed or stopped, step skipped, step did not run, result not recorded, not run again |
+| startedAt, endedAt | RFC 3339 or "" |
+
+A record moves in one direction: `pending`, then `running`, then `done`, `failed` or `not run`. A closed record does not change again. A record with a missing or wrong-type field, or a status outside this set, makes the list damaged: `instructions-next` and `instruction-record` return the DataError `run state key instructions: record <i> field <f> is <found>, want <expected>`. Two actions change the records:
+
+| Action | What it does |
+|---|---|
+| `instructions-next` | On the first call with no `instructions` key, seeds the list from config (an empty config list writes nothing). Marks each `running` record `failed` with the outcome `result not recorded, not run again`. Starts the first `pending` record and returns it with `remaining` and `failedRunning` (the numbers of the records it marked `failed`). Returns no instruction when none is `pending`. |
+| `instruction-record` | Closes one `running` record with `instructionNumber`, `instructionStatus` (`done`, `failed` or `not run`) and `instructionOutcome` (at most 1000 characters; required for `failed` and `not run`). With `instructionAll:true` and the status `not run`, it closes every open record: a `pending` record becomes `not run` with the given outcome, and a `running` record becomes `failed` with the outcome `result not recorded, not run again`. Returns `key` and `closed` (`number`, `status`, `outcome` and `endedAt` of each record it closed). |
+
+| Reader of execute-state `instructions` | Treats a record as | Pinned by |
+|---|---|---|
+| `execute_state` `instructions-next` (seeds on the first call) | the live list | `TestExecuteStateInstruction*` (`internal/tools/execute_state_test.go`) |
+| `execute_state` `instruction-record` | the record to close | `TestExecuteStateInstruction*`, `TestInstructionActionsParity` |
+| execute skill Step 9a loop | the live list, before `cleanup` | `internal/skillcheck/skillcheck_execute_test.go` |
+| execute skill `## Resume` row | open records after all tasks are done | `internal/skillcheck/skillcheck_execute_test.go` |
+| dashboard collector | the end group `end of run (execute)` | `TestDashboardInstructionMapping` |
+| execute-state schema | an array of records | `TestExecuteStateSchema_AcceptsWrittenState` |
+
+`execRunInFlight` does not read `instructions`. A run with all tasks done and an open record has no `resumeBriefing` on `read`. The `--resume` row of `execute/SKILL.md` finds it from the `instructions` records instead.
+
+Older form: an execute state with no `instructions` key is not seeded yet. The first `instructions-next` call seeds it from config. Every other reader treats it as an empty list.
 
 ---
 

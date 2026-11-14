@@ -14,7 +14,11 @@
 // Section routing follows the JS precedent (scripts/lib/config.js):
 // ProjectSections (version, jira, commit, pr, git, plan, execute, harden) live in
 // config.toml; all other sections (ship, review, receivedReview, workspace,
-// automation, …) live in local.toml.
+// automation, …) live in local.toml. One exception: [instructions] is in
+// LocalSections and AllowedProjectKeys, so it is valid in both files, and
+// ReadInstructions (instructions.go) reads and merges it from config.toml,
+// local.toml and the user-level file. A write of the section through
+// WriteSection still goes to local.toml.
 package config
 
 import (
@@ -68,6 +72,9 @@ var LocalSections = map[string]bool{
 	"workspace":      true,
 	"automation":     true,
 	"dashboard":      true,
+	// instructions is also in AllowedProjectKeys, never in ProjectSections:
+	// ReadInstructions reads and merges it from all three config files.
+	"instructions": true,
 }
 
 // Quiet suppresses config-read tracing to stderr when set to true.

@@ -37,6 +37,7 @@ Answer `implement`, `edit` or `skip`. After `implement`, the skill applies the f
 
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
+| Step 0a — Resolve instructions | tool | Gets the received-review list of the `[instructions]` config. A config error stops the run before Step 0. | The list | yes | `--no-instructions` is not set |
 | Step 0 — Plan Mode Check | skill | Stops the run when plan mode is active, because the skill writes files and posts replies. | The go-ahead for the next step | no | always. It stops the run only in plan mode |
 | Step 1 — READ: Gather Review Feedback | skill | Reads `--auto`, `--no-harden` and `--pr` from the arguments and keeps them for the later steps. | The parsed flags | no | always |
 | Step 1a — Fetch PR overview and the auto-apply severities (every run) | tool | Calls `received_review_prepare` for the PR overview, the CI status and `alwaysFixSeverities`. | The PR overview and the pre-approved severities | no | always. With no PR number the overview is skipped |
@@ -55,14 +56,15 @@ Answer `implement`, `edit` or `skip`. After `implement`, the skill applies the f
 | Step 11.7 — LINK VERIFICATION — HARD GATE | tool | Checks every URL in the reply bodies with `links_validate`. On a violation the skill posts no reply and stops. | The link check result | no | always, before replies are posted |
 | Step 12 — REPLY: Post PR Thread Replies | tool | Prints the summary and the ledger. Without `--auto` it asks `yes`, `skip` or `selective`. Then it posts each reply in its comment thread with `gh api`. | The posted replies | no | always. With no PR number only the summary and the ledger are printed |
 | Step 12.5 — VERIFY: Confirm All Threads Replied | tool | Calls `received_review_verify` and replies to each thread that is still outstanding, in at most 2 rounds. | The final thread status | no | a PR number exists |
+| Step 13 — Run instructions | skill | Runs each instruction of the list, then prints `Instructions (received-review): …`. | The summary line | yes | no cancel at Step 10, and the list is not empty |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
-| Starts | With `/sdlc:received-review`. `--pr <number>` selects the PR. `--auto` and `--no-harden` change the run. |
-| Ends | After Step 12.5, or after Step 12 when there is no PR number. A link violation at Step 11.7 stops the run. |
-| Asks the user | At Step 2 for unclear items, at Step 3 for items that cannot be verified, at Step 10: `implement`, `edit` or `skip`, at Step 11.6: `dispatch` or `skip` for each group, and at Step 12: `yes`, `skip` or `selective`. `--auto` asks nothing. |
+| Starts | With `/sdlc:received-review`. `--pr <number>` selects the PR. `--auto`, `--no-harden` and `--no-instructions` change the run. |
+| Ends | After Step 13. When no list runs, after Step 12.5, or after Step 12 when there is no PR number. A config error at Step 0a stops the run before Step 0. A link violation at Step 11.7 stops the run. |
+| Asks the user | At Step 2 for unclear items, at Step 3 for items that cannot be verified, at Step 10: `implement`, `edit` or `skip`, at Step 11.6: `dispatch` or `skip` for each group, and at Step 12: `yes`, `skip` or `selective`. `--auto` skips these prompts. An instruction asks only when its question flags allow it. |
 | Resume | none |
 
 ## More examples
@@ -75,13 +77,13 @@ Answer `implement`, `edit` or `skip`. After `implement`, the skill applies the f
 
 Run it after `/sdlc:review` in the same conversation, or paste the findings. With no PR number, the skill takes the feedback from the conversation or from your paste. It fixes what you approve, then prints the summary and the ledger. It posts no reply, because there is no comment thread.
 
-**Run with no prompt, in a pipeline:**
+**Run with no finding prompt, in a pipeline:**
 
 ```text
 /sdlc:received-review --pr 42 --auto
 ```
 
-The skill fixes every "will fix" finding and asks nothing. It records each other finding as `needs-direction` for `/sdlc:deferred`, and it does not close that finding. See [Auto mode](./received-review/consent-and-auto-mode.md#auto-mode).
+The skill fixes every "will fix" finding and asks nothing about the findings. It records each other finding as `needs-direction` for `/sdlc:deferred`, and it does not close that finding. A follow-up instruction still asks a critical question when its `criticalQuestions` flag allows it. See [Auto mode](./received-review/consent-and-auto-mode.md#auto-mode).
 
 **Pre-approve the severities that you always fix:**
 
@@ -95,8 +97,9 @@ A "will fix" finding with a listed severity gets its fix with no prompt, and one
 
 ## Reference
 
-- [Flags, consent and auto mode](./received-review/consent-and-auto-mode.md): the 3 flags, the prompts of a manual run, the pre-approved severities, what `--auto` changes, and tips.
+- [Flags, consent and auto mode](./received-review/consent-and-auto-mode.md): the 4 flags, the prompts of a manual run, the pre-approved severities, what `--auto` changes, the follow-up instructions, and tips.
 - [Records and the ledger](./received-review/records-and-ledger.md): the ledger terms, where an unfixed finding is recorded, and the fix progress on the dashboard.
+- [Follow-up instructions](../instructions.md): the `[instructions]` config, the merge rule, the question rules and the summary line.
 
 ## Related skills
 

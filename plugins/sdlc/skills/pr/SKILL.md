@@ -1,8 +1,8 @@
 ---
 name: pr
-description: "Use this skill when creating or updating a pull request, updating a PR description, or generating PR content from the branch's commits. Handles the full PR workflow: consumes pre-computed context from the `pr_prepare` MCP tool, generates description with plan-critique-improve-do-critique-improve, user review, and publishes through the `pr_apply` MCP tool (the skill runs no git or gh commands itself). Creates a new PR, or updates the open PR for the branch when one exists. Applies no labels of its own: the only label is the release:<level> label that pr_apply derives from release intent. Arguments: [--draft] [--base <branch>] [--auto] [--skip-approval]. Use --draft to open the new PR as a draft and --base <branch> to target a branch other than the repository default; both apply only when a new PR is created. Use --auto to skip interactive approval and to mark pr_apply as running unattended. Use --skip-approval to skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent) without affecting autoMode. Triggers on: create PR, open pull request, update PR, write PR description, PR summary, describe changes for a pull request."
+description: "Use this skill when creating or updating a pull request, updating a PR description, or generating PR content from the branch's commits. Handles the full PR workflow: consumes pre-computed context from the `pr_prepare` MCP tool, generates description with plan-critique-improve-do-critique-improve, user review, and publishes through the `pr_apply` MCP tool (the skill runs no git or gh commands itself, except an instruction from config). Creates a new PR, or updates the open PR for the branch when one exists. Applies no labels of its own: the only label is the release:<level> label that pr_apply derives from release intent. Arguments: [--draft] [--base <branch>] [--auto] [--skip-approval] [--no-instructions]. Use --draft to open the new PR as a draft and --base <branch> to target a branch other than the repository default; both apply only when a new PR is created. Use --no-instructions to skip the pr instructions of the config. Use --auto to skip interactive approval and to mark pr_apply as running unattended. Use --skip-approval to skip only the Step 5 publish-confirmation prompt (e.g. when dispatched by ship, which already resolved release intent) without affecting autoMode. Triggers on: create PR, open pull request, update PR, write PR description, PR summary, describe changes for a pull request."
 user-invocable: true
-argument-hint: "[--draft] [--base <branch>] [--auto] [--skip-approval]"
+argument-hint: "[--draft] [--base <branch>] [--auto] [--skip-approval] [--no-instructions]"
 model: sonnet
 ---
 
@@ -36,6 +36,8 @@ this port's tool surface (`pr_prepare`, `pr_apply`) actually supports:
   returns a `warnings` entry for each one it ignored: `gh pr edit` cannot make a PR a draft or
   change its base. Show those warnings to the user. `pr_prepare` does not read `--base`: its
   `commitsSinceBase` is always measured against the default branch.
+- `--no-instructions` is read from your own invocation arguments, like `--auto`. It is independent
+  of `--auto`: both apply. It skips Step 0a and Step 7.
 - `--label` is gone: the only label is the `release:*` label `pr_apply` derives from
   `releaseLevel`. If a user still types `--label`, ignore it.
 - `--update` is gone: updating is the default. `pr_apply` edits the open PR for the branch
@@ -144,6 +146,22 @@ If the system context contains "Plan mode is active":
 
 1. Announce: "This skill requires write operations (creating or updating a pull request). Exit plan mode first, then re-invoke `/pr`."
 2. Stop. Do not proceed to subsequent steps.
+
+---
+
+### Step 0a — Resolve instructions
+
+Skip this step when `--no-instructions` was passed. Otherwise, before any other call, run:
+
+```
+instructions_resolve({ key: "pr" }) → INSTRUCTIONS
+```
+
+Keep `INSTRUCTIONS.instructions` for Step 7. The list is empty when the config has none.
+
+**On tool error (a DataError for bad config content, or an InfraError):** print the error
+message and its suggestion, then stop before Step 0. No step ran. The user fixes the config
+and runs `/pr` again.
 
 ---
 
@@ -475,6 +493,26 @@ Pull request updated: <url>
 
 If the result has `warnings`, print each one after that line.
 
+### Step 7 — Run instructions
+
+Skip this step when `--no-instructions` was passed, or when `INSTRUCTIONS.count` is 0.
+Run it only after Step 6 shows the created or updated PR. A cancel at Step 5 or a tool error in
+Step 0 to Step 6 ends the skill with no list run. This includes the `pr_apply` error
+`remote branch <branch> changed since the last push. pr stopped.`
+
+Read [`../ship/instructions-run.md`](../ship/instructions-run.md) and follow its "Loop without run state"
+section. The run mode comes from the `--auto` token of the arguments of this skill. Run each
+instruction of `INSTRUCTIONS.instructions` in order, in this session. An instruction from config
+may run git or gh commands. Then print the summary line:
+
+```text
+Instructions (pr): N total, X done, Y failed, Z not run.
+- `pr #1 (team) failed: <one line of cause>`
+```
+
+There is no run state to write. If the list stops before its end (an interrupt), print:
+`Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.`
+
 ---
 
 ## Best Practices
@@ -493,7 +531,7 @@ If the result has `warnings`, print each one after that line.
 - Include file paths in the Changes Overview section (only applies if that section exists)
 - Call `pr_apply` without explicit user approval (unless `--auto` or `--skip-approval` was passed)
 - Skip the plan-critique-improve-do-critique-improve cycle before presenting to the user
-- Run git or gh commands to gather data — all context comes from `PR_CONTEXT` plus what you already know from the conversation
+- Run git or gh commands to gather data — all context comes from `PR_CONTEXT` plus what you already know from the conversation. The only exception is an instruction from config (Step 7).
 
 ## Error Recovery
 
@@ -503,6 +541,8 @@ If the result has `warnings`, print each one after that line.
 | `PR_CONTEXT.ok` is `false` | Show each error, stop | No — user/auth/setup issue |
 | `links_validate` reports violations | Show the violation list, stop, do not retry automatically | No — user needs to fix the links |
 | `pr_apply` tool error | Show error; offer manual fallback (copy title + description) | Yes, if it looks like a defect |
+| `pr_apply` error `remote branch <branch> changed since the last push. pr stopped.` | Show the error, stop, run no instruction. The user checks the remote branch, then runs `/pr` again | No — the remote branch moved |
+| `instructions_resolve` tool error (Step 0a) | Show the error and its suggestion, stop before Step 0 | No — the user fixes the config |
 
 When invoking `error-report`, provide:
 - **Skill**: pr
@@ -542,6 +582,7 @@ process quirks encountered while generating PR content.
 
 After creating or updating the PR, common follow-ups include:
 - `/review` — review the branch
+- the `Instructions (pr): …` line names each failed or skipped instruction. Run it by hand if you need it.
 
 If OpenSpec enrichment was applied in Step 2 (an active change was detected), also suggest:
 - `openspec validate --strict <change>` — validate change spec files structurally (after merge)

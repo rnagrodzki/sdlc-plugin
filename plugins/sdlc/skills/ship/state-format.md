@@ -29,6 +29,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "steps": [ ... ],
   "decisions": [ ... ],
   "deferredFindings": [ ... ],
+  "instructions": [ ... ],
   "issues": [ ... ],
   "lastFailedStep": null,
   "historyFailureRecorded": true,
@@ -55,6 +56,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `steps` | array | One entry per configured step, plus a seeded `received-review` entry when `review` is configured. See "The `steps[]` scaffold" below — this is config-driven, not a fixed list. |
 | `decisions` | array | Appended by `ship_state{action:"decide"}` and by `ship_state{action:"commit-check"}`. See "`decisions` Array" below. |
 | `deferredFindings` | array | Appended by `ship_state{action:"defer"}`. `healing_record` kind `fixed` with `detail.deferredId` sets `fixedInRun:true` on the matching entries. |
+| `instructions` | array | One record for each configured instruction of the run, seeded `pending` by `ship_prepare`. Absent on a state file from an older version. See "instructions" below. |
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
 | `historyFailureRecorded` | boolean | Absent until the first `fail` of the run. The first `ship_state{action:"fail"}` of a run sets it to `true` before it appends the failure row to `runs.jsonl`. `true` does not prove the row exists: a failed append leaves the flag set. It stops a second `fail` row for the same run. It does not stop Step 10c's `history_record` row, so a run that fails, resumes, and completes has two rows: the `failure` row and the final row. See "Issues and `lastFailedStep`" below. |
@@ -182,6 +184,7 @@ Git runs in the active worktree. The ship state lives in the main root. The call
 1. `git add -A -- ':!.sdlc-v2/'` stages every change except the data directory, untracked files that are not gitignored included.
 2. `git diff --cached --name-only` counts the staged paths (`stagedCount`).
 3. `git rev-parse HEAD` reads HEAD. When `commitBaseHead` is absent, the call stores HEAD there. A later call keeps the stored value.
+4. Clean tree only: after the state write, a best-effort push of the branch (see below).
 
 A failed git command returns an `InfraError` with the suggestion "Check the repository state with git status, then call commit-check again." The outcome then depends on the tree and on HEAD:
 
@@ -191,15 +194,17 @@ A failed git command returns an `InfraError` with the suggestion "Check the repo
 | clean | equal to `commitBaseHead` | Appends one `decisions[]` entry (`step:"commit"`, `decision` = `result`) and completes the `commit` step with `result`. | `nothing to commit: execute committed N wave commit(s)` when N > 0, else `nothing to commit: the working tree is clean` |
 | clean | not equal to `commitBaseHead` | Writes the `commit` key of `sideEffects` (`kind:"sha"`, `ref` = the full HEAD sha) and completes the `commit` step with `result`. | `committed <first 7 characters of HEAD>` |
 
-N (`waveCommits`) counts the `waves[]` entries with a non-empty `committedSha` in this branch's execute state. The call reads the execute state only on the clean, HEAD equal to `commitBaseHead` route. On every other route, `waveCommits` is 0 and `warnings` is empty. On that route, no execute state gives 0. An unreadable execute state also gives 0, and the response names the cause in `warnings`. All state changes of one call go to disk in one write. When that write fails, the call returns an `InfraError`, and the state file keeps its earlier content. The changes that `git add` staged stay staged.
+N (`waveCommits`) counts the `waves[]` entries with a non-empty `committedSha` in this branch's execute state. The call reads the execute state only on the clean, HEAD equal to `commitBaseHead` route. On every other route, `waveCommits` is 0. On that route, no execute state gives 0. An unreadable execute state also gives 0, and the response names the cause in `warnings`. All state changes of one call go to disk in one write. When that write fails, the call returns an `InfraError`, and the state file keeps its earlier content. The changes that `git add` staged stay staged.
+
+On both clean routes, after the state write, the call pushes the current branch to `origin` (best effort). It skips the push on the default branch and when no `origin` remote exists. A skip or a push failure adds one entry to `warnings` and never changes `stepCompleted`. The dirty route does not push. So on the clean route with HEAD not equal to `commitBaseHead`, `warnings` can hold a push warning.
 
 The response carries `clean`, `stagedCount`, `waveCommits`, `stepCompleted`, `result`, `warnings`, and `next`. When `stepCompleted` is `true`, it also carries the `todos` and `display` of the completed step, the same as `complete-step`. `next` is one of:
 
 | Outcome | `next` |
 |---|---|
 | dirty | `Changes are staged. Dispatch the commit agent, then 7c2, then complete-step.` |
-| clean, nothing to commit | `Commit step completed. Skip 7c2 and 7d. Go to the next step.` |
-| clean, commit landed | `Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step.` |
+| clean, nothing to commit | `Commit step completed. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step.` |
+| clean, commit landed | `Commit step completed from the landed commit. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step.` |
 
 ---
 
@@ -246,6 +251,53 @@ Ship's review routing defers each finding below `flags.reviewThreshold` this way
 
 ---
 
+## instructions
+
+`ship_prepare` writes `instructions` once, when it starts the run (`instrSeed` in `internal/tools/instruction_records.go`). The array holds one record for each instruction of the `[instructions]` config section that belongs to the run: the keys of the resolved steps, `received-review` and `commit-fixes` when `review` is a step, and `ship`. It is `[]` when the config has no such instruction. `source` is `team`, `project local` or `user`.
+
+| Field | Values |
+|---|---|
+| key, number, source, text | from config |
+| normalQuestions, criticalQuestions, onQuestionNotAllowed | from config |
+| status | pending, running, done, failed, not run |
+| outcome | result line, error, question not allowed, decided, step failed or stopped, step skipped, step did not run, result not recorded, not run again |
+| startedAt, endedAt | RFC 3339 or "" |
+
+A record moves in one direction: `pending`, then `running`, then `done`, `failed` or `not run`. A closed record does not change again. A record with a missing or wrong-type field, or a status outside this set, makes the list damaged: `instructions-next` and `instruction-record` return the DataError `run state key instructions: record <i> field <f> is <found>, want <expected>`.
+
+`ship_prepare` seeds the records. The sweeps below close open records. The two actions in this table run the list. Both take `detail.key`, an instruction key.
+
+| Action | What it does |
+|---|---|
+| `instructions-next` | Marks each `running` record of the key `failed` with the outcome `result not recorded, not run again`. Starts the first `pending` record of the key and returns it with `remaining`, `runMode` (`--auto`, or `interactive` when `flags.auto` is `false`) and `failedRunning` (the numbers of the records it marked `failed`). Returns no instruction when the key has no `pending` record. |
+| `instruction-record` | Closes one `running` record with `detail.instructionNumber`, `detail.instructionStatus` (`done`, `failed` or `not run`) and `detail.instructionOutcome` (at most 1000 characters; required for `failed` and `not run`). With `detail.instructionAll:true` and the status `not run`, it closes every open record of the key: a `pending` record becomes `not run` with the given outcome, and a `running` record becomes `failed` with the outcome `result not recorded, not run again`. Returns `key` and `closed` (`number`, `status`, `outcome` and `endedAt` of each record it closed). |
+
+The sweeps of `fail`, `skip` and `cleanup-pipeline` close open records in the same write as their own change. A `pending` record becomes `not run`. A `running` record becomes `failed` with the outcome `result not recorded, not run again`. A damaged list closes no record: the action adds one warning that starts with `Instruction records not closed:` and still completes.
+
+| Action | Records it sweeps | Outcome of a `pending` record |
+|---|---|---|
+| `fail` | every open record of the run | `step failed or stopped` |
+| `skip` | the open records of the skipped step | `step skipped` |
+| `cleanup-pipeline` | every open record of the run | `step did not run` |
+
+| Reader | Treats a record as |
+|---|---|
+| ship_state instructions-next, instruction-record | the live list |
+| ship_state fail, skip, cleanup-pipeline | open records to sweep |
+| ship_state read, report | counted in the summary |
+| in-flight check | an open record keeps the run in flight |
+| execute_state instructions-next, instruction-record | the live list (standalone execute) |
+| ship skill 7g, item 8, 9-pre, item 10, resume | the live list and the summary |
+| dashboard collector | rows under steps and the end group |
+
+`read` returns the summary as `reportData.instructionSummary` (`{total, done, failed, notRun, lines}`). `lines` holds one line for each `failed`, `not run` or `decided:` record. A damaged `instructions` value gives a zero summary and one warning.
+
+The in-flight check (`shipRunInFlight`) reports a started run as in flight when a step blocks proceed, a record is `pending` or `running`, or the `instructions` list is damaged. A `pipelineStatus` of `completed` is never in flight.
+
+Older form: a state file with no instructions key (a run from an older version) is an empty list for each reader.
+
+---
+
 ## Issues and `lastFailedStep`
 
 `ship_state{action:"fail", step, detail:{error?}}` — `detail.error` is the only detail field `fail` reads (plus `detail.branch` and `detail.detail`); `reason`, `severity`, and `category` are ignored. Besides setting the target step's `status:"failed"` — also sets `st.Data["lastFailedStep"]` to the failed step's name and appends a structured entry to `issues[]`:
@@ -261,7 +313,7 @@ Ship's review routing defers each finding below `flags.reviewThreshold` this way
 }
 ```
 
-`fail` always writes `severity:"error"`, `category:"ship-fail"`, and `summary:"Step <name> failed"`; `detail` is `detail.error` as text, empty when it was not passed. In the shared issue shape, `wave`, `step`, `taskId`, and `detail` are optional; `severity`, `category`, `summary`, and `timestamp` are always present. This mirrors `execute-state.schema.json`'s own `issues[]` shape.
+`fail` always writes `severity:"error"`, `category:"ship-fail"`, and `summary:"Step <name> failed"`; `detail` is `detail.error` as text, empty when it was not passed. The same write also sweeps every open `instructions` record of the run (see "instructions" above): a `pending` record becomes `not run` with `step failed or stopped`, a `running` record becomes `failed` with `result not recorded, not run again`. In the shared issue shape, `wave`, `step`, `taskId`, and `detail` are optional; `severity`, `category`, `summary`, and `timestamp` are always present. This mirrors `execute-state.schema.json`'s own `issues[]` shape.
 
 The first `fail` of a run also appends one row to `.sdlc-v2/history/runs.jsonl`, so a run that stops before cleanup still has a history row. The row has `skill:"ship"`, `outcome:"failure"`, the run's `branch`, `ts` (the time of the `fail` call), `started_at` (the state's `startedAt`), and `duration_ms` (`started_at` to `ts`; `0` when `startedAt` does not parse). When the state holds a `linkedPlan` with an RFC 3339 `startedAt`, the row also has `plan_file`, `plan_started_at`, and, when `completedAt` is RFC 3339 and not before `startedAt`, `plan_duration_ms` (`startedAt` to `completedAt`). A `linkedPlan` that is not an object or has a bad time adds a `warnings` entry that names the value; the row is still written:
 
@@ -340,6 +392,7 @@ Self-healing ledger. `ship_state{action:"healing_record", step?, detail:{kind, .
 | `reviewLedgerNote` | string | Present only when `reviewLedger` is `null`: `"review did not run or its total was not recorded"`. |
 | `deferredFindings` | number | Count of `data.deferredFindings` entries without `fixedInRun:true` — a plain, already-computed count. Do not re-derive it by summing `reviewLedger.deferredByReason`'s values yourself; read this field instead. Not the same thing as the top-level `deferredFindings` array on the `read` response, which holds the entries themselves, including entries with `fixedInRun:true`. |
 | `healing` | object | `data.healing` verbatim (`{reviewTotal?, fixed?, fixProgress?, hardened?}` — see `data.healing` above), or `{}` when no `healing_record` call has been made. Ship's harden step reads `reportData.healing.fixed` from here. |
+| `instructionSummary` | object | `{total, done, failed, notRun, lines}` counted from `data.instructions`. See "instructions" above. |
 
 `reviewLedger`'s own fields, computed server-side, never by the calling skill:
 - `total` is `data.healing.reviewTotal.total` verbatim.
@@ -360,7 +413,7 @@ Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the sta
 - **`ship_state{action:"cleanup-pipeline", detail:{branch?, force?, ttlDays?}}`** — the action this skill's Terminal Cleanup step calls. Three paths for `currentRun`:
   - `force:true` — skips the contract check entirely and does **not** stamp anything: `{"cleaned":false,"preservedReason":"force"}`.
   - no state file found — `{"valid":true,"cleaned":false,"reason":"no-state-file"}`.
-  - otherwise — validates the contract exactly like `cleanup` (same violation semantics: `in_progress`, or `pending` without a `condition` key) and, on success, stamps exactly like `cleanup`: `{"valid":true,"cleaned":true,"pipelineStatus":"completed","pipelineCompletedAt":"..."}`. A violation still returns a `DataError` and stops here — the GC sweep below does not run.
+  - otherwise — validates the contract exactly like `cleanup` (same violation semantics: `in_progress`, or `pending` without a `condition` key) and, on success, stamps like `cleanup`: `{"valid":true,"cleaned":true,"pipelineStatus":"completed","pipelineCompletedAt":"..."}`. Unlike `cleanup`, the stamp write also sweeps every open `instructions` record of the run with the outcome `step did not run` (a `running` record becomes `failed` with `result not recorded, not run again`). A violation still returns a `DataError` and stops here — the GC sweep below does not run.
 
   All three non-violation paths then run an unconditional GC sweep and a per-run-directory reap, returning:
   ```json

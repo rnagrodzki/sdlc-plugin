@@ -4,7 +4,7 @@ Read this page when you run `/sdlc:received-review` with a flag, when you want
 fewer prompts, or when a pipeline runs the skill with `--auto`.
 
 ```text
-/sdlc:received-review [--pr <number>] [--auto] [--no-harden]
+/sdlc:received-review [--pr <number>] [--auto] [--no-harden] [--no-instructions]
 ```
 
 The [overview page](../received-review.md#example) shows an example.
@@ -14,8 +14,9 @@ The [overview page](../received-review.md#example) shows an example.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--pr <number>` | The pull request whose review comments the skill reads and answers. | none. With no PR number, the skill takes the feedback from the dispatch prompt, the conversation or your paste, and posts no reply. |
-| `--auto` | Run without prompts. Only "agree, will fix" ends a finding. Every other outcome is recorded as a `needs-direction` follow-up and is not closed. See [Auto mode](#auto-mode). | off |
+| `--auto` | Run without prompts. One exception: a follow-up instruction still asks a critical question when its `criticalQuestions` flag allows it (see [Follow-up instructions](#follow-up-instructions)). Only "agree, will fix" ends a finding. Every other outcome is recorded as a `needs-direction` follow-up and is not closed. See [Auto mode](#auto-mode). | off |
 | `--no-harden` | Skip the harden dispatch in Step 11.6. Use it when a caller already owns hardening for the run, for example the `harden` step of `/sdlc:ship`. See [The harden dispatch](#the-harden-dispatch). | off |
+| `--no-instructions` | Do not run the follow-up instructions of the skill. Ship passes this flag, because ship runs the lists itself. See [Follow-up instructions](#follow-up-instructions). | off |
 
 ## Prompts of a manual run
 
@@ -110,7 +111,7 @@ failure does not stop the replies.
 
 - **Manual run.** The skill asks `dispatch` or `skip` for each group that is
   not hardened yet.
-- **`--auto`.** The skill asks nothing and passes `--auto` to each
+- **`--auto`.** The skill asks nothing about the groups and passes `--auto` to each
   `/sdlc:harden` run. `/sdlc:harden` then applies guardrail edits and
   review-dimension edits to your project with no prompt: add, strengthen,
   consolidate, repair, and the removal of a rule with a dead reference. Merges and other removals
@@ -126,6 +127,36 @@ failure does not stop the replies.
   `--auto` on its own.
 - **Groups that get no run.** The summary lists each suppressed group and each
   lone `disagree` finding that formed no group, as the grouping returned them.
+
+## Follow-up instructions
+
+`/sdlc:received-review` runs the `received-review` list of the
+`[instructions]` config at the end of a run, for example a post with the
+count of fixed findings.
+[Follow-up instructions](../../instructions.md) has the config, the merge rule
+and the question rules.
+
+| Run | Flow |
+|---|---|
+| Before | Step 0 → … → Step 12.5 verify replies |
+| After | Step 0a resolve → Step 0 → … → Step 12.5 verify replies → Step 13 run the list → summary line |
+
+- The list runs only when Step 12.5 is done (or skipped for a run with no PR
+  number), and you did not cancel at the Step 10 prompt. A cancel here means you chose `skip` when no finding is pre-approved. With a pre-approved finding, `skip` does not cancel.
+- The run mode is the `--auto` flag of this run. With `--auto`, an instruction
+  asks only a critical question that its `criticalQuestions` flag allows.
+- `--no-harden` does not skip the list, because the list is not a harden run.
+- A failed instruction does not fail the run. An empty list prints no
+  instructions line.
+
+| Exit route | List runs | What you see |
+|---|---|---|
+| config error at Step 0a | no | the config error. No step starts. Fix the config, then run the skill again. |
+| cancel at the Step 10 prompt | no | the existing end of a cancelled run |
+| `--no-instructions` | no | the summary and the ledger only |
+| a tool or worker error | no | the existing error text |
+| Step 12.5 done, no cancel | yes | `Instructions (received-review): N total, D done, F failed, S not run.` |
+| you interrupt the list | partial | `Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.` |
 
 ## Tips and gotchas
 

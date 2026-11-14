@@ -1473,6 +1473,39 @@ func TestHardenSectionRegistered(t *testing.T) {
 	}
 }
 
+// TestInstructionsSectionRegistered pins the instructions section in both
+// key sets and keeps it out of ProjectSections: ReadInstructions reads it
+// from the team file and from both local files.
+func TestInstructionsSectionRegistered(t *testing.T) {
+	if !AllowedProjectKeys["instructions"] {
+		t.Error(`AllowedProjectKeys is missing "instructions"`)
+	}
+	if !LocalSections["instructions"] {
+		t.Error(`LocalSections is missing "instructions"`)
+	}
+	if ProjectSections["instructions"] {
+		t.Error(`ProjectSections must not contain "instructions"`)
+	}
+}
+
+// TestRead_AcceptsInstructions verifies a team config with an
+// [instructions] section loads without an unknown-key error.
+func TestRead_AcceptsInstructions(t *testing.T) {
+	resetTrace()
+	Quiet = true
+	defer func() { Quiet = false }()
+	root := t.TempDir()
+	setupProjectConfig(t, root, map[string]any{
+		"instructions": map[string]any{
+			"pr": []any{map[string]any{"text": "Move the ticket."}},
+		},
+	})
+
+	if _, err := Read(root); err != nil {
+		t.Fatalf("Read with [instructions]: %v", err)
+	}
+}
+
 // TestRead_AcceptsHardenInstructions verifies a config with a
 // [harden.instructions] table loads without an unknown-key error.
 func TestRead_AcceptsHardenInstructions(t *testing.T) {

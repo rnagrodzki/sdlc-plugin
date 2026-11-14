@@ -1,8 +1,8 @@
 ---
 name: review
-description: "Use this skill when reviewing code changes across project-defined dimensions (security, performance, docs, concurrency, etc.). Runs the review_prepare tool to pre-compute all git data, then dispatches one background agent per dimension directly from the main session, coordinated via a file-based ledger (no orchestrator agent). Arguments: [--base <branch>] [--dry-run]. Triggers on: review changes, code review, review PR, multi-dimension review, run review."
+description: "Use this skill when reviewing code changes across project-defined dimensions (security, performance, docs, concurrency, etc.). Runs the review_prepare tool to pre-compute all git data, then dispatches one background agent per dimension directly from the main session, coordinated via a file-based ledger (no orchestrator agent). Arguments: [--base <branch>] [--dry-run] [--no-instructions]. Triggers on: review changes, code review, review PR, multi-dimension review, run review."
 user-invocable: true
-argument-hint: "[--base <branch>] [--dry-run]"
+argument-hint: "[--base <branch>] [--dry-run] [--no-instructions]"
 model: sonnet
 ---
 
@@ -17,6 +17,27 @@ orchestrator agent used to run, now inline.
 **Announce at start:** "I'm using review (sdlc v{sdlc_version})." — extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
 **Communication style:** Follow `style.guide` from `review_prepare` for every explanation, status line, summary, and AskUserQuestion text in this skill. If this skill has no such call, or the call failed, follow the `sdlc communication style` block in session context. Do not apply it to commit messages, PR bodies, review comments, or Jira text: they follow their own templates and config.
+
+---
+
+## Step 0a — Resolve instructions
+
+Parse `--no-instructions` from `$ARGUMENTS`. The flag is independent of `--dry-run`: a dry run has no list in any case.
+
+With `--no-instructions`: do not call `instructions_resolve`. Go to Step 0. Step 10 runs no list.
+
+Without `--no-instructions`:
+
+```
+instructions_resolve({ key: "review" })
+→ { key, count, instructions, summary, next }
+```
+
+Keep `instructions` for Step 10.
+
+**On tool error:** print the error message of the tool as it is. It names the config problem and
+its fix. Say that no step started. Stop. Run no Step 0 to Step 10 step. There is nothing to
+clean up, because no manifest exists. The user fixes the config, then runs `/review` again.
 
 ---
 
@@ -601,14 +622,49 @@ writes only to the old run's ledger, which the new run does not read.
 
 ---
 
+## Step 10 — Run instructions
+
+This step runs only when all of these are true:
+
+- `--dry-run` was not passed.
+- `--no-instructions` was not passed.
+- Step 7 ended with a verdict. A run that stopped on an error, or was interrupted, has no verdict.
+- Step 9 has finished. No worker runs now.
+
+When one of them is false, run no list. A dry run goes from Step 1 to Step 9 and then ends. An
+error stop or an interruption ends after Step 9 with the existing text of that route.
+
+When `instructions` from Step 0a is empty (`count` is 0), print no instructions line. End.
+
+Otherwise run the list in interactive mode. Follow [`../ship/instructions-run.md`](../ship/instructions-run.md),
+section "Loop without run state". The run mode of `review` is always interactive: there is
+no `--auto` flag. Run each instruction in the main session, in the order of the list. Never
+dispatch an Agent for an instruction.
+
+Print the summary line after the list ends:
+
+```
+Instructions (review): N total, D done, F failed, S not run.
+```
+
+A failed instruction never changes the verdict of the review. When the user interrupts the list,
+print this line and end:
+
+```
+Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.
+```
+
+---
+
 ## Routes
 
-Every route ends in Step 9. A route that continues the wave loop or goes to Step 4 reaches
+Every route ends in Step 9, except the resolve error of Step 0a. A successful run then continues to Step 10. A route that continues the wave loop or goes to Step 4 reaches
 Step 9 after the last step it runs.
 
 | Route | Exit |
 |---|---|
-| dry run | Step 1, then Step 9 cleanup, no ledger |
+| resolve error (Step 0a) | print the config error, stop. No later step runs. No list |
+| dry run | Step 1, then Step 9 cleanup, no ledger. No list |
 | zero waves | Step 4 with zero findings |
 | error stop (a step fails and the run cannot go on) | Step 9: `TaskStop` pass for every dispatched worker with no `done` entry, a failed stop adds the worker to the unstoppable list, `diff_dir` is kept while that list is not empty. No `ledger_skip` call |
 | interruption | Step 9 as for an error stop, when this session still has the task IDs. Else tell the user that old workers can still run. No `ledger_skip` call |
@@ -616,6 +672,8 @@ Step 9 after the last step it runs.
 | worker stalled twice, `TaskStop` succeeds | `ledger_skip` reason `stalled`, continue the wave loop |
 | worker stalled or missing twice, `TaskStop` fails or no task ID (for example nested under `/ship`) | `ledger_skip` reason `unstopped`, add the worker to the unstoppable list (Step 3), continue the wave loop |
 | `ledger_skip` fails | print the error, name the worker in the Step 5 comment as skipped (stalled or missing), continue |
+| Step 9 done, Step 7 gave a verdict, no `--dry-run`, no `--no-instructions` | Step 10 (list, interactive, then the summary line), then end |
+| Step 10 interrupted | print the interrupt line of Step 10, end |
 | review run stopped and invoked again | Step 0 runs again and gets a new `run_id`. The old ledger folder shows as `stalled` on the dashboard after 30 minutes with no change. It stays there until the ledger sweep removes it (7 days by default) |
 
 ---

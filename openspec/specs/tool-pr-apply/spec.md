@@ -280,13 +280,15 @@ The tool SHALL create any missing release labels in the repository, best effort,
 - **THEN** no label is created and the call continues
 
 ### Requirement: Push before create or edit
-The tool SHALL run `git push -u origin HEAD` when the branch has no upstream or is ahead of it, and SHALL skip the push when the upstream is caught up.
+The tool SHALL push the branch when the branch has no upstream or is ahead of it, and SHALL skip the push when the upstream is caught up. When the branch has a remote-tracking ref, the push SHALL use `--force-with-lease=refs/heads/<branch>:<tracking commit>`. With no tracking ref, the push SHALL be `git push -u origin HEAD`.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | Upstream check fails | `InfraError` | `checking upstream: <error>` |
 | Commits-ahead check fails | `InfraError` | `checking commits ahead of upstream: <error>` |
-| Push fails | `InfraError` | `git push: <error>` / push manually with `git push -u origin HEAD`, retry `pr_apply` |
+| Tracking ref read fails | `InfraError` | `cannot read the remote-tracking ref of <branch>: <error>` / check the git repository, then run the pr step again. No push runs. |
+| Lease rejected | `DomainError` | `remote branch <branch> changed since the last push. pr stopped.` / fetch the branch, review the other commits, integrate them, then run the pr step again |
+| Push fails | `InfraError` | `git push: <error>` / by failure kind: `auth` check the credentials, `network` check the network, `no-remote` add the origin remote, `rejected` fetch and integrate the remote commits, `other` push manually with `git push -u origin HEAD`; then retry `pr_apply` |
 
 #### Scenario: No upstream
 - **WHEN** the branch has no upstream
@@ -299,6 +301,16 @@ The tool SHALL run `git push -u origin HEAD` when the branch has no upstream or 
 #### Scenario: Caught up
 - **WHEN** HEAD is 0 commits ahead of the upstream
 - **THEN** no push runs
+
+#### Scenario: Rebased branch with a tracking ref
+- **WHEN** the branch was rebased and has a remote-tracking ref
+- **THEN** the tool pushes with `--force-with-lease` and the tracking commit
+
+#### Scenario: Another person pushed
+- **WHEN** the remote branch has a commit that the tracking ref does not hold
+- **THEN** the push is rejected
+- **AND** the tool returns DomainError `remote branch <branch> changed since the last push. pr stopped.`
+- **AND** no PR is created or edited
 
 ### Requirement: Create or update the PR
 The tool SHALL edit the current branch's PR when `gh pr view` finds one with state `OPEN`, and create a new PR otherwise.

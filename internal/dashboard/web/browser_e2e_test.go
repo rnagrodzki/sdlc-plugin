@@ -1438,6 +1438,197 @@ func TestBrowserE2E_HardenTile(t *testing.T) {
 			block.querySelectorAll('`+hardenTile+`').length === 0;`))
 }
 
+// What TestBrowserE2E_Instructions seeds and looks for.
+const (
+	browserInstrBranch  = "feat/instructions"
+	browserInstrSession = "s-instructions"
+	// browserInstrMarkup is the text of one record. The page must show it as
+	// text and run no script.
+	browserInstrMarkup  = "<img src=x onerror=alert(1)>"
+	browserInstrOutcome = "Jira transition not found"
+	browserInstrEndText = "Post the PR link in the release channel"
+)
+
+// browserSeedInstructionShip writes a running ship run with instruction
+// records: two for the commit step, one failed and one running for the pr step,
+// and one ship record that belongs to the end of the run.
+func browserSeedInstructionShip(t *testing.T, root string, now time.Time) {
+	t.Helper()
+	st, err := state.Init(root, "ship", browserInstrBranch, browserInstrSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := func(key string, number int, source, text, status, outcome string) map[string]any {
+		return map[string]any{"key": key, "number": number, "source": source, "text": text, "status": status, "outcome": outcome}
+	}
+	st.Data["branch"] = browserInstrBranch
+	st.Data["startedAt"] = browserTS(now.Add(-30 * time.Minute))
+	st.Data["steps"] = []any{
+		map[string]any{"name": "commit", "status": tools.StepCompleted, "startedAt": browserTS(now.Add(-30 * time.Minute)), "completedAt": browserTS(now.Add(-20 * time.Minute))},
+		map[string]any{"name": "pr", "status": tools.StepInProgress, "startedAt": browserTS(now.Add(-2 * time.Minute))},
+	}
+	st.Data["instructions"] = []any{
+		rec("commit", 1, "team", "Run the formatter on the staged files", "done", "Formatted 4 files"),
+		rec("pr", 1, "team", "Move the Jira ticket to In Review", "failed", browserInstrOutcome),
+		rec("pr", 2, "project local", browserInstrMarkup, "running", ""),
+		rec("ship", 1, "team", browserInstrEndText, "pending", ""),
+	}
+	if err := state.Write(st); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestBrowserE2E_Instructions drives the real page against a ship run with
+// instruction records. The commit and pr tiles must show their rows, the end
+// group must show after the last tile with its label, and markup in the text
+// of a record must show as text and add no element to the page.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_Instructions(t *testing.T) {
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+	stderrBuf := captureStderr(t)
+	shortTimings(t, browserSnapshotEvery, time.Second)
+
+	now := time.Now().UTC()
+	repoI := t.TempDir()
+	browserSeedInstructionShip(t, repoI, now)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	o := browserOptions(ln, []string{repoI}, &browserCollector{})
+	base := "http://" + ln.Addr().String()
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server stderr:\n%s", stderrBuf.String())
+		}
+	})
+	serveCtx, stopServe := context.WithCancel(context.Background())
+	serveDone := make(chan int, 1)
+	go func() { serveDone <- Serve(serveCtx, o) }()
+	t.Cleanup(func() {
+		stopServe()
+		select {
+		case <-serveDone:
+		case <-time.After(5 * time.Second):
+			t.Error("Serve did not return at cleanup")
+		}
+	})
+	browserWaitFor(t, "GET /api/health", func() bool {
+		resp, err := http.Get(base + "/api/health")
+		if err != nil {
+			return false
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	})
+
+	// The snapshot must hold the records, else the page checks below prove nothing.
+	var pr *tools.DashboardStep
+	var end int
+	for _, repo := range browserSnapshotOf(t, base).Repos {
+		if repo.Root != repoI {
+			continue
+		}
+		for _, p := range repo.Pipelines {
+			end = len(p.EndInstructions)
+			for i := range p.Steps {
+				if p.Steps[i].Name == "pr" {
+					pr = &p.Steps[i]
+				}
+			}
+		}
+	}
+	if pr == nil || len(pr.Instructions) != 2 || end != 1 {
+		t.Fatalf("snapshot: pr step %+v, %d end records; want 2 pr records and 1 end record", pr, end)
+	}
+
+	opts := append(chromedp.DefaultExecAllocatorOptions[:],
+		chromedp.ExecPath(chrome),
+		chromedp.NoSandbox,
+		chromedp.UserDataDir(t.TempDir()),
+		chromedp.WindowSize(1400, 1000),
+	)
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
+	t.Cleanup(cancelAlloc)
+	ctx, cancelCtx := chromedp.NewContext(allocCtx)
+	t.Cleanup(cancelCtx)
+	if err := chromedp.Do(ctx); err != nil {
+		t.Fatalf("start Chrome: %v", err)
+	}
+	page := &browserPage{t: t, ctx: ctx}
+
+	page.do("open the dashboard", chromedp.Navigate(base+"/"))
+	page.wait("the first snapshot", `document.getElementById('conn').getAttribute('data-state') === 'snapshot'`)
+	page.click("the Pipelines tab", "#tab-pipelines")
+
+	inBlock := func(body string) string {
+		return `(function () {
+			var block = Array.prototype.filter.call(document.querySelectorAll('#feed > [data-key]'), function (b) {
+				return b.getAttribute('data-key').indexOf(` + browserJSON(repoI+"\n") + `) === 0;
+			})[0];
+			if (!block) return false;
+			` + body + `
+		})()`
+	}
+	page.wait("the pr tile with its rows", inBlock(`
+		var tile = block.querySelector('details[data-section="pr"]');
+		return !!tile && tile.querySelectorAll('.instr-row').length === 2;`))
+
+	var got struct {
+		CommitRows int      `json:"commitRows"`
+		PrLamps    []string `json:"prLamps"`    // the lamp class of each pr row
+		PrTexts    []string `json:"prTexts"`    // the shown text of each pr row
+		PrOutcomes []string `json:"prOutcomes"` // the outcome of each pr row that has one
+		Imgs       int      `json:"imgs"`       // img elements anywhere in the block
+		EndLabel   string   `json:"endLabel"`
+		EndRows    []string `json:"endRows"`
+		EndAfter   bool     `json:"endAfter"` // the end group follows the last step tile
+	}
+	raw := browserMust[string](page, "read the rows", inBlock(`
+		var all = function (root, sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); };
+		var pr = block.querySelector('details[data-section="pr"]');
+		var end = block.querySelector('.end-group');
+		var tiles = all(block, '.step-detail > details.step-sec');
+		var steps = all(block, '.step-detail > *');
+		var lastStep = block.querySelector('details[data-section="pr"]');
+		return JSON.stringify({
+			commitRows: all(block, 'details[data-section="commit"] .instr-row').length,
+			prLamps: all(pr, '.instr-row .lamp').map(function (l) { return l.className; }),
+			prTexts: all(pr, '.instr-text').map(function (n) { return n.textContent; }),
+			prOutcomes: all(pr, '.instr-outcome').map(function (n) { return n.textContent; }),
+			imgs: all(block, 'img').length,
+			endLabel: end ? end.querySelector('.end-label').textContent : '',
+			endRows: end ? all(end, '.instr-text').map(function (n) { return n.textContent; }) : [],
+			endAfter: !!end && steps.indexOf(end) > steps.indexOf(lastStep) && tiles.length > 0
+		});`))
+	if err := json.Unmarshal([]byte(raw), &got); err != nil {
+		t.Fatalf("decode the rows %q: %v", raw, err)
+	}
+	if got.CommitRows != 1 {
+		t.Errorf("commit rows = %d; want 1", got.CommitRows)
+	}
+	if len(got.PrLamps) != 2 || !strings.Contains(got.PrLamps[0], "lamp-failed") || !strings.Contains(got.PrLamps[1], "lamp-running") {
+		t.Errorf("pr lamp classes = %q; want lamp-failed, then lamp-running", got.PrLamps)
+	}
+	if !slices.Equal(got.PrTexts, []string{"Move the Jira ticket to In Review", browserInstrMarkup}) {
+		t.Errorf("pr texts = %q; want the Jira text, then the markup as text", got.PrTexts)
+	}
+	if !slices.Equal(got.PrOutcomes, []string{browserInstrOutcome}) {
+		t.Errorf("pr outcomes = %q; want %q", got.PrOutcomes, browserInstrOutcome)
+	}
+	if got.Imgs != 0 {
+		t.Errorf("img elements in the block = %d; want 0, the markup must stay text", got.Imgs)
+	}
+	if got.EndLabel != "end of run (ship)" || !slices.Equal(got.EndRows, []string{browserInstrEndText}) || !got.EndAfter {
+		t.Errorf("end group = label %q, rows %q, after the last tile %v; want %q, [%q], true", got.EndLabel, got.EndRows, got.EndAfter, "end of run (ship)", browserInstrEndText)
+	}
+}
+
 // TestBrowserE2E_DetailLoad drives the real page against the slim snapshot of
 // browserCollector and the two detail routes, in a temp repo with a completed
 // harden ship run, the evidence of its session, and one History row.

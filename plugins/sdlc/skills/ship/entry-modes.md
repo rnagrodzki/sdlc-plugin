@@ -18,7 +18,7 @@ If `--resume` was passed (or the pipeline auto-detects an in-flight run — see 
 ship_state({action:"read"})
 ```
 
-If the response carries a `resumeBriefing` block, the pipeline is genuinely in flight. Render `resumeBriefing.display` **verbatim** (it is a pre-formatted markdown progress block — do not paraphrase or reformat it), then continue the pipeline from the step named by `resumeBriefing.next.id` using the `flags`/`steps`/`decisions` already in the state object. `resumeBriefing` fields:
+If the response carries a `resumeBriefing` block, the pipeline is genuinely in flight. Render `resumeBriefing.display` **verbatim** (it is a pre-formatted markdown progress block — do not paraphrase or reformat it), then run the open lists ("Open lists first" below) and continue the pipeline from the step named by `resumeBriefing.next.id` using the `flags`/`steps`/`decisions` already in the state object. `resumeBriefing` fields:
 
 ```
 resumable        bool
@@ -32,6 +32,21 @@ next              {id, instruction, etaSeconds, etaBasis}   // id is the step to
 ```
 
 There is no run to resume in three cases. `read` returns a `DataError` when no ship state file exists for the branch. `read` succeeds with **no** `resumeBriefing` when the only file found is already stamped terminal, or when a state file exists but no step in it ever actually started (nothing was in flight to resume). All three are safe to treat identically. Fall through to the normal fresh-start path (SKILL.md's Step loop, items 3-4). Each state write of a new run deletes every other `ship-<slug>-*.json` file of the branch, a file in which no step started included. It keeps only a completed run that is not a dry-run (`pipelineStatus:"completed"` and no `flags.dryRun:true`). GC deletes a kept file later.
+
+### Open lists first
+
+Before you follow `resumeBriefing.next`, run the open instruction lists of the completed steps. A stop can leave a record pending or running after its step completed, and `next` skips a completed step. Run each list in this main session, with the 7g loop of SKILL.md item 7:
+
+```text
+read → for each steps[] entry with status completed, in steps[] order: 7g loop {key:<step name>}
+     → when received-review is completed: 7g loop {key:"commit-fixes"}
+     → resume at resumeBriefing.next, or 9-pre (SKILL.md) when resumeBriefing.next is absent (every step is done)
+```
+
+- A list with no open record returns `(none)` at the first `instructions-next` call. Go to the next step.
+- A record left running is marked failed by the next `instructions-next` call (outcome `result not recorded, not run again`), and the loop runs the rest of the list. Never run that instruction again.
+- A failed step has no open record: its `fail` swept them.
+- Run these lists before the received-review recovery below. That recovery runs the received-review and commit-fixes lists of the step it completes.
 
 ### Received-review recovery
 
@@ -49,7 +64,8 @@ Do not run step 8 again, and never dispatch received-review again for these find
 3. `ship_state({action:"decide", step:"received-review", detail:{text:"resumed after a stop: review output lost; findings with no fix or deferral record stay unaccounted"}})`.
 4. `ship_state({action:"complete-step", step:"received-review", detail:{outcome:"success", result:"resumed — review output lost"}})`. Apply loop items 7b and 7d to items 2 and 4.
 5. Print one line: `Run /sdlc:review and then /sdlc:received-review to recover findings lost in the stop.` Step 10 names their count as `UNACCOUNTED` when review's total was recorded.
-6. Run rebase, then go to the next configured main-loop step.
+6. Run the lists as SKILL.md item 8 does: the 7g loop for key `received-review`, then the 7g loop for key `commit-fixes` when item 1 ran commit-fixes, else `ship_state({action:"instruction-record", detail:{key:"commit-fixes", instructionAll:true, instructionStatus:"not run", instructionOutcome:"step did not run"}})`.
+7. Run rebase, then go to the next configured main-loop step.
 
 ## --gc handler (R39)
 

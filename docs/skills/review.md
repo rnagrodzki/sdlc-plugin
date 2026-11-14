@@ -37,6 +37,7 @@ Then the skill asks where the review goes: a comment on the open PR, a file in `
 
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
+| Step 0a — Resolve instructions | tool | Gets the review list of the `[instructions]` config. A config error stops the run before Step 0. | The list | yes | `--no-instructions` is not set |
 | Step 0 — Run `review_prepare` | tool | Calls `review_prepare`, reads the manifest and shows each warning. On a tool error it shows the error and stops. | The manifest with the dimensions and the waves | no | always |
 | Step 1 — Dry Run Check | skill | Prints the review plan, cleans up the files of the run and stops. No agent starts. | The review plan | yes | `--dry-run` is passed |
 | Step 2 — Wave Dispatch | agent | Starts one background agent for each dimension, wave by wave, with at most `maxParallelDimensions` agents in a wave. | Workers that write their findings to the ledger | no | always, unless `manifest.waves` is empty |
@@ -46,15 +47,16 @@ Then the skill asks where the review goes: a comment on the open PR, a file in `
 | Step 6 — Display Full Comment Body | skill | Shows the full text of the comment in the terminal, with no summary. | The visible review | no | always |
 | Step 7 — Handle Posting | skill | Checks the links in the comment, then posts it to the PR, saves it under `.sdlc-v2/reviews/` or keeps it in the terminal. | A posted comment or a saved review file | no | always. The options depend on the PR and the scope |
 | Step 8 — Offer Self-Fix | skill | Offers `fix` (runs `received-review`), `harden` (only when the verdict is `CHANGES REQUESTED`) or `no`. | A `received-review` run, a `harden` run or nothing | yes | the verdict is `CHANGES REQUESTED` or `APPROVED WITH NOTES` |
-| Step 9 — Cleanup | tool | Stops the workers that did not finish. Deletes the manifest file. Deletes the diff directory only when no worker could be left running. | A clean working state | no | always, on every end of the run |
+| Step 9 — Cleanup | tool | Stops the workers that did not finish. Deletes the manifest file. Deletes the diff directory only when no worker could be left running. | A clean working state | no | always, on every end of the run after Step 0a |
+| Step 10 — Run instructions | skill | Runs each instruction of the list, then prints `Instructions (review): …`. | The summary line | yes | not `--dry-run`, Step 7 gave a verdict (the run did not stop on an error), Step 9 has finished, and the list is not empty |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
-| Starts | With `/sdlc:review`. `--base <branch>` sets the base branch. `--dry-run` shows the plan only. |
-| Ends | After Step 9. A dry run ends after the cleanup of Step 1. |
-| Asks the user | At Step 7: post, save or keep in the terminal. At Step 8: fix, harden or no. |
+| Starts | With `/sdlc:review`. `--base <branch>` sets the base branch. `--dry-run` shows the plan only. `--no-instructions` skips the follow-up instructions. |
+| Ends | After Step 10, or after Step 9 when no list runs. A dry run ends after the cleanup of Step 1. A config error at Step 0a stops the run before Step 0. |
+| Asks the user | At Step 7: post, save or keep in the terminal. At Step 8: fix, harden or no. An instruction asks only when its question flags allow it. |
 | Resume | none |
 
 ## More examples
@@ -86,8 +88,9 @@ Put these lines in `.sdlc-v2/local.toml`, or set the scope with `/sdlc:setup`. T
 
 ## Reference
 
-- [Flags and settings](./review/settings.md): the 2 flags, the 5 scopes, the count of parallel reviewers, the dimensions and the dry-run plan.
+- [Flags and settings](./review/settings.md): the 3 flags, the 5 scopes, the count of parallel reviewers, the dimensions, the dry-run plan and the follow-up instructions.
 - [Review results](./review/results.md): the comment, the verdict rules, skipped dimensions, the posting options, the fix offer and what stays after a run.
+- [Follow-up instructions](../instructions.md): the `[instructions]` config, the merge rule, the question rules and the summary line.
 
 ## Related skills
 

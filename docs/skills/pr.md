@@ -38,6 +38,7 @@ You see these items in order:
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
 | Step 0 — Plan Mode Check | skill | Stops the run when plan mode is active, because the skill creates or updates a PR. | The go-ahead for the next step | no | always. It stops the run only in plan mode |
+| Step 0a — Resolve instructions | tool | Gets the pr list of the `[instructions]` config. A config error stops the run. | The list | yes | `--no-instructions` is not set |
 | Step 0 (CONSUME): Call `pr_prepare` | tool | Calls `pr_prepare`. Shows each error and stops when `PR_CONTEXT.ok` is `false`. Shows each warning. | `PR_CONTEXT` | no | always |
 | Step 1: Consume the Context | skill | Reads the branch, the Jira ticket, the template, the commits and the version data. Holds the release fields that the caller gave. | The facts for the description and the release intent | no | always |
 | Step 1b (GATE): Release Intent | skill | Asks for a release level, or for an acknowledged skip, and drafts the release notes. With `--auto` and no release level it stops with an error. | The release level, the release notes and the release source | yes | no `releaseLevel` was given at invocation |
@@ -45,15 +46,16 @@ You see these items in order:
 | Step 3 (CRITIQUE): Self-review the Draft | skill | Checks the draft against the quality gates. | A list of failing gates | no | always |
 | Step 4 (IMPROVE): Revise Based on Critique | skill | Fixes each failing gate, with at most 2 rounds for each gate. Asks the user a question when a business section stays unclear. | The revised draft | no | always |
 | Step 5 (DO): Present for Review | skill | Shows the release intent, the title and the description. Asks `yes`, `edit` or `cancel`. | The approved title and description | no | always. `--auto` and `--skip-approval` skip the question |
-| Step 6: Create or Update PR | tool | Checks the links in the body with `links_validate`, then calls `pr_apply` to create the PR or update the open PR. | The PR URL | no | always, after `yes` or after a skipped question |
+| Step 6: Create or Update PR | tool | Checks the links in the body with `links_validate`, then calls `pr_apply` to create the PR or update the open PR. Pushes with a lease when the branch is already on the remote. When the remote branch changed since the last push, the run stops. | The PR URL | no | always, after `yes` or after a skipped question |
+| Step 7 — Run instructions | skill | Runs each instruction of the list, then prints `Instructions (pr): …`. | The summary line | yes | the list is not empty |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
-| Starts | With `/sdlc:pr`. `--draft`, `--base <branch>`, `--auto` and `--skip-approval` change the run. |
-| Ends | After Step 6 shows `Pull request created` or `Pull request updated` with the URL. A `cancel`, an error or a link violation ends the run with no PR change. |
-| Asks the user | At Step 1b for the release level. At Step 2 or Step 4 when a business section stays unclear. At Step 5: `yes`, `edit` or `cancel`. |
+| Starts | With `/sdlc:pr`. `--draft`, `--base <branch>`, `--auto`, `--skip-approval` and `--no-instructions` change the run. |
+| Ends | After Step 7 prints the instructions line. With no list, after Step 6 shows `Pull request created` or `Pull request updated` with the URL. A `cancel`, an error or a link violation ends the run with no PR change. |
+| Asks the user | At Step 1b for the release level. At Step 2 or Step 4 when a business section stays unclear. At Step 5: `yes`, `edit` or `cancel`. An instruction asks only when its question flags allow it. |
 | Resume | none |
 
 ## More examples
@@ -85,7 +87,8 @@ Run the same command again on the same branch. The skill writes the title and th
 ## Reference
 
 - [The PR description](./pr/description.md): the sections, your own template, the fill rules, the quality gates and the link check.
-- [Flags and the release decision](./pr/flags-and-release.md): the 4 flags, create or update, the release question, each stop and the limits.
+- [Flags and the release decision](./pr/flags-and-release.md): the 5 flags, create or update, the push, the release question, each stop and the limits.
+- [Follow-up instructions](../instructions.md): the `[instructions]` config, the merge rule, the question rules and the summary line.
 
 ## Related skills
 

@@ -44,9 +44,9 @@ import (
 // empty-string distinction for reason/error/result, are preserved without
 // literal typed struct fields (see detailIntPtr below).
 type ShipStateIn struct {
-	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=commit-check,enum=openspec-check,enum=openspec-tasks,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record,enum=harden_clusters,enum=report" jsonschema_description:"Operation to perform: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start (legacy), complete (legacy), skip, fail, decide, defer, healing_record, harden_clusters, report, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
+	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=commit-check,enum=openspec-check,enum=openspec-tasks,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record,enum=harden_clusters,enum=report,enum=instructions-next,enum=instruction-record" jsonschema_description:"Operation to perform: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start (legacy), complete (legacy), skip, fail, decide, defer, healing_record, harden_clusters, report, instructions-next, instruction-record, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
 	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
-	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, merge, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, deferredId (kind fixed: the deferred row to resolve; the deferredFindings entries with it get fixedInRun:true), status, phase, trigger, classification, applied (at most 100 entries {surface, action, targetFile, rationale?, patch?}; rationale at most 600 runes; a patch over 1536 bytes is cut and gets patchCut:true, which the caller never sends), skipped, held (optional, at most 100 entries {surface, action, targetFile, reason, deferredId?}; [] is valid; reason is one of pending-stored | pending-not-stored | not-processed; deferredId is a non-empty string, required for reason pending-stored and absent for the other reasons; entries can share one deferredId; not checked against the harden summary or the deferred items; a longer list or a bad entry is a DomainError and writes nothing), branch; harden_clusters reads findings, branch. Each finding may also carry line, deferredId and fixedInRun. report reads write, format, branch; deferred_add reads id, description, created, source, priority, merge (true to merge into the open item with the same id)). See the action list for which sub-fields each action reads."`
+	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, merge, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, deferredId (kind fixed: the deferred row to resolve; the deferredFindings entries with it get fixedInRun:true), status, phase, trigger, classification, applied (at most 100 entries {surface, action, targetFile, rationale?, patch?}; rationale at most 600 runes; a patch over 1536 bytes is cut and gets patchCut:true, which the caller never sends), skipped, held (optional, at most 100 entries {surface, action, targetFile, reason, deferredId?}; [] is valid; reason is one of pending-stored | pending-not-stored | not-processed; deferredId is a non-empty string, required for reason pending-stored and absent for the other reasons; entries can share one deferredId; not checked against the harden summary or the deferred items; a longer list or a bad entry is a DomainError and writes nothing), branch; harden_clusters reads findings, branch. Each finding may also carry line, deferredId and fixedInRun. report reads write, format, branch; instructions-next and instruction-record read key (one of execute, commit, review, received-review, commit-fixes, verify-openspec, archive-openspec, harden, pr, verify-pipeline, await-remote-review, learnings-commit, ship; example: key: commit) and branch. instruction-record also reads instructionNumber (1 to the record count), instructionAll (true closes each open record of the key; needs instructionStatus not run and an outcome; a pending record becomes not run with the outcome, a running record becomes failed with outcome result not recorded, not run again), instructionStatus (done, failed, not run), instructionOutcome (max 1000 characters after trimming, required for failed and not run; a longer outcome is a DomainError, never cut). Every other action refuses instructionNumber, instructionAll, instructionStatus and instructionOutcome; deferred_add reads id, description, created, source, priority, merge (true to merge into the open item with the same id)). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session. init also uses it to keep older ship runs of the branch: a run that is not a dry-run and whose non-empty sessionId differs from this non-empty value is kept. When either value is empty, a sibling run that is not completed is deleted."`
 }
 
@@ -616,15 +616,8 @@ func shipFormatViolations(violations []shipContractViolation) string {
 // git commands and branch resolution run in workDir. An unknown action
 // returns a DomainError that lists the valid actions.
 func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
-	// Validate detail level for mutating actions.
-	switch in.Action {
-	case "begin-step", "complete-step", "start", "complete", "skip", "fail", "decide", "defer":
-		if v := detailStr(in.Detail, "detail"); v != "" && v != "full" && v != "concise" {
-			return nil, &mcpserver.DomainError{
-				Msg:        fmt.Sprintf(`%s: detail must be "concise" or "full", got %q; pass detail.detail="concise" or omit for default "full"`, in.Action, v),
-				Suggestion: "Pass detail.detail as the string \"concise\" or \"full\" only, or omit the field entirely to use the default.",
-			}
-		}
+	if err := shipCheckActionInputs(in); err != nil {
+		return nil, err
 	}
 
 	switch in.Action {
@@ -695,10 +688,35 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "report":
 		return shipStateReport(root, workDir, in, now)
 
+	// Instruction records — the follow-up instructions of each step and of the run.
+	case "instructions-next":
+		return shipStateInstructionsNext(root, workDir, in, now)
+	case "instruction-record":
+		return shipStateInstructionRecord(root, workDir, in, now)
+
 	default:
 		return nil, unknownActionError("ship_state action", in.Action, "",
-			"pass one of: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli, healing_record, harden_clusters, report (start and complete are legacy aliases of begin-step and complete-step)")
+			"pass one of: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli, healing_record, harden_clusters, report, instructions-next, instruction-record (start and complete are legacy aliases of begin-step and complete-step)")
 	}
+}
+
+// shipCheckActionInputs runs the input checks that apply across actions,
+// before the dispatch: detail.detail of the narrated actions must be
+// "concise" or "full", and only instruction-record takes the record inputs.
+func shipCheckActionInputs(in ShipStateIn) error {
+	switch in.Action {
+	case "begin-step", "complete-step", "start", "complete", "skip", "fail", "decide", "defer":
+		if v := detailStr(in.Detail, "detail"); v != "" && v != "full" && v != "concise" {
+			return &mcpserver.DomainError{
+				Msg:        fmt.Sprintf(`%s: detail must be "concise" or "full", got %q; pass detail.detail="concise" or omit for default "full"`, in.Action, v),
+				Suggestion: "Pass detail.detail as the string \"concise\" or \"full\" only, or omit the field entirely to use the default.",
+			}
+		}
+	}
+	if in.Action != "instruction-record" {
+		return shipRefuseInstructionInputs(in.Detail)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -1413,11 +1431,11 @@ func shipStateCommitCheck(root, workDir string, in ShipStateIn, now func() time.
 			"decision": out.Result,
 			"at":       at.UTC().Format(time.RFC3339),
 		})
-		out.Next = "Commit step completed. Skip 7c2 and 7d. Go to the next step."
+		out.Next = "Commit step completed. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step."
 	} else {
 		out.Result = "committed " + shortSHA(head)
 		shipRecordSideEffect(st.Data, shipSideEffectKey(st.Data, shipCommitStep), shipStepSideEffects[shipCommitStep], head, at)
-		out.Next = "Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step."
+		out.Next = "Commit step completed from the landed commit. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step."
 	}
 
 	startedAt, _ := step["startedAt"].(string)
@@ -1426,6 +1444,13 @@ func shipStateCommitCheck(root, workDir string, in ShipStateIn, now func() time.
 	}
 	if err := shipStateWriteFunc(st); err != nil {
 		return nil, shipCommitWriteError(st, err)
+	}
+	// The step can complete without a commit_apply push (execute committed
+	// the waves, or the commit landed outside the commit skill), so the
+	// branch reaches the remote here. A push warning never changes
+	// stepCompleted.
+	if _, warning := pushBestEffort(workDir); warning != "" {
+		out.Warnings = append(out.Warnings, warning)
 	}
 	completedAt, _ := step["completedAt"].(string)
 	_, ts := shipCompletionTiming(root, st.Data, stepIdx, shipCommitStep, startedAt, completedAt, at)
@@ -1468,12 +1493,21 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 			Suggestion: "Run ship_state read and pass one of the step names listed under steps, then retry ship_state skip.",
 		}
 	}
+	skippedAt := now()
 	step["status"] = "skipped"
-	step["completedAt"] = now().UTC().Format(time.RFC3339)
+	step["completedAt"] = skippedAt.UTC().Format(time.RFC3339)
 	if v, ok := in.Detail["reason"]; ok {
 		step["reason"] = v
 	}
-	if err := state.Write(st); err != nil {
+	// The open records of the skipped step close in the same write. A damaged
+	// list never blocks the skip: the response names it.
+	var warnings []string
+	if _, err := instrSweep(st.Data, func(rec map[string]any) bool {
+		return instrString(rec, instrFieldKey) == in.Step
+	}, shipInstrOutcomeSkipped, skippedAt); err != nil {
+		warnings = append(warnings, instrSweepWarning(err))
+	}
+	if err := shipStateWriteFunc(st); err != nil {
 		return nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
 			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state skip.",
@@ -1486,6 +1520,7 @@ func shipStateSkip(root, workDir string, in ShipStateIn, now func() time.Time) (
 		Narration: pipeline.Narration{
 			Summary: fmt.Sprintf("Step '%s' skipped (%d of %d).", in.Step, pos, total),
 		},
+		Warnings: warnings,
 	}
 	if shipDetailLevel(in) == "full" {
 		ts := pipeline.NewTimingsStore(root)
@@ -1503,6 +1538,11 @@ var shipHistoryAppendFunc = func(root string, rec history.RunRecord) error {
 // shipStateWriteFunc writes a ship state file. Tests replace it to force a
 // write failure without touching file permissions.
 var shipStateWriteFunc = state.Write
+
+// shipCleanupStampWriteFunc writes the completed stamp of cleanup-pipeline.
+// It is apart from shipStateWriteFunc so that a test can fail the stamp write
+// and keep the later writes of cleanup-pipeline working, and the reverse.
+var shipCleanupStampWriteFunc = state.Write
 
 // shipFailDurationMs returns the milliseconds between startedAt and now. It
 // returns 0 when startedAt does not parse as an RFC3339 timestamp.
@@ -1601,6 +1641,12 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 	errVal, hasErr := in.Detail["error"]
 	failedAt := now()
 	firstFail := shipApplyFail(st.Data, step, in.Step, errVal, hasErr, failedAt)
+	// Each open record of the run closes in the same write as the fail row. A
+	// damaged list never blocks the fail: the response names it.
+	var warnings []string
+	if _, err := instrSweep(st.Data, shipInstrMatchAll, shipInstrOutcomeFailed, failedAt); err != nil {
+		warnings = append(warnings, instrSweepWarning(err))
+	}
 
 	if err := shipStateWriteFunc(st); err != nil {
 		return nil, &mcpserver.InfraError{
@@ -1612,9 +1658,8 @@ func shipStateFail(root, workDir string, in ShipStateIn, now func() time.Time) (
 
 	// The flag is persisted before the append. A crash between the two loses
 	// the row but never writes a second one.
-	var warnings []string
 	if firstFail {
-		warnings = shipAppendFailHistory(root, st.Data, failedAt)
+		warnings = append(warnings, shipAppendFailHistory(root, st.Data, failedAt)...)
 	}
 
 	pos, total := shipStepPosition(st.Data, in.Step)
@@ -3368,11 +3413,13 @@ type ShipResumeBriefing struct {
 }
 
 // shipRunInFlight reports whether a ship pipeline has been started but not
-// finished: some step still blocks proceed (shipFirstBlockingStep is
-// non-empty) AND at least one step has actually been touched (has a
-// startedAt). The second condition distinguishes a freshly init'd pipeline
-// — nothing has run yet, so there is nothing to resume or report an
-// interruption for — from a genuinely interrupted one.
+// finished: at least one step has actually been touched (has a startedAt)
+// AND some work is left — a step still blocks proceed (shipFirstBlockingStep
+// is non-empty) or an instruction record is pending or running. The
+// started-step condition distinguishes a freshly init'd pipeline — nothing
+// has run yet, so there is nothing to resume or report an interruption for —
+// from a genuinely interrupted one. The record condition keeps a run whose
+// steps are all done, but whose end list is still open, in flight.
 //
 // A run that cleanup stamped pipelineStatus:"completed" is never in flight.
 // "failed" is terminal for the cleanup contract, so a stamped run can still
@@ -3382,10 +3429,10 @@ func shipRunInFlight(data map[string]any) bool {
 	if status, _ := data["pipelineStatus"].(string); status == "completed" {
 		return false
 	}
-	if shipFirstBlockingStep(data) == "" {
+	if shipLastActiveStep(data) == nil {
 		return false
 	}
-	return shipLastActiveStep(data) != nil
+	return shipFirstBlockingStep(data) != "" || shipHasOpenInstruction(data)
 }
 
 // shipLastActiveStep returns the step most recently touched: the
@@ -3902,16 +3949,22 @@ func shipCleanupStampRun(workDir string, st *state.State, now func() time.Time) 
 		}
 	}
 	var stamp shipCleanupStamp
-	completedAt := now().UTC().Format(time.RFC3339)
+	stampedAt := now()
+	completedAt := stampedAt.UTC().Format(time.RFC3339)
 	st.Data["pipelineStatus"] = "completed"
 	st.Data["pipelineCompletedAt"] = completedAt
+	// Each open record of the run closes in the same write as the stamp. A
+	// damaged list never blocks the stamp: the response names it.
+	if _, err := instrSweep(st.Data, shipInstrMatchAll, shipInstrOutcomeDidNotRun, stampedAt); err != nil {
+		stamp.warnings = append(stamp.warnings, instrSweepWarning(err))
+	}
 	// The OpenSpec decision goes into the same write as the stamp.
 	var openspecWarning string
 	stamp.openspecReport, openspecWarning = shipCleanupOpenspecReport(workDir, st.Data, now())
 	if openspecWarning != "" {
 		stamp.warnings = append(stamp.warnings, openspecWarning)
 	}
-	if err := state.Write(st); err != nil {
+	if err := shipCleanupStampWriteFunc(st); err != nil {
 		return shipCleanupStamp{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
 			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state cleanup-pipeline.",
@@ -4691,21 +4744,23 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - init: Create ship state. Optional: detail.branch, detail.flags, sessionId. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC deletes a kept file later.
 - begin-step: Begin execution of a step (preferred over start). Requires step. Returns narration with progress, ETA, dispatch instruction, todos, and alreadyDone (true when ship_verify_side_effect already recorded this step's side effect in the sideEffects journal — a resumed pipeline can skip redoing it). Optional: detail.branch, detail.stateFile, detail.detail.
 - complete-step: Complete execution of a step (preferred over complete). Requires step. Returns narration with timing, next step, todos, issue summary, warnings, and linkedPlan. Side effect: complete-step of execute (outcome not failure) reads the execute state planPath and the plan state it names, then saves linkedPlan {planFile, startedAt, completedAt} once; a later call keeps the first object. linkedPlan in the output is the value that the ship state holds after the call (saved or kept), and is absent when no linked plan run was found. A failed lookup, a plan run with no valid start time (nothing saved), and a done mark that is not RFC 3339 (completedAt left out) each add one warnings entry and never fail the step. Optional: detail.outcome ("success"|"failure"), detail.result, detail.branch, detail.stateFile, detail.detail.
-- commit-check: Decide the commit step from the working tree. Requires: (none). Optional: detail.branch. Side effects: staging (git add -A -- ':!.sdlc-v2/' in the active worktree stages every change, untracked files that are not gitignored included; then git diff --cached --name-only counts the staged paths); the first call of a run stores HEAD in state key commitBaseHead, and later calls keep it. Dirty tree: returns {clean:false, stagedCount} and changes no step. Clean tree with HEAD equal to commitBaseHead: appends one decide entry and does what complete-step does for the commit step, with result "`+commitNothingPrefix+`: execute committed N wave commit(s)" (N = non-empty waves[].committedSha of this branch's execute state) or "`+commitNothingPrefix+`: the working tree is clean" (N = 0). Clean tree with HEAD not equal to commitBaseHead: records HEAD in the side-effect journal (sideEffects, kind sha) and does what complete-step does for the commit step, with result "committed <short sha>". Returns clean, stagedCount, waveCommits, stepCompleted, result, todos and display (when stepCompleted), warnings, next. Errors: a failed git call is a git InfraError; a commit step that is not in_progress is a step-state DomainError; a pipeline with no commit step, or a commitBaseHead that is not a string, is a DataError.
+- commit-check: Decide the commit step from the working tree. Requires: (none). Optional: detail.branch. Side effects: staging (git add -A -- ':!.sdlc-v2/' in the active worktree stages every change, untracked files that are not gitignored included; then git diff --cached --name-only counts the staged paths); the first call of a run stores HEAD in state key commitBaseHead, and later calls keep it. Dirty tree: returns {clean:false, stagedCount} and changes no step. Clean tree with HEAD equal to commitBaseHead: appends one decide entry and does what complete-step does for the commit step, with result "`+commitNothingPrefix+`: execute committed N wave commit(s)" (N = non-empty waves[].committedSha of this branch's execute state) or "`+commitNothingPrefix+`: the working tree is clean" (N = 0). Clean tree with HEAD not equal to commitBaseHead: records HEAD in the side-effect journal (sideEffects, kind sha) and does what complete-step does for the commit step, with result "committed <short sha>". When the call completes the commit step itself, it then pushes the branch to origin, best effort: a skipped or failed push adds one entry to warnings and never changes stepCompleted. A dirty tree never pushes. Returns clean, stagedCount, waveCommits, stepCompleted, result, todos and display (when stepCompleted), warnings, next. Errors: a failed git call is a git InfraError; a commit step that is not in_progress is a step-state DomainError; a pipeline with no commit step, or a commitBaseHead that is not a string, is a DataError.
 - openspec-check: Check the OpenSpec change of the run for verify-openspec or archive-openspec. Requires: step (verify-openspec | archive-openspec, in_progress). Optional: detail.change (only when flags.openspecChange is empty), detail.branch. Reads: flags.openspecChange, openspecBaseHead, linkedPlan.planFile (for the missing-artifacts next text), openspec/changes/. Side effects: runs openspec validate --strict; on missing-on-disk, missing-artifacts or invalid it writes the fail row of the step, as the fail action does. Returns change, outcome (ok | archived | missing-on-disk | missing-artifacts | invalid), missing, validateOutput (cut at 16384 bytes, with a warning when cut), overlaps (filled only for outcome invalid; empty for every other outcome), warnings, next. Errors: a step other than verify-openspec or archive-openspec, a step that is not in_progress, a bad change name, a detail.change or detail.branch that is not a string, or any detail.sync key is a DomainError; a pipeline with no entry for the step is a DataError; a failed state write, a failed read of the change files other than a missing path, a missing openspec CLI, or a validate output over the execx cap is an InfraError.
 - openspec-tasks: Count, and on request sync, the tasks.md checkboxes of the OpenSpec change for archive-openspec. Requires: step (archive-openspec, in_progress). Optional: detail.sync (true rewrites each open box outside code fences; absent or false writes nothing), detail.change (as openspec-check). Reads: flags.openspecChange, openspec/changes/<change>/tasks.md. Side effects: with detail.sync true, replaces tasks.md through a temp file. Returns change, before, after, changed, written, warnings, next. An absent tasks.md and a tasks.md with no box each return counts 0, write nothing, and add one warning that names the case. Read policy: unlike openspec-check and AnalyzeChange, a tasks.md that is a symlink or another non-regular file is refused, because the temp-file rename would replace the link; a tasks.md over 1 MiB is refused, because the action reads it whole to rewrite it. Errors: a step other than archive-openspec, a step that is not in_progress, a bad change name, a detail.change or detail.branch that is not a string, or a detail.sync that is not a boolean is a DomainError; a pipeline with no archive-openspec entry, a non-regular tasks.md, a tasks.md over 1 MiB, or an unclosed code fence (the message names the line) is a DataError; a failed read or write of tasks.md is an InfraError.
 - start: (Legacy) Begin a step. Requires step. Returns narration. Optional: detail.branch, detail.detail.
 - complete: (Legacy) Complete a step. Requires step. Returns narration with timing, warnings, and linkedPlan. Same linkedPlan side effect and output as complete-step. Optional: detail.branch, detail.result, detail.detail.
-- skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail.
-- fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. The failure row carries the same plan fields from linkedPlan as history_record; a linkedPlan that is not an object or has a bad time adds a warnings entry. Optional: detail.branch, detail.error (recorded as issue), detail.detail.
+- skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail. Also closes the open instruction records of that step, in the same write: pending becomes "not run" with outcome "step skipped", running becomes "failed" with outcome "result not recorded, not run again". A damaged instructions list closes no record and adds one warning; the action still completes.
+- fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. The failure row carries the same plan fields from linkedPlan as history_record; a linkedPlan that is not an object or has a bad time adds a warnings entry. Optional: detail.branch, detail.error (recorded as issue), detail.detail. Also closes the open instruction records of the run, in the same write: pending becomes "not run" with outcome "step failed or stopped", running becomes "failed" with outcome "result not recorded, not run again". A damaged instructions list closes no record and adds one warning; the action still completes.
 - decide: Record a decision. Requires step. Returns narration. Optional: detail.branch, detail.text, detail.detail.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it (with no ship state file the summary says the item is stored nowhere). Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`"). defer and deferred_add read .sdlc-v2/history/deferred.json to merge into an open row: a defer with reason `+history.ReasonNeedsDirection+` on a file that has an open `+history.ReasonNeedsDirection+` row appends its description as a line to that row instead of adding a row. The response names the row id it merged into, and its next field says whether the call merged, added a row, or found the text already there. The run-scoped entry is written after deferred.json and carries deferredId, the id of the deferred.json row that holds the text (absent when the deferred.json write failed). When the deferred.json write succeeded, defer also reads data.healing.fixProgress of the run: when it holds the finding's row (match: the only row with the same file, line and title, else the only queued or fixing row with the same file and line), defer sets it to deferred (a failed row stays failed) and copies deferredId onto it. The summary and next then end with a note: "Fix-progress row set to deferred (was <prior status>)." when the status changed, or "Fix-progress row kept <status> and got the deferred id." when the status stayed and the row only received the deferredId; with no matching row, or nothing to change, defer adds no note. When the deferred.json write failed, defer does not change the row and adds no note. A damaged data.healing (not an object, or a fixProgress that is not a list) leaves the row unchanged and adds a warning with the repair step to the summary and to next, and the defer call does not fail for it. A failed state write after a good deferred.json write names that row: run deferred_resolve on it before a retry (a retry in a later second adds a second row), or retry only when a second row is acceptable.
 - healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1); a repeat with the same (origin, file, line, title) is a duplicate; kind fixed also sets the matching data.healing.fixProgress row to fixed (match: the exact key, else the only row with the same file, line and title, else the only queued or fixing row with the same file and line; it creates no row; a duplicate fixed call still repairs the row, with narration "fix-progress row set to fixed" and written true; when the call changes the status of a row, the response carries fixRow {status, prior, updatedAt} and next names the prior status; a fixProgress value that is not a list does not fail the call: the fixed record is written, no row changes, and summary, next and warnings carry a warning that names the state file); Optional detail.deferredId (string, the id from the finding's Deferred-id line): healing_record kind fixed with deferredId also resolves that row in .sdlc-v2/history/deferred.json. The row is resolved first (a resolved row is left as it is), then fixedInRun:true is set on every deferredFindings entry with that deferredId: entries that share one merged deferred.json row are all flagged by one call, and the whole row is resolved; an id missing from either store (deferredFindings or deferred.json) is a DomainError, and the response echoes deferredId and fixedInRun with next "deferred item <id> resolved. Continue the fix pass." or "deferred item <id> was already resolved. Continue the fix pass.") | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile, optional rationale (string, at most `+fmt.Sprint(healingRationaleMaxRunes)+` runes; a longer rationale is a DomainError), optional patch (string; a patch over `+fmt.Sprint(healingPatchMaxBytes)+` bytes is cut, the entry gets patchCut:true, and summary, next and warnings name each cut entry and its received byte count; the caller never sends patchCut)}] (at most `+fmt.Sprint(healingAppliedMax)+` entries; a longer list is a DomainError and writes nothing), detail.skipped (non-negative integer). Optional: detail.held, at most `+fmt.Sprint(healingHeldMax)+` entries (a longer list is a DomainError and writes nothing) [{surface, action, targetFile, reason (one of `+strings.Join(healingHeldReasons, " | ")+`), deferredId (a non-empty string, stored trimmed; required for `+healingHeldPendingStored+`, absent otherwise; entries can share one deferredId)}]; an empty held list is valid and stored as []; the tool does not check that held lists every item of the harden summary, and does not check deferredId against the stored deferred items. A wrong type, a caller patchCut or a bad held entry returns DomainError and writes nothing. A "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires the finding fields of "fixed" — detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1) — plus detail.status (one of `+strings.Join(healingFixStatuses, " | ")+`). Upserts data.healing.fixProgress[] on the key (origin, file, line, title): a new key appends a record with firstAt and updatedAt; a repeat of the stored status changes nothing (a new severity included); a stored final status (`+strings.Join(healingFixFinal, " | ")+`) is kept when the incoming status is queued or fixing, and a stored failed is kept when the incoming status is deferred (narration "kept <status>"); any other status change replaces the whole record and keeps firstAt and the deferredId of the stored record. At most `+fmt.Sprint(healingFixProgressMax)+` records: a new key past the cap is a DomainError, while a stored key still updates. Never writes data.healing.fixed). Optional: detail.branch. A no-op call returns narration "already recorded — no change" (or "kept <status>"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing; a fixed record with detail.deferredId then resolves nothing, and its next says that the deferred item stays open. A damaged data.healing (not an object, or a list key that is not a list) is a DataError that names the state file, except a fixProgress value on kind fixed (see above). Returns summary, kind, written (true only when this call changed the state file), record (the record as stored after the call: recordedAt for review-total, fixed and hardened; status, firstAt and updatedAt for fix-progress; on a no-op call, and on a repeat fixed call that only sets its fixProgress row, the stored entry, not the incoming one; with no live run the validated incoming record), and next (id "continue-fix-pass" with the instruction for the fix pass: kind fix-progress and kind fixed return it (with detail.deferredId, the instruction of kind fixed names the deferred item); kind review-total returns next id "continue-after-review-total" and kind hardened returns next id "continue-harden", each with the instruction for the calling step; for kind hardened, phase started asks for the done record and phase done ends Step 5 of the harden run and names the step after it).
 - harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction"|"not-evaluated" (only with reason below-threshold), reason? (one of `+strings.Join(history.DeferredReasons(), " | ")+`), line?, deferredId?, fixedInRun?}]. Optional: detail.branch (the ship run whose healing.hardened triggers set alreadyHardened). failureText has every double quote replaced by a single quote and every backslash by a slash, so it is safe inside a quoted --failure-text argument. A below-threshold finding joins the cluster of its file when that file has another finding that is not below-threshold; a file with only below-threshold findings forms no cluster. Each finding also lands in at most one of three lists, which never change the clusters. The reason of a finding picks its list; the verdict picks it only when the reason is empty. fixNow holds a below-threshold finding with a deferredId and fixedInRun false. staysDeferred holds a below-threshold finding without a deferredId and a needs-direction finding. evidenceOnly holds a disagree or wont-fix finding (the verdict agree-won't-fix counts as wont-fix). Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, fixNow, staysDeferred, evidenceOnly (each [] when empty), and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
-- read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. reviewLedger and reportData.deferredFindings (a count) skip each deferredFindings entry with fixedInRun:true; the state's own data.deferredFindings array in the same response is not filtered and keeps those entries. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
+- instructions-next — Requires: detail.key (an instruction key, for example "commit"; the Detail field lists every key). Optional: detail.branch. Reads the instructions list of the ship state of this branch. Starts the next pending record and returns it, the count left and runMode. A record of the key left running is marked failed first, with outcome "result not recorded, not run again". Returns summary, instruction (the record {key, number, source, text, normalQuestions, criticalQuestions, onQuestionNotAllowed, status, outcome, startedAt, endedAt}, or (none) when no record of the key is pending), remaining, failedRunning (the numbers of the records that were still running and that this call marked failed; (none) when none), runMode ("--auto" or "interactive", from flags.auto of the ship state; a missing flags.auto is "--auto"), warnings and next. Errors: DomainError for bad input or for an instruction key sent with another action, DataError for a damaged instructions key, InfraError for a failed write. Warnings: a flags.auto that is not a boolean names the type found, says that runMode "--auto" is used, and says to start a new run. Differences from execute_state: this action never seeds from config, because ship_prepare seeds the list, so a state with no instructions key is an empty list. A missing or unreadable state file keeps the read error of ship_state.
+- instruction-record — Requires: detail.key, detail.instructionStatus (done, failed or not run), and detail.instructionNumber or detail.instructionAll. detail.instructionOutcome is required for failed and not run, optional for done; it is trimmed and may have at most 1000 characters (a longer outcome is a DomainError, never cut). Optional: detail.branch. Closes the running record instructionNumber of the key. With instructionAll:true, status "not run" and an outcome, closes each open record of the key: a pending record becomes not run with the outcome, a running record becomes failed with outcome "result not recorded, not run again". Returns summary, key, updated (the number of records closed), closed (each closed record as stored: number, status, outcome, endedAt), warnings and next ("Call instructions-next for <key>." after one record; "No record of <key> is open. Continue with the next step." after instructionAll). Errors: DomainError for bad input, for a closed record, or for an instruction key sent with another action, DataError for a damaged instructions key, InfraError for a failed write. Warnings: warnings. The error for a misplaced record input names detail.<field>. execute_state names <field>.
+- read: Return the full ship state. Optional: detail.branch. The response also carries "reportData": report-ready aggregates, including healing (data.healing verbatim, {} when absent) and reviewLedger {total, fixed (local-review only), deferredByReason, unaccounted = total - fixed - deferred, never clamped} — reviewLedger is null, with reviewLedgerNote, when no review total was recorded. reviewLedger and reportData.deferredFindings (a count) skip each deferredFindings entry with fixedInRun:true; the state's own data.deferredFindings array in the same response is not filtered and keeps those entries. reportData.instructionSummary counts the instruction records. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the pipeline is in flight (not stamped pipelineStatus:"completed", some step still blocks proceed or an instruction record is pending or running, and at least one step has been started), the state also carries a "resumeBriefing" (resumable, lastStep, lastStepStatus, sideEffects, summary, display, timing{stepSeconds,pipelineSeconds,idleSeconds,human}, next). A step left "failed" is still reported resumable:true, never as an error.
 - report: Compose the end-of-run report from ship state, healing records, this run's execute state (only when the execute step completed) and its linked plan run, the review run ledger of this ship run (for the Review waves section), CLI evidence, user input and learnings, and render it. Its deferredFindings list leaves out each entry with fixedInRun:true (the fix is counted under healing.fixed). Optional: detail.write (true persists it under <main worktree>/.sdlc-v2/reports/), detail.format ("md"|"json", default from automation.report.format), detail.branch. Returns {skipped:true} when automation.report.enabled is false.
 - cleanup: Stamp a branch's ship state terminal (pipelineStatus:"completed", pipelineCompletedAt) instead of deleting it, after validating every step is in a terminal state — the state survives for later reads until GC's TTL prunes it. Optional: detail.branch.
-- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary and the plan review rounds (when the plan run has any) into ship state planReviewRounds, in one ship state write. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary and review rounds not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?, exploreSummaryCount?, reviewRoundsCount?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary and review rounds not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". exploreSummaryCount and reviewRoundsCount are present only after the copy write succeeded: the number of entries ship state now holds in planExploreSummary and planReviewRounds. When flags.openspecChange names a change, the output holds openspec {change, stillActive, path}; when the change is still in openspec/changes/<change>/, the stamp write adds one decisions[] entry for step archive-openspec. When that report is skipped (an invalid change name, or a stat error other than a missing path), the output has no openspec key and holds warnings, a list with one "OpenSpec report skipped: <cause>" line; with no skip the warnings key is absent. Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays.
+- cleanup-pipeline: Same stamp-instead-of-delete for the current branch's ship state (force/no-state-file skip the contract check). Only after a successful stamp, it deletes the plan run linked through this branch's execute state (its plan-<slug>-<ts>.json and .evidence directory) when the ship report ship-<runId>-report.<md|json> exists; force and no-state-file never delete it. Before it deletes the plan run, it copies the explorer summary into ship state planExploreSummary and the plan review rounds (when the plan run has any) into ship state planReviewRounds, in one ship state write. If the copy fails, the plan run stays and planRun.reason starts with "explorer summary and review rounds not saved: ". Fix the cause and call cleanup-pipeline again. The result's planRun is {deleted, runId?, reason?, exploreSummaryCount?, reviewRoundsCount?} with reason "run not stamped" | "no linked plan run" | "report not written" | "explorer summary and review rounds not saved: <error>. Fix the cause and call cleanup-pipeline again." | "remove failed: <error>". exploreSummaryCount and reviewRoundsCount are present only after the copy write succeeded: the number of entries ship state now holds in planExploreSummary and planReviewRounds. When flags.openspecChange names a change, the output holds openspec {change, stillActive, path}; when the change is still in openspec/changes/<change>/, the stamp write adds one decisions[] entry for step archive-openspec. When that report is skipped (an invalid change name, or a stat error other than a missing path), the output has no openspec key and holds warnings, a list with one "OpenSpec report skipped: <cause>" line; with no skip the warnings key is absent. Then an unconditional GC + per-run-directory sweep. Optional: detail.branch, detail.force, detail.ttlDays. Also closes the open instruction records of the run, in the stamp write only: pending becomes "not run" with outcome "step did not run", running becomes "failed" with outcome "result not recorded, not run again". A damaged instructions list closes no record and adds one warning; the action still completes.
 - gc: Garbage-collect stale state files. Optional: detail.ttlDays, detail.dryRun.
 - migrate: Migrate state between branches. Requires detail.from, detail.to.
 - next: Return the next pending step. Optional: detail.branch, detail.stateFile.
@@ -4714,13 +4769,14 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - deferred_add: Add a deferred issue to .sdlc-v2/history/deferred.json. Requires detail.id, detail.description. Optional: detail.created (defaults to now), detail.source, detail.priority ("high"|"medium"|"low", defaults to "medium"), detail.merge (true or false, defaults to false; true appends only the new lines of detail.description to the open item with the same id, and adds the item as <id>-<n> when only a resolved item has that id). Returns {ok, id (the id of the item that holds the text), merged (true when new lines were appended to an open item), created, priority, source, description (the item as deferred.json holds it after the call; for a merge, the merged description), next (a string)}. A deferred.json larger than 8 MiB or one that does not parse returns a DataError and the file stays unchanged.
 - deferred_list: List all deferred issues. Returns {issues, openCount}.
 - deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}.
-- deferred_resolve: Mark a deferred issue as resolved by ID. Requires detail.id. Returns {ok, id}. Errors if the ID is not found.`,
+- deferred_resolve: Mark a deferred issue as resolved by ID. Requires detail.id. Returns {ok, id}. Errors if the ID is not found.
+- log-cli: Append one CLI execution row (pipeline "ship") to the CLI evidence JSONL file. Requires: (none). Optional: detail.branch, detail.step, detail.command, detail.exitCode (integer, default 0), detail.outputHead. Returns {ok, action}. A failed append is an InfraError.`,
 		mcpserver.Annotations{
 			Title:       "Read or update ship run state",
 			ReadOnly:    false,
 			Destructive: true,
 			Idempotent:  false,
-			OpenWorld:   false,
+			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in ShipStateIn) (any, error) {
 			root, err := worktree.MainRoot()

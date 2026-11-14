@@ -289,3 +289,48 @@ func TestReceivedReviewSkillParity(t *testing.T) {
 		}
 	})
 }
+
+// TestReceivedReviewSkillInstructionsText pins the standalone instructions
+// steps of the received-review skill: the flag, the resolve call before
+// Step 0, the list after Step 12.5 and the routes that run no list.
+func TestReceivedReviewSkillInstructionsText(t *testing.T) {
+	skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "received-review", "SKILL.md"))
+
+	if !flagParityHintFlags(skill)["--no-instructions"] {
+		t.Error("received-review argument-hint does not list --no-instructions")
+	}
+
+	for _, want := range []string{
+		"## Step 0a — Resolve instructions",
+		`instructions_resolve({ key: "received-review" })`,
+		"## Step 13 — Run instructions",
+		"Instructions (received-review): N total, D done, F failed, S not run.",
+		"the run is cancelled. Run no Step 13 list.",
+		"`--no-harden` does not skip it",
+		"Run the remaining instructions by hand.",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Errorf("received-review: missing %q", want)
+		}
+	}
+
+	order := []string{
+		"## Step 0a — Resolve instructions",
+		"## Step 0 — Plan Mode Check",
+		"## Step 12.5 — VERIFY: Confirm All Threads Replied",
+		"## Step 13 — Run instructions",
+		"## Best Practices",
+	}
+	last := -1
+	for _, h := range order {
+		i := strings.Index(skill, h)
+		if i < 0 {
+			t.Errorf("received-review: missing heading %q", h)
+			continue
+		}
+		if i < last {
+			t.Errorf("received-review: heading %q is out of order", h)
+		}
+		last = i
+	}
+}

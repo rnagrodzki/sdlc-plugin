@@ -23,6 +23,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/santhosh-tekuri/jsonschema/v6"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -8337,6 +8338,8 @@ func commitCheckFixture(t *testing.T, branch string) (string, string) {
 	path := shipStateInitFixture(t, dir, branch)
 	setStepStatus(t, path, "execute", "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
 	setStepStatus(t, path, "commit", "in_progress", map[string]any{"startedAt": "2026-01-01T00:00:00Z"})
+	// No test pushes for real. A test that checks the push stubs it again.
+	stubPushBestEffort(t, true, "")
 	return dir, path
 }
 
@@ -8444,7 +8447,7 @@ func TestShipState_CommitCheck_CleanCountsWaveCommits(t *testing.T) {
 	if !out.Clean || out.StagedCount != 0 || out.WaveCommits != 2 || !out.StepCompleted || out.Result != wantResult {
 		t.Errorf("out = %+v, want clean, waveCommits=2, stepCompleted, result %q", out, wantResult)
 	}
-	if out.Next != "Commit step completed. Skip 7c2 and 7d. Go to the next step." {
+	if out.Next != "Commit step completed. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step." {
 		t.Errorf("next = %q", out.Next)
 	}
 	if len(out.Todos) == 0 || out.Display == "" {
@@ -8565,7 +8568,7 @@ func TestShipState_CommitCheck_LandedCommitAfterInterrupt(t *testing.T) {
 	if !out.Clean || !out.StepCompleted || out.Result != want {
 		t.Errorf("third out = %+v, want clean, completed, result %q", out, want)
 	}
-	if out.Next != "Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step." {
+	if out.Next != "Commit step completed from the landed commit. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step." {
 		t.Errorf("next = %q", out.Next)
 	}
 	data := readStateData(t, path)
@@ -8581,6 +8584,84 @@ func TestShipState_CommitCheck_LandedCommitAfterInterrupt(t *testing.T) {
 	}
 	if step := commitStepEntry(t, path); step["status"] != "completed" || step["result"] != want || step["completedAt"] != "2026-01-01T00:05:00Z" {
 		t.Errorf("commit step = %v, want completed with result %q and completedAt 2026-01-01T00:05:00Z", step, want)
+	}
+}
+
+// TestShipStateCommitCheck_PushOnCompletedStep checks that commit-check pushes the work directory when it completes the step, for a clean tree and for a landed commit, and adds the push warning without changing stepCompleted.
+func TestShipStateCommitCheck_PushOnCompletedStep(t *testing.T) {
+	t.Run("nothing to commit pushes with no warning", func(t *testing.T) {
+		branch := "feat/cc-push-clean"
+		dir, _ := commitCheckFixture(t, branch)
+		calls := stubPushBestEffort(t, true, "")
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("commit-check: %v", err)
+		}
+		if !out.StepCompleted || len(out.Warnings) != 0 {
+			t.Errorf("out = %+v, want stepCompleted and no warnings", out)
+		}
+		if len(*calls) != 1 || (*calls)[0] != dir {
+			t.Errorf("push calls = %v, want one call in %s", *calls, dir)
+		}
+	})
+	t.Run("push warning is added and the step stays completed", func(t *testing.T) {
+		branch := "feat/cc-push-warn"
+		dir, path := commitCheckFixture(t, branch)
+		want := pushFailedWarning("auth", "denied")
+		calls := stubPushBestEffort(t, false, want)
+		writeFile(t, filepath.Join(dir, "a.txt"), "a")
+		if _, err := runCommitCheck(t, dir, branch); err != nil {
+			t.Fatalf("first commit-check: %v", err)
+		}
+		mustRun(t, dir, "git", "commit", "-m", "first")
+		if len(*calls) != 0 {
+			t.Fatalf("push calls after a dirty check = %v, want none", *calls)
+		}
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("second commit-check: %v", err)
+		}
+		if !out.StepCompleted || len(out.Warnings) != 1 || out.Warnings[0] != want {
+			t.Errorf("out = %+v, want stepCompleted and warnings [%q]", out, want)
+		}
+		if len(*calls) != 1 {
+			t.Errorf("push calls = %v, want 1", *calls)
+		}
+		if got := commitStepEntry(t, path)["status"]; got != "completed" {
+			t.Errorf("commit status = %v, want completed", got)
+		}
+	})
+	t.Run("push warning joins an execute-state warning", func(t *testing.T) {
+		branch := "feat/cc-push-both"
+		dir, _ := commitCheckFixture(t, branch)
+		stubPushBestEffort(t, false, "push skipped: no remote origin")
+		writeFile(t, filepath.Join(dir, paths.DataDir, paths.RunsSubdir,
+			fmt.Sprintf("execute-%s-20260101T000000Z.json", state.SlugifyBranch(branch))), "{not json")
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("commit-check: %v", err)
+		}
+		if len(out.Warnings) != 2 || out.Warnings[1] != "push skipped: no remote origin" {
+			t.Errorf("warnings = %v, want the execute-state warning then the push warning", out.Warnings)
+		}
+	})
+}
+
+// TestShipStateCommitCheck_DirtyTreeDoesNotPush checks that a call that hands the step to the commit skill does not push.
+func TestShipStateCommitCheck_DirtyTreeDoesNotPush(t *testing.T) {
+	branch := "feat/cc-push-dirty"
+	dir, _ := commitCheckFixture(t, branch)
+	calls := stubPushBestEffort(t, true, "")
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	out, err := runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("commit-check: %v", err)
+	}
+	if out.StepCompleted || len(out.Warnings) != 0 {
+		t.Errorf("out = %+v, want a dirty hand-off with no warnings", out)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("push calls = %v, want none", *calls)
 	}
 }
 
@@ -10442,6 +10523,839 @@ func TestShipState_Defer_NoLineRow(t *testing.T) {
 		}
 		if rows := deferFixRows(t, path); !reflect.DeepEqual(rows, []any{fixRowSeed("queued", nil)}) {
 			t.Errorf("fixProgress = %#v, want it unchanged", rows)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// instruction records — instructions-next, instruction-record, sweeps and the
+// in-flight rule
+// ---------------------------------------------------------------------------
+
+// instrFixture creates a ship state on branch with the given instruction
+// records seeded (pending) and returns the dir and state path.
+func instrFixture(t *testing.T, branch string, list []config.Instruction) (dir, path string) {
+	t.Helper()
+	dir, path = deferFixture(t, branch)
+	data := readStateData(t, path)
+	instrSeed(data, list)
+	writeStateData(t, path, data)
+	return dir, path
+}
+
+func writeStateData(t *testing.T, path string, data map[string]any) {
+	t.Helper()
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
+}
+
+// instrList builds n instructions of key from the project local source.
+func instrList(key string, texts ...string) []config.Instruction {
+	out := make([]config.Instruction, 0, len(texts))
+	for i, text := range texts {
+		out = append(out, config.Instruction{
+			Key: key, Number: i + 1, Source: config.InstructionSourceProjectLocal, Text: text,
+			OnQuestionNotAllowed: config.OnQuestionNotAllowedSkip,
+		})
+	}
+	return out
+}
+
+// storedRecords returns the stored records as "key#number status outcome".
+func storedRecords(t *testing.T, path string) []string {
+	t.Helper()
+	list, _ := readStateData(t, path)["instructions"].([]any)
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		r, _ := item.(map[string]any)
+		out = append(out, fmt.Sprintf("%s#%d %s %s", instrString(r, "key"), instrInt(r, "number"), instrString(r, "status"), instrString(r, "outcome")))
+	}
+	return out
+}
+
+func storedRecord(t *testing.T, path string, i int) map[string]any {
+	t.Helper()
+	list, _ := readStateData(t, path)["instructions"].([]any)
+	if i >= len(list) {
+		t.Fatalf("stored records = %d, want index %d", len(list), i)
+	}
+	r, _ := list[i].(map[string]any)
+	return r
+}
+
+func instrCall(dir, branch, action string, detail map[string]any, at time.Time) (any, error) {
+	d := map[string]any{"branch": branch}
+	maps.Copy(d, detail)
+	return shipState(dir, dir, ShipStateIn{Action: action, Detail: d}, fixedNow(at))
+}
+
+var instrT0 = time.Date(2026, 11, 13, 10, 2, 0, 0, time.UTC)
+
+// TestShipStateInstructionNextAndRecord walks one record through next and
+// record and compares the stored record with the contract example.
+func TestShipStateInstructionNextAndRecord(t *testing.T) {
+	const branch = "feat/instr-walk"
+	list := append(instrList("commit", "Run the linter."), instrList("pr", "Post in chat.", "Open the PR URL in my browser.")...)
+	dir, path := instrFixture(t, branch, list)
+
+	// pr #1 is done, so the next pr record is #2 with none left after it.
+	data := readStateData(t, path)
+	recs, _ := data["instructions"].([]any)
+	recs[1].(map[string]any)["status"] = "done"
+	writeStateData(t, path, data)
+
+	out, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0)
+	if err != nil {
+		t.Fatalf("instructions-next: %v", err)
+	}
+	next, ok := out.(InstructionsNextOut)
+	if !ok {
+		t.Fatalf("output = %#v, want InstructionsNextOut", out)
+	}
+	if next.Instruction == nil || next.Instruction.Key != "pr" || next.Instruction.Number != 2 {
+		t.Fatalf("instruction = %+v, want pr #2", next.Instruction)
+	}
+	if got, want := next.Summary, `pr #2 (project local) "Open the PR URL in my browser."`; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if next.Remaining != 0 {
+		t.Errorf("remaining = %d, want 0", next.Remaining)
+	}
+	if got, want := next.Next, "Do instruction pr #2, then call instruction-record."; got != want {
+		t.Errorf("next = %q, want %q", got, want)
+	}
+	stored := storedRecord(t, path, 2)
+	if stored["status"] != "running" || stored["startedAt"] != "2026-11-13T10:02:00Z" || stored["endedAt"] != "" {
+		t.Errorf("stored after next = %v, want running with startedAt 2026-11-13T10:02:00Z", stored)
+	}
+
+	out, err = instrCall(dir, branch, "instruction-record", map[string]any{
+		"key": "pr", "instructionNumber": float64(2), "instructionStatus": "done", "instructionOutcome": "opened",
+	}, instrT0.Add(9*time.Second))
+	if err != nil {
+		t.Fatalf("instruction-record: %v", err)
+	}
+	rec, ok := out.(InstructionRecordResultOut)
+	if !ok {
+		t.Fatalf("output = %#v, want InstructionRecordResultOut", out)
+	}
+	if rec.Updated != 1 || rec.Warnings == nil || len(rec.Warnings) != 0 {
+		t.Errorf("record out = %+v, want updated 1 and warnings []", rec)
+	}
+	if got, want := rec.Summary, "Instruction pr #2 recorded as done."; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if got, want := rec.Next, "Call instructions-next for pr."; got != want {
+		t.Errorf("next = %q, want %q", got, want)
+	}
+	stored = storedRecord(t, path, 2)
+	want := map[string]any{"status": "done", "outcome": "opened", "startedAt": "2026-11-13T10:02:00Z", "endedAt": "2026-11-13T10:02:09Z"}
+	for k, v := range want {
+		if stored[k] != v {
+			t.Errorf("stored %s = %v, want %v", k, stored[k], v)
+		}
+	}
+	// The commit record is untouched.
+	if got := storedRecords(t, path)[0]; got != "commit#1 pending " {
+		t.Errorf("commit record = %q, want it pending", got)
+	}
+
+	// No pr record is left: next returns (none) and writes nothing.
+	useShipStateWrite(t, func(*state.State) error { t.Fatal("write on a (none) result"); return nil })
+	out, err = instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0)
+	if err != nil {
+		t.Fatalf("instructions-next: %v", err)
+	}
+	next = out.(InstructionsNextOut)
+	if next.Instruction != nil || next.Remaining != 0 {
+		t.Errorf("next = %+v, want (none) and remaining 0", next)
+	}
+	if got, want := next.Next, "No open instruction for pr. Continue with the next step."; got != want {
+		t.Errorf("next = %q, want %q", got, want)
+	}
+	raw, _ := json.Marshal(next)
+	if !strings.Contains(string(raw), `"instruction":null`) {
+		t.Errorf("JSON = %s, want instruction null", raw)
+	}
+}
+
+// TestShipStateInstructionNextNoRecords covers a valid key with no record and
+// the missing instructions key.
+func TestShipStateInstructionNextNoRecords(t *testing.T) {
+	const branch = "feat/instr-empty"
+	dir, _ := deferFixture(t, branch)
+	out, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "ship"}, instrT0)
+	if err != nil {
+		t.Fatalf("instructions-next: %v", err)
+	}
+	next := out.(InstructionsNextOut)
+	if next.Instruction != nil || next.Remaining != 0 {
+		t.Errorf("next = %+v, want (none) and remaining 0", next)
+	}
+}
+
+// TestShipStateInstructionNextFailsRunning proves a record left running is
+// failed before the next pending record starts.
+func TestShipStateInstructionNextFailsRunning(t *testing.T) {
+	const branch = "feat/instr-stale"
+	dir, path := instrFixture(t, branch, instrList("review", "a", "b", "c"))
+	if _, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "review"}, instrT0); err != nil {
+		t.Fatalf("first next: %v", err)
+	}
+	out, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "review"}, instrT0.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("second next: %v", err)
+	}
+	next := out.(InstructionsNextOut)
+	if next.Instruction == nil || next.Instruction.Number != 2 || next.Remaining != 1 {
+		t.Fatalf("next = %+v, want review #2 with 1 left", next)
+	}
+	want := []string{
+		"review#1 failed result not recorded, not run again",
+		"review#2 running ",
+		"review#3 pending ",
+	}
+	if got := storedRecords(t, path); !slices.Equal(got, want) {
+		t.Errorf("stored = %q, want %q", got, want)
+	}
+}
+
+// TestShipStateInstructionRunMode has one case for each run mode row.
+func TestShipStateInstructionRunMode(t *testing.T) {
+	cases := []struct {
+		name     string
+		flags    any // nil: flags.auto absent
+		set      bool
+		wantMode string
+		wantWarn []string
+	}{
+		{"auto true", true, true, "--auto", nil},
+		{"auto false", false, true, "interactive", nil},
+		{"auto missing", nil, false, "--auto", nil},
+		{"auto not boolean", "yes", true, "--auto", []string{"flags.auto of the ship state is string yes, want a boolean. Run mode --auto is used. Start a new run to set flags.auto again."}},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := fmt.Sprintf("feat/instr-mode-%d", i)
+			dir, path := instrFixture(t, branch, instrList("pr", "x"))
+			data := readStateData(t, path)
+			flags := map[string]any{"bump": "patch"}
+			if tc.set {
+				flags["auto"] = tc.flags
+			}
+			data["flags"] = flags
+			writeStateData(t, path, data)
+
+			out, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0)
+			if err != nil {
+				t.Fatalf("instructions-next: %v", err)
+			}
+			next := out.(InstructionsNextOut)
+			if next.RunMode != tc.wantMode {
+				t.Errorf("runMode = %q, want %q", next.RunMode, tc.wantMode)
+			}
+			if !slices.Equal(next.Warnings, tc.wantWarn) {
+				t.Errorf("warnings = %q, want %q", next.Warnings, tc.wantWarn)
+			}
+		})
+	}
+}
+
+// TestShipStateInstructionRecordInputs runs each row of the input table.
+func TestShipStateInstructionRecordInputs(t *testing.T) {
+	cases := []struct {
+		name    string
+		action  string
+		detail  map[string]any
+		wantMsg string // "" means success
+	}{
+		{"both", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionAll": true, "instructionStatus": "not run", "instructionOutcome": "x"},
+			"use instructionNumber or instructionAll, not both"},
+		{"neither", "instruction-record", map[string]any{"key": "pr", "instructionStatus": "done"},
+			"instructionNumber or instructionAll is required"},
+		{"all false is neither", "instruction-record", map[string]any{"key": "pr", "instructionAll": false, "instructionStatus": "done"},
+			"instructionNumber or instructionAll is required"},
+		{"all with done", "instruction-record", map[string]any{"key": "pr", "instructionAll": true, "instructionStatus": "done"},
+			`instructionAll:true takes only status "not run"`},
+		{"key absent", "instruction-record", map[string]any{"instructionNumber": float64(1), "instructionStatus": "done"},
+			`key "" is not an instruction key`},
+		{"key unknown", "instruction-record", map[string]any{"key": "deploy", "instructionNumber": float64(1), "instructionStatus": "done"},
+			`key "deploy" is not an instruction key`},
+		{"next key unknown", "instructions-next", map[string]any{"key": "deploy"},
+			`key "deploy" is not an instruction key`},
+		{"key number", "instruction-record", map[string]any{"key": float64(5), "instructionNumber": float64(1), "instructionStatus": "done"},
+			`key "5" is not an instruction key`},
+		{"key bool", "instructions-next", map[string]any{"key": true},
+			`key "true" is not an instruction key`},
+		{"number not whole", "instruction-record", map[string]any{"key": "pr", "instructionNumber": 1.5, "instructionStatus": "done"},
+			"instruction-record: detail.instructionNumber must be a whole number, got 1.5"},
+		{"number string", "instruction-record", map[string]any{"key": "pr", "instructionNumber": "2", "instructionStatus": "done"},
+			"instruction-record: detail.instructionNumber must be a whole number, got 2"},
+		{"number bool", "instruction-record", map[string]any{"key": "pr", "instructionNumber": true, "instructionStatus": "done"},
+			"instruction-record: detail.instructionNumber must be a whole number, got true"},
+		{"number null is absent", "instruction-record", map[string]any{"key": "pr", "instructionNumber": nil, "instructionStatus": "done"},
+			"instructionNumber or instructionAll is required"},
+		{"all string", "instruction-record", map[string]any{"key": "pr", "instructionAll": "true", "instructionStatus": "not run", "instructionOutcome": "x"},
+			"instruction-record: detail.instructionAll must be a boolean, got string"},
+		{"status not string", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": float64(1)},
+			"instruction-record: detail.instructionStatus must be a string, got float64"},
+		{"outcome not string", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": "done", "instructionOutcome": true},
+			"instruction-record: detail.instructionOutcome must be a string, got bool"},
+		{"number int-typed", "instruction-record", map[string]any{"key": "pr", "instructionNumber": 1, "instructionStatus": "done"}, ""},
+		{"failed needs outcome", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": "failed", "instructionOutcome": "  "},
+			"outcome is required for failed and not run"},
+		{"number one", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": "done"}, ""},
+		{"all not run", "instruction-record", map[string]any{"key": "pr", "instructionAll": true, "instructionStatus": "not run", "instructionOutcome": "user stopped"}, ""},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := fmt.Sprintf("feat/instr-input-%d", i)
+			dir, _ := instrFixture(t, branch, instrList("pr", "x"))
+			if _, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0); err != nil {
+				t.Fatalf("instructions-next: %v", err)
+			}
+			_, err := instrCall(dir, branch, tc.action, tc.detail, instrT0)
+			if tc.wantMsg == "" {
+				if err != nil {
+					t.Fatalf("err = %v, want success", err)
+				}
+				return
+			}
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) || de.Msg != tc.wantMsg {
+				t.Fatalf("err = %v, want DomainError %q", err, tc.wantMsg)
+			}
+			if de.Suggestion == "" {
+				t.Error("suggestion is empty")
+			}
+		})
+	}
+}
+
+// TestShipStateInstructionInputsOtherAction proves another action refuses
+// each of the 4 record keys and writes nothing.
+func TestShipStateInstructionInputsOtherAction(t *testing.T) {
+	values := map[string]any{
+		"instructionNumber":  float64(1),
+		"instructionAll":     true,
+		"instructionStatus":  "done",
+		"instructionOutcome": "ok",
+	}
+	for _, field := range instrInputFields {
+		for _, action := range []string{"complete-step", "instructions-next"} {
+			t.Run(field+"/"+action, func(t *testing.T) {
+				branch := "feat/instr-other-" + strings.ToLower(field)
+				dir, path := instrFixture(t, branch, instrList("execute", "x"))
+				before, _ := os.ReadFile(path)
+				_, err := shipState(dir, dir, ShipStateIn{
+					Action: action, Step: "execute",
+					Detail: map[string]any{"branch": branch, "key": "execute", field: values[field]},
+				}, fixedNow(instrT0))
+				var de *mcpserver.DomainError
+				wantMsg := "detail." + field + " is valid only with instruction-record"
+				if !errors.As(err, &de) || de.Msg != wantMsg {
+					t.Fatalf("err = %v, want DomainError %q", err, wantMsg)
+				}
+				if want := "Remove detail." + field + ", or use action instruction-record."; de.Suggestion != want {
+					t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
+				}
+				if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+					t.Error("the refused call changed the state file")
+				}
+			})
+		}
+	}
+}
+
+// TestShipStateInstructionRecordClosed proves a closed record never changes.
+func TestShipStateInstructionRecordClosed(t *testing.T) {
+	const branch = "feat/instr-closed"
+	dir, path := instrFixture(t, branch, instrList("pr", "x"))
+	data := readStateData(t, path)
+	data["instructions"].([]any)[0].(map[string]any)["status"] = "done"
+	writeStateData(t, path, data)
+	_, err := instrCall(dir, branch, "instruction-record", map[string]any{
+		"key": "pr", "instructionNumber": float64(1), "instructionStatus": "failed", "instructionOutcome": "again",
+	}, instrT0)
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) || de.Msg != "instruction pr #1 is closed (done)" {
+		t.Fatalf("err = %v, want DomainError instruction pr #1 is closed (done)", err)
+	}
+	if got := storedRecords(t, path); !slices.Equal(got, []string{"pr#1 done "}) {
+		t.Errorf("stored = %q, want it unchanged", got)
+	}
+}
+
+// TestShipStateInstructionRecordAll proves instructionAll closes each open
+// record of the key and no record of another key.
+func TestShipStateInstructionRecordAll(t *testing.T) {
+	const branch = "feat/instr-all"
+	dir, path := instrFixture(t, branch, append(instrList("pr", "a", "b", "c"), instrList("ship", "d")...))
+	if _, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0); err != nil {
+		t.Fatalf("instructions-next: %v", err)
+	}
+	out, err := instrCall(dir, branch, "instruction-record", map[string]any{
+		"key": "pr", "instructionAll": true, "instructionStatus": "not run", "instructionOutcome": "user stopped",
+	}, instrT0)
+	if err != nil {
+		t.Fatalf("instruction-record: %v", err)
+	}
+	if got := out.(InstructionRecordResultOut).Updated; got != 3 {
+		t.Errorf("updated = %d, want 3", got)
+	}
+	if got, want := out.(InstructionRecordResultOut).Summary, "3 open instructions of pr closed."; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	want := []string{
+		"pr#1 failed result not recorded, not run again",
+		"pr#2 not run user stopped",
+		"pr#3 not run user stopped",
+		"ship#1 pending ",
+	}
+	if got := storedRecords(t, path); !slices.Equal(got, want) {
+		t.Errorf("stored = %q, want %q", got, want)
+	}
+}
+
+// TestShipStateInstructionDamagedList proves a damaged instructions key is a
+// DataError for both actions.
+func TestShipStateInstructionDamagedList(t *testing.T) {
+	const branch = "feat/instr-damaged"
+	dir, path := deferFixture(t, branch)
+	data := readStateData(t, path)
+	data["instructions"] = "not a list"
+	writeStateData(t, path, data)
+	for _, call := range []struct {
+		action string
+		detail map[string]any
+	}{
+		{"instructions-next", map[string]any{"key": "pr"}},
+		{"instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": "done"}},
+	} {
+		_, err := instrCall(dir, branch, call.action, call.detail, instrT0)
+		var de *mcpserver.DataError
+		if !errors.As(err, &de) || de.Msg != instrDamagedMsg {
+			t.Errorf("%s err = %v, want DataError %q", call.action, err, instrDamagedMsg)
+		}
+	}
+}
+
+// TestShipStateInstructionNextWriteFails proves a failed write of call 1
+// leaves the stored record pending.
+func TestShipStateInstructionNextWriteFails(t *testing.T) {
+	const branch = "feat/instr-next-write"
+	dir, path := instrFixture(t, branch, instrList("pr", "x"))
+	useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+	_, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0)
+	assertInstrWriteError(t, err)
+	if got := storedRecords(t, path); !slices.Equal(got, []string{"pr#1 pending "}) {
+		t.Errorf("stored = %q, want pr#1 pending", got)
+	}
+}
+
+// TestShipStateInstructionRecordWriteFails proves a failed write of call 2
+// leaves the stored record running, and the next call turns it into failed.
+func TestShipStateInstructionRecordWriteFails(t *testing.T) {
+	const branch = "feat/instr-record-write"
+	dir, path := instrFixture(t, branch, instrList("pr", "x"))
+	if _, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0); err != nil {
+		t.Fatalf("instructions-next: %v", err)
+	}
+	prev := shipStateWriteFunc
+	shipStateWriteFunc = func(*state.State) error { return errors.New("disk full") }
+	_, err := instrCall(dir, branch, "instruction-record", map[string]any{
+		"key": "pr", "instructionNumber": float64(1), "instructionStatus": "done",
+	}, instrT0)
+	shipStateWriteFunc = prev
+	assertInstrWriteError(t, err)
+	if got := storedRecords(t, path); !slices.Equal(got, []string{"pr#1 running "}) {
+		t.Fatalf("stored after failed record = %q, want pr#1 running", got)
+	}
+
+	out, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("instructions-next: %v", err)
+	}
+	if out.(InstructionsNextOut).Instruction != nil {
+		t.Errorf("instruction = %+v, want (none)", out.(InstructionsNextOut).Instruction)
+	}
+	if got, want := storedRecords(t, path), []string{"pr#1 failed result not recorded, not run again"}; !slices.Equal(got, want) {
+		t.Errorf("stored = %q, want %q", got, want)
+	}
+}
+
+func assertInstrWriteError(t *testing.T, err error) {
+	t.Helper()
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) || ie.Msg != "cannot write the ship state: disk full" {
+		t.Fatalf("err = %v, want InfraError cannot write the ship state: disk full", err)
+	}
+	if !strings.HasPrefix(ie.Suggestion, "Continue the run. The next instructions-next call closes the record.") {
+		t.Errorf("suggestion = %q", ie.Suggestion)
+	}
+}
+
+// TestShipStateSweepSkip proves skip closes the open records of that step
+// only, keeps a closed record of that step as it was, and on a failed state
+// write persists neither the step row nor the records.
+func TestShipStateSweepSkip(t *testing.T) {
+	// setup seeds review #1-#3 and pr #1, closes review #1 as done, and starts
+	// review #2.
+	setup := func(t *testing.T, branch string) (dir, path string) {
+		t.Helper()
+		dir, path = instrFixture(t, branch, append(instrList("review", "a", "b", "c"), instrList("pr", "d")...))
+		data := readStateData(t, path)
+		done := data["instructions"].([]any)[0].(map[string]any)
+		done["status"], done["outcome"], done["endedAt"] = "done", "ok", "2026-11-13T10:00:00Z"
+		writeStateData(t, path, data)
+		if _, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "review"}, instrT0); err != nil {
+			t.Fatalf("instructions-next: %v", err)
+		}
+		return dir, path
+	}
+	skip := func(dir, branch string) error {
+		_, err := shipState(dir, dir, ShipStateIn{Action: "skip", Step: "review", Detail: map[string]any{"branch": branch}}, fixedNow(instrT0))
+		return err
+	}
+
+	t.Run("success", func(t *testing.T) {
+		const branch = "feat/instr-sweep-skip"
+		dir, path := setup(t, branch)
+		if err := skip(dir, branch); err != nil {
+			t.Fatalf("skip: %v", err)
+		}
+		want := []string{
+			"review#1 done ok",
+			"review#2 failed result not recorded, not run again",
+			"review#3 not run step skipped",
+			"pr#1 pending ",
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, want) {
+			t.Errorf("stored = %q, want %q", got, want)
+		}
+		if got := storedRecord(t, path, 0)["endedAt"]; got != "2026-11-13T10:00:00Z" {
+			t.Errorf("done record endedAt = %v, want it unchanged", got)
+		}
+	})
+	t.Run("state write fails", func(t *testing.T) {
+		const branch = "feat/instr-sweep-skip-write"
+		dir, path := setup(t, branch)
+		before, _ := os.ReadFile(path)
+		useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+		err := skip(dir, branch)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) || !strings.HasPrefix(ie.Msg, "write ship state to ") {
+			t.Fatalf("err = %v, want the skip write InfraError", err)
+		}
+		if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+			t.Error("the failed skip changed the state file")
+		}
+		if step := findStepMap(t, readStateData(t, path), "review"); step["status"] == "skipped" {
+			t.Error("step status persisted as skipped after a failed write")
+		}
+	})
+}
+
+// TestShipStateSweepFail proves fail closes each open record of the run in
+// the state write, and covers both write failure points of fail: the state
+// write (nothing persisted) and the history append (records persisted).
+func TestShipStateSweepFail(t *testing.T) {
+	list := append(instrList("execute", "a"), instrList("ship", "b", "c")...)
+	wantSwept := []string{
+		"execute#1 not run step failed or stopped",
+		"ship#1 not run step failed or stopped",
+		"ship#2 not run step failed or stopped",
+	}
+	wantOpen := []string{"execute#1 pending ", "ship#1 pending ", "ship#2 pending "}
+
+	t.Run("success", func(t *testing.T) {
+		const branch = "feat/instr-sweep-fail-ok"
+		dir, path := instrFixture(t, branch, list)
+		recordShipHistoryAppends(t, nil)
+		if _, err := shipFail(dir, branch, "execute", instrT0); err != nil {
+			t.Fatalf("fail: %v", err)
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, wantSwept) {
+			t.Errorf("stored = %q, want %q", got, wantSwept)
+		}
+	})
+	t.Run("state write fails", func(t *testing.T) {
+		const branch = "feat/instr-sweep-fail-write"
+		dir, path := instrFixture(t, branch, list)
+		rows := recordShipHistoryAppends(t, nil)
+		useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+		if _, err := shipFail(dir, branch, "execute", instrT0); err == nil {
+			t.Fatal("fail succeeded, want the write error")
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, wantOpen) {
+			t.Errorf("stored = %q, want %q", got, wantOpen)
+		}
+		if step := findStepMap(t, readStateData(t, path), "execute"); step["status"] == "failed" {
+			t.Error("step status persisted as failed after a failed write")
+		}
+		if len(*rows) != 0 {
+			t.Errorf("history rows = %d, want 0", len(*rows))
+		}
+	})
+	t.Run("history append fails", func(t *testing.T) {
+		const branch = "feat/instr-sweep-fail-hist"
+		dir, path := instrFixture(t, branch, list)
+		recordShipHistoryAppends(t, errors.New("history down"))
+		out, err := shipFail(dir, branch, "execute", instrT0)
+		if err != nil {
+			t.Fatalf("fail: %v", err)
+		}
+		if len(out.(ShipStepNarrationOut).Warnings) == 0 {
+			t.Error("warnings empty, want the history warning")
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, wantSwept) {
+			t.Errorf("stored = %q, want %q", got, wantSwept)
+		}
+	})
+}
+
+// TestShipStateSweepCleanupPipeline proves cleanup-pipeline closes each open
+// record of the run in the stamp write, and covers its write failure points:
+// the stamp write (nothing persisted) and the gc sweep after it (records
+// persisted with the stamp). force does not stamp and closes nothing.
+func TestShipStateSweepCleanupPipeline(t *testing.T) {
+	setup := func(t *testing.T, branch string) (dir, path string) {
+		t.Helper()
+		dir, path = instrFixture(t, branch, append(instrList("pr", "a"), instrList("ship", "b")...))
+		if _, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "pr"}, instrT0); err != nil {
+			t.Fatalf("instructions-next: %v", err)
+		}
+		for _, step := range []string{"execute", "commit", "review", "received-review", "commit-fixes", "version", "pr"} {
+			setStepStatus(t, path, step, "skipped", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
+		}
+		return dir, path
+	}
+	wantSwept := []string{
+		"pr#1 failed result not recorded, not run again",
+		"ship#1 not run step did not run",
+	}
+	wantOpen := []string{"pr#1 running ", "ship#1 pending "}
+	cleanup := func(dir, branch string, detail map[string]any) error {
+		d := map[string]any{"branch": branch}
+		maps.Copy(d, detail)
+		_, err := shipState(dir, dir, ShipStateIn{Action: "cleanup-pipeline", Detail: d}, fixedNow(instrT0))
+		return err
+	}
+
+	t.Run("success", func(t *testing.T) {
+		const branch = "feat/instr-sweep-clean-ok"
+		dir, path := setup(t, branch)
+		if err := cleanup(dir, branch, nil); err != nil {
+			t.Fatalf("cleanup-pipeline: %v", err)
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, wantSwept) {
+			t.Errorf("stored = %q, want %q", got, wantSwept)
+		}
+	})
+	t.Run("stamp write fails", func(t *testing.T) {
+		const branch = "feat/instr-sweep-clean-write"
+		dir, path := setup(t, branch)
+		// The stamp write seam fails, so the state file stays as it was. A
+		// seam, not a read-only folder: a root process ignores file modes.
+		orig := shipCleanupStampWriteFunc
+		shipCleanupStampWriteFunc = func(*state.State) error { return errors.New("disk full") }
+		t.Cleanup(func() { shipCleanupStampWriteFunc = orig })
+		err := cleanup(dir, branch, nil)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) || !strings.HasPrefix(ie.Msg, "write ship state to ") {
+			t.Fatalf("err = %v, want the stamp write InfraError", err)
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, wantOpen) {
+			t.Errorf("stored = %q, want %q", got, wantOpen)
+		}
+		if readStateData(t, path)["pipelineStatus"] == "completed" {
+			t.Error("pipelineStatus persisted after a failed stamp write")
+		}
+	})
+	t.Run("gc fails after the stamp", func(t *testing.T) {
+		const branch = "feat/instr-sweep-clean-gc"
+		dir, path := setup(t, branch)
+		orig := shipGCFunc
+		shipGCFunc = func(string, state.GCOptions) (*state.GCReport, error) { return nil, errors.New("gc down") }
+		t.Cleanup(func() { shipGCFunc = orig })
+		if err := cleanup(dir, branch, nil); err == nil {
+			t.Fatal("cleanup-pipeline succeeded, want the gc error")
+		}
+		data := readStateData(t, path)
+		if data["pipelineStatus"] != "completed" {
+			t.Errorf("pipelineStatus = %v, want completed", data["pipelineStatus"])
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, wantSwept) {
+			t.Errorf("stored = %q, want %q", got, wantSwept)
+		}
+	})
+	t.Run("plan run copy write fails after the stamp", func(t *testing.T) {
+		f := newPlanRunCleanupFixture(t, "feat/instr-sweep-clean-copy", true, linkedPlanFile)
+		f.writeExplorer(t, "auth-flow", "done", 2)
+		f.writeShipReport(t, "md")
+		st, err := state.Find(f.dir, "ship", f.branch)
+		if err != nil || st == nil {
+			t.Fatalf("find ship state: %v", err)
+		}
+		data := readStateData(t, st.Path)
+		instrSeed(data, instrList("ship", "b"))
+		writeStateData(t, st.Path, data)
+		useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+		if _, err := f.cleanupPipeline(t, nil); err != nil {
+			t.Fatalf("cleanup-pipeline: %v", err)
+		}
+		if got, want := storedRecords(t, st.Path), []string{"ship#1 not run step did not run"}; !slices.Equal(got, want) {
+			t.Errorf("stored = %q, want %q", got, want)
+		}
+	})
+	t.Run("force", func(t *testing.T) {
+		const branch = "feat/instr-sweep-clean-force"
+		dir, path := setup(t, branch)
+		if err := cleanup(dir, branch, map[string]any{"force": true}); err != nil {
+			t.Fatalf("cleanup-pipeline: %v", err)
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, wantOpen) {
+			t.Errorf("stored = %q, want %q", got, wantOpen)
+		}
+	})
+}
+
+// TestShipRunInFlight has one case for each row of the in-flight table, plus
+// the existing blocked-step rule.
+func TestShipRunInFlight(t *testing.T) {
+	steps := func(statuses ...string) []any {
+		names := []string{"execute", "commit", "pr"}
+		out := make([]any, 0, len(statuses))
+		for i, s := range statuses {
+			step := map[string]any{"name": names[i], "status": s}
+			if s != "pending" {
+				step["startedAt"] = "2026-01-01T00:00:00Z"
+			}
+			out = append(out, step)
+		}
+		return out
+	}
+	records := func(status string) []any {
+		return []any{map[string]any{"key": "ship", "number": 1, "status": status}}
+	}
+	cases := []struct {
+		name string
+		data map[string]any
+		want bool
+	}{
+		{"fresh run", map[string]any{"steps": steps("pending", "pending", "pending"), "instructions": records("pending")}, false},
+		{"open end list", map[string]any{"steps": steps("completed", "completed", "completed"), "instructions": records("pending")}, true},
+		{"running end record", map[string]any{"steps": steps("completed", "completed", "completed"), "instructions": records("running")}, true},
+		{"completed run", map[string]any{"pipelineStatus": "completed", "steps": steps("completed", "completed", "completed"), "instructions": records("pending")}, false},
+		{"all closed", map[string]any{"steps": steps("completed", "completed", "completed"), "instructions": records("done")}, false},
+		{"damaged list", map[string]any{"steps": steps("completed", "completed", "completed"), "instructions": "x"}, true},
+		{"blocked step", map[string]any{"steps": steps("completed", "in_progress", "pending")}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := shipRunInFlight(tc.data); got != tc.want {
+				t.Errorf("shipRunInFlight = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// shipStateReadFixture seeds a ship state on branch with extra data keys and
+// returns the root of the repo.
+func shipStateReadFixture(t *testing.T, branch string, extra map[string]any) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, branch)
+	path := shipStateInitFixture(t, dir, branch)
+	data := readStateData(t, path)
+	for k, v := range extra {
+		data[k] = v
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func shipStateReadReportData(t *testing.T, dir, branch string) ShipReportData {
+	t.Helper()
+	result, err := shipState(dir, dir, ShipStateIn{Action: "read", Detail: map[string]any{"branch": branch}}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	rd, ok := result.(map[string]any)["reportData"].(ShipReportData)
+	if !ok {
+		t.Fatalf("reportData type = %T, want ShipReportData", result.(map[string]any)["reportData"])
+	}
+	return rd
+}
+
+func TestShipStateReadInstructionSummary(t *testing.T) {
+	t.Run("counts and lines", func(t *testing.T) {
+		dir := shipStateReadFixture(t, "feat/instr-read", map[string]any{"instructions": shipReportInstructionRecords()})
+		rd := shipStateReadReportData(t, dir, "feat/instr-read")
+		want := instrSummaryOut{Total: 6, Done: 4, Failed: 1, NotRun: 1, Lines: []string{
+			"pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.",
+			`ship #1 (team) not run: question not allowed (critical, --auto): "Two channels match #releases: #releases, #releases-eu. Which one?"`,
+			`ship #2 (project local) done, decided: "Which notes file?" -> ~/notes/shipped.md`,
+		}}
+		if !reflect.DeepEqual(rd.InstructionSummary, want) {
+			t.Errorf("InstructionSummary = %#v, want %#v", rd.InstructionSummary, want)
+		}
+		if len(rd.Warnings) != 0 {
+			t.Errorf("Warnings = %v, want none", rd.Warnings)
+		}
+	})
+
+	t.Run("no line to show: lines is [] in JSON and (none) in text", func(t *testing.T) {
+		const branch = "feat/instr-none"
+		dir := shipStateReadFixture(t, branch, map[string]any{"instructions": shipReportInstructionRecords()[1:2]})
+		rd := shipStateReadReportData(t, dir, branch)
+		if rd.InstructionSummary.Total != 1 || rd.InstructionSummary.Done != 1 {
+			t.Fatalf("InstructionSummary = %+v", rd.InstructionSummary)
+		}
+		raw, err := json.Marshal(rd.InstructionSummary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != `{"total":1,"done":1,"failed":0,"notRun":0,"lines":[]}` {
+			t.Errorf("JSON = %s", raw)
+		}
+
+		t.Chdir(dir)
+		res, text := callRegisteredTool(t, RegisterShipStateTools, "ship_state", map[string]any{
+			"action": "read", "detail": map[string]any{"branch": branch},
+		})
+		if res.IsError {
+			t.Fatalf("read failed:\n%s", text)
+		}
+		if !strings.Contains(text, "lines: (none)") {
+			t.Errorf("text output has no %q:\n%s", "lines: (none)", text)
+		}
+	})
+
+	t.Run("damaged key gives one warning and the read succeeds", func(t *testing.T) {
+		dir := shipStateReadFixture(t, "feat/instr-damaged", map[string]any{"instructions": "damaged"})
+		rd := shipStateReadReportData(t, dir, "feat/instr-damaged")
+		if rd.InstructionSummary.Total != 0 || len(rd.InstructionSummary.Lines) != 0 || rd.InstructionSummary.Lines == nil {
+			t.Errorf("InstructionSummary = %#v, want zero with empty lines", rd.InstructionSummary)
+		}
+		if len(rd.Warnings) != 1 || rd.Warnings[0] != instrDamagedMsg {
+			t.Errorf("Warnings = %v, want [%q]", rd.Warnings, instrDamagedMsg)
 		}
 	})
 }

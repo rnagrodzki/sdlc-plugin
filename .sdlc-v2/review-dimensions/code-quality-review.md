@@ -155,6 +155,21 @@ Review Go source changes for baseline code quality in this module
   must be checked against an actual call-graph/reference search of the
   handler — a plausible-sounding reason is not evidence the annotation is
   correct.
+- An MCP tool annotation (e.g. read-only, idempotent, open-world) with a reason string
+  must be checked against an actual call-graph/reference search of the
+  handler -- a plausible-sounding reason is not evidence the annotation is
+  correct. An annotation covers every action of the tool, so run the search for
+  each action, and for each action that a change adds or changes. List each side
+  effect (a file write, a rename, a delete) and each call that leaves the process
+  (a git push, a `gh` call, a network request). When any action makes such a
+  call, the open-world hint MUST be true. An annotation that is true for the
+  old actions but false for one action, or a call added to an existing action
+  that makes the annotation false, is a finding unless
+  `docs/internal/mcp-tool-annotations.md` names an exception that covers it.
+  This extends the annotation bullet above, which asks for a call-graph search
+  but does not name every action or the calls that leave the process. Example:
+  a multi-action tool annotated as not open-world although one action pushes
+  to the remote.
 - Exported identifiers (`var`, `const`, `func`, `type`) must have an
   explicit `//` doc comment on the line immediately preceding them; a
   `//go:embed` directive alone is not sufficient — it is a compiler
@@ -445,3 +460,5 @@ Review Go source changes for baseline code quality in this module
   beside a done marker with a copied predicate, an enum text that omitted it,
   and a repeat-stop rule spread over three functions.
 - A comment that states a count or a list of the members of code near it (for example 'checks these 6 rules', or a list of the rule ids that the code below defines) makes a claim that goes stale when a member is added or removed. Count the members in the code and compare each number and each name in the comment with that count. A number or a name that differs is a finding. A comment that states what the group is for and gives no count or list is preferred. When a comment must give the size, it names the constant or the table that holds the members. This extends the size-or-count rule above, which names a limit that a constant holds, and the callers rule above, which names callers only. Example: a comment on `Rule` that hard-coded the number of the rule ids defined below it.
+- A literal that repeats a value which the function already holds under a name is a finding: a resolved remote, branch, path or setting that the code read into a variable or a parameter (for example `pushRemote`) and then types again as a literal (`"origin"`) in the same function or in its helpers. When the setting changes, the literal stays old and two parts of one flow act on different values. Grep each changed function for the literal and for the variable that holds the value, and pass the variable down to each helper that needs it. This extends the closed-set and format-derived literal rules above, which name a set of values and a format, not a value that is already in scope. Example: a push helper that typed `origin` while the caller held the resolved `pushRemote`.
+- Helpers that do one job in variants (a plain push, a push with a lease, a push that sets the upstream) have names that state the difference. A reader tells the variants apart from the names alone, and no name suggests a variant that the body does not run. List the sibling helpers of the changed code and compare each name with its body. Two names that read as synonyms, or a name that omits the variant it runs, is a finding: rename it, or merge the helpers when the bodies differ in one value. This extends the naming-consistency bullet and the rule above that a name states what its value holds, which cover a variable and a sibling convention, not the names of a set of helpers. Example: push helpers named `runPush`, `Push` and `pushWithLease`, where a reader could not tell which one forces the lease.
