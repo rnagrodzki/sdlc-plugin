@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 )
 
 // TestExecuteStateSchema_AcceptsWrittenState drives the real execute_state
@@ -99,6 +101,17 @@ func TestExecuteStateSchema_AcceptsWrittenState(t *testing.T) {
 	call(ExecuteStateIn{Action: "issue-draft", TaskID: "T2", IssueDraftTitle: "follow up", IssueDraftBody: "body", IssueDraftLabels: []string{"bug"}})
 	call(ExecuteStateIn{Action: "decide", DecideType: "guardrail", DecideID: "no-secrets", DecideDecision: "override", DecideReason: "test"})
 	call(ExecuteStateIn{Action: "drift-log", DriftSeverity: "warning", DriftSummary: "drift", DriftDetail: "detail", Wave: intPtr(1), TaskID: "T1"})
+
+	// Instruction records: the first instructions-next seeds the execute list
+	// from config. One record closes done, one stays running, one not run.
+	writeFile(t, filepath.Join(root, ".sdlc-v2", "config.toml"),
+		"[[instructions.execute]]\ntext = \"Post in chat.\"\n\n[[instructions.execute]]\ntext = \"Tag the release.\"\nnormalQuestions = true\n\n[[instructions.execute]]\ntext = \"Close the ticket.\"\n")
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "user-local.toml"))
+	call(ExecuteStateIn{Action: "instructions-next"})
+	call(ExecuteStateIn{Action: "instruction-record", InstructionNumber: intPtr(1), InstructionStatus: instrStrPtr("done"), InstructionOutcome: instrStrPtr("posted")})
+	call(ExecuteStateIn{Action: "instructions-next"})
+	call(ExecuteStateIn{Action: "instruction-record", InstructionAll: instrBoolPtr(true), InstructionStatus: instrStrPtr("not run"), InstructionOutcome: instrStrPtr("user stopped")})
+
 	call(ExecuteStateIn{Action: "cleanup"})
 
 	raw, err := os.ReadFile(filePath)
@@ -106,7 +119,7 @@ func TestExecuteStateSchema_AcceptsWrittenState(t *testing.T) {
 		t.Fatalf("read state file: %v", err)
 	}
 	// Guard that the run really produced the keys this test exists for.
-	for _, key := range []string{`"sessionId"`, `"commitWaves"`, `"committedSha"`, `"splitTree"`, `"verifyTokens"`, `"attempt"`, `"resumeFrom"`, `"runStatus"`} {
+	for _, key := range []string{`"sessionId"`, `"commitWaves"`, `"committedSha"`, `"splitTree"`, `"verifyTokens"`, `"attempt"`, `"resumeFrom"`, `"runStatus"`, `"instructions"`} {
 		if !strings.Contains(string(raw), key) {
 			t.Errorf("state file has no %s key; the run did not exercise it", key)
 		}

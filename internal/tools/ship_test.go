@@ -3583,33 +3583,38 @@ func TestShipPrepare_InstructionsDryRunSeeds(t *testing.T) {
 }
 
 // TestInstructionStatusMatchesSchema proves that the status enum of the
-// instruction records in ship-state.schema.json equals the status constants.
+// instruction records in ship-state.schema.json and execute-state.schema.json
+// equals the status constants.
 func TestInstructionStatusMatchesSchema(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var schema struct {
-		Properties struct {
-			Instructions struct {
-				Items struct {
-					Properties struct {
-						Status struct {
-							Enum []string `json:"enum"`
-						} `json:"status"`
-					} `json:"properties"`
-				} `json:"items"`
-			} `json:"instructions"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal(raw, &schema); err != nil {
-		t.Fatal(err)
-	}
-	got := slices.Clone(schema.Properties.Instructions.Items.Properties.Status.Enum)
-	want := []string{instrPending, instrRunning, instrDone, instrFailed, instrNotRun}
-	slices.Sort(got)
-	slices.Sort(want)
-	if !slices.Equal(got, want) {
-		t.Errorf("schema status enum = %v, want %v", got, want)
+	for _, name := range []string{"ship-state.schema.json", "execute-state.schema.json"} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "schemas", name))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var schema struct {
+				Properties struct {
+					Instructions struct {
+						Items struct {
+							Properties struct {
+								Status struct {
+									Enum []string `json:"enum"`
+								} `json:"status"`
+							} `json:"properties"`
+						} `json:"items"`
+					} `json:"instructions"`
+				} `json:"properties"`
+			}
+			if err := json.Unmarshal(raw, &schema); err != nil {
+				t.Fatal(err)
+			}
+			got := slices.Clone(schema.Properties.Instructions.Items.Properties.Status.Enum)
+			want := []string{instrPending, instrRunning, instrDone, instrFailed, instrNotRun}
+			slices.Sort(got)
+			slices.Sort(want)
+			if !slices.Equal(got, want) {
+				t.Errorf("schema status enum = %v, want %v", got, want)
+			}
+		})
 	}
 }

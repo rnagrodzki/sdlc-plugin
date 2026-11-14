@@ -1523,6 +1523,11 @@ type ShipReportData struct {
 	ReviewLedgerNote string            `json:"reviewLedgerNote,omitempty"`
 	// Healing is data.healing verbatim, or an empty map when absent.
 	Healing map[string]any `json:"healing"`
+	// InstructionSummary counts the instruction records of the run. Its lines
+	// are [] when no record failed, did not run or was decided. A damaged
+	// instructions key gives a zero summary and one entry in Warnings.
+	InstructionSummary instrSummaryOut `json:"instructionSummary"`
+	Warnings           []string        `json:"warnings,omitempty"`
 }
 
 // ShipReviewLedger is the review-finding account built from data.healing
@@ -1689,23 +1694,27 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 		ledgerNote = shipReviewLedgerNote
 	}
 
+	instrSum, instrWarnings := instrSummary(data)
+
 	return ShipReportData{
-		Bump:             bump,
-		BumpSource:       bumpSource,
-		PreRelease:       preRelease,
-		PreReleasePolicy: preReleasePolicy,
-		StepsTotal:       total,
-		StepsCompleted:   completed,
-		StepsPending:     pending,
-		StepsSkipped:     skipped,
-		StepsFailed:      failed,
-		Duration:         duration,
-		Decisions:        decisions,
-		DeferredFindings: len(openDeferred(deferredFindings)),
-		BinaryVersion:    binaryVersion,
-		ReviewLedger:     ledger,
-		ReviewLedgerNote: ledgerNote,
-		Healing:          healing,
+		InstructionSummary: instrSum,
+		Warnings:           instrWarnings,
+		Bump:               bump,
+		BumpSource:         bumpSource,
+		PreRelease:         preRelease,
+		PreReleasePolicy:   preReleasePolicy,
+		StepsTotal:         total,
+		StepsCompleted:     completed,
+		StepsPending:       pending,
+		StepsSkipped:       skipped,
+		StepsFailed:        failed,
+		Duration:           duration,
+		Decisions:          decisions,
+		DeferredFindings:   len(openDeferred(deferredFindings)),
+		BinaryVersion:      binaryVersion,
+		ReviewLedger:       ledger,
+		ReviewLedgerNote:   ledgerNote,
+		Healing:            healing,
 	}
 }
 

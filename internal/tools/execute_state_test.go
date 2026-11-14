@@ -10584,3 +10584,426 @@ func TestExecuteInitOpenspecHeaders(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// instruction records — instructions-next and instruction-record
+// ---------------------------------------------------------------------------
+
+var execInstrT0 = time.Date(2026, 11, 14, 9, 0, 0, 0, time.UTC)
+
+// execInstrConfig writes a team config with one execute instruction for each
+// text, and points the user-level config at a file that does not exist.
+func execInstrConfig(t *testing.T, root string, texts ...string) {
+	t.Helper()
+	var b strings.Builder
+	for _, text := range texts {
+		fmt.Fprintf(&b, "[[instructions.execute]]\ntext = %q\n\n", text)
+	}
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), b.String())
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "user-local.toml"))
+}
+
+// execInstrFixture creates an execute state on branch, with no instructions
+// key, under a root whose config holds the given execute instructions. It
+// returns the root and the state file path.
+func execInstrFixture(t *testing.T, branch string, texts ...string) (root, path string) {
+	t.Helper()
+	root = t.TempDir()
+	execInstrConfig(t, root, texts...)
+	createExecState(t, root, branch, map[string]any{"branch": branch})
+	st, err := state.Find(root, "execute", branch)
+	if err != nil || st == nil {
+		t.Fatalf("find state: %v", err)
+	}
+	return root, st.Path
+}
+
+// execInstrSeeded is execInstrFixture with the records already seeded
+// pending from the config list.
+func execInstrSeeded(t *testing.T, branch string, texts ...string) (root, path string) {
+	t.Helper()
+	root, path = execInstrFixture(t, branch, texts...)
+	data := readStateData(t, path)
+	instrSeed(data, instrList("execute", texts...))
+	writeStateData(t, path, data)
+	return root, path
+}
+
+func execInstrCall(root, branch string, in ExecuteStateIn, at time.Time) (any, error) {
+	in.Branch = branch
+	return executeState(root, root, in, fixedClock(at))
+}
+
+func execInstrNext(t *testing.T, root, branch string, at time.Time) ExecInstructionsNextOut {
+	t.Helper()
+	out, err := execInstrCall(root, branch, ExecuteStateIn{Action: "instructions-next"}, at)
+	if err != nil {
+		t.Fatalf("instructions-next: %v", err)
+	}
+	next, ok := out.(ExecInstructionsNextOut)
+	if !ok {
+		t.Fatalf("output = %#v, want ExecInstructionsNextOut", out)
+	}
+	return next
+}
+
+func execInstrRecordIn(number int, status, outcome string) ExecuteStateIn {
+	return ExecuteStateIn{
+		Action:             "instruction-record",
+		InstructionNumber:  intPtr(number),
+		InstructionStatus:  instrStrPtr(status),
+		InstructionOutcome: instrStrPtr(outcome),
+	}
+}
+
+// useExecStateWrite replaces execStateWriteFunc for one test and restores it
+// afterwards.
+func useExecStateWrite(t *testing.T, fn func(st *state.State) error) {
+	t.Helper()
+	prev := execStateWriteFunc
+	execStateWriteFunc = fn
+	t.Cleanup(func() { execStateWriteFunc = prev })
+}
+
+func assertExecInstrWriteError(t *testing.T, err error) {
+	t.Helper()
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %v, want InfraError", err)
+	}
+	if want := "cannot write the execute state: disk full"; ie.Msg != want {
+		t.Errorf("msg = %q, want %q", ie.Msg, want)
+	}
+	if want := "Continue to cleanup. A --resume run closes the record. If writes keep failing, check that the execute state folder is writable."; ie.Suggestion != want {
+		t.Errorf("suggestion = %q, want %q", ie.Suggestion, want)
+	}
+}
+
+// TestExecuteStateInstructionNextSeedsAndRecords walks the execute list from
+// the seed on the first call to the (none) result.
+func TestExecuteStateInstructionNextSeedsAndRecords(t *testing.T) {
+	const branch = "feat/exec-instr-walk"
+	root, path := execInstrFixture(t, branch, "Post in chat.", "Tag the release.")
+
+	next := execInstrNext(t, root, branch, execInstrT0)
+	if next.Instruction == nil || next.Instruction.Key != "execute" || next.Instruction.Number != 1 || next.Instruction.Source != "team" {
+		t.Fatalf("instruction = %+v, want execute #1 (team)", next.Instruction)
+	}
+	if got, want := next.Summary, `execute #1 (team) "Post in chat."`; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
+	}
+	if next.Remaining != 1 {
+		t.Errorf("remaining = %d, want 1", next.Remaining)
+	}
+	if got, want := next.Next, "Do instruction execute #1, then call instruction-record."; got != want {
+		t.Errorf("next = %q, want %q", got, want)
+	}
+	if got, want := storedRecords(t, path), []string{"execute#1 running ", "execute#2 pending "}; !slices.Equal(got, want) {
+		t.Fatalf("stored = %q, want %q", got, want)
+	}
+	if got := storedRecord(t, path, 0)["startedAt"]; got != "2026-11-14T09:00:00Z" {
+		t.Errorf("startedAt = %v, want 2026-11-14T09:00:00Z", got)
+	}
+
+	// A config change after the seed does not change the stored list.
+	execInstrConfig(t, root, "Other text.")
+
+	out, err := execInstrCall(root, branch, execInstrRecordIn(1, "done", "posted"), execInstrT0.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("instruction-record: %v", err)
+	}
+	rec, ok := out.(ExecInstructionRecordOut)
+	if !ok {
+		t.Fatalf("output = %#v, want ExecInstructionRecordOut", out)
+	}
+	if rec.Updated != 1 || rec.Warnings == nil || len(rec.Warnings) != 0 {
+		t.Errorf("record out = %+v, want updated 1 and warnings []", rec)
+	}
+	if got, want := rec.Next, "Call instructions-next."; got != want {
+		t.Errorf("next = %q, want %q", got, want)
+	}
+	stored := storedRecord(t, path, 0)
+	if stored["status"] != "done" || stored["outcome"] != "posted" || stored["endedAt"] != "2026-11-14T09:00:05Z" {
+		t.Errorf("stored #1 = %v, want done, posted, endedAt 2026-11-14T09:00:05Z", stored)
+	}
+
+	next = execInstrNext(t, root, branch, execInstrT0)
+	if next.Instruction == nil || next.Instruction.Number != 2 || next.Instruction.Text != "Tag the release." || next.Remaining != 0 {
+		t.Fatalf("next = %+v, want execute #2 \"Tag the release.\" with remaining 0", next)
+	}
+	if _, err := execInstrCall(root, branch, execInstrRecordIn(2, "failed", "no tag"), execInstrT0); err != nil {
+		t.Fatalf("instruction-record: %v", err)
+	}
+
+	// No record is left: next returns (none) and writes nothing.
+	useExecStateWrite(t, func(*state.State) error { t.Fatal("write on a (none) result"); return nil })
+	next = execInstrNext(t, root, branch, execInstrT0)
+	if next.Instruction != nil || next.Remaining != 0 {
+		t.Errorf("next = %+v, want (none) and remaining 0", next)
+	}
+	if got, want := next.Next, "No open instruction for execute. Call cleanup."; got != want {
+		t.Errorf("next = %q, want %q", got, want)
+	}
+	raw, _ := json.Marshal(next)
+	if !strings.Contains(string(raw), `"instruction":null`) {
+		t.Errorf("JSON = %s, want instruction null", raw)
+	}
+	if got, want := storedRecords(t, path), []string{"execute#1 done posted", "execute#2 failed no tag"}; !slices.Equal(got, want) {
+		t.Errorf("stored = %q, want %q", got, want)
+	}
+}
+
+// TestExecuteStateInstructionNextEmptyList proves an empty execute list
+// returns the cleanup next value and writes nothing.
+func TestExecuteStateInstructionNextEmptyList(t *testing.T) {
+	const branch = "feat/exec-instr-empty"
+	root, path := execInstrFixture(t, branch)
+	useExecStateWrite(t, func(*state.State) error { t.Fatal("write on an empty list"); return nil })
+	next := execInstrNext(t, root, branch, execInstrT0)
+	if next.Instruction != nil || next.Remaining != 0 {
+		t.Errorf("next = %+v, want (none) and remaining 0", next)
+	}
+	if got, want := next.Next, "No instructions for execute. Call cleanup."; got != want {
+		t.Errorf("next = %q, want %q", got, want)
+	}
+	if _, ok := readStateData(t, path)["instructions"]; ok {
+		t.Error("the state has an instructions key after an empty list")
+	}
+}
+
+// TestExecuteStateInstructionNextConfigError proves a config error at the
+// seed is a DataError and leaves the state unchanged.
+func TestExecuteStateInstructionNextConfigError(t *testing.T) {
+	const branch = "feat/exec-instr-config"
+	root, path := execInstrFixture(t, branch)
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[[instructions.execute]]\ntext = 5\n")
+	before, _ := os.ReadFile(path)
+	_, err := execInstrCall(root, branch, ExecuteStateIn{Action: "instructions-next"}, execInstrT0)
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) || !strings.HasPrefix(de.Msg, "execute: config error") {
+		t.Fatalf("err = %v, want DataError execute: config error", err)
+	}
+	if after, _ := os.ReadFile(path); string(before) != string(after) {
+		t.Error("the refused call changed the state file")
+	}
+}
+
+// TestExecuteStateInstructionInputsOtherAction proves another action refuses
+// each of the 4 record inputs, also when it holds its zero value, and writes
+// nothing.
+func TestExecuteStateInstructionInputsOtherAction(t *testing.T) {
+	set := map[string]func(in *ExecuteStateIn){
+		"instructionNumber":  func(in *ExecuteStateIn) { in.InstructionNumber = intPtr(0) },
+		"instructionAll":     func(in *ExecuteStateIn) { in.InstructionAll = instrBoolPtr(false) },
+		"instructionStatus":  func(in *ExecuteStateIn) { in.InstructionStatus = instrStrPtr("") },
+		"instructionOutcome": func(in *ExecuteStateIn) { in.InstructionOutcome = instrStrPtr("") },
+	}
+	for _, field := range shipInstrInputs {
+		for _, action := range []string{"cleanup", "instructions-next", "read"} {
+			t.Run(field+"/"+action, func(t *testing.T) {
+				const branch = "feat/exec-instr-other"
+				root, path := execInstrSeeded(t, branch, "x")
+				before, _ := os.ReadFile(path)
+				in := ExecuteStateIn{Action: action}
+				set[field](&in)
+				_, err := execInstrCall(root, branch, in, execInstrT0)
+				var de *mcpserver.DomainError
+				wantMsg := field + " is valid only with instruction-record"
+				if !errors.As(err, &de) || de.Msg != wantMsg {
+					t.Fatalf("err = %v, want DomainError %q", err, wantMsg)
+				}
+				if want := "Remove " + field + ", or use action instruction-record."; de.Suggestion != want {
+					t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
+				}
+				if after, _ := os.ReadFile(path); string(before) != string(after) {
+					t.Error("the refused call changed the state file")
+				}
+			})
+		}
+	}
+}
+
+// TestExecuteStateInstructionRecordInputs covers the input rules of
+// instruction-record. Each refused call leaves the state unchanged.
+func TestExecuteStateInstructionRecordInputs(t *testing.T) {
+	cases := []struct {
+		name string
+		in   ExecuteStateIn
+		want string
+	}{
+		{"number and all", ExecuteStateIn{Action: "instruction-record", InstructionNumber: intPtr(1), InstructionAll: instrBoolPtr(true), InstructionStatus: instrStrPtr("not run"), InstructionOutcome: instrStrPtr("x")},
+			"use instructionNumber or instructionAll, not both"},
+		{"neither", ExecuteStateIn{Action: "instruction-record", InstructionStatus: instrStrPtr("done")},
+			"instructionNumber or instructionAll is required"},
+		{"all false only", ExecuteStateIn{Action: "instruction-record", InstructionAll: instrBoolPtr(false), InstructionStatus: instrStrPtr("done")},
+			"instructionNumber or instructionAll is required"},
+		{"all with done", ExecuteStateIn{Action: "instruction-record", InstructionAll: instrBoolPtr(true), InstructionStatus: instrStrPtr("done")},
+			`instructionAll:true takes only status "not run"`},
+		{"no status", ExecuteStateIn{Action: "instruction-record", InstructionNumber: intPtr(1)},
+			`status "" is not valid`},
+		{"bad status", execInstrRecordIn(1, "maybe", ""), `status "maybe" is not valid`},
+		{"failed without outcome", execInstrRecordIn(1, "failed", " "), "outcome is required for failed and not run"},
+		{"outcome too long", execInstrRecordIn(1, "done", strings.Repeat("a", 1001)), "the outcome has 1001 characters. The limit is 1000."},
+		{"number out of range", execInstrRecordIn(3, "done", ""), "execute has 2 instructions. Number 3 is out of range."},
+		{"number zero", execInstrRecordIn(0, "done", ""), "execute has 2 instructions. Number 0 is out of range."},
+		{"pending record", execInstrRecordIn(2, "done", ""), "instruction execute #2 is not running (pending)"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			const branch = "feat/exec-instr-inputs"
+			root, path := execInstrFixture(t, branch, "a", "b")
+			execInstrNext(t, root, branch, execInstrT0) // #1 running
+			before, _ := os.ReadFile(path)
+			_, err := execInstrCall(root, branch, c.in, execInstrT0)
+			var de *mcpserver.DomainError
+			if !errors.As(err, &de) || de.Msg != c.want {
+				t.Fatalf("err = %v, want DomainError %q", err, c.want)
+			}
+			if after, _ := os.ReadFile(path); string(before) != string(after) {
+				t.Error("the refused call changed the state file")
+			}
+		})
+	}
+}
+
+// TestExecuteStateInstructionRecordClosed proves a closed record never changes.
+func TestExecuteStateInstructionRecordClosed(t *testing.T) {
+	const branch = "feat/exec-instr-closed"
+	root, path := execInstrSeeded(t, branch, "x")
+	data := readStateData(t, path)
+	data["instructions"].([]any)[0].(map[string]any)["status"] = "done"
+	writeStateData(t, path, data)
+	_, err := execInstrCall(root, branch, execInstrRecordIn(1, "failed", "again"), execInstrT0)
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) || de.Msg != "instruction execute #1 is closed (done)" {
+		t.Fatalf("err = %v, want DomainError instruction execute #1 is closed (done)", err)
+	}
+	if got := storedRecords(t, path); !slices.Equal(got, []string{"execute#1 done "}) {
+		t.Errorf("stored = %q, want it unchanged", got)
+	}
+}
+
+// TestExecuteStateInstructionRecordAll proves instructionAll closes each open
+// record: pending becomes not run, running becomes failed.
+func TestExecuteStateInstructionRecordAll(t *testing.T) {
+	const branch = "feat/exec-instr-all"
+	root, path := execInstrFixture(t, branch, "a", "b", "c")
+	execInstrNext(t, root, branch, execInstrT0)
+	out, err := execInstrCall(root, branch, ExecuteStateIn{
+		Action: "instruction-record", InstructionAll: instrBoolPtr(true),
+		InstructionStatus: instrStrPtr("not run"), InstructionOutcome: instrStrPtr("user stopped"),
+	}, execInstrT0)
+	if err != nil {
+		t.Fatalf("instruction-record: %v", err)
+	}
+	if got := out.(ExecInstructionRecordOut); got.Updated != 3 || got.Summary != "3 open instructions of execute closed." {
+		t.Errorf("out = %+v, want updated 3", got)
+	}
+	want := []string{
+		"execute#1 failed result not recorded, not run again",
+		"execute#2 not run user stopped",
+		"execute#3 not run user stopped",
+	}
+	if got := storedRecords(t, path); !slices.Equal(got, want) {
+		t.Errorf("stored = %q, want %q", got, want)
+	}
+
+	// With no open record left, the call closes nothing and writes nothing.
+	useExecStateWrite(t, func(*state.State) error { t.Fatal("write with no open record"); return nil })
+	out, err = execInstrCall(root, branch, ExecuteStateIn{
+		Action: "instruction-record", InstructionAll: instrBoolPtr(true),
+		InstructionStatus: instrStrPtr("not run"), InstructionOutcome: instrStrPtr("again"),
+	}, execInstrT0)
+	if err != nil {
+		t.Fatalf("instruction-record: %v", err)
+	}
+	if got := out.(ExecInstructionRecordOut).Updated; got != 0 {
+		t.Errorf("updated = %d, want 0", got)
+	}
+}
+
+// TestExecuteStateInstructionDamagedList proves an instructions key of the
+// wrong type is a DataError for both actions, with no config read.
+func TestExecuteStateInstructionDamagedList(t *testing.T) {
+	const branch = "feat/exec-instr-damaged"
+	root, path := execInstrFixture(t, branch, "x")
+	data := readStateData(t, path)
+	data["instructions"] = "not a list"
+	writeStateData(t, path, data)
+	for _, in := range []ExecuteStateIn{{Action: "instructions-next"}, execInstrRecordIn(1, "done", "")} {
+		_, err := execInstrCall(root, branch, in, execInstrT0)
+		var de *mcpserver.DataError
+		if !errors.As(err, &de) || de.Msg != instrDamagedMsg || de.Suggestion != instrDamagedAdvice {
+			t.Errorf("%s err = %v, want DataError %q", in.Action, err, instrDamagedMsg)
+		}
+	}
+}
+
+// TestExecuteStateInstructionNextWriteFails proves a failed write of call 1
+// changes no stored record: the seed is not stored, and a seeded record stays
+// pending.
+func TestExecuteStateInstructionNextWriteFails(t *testing.T) {
+	t.Run("seed", func(t *testing.T) {
+		const branch = "feat/exec-instr-next-write-seed"
+		root, path := execInstrFixture(t, branch, "x")
+		useExecStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+		_, err := execInstrCall(root, branch, ExecuteStateIn{Action: "instructions-next"}, execInstrT0)
+		assertExecInstrWriteError(t, err)
+		if _, ok := readStateData(t, path)["instructions"]; ok {
+			t.Error("the state has an instructions key after a failed seed write")
+		}
+	})
+	t.Run("seeded", func(t *testing.T) {
+		const branch = "feat/exec-instr-next-write"
+		root, path := execInstrSeeded(t, branch, "x")
+		useExecStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+		_, err := execInstrCall(root, branch, ExecuteStateIn{Action: "instructions-next"}, execInstrT0)
+		assertExecInstrWriteError(t, err)
+		if got := storedRecords(t, path); !slices.Equal(got, []string{"execute#1 pending "}) {
+			t.Errorf("stored = %q, want execute#1 pending", got)
+		}
+	})
+}
+
+// TestExecuteStateInstructionRecordWriteFails makes call 2 fail through
+// execStateWriteFunc: the stored record stays running, and the next
+// instructions-next call turns it into failed.
+func TestExecuteStateInstructionRecordWriteFails(t *testing.T) {
+	const branch = "feat/exec-instr-record-write"
+	root, path := execInstrFixture(t, branch, "x")
+	execInstrNext(t, root, branch, execInstrT0)
+
+	prev := execStateWriteFunc
+	execStateWriteFunc = func(*state.State) error { return errors.New("disk full") }
+	_, err := execInstrCall(root, branch, execInstrRecordIn(1, "done", ""), execInstrT0)
+	execStateWriteFunc = prev
+	assertExecInstrWriteError(t, err)
+	if got := storedRecords(t, path); !slices.Equal(got, []string{"execute#1 running "}) {
+		t.Fatalf("stored after failed record = %q, want execute#1 running", got)
+	}
+
+	next := execInstrNext(t, root, branch, execInstrT0.Add(time.Minute))
+	if next.Instruction != nil {
+		t.Errorf("instruction = %+v, want (none)", next.Instruction)
+	}
+	if got, want := storedRecords(t, path), []string{"execute#1 failed result not recorded, not run again"}; !slices.Equal(got, want) {
+		t.Errorf("stored = %q, want %q", got, want)
+	}
+}
+
+// TestExecuteStateInstructionResumeClosesRunning covers a stop between call 1
+// and call 2: the next instructions-next call (a --resume run) fails the
+// running record and starts the next one.
+func TestExecuteStateInstructionResumeClosesRunning(t *testing.T) {
+	const branch = "feat/exec-instr-resume"
+	root, path := execInstrFixture(t, branch, "a", "b")
+	execInstrNext(t, root, branch, execInstrT0)
+	next := execInstrNext(t, root, branch, execInstrT0.Add(time.Hour))
+	if next.Instruction == nil || next.Instruction.Number != 2 {
+		t.Fatalf("instruction = %+v, want execute #2", next.Instruction)
+	}
+	want := []string{"execute#1 failed result not recorded, not run again", "execute#2 running "}
+	if got := storedRecords(t, path); !slices.Equal(got, want) {
+		t.Errorf("stored = %q, want %q", got, want)
+	}
+}

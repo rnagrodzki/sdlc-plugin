@@ -65,8 +65,11 @@ const (
 // instrSummaryOut is the summary of the records of one run. Total counts every
 // record. Lines holds one line for each failed, not run or decided record.
 type instrSummaryOut struct {
-	Total, Done, Failed, NotRun int
-	Lines                       []string // one per failed, not run, or decided record
+	Total  int      `json:"total"`
+	Done   int      `json:"done"`
+	Failed int      `json:"failed"`
+	NotRun int      `json:"notRun"`
+	Lines  []string `json:"lines"` // one per failed, not run, or decided record; [] never null
 }
 
 // instrSeed writes one pending record for each instruction of list, replacing

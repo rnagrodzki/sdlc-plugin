@@ -433,6 +433,28 @@
       "type": "integer",
       "minimum": 1,
       "description": "Liveness poll interval in seconds, resolved at init from explicit input > ship-state flags > built-in default (60). Consumed by wave-await for three things: (1) the polling cadence between probes; (2) a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled; (3) a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. A worker that DOES answer is not failed at all -- the reply is treated as proof of life and the same attempt continues."
+    },
+    "instructions": {
+      "type": "array",
+      "description": "One record for each execute instruction of a standalone run, seeded pending by the first instructions-next call. A closed record (done, failed, not run) never changes.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "number", "source", "text", "status", "outcome", "startedAt", "endedAt"],
+        "properties": {
+          "key": { "type": "string" },
+          "number": { "type": "integer", "minimum": 1 },
+          "source": { "enum": ["team", "project local", "user"] },
+          "text": { "type": "string" },
+          "normalQuestions": { "type": "boolean" },
+          "criticalQuestions": { "type": "boolean" },
+          "onQuestionNotAllowed": { "enum": ["skip", "decide"] },
+          "status": { "enum": ["pending", "running", "done", "failed", "not run"] },
+          "outcome": { "type": "string", "maxLength": 1000 },
+          "startedAt": { "type": "string" },
+          "endedAt": { "type": "string" }
+        }
+      }
     }
   },
   "required": ["version", "skill", "startedAt", "branch", "planHash", "totalTasks", "waves", "context"],

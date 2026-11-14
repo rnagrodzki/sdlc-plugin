@@ -11124,3 +11124,98 @@ func TestShipRunInFlight(t *testing.T) {
 		})
 	}
 }
+
+// shipStateReadFixture seeds a ship state on branch with extra data keys and
+// returns the root of the repo.
+func shipStateReadFixture(t *testing.T, branch string, extra map[string]any) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, branch)
+	path := shipStateInitFixture(t, dir, branch)
+	data := readStateData(t, path)
+	for k, v := range extra {
+		data[k] = v
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func shipStateReadReportData(t *testing.T, dir, branch string) ShipReportData {
+	t.Helper()
+	result, err := shipState(dir, dir, ShipStateIn{Action: "read", Detail: map[string]any{"branch": branch}}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	rd, ok := result.(map[string]any)["reportData"].(ShipReportData)
+	if !ok {
+		t.Fatalf("reportData type = %T, want ShipReportData", result.(map[string]any)["reportData"])
+	}
+	return rd
+}
+
+func TestShipStateReadInstructionSummary(t *testing.T) {
+	t.Run("counts and lines", func(t *testing.T) {
+		dir := shipStateReadFixture(t, "feat/instr-read", map[string]any{"instructions": shipReportInstructionRecords()})
+		rd := shipStateReadReportData(t, dir, "feat/instr-read")
+		want := instrSummaryOut{Total: 6, Done: 4, Failed: 1, NotRun: 1, Lines: []string{
+			"pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.",
+			`ship #1 (team) not run: question not allowed (critical, --auto): "Two channels match #releases: #releases, #releases-eu. Which one?"`,
+			`ship #2 (project local) done, decided: "Which notes file?" -> ~/notes/shipped.md`,
+		}}
+		if !reflect.DeepEqual(rd.InstructionSummary, want) {
+			t.Errorf("InstructionSummary = %#v, want %#v", rd.InstructionSummary, want)
+		}
+		if len(rd.Warnings) != 0 {
+			t.Errorf("Warnings = %v, want none", rd.Warnings)
+		}
+	})
+
+	t.Run("no line to show: lines is [] in JSON and (none) in text", func(t *testing.T) {
+		const branch = "feat/instr-none"
+		dir := shipStateReadFixture(t, branch, map[string]any{"instructions": shipReportInstructionRecords()[1:2]})
+		rd := shipStateReadReportData(t, dir, branch)
+		if rd.InstructionSummary.Total != 1 || rd.InstructionSummary.Done != 1 {
+			t.Fatalf("InstructionSummary = %+v", rd.InstructionSummary)
+		}
+		raw, err := json.Marshal(rd.InstructionSummary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(raw) != `{"total":1,"done":1,"failed":0,"notRun":0,"lines":[]}` {
+			t.Errorf("JSON = %s", raw)
+		}
+
+		t.Chdir(dir)
+		res, text := callRegisteredTool(t, RegisterShipStateTools, "ship_state", map[string]any{
+			"action": "read", "detail": map[string]any{"branch": branch},
+		})
+		if res.IsError {
+			t.Fatalf("read failed:\n%s", text)
+		}
+		if !strings.Contains(text, "lines: (none)") {
+			t.Errorf("text output has no %q:\n%s", "lines: (none)", text)
+		}
+	})
+
+	t.Run("damaged key gives one warning and the read succeeds", func(t *testing.T) {
+		dir := shipStateReadFixture(t, "feat/instr-damaged", map[string]any{"instructions": "damaged"})
+		rd := shipStateReadReportData(t, dir, "feat/instr-damaged")
+		if rd.InstructionSummary.Total != 0 || len(rd.InstructionSummary.Lines) != 0 || rd.InstructionSummary.Lines == nil {
+			t.Errorf("InstructionSummary = %#v, want zero with empty lines", rd.InstructionSummary)
+		}
+		if len(rd.Warnings) != 1 || rd.Warnings[0] != instrDamagedMsg {
+			t.Errorf("Warnings = %v, want [%q]", rd.Warnings, instrDamagedMsg)
+		}
+	})
+}

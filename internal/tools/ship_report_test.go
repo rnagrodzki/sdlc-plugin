@@ -1917,3 +1917,95 @@ func TestShipReportWaveCells(t *testing.T) {
 		}
 	})
 }
+
+// shipReportInstructionRecords builds the records of the contract example:
+// 6 records, 4 done, 1 failed, 1 not run, one of the done records decided.
+func shipReportInstructionRecords() []any {
+	rec := func(key string, number int, source, status, outcome string) any {
+		return map[string]any{"key": key, "number": float64(number), "source": source, "status": status, "outcome": outcome}
+	}
+	return []any{
+		rec("pr", 1, "team", "failed", "Jira transition 'In Review' not found for ticket INT-123."),
+		rec("pr", 2, "project local", "done", ""),
+		rec("ship", 1, "team", "not run", `question not allowed (critical, --auto): "Two channels match #releases: #releases, #releases-eu. Which one?"`),
+		rec("ship", 2, "project local", "done", `decided: "Which notes file?" -> ~/notes/shipped.md`),
+		rec("commit", 1, "team", "done", ""),
+		rec("review", 1, "team", "done", ""),
+	}
+}
+
+func TestShipReportInstructions(t *testing.T) {
+	t.Run("section after Decisions", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, map[string]any{
+			"decisions":    []any{map[string]any{"step": "pr", "decision": "chose minor", "at": "2025-06-15T10:40:00Z"}},
+			"instructions": shipReportInstructionRecords(),
+		})
+		out := runShipReport(t, root, nil)
+
+		want := []string{
+			"",
+			"Ship instructions: 6 total, 4 done, 1 failed, 1 not run.",
+			"- pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.",
+			`- ship #1 (team) not run: question not allowed (critical, --auto): "Two channels match #releases: #releases, #releases-eu. Which one?"`,
+			`- ship #2 (project local) done, decided: "Which notes file?" -> ~/notes/shipped.md`,
+			"",
+		}
+		got := shipReportSection(out.Display, "Instructions")
+		if strings.Join(got, "\n") != strings.Join(want, "\n") {
+			t.Errorf("Instructions section:\n%q\nwant:\n%q", got, want)
+		}
+		decisions := strings.Index(out.Display, "\n## Decisions\n")
+		instructions := strings.Index(out.Display, "\n## Instructions\n")
+		learnings := strings.Index(out.Display, "\n## Learnings\n")
+		if !(decisions >= 0 && decisions < instructions && instructions < learnings) {
+			t.Errorf("section order: Decisions %d, Instructions %d, Learnings %d", decisions, instructions, learnings)
+		}
+		if s := out.InstructionSummary; s.Total != 6 || s.Done != 4 || s.Failed != 1 || s.NotRun != 1 || len(s.Lines) != 3 {
+			t.Errorf("InstructionSummary = %+v", s)
+		}
+	})
+
+	t.Run("no records, no section", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, nil)
+		out := runShipReport(t, root, nil)
+		if strings.Contains(out.Display, "## Instructions") {
+			t.Errorf("display has an Instructions section with no records:\n%s", out.Display)
+		}
+		raw, err := json.Marshal(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"instructionSummary":{"total":0,"done":0,"failed":0,"notRun":0,"lines":[]}`) {
+			t.Errorf("JSON has no empty instructionSummary: %s", raw)
+		}
+	})
+
+	t.Run("damaged key gives a warning and no section", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, map[string]any{"instructions": "damaged"})
+		out := runShipReport(t, root, nil)
+		if strings.Contains(out.Display, "## Instructions") {
+			t.Errorf("display has an Instructions section for a damaged key:\n%s", out.Display)
+		}
+		warnings := 0
+		for _, issue := range out.Issues {
+			if m, ok := issue.(map[string]any); ok && m["summary"] == instrDamagedMsg && m["severity"] == "warning" {
+				warnings++
+			}
+		}
+		if warnings != 1 {
+			t.Errorf("warnings = %d, want 1; issues = %v", warnings, out.Issues)
+		}
+	})
+
+	t.Run("a failed record does not fail the report", func(t *testing.T) {
+		root := shipReportRoot(t)
+		createShipReportState(t, root, map[string]any{"instructions": shipReportInstructionRecords()[:1]})
+		out := runShipReport(t, root, nil)
+		if out.InstructionSummary.Failed != 1 || out.Display == "" {
+			t.Errorf("report = %+v", out.InstructionSummary)
+		}
+	})
+}
