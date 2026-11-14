@@ -45,7 +45,7 @@ stateDiagram-v2
 - **THEN** the action returns DomainError `detail.instructionNumber is valid only with instruction-record`
 
 ### Requirement: Record sweeps
-The `fail`, `skip` and `cleanup-pipeline` actions SHALL close the open records with the outcomes `step failed or stopped`, `step skipped` and `step did not run`.
+The `fail`, `skip` and `cleanup-pipeline` actions SHALL close the open records. A pending record becomes `not run` with the outcome `step failed or stopped`, `step skipped` or `step did not run`. A running record becomes `failed` with the outcome `result not recorded, not run again`.
 
 #### Scenario: Skip
 - **WHEN** the harden step is skipped

@@ -302,7 +302,7 @@ The only other commits in a run are merge commits made by the tool itself in `##
 6. Load `context` (`completedTaskIds`, `filesAdded`/`filesModified`, `interfacesCreated`, `decisionsFromPriorWaves`) into the resumed session's understanding. Load `quality` from state with explicit three-way branching: if `sources.quality == "cli"` (an explicit `--quality` was passed), use EXECUTE_QUALITY; else if `state.quality` is non-empty (the tier stamped when this run was initialized), use `state.quality`; else use EXECUTE_QUALITY (config or auto default), which is empty only when EXECUTE_AUTO is false and no config set a tier — prompt for the tier in that one case.
 7. Resume from the first wave with status `in_progress` or `pending`, per `willRedo`/`willSkip` on the briefing.
 
-**All tasks done, open instruction records.** An interrupt during Step 9a leaves the run with no `cleanup` call, so the run stays in flight. The `read` result then has no `resumeBriefing`, because every task is done. Use this table for that case:
+**All tasks done, open instruction records.** An interrupt during Step 9a leaves the run with no `cleanup` call, so the run stays unfinished. The `read` result then has no `resumeBriefing`, because every task is done. Use this table for that case:
 
 | `read` result on `--resume` | Action |
 |---|---|

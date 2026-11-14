@@ -64,7 +64,7 @@ In a ship run, ship SHALL run each list in its main session and SHALL pass `--no
 
 #### Scenario: Step fails
 - **WHEN** a step fails
-- **THEN** each open record of the run becomes `not run` with the outcome `step failed or stopped`
+- **THEN** each pending record of the run becomes `not run` with the outcome `step failed or stopped`, and each running record becomes `failed` with the outcome `result not recorded, not run again`
 
 ### Requirement: Lists in a standalone run
 In a standalone run, execute, commit, review, received-review, pr, harden and verify-pipeline SHALL run their own list after success. The keys commit-fixes, verify-openspec, archive-openspec, await-remote-review, learnings-commit and ship SHALL run only in a ship run.
