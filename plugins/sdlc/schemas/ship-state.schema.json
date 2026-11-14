@@ -142,6 +142,28 @@
         "required": ["step", "decision"]
       }
     },
+    "instructions": {
+      "type": "array",
+      "description": "One record for each instruction of the run, seeded pending by ship_prepare. A closed record (done, failed, not run) never changes.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "number", "source", "text", "status", "outcome", "startedAt", "endedAt"],
+        "properties": {
+          "key": { "type": "string" },
+          "number": { "type": "integer", "minimum": 1 },
+          "source": { "enum": ["team", "project local", "user"] },
+          "text": { "type": "string" },
+          "normalQuestions": { "type": "boolean" },
+          "criticalQuestions": { "type": "boolean" },
+          "onQuestionNotAllowed": { "enum": ["skip", "decide"] },
+          "status": { "enum": ["pending", "running", "done", "failed", "not run"] },
+          "outcome": { "type": "string", "maxLength": 1000 },
+          "startedAt": { "type": "string" },
+          "endedAt": { "type": "string" }
+        }
+      }
+    },
     "deferredFindings": {
       "type": "array",
       "items": {

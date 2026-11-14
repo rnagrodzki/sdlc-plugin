@@ -449,6 +449,13 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 			t, strings.Join(dimensions.ValidSeverities, ", ")))
 	}
 
+	// The [instructions] section of the 3 config files. A problem stops the
+	// run before any state write, like the other config errors above.
+	instrByKey, instrErr := config.ReadInstructions(cfgRoot)
+	if instrErr != nil {
+		errors = append(errors, "ship: config error, no step started.\n"+instrErr.Error())
+	}
+
 	// At least one step must run.
 	if len(stepsList) == 0 {
 		errors = append(errors, "All steps are skipped. At least one step must run.")
@@ -610,6 +617,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	st.Data["steps"] = scaffold
 	st.Data["decisions"] = []any{}
 	st.Data["deferredFindings"] = []any{}
+	instrSeed(st.Data, shipRunInstructions(instrByKey, stepsList))
 	if baseHead != "" {
 		st.Data["openspecBaseHead"] = baseHead
 	}
@@ -627,6 +635,29 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	out.PipelineDisplay = pipeline.PipelineTable(configStepsFromScaffold(scaffold))
 	out.Next = shipPrepareNext(out)
 	return out, nil
+}
+
+// shipRunInstructions returns the instructions of the keys that the run
+// executes, in the canonical key order: the resolved steps, received-review
+// and commit-fixes when review is a step, and "ship". A key that is not in the
+// run is dropped, so it never runs. An instruction of a step that is off is
+// valid in the config and is dropped here.
+func shipRunInstructions(byKey map[string][]config.Instruction, steps []string) []config.Instruction {
+	runKeys := map[string]bool{"ship": true}
+	for _, st := range steps {
+		runKeys[st] = true
+		if st == "review" {
+			runKeys["received-review"] = true
+			runKeys["commit-fixes"] = true
+		}
+	}
+	list := []config.Instruction{}
+	for _, key := range config.InstructionKeys {
+		if runKeys[key] {
+			list = append(list, byKey[key]...)
+		}
+	}
+	return list
 }
 
 // shipStepDescriptions gives each known ship pipeline step name a one-line
@@ -1686,7 +1717,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 // tools.
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
-		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. A plan with an **OpenSpec-Create:** line and no **OpenSpec-Staging:** or **OpenSpec-Saved:** line, or with such a line and an OpenSpec Appendix that starts with [TBD, is refused in errors before any write. A staging folder whose stage.json names another plan is refused in errors, and no file changes. When an OpenSpec change is named, it warns about each capability spec that another active or staged change also edits, and stores HEAD as openspecBaseHead in the state file (not on dryRun); a failed git rev-parse HEAD adds a warning and stores no key. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing.",
+		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. A plan with an **OpenSpec-Create:** line and no **OpenSpec-Staging:** or **OpenSpec-Saved:** line, or with such a line and an OpenSpec Appendix that starts with [TBD, is refused in errors before any write. A staging folder whose stage.json names another plan is refused in errors, and no file changes. When an OpenSpec change is named, it warns about each capability spec that another active or staged change also edits, and stores HEAD as openspecBaseHead in the state file (not on dryRun); a failed git rev-parse HEAD adds a warning and stores no key. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing. Reads the [instructions] section of the team, project local and user-level config. A config problem adds one errors entry. Seeds one pending record for each instruction of the run.",
 		mcpserver.Annotations{
 			Title:       "Prepare ship pipeline run",
 			ReadOnly:    false,
