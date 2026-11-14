@@ -1,0 +1,66 @@
+---
+// The fact row of the reference Skill page (site-preview.src.html:486-491).
+// The values come from the `### Run facts` table of the docs page (parseSteps).
+import { inlineParts } from '../lib/sequence-state.mjs';
+
+interface Props {
+  facts: { starts: string; ends: string; asks: string; resume: string };
+}
+const { facts } = Astro.props;
+
+const rows = [
+  { label: 'Starts from', value: facts.starts },
+  { label: 'Ends with', value: facts.ends },
+  { label: 'Asks you', value: facts.asks },
+  { label: 'After a stop', value: facts.resume },
+];
+---
+
+<dl class="facts-row">
+  {
+    rows.map((row) => (
+      <div>
+        <dt class="fact-k">{row.label}</dt>
+        <dd class="fact-v">
+          {inlineParts(row.value).map((part) =>
+            part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+          )}
+        </dd>
+      </div>
+    ))
+  }
+</dl>
+
+<style>
+  .facts-row {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: var(--space-18) var(--space-32);
+    margin: 0;
+    padding: var(--space-20) 0;
+    border-block: 1px solid var(--line);
+  }
+  .fact-k {
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .fact-v {
+    margin: var(--space-2) 0 0;
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+  }
+  .fact-v code {
+    font-family: var(--font-mono);
+    font-size: var(--text-code);
+  }
+  @media (max-width: 900px) {
+    .facts-row {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 520px) {
+    .facts-row {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

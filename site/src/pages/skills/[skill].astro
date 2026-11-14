@@ -1,0 +1,271 @@
+---
+// The page of one skill: /skills/<skill>/ (reference Skill page,
+// site-preview.src.html:463-543, ref-skill-page.jpeg). The steps and facts come
+// from the docs page at build time; the Steps section itself is removed from the
+// rendered Markdown by remarkStripSteps, so it shows only once.
+import path from 'node:path';
+import { getCollection, render } from 'astro:content';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import InstallCommand from '../../components/InstallCommand.astro';
+import FactPanel from '../../components/FactPanel.astro';
+import SkillSequence from '../../components/SkillSequence.astro';
+import { BASE } from '../../../site.config.mjs';
+import { pageKind, routeFor } from '../../lib/doc-links.mjs';
+import { parseSteps } from '../../lib/steps-table.mjs';
+import { stepShares, timesFor } from '../../lib/timing.mjs';
+import { inlineParts } from '../../lib/sequence-state.mjs';
+import stepTimes from '../../data/step-times.json';
+
+export async function getStaticPaths() {
+  const repoRoot = path.resolve('..');
+  const entries = await getCollection('docs');
+  return entries.flatMap((entry) => {
+    if (!entry.filePath) return [];
+    // entry.filePath is relative to site/.
+    const repoPath = path.relative(repoRoot, path.resolve(entry.filePath)).split(path.sep).join('/');
+    if (pageKind(repoPath) !== 'skill') return [];
+    const skill = /^\/skills\/([^/]+)\/$/.exec(routeFor(repoPath, { base: '' }))?.[1];
+    if (!skill) throw new Error(`no skill route for ${repoPath}`);
+    return [{ params: { skill }, props: { entry } }];
+  });
+}
+
+const { entry } = Astro.props;
+const { skill } = Astro.params;
+const { steps, facts } = parseSteps(entry.body ?? '');
+const run = timesFor(stepTimes, skill);
+const times = run ? stepShares(steps, run.times) : null;
+const { Content } = await render(entry);
+
+/** The first paragraph under the H1 of the docs page, with links reduced to their text. */
+function leadParagraph(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  let i = lines.findIndex((l) => /^#\s/.test(l));
+  i = i === -1 ? 0 : i + 1;
+  while (i < lines.length && lines[i].trim() === '') i++;
+  const para: string[] = [];
+  for (; i < lines.length && lines[i].trim() !== '' && !/^(#|\||```|- |\* |\d+\. )/.test(lines[i].trim()); i++) {
+    para.push(lines[i].trim());
+  }
+  return para.join(' ').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+}
+
+const command = `/sdlc:${skill}`;
+const lead = leadParagraph(entry.body ?? '');
+const description = lead.replace(/[`*]/g, '') || `The ${command} skill of the sdlc plugin.`;
+---
+
+<BaseLayout title={`${command} | sdlc`} description={description} current="skills">
+  <div class="fields" aria-hidden="true">
+    <span class="field f1"></span><span class="field f2"></span><span class="field f3"></span>
+  </div>
+  <div class="skill wrap">
+    <div class="sk-head">
+      <div class="sk-lead">
+        <p class="crumb"><a href={`${BASE}/skills/`}>Skills</a> / {skill}</p>
+        <h1 class="sk-h1">
+          <span class="typed" style={`--n: ${command.length}`}>{command}</span><span class="caret" aria-hidden="true"></span>
+        </h1>
+        {
+          lead && (
+            <p class="sub">
+              {inlineParts(lead).map((part) =>
+                part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+              )}
+            </p>
+          )
+        }
+      </div>
+      <InstallCommand lines={[command]} label="Run it in Claude Code" />
+    </div>
+    <FactPanel facts={facts} />
+    <SkillSequence steps={steps} times={times} run={run ? { version: run.version, runDate: run.runDate } : null} />
+    <article class="doc">
+      <Content />
+    </article>
+  </div>
+</BaseLayout>
+
+<style>
+  /* The colour fields behind the glass, as on the Home page. */
+  .fields {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1300px;
+    overflow: hidden;
+    z-index: -1;
+    pointer-events: none;
+  }
+  .field {
+    position: absolute;
+    border-radius: var(--r-round);
+    filter: blur(70px);
+  }
+  .f1 {
+    width: 540px;
+    height: 540px;
+    right: -90px;
+    top: 30px;
+    background: var(--f1);
+  }
+  .f2 {
+    width: 420px;
+    height: 420px;
+    right: 30%;
+    top: 280px;
+    background: var(--f2);
+  }
+  .f3 {
+    width: 480px;
+    height: 480px;
+    left: -120px;
+    top: 760px;
+    background: var(--f1);
+  }
+  .skill {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-44);
+    padding-bottom: var(--space-64);
+  }
+  .crumb {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--muted);
+  }
+  .crumb a {
+    color: inherit;
+  }
+  .sk-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: var(--space-24) var(--space-56);
+    align-items: end;
+  }
+  .sk-lead {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+  }
+  .sk-h1 {
+    font-family: var(--font-mono);
+    font-weight: var(--weight-medium);
+    margin: 0;
+    font-size: var(--text-skill);
+    line-height: var(--leading-skill);
+    letter-spacing: var(--tracking-2);
+  }
+  /* The command types itself one time. --n is the command length in characters. */
+  .typed {
+    display: inline-block;
+    overflow: hidden;
+    white-space: nowrap;
+    vertical-align: bottom;
+    width: calc(var(--n) * 1ch - 0.2em);
+    animation: sk-type var(--dur-1100) steps(var(--n)) var(--dur-200) both;
+  }
+  @keyframes sk-type {
+    from {
+      width: 0;
+    }
+  }
+  .caret {
+    display: inline-block;
+    width: 0.45ch;
+    height: 0.92em;
+    margin-left: 0.08em;
+    vertical-align: -0.1em;
+    background: var(--accent);
+    animation: sk-blink var(--dur-1100) steps(1) infinite;
+  }
+  @keyframes sk-blink {
+    50% {
+      opacity: 0;
+    }
+  }
+  .sub {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xl);
+    line-height: var(--leading-sub);
+    max-width: 54ch;
+  }
+  .sub code {
+    font-family: var(--font-mono);
+    font-size: var(--text-code);
+  }
+
+  /* The rest of the docs page. Its H1 and lead paragraph are already in the head. */
+  .doc {
+    max-width: 72ch;
+    line-height: var(--leading-body);
+  }
+  .doc > :global(h1:first-child),
+  .doc > :global(h1:first-child + p) {
+    display: none;
+  }
+  .doc :global(h2) {
+    font-family: var(--font-display);
+    font-size: var(--text-2xl);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    font-weight: var(--weight-semibold);
+    margin: var(--space-40) 0 var(--space-12);
+  }
+  .doc :global(h3) {
+    font-family: var(--font-display);
+    font-size: var(--text-xl);
+    font-weight: var(--weight-semibold);
+    margin: var(--space-28) 0 var(--space-8);
+  }
+  .doc :global(:is(p, ul, ol)) {
+    margin: 0 0 var(--space-14);
+  }
+  .doc :global(a) {
+    color: var(--accent-on-field);
+    text-underline-offset: var(--space-3);
+  }
+  .doc :global(:not(pre) > code) {
+    font-size: var(--text-code);
+  }
+  .doc :global(pre) {
+    overflow-x: auto;
+    padding: var(--space-14) var(--space-18);
+    border-radius: var(--r-12);
+    font-size: var(--text-xs);
+    line-height: var(--leading-code);
+  }
+  .doc :global(table) {
+    display: block;
+    overflow-x: auto;
+    border-collapse: collapse;
+    font-size: var(--text-md);
+    margin: 0 0 var(--space-14);
+  }
+  .doc :global(th) {
+    text-align: left;
+    font-weight: var(--weight-medium);
+    font-size: var(--text-xs);
+    color: var(--muted);
+    padding: 0 var(--space-16) var(--space-10) 0;
+  }
+  .doc :global(td) {
+    padding: var(--space-11) var(--space-16) var(--space-11) 0;
+    border-top: 1px solid var(--line);
+    vertical-align: top;
+  }
+
+  @media (max-width: 900px) {
+    .sk-head {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .typed,
+    .caret {
+      animation: none;
+    }
+  }
+</style>

@@ -1,0 +1,748 @@
+---
+// The time bar, the step sequence and the step panel of the reference Skill
+// page (site-preview.src.html:492-542, time bar :500, sequence :514).
+// The steps come from the `## Steps` table of the docs page (parseSteps) and the
+// times from step-times.json (timesFor + stepShares). Without a script each step
+// shows as text and the time bar is drawn at build time; skill-sequence.ts adds
+// the select, optional switch and replay on top.
+import { actorLabel, formatDuration, inlineParts, shareText } from '../lib/sequence-state.mjs';
+
+interface Step {
+  name: string;
+  actor: 'user' | 'tool' | 'agent' | 'skill';
+  does: string;
+  handsOver: string;
+  optional: boolean;
+  when: string;
+}
+interface Props {
+  steps: Step[];
+  /** stepShares(steps, run.times), or null for a skill with no measured run */
+  times: { totalMs: number; parts: Array<{ name: string; ms: number; share: number; measured: boolean }> } | null;
+  run: { version: string; runDate: string } | null;
+}
+const { steps, times, run } = Astro.props;
+
+const hasTimes = times !== null && run !== null;
+const hasOptional = steps.some((s) => s.optional);
+const partOf = new Map((times?.parts ?? []).map((p) => [p.name, p]));
+const measured = (name: string) => partOf.get(name)?.measured === true;
+const msOf = (name: string) => partOf.get(name)?.ms ?? 0;
+const first = steps[0];
+
+const timeText = (name: string) => (!hasTimes ? '' : measured(name) ? formatDuration(msOf(name)) : 'not in this run');
+const shareLine = (name: string) =>
+  measured(name) ? shareText(msOf(name), times?.totalMs ?? 0) : 'The measured run did not use this step';
+const segments = (times?.parts ?? []).filter((p) => p.measured && p.ms > 0);
+/** A step name without its Markdown marks, for labels that hold text only. */
+const plain = (text: string) => inlineParts(text).map((part) => part.value).join('');
+const optionalNames = new Set(steps.filter((s) => s.optional).map((s) => s.name));
+---
+
+<div class="skill-seq" data-seq-root data-has-times={hasTimes ? 'true' : 'false'}>
+  {
+    hasTimes && (
+      <section class="block" aria-labelledby="time-heading">
+        <div class="block-head">
+          <h2 class="h2" id="time-heading">
+            Where the time goes
+          </h2>
+          <div class="controls" data-seq-controls hidden>
+            {hasOptional && (
+              <label class="switch">
+                <input type="checkbox" checked data-opt-toggle />
+                <span class="switch-ui" aria-hidden="true" />
+                Optional steps
+              </label>
+            )}
+            <button class="ghost" type="button" data-replay>
+              Replay the run
+            </button>
+          </div>
+        </div>
+        <div class="time glass">
+          <div class="time-bar" role="group" aria-label="Time of each step">
+            {segments.map((p) => (
+              <button
+                type="button"
+                class:list={['seg', 'is-in', { 'is-opt': optionalNames.has(p.name) }]}
+                style={`flex-grow: ${p.ms}`}
+                aria-label={`${plain(p.name)}, ${formatDuration(p.ms)}`}
+                data-seg={p.name}
+                data-label={plain(p.name)}
+              >
+                {p.share > 0.09 ? plain(p.name) : ''}
+              </button>
+            ))}
+          </div>
+          <p class="time-foot">
+            <span>
+              Total <strong data-time-total>{formatDuration(times!.totalMs)}</strong>. Select a part to see its step.
+            </span>
+            <span>
+              Times from one real run on {run!.runDate}, <span class="ver">sdlc v{run!.version}</span>
+            </span>
+          </p>
+        </div>
+      </section>
+    )
+  }
+  <div class="sk-body">
+    <section class="seq-wrap" aria-labelledby="seq-heading">
+      <div class="block-head">
+        <h2 class="h2" id="seq-heading">What it does, step by step</h2>
+        <ul class="legend">
+          <li class="is-you"><span class="pill" aria-hidden="true"></span>You act</li>
+          <li><span class="pill" aria-hidden="true"></span>Always runs</li>
+          <li class="is-opt"><span class="pill" aria-hidden="true"></span>Optional or conditional</li>
+        </ul>
+        {
+          !hasTimes && (
+            <div class="controls" data-seq-controls hidden>
+              {hasOptional && (
+                <label class="switch">
+                  <input type="checkbox" checked data-opt-toggle />
+                  <span class="switch-ui" aria-hidden="true" />
+                  Optional steps
+                </label>
+              )}
+              <button class="ghost" type="button" data-replay>
+                Replay the steps
+              </button>
+            </div>
+          )
+        }
+      </div>
+      <div class="seq-track" data-seq-track>
+        <span class="seq-fill" aria-hidden="true" data-seq-fill></span>
+        <span class="seq-dot" aria-hidden="true" data-seq-dot></span>
+        <ol class="seq">
+          {
+            steps.map((step, i) => (
+              <li
+                class:list={['seq-step', { 'is-you': step.actor === 'user', 'is-opt': step.optional, 'is-now': i === 0 }]}
+                data-step={step.name}
+                data-optional={step.optional ? 'true' : 'false'}
+                data-who={actorLabel(step.actor)}
+                data-ms={hasTimes && measured(step.name) ? String(msOf(step.name)) : undefined}
+              >
+                <button class="seq-btn" type="button" aria-current={i === 0 ? 'step' : undefined}>
+                  <span class="pill" aria-hidden="true" />
+                  <span class="seq-main">
+                    <span class="seq-name">
+                      <span data-step-name>
+                        {inlineParts(step.name).map((part) =>
+                          part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+                        )}
+                      </span>{' '}
+                      <span class="who">{actorLabel(step.actor)}</span>
+                    </span>
+                    <span class="seq-text">
+                      {inlineParts(step.does).map((part) =>
+                        part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+                      )}
+                    </span>
+                  </span>
+                  <span class="seq-time">{timeText(step.name)}</span>
+                </button>
+                <span hidden data-io-when>
+                  {inlineParts(step.when).map((part) =>
+                    part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+                  )}
+                </span>
+                <span hidden data-io-out>
+                  {inlineParts(step.handsOver).map((part) =>
+                    part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+                  )}
+                </span>
+              </li>
+            ))
+          }
+        </ol>
+      </div>
+    </section>
+    {
+      first && (
+        <aside class="now glass" aria-live="polite" aria-label="Selected step" data-now>
+          <p class="now-count" data-now-count>
+            Step 1 of {steps.length}
+          </p>
+          <p class="now-name" data-now-name>
+            {inlineParts(first.name).map((part) =>
+              part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+            )}
+          </p>
+          <p class="now-wholine">
+            <span class="who" data-now-who>
+              {actorLabel(first.actor)}
+            </span>
+          </p>
+          {hasTimes && (
+            <p class="now-time" data-now-time>
+              {timeText(first.name)}
+            </p>
+          )}
+          {hasTimes && (
+            <p class="now-share" data-now-share>
+              {shareLine(first.name)}
+            </p>
+          )}
+          <div class="now-io">
+            <div>
+              <span class="io-k">When</span>
+              <span class="io-v" data-now-when>
+                {inlineParts(first.when).map((part) =>
+                  part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+                )}
+              </span>
+            </div>
+            <span class="io-arrow" aria-hidden="true" />
+            <div>
+              <span class="io-k">Hands over</span>
+              <span class="io-v" data-now-out>
+                {inlineParts(first.handsOver).map((part) =>
+                  part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+                )}
+              </span>
+            </div>
+          </div>
+        </aside>
+      )
+    }
+  </div>
+</div>
+
+<script>
+  import '../scripts/skill-sequence.ts';
+</script>
+
+<style>
+  .skill-seq {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-44);
+  }
+  .h2 {
+    font-family: var(--font-display);
+    margin: 0;
+    font-size: var(--text-h2);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    font-weight: var(--weight-semibold);
+    text-wrap: balance;
+  }
+  .block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-20);
+  }
+  .block-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8) var(--space-40);
+    align-items: end;
+    justify-content: space-between;
+  }
+  code {
+    font-family: var(--font-mono);
+    font-size: var(--text-code);
+  }
+
+  /* shared flow shape: a pill on a wire, as on the dashboard */
+  .pill {
+    display: block;
+    width: 36px;
+    height: var(--space-20);
+    border-radius: var(--r-ctl);
+    border: 2px solid var(--accent);
+    background: var(--bg);
+    position: relative;
+    flex: none;
+  }
+  .pill::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: var(--space-6);
+    height: var(--space-6);
+    margin: -3px 0 0 -3px;
+    border-radius: var(--r-round);
+    background: var(--accent);
+  }
+  .is-opt .pill {
+    border-style: dashed;
+  }
+  .is-opt .pill::after {
+    background: transparent;
+    border: 1.5px solid var(--accent);
+    width: var(--space-7);
+    height: var(--space-7);
+    margin: -3.5px 0 0 -3.5px;
+  }
+  .is-you .pill {
+    background: var(--accent);
+  }
+  .is-you .pill::after {
+    background: var(--on-accent);
+  }
+
+  /* controls */
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-10) var(--space-18);
+    align-items: center;
+  }
+  .switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-10);
+    font-size: var(--text-sm);
+    cursor: pointer;
+    user-select: none;
+  }
+  .switch input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+  }
+  .switch-ui {
+    width: 38px;
+    height: var(--space-22);
+    border-radius: var(--r-ctl);
+    background: var(--ink-50);
+    position: relative;
+    transition: background var(--dur-200);
+  }
+  .switch-ui::after {
+    content: '';
+    position: absolute;
+    top: var(--space-3);
+    left: var(--space-3);
+    width: var(--space-16);
+    height: var(--space-16);
+    border-radius: var(--r-round);
+    background: var(--white);
+    box-shadow: 0 1px 2px var(--ink-30);
+    transition: transform var(--dur-200);
+  }
+  .switch input:checked + .switch-ui {
+    background: var(--accent);
+  }
+  .switch input:checked + .switch-ui::after {
+    transform: translateX(16px);
+  }
+  .switch input:focus-visible + .switch-ui {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .ghost {
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    color: var(--ink);
+    padding: var(--space-7) var(--space-15);
+    border-radius: var(--r-ctl);
+    border: 1px solid var(--line);
+    background: var(--white-50);
+    cursor: pointer;
+    transition:
+      background var(--dur-200),
+      transform var(--dur-200);
+  }
+  .ghost:hover {
+    background: var(--white-90);
+    transform: translateY(-1px);
+  }
+  .ghost:disabled {
+    cursor: default;
+    color: var(--muted);
+    transform: none;
+  }
+  .ghost:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  /* time bar: one part for each step, as wide as its time */
+  .time {
+    border-radius: var(--r-panel);
+    padding: var(--space-18) var(--space-18) var(--space-14);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+  }
+  .time-bar {
+    display: flex;
+    gap: var(--space-3);
+    height: var(--space-56);
+  }
+  .seg {
+    flex: 0 1 0;
+    min-width: 0;
+    border: 0;
+    padding: var(--space-8) var(--space-9);
+    border-radius: var(--r-7);
+    background-color: var(--accent-24);
+    box-shadow: inset 0 0 0 1px var(--accent-70);
+    cursor: pointer;
+    overflow: hidden;
+    white-space: nowrap;
+    text-align: left;
+    color: var(--ink);
+    font: var(--weight-medium) var(--text-2xs) var(--font-body);
+    transition:
+      flex-grow var(--dur-900) var(--ease-grow),
+      opacity var(--dur-250),
+      background-color var(--dur-250),
+      color var(--dur-250),
+      min-width var(--dur-400),
+      padding var(--dur-400),
+      transform var(--dur-200);
+  }
+  .seg.is-in {
+    min-width: var(--space-9);
+  }
+  .seg.is-opt {
+    background-image: repeating-linear-gradient(135deg, transparent 0 6px, var(--white-40) 6px 8px);
+  }
+  .seg:hover {
+    background-color: var(--accent-42);
+    transform: translateY(-3px);
+  }
+  .seg.is-now {
+    background-color: var(--accent);
+    color: var(--on-accent);
+    box-shadow: 0 10px 22px -10px var(--accent);
+  }
+  .seg.is-off {
+    min-width: 0;
+    padding-inline: 0;
+    opacity: 0;
+    margin-left: -3px;
+    pointer-events: none;
+  }
+  .seg:focus-visible {
+    outline: 2px solid var(--ink);
+    outline-offset: 2px;
+  }
+  .time-foot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6) var(--space-20);
+    justify-content: space-between;
+    font-size: var(--text-xs);
+    color: var(--muted);
+    margin: 0;
+  }
+  .time-foot strong {
+    color: var(--ink);
+    font-family: var(--font-mono);
+    font-weight: var(--weight-medium);
+  }
+  .ver {
+    font-family: var(--font-mono);
+  }
+
+  /* the sequence: the run plays down the wire */
+  .sk-body {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 340px);
+    gap: var(--space-32) var(--space-56);
+    align-items: start;
+  }
+  .seq-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-18);
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8) var(--space-22);
+    font-size: var(--text-xs);
+    color: var(--muted);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .legend li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+  }
+  .legend .pill {
+    width: 28px;
+    height: var(--space-16);
+  }
+  .seq-track {
+    position: relative;
+  }
+  .seq-track::before {
+    content: '';
+    position: absolute;
+    left: 29px;
+    top: var(--space-26);
+    bottom: var(--space-26);
+    width: 2px;
+    background: var(--accent);
+    opacity: 0.35;
+  }
+  .seq {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .seq-fill {
+    position: absolute;
+    left: 29px;
+    top: var(--space-26);
+    width: 2px;
+    height: 0;
+    background: var(--accent);
+    transition: height var(--dur-700) var(--ease-glide);
+  }
+  .seq-dot {
+    position: absolute;
+    left: 23px;
+    top: var(--space-20);
+    width: var(--space-14);
+    height: var(--space-14);
+    border-radius: var(--r-round);
+    background: var(--accent);
+    box-shadow:
+      0 0 0 6px var(--accent-16),
+      0 0 20px 2px var(--amber-95);
+    transition: transform var(--dur-700) var(--ease-glide);
+    z-index: 2;
+    pointer-events: none;
+  }
+  .seq-step {
+    position: relative;
+    display: block;
+  }
+  .seq-btn {
+    display: grid;
+    grid-template-columns: 36px minmax(0, 1fr) auto;
+    gap: var(--space-4) var(--space-18);
+    align-items: start;
+    width: 100%;
+    padding: var(--space-12);
+    border: 1px solid transparent;
+    border-radius: var(--r-14);
+    background: transparent;
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    position: relative;
+    z-index: 1;
+    transition:
+      background var(--dur-250),
+      border-color var(--dur-250),
+      box-shadow var(--dur-250),
+      transform var(--dur-250);
+  }
+  .seq-btn:hover {
+    background: var(--white-38);
+    transform: translateX(3px);
+  }
+  .seq-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  .seq-step .pill {
+    margin-top: var(--space-3);
+    transition:
+      background var(--dur-300),
+      transform var(--dur-300),
+      box-shadow var(--dur-300);
+  }
+  .seq-main {
+    display: block;
+    transition: opacity var(--dur-300);
+  }
+  .seq-name {
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6) var(--space-10);
+    align-items: center;
+    margin: 0;
+  }
+  .who {
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-medium);
+    padding: var(--space-2) var(--space-9);
+    border-radius: var(--r-ctl);
+    border: 1px solid var(--line);
+    color: var(--muted);
+    background: var(--white-50);
+  }
+  .seq-text {
+    display: block;
+    margin: var(--space-4) 0 0;
+    color: var(--muted);
+    font-size: var(--text-md);
+    max-width: 60ch;
+  }
+  .seq-time {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    padding-top: var(--space-5);
+    text-align: right;
+  }
+  .seq-step.is-done .pill {
+    background: var(--accent);
+  }
+  .seq-step.is-done .pill::after {
+    background: var(--on-accent);
+    border-color: var(--on-accent);
+  }
+  .seq-step.is-now .seq-btn {
+    background: var(--glass);
+    border-color: var(--glass-edge);
+    box-shadow:
+      inset 0 1px 0 var(--white-60),
+      0 18px 36px -24px var(--shade);
+  }
+  .seq-step.is-now .pill {
+    transform: scale(1.12);
+    box-shadow: 0 0 0 5px var(--accent-14);
+  }
+  .seq-step:not(.is-done):not(.is-now) .seq-main,
+  .seq-step:not(.is-done):not(.is-now) .seq-time {
+    color: var(--muted);
+  }
+
+  /* the panel that follows the run */
+  .now {
+    position: sticky;
+    top: var(--space-16);
+    border-radius: var(--r-panel);
+    padding: var(--space-24);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+  }
+  .now-count {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .now-name {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-2xl);
+    font-weight: var(--weight-semibold);
+    letter-spacing: var(--tracking-3);
+    line-height: var(--leading-tight);
+    overflow-wrap: anywhere;
+  }
+  .now-wholine {
+    margin: 0;
+  }
+  .now-time {
+    margin: var(--space-8) 0 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-3xl);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--tracking-5);
+    line-height: var(--leading-none);
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .now-share {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .now-io {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 28px minmax(0, 1fr);
+    gap: var(--space-10);
+    align-items: center;
+    margin-top: var(--space-6);
+    padding-top: var(--space-16);
+    border-top: 1px solid var(--line);
+  }
+  .io-k {
+    display: block;
+    font-size: var(--text-2xs);
+    color: var(--muted);
+  }
+  .io-v {
+    display: block;
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+  }
+  .io-arrow {
+    height: 2px;
+    background: var(--accent);
+    position: relative;
+    opacity: 0.75;
+  }
+  .io-arrow::after {
+    content: '';
+    position: absolute;
+    right: -2px;
+    top: -4px;
+    border: 5px solid transparent;
+    border-left-color: var(--accent);
+    border-right: 0;
+  }
+  .now.swap > * {
+    animation: seq-swap var(--dur-350) var(--ease) both;
+  }
+  @keyframes seq-swap {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .sk-body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .now {
+      position: static;
+      order: -1;
+    }
+  }
+  @media (max-width: 520px) {
+    .seq-btn {
+      grid-template-columns: 36px minmax(0, 1fr);
+    }
+    .seq-time {
+      grid-column: 2;
+      text-align: left;
+      padding-top: 0;
+    }
+  }
+  /* Reduced motion: no swap, no growth, the signal does not glide. base.css also
+     stops every animation; these rules keep the intent next to the component. */
+  @media (prefers-reduced-motion: reduce) {
+    .now.swap > * {
+      animation: none;
+    }
+    .seg,
+    .seq-dot,
+    .seq-fill,
+    .seq-btn,
+    .ghost {
+      transition: none;
+    }
+  }
+</style>
