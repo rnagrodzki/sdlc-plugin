@@ -15,6 +15,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/configmigrate"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/prtemplate"
@@ -86,10 +87,13 @@ func releaseTestRuntime(fileVersion string) prRuntime {
 		// both the skipReleaseCheck verification gate and the release-notes
 		// auto-generation path). Callers exercising push/skip-check/notes
 		// behavior override the relevant field(s) explicitly.
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
 		// Base-branch resolution for a new PR (create path): idle default,
 		// same reasoning as the other fields in this block.
 		gitBaseBranch: func(dir, configured string) (string, error) { return "main", nil },
@@ -1266,11 +1270,14 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 		// SkipReleaseCheck triggers the verification gate (gitLogSinceTag);
 		// idle upstream means the push-decision block never calls
 		// gitPushSetUpstream.
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
-		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
+		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1423,10 +1430,13 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 		ghPREdit: func(dir string, num int, title, body string) (string, error) {
 			return "https://github.com/o/r/pull/9", nil
 		},
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 	}
 
 	out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1462,11 +1472,14 @@ func TestPrApply_ClosedOrMergedPR_CreatesNew(t *testing.T) {
 				ghPRCreate: func(dir, title, body string, _ prCreateOpts) (string, error) {
 					return "https://github.com/o/r/pull/10", nil
 				},
-				gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-				gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-				gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-				gitPushSetUpstream: func(dir, remote string) error { return nil },
-				gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
+				gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+				gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+				gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+				gitPushSetUpstream:    func(dir, remote string) error { return nil },
+				gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+				gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+				gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
+				gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 			}
 
 			out, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1518,13 +1531,16 @@ func TestPrApply_DraftAndBase_RealGHStub(t *testing.T) {
 			t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 			rt := prRuntime{
-				ghPRForBranch:      func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
-				ghPRCreate:         defaultPRRuntime.ghPRCreate,
-				gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-				gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-				gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-				gitPushSetUpstream: func(dir, remote string) error { return nil },
-				gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
+				ghPRForBranch:         func(dir string) ghx.PRMetadata { return ghx.PRMetadata{Exists: false} },
+				ghPRCreate:            defaultPRRuntime.ghPRCreate,
+				gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+				gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+				gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+				gitPushSetUpstream:    func(dir, remote string) error { return nil },
+				gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+				gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+				gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
+				gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 			}
 			in := PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true, Draft: tc.draft, Base: tc.base}
 			out, err := prApplyCoreWith("/mock/root", t.TempDir(), in, rt)
@@ -1572,10 +1588,13 @@ func TestPrApply_DraftAndBase_IgnoredOnUpdate(t *testing.T) {
 			t.Fatal("gh pr create must not run when an open PR exists")
 			return "", nil
 		},
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 	}
 
 	in := PRApplyIn{Title: "Updated", Body: "Body text", SkipReleaseCheck: true, Draft: true, Base: "develop"}
@@ -1933,11 +1952,14 @@ func TestPrApply_PermissionError_EnrichedWithAuthHints(t *testing.T) {
 		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
 			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "me"}
 		},
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
-		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
+		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -1977,10 +1999,13 @@ func TestPrApply_PermissionError_FromEdit_EnrichedSameWay(t *testing.T) {
 		ghAuthProbe: func(dir, host string) ghx.AuthProbeResult {
 			return ghx.AuthProbeResult{Authenticated: true, ActiveAccount: "me"}
 		},
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Updated title", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -2009,11 +2034,14 @@ func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 		// isPermissionError short-circuits before any of them would be
 		// called, a nil-func panic here would itself prove enrichment ran
 		// where it shouldn't have.
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
-		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
+		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -2042,10 +2070,13 @@ func TestPrApply_NonPermissionError_FromEdit_GenericSuggestion(t *testing.T) {
 		},
 		// execRun/ghGetAccounts/ghAuthProbe left nil on purpose — see
 		// TestPrApply_NonPermissionError_PassesThroughUnenriched.
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "T", Body: "B", SkipReleaseCheck: true}, rt)
@@ -2070,11 +2101,14 @@ func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T)
 		execRun: func(name string, args []string, opts execx.Options) (string, error) {
 			return "", errors.New("fatal: no such remote 'origin'")
 		},
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
-		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
+		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
 
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", PRApplyIn{Title: "Add thing", Body: "Body text", SkipReleaseCheck: true}, rt)
@@ -2124,11 +2158,14 @@ func fakeReleasePRRuntime() prRuntime {
 		},
 		execRun: func(name string, args []string, opts execx.Options) (string, error) { return "", nil },
 		// Same idle defaults as releaseTestRuntime — see its comment.
-		gitHasUpstream:     func(dir string) (bool, error) { return true, nil },
-		gitCommitsAhead:    func(dir string) (int, error) { return 0, nil },
-		gitPushSetUpstream: func(dir, remote string) error { return nil },
-		gitLogSinceTag:     func(dir string) ([]string, error) { return nil, nil },
-		gitBaseBranch:      func(dir, configured string) (string, error) { return "main", nil },
+		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
+		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
+		gitPushSetUpstream:    func(dir, remote string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
+		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
+		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
 }
 
@@ -3259,5 +3296,127 @@ func TestPRApply_ReapplyChangedIntent_SingleReleaseLabel(t *testing.T) {
 	}
 	if out2.ReleaseIntent == nil || !slices.Equal(out2.ReleaseIntent.LabelsRemoved, []string{"release:patch-rc"}) {
 		t.Errorf("second apply LabelsRemoved: got %v, want [release:patch-rc]", out2.ReleaseIntent.LabelsRemoved)
+	}
+}
+
+// prApplyLeaseRuntime returns a runtime that reaches the push path with no
+// upstream, on branch feat/x.
+func prApplyLeaseRuntime() prRuntime {
+	rt := releaseTestRuntime("1.0.0")
+	rt.execRun = mockAddLabelExec("release:patch")
+	rt.gitHasUpstream = func(dir string) (bool, error) { return false, nil }
+	rt.gitCurrentBranch = func(dir string) (string, error) { return "feat/x", nil }
+	return rt
+}
+
+func prApplyLeaseIn() PRApplyIn {
+	return PRApplyIn{Title: "T", Body: "B", ReleaseLevel: "patch", ReleaseNotes: "notes", ReleaseSource: "user"}
+}
+
+func TestPRApplyPushUsesLeaseWithTrackingRef(t *testing.T) {
+	rt := prApplyLeaseRuntime()
+	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) {
+		if remote != "origin" || branch != "feat/x" {
+			t.Errorf("tracking lookup: got %q %q", remote, branch)
+		}
+		return "abc123", true, nil
+	}
+	var leaseSHA string
+	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error { leaseSHA = sha; return nil }
+	rt.gitPushSetUpstream = func(dir, remote string) error {
+		t.Fatal("plain push must not run when a tracking ref exists")
+		return nil
+	}
+	if _, err := prApplyCoreWith("/mock/root", "/mock/work", prApplyLeaseIn(), rt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if leaseSHA != "abc123" {
+		t.Errorf("lease sha: got %q, want abc123", leaseSHA)
+	}
+}
+
+func TestPRApplyPushPlainWithoutTrackingRef(t *testing.T) {
+	rt := prApplyLeaseRuntime()
+	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) { return "", false, nil }
+	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error {
+		t.Fatal("lease push must not run with no tracking ref")
+		return nil
+	}
+	var pushed bool
+	rt.gitPushSetUpstream = func(dir, remote string) error { pushed = true; return nil }
+	if _, err := prApplyCoreWith("/mock/root", "/mock/work", prApplyLeaseIn(), rt); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !pushed {
+		t.Error("expected the plain push")
+	}
+}
+
+func TestPRApplyLeaseRejectedIsDomainError(t *testing.T) {
+	rt := prApplyLeaseRuntime()
+	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) { return "abc123", true, nil }
+	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error {
+		return &gitx.PushError{Kind: gitx.PushKindRejected, Stderr: "stale info"}
+	}
+	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
+		t.Fatalf("no gh call may run after a rejected lease: %s %v", name, args)
+		return "", nil
+	}
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", prApplyLeaseIn(), rt)
+	var de *mcpserver.DomainError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected *mcpserver.DomainError, got %T: %v", err, err)
+	}
+	if want := "remote branch feat/x changed since the last push. pr stopped."; de.Msg != want {
+		t.Errorf("message: got %q, want %q", de.Msg, want)
+	}
+}
+
+func TestPRApplyLeasePushFailureIsInfraError(t *testing.T) {
+	rt := prApplyLeaseRuntime()
+	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) { return "abc123", true, nil }
+	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error {
+		return &gitx.PushError{Kind: gitx.PushKindNetwork, Stderr: "could not resolve host"}
+	}
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", prApplyLeaseIn(), rt)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+}
+
+func TestPRApplyPlainPushRejectedStaysInfraError(t *testing.T) {
+	rt := prApplyLeaseRuntime()
+	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) { return "", false, nil }
+	rt.gitPushSetUpstream = func(dir, remote string) error {
+		return &gitx.PushError{Kind: gitx.PushKindRejected, Stderr: "rejected"}
+	}
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", prApplyLeaseIn(), rt)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+}
+
+func TestPRApplyTrackingRefReadFails(t *testing.T) {
+	rt := prApplyLeaseRuntime()
+	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) {
+		return "", false, errors.New("boom")
+	}
+	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error {
+		t.Fatal("no push may run when the tracking ref read fails")
+		return nil
+	}
+	rt.gitPushSetUpstream = func(dir, remote string) error {
+		t.Fatal("no push may run when the tracking ref read fails")
+		return nil
+	}
+	_, err := prApplyCoreWith("/mock/root", "/mock/work", prApplyLeaseIn(), rt)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+	}
+	if want := "cannot read the remote-tracking ref of feat/x: boom"; ie.Msg != want {
+		t.Errorf("message: got %q, want %q", ie.Msg, want)
 	}
 }

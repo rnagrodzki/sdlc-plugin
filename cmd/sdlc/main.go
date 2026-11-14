@@ -83,6 +83,7 @@ func runMCP() {
 	tools.RegisterShipTools(s)
 	tools.RegisterPlanSupportTools(s)
 	tools.RegisterLearningsTools(s)
+	tools.RegisterInstructionsTools(s)
 	tools.RegisterDashboardTools(s)
 
 	if err := s.ServeStdio(); err != nil {

@@ -102,6 +102,13 @@ var toolAnnotations = map[string]annotationPolicy{
 		openWorld:  false,
 		reason:     "mkdirTempFunc(\"\", \"sdlc-explore-<slug>-\") for the manifest, and os.RemoveAll of sibling sdlc-explore-* dirs older than 24h under os.TempDir()",
 	},
+	"instructions_resolve": {
+		title:      "Resolve skill instructions",
+		readOnly:   true,
+		idempotent: true,
+		openWorld:  false,
+		reason:     "reads .sdlc-v2/config.toml, .sdlc-v2/local.toml and the user-level config file; writes nothing",
+	},
 	"learnings_log": {
 		title:      "Manage learnings log",
 		readOnly:   true,
@@ -316,6 +323,7 @@ func TestEveryToolMatchesItsAnnotationDecision(t *testing.T) {
 	RegisterShipTools(s)
 	RegisterPlanSupportTools(s)
 	RegisterLearningsTools(s)
+	RegisterInstructionsTools(s)
 	RegisterDashboardTools(s)
 
 	ctx := context.Background()
@@ -553,6 +561,8 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				// sdlc-explore-* directory leaks into the OS temp dir.
 				redirectTempManifests(t)
 				_ = buildExplorePack(root, root, "", "investigate the widget rendering pipeline")
+			case "instructions_resolve":
+				_, _ = instructionsResolve(root, InstructionsResolveIn{Key: "pr"})
 			case "learnings_log":
 				_, _ = learningsLog(root, LearningsLogIn{Action: "append", Entry: "## test entry\nsingle line body, no blank lines"})
 			case "mcp_failure_record":

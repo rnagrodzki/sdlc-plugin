@@ -104,6 +104,7 @@ func reviewSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterSetupWriteTools(srv)
 	tools.RegisterLearningsTools(srv)
+	tools.RegisterInstructionsTools(srv)
 
 	mcpSrv := srv.MCPServer()
 

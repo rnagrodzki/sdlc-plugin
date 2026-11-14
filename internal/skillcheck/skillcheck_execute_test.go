@@ -82,6 +82,7 @@ func executeSkillsListTools(t *testing.T) []*mcp.Tool {
 	tools.RegisterExecuteStateTools(srv)
 	tools.RegisterJiraTools(srv)
 	tools.RegisterLearningsTools(srv)
+	tools.RegisterInstructionsTools(srv)
 	tools.RegisterLinksTools(srv)
 	tools.RegisterMCPFailureTools(srv)
 	tools.RegisterMigrateTools(srv)

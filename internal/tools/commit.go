@@ -482,6 +482,7 @@ type CommitApplyIn struct {
 	Message         string `json:"message" jsonschema_description:"Commit message to use for 'git commit -m'. Must not be empty."`
 	SkipConfigCheck bool   `json:"skipConfigCheck" jsonschema_description:"Skips the config-version auto-migration gate normally run before staging and committing. Set only when the caller has already verified or migrated the config."`
 	SessionID       string `json:"sessionID" jsonschema_description:"Claude Code session ID. Reserved for future use; not currently read by commit_apply."`
+	Push            bool   `json:"push,omitempty" jsonschema_description:"Optional. Plain JSON bool. true pushes the branch after the commit, best effort. Omitted: no push. Example: true"`
 }
 
 // CommitApplyOut is the output for the commit_apply tool.
@@ -491,6 +492,8 @@ type CommitApplyOut struct {
 	SkippedUntrackedPaths []string `json:"skippedUntrackedPaths" jsonschema_description:"Untracked paths that commit_apply did NOT stage or commit; a wholly untracked directory is listed as dir/. commit_apply stages only tracked files that have changes, plus files already staged, and never anything under .sdlc-v2/. Renders as (none) when nothing was skipped. Never report these paths as committed: run git add on any that belong in the change, then commit again."`
 	SkippedTrackedPaths   []string `json:"skippedTrackedPaths" jsonschema_description:"Tracked paths with working-tree changes that commit_apply did NOT stage or commit because they live under .sdlc-v2/ (the runtime state directory, e.g. .sdlc-v2/config.toml). They are still modified in the working tree. Renders as (none) when nothing was skipped. Never report these paths as committed: run git add on any that belong in the change, then commit again."`
 	Next                  string   `json:"next" jsonschema_description:"The exact follow-up step: either a confirmation that the commit holds everything, or the git add plus commit_apply retry needed for the paths named in skippedUntrackedPaths and skippedTrackedPaths."`
+	Pushed                bool     `json:"pushed" jsonschema_description:"true when the push worked. false when push was not requested, was skipped, or failed."`
+	Warnings              []string `json:"warnings,omitempty" jsonschema_description:"Push skipped or failed. The commit stays. Absent when there is no warning."`
 }
 
 // scopedStagePaths returns the explicit path list commit_apply stages: tracked
@@ -682,13 +685,22 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 	}
 
 	sha = strings.TrimSpace(sha)
-	return CommitApplyOut{
+	out := CommitApplyOut{
 		SHA:                   sha,
 		Summary:               commitApplySummary(sha, len(nonEmptyLines(stagedNames)), skipped, skippedTracked),
 		SkippedUntrackedPaths: skipped,
 		SkippedTrackedPaths:   skippedTracked,
 		Next:                  commitApplyNext(skipped, skippedTracked),
-	}, nil
+	}
+	// The push runs after the SHA read, so the SHA is set when the push fails.
+	if in.Push {
+		pushed, warning := pushBestEffort(gitRoot)
+		out.Pushed = pushed
+		if warning != "" {
+			out.Warnings = []string{warning}
+		}
+	}
+	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -727,7 +739,7 @@ func RegisterCommitTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "commit_apply",
-		"Create a git commit with the given message from the tracked changes in the working tree plus anything already staged, and return the commit SHA. Files are staged by an explicit path list, never by sweeping the whole tree: untracked files are not staged or deleted and are named in skippedUntrackedPaths, and tracked changes under .sdlc-v2/ are not staged either and are named in skippedTrackedPaths. git add any file from either list that belongs in the commit before calling. Not terminal: read next, which states whether the commit holds everything or a git add plus a second commit_apply call is still needed.",
+		"Create a git commit with the given message from the tracked changes in the working tree plus anything already staged, and return the commit SHA. Files are staged by an explicit path list, never by sweeping the whole tree: untracked files are not staged or deleted and are named in skippedUntrackedPaths, and tracked changes under .sdlc-v2/ are not staged either and are named in skippedTrackedPaths. git add any file from either list that belongs in the commit before calling. Optional: push. push true pushes the branch to origin after the commit, best effort: it skips the default branch and a repository with no origin remote. A push failure never fails the call: the commit SHA stays set, pushed is false, and warnings names the cause (auth, network, rejected, no remote, other). push omitted or false: no push, the behavior of today. Not terminal: read next, which states whether the commit holds everything or a git add plus a second commit_apply call is still needed.",
 		mcpserver.Annotations{
 			Title:       "Create a git commit",
 			ReadOnly:    false,

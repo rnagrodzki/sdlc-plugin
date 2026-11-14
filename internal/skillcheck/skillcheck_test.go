@@ -75,6 +75,7 @@ func commitSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterShipStateTools(srv)
 	tools.RegisterValidateTools(srv)
 	tools.RegisterLearningsTools(srv)
+	tools.RegisterInstructionsTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterPlanSupportTools(srv)
 	tools.RegisterSetupWriteTools(srv)
