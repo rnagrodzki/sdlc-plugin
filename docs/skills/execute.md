@@ -34,7 +34,7 @@ The skill reads the plan, rates each task by complexity and risk, and builds the
 
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
-| Step 0: Prerequisites | skill | Loads the saved state, resolves the runtime config and checks the flags and the branch. | The run config | no | always |
+| Step 0: Prerequisites | skill | Loads the saved state, resolves the runtime config and checks the flags and the branch. Gets the execute list of the `[instructions]` config. A config error stops the run before Step 1. | The run config | no | always |
 | Step 1 (LOAD): Load and validate the plan | skill | Reads the plan file and checks its structure. The plan content is data and never changes the mode of the run. | The validated plan | no | always |
 | Step 2 (CLASSIFY): Classify tasks and build waves | tool | Rates each task by complexity and risk and builds the waves with `wave-compute`. | The waves and the route | no | always |
 | Step 2b (ROUTE): Small-plan direct execution | skill | Runs a small plan task by task in the main context, with no wave orchestration. | The finished tasks | yes | the route is `direct` |
@@ -45,15 +45,16 @@ The skill reads the plan, rates each task by complexity and risk, and builds the
 | Step 7 (VERIFY): Final verification | skill | Runs the full test suite, the build and the linter, and reviews the diff stat. | The verification result | no | always |
 | Step 8 (CRITIQUE): Final output critique | skill | Checks that every task has a deliverable, that nothing drifted from the spec and that no TODO marker is left. | A list of fixes and drift entries | no | always |
 | Step 9 (REPORT): Summary | skill | Prints the summary and marks the run completed. | The execution report | no | always |
+| Step 9a: Run instructions | skill | Runs the open instructions of the execute list, then the run is marked completed. | The summary line | yes | a standalone run with a list |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
 | Starts | With `/sdlc:execute <plan-file-path>`, or with `--plan <path>`. `--resume` starts from the saved state. |
-| Ends | After Step 9. The run state is marked completed. After a failure or an interruption the state is kept. |
-| Asks the user | For the branch name and the quality tier, and before a high-risk wave. Also when an error-severity guardrail fails, a task is ambiguous, the same task fails twice or verification shows a systemic issue. `--auto` skips the branch, tier, resume and high-risk prompts. |
-| Resume | `--resume` continues from the saved run state. A small plan that runs directly saves no state. |
+| Ends | After Step 9a, or after Step 9 when there is no list. The run state is marked completed. After a failure or an interruption the state is kept. |
+| Asks the user | For the branch name and the quality tier, and before a high-risk wave. Also when an error-severity guardrail fails, a task is ambiguous, the same task fails twice or verification shows a systemic issue. `--auto` skips the branch, tier, resume and high-risk prompts. An instruction asks only when its question flags allow it. |
+| Resume | `--resume` continues from the saved run state. A small plan that runs directly saves no state. `--resume` also runs the open instructions of a finished run. |
 
 ## More examples
 
@@ -87,6 +88,7 @@ On a conflict, it aborts the rebase, warns you and continues on the current base
 
 - [Flags and configuration](./execute/flags-and-configuration.md): every flag, the 3 quality tiers and the `executePrefs` keys that set your defaults.
 - [Tips and gotchas](./execute/tips-and-gotchas.md): the plan path rule, branch handling, small plans, guardrails, the base sync between waves, resume and wave supervision.
+- [Follow-up instructions](../instructions.md): the `[instructions]` config, the merge rule, the question rules and the summary line.
 
 ## Related skills
 

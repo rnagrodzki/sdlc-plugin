@@ -58,3 +58,17 @@ and not the plugin. Fix the file and run `/sdlc:harden` again. A `config.toml` t
 `/sdlc:harden` cannot read or parse also stops the run. In `--from-learnings` mode
 the first such error stops the whole triage run, and `/sdlc:harden` removes no
 learnings entry.
+
+## Not the same as follow-up instructions
+
+Two config sections give instructions to `/sdlc:harden`. They do different work:
+
+| Section | What it does |
+|---|---|
+| `[harden.instructions]` | Shapes the proposals that harden drafts. This page. |
+| `[instructions]`, key `harden` | Runs actions after a harden run, for example a channel post. Step 8 runs them. See [Follow-up instructions](./auto-mode-and-edits.md#follow-up-instructions). |
+
+`/sdlc:harden` prints the `[harden.instructions]` block after Step 1, and the
+orchestrator reads the table from the manifest. The skill never does those
+lines as actions. It does each
+instruction of the `harden` list as an action after Step 7.

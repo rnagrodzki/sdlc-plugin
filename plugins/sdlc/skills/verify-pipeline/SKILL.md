@@ -78,7 +78,7 @@ Routing by category:
 
 When NOT running with `--auto`, ALWAYS emit a proposal (no automatic edits) regardless of category (R4, R9).
 
-> **C1 prohibition:** never run `git commit`, `git push`, `git tag`, or any other state-changing git or `gh` command from this skill, except an instruction from config (Step 5, standalone run only). The fix of Step 3 is never committed or pushed by this skill. C2: never modify files outside the project root.
+> **C1 prohibition:** never run `git commit`, `git push`, `git tag`, or any other state-changing git or `gh` command from this skill, except an instruction from config (Step 5, standalone run only). The fix of Step 3 is never committed or pushed by this skill. C2: never modify files outside the project root, except an instruction from config (Step 5, standalone run only).
 >
 > **Fix:** if a fix is warranted, edit source files only, then hand back to the dispatcher (`fix-applied`) — the dispatcher (ship, via `commit`) owns committing and pushing.
 > **Why:** this skill's only contract with its caller is the Step 4 JSON verdict; committing here would race ship's own commit step and break the single-writer assumption the pipeline relies on.

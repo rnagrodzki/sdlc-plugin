@@ -21,6 +21,8 @@ hint. The skill shows the commit plan and commits with no question.
 | `--scope <scope>` | Gives a hint for the commit scope to the message generator. |
 | `--auto` | Skips the `yes`, `edit` or `cancel` question. The skill still shows the commit plan. |
 | `--force-default-branch` | Deprecated. It has no effect. |
+| `--push` | Push the branch after the commit, best effort. The push skips the default branch and a repository with no `origin` remote. A failed push gives a warning, and the commit stays. Off by default. |
+| `--no-instructions` | Do not run the follow-up instructions of the skill. Ship passes this flag, because ship runs the lists itself. Off by default. |
 
 - No tool checks a hint. The skill drops a hint, and tells you, when
   `commit.allowedTypes` (for `--type`) or `commit.allowedScopes` (for
@@ -28,6 +30,9 @@ hint. The skill shows the commit plan and commits with no question.
   the flags. See [Message rules](./message-rules.md#commit-rules-in-the-project-config).
 - `--no-stash` and `--amend` are legacy flags. The skill ignores them: it
   never stashes and never amends.
+- `--push` and `--no-instructions` do not depend on each other or on
+  `--auto`. `--push` with `--force-default-branch` still skips the push on the
+  default branch, with a warning.
 
 ## What goes into the commit
 
@@ -95,6 +100,30 @@ the untracked paths and the tracked paths under `.sdlc-v2/`.
 A named path is still uncommitted. Run `git add <paths>` and `/sdlc:commit`
 again. This makes a second commit, because the first commit is done.
 
+| Part of the run | Before | After |
+|---|---|---|
+| After `yes` | `commit_apply`, then verify | `commit_apply` (it pushes with `--push`), then the push warnings, then verify, then the instruction list, then the summary line |
+
+With `--push`, the skill prints each push warning after the result. See
+[Warnings and notices](#warnings-and-notices).
+
+Then the skill runs the commit list of the
+[follow-up instructions](../../instructions.md), one instruction at a time,
+and prints one line:
+
+```text
+Instructions (commit): 2 total, 1 done, 1 failed, 0 not run.
+- commit #1 (team) failed: <cause>
+```
+
+| Exit | The list runs | What you see |
+|---|---|---|
+| `--no-instructions`, or the list is empty | no | no instructions line |
+| a config error in `[instructions]` | no | the error and its fix. The skill stops before `commit_prepare`, and nothing is committed. |
+| `cancel`, or an error before the commit result | no | the error, or nothing for `cancel` |
+| the commit landed | yes | the instructions line |
+| the run stops in the middle of the list | partly | `Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.` |
+
 ## Warnings and notices
 
 - **Default branch.** When you are on the default branch, the skill warns you
@@ -106,11 +135,20 @@ again. This makes a second commit, because the first commit is done.
   yourself first when you want one commit for the change.
 - **Plan mode.** The skill stops in plan mode, because it writes to git. Exit
   plan mode, then run `/sdlc:commit` again.
+- **Push.** Only with `--push`. A push warning never fails the commit: the
+  commit stays. The warnings are:
+  - `push skipped: <branch> is the default branch`
+  - `push skipped: no remote origin`
+  - `push failed (<kind>): <git error>. The pr step pushes again.` The kind is
+    `auth`, `network`, `rejected`, `no-remote` or `other`.
+
+  A commit without `--push` does not push.
 
 ## Errors
 
 | Cause | What the skill does |
 |---|---|
+| The `[instructions]` config has an error | Shows the error and its fix, and stops before `commit_prepare` runs. Correct the config file, then run the skill again. |
 | No file is staged | Shows `no files staged for commit` and stops. Stage a file, then run the skill again. |
 | `commit_prepare` fails, or it reports a config-check error | Shows the error and stops. |
 | The manifest file for the message generator was not written | Shows the `manifestPath:` warning and stops. |

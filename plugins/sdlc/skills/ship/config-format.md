@@ -88,6 +88,8 @@ On either failure `ship_prepare` creates no state; the skill prints the error ve
 
 There is no `workspace` field in this port. `ship_prepare` reads no such config key, and this pipeline never creates a git worktree — `execute` is always isolated with a feature branch (see `reference.md`'s "No `workspace` config field, no worktree mode"). If a project's `.sdlc-v2/local.toml` still carries `ship.workspace` from the source skill, it is silently ignored — do not treat its presence as an error, and do not attempt to honor a `"worktree"` value.
 
+There is no push field in the `ship` section. The `commit` and `commit-fixes` steps push the branch after the commit, best effort: the push skips the default branch and a repository with no `origin` remote, and a failed push is a warning, never a step failure. The harden commits and the verify-pipeline fix commit do not push. The `pr` step pushes with `--force-with-lease` when the branch has a remote-tracking ref, and with `git push -u origin HEAD` when it has none. See [Push changes in ship](../../../../docs/instructions.md#push-changes-in-ship).
+
 ### reviewThreshold Levels
 
 | Value | Which severities trigger the fix loop |
@@ -214,3 +216,7 @@ Smallest step set with widest review threshold, plus post-PR CI verification. Su
   }
 }
 ```
+
+## Related sections
+
+The `[instructions]` section is a separate top-level section, not a `ship` field. It holds the follow-up instructions that ship runs after each step and after the last step. It is the only section that merges `.sdlc-v2/config.toml` with `.sdlc-v2/local.toml` or the user-level file. See [Follow-up instructions](../../../../docs/instructions.md).

@@ -33,7 +33,7 @@ For a `plugin-defect` failure, it offers to file an issue with [`/sdlc:error-rep
 
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
-| Step 0: Parse arguments | skill | Reads the flags and checks them. It stops with an error when two inputs are given, when no input is given, or when `--auto` is used with `--from-learnings`. | The failure input and the flags | no | always |
+| Step 0: Parse arguments | skill | Reads the flags and checks them. It stops with an error when two inputs are given, when no input is given, or when `--auto` is used with `--from-learnings`. Gets the harden list of the `[instructions]` config, except with `--no-instructions` or `--from-learnings`. A config error stops the run before Step 1. | The failure input and the flags | no | always |
 | Step 1: Load state with `prepare_orchestrator` | tool | Calls `prepare_orchestrator` in mode `harden`. It loads the failure, the hardening surfaces and the pre-flight findings into a manifest, and prints the custom instructions. | The manifest path | no | no `--from-learnings` |
 | Step 1 (alternative): `--from-learnings` mode | skill | Reads the learnings log, skips the entries that harden wrote, and sends each other entry through the orchestrator. It groups the results by classification and removes the addressed entries. | The grouped results for Step 5 | yes | `--from-learnings` is given. It replaces Steps 1 to 4 |
 | Step 2: Classify | skill | Prints a short preview of the failure and the classification hint. A `plugin-defect` hint from an issue with the `mcp-failure` label builds the result without the orchestrator. | The failure preview and the hint | no | no `--from-learnings` |
@@ -42,14 +42,15 @@ For a `plugin-defect` failure, it offers to file an issue with [`/sdlc:error-rep
 | Step 5: Present and apply | skill | Shows each proposal, asks for approval, and checks the edit before and after the write. It reverts a bad edit. With `--auto` it applies only the safe actions and stores the rest as pending deferred items. | The edits to the hardening surfaces, and the ship state record in a ship run | no | the route has at least one proposal |
 | Step 6: Plugin-defect route | skill | Shows the error report payload and asks whether to run `error-report`. With `--auto` it only shows the payload. | The filed issue, or the shown payload | no | the classification is `plugin-defect` |
 | Step 7: Learning capture | tool | Appends one entry to the learnings log with the classification, the counts and the route. | The learnings entry | no | always. A halt or a cancel skips it |
+| Step 8: Run instructions | skill | Runs each instruction of the list, then prints `Instructions (harden): …`. | The summary line | yes | no stop, no plugin-defect route, not `--from-learnings`, and the list is not empty |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
 | Starts | With `/sdlc:harden` and one input: `--failure-text`, `--from-issue` or `--from-learnings`. Other skills start it after a failure. |
-| Ends | After Step 7 writes the learnings entry. It ends earlier on an argument error, on a bad orchestrator result, on a halt, or when the user cancels. |
-| Asks the user | At each proposal in Step 5, at each validation failure, at the ambiguous upstream-report offer, and at the `error-report` offer in Step 6. With `--auto` it asks nothing. |
+| Ends | After Step 8 runs the instruction list, or after Step 7 writes the learnings entry when no list runs. It ends earlier on an argument error, on a config error, on a bad orchestrator result, on a halt, or when the user cancels. |
+| Asks the user | At each proposal in Step 5, at each validation failure, at the ambiguous upstream-report offer, and at the `error-report` offer in Step 6. With `--auto` it skips these prompts. An instruction asks only when its question flags allow it. |
 | Resume | none |
 
 ## More examples
@@ -80,8 +81,9 @@ For a `plugin-defect` failure, it offers to file an issue with [`/sdlc:error-rep
 
 ## Reference
 
-- [Flags and rule edits](./harden/auto-mode-and-edits.md): each flag, what `--auto` applies and what it holds back, what harden can remove, and how each edit is checked.
+- [Flags and rule edits](./harden/auto-mode-and-edits.md): each flag, what `--auto` applies and what it holds back, what harden can remove, how each edit is checked, and the follow-up instructions.
 - [Custom instructions](./harden/custom-instructions.md): project guidance for the proposals, in `.sdlc-v2/config.toml`.
+- [Follow-up instructions](../instructions.md): the `[instructions]` config, the merge rule, the question rules and the summary line.
 - [Learnings](./harden/learnings.md): the learnings triage, the learnings stats and the skill recommendations.
 - [Ship state record](./harden/ship-state-record.md): the record that a `/sdlc:ship` run keeps of each harden run.
 

@@ -39,6 +39,12 @@ lines:
 
 A run with `--steps` that leaves out `execute` follows the same rules.
 
+On the clean-tree routes and on the agent route (`/sdlc:commit --push`), the step then pushes the branch, best effort. The push skips
+the default branch and a repository with no `origin` remote. A failed push
+gives a warning, and the step still succeeds. See
+[Instructions after each step](#instructions-after-each-step) for the push
+table.
+
 ### rebase
 
 A rebase onto the base branch (`[git] baseBranch`, else the repository default
@@ -75,6 +81,22 @@ validation and the `tasks.md` box count. The skill does not run them itself.
 - `openspec archive` exits non-zero: the step fails with the CLI output. Fix
   the cause, then run `/sdlc:ship --resume`. The resumed step starts again,
   and the box sync finds no open box.
+
+### pr
+
+The `pr` step runs [/sdlc:pr](../pr.md) with the release level that ship
+resolved before the first step. Before it creates or updates the pull
+request, the step pushes the branch when the branch has no upstream or has
+commits that the upstream does not have:
+
+- The branch has a remote-tracking ref: the push uses `--force-with-lease`
+  with the commit of that ref. A rebased branch replaces the remote branch,
+  but a commit that another person pushed is never lost.
+- The branch has no remote-tracking ref: the push is `git push -u origin HEAD`.
+- The lease is rejected: the step fails with
+  `remote branch <branch> changed since the last push. pr stopped.` No pull
+  request is created or edited. Fetch the branch, review the other commits,
+  integrate them, then run `/sdlc:ship --resume`.
 
 ## OpenSpec checks at the start of a run
 
@@ -289,3 +311,48 @@ On `--resume`, the saved status of the step decides what ship does:
   record show as `UNACCOUNTED` in the summary. Run `/sdlc:review` and then
   `/sdlc:received-review` to get them back. With `--auto`, ship does the
   same and asks nothing.
+
+## Instructions after each step
+
+After each step, ship runs the follow-up instructions of that step from the
+`[instructions]` config. After the last step, it runs the `ship` list. Ship
+does each instruction in its main session, never in a dispatched agent. It
+passes `--no-instructions` to each skill that it starts, so that skill does
+not run its own list. The full rules are on
+[Follow-up instructions](../../instructions.md).
+
+| Part of the run | Before | After |
+|---|---|---|
+| Each step | begin, work, complete | begin, work, complete, run the list of the step |
+| After the last step | report, cleanup, summary | run the `ship` list, then report, cleanup, summary |
+| commit and commit-fixes | no push | push, best effort |
+| pr | plain push | lease push |
+
+- The commit-check route of the commit step, where no agent runs, also runs
+  the commit list.
+- The received-review list runs after the received-review step. The
+  commit-fixes list runs after commit-fixes. When commit-fixes does not run,
+  each commit-fixes instruction gets `not run` with the outcome
+  `step did not run`.
+- The harden commits and the verify-pipeline fix commit do not push.
+- A failed instruction never fails the step or the run.
+
+Push table:
+
+| Push | When | Failure result |
+|---|---|---|
+| commit step | after the commit, not on the default branch | warning `push failed (<kind>): <stderr>. The pr step pushes again.` The step succeeds. |
+| commit-fixes step | after the commit, not on the default branch | the same warning. The step succeeds. |
+| pr step, tracking ref exists | lease push with the tracking commit | error `remote branch <branch> changed since the last push. pr stopped.` Fix: `Fetch the branch, review the other commits, integrate them, then run the pr step again.` |
+| pr step, no tracking ref | plain push | the existing infrastructure error |
+
+Exit routes:
+
+| Exit | What happens to the instructions | Next |
+|---|---|---|
+| a config error in `[instructions]` at the start | no step starts, and no run state is written | correct the file that the error names, then run `/sdlc:ship` again |
+| a step fails, or you stop it | each pending instruction of the run gets `not run` with `step failed or stopped`. A running instruction gets `failed`. The later lists, the `ship` list too, do not run. | the resume instruction of the run |
+| ship skips a step | each pending instruction of that step gets `not run` with `step skipped`. A running instruction gets `failed`. | the next step |
+| a step fails after a commit push | the same as a failed step. Ship does not undo the push. | the pr step pushes again with a lease |
+| the run stops while an instruction runs | the instruction stays `running` | `/sdlc:ship --resume` marks it `failed` with `result not recorded, not run again`, then runs the rest of the open lists |
+| the run completes | each instruction is `done`, `failed` or `not run` | the summary shows the instructions line |
