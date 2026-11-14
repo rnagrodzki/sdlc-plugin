@@ -209,9 +209,9 @@ Four CI scripts handle the release pipeline. All live under `.github/scripts/` a
 
 Matching workflow files live under `.github/workflows/`.
 
-**To scaffold CI workflows:** Configure the `version` section in `/setup` to create missing files. When a CI script is outdated or missing, `/setup` lists it and asks before it updates it. You can also call `scaffold_ci` directly.
+**To scaffold CI workflows:** Configure the `version` section in `/setup` to create missing files. When a CI script is outdated or missing, `/setup` lists it and asks before it updates it. You can also call `scaffold_ci` directly. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
 
-**To update outdated CI scripts:** Run `/setup`. Step 3c asks before it updates a script that is `outdated` or `missing`. Or call `scaffold_ci({updateOutdated: true})` directly. It overwrites only scripts whose installed version is below the bundled version, migrates legacy `.js` files and creates missing files. Current files stay unchanged. `scaffold_ci({force: true})` overwrites every existing file. Do not pass both inputs: the tool returns an error. Scaffolding also runs a read-only branch protection check against the repo's rulesets/classic protection and reports the result — see below.
+**To update outdated CI scripts:** Run `/setup`. Step 3c asks before it updates a script that is `outdated` or `missing`. Or call `scaffold_ci({updateOutdated: true})` directly. It overwrites only scripts whose installed version is below the bundled version, migrates legacy `.js` files and creates missing files. Current files stay unchanged. The `force` input overwrites every existing file instead. Do not pass both inputs: the tool returns an error.
 
 ### Delivery Method (`method`)
 

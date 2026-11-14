@@ -38,4 +38,4 @@ Read the tool's output. Report the result:
 
 If a `warning` field is present, display it.
 
-Return to the parent skill (Step 4 summary).
+Return to the parent skill (Step 3c, then the Step 4 summary).

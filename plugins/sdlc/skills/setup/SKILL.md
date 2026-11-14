@@ -59,9 +59,9 @@ field that does not exist. Deviations, one line each:
 - **Diff preview (Gap C):** source's `computeConfigDiff` pure-JS diff has no Go/tool
   equivalent. Replaced with an LLM-native before/after table built from the Step 0 snapshot
   vs. the values assembled during Step 3 (see "Diff preview" below).
-- **R-SCRIPT-VERSIONS warning moved to Step 4.** `setup_prepare` returns `ciScriptDrift[]`
+- **R-SCRIPT-VERSIONS warning moved to Steps 3c and 4.** `setup_prepare` returns `ciScriptDrift[]`
   (installed vs current version of each `scaffold_ci`-managed script). Step 0 prints no
-  warning for it; Step 4's `CI scripts needing an update` block reports it instead.
+  warning for it; Step 3c offers the update, and Step 4 reports the scripts still not current.
 - **`setup_init` vs `setup_write_sections`:** `setup_init` (existing Go tool) takes no input
   and always writes the *complete* `config.toml`/`local.toml` templates — every field, heavily
   commented — directly to disk in one shot; it cannot accept assembled field values the way
@@ -112,11 +112,11 @@ field that does not exist. Deviations, one line each:
   list of migrated legacy files to offer for deletion, so Step 2 has no delete prompt.
 - **`--skip` dropped.** It was listed as a flag but no step ever read it. Use `--only` or
   the menu to choose sections.
-- **Tool map:** `setup_prepare` (Step 0 descriptors), `setup_init` (Step 0, scaffold-only),
-  `migrate` (Step 2), `setup_write_sections` (Step 3 "Writing config files"). `validate` is
-  called only inside the delegated companion sub-flows (`setup-dimensions.md`,
-  `setup-pr-template.md`, `setup-guardrails.md`, `setup-execution-guardrails.md`), never
-  directly by this file.
+- **Tool map:** `setup_prepare` (Steps 0, 3b, 3c), `setup_init` (Step 0, scaffold-only),
+  `migrate` (Step 2), `setup_write_sections` (Step 3 "Writing config files"), `scaffold_ci`
+  (Step 3c, only after the user confirms). `validate` is called only inside the delegated
+  companion sub-flows (`setup-dimensions.md`, `setup-pr-template.md`, `setup-guardrails.md`,
+  `setup-execution-guardrails.md`), never directly by this file.
 
 ---
 
@@ -155,7 +155,7 @@ If the system context contains "Plan mode is active":
 1. Call the `setup_prepare` MCP tool:
 
    ```
-   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[], userConfigPath, localValues }
+   setup_prepare({ skipConfigCheck: false }) → { ok, needsMigration, sections[], defaultBranch, remoteOwner, ciScriptDrift[], ciScriptDriftError, userConfigPath, localValues }
    ```
 
    `sections[]` is the static 19-row descriptor list, always in canonical
@@ -237,7 +237,7 @@ If the system context contains "Plan mode is active":
    ignore `--force`; the `--only` id set wins.
 
    If none of the direct-entry flags, `--only`, or `--force` were passed: continue with the
-   full interactive flow (Steps 1 → 2 → 2b → 3 → 4).
+   full interactive flow (Steps 1 → 2 → 2b → 3 → 3b → 3c → 4).
 
 ---
 
@@ -377,8 +377,8 @@ default is always `all`.)
 - Empty reply → `all`.
 - `all` → every id from the 19-id canonical list.
 - `not-set` → ids whose computed `state === 'not-set'`.
-- `none` or `cancel` → empty list → print `No sections selected — no changes made.` and jump
-  to Step 4.
+- `none` or `cancel` → empty list → print `No sections selected — no config changes.` and jump
+  to Step 3c.
 - Comma- or space-separated numbers, optionally including `M-N` ranges → resolve each token
   to a row by 1-indexed position; union the results.
 - **Invalid input:** if any token is unknown or out of range, print one line:
@@ -943,8 +943,62 @@ that was just written.
 
 Confirm every id written in "Writing config files" now shows `state === 'set'`. If any
 written id still shows `not-set` (write silently no-opped or the value resolved as empty),
-warn the user and offer to retry that section's write. Do not proceed to Step 4 while a
+warn the user and offer to retry that section's write. Do not proceed to Step 3c while a
 just-written section still reads back as `not-set`.
+
+---
+
+### Step 3c — Update CI Scripts
+
+Every route into Step 4 runs this step first (see the routes in Step 0 item 5, Step 1
+Phase 4, Step 3b and `setup-openspec.md`).
+
+Read `ciScriptDrift[]` and `ciScriptDriftError` of the latest `setup_prepare` call (Step
+3b's, else Step 0's). If `ciScriptDriftError` is not empty, print this line, go to Step 4
+and ask no question (the field holds the error and its Suggestion):
+`CI script check failed: <ciScriptDriftError>`
+
+An absent `ciScriptDrift[]` counts as empty.
+Keep the entries whose `action` is `outdated` or `missing`.
+Any other `action` value counts as `current`.
+With no kept entry, go to Step 4. Ask no question.
+
+1. Print the kept entries, then the effect of an update:
+
+   ```
+   CI scripts that differ from the plugin version:
+   | Script | State | Installed | Current |
+   |---|---|---|---|
+   | <script> | <action> | v<installedVersion, or - when 0 (not installed)> | v<currentVersion> |
+
+   Update rewrites the outdated scripts, migrates a legacy .js script and creates the
+   missing ones. Scripts that are current stay unchanged. Local edits in an updated
+   script are lost. Git keeps the old version of each committed file.
+   ```
+
+2. Ask one AskUserQuestion: `Update the CI scripts listed above?`
+   - **Update (Recommended)** — rewrite only the listed scripts.
+   - **Skip** — change no file. The summary lists the scripts again.
+
+   Ask also with `--force` or `--only`: those flags select sections, not files.
+   When AskUserQuestion is not available, do not call the tool: treat the answer as Skip.
+
+3. Route the answer. Every row goes to Step 4 next:
+
+   | Answer | Call | Print |
+   |---|---|---|
+   | Update, `scaffold_ci` returns a result | `scaffold_ci({ updateOutdated: true })` once, then `setup_prepare({ skipConfigCheck: true })` | each `files[]` entry with `action` `created`, `overwritten` or `migrated`. With no such entry, print `No CI file needed a change.` Then each `warnings[]` entry (none when empty) and `next` |
+   | Update, `scaffold_ci` returns an error | `setup_prepare({ skipConfigCheck: true })` | the error and its Suggestion, then `Some CI files can already be written. Run git status to see them, then run /setup again.` |
+   | Skip | none | nothing |
+   | Any other answer (free text or a dismissed question) | none | nothing. Treat the answer as Skip. |
+
+`setup_prepare` takes its full input on each call. It keeps no state between calls.
+Step 4 reads `ciScriptDrift[]` and `ciScriptDriftError` of this call. If this
+`setup_prepare` call returns an error, print it. Step 4 then omits the CI block and
+prints `Run /setup again to check the CI scripts.`
+
+A later `/setup` run detects any script that is still outdated. A failed or skipped
+update is therefore safe to repeat.
 
 ---
 
@@ -971,17 +1025,20 @@ Migrated:
 CI scripts needing an update:
   <script> — <action> (installed v<installedVersion>, current v<currentVersion>)
   ...
-  Fix: run scaffold_ci({ force: true }), or re-confirm the version section in /setup.
+  Fix: run /setup again and choose Update, or call scaffold_ci({ updateOutdated: true }).
 ```
 
 Only show sections that were actually created, updated, or migrated. Omit sections that were
 skipped or unchanged.
 
 The `CI scripts needing an update` block comes from `ciScriptDrift[]` of the latest
-`setup_prepare` call (Step 3b's, else Step 0's). Each entry is
+`setup_prepare` call (Step 3c's, else Step 3b's, else Step 0's). Each entry is
 `{ script, installedVersion, currentVersion, action }`, with `action` one of `current`,
 `outdated`, `missing`. Show one line per entry whose `action` is not `current`. Omit the block
 when `ciScriptDrift` is empty or every entry is `current`.
+
+If `ciScriptDriftError` of that call is not empty, print
+`CI script check failed: <ciScriptDriftError>` in place of the block.
 
 ---
 

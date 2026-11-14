@@ -394,6 +394,7 @@ func TestSetupSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"openspec_enrich",
 		"validate",
 		"dimensions_render_instructions",
+		"scaffold_ci",
 	}
 
 	for _, name := range expected {
@@ -631,5 +632,36 @@ func TestSetupSkillsOpenspecMarkerMatchesTool(t *testing.T) {
 	}
 	if !foundInSkill {
 		t.Error("skills/setup/SKILL.md names no managed-block begin marker for Step 0 detection")
+	}
+}
+
+// TestSetupSkillsStep3cRules asserts the Step 3c section of the setup skill
+// holds each rule that keeps an unknown value, an absent field, a check error
+// or a missing answer from causing a question or a write.
+func TestSetupSkillsStep3cRules(t *testing.T) {
+	repoRoot := setupSkillsRepoRoot(t)
+	path := filepath.Join(repoRoot, "skills/setup/SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	text := string(data)
+	start := strings.Index(text, "### Step 3c")
+	end := strings.Index(text, "### Step 4")
+	if start < 0 || end < start {
+		t.Fatalf("skills/setup/SKILL.md: Step 3c section not found between %q and %q", "### Step 3c", "### Step 4")
+	}
+	section := text[start:end]
+	for rule, want := range map[string]string{
+		"unknown action gives no question and no write": "Any other `action` value counts as `current`.",
+		"missing field gives no question":               "An absent `ciScriptDrift[]` counts as empty.",
+		"drift check error gives no question":           "CI script check failed: <ciScriptDriftError>",
+		"no question tool gives no write":               "When AskUserQuestion is not available, do not call the tool: treat the answer as Skip.",
+		"unknown answer gives no write":                 "Any other answer (free text or a dismissed question)",
+		"the only write call":                           "scaffold_ci({ updateOutdated: true })",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("skills/setup/SKILL.md Step 3c: missing rule (%s): %q", rule, want)
+		}
 	}
 }
