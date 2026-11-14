@@ -68,6 +68,9 @@ var LocalSections = map[string]bool{
 	"workspace":      true,
 	"automation":     true,
 	"dashboard":      true,
+	// instructions is also in AllowedProjectKeys, never in ProjectSections:
+	// ReadInstructions reads and merges it from all three config files.
+	"instructions": true,
 }
 
 // Quiet suppresses config-read tracing to stderr when set to true.

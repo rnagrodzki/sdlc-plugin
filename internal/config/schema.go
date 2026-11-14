@@ -26,6 +26,9 @@ var AllowedProjectKeys = map[string]bool{
 	"plan":    true,
 	"execute": true,
 	"harden":  true,
+	// instructions is also in LocalSections: ReadInstructions reads and
+	// merges it from all three config files.
+	"instructions": true,
 }
 
 // validateProjectKeys checks that every top-level key in raw belongs to

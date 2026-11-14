@@ -482,3 +482,175 @@ func UnmergedFiles(dir string) ([]string, error) {
 	}
 	return files, nil
 }
+
+// pushRun is the seam for tests. Production value: execx.RunAllowExit.
+var pushRun = execx.RunAllowExit
+
+// Push error kinds. PushError.Kind holds exactly one of these values.
+const (
+	PushKindNoRemote = "no-remote"
+	PushKindAuth     = "auth"
+	PushKindRejected = "rejected"
+	PushKindNetwork  = "network"
+	PushKindOther    = "other"
+)
+
+// pushStderrMax caps the stderr line kept in a PushError.
+const pushStderrMax = 300
+
+// PushError is the error of a failed git push. Callers read Kind with
+// errors.As.
+type PushError struct {
+	// Kind is one of PushKindNoRemote, PushKindAuth, PushKindRejected,
+	// PushKindNetwork or PushKindOther.
+	Kind string
+	// Stderr is the first line of the git stderr text, with URL credentials
+	// hidden.
+	Stderr string
+}
+
+func (e *PushError) Error() string {
+	return fmt.Sprintf("gitx: push failed (%s): %s", e.Kind, e.Stderr)
+}
+
+// pushKindRules maps git stderr text to a kind. The rows are checked in
+// order and the first match wins. Matching is case-insensitive.
+var pushKindRules = []struct {
+	kind string
+	subs []string
+}{
+	{PushKindNoRemote, []string{"does not appear to be a git repository", "no such remote"}},
+	{PushKindAuth, []string{"authentication failed", "permission denied", "could not read username"}},
+	{PushKindRejected, []string{"[rejected]", "stale info", "non-fast-forward"}},
+	{PushKindNetwork, []string{"could not resolve host", "connection timed out", "unable to access"}},
+}
+
+// classifyPushStderr returns the PushError kind for git stderr text.
+func classifyPushStderr(stderr string) string {
+	s := strings.ToLower(stderr)
+	for _, rule := range pushKindRules {
+		for _, sub := range rule.subs {
+			if strings.Contains(s, sub) {
+				return rule.kind
+			}
+		}
+	}
+	return PushKindOther
+}
+
+// credentialURLRe matches the user info part of a URL, such as
+// https://user:token@host.
+var credentialURLRe = regexp.MustCompile(`://[^/@\s]+@`)
+
+// firstStderrLine returns the first non-empty line of stderr with URL
+// credentials hidden and the length capped.
+func firstStderrLine(stderr string) string {
+	line := ""
+	for _, l := range strings.Split(stderr, "\n") {
+		if l = strings.TrimSpace(l); l != "" {
+			line = l
+			break
+		}
+	}
+	line = credentialURLRe.ReplaceAllString(line, "://***@")
+	if r := []rune(line); len(r) > pushStderrMax {
+		line = string(r[:pushStderrMax]) + "..."
+	}
+	return line
+}
+
+// runPush runs git push with args and returns a *PushError on any failure.
+// The kind comes from the whole stderr text, the Stderr field from its
+// first line.
+func runPush(dir string, args []string) error {
+	_, stderr, exitCode, err := pushRun("git", args, execx.Options{Dir: dir})
+	if err != nil {
+		return &PushError{Kind: PushKindOther, Stderr: firstStderrLine(err.Error())}
+	}
+	if exitCode == 0 {
+		return nil
+	}
+	return &PushError{Kind: classifyPushStderr(stderr), Stderr: firstStderrLine(stderr)}
+}
+
+// Push pushes HEAD to remote and sets the upstream (git push -u <remote>
+// HEAD). A failed push returns a *PushError.
+func Push(dir, remote string) error {
+	if remote == "" {
+		return fmt.Errorf("gitx: push: remote is empty")
+	}
+	if err := validateRef(remote, "push"); err != nil {
+		return err
+	}
+	return runPush(dir, []string{"push", "-u", remote, "HEAD"})
+}
+
+// PushForceWithLease pushes HEAD to remote with
+// --force-with-lease=refs/heads/<branch>:<expectedSHA> and sets the upstream
+// (git push --force-with-lease=refs/heads/<branch>:<sha> -u <remote> HEAD).
+// The push replaces the remote branch only when it is still at expectedSHA.
+// A lease failure returns a *PushError with kind "rejected".
+func PushForceWithLease(dir, remote, branch, expectedSHA string) error {
+	args := []struct{ name, value string }{{"remote", remote}, {"branch", branch}, {"expected sha", expectedSHA}}
+	for _, a := range args {
+		if a.value == "" {
+			return fmt.Errorf("gitx: push force with lease: %s is empty", a.name)
+		}
+		if err := validateRef(a.value, "push force with lease"); err != nil {
+			return err
+		}
+	}
+	lease := "--force-with-lease=refs/heads/" + branch + ":" + expectedSHA
+	return runPush(dir, []string{"push", lease, "-u", remote, "HEAD"})
+}
+
+// RemoteTrackingSHA returns the commit of refs/remotes/<remote>/<branch>.
+// ok is false, with no error, when the ref does not exist: git rev-parse
+// --verify --quiet exits 1 in that case. Any other failure is an error.
+func RemoteTrackingSHA(dir, remote, branch string) (sha string, ok bool, err error) {
+	if err := validateRef(remote, "remote tracking sha"); err != nil {
+		return "", false, err
+	}
+	if err := validateRef(branch, "remote tracking sha"); err != nil {
+		return "", false, err
+	}
+	out, stderr, exitCode, runErr := execx.RunAllowExit("git",
+		[]string{"rev-parse", "--verify", "--quiet", "refs/remotes/" + remote + "/" + branch},
+		execx.Options{Dir: dir})
+	if runErr != nil {
+		return "", false, fmt.Errorf("gitx: remote tracking sha: %w", runErr)
+	}
+	switch exitCode {
+	case 0:
+		return out, true, nil
+	case 1:
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("gitx: remote tracking sha: exit %d: %s", exitCode, firstStderrLine(stderr))
+	}
+}
+
+// HasRemote reports whether the repository has a remote named remote
+// (git remote get-url <remote>). Exit 2 means the remote does not exist and
+// returns (false, nil). Any other failure, such as a directory that is not a
+// repository, is an error.
+func HasRemote(dir, remote string) (bool, error) {
+	if remote == "" {
+		return false, fmt.Errorf("gitx: has remote: remote is empty")
+	}
+	if err := validateRef(remote, "has remote"); err != nil {
+		return false, err
+	}
+	_, stderr, exitCode, err := execx.RunAllowExit("git", []string{"remote", "get-url", remote}, execx.Options{Dir: dir})
+	if err != nil {
+		return false, fmt.Errorf("gitx: has remote: %w", err)
+	}
+	switch exitCode {
+	case 0:
+		return true, nil
+	case 2:
+		return false, nil
+	default:
+		return false, fmt.Errorf("gitx: has remote: exit %d: %s", exitCode, firstStderrLine(stderr))
+	}
+}

@@ -185,3 +185,25 @@ review-dimensions = []
 # Guides how harden drafts copilot instruction proposals. Max 10 items, 1-1024 characters each (no empty strings).
 # Example: copilot-instructions = ["Use table-driven tests for Go code."]
 copilot-instructions = []
+
+# ─── Follow-up instructions ──────────────────────────────────────
+# Follow-up instructions that ship, and standalone skills, run after a step.
+# Keys: ship step names, plus "ship" for the end of a ship run. See docs/instructions.md.
+# The team list of a key comes first. A developer list in .sdlc-v2/local.toml,
+# or else in the user-level file, follows it.
+# Max 50 instructions for each key after text expansion, 4000 characters each.
+# Edit this section by hand. The /setup skill does not manage it.
+
+[instructions]
+# [[instructions.pr]]
+# text = "Move the Jira ticket named in the branch name to 'In Review'."
+# normalQuestions = false        # ask a normal question while doing it
+# criticalQuestions = true       # ask a critical (outward or irreversible) question
+# onQuestionNotAllowed = "skip"  # or "decide"
+#
+# A text array gives one instruction for each string, in order:
+# [[instructions.ship]]
+# text = ["Post the PR link to #releases.", "Post the CI result to #releases."]
+#
+# The same section as one inline table (use it in place of the [instructions] header):
+# instructions = { pr = [ { text = "Move the Jira ticket named in the branch name to 'In Review'." } ] }

@@ -177,3 +177,22 @@
 # [dashboard]
 # autoStart = false   # start the local dashboard when a Claude session starts
 # port = 7385         # 1024-65535, loopback only
+
+# ─── Follow-up instructions (optional — delete if not using) ───────
+# Your own follow-up instructions, run after the team list of the same key
+# in .sdlc-v2/config.toml. Keys: ship step names, plus "ship" for the end of
+# a ship run. See docs/instructions.md.
+# Edit this section by hand. The /setup skill does not manage it.
+# A key set here replaces the user-level list of that key.
+# An empty list hides the user-level list for that key:
+# [instructions]
+# harden = []
+#
+# [[instructions.ship]]
+# text = ["Add the PR link to ~/notes/shipped.md."]
+# normalQuestions = false        # ask a normal question while doing it
+# criticalQuestions = false      # ask a critical (outward or irreversible) question
+# onQuestionNotAllowed = "skip"  # or "decide"
+#
+# The same section as one inline table (use it in place of the [instructions] header):
+# instructions = { ship = [ { text = "Add the PR link to ~/notes/shipped.md." } ] }
