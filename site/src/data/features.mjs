@@ -8,8 +8,11 @@ export const features = [
     title: 'See every pipeline at once',
     summary: 'One page shows every pipeline in every repository: progress, session activity and issues.',
     description: 'The dashboard is one local page that lists the pipelines of every registered repository, not only the repository of the current session.',
-    media: [],
-    claims: [],
+    media: ['dashboard-main'],
+    claims: [
+      { text: 'Live progress of each run in every registered repository', doc: 'docs/dashboard.md#what-it-shows' },
+      { text: 'Open it with one command', doc: 'docs/skills/dashboard.md' },
+    ],
   },
   {
     slug: 'stats',
