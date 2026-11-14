@@ -220,3 +220,27 @@ Step 7: Timing (wall clock, UTC)
 - The plan state keeps at most 64 step times: one for the first checkpoint
   of each step and round. When the list holds 64 entries, the report adds
   the line "Steps: first 64 checkpoints only".
+
+## Handoff report
+
+Before it offers the next skill, Step 7 also prints these lines:
+
+- **Scorecard pointer**, only when the plan file has a
+  `## Verification Scorecard` section (Step 5 ran):
+  `Verification Scorecard: <verdict line> — see ## Verification Scorecard in the plan for details.`
+- **Dispatch report**, two lines from the `dispatch-status` evidence item.
+  The lane names come from the last lane merge:
+
+  ```
+  Step 7: Lane failures: <lanes or none>. Lanes not returned: <lanes or none>. Lanes skipped: <lanes or none>.
+  Step 7: Done inline (agent not returned): <agents or none>. Agents not stopped: <agents or none>.
+  ```
+
+  When the item cannot be read, or its body is not a JSON object, each value
+  prints `unknown`.
+- **Style report**: a table of the plan sections (words, prose, long
+  sentences, jargon, status), then the banned phrases, the STE hits, the
+  diagram contrast hits and the warnings.
+- **Instruction self-check table**, only when `local.toml` holds style
+  instructions. Each row names one instruction and the evidence in the plan
+  file. The skill fixes each "no" row before it continues.

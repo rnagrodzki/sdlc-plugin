@@ -332,7 +332,7 @@ Self-healing ledger. `ship_state{action:"healing_record", step?, detail:{kind, .
 
 ## `reportData` (attached by `read`, never persisted)
 
-`ship_state{action:"read"}` computes `reportData` from `data` on every call and attaches it to the response — it is never written back to the state file. Besides the step counts, duration, and bump provenance already summarized in docs/skills/ship.md's "State and Resolution Trace" section, it carries the review ledger built from `data.healing` and `data.deferredFindings`:
+`ship_state{action:"read"}` computes `reportData` from `data` on every call and attaches it to the response — it is never written back to the state file. Besides the step counts, duration, and bump provenance already summarized in docs/skills/ship/state-and-trace.md's "State and Resolution Trace" section, it carries the review ledger built from `data.healing` and `data.deferredFindings`:
 
 | Field | Type | Description |
 |---|---|---|

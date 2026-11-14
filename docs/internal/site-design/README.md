@@ -1,9 +1,23 @@
 # Design reference: sdlc site (GitHub Pages)
 
-This folder is the design attachment of the topic file
-`.sdlc-v2/preplan/2026-11-13-github-pages.md`. Decision #23 of that file makes
-it the source of truth for the look of the site. The user approved it in
-preplan on 2026-11-13.
+This folder is the source of truth for the look of the site. The user approved
+it in preplan on 2026-11-13. The preplan topic file is local state that git
+ignores, so the decisions that this page cites are copied below.
+
+## Decisions
+
+The numbers are the decision numbers of the preplan topic file.
+
+| # | Decision |
+|---|---|
+| 10 | The Home page and the product pages show real dashboard screenshots and short recordings of a ship run. No image shows a private repository name, a private branch name or a ticket key. |
+| 14 | Each screenshot and recording records the plugin version it came from, and the site shows that version next to it. The documentation-review dimension flags an image whose version is older than the last minor release. |
+| 16 | One design system holds the look: one color palette, one type scale, one spacing scale and a fixed component set. No page uses a value or a component outside the system. The design system comes before any page. |
+| 17 | Each page meets WCAG 2.2 AA text contrast, works with a keyboard, stops animations for a reader who asks for reduced motion, and works on phone, tablet and desktop with no sideways scroll. |
+| 20 | The look is locked: look B (Run) with the palette Bone amber. The final values of palette, signal green, glass, type and shapes are in `site-preview.src.html`. Signal green marks only the harden lane and the dashboard lamps. |
+| 21 | Each skill page starts with the action sequence of the skill as a flow. Each step shows who acts, what the step does, what it hands over, and whether it is optional. The sequence lists every step, the optional and conditional steps included. A fact panel shows where the skill starts and ends, when it asks the user and how a stopped run continues. |
+| 22 | An all-skills page shows how the skills interact: a closed-loop map of the pipeline from preplan to `await-remote-review`, with the way back through harden, a table of what each skill hands over to the next, and the skills around the pipeline. |
+| 23 | This folder is the design reference. Locked: the theme and the look. Not locked: copy and sample data. |
 
 ## What is locked and what is not
 
@@ -70,10 +84,9 @@ changes only the lightness or the alpha. The checksum above includes them.
 
 ## Rules for the plan and for each task
 
-1. The first task copies this folder into the repository as
-   `docs/internal/site-design/` and commits it. Verify the checksums before
-   the copy. Git ignores `.sdlc-v2/`, so this folder is not in the repository
-   until that task runs.
+1. The first task of the plan copied this folder from the preplan attachment
+   into the repository as `docs/internal/site-design/`, after a check of the
+   checksums.
 2. The design system (#16) takes each token from the `.site` block of
    `site-preview.src.html`. It adds no value that the reference does not hold.
 3. Each task that builds a page or a component names the reference page and

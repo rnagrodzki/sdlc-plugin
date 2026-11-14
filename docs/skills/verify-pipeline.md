@@ -17,11 +17,13 @@ A CI check failed on pull request 42. Ask for the cause:
 /sdlc:verify-pipeline --pr 42
 ```
 
-The skill finds the first failed check with `gh pr checks`, reads its failure log and puts the failure in 1 of 7 categories. Then it prints one JSON line, the verdict. Without `--auto`, the verdict is always a proposal:
+The skill finds the first failed check with `gh pr checks`, reads its failure log and puts the failure in 1 of 7 categories. Then it prints one JSON line, the verdict. Without `--auto`, the verdict for a log that the skill found is always a proposal:
 
 - `"status":"proposal"`: the skill changed no file.
 - `"summary"`: the diagnosis.
 - `"suggestedPatch"`: the fix, as a diff or as text.
+
+When the skill finds no log (no `--pr` and no `--logs`, no failed check, or `gh` not authenticated), it prints an `abort` verdict, with or without `--auto`.
 
 ## What you get
 

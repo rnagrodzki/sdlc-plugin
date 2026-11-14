@@ -14,9 +14,12 @@ This project keeps user documentation in `docs/` (`getting-started.md`,
 `local-install.md`, `dashboard.md`, `versioning.md`, `docs/skills/*.md`) and
 contributor documentation in `docs/internal/` (`plan-architecture.md`,
 `smoke-test.md`), separate from the runtime skill content under
-`plugins/sdlc/skills/`. The site under `site/` builds its pages from the
-Markdown in `README.md`, `CHANGELOG.md` and `docs/**` (not `docs/internal/**`)
-and keeps its own copy of no text. Check:
+`plugins/sdlc/skills/`. The site under `site/` builds its skill and docs pages
+from the Markdown in `README.md`, `CHANGELOG.md` and `docs/**` (not
+`docs/internal/**`). The only text that the site owns is in
+`site/src/data/features.mjs` (title, summary, description and claim text of
+each product page) and `site/src/data/assets.json` (alt and caption text of
+each image). Check:
 
 - Behavioral changes to a skill (`plugins/sdlc/skills/**`) or an MCP tool's
   contract are reflected in `docs/` where relevant, rather than only in the
@@ -89,9 +92,18 @@ and keeps its own copy of no text. Check:
   not say 'see the page'.
 - The site URL, the base path and the repository blob URL come from
   `site/site.config.mjs`. A file under `site/` that repeats one of these values
-  as a literal is a finding.
+  as a literal is a finding. Tests (`*.test.mjs`) may hold the values as
+  fixtures. Check: grep `site/` for each value of `SITE`, `BASE` and
+  `REPO_BLOB_URL` in `site/site.config.mjs`, with `node_modules`, `dist`,
+  `.astro` and `.lighthouseci` excluded. Record in the finding or in the
+  verified note the files that the grep matched.
 - Each entry of `site/src/data/assets.json` and `site/src/data/step-times.json`
   has a `version`. Flag it when its minor version is older than the newest
   `## [X.Y.0]` heading in `CHANGELOG.md`.
 - No image, recording or sample data under `site/` shows a private repository
-  name, branch name or ticket key.
+  name, branch name or ticket key. Check: grep `site/src/data/*.json` and the
+  alt and caption text in `site/src/data/assets.json`, then open each file under
+  `site/src/assets` and `site/public` and read every repository name, branch
+  name and ticket key it shows (the repo filter row of a dashboard capture
+  too). Name each file that you opened. A file that you did not open is not
+  verified.

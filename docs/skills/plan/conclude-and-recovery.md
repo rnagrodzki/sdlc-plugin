@@ -21,7 +21,7 @@ and asks again. Each point changes only what the options do:
 |---|---|---|---|---|
 | Before run | a user message before the first `plan_prepare` call | no question. Add the message to the request | — | — |
 | Mid-run | a user message after the first `plan_prepare` call (Steps 0 to 7), before the done marker, that answers no skill question | continue at `checkpoint.step`. After a material change at Step 6.5, 6.6 or 7, continue at Step 5 with the next round. Run every step that is left. Step 7 writes done | wait for the next message. Apply it. Ask again | the conclude stop rule. Print the plan path and the step. End |
-| Gate | Step 6.5 `results[]` has a status that is not `ok`, Step 6.6 `findings` is not empty, or the gate tool returns an error, and no user message waits | fix each finding. Run the same gate again. Add one try to `gate-tries`. With findings or an error after 3 tries: ask again with no Conclude option | apply the change. Set `gate-tries` to 0. Run Step 6.5 again | the conclude stop rule. Print the findings. End |
+| Gate | Step 6.5 `results[]` has a status that is not `ok`, Step 6.6 `findings` is not empty, or the gate tool returns an error, and no user message waits | fix each finding (a tool error has no fix). Run the same gate again. Add one try to `gate-tries`. With findings or an error after 3 tries: ask again with no Conclude option | apply the change. Set `gate-tries` to 0. Run Step 6.5 again | the conclude stop rule. Print the findings. End |
 | After handoff | a reply to the Step 7 handoff that asks for a change | the **Rejected handoff with feedback** rule of Step 7 | wait, apply, ask again | end. The plan file stays. No state call |
 
 With `--auto`, or in a session with no AskUserQuestion, the skill takes

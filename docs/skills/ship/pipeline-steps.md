@@ -145,6 +145,10 @@ files and runs the strict validation.
 - Fails and stops the pipeline for three outcomes: the change is missing on
   disk, the change lacks `proposal.md` or a `specs/*/spec.md` file (missing
   artifacts), or `openspec validate --strict` fails (invalid).
+- `openspec-check` returns an error (a domain, data or infra error): the step
+  fails with the error text, prints the Suggestion and stops the pipeline. A
+  person must look at the cause before `/sdlc:ship --resume`, also when the
+  Suggestion asks for another call.
 - For a change missing on disk with an `**OpenSpec-Saved:**` line in the plan,
   the failure message tells you to merge the OpenSpec PR (branch
   `openspec/<change>`) first, update the branch from the default branch, and

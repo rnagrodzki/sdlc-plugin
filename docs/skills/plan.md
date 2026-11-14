@@ -43,7 +43,7 @@ A small change (2-3 files) gets a lightweight plan: no exploration and no review
 | Step 6: Apply review fixes | skill | Fixes each blocking issue of the review. In the OpenSpec Create flow it also authors the change files before Step 6.5. | The fixed plan | no | the review found blocking issues, or the plan uses the OpenSpec Create flow |
 | Step 6.5: Link verification | tool | Checks every URL in the plan with `links_validate`. This is a hard gate. | The link check result | no | always |
 | Step 6.6: Format validation | tool | Checks the plan structure with `validate`. This is a hard gate. | The format check result | no | always |
-| Step 7: Handoff | skill | Marks the run done, prints the timing and the style report, and offers to run `/ship` or `/execute`. | The plan file path | no | always |
+| Step 7: Handoff | skill | Marks the run done, prints the timing, dispatch and style reports, and offers to run `/ship` or `/execute`. | The plan file path | no | always |
 
 ### Run facts
 

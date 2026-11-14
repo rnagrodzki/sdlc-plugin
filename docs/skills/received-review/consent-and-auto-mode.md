@@ -102,15 +102,18 @@ go and how the ledger counts them.
 
 ## The harden dispatch
 
-Step 11.6 groups the findings by file and runs
-[/sdlc:harden](../harden.md) for each group, with at most 5 groups. The step is
-best-effort: a failure does not stop the replies.
+Step 11.6 groups the findings by file, with at most 5 groups, and runs
+[/sdlc:harden](../harden.md) for each group that is not hardened yet. A group
+is hardened when the live `/sdlc:ship` run already holds a harden record with
+the same failure text; the skill skips that group. The step is best-effort: a
+failure does not stop the replies.
 
-- **Manual run.** The skill asks `dispatch` or `skip` for each group.
+- **Manual run.** The skill asks `dispatch` or `skip` for each group that is
+  not hardened yet.
 - **`--auto`.** The skill asks nothing and passes `--auto` to each
   `/sdlc:harden` run. `/sdlc:harden` then applies guardrail edits and
-  review-dimension edits to your project with no prompt: add, tighten, repair,
-  and the removal of a rule with a dead reference. Merges and other removals
+  review-dimension edits to your project with no prompt: add, strengthen,
+  consolidate, repair, and the removal of a rule with a dead reference. Merges and other removals
   wait as pending deferred items, as
   [Auto mode and pending edits](../harden/auto-mode-and-edits.md#auto-mode-and-pending-edits)
   describes. The summary of this skill lists each applied edit under
@@ -121,6 +124,8 @@ best-effort: a failure does not stop the replies.
 - **A subagent with no way to ask.** When the skill cannot ask you and `--auto`
   was not passed, it skips the step and says so in the summary. It never adds
   `--auto` on its own.
+- **Groups that get no run.** The summary lists each suppressed group and each
+  lone `disagree` finding that formed no group, as the grouping returned them.
 
 ## Tips and gotchas
 
