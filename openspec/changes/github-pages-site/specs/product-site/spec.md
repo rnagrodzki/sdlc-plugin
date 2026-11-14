@@ -45,15 +45,15 @@ The site check SHALL scan the built pages and SHALL fail when it finds a broken 
 
 #### Scenario: Clean output
 - **WHEN** the scan finds no finding
-- **THEN** `npm run verify` exits 0 and prints no line
+- **THEN** `bun run verify` exits 0 and prints no line
 
 #### Scenario: Finding present
 - **WHEN** a page links an anchor that does not exist
-- **THEN** `npm run verify` prints `<route> broken-anchor <detail>` and exits 1
+- **THEN** `bun run verify` prints `<route> broken-anchor <detail>` and exits 1
 
 #### Scenario: Read error
 - **WHEN** the scan cannot read a built file
-- **THEN** `npm run verify` prints `read error <file>: <message>` and exits 2
+- **THEN** `bun run verify` prints `read error <file>: <message>` and exits 2
 
 ### Requirement: Skill pages come from Steps tables
 Each skill docs page SHALL hold a `## Steps` table and a `### Run facts` table in the pinned format. Its site page SHALL show each step, and a bad table SHALL fail the check.

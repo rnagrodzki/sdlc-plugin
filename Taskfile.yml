@@ -102,26 +102,26 @@ tasks:
     desc: Install the site dependencies
     dir: site
     cmds:
-      - npm ci
+      - bun install --frozen-lockfile
 
   site:dev:
     desc: Serve the site with live reload
     dir: site
     cmds:
-      - npm run dev
+      - bun run dev
 
   site:test:
     desc: Run the site unit tests
     dir: site
     cmds:
-      - npm test
+      - bun run test
 
   site:build:
     desc: Build the site and scan the output
     dir: site
     cmds:
-      - npm run build
-      - npm run verify
+      - bun run build
+      - bun run verify
 
   git:clear:
     desc: Delete local branches whose upstream is gone (prunes after fetch, skips current branch)

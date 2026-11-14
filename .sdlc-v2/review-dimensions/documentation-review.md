@@ -36,6 +36,12 @@ and keeps its own copy of no text. Check:
   under `docs/internal/`, not under `skills/` (which is runtime-only) — flag any doc
   content added to `plugins/sdlc/skills/` that reads as contributor-facing
   background rather than skill instructions.
+- A changed or new page under `docs/skills/` follows `docs/internal/skill-page-style.md`:
+  value and an example come first, the overview page stays at 150 lines or
+  fewer, and technical detail (flags, state files, error tables, traces) sits
+  in a reference page `docs/skills/<skill>/<topic>.md`. Flag an overview page
+  that opens with mechanics, that has no example in its first screen, or that
+  states a capability the skill's `SKILL.md` does not have.
 - On any configuration path or directory rename (e.g. `.sdlc/` ->
   `.sdlc-v2/`), perform a full-repository grep sweep across `docs/**`,
   `README.md`, `plugins/sdlc/skills/**`, and `plugins/sdlc/schemas/**` to

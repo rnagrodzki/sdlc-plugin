@@ -3,7 +3,7 @@
 // The base path in the URL must match BASE in site.config.mjs.
 const median = { minScore: 0.95, aggregationMethod: 'median' };
 module.exports = { ci: {
-  collect: { startServerCommand: 'npm run preview -- --port 4321', startServerReadyPattern: 'localhost:4321',
+  collect: { startServerCommand: 'bun run preview --port 4321', startServerReadyPattern: 'localhost:4321',
              url: ['http://localhost:4321/sdlc-plugin/'], numberOfRuns: 3 },
   assert: { assertions: {
     'categories:performance': ['error', median], 'categories:accessibility': ['error', median],

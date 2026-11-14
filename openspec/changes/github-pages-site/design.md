@@ -64,10 +64,10 @@ sequenceDiagram
   participant pages as GitHub Pages
   user->>gh: push to main
   gh->>job: push event
-  job->>fs: npm ci, npm test
+  job->>fs: bun install --frozen-lockfile, bun run test
   job->>fs: astro build reads docs, README, CHANGELOG
   fs-->>job: dist/
-  job->>fs: npm run verify scans dist/
+  job->>fs: bun run verify scans dist/
   job->>pages: upload artifact, deploy
   pages-->>user: https://rnagrodzki.github.io/sdlc-plugin/
 ```

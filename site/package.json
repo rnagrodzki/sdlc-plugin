@@ -2,6 +2,7 @@
   "name": "sdlc-site",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.4.4",
   "engines": {
     "node": ">=22.12"
   },
@@ -13,7 +14,7 @@
     "test": "node --test \"src/lib/*.test.mjs\""
   },
   "dependencies": {
-    "@astrojs/sitemap": "^3.7.4",
+    "@astrojs/sitemap": "3.7.4",
     "astro": "^6",
     "mermaid": "^11"
   },

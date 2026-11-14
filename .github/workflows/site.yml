@@ -46,18 +46,22 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: site/package-lock.json
+
+      # Bun installs the packages. The scripts of site/package.json still run on Node.
+      - if: steps.changes.outputs.site == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
 
       - name: Test, build and scan
         if: steps.changes.outputs.site == 'true'
         working-directory: site
-        run: npm ci && npm test && npm run build && npm run verify
+        run: bun install --frozen-lockfile && bun run test && bun run build && bun run verify
 
       - name: Lighthouse
         if: steps.changes.outputs.site == 'true' && github.event_name == 'pull_request'
         working-directory: site
-        run: npx lhci autorun
+        run: bunx lhci autorun
 
       - if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
