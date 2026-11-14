@@ -2243,7 +2243,7 @@ func extractFencedJSON(t *testing.T, doc, heading string) string {
 // Six more restate the same value and are pinned here too:
 // config-format.md's "Full Example" JSON block and its "(the default)"
 // prose sentence, entry-modes.md's dry-run text (two spots),
-// docs/skills/ship.md's Review threshold bullet, and the "default" keyword of
+// docs/skills/ship/tips-and-gotchas.md's Review threshold bullet, and the "default" keyword of
 // ship.reviewThreshold in sdlc-local.schema.json. When one moves without the
 // others, a project gets a different fix-loop depth depending on how it was
 // set up, or a doc describes a default that no longer exists.
@@ -2337,15 +2337,15 @@ func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
 		t.Fatal(`entry-modes.md has no "every finding (X and above)" text`)
 	}
 
-	// docs/skills/ship.md: the Review threshold bullet.
-	shipDocPath := filepath.Join(repo, "docs", "skills", "ship.md")
+	// docs/skills/ship/tips-and-gotchas.md: the Review threshold bullet.
+	shipDocPath := filepath.Join(repo, "docs", "skills", "ship", "tips-and-gotchas.md")
 	shipDoc, err := os.ReadFile(shipDocPath)
 	if err != nil {
-		t.Fatalf("read docs/skills/ship.md: %v", err)
+		t.Fatalf("read docs/skills/ship/tips-and-gotchas.md: %v", err)
 	}
 	bulletMatch := regexp.MustCompile("Review threshold\\.\\*\\* Default: `(\\w+)`").FindStringSubmatch(string(shipDoc))
 	if bulletMatch == nil {
-		t.Fatal(`docs/skills/ship.md has no "Review threshold." Default bullet`)
+		t.Fatal(`docs/skills/ship/tips-and-gotchas.md has no "Review threshold." Default bullet`)
 	}
 
 	// 10th pin: the "default" keyword of ship.reviewThreshold in
@@ -2389,7 +2389,7 @@ func TestShippedReviewThresholdDefaultsAgree(t *testing.T) {
 		`plugins/sdlc/skills/ship/config-format.md "(the default)" prose`:          proseMatch[1],
 		`plugins/sdlc/skills/ship/entry-modes.md dry-run "threshold X," text`:      dryRunMatch[1],
 		`plugins/sdlc/skills/ship/entry-modes.md "every finding (X and above)"`:    aboveMatch[1],
-		"docs/skills/ship.md Review threshold bullet":                              bulletMatch[1],
+		"docs/skills/ship/tips-and-gotchas.md Review threshold bullet":             bulletMatch[1],
 		"plugins/sdlc/schemas/sdlc-local.schema.json ship.reviewThreshold.default": schema.Defs.ShipSection.Properties.ReviewThreshold.Default,
 	}
 	for source, value := range got {

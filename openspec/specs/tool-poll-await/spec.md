@@ -1,7 +1,7 @@
 # tool-poll-await Specification
 
 ## Purpose
-`poll_await` runs one non-blocking probe of a PR's remote review verdict or CI checks and returns a resumable stepper envelope. The `ship` skill calls it in a loop for its verify-pipeline and await-remote-review steps. Output follows docs/mcp-output-contract.md.
+`poll_await` runs one non-blocking probe of a PR's remote review verdict or CI checks and returns a resumable stepper envelope. The `ship` skill calls it in a loop for its verify-pipeline and await-remote-review steps. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

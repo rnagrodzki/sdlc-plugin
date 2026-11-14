@@ -397,6 +397,6 @@ When a wave produces fundamentally broken output that cannot be recovered throug
 
 ## See Also
 
-- [`docs/execute-wave-supervision.md`](../../../../docs/execute-wave-supervision.md) — heartbeats,
+- [`docs/internal/execute-wave-supervision.md`](../../../../docs/internal/execute-wave-supervision.md) — heartbeats,
   the three ceilings, reclaim, and retry semantics behind this document's `## Stalled vs Timeout`
   section.

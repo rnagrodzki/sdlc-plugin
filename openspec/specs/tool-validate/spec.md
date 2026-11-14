@@ -1,7 +1,7 @@
 # tool-validate Specification
 
 ## Purpose
-`validate` runs one deterministic validator, picked by `action`, against the project and reports failed checks as findings. Skills and the plan-edit hook use it to check plans, PR templates and bodies, cost tiers, guardrails, review dimensions, CI script drift, and worktree anchoring. Output follows docs/mcp-output-contract.md.
+`validate` runs one deterministic validator, picked by `action`, against the project and reports failed checks as findings. Skills and the plan-edit hook use it to check plans, PR templates and bodies, cost tiers, guardrails, review dimensions, CI script drift, and worktree anchoring. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

@@ -1,0 +1,38 @@
+[
+  {
+    "id": "dashboard-main",
+    "kind": "image",
+    "file": "src/assets/dashboard.png",
+    "version": "0.4.12",
+    "captured": "2026-11-13",
+    "alt": "The sdlc dashboard with three finished pipelines of the sdlc-plugin repository: one ship run with ten steps and two plan runs with five steps each.",
+    "caption": "The dashboard with three finished pipelines"
+  },
+  {
+    "id": "dashboard-stats",
+    "kind": "image",
+    "file": "src/assets/dashboard-stats.png",
+    "version": "0.4.12",
+    "captured": "2026-11-14",
+    "alt": "sdlc dashboard stats of ship runs",
+    "caption": "Run stats in the dashboard"
+  },
+  {
+    "id": "dashboard-long-run",
+    "kind": "image",
+    "file": "src/assets/dashboard-long-run.png",
+    "version": "0.4.12",
+    "captured": "2026-11-14",
+    "alt": "sdlc dashboard with a long ship run in progress",
+    "caption": "A long run, step by step"
+  },
+  {
+    "id": "dashboard-ship-detail",
+    "kind": "image",
+    "file": "src/assets/dashboard-ship-detail.png",
+    "version": "0.4.12",
+    "captured": "2026-11-14",
+    "alt": "sdlc dashboard with the detail of one ship run open",
+    "caption": "The detail of one ship run"
+  }
+]

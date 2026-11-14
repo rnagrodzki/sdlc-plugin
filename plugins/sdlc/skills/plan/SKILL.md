@@ -209,7 +209,7 @@ Then go to **Existing change** with the chosen name.
 - `valid` is true:
   1. Read in parallel: `openspec/changes/<name>/proposal.md` (intent and scope), `openspec/changes/<name>/design.md` (technical approach; optional — skip if absent), every path in `fromOpenspec.deltaSpecPaths` (the delta specs, i.e. the requirements — repo-relative paths under `openspec/changes/<name>/specs/`, already computed by the `plan_prepare` call above; do not glob the `specs/` directory yourself), `openspec/changes/<name>/tasks.md` (OpenSpec's task checklist; optional — skip if absent).
   2. Store these as `openspecContext` for use in Steps 1–5.
-  3. Set the plan file header `**Source:**` to `openspec/changes/<name>/` (when the template is written later, keep this line in place of `**Source:** [TBD]`) — required verbatim: `execute_state({action:"init"})` reads this exact header to ref-stamp `tasks.md` later. Do NOT report `openspecContext.tasksUpdated` as tasks updated — it is a pending count, not a write. Rationale: `docs/plan-architecture.md` § "OpenSpec tasks.md Ref Stamping".
+  3. Set the plan file header `**Source:**` to `openspec/changes/<name>/` (when the template is written later, keep this line in place of `**Source:** [TBD]`) — required verbatim: `execute_state({action:"init"})` reads this exact header to ref-stamp `tasks.md` later. Do NOT report `openspecContext.tasksUpdated` as tasks updated — it is a pending count, not a write. Rationale: `docs/internal/plan-architecture.md` § "OpenSpec tasks.md Ref Stamping".
   4. Apply **Header cleanup** below.
   5. Skip complexity routing; still make the template-resolution call below (with `fromOpenspecDirect: true`) before proceeding to Step 1.
 
@@ -1383,4 +1383,4 @@ On selection, invoke the chosen skill using the Skill tool. For `openspec-save`,
 - `./plan-reviewer-prompt.md` — plan review subagent template
 - `./plan-format-reference.md` — plan document format specification
 - [`/execute`](../execute/SKILL.md) — skill that executes the plans this skill produces
-- [`docs/plan-architecture.md`](../../../../docs/plan-architecture.md) — plan skill architecture reference
+- [`docs/internal/plan-architecture.md`](../../../../docs/internal/plan-architecture.md) — plan skill architecture reference

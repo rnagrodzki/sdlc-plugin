@@ -2683,7 +2683,7 @@ func checkpointNext(mainRoot string, cp PlanCheckpoint) string {
 // time of the marker call itself (a "done" call minutes after the last edit
 // still reports the edit time). The "done" marker additionally appends a
 // durable history record, since ship's cleanup step or the GC TTL sweep
-// deletes the plan state file later (see docs/plan-architecture.md's
+// deletes the plan state file later (see docs/internal/plan-architecture.md's
 // Lifecycle section) — without this, the timing would be lost when the run
 // file goes.
 // ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ package skillcheck
 import (
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -342,11 +343,14 @@ func TestHardenSkillParity(t *testing.T) {
 			t.Error("harden/SKILL.md still names the old 5e entry {surface, action, targetFile}, without rationale and patch")
 		}
 
-		// The docs section lists the record fields, each held reason, each
-		// exit of the held table and the causes of an interrupted record.
-		docsPath := filepath.Join(filepath.Dir(filepath.Dir(executeSkillsRepoRoot(t))), "docs", "skills", "harden.md")
-		docs := executeSkillsReadFile(t, docsPath)
-		hardenSkillsAssertOnce(t, "docs/skills/harden.md", docs, "\n## Ship state record\n")
+		// The docs list the record fields, each held reason, each exit of the
+		// held table and the causes of an interrupted record. The overview page
+		// and the reference pages under docs/skills/harden/ hold this text, so
+		// the check reads them all as one text. The record has its own page.
+		docsRoot := filepath.Join(filepath.Dir(filepath.Dir(executeSkillsRepoRoot(t))), "docs", "skills")
+		recordPath := filepath.Join(docsRoot, "harden", "ship-state-record.md")
+		hardenSkillsAssertOnce(t, "docs/skills/harden/ship-state-record.md", "\n"+executeSkillsReadFile(t, recordPath), "\n# Ship state record\n")
+		docs, docsLabel := hardenSkillsReadDocs(t, docsRoot)
 		docsFlat := strings.Join(strings.Fields(docs), " ")
 		// The six exits of the held exit table, in user terms.
 		docsHeldExitRows := []string{
@@ -366,17 +370,17 @@ func TestHardenSkillParity(t *testing.T) {
 			"**Limits of one call.** A call with more than 100 `applied[]` entries, more than 100 `held[]` entries, or a `rationale` over 600 characters fails with an error and writes nothing.",
 			"The proposal that caused a halt has no `held` entry:",
 			"| The session ends between step 5-pre and step 5e | the `started` record |",
-			"The harden step of `/ship` commits the leftover edits in its own commit, not the pipeline `commit` step.",
+			"The harden step of `/sdlc:ship` commits the leftover edits in its own commit, not the pipeline `commit` step.",
 			"| The step 5e call fails (for example, a field is not valid, or a list is over its limit) | the `started` record |",
 			"The dashboard shows a `started` record as \"interrupted\" only when the harden step of the ship run no longer runs.",
 			"A run that stops before step 5-pre leaves no record, and the dashboard shows no run. These stops include:",
 		}, docsHeldExitRows...) {
-			hardenSkillsAssertOnce(t, "docs/skills/harden.md", docsFlat, want)
+			hardenSkillsAssertOnce(t, docsLabel, docsFlat, want)
 		}
 		// The docs page does not copy the internal rows of the skill table.
 		for _, row := range heldExitRows {
 			if strings.Contains(docsFlat, row) {
-				t.Errorf("docs/skills/harden.md copies the skill held exit row %q; describe the exit in user terms", row)
+				t.Errorf("%s copies the skill held exit row %q; describe the exit in user terms", docsLabel, row)
 			}
 		}
 		for _, stale := range []string{
@@ -385,10 +389,33 @@ func TestHardenSkillParity(t *testing.T) {
 			"Otherwise it is the patch of the proposal, or `\"\"`.",
 		} {
 			if strings.Contains(docsFlat, stale) {
-				t.Errorf("docs/skills/harden.md still holds the stale text %q", stale)
+				t.Errorf("%s still holds the stale text %q", docsLabel, stale)
 			}
 		}
 	})
+}
+
+// hardenSkillsReadDocs reads the harden overview page docs/skills/harden.md
+// and every reference page under docs/skills/harden/, and joins them into one
+// text. The label names the files that were read, for error messages.
+func hardenSkillsReadDocs(t *testing.T, docsRoot string) (text, label string) {
+	t.Helper()
+	paths := []string{filepath.Join(docsRoot, "harden.md")}
+	refs, err := filepath.Glob(filepath.Join(docsRoot, "harden", "*.md"))
+	if err != nil {
+		t.Fatalf("glob docs/skills/harden/*.md: %v", err)
+	}
+	if len(refs) == 0 {
+		t.Fatalf("docs/skills/harden/ holds no reference page under %s", docsRoot)
+	}
+	sort.Strings(refs)
+	paths = append(paths, refs...)
+	var texts, names []string
+	for _, p := range paths {
+		texts = append(texts, executeSkillsReadFile(t, p))
+		names = append(names, "docs/skills/"+filepath.ToSlash(strings.TrimPrefix(p, docsRoot+string(filepath.Separator))))
+	}
+	return strings.Join(texts, "\n"), strings.Join(names, " + ")
 }
 
 // hardenSkillsAssertOnce reports an error unless text holds want exactly

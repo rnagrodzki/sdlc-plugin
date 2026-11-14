@@ -1,7 +1,7 @@
 # tool-mcp-failure-record Specification
 
 ## Purpose
-`mcp_failure_record` classifies one failed MCP tool call and appends a structured block to the project learnings log. It is internal: sdlc skills (for example `jira`) call it after an MCP call fails. Output follows docs/mcp-output-contract.md.
+`mcp_failure_record` classifies one failed MCP tool call and appends a structured block to the project learnings log. It is internal: sdlc skills (for example `jira`) call it after an MCP call fails. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

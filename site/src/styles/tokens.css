@@ -1,0 +1,194 @@
+/*
+ * Design tokens of the sdlc site.
+ *
+ * Source: docs/internal/site-design/site-preview.src.html, the `.site` block
+ * (lines 36-46) and the raw values of the site CSS (lines 47-385).
+ * Each value here is a value of the reference. Do not add a value that the
+ * reference does not hold (design reference rule 2). A change of the look
+ * changes the reference in the same commit (rule 5).
+ *
+ * Pages and components use only these tokens. The test
+ * site/src/lib/tokens.test.mjs checks the contrast of each color pair the pages
+ * use, and that each reference value has a token here.
+ */
+:root {
+  /* palette: the reference .site block */
+  --bg: #E6E2DA;
+  --ink: #1F1A14;
+  --muted: #5A5247;
+  --accent: #8F4A08;
+  --on-accent: #FFFFFF;
+  /* contrast fixes: same hue as --accent and --go, lower lightness */
+  --accent-on-field: #884608; /* accent text on the amber field */
+  --go-text: #1C7754;         /* signal-green text on --go-tint */
+  --line: rgba(31,26,20,.14);
+  --shade: rgba(31,26,20,.42);
+  --glass: rgba(255,255,255,.56);
+  --glass-edge: rgba(255,255,255,.85);
+  --glass-blur: 16px;
+  --f1: rgba(225,150,60,.28);
+  --f2: rgba(60,190,140,.2);
+  --go: #1E7F5A;
+  --go-lit: #46C98A;
+
+  /* named raw colors of the reference CSS */
+  --white: #FFFFFF;
+  --paper: #FFFDF9;        /* solid chips, pills, selected tiles */
+  --accent-tint: #F6DFC0;  /* hover and related fill of track chips */
+  --go-tint: #DDF1E8;      /* hover fill of the harden node */
+  --cream: #F5E4C8;        /* command text on the dark dashboard node */
+  --lamp-off: #6E655A;     /* dashboard lamp that is not lit */
+  --amber: #E1963C;        /* the f1 hue at full alpha: glows, map sleeve */
+  --mint: #3CBE8C;         /* the f2 hue at full alpha: map sleeve */
+
+  /* ink at an alpha */
+  --ink-16: rgba(31,26,20,.16);
+  --ink-18: rgba(31,26,20,.18);
+  --ink-30: rgba(31,26,20,.3);
+  --ink-50: rgba(31,26,20,.5);   /* switch track when off */
+
+  /* white at an alpha */
+  --white-20: rgba(255,255,255,.2);
+  --white-38: rgba(255,255,255,.38);
+  --white-40: rgba(255,255,255,.4);
+  --white-50: rgba(255,255,255,.5);
+  --white-60: rgba(255,255,255,.6);
+  --white-70: rgba(255,255,255,.7);
+  --white-72: rgba(255,255,255,.72);
+  --white-78: rgba(255,255,255,.78);
+  --white-90: rgba(255,255,255,.9);
+
+  /* accent at an alpha */
+  --accent-14: rgba(143,74,8,.14);
+  --accent-16: rgba(143,74,8,.16);
+  --accent-24: rgba(143,74,8,.24);
+  --accent-25: rgba(143,74,8,.25);
+  --accent-30: rgba(143,74,8,.3);
+  --accent-35: rgba(143,74,8,.35);
+  --accent-40: rgba(143,74,8,.4);
+  --accent-42: rgba(143,74,8,.42);
+  --accent-70: rgba(143,74,8,.7);  /* time-bar part edge */
+
+  /* amber at an alpha (glows) */
+  --amber-40: rgba(225,150,60,.4);
+  --amber-95: rgba(225,150,60,.95);
+
+  /* signal green at an alpha (glows) */
+  --go-lit-40: rgba(70,201,138,.4);
+  --go-lit-90: rgba(70,201,138,.9);
+  --go-lit-95: rgba(70,201,138,.95);
+
+  /* type families: Geist and Geist Mono from the Astro fonts API */
+  --font-display: var(--font-geist), system-ui, sans-serif;
+  --font-body: var(--font-geist), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /* type steps */
+  --text-2xs: .75rem;
+  --text-xs: .8125rem;
+  --text-sm: .875rem;
+  --text-md: .9375rem;
+  --text-base: 1rem;
+  --text-lg: 1.0625rem;
+  --text-xl: 1.125rem;
+  --text-brand: 1.3125rem;
+  --text-2xl: 1.75rem;
+  --text-3xl: 2.5rem;
+  --text-code: .875em;
+  --text-h1: clamp(2.25rem,5vw,3.75rem);
+  --text-h2: clamp(1.5rem,3vw,2.125rem);
+  --text-skill: clamp(2rem,4.6vw,3.25rem);
+  --text-skill-detail: clamp(1.375rem,2.4vw,1.75rem);
+  /* SVG text of the skill map, in user units */
+  --text-map-chip: 12.5px;
+  --text-map-node: 13.5px;
+  --text-map-station: 15px;
+
+  --weight-regular: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-bold: 700;
+
+  --leading-none: 1;
+  --leading-h1: 1.04;
+  --leading-skill: 1.05;
+  --leading-tight: 1.1;
+  --leading-body: 1.5;
+  --leading-sub: 1.55;
+  --leading-code: 1.75;
+
+  --tracking-1: -.01em;
+  --tracking-2: -.02em;
+  --tracking-3: -.03em;
+  --tracking-4: -.04em;
+  --tracking-5: -.05em;
+
+  /* radii */
+  --r-panel: 18px;
+  --r-ctl: 999px;
+  --r-16: 16px;
+  --r-14: 14px;
+  --r-12: 12px;
+  --r-10: 10px;
+  --r-7: 7px;
+  --r-5: 5px;
+  --r-2: 2px;
+  --r-round: 50%;
+
+  /* spacing: the gap, padding and margin values of the reference */
+  --space-2: 2px;
+  --space-3: 3px;
+  --space-4: 4px;
+  --space-5: 5px;
+  --space-6: 6px;
+  --space-7: 7px;
+  --space-8: 8px;
+  --space-9: 9px;
+  --space-10: 10px;
+  --space-11: 11px;
+  --space-12: 12px;
+  --space-14: 14px;
+  --space-15: 15px;
+  --space-16: 16px;
+  --space-17: 17px;
+  --space-18: 18px;
+  --space-20: 20px;
+  --space-22: 22px;
+  --space-24: 24px;
+  --space-26: 26px;
+  --space-28: 28px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-44: 44px;
+  --space-56: 56px;
+  --space-64: 64px;
+
+  /* durations */
+  --dur-80: 80ms;    /* first delay of the map intro */
+  --dur-120: 120ms;  /* step delay of the map intro */
+  --dur-200: .2s;
+  --dur-250: .25s;
+  --dur-300: .3s;
+  --dur-350: .35s;
+  --dur-400: .4s;
+  --dur-500: .5s;
+  --dur-550: .55s;
+  --dur-600: .6s;
+  --dur-700: .7s;
+  --dur-900: .9s;
+  --dur-1000: 1s;
+  --dur-1100: 1.1s;
+  --dur-1300: 1.3s;
+  --dur-1700: 1.7s;
+  --dur-1800: 1.8s;
+  --dur-2100: 2.1s;
+
+  /* easings */
+  --ease: ease;
+  --ease-out: ease-out;
+  --ease-linear: linear;
+  --ease-grow: cubic-bezier(.2,.7,.2,1);     /* time-bar parts */
+  --ease-glide: cubic-bezier(.3,.7,.2,1);    /* run wire, track parts, table rows */
+  --ease-spring: cubic-bezier(.3,1.5,.5,1);  /* chips and tiles that pop */
+  --ease-draw: cubic-bezier(.4,.6,.2,1);     /* the map draws itself */
+}

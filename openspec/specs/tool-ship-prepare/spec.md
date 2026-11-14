@@ -1,7 +1,7 @@
 # tool-ship-prepare Specification
 
 ## Purpose
-MCP tool `ship_prepare` merges ship CLI flags with ship config, validates the resolved pipeline, and initializes the ship state file for a new run; with `gc:true` it prunes stale state files instead. The `ship` skill calls it at most once per run. Output follows docs/mcp-output-contract.md.
+MCP tool `ship_prepare` merges ship CLI flags with ship config, validates the resolved pipeline, and initializes the ship state file for a new run; with `gc:true` it prunes stale state files instead. The `ship` skill calls it at most once per run. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

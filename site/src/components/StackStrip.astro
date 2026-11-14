@@ -1,0 +1,64 @@
+---
+// The stack that this version of the plugin is made for. The required and
+// optional tools mirror docs/getting-started.md, section "Prerequisites".
+const tools = [
+  { name: 'Claude Code', optional: false },
+  { name: 'GitHub', optional: false },
+  { name: 'Jira', optional: true },
+  { name: 'OpenSpec', optional: true },
+];
+---
+
+<div class="stack">
+  <p class="stack-label">Made for this stack</p>
+  <ul class="stack-tools">
+    {
+      tools.map((tool) => (
+        <li class="stack-tool">
+          {tool.name}
+          {tool.optional && <span class="stack-opt">optional</span>}
+        </li>
+      ))
+    }
+  </ul>
+  <p class="stack-note">Support for other tools comes in later versions.</p>
+</div>
+
+<style>
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .stack-label,
+  .stack-note {
+    margin: 0;
+  }
+  .stack-tools {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .stack-tool {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-6);
+    padding: var(--space-4) var(--space-12);
+    border: 1px solid var(--glass-edge);
+    border-radius: var(--r-ctl);
+    background: var(--white-50);
+    color: var(--ink);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+  }
+  .stack-opt {
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-regular);
+    color: var(--muted);
+  }
+</style>

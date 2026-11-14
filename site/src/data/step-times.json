@@ -1,0 +1,17 @@
+{
+  "ship": {
+    "version": "0.4.12",
+    "runDate": "2026-11-13",
+    "times": {
+      "execute": 1451000,
+      "commit": 2000,
+      "review": 556000,
+      "received-review": 1502000,
+      "verify-openspec": 9000,
+      "archive-openspec": 21000,
+      "harden": 1035000,
+      "pr": 3596000,
+      "verify-pipeline": 170000
+    }
+  }
+}

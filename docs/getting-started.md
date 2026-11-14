@@ -4,7 +4,7 @@ This is the onboarding path: install the plugin, set up a project, and learn
 which command to run at each stage of a change. For how the plugin works
 internally (launcher, binary cache, tool list, config schema), see
 [`README.md`](../README.md). For a step-by-step verification checklist after
-install, see [`smoke-test.md`](smoke-test.md).
+install, see [`smoke-test.md`](internal/smoke-test.md).
 
 ## Prerequisites
 
@@ -122,8 +122,8 @@ For the full end-to-end flow instead of running each stage by hand:
 /ship
 ```
 
-runs execute → commit → review → PR → CI verification as one
-pipeline, stopping for confirmation between steps by default.
+runs execute → commit → review → PR as one pipeline. Optional steps
+add OpenSpec checks, harden, CI verification and a remote review wait.
 
 It accepts `--resume` to pick back up from a saved state file if
 interrupted.
@@ -213,7 +213,7 @@ run end-to-end without stopping. Field reference: `README.md`
 
 ## Next steps
 
-- Run through [`smoke-test.md`](smoke-test.md) to confirm the install works
+- Run through [`smoke-test.md`](internal/smoke-test.md) to confirm the install works
   end to end.
 - [Skill Reference](skills/README.md) — detailed docs for every slash command.
 - Hit an error? `README.md` → "Troubleshooting" covers launcher and

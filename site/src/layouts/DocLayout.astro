@@ -1,0 +1,448 @@
+---
+// The frame of a Markdown page: a docs page, the README page and the release notes.
+// The title block mirrors the head of the Skill page (site-preview.src.html:463-543,
+// ref-skill-page.jpeg): a crumb line, the H1 and a one-line lead. The reference has no docs
+// page, so the three columns below the title block use only the tokens of tokens.css.
+//   1100px and wider: the page list | the Markdown body | the "On this page" list.
+//   Below 1100px: one column. The page list is a block of pills, the "On this page" list folds.
+import BaseLayout from './BaseLayout.astro';
+import { BASE } from '../../site.config.mjs';
+import { docsPages, MORE_PAGES, type DocsPage } from '../lib/docs-pages';
+
+interface Props {
+  title: string; // page title and og:title
+  description: string; // meta description and og:description
+  current: 'docs' | 'releases' | 'skills';
+  heading: string; // the H1 of the title block
+  lead?: string; // one line under the H1. Leave it out when the body starts with the same sentence
+  crumb: string; // the last part of the crumb line
+  crumbHref?: string; // when set, the crumb line starts with a link, for example Docs
+  crumbLabel?: string; // the text of that link
+  toc: { depth: number; slug: string; text: string }[]; // the "On this page" entries
+  hideIntro?: boolean; // true when the lead is the complete first block of the body
+  // The left page list. Leave it out for the docs page list. A reference page of a skill sets it.
+  nav?: { label: string; groups: DocsPage[][] };
+}
+const { title, description, current, heading, lead, crumb, crumbHref, crumbLabel, toc, hideIntro = false, nav } = Astro.props;
+
+const here = Astro.url.pathname;
+const { label: navLabel, groups } = nav ?? {
+  label: 'Docs',
+  groups: [[{ title: 'Overview', lead: '', href: `${BASE}/docs/` }, ...(await docsPages())], MORE_PAGES],
+};
+---
+
+<BaseLayout title={title} description={description} current={current}>
+  <div class="fields" aria-hidden="true">
+    <span class="field f1"></span><span class="field f2"></span><span class="field f3"></span>
+  </div>
+  <div class="docpage wrap">
+    <header class="doc-head">
+      <p class="crumb">
+        {crumbHref && crumbLabel ? <><a href={crumbHref}>{crumbLabel}</a> / </> : null}{crumb}
+      </p>
+      <h1 class="doc-h1">{heading}</h1>
+      {lead && <p class="sub">{lead}</p>}
+    </header>
+    <div class="doc-grid">
+      <nav class="doc-nav" aria-label={`${navLabel} pages`}>
+        <p class="side-h">{navLabel}</p>
+        {
+          groups.map((group) => (
+            <ul>
+              {group.map((page) => (
+                <li>
+                  <a href={page.href} aria-current={page.href === here ? 'page' : undefined}>
+                    {page.title}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ))
+        }
+      </nav>
+      <div class="doc-main">
+        {
+          toc.length > 0 && (
+            <details class="toc-fold glass">
+              <summary>On this page</summary>
+              <ul>
+                {toc.map((h) => (
+                  <li class:list={{ deep: h.depth > 2 }}>
+                    <a href={`#${h.slug}`}>{h.text}</a>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )
+        }
+        <slot name="intro" />
+        <article class:list={['doc', { 'hide-intro': hideIntro, 'after-intro': Astro.slots.has('intro') }]}>
+          <slot />
+        </article>
+      </div>
+      {
+        toc.length > 0 && (
+          <nav class="doc-toc" aria-label="On this page">
+            <p class="side-h">On this page</p>
+            <ul>
+              {toc.map((h) => (
+                <li class:list={{ deep: h.depth > 2 }}>
+                  <a href={`#${h.slug}`}>{h.text}</a>
+                </li>
+              ))}
+            </ul>
+          </nav>
+        )
+      }
+    </div>
+  </div>
+</BaseLayout>
+
+<style>
+  /* The colour fields behind the glass, as on the Home page. */
+  .fields {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1300px;
+    overflow: hidden;
+    z-index: -1;
+    pointer-events: none;
+  }
+  .field {
+    position: absolute;
+    border-radius: var(--r-round);
+    filter: blur(70px);
+  }
+  .f1 {
+    width: 540px;
+    height: 540px;
+    right: -90px;
+    top: 30px;
+    background: var(--f1);
+  }
+  .f2 {
+    width: 420px;
+    height: 420px;
+    right: 30%;
+    top: 280px;
+    background: var(--f2);
+  }
+  .f3 {
+    width: 480px;
+    height: 480px;
+    left: -120px;
+    top: 760px;
+    background: var(--f1);
+  }
+  .docpage {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-40);
+    padding-bottom: var(--space-64);
+  }
+
+  /* The title block: the crumb line, the H1 and the lead, as in the head of the Skill page. */
+  .doc-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+    padding-bottom: var(--space-32);
+    border-bottom: 1px solid var(--line);
+  }
+  .crumb {
+    margin: 0;
+    font-size: var(--text-sm);
+    color: var(--muted);
+  }
+  .crumb a {
+    color: inherit;
+  }
+  .doc-h1 {
+    margin: 0;
+    font-family: var(--font-display);
+    font-size: var(--text-skill);
+    line-height: var(--leading-skill);
+    letter-spacing: var(--tracking-2);
+    font-weight: var(--weight-semibold);
+    overflow-wrap: anywhere;
+  }
+  .sub {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xl);
+    line-height: var(--leading-sub);
+    max-width: 54ch;
+  }
+
+  /* One column below 1100px. */
+  .doc-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--space-24);
+  }
+  .doc-main {
+    min-width: 0;
+    max-width: 57ch; /* about 70 characters of body text in each line */
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-24);
+  }
+  .side-h {
+    margin: 0 0 var(--space-10);
+    font-size: var(--text-xs);
+    font-weight: var(--weight-medium);
+    color: var(--muted);
+  }
+  .doc-nav ul,
+  .doc-toc ul,
+  .toc-fold ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .doc-nav a,
+  .doc-toc a,
+  .toc-fold a {
+    display: block;
+    color: var(--muted);
+    text-decoration: none;
+  }
+  .doc-nav a:hover,
+  .doc-toc a:hover,
+  .toc-fold a:hover {
+    color: var(--ink);
+  }
+
+  /* The page list below 1100px: one block of pills. The pill of this page is solid. */
+  .doc-nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-6);
+  }
+  .doc-nav .side-h {
+    margin: 0 var(--space-6) 0 0;
+  }
+  .doc-nav ul {
+    display: contents;
+  }
+  .doc-nav a {
+    padding: var(--space-7) var(--space-14);
+    border: 1px solid var(--line);
+    border-radius: var(--r-ctl);
+    font-size: var(--text-sm);
+  }
+  .doc-nav a[aria-current] {
+    background: var(--paper);
+    border-color: var(--accent);
+    color: var(--ink);
+    font-weight: var(--weight-medium);
+  }
+
+  /* The "On this page" list below 1100px: it folds, so the body starts near the top. */
+  .doc-toc {
+    display: none;
+  }
+  .toc-fold {
+    border-radius: var(--r-14);
+    font-size: var(--text-md);
+  }
+  .toc-fold summary {
+    padding: var(--space-12) var(--space-18);
+    border-radius: var(--r-14);
+    font-weight: var(--weight-medium);
+    cursor: pointer;
+  }
+  .toc-fold ul {
+    padding: 0 var(--space-18) var(--space-12);
+  }
+  .toc-fold a {
+    padding: var(--space-6) 0;
+  }
+  .toc-fold .deep {
+    padding-left: var(--space-16);
+    font-size: var(--text-sm);
+  }
+
+  @media (min-width: 1100px) {
+    .doc-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 3fr) minmax(0, 1fr);
+      gap: var(--space-56);
+      align-items: start;
+    }
+    .toc-fold {
+      display: none;
+    }
+    /* The two side lists stay in view while the body scrolls. A long list scrolls in its frame.
+       The padding and the equal negative margin keep the focus ring inside the scroll frame. */
+    .doc-nav,
+    .doc-toc {
+      display: block;
+      position: sticky;
+      top: var(--space-24);
+      max-height: calc(100vh - var(--space-44));
+      overflow-y: auto;
+      padding: var(--space-4);
+      margin: calc(-1 * var(--space-4));
+    }
+    .doc-nav .side-h {
+      margin: 0 0 var(--space-10);
+    }
+    .doc-nav ul,
+    .doc-toc ul {
+      display: block;
+      border-left: 1px solid var(--line);
+    }
+    .doc-nav ul + ul {
+      margin-top: var(--space-16);
+    }
+    .doc-nav a,
+    .doc-toc a {
+      margin-left: -1px;
+      padding: var(--space-6) var(--space-14);
+      border: 0;
+      border-left: var(--space-2) solid transparent;
+      border-radius: 0;
+      font-size: var(--text-md);
+      line-height: var(--leading-tight);
+    }
+    .doc-toc a {
+      font-size: var(--text-sm);
+    }
+    .doc-toc .deep a {
+      padding-left: var(--space-26);
+    }
+    .doc-nav a[aria-current] {
+      background: none;
+      border-left-color: var(--accent);
+    }
+  }
+
+  /* The Markdown body. The H1 of the file is in the title block. */
+  .doc {
+    min-width: 0;
+    overflow-wrap: anywhere; /* a long inline code or URL wraps in place of widening the page */
+    font-size: var(--text-lg);
+    line-height: var(--leading-sub);
+  }
+  .doc :global(h1:first-of-type),
+  .doc.hide-intro > :global(h1:first-child + :is(p, blockquote)) {
+    display: none;
+  }
+  .doc :global(:is(h2, h3, h4)) {
+    font-family: var(--font-display);
+    font-weight: var(--weight-semibold);
+    scroll-margin-top: var(--space-24);
+  }
+  /* Each h2 starts a part: a line and clear space above it. */
+  .doc :global(h2) {
+    font-size: var(--text-2xl);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    margin: var(--space-44) 0 var(--space-16);
+    padding-top: var(--space-40);
+    border-top: 1px solid var(--line);
+  }
+  /* An h2 that starts the body has no line: the line of the title block is directly above it. */
+  .doc > :global(h2:first-child),
+  .doc > :global(h1:first-child + h2),
+  .doc.hide-intro > :global(h1:first-child + :is(p, blockquote) + h2) {
+    margin-top: 0;
+    padding-top: 0;
+    border-top: 0;
+  }
+  .doc.after-intro > :global(h2:first-child) {
+    margin-top: var(--space-16);
+  }
+  .doc :global(h3) {
+    font-size: var(--text-xl);
+    line-height: var(--leading-body);
+    margin: var(--space-40) 0 var(--space-10);
+  }
+  .doc :global(h4) {
+    font-size: var(--text-base);
+    margin: var(--space-28) 0 var(--space-8);
+  }
+  .doc :global(:is(p, ul, ol, blockquote, pre, table, .mermaid-diagram)) {
+    margin: 0 0 var(--space-18);
+  }
+  .doc :global(:is(ul, ol)) {
+    padding-left: var(--space-24);
+  }
+  .doc :global(li + li),
+  .doc :global(li > :is(ul, ol)) {
+    margin-top: var(--space-6);
+  }
+  .doc :global(li > :is(ul, ol, p):last-child) {
+    margin-bottom: 0;
+  }
+  .doc :global(a) {
+    color: var(--accent-on-field);
+    text-underline-offset: var(--space-3);
+  }
+  .doc :global(blockquote) {
+    padding-left: var(--space-18);
+    border-left: var(--space-3) solid var(--accent-30);
+    color: var(--muted);
+  }
+  .doc :global(blockquote > :last-child) {
+    margin-bottom: 0;
+  }
+  .doc :global(hr) {
+    margin: var(--space-40) 0;
+    border: 0;
+    border-top: 1px solid var(--line);
+  }
+  .doc :global(:not(pre) > code) {
+    padding: 0 var(--space-3);
+    border-radius: var(--r-5);
+    background: var(--white-50);
+    font-size: var(--text-code);
+  }
+  /* A code block and a table scroll in their own frame, so the page does not scroll sideways. */
+  .doc :global(pre) {
+    overflow-x: auto;
+    padding: var(--space-16) var(--space-20);
+    border-radius: var(--r-12);
+    font-size: var(--text-xs);
+    line-height: var(--leading-code);
+  }
+  .doc :global(table) {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+    border: 1px solid var(--line);
+    border-radius: var(--r-12);
+    background: var(--white-40);
+    font-size: var(--text-md);
+    line-height: var(--leading-body);
+    overflow-wrap: break-word; /* a cell keeps its words whole, and the table scrolls */
+  }
+  .doc :global(th) {
+    text-align: left;
+    font-weight: var(--weight-medium);
+    font-size: var(--text-xs);
+    color: var(--muted);
+    padding: var(--space-12) var(--space-16);
+  }
+  .doc :global(td) {
+    padding: var(--space-12) var(--space-16);
+    border-top: 1px solid var(--line);
+    vertical-align: top;
+  }
+  .doc :global(img) {
+    max-width: 100%;
+    height: auto;
+  }
+  /* On a phone a text cell keeps a readable width next to a wide cell. The table scrolls. */
+  @media (max-width: 520px) {
+    .doc :global(:is(th, td)) {
+      min-width: 14ch;
+    }
+  }
+</style>

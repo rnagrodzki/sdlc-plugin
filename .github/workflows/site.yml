@@ -1,0 +1,91 @@
+name: Site
+
+# Builds the project site and deploys it to GitHub Pages.
+# No paths: filter. A check with a paths: filter does not report on other pull
+# requests, and GitHub then blocks them when the check is required. The change
+# gate step skips the build steps when a pull request changes no site path
+# (site/src/lib/site-paths.mjs). A push to main always builds and deploys,
+# because docs and changelog changes feed the site.
+# The site checks (test, build, verify, Lighthouse) are intentionally CI-only:
+# the pre-push hook in lefthook.yml mirrors test.yml (Go) and does not run
+# them. Before a push that touches a site path, run them by hand:
+# task site:install site:test site:build (Taskfile.yml).
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: site-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: Site build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      # Runs before setup-node on the Node of ubuntu-latest; the script uses only
+      # built-in modules. It needs Node 16 or later (ES modules, node: imports);
+      # every ubuntu-latest image ships a newer Node. Explicit bash runs with
+      # -e -o pipefail, so a git failure stops the step and never writes site=false.
+      - name: Change gate
+        id: changes
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then echo "site=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          changed="$(git diff --name-only "origin/$BASE_REF...HEAD")"
+          printf '%s\n' "$changed" | node site/scripts/site-changed.mjs >> "$GITHUB_OUTPUT"
+
+      - if: steps.changes.outputs.site == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      # Bun installs the packages. The scripts of site/package.json still run on Node.
+      - if: steps.changes.outputs.site == 'true'
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+
+      - name: Test, build and scan
+        if: steps.changes.outputs.site == 'true'
+        working-directory: site
+        run: bun install --frozen-lockfile && bun run test && bun run build && bun run verify
+
+      # bun run uses the @lhci/cli of site/node_modules (pinned in bun.lock) and
+      # never downloads a package, unlike bunx.
+      - name: Lighthouse
+        if: steps.changes.outputs.site == 'true' && github.event_name == 'pull_request'
+        working-directory: site
+        run: bun run lhci autorun
+
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
+        with:
+          path: site/dist
+
+  deploy:
+    # A manual run on another branch builds the site and does not deploy it.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

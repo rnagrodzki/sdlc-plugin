@@ -1,7 +1,7 @@
 # tool-verify-pipeline-classify Specification
 
 ## Purpose
-`verify_pipeline_classify` classifies the log text of a failed CI check into one of seven root-cause categories. The `verify-pipeline` skill calls it after a CI failure is observed. Output follows docs/mcp-output-contract.md.
+`verify_pipeline_classify` classifies the log text of a failed CI check into one of seven root-cause categories. The `verify-pipeline` skill calls it after a CI failure is observed. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

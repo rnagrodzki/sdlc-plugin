@@ -1052,7 +1052,7 @@ func callRegisteredCommitApply(t *testing.T, message string) string {
 }
 
 // TestCommitApply_RenderedOutputNamesSkippedPaths goes through the registered
-// tool and its Markdown renderer (docs/mcp-output-contract.md): a skipped
+// tool and its Markdown renderer (docs/internal/mcp-output-contract.md): a skipped
 // untracked file is listed under skippedUntrackedPaths, and an empty list
 // renders as (none) instead of disappearing.
 func TestCommitApply_RenderedOutputNamesSkippedPaths(t *testing.T) {

@@ -1,167 +1,98 @@
-# /openspec-save
+# /sdlc:openspec-save
 
-Save the OpenSpec change that `/plan` staged as its own branch, commit, and pull
-request. Reviewers read and merge the spec first. You ship the implementation
-after that. The full command name is `/sdlc:openspec-save`.
+Get your OpenSpec change reviewed and merged as its own pull request, before any implementation code exists.
 
-## When to use
+## Why use it
 
-- `/plan` ran with **Create OpenSpec change**, and the plan file has an
-  `**OpenSpec-Staging:**` header line.
-- You want the spec reviewed and merged before any code exists.
-- A run of `/openspec-save` stopped half way, and you want to continue it.
+`/sdlc:plan` with the choice **Create OpenSpec change** stages the spec of your change in a folder outside the tracked tree.
+No branch and no pull request holds the spec yet.
+This skill moves the change onto its own branch, commits it and opens a pull request that holds only the spec.
+Your reviewers merge the spec first. Then you ship the implementation.
 
-## The merge-first flow
+## Example
 
-The change is written in the plan phase, but it is not yet in the tracked tree.
-It sits under `.sdlc-v2/openspec-staging/<change>/` of the main worktree. When
-the skill can find the main worktree, it runs from any worktree of the repo.
-Two other cases exist:
-
-- A plan that an older plugin staged has its change under
-  `.sdlc-v2/openspec-staging/<change>/` of the active worktree. The skill uses
-  that folder when the folder of the main worktree and
-  `openspec/changes/<change>/` are both missing.
-- When the skill cannot find the main worktree, it uses only the folder of the
-  active worktree and prints the warning `Main worktree not found (...)`.
-
-This skill moves the change into the tracked tree and sends it to review on its
-own:
-
-1. `/plan` stages the change and writes the `**OpenSpec-Staging:**` header line
-   in the plan file.
-2. `/openspec-save` creates the branch `openspec/<change>`, moves the change into
-   `openspec/changes/<change>/`, commits it, and opens a PR.
-3. You and your reviewers merge that PR into the default branch.
-4. You create a new branch from the default branch and run `/ship` with the same
-   plan file.
-
-The OpenSpec PR and the code PR are two separate PRs.
-
-## Syntax
-
-    /openspec-save <plan-path> | --plan <path> [--auto]
-
-The plan path is required. The skill never picks a plan for you.
-
-## Flags
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--plan <path>` | Path of the plan file. Same as the positional `<plan-path>`. If you give both forms with different paths, the skill stops with an error. The same path in both forms is accepted. | none |
-| `--auto` | Skips the approval question of the commit skill. The pr skill still asks you for release intent, so the run is not unattended. | off |
-
-A relative path is resolved against the current working directory. The
-`openspec_save` tool takes an absolute path only.
-
-## What the skill does
-
-| Step | Action |
-|------|--------|
-| 1. Save | Calls the `openspec_save` tool. It creates the branch, moves the change into `openspec/changes/<change>/`, stamps a ref comment into each task line of `tasks.md`, stages the change, and rewrites the plan header to `**OpenSpec-Saved:**`. It does not commit. A change with no `tasks.md` is saved with a warning, and the skill prints it. |
-| 2. Commit | Runs the commit skill with `--type docs --scope openspec`, and with `--auto` when you passed it. It runs only when the tool reports staged files. |
-| 3. PR | Runs the pr skill. It asks you for release intent. Choose **Skip release (acknowledged)**: the PR holds only the OpenSpec change. |
-| 4. Report | Prints the change, the branch, and the PR URL. It tells you to merge the PR and then run `/ship`. |
-
-The commit skill and the pr skill run in your session, so their questions reach
-you directly.
-
-## Examples
-
-**Save the change of a plan:**
+The plan `add-widget.md` staged the change `add-widget`. On the default branch, with no uncommitted change in tracked files, run:
 
     /openspec-save /Users/me/.claude/plans/add-widget.md
 
-Creates `openspec/add-widget`, commits the change after you approve the commit
-message, and opens a PR after you answer the release-intent question.
+1. The skill creates the branch `openspec/add-widget` and moves the change into `openspec/changes/add-widget/`.
+2. The commit skill drafts the commit message and asks you to approve it.
+3. The pr skill asks for release intent. Choose **Skip release (acknowledged)**: the PR holds only the OpenSpec change.
+4. The skill prints the change name, the branch and the PR URL.
 
-**Name the plan with a flag:**
+Merge that PR. Then create a new branch from the default branch and run `/sdlc:ship --plan <plan-path>`.
 
-    /openspec-save --plan /Users/me/.claude/plans/add-widget.md
+`/openspec-save` is the short name. The full command name is `/sdlc:openspec-save`.
 
-Same result. Use this form when you want the argument to be explicit.
+## What you get
 
-**Skip the commit approval:**
+- **Spec review before any code exists.** The change gets its own branch `openspec/<change>`, its own commit and its own PR.
+- **One command for the hand work.** The skill creates the branch, moves and stages the change, then runs the commit skill and the pr skill.
+- **Your decisions stay yours.** The commit skill and the pr skill ask you directly, and the skill never answers a question for you.
+- **A stopped run is safe to repeat.** Run the skill again on the saved branch, and the run continues at the commit or at the PR.
+- **No half-saved change.** The tool checks that each file of the change is in the git index before it marks the plan as saved.
 
-    /openspec-save /Users/me/.claude/plans/add-widget.md --auto
+## Steps
 
-The commit skill does not ask you to approve its message. The pr skill still asks
-for release intent and for approval of the PR text.
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 1: Save | tool | Calls `openspec_save` with the absolute plan path. The tool creates the branch `openspec/<change>`, moves the change into `openspec/changes/<change>/` and stages it. | The list of staged files | no | always |
+| Step 2: Commit | skill | Runs the commit skill with `--type docs --scope openspec`, and with `--auto` when you passed it. | The commit on the branch | yes | `stagedFiles` has paths |
+| Step 3: PR | skill | Runs the pr skill with no `--auto`. It asks you for release intent and approval. Choose **Skip release (acknowledged)**. | The PR URL | no | always |
+| Step 4: Report | skill | Prints the change name, the branch and the PR URL. It tells you to merge the PR and then run `/sdlc:ship --plan <plan-path>`. | The report | no | always |
 
-## Prerequisites
+### Run facts
 
-- The OpenSpec CLI is installed. The tool calls it to move the change.
-- You are on the default branch, or on the branch `openspec/<change>`. On any
-  other branch the tool stops. On the default branch it creates and switches to
-  `openspec/<change>`.
-- Tracked files outside `openspec/changes/<change>/` and `.sdlc-v2/` have no
-  changes. Commit or stash them first. Untracked files do not count.
+| Fact | Value |
+|---|---|
+| Starts | With `/sdlc:openspec-save <plan-path>` or `--plan <path>`. The plan path is required. |
+| Ends | After the Step 4 report. It also ends at once when the tool fails or you decline the commit or the PR. It reports the branch. |
+| Asks the user | In the commit skill and the pr skill, which ask you directly. It never answers for you. `--auto` skips only the commit approval. |
+| Resume | Run the skill again on the saved branch. The saved plan header makes `openspec_save` return `already`, and the run continues at Step 2 or Step 3. |
+
+## More examples
+
+**Name the plan with a flag, and skip the commit approval:**
+
+    /openspec-save --plan /Users/me/.claude/plans/add-widget.md --auto
+
+The commit skill does not ask you to approve its message. The pr skill still asks for release intent and for approval of the PR text.
+
+| Flag | What it does |
+|---|---|
+| `--plan <path>` | Names the plan file. Same as the positional `<plan-path>`. |
+| `--auto` | Skips the approval question of the commit skill. The pr skill still asks you. |
+
+**Continue a stopped run:**
+
+    /openspec-save /Users/me/.claude/plans/add-widget.md
+
+You declined the commit in the first run, so the branch `openspec/add-widget` holds the staged change.
+Run the same command again on that branch. The tool returns `already`, and the run continues at the commit.
+When the commit exists and the PR does not, the run continues at the PR.
+
+### The merge-first flow
+
+1. `/plan` stages the change and writes the `**OpenSpec-Staging:**` header line in the plan file.
+2. `/openspec-save` creates the branch `openspec/<change>`, moves the change into `openspec/changes/<change>/`, commits it, and opens a PR.
+3. You and your reviewers merge that PR into the default branch.
+4. You create a new branch from the default branch and run `/ship` with the same plan file.
+
+The OpenSpec PR and the code PR are two separate PRs.
+
+`/plan` stages the change under `.sdlc-v2/openspec-staging/<change>/` of the main worktree. When the skill can find the main worktree, it runs from any worktree of the repo.
+A change that an older plugin staged sits in that folder of the active worktree, and the skill can fall back to it.
+When the skill cannot find the main worktree, it uses only the folder of the active worktree and prints the warning `Main worktree not found (...)`.
+[Where the skill finds the staged change](./openspec-save/flags-and-prerequisites.md#where-the-skill-finds-the-staged-change) has the exact rules.
+
+## Reference
+
+- [Flags and prerequisites](./openspec-save/flags-and-prerequisites.md): the two flags, the rules for the plan path, the state the repository needs, and where the skill finds the staged change.
+- [Stops and repeat runs](./openspec-save/stops-and-repeat-runs.md): what a save changes, what stops a run, and how the next run continues.
 
 ## Related skills
 
-- [/plan](plan.md) — Stages the OpenSpec change and writes the header line that
-  this skill reads.
-- [/commit](commit.md) — Commits the staged change. It runs inside this skill.
-- [/pr](pr.md) — Opens the PR, or updates the open PR of the branch. It runs
-  inside this skill.
-- [/ship](ship.md) — Run it on a new branch from the default branch after the
-  OpenSpec PR is merged.
-
-## Tips and gotchas
-
-- **Merge the OpenSpec PR before you ship.** Run `/ship` on a new branch from
-  the default branch after the merge. Do not run it on `openspec/<change>`.
-- **`--auto` does not skip the release question.** The pr skill in auto mode
-  stops with an error when no release level is given. So this skill never passes
-  `--auto` to the pr skill. You answer the question.
-- **A stopped run is safe to repeat.** After the save, the plan has the
-  `**OpenSpec-Saved:**` header line. A second run of `/openspec-save` makes the
-  tool return `already`. The tool then runs `git add` on the change folder
-  again and changes no file. The run continues where it stopped:
-    - The commit did not happen: the change is staged, and the run continues
-      at the commit. This is also true when you unstaged the change, for
-      example with `git reset`.
-    - The commit happened, but the PR did not: the change folder is the same
-      as in the last commit, so the commit is skipped and the run continues at
-      the PR. The commit skill stops when nothing is staged, with the error "no
-      files staged for commit".
-    - A PR for the branch is already open: the pr skill updates that PR.
-    - The tool stopped with an error after it created `openspec/<change>`: the
-      repository is on that branch, and the next run continues the save there.
-- **Switch to the saved branch before you run it again.** On a second run the
-  tool checks that the current branch is the saved branch and that
-  `openspec/changes/<change>/` exists. When a check fails, the tool returns an
-  error and the run stops.
-- **An error stops the run.** The skill prints the error and stops in these
-  cases:
-    - The call has a usage error: no plan path, `--plan` with no value, two
-      positional paths, a positional path and a `--plan` path that name
-      different files, or an option the skill does not know. The skill calls no
-      tool first.
-    - The tool returns an error. The skill prints the error and its Suggestion,
-      and reports the current branch. A `domain` error needs a fix of the input
-      or of the repository state. An `infra` error needs a fix of the
-      environment, for example file access or the OpenSpec CLI. After the fix,
-      run the skill again.
-    - The commit skill or the pr skill returns an error. The skill also reports
-      the branch.
-- **Decline stops the run.** If you decline the commit, the skill stops and
-  reports the branch and the staged change. If you decline the PR, it stops and
-  reports the branch.
-- **Do not edit the plan header by hand.** The tool rewrites it. A plan with both
-  an `**OpenSpec-Staging:**` and an `**OpenSpec-Saved:**` line is an error.
-- **Save with the plan that staged the change.** When the `stage.json` of the
-  staging folder names another plan file, the tool returns a `domain` error that
-  names the owner plan, and no file changes.
-- **The tool checks the files after `git add`.** It checks that each file of
-  `stage.json` is on disk and in the git index. It also checks that no file
-  under `openspec/changes/<change>/` is untracked. `.openspec.yaml` is never
-  reported. A gap returns a `domain` error that names each path, and the plan
-  header stays `**OpenSpec-Staging:**`:
-    - A file is not in the index, or is untracked: run `git add
-      openspec/changes/<change>/` and run `/openspec-save` again.
-    - A file is missing on disk: delete `openspec/changes/<change>/`, keep the
-      `**OpenSpec-Staging:**` header in the plan, and run `/sdlc:plan` to stage
-      the change again.
-  After a first call, the staging folder is gone. A second call checks only for
-  untracked files.
+- [/sdlc:plan](./plan.md): stages the OpenSpec change and writes the header line that this skill reads.
+- [/sdlc:commit](./commit.md): commits the staged change. It runs inside this skill.
+- [/sdlc:pr](./pr.md): opens the PR, or updates the open PR of the branch. It runs inside this skill.
+- [/sdlc:ship](./ship.md): run it on a new branch from the default branch after the OpenSpec PR is merged.

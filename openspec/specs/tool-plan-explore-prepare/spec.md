@@ -1,7 +1,7 @@
 # tool-plan-explore-prepare Specification
 
 ## Purpose
-`plan_explore_prepare` is an internal MCP tool that runs the plan skill's discovery pass and writes a `manifest.json` into a fresh temp directory. `plan_prepare` embeds the same discovery pass as its `explorePack` field; this tool runs it standalone. Output follows docs/mcp-output-contract.md.
+`plan_explore_prepare` is an internal MCP tool that runs the plan skill's discovery pass and writes a `manifest.json` into a fresh temp directory. `plan_prepare` embeds the same discovery pass as its `explorePack` field; this tool runs it standalone. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

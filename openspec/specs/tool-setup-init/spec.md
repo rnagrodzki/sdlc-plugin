@@ -1,7 +1,7 @@
 # tool-setup-init Specification
 
 ## Purpose
-`setup_init` scaffolds `.sdlc-v2/` (gitignore blocks and full commented TOML templates), and in separate modes checks, reads, or writes the project plan and PR templates. The `setup` skill and its sub-flows call it. Output follows docs/mcp-output-contract.md.
+`setup_init` scaffolds `.sdlc-v2/` (gitignore blocks and full commented TOML templates), and in separate modes checks, reads, or writes the project plan and PR templates. The `setup` skill and its sub-flows call it. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

@@ -1,0 +1,41 @@
+---
+// A reference page of a skill: /skills/<skill>/<topic>/, from docs/skills/<skill>/<topic>.md.
+// It has the DocLayout look: the title block from the H1, the "On this page" list, and on the
+// left the page list of the skill (the overview page first, then the reference pages) and a
+// link back to /skills/.
+import type { CollectionEntry } from 'astro:content';
+import { render } from 'astro:content';
+import DocLayout from '../layouts/DocLayout.astro';
+import { BASE } from '../../site.config.mjs';
+import { docMeta, tocEntries } from '../lib/doc-meta.mjs';
+import { skillPages } from '../lib/docs-pages';
+
+interface Props {
+  entry: CollectionEntry<'docs'>;
+  skill: string; // the skill name, as in the route
+}
+const { entry, skill } = Astro.props;
+const command = `/sdlc:${skill}`;
+const { Content, headings } = await render(entry);
+const { title: heading, lead, leadIsIntro } = docMeta(entry.body ?? '', `${command} reference`);
+const nav = {
+  label: command,
+  groups: [await skillPages(skill), [{ title: 'All skills', lead: '', href: `${BASE}/skills/` }]],
+};
+---
+
+<DocLayout
+  title={`${heading} | ${command} | sdlc`}
+  description={lead || `${heading}, a reference page of the ${command} skill.`}
+  current="skills"
+  heading={heading}
+  lead={leadIsIntro ? lead : undefined}
+  crumb={heading}
+  crumbHref={`${BASE}/skills/${skill}/`}
+  crumbLabel={command}
+  toc={tocEntries(headings)}
+  hideIntro={leadIsIntro}
+  nav={nav}
+>
+  <Content />
+</DocLayout>

@@ -12,7 +12,7 @@ Every `ship_state` call takes `{action, step?, detail?, sessionId?}`. Action-spe
 .sdlc-v2/runs/ship-<branch-slug>-<timestamp>.json
 ```
 
-Managed by the shared `internal/state` package (the same one `execute_state`, `plan_state`, and `commit`'s state helpers use). The skill never constructs or parses this filename itself — every action that reads ship state resolves the file by current branch or by an explicit `detail.branch`; only `begin-step`, `complete-step`, `next`, and `todos` also honor `detail.stateFile`, which reads that file directly and returns the parsed state rendered as Markdown (see `docs/mcp-output-contract.md`), never a raw file to parse.
+Managed by the shared `internal/state` package (the same one `execute_state`, `plan_state`, and `commit`'s state helpers use). The skill never constructs or parses this filename itself — every action that reads ship state resolves the file by current branch or by an explicit `detail.branch`; only `begin-step`, `complete-step`, `next`, and `todos` also honor `detail.stateFile`, which reads that file directly and returns the parsed state rendered as Markdown (see `docs/internal/mcp-output-contract.md`), never a raw file to parse.
 
 ---
 
@@ -161,7 +161,7 @@ The proceed-gate keeps an earlier entry from being passed while it is `pending`,
 
 ## The `next` Action
 
-`ship_state{action:"next"}` renders `step` and `automation` as bullet fields: it walks `steps[]` **in the order the entries were scaffolded** (the fixed pipeline order), setting `step` to the name of the first entry where R-b1 says progress is blocked. `step` is declared `omitempty` (`ShipNextOut` in `internal/tools/ship_state.go`), so once every entry is terminal it drops out of the rendered output entirely and only `automation` still renders. An `omitempty` field with an empty value is omitted, never shown as `(none)` — see rule 14 in `docs/mcp-output-contract.md`. `automation` resolves via the project's `automation.mode`/`automation.steps` config (see `config-format.md`), defaulting to `"confirm"` on any config-read failure.
+`ship_state{action:"next"}` renders `step` and `automation` as bullet fields: it walks `steps[]` **in the order the entries were scaffolded** (the fixed pipeline order), setting `step` to the name of the first entry where R-b1 says progress is blocked. `step` is declared `omitempty` (`ShipNextOut` in `internal/tools/ship_state.go`), so once every entry is terminal it drops out of the rendered output entirely and only `automation` still renders. An `omitempty` field with an empty value is omitted, never shown as `(none)` — see rule 14 in `docs/internal/mcp-output-contract.md`. `automation` resolves via the project's `automation.mode`/`automation.steps` config (see `config-format.md`), defaulting to `"confirm"` on any config-read failure.
 
 Because `steps[]` is now config-driven (see above), `next` walks **every** configured step in order — `verify-openspec`, `archive-openspec`, `harden`, `verify-pipeline`, `await-remote-review`, and `learnings-commit` are all visible to it when configured, not skipped. `commit-fixes` is never in `steps[]`, so `next` never names it. `next` names the seeded `received-review` entry only when it is `in_progress` or `failed`: a `pending` entry with its `condition` does not block. This skill's own prose dispatches both conditional sub-steps directly (based on each finding's severity, not the review verdict), not something to wait on `next` for. A `next` result with no `step` bullet (only `automation`) means every *configured* step is terminal; it does not by itself distinguish "pipeline actually done" from "conditional review-fix loop still pending a verdict" — that judgment stays with the skill's own review-verdict handling.
 
@@ -332,7 +332,7 @@ Self-healing ledger. `ship_state{action:"healing_record", step?, detail:{kind, .
 
 ## `reportData` (attached by `read`, never persisted)
 
-`ship_state{action:"read"}` computes `reportData` from `data` on every call and attaches it to the response — it is never written back to the state file. Besides the step counts, duration, and bump provenance already summarized in docs/skills/ship.md's "State and Resolution Trace" section, it carries the review ledger built from `data.healing` and `data.deferredFindings`:
+`ship_state{action:"read"}` computes `reportData` from `data` on every call and attaches it to the response — it is never written back to the state file. Besides the step counts, duration, and bump provenance already summarized in docs/skills/ship/state-and-trace.md's "State and Resolution Trace" section, it carries the review ledger built from `data.healing` and `data.deferredFindings`:
 
 | Field | Type | Description |
 |---|---|---|
@@ -351,7 +351,7 @@ Self-healing ledger. `ship_state{action:"healing_record", step?, detail:{kind, .
 
 ## Lifecycle: Cleanup
 
-The JSON objects shown in this section are **field inventories, not the wire format** — every tool result is rendered as Markdown bullets and `## name` sections (see `docs/mcp-output-contract.md`). Read them as "these fields are present with these values", not as text to parse.
+The JSON objects shown in this section are **field inventories, not the wire format** — every tool result is rendered as Markdown bullets and `## name` sections (see `docs/internal/mcp-output-contract.md`). Read them as "these fields are present with these values", not as text to parse.
 
 Two actions, both terminal, neither a `steps[]` entry. **Neither deletes the state file.** Both stamp it terminal and leave it in place — it survives for later reads (including a subsequent `--resume` attempt, which will correctly report no run in flight) until GC's TTL prunes it. A dry-run run is the exception: the state write of a later run on the branch deletes it.
 

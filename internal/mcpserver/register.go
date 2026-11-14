@@ -32,7 +32,7 @@ type Annotations struct {
 	// gitignored plugin state (.sdlc-v2/runs, .sdlc-v2/learnings) or
 	// os.TempDir, on paths the plugin computes itself and a caller cannot
 	// redirect. A tool that can write ANY git-tracked file must leave this
-	// false. See docs/mcp-tool-annotations.md.
+	// false. See docs/internal/mcp-tool-annotations.md.
 	ReadOnly bool
 	// Destructive reports that the tool may perform destructive (non-additive)
 	// updates. When in doubt, declare true -- over-restricting is safe.
@@ -89,7 +89,7 @@ func actionEnum(schema *jsonschema.Schema) []string {
 // OpenWorld would silently under-claim danger (the MCP spec defaults both to
 // true). Classify the tool against the ReadOnly boundary rule before filling
 // it in, and add the matching row to the toolAnnotations golden map in
-// internal/tools/annotations_test.go; see docs/mcp-tool-annotations.md.
+// internal/tools/annotations_test.go; see docs/internal/mcp-tool-annotations.md.
 //
 // All handler outcomes -- success, typed errors, panics -- are returned as
 // Markdown text content in the MCP result with the appropriate IsError flag.

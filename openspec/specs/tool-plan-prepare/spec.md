@@ -1,7 +1,7 @@
 # tool-plan-prepare Specification
 
 ## Purpose
-`plan_prepare` is the plan skill's mandatory state and config load: it starts or reuses a plan run and returns OpenSpec context, guardrails, style, dispatch metadata, and (on request) the resolved plan template. Output follows docs/mcp-output-contract.md.
+`plan_prepare` is the plan skill's mandatory state and config load: it starts or reuses a plan run and returns OpenSpec context, guardrails, style, dispatch metadata, and (on request) the resolved plan template. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

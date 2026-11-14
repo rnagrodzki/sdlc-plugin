@@ -1,0 +1,826 @@
+---
+// The map of the all-skills page (reference All skills,
+// site-preview.src.html:567-617, ref-all-skills.jpeg). The build draws the
+// whole map: preplan and plan, one pill for each step of the ship Steps table
+// on the tinted ship band (top and right side), and the harden lane on the way
+// back to plan. With no script the map and the detail panel of the default
+// selection show as they are. loop-map.ts adds the selection and the signal.
+import { inlineParts } from '../lib/sequence-state.mjs';
+
+type Step = { name: string; optional: boolean };
+type Item = { what: string; who: string; go: string };
+export type Panel = { id: string; name: string; kicker: string; does: string; gets: Item[]; gives: Item[]; href: string };
+
+interface Props {
+  steps: Step[]; // the ship Steps table, in table order
+  panels: Panel[]; // one detail panel for each map node, tile and chip id
+  defaultId: string; // the panel that shows with no script
+  showDashboard: boolean; // the Skill map has a dashboard skill
+}
+const { steps, panels, defaultId, showDashboard } = Astro.props;
+
+// ---- geometry, in SVG user units ----
+const PILL_H = 38; // height of a step pill
+const GAP_X = 12; // free space between two pills, left to right
+const GAP_Y = 8; // free space between two pills, top to bottom
+const R = 180; // radius of the loop ends
+const T = 64; // y of the top side of the loop
+const CY = T + R;
+const B = T + 2 * R; // y of the bottom side, where the harden lane runs
+const ANGLE_END = (75 * Math.PI) / 180; // the ship band ends at 75 degrees on the lower right arc
+/** Pill width for a label: Geist 600 15px, calibrated on the reference pills (Received review = 168). */
+const pillWidth = (label: string) => Math.round(8.3 * label.length + 46);
+const f = (n: number) => Math.round(n * 10) / 10;
+
+type Seg = { kind: 'line'; x0: number; y0: number; x1: number; y1: number; len: number } | { kind: 'arc'; cx: number; cy: number; a0: number; a1: number; len: number };
+const line = (x0: number, y0: number, x1: number, y1: number): Seg => ({ kind: 'line', x0, y0, x1, y1, len: Math.hypot(x1 - x0, y1 - y0) });
+// Angles grow clockwise on screen (y points down).
+const arc = (cx: number, cy: number, a0: number, a1: number): Seg => ({ kind: 'arc', cx, cy, a0, a1, len: R * (a1 - a0) });
+
+type Box = { x: number; y: number; w: number; h: number };
+const overlaps = (a: Box, b: Box, gx: number, gy: number) =>
+  Math.abs(a.x - b.x) < (a.w + b.w) / 2 + gx && Math.abs(a.y - b.y) < (a.h + b.h) / 2 + gy;
+
+const xPre = 84;
+const wPre = pillWidth('preplan');
+const wPlan = pillWidth('plan');
+const xPlan = xPre + wPre / 2 + 36 + wPlan / 2;
+const LC = xPlan + R; // center x of the left loop end
+
+/** Lays the loop out for a top side of length S. Returns null when the steps do not fit on the band. */
+function layout(S: number) {
+  const RC = LC + S;
+  const mid = (LC + RC) / 2;
+  const segs: Seg[] = [
+    line(xPre, CY, xPlan, CY),
+    arc(LC, CY, Math.PI, 1.5 * Math.PI),
+    line(LC, T, RC, T),
+    arc(RC, CY, -0.5 * Math.PI, 0),
+    arc(RC, CY, 0, 0.5 * Math.PI),
+    line(RC, B, LC, B),
+    arc(LC, CY, 0.5 * Math.PI, Math.PI),
+  ];
+  const total = segs.reduce((sum, s) => sum + s.len, 0);
+  const startOf = (k: number) => segs.slice(0, k).reduce((sum, s) => sum + s.len, 0);
+  const pointAt = (d: number) => {
+    let rest = Math.max(0, Math.min(d, total));
+    for (const s of segs) {
+      if (rest <= s.len || s === segs[segs.length - 1]) {
+        const t = s.len === 0 ? 0 : rest / s.len;
+        if (s.kind === 'line') {
+          const dx = (s.x1 - s.x0) / s.len;
+          const dy = (s.y1 - s.y0) / s.len;
+          return { x: s.x0 + (s.x1 - s.x0) * t, y: s.y0 + (s.y1 - s.y0) * t, tx: dx, ty: dy };
+        }
+        const a = s.a0 + (s.a1 - s.a0) * t;
+        return { x: s.cx + R * Math.cos(a), y: s.cy + R * Math.sin(a), tx: -Math.sin(a), ty: Math.cos(a) };
+      }
+      rest -= s.len;
+    }
+    throw new Error('unreachable');
+  };
+  const pathD = (d0: number, d1: number) => {
+    const p0 = pointAt(d0);
+    let out = `M${f(p0.x)} ${f(p0.y)}`;
+    let acc = 0;
+    for (const s of segs) {
+      const a = acc;
+      const b = acc + s.len;
+      acc = b;
+      if (b <= d0 || a >= d1) continue;
+      const p = pointAt(Math.min(b, d1));
+      out += s.kind === 'line' ? ` L${f(p.x)} ${f(p.y)}` : ` A${R} ${R} 0 0 1 ${f(p.x)} ${f(p.y)}`;
+    }
+    return out;
+  };
+
+  const dashW = Math.min(520, S - 40);
+  const fixed: Box[] = [
+    { x: mid, y: T + 48, w: 304, h: 30 }, // ship label
+    ...(showDashboard ? [{ x: mid, y: CY + 6, w: dashW, h: 96 }] : []),
+    { x: mid, y: B, w: 420, h: 40 }, // harden lane
+  ];
+  const dTop = startOf(2);
+  const dEnd = startOf(4) + R * ANGLE_END;
+  const placed: Array<Box & { d: number }> = [];
+  for (const step of steps) {
+    const w = pillWidth(step.name);
+    let d = placed.length === 0 ? dTop + w / 2 - 25 : placed[placed.length - 1].d;
+    const boxAt = (dd: number) => ({ ...pointAt(dd), w, h: PILL_H, d: dd });
+    while (placed.some((p) => overlaps(p, boxAt(d), GAP_X, GAP_Y))) d += 2;
+    const box = boxAt(d);
+    if (d > dEnd || fixed.some((fb) => overlaps(fb, box, GAP_X, GAP_Y))) return null;
+    placed.push(box);
+  }
+
+  const dLast = placed.length > 0 ? placed[placed.length - 1].d : dTop;
+  const dHarden = startOf(5) + (RC - mid);
+  const dLoopEnd = total - 46;
+  const head = pointAt(dLoopEnd);
+  const nx = -head.ty;
+  const ny = head.tx;
+  const arrow = [
+    [head.x + head.tx * 9, head.y + head.ty * 9],
+    [head.x - head.tx * 6 + nx * 7.5, head.y - head.ty * 6 + ny * 7.5],
+    [head.x - head.tx * 6 - nx * 7.5, head.y - head.ty * 6 - ny * 7.5],
+  ]
+    .map(([x, y]) => `${f(x)},${f(y)}`)
+    .join(' ');
+
+  const order = [
+    { id: 'skill:preplan', d: 0 },
+    { id: 'skill:plan', d: segs[0].len },
+    ...placed.map((p, i) => ({ id: `step:${steps[i].name}`, d: p.d })),
+  ];
+  const right = Math.max(...placed.map((p) => p.x + p.w / 2), ...fixed.map((fb) => fb.x + fb.w / 2));
+  return {
+    width: Math.ceil(right + 24),
+    height: B + 48,
+    mid,
+    dashW,
+    total,
+    route: pathD(0, total),
+    track: pathD(0, dLast),
+    sleeve: pathD(dTop - 14, Math.min(dLast + 16, total)),
+    wsegs: order.slice(1).map((o, i) => ({ a: order[i].id, b: o.id, d: pathD(order[i].d, o.d) })),
+    loop: pathD(dLast, dLoopEnd),
+    arrow,
+    dHarden,
+    stations: placed.map((p, i) => ({ ...steps[i], ...p, i: i + 2 })),
+  };
+}
+
+let map: NonNullable<ReturnType<typeof layout>> | null = null;
+for (let S = 360; S <= 2000 && !map; S += 10) map = layout(S);
+if (!map) throw new Error('LoopMap: the ship steps do not fit on the map');
+
+const fixedStations = [
+  { id: 'skill:preplan', name: 'preplan', x: xPre, w: wPre, d: 0, i: 0 },
+  { id: 'skill:plan', name: 'plan', x: xPlan, w: wPlan, d: xPlan - xPre, i: 1 },
+];
+const lampCount = steps.length + 1;
+const dashX = map.mid - map.dashW / 2;
+const lampStep = lampCount > 1 ? (map.dashW - 86 - 22) / (lampCount - 1) : 0;
+---
+
+<div class="map glass">
+  <div class="map-scroll">
+    <svg
+      class="map-svg"
+      data-map-svg
+      data-total={f(map.total)}
+      viewBox={`0 0 ${map.width} ${map.height}`}
+      role="group"
+      aria-label="Map of the pipeline"
+    >
+      <defs>
+        <linearGradient id="zoneg" gradientUnits="userSpaceOnUse" x1={LC - 26} y1="0" x2={f(2 * map.mid - LC + R + 14)} y2="0">
+          <stop offset="0" class="zone-a"></stop>
+          <stop offset="1" class="zone-b"></stop>
+        </linearGradient>
+      </defs>
+      <path data-map-route d={map.route} fill="none" stroke="none"></path>
+      <path class="sleeve" d={map.sleeve}></path>
+      <path class="track" pathLength="100" d={map.track}></path>
+      {map.wsegs.map((s) => <path class="wseg" pathLength="100" data-a={s.a} data-b={s.b} d={s.d} />)}
+      <path class="loop" data-map-loop pathLength="100" d={map.loop}></path>
+      <polygon class="loop-head" points={map.arrow}></polygon>
+      <g class="node n-ship" data-id="ship" tabindex="0" role="button" aria-label="/sdlc:ship">
+        <rect class="chip-r" x={map.mid - 152} y={T + 33} width="304" height="30" rx="15"></rect>
+        <text class="chip-t" x={map.mid} y={T + 53}><tspan class="mono">/sdlc:ship</tspan><tspan dx="7">runs this part in one command</tspan></text>
+      </g>
+      {
+        showDashboard && (
+          <g class="node n-dash" data-id="skill:dashboard" tabindex="0" role="button" aria-label="/sdlc:dashboard">
+            <rect class="dash-r" x={dashX} y={CY - 42} width={map.dashW} height="96" rx="24" />
+            <text class="d-text" x={map.mid} y={CY - 3}>
+              <tspan class="d-cmd">/sdlc:dashboard</tspan>
+              <tspan dx="9">watches every run</tspan>
+            </text>
+            <line class="d-wire" x1={dashX + 54} y1={CY + 26} x2={dashX + map.dashW - 54} y2={CY + 26} />
+            {Array.from({ length: lampCount }, (_, k) => (
+              <rect class="lamp" data-lamp x={f(dashX + 43 + k * lampStep)} y={CY + 21} width="22" height="10" rx="5" />
+            ))}
+          </g>
+        )
+      }
+      <g class="pulse" data-map-pulse aria-hidden="true"><circle class="p-halo" r="15"></circle><circle class="p-core" r="6"></circle></g>
+      {
+        fixedStations.map((s) => (
+          <g class="node station" data-id={s.id} data-d={f(s.d)} style={`--i:${s.i}`} tabindex="0" role="button" aria-label={`/sdlc:${s.name}`}>
+            <rect class="n-pill" x={f(s.x - s.w / 2)} y={CY - PILL_H / 2} width={s.w} height={PILL_H} rx={PILL_H / 2} />
+            <circle class="n-dot" cx={f(s.x - s.w / 2 + 21)} cy={CY} r="5" />
+            <text class="n-name" x={f(s.x + 9)} y={CY + 5}>{s.name}</text>
+          </g>
+        ))
+      }
+      {
+        map.stations.map((s) => (
+          <g
+            class:list={['node station', { 'is-opt': s.optional }]}
+            data-id={`step:${s.name}`}
+            data-d={f(s.d)}
+            style={`--i:${s.i}`}
+            tabindex="0"
+            role="button"
+            aria-label={`${s.name}, ${s.optional ? 'an optional step' : 'a step'} of /sdlc:ship`}
+          >
+            <rect class="n-pill" x={f(s.x - s.w / 2)} y={f(s.y - PILL_H / 2)} width={s.w} height={PILL_H} rx={PILL_H / 2} />
+            <circle class="n-dot" cx={f(s.x - s.w / 2 + 21)} cy={f(s.y)} r="5" />
+            <text class="n-name" x={f(s.x + 9)} y={f(s.y + 5)}>{s.name}</text>
+          </g>
+        ))
+      }
+      <g class="node n-harden" data-id="lane:harden" data-d={f(map.dHarden)} tabindex="0" role="button" aria-label="/sdlc:harden">
+        <rect class="h-r" x={map.mid - 210} y={B - 20} width="420" height="40" rx="20"></rect>
+        <text class="h-t" x={map.mid} y={B + 5}><tspan class="mono">/sdlc:harden</tspan><tspan dx="8">turns a failed run into a new guardrail</tspan></text>
+      </g>
+    </svg>
+  </div>
+  <div class="sk-detail" data-sk-detail aria-live="polite">
+    {
+      panels.map((p) => (
+        <div class="sd-panel" data-panel={p.id} hidden={p.id !== defaultId}>
+          <div>
+            <p class="sd-k">Gets</p>
+            <ul class="sd-list">
+              {p.gets.map((x) => {
+                const inner = (
+                  <>
+                    <span class="sd-what">
+                      {inlineParts(x.what).map((part) => (part.kind === 'code' ? <code>{part.value}</code> : part.value))}
+                    </span>
+                    {x.who && <span class="sd-who">{x.who}</span>}
+                  </>
+                );
+                return (
+                  <li>
+                    {x.go ? (
+                      <button class="sd-item" type="button" data-go={x.go}>
+                        {inner}
+                      </button>
+                    ) : (
+                      <span class="sd-item">{inner}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+          <span class="sd-arrow" aria-hidden="true" />
+          <div class="sd-mid">
+            {p.kicker && <p class="sd-kicker">{p.kicker}</p>}
+            <p class="sd-name" tabindex="-1">{p.name}</p>
+            <p class="sd-does">
+              {inlineParts(p.does).map((part) => (part.kind === 'code' ? <code>{part.value}</code> : part.value))}
+            </p>
+            {p.href && (
+              <a class="sd-link" href={p.href}>
+                Read the {p.name} page
+              </a>
+            )}
+          </div>
+          <span class="sd-arrow" aria-hidden="true" />
+          <div>
+            <p class="sd-k">Hands over</p>
+            <ul class="sd-list">
+              {p.gives.map((x) => {
+                const inner = (
+                  <>
+                    <span class="sd-what">
+                      {inlineParts(x.what).map((part) => (part.kind === 'code' ? <code>{part.value}</code> : part.value))}
+                    </span>
+                    {x.who && <span class="sd-who">{x.who}</span>}
+                  </>
+                );
+                return (
+                  <li>
+                    {x.go ? (
+                      <button class="sd-item" type="button" data-go={x.go}>
+                        {inner}
+                      </button>
+                    ) : (
+                      <span class="sd-item">{inner}</span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
+      ))
+    }
+  </div>
+</div>
+
+<script>
+  import '../scripts/loop-map.ts';
+</script>
+
+<style>
+  /* The map frame: the SVG keeps the reference minimum width of 900px and
+     scrolls in its own frame on a phone. */
+  .map {
+    border-radius: var(--r-panel);
+    padding: var(--space-16) var(--space-14) var(--space-14);
+  }
+  .map-scroll {
+    overflow-x: auto;
+  }
+  .map-svg {
+    display: block;
+    width: 100%;
+    min-width: 900px;
+    height: auto;
+  }
+  .zone-a {
+    stop-color: var(--amber);
+    stop-opacity: 0.3;
+  }
+  .zone-b {
+    stop-color: var(--mint);
+    stop-opacity: 0.3;
+  }
+  svg .node {
+    cursor: pointer;
+    outline: none;
+  }
+  svg .node:focus-visible :is(.n-pill, .dash-r, .chip-r, .h-r) {
+    stroke: var(--ink);
+    stroke-width: 3.5;
+    stroke-dasharray: none;
+  }
+
+  /* the track */
+  .track {
+    fill: none;
+    stroke: var(--accent-24);
+    stroke-width: 8;
+    stroke-linecap: round;
+  }
+  .wseg {
+    fill: none;
+    stroke: var(--accent);
+    stroke-width: 8;
+    stroke-linecap: round;
+    stroke-dasharray: 101;
+    stroke-dashoffset: 101;
+    transition: stroke-dashoffset var(--dur-550) var(--ease-glide);
+  }
+  .wseg:global(.on) {
+    stroke-dashoffset: 0;
+  }
+  .sleeve {
+    fill: none;
+    stroke: url(#zoneg);
+    stroke-width: 60;
+    stroke-linecap: round;
+    opacity: 0.7;
+    transition: opacity var(--dur-300);
+  }
+  .map-svg:global(.sel-ship) .sleeve {
+    opacity: 1;
+  }
+  .loop {
+    fill: none;
+    stroke: var(--go);
+    stroke-width: 4;
+    stroke-linecap: round;
+    opacity: 0.6;
+    transition:
+      opacity var(--dur-250),
+      stroke-width var(--dur-250);
+  }
+  .loop:global(.on) {
+    opacity: 1;
+    stroke-width: 6;
+  }
+  .loop-head {
+    fill: var(--go);
+    opacity: 0.75;
+    transition: opacity var(--dur-250);
+  }
+  .loop:global(.on) + .loop-head {
+    opacity: 1;
+  }
+
+  /* one pill on the track for each step */
+  .station {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform var(--dur-300) var(--ease-spring);
+  }
+  .n-pill {
+    fill: var(--paper);
+    stroke: var(--accent);
+    stroke-width: 2.5;
+    filter: drop-shadow(0 6px 7px var(--ink-18));
+    transition:
+      fill var(--dur-250),
+      stroke-opacity var(--dur-250),
+      filter var(--dur-300);
+  }
+  .is-opt .n-pill {
+    stroke-dasharray: 6 4;
+  }
+  .n-dot {
+    fill: var(--accent);
+    transition:
+      fill var(--dur-250),
+      opacity var(--dur-250);
+  }
+  .is-opt .n-dot {
+    fill: var(--paper);
+    stroke: var(--accent);
+    stroke-width: 1.5;
+  }
+  .n-name {
+    font-family: var(--font-body);
+    font-weight: var(--weight-semibold);
+    font-size: var(--text-map-station);
+    letter-spacing: var(--tracking-1);
+    fill: var(--ink);
+    text-anchor: middle;
+    transition: fill var(--dur-250);
+  }
+  .station:hover {
+    transform: translateY(-3px);
+  }
+  .station:hover .n-pill,
+  .station:global(.is-rel) .n-pill {
+    fill: var(--accent-tint);
+  }
+  .map-svg:global(.has-sel) .station:not(.is-sel):not(.is-rel) .n-pill {
+    stroke-opacity: 0.55;
+  }
+  .map-svg:global(.has-sel) .station:not(.is-sel):not(.is-rel) .n-dot {
+    opacity: 0.55;
+  }
+  .map-svg:global(.has-sel) .station:not(.is-sel):not(.is-rel) .n-name {
+    fill: var(--muted);
+  }
+  .station:global(.is-sel) {
+    transform: scale(1.1);
+  }
+  .station:global(.is-sel) .n-pill {
+    fill: var(--accent);
+    stroke-dasharray: none;
+    filter: drop-shadow(0 0 12px var(--amber-95));
+  }
+  .station:global(.is-sel) .n-dot {
+    fill: var(--on-accent);
+    stroke: none;
+  }
+  .station:global(.is-sel) .n-name {
+    fill: var(--on-accent);
+  }
+  .station:global(.ping) .n-pill {
+    animation: lm-glow var(--dur-900) var(--ease-out);
+  }
+  @keyframes lm-glow {
+    0%,
+    25% {
+      filter: drop-shadow(0 0 14px var(--amber));
+      fill: var(--accent-tint);
+    }
+  }
+
+  /* the ship label on the track */
+  .chip-r {
+    fill: var(--paper);
+    stroke: var(--accent-30);
+    transition: fill var(--dur-250);
+  }
+  .chip-t {
+    font-family: var(--font-body);
+    font-weight: var(--weight-medium);
+    font-size: var(--text-map-chip);
+    fill: var(--ink);
+    text-anchor: middle;
+    transition: fill var(--dur-250);
+  }
+  .chip-t .mono,
+  .h-t .mono {
+    font-family: var(--font-mono);
+  }
+  .chip-t .mono {
+    fill: var(--accent);
+    transition: fill var(--dur-250);
+  }
+  .n-ship:hover .chip-r {
+    fill: var(--accent-tint);
+  }
+  .n-ship:global(.is-sel) .chip-r {
+    fill: var(--accent);
+  }
+  .n-ship:global(.is-sel) .chip-t,
+  .n-ship:global(.is-sel) .chip-t .mono {
+    fill: var(--on-accent);
+  }
+
+  /* the dashboard in the middle of the loop, with one lamp for each step */
+  .n-dash {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform var(--dur-300) var(--ease-spring);
+  }
+  .n-dash:hover {
+    transform: translateY(-3px);
+  }
+  .dash-r {
+    fill: var(--ink);
+    stroke: var(--ink);
+    stroke-width: 2.5;
+    filter: drop-shadow(0 16px 18px var(--ink-30));
+    transition: stroke var(--dur-250);
+  }
+  .n-dash:global(.is-sel) .dash-r {
+    stroke: var(--go-lit);
+  }
+  .d-text {
+    font-family: var(--font-body);
+    font-weight: var(--weight-medium);
+    font-size: var(--text-map-node);
+    fill: var(--white-78);
+    text-anchor: middle;
+  }
+  .d-cmd {
+    font-family: var(--font-mono);
+    fill: var(--cream);
+  }
+  .d-wire {
+    stroke: var(--white-20);
+    stroke-width: 3;
+    stroke-linecap: round;
+  }
+  .lamp {
+    fill: var(--lamp-off);
+    transition: fill var(--dur-400);
+  }
+  .lamp:global(.lit),
+  .map-svg:global(.sel-dashboard) .lamp {
+    fill: var(--go-lit);
+    filter: drop-shadow(0 0 5px var(--go-lit));
+  }
+
+  /* harden, on the way back */
+  .n-harden {
+    transform-box: fill-box;
+    transform-origin: center;
+    transition: transform var(--dur-300) var(--ease-spring);
+  }
+  .n-harden:hover {
+    transform: translateY(-3px);
+  }
+  .h-r {
+    fill: var(--paper);
+    stroke: var(--go);
+    stroke-width: 2.5;
+    filter: drop-shadow(0 8px 9px var(--ink-16));
+    transition:
+      fill var(--dur-250),
+      filter var(--dur-300);
+  }
+  .h-t {
+    font-family: var(--font-body);
+    font-weight: var(--weight-medium);
+    font-size: var(--text-map-node);
+    fill: var(--ink);
+    text-anchor: middle;
+    transition: fill var(--dur-250);
+  }
+  .h-t .mono {
+    fill: var(--go-text);
+    transition: fill var(--dur-250);
+  }
+  .n-harden:hover .h-r,
+  .n-harden:global(.is-rel) .h-r {
+    fill: var(--go-tint);
+  }
+  .n-harden:global(.is-sel) .h-r {
+    fill: var(--go);
+    filter: drop-shadow(0 0 12px var(--go-lit-90));
+  }
+  .n-harden:global(.is-sel) .h-t,
+  .n-harden:global(.is-sel) .h-t .mono {
+    fill: var(--white);
+  }
+  .n-harden:global(.ping) .h-r {
+    animation: lm-glow-go var(--dur-900) var(--ease-out);
+  }
+  @keyframes lm-glow-go {
+    0%,
+    25% {
+      filter: drop-shadow(0 0 14px var(--go-lit));
+      fill: var(--go-tint);
+    }
+  }
+
+  /* the signal that travels the loop */
+  /* The signal shows only while loop-map.ts runs it. */
+  .pulse:not(.is-live) {
+    display: none;
+  }
+  .pulse {
+    pointer-events: none;
+    filter: drop-shadow(0 0 7px var(--amber-95));
+  }
+  .p-halo {
+    fill: var(--amber-40);
+  }
+  .p-core {
+    fill: var(--accent);
+    stroke: var(--paper);
+    stroke-width: 2;
+  }
+  .pulse:global(.is-loop) {
+    filter: drop-shadow(0 0 7px var(--go-lit-95));
+  }
+  .pulse:global(.is-loop) .p-halo {
+    fill: var(--go-lit-40);
+  }
+  .pulse:global(.is-loop) .p-core {
+    fill: var(--go);
+  }
+
+  /* the map draws itself one time */
+  @keyframes lm-draw {
+    from {
+      stroke-dashoffset: 101;
+    }
+  }
+  @keyframes lm-pop {
+    from {
+      opacity: 0;
+      transform: translateY(10px) scale(0.6);
+    }
+  }
+  @keyframes lm-fade {
+    from {
+      opacity: 0;
+    }
+  }
+  .map-svg:global(.intro) .track {
+    stroke-dasharray: 101;
+    animation: lm-draw var(--dur-1300) var(--ease-draw) both;
+  }
+  .map-svg:global(.intro) .station {
+    animation: lm-pop var(--dur-500) var(--ease-spring) both;
+    animation-delay: calc(var(--i) * var(--dur-120) + var(--dur-80));
+  }
+  .map-svg:global(.intro) .sleeve {
+    animation: lm-fade var(--dur-700) var(--ease) var(--dur-700) both;
+  }
+  .map-svg:global(.intro) .n-ship {
+    animation: lm-fade var(--dur-500) var(--ease) var(--dur-1000) both;
+  }
+  .map-svg:global(.intro) .n-dash {
+    animation: lm-pop var(--dur-600) var(--ease-spring) var(--dur-500) both;
+  }
+  .map-svg:global(.intro) .loop {
+    stroke-dasharray: 101;
+    animation: lm-draw var(--dur-900) var(--ease-draw) var(--dur-1300) both;
+  }
+  .map-svg:global(.intro) .loop-head {
+    animation: lm-fade var(--dur-300) var(--ease) var(--dur-2100) both;
+  }
+  .map-svg:global(.intro) .n-harden {
+    animation: lm-pop var(--dur-500) var(--ease-spring) var(--dur-1700) both;
+  }
+
+  /* what the selected skill gets and hands over */
+  .sk-detail {
+    margin: var(--space-6) var(--space-8) var(--space-4);
+  }
+  .sd-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 34px minmax(0, 1.2fr) 34px minmax(0, 1fr);
+    gap: var(--space-14);
+    align-items: start;
+  }
+  .sd-k {
+    margin: 0 0 var(--space-8);
+    font-size: var(--text-2xs);
+    color: var(--muted);
+  }
+  .sd-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+  }
+  .sd-item {
+    display: block;
+    width: 100%;
+    padding: var(--space-10) var(--space-14);
+    border-radius: var(--r-12);
+    border: 1px solid var(--glass-edge);
+    background: var(--white-50);
+    font: inherit;
+    color: inherit;
+    text-align: left;
+  }
+  button.sd-item {
+    cursor: pointer;
+    transition:
+      background var(--dur-200),
+      transform var(--dur-200),
+      border-color var(--dur-200);
+  }
+  button.sd-item:hover {
+    background: var(--paper);
+    border-color: var(--accent-40);
+    transform: translateY(-2px);
+  }
+  .sd-what {
+    display: block;
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+  }
+  .sd-what code,
+  .sd-does code {
+    font-size: var(--text-code);
+  }
+  .sd-who {
+    display: block;
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  button.sd-item .sd-who {
+    color: var(--accent);
+  }
+  .sd-mid {
+    padding: var(--space-20) var(--space-24);
+    border-radius: var(--r-16);
+    background: var(--paper);
+    box-shadow:
+      0 0 0 1px var(--white-90),
+      0 22px 40px -26px var(--shade);
+  }
+  .sd-kicker {
+    margin: 0 0 var(--space-4);
+    font-size: var(--text-2xs);
+    color: var(--muted);
+  }
+  .sd-name {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-skill-detail);
+    font-weight: var(--weight-medium);
+    letter-spacing: var(--tracking-3);
+    color: var(--accent);
+    overflow-wrap: anywhere;
+  }
+  .sd-name:focus {
+    outline: none;
+  }
+  .sd-does {
+    margin: var(--space-8) 0 0;
+    color: var(--muted);
+    font-size: var(--text-md);
+    line-height: var(--leading-body);
+  }
+  .sd-link {
+    display: inline-block;
+    margin-top: var(--space-10);
+    font-size: var(--text-sm);
+    color: var(--accent);
+    text-underline-offset: var(--space-3);
+  }
+  .sd-arrow {
+    height: 2px;
+    background: var(--accent);
+    position: relative;
+    opacity: 0.7;
+    margin-top: var(--space-56);
+  }
+  .sd-arrow::after {
+    content: '';
+    position: absolute;
+    right: -2px;
+    top: -4px;
+    border: 5px solid transparent;
+    border-left-color: var(--accent);
+    border-right: 0;
+  }
+  .sd-panel:global(.swap) > * {
+    animation: lm-swap var(--dur-300) var(--ease) both;
+  }
+  @keyframes lm-swap {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+
+  @media (max-width: 900px) {
+    .sd-panel {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .sd-arrow {
+      display: none;
+    }
+  }
+</style>

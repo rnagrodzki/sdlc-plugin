@@ -1,0 +1,109 @@
+---
+// The product page of a workflow change: /features/<slug>/.
+// The reference has no product page. It is built from the Home components and
+// the Home tokens only (site-preview.src.html:423-458). The branches live in
+// src/lib (resolveDocHref, findAsset, isRoutable), not in this file.
+import fs from 'node:fs';
+import path from 'node:path';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import MediaFrame from '../../components/MediaFrame.astro';
+import { BASE, REPO_BLOB_URL } from '../../../site.config.mjs';
+import { features } from '../../data/features.mjs';
+import { isRoutable } from '../../lib/assets.mjs';
+import { resolveDocHref } from '../../lib/doc-links.mjs';
+import { listPublished } from '../../lib/published-paths.mjs';
+
+export function getStaticPaths() {
+  return features.filter(isRoutable).map((feature) => ({ params: { slug: feature.slug }, props: { feature } }));
+}
+
+const { feature } = Astro.props;
+
+// A claim `doc` is a repository path, so it resolves from the repository root.
+// A claim that names a missing docs file stops the build.
+const publishedPaths = listPublished(path.resolve('..'), fs);
+const claims = feature.claims.map((claim) => ({
+  text: claim.text,
+  href: resolveDocHref(claim.doc, { fromPath: 'README.md', publishedPaths, base: BASE, repoBlobUrl: REPO_BLOB_URL }),
+}));
+---
+
+<BaseLayout title={`${feature.title} | sdlc`} description={feature.summary} current="features">
+  <div class="feature wrap">
+    <div class="lead">
+      <h1 class="h1">{feature.title}</h1>
+      <p class="sub">{feature.description}</p>
+    </div>
+    {feature.media.map((id) => <MediaFrame assetId={id} />)}
+    <section class="block" aria-labelledby="claims-heading">
+      <h2 class="h2" id="claims-heading">What it does</h2>
+      <ul class="claims">
+        {
+          claims.map((claim) => (
+            <li>
+              <a href={claim.href}>{claim.text}</a>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+  </div>
+</BaseLayout>
+
+<style>
+  .feature {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-44);
+  }
+  .lead {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-22);
+  }
+  .h1 {
+    font-family: var(--font-display);
+    margin: 0;
+    text-wrap: balance;
+    font-size: var(--text-h1);
+    line-height: var(--leading-h1);
+    letter-spacing: var(--tracking-4);
+    font-weight: var(--weight-semibold);
+  }
+  .h2 {
+    font-family: var(--font-display);
+    margin: 0;
+    font-size: var(--text-h2);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    font-weight: var(--weight-semibold);
+    text-wrap: balance;
+  }
+  .sub {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xl);
+    line-height: var(--leading-sub);
+    max-width: 54ch;
+  }
+  .block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-20);
+  }
+  .claims {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .claims a {
+    color: var(--accent-on-field);
+    font-family: var(--font-display);
+    font-size: var(--text-lg);
+    font-weight: var(--weight-semibold);
+    text-underline-offset: var(--space-3);
+  }
+</style>

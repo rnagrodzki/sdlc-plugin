@@ -185,5 +185,5 @@ so it stays visibly delimited and cannot merge into the surrounding document.
 
 - `internal/mcpserver/render_test.go` — golden fixtures for the walker rules above.
 - `internal/mcpserver/errors_test.go` — `mapError` and `defaultRecovery` tests.
-- `docs/mcp-tool-annotations.md` — the annotation contract (`ReadOnly`, `Destructive`, `Idempotent`,
+- `docs/internal/mcp-tool-annotations.md` — the annotation contract (`ReadOnly`, `Destructive`, `Idempotent`,
   `OpenWorld`) that sits alongside this output contract on every registered tool.

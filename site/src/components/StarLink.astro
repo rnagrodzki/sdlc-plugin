@@ -1,0 +1,21 @@
+---
+// The star control is a link to the repository. No third-party widget.
+import { REPO_BLOB_URL } from '../../site.config.mjs';
+
+const repoUrl = REPO_BLOB_URL.replace(/\/blob\/[^/]+$/, '');
+---
+
+<a class="star glass" href={repoUrl}>Star on GitHub</a>
+
+<style>
+  .star {
+    font: inherit;
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+    color: var(--ink);
+    text-decoration: none;
+    padding: var(--space-7) var(--space-15);
+    border-radius: var(--r-ctl);
+    cursor: pointer;
+  }
+</style>

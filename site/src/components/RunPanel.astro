@@ -1,0 +1,204 @@
+---
+// The glass run panel of the reference Home (site-preview.src.html:424-440).
+// A sample run, not live data: the label says so. Only the step in progress
+// moves, and it stops under reduced motion. Each row links to its skill page.
+import { BASE } from '../../site.config.mjs';
+import { skillHref } from '../lib/skill-map.mjs';
+
+/** The skill page of a command such as `/sdlc:plan`. */
+const pageOf = (cmd: string) => skillHref(cmd.replace('/sdlc:', ''), BASE);
+
+type StepState = 'done' | 'run' | 'wait';
+interface Step {
+  name: string;
+  cmd: string;
+  value: string;
+  state: StepState;
+  progress?: { done: number; total: number };
+}
+
+const steps: Step[] = [
+  { name: 'Preplan', cmd: '/sdlc:preplan', value: '20 decisions', state: 'done' },
+  { name: 'Plan', cmd: '/sdlc:plan', value: '14 tasks', state: 'done' },
+  { name: 'Execute', cmd: '/sdlc:execute', value: '3 of 3 waves', state: 'done' },
+  { name: 'Commit', cmd: '/sdlc:commit', value: 'done', state: 'done' },
+  { name: 'Review', cmd: '/sdlc:review', value: '4 of 6 dimensions', state: 'run', progress: { done: 4, total: 6 } },
+  { name: 'Pull request', cmd: '/sdlc:pr', value: 'waits', state: 'wait' },
+  { name: 'Verify', cmd: '/sdlc:verify-pipeline', value: 'waits', state: 'wait' },
+];
+
+const stateText: Record<StepState, string> = { done: 'Done', run: 'In progress', wait: 'Waits' };
+---
+
+<div class="run glass">
+  <div class="run-head">
+    <span class="tag">Sample run</span>
+    <span class="run-branch">feat/gh-pages</span>
+    <span class="run-time">6 h 12 min</span>
+  </div>
+  <ol class="run-rows">
+    {
+      steps.map((step) => (
+        <li class:list={['run-row', { 'is-wait': step.state === 'wait' }]}>
+          <span class:list={['st', `st-${step.state}`]} role="img" aria-label={stateText[step.state]} />
+          <a class="run-name" href={pageOf(step.cmd)}>
+            {step.name}
+            <span class="run-cmd">{step.cmd}</span>
+          </a>
+          <span class="run-val">{step.value}</span>
+          {step.progress && (
+            <span class="bar" aria-hidden="true">
+              <span class="bar-fill" style={`width: ${(step.progress.done / step.progress.total) * 100}%`} />
+            </span>
+          )}
+        </li>
+      ))
+    }
+  </ol>
+  <p class="run-foot">
+    <a href={pageOf('/sdlc:ship')}>/sdlc:ship</a> runs execute to pull request in one command, and can verify CI.
+    <a href={pageOf('/sdlc:harden')}>Harden</a> turns a failed run into a new guardrail for the next plan.
+  </p>
+</div>
+
+<style>
+  .run {
+    border-radius: var(--r-panel);
+    padding: var(--space-20) var(--space-22);
+  }
+  .run-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8) var(--space-14);
+    align-items: center;
+    padding-bottom: var(--space-14);
+    border-bottom: 1px solid var(--line);
+  }
+  .tag {
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-semibold);
+    border: 1px solid currentColor;
+    color: var(--muted);
+    border-radius: var(--r-ctl);
+    padding: var(--space-2) var(--space-10);
+  }
+  .run-branch {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+  }
+  .run-time {
+    margin-left: auto;
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .run-rows {
+    list-style: none;
+    margin: 0;
+    padding: var(--space-4) 0 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .run-row {
+    display: grid;
+    grid-template-columns: var(--space-20) minmax(0, 1fr) auto;
+    gap: var(--space-6) var(--space-12);
+    align-items: center;
+    padding: var(--space-10) 0;
+    font-size: var(--text-md);
+    border-top: 1px solid var(--line);
+  }
+  .run-row:first-child {
+    border-top: 0;
+  }
+  .st {
+    width: var(--space-16);
+    height: var(--space-16);
+    border-radius: var(--r-round);
+    justify-self: center;
+    position: relative;
+  }
+  .st-done {
+    background: var(--accent);
+  }
+  .st-done::after {
+    content: '';
+    position: absolute;
+    left: 5.5px;
+    top: 2.5px;
+    width: var(--space-4);
+    height: var(--space-8);
+    border: solid var(--on-accent);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .st-run {
+    border: 2px solid var(--accent-25);
+    border-top-color: var(--accent);
+    animation: spin var(--dur-1800) var(--ease-linear) infinite;
+  }
+  .st-wait {
+    border: 2px solid var(--ink-30);
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .run-name {
+    font-weight: var(--weight-medium);
+    color: inherit;
+    text-decoration: none;
+  }
+  .run-name:hover .run-cmd {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: var(--space-3);
+  }
+  .run-foot a {
+    text-underline-offset: var(--space-3);
+  }
+  .run-cmd {
+    display: block;
+    font-family: var(--font-mono);
+    font-weight: var(--weight-regular);
+    font-size: var(--text-2xs);
+    color: var(--muted);
+  }
+  .run-val {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .is-wait .run-name {
+    color: var(--muted);
+  }
+  .bar {
+    grid-column: 2 / 4;
+    height: var(--space-4);
+    border-radius: var(--r-2);
+    background: var(--line);
+    overflow: hidden;
+  }
+  .bar-fill {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: var(--r-2);
+  }
+  .run-foot {
+    margin: 0;
+    padding-top: var(--space-12);
+    border-top: 1px solid var(--line);
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .st-run {
+      animation: none;
+    }
+  }
+</style>

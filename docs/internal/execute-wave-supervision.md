@@ -6,7 +6,7 @@ This document describes how the `/execute` skill supervises a running wave:
 what counts as a heartbeat, the ceilings that turn silence into a failure,
 what a reclaim actually does, and how retries carry partial work forward. For
 the user-facing skill definition, see
-[`plugins/sdlc/skills/execute/SKILL.md`](../plugins/sdlc/skills/execute/SKILL.md).
+[`plugins/sdlc/skills/execute/SKILL.md`](../../plugins/sdlc/skills/execute/SKILL.md).
 Everything here is server-driven: the calling skill never computes elapsed
 time or classifies a stall itself — it calls `execute_state({action:
 "wave-await"})` and follows the returned `next` instruction verbatim.
@@ -203,4 +203,4 @@ staleness check is not a perfect proxy for worker health — only for
 | Five phases | `plugins/sdlc/skills/execute/state-format.md` (Progress Markers), `internal/wave/progress.go` |
 | Three ceilings, classification precedence | `internal/wave/serverstate.go` (`ClassifyTask`), `internal/tools/execute_wave_await.go` (`execWaveStallTimeouts`) |
 | Reclaim, failure causes, retries | `internal/tools/execute_wave_await.go` (`execActionWaveAwait`), `plugins/sdlc/skills/execute/recovering-from-failures.md` |
-| Tuning | `plugins/sdlc/skills/execute/SKILL.md` (Step 0), `docs/skills/execute.md` |
+| Tuning | `plugins/sdlc/skills/execute/SKILL.md` (Step 0), `docs/skills/execute/flags-and-configuration.md` |

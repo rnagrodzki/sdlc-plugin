@@ -87,7 +87,7 @@ and `mcp-output-drives-behavior` guardrails.
   `internal/mcpserver/render.go`), so handlers do not have to
   pre-initialize slices, and no result may show a blank line or an empty
   heading where a collection was.
-- `omitempty` wins over `(none)`. Rule 14 in `docs/mcp-output-contract.md`
+- `omitempty` wins over `(none)`. Rule 14 in `docs/internal/mcp-output-contract.md`
   runs first, when the renderer collects a struct's fields: a field tagged
   `omitempty` or `omitzero` with an empty value is left out completely. Only
   an untagged field renders `- <key>: (none)`. So "absent" in a skill or doc
@@ -135,7 +135,7 @@ and `mcp-output-drives-behavior` guardrails.
   is wrong. `InfraError` means a filesystem, network or process operation
   failed. `DataError` means stored data is wrong: it fails to parse, fails its
   schema, or breaks an invariant (for example two files for one key). Check
-  the class against `docs/mcp-output-contract.md`. A class that does not match
+  the class against `docs/internal/mcp-output-contract.md`. A class that does not match
   the cause is a finding, because the renderer picks the default recovery text
   from the class.
 - A `Next`, `Suggestion` or retry hint that tells the caller to call a tool
@@ -276,7 +276,7 @@ When reviewing changes to MCP handler code, perform these concrete checks:
   of the new action (a file write, a rename, a delete). An annotation that
   fits the old actions but not the new one (for example read-only on a tool
   whose new action writes a file) is a finding, unless
-  `docs/mcp-tool-annotations.md` names an exception that covers the action.
+  `docs/internal/mcp-tool-annotations.md` names an exception that covers the action.
 
 ## Cross-references
 

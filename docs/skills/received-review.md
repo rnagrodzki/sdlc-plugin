@@ -1,194 +1,107 @@
-# /received-review
+# /sdlc:received-review
 
-Respond to code review feedback on a pull request. Reads reviewer comments,
-verifies each one against the actual code, and applies fixes or replies with
-technical justification.
+Get each review comment on your pull request checked against the code, then fixed or answered with a technical reason.
 
-## When to use
+## Why use it
 
-- A reviewer (human or automated) left comments on your PR and you want to
-  work through them systematically.
-- `/ship` triggered an automatic fix loop because the review found issues at
-  or above the project's configured severity threshold.
-- You want review feedback addressed with technical rigor, not surface-level
-  agreement.
+A reviewer, human or automated, left comments on your pull request. Some comments are correct, some are wrong, and some are unclear.
+To agree with every comment is fast, and it puts wrong changes into your code.
+This skill checks each comment against the full codebase and gives it a verdict: will fix, will not fix, disagree or needs direction.
+You approve the plan. Then the skill applies the fixes and replies in each comment thread.
 
-## Syntax
+## Example
 
-    /received-review [options]
+Work through the review comments of pull request 42:
 
-## Flags
+```text
+/sdlc:received-review --pr 42
+```
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--pr <number>` | PR number to process feedback for. | auto-detected from branch |
-| `--auto` | Run without prompts. Only "agree — will fix" ends a finding; every other outcome is recorded as a `needs-direction` follow-up instead of being closed. See [Auto mode](#auto-mode). | off |
-| `--no-harden` | Skip the harden dispatch in Step 11.6. Use when a caller (e.g. `/ship`'s own `harden` step) already owns hardening for this run. | off |
+The skill reads the comments and checks each one against the code, its callers and its tests. It changes nothing at this point. It shows you:
 
-## Examples
+- A summary table: one row for each comment, with its file, line, type, verdict and a one-line reasoning.
+- The action plan: the comments it will fix, the comments it will push back on, and the comments that need direction.
+- The full text of each drafted reply.
 
-**Process feedback on the current branch's PR:**
+Answer `implement`, `edit` or `skip`. After `implement`, the skill applies the fixes one at a time and checks each fix. It then asks before it posts the replies. The run ends with a ledger line such as `Review findings: 14 total = 9 fixed + 5 deferred`.
 
-    /received-review
+## What you get
 
-Detects the PR, reads all comments, verifies each against the code, and works
-through them one by one.
+- Catch a wrong comment before it changes your code: the skill reads the code, the callers and the tests behind each comment.
+- Keep control: the skill changes no code and posts no reply before you approve, unless you pre-approve a severity or pass `--auto`.
+- Send replies that start with the substance: one reply in each comment thread, with no praise. The threads stay open for you to resolve.
+- Lose no finding: a ledger accounts for every finding, and each finding that the skill records as unfixed goes to the `/sdlc:deferred` backlog.
+- Turn findings into guardrails: the skill groups the findings by file and offers a `/sdlc:harden` run for each group.
 
-**Process feedback for a specific PR:**
+## Steps
 
-    /received-review --pr 42
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0 — Plan Mode Check | skill | Stops the run when plan mode is active, because the skill writes files and posts replies. | The go-ahead for the next step | no | always. It stops the run only in plan mode |
+| Step 1 — READ: Gather Review Feedback | skill | Reads `--auto`, `--no-harden` and `--pr` from the arguments and keeps them for the later steps. | The parsed flags | no | always |
+| Step 1a — Fetch PR overview and the auto-apply severities (every run) | tool | Calls `received_review_prepare` for the PR overview, the CI status and `alwaysFixSeverities`. | The PR overview and the pre-approved severities | no | always. With no PR number the overview is skipped |
+| Step 1b — Fetch actual comments (always required — the tool above does not return them) | tool | Fetches the reviewer comments with `gh` and parses each one into a list. Skips the comments that are already addressed and records why. | The list of feedback items | no | always |
+| Step 2 — UNDERSTAND: Categorize and Flag | skill | Gives each item a type and flags the unclear items. Without `--auto` it asks about all unclear items at once. With `--auto` it records each one as `needs-direction`. | The typed items | no | always |
+| Step 3 — VERIFY: Check Against Full Codebase Context | skill | Checks each item against the code, the callers and the tests, and sets a verification status. | The verified items | no | always |
+| Step 4 — EVALUATE: Assess Each Item | skill | Sets a verdict for each item: agree will fix, agree won't fix, disagree or needs direction. With `--auto` only agree will fix and needs direction can remain. | The verdicts | no | always |
+| Step 5 — CRITIQUE #1: Self-Critique the Evaluation | skill | Checks the evaluation against the gates. It shows nothing to the user. | A list of failing gates | no | always |
+| Step 6 — IMPROVE #1: Revise Evaluation | skill | Fixes each failing gate, with at most 2 rounds for each gate. | The revised evaluation | no | always |
+| Step 7 — RESPOND (DO): Draft Responses | skill | Drafts one reply for each item. Each reply starts with the substance and has no praise. | The drafted replies | no | always |
+| Step 8 — CRITIQUE #2: Self-Critique the Responses | skill | Checks the replies against the gates. It shows nothing to the user. | A list of failing gates | no | always |
+| Step 9 — IMPROVE #2: Revise Responses | skill | Fixes each failing gate of the replies, with at most 2 rounds for each gate. | The revised replies | no | always |
+| Step 10 — PRESENT: Show Findings and Proposed Plan | skill | Shows the summary table, the action plan and the drafted replies. Asks `implement`, `edit` or `skip`. | The approved findings | no | always. `--auto` skips the question, and findings in `alwaysFixSeverities` need no approval |
+| Step 11 — IMPLEMENT: Execute Changes | skill | Applies the code fixes in order of importance, records the fix progress and records every finding that stays unfixed. | The fixes and the records of unfixed findings | no | there is an approved finding |
+| Step 11.6 — META-ANALYZE: Cluster Findings and Dispatch harden | skill | Groups the findings that have a verdict and runs `harden` for each approved group through the Skill tool. A failure here does not stop the run. | A `harden` run | yes | `--no-harden` is not passed, and `AskUserQuestion` or `--auto` is available |
+| Step 11.7 — LINK VERIFICATION — HARD GATE | tool | Checks every URL in the reply bodies with `links_validate`. On a violation the skill posts no reply and stops. | The link check result | no | always, before replies are posted |
+| Step 12 — REPLY: Post PR Thread Replies | tool | Prints the summary and the ledger. Without `--auto` it asks `yes`, `skip` or `selective`. Then it posts each reply in its comment thread with `gh api`. | The posted replies | no | always. With no PR number only the summary and the ledger are printed |
+| Step 12.5 — VERIFY: Confirm All Threads Replied | tool | Calls `received_review_verify` and replies to each thread that is still outstanding, in at most 2 rounds. | The final thread status | no | a PR number exists |
 
-**Process feedback without prompts (used by pipelines):**
+### Run facts
 
-    /received-review --auto
-
-## Auto mode
-
-`--auto` is for pipeline and subagent dispatch, where there is no human to
-ask. It does not mean "agree with everything and move on". It narrows what is
-allowed to close a finding down to one verdict:
-
-- **`agree — will fix`** — the only outcome that ends a finding. The fix is
-  made and the review thread gets a reply saying so.
-- **Everything else becomes `needs-direction`** — recorded, not closed.
-  "Agree, won't fix", "disagree", "cannot verify", and comments too unclear to
-  evaluate all land here. Without `--auto`, an unclear comment stops the whole
-  run to ask you; under `--auto` there is no one to ask, so it is recorded
-  instead — with a note on what's unclear — and the run keeps going with the
-  rest of the comments. The thread gets a reply naming the open question, and
-  the finding goes to the backlog.
-
-**A fix that fails its own check is reverted, not retried blindly.** If a
-change doesn't compile or doesn't pass its tests, `--auto` undoes just that
-change and records it as `needs-direction` with the failure noted, instead of
-guessing at a second approach with no one watching.
-
-Either way the thread itself is only replied to, never resolved: this port
-does not resolve review threads programmatically, so close them yourself in
-the GitHub UI once you are satisfied.
-
-A recorded finding keeps the judgment that was actually reached, in a separate
-`reason` field (`wont-fix`, `disagree` or `needs-direction`), so whoever reads
-the backlog later can tell a finding the skill thought was wrong from one that
-is a real fork in the road.
-
-`needs-direction` is only valid when the record names **two or more** candidate
-approaches plus a one-line trade-off between them. One obvious approach is not
-a question — it is a fix.
-
-**Where the records go.** They are written once verdicts are final, not at the
-moment a verdict is first reached — a verdict can still change later in the
-run, and the deferred file is append-only, so an early write would leave a
-stale entry behind. They show up in the deferred backlog that
-[/deferred](deferred.md) triages, and in the end-of-run ledger that accounts
-for every finding as `fixed`, `deferred` (grouped by `reason`), or
-`UNACCOUNTED`. (Manual mode adds a fourth term, `skipped at Step 10`; see
-[Consent and auto-apply severities](#consent-and-auto-apply-severities).)
-
-**Recording is best-effort, with a fallback.** The primary write attaches the
-finding to the current `/ship` run. When there is no ship state for the branch
-— a standalone run, for instance — or the write cannot be persisted, the skill
-falls back to writing straight to the deferred file instead. Only if both fail
-is the finding named `UNACCOUNTED` in the ledger. It is never silently dropped.
-
-**No PR yet? No reply step.** When there's no PR number — for example when
-`/ship` dispatches this skill on its fix loop before ever opening one — there
-are no review threads to reply to. The reply-posting and reply-verification
-steps are skipped outright; only the run's summary and ledger are shown.
-
-**A finding that is already deferred.** A finding can arrive with a
-`**Deferred-id:**` line. The line means the finding is already a deferred item.
-`/ship` sends such findings in the fix pass of its [`harden` step](ship.md).
-This skill fixes the finding or leaves it deferred under the same id. It never
-defers the finding a second time, so the backlog gets no duplicate. On a live
-`/ship` run, a fix resolves the deferred item. The summary lists each finding
-that stays deferred as `<file:line> stays deferred as <id>`.
-
-**It also reaches `/harden`.** Step 11.6 clusters the findings by file and
-dispatches [`/harden --auto`](harden.md) for each cluster (capped at 5), which
-applies guardrail and review-dimension edits (add, tighten, repair, and removal
-of a rule with a dead reference) to your project without a confirmation prompt.
-Merges and other removals wait as pending deferred items, as
-[`/harden`](harden.md#auto-mode-and-pending-edits) describes. Each applied edit
-is listed under "Auto-accepted", and each pending edit under "Pending", in the
-summary this skill relays back. Pass
-`--no-harden` to skip this dispatch — for example when `/ship`'s own `harden`
-step already owns hardening for the run.
-
-## Consent and auto-apply severities
-
-Set `receivedReview.alwaysFixSeverities` in `.sdlc-v2/local.toml` (or `~/.sdlc/local.toml`).
-Allowed values: `critical`, `high`, `medium`, `low`, `info`. Default: `[]` (every finding asks).
-
-| Situation | What happens |
+| Fact | Value |
 |---|---|
-| `--auto` | Every "will fix" finding gets its fix. The setting adds nothing. |
-| A "will fix" finding with a listed severity | It gets its fix with no prompt. One `pre-approved` line shows it, for example `pre-approved (high in alwaysFixSeverities): internal/api/user.go:42 — <title>`. |
-| A comment with no severity | It counts as `medium`. |
-| Other findings exist | One prompt asks about them only. |
-| You answer skip | Only the pre-approved findings get their fix. Skipped findings get no fix, no reply and no record. |
-| You answer edit | The skill shows the plan again and computes the pre-approved findings again. |
-| Every finding is pre-approved | No Step 10 plan prompt. The later prompts still ask in manual mode: the Step 11.6 harden prompt and, when a PR exists, the Step 12 reply prompt. |
-| No finding needs an action | No prompt. Only the summary shows. |
-| A bad value: a wrong type (including a `receivedReview` value that is not a table) or an unknown item such as `"blocker"` | The whole list becomes `[]`, one warning shows, and every finding asks. `["high", "blocker"]` pre-approves nothing. |
-| The local file cannot be read | The error shows, and every finding asks. |
+| Starts | With `/sdlc:received-review`. `--pr <number>` selects the PR. `--auto` and `--no-harden` change the run. |
+| Ends | After Step 12.5, or after Step 12 when there is no PR number. A link violation at Step 11.7 stops the run. |
+| Asks the user | At Step 2 for unclear items, at Step 3 for items that cannot be verified, at Step 10: `implement`, `edit` or `skip`, at Step 11.6: `dispatch` or `skip` for each group, and at Step 12: `yes`, `skip` or `selective`. `--auto` asks nothing. |
+| Resume | none |
 
-In manual mode, the end-of-run ledger gets one more term: `skipped at Step 10` counts each finding that you skipped at the Step 10 prompt, whether or not pre-approved findings got their fix. The term shows only when its count is not 0. The summary also gets one line for these findings:
+## More examples
 
-```
-- 11 findings skipped at the Step 10 prompt (no fix, no reply, no record)
-Review findings: 14 total = 3 fixed + 0 deferred + 11 skipped at Step 10
+**Fix the findings of a local review, with no pull request:**
+
+```text
+/sdlc:received-review
 ```
 
-## Fix progress on the dashboard
+Run it after `/sdlc:review` in the same conversation, or paste the findings. With no PR number, the skill takes the feedback from the conversation or from your paste. It fixes what you approve, then prints the summary and the ledger. It posts no reply, because there is no comment thread.
 
-In every mode, Step 11 writes the status of each accepted finding (`queued`,
-`fixing`, `fixed`, `failed`, `deferred`) to `healing.fixProgress` of the ship
-state. Two other calls also set the matching row:
+**Run with no prompt, in a pipeline:**
 
-- `ship_state` `healing_record` with `kind:"fixed"` sets the row to `fixed`.
-- `ship_state` action `defer` sets the row to `deferred` and copies the
-  deferred id onto it. It does this only when its `deferred.json` write
-  succeeded. A `failed` row stays `failed`.
+```text
+/sdlc:received-review --pr 42 --auto
+```
 
-Each of these calls changes a row only when exactly one row matches the
-finding. It never creates a row. So when the skill skips a `fix-progress`
-call, the row still moves on at the `fixed` or `defer` call.
-The [dashboard](../dashboard.md) shows these rows in the review queue of
-the `review` step. It shows them on the received-review step when the run
-has no review queue. The rows are for display only: the review ledger counts
-the separate `fixed` records.
+The skill fixes every "will fix" finding and asks nothing. It records each other finding as `needs-direction` for `/sdlc:deferred`, and it does not close that finding. See [Auto mode](./received-review/consent-and-auto-mode.md#auto-mode).
 
-The writes need a live `/ship` run. In a standalone run, the first call
-reports that no run is live, and the skill makes no more status writes.
+**Pre-approve the severities that you always fix:**
 
-One run stores at most 200 fix records. No setting changes this cap. At the
-cap, the tool rejects a new finding with an error that says "Do not retry".
-The skill then makes no more `fix-progress` calls in the run. The same stop
-applies to a damaged ship state. The fixes, the records and the replies
-continue. The `fixed` and `defer` calls still set the rows that are already
-stored, so a stored row can still move to `fixed` or `deferred` after the
-stop.
+```toml
+# .sdlc-v2/local.toml
+[receivedReview]
+alwaysFixSeverities = ["critical", "high"]
+```
+
+A "will fix" finding with a listed severity gets its fix with no prompt, and one `pre-approved` line shows it. One prompt asks about the other findings. See [Consent and auto-apply severities](./received-review/consent-and-auto-mode.md#consent-and-auto-apply-severities).
+
+## Reference
+
+- [Flags, consent and auto mode](./received-review/consent-and-auto-mode.md): the 3 flags, the prompts of a manual run, the pre-approved severities, what `--auto` changes, and tips.
+- [Records and the ledger](./received-review/records-and-ledger.md): the ledger terms, where an unfixed finding is recorded, and the fix progress on the dashboard.
 
 ## Related skills
 
-- [/review](review.md) — Produces the findings that this skill responds to.
-- [/commit](commit.md) — Commit the fixes after addressing feedback.
-- [/ship](ship.md) — Runs this skill when review findings meet or exceed the
-  severity threshold.
-- [/deferred](deferred.md) — Triages the findings this skill records instead
-  of fixing.
-- [/harden](harden.md) — Dispatched per finding cluster in Step 11.6 to turn
-  recurring findings into project guardrails.
-
-## Tips and gotchas
-
-- **Dual self-critique.** The skill verifies each comment against the actual
-  code before accepting it. If a comment is incorrect, it explains why instead
-  of blindly agreeing.
-- **Not just for human reviewers.** This skill processes feedback from any
-  source: humans, Copilot, or `/review`'s own findings.
-- **Fix loop in /ship.** When running inside `/ship`, this skill triggers
-  conditionally — only if `/review` produced at least one finding that meets
-  or exceeds the configured severity threshold. Findings below it are deferred
-  instead, not dropped.
+- [/sdlc:review](./review.md): produces the findings that this skill responds to.
+- [/sdlc:commit](./commit.md): commits the fixes after the run.
+- [/sdlc:ship](./ship.md): runs this skill when review findings are at or above the review threshold.
+- [/sdlc:deferred](./deferred.md): triages the findings that this skill records and does not fix.
+- [/sdlc:harden](./harden.md): turns a group of findings into project guardrails.

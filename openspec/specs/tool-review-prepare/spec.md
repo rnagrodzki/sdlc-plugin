@@ -1,7 +1,7 @@
 # tool-review-prepare Specification
 
 ## Purpose
-MCP tool `review_prepare` pre-computes everything the `review` skill needs before it dispatches one reviewer per dimension: changed files, dimension matching, per-dimension diff and slice files, commit context, and a plan critique. It also saves a finished review comment under `.sdlc-v2/reviews/` in save mode. Output follows docs/mcp-output-contract.md.
+MCP tool `review_prepare` pre-computes everything the `review` skill needs before it dispatches one reviewer per dimension: changed files, dimension matching, per-dimension diff and slice files, commit context, and a plan critique. It also saves a finished review comment under `.sdlc-v2/reviews/` in save mode. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

@@ -192,7 +192,7 @@ func TestListToolsOrdering(t *testing.T) {
 	}
 
 	// No tool may advertise an output schema: the Markdown contract
-	// (docs/mcp-output-contract.md) says content[0].text is the only
+	// (docs/internal/mcp-output-contract.md) says content[0].text is the only
 	// channel, and an outputSchema would oblige the server to send
 	// structuredContent back.
 	for _, tool := range resp.Tools {

@@ -1,7 +1,7 @@
 # tool-verify-tag-ancestry Specification
 
 ## Purpose
-MCP tool `verify_tag_ancestry` checks whether a git tag is an ancestor of HEAD. It is registered as `INTERNAL — called by sdlc skills only`; no current skill calls it, and `plugins/sdlc/skills/ship/reference.md` forbids calling it from the ship pipeline. Output follows docs/mcp-output-contract.md.
+MCP tool `verify_tag_ancestry` checks whether a git tag is an ancestor of HEAD. It is registered as `INTERNAL — called by sdlc skills only`; no current skill calls it, and `plugins/sdlc/skills/ship/reference.md` forbids calling it from the ship pipeline. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

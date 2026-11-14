@@ -1,7 +1,7 @@
 # tool-dimensions-render-instructions Specification
 
 ## Purpose
-`dimensions_render_instructions` renders one review-dimension file to its GitHub Copilot instructions mirror, writes a dimension file, or lists installed dimensions. The `setup` skill (Step 0 snapshot and the setup-dimensions sub-flow) and the `harden` skill's Copilot-mirror step call it. Output follows docs/mcp-output-contract.md.
+`dimensions_render_instructions` renders one review-dimension file to its GitHub Copilot instructions mirror, writes a dimension file, or lists installed dimensions. The `setup` skill (Step 0 snapshot and the setup-dimensions sub-flow) and the `harden` skill's Copilot-mirror step call it. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

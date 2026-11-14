@@ -126,7 +126,7 @@ Several `internal/tools/*.go` files already follow this with their own
   configured file is unreadable — surface the error to the caller so they
   can choose recovery.
 - Pick the error class by cause, following the Error codes table in
-  `docs/mcp-output-contract.md`: `DomainError` for bad caller input,
+  `docs/internal/mcp-output-contract.md`: `DomainError` for bad caller input,
   `InfraError` for filesystem, network, or process failures, `DataError` for
   parse or schema failures. A filesystem read failure returned as
   `DomainError` is a finding. Example: `openspec_save` mapped every plan read

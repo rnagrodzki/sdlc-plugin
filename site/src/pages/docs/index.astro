@@ -1,0 +1,94 @@
+---
+// /docs/ shows the list of the docs pages, each with a one-line description, then README.md.
+// One flat list, no sidebar tree, no search.
+import { getEntry, render } from 'astro:content';
+import DocLayout from '../../layouts/DocLayout.astro';
+import { docsPages, MORE_PAGES } from '../../lib/docs-pages';
+import { tocEntries } from '../../lib/doc-meta.mjs';
+
+const readme = await getEntry('root', 'readme');
+if (!readme) throw new Error('README.md is not in the root collection');
+const { Content, headings } = await render(readme);
+
+const guides = [...(await docsPages()), ...MORE_PAGES];
+const toc = [
+  { depth: 2, slug: 'guides', text: 'Guides' },
+  { depth: 2, slug: 'readme', text: 'README' },
+  ...tocEntries(headings),
+];
+---
+
+<DocLayout
+  title="Docs | sdlc"
+  description="The guides and the README of the sdlc plugin."
+  current="docs"
+  heading="Docs"
+  lead="The guides of the sdlc plugin, then the README of the repository."
+  crumb="sdlc plugin"
+  toc={toc}
+>
+  <section slot="intro" class="guides" aria-labelledby="guides">
+    <h2 id="guides">Guides</h2>
+    <ul class="glass">
+      {
+        guides.map((page) => (
+          <li>
+            <a href={page.href}>
+              <span class="g-title">{page.title}</span>
+              <span class="g-lead">{page.lead}</span>
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+  </section>
+  <h2 id="readme">README</h2>
+  <Content />
+</DocLayout>
+
+<style>
+  .guides h2 {
+    margin: 0 0 var(--space-16);
+    font-family: var(--font-display);
+    font-size: var(--text-2xl);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    font-weight: var(--weight-semibold);
+    scroll-margin-top: var(--space-24);
+  }
+  .guides ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    border-radius: var(--r-panel);
+    overflow: hidden; /* the hover fill of the first and last row follows the panel corners */
+  }
+  .guides li + li {
+    border-top: 1px solid var(--line);
+  }
+  /* One row is one link: the title, then the description. They stack when the row is narrow. */
+  .guides a {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-4) var(--space-24);
+    padding: var(--space-16) var(--space-22);
+    color: inherit;
+    text-decoration: none;
+  }
+  .guides a:hover {
+    background: var(--white-50);
+  }
+  .guides a:focus-visible {
+    outline-offset: calc(-1 * var(--space-2)); /* inside the row: the panel clips an outer ring */
+  }
+  .g-title {
+    flex: 1 1 14ch;
+    font-weight: var(--weight-semibold);
+    color: var(--accent-on-field);
+  }
+  .g-lead {
+    flex: 3 1 28ch;
+    color: var(--muted);
+    font-size: var(--text-md);
+  }
+</style>

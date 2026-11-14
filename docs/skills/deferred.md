@@ -1,124 +1,89 @@
-# /deferred
+# /sdlc:deferred
 
-Show the items that earlier pipeline runs recorded but did not fix, and triage
-them: file an item as a GitHub issue, or resolve it without filing. The full
-command name is `/sdlc:deferred`.
+See what earlier pipeline runs recorded but did not fix, and turn each item into a GitHub issue or close it.
 
-## When to use
+## Why use it
 
-- A `/ship` run ended and its summary said deferred items are still open.
-- You want to see the backlog: review findings that fell below the review
-  threshold, issue drafts raised while a plan was executing, findings
-  `/received-review` left unfixed (`wont-fix`, `disagree`, `needs-direction`),
-  and rule edits `/harden --auto` held back for a person (source
-  `harden-pending`).
-- You want to turn a deferred item into a tracked GitHub issue.
-- You decided an item is not worth tracking and want to close it.
+A pipeline run records the items that it finds and does not fix. These deferred items go into one backlog of the project.
+The items are review findings below the review threshold, issue drafts from the execute step, and findings that `/sdlc:received-review` left unfixed. Rule edits that `/sdlc:harden --auto` held back for a person are items too.
+This skill shows the open items. You file an item as a GitHub issue, or you resolve it without an issue.
+The skill files no issue before you approve its full text.
 
-## Syntax
+## Example
 
-    /deferred [--list | --resolve <id>]
-
-With no flag, `/deferred` runs the triage flow.
-
-## Flags
-
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--list` | Print the open items as a table and stop. Asks nothing and changes nothing. Cannot be combined with `--resolve`. | off |
-| `--resolve <id>` | Mark the item with this id as resolved, without filing an issue. Asks nothing. An id that is already resolved is reported as such and nothing changes. Cannot be combined with `--list`. | — |
-
-## Examples
-
-**Triage the open items:**
+A `/sdlc:ship` run ended, and its summary says that deferred items are still open. Run:
 
     /deferred
 
-Shows every open item grouped by priority, then asks whether to create GitHub
-issues, resolve items without filing, or skip. You pick the items. For each
-issue, the full title and body are shown in chat first, and nothing is filed
-until you approve it. If no item is open, it prints `No deferred items open.`
-and stops.
+The skill prints each open item under its priority, as `[<id>] <first line of the description> (source: <source>)`. Then it asks what to do:
+
+- **Create GitHub issues**: file the items you pick as issues.
+- **Resolve without filing**: mark the items you pick as resolved.
+- **Skip**: leave everything open and review later.
+
+For each issue, the skill shows the full title and body in chat. It files the issue only after you approve the text, then it prints the issue URL.
+
+`/deferred` is the short name. The full command name is `/sdlc:deferred`.
+
+## What you get
+
+- See the whole backlog: each open item from earlier runs in one list, grouped by priority.
+- Turn an item into a tracked GitHub issue: the skill drafts the title and the body from the recorded item and adds the label `deferred-followup`.
+- Approve each issue first: you see the full text, then you file it as shown, change the text, or skip the item.
+- Close an item that is not worth an issue: `--resolve <id>` resolves it and asks nothing.
+- Look at no risk: `--list` prints the open items, asks nothing and changes nothing.
+
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 1: Parse arguments | skill | Reads the flags and picks the mode: triage, list, or resolve one item. It stops with a usage line when both flags are given, when `--resolve` has no id, or when another argument appears. | The chosen mode | no | always |
+| Step 2a: List the open items | skill | Reads the items through the `ship_state` tool and prints the open items as a table, high priority first. It asks nothing and changes nothing. | The table of open items | yes | `--list` |
+| Step 2b: Resolve one item | skill | Marks the item with this id as resolved through the `ship_state` tool, and files no issue. It asks nothing. An item that is already resolved stays as it is. | The resolved item | yes | `--resolve <id>` |
+| Step 2c: Triage | skill | Shows the open items and asks what to do. For each item you pick, it files a GitHub issue after you approve the full draft, or it resolves the item without an issue. | The filed issues, the resolved items and one line of counts | yes | no flag |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/sdlc:deferred`: with no flag, with `--list`, or with `--resolve <id>`. |
+| Ends | After Step 2 runs its mode. Triage and `--list` end at once when no item is open, and print `No deferred items open.` |
+| Asks the user | In triage mode only. It always asks before it acts and shows the full issue draft first. It has no auto mode. `--list` and `--resolve` ask nothing. |
+| Resume | none |
+
+## More examples
 
 **Print the backlog only:**
 
     /deferred --list
 
-Prints a table of the open items, high priority first. Resolved items are not
-shown.
+The skill prints a table of the open items, high priority first, with the columns `ID`, `Priority`, `Reason`, `Created` and `Description`. Resolved items are not in the table.
 
-**Resolve one item without filing:**
+**Resolve one item without an issue:**
 
     /deferred --resolve review-deferred-2026-09-21T10:15:00Z-1
 
-Marks that one item resolved. Use `--list` first to find the id. If the item
-was already resolved, it says so and changes nothing.
+The skill prints `Resolved <id> without filing an issue.` Use `--list` first to find the id. For an item that is already resolved, it prints `<id> is already resolved.` and changes nothing.
+
+**Pending rule edits are not filed.** For an item with the source `harden-pending`, triage files no issue and prints two lines:
+
+```text
+<id> holds rule edits that need a person. Run: /sdlc:harden --failure-text "Pending rule edits: <id>" --skill deferred
+Then resolve it: /sdlc:deferred --resolve <id>
+```
+
+The first command applies the rule edits with your approval. The item stays open until you run the second command.
+The choice to resolve without filing also leaves such an item open and prints the same command.
+
+## Reference
+
+- [Deferred items](./deferred/items.md): where an item comes from, what `source` and `reason` mean, and the limits. **The durable write is best-effort.** An item whose write failed is not in the backlog.
+- [Triage and issue filing](./deferred/triage.md): the questions, the issue text, the label `deferred-followup`, and what the skill does when `gh` fails.
 
 ## Related skills
 
-- [/ship](ship.md) — Its last step runs the same triage on the items still open
-  when a run ends.
-- [/review](review.md) — Findings below the review threshold are recorded as
-  deferred items.
-- [/execute](execute.md) — Issue drafts raised while a plan runs are recorded as
-  deferred items.
-- [/received-review](received-review.md) — Findings it does not fix are recorded
-  as deferred items, with a `reason` of `wont-fix`, `disagree` or
-  `needs-direction`.
-- [/harden](harden.md) — Under `--auto`, rule edits that need a person are
-  recorded as deferred items with source `harden-pending`. Triage prints the
-  `/harden` command that applies them.
-
-## Tips and gotchas
-
-- **Items are recorded when they are found.** They are stored in the project's
-  deferred-items file as soon as a review, execute, received-review or harden
-  step creates them, so they normally survive an early exit from a pipeline run.
-  `/deferred` only reads and closes them. It never adds one.
-- **Pending rule edits are not filed.** `/harden --auto` stores rule edits that
-  need a person as items with source `harden-pending`, one item for each rule
-  section. Triage never files such an item as a GitHub issue. It prints the
-  `/harden` command that applies the edits with your approval. The item stays
-  open until you resolve it with `/deferred --resolve <id>`. The choice to
-  resolve without filing also leaves such an item open and prints the same
-  command.
-- **The durable write is best-effort.** If it fails, the recording tool prints a
-  warning and keeps going instead of failing the call. That item then lives only
-  on the run-scoped state file and is lost when that file is cleaned up, so it
-  never reaches `/deferred`. Watch for those warnings during a run.
-- **`source` is not the reason.** Every item recorded through `ship_state defer`
-  has an id starting with `review-deferred-`. Its source is whatever the caller
-  passed: `/received-review` passes `received-review`, and the source defaults
-  to `review-below-threshold` when the caller passes none. The `reason` field
-  (`below-threshold`, `needs-direction`, `disagree`, `wont-fix`) says why an
-  item was deferred. Execute drafts use the source `execute-drift` and have no
-  reason.
-- **Nothing is filed without your approval.** Before each `gh issue create`,
-  the complete title and body are printed in chat. You can approve, change the
-  text, or skip that item. Every issue gets the label `deferred-followup`
-  (unless you choose to file without it, see below), and no AI-tool attribution
-  line is added to the body.
-- **An item is resolved only after its issue exists.** If `gh` fails, the item
-  stays open. An auth or permission error stops the whole batch; a network or
-  rate-limit error is retried once. A missing `deferred-followup` label is the
-  common cause. `gh label create deferred-followup` fixes it, but that writes to
-  the shared remote repo, so `/deferred` asks you first and offers to file the
-  issue without the label instead.
-- **The issue body is as detailed as the recorded item.** Run from `/ship`'s
-  last step, an execute draft is filed with its full body. Run later on its own,
-  the body is built from the recorded fields: description, priority, time, and
-  file, severity and reason when they were set. The description sits in a code
-  fence, so its text cannot pass for the metadata lines below it. The body has no `Source` line —
-  see the `source` note above — but it carries the deferred item id, whose
-  prefix shows which step recorded it.
-- **Triage always asks.** `/deferred` has no automatic mode. `/ship` in its
-  automatic mode skips this question, so items wait until you run `/deferred`.
-- **Resolving cannot be undone from here.** There is no command to reopen a
-  resolved item.
-
-## Maintaining this skill
-
-The triage flow is written down in exactly one place:
-`plugins/sdlc/skills/deferred/reference.md`. Two callers follow it — the
-`/deferred` skill in its default mode, and `/ship` Step 10b. Change the flow
-there. Do not copy it into either caller.
+- [/sdlc:ship](./ship.md): runs the same triage in its last step. In its automatic mode it skips the question, so the items wait for this skill.
+- [/sdlc:review](./review.md): in a `/sdlc:ship` run, its findings below the review threshold are recorded as deferred items.
+- [/sdlc:execute](./execute.md): issue drafts raised while a plan runs are recorded as deferred items.
+- [/sdlc:received-review](./received-review.md): records the findings that it does not fix, with a reason of `wont-fix`, `disagree` or `needs-direction`.
+- [/sdlc:harden](./harden.md): under `--auto`, stores the rule edits that need a person as deferred items. Triage prints the command that applies them.

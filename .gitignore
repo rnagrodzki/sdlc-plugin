@@ -61,3 +61,12 @@ tmp/
 
 # scratch files of Claude sessions
 .ctmp/
+
+# built preview of the site design reference
+/docs/internal/site-design/sdlc-site-looks.html
+
+# site build output
+/site/node_modules/
+/site/dist/
+/site/.astro/
+/site/.lighthouseci/

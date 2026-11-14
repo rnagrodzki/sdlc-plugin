@@ -1,7 +1,7 @@
 # tool-setup-prepare Specification
 
 ## Purpose
-`setup_prepare` returns the static setup section manifest, a config-migration flag, runtime-detected defaults, and CI script drift. The `setup` skill calls it at pre-flight and again after writes. Output follows docs/mcp-output-contract.md.
+`setup_prepare` returns the static setup section manifest, a config-migration flag, runtime-detected defaults, and CI script drift. The `setup` skill calls it at pre-flight and again after writes. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

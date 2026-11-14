@@ -1,0 +1,152 @@
+---
+// The self-healing and self-learning section of Home. It reads
+// src/data/pillars.mjs. Each skill name is a link to its skill page. A pillar
+// links to its product page only when the feature entry has claims.
+import { BASE } from '../../site.config.mjs';
+import { features } from '../data/features.mjs';
+import { pillarNote, pillars } from '../data/pillars.mjs';
+import { isRoutable } from '../lib/assets.mjs';
+import { inlineParts } from '../lib/sequence-state.mjs';
+import { skillHref } from '../lib/skill-map.mjs';
+
+const columns = pillars.map((pillar) => {
+  const feature = features.find((f) => f.slug === pillar.feature);
+  return { ...pillar, feature: feature && isRoutable(feature) ? feature : undefined };
+});
+---
+
+<ul class="pillars">
+  {
+    columns.map((pillar) => (
+      <li class:list={['pillar', 'island', `pillar-${pillar.id}`]}>
+        <p class="pillar-kicker">{pillar.kicker}</p>
+        <h3 class="pillar-title">{pillar.title}</h3>
+        <p class="pillar-lead">{pillar.lead}</p>
+        <ul class="pillar-points">
+          {pillar.points.map((point) => (
+            <li>{point}</li>
+          ))}
+        </ul>
+        <ul class="pillar-skills" aria-label="Skills">
+          {pillar.skills.map((name) => (
+            <li>
+              <a class="skill-chip" href={skillHref(name, BASE)}>
+                /sdlc:{name}
+              </a>
+            </li>
+          ))}
+        </ul>
+        {pillar.feature && (
+          <a class="pillar-more" href={`${BASE}/features/${pillar.feature.slug}/`}>
+            {pillar.feature.title}
+          </a>
+        )}
+      </li>
+    ))
+  }
+</ul>
+<p class="pillar-note">
+  {inlineParts(pillarNote).map((part) => (part.kind === 'code' ? <code>{part.value}</code> : part.value))}
+</p>
+
+<style>
+  .pillars {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-16);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .pillar {
+    --pillar-color: var(--accent);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    padding: var(--space-24) var(--space-24) var(--space-22);
+  }
+  /* The name of the pillar, as a filled label in the color of the pillar. */
+  .pillar-kicker {
+    align-self: flex-start;
+    margin: 0;
+    padding: var(--space-2) var(--space-10);
+    border-radius: var(--r-ctl);
+    background: var(--pillar-color);
+    color: var(--white);
+    font-size: var(--text-2xs);
+    font-weight: var(--weight-semibold);
+  }
+  .pillar-learn {
+    --pillar-color: var(--go);
+  }
+  .pillar-maintain {
+    --pillar-color: var(--ink);
+  }
+  .pillar-title {
+    font-family: var(--font-display);
+    margin: 0;
+    font-size: var(--text-2xl);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    font-weight: var(--weight-semibold);
+    text-wrap: balance;
+  }
+  .pillar-lead {
+    margin: 0;
+    font-size: var(--text-base);
+    color: var(--muted);
+  }
+  .pillar-points {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--text-md);
+  }
+  .pillar-points li {
+    position: relative;
+    padding-left: var(--space-22);
+  }
+  /* The check before each point, in the color of the pillar. */
+  .pillar-points li::before {
+    content: '';
+    position: absolute;
+    left: var(--space-4);
+    top: var(--space-4);
+    width: var(--space-5);
+    height: var(--space-10);
+    border: solid var(--pillar-color);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+  .pillar-skills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    margin: auto 0 0;
+    padding: var(--space-4) 0 0;
+    list-style: none;
+  }
+  .pillar-more {
+    align-self: flex-start;
+    color: var(--accent-on-field);
+    font-size: var(--text-sm);
+    font-weight: var(--weight-medium);
+    text-underline-offset: var(--space-3);
+  }
+  .pillar-note {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-sm);
+  }
+  .pillar-note code {
+    font-size: var(--text-code);
+  }
+  @media (max-width: 900px) {
+    .pillars {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

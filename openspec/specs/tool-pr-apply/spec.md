@@ -1,7 +1,7 @@
 # tool-pr-apply Specification
 
 ## Purpose
-MCP tool `pr_apply` pushes the current branch when needed and creates or updates its pull request with `gh`, recording release intent (label plus body markers) when a release level is given. The `pr` skill calls it after user approval. Output follows docs/mcp-output-contract.md.
+MCP tool `pr_apply` pushes the current branch when needed and creates or updates its pull request with `gh`, recording release intent (label plus body markers) when a release level is given. The `pr` skill calls it after user approval. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

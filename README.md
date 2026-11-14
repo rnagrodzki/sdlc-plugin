@@ -14,6 +14,8 @@ New to this plugin? See [`docs/getting-started.md`](docs/getting-started.md)
 for install, project setup, and the day-to-day skill workflow. This README
 covers how the plugin works internally.
 
+**Website:** [rnagrodzki.github.io/sdlc-plugin](https://rnagrodzki.github.io/sdlc-plugin/) shows the product pages, the skill pages and the docs.
+
 ## Install
 
 ```
@@ -174,6 +176,17 @@ at each step; `supervised` is the safer default for interactive use.
   sha256sum-compatible `checksums.txt`), triggered by pushing a `v<version>`
   tag (`.github/workflows/release.yml`). `lefthook.yml` runs the same
   `go vet` + test steps as CI on `pre-push`.
+- `site/` is the Astro project of the website. It builds the pages from
+  `README.md`, `CHANGELOG.md` and `docs/**` (not `docs/internal/**`). It uses
+  bun. `task site:install` installs the packages, `task site:dev` serves the
+  site with live reload, `task site:test` runs the Node tests, and
+  `task site:build` builds the site and checks its routes and links. These checks run only
+  in `.github/workflows/site.yml`; `lefthook.yml` does not run them. The
+  `version` of each entry in `site/src/data/assets.json` and
+  `site/src/data/step-times.json` must not be older than the newest minor
+  release in `CHANGELOG.md`. Page style rules:
+  [`docs/internal/skill-page-style.md`](docs/internal/skill-page-style.md).
+  Design reference: [`docs/internal/site-design/`](docs/internal/site-design/README.md).
 
 ## Troubleshooting
 

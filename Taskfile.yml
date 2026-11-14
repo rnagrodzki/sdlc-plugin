@@ -98,6 +98,31 @@ tasks:
     cmds:
       - go run ./cmd/design-preview -mode merge
 
+  site:install:
+    desc: Install the site dependencies
+    dir: site
+    cmds:
+      - bun install --frozen-lockfile
+
+  site:dev:
+    desc: Serve the site with live reload
+    dir: site
+    cmds:
+      - bun run dev
+
+  site:test:
+    desc: Run the site unit tests
+    dir: site
+    cmds:
+      - bun run test
+
+  site:build:
+    desc: Build the site and scan the output
+    dir: site
+    cmds:
+      - bun run build
+      - bun run verify
+
   git:clear:
     desc: Delete local branches whose upstream is gone (prunes after fetch, skips current branch)
     cmds:

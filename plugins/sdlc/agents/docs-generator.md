@@ -30,7 +30,7 @@ Read the manifest JSON from `MANIFEST_FILE`. The manifest contains:
 ## Step 1 — Read Source Files
 
 In `tool-reference` and `architecture-overview` modes, also read `internal/mcpserver/render.go` and
-`docs/mcp-output-contract.md` before documenting any tool result shape: results are Markdown, not
+`docs/internal/mcp-output-contract.md` before documenting any tool result shape: results are Markdown, not
 JSON, and those two files carry the rules (root `Next` hoist, `render:"raw"`, `(none)` for nil or
 empty collections, the `## Do this` section on errors).
 

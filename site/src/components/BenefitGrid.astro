@@ -1,0 +1,82 @@
+---
+// The other benefits of Home. They read src/data/benefits.mjs. Each skill
+// name is a link to its skill page.
+import { BASE } from '../../site.config.mjs';
+import { benefits } from '../data/benefits.mjs';
+import { inlineParts } from '../lib/sequence-state.mjs';
+import { skillHref } from '../lib/skill-map.mjs';
+---
+
+<ul class="benefits">
+  {
+    benefits.map((benefit) => (
+      <li class="benefit island">
+        <h3 class="benefit-title">{benefit.title}</h3>
+        <p class="benefit-text">
+          {inlineParts(benefit.text).map((part) => (part.kind === 'code' ? <code>{part.value}</code> : part.value))}
+        </p>
+        <ul class="benefit-skills" aria-label="Skills">
+          {benefit.skills.map((name) => (
+            <li>
+              <a class="skill-chip" href={skillHref(name, BASE)}>
+                /sdlc:{name}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </li>
+    ))
+  }
+</ul>
+
+<style>
+  .benefits {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-16);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .benefit {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-8);
+    padding: var(--space-20) var(--space-22);
+  }
+  .benefit-title {
+    font-family: var(--font-display);
+    margin: 0;
+    font-size: var(--text-xl);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-2);
+    font-weight: var(--weight-semibold);
+    text-wrap: balance;
+  }
+  .benefit-text {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-md);
+  }
+  .benefit-text code {
+    font-size: var(--text-code);
+  }
+  .benefit-skills {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6);
+    margin: auto 0 0;
+    padding: var(--space-6) 0 0;
+    list-style: none;
+  }
+  @media (max-width: 900px) {
+    .benefits {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 560px) {
+    .benefits {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

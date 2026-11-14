@@ -1,7 +1,7 @@
 # tool-ship-state Specification
 
 ## Purpose
-MCP tool `ship_state` reads and updates the ship pipeline's run state: step lifecycle, decisions, deferred findings, self-healing records, resume data, cleanup, garbage collection, the end-of-run report, and the durable history store. The `ship` skill and its sub-skills (`received-review`, `harden`, `deferred`) call it throughout a run. Output follows docs/mcp-output-contract.md.
+MCP tool `ship_state` reads and updates the ship pipeline's run state: step lifecycle, decisions, deferred findings, self-healing records, resume data, cleanup, garbage collection, the end-of-run report, and the durable history store. The `ship` skill and its sub-skills (`received-review`, `harden`, `deferred`) call it throughout a run. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

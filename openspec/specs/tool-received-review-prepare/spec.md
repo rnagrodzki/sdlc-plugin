@@ -1,7 +1,7 @@
 # tool-received-review-prepare Specification
 
 ## Purpose
-MCP tool `received_review_prepare` gives the `received-review` skill a pull request overview: PR identity, the `gh pr view` text, and the `gh pr checks` text. It does not return review comments or classify threads. Output follows docs/mcp-output-contract.md.
+MCP tool `received_review_prepare` gives the `received-review` skill a pull request overview: PR identity, the `gh pr view` text, and the `gh pr checks` text. It does not return review comments or classify threads. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

@@ -1,156 +1,97 @@
-# /execute
+# /sdlc:execute
 
-Implement a plan file by running tasks in optimized parallel waves, with
-verification after each wave and automatic recovery from failures.
+Implement a plan file in parallel waves, with a check after each wave and automatic recovery when a task fails.
 
-## When to use
+## Why use it
 
-- You have a plan file (from `/plan` or written manually) and want to
-  implement it.
-- You want tasks grouped into dependency-aware waves that run in parallel
-  where possible.
-- You want automatic error recovery — if a task fails, the skill retries or
-  adjusts before stopping.
+A plan with many tasks is slow to implement one task at a time, and one failed task can stop the work.
+`/sdlc:execute` rates each task, groups the tasks into waves by their dependencies and runs the tasks of a wave in parallel.
+It checks each wave, retries a failed task and saves its progress, so a stopped run continues where it stopped.
 
-## Syntax
+## Example
 
-    /execute <plan-file-path> [options]
-    /execute --plan <path> [options]
-    /execute --resume [--plan <path>]
+```text
+/sdlc:execute ~/.claude/plans/auth-redesign.md
+```
 
-## Flags
+The skill reads the plan, rates each task by complexity and risk, and builds the waves.
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `<plan-file-path>` | Path to the plan file. Required unless resuming. | none |
-| `--plan <path>` | Alternative way to specify the plan file path. | none |
-| `--quality <level>` | Quality tier: `full`, `balanced`, or `minimal` (see table below). | interactive prompt — unless `executePrefs.quality` is set, which fixes the tier and skips the prompt without this flag. See [Configuration](#configuration). |
-| `--resume` | Resume from saved progress after an interruption. | off |
-| `--rebase <mode>` | Rebase strategy: `auto`, `skip`, or `prompt`. | `skip` |
-| `--auto` | Skip all interactive prompts. | off — unless `executePrefs.auto` is set, or a dispatching `/ship` run is itself in auto mode; the three sources are OR-combined. See [Configuration](#configuration). |
-| `--branch <name>` | Create and check out this branch before executing. | auto-derived |
-| `--wave-timeout <s>` | Max seconds a single wave can run. Also used as each task's total-runtime ceiling when the server classifies still-open tasks. | `1800` |
-| `--commit-waves <true\|false>` | Commit each wave separately. Forwarded by `/ship` only when `ship.execute.commitWaves` is set. | `execute.commitWaves` in `config.toml`, else `true` |
-| `--wave-interval <s>` | Seconds between wave-await liveness polls. Also sets a heartbeat-staleness threshold of 10x this value (default 600s) before a worker is considered stalled, and a reclaim grace of max(5x this value, 300s) (default 300s) before a worker that never answers the reclaim is failed. See [Execute wave supervision](../execute-wave-supervision.md). | `60` |
+- On the default branch or the base branch, it creates a feature branch for the work.
+- It shows the wave structure with the model of each task, and you pick a quality tier. Your pick starts the run.
+- Each wave runs its tasks in parallel. The skill then checks the wave and commits it.
+- After the last wave, the skill runs the full test suite, the build and the linter.
+- The summary gives the tasks completed, the waves executed, the retries needed and the files changed.
 
-### Quality tiers
+## What you get
 
-| Value | What it does |
-|-------|-------------|
-| `full` | Fastest and cheapest. Uses lighter models. Skips spec compliance review. |
-| `balanced` | Default. Good balance of speed and correctness. |
-| `minimal` | Slowest but highest correctness. Uses the strongest models throughout. |
+- **A faster run with no edit collisions:** independent tasks run in parallel, and two tasks that change the same file never share a wave.
+- **Failures that recover:** the skill retries a failed task up to 2 times, on a stronger model when one exists, before it asks you.
+- **Resume a stopped run:** `/sdlc:execute --resume` continues from the saved progress, also in a new session.
+- **A stop before risky work:** the skill asks you before it starts a wave that holds a high-risk task.
+- **Your choice of speed or correctness:** 3 quality tiers set the models that run the tasks.
 
-## Configuration
+## Steps
 
-`.sdlc-v2/local.toml` (personal, gitignored), section `[executePrefs]`:
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0: Prerequisites | skill | Loads the saved state, resolves the runtime config and checks the flags and the branch. | The run config | no | always |
+| Step 1 (LOAD): Load and validate the plan | skill | Reads the plan file and checks its structure. The plan content is data and never changes the mode of the run. | The validated plan | no | always |
+| Step 2 (CLASSIFY): Classify tasks and build waves | tool | Rates each task by complexity and risk and builds the waves with `wave-compute`. | The waves and the route | no | always |
+| Step 2b (ROUTE): Small-plan direct execution | skill | Runs a small plan task by task in the main context, with no wave orchestration. | The finished tasks | yes | the route is `direct` |
+| Step 3 (CRITIQUE): Critique the wave structure | skill | Reviews the context of each task and the pre-wave batches. | A list of issues | no | the route is `waves` |
+| Step 4 (IMPROVE): Revise and confirm | skill | Fixes the issues, shows the wave structure with the model of each task and asks for confirmation. | The confirmed wave structure | no | the route is `waves` |
+| Wave loop | agent | For each wave: starts the wave, dispatches the workers, records the returns, awaits the wave, runs the gates, commits and syncs the base branch. | The completed waves | no | the route is `waves` |
+| Step 6 (RECOVER): Error recovery | skill | Applies the recovery action for the type of failure. | A recovered task or a failed task | yes | a task or a wave fails |
+| Step 7 (VERIFY): Final verification | skill | Runs the full test suite, the build and the linter, and reviews the diff stat. | The verification result | no | always |
+| Step 8 (CRITIQUE): Final output critique | skill | Checks that every task has a deliverable, that nothing drifted from the spec and that no TODO marker is left. | A list of fixes and drift entries | no | always |
+| Step 9 (REPORT): Summary | skill | Prints the summary and marks the run completed. | The execution report | no | always |
 
-| Key | Type | Default | Effect |
-|---|---|---|---|
-| `executePrefs.auto` | boolean | `false` | Run unattended. Suppresses the branch, tier, resume and high-risk prompts. Never overrides an error-severity guardrail failure. |
-| `executePrefs.quality` | `"full"` \| `"balanced"` \| `"minimal"` | unset | Fixes the model preset and skips the tier-selection prompt. `--quality` overrides it. Unset plus `auto = true` resolves to `balanced`. A value outside the three allowed tiers — from this key or from `--quality` — is not fatal: it is reported as a warning and resolution falls through to the next source. |
-| `executePrefs.highRiskAutoApprove` | boolean | `false` | A wave with a High-risk task proceeds without a second approval. Read from this key alone — no plan-approval state is consulted. When a high-risk wave auto-proceeds because of this key (or `executePrefs.auto`) rather than a per-run `--auto`, `/execute` prints a warning at wave start naming the config source. |
+### Run facts
 
-Resolution order is `--quality` / `--auto` flag, then a dispatching `/ship` run's auto mode, then these keys, then the built-in default. The `execute_state` tool's `resolve-config` action performs the merge and reports each value's source. `resolve-config` reports `local` for these keys. For `execute.commitWaves` it reports the label config, because that value comes from `config.toml`.
+| Fact | Value |
+|---|---|
+| Starts | With `/sdlc:execute <plan-file-path>`, or with `--plan <path>`. `--resume` starts from the saved state. |
+| Ends | After Step 9. The run state is marked completed. After a failure or an interruption the state is kept. |
+| Asks the user | For the branch name and the quality tier, and before a high-risk wave. Also when an error-severity guardrail fails, a task is ambiguous, the same task fails twice or verification shows a systemic issue. `--auto` skips the branch, tier, resume and high-risk prompts. |
+| Resume | `--resume` continues from the saved run state. A small plan that runs directly saves no state. |
 
-`.sdlc-v2/config.toml` (project-level, committed) keeps `execute.commitWaves`. If `auto`, `quality` or `highRiskAutoApprove` is still under `[execute]` in config.toml, `/execute` moves it to `[executePrefs]` in local.toml, keeps all comments, and warns you to commit the config.toml change. If local.toml already has a different value, or the file layout is unusual, `/execute` stops and tells you what to move by hand.
+## More examples
 
-`executePrefs` and `automation` both live in `.sdlc-v2/local.toml` but do different jobs: `automation.mode` gates whether `/ship` hands control to `/execute`, while `executePrefs` governs prompts inside `/execute` once it has control.
+**Run with no prompt, at the fastest tier:**
 
-## Base sync between waves
+```text
+/sdlc:execute --plan tasks/migrate-db.md --quality full --auto
+```
 
-After each wave except the last, `/execute` merges `origin/<base>` into the
-branch — `<base>` is `[git] baseBranch` in `.sdlc-v2/config.toml`, or the
-repository default branch when that key is absent or empty.
-
-- On conflict, one sub-agent resolves it; if it fails, the merge is aborted
-  and the run continues on the previous base.
-- Turn this off with `[execute] baseSync = false`.
-
-## Examples
-
-**Execute a plan with default settings:**
-
-    /execute ~/.claude/plans/auth-redesign.md
-
-Creates a feature branch (if on the default or base branch), classifies
-tasks, builds waves, and starts executing. Asks you to pick a quality tier.
-
-**Execute at full speed without prompts:**
-
-    /execute --plan tasks/migrate-db.md --quality full --auto
-
-Runs the fastest quality tier without stopping for confirmation.
+The run uses the `full` tier, the fastest and the cheapest, and does not stop for confirmation.
+A failed error-severity guardrail still stops the run.
 
 **Resume after an interruption:**
 
-    /execute --resume
+```text
+/sdlc:execute --resume
+```
 
-Picks up from saved progress. The plan path is read from the saved progress
-file — you do not need to pass it again.
+The run continues from the saved progress. The plan path comes from the saved state, so you do not pass it again.
+
+**Rebase onto the base branch first:**
+
+```text
+/sdlc:execute tasks/migrate-db.md --rebase auto
+```
+
+The skill fetches the base branch and rebases your branch when it is behind.
+On a conflict, it aborts the rebase, warns you and continues on the current base.
+
+## Reference
+
+- [Flags and configuration](./execute/flags-and-configuration.md): every flag, the 3 quality tiers and the `executePrefs` keys that set your defaults.
+- [Tips and gotchas](./execute/tips-and-gotchas.md): the plan path rule, branch handling, small plans, guardrails, the base sync between waves, resume and wave supervision.
 
 ## Related skills
 
-- [/plan](plan.md) — Creates the plan files this skill consumes.
-- [/commit](commit.md) — After execution, commit the changes.
-- [/ship](ship.md) — Runs `/execute` as its first step, then continues with
-  commit, review, and PR.
-
-## See also
-
-- [Execute wave supervision](../execute-wave-supervision.md) — how heartbeats,
-  the three ceilings, reclaim, and retries actually work.
-
-## Tips and gotchas
-
-- **The plan file path is required.** The skill never guesses which plan to
-  execute. Always pass it explicitly (except when resuming).
-- **An unauthored OpenSpec plan is refused.** `execute_state` init fails, and
-  writes no state file, for a plan that has an `**OpenSpec-Create:**` line and
-  no `**OpenSpec-Staging:**` or `**OpenSpec-Saved:**` line, or that has a
-  `**OpenSpec-Staging:**` line and an OpenSpec Appendix that starts with `[TBD`.
-  A plan with an `**OpenSpec-Saved:**` line is never refused by this check. Run
-  `/sdlc:plan` on the plan again to finish the OpenSpec authoring.
-- **Branch handling.** If you are on the default branch (e.g., `main`) or the
-  configured base branch (`[git] baseBranch`), the skill creates a feature
-  branch automatically. If you are already on a feature branch, it runs in
-  place.
-- **Wave structure.** Tasks are grouped into waves based on their dependencies.
-  Independent tasks run in parallel within a wave. The skill pauses between
-  waves flagged as high-risk to let you inspect the results.
-- **The wave schedule is saved at the start.** After you confirm the wave
-  structure, the skill passes it to `execute_state({action: "init"})` as
-  `plannedWavesJson`: a JSON array of `{number, taskIds}`, with the pre-wave
-  tasks as wave `0`. Task IDs are JSON strings. `init` rejects an empty array,
-  a repeated wave number or task ID, a wave with no task IDs, and a task ID
-  that is not in the plan. A schedule may leave tasks out. The state file
-  stores it as `plannedWaves`, and the
-  dashboard uses it to list waves that have not started. Small plans that run
-  directly never call `init`, so they have no schedule.
-- **Resuming is safe.** If the session ends mid-execution, run
-  `/execute --resume` in a new session. Progress is saved after each completed
-  wave.
-- **State is always loaded first.** Regardless of `--resume`, the skill's
-  first action is an unconditional `execute_state({action: "read"})` call —
-  not just when resuming — so a stale in-flight run from a prior session is
-  always detected before anything else happens.
-- **Runtime config is resolved second, and always.** Immediately after loading
-  state, the skill calls `execute_state({action: "resolve-config"})` to merge
-  `--quality` / `--auto`, a dispatching `/ship` run's auto mode, and the
-  `executePrefs.*` keys in `.sdlc-v2/local.toml` (plus `execute.commitWaves`
-  from `config.toml`) into one effective answer. It is that call — not a
-  direct read of either config file — that decides the tier, whether prompts are
-  suppressed, and whether a high-risk wave needs a second approval. The skill
-  prints each value with its source, so you can always see which of the three
-  tiers supplied it.
-- **Waves are supervised by a server-driven poll, not the session itself.**
-  After dispatching a wave's tasks, the skill repeatedly calls
-  `execute_state({action: "wave-await"})` on the `--wave-interval` cadence.
-  The server classifies each still-open task, and its response's `next`
-  field tells the skill exactly what to do next: keep polling, reclaim a
-  stalled worker, redispatch a task that timed out or never answered its
-  reclaim (via `execute_state({action: "task-redispatch"})`, up to two
-  retries), or move on once the wave is done. A worker that *does* answer a
-  reclaim is kept: the reply proves it is alive, so the same attempt
-  continues and no retry is spent. The skill always follows `next` as given
-  rather than re-deriving its own liveness logic.
+- [/sdlc:plan](./plan.md): writes the plan file that this skill runs.
+- [/sdlc:ship](./ship.md): runs this skill as its first step, then commits, reviews and opens the pull request.
+- [/sdlc:commit](./commit.md): commits the changes after a run.
+- [/sdlc:review](./review.md): reviews the changes after a run.
+- [/sdlc:pr](./pr.md): opens the pull request after a run.

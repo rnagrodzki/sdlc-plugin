@@ -1,7 +1,7 @@
 # tool-learnings-log Specification
 
 ## Purpose
-The `learnings_log` MCP tool appends, reads, removes, and summarizes entries in the shared learnings log `.sdlc-v2/learnings/log.md` of the main git worktree. Skills such as `execute`, `harden`, `ship`, and `plan` call it instead of editing the file directly. Output follows docs/mcp-output-contract.md.
+The `learnings_log` MCP tool appends, reads, removes, and summarizes entries in the shared learnings log `.sdlc-v2/learnings/log.md` of the main git worktree. Skills such as `execute`, `harden`, `ship`, and `plan` call it instead of editing the file directly. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

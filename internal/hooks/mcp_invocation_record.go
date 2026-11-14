@@ -14,7 +14,7 @@ import (
 
 // mcpToolPrefix is the naming convention every sdlc MCP tool call carries in
 // tool_name — see plugins/sdlc/.claude-plugin/plugin.json's mcpServers.sdlc
-// wiring and docs/smoke-test.md.
+// wiring and docs/internal/smoke-test.md.
 const mcpToolPrefix = "mcp__plugin_sdlc_sdlc__"
 
 // recordMCPInvocation is the "record-mcp-invocation" hook handler

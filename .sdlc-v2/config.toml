@@ -290,6 +290,15 @@ be cross-checked with a second independent method (e.g. a broader wildcard \
 grep across all file extensions, or LSP findReferences) to catch call sites \
 the primary search terms miss."""
 
+[plan.guardrails.feature-change-updates-site-pages]
+severity = "error"
+description = """
+A plan that adds, removes or changes a user-facing feature of the plugin \
+must include a task that updates the matching product page entry in \
+site/src/data/features.mjs and the docs page under docs/ that its claims \
+link to. A feature with no product page needs the docs page task only. \
+A removed feature also removes its product page claims."""
+
 [plan.guardrails.refactoring-includes-doc-sweep]
 severity = "warning"
 description = """
@@ -437,7 +446,7 @@ schema."""
 
 [execute.guardrails.execute-handler-nil-normalization]
 severity = "error"
-description = "MCP tool output is Markdown. The renderer prints a nil or empty slice, map, pointer, or string as `(none)`, so a handler does not need to turn nil into an empty collection before returning. Verify these at execute time, not just in the plan's stated contract: (1) a field the reader must see even when it is empty has no `omitempty` or `omitzero` tag, because the renderer drops a tagged field whose value is the zero value (rule 14 in docs/mcp-output-contract.md); (2) no code or test depends on the difference between nil and empty in tool output, because the reader cannot tell them apart; (3) no test expects JSON `null` in tool output; (4) a field the caller acts on has a test that calls the registered MCP tool and asserts the rendered line, such as `(none)` for an empty list; a test of the Go struct alone does not pin the rendering. Values written to a persisted JSON state file are different: normalize nil there, because a `null` can break a later reader that type-asserts a slice."
+description = "MCP tool output is Markdown. The renderer prints a nil or empty slice, map, pointer, or string as `(none)`, so a handler does not need to turn nil into an empty collection before returning. Verify these at execute time, not just in the plan's stated contract: (1) a field the reader must see even when it is empty has no `omitempty` or `omitzero` tag, because the renderer drops a tagged field whose value is the zero value (rule 14 in docs/internal/mcp-output-contract.md); (2) no code or test depends on the difference between nil and empty in tool output, because the reader cannot tell them apart; (3) no test expects JSON `null` in tool output; (4) a field the caller acts on has a test that calls the registered MCP tool and asserts the rendered line, such as `(none)` for an empty list; a test of the Go struct alone does not pin the rendering. Values written to a persisted JSON state file are different: normalize nil there, because a `null` can break a later reader that type-asserts a slice."
 
 [execute.guardrails.spec-compliance-literal-contract-diff]
 severity = "error"
@@ -543,7 +552,7 @@ same permission class as the operation it precedes."""
 
 [execute.guardrails.mcp-tool-annotation-reason-call-graph-verified]
 severity = "warning"
-description = 'Before marking done a task that adds or changes an MCP tool annotation (e.g. read-only, idempotent) with a reason string explaining why it is safe, verify the reason against an actual call-graph/reference search of the handler -- a plausible-sounding reason string is not evidence the annotation is correct. A tool annotation covers every action of the tool: when the task adds an action to an annotated tool, run the same search for the new action and check each side effect it has (a file write, a rename, a delete). An annotation that fits the old actions but not the new one fails the task, unless docs/mcp-tool-annotations.md names an exception that covers the action.'
+description = 'Before marking done a task that adds or changes an MCP tool annotation (e.g. read-only, idempotent) with a reason string explaining why it is safe, verify the reason against an actual call-graph/reference search of the handler -- a plausible-sounding reason string is not evidence the annotation is correct. A tool annotation covers every action of the tool: when the task adds an action to an annotated tool, run the same search for the new action and check each side effect it has (a file write, a rename, a delete). An annotation that fits the old actions but not the new one fails the task, unless docs/internal/mcp-tool-annotations.md names an exception that covers the action.'
 
 [execute.guardrails.nested-dispatch-runtime-stop]
 severity = "warning"
@@ -957,7 +966,7 @@ description = "Before marking a task done that adds a variant (a state, a status
 severity = 'error'
 
 [execute.guardrails.skill-text-names-every-route]
-description = 'Before marking done a task that modifies a SKILL.md, find each paragraph, table row (an Arguments row for a flag such as --auto), list or error list that names the writers, routes, steps or causes of one value, stop rule or flag. Grep SKILL.md for every route that writes the value, reaches the stop or reads the flag, and compare the grep with the text. A text that names one member of several fails the task, unless it says that it names only some. A list of errors that a resume or restart flow can return names every error the call returns, including one the task adds. A renamed label or option name leaves no stale old name in SKILL.md: grep for it. Record each text and the grep in task verification.'
+description = 'Before marking done a task that modifies a SKILL.md, find each paragraph, table row (an Arguments row for a flag such as --auto), list or error list that names the writers, routes, steps or causes of one value, stop rule or flag. Grep SKILL.md for every route that writes the value, reaches the stop or reads the flag, and compare the grep with the text. A text that names one member of several fails the task, unless it says that it names only some. A list of errors that a resume or restart flow can return names every error the call returns, including one the task adds. A renamed label or option name leaves no stale old name in SKILL.md: grep for it. The same holds for a list of the actions that a mode applies (for example the edit actions of --auto) and for a step that describes a dispatch: compare each with the enum or the agent file it names, and name every member and every step. Record each text and the grep in task verification.'
 severity = 'error'
 
 [execute.guardrails.command-hint-quotes-spliced-values]
@@ -974,4 +983,24 @@ severity = 'warning'
 
 [execute.guardrails.docs-page-covers-code-outcomes]
 description = 'Before marking a task done that adds or changes a docs page or a SKILL.md for a tool-backed skill, list from the Go handler what the page must cover, and grep the page for each item. (1) Each cap that a read enforces (a file size, an entry count, a path budget): the page names the counted set, the unit and the effect at the cap. (2) Each error that the handler returns for each kind of input (a folder, a file, a link, an issue): the page names the cause and the next step of the user. (3) The text that the handler writes for each kind of input, such as a row of a structure table: the page copies it or marks it as a paraphrase. (4) Each outcome state and each warning line that the skill prints, such as a run that ends with gaps. A conditional text states its condition. An item that the code has and the page omits fails the task. Record each item and the grep in task verification.'
+severity = 'warning'
+
+[execute.guardrails.ci-workflow-versions-pinned-and-parity-stated]
+description = 'Before marking a task done that adds or changes a step in a file under .github/workflows/, list each step that fetches a tool at run time (npx, bunx, pnpm dlx, go install, pip install) and each step that runs node, bun or a script. A fetched tool names an exact version, never a bare package name or @latest. A step that runs node or bun comes after a setup step with an explicit version, not on the runner default. List each check that the workflow runs and that a developer can run locally. Each one is mirrored in lefthook.yml, or a comment next to the step says the gap is intentional and why. Record each step and the grep in task verification.'
+severity = 'warning'
+
+[execute.guardrails.rule-text-claims-and-sweeps-searchable]
+description = 'Before marking a task done that writes rule text (a review dimension, a .github/instructions file, a guardrail description), list each sentence that states an absence or an exclusivity (only, never, no, sole, every) and each sweep for a literal value (a URL, a base path, a name). For each claim, run a search that could disprove it across the repository and record the command and result. A claim with a counter-example fails the task: narrow it or name the exception. For each sweep, the text names the search pattern for each value, the folders searched, the folders excluded and what to record, so a reviewer can run it unchanged. Record each claim, its command and its result in task verification.'
+severity = 'error'
+
+[execute.guardrails.new-build-surface-documented]
+description = 'Before marking a task done that adds or changes a build surface (a directory with its own toolchain, lockfile or dev server, or a workflow under .github/workflows/ that builds, tests or deploys), grep README.md and docs/internal/ (exclude node_modules) for the directory name and for the workflow file name. Each name has a match in a page that states the commands to build, test and preview locally, the checks CI runs and where they run, how and where it deploys, and the pinned tool versions. A changed command, trigger or deploy target updates that page in the same task. A name with no match, or a page that omits one of these items, fails the task. Record each grep and the page in task verification.'
+severity = 'warning'
+
+[plan.guardrails.new-build-surface-documented]
+description = 'When a plan adds a build surface (a directory with its own toolchain, lockfile or dev server, or a workflow under .github/workflows/ that builds, tests or deploys), the plan includes a task that writes its contributor documentation in README.md or a page under docs/internal/. The task names the page and lists what it states: the commands to build, test and preview locally, the checks CI runs and where they run, how and where it deploys, and the pinned tool versions. The task Verification greps README.md and docs/internal/ for the directory name and the workflow file name. A plan that adds the surface and leaves its documentation to a later change is a plan defect.'
+severity = 'warning'
+
+[execute.guardrails.committed-text-names-tracked-paths]
+description = 'Before marking a task done that adds or changes a committed file that cites, links to, includes, reads or copies from another path (a docs page, the README, a site data file, a test fixture, a spec, a build or scan input), list each such path. Confirm that git tracks it: run git ls-files --error-unmatch <path> and git check-ignore -v <path>. A path that git ignores or that is untracked does not exist on a clean checkout, in CI or on the published site, so the reference breaks there. Copy the needed content into a tracked file and point to that file, or state in the text that the path is local only. Run the build, the tests and the link check with only tracked files, not only on the developer machine. Record each path and the two commands in task verification.'
 severity = 'warning'

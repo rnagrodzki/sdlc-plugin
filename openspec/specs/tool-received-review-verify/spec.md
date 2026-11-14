@@ -1,7 +1,7 @@
 # tool-received-review-verify Specification
 
 ## Purpose
-MCP tool `received_review_verify` fetches every review comment thread on a pull request and classifies each one by whether the PR author has replied; the `received-review` skill calls it for triage and post-reply checks. In write mode it saves drafted reply bodies for link validation. Output follows docs/mcp-output-contract.md.
+MCP tool `received_review_verify` fetches every review comment thread on a pull request and classifies each one by whether the PR author has replied; the `received-review` skill calls it for triage and post-reply checks. In write mode it saves drafted reply bodies for link validation. Output follows docs/internal/mcp-output-contract.md.
 
 ## Requirements
 

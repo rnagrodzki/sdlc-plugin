@@ -1,0 +1,106 @@
+---
+// The list of every skill on Home: one direct link to each skill page, in the
+// two groups of the `## Skill map` table of docs/skills/README.md. A skill of
+// the recommended workflow is a filled chip.
+import { BASE } from '../../site.config.mjs';
+import { readSkillMap, skillHref } from '../lib/skill-map.mjs';
+
+interface Props {
+  core?: string[]; // the skills of the recommended workflow
+}
+const { core = [] } = Astro.props;
+
+const skills = readSkillMap();
+const groups = [
+  { label: 'Pipeline', items: skills.filter((s) => s.role === 'pipeline') },
+  { label: 'Around the pipeline', items: skills.filter((s) => s.role === 'around') },
+];
+---
+
+<div class="index island">
+  {
+    groups.map((group) => (
+      <div class="index-group">
+        <h3 class="index-label">{group.label}</h3>
+        <ul class="index-list">
+          {group.items.map((skill) => (
+            <li>
+              <a
+                class:list={['skill-chip', 'index-chip', { 'is-core': core.includes(skill.name) }]}
+                href={skillHref(skill.name, BASE)}
+                title={skill.summary}
+                aria-label={core.includes(skill.name) ? `/sdlc:${skill.name}, a workflow skill` : undefined}
+              >
+                /sdlc:{skill.name}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </div>
+    ))
+  }
+  {
+    core.length > 0 && (
+      <p class="index-legend">
+        <span class="index-dot" aria-hidden="true" />A filled name is a skill of the workflow.
+      </p>
+    )
+  }
+</div>
+
+<style>
+  .index {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-16);
+    padding: var(--space-22) var(--space-24);
+  }
+  .index-group {
+    display: grid;
+    grid-template-columns: 11rem minmax(0, 1fr);
+    gap: var(--space-8) var(--space-16);
+    align-items: baseline;
+  }
+  .index-label {
+    margin: 0;
+    font-size: var(--text-sm);
+    font-weight: var(--weight-semibold);
+    color: var(--muted);
+  }
+  .index-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .index-chip {
+    font-size: var(--text-sm);
+    padding: var(--space-5) var(--space-12);
+  }
+  .index-chip.is-core {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--on-accent);
+  }
+  .index-legend {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .index-dot {
+    width: var(--space-10);
+    height: var(--space-10);
+    border-radius: var(--r-round);
+    background: var(--accent);
+  }
+  @media (max-width: 700px) {
+    .index-group {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>
