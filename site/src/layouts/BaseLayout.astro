@@ -41,6 +41,10 @@ const pageUrl = new URL(Astro.url.pathname, SITE).href;
     <Nav current={current} />
     <main id="main"><slot /></main>
     <Footer />
+    <script>
+      // Every page loads this small script. It imports Mermaid only when the page holds a diagram.
+      import '../scripts/mermaid.ts';
+    </script>
   </body>
 </html>
 
@@ -60,6 +64,15 @@ const pageUrl = new URL(Astro.url.pathname, SITE).href;
     box-shadow:
       inset 0 1px 0 var(--white-60),
       0 20px 44px -26px var(--shade);
+  }
+  /* A rendered Mermaid diagram (scripts/mermaid.ts). It scrolls in its own frame on a phone. */
+  .mermaid-diagram {
+    overflow-x: auto;
+    margin: 0 0 var(--space-14);
+  }
+  .mermaid-diagram svg {
+    max-width: 100%;
+    height: auto;
   }
   .skip-link {
     position: absolute;

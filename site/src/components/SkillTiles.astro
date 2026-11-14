@@ -1,0 +1,121 @@
+---
+// The skill tiles of the all-skills page (reference site-preview.src.html:640-650):
+// one tile for each skill of the `## Skill map` table that has no node on the
+// map. Each around skill is one tile; a pipeline skill that is not on the map
+// (for example verify-requirements) is a tile too. A tile selects its
+// `skill:<name>` id in the same way as a map node.
+import { inlineParts } from '../lib/sequence-state.mjs';
+
+type Tile = { name: string; role: string; summary: string };
+interface Props {
+  tiles: Tile[];
+}
+const { tiles } = Astro.props;
+---
+
+<div class="block">
+  <h2 class="h2">Skills around the pipeline</h2>
+  <ul class="sup">
+    {
+      tiles.map((t) => (
+        <li>
+          <button class="sup-btn node" type="button" data-id={`skill:${t.name}`} data-sup="1" data-role={t.role}>
+            <span class="sup-name">/sdlc:{t.name}</span>
+            <span class="sup-text">
+              {inlineParts(t.summary).map((part) => (part.kind === 'code' ? <code>{part.value}</code> : part.value))}
+            </span>
+          </button>
+        </li>
+      ))
+    }
+  </ul>
+</div>
+
+<style>
+  .block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-20);
+  }
+  .h2 {
+    font-family: var(--font-display);
+    margin: 0;
+    font-size: var(--text-h2);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    font-weight: var(--weight-semibold);
+    text-wrap: balance;
+  }
+  .sup {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-14);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .sup li {
+    display: flex;
+  }
+  .sup-btn {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    width: 100%;
+    padding: var(--space-16) var(--space-18);
+    border: 1px solid var(--glass-edge);
+    border-radius: var(--r-16);
+    background: var(--white-38);
+    box-shadow: 0 14px 28px -24px var(--shade);
+    font: inherit;
+    color: inherit;
+    text-align: left;
+    cursor: pointer;
+    transition:
+      background var(--dur-200),
+      border-color var(--dur-200),
+      box-shadow var(--dur-200),
+      transform var(--dur-250) var(--ease-spring);
+  }
+  .sup-btn:hover {
+    background: var(--white-72);
+    transform: translateY(-4px);
+  }
+  .sup-btn:global(.is-sel) {
+    background: var(--paper);
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 3px var(--accent-14),
+      0 18px 30px -22px var(--shade);
+  }
+  .sup-btn:global(.is-rel) {
+    background: var(--white-72);
+    border-color: var(--accent-35);
+  }
+  .sup-name {
+    display: block;
+    font-family: var(--font-mono);
+    font-size: var(--text-md);
+    font-weight: var(--weight-medium);
+    color: var(--accent);
+  }
+  .sup-text {
+    display: block;
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-md);
+  }
+  .sup-text code {
+    font-size: var(--text-code);
+  }
+  @media (max-width: 900px) {
+    .sup {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 520px) {
+    .sup {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

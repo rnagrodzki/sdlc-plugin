@@ -1,0 +1,259 @@
+---
+// The all-skills page: /skills/ (reference All skills, site-preview.src.html:548-651,
+// ref-all-skills.jpeg). Everything comes from the docs at build time:
+//   shipSteps = parseSteps(docs/skills/ship.md).steps           -> loop track pills
+//   skillMap  = parseTableUnder(docs/skills/README.md, Skill map) -> map skills and tiles
+//   handovers = parseTableUnder(docs/skills/README.md, Handovers) -> HandoverTable strips
+// A missing table stops the build, so the page and its docs cannot differ.
+import fs from 'node:fs';
+import path from 'node:path';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import LoopMap, { type Panel } from '../../components/LoopMap.astro';
+import HandoverTable from '../../components/HandoverTable.astro';
+import SkillTiles from '../../components/SkillTiles.astro';
+import { BASE } from '../../../site.config.mjs';
+import { parseSteps, parseTableUnder } from '../../lib/steps-table.mjs';
+import { FIXED_SKILLS, HARDEN_LANE_ID, SHIP_ID, nodeFor, skillNodeNames } from '../../lib/selection.mjs';
+
+const docsDir = path.resolve('../docs/skills');
+const read = (file: string) => fs.readFileSync(path.join(docsDir, file), 'utf8');
+const readme = read('README.md');
+
+const shipSteps = parseSteps(read('ship.md')).steps;
+const skills = parseTableUnder(readme, '## Skill map').map((r) => ({ name: r.Skill, role: r.Role, summary: r.Summary }));
+const handovers = parseTableUnder(readme, '## Handovers') as Array<{ From: string; To: string; 'Hands over': string }>;
+if (skills.length === 0) throw new Error('docs/skills/README.md: no table under "## Skill map"');
+if (handovers.length === 0) throw new Error('docs/skills/README.md: no table under "## Handovers"');
+
+const stepNames = shipSteps.map((s) => s.name);
+const skillNodes = skillNodeNames({ shipSteps: stepNames, skills });
+
+/** The map node id of each skill name that has a node on the page. */
+const nodeIds: Record<string, string> = {};
+for (const name of new Set([...skills.map((s) => s.name), ...handovers.flatMap((r) => [r.From, r.To])])) {
+  const id = nodeFor(name, stepNames);
+  const onPage =
+    id === SHIP_ID || id === HARDEN_LANE_ID || id.startsWith('step:') || skillNodes.includes(name);
+  if (onPage) nodeIds[name] = id;
+}
+
+// Tiles: each skill with a skill node that the map does not draw. Around skills first.
+const tileSkills = skills.filter((s) => skillNodes.includes(s.name) && !FIXED_SKILLS.includes(s.name));
+const tiles = [...tileSkills.filter((s) => s.role === 'around'), ...tileSkills.filter((s) => s.role !== 'around')];
+
+// ---- the detail panel of each id ----
+const NONE = [{ what: 'None in the handover table', who: '', go: '' }];
+const orNone = <T,>(items: T[]) => (items.length > 0 ? items : NONE);
+const pageOf = (name: string) => (fs.existsSync(path.join(docsDir, `${name}.md`)) ? `${BASE}/skills/${name}/` : '');
+const summaryOf = (name: string) => skills.find((s) => s.name === name)?.summary ?? '';
+const gets = (name: string) =>
+  handovers.filter((r) => r.To === name).map((r) => ({ what: r['Hands over'], who: `from ${r.From}`, go: nodeIds[r.From] ?? '' }));
+const gives = (name: string) =>
+  handovers.filter((r) => r.From === name).map((r) => ({ what: r['Hands over'], who: `to ${r.To}`, go: nodeIds[r.To] ?? '' }));
+
+// A handover from the person who runs the pipeline. The Handovers table holds
+// skill-to-skill rows only, so this input has no row there.
+const FROM_YOU: Record<string, Array<{ what: string; who: string; go: string }>> = {
+  preplan: [{ what: 'An idea', who: 'from you', go: '' }],
+};
+
+const skillPanel = (id: string, name: string, kicker: string): Panel => ({
+  id,
+  name: `/sdlc:${name}`,
+  kicker,
+  does: summaryOf(name),
+  gets: orNone([...(FROM_YOU[name] ?? []), ...gets(name)]),
+  gives: orNone(gives(name)),
+  href: pageOf(name),
+});
+const roleKicker = (name: string) =>
+  skills.find((s) => s.name === name)?.role === 'around' ? 'A skill around the pipeline' : 'A pipeline skill';
+
+const panels: Panel[] = [
+  ...FIXED_SKILLS.map((name) => skillPanel(`skill:${name}`, name, roleKicker(name))),
+  ...shipSteps.map((step, i): Panel => {
+    const prev = shipSteps[i - 1];
+    const next = shipSteps[i + 1];
+    return {
+      id: `step:${step.name}`,
+      name: step.name,
+      kicker: `Step ${i + 1} of ${shipSteps.length} of /sdlc:ship${step.optional ? ', optional' : ''}`,
+      does: step.does,
+      gets: prev
+        ? [{ what: prev.handsOver, who: `from ${prev.name}`, go: `step:${prev.name}` }]
+        : orNone(gets('ship')),
+      gives: [
+        {
+          what: step.handsOver,
+          who: next ? `to ${next.name}` : 'at the end of the run',
+          go: next ? `step:${next.name}` : '',
+        },
+      ],
+      href: pageOf(step.name),
+    };
+  }),
+  skillPanel(SHIP_ID, 'ship', 'Runs the steps on the band in one command'),
+  skillPanel(HARDEN_LANE_ID, 'harden', 'The way back to plan'),
+  ...tiles.map((t) => skillPanel(`skill:${t.name}`, t.name, roleKicker(t.name))),
+];
+
+const defaultId = 'skill:preplan';
+const mapData = {
+  shipSteps: stepNames,
+  handovers: handovers.map(({ From, To }) => ({ From, To })),
+  skills: skills.map(({ name, role }) => ({ name, role })),
+  defaultId,
+};
+
+const sub =
+  'Each skill does one job and hands its result to the next skill. Select a skill to see what it gets and what it hands over.';
+---
+
+<BaseLayout title="Skills | sdlc" description={sub} current="skills">
+  <div class="fields" aria-hidden="true">
+    <span class="field f1"></span><span class="field f2"></span><span class="field f3"></span>
+  </div>
+  <div class="skills wrap" data-skills-root data-map={JSON.stringify(mapData)}>
+    <div class="lead">
+      <h1 class="h1">How the skills work together.</h1>
+      <p class="sub">{sub}</p>
+      <ul class="legend" aria-label="Legend of the map">
+        <li><span class="pill" aria-hidden="true"></span>A step that always runs</li>
+        <li class="is-opt"><span class="pill" aria-hidden="true"></span>An optional step</li>
+        <li><span class="lg-loop" aria-hidden="true"></span>What a failed run teaches the pipeline</li>
+        <li><span class="lg-lamp" aria-hidden="true"></span>The dashboard sees the step</li>
+      </ul>
+    </div>
+    <LoopMap steps={shipSteps} panels={panels} defaultId={defaultId} showDashboard={skills.some((s) => s.name === 'dashboard')} />
+    <HandoverTable handovers={handovers} nodeIds={nodeIds} />
+    <SkillTiles tiles={tiles} />
+  </div>
+</BaseLayout>
+
+<style>
+  /* The colour fields behind the glass, as on the Home page. */
+  .fields {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1300px;
+    overflow: hidden;
+    z-index: -1;
+    pointer-events: none;
+  }
+  .field {
+    position: absolute;
+    border-radius: var(--r-round);
+    filter: blur(70px);
+  }
+  .f1 {
+    width: 540px;
+    height: 540px;
+    right: -90px;
+    top: 30px;
+    background: var(--f1);
+  }
+  .f2 {
+    width: 420px;
+    height: 420px;
+    right: 30%;
+    top: 280px;
+    background: var(--f2);
+  }
+  .f3 {
+    width: 480px;
+    height: 480px;
+    left: -120px;
+    top: 760px;
+    background: var(--f1);
+  }
+  .skills {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-44);
+    padding-bottom: var(--space-64);
+  }
+  .lead {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-22);
+  }
+  .h1 {
+    font-family: var(--font-display);
+    margin: 0;
+    text-wrap: balance;
+    font-size: var(--text-h1);
+    line-height: var(--leading-h1);
+    letter-spacing: var(--tracking-4);
+    font-weight: var(--weight-semibold);
+  }
+  .sub {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xl);
+    line-height: var(--leading-sub);
+    max-width: 54ch;
+  }
+  .legend {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8) var(--space-22);
+    font-size: var(--text-xs);
+    color: var(--muted);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  .legend li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-8);
+  }
+  .pill {
+    display: block;
+    width: 28px;
+    height: 16px;
+    border-radius: var(--r-ctl);
+    border: 2px solid var(--accent);
+    background: var(--bg);
+    position: relative;
+    flex: none;
+  }
+  .pill::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 6px;
+    height: 6px;
+    margin: -3px 0 0 -3px;
+    border-radius: var(--r-round);
+    background: var(--accent);
+  }
+  .is-opt .pill {
+    border-style: dashed;
+  }
+  .is-opt .pill::after {
+    background: transparent;
+    border: 1.5px solid var(--accent);
+    width: 7px;
+    height: 7px;
+    margin: -3.5px 0 0 -3.5px;
+  }
+  .lg-loop {
+    display: block;
+    width: 28px;
+    border-top: 3px solid var(--go);
+    border-radius: var(--r-2);
+  }
+  .lg-lamp {
+    display: block;
+    width: 20px;
+    height: 10px;
+    margin: 0 var(--space-4);
+    border-radius: var(--r-5);
+    background: var(--go-lit);
+    box-shadow: 0 0 0 4px var(--ink);
+  }
+</style>

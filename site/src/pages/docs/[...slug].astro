@@ -1,0 +1,45 @@
+---
+// One docs page: /docs/<path>/. The docs pages of docs/skills/ have the Skill page
+// (Task 21), and the pages of docs/internal/ have no site page.
+import path from 'node:path';
+import { getCollection, render } from 'astro:content';
+import DocLayout from '../../layouts/DocLayout.astro';
+import { BASE } from '../../../site.config.mjs';
+import { pageKind, routeFor } from '../../lib/doc-links.mjs';
+import { docMeta, tocEntries } from '../../lib/doc-meta.mjs';
+
+export async function getStaticPaths() {
+  const repoRoot = path.resolve('..');
+  const entries = await getCollection('docs');
+  return entries.flatMap((entry) => {
+    if (!entry.filePath) return [];
+    // entry.filePath is relative to site/.
+    const repoPath = path.relative(repoRoot, path.resolve(entry.filePath)).split(path.sep).join('/');
+    if (pageKind(repoPath) !== 'doc') return [];
+    const slug = /^\/docs\/(.+)\/$/.exec(routeFor(repoPath, { base: '' }))?.[1];
+    if (!slug) throw new Error(`no docs route for ${repoPath}`);
+    return [{ params: { slug }, props: { entry } }];
+  });
+}
+
+const { entry } = Astro.props;
+const { Content, headings } = await render(entry);
+// The title block shows the lead only when the lead is the complete first block of the page.
+// Then the body hides that block. In each other page the body starts with the same sentence.
+const { title: heading, lead, leadIsIntro } = docMeta(entry.body ?? '', Astro.params.slug);
+---
+
+<DocLayout
+  title={`${heading} | sdlc docs`}
+  description={lead || `${heading}, a docs page of the sdlc plugin.`}
+  current="docs"
+  heading={heading}
+  lead={leadIsIntro ? lead : undefined}
+  crumb={heading}
+  crumbHref={`${BASE}/docs/`}
+  crumbLabel="Docs"
+  toc={tocEntries(headings)}
+  hideIntro={leadIsIntro}
+>
+  <Content />
+</DocLayout>
