@@ -39,10 +39,20 @@ hook — keep them in sync." Check:
   MODULE_NOT_FOUND; pass an explicit glob (`<dir>/*.test.cjs`) instead. When
   a command depends on one version's behavior, say so in a comment next to
   the pinned version.
-- CI/local-hook parity gaps: when a workflow step is deliberately not
-  mirrored in `lefthook.yml`'s pre-push hook (e.g. Node tests that run only
-  in CI), a comment in the workflow must say the gap is intentional. An
-  unexplained gap reads as an accidental omission.
+- CI/local-hook parity gaps: every check that any workflow runs (not only
+  `test.yml`: also the site workflow, lint, build, Lighthouse, and Node or
+  bun tests) is either mirrored in `lefthook.yml` or has a comment next to
+  the step that says the gap is intentional and why. A check with neither is
+  a finding. An unexplained gap reads as an accidental omission.
+- Floating tool and runtime versions: a step that fetches a tool at run time
+  (`npx`, `bunx`, `pnpm dlx`, `go install` with `@latest`, `pip install` with
+  no `==`) names an exact package version (for example
+  `@lhci/cli@<exact version>`), never a bare package name or `@latest`. Each
+  step that runs `node`, `bun` or a script they run uses a runtime from a
+  setup step with an explicit version (`node-version`, `bun-version` or a
+  version file), never the runner default image. This covers every job,
+  including a change-gate or path-filter step. A step that runs before its
+  setup step is a finding.
 - Sibling release workflows (`promote-release.yml`, `release.yml`,
   `release-on-main.yml`) that push or tag the same ref (e.g., release branch)
   must each have an explicit `concurrency:` block with a comment stating
@@ -51,3 +61,4 @@ hook — keep them in sync." Check:
   task must document why they differ. Ensure `cancel-in-progress` is `false`
   on any job that pushes or tags, and verify `permissions:` and trigger
   filters are synchronized across siblings pushing the same target.
+- A new or changed workflow that builds, tests or deploys a directory (for example a site workflow for `site/`) is described in `README.md` or a page under `docs/internal/`: its trigger, its checks, its deploy target and its pinned tool versions. Check: grep `README.md` and `docs/internal/` (exclude `node_modules`) for the workflow file name. A workflow with no match is a finding. A change to its trigger, its checks or its deploy target that leaves that text stale is a finding.
