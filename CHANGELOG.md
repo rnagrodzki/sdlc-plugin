@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.1] - 2026-11-14
+
+### RC 1
+
+- Plan instructions: a project can set `[[instructions.<key>]]` lists in `.sdlc-v2/config.toml` for 13 keys (the ship steps, commit-fixes and others). The ship pipeline runs each list in order after its step.
+- `commit_apply` and `commit-check` can push the branch. A push failure is reported with its kind (rejected, no upstream, auth, other), a masked and length-capped cause, and a kind-specific suggestion.
+- A damaged instruction list gives a warning. A failed or stopped step closes its open records in one bulk call.
+- The site home page has a new customization section.
+
 ## [0.5.0] - 2026-11-14
 
 ### RC 1
