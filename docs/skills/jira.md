@@ -1,30 +1,38 @@
-# /jira
+# /sdlc:jira
 
-Create, read, search, update, and manage Jira issues directly from Claude
-Code. Caches project metadata to keep operations fast.
+Create, find and update Jira issues from Claude Code, and approve every write before it reaches Jira.
 
-## When to use
+## Why use it
 
-- You want to create a Jira issue for work you are doing.
-- You want to read or search existing Jira issues.
-- You want to transition an issue, add a comment, or log work.
-- You want to link Jira issues to each other.
+You track your work in Jira, and each change of an issue takes you out of your work and into a browser form.
+`/sdlc:jira` takes the request in plain words: create, search, move, comment, link, assign or log work.
+It reads the fields and the workflows of your project one time, saves them in a cache, and uses the cache for each later operation.
+Before each write, it shows you the full payload and waits for your answer.
 
-## Syntax
+## Example
 
-    /jira [options]
+Run the command, then describe the operation in plain words:
 
-After invoking `/jira`, describe what you want in natural language.
+```text
+/sdlc:jira
+Create a task in PROJ: "Add rate limiting to auth API" with priority High
+```
 
-## Flags
+On the first run for `PROJ`, the skill builds the cache and reports the number of issue types and workflow states. Then you see, in this order:
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--project <KEY>` | Jira project key (e.g., `PROJ`). | auto-detected from branch, else configured default |
-| `--force-refresh` | Rebuild the cached project metadata. | off |
-| `--init-templates` | Copy default issue templates to `.sdlc-v2/jira-templates/` for per-project customization. The plugin ships no default templates today, so this copies nothing and says so. | off |
-| `--site <host>` | Jira site hostname (e.g., `mycompany.atlassian.net`). Disambiguates cached projects that exist under more than one site. | unset |
-| `--skip-workflow-discovery` | Skip loading workflows and transitions (faster startup; useful in CI). | off |
+- An `Initial:` / `Critique:` / `Final:` block: the draft, the findings of the check, and the corrected payload.
+- The full payload. The description has the sections of your template for the issue type, or `## Summary`, `## Context` and `## Acceptance Criteria`.
+- A question with three answers: approve, change or cancel.
+
+After approve, the skill checks every link in the description. A failed check stops the operation. A passed check creates the issue in Jira.
+
+## What you get
+
+- **The daily Jira work in one command.** Create, edit, view and search issues, move them through the workflow, comment, link, assign, log work, or ask for many operations in one request.
+- **Fast after the first run.** The skill caches the fields, workflows and link types of your project, and makes no more discovery calls until the next refresh.
+- **No guessed values.** Field values come from the cache or from you, and the skill asks for each required field that you did not give.
+- **Your approval before every write.** You see a critique of the draft and the full payload, then you answer approve, change or cancel.
+- **Descriptions with a fixed structure.** The skill fills the template of the issue type, or a base structure, and sends no text with a raw placeholder.
 
 ## Steps
 
@@ -49,60 +57,47 @@ After invoking `/jira`, describe what you want in natural language.
 
 | Fact | Value |
 |---|---|
-| Starts | With `/jira`, with or without a flag. Then the user describes the operation in natural language. |
+| Starts | With `/sdlc:jira`, with or without a flag. Then the user describes the operation in natural language. |
 | Ends | After Step 4. It ends earlier with `--init-templates`, with a cancelled approval, or with a failed link check. |
 | Asks the user | When the project key is unknown, when the cache exists under more than one site, when the request is ambiguous, for each required field the user did not give, and at the approval of every write operation. |
 | Resume | none |
 
-## Examples
+## More examples
 
-**Create an issue:**
+**Find issues:**
 
-    /jira
-    > Create a task in PROJ: "Add rate limiting to auth API" with priority High
+```text
+/sdlc:jira
+Find all open bugs assigned to me in PROJ
+```
 
-**Read an issue:**
+The skill builds the JQL query for the project and shows the result as a table. A search or a view changes nothing in Jira, so it asks for no approval.
 
-    /jira
-    > Show me PROJ-456
+**Move an issue to a new status:**
 
-**Search issues:**
+```text
+/sdlc:jira
+Move PROJ-789 to "In Review"
+```
 
-    /jira
-    > Find all open bugs assigned to me in PROJ
+The skill finds the transition in the cached workflow of the issue type. When no transition goes to that status, it lists the available transitions and asks which one to use. You approve the payload before the move.
 
-**Transition an issue:**
+**Rebuild the cache after a change of the Jira configuration:**
 
-    /jira
-    > Move PROJ-789 to "In Review"
+```text
+/sdlc:jira --project PROJ --force-refresh
+```
 
-**Initialize templates:**
+The cache does not expire on a timer. This command reads the fields and the workflows of `PROJ` again and saves a new cache.
 
-    /jira --init-templates --project NEWPROJ
+## Reference
+
+- [Flags, project key and cache](./jira/flags-and-cache.md): the 5 flags, what the skill needs, how it finds the project key, the cache, and what occurs when an operation fails.
+- [Description templates](./jira/templates.md): where a template comes from, the base structure, `--init-templates`, placeholders, and the rules for descriptions and comments.
 
 ## Related skills
 
-- [/plan](plan.md) — Plans can reference Jira issues as requirements.
-- [/pr](pr.md) — PR descriptions can include Jira issue links.
-- [/setup](setup.md) — Configure the default Jira project key.
-
-## Tips and gotchas
-
-- **Configure first.** Run `/setup` and configure the `jira` section to set a
-  default project key before using `/jira`.
-- **Requires Atlassian MCP connection.** The skill dispatches Jira operations
-  through the Atlassian MCP connector — make sure it is authorized.
-- **Metadata is cached.** The first invocation loads and caches fields,
-  workflows, and transitions; the cache does not expire on its own. Use
-  `--force-refresh` if the project's Jira configuration changed.
-- **Multi-project repos.** Add a `projects` array under the `jira` section of
-  `.sdlc-v2/config.toml` to restrict which project keys are accepted, then
-  use `--project <KEY>` to pick the active one per invocation.
-- **Templates.** A description template per issue type is optional. With a
-  template at `.sdlc-v2/jira-templates/<Type>.md`, `/jira` fills it. Without
-  one, `/jira` tells you no template was found and drafts the description
-  from a base structure: `## Summary`, `## Context`, `## Acceptance Criteria`.
-  You still review the critique and approve the payload before anything is
-  sent to Jira. The plugin ships no default templates today, so
-  `--init-templates` copies nothing unless it finds a templates directory
-  (see the skill for the lookup order).
+- [/sdlc:setup](./setup.md): sets the default Jira project key that this skill reads.
+- [/sdlc:verify-requirements](./verify-requirements.md): checks the requirements of a Jira ticket, and needs the cache that this skill builds.
+- [/sdlc:plan](./plan.md): writes an implementation plan for a ticket.
+- [/sdlc:execute](./execute.md): executes the plan.

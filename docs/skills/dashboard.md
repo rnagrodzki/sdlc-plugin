@@ -1,44 +1,36 @@
-# /dashboard
+# /sdlc:dashboard
 
-Open, check, or stop the local sdlc dashboard: one web page that shows the
-pipelines of every registered repo, their progress, session activity,
-issues, and preplan topic files (Preplans tab, and the Preplans box on the
-Activity tab). The page can also change the
-status of a preplan topic file, delete History rows, dismiss a wait that no
-pipeline shows, and delete one preplan topic file, deferred item, or learning
-for good. The full command name is `/sdlc:dashboard`.
+See the pipelines of every registered repo on one local web page, with one command and no switch between sessions.
 
-## When to use
+## Why use it
 
-- You want to see every repo's pipeline progress at a glance, without
-  switching sessions or terminals.
-- You want to check whether the dashboard server is already running.
-- You want to shut the server down before your laptop sleeps or reboots.
-- You want to start the server without a browser popping up, for example
-  when working over SSH.
-- You want to see your preplan topic files and their status on the Preplans
-  tab.
-- You want to delete a preplan topic file (Preplans tab), or a deferred item
-  or a learning (Activity tab). The delete is permanent: the page has no
-  undo. See [Delete an item](../dashboard.md#delete-an-item).
-- You want to change the status of a preplan topic file, delete History rows,
-  or dismiss a wait that no pipeline shows. See
-  [Change a preplan status, delete History rows, dismiss a wait](../dashboard.md#change-a-preplan-status-delete-history-rows-dismiss-a-wait).
+You run pipelines in more than one repo and in more than one session.
+To see their progress, you switch between sessions and terminals.
+This skill opens one local web page that shows every registered repo: pipeline state, session activity, issues and preplan topic files.
+The same command, with one flag, reports on the server or stops it.
 
-## Syntax
+## Example
 
-    /dashboard [--status | --stop | --no-open]
+Open the dashboard:
 
-With no flag, `/dashboard` starts the server if it is not already running,
-then opens it in your default browser.
+```text
+/sdlc:dashboard
+```
 
-## Flags
+The skill starts the server when it is not active, opens the page in your default browser, and prints one line:
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--status` | Report whether the server is running, and its address, pid, and version. Starts nothing. Cannot be combined with `--stop` or `--no-open`. | off |
-| `--stop` | End the running server. Cannot be combined with `--status` or `--no-open`. | off |
-| `--no-open` | Start the server if it is not already running, but do not open a browser. Cannot be combined with `--status` or `--stop`. | off |
+- `Dashboard: <url>`
+
+`<url>` is the address of the server. The default address is `http://127.0.0.1:7385`.
+[Dashboard](../dashboard.md) describes each tab and each control of the page.
+
+## What you get
+
+- See every registered repo on one page: pipeline state, session activity, issues and preplan topic files, without a switch of session or terminal.
+- Run the command again at no risk: when a server of the current version is active, you get the same address and no second server.
+- Check or stop the server with one flag: `--status` reports the address, the pid and the version, and `--stop` ends the server.
+- Work over SSH: `--no-open` starts the server and prints the address, and opens no browser.
+- Act from the page: [archive a run](../dashboard.md#archive-a-run), [clear the cache](../dashboard.md#clear-cache-files), [delete an item](../dashboard.md#delete-an-item), or [change a preplan status, delete History rows and dismiss a wait](../dashboard.md#change-a-preplan-status-delete-history-rows-dismiss-a-wait). The page has no undo.
 
 ## Steps
 
@@ -51,39 +43,40 @@ then opens it in your default browser.
 
 | Fact | Value |
 |---|---|
-| Starts | With `/dashboard`, with or without one flag: `--status`, `--stop` or `--no-open`. |
+| Starts | With `/sdlc:dashboard`, with no flag or with exactly one of `--status`, `--stop` or `--no-open`. |
 | Ends | After Step 2 prints one message. A tool error stops the skill after it prints the error `## Do this` text as it is. |
 | Asks the user | Never. The skill has no question and no gate. |
 | Resume | none |
 
-## Examples
+## More examples
 
-**Open the dashboard:**
+**Check that the server runs:**
 
-    /dashboard
+```text
+/sdlc:dashboard --status
+```
 
-Starts the server if it is not already running, then opens it in your
-default browser. If a server of the current version is already running,
-no second server starts and the same address opens.
-
-**Check if it is running:**
-
-    /dashboard --status
-
-Reports the server's address, process id, and version if it is running, or
-reports that it is not running. Starts nothing.
+The skill reports that the server runs, with its address, pid and version, or that the server does not run. It starts nothing.
 
 **Stop the server:**
 
-    /dashboard --stop
+```text
+/sdlc:dashboard --stop
+```
 
-Ends the running server. Use this before your laptop sleeps or reboots, or
-when you are done with the dashboard for the session.
+The skill ends the server and reports it as not running, with its last known address. Use it before your laptop sleeps or restarts.
+When the server does not stop in time, the skill also tells you to check the server log and to try again.
 
-**Start it without opening a browser:**
+**Start the server with no browser:**
 
-    /dashboard --no-open
+```text
+/sdlc:dashboard --no-open
+```
 
-Starts the server if it is not already running, and prints its address, but
-does not open a browser. Useful over SSH, or when you will open the address
-yourself.
+The skill starts the server when it is not active and prints `Dashboard: <url>`. It opens no browser. Use it over SSH, or when you open the address yourself.
+
+## Related skills
+
+- [/sdlc:ship](./ship.md): runs the pipeline that the dashboard shows.
+- [/sdlc:preplan](./preplan.md): writes the preplan topic files that the Preplans tab shows.
+- [/sdlc:deferred](./deferred.md): triages the deferred items that you can also delete on the Activity tab.

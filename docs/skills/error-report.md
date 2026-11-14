@@ -1,43 +1,36 @@
-# /error-report
+# /sdlc:error-report
 
-Propose a GitHub issue for an error that an SDLC skill hit. The skill collects
-the error context, asks for your consent twice, and files the issue in
-`rnagrodzki/sdlc-plugin`. The full command name is `/sdlc:error-report`.
+Turn a plugin error into a GitHub issue with the full error context, and approve the text before the skill files it.
 
-## When to use
+## Why use it
 
-- Another SDLC skill hit an error that looks like a defect of the plugin, and it
-  offers to report the error. The skill runs by itself in that case. You only
-  answer its questions.
-- A calling skill could not start `/error-report` and printed the error fields
-  for you. You run the command with those fields.
-- You want to track a tooling error that is not yet an open issue.
+A skill of the plugin fails, and the error looks like a defect of the plugin, not of your project.
+A report by hand costs time: you copy the error, the step, the branch and the command into an issue.
+This skill collects that context, writes the issue draft and shows the draft to you.
+It files the issue in `rnagrodzki/sdlc-plugin` only after you answer `yes` two times.
 
-The skill reports only errors that are worth an issue: a failed prepare tool, a
-failed `gh` or `git` command, an API error that repeats, a conflict that stays
-after one retry, a task that fails after 2 retries, or a build failure that
-blocks a wave. It skips user errors without a question: invalid input, HTTP 401,
-403 and 404, a user cancel, a lint-only failure, a missing config value and a
-`gh` session that is not logged in.
+## Example
 
-## Syntax
+`/sdlc:pr` hits a `pr_prepare` tool error that looks like a plugin defect, and it starts this skill for you.
+When a skill cannot start it, the skill gives you a line of this form, and you run the line:
 
-    /sdlc:error-report skill=<skill> step=<step> operation=<operation> error=<errorText> exitOrHttpCode=<code> errorType=<type>
+```text
+/sdlc:error-report skill=<skill> step=<step> operation=<operation> error=<errorText> exitOrHttpCode=<code> errorType=<type>
+```
 
-You do not type this line in the normal flow. A calling skill starts
-`/error-report` for you. The line is the fallback for a calling skill that cannot
-start it.
+In both cases you see these lines, and `/sdlc:pr` then continues with its own error handling:
 
-## Fields
+- The offer: `This error may be worth tracking as a GitHub issue. Create one? (yes / no)`
+- After `yes`, the draft: the title, the labels `tooling-error` and `pr`, the description, and `Create this issue? (yes / edit / cancel)`
+- After the second `yes`: `GitHub issue created: #<number> — <url>`
 
-| Field | Description | Required |
-|-------|-------------|----------|
-| `skill` | The skill that hit the error. It becomes the second label of the issue. | yes |
-| `step` | The step or operation that failed. | yes |
-| `operation` | What the skill tried to do. | yes |
-| `error` | The full error: exit code, message and HTTP status. | yes |
-| `exitOrHttpCode` | The exit code or the HTTP status. | no |
-| `errorType` | The kind of error, such as script crash, CLI failure or persistent API error. | no |
+## What you get
+
+- **A report with no copy work.** The draft has the skill, the step, the operation, the full error text, the repository, the branch and a timestamp.
+- **Control of what is filed.** The skill creates nothing until you accept the offer and then approve the full draft. `edit` changes the text first.
+- **No duplicate issues.** When similar open issues exist, you can add the error as a comment to one of them.
+- **No offer for your own errors.** The skill skips invalid input, HTTP 401, 403 and 404, a cancel and a lint-only failure without a question.
+- **A run that is not blocked.** The skill adds the offer, then returns to the error handling of the calling skill.
 
 ## Steps
 
@@ -50,63 +43,45 @@ start it.
 | Step 5: Dispatch the error-report-orchestrator Agent | agent | Fills the issue template from the manifest on a lightweight model. The agent calls neither `gh` nor `git`. | The issue title and body | no | the manifest is ready |
 | Step 6: Consent gate 2 (review) | user | Shows the title, the labels and the body. You choose `yes`, `edit` or `cancel`. On `edit` the skill changes the text and shows it again. | The approved issue text | no | the draft is ready |
 | Step 6b: Similar open issues | user | Lists open issues with the labels `tooling-error` and the skill name. You choose `comment`, `new` or `cancel`. On `comment` you pick an issue and approve the text, and the skill posts the comment. | The choice to comment or to create, or the posted comment | yes | the search found similar issues |
-| Step 7: Create the GitHub issue and return | skill | Runs `gh issue create` with the labels `tooling-error` and the skill name. Then it removes the manifest and returns to the calling skill. | The issue number and URL | no | you approved the text |
+| Step 7: Create the GitHub issue and return | skill | Runs `gh issue create` with the labels `tooling-error` and the skill name. Then it removes the manifest and returns to the calling skill. | The issue number and URL | no | you approved the text, and Step 6b did not end the run |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
 | Starts | When another skill sends an issue-worthy error to it, or when you run `/sdlc:error-report` with the error fields. |
-| Ends | After Step 7, after a comment posted in Step 6b, or at once when a step skips the proposal or you answer `no` or `cancel`. It then returns to the calling skill. |
-| Asks the user | At two gates: the offer in Step 3 and the review in Step 6. It also asks in Step 6b when similar open issues exist. It has no auto mode. |
+| Ends | After Step 7, or after a comment posted in Step 6b. It ends earlier when a step skips the proposal, when you answer `no` or `cancel`, when `prepare_orchestrator` returns an error, or when the skill cannot read the draft. |
+| Asks the user | At two gates: the offer in Step 3 and the review in Step 6. It also asks in Step 6b when similar open issues exist. It never creates an issue without both gates. |
 | Resume | none |
 
-## What the skill creates
+## More examples
 
-The issue goes to `rnagrodzki/sdlc-plugin`. The repo of your project is not the
-target. The title has the form `[<skill>] <one-line summary>` and is at most 72
-characters long. The labels are `tooling-error` and the name of the calling
-skill. The skill creates a missing label and tries again once.
+**Add the error to an open issue:**
 
-The body comes from the `ToolingError.md` template and has the error context. It
-has no AI attribution line.
+The skill prints `Similar open issue(s) found:` with a list, such as `#42 — [plan] Task decomposition fails on empty specs`.
+Answer `comment`, pick the issue, and approve the comment text.
+The skill prints `Comment added to #<number> — <url>` and creates no new issue.
 
-## Examples
+**Change the draft before the skill files it:**
 
-**An error during a ship run:**
+At `Create this issue? (yes / edit / cancel)`, answer `edit` and say what to change.
+The skill changes the title or the body and shows the draft again, until you answer `yes` or `cancel`.
 
-`/ship` hits a failed `gh pr create`. It sends the error to `/error-report`. You
-see the offer, answer `yes`, read the draft, and answer `yes` again. The skill
-prints `GitHub issue created: #<number> — <url>`. The ship run goes on with its
-own error handling.
+**Decline the report:**
 
-**A similar issue exists:**
+Answer `no` to the offer, or `cancel` to the draft.
+The skill creates nothing, and the calling skill continues with its own error handling.
 
-The skill finds `#42 — [pr] gh pr create fails`. You choose `comment`. It shows
-the comment text and asks you to approve it. After your `yes` it posts the
-comment and creates no new issue.
+## Reference
 
-## Prerequisites
-
-- The `gh` CLI is installed and logged in.
-- The repo has a git remote.
-
-When a prerequisite is missing, the skill skips the proposal and says nothing.
+- [Errors with and without an offer](./error-report/which-errors.md): the 6 kinds of error that get an offer, the 8 kinds that get none, and the 2 prerequisites.
+- [Issue and manual command](./error-report/issue.md): the fields of the manual command, the target repository, the title, the labels, the body, the comment and the failure messages.
 
 ## Related skills
 
-- [/harden](harden.md) — Runs `/error-report` when its result is a defect of the
-  plugin.
-- [/commit](commit.md), [/review](review.md), [/pr](pr.md),
-  [/execute](execute.md) and [/received-review](received-review.md) — Send an
-  error to `/error-report` when they hit an error that is worth an issue.
-
-## Tips and gotchas
-
-- **The skill does not stop the calling skill.** It adds an issue proposal and
-  then returns to the normal error handling of the caller.
-- **Two gates guard the issue.** The skill creates no issue and no comment
-  until you pass both gates and Step 6b.
-- **A failed `gh issue create` is tried again once.** The skill creates the
-  missing labels first. When the second try fails, the skill prints
-  `Could not create GitHub issue: <error>` and returns.
+- [/sdlc:harden](./harden.md): offers this skill when it classifies a failure as a plugin defect.
+- [/sdlc:execute](./execute.md): offers this skill after a task fails after 2 retries.
+- [/sdlc:commit](./commit.md): starts this skill for a `commit_apply` error that looks like a plugin defect.
+- [/sdlc:pr](./pr.md): starts this skill for a `pr_prepare` or `pr_apply` error that looks like a plugin defect.
+- [/sdlc:review](./review.md): starts this skill for a tool-call crash, not for a user error.
+- [/sdlc:received-review](./received-review.md): starts this skill when a reply to GitHub fails two times with a server error.
