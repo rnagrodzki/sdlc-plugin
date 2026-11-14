@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -113,11 +112,12 @@ type SetupPrepareOut struct {
 	RemoteOwner    string       `json:"remoteOwner,omitempty"`
 	// CIScriptDrift compares each scaffold_ci-managed script/workflow
 	// against the version currently embedded in this binary (Task 3, R2).
-	// Best-effort: degrades to an empty list rather than failing
-	// setup_prepare if the comparison errors.
-	CIScriptDrift []CIScriptDriftEntry `json:"ciScriptDrift"`
-	// CIScriptDriftError holds the drift check error and its Suggestion. Absent when the check works.
-	CIScriptDriftError string `json:"ciScriptDriftError,omitempty"`
+	// Best-effort: when the comparison fails it is empty and
+	// CIScriptDriftError holds the error, so setup_prepare does not fail.
+	CIScriptDrift []CIScriptDriftEntry `json:"ciScriptDrift" jsonschema_description:"One entry per scaffold_ci-managed CI file: script, installedVersion, currentVersion and action (current, outdated or missing). An empty list has two meanings: read ciScriptDriftError first. When ciScriptDriftError is set, the check failed and the list holds no result."`
+	// CIScriptDriftError holds the drift check error and its Suggestion.
+	// Absent when the check works.
+	CIScriptDriftError string `json:"ciScriptDriftError,omitempty" jsonschema_description:"Set only when the CI script drift check failed (for example an installed CI file above the read limit of scaffold_ci, or a file that cannot be read): the error message, then its Suggestion. ciScriptDrift is then empty. Omitted when the check works."`
 	// UserConfigPath is the absolute path of the user-level local config
 	// (~/.sdlc/local.toml or $SDLC_USER_CONFIG). Empty when no home
 	// directory is available (see config.UserConfigPath).
@@ -278,7 +278,7 @@ func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrep
 	}
 
 	// Best-effort CI script drift comparison (Task 3, R2): never fails
-	// setup_prepare, degrades to an empty list on error.
+	// setup_prepare: on error ciScriptDrift is empty and ciScriptDriftError holds the error.
 	ciDrift, driftErr := ciScriptDrift(driftRoot)
 	ciDriftErrText := ""
 	if driftErr != nil {
@@ -302,17 +302,22 @@ func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrep
 	}, nil
 }
 
-// ciDriftErrorText joins the error message and its Suggestion, so the skill can print one actionable line.
+// ciDriftErrorText joins the error message and its Suggestion, so the skill
+// can print one actionable line. It classifies err the way a failed tool
+// result is classified (mcpserver.ErrorParts). The message gets a final
+// period before the Suggestion when it has none. An empty Suggestion gives
+// the message alone.
 func ciDriftErrorText(err error) string {
-	var de *mcpserver.DataError
-	var ie *mcpserver.InfraError
-	switch {
-	case errors.As(err, &de):
-		return de.Msg + " " + de.Suggestion
-	case errors.As(err, &ie):
-		return ie.Msg + " " + ie.Suggestion
+	_, msg, suggestion := mcpserver.ErrorParts(err)
+	msg = strings.TrimSpace(msg)
+	suggestion = strings.TrimSpace(suggestion)
+	if suggestion == "" {
+		return msg
 	}
-	return err.Error()
+	if !strings.HasSuffix(msg, ".") {
+		msg += "."
+	}
+	return msg + " " + suggestion
 }
 
 // extractLocalPath walks a dotted path (e.g. "plan.guardrails") through raw

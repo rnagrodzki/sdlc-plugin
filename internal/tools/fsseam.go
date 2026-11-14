@@ -25,9 +25,10 @@ var writeFileFunc = os.WriteFile
 var readFileFunc = os.ReadFile
 
 // maxCheckedFileBytes bounds the read of a file that a tool checks before it
-// writes: config.toml for the guardrail check of setup_write_sections, and the
-// current mirror for dimensions_render_instructions. A real file of either
-// kind holds a few KiB.
+// writes: config.toml for the guardrail check of setup_write_sections, the
+// current mirror for dimensions_render_instructions, and each installed CI
+// file that scaffold_ci, setup_prepare and validate (ci_script_drift) read for
+// its version. A real file of any of these kinds holds a few KiB.
 const maxCheckedFileBytes = 1 << 20
 
 // maxCheckedFileText is maxCheckedFileBytes as text for tool descriptions.

@@ -16,7 +16,7 @@ The `ci_script_drift` action SHALL compare each CI file installed by `scaffold_c
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | Embedded payload missing | `InfraError` | `embedded payload "<name>" not found` / update or reinstall the plugin |
-| Installed file above 1048576 bytes | `DataError` | `check installed version of CI script <path>: ...larger than 1048576 bytes` / restore the file with git or delete it, then run the same call again |
+| Installed file above 1048576 bytes | `DataError` | `check installed version of CI script <path>: read <file>: installed CI file is too large: <size> bytes, over the 1048576 byte limit` / restore the file with git or delete it, then run the same call again |
 | Installed file cannot be read | `InfraError` | `check installed version of CI script <path>: read <file>: <cause>` / check read permission |
 
 #### Scenario: Freshly scaffolded project

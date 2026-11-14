@@ -62,6 +62,14 @@ func mapError(err error) (code string, msg string, suggestion string) {
 	return "infra", err.Error(), ""
 }
 
+// ErrorParts returns the error code ("domain", "infra" or "data"), the
+// message and the recovery suggestion of err, classified the same way a
+// failed tool result is. A tool that reports a caught error in a field of a
+// successful result uses it in place of its own errors.As checks.
+func ErrorParts(err error) (code, msg, suggestion string) {
+	return mapError(err)
+}
+
 // --- Markdown error rendering ---
 
 // renderError renders a failed tool result as the Markdown text that becomes

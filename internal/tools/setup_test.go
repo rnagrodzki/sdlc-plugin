@@ -1559,7 +1559,7 @@ func TestSetupPrepare_CIScriptDriftError(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, ciFileOfSize(maxInstalledCIFileBytes+1), 0o644); err != nil {
+	if err := os.WriteFile(path, ciFileOfSize(maxCheckedFileBytes+1), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1573,8 +1573,10 @@ func TestSetupPrepare_CIScriptDriftError(t *testing.T) {
 	if out.CIScriptDrift == nil || len(out.CIScriptDrift) != 0 {
 		t.Errorf("expected an empty non-nil ciScriptDrift, got %v", out.CIScriptDrift)
 	}
-	if !strings.Contains(out.CIScriptDriftError, ciFileTooLargeSuggestion) {
-		t.Errorf("ciScriptDriftError must hold the Suggestion, got %q", out.CIScriptDriftError)
+	want := fmt.Sprintf("check installed version of CI script %s: read %s: installed CI file is too large: %d bytes, over the %d byte limit. %s",
+		filepath.Join(".github", "workflows", "release-on-main.yml"), path, maxCheckedFileBytes+1, maxCheckedFileBytes, ciFileTooLargeSuggestion)
+	if out.CIScriptDriftError != want {
+		t.Errorf("ciScriptDriftError mismatch:\n got: %q\nwant: %q", out.CIScriptDriftError, want)
 	}
 }
 
@@ -1622,15 +1624,21 @@ func TestSetupPrepare_CIScriptDriftAfterUpdate(t *testing.T) {
 
 // TestCIDriftErrorText verifies the text of each error class.
 func TestCIDriftErrorText(t *testing.T) {
-	data := &mcpserver.DataError{Msg: "data msg", Suggestion: "data fix"}
-	infra := &mcpserver.InfraError{Msg: "infra msg", Suggestion: "infra fix"}
+	data := &mcpserver.DataError{Msg: "data msg", Suggestion: "data fix."}
+	infra := &mcpserver.InfraError{Msg: "infra msg", Suggestion: "infra fix."}
+	domain := &mcpserver.DomainError{Msg: "domain msg", Suggestion: "domain fix."}
 	cases := []struct {
 		name string
 		err  error
 		want string
 	}{
-		{"data error", data, "data msg data fix"},
-		{"wrapped infra error", fmt.Errorf("x: %w", infra), "infra msg infra fix"},
+		{"data error", data, "data msg. data fix."},
+		{"wrapped data error", fmt.Errorf("x: %w", data), "x: data msg. data fix."},
+		{"infra error", infra, "infra msg. infra fix."},
+		{"wrapped infra error", fmt.Errorf("x: %w", infra), "x: infra msg. infra fix."},
+		{"domain error keeps its suggestion", domain, "domain msg. domain fix."},
+		{"message with a final period", &mcpserver.InfraError{Msg: "done.", Suggestion: "retry."}, "done. retry."},
+		{"empty suggestion gives no trailing space", &mcpserver.InfraError{Msg: "infra msg"}, "infra msg"},
 		{"plain error", errors.New("plain"), "plain"},
 	}
 	for _, tc := range cases {

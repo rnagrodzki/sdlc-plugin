@@ -88,6 +88,7 @@ sequenceDiagram
 |---|---|---|---|
 | `ScaffoldCIIn.updateOutdated` (new) | bool | JSON boolean, optional, default `false` | `true` |
 | `ScaffoldCIIn.force` (description changed) | bool | JSON boolean, optional, default `false` | `false` |
+| `ScaffoldCIOut.mode` (new) | string | `default`, `force` or `updateOutdated` | `updateOutdated` |
 | `SetupPrepareOut.ciScriptDriftError` (new) | string | plain text, omitted when empty | `check installed version of CI script .github/workflows/release-on-main.yml: ... The installed file is larger than 1 MiB, ...` |
 
 ## Decisions

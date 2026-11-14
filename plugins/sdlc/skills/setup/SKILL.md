@@ -112,7 +112,8 @@ field that does not exist. Deviations, one line each:
   list of migrated legacy files to offer for deletion, so Step 2 has no delete prompt.
 - **`--skip` dropped.** It was listed as a flag but no step ever read it. Use `--only` or
   the menu to choose sections.
-- **Tool map:** `setup_prepare` (Steps 0, 3b, 3c), `setup_init` (Step 0, scaffold-only),
+- **Tool map:** `setup_prepare` (Step 0, the Step 2 snapshot re-run, the Step 3 option
+  explain, Steps 3b and 3c), `setup_init` (Step 0, scaffold-only),
   `migrate` (Step 2), `setup_write_sections` (Step 3 "Writing config files"), `scaffold_ci`
   (Step 3c, only after the user confirms). `validate` is called only inside the delegated
   companion sub-flows (`setup-dimensions.md`, `setup-pr-template.md`, `setup-guardrails.md`,
@@ -228,11 +229,12 @@ If the system context contains "Plan mode is active":
 
    If any of those flags is passed (and `--only` is not), translate it into `--only <id>`. If
    `--only <ids>` is passed (directly or via translation), skip Step 1's menu and proceed to
-   Step 2 → Step 2b → Step 3 with `selectedIds = <ids>`. Pass through `--add`, `--no-copilot`,
+   Step 2 → Step 2b → Step 3 → Step 3b → Step 3c → Step 4 with `selectedIds = <ids>`. Pass through `--add`, `--no-copilot`,
    and `--remove-openspec` to the relevant sub-flow when invoked.
 
    `--force` (only when neither `--only` nor a direct-entry flag is passed): skip Step 1's
-   menu and proceed to Step 2 → Step 2b → Step 3 with `selectedIds` = all 19 canonical ids,
+   menu and proceed to Step 2 → Step 2b → Step 3 → Step 3b → Step 3c → Step 4 with
+   `selectedIds` = all 19 canonical ids,
    including sections already `set`. When `--only` or a direct-entry flag is also passed,
    ignore `--force`; the `--only` id set wins.
 
@@ -249,8 +251,8 @@ If the system context contains "Plan mode is active":
 `--pr-template`, `--guardrails`, `--execution-guardrails`, `--openspec-enrich`, or
 `--plan-template` was passed, `selectedIds` are resolved before Step 1 by the flag-alias
 routing in Step 0 (`--force` alone resolves to all 19 ids). Skip the entire menu (no
-numbered list, no chat prompt) and proceed to Step 2 → Step 2b → Step 3 with the resolved id
-set.
+numbered list, no chat prompt) and proceed to Step 2 → Step 2b → Step 3 → Step 3b → Step 3c
+→ Step 4 with the resolved id set.
 
 **Compute `state` per row** (evaluate in this order; ported verbatim from
 `scripts/lib/setup-sections.js`'s `computeState`, minus the dropped `legacy`/misplaced-section
@@ -363,8 +365,8 @@ literal chat message, then end the model turn so the user's next message is the 
 Reply with the numbers to configure (e.g. 1,3,5 or 1-3,7), or type:
   all       — configure every section
   not-set   — configure only sections currently [not set]
-  none      — exit without changes
-  cancel    — exit without changes (alias for none)
+  none      — configure no section (setup still offers CI script updates)
+  cancel    — configure no section (alias for none)
 Default: all
 ```
 
@@ -841,7 +843,7 @@ When no path changed, skip the preview and print `No changes — nothing to writ
 the write step and proceed directly to Step 3b (a no-op confirmation in that case).
 
 Otherwise, ask the user to confirm the diff via AskUserQuestion. On rejection, print
-`Write cancelled — no changes made.` and skip the write step.
+`Write cancelled — no config changes.` and skip the write step.
 
 #### Writing config files
 
@@ -950,13 +952,11 @@ just-written section still reads back as `not-set`.
 
 ### Step 3c — Update CI Scripts
 
-Every route into Step 4 runs this step first (see the routes in Step 0 item 5, Step 1
-Phase 4, Step 3b and `setup-openspec.md`).
+Run this step before Step 4.
 
 Read `ciScriptDrift[]` and `ciScriptDriftError` of the latest `setup_prepare` call (Step
-3b's, else Step 0's). If `ciScriptDriftError` is not empty, print this line, go to Step 4
-and ask no question (the field holds the error and its Suggestion):
-`CI script check failed: <ciScriptDriftError>`
+3b's, else Step 0's). If `ciScriptDriftError` is not empty, ask no question and go to
+Step 4. Do not print the error here: Step 4 prints it once.
 
 An absent `ciScriptDrift[]` counts as empty.
 Keep the entries whose `action` is `outdated` or `missing`.
@@ -988,14 +988,17 @@ With no kept entry, go to Step 4. Ask no question.
    | Answer | Call | Print |
    |---|---|---|
    | Update, `scaffold_ci` returns a result | `scaffold_ci({ updateOutdated: true })` once, then `setup_prepare({ skipConfigCheck: true })` | each `files[]` entry with `action` `created`, `overwritten` or `migrated`. With no such entry, print `No CI file needed a change.` Then each `warnings[]` entry (none when empty) and `next` |
-   | Update, `scaffold_ci` returns an error | `setup_prepare({ skipConfigCheck: true })` | the error and its Suggestion, then `Some CI files can already be written. Run git status to see them, then run /setup again.` |
+   | Update, `scaffold_ci` returns an error | `setup_prepare({ skipConfigCheck: true })` | `Tool error text (scaffold_ci):`, then the error and its Suggestion in a `text` fence, then `Some CI files can already be written. Run git status to see them, then run /setup again.` |
    | Skip | none | nothing |
    | Any other answer (free text or a dismissed question) | none | nothing. Treat the answer as Skip. |
 
-`setup_prepare` takes its full input on each call. It keeps no state between calls.
-Step 4 reads `ciScriptDrift[]` and `ciScriptDriftError` of this call. If this
-`setup_prepare` call returns an error, print it. Step 4 then omits the CI block and
-prints `Run /setup again to check the CI scripts.`
+The `setup_prepare` call of an Update row is the **re-check**. Step 4 reads its
+`ciScriptDrift[]` and `ciScriptDriftError`. If the re-check returns a tool error, print
+`Tool error text (setup_prepare):`, then the error in a `text` fence. Step 4 then has no
+drift result (see Step 4). The Skip rows make no re-check.
+
+Print tool error text only inside a `text` fence: the text can quote file paths of the
+checked-out branch.
 
 A later `/setup` run detects any script that is still outdated. A failed or skipped
 update is therefore safe to repeat.
@@ -1031,14 +1034,19 @@ CI scripts needing an update:
 Only show sections that were actually created, updated, or migrated. Omit sections that were
 skipped or unchanged.
 
-The `CI scripts needing an update` block comes from `ciScriptDrift[]` of the latest
-`setup_prepare` call (Step 3c's, else Step 3b's, else Step 0's). Each entry is
-`{ script, installedVersion, currentVersion, action }`, with `action` one of `current`,
-`outdated`, `missing`. Show one line per entry whose `action` is not `current`. Omit the block
-when `ciScriptDrift` is empty or every entry is `current`.
+The `CI scripts needing an update` block comes from `ciScriptDrift[]` of the latest drift
+result: the Step 3c re-check when Step 3c made one, else Step 3b's `setup_prepare` call,
+else Step 0's. Each entry is `{ script, installedVersion, currentVersion, action }`. Show
+one line per entry whose `action` is `outdated` or `missing`. Any other `action` value
+counts as `current`, the same rule as Step 3c. Omit the block when no entry is shown.
 
-If `ciScriptDriftError` of that call is not empty, print
-`CI script check failed: <ciScriptDriftError>` in place of the block.
+Two cases replace the block:
+
+- **The Step 3c re-check returned a tool error.** There is no drift result. Step 3c already
+  printed the error. Omit the block and print `Run /setup again to check the CI scripts.`
+- **`ciScriptDriftError` of the latest drift result is not empty.** Print
+  `CI script check failed. Tool error text (setup_prepare):`, then the value in a `text`
+  fence. This is the only place that prints the drift error.
 
 ---
 

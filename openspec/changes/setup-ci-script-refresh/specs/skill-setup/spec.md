@@ -115,8 +115,9 @@ The skill SHALL resolve the reply to a set of section ids as below, and SHALL al
 The skill SHALL end with a `Setup complete` summary that lists only the config files, content, and migrations that were created, updated, or migrated, and SHALL log a learning with `learnings_log({ action: "append", entry })`.
 
 - Learning entry heading: `## YYYY-MM-DD — setup: <brief summary>`.
-- The summary SHALL also show a `CI scripts needing an update:` block built from `ciScriptDrift` of the latest `setup_prepare` call (the CI script update step's call when it ran): one line per entry whose `action` is not `current`, as `<script> — <action> (installed v<installedVersion>, current v<currentVersion>)`, followed by the fix `Fix: run /setup again and choose Update, or call scaffold_ci({ updateOutdated: true }).` The block is omitted when `ciScriptDrift` is empty or every entry is `current`.
-- When `ciScriptDriftError` of that call is not empty, the summary SHALL print `CI script check failed: <ciScriptDriftError>` in place of the block.
+- The summary SHALL also show a `CI scripts needing an update:` block built from `ciScriptDrift` of the latest drift result (the re-check of the CI script update step when it made one): one line per entry whose `action` is `outdated` or `missing`, as `<script> — <action> (installed v<installedVersion>, current v<currentVersion>)`, followed by the fix `Fix: run /setup again and choose Update, or call scaffold_ci({ updateOutdated: true }).` Any other `action` value counts as `current`, the same rule as the CI script update step. The block is omitted when no entry is shown.
+- When `ciScriptDriftError` of that result is not empty, the summary SHALL print `CI script check failed. Tool error text (setup_prepare):` and then the value in a `text` fence, in place of the block. The summary is the only place that prints the drift error.
+- When the re-check of the CI script update step returned a tool error, the summary SHALL omit the block and print `Run /setup again to check the CI scripts.`
 
 #### Scenario: Only jira configured
 - **WHEN** only `jira` was written
@@ -134,13 +135,31 @@ The skill SHALL end with a `Setup complete` summary that lists only the config f
 
 #### Scenario: Drift check failed
 - **WHEN** the latest `setup_prepare` returns a non-empty `ciScriptDriftError`
-- **THEN** the summary prints `CI script check failed: <ciScriptDriftError>`
+- **THEN** the summary prints `CI script check failed. Tool error text (setup_prepare):` and the value in a `text` fence
 - **AND** the summary has no `CI scripts needing an update:` block
+
+#### Scenario: Re-check failed
+- **WHEN** the user picks Update and the `setup_prepare` re-check returns a tool error
+- **THEN** the CI script update step prints the error in a `text` fence
+- **AND** the summary has no `CI scripts needing an update:` block
+- **AND** the summary prints `Run /setup again to check the CI scripts.`
+
+### Requirement: Diff preview before writing
+Before any write in the "Writing config files" step, the skill SHALL show a `path | before | after` table of changed config paths and SHALL ask for confirmation with AskUserQuestion.
+
+- Only paths whose value changed are listed.
+- No changed path: print `No changes — nothing to write.` and skip the write.
+- Rejected: print `Write cancelled — no config changes.` and skip the write. The CI script update step still runs after it, so the run can still write CI scripts.
+
+#### Scenario: Nothing changed
+- **WHEN** every assembled value equals the snapshot value
+- **THEN** the skill prints `No changes — nothing to write.`
+- **AND** does not call `setup_write_sections`
 
 ## ADDED Requirements
 
 ### Requirement: CI script update question
-The skill SHALL run a CI script update step (Step 3c) before the summary on every route that reaches the summary, and SHALL ask one AskUserQuestion only when a `ciScriptDrift` entry has `action` `outdated` or `missing`.
+The skill SHALL run a CI script update step (Step 3c) before the summary on every route of the setup skill file that reaches the summary (a companion sub-flow that stops the run ends before it), and SHALL ask one AskUserQuestion only when a `ciScriptDrift` entry has `action` `outdated` or `missing`.
 
 - An absent `ciScriptDrift` counts as empty. Any other `action` value counts as `current`.
 - Setup `--force` and `--only` select sections, not files. They do not skip the question.
@@ -202,7 +221,7 @@ sequenceDiagram
 #### Scenario: Update fails
 - **WHEN** the user picks `Update (Recommended)`
 - **AND** `scaffold_ci` returns an error
-- **THEN** the skill prints the error and its Suggestion
+- **THEN** the skill prints `Tool error text (scaffold_ci):` and the error and its Suggestion in a `text` fence
 - **AND** the skill prints `Some CI files can already be written. Run git status to see them, then run /setup again.`
 - **AND** the skill calls `setup_prepare({ skipConfigCheck: true })` before the summary
 
@@ -221,9 +240,10 @@ sequenceDiagram
 - **AND** the skill does not call `scaffold_ci`
 
 ### Requirement: CI script check failure
-The skill SHALL print `CI script check failed: <ciScriptDriftError>` and SHALL ask no CI script question when the latest `setup_prepare` returns a non-empty `ciScriptDriftError`.
+The skill SHALL ask no CI script question and SHALL NOT call `scaffold_ci` when the latest `setup_prepare` returns a non-empty `ciScriptDriftError`. The CI script update step SHALL NOT print the error; the summary prints it once.
 
 #### Scenario: Check failed
 - **WHEN** the latest `setup_prepare` returns `ciScriptDriftError` with a size error
-- **THEN** the skill prints `CI script check failed: ` followed by the error and its Suggestion
+- **THEN** the skill asks no CI script question
 - **AND** the skill does not call `scaffold_ci`
+- **AND** the summary prints `CI script check failed. Tool error text (setup_prepare):` followed by the error and its Suggestion in a `text` fence, once

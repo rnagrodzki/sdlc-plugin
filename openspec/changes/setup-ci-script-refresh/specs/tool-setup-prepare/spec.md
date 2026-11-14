@@ -53,7 +53,7 @@ The tool SHALL report one `ciScriptDrift` entry per CI script or workflow that `
 - `outdated`: installed version is lower than current, or only the legacy file exists.
 - `missing`: neither the destination nor the legacy file exists.
 - When the active worktree root cannot be resolved, the comparison uses the project root.
-- If the comparison fails, `ciScriptDrift` is `[]`, `ciScriptDriftError` holds the error message and its Suggestion, and the tool still returns `ok: true`.
+- If the comparison fails, `ciScriptDrift` is `[]`, `ciScriptDriftError` holds the error message and its Suggestion, and the tool still returns `ok: true`. The text is the message, a period when the message has none, a space and the Suggestion; with no Suggestion it is the message alone.
 - An installed file above 1048576 bytes makes the comparison fail with the size error of the `tool-scaffold-ci` spec.
 - Remediation is `scaffold_ci({updateOutdated:true})`; see the `tool-scaffold-ci` spec.
 
