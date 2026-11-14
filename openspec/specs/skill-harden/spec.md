@@ -562,3 +562,14 @@ A learnings pattern with `patternCount` 3 or more and no covering rule SHALL bec
 #### Scenario: Pending item run
 - **WHEN** the failure text is `Pending rule edits: harden-pending-plan`
 - **THEN** the proposals repeat the edits listed in that open deferred item
+
+### Requirement: Standalone instructions
+Without `--no-instructions` and not in `--from-learnings` mode, the skill SHALL call `instructions_resolve` with key `harden` in Step 0, and SHALL run the list after Step 7 under the name `Run instructions`.
+
+#### Scenario: From learnings
+- **WHEN** `--from-learnings` is given
+- **THEN** no instruction runs
+
+#### Scenario: Stop in Step 5
+- **WHEN** the run stops in Step 5
+- **THEN** no instruction runs

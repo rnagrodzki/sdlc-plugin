@@ -671,3 +671,14 @@ The `execute_state` `init` call SHALL pass `plannedWavesJson` with the final wav
 #### Scenario: Confirmed schedule
 - **WHEN** Step 4 confirms wave 1 with tasks `1`, `2` and wave 2 with task `3`
 - **THEN** `init` gets `plannedWavesJson` `[{"number":1,"taskIds":["1","2"]},{"number":2,"taskIds":["3"]}]`
+
+### Requirement: Standalone instructions
+Without `--no-instructions`, the skill SHALL call `instructions_resolve` with key `execute` in Step 0, and SHALL run the list in Step 9 before `cleanup` through `execute_state` `instructions-next` and `instruction-record`.
+
+#### Scenario: Failed run
+- **WHEN** a task fails
+- **THEN** no instruction runs and the records stay pending
+
+#### Scenario: Resume
+- **WHEN** `--resume` finds all tasks done and an open record
+- **THEN** the skill runs the open records, then calls `cleanup`
