@@ -636,7 +636,7 @@ error stop or an interruption ends after Step 9 with the existing text of that r
 
 When `instructions` from Step 0a is empty (`count` is 0), print no instructions line. End.
 
-Otherwise run the list in interactive mode. Follow `plugins/sdlc/skills/ship/instructions-run.md`,
+Otherwise run the list in interactive mode. Follow [`../ship/instructions-run.md`](../ship/instructions-run.md),
 section "Loop without run state". The run mode of `review` is always interactive: there is
 no `--auto` flag. Run each instruction in the main session, in the order of the list. Never
 dispatch an Agent for an instruction.

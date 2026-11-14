@@ -10634,15 +10634,15 @@ func execInstrCall(root, branch string, in ExecuteStateIn, at time.Time) (any, e
 	return executeState(root, root, in, fixedClock(at))
 }
 
-func execInstrNext(t *testing.T, root, branch string, at time.Time) ExecInstructionsNextOut {
+func execInstrNext(t *testing.T, root, branch string, at time.Time) InstructionsNextOut {
 	t.Helper()
 	out, err := execInstrCall(root, branch, ExecuteStateIn{Action: "instructions-next"}, at)
 	if err != nil {
 		t.Fatalf("instructions-next: %v", err)
 	}
-	next, ok := out.(ExecInstructionsNextOut)
+	next, ok := out.(InstructionsNextOut)
 	if !ok {
-		t.Fatalf("output = %#v, want ExecInstructionsNextOut", out)
+		t.Fatalf("output = %#v, want InstructionsNextOut", out)
 	}
 	return next
 }
@@ -10712,9 +10712,9 @@ func TestExecuteStateInstructionNextSeedsAndRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instruction-record: %v", err)
 	}
-	rec, ok := out.(ExecInstructionRecordOut)
+	rec, ok := out.(InstructionRecordResultOut)
 	if !ok {
-		t.Fatalf("output = %#v, want ExecInstructionRecordOut", out)
+		t.Fatalf("output = %#v, want InstructionRecordResultOut", out)
 	}
 	if rec.Updated != 1 || rec.Warnings == nil || len(rec.Warnings) != 0 {
 		t.Errorf("record out = %+v, want updated 1 and warnings []", rec)
@@ -10798,7 +10798,7 @@ func TestExecuteStateInstructionInputsOtherAction(t *testing.T) {
 		"instructionStatus":  func(in *ExecuteStateIn) { in.InstructionStatus = instrStrPtr("") },
 		"instructionOutcome": func(in *ExecuteStateIn) { in.InstructionOutcome = instrStrPtr("") },
 	}
-	for _, field := range shipInstrInputs {
+	for _, field := range instrInputFields {
 		for _, action := range []string{"cleanup", "instructions-next", "read"} {
 			t.Run(field+"/"+action, func(t *testing.T) {
 				const branch = "feat/exec-instr-other"
@@ -10843,9 +10843,9 @@ func TestExecuteStateInstructionRecordInputs(t *testing.T) {
 			`status "" is not valid`},
 		{"bad status", execInstrRecordIn(1, "maybe", ""), `status "maybe" is not valid`},
 		{"failed without outcome", execInstrRecordIn(1, "failed", " "), "outcome is required for failed and not run"},
-		{"outcome too long", execInstrRecordIn(1, "done", strings.Repeat("a", 1001)), "the outcome has 1001 characters. The limit is 1000."},
-		{"number out of range", execInstrRecordIn(3, "done", ""), "execute has 2 instructions. Number 3 is out of range."},
-		{"number zero", execInstrRecordIn(0, "done", ""), "execute has 2 instructions. Number 0 is out of range."},
+		{"outcome too long", execInstrRecordIn(1, "done", strings.Repeat("a", 1001)), "the outcome has 1001 characters, over the limit of 1000"},
+		{"number out of range", execInstrRecordIn(3, "done", ""), "instruction number 3 is out of range: execute has 2 instructions"},
+		{"number zero", execInstrRecordIn(0, "done", ""), "instruction number 0 is out of range: execute has 2 instructions"},
 		{"pending record", execInstrRecordIn(2, "done", ""), "instruction execute #2 is not running (pending)"},
 	}
 	for _, c := range cases {
@@ -10896,7 +10896,7 @@ func TestExecuteStateInstructionRecordAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instruction-record: %v", err)
 	}
-	if got := out.(ExecInstructionRecordOut); got.Updated != 3 || got.Summary != "3 open instructions of execute closed." {
+	if got := out.(InstructionRecordResultOut); got.Updated != 3 || got.Summary != "3 open instructions of execute closed." {
 		t.Errorf("out = %+v, want updated 3", got)
 	}
 	want := []string{
@@ -10917,7 +10917,7 @@ func TestExecuteStateInstructionRecordAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instruction-record: %v", err)
 	}
-	if got := out.(ExecInstructionRecordOut).Updated; got != 0 {
+	if got := out.(InstructionRecordResultOut).Updated; got != 0 {
 		t.Errorf("updated = %d, want 0", got)
 	}
 }

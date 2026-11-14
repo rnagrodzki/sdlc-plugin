@@ -925,7 +925,7 @@ A run that stopped on a tool error or a worker error runs no list. It ends with 
 
 When `instructions` from Step 0a is empty (`count` is 0), print no instructions line. End.
 
-Otherwise run the list. Follow `plugins/sdlc/skills/ship/instructions-run.md`, section "Loop without run state".
+Otherwise run the list. Follow [`../ship/instructions-run.md`](../ship/instructions-run.md), section "Loop without run state".
 The run mode is the `--auto` token of this invocation's own `$ARGUMENTS`: with `--auto`, the run is `--auto`. Without it, the run is interactive.
 Run each instruction in the main session, in the order of the list. Never dispatch an Agent for an instruction.
 The list is not a harden run: `--no-harden` does not skip it.

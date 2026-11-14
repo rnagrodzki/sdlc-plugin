@@ -11,7 +11,7 @@ The tool SHALL push the branch when the branch has no upstream or is ahead of it
 | Commits-ahead check fails | `InfraError` | `checking commits ahead of upstream: <error>` |
 | Tracking ref read fails | `InfraError` | `cannot read the remote-tracking ref of <branch>: <error>` / check the git repository, then run the pr step again. No push runs. |
 | Lease rejected | `DomainError` | `remote branch <branch> changed since the last push. pr stopped.` / fetch the branch, review the other commits, integrate them, then run the pr step again |
-| Push fails | `InfraError` | `git push: <error>` / push manually with `git push -u origin HEAD`, retry `pr_apply` |
+| Push fails | `InfraError` | `git push: <error>` / by failure kind: `auth` check the credentials, `network` check the network, `no-remote` add the origin remote, `rejected` fetch and integrate the remote commits, `other` push manually with `git push -u origin HEAD`; then retry `pr_apply` |
 
 #### Scenario: No upstream
 - **WHEN** the branch has no upstream

@@ -27,8 +27,8 @@ export const benefits = [
   },
   {
     title: 'Your follow-up steps, run for you',
-    text: 'Write the steps you repeat after a run in config, such as a ticket move or a channel post. Ship runs each one after its step and reports the result.',
-    skills: ['ship', 'commit', 'pr'],
+    text: 'Write the steps you repeat after a run in config, such as a ticket move or a channel post. Ship, or the skill you run alone, runs each one after its step and reports the result.',
+    skills: ['ship', 'execute', 'commit', 'review', 'received-review', 'pr', 'harden', 'verify-pipeline'],
   },
   {
     title: 'Output in the style of your project',

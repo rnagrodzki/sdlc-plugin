@@ -88,7 +88,7 @@ resolves at its start.
 
 ```text
 Instructions (execute): 2 total, 1 done, 1 failed, 0 not run.
-- execute #1 (team) failed: <cause>
+- `execute #1 (team) failed: <cause>`
 ```
 
 The run state keeps each result. A small plan that runs directly writes no

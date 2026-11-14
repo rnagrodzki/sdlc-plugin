@@ -48,7 +48,7 @@ Then the skill asks where the review goes: a comment on the open PR, a file in `
 | Step 7 — Handle Posting | skill | Checks the links in the comment, then posts it to the PR, saves it under `.sdlc-v2/reviews/` or keeps it in the terminal. | A posted comment or a saved review file | no | always. The options depend on the PR and the scope |
 | Step 8 — Offer Self-Fix | skill | Offers `fix` (runs `received-review`), `harden` (only when the verdict is `CHANGES REQUESTED`) or `no`. | A `received-review` run, a `harden` run or nothing | yes | the verdict is `CHANGES REQUESTED` or `APPROVED WITH NOTES` |
 | Step 9 — Cleanup | tool | Stops the workers that did not finish. Deletes the manifest file. Deletes the diff directory only when no worker could be left running. | A clean working state | no | always, on every end of the run after Step 0a |
-| Step 10 — Run instructions | skill | Runs each instruction of the list, then prints `Instructions (review): …`. | The summary line | yes | not `--dry-run`, Step 7 gave a verdict, and the list is not empty |
+| Step 10 — Run instructions | skill | Runs each instruction of the list, then prints `Instructions (review): …`. | The summary line | yes | not `--dry-run`, Step 7 gave a verdict (the run did not stop on an error), Step 9 has finished, and the list is not empty |
 
 ### Run facts
 

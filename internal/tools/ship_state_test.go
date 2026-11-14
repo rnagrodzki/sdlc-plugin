@@ -8607,7 +8607,7 @@ func TestShipStateCommitCheck_PushOnCompletedStep(t *testing.T) {
 	t.Run("push warning is added and the step stays completed", func(t *testing.T) {
 		branch := "feat/cc-push-warn"
 		dir, path := commitCheckFixture(t, branch)
-		want := "push failed (auth): denied. The pr step pushes again."
+		want := pushFailedWarning("auth", "denied")
 		calls := stubPushBestEffort(t, false, want)
 		writeFile(t, filepath.Join(dir, "a.txt"), "a")
 		if _, err := runCommitCheck(t, dir, branch); err != nil {
@@ -10613,9 +10613,9 @@ func TestShipStateInstructionNextAndRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instructions-next: %v", err)
 	}
-	next, ok := out.(ShipInstructionsNextOut)
+	next, ok := out.(InstructionsNextOut)
 	if !ok {
-		t.Fatalf("output = %#v, want ShipInstructionsNextOut", out)
+		t.Fatalf("output = %#v, want InstructionsNextOut", out)
 	}
 	if next.Instruction == nil || next.Instruction.Key != "pr" || next.Instruction.Number != 2 {
 		t.Fatalf("instruction = %+v, want pr #2", next.Instruction)
@@ -10640,12 +10640,15 @@ func TestShipStateInstructionNextAndRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instruction-record: %v", err)
 	}
-	rec, ok := out.(ShipInstructionRecordOut)
+	rec, ok := out.(InstructionRecordResultOut)
 	if !ok {
-		t.Fatalf("output = %#v, want ShipInstructionRecordOut", out)
+		t.Fatalf("output = %#v, want InstructionRecordResultOut", out)
 	}
 	if rec.Updated != 1 || rec.Warnings == nil || len(rec.Warnings) != 0 {
 		t.Errorf("record out = %+v, want updated 1 and warnings []", rec)
+	}
+	if got, want := rec.Summary, "Instruction pr #2 recorded as done."; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
 	}
 	if got, want := rec.Next, "Call instructions-next for pr."; got != want {
 		t.Errorf("next = %q, want %q", got, want)
@@ -10668,7 +10671,7 @@ func TestShipStateInstructionNextAndRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instructions-next: %v", err)
 	}
-	next = out.(ShipInstructionsNextOut)
+	next = out.(InstructionsNextOut)
 	if next.Instruction != nil || next.Remaining != 0 {
 		t.Errorf("next = %+v, want (none) and remaining 0", next)
 	}
@@ -10690,7 +10693,7 @@ func TestShipStateInstructionNextNoRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instructions-next: %v", err)
 	}
-	next := out.(ShipInstructionsNextOut)
+	next := out.(InstructionsNextOut)
 	if next.Instruction != nil || next.Remaining != 0 {
 		t.Errorf("next = %+v, want (none) and remaining 0", next)
 	}
@@ -10708,7 +10711,7 @@ func TestShipStateInstructionNextFailsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second next: %v", err)
 	}
-	next := out.(ShipInstructionsNextOut)
+	next := out.(InstructionsNextOut)
 	if next.Instruction == nil || next.Instruction.Number != 2 || next.Remaining != 1 {
 		t.Fatalf("next = %+v, want review #2 with 1 left", next)
 	}
@@ -10734,7 +10737,7 @@ func TestShipStateInstructionRunMode(t *testing.T) {
 		{"auto true", true, true, "--auto", nil},
 		{"auto false", false, true, "interactive", nil},
 		{"auto missing", nil, false, "--auto", nil},
-		{"auto not boolean", "yes", true, "--auto", []string{"flags.auto is not a boolean"}},
+		{"auto not boolean", "yes", true, "--auto", []string{"flags.auto of the ship state is string yes, want a boolean. Run mode --auto is used. Start a new run to set flags.auto again."}},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -10752,7 +10755,7 @@ func TestShipStateInstructionRunMode(t *testing.T) {
 			if err != nil {
 				t.Fatalf("instructions-next: %v", err)
 			}
-			next := out.(ShipInstructionsNextOut)
+			next := out.(InstructionsNextOut)
 			if next.RunMode != tc.wantMode {
 				t.Errorf("runMode = %q, want %q", next.RunMode, tc.wantMode)
 			}
@@ -10785,8 +10788,25 @@ func TestShipStateInstructionRecordInputs(t *testing.T) {
 			`key "deploy" is not an instruction key`},
 		{"next key unknown", "instructions-next", map[string]any{"key": "deploy"},
 			`key "deploy" is not an instruction key`},
+		{"key number", "instruction-record", map[string]any{"key": float64(5), "instructionNumber": float64(1), "instructionStatus": "done"},
+			`key "5" is not an instruction key`},
+		{"key bool", "instructions-next", map[string]any{"key": true},
+			`key "true" is not an instruction key`},
 		{"number not whole", "instruction-record", map[string]any{"key": "pr", "instructionNumber": 1.5, "instructionStatus": "done"},
 			"instruction-record: detail.instructionNumber must be a whole number, got 1.5"},
+		{"number string", "instruction-record", map[string]any{"key": "pr", "instructionNumber": "2", "instructionStatus": "done"},
+			"instruction-record: detail.instructionNumber must be a whole number, got 2"},
+		{"number bool", "instruction-record", map[string]any{"key": "pr", "instructionNumber": true, "instructionStatus": "done"},
+			"instruction-record: detail.instructionNumber must be a whole number, got true"},
+		{"number null is absent", "instruction-record", map[string]any{"key": "pr", "instructionNumber": nil, "instructionStatus": "done"},
+			"instructionNumber or instructionAll is required"},
+		{"all string", "instruction-record", map[string]any{"key": "pr", "instructionAll": "true", "instructionStatus": "not run", "instructionOutcome": "x"},
+			"instruction-record: detail.instructionAll must be a boolean, got string"},
+		{"status not string", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": float64(1)},
+			"instruction-record: detail.instructionStatus must be a string, got float64"},
+		{"outcome not string", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": "done", "instructionOutcome": true},
+			"instruction-record: detail.instructionOutcome must be a string, got bool"},
+		{"number int-typed", "instruction-record", map[string]any{"key": "pr", "instructionNumber": 1, "instructionStatus": "done"}, ""},
 		{"failed needs outcome", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": "failed", "instructionOutcome": "  "},
 			"outcome is required for failed and not run"},
 		{"number one", "instruction-record", map[string]any{"key": "pr", "instructionNumber": float64(1), "instructionStatus": "done"}, ""},
@@ -10826,7 +10846,7 @@ func TestShipStateInstructionInputsOtherAction(t *testing.T) {
 		"instructionStatus":  "done",
 		"instructionOutcome": "ok",
 	}
-	for _, field := range shipInstrInputs {
+	for _, field := range instrInputFields {
 		for _, action := range []string{"complete-step", "instructions-next"} {
 			t.Run(field+"/"+action, func(t *testing.T) {
 				branch := "feat/instr-other-" + strings.ToLower(field)
@@ -10885,8 +10905,11 @@ func TestShipStateInstructionRecordAll(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instruction-record: %v", err)
 	}
-	if got := out.(ShipInstructionRecordOut).Updated; got != 3 {
+	if got := out.(InstructionRecordResultOut).Updated; got != 3 {
 		t.Errorf("updated = %d, want 3", got)
+	}
+	if got, want := out.(InstructionRecordResultOut).Summary, "3 open instructions of pr closed."; got != want {
+		t.Errorf("summary = %q, want %q", got, want)
 	}
 	want := []string{
 		"pr#1 failed result not recorded, not run again",
@@ -10958,8 +10981,8 @@ func TestShipStateInstructionRecordWriteFails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("instructions-next: %v", err)
 	}
-	if out.(ShipInstructionsNextOut).Instruction != nil {
-		t.Errorf("instruction = %+v, want (none)", out.(ShipInstructionsNextOut).Instruction)
+	if out.(InstructionsNextOut).Instruction != nil {
+		t.Errorf("instruction = %+v, want (none)", out.(InstructionsNextOut).Instruction)
 	}
 	if got, want := storedRecords(t, path), []string{"pr#1 failed result not recorded, not run again"}; !slices.Equal(got, want) {
 		t.Errorf("stored = %q, want %q", got, want)
@@ -10978,24 +11001,64 @@ func assertInstrWriteError(t *testing.T, err error) {
 }
 
 // TestShipStateSweepSkip proves skip closes the open records of that step
-// only.
+// only, keeps a closed record of that step as it was, and on a failed state
+// write persists neither the step row nor the records.
 func TestShipStateSweepSkip(t *testing.T) {
-	const branch = "feat/instr-sweep-skip"
-	dir, path := instrFixture(t, branch, append(instrList("review", "a", "b"), instrList("pr", "c")...))
-	if _, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "review"}, instrT0); err != nil {
-		t.Fatalf("instructions-next: %v", err)
+	// setup seeds review #1-#3 and pr #1, closes review #1 as done, and starts
+	// review #2.
+	setup := func(t *testing.T, branch string) (dir, path string) {
+		t.Helper()
+		dir, path = instrFixture(t, branch, append(instrList("review", "a", "b", "c"), instrList("pr", "d")...))
+		data := readStateData(t, path)
+		done := data["instructions"].([]any)[0].(map[string]any)
+		done["status"], done["outcome"], done["endedAt"] = "done", "ok", "2026-11-13T10:00:00Z"
+		writeStateData(t, path, data)
+		if _, err := instrCall(dir, branch, "instructions-next", map[string]any{"key": "review"}, instrT0); err != nil {
+			t.Fatalf("instructions-next: %v", err)
+		}
+		return dir, path
 	}
-	if _, err := shipState(dir, dir, ShipStateIn{Action: "skip", Step: "review", Detail: map[string]any{"branch": branch}}, fixedNow(instrT0)); err != nil {
-		t.Fatalf("skip: %v", err)
+	skip := func(dir, branch string) error {
+		_, err := shipState(dir, dir, ShipStateIn{Action: "skip", Step: "review", Detail: map[string]any{"branch": branch}}, fixedNow(instrT0))
+		return err
 	}
-	want := []string{
-		"review#1 failed result not recorded, not run again",
-		"review#2 not run step skipped",
-		"pr#1 pending ",
-	}
-	if got := storedRecords(t, path); !slices.Equal(got, want) {
-		t.Errorf("stored = %q, want %q", got, want)
-	}
+
+	t.Run("success", func(t *testing.T) {
+		const branch = "feat/instr-sweep-skip"
+		dir, path := setup(t, branch)
+		if err := skip(dir, branch); err != nil {
+			t.Fatalf("skip: %v", err)
+		}
+		want := []string{
+			"review#1 done ok",
+			"review#2 failed result not recorded, not run again",
+			"review#3 not run step skipped",
+			"pr#1 pending ",
+		}
+		if got := storedRecords(t, path); !slices.Equal(got, want) {
+			t.Errorf("stored = %q, want %q", got, want)
+		}
+		if got := storedRecord(t, path, 0)["endedAt"]; got != "2026-11-13T10:00:00Z" {
+			t.Errorf("done record endedAt = %v, want it unchanged", got)
+		}
+	})
+	t.Run("state write fails", func(t *testing.T) {
+		const branch = "feat/instr-sweep-skip-write"
+		dir, path := setup(t, branch)
+		before, _ := os.ReadFile(path)
+		useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+		err := skip(dir, branch)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) || !strings.HasPrefix(ie.Msg, "write ship state to ") {
+			t.Fatalf("err = %v, want the skip write InfraError", err)
+		}
+		if after, _ := os.ReadFile(path); !bytes.Equal(before, after) {
+			t.Error("the failed skip changed the state file")
+		}
+		if step := findStepMap(t, readStateData(t, path), "review"); step["status"] == "skipped" {
+			t.Error("step status persisted as skipped after a failed write")
+		}
+	})
 }
 
 // TestShipStateSweepFail proves fail closes each open record of the run in
@@ -11097,15 +11160,12 @@ func TestShipStateSweepCleanupPipeline(t *testing.T) {
 	t.Run("stamp write fails", func(t *testing.T) {
 		const branch = "feat/instr-sweep-clean-write"
 		dir, path := setup(t, branch)
-		// The stamp write goes through state.Write. A read-only runs folder
-		// makes it fail with the state file left as it was.
-		runsDir := filepath.Dir(path)
-		if err := os.Chmod(runsDir, 0o555); err != nil {
-			t.Fatalf("chmod: %v", err)
-		}
-		t.Cleanup(func() { _ = os.Chmod(runsDir, 0o755) })
+		// The stamp write seam fails, so the state file stays as it was. A
+		// seam, not a read-only folder: a root process ignores file modes.
+		orig := shipCleanupStampWriteFunc
+		shipCleanupStampWriteFunc = func(*state.State) error { return errors.New("disk full") }
+		t.Cleanup(func() { shipCleanupStampWriteFunc = orig })
 		err := cleanup(dir, branch, nil)
-		_ = os.Chmod(runsDir, 0o755)
 		var ie *mcpserver.InfraError
 		if !errors.As(err, &ie) || !strings.HasPrefix(ie.Msg, "write ship state to ") {
 			t.Fatalf("err = %v, want the stamp write InfraError", err)
@@ -11193,7 +11253,7 @@ func TestShipRunInFlight(t *testing.T) {
 		{"running end record", map[string]any{"steps": steps("completed", "completed", "completed"), "instructions": records("running")}, true},
 		{"completed run", map[string]any{"pipelineStatus": "completed", "steps": steps("completed", "completed", "completed"), "instructions": records("pending")}, false},
 		{"all closed", map[string]any{"steps": steps("completed", "completed", "completed"), "instructions": records("done")}, false},
-		{"damaged list", map[string]any{"steps": steps("completed", "completed", "completed"), "instructions": "x"}, false},
+		{"damaged list", map[string]any{"steps": steps("completed", "completed", "completed"), "instructions": "x"}, true},
 		{"blocked step", map[string]any{"steps": steps("completed", "in_progress", "pending")}, true},
 	}
 	for _, tc := range cases {

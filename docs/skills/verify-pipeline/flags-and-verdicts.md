@@ -137,7 +137,7 @@ and the question rules.
 ```text
 {"status":"fix-applied","filesChanged":["path/a"],"summary":"<one-line summary>"}
 Instructions (verify-pipeline): 1 total, 0 done, 1 failed, 0 not run.
-- verify-pipeline #1 (team) failed: <one line of cause>
+- `verify-pipeline #1 (team) failed: <one line of cause>`
 ```
 
 | Exit route | List runs | What you see |

@@ -155,20 +155,25 @@ func orEmptyRows(m map[string][]DashboardInstruction) map[string][]DashboardInst
 }
 
 // TestDashboardInstructionAbsent checks that a run with no record, a null key,
-// an empty list, or a damaged key has neither field in its JSON.
+// an empty list, or a damaged key has neither field in its JSON, and that a
+// damaged key or a skipped record gives one issue with Ref "instructions".
 func TestDashboardInstructionAbsent(t *testing.T) {
 	cases := []struct {
-		name  string
-		set   bool // false leaves the key out of the state
-		value any
+		name      string
+		set       bool // false leaves the key out of the state
+		value     any
+		wantIssue string // "" means no instruction issue
 	}{
 		{name: "no key"},
 		{name: "null", set: true, value: nil},
 		{name: "empty list", set: true, value: []any{}},
-		{name: "not a list", set: true, value: "oops"},
-		{name: "list of text", set: true, value: []any{"a", "b"}},
-		{name: "object", set: true, value: map[string]any{"key": "pr"}},
-		{name: "only bad rows", set: true, value: []any{map[string]any{"key": "pr", "status": "weird"}, map[string]any{"status": "done"}}},
+		{name: "not a list", set: true, value: "oops", wantIssue: "the page shows no instruction of this run"},
+		{name: "list of text", set: true, value: []any{"a", "b"}, wantIssue: "the page shows no instruction of this run"},
+		{name: "object", set: true, value: map[string]any{"key": "pr"}, wantIssue: "the page shows no instruction of this run"},
+		{name: "only bad rows", set: true, value: []any{map[string]any{"key": "pr", "status": "weird"}, map[string]any{"status": "done"}},
+			wantIssue: "the page shows no instruction of this run"},
+		{name: "status outside the record statuses", set: true, value: []any{dashInstrRec("pr", 1, "weird", "")},
+			wantIssue: "record 1 field status"},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
@@ -183,10 +188,27 @@ func TestDashboardInstructionAbsent(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, field := range []string{`"instructions"`, `"endInstructions"`, `"endLabel"`} {
+			// The colon matches a JSON key only: an issue Ref value
+			// "instructions" is not a field.
+			for _, field := range []string{`"instructions":`, `"endInstructions":`, `"endLabel":`} {
 				if strings.Contains(string(b), field) {
 					t.Errorf("pipeline JSON has %s: %s", field, b)
 				}
+			}
+			var issues []DashboardIssue
+			for _, is := range p.Issues {
+				if is.Ref == "instructions" {
+					issues = append(issues, is)
+				}
+			}
+			if tt.wantIssue == "" {
+				if len(issues) != 0 {
+					t.Errorf("instruction issues = %+v, want none", issues)
+				}
+				return
+			}
+			if len(issues) != 1 || !strings.Contains(issues[0].Text, tt.wantIssue) || issues[0].Source != "state" {
+				t.Errorf("instruction issues = %+v, want one state issue with %q", issues, tt.wantIssue)
 			}
 		})
 	}

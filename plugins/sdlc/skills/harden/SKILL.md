@@ -1537,7 +1537,7 @@ Skip this step when `--no-instructions` or `--from-learnings` was passed, when
 (interactive and `--auto`). A stop in Step 5 (a `cancel`, a 5a write-back halt
 or a 5b halt) ends the run with no Step 7, so no list runs.
 
-Read `plugins/sdlc/skills/ship/instructions-run.md` and follow its "Loop
+Read [`../ship/instructions-run.md`](../ship/instructions-run.md) and follow its "Loop
 without run state" section. The run mode comes from the `--auto` token of the
 arguments of this skill. Run each instruction of `INSTRUCTIONS.instructions` in
 order, in this session. In `--auto` mode, the question rules of that file still
@@ -1549,7 +1549,7 @@ Then print the summary line:
 
 ```text
 Instructions (harden): N total, X done, Y failed, Z not run.
-- harden #1 (team) failed: <one line of cause>
+- `harden #1 (team) failed: <one line of cause>`
 ```
 
 There is no run state to write. If the list stops before its end (an

@@ -77,13 +77,13 @@ Answer `implement`, `edit` or `skip`. After `implement`, the skill applies the f
 
 Run it after `/sdlc:review` in the same conversation, or paste the findings. With no PR number, the skill takes the feedback from the conversation or from your paste. It fixes what you approve, then prints the summary and the ledger. It posts no reply, because there is no comment thread.
 
-**Run with no prompt, in a pipeline:**
+**Run with no finding prompt, in a pipeline:**
 
 ```text
 /sdlc:received-review --pr 42 --auto
 ```
 
-The skill fixes every "will fix" finding and asks nothing about the findings. It records each other finding as `needs-direction` for `/sdlc:deferred`, and it does not close that finding. See [Auto mode](./received-review/consent-and-auto-mode.md#auto-mode).
+The skill fixes every "will fix" finding and asks nothing about the findings. It records each other finding as `needs-direction` for `/sdlc:deferred`, and it does not close that finding. A follow-up instruction still asks a critical question when its `criticalQuestions` flag allows it. See [Auto mode](./received-review/consent-and-auto-mode.md#auto-mode).
 
 **Pre-approve the severities that you always fix:**
 

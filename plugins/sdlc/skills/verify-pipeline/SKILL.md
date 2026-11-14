@@ -99,12 +99,12 @@ The single JSON line is the contract with the parent dispatcher (ship) — anyth
 
 Skip this step when `--no-instructions` was passed, when `INSTRUCTIONS.count` is 0, or when the verdict is `abort`. Run it only after Step 4 printed a `fix-applied` or `proposal` verdict line. Never run it before the JSON line.
 
-Read `plugins/sdlc/skills/ship/instructions-run.md` and follow its "Loop without run state" section. The run mode is always interactive: `--auto` does not change it. Run each instruction of `INSTRUCTIONS.instructions` in order, in this session. An instruction from config may run git or gh commands. Then print the summary line on the lines after the JSON line:
+Read [`../ship/instructions-run.md`](../ship/instructions-run.md) and follow its "Loop without run state" section. The run mode is always interactive: `--auto` does not change it. Run each instruction of `INSTRUCTIONS.instructions` in order, in this session. An instruction from config may run git or gh commands. Then print the summary line on the lines after the JSON line:
 
 ```text
 {"status":"fix-applied","filesChanged":["path/a"],"summary":"<one-line summary>"}
 Instructions (verify-pipeline): N total, X done, Y failed, Z not run.
-- verify-pipeline #1 (team) failed: <one line of cause>
+- `verify-pipeline #1 (team) failed: <one line of cause>`
 ```
 
 There is no run state to write. If the list stops before its end (an interrupt), print:
@@ -119,7 +119,7 @@ There is no run state to write. If the list stops before its end (an interrupt),
 
 ## What's Next
 
-When `fix-applied`: ship's verify-pipeline step dispatches `commit` to commit the fix. The commit does not push, because ship does not pass `--push` after the rebase. Pushing is a manual pause in ship, then polling resumes via `poll_await({target: "pipeline"})` (R7 — this skill MUST NOT commit itself).
+When `fix-applied`: ship's verify-pipeline step dispatches `commit` to commit the fix. The commit does not push, because ship does not pass `--push` on this commit, so the manual-push pause stays. Pushing is a manual pause in ship, then polling resumes via `poll_await({target: "pipeline"})` (R7 — this skill MUST NOT commit itself).
 In a standalone run, the `Instructions (verify-pipeline): …` line follows the JSON line.
 
 When `proposal`: the user (interactive) or ship (logging) reads the proposal and decides whether to apply.

@@ -44,7 +44,7 @@ The skill reads the plan, rates each task by complexity and risk, and builds the
 | Step 6 (RECOVER): Error recovery | skill | Applies the recovery action for the type of failure. | A recovered task or a failed task | yes | a task or a wave fails |
 | Step 7 (VERIFY): Final verification | skill | Runs the full test suite, the build and the linter, and reviews the diff stat. | The verification result | no | always |
 | Step 8 (CRITIQUE): Final output critique | skill | Checks that every task has a deliverable, that nothing drifted from the spec and that no TODO marker is left. | A list of fixes and drift entries | no | always |
-| Step 9 (REPORT): Summary | skill | Prints the summary and marks the run completed. | The execution report | no | always |
+| Step 9 (REPORT): Summary | skill | Prints the summary. With no execute list, it marks the run completed. With a list, Step 9a marks the run completed. | The execution report | no | always |
 | Step 9a: Run instructions | skill | Runs the open instructions of the execute list, then the run is marked completed. | The summary line | yes | a standalone run with a list |
 
 ### Run facts
@@ -54,7 +54,7 @@ The skill reads the plan, rates each task by complexity and risk, and builds the
 | Starts | With `/sdlc:execute <plan-file-path>`, or with `--plan <path>`. `--resume` starts from the saved state. |
 | Ends | After Step 9a, or after Step 9 when there is no list. The run state is marked completed. After a failure or an interruption the state is kept. |
 | Asks the user | For the branch name and the quality tier, and before a high-risk wave. Also when an error-severity guardrail fails, a task is ambiguous, the same task fails twice or verification shows a systemic issue. `--auto` skips the branch, tier, resume and high-risk prompts. An instruction asks only when its question flags allow it. |
-| Resume | `--resume` continues from the saved run state. A small plan that runs directly saves no state. `--resume` also runs the open instructions of a finished run. |
+| Resume | `--resume` continues from the saved run state. A small plan that runs directly saves no state. `--resume` also runs the open instructions of a run whose tasks are all done but whose instruction list is still open. A run already marked completed is not resumed. |
 
 ## More examples
 

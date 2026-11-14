@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: instructions-next action
-The action SHALL take `detail.key`, SHALL mark each running record of the key failed with the outcome `result not recorded, not run again`, then SHALL mark the first pending record running and return it with `remaining` and `runMode`.
+The action SHALL take `detail.key`, SHALL mark each running record of the key failed with the outcome `result not recorded, not run again`, then SHALL mark the first pending record running and return it with `remaining`, `runMode` and `failedRunning` (the numbers of the records it marked failed).
 
 #### Scenario: Next record
 - **WHEN** the key `pr` has a pending record 2
@@ -15,10 +15,10 @@ The action SHALL take `detail.key`, SHALL mark each running record of the key fa
 
 #### Scenario: Run mode not boolean
 - **WHEN** `flags.auto` is not a boolean
-- **THEN** `runMode` is `--auto` and `warnings` has `flags.auto is not a boolean`
+- **THEN** `runMode` is `--auto` and `warnings` has `flags.auto of the ship state is <type> <value>, want a boolean. Run mode --auto is used. Start a new run to set flags.auto again.`
 
 ### Requirement: instruction-record action
-The action SHALL take `detail.key`, `detail.instructionStatus` (done, failed, not run), and `detail.instructionNumber` or `detail.instructionAll: true`, with an optional `detail.instructionOutcome` of at most 1000 characters. A closed record SHALL NOT change.
+The action SHALL take `detail.key`, `detail.instructionStatus` (done, failed, not run), and `detail.instructionNumber` or `detail.instructionAll: true`, with `detail.instructionOutcome` (required for failed and not run, trimmed, at most 1000 characters). A closed record SHALL NOT change. With `instructionAll: true` the status SHALL be `not run`: a pending record becomes `not run` with the outcome, and a running record becomes `failed` with the outcome `result not recorded, not run again`. The output SHALL return `key` and `closed`, one entry for each closed record with `number`, `status`, `outcome` and `endedAt`.
 
 Record states:
 
@@ -45,14 +45,14 @@ stateDiagram-v2
 - **THEN** the action returns DomainError `detail.instructionNumber is valid only with instruction-record`
 
 ### Requirement: Record sweeps
-The `fail`, `skip` and `cleanup-pipeline` actions SHALL close the open records. A pending record becomes `not run` with the outcome `step failed or stopped`, `step skipped` or `step did not run`. A running record becomes `failed` with the outcome `result not recorded, not run again`.
+The `fail`, `skip` and `cleanup-pipeline` actions SHALL close the open records. A pending record becomes `not run` with the outcome `step failed or stopped`, `step skipped` or `step did not run`. A running record becomes `failed` with the outcome `result not recorded, not run again`. A damaged list SHALL close no record: the action SHALL add one warning that starts with `Instruction records not closed:` and SHALL still complete.
 
 #### Scenario: Skip
 - **WHEN** the harden step is skipped
 - **THEN** each open harden record is `not run` with the outcome `step skipped`
 
 ### Requirement: Open records keep the run in flight
-A started run that is not completed SHALL count as in flight when a step blocks or a record is pending or running.
+A started run that is not completed SHALL count as in flight when a step blocks, a record is pending or running, or the list is damaged.
 
 #### Scenario: End list open
 - **WHEN** every step is done and a `ship` record is pending

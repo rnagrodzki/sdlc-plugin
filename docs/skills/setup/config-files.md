@@ -28,10 +28,11 @@ Setup does not save the answer to this question. A later run that configures a p
 
 ## Options that setup does not ask about
 
-Edit these options by hand in `.sdlc-v2/config.toml`.
+Edit these options by hand. Each option is in `.sdlc-v2/config.toml`, except `[instructions]`, which can be in all three config files.
 
 | Option | What it does | More |
 |--------|--------------|------|
+| `[instructions]` | Follow-up instructions that run after a step, after a ship run, or after a skill. Valid in `.sdlc-v2/config.toml`, `.sdlc-v2/local.toml` and the user-level file | [Follow-up instructions](../../instructions.md) |
 | `[harden.instructions]` | The custom instructions for `/sdlc:harden` | [Custom instructions](../harden/custom-instructions.md) |
 | `[version.pushAuth]` | A custom CI push-auth secret, for example when branch-protection rulesets block the default token. The `version` section of the config template documents it | [Protected branches and rulesets](../../versioning.md#protected-branches-and-rulesets) |
 | `baseBranch` in `[git]` (default `""`) | The integration branch for `execute`, `ship`, `pr`, `review` and `commit`. Empty means the default branch of the repository | [Integration branch](../../getting-started.md#integration-branch) |

@@ -72,15 +72,18 @@ The templates `plugins/sdlc/templates/config.toml` and `plugins/sdlc/templates/l
 
 ## Keys
 
-The section has 13 keys: the 12 ship step names, and `ship` for the end of a ship run.
+The section has 13 keys: the 10 pipeline steps of ship, `received-review` and `commit-fixes`, and `ship` for the end of a ship run.
+
+- `received-review` and `commit-fixes` are not pipeline steps. Ship sequences them after the review step.
+- `rebase` has no key. Ship does not run a list after its rebase. An `[[instructions.rebase]]` entry is a config error.
 
 | Key | Ship run: the list runs after | Standalone run: the list runs after |
 |---|---|---|
 | `execute` | the execute step | `/sdlc:execute`, when all tasks completed |
 | `commit` | the commit step | `/sdlc:commit`, when the commit landed |
 | `review` | the review step | `/sdlc:review`, when the review gave a verdict. A `--dry-run` runs no list. |
-| `received-review` | the received-review step | `/sdlc:received-review`, at the end of a run that you did not cancel |
-| `commit-fixes` | the commit-fixes step | never |
+| `received-review` | received-review, which ship sequences after the review step | `/sdlc:received-review`, at the end of a run that you did not cancel |
+| `commit-fixes` | the commit of the received-review fixes | never |
 | `verify-openspec` | the verify-openspec step | never |
 | `archive-openspec` | the archive-openspec step | never |
 | `harden` | the harden step | `/sdlc:harden`, after a successful run. `--from-learnings` and the plugin-defect route (Step 6) run no list. |
@@ -196,7 +199,7 @@ The agent does not ask. It follows `onQuestionNotAllowed` of the instruction:
 | Value | Action | Status | Outcome |
 |---|---|---|---|
 | `skip` | The agent does not do the part that needs the answer. | `not run` | the question |
-| `decide` | The agent picks the answer and does the work with it. | `done` | `decided: "<question>" -> <answer>` |
+| `decide` | The agent picks the answer and does the work with it. | `done` | ``decided: `<question>` -> `<answer>` `` |
 
 ## What you see
 
@@ -204,17 +207,19 @@ At the end of a ship run, the summary shows the instructions. The ship report ha
 
 ```text
 Ship instructions: 6 total, 4 done, 1 failed, 1 not run.
-- pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.
-- ship #1 (team) not run: "Two channels match #releases: #releases, #releases-eu. Which one?"
-- ship #2 (project local) done, decided: "Which notes file?" -> ~/notes/shipped.md
+- `pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.`
+- `ship #1 (team) not run: Two channels match #releases: #releases, #releases-eu. Which one?`
+- ``ship #2 (project local) done, decided: `Which notes file?` -> `~/notes/shipped.md` ``
 ```
+
+An outcome is agent-written and can quote outside text, such as a ticket or a tool result. So the summary prints each line inside an inline code span.
 
 A standalone skill prints its line after its own result:
 
 ```text
 PR #123 created: https://github.com/<owner>/<repo>/pull/123
 Instructions (pr): 2 total, 1 done, 1 failed, 0 not run.
-- pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.
+- `pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.`
 ```
 
 With no instruction, the summary has no instructions line.
@@ -261,7 +266,9 @@ Problem: "deploy" is not a ship step name and not "ship".
 Fix: use one of: execute, commit, review, received-review, commit-fixes, verify-openspec, archive-openspec, harden, pr, verify-pipeline, await-remote-review, learnings-commit, ship.
 ```
 
-A standalone skill starts the first line with its key, for example `pr: config error, no step started.`
+A standalone skill starts the first line with its key, for example `pr: config error, no instruction ran.`
+
+When a file cannot be read, ship starts the first line with `ship: a config file cannot be read, no step started.` The fix is file access, not the file content.
 
 The plugin reports the first error only. It checks the team file first, then the project local file, then the user-level file.
 
@@ -274,13 +281,19 @@ The plugin reports the first error only. It checks the team file first, then the
 | `instructions.<key>` | `the value is not an array of tables.` | `use [[instructions.<key>]] headers.` |
 | `instructions.<key>` | `"<key>" is not a ship step name and not "ship".` | `use one of: <the 13 keys>.` |
 | `instructions.<key>` | `the list has <n> instructions after text expansion. The limit is 50.` | `split or shorten the list.` |
-| `instructions.<key>[n].text` | `the text has <n> characters. The limit is 4000.` | `shorten the text or split it into 2 instructions.` |
-| `instructions.<key>[n].text` | the text is missing, blank, an empty array or not a string | `set a non-blank string or a non-empty array of strings.` |
+| `instructions.<key>[n].text` | `the text has <n> characters. The limit is 4000` | `shorten the text or split it into 2 instructions.` |
+| `instructions.<key>[n].text` | `the text is missing` | `set a non-blank string or a non-empty array of strings.` |
+| `instructions.<key>[n].text` | `the text is blank` | `set a non-blank string or a non-empty array of strings.` |
+| `instructions.<key>[n].text` | `the text is an empty array` | `set a non-blank string or a non-empty array of strings.` |
+| `instructions.<key>[n].text` | `the text is not a string or an array of strings` | `set a non-blank string or a non-empty array of strings.` |
+| `instructions.<key>[n].text` | `item <i>: the item is not a string` | `set a non-blank string or a non-empty array of strings.` |
+| `instructions.<key>[n].text` | `item <i>: the text has <n> characters. The limit is 4000` | `shorten the text or split it into 2 instructions.` |
+| `instructions.<key>[n].text` | `item <i>: the text is blank` | `set a non-blank string or a non-empty array of strings.` |
 | `instructions.<key>[n].normalQuestions`, `instructions.<key>[n].criticalQuestions` | `the value <v> is not a boolean.` | `use true or false.` |
 | `instructions.<key>[n].onQuestionNotAllowed` | `the value <v> is not "skip" or "decide".` | `use "skip" or "decide".` |
 | `instructions.<key>[n].<field>` | `"<field>" is not a known field.` | `remove it. Allowed: text, normalQuestions, criticalQuestions, onQuestionNotAllowed.` |
 
-The `n` counts the entries of the key in that file, from 1.
+The `n` counts the entries of the key in that file, from 1. When `text` is an array, the `i` counts its items from 1.
 
 ## Push changes in ship
 
@@ -301,7 +314,10 @@ A best-effort push never fails the step. The commit stays, and the push result i
 | the push works | none |
 | the branch is the default branch | `push skipped: <branch> is the default branch` |
 | the repository has no `origin` remote | `push skipped: no remote origin` |
-| the push fails | `push failed (<kind>): <git error>. The pr step pushes again.` The kind is `auth`, `network`, `rejected`, `no-remote` or `other`. |
+| the current branch or the `origin` remote cannot be read | `push skipped: cannot read the current branch: <error>` or `push skipped: cannot read remote origin: <error>` |
+| the push fails | `push failed (<kind>): <git error>. The commit is kept and is not on the remote.` The kind is `auth`, `network`, `rejected`, `no-remote` or `other`. |
+
+When the default-branch lookup fails, the push still runs. The warning then starts with `default-branch check skipped: <error>.` After a push that works, the warning ends with `The branch was pushed.` The error text is cut to one short line, and a password in a remote URL is hidden.
 
 The pr step pushes when the branch has no upstream or has commits that the upstream does not have:
 
@@ -328,8 +344,11 @@ Three config settings have the name instructions. They do different work:
 | instructions for each key in each file, after text expansion | 50 |
 | characters for each text | 4000 |
 | bytes for each config file | 1048576 (1 MiB) |
-| characters for each recorded outcome | 1000 |
+| characters in the outcome of one instruction record | 1000 |
 
-All limits are fixed. No config key changes them. A config file or an instruction over a limit is a config error.
+All limits are fixed. No config key changes them.
+
+- A config file or an instruction over a limit is a config error.
+- The outcome limit applies when a record is written. The plugin trims the outcome first, then counts its characters. An outcome over 1000 characters is rejected. The record call fails, and the record stays as it was. This is not a config error.
 
 `/sdlc:setup` has no menu entry for this section. Edit the files by hand.

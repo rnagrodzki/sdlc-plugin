@@ -50,7 +50,7 @@ func TestVerifyPipelineSkillFlags(t *testing.T) {
 			"| `fix-applied` or `proposal` verdict, no `--no-instructions` | yes, after the JSON line |",
 			"| Step 5 interrupted |",
 			"In a standalone run, the `Instructions (verify-pipeline): …` line follows the JSON line.",
-			"The commit does not push, because ship does not pass `--push` after the rebase.",
+			"The commit does not push, because ship does not pass `--push` on this commit, so the manual-push pause stays.",
 		} {
 			if !strings.Contains(skill, want) {
 				t.Errorf("skills/verify-pipeline/SKILL.md: missing %q", want)

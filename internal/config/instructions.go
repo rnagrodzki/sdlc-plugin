@@ -10,6 +10,7 @@
 //
 // The loader reads raw maps, not the section extractor (extractSection drops
 // list values), and it checks every file in full, a hidden user list too.
+
 package config
 
 import (
@@ -27,23 +28,42 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
+// Instruction keys that callers name directly. Every key is in InstructionKeys.
+const (
+	// InstructionKeyReview is the list ship runs after its review step.
+	InstructionKeyReview = "review"
+	// InstructionKeyReceivedReview is the list ship runs after it sequences
+	// received-review, which is not a pipeline step.
+	InstructionKeyReceivedReview = "received-review"
+	// InstructionKeyCommitFixes is the list ship runs after it commits the
+	// received-review fixes, which is not a pipeline step.
+	InstructionKeyCommitFixes = "commit-fixes"
+	// InstructionKeyShip is the end list of a ship run.
+	InstructionKeyShip = "ship"
+)
+
 // InstructionKeys is the canonical key list, in ship order, plus "ship".
-// The step names equal shipmeta.CanonicalSteps plus the two item-8 steps
-// received-review and commit-fixes (TestInstructionKeysCoverCanonicalSteps).
-// Both schema enums of $defs.instructionsSection equal this list
-// (TestInstructionKeysMatchSchema).
-var InstructionKeys = []string{"execute", "commit", "review", "received-review",
-	"commit-fixes", "verify-openspec", "archive-openspec", "harden", "pr",
-	"verify-pipeline", "await-remote-review", "learnings-commit", "ship"}
+// The step names equal shipmeta.CanonicalSteps plus received-review and
+// commit-fixes, which ship sequences after review but which are not pipeline
+// steps (TestInstructionKeysCoverCanonicalSteps). Both schema enums of
+// $defs.instructionsSection equal this list (TestInstructionKeysMatchSchema).
+var InstructionKeys = []string{"execute", "commit", InstructionKeyReview, InstructionKeyReceivedReview,
+	InstructionKeyCommitFixes, "verify-openspec", "archive-openspec", "harden", "pr",
+	"verify-pipeline", "await-remote-review", "learnings-commit", InstructionKeyShip}
 
 // StandaloneInstructionKeys are the keys a skill may run outside a ship run.
-var StandaloneInstructionKeys = []string{"execute", "commit", "review",
-	"received-review", "pr", "harden", "verify-pipeline"}
+var StandaloneInstructionKeys = []string{"execute", "commit", InstructionKeyReview,
+	InstructionKeyReceivedReview, "pr", "harden", "verify-pipeline"}
 
 const (
-	MaxInstructionsPerKey      = 50      // per key per file, after text expansion
-	MaxInstructionText         = 4000    // characters per text string
-	MaxInstructionsConfigBytes = 1 << 20 // bytes per config file read by this loader
+	// MaxInstructionsPerKey is the most instructions one key may hold in one
+	// file, counted after each text array is expanded.
+	MaxInstructionsPerKey = 50
+	// MaxInstructionText is the most characters one text string may hold.
+	MaxInstructionText = 4000
+	// MaxInstructionsConfigBytes is the most bytes this loader reads from one
+	// config file.
+	MaxInstructionsConfigBytes = 1 << 20
 )
 
 // Instruction sources, in merge order.
@@ -77,27 +97,32 @@ var instructionAllowedFields = []string{"text", "normalQuestions", "criticalQues
 type Instruction struct {
 	Key                  string `json:"key"`
 	Number               int    `json:"number"` // 1-based place in the merged list of Key
-	Source               string `json:"source"` // "team" | "project local" | "user"
+	Source               string `json:"source"` // one of the InstructionSource* constants
 	Text                 string `json:"text"`
 	NormalQuestions      bool   `json:"normalQuestions"`
 	CriticalQuestions    bool   `json:"criticalQuestions"`
-	OnQuestionNotAllowed string `json:"onQuestionNotAllowed"` // "skip" | "decide"
+	OnQuestionNotAllowed string `json:"onQuestionNotAllowed"` // one of the OnQuestionNotAllowed* constants
 }
 
 // InstructionsError is a config error of the [instructions] section. Every
 // error names the file, the field, the problem and the fix.
 type InstructionsError struct {
-	Kind    string // "data" (bad content) | "infra" (file cannot be read)
+	Kind    string // one of the InstructionsError* kind constants
 	File    string // ".sdlc-v2/config.toml" | ".sdlc-v2/local.toml" | user-level path
 	Field   string // e.g. "instructions.pr[2].onQuestionNotAllowed"; "(whole file)" for a file error
 	Problem string
 	Fix     string
+	Cause   error // the read error of an infra-kind error; nil for a data-kind error
 }
 
 // Error returns "File: …\nField: …\nProblem: …\nFix: …".
 func (e *InstructionsError) Error() string {
 	return fmt.Sprintf("File: %s\nField: %s\nProblem: %s\nFix: %s", e.File, e.Field, e.Problem, e.Fix)
 }
+
+// Unwrap returns Cause, so errors.Is sees the read error (for example
+// fs.ErrPermission) through an infra-kind error.
+func (e *InstructionsError) Unwrap() error { return e.Cause }
 
 // instructionsFile is one config file read by ReadInstructions.
 type instructionsFile struct {
@@ -345,8 +370,8 @@ func parseInstructionEntry(f instructionsFile, key, field string, entry map[stri
 		s, isStr := raw.(string)
 		if !isStr || (s != OnQuestionNotAllowedSkip && s != OnQuestionNotAllowedDecide) {
 			return nil, dataErr(f, field+".onQuestionNotAllowed",
-				fmt.Sprintf("the value %v is not \"skip\" or \"decide\".", formatTOMLValue(raw)),
-				`use "skip" or "decide".`)
+				fmt.Sprintf("the value %s is not %q or %q.", formatTOMLValue(raw), OnQuestionNotAllowedSkip, OnQuestionNotAllowedDecide),
+				fmt.Sprintf("use %q or %q.", OnQuestionNotAllowedSkip, OnQuestionNotAllowedDecide))
 		}
 		onNotAllowed = s
 	}
@@ -427,7 +452,7 @@ func parseInstructionBool(f instructionsFile, field string, entry map[string]any
 	b, isBool := raw.(bool)
 	if !isBool {
 		return false, dataErr(f, field+"."+name,
-			fmt.Sprintf("the value %v is not a boolean.", formatTOMLValue(raw)),
+			fmt.Sprintf("the value %s is not a boolean.", formatTOMLValue(raw)),
 			"use true or false.")
 	}
 	return b, nil
@@ -442,16 +467,20 @@ func formatTOMLValue(v any) string {
 	return fmt.Sprintf("%v", v)
 }
 
-func dataErr(f instructionsFile, field, problem, fix string) *InstructionsError {
+// dataErr returns a data-kind *InstructionsError as an error.
+func dataErr(f instructionsFile, field, problem, fix string) error {
 	return &InstructionsError{Kind: InstructionsErrorData, File: f.label, Field: field, Problem: problem, Fix: fix}
 }
 
-func infraErr(f instructionsFile, err error) *InstructionsError {
+// infraErr returns an infra-kind *InstructionsError as an error. It keeps err
+// as Cause.
+func infraErr(f instructionsFile, err error) error {
 	return &InstructionsError{
 		Kind:    InstructionsErrorInfra,
 		File:    f.label,
 		Field:   instructionsWholeFileField,
 		Problem: err.Error(),
 		Fix:     "make the file readable.",
+		Cause:   err,
 	}
 }

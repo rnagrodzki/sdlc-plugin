@@ -500,14 +500,14 @@ Run it only after Step 6 shows the created or updated PR. A cancel at Step 5 or 
 Step 0 to Step 6 ends the skill with no list run. This includes the `pr_apply` error
 `remote branch <branch> changed since the last push. pr stopped.`
 
-Read `plugins/sdlc/skills/ship/instructions-run.md` and follow its "Loop without run state"
+Read [`../ship/instructions-run.md`](../ship/instructions-run.md) and follow its "Loop without run state"
 section. The run mode comes from the `--auto` token of the arguments of this skill. Run each
 instruction of `INSTRUCTIONS.instructions` in order, in this session. An instruction from config
 may run git or gh commands. Then print the summary line:
 
 ```text
 Instructions (pr): N total, X done, Y failed, Z not run.
-- pr #1 (team) failed: <one line of cause>
+- `pr #1 (team) failed: <one line of cause>`
 ```
 
 There is no run state to write. If the list stops before its end (an interrupt), print:

@@ -113,7 +113,7 @@ and prints one line:
 
 ```text
 Instructions (commit): 2 total, 1 done, 1 failed, 0 not run.
-- commit #1 (team) failed: <cause>
+- `commit #1 (team) failed: <cause>`
 ```
 
 | Exit | The list runs | What you see |
@@ -139,8 +139,13 @@ Instructions (commit): 2 total, 1 done, 1 failed, 0 not run.
   commit stays. The warnings are:
   - `push skipped: <branch> is the default branch`
   - `push skipped: no remote origin`
-  - `push failed (<kind>): <git error>. The pr step pushes again.` The kind is
-    `auth`, `network`, `rejected`, `no-remote` or `other`.
+  - `push skipped: cannot read the current branch: <error>`
+  - `push skipped: cannot read remote origin: <error>`
+  - `push failed (<kind>): <git error>. The commit is kept and is not on the
+    remote.` The kind is `auth`, `network`, `rejected`, `no-remote` or `other`.
+
+  When the default-branch lookup fails, the push still runs. The warning then
+  starts with `default-branch check skipped: <error>.`
 
   A commit without `--push` does not push.
 

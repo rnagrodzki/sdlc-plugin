@@ -2,11 +2,13 @@ package gitx
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 )
@@ -1172,56 +1174,6 @@ func TestHasUpstream_NotARepo(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// PushSetUpstream
-// ---------------------------------------------------------------------------
-
-func TestPushSetUpstream_EmptyRemote(t *testing.T) {
-	dir := t.TempDir()
-	initGitRepo(t, dir)
-
-	err := PushSetUpstream(dir, "")
-	if err == nil {
-		t.Fatal("PushSetUpstream(\"\"): expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "remote is empty") {
-		t.Fatalf("PushSetUpstream(\"\"): error = %q, want mention of %q", err.Error(), "remote is empty")
-	}
-}
-
-func TestPushSetUpstream_InvalidRemote(t *testing.T) {
-	dir := t.TempDir()
-	initGitRepo(t, dir)
-
-	err := PushSetUpstream(dir, "--delete")
-	if err == nil {
-		t.Fatal("PushSetUpstream(\"--delete\"): expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "looks like a flag") {
-		t.Fatalf("PushSetUpstream(\"--delete\"): error = %q, want mention of %q", err.Error(), "looks like a flag")
-	}
-}
-
-func TestPushSetUpstream_Success(t *testing.T) {
-	// Create a bare remote, clone it, make a commit, push with set-upstream.
-	bare := t.TempDir()
-	gitRun(t, bare, "init", "--bare")
-
-	clone := t.TempDir()
-	gitRun(t, clone, "clone", bare, ".")
-	gitRun(t, clone, "config", "user.email", "test@test.com")
-	gitRun(t, clone, "config", "user.name", "Test")
-	if err := os.WriteFile(filepath.Join(clone, "push.txt"), []byte("push\n"), 0644); err != nil {
-		t.Fatalf("write push.txt: %v", err)
-	}
-	gitRun(t, clone, "add", "push.txt")
-	gitRun(t, clone, "commit", "-m", "initial commit")
-
-	if err := PushSetUpstream(clone, "origin"); err != nil {
-		t.Fatalf("PushSetUpstream: unexpected error: %v", err)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // CommitsAhead
 // ---------------------------------------------------------------------------
 
@@ -1318,8 +1270,21 @@ var pushKindRows = []struct {
 	{"Updates were rejected because of a non-fast-forward", PushKindRejected},
 	{"fatal: unable to access 'https://x/': Could not resolve host: x", PushKindNetwork},
 	{"ssh: connect to host x: Connection timed out", PushKindNetwork},
+	{"fatal: unable to access 'https://x/': Failed to connect to x port 443: Connection refused", PushKindNetwork},
 	{"error: something odd", PushKindOther},
 	{"", PushKindOther},
+	// A local file error prints "Permission denied" with no publickey: not auth.
+	{"error: unable to create '.git/index.lock': Permission denied", PushKindOther},
+	// HTTP status rows: the text also holds "unable to access" (network), and
+	// the status row wins.
+	{"fatal: unable to access 'https://x/': The requested URL returned error: 401", PushKindAuth},
+	{"fatal: unable to access 'https://x/': The requested URL returned error: 403", PushKindAuth},
+	{"fatal: unable to access 'https://x/': The requested URL returned error: 404", PushKindNoRemote},
+	// Text that matches two rows pins the row order.
+	{"fatal: 'x' does not appear to be a git repository\ngit@x: Permission denied (publickey).", PushKindNoRemote},
+	{"remote: Authentication failed\n ! [rejected]        feature -> feature (fetch first)", PushKindAuth},
+	{"fatal: Authentication failed\nfatal: unable to access 'https://x/': Could not resolve host: x", PushKindAuth},
+	{" ! [rejected]        feature -> feature (non-fast-forward)\nssh: connect to host x: Connection timed out", PushKindRejected},
 }
 
 func TestPushKindTable(t *testing.T) {
@@ -1343,7 +1308,7 @@ func TestPushArgs(t *testing.T) {
 	if want := "git push -u origin HEAD"; strings.Join(*got, " ") != want {
 		t.Fatalf("args = %q, want %q", strings.Join(*got, " "), want)
 	}
-	if err := PushForceWithLease(t.TempDir(), "origin", "feat/x", "abc123"); err != nil {
+	if err := PushForceWithLease(t.TempDir(), "origin", Lease{"feat/x", "abc123"}); err != nil {
 		t.Fatalf("PushForceWithLease: %v", err)
 	}
 	want := []string{"git", "push", "--force-with-lease=refs/heads/feat/x:abc123", "-u", "origin", "HEAD"}
@@ -1368,12 +1333,76 @@ func TestPushError_FirstLineAndRedaction(t *testing.T) {
 	}
 }
 
+// TestFirstStderrLine_Redaction: the whole user info part of a URL is hidden,
+// also when the password holds an unencoded '@'.
+func TestFirstStderrLine_Redaction(t *testing.T) {
+	rows := []struct{ in, want string }{
+		{"fatal: https://user:p@ss@host/repo", "fatal: https://***@host/repo"},
+		{"fatal: https://user:tok@host/repo", "fatal: https://***@host/repo"},
+		{"fatal: https://host/repo by me@x", "fatal: https://host/repo by me@x"},
+		{"a https://u:p@h1/r and https://v:q@h2/r", "a https://***@h1/r and https://***@h2/r"},
+	}
+	for _, row := range rows {
+		if got := firstStderrLine(row.in); got != row.want {
+			t.Errorf("firstStderrLine(%q) = %q, want %q", row.in, got, row.want)
+		}
+	}
+}
+
+// TestFirstStderrLine_Cap: a line of pushStderrMax runes is kept whole; a
+// longer line is cut at pushStderrMax runes, never inside a character.
+func TestFirstStderrLine_Cap(t *testing.T) {
+	atCap := strings.Repeat("a", pushStderrMax)
+	if got := firstStderrLine(atCap); got != atCap {
+		t.Errorf("line at the cap: got %d runes, want it unchanged", len([]rune(got)))
+	}
+	overCap := strings.Repeat("a", pushStderrMax+1)
+	if got, want := firstStderrLine(overCap), strings.Repeat("a", pushStderrMax)+"..."; got != want {
+		t.Errorf("line over the cap: got %q, want %q", got, want)
+	}
+	multi := strings.Repeat("é", pushStderrMax+1)
+	got := firstStderrLine(multi)
+	if want := strings.Repeat("é", pushStderrMax) + "..."; got != want {
+		t.Errorf("multi-byte line over the cap: got %q, want %q", got, want)
+	}
+	if !utf8.ValidString(got) {
+		t.Errorf("multi-byte cut gave invalid UTF-8: %q", got)
+	}
+}
+
 func TestPushError_RunFailureIsKindOther(t *testing.T) {
 	fakePushRun(t, "", 0, errors.New("exec: git: not found"))
 	err := Push(t.TempDir(), "origin")
 	var pe *PushError
 	if !errors.As(err, &pe) || pe.Kind != PushKindOther || !strings.Contains(pe.Stderr, "not found") {
 		t.Fatalf("err = %v", err)
+	}
+	if pe.Cause == nil || pe.Cause.Error() != "exec: git: not found" {
+		t.Fatalf("Cause = %v, want the run error", pe.Cause)
+	}
+}
+
+// TestPushError_UnwrapKeepsTheRunError: errors.Is sees the run error through
+// a *PushError.
+func TestPushError_UnwrapKeepsTheRunError(t *testing.T) {
+	runErr := errors.New("exec: git: not found")
+	fakePushRun(t, "", 0, runErr)
+	if err := Push(t.TempDir(), "origin"); !errors.Is(err, runErr) {
+		t.Fatalf("errors.Is(err, runErr) = false; err = %v", err)
+	}
+}
+
+// TestPushError_OutputCapIsNotAPushError: an output over the execx cap keeps
+// execx.ErrOutputCap and is not turned into a soft push failure.
+func TestPushError_OutputCapIsNotAPushError(t *testing.T) {
+	fakePushRun(t, "", 0, fmt.Errorf("execx: git: %w", execx.ErrOutputCap))
+	err := Push(t.TempDir(), "origin")
+	if !errors.Is(err, execx.ErrOutputCap) {
+		t.Fatalf("errors.Is(err, ErrOutputCap) = false; err = %v", err)
+	}
+	var pe *PushError
+	if errors.As(err, &pe) {
+		t.Fatalf("err = %v is a *PushError; want a plain error", err)
 	}
 }
 
@@ -1384,11 +1413,52 @@ func TestPushValidation(t *testing.T) {
 	if err := Push(t.TempDir(), "--delete"); err == nil || !strings.Contains(err.Error(), "looks like a flag") {
 		t.Fatalf("Push(--delete) error = %v", err)
 	}
-	if err := PushForceWithLease(t.TempDir(), "origin", "main", ""); err == nil {
-		t.Fatal("empty expected sha: expected error")
+	for _, remote := range []string{"https://x/y.git", "ext::sh -c x"} {
+		if err := Push(t.TempDir(), remote); err == nil || !strings.Contains(err.Error(), "not a remote name") {
+			t.Fatalf("Push(%q) error = %v; want a remote-name error", remote, err)
+		}
 	}
-	if err := PushForceWithLease(t.TempDir(), "origin", "--x", "abc"); err == nil || !strings.Contains(err.Error(), "looks like a flag") {
-		t.Fatalf("flag-like branch error = %v", err)
+}
+
+// TestPushForceWithLeaseValidation: every input of PushForceWithLease is
+// checked before git runs.
+func TestPushForceWithLeaseValidation(t *testing.T) {
+	ran := fakePushRun(t, "", 0, nil)
+	rows := []struct {
+		name   string
+		remote string
+		lease  Lease
+		want   string
+	}{
+		{"empty remote", "", Lease{"main", "abc123"}, "gitx: push force with lease: remote is empty"},
+		{"empty branch", "origin", Lease{"", "abc123"}, "gitx: push force with lease: branch is empty"},
+		{"empty sha", "origin", Lease{"main", ""}, "gitx: push force with lease: expected sha is empty"},
+		{"flag-like remote", "--x", Lease{"main", "abc123"}, "looks like a flag"},
+		{"flag-like branch", "origin", Lease{"--x", "abc123"}, "looks like a flag"},
+		{"flag-like sha", "origin", Lease{"main", "--x"}, "looks like a flag"},
+		{"URL remote", "https://x/y.git", Lease{"main", "abc123"}, "not a remote name"},
+		{"branch with colon", "origin", Lease{"a:b", "abc123"}, "holds ':'"},
+		{"sha not hex", "origin", Lease{"main", "feat/x"}, "is not a hex commit id"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			err := PushForceWithLease(t.TempDir(), row.remote, row.lease)
+			if err == nil || !strings.Contains(err.Error(), row.want) {
+				t.Fatalf("error = %v; want text %q", err, row.want)
+			}
+		})
+	}
+	if len(*ran) != 0 {
+		t.Fatalf("git ran with %q; want no run for a bad input", *ran)
+	}
+}
+
+func TestRemoteNameValidation(t *testing.T) {
+	if _, err := HasRemote(t.TempDir(), "https://x/y.git"); err == nil || !strings.Contains(err.Error(), "not a remote name") {
+		t.Fatalf("HasRemote(URL) error = %v", err)
+	}
+	if _, _, err := RemoteTrackingSHA(t.TempDir(), "ext::x", "main"); err == nil || !strings.Contains(err.Error(), "not a remote name") {
+		t.Fatalf("RemoteTrackingSHA(transport) error = %v", err)
 	}
 }
 
@@ -1402,7 +1472,7 @@ func TestPushParity(t *testing.T) {
 		if !errors.As(Push(t.TempDir(), "origin"), &plain) {
 			t.Fatalf("%q: Push gave no PushError", row.stderr)
 		}
-		if !errors.As(PushForceWithLease(t.TempDir(), "origin", "b", "abc"), &lease) {
+		if !errors.As(PushForceWithLease(t.TempDir(), "origin", Lease{"b", "abc123"}), &lease) {
 			t.Fatalf("%q: PushForceWithLease gave no PushError", row.stderr)
 		}
 		if plain.Kind != row.kind || lease.Kind != row.kind || plain.Stderr != lease.Stderr {
@@ -1507,7 +1577,7 @@ func TestPushForceWithLease_RealGitRebasedBranchPushes(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("RemoteTrackingSHA = %q, %v, %v", sha, ok, err)
 	}
-	if err := PushForceWithLease(clone, "origin", "feature", sha); err != nil {
+	if err := PushForceWithLease(clone, "origin", Lease{"feature", sha}); err != nil {
 		t.Fatalf("PushForceWithLease: %v", err)
 	}
 	if got := gitRun(t, bare, "rev-parse", "feature"); got != gitRun(t, clone, "rev-parse", "HEAD") {
@@ -1526,7 +1596,7 @@ func TestPushForceWithLease_RealGitAnotherPersonPushed(t *testing.T) {
 	otherHead := pushOtherCommit(t, bare, "feature")
 
 	gitRun(t, clone, "commit", "--amend", "--allow-empty", "-m", "one rewritten")
-	err := PushForceWithLease(clone, "origin", "feature", sha)
+	err := PushForceWithLease(clone, "origin", Lease{"feature", sha})
 	var pe *PushError
 	if !errors.As(err, &pe) || pe.Kind != PushKindRejected {
 		t.Fatalf("PushForceWithLease = %v; want kind rejected", err)

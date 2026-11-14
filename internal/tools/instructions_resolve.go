@@ -18,7 +18,7 @@ import (
 
 // InstructionsResolveIn is the input for the instructions_resolve tool.
 type InstructionsResolveIn struct {
-	Key string `json:"key" jsonschema_description:"Required. Skill key: one of execute, commit, review, received-review, pr, harden, verify-pipeline. Example: pr"`
+	Key string `json:"key" jsonschema:"enum=execute,enum=commit,enum=review,enum=received-review,enum=pr,enum=harden,enum=verify-pipeline" jsonschema_description:"Required. Skill key: one of execute, commit, review, received-review, pr, harden, verify-pipeline. Example: pr"`
 }
 
 // InstructionsResolveOut is the output of the instructions_resolve tool.
@@ -47,8 +47,11 @@ func instructionsResolve(root string, in InstructionsResolveIn) (InstructionsRes
 	if err != nil {
 		var ie *config.InstructionsError
 		if errors.As(err, &ie) && ie.Kind == config.InstructionsErrorData {
+			// Cause-neutral: a skill calls this at its start, and execute
+			// calls it after its last wave, so "no step started" is not
+			// always true. No instruction of the key ran in either case.
 			return InstructionsResolveOut{}, &mcpserver.DataError{
-				Msg:        fmt.Sprintf("%s: config error, no step started.\n%s", in.Key, ie.Error()),
+				Msg:        fmt.Sprintf("%s: config error, no instruction ran.\n%s", in.Key, ie.Error()),
 				Suggestion: ie.Fix,
 				Cause:      err,
 			}

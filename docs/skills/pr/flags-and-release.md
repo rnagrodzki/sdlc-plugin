@@ -55,10 +55,10 @@ the PR, it runs the pr list of the
 
 | Push | When | Failure result |
 |---|---|---|
-| commit step of `/sdlc:ship` | after the commit, not on the default branch | warning `push failed (<kind>): <stderr>. The pr step pushes again.` The step succeeds. |
+| commit step of `/sdlc:ship` | after the commit, not on the default branch | warning `push failed (<kind>): <stderr>. The commit is kept and is not on the remote.` The step succeeds. |
 | commit-fixes step of `/sdlc:ship` | after the commit, not on the default branch | the same warning. The step succeeds. |
 | pr, tracking ref exists | lease push with the tracking commit | error `remote branch <branch> changed since the last push. pr stopped.` Fix: `Fetch the branch, review the other commits, integrate them, then run the pr step again.` |
-| pr, no tracking ref | plain push (`git push -u origin HEAD`) | the existing infrastructure error |
+| pr, no tracking ref | plain push (`git push -u origin HEAD`) | the existing infrastructure error `git push: <error>`. The fix depends on the failure kind: check the credentials (`auth`), check the network (`network`), add the `origin` remote (`no-remote`), fetch and integrate the remote commits (`rejected`), or push by hand (`other`). |
 
 The lease push replaces the remote branch after a rebase. A commit that
 another person pushed is never lost: the lease is rejected, and no PR is
@@ -68,7 +68,7 @@ The summary line after the PR:
 
 ```text
 Instructions (pr): 2 total, 1 done, 1 failed, 0 not run.
-- pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.
+- `pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.`
 ```
 
 | Exit | The list runs | What you see |

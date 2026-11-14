@@ -304,12 +304,12 @@ The records have the same shape as the `instructions` records of the ship state 
 | outcome | result line, error, question not allowed, decided, step failed or stopped, step skipped, step did not run, result not recorded, not run again |
 | startedAt, endedAt | RFC 3339 or "" |
 
-A record moves in one direction: `pending`, then `running`, then `done`, `failed` or `not run`. A closed record does not change again. Two actions change the records:
+A record moves in one direction: `pending`, then `running`, then `done`, `failed` or `not run`. A closed record does not change again. A record with a missing or wrong-type field, or a status outside this set, makes the list damaged: `instructions-next` and `instruction-record` return the DataError `run state key instructions: record <i> field <f> is <found>, want <expected>`. Two actions change the records:
 
 | Action | What it does |
 |---|---|
-| `instructions-next` | On the first call with no `instructions` key, seeds the list from config (an empty config list writes nothing). Marks each `running` record `failed` with the outcome `result not recorded, not run again`. Starts the first `pending` record and returns it with `remaining`. Returns no instruction when none is `pending`. |
-| `instruction-record` | Closes one `running` record with `instructionNumber`, `instructionStatus` (`done`, `failed` or `not run`) and `instructionOutcome` (at most 1000 characters; required for `failed` and `not run`). With `instructionAll:true` and the status `not run`, it closes every open record. |
+| `instructions-next` | On the first call with no `instructions` key, seeds the list from config (an empty config list writes nothing). Marks each `running` record `failed` with the outcome `result not recorded, not run again`. Starts the first `pending` record and returns it with `remaining` and `failedRunning` (the numbers of the records it marked `failed`). Returns no instruction when none is `pending`. |
+| `instruction-record` | Closes one `running` record with `instructionNumber`, `instructionStatus` (`done`, `failed` or `not run`) and `instructionOutcome` (at most 1000 characters; required for `failed` and `not run`). With `instructionAll:true` and the status `not run`, it closes every open record: a `pending` record becomes `not run` with the given outcome, and a `running` record becomes `failed` with the outcome `result not recorded, not run again`. Returns `key` and `closed` (`number`, `status`, `outcome` and `endedAt` of each record it closed). |
 
 | Reader of execute-state `instructions` | Treats a record as | Pinned by |
 |---|---|---|

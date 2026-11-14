@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -402,6 +403,12 @@ func TestReadInstructions_PathStates(t *testing.T) {
 		ie := mustInstructionsError(t, err)
 		if ie.Kind != "infra" || ie.File != ".sdlc-v2/local.toml" || ie.Fix != "make the file readable." {
 			t.Errorf("error = %+v, want Kind infra for .sdlc-v2/local.toml", ie)
+		}
+		// The read error stays in the chain: errors.As finds the
+		// *fs.PathError through the InstructionsError.
+		var pathErr *fs.PathError
+		if ie.Cause == nil || !errors.As(err, &pathErr) {
+			t.Errorf("errors.As(err, *fs.PathError) = false, Cause = %v; want the read error in the chain", ie.Cause)
 		}
 	})
 

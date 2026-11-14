@@ -159,8 +159,8 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:    false,
 		destructive: true,
 		idempotent:  false,
-		openWorld:   false,
-		reason:      "git add -- <explicit tracked paths> (never -A; .sdlc-v2/ excluded) + git commit; no ghx/http in commit.go",
+		openWorld:   true,
+		reason:      "git add -- <explicit tracked paths> (never -A; .sdlc-v2/ excluded) + git commit; openWorld:true because push:true runs git push to the origin remote (pushBestEffort)",
 	},
 	"pr_prepare": {
 		title:       "Prepare pull request context",
@@ -191,8 +191,8 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:    false,
 		destructive: true,
 		idempotent:  false,
-		openWorld:   false,
-		reason:      "configmigrate.MigrateWithBackup → tracked config.toml; commit-check runs git add -A -- ':!.sdlc-v2/' in the active worktree, which stages every change, untracked files that are not gitignored included; openWorld:false because ship_state.go has zero ghx references",
+		openWorld:   true,
+		reason:      "configmigrate.MigrateWithBackup → tracked config.toml; commit-check runs git add -A -- ':!.sdlc-v2/' in the active worktree, which stages every change, untracked files that are not gitignored included; openWorld:true because commit-check runs git push to the origin remote (pushBestEffort) on both completing routes",
 	},
 	"ship_prepare": {
 		title:       "Prepare ship pipeline run",

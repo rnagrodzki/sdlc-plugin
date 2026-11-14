@@ -219,4 +219,4 @@ Smallest step set with widest review threshold, plus post-PR CI verification. Su
 
 ## Related sections
 
-The `[instructions]` section is a separate top-level section, not a `ship` field. It holds the follow-up instructions that ship runs after each step and after the last step. It is the only section that merges `.sdlc-v2/config.toml` with `.sdlc-v2/local.toml` or the user-level file. See [Follow-up instructions](../../../../docs/instructions.md).
+The `[instructions]` section is a separate top-level section, not a `ship` field. It holds the follow-up instructions that ship runs after each step and after the last step. It reads three files. For each key, the list of the team file `.sdlc-v2/config.toml` comes first. Then comes the list of `.sdlc-v2/local.toml` when that file sets the key, else the list of the user-level file. See [Follow-up instructions](../../../../docs/instructions.md).

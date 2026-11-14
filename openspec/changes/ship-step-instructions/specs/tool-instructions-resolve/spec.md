@@ -30,7 +30,7 @@ The tool SHALL return the error class of each row, with a Suggestion.
 | Case | Class |
 |---|---|
 | key empty or not standalone | DomainError `<key> runs only in a ship run` |
-| bad config content | DataError that names the file, the field, the problem and the fix |
+| bad config content | DataError `<key>: config error, no instruction ran.` that names the file, the field, the problem and the fix |
 | config file cannot be read | InfraError |
 
 #### Scenario: Ship-only key

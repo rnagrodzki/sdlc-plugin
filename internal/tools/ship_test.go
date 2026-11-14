@@ -3572,6 +3572,35 @@ func TestShipPrepare_InstructionsConfigErrorStopsRun(t *testing.T) {
 	}
 }
 
+// TestShipPrepare_InstructionsUnreadableFileStopsRun checks that an
+// infra-kind error (the user-level file is a folder) is named as a file that
+// cannot be read, not as a config error, and writes no state.
+func TestShipPrepare_InstructionsUnreadableFileStopsRun(t *testing.T) {
+	userDir := filepath.Join(t.TempDir(), "user-config-folder")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(config.UserConfigPathEnv, userDir)
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/instructions")
+	out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("shipPrepare: %v", err)
+	}
+	hits := errorsContaining(out.Errors, "ship: a config file cannot be read, no step started.\n")
+	if len(hits) != 1 || len(errorsContaining(out.Errors, "config error")) != 0 {
+		t.Fatalf("Errors = %v, want one cannot-be-read entry and no config error entry", out.Errors)
+	}
+	if !strings.Contains(hits[0], "Fix: make the file readable.") {
+		t.Errorf("error does not carry the fix: %q", hits[0])
+	}
+	if out.StateFile != "" {
+		t.Errorf("StateFile = %q, want empty", out.StateFile)
+	}
+}
+
 func TestShipPrepare_InstructionsDryRunSeeds(t *testing.T) {
 	out, _ := shipPrepareInstructionsFixture(t, "[[instructions.pr]]\ntext = \"p\"\n", "", ShipPrepareIn{DryRun: true})
 	if len(out.Errors) != 0 {

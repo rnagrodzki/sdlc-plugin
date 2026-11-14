@@ -100,7 +100,7 @@ func TestCommitSkillFlags(t *testing.T) {
 			t.Fatalf("Step 6=%d Step 7=%d: Step 7 must follow Step 6", step6, step7)
 		}
 		for _, want := range []string{
-			"plugins/sdlc/skills/ship/instructions-run.md",
+			"../ship/instructions-run.md",
 			"Loop without run state",
 			"Instructions (commit): N total, X done, Y failed, Z not run.",
 			"Run the remaining instructions by hand. A new run of the skill runs the whole list again unless you pass --no-instructions.",

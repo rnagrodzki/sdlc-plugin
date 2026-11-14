@@ -54,7 +54,7 @@ At the end, ship prints the step table, the decisions log and the deferred findi
 |---|---|
 | Starts | With `/sdlc:ship`. With `--plan <path>` the run starts at execute. Without it the run starts at commit. A config error in `[instructions]` stops the run before the first step. |
 | Ends | After the learnings-commit step and the `ship` instruction list. Ship writes the run report, cleans up the run state and prints the summary. |
-| Asks the user | Between steps, unless `--auto` is set. With `--auto`, two cases still ask: resume or replace a run in flight on the branch, and file a GitHub issue for an execute-step draft. An instruction asks only when its question flags allow it. |
+| Asks the user | Between steps, unless `--auto` is set. With `--auto`, three cases still ask: resume or replace a run in flight on the branch, file a GitHub issue for an execute-step draft, and a critical question of an instruction whose `criticalQuestions` flag is `true`. |
 | Resume | `/sdlc:ship --resume` continues from the saved progress of the run. A resumed run first runs the open instructions of the completed steps. |
 
 ## More examples
@@ -66,7 +66,7 @@ At the end, ship prints the step table, the decisions log and the deferred findi
 ```
 
 Runs the full pipeline with no confirmation prompt between steps.
-Two cases still ask: a run still in flight on the branch, and a GitHub issue for an execute-step draft.
+Three cases still ask: a run still in flight on the branch, a GitHub issue for an execute-step draft, and a critical question of an instruction that allows it.
 
 **Ship changes you already made**
 

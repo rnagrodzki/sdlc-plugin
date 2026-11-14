@@ -451,9 +451,9 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 
 	// The [instructions] section of the 3 config files. A problem stops the
 	// run before any state write, like the other config errors above.
-	instrByKey, instrErr := config.ReadInstructions(cfgRoot)
-	if instrErr != nil {
-		errors = append(errors, "ship: config error, no step started.\n"+instrErr.Error())
+	instrByKey, instrErrText := shipPrepareInstructions(cfgRoot)
+	if instrErrText != "" {
+		errors = append(errors, instrErrText)
 	}
 
 	// At least one step must run.
@@ -637,18 +637,34 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 	return out, nil
 }
 
+// shipPrepareInstructions reads the [instructions] section of the 3 config
+// files under cfgRoot. errText is "" when every file is valid. Else errText is
+// the errors entry of ship_prepare: a data-kind error is a config error, and
+// an infra-kind error is a file that cannot be read.
+func shipPrepareInstructions(cfgRoot string) (map[string][]config.Instruction, string) {
+	byKey, err := config.ReadInstructions(cfgRoot)
+	if err == nil {
+		return byKey, ""
+	}
+	var ie *config.InstructionsError
+	if stderrors.As(err, &ie) && ie.Kind == config.InstructionsErrorInfra {
+		return nil, "ship: a config file cannot be read, no step started.\n" + err.Error()
+	}
+	return nil, "ship: config error, no step started.\n" + err.Error()
+}
+
 // shipRunInstructions returns the instructions of the keys that the run
 // executes, in the canonical key order: the resolved steps, received-review
 // and commit-fixes when review is a step, and "ship". A key that is not in the
 // run is dropped, so it never runs. An instruction of a step that is off is
 // valid in the config and is dropped here.
 func shipRunInstructions(byKey map[string][]config.Instruction, steps []string) []config.Instruction {
-	runKeys := map[string]bool{"ship": true}
+	runKeys := map[string]bool{config.InstructionKeyShip: true}
 	for _, st := range steps {
 		runKeys[st] = true
-		if st == "review" {
-			runKeys["received-review"] = true
-			runKeys["commit-fixes"] = true
+		if st == config.InstructionKeyReview {
+			runKeys[config.InstructionKeyReceivedReview] = true
+			runKeys[config.InstructionKeyCommitFixes] = true
 		}
 	}
 	list := []config.Instruction{}

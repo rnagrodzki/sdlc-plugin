@@ -341,16 +341,18 @@ Push table:
 
 | Push | When | Failure result |
 |---|---|---|
-| commit step | after the commit, not on the default branch | warning `push failed (<kind>): <stderr>. The pr step pushes again.` The step succeeds. |
+| commit step | after the commit, not on the default branch | warning `push failed (<kind>): <stderr>. The commit is kept and is not on the remote.` The step succeeds. |
 | commit-fixes step | after the commit, not on the default branch | the same warning. The step succeeds. |
 | pr step, tracking ref exists | lease push with the tracking commit | error `remote branch <branch> changed since the last push. pr stopped.` Fix: `Fetch the branch, review the other commits, integrate them, then run the pr step again.` |
-| pr step, no tracking ref | plain push | the existing infrastructure error |
+| pr step, no tracking ref | plain push | the existing infrastructure error. The fix depends on the failure kind (`auth`, `network`, `no-remote`, `rejected` or `other`). |
 
 Exit routes:
 
 | Exit | What happens to the instructions | Next |
 |---|---|---|
 | a config error in `[instructions]` at the start | no step starts, and no run state is written | correct the file that the error names, then run `/sdlc:ship` again |
+| `--dry-run` | ship writes each instruction as `pending`. No instruction runs. | the dry-run table shows the steps, then the run stops |
+| a record call fails | ship prints one warning and keeps it for the summary. The instruction record stays as it was. | the loop continues. The summary prints the warning after the instructions line. |
 | a step fails, or you stop it | each pending instruction of the run gets `not run` with `step failed or stopped`. A running instruction gets `failed`. The later lists, the `ship` list too, do not run. | the resume instruction of the run |
 | ship skips a step | each pending instruction of that step gets `not run` with `step skipped`. A running instruction gets `failed`. | the next step |
 | a step fails after a commit push | the same as a failed step. Ship does not undo the push. | the pr step pushes again with a lease |

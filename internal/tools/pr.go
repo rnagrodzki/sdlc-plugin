@@ -227,8 +227,8 @@ type prRuntime struct {
 	jiraExtract           func(branchName string) string
 	templateResolve       func(root string) (*prtemplate.Template, error)
 	gitPushSetUpstream    func(dir, remote string) error
-	gitRemoteTrackingSHA  func(dir, remote, branch string) (string, bool, error)
-	gitPushForceWithLease func(dir, remote, branch, sha string) error
+	gitRemoteTrackingSHA  func(dir, remote, branchName string) (string, bool, error)
+	gitPushForceWithLease func(dir, remote string, lease gitx.Lease) error
 	gitHasUpstream        func(dir string) (bool, error)
 	gitCommitsAhead       func(dir string) (int, error)
 	gitLogSinceTag        func(dir string) ([]string, error)
@@ -263,7 +263,7 @@ var defaultPRRuntime = prRuntime{
 		return detectJiraTicket(branchName, nil)
 	},
 	templateResolve:       prtemplate.Resolve,
-	gitPushSetUpstream:    gitx.PushSetUpstream,
+	gitPushSetUpstream:    gitx.Push,
 	gitRemoteTrackingSHA:  gitx.RemoteTrackingSHA,
 	gitPushForceWithLease: gitx.PushForceWithLease,
 	gitHasUpstream:        gitx.HasUpstream,
@@ -979,7 +979,8 @@ type ReleaseIntentInfo struct {
 // ref the push uses --force-with-lease with that commit, so a rebased branch
 // can replace the remote branch and a commit of another person is never lost.
 // With no tracking ref it is a plain push -u. A rejected lease is a
-// DomainError; any other push failure is an InfraError.
+// DomainError; any other push failure, a rejected plain push included, is an
+// InfraError whose Suggestion follows the PushError kind.
 func pushWithLease(rt prRuntime, workDir, remote string) error {
 	branchName, err := rt.gitCurrentBranch(workDir)
 	if err != nil {
@@ -998,7 +999,7 @@ func pushWithLease(rt prRuntime, workDir, remote string) error {
 		}
 	}
 	if ok {
-		err = rt.gitPushForceWithLease(workDir, remote, branchName, sha)
+		err = rt.gitPushForceWithLease(workDir, remote, gitx.Lease{Branch: branchName, ExpectedSHA: sha})
 	} else {
 		err = rt.gitPushSetUpstream(workDir, remote)
 	}
@@ -1016,7 +1017,29 @@ func pushWithLease(rt prRuntime, workDir, remote string) error {
 	return &mcpserver.InfraError{
 		Msg:        "git push: " + err.Error(),
 		Cause:      err,
-		Suggestion: "Push the current branch manually (git push -u origin HEAD), then retry pr_apply.",
+		Suggestion: pushFailureSuggestion(err),
+	}
+}
+
+// pushFailureSuggestion returns the recovery step for a failed pr_apply push.
+// The step follows the PushError kind; an error that is not a PushError gets
+// the manual-push step.
+func pushFailureSuggestion(err error) string {
+	var pe *gitx.PushError
+	if !errors.As(err, &pe) {
+		return "Push the current branch manually (git push -u origin HEAD), then retry pr_apply."
+	}
+	switch pe.Kind {
+	case gitx.PushKindAuth:
+		return "Check the git credentials for origin (gh auth status, or the SSH key), then retry pr_apply."
+	case gitx.PushKindNetwork:
+		return "Check the network connection to origin, then retry pr_apply."
+	case gitx.PushKindNoRemote:
+		return "Add the origin remote (git remote add origin <url>), then retry pr_apply."
+	case gitx.PushKindRejected:
+		return "Fetch the remote branch, integrate its commits, then retry pr_apply."
+	default:
+		return "Push the current branch manually (git push -u origin HEAD), then retry pr_apply."
 	}
 }
 
@@ -1198,7 +1221,7 @@ func prApplyCoreWith(mainRoot, workDir string, in PRApplyIn, rt prRuntime) (PRAp
 		needsPush = ahead > 0
 	}
 	if needsPush {
-		if err := pushWithLease(rt, workDir, "origin"); err != nil {
+		if err := pushWithLease(rt, workDir, pushRemote); err != nil {
 			return PRApplyOut{}, err
 		}
 	}

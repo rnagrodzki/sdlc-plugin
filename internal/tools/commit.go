@@ -745,7 +745,7 @@ func RegisterCommitTools(s *mcpserver.Server) {
 			ReadOnly:    false,
 			Destructive: true,
 			Idempotent:  false,
-			OpenWorld:   false,
+			OpenWorld:   true,
 		},
 		func(ctx mcpserver.Ctx, in CommitApplyIn) (CommitApplyOut, error) {
 			cfgRoot, err := worktree.MainRoot()

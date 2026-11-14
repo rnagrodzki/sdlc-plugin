@@ -42,10 +42,8 @@ func parityOf(out any, err error) parityResult {
 	res := parityResult{class: "ok", instr: "(none)"}
 	var rec *InstructionRecordOut
 	switch o := out.(type) {
-	case ShipInstructionsNextOut:
+	case InstructionsNextOut:
 		rec, res.warnings = o.Instruction, o.Warnings
-	case ExecInstructionsNextOut:
-		rec = o.Instruction
 	default:
 		res.instr = ""
 	}
@@ -136,7 +134,7 @@ func TestInstructionActionsParity(t *testing.T) {
 			}),
 			call: next,
 			// Difference: only ship reads flags.auto.
-			ship: parityResult{class: "ok", instr: "execute #1", warnings: []string{"flags.auto is not a boolean"}},
+			ship: parityResult{class: "ok", instr: "execute #1", warnings: []string{"flags.auto of the ship state is string yes, want a boolean. Run mode --auto is used. Start a new run to set flags.auto again."}},
 			exec: parityResult{class: "ok", instr: "execute #1"},
 		},
 		{
@@ -222,7 +220,7 @@ func TestInstructionActionsParity(t *testing.T) {
 	shipValues := map[string]any{
 		"instructionNumber": float64(1), "instructionAll": true, "instructionStatus": "done", "instructionOutcome": "ok",
 	}
-	for _, field := range shipInstrInputs {
+	for _, field := range instrInputFields {
 		t.Run("record input with another action/"+field, func(t *testing.T) {
 			const branch = "feat/instr-parity-input"
 			dir, _ := deferFixture(t, branch)

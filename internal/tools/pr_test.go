@@ -90,8 +90,8 @@ func releaseTestRuntime(fileVersion string) prRuntime {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
 		// Base-branch resolution for a new PR (create path): idle default,
@@ -1274,8 +1274,8 @@ func TestPrApply_NoExistingPR_Creates(t *testing.T) {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
@@ -1434,8 +1434,8 @@ func TestPrApply_ExistingPR_Updates(t *testing.T) {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 	}
 
@@ -1476,8 +1476,8 @@ func TestPrApply_ClosedOrMergedPR_CreatesNew(t *testing.T) {
 				gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 				gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 				gitPushSetUpstream:    func(dir, remote string) error { return nil },
-				gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-				gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+				gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+				gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 				gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 				gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 			}
@@ -1537,8 +1537,8 @@ func TestPrApply_DraftAndBase_RealGHStub(t *testing.T) {
 				gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 				gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 				gitPushSetUpstream:    func(dir, remote string) error { return nil },
-				gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-				gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+				gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+				gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 				gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 				gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 			}
@@ -1592,8 +1592,8 @@ func TestPrApply_DraftAndBase_IgnoredOnUpdate(t *testing.T) {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 	}
 
@@ -1956,8 +1956,8 @@ func TestPrApply_PermissionError_EnrichedWithAuthHints(t *testing.T) {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
@@ -2003,8 +2003,8 @@ func TestPrApply_PermissionError_FromEdit_EnrichedSameWay(t *testing.T) {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 	}
 
@@ -2038,8 +2038,8 @@ func TestPrApply_NonPermissionError_PassesThroughUnenriched(t *testing.T) {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
@@ -2074,8 +2074,8 @@ func TestPrApply_NonPermissionError_FromEdit_GenericSuggestion(t *testing.T) {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 	}
 
@@ -2105,8 +2105,8 @@ func TestPrApply_PermissionError_NoOriginRemote_FallsBackToGeneric(t *testing.T)
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
 	}
@@ -2161,8 +2161,8 @@ func fakeReleasePRRuntime() prRuntime {
 		gitHasUpstream:        func(dir string) (bool, error) { return true, nil },
 		gitCommitsAhead:       func(dir string) (int, error) { return 0, nil },
 		gitPushSetUpstream:    func(dir, remote string) error { return nil },
-		gitRemoteTrackingSHA:  func(dir, remote, branch string) (string, bool, error) { return "", false, nil },
-		gitPushForceWithLease: func(dir, remote, branch, sha string) error { return nil },
+		gitRemoteTrackingSHA:  func(dir, remote, branchName string) (string, bool, error) { return "", false, nil },
+		gitPushForceWithLease: func(dir, remote string, lease gitx.Lease) error { return nil },
 		gitCurrentBranch:      func(dir string) (string, error) { return "feat/x", nil },
 		gitLogSinceTag:        func(dir string) ([]string, error) { return nil, nil },
 		gitBaseBranch:         func(dir, configured string) (string, error) { return "main", nil },
@@ -3315,14 +3315,14 @@ func prApplyLeaseIn() PRApplyIn {
 
 func TestPRApplyPushUsesLeaseWithTrackingRef(t *testing.T) {
 	rt := prApplyLeaseRuntime()
-	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) {
-		if remote != "origin" || branch != "feat/x" {
-			t.Errorf("tracking lookup: got %q %q", remote, branch)
+	rt.gitRemoteTrackingSHA = func(dir, remote, branchName string) (string, bool, error) {
+		if remote != "origin" || branchName != "feat/x" {
+			t.Errorf("tracking lookup: got %q %q", remote, branchName)
 		}
 		return "abc123", true, nil
 	}
 	var leaseSHA string
-	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error { leaseSHA = sha; return nil }
+	rt.gitPushForceWithLease = func(dir, remote string, lease gitx.Lease) error { leaseSHA = lease.ExpectedSHA; return nil }
 	rt.gitPushSetUpstream = func(dir, remote string) error {
 		t.Fatal("plain push must not run when a tracking ref exists")
 		return nil
@@ -3337,8 +3337,8 @@ func TestPRApplyPushUsesLeaseWithTrackingRef(t *testing.T) {
 
 func TestPRApplyPushPlainWithoutTrackingRef(t *testing.T) {
 	rt := prApplyLeaseRuntime()
-	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) { return "", false, nil }
-	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error {
+	rt.gitRemoteTrackingSHA = func(dir, remote, branchName string) (string, bool, error) { return "", false, nil }
+	rt.gitPushForceWithLease = func(dir, remote string, lease gitx.Lease) error {
 		t.Fatal("lease push must not run with no tracking ref")
 		return nil
 	}
@@ -3354,8 +3354,8 @@ func TestPRApplyPushPlainWithoutTrackingRef(t *testing.T) {
 
 func TestPRApplyLeaseRejectedIsDomainError(t *testing.T) {
 	rt := prApplyLeaseRuntime()
-	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) { return "abc123", true, nil }
-	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error {
+	rt.gitRemoteTrackingSHA = func(dir, remote, branchName string) (string, bool, error) { return "abc123", true, nil }
+	rt.gitPushForceWithLease = func(dir, remote string, lease gitx.Lease) error {
 		return &gitx.PushError{Kind: gitx.PushKindRejected, Stderr: "stale info"}
 	}
 	rt.execRun = func(name string, args []string, opts execx.Options) (string, error) {
@@ -3374,8 +3374,8 @@ func TestPRApplyLeaseRejectedIsDomainError(t *testing.T) {
 
 func TestPRApplyLeasePushFailureIsInfraError(t *testing.T) {
 	rt := prApplyLeaseRuntime()
-	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) { return "abc123", true, nil }
-	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error {
+	rt.gitRemoteTrackingSHA = func(dir, remote, branchName string) (string, bool, error) { return "abc123", true, nil }
+	rt.gitPushForceWithLease = func(dir, remote string, lease gitx.Lease) error {
 		return &gitx.PushError{Kind: gitx.PushKindNetwork, Stderr: "could not resolve host"}
 	}
 	_, err := prApplyCoreWith("/mock/root", "/mock/work", prApplyLeaseIn(), rt)
@@ -3385,9 +3385,40 @@ func TestPRApplyLeasePushFailureIsInfraError(t *testing.T) {
 	}
 }
 
+// TestPRApplyPushFailureSuggestionByKind: the InfraError Suggestion of a
+// failed push follows the PushError kind.
+func TestPRApplyPushFailureSuggestionByKind(t *testing.T) {
+	rows := []struct {
+		err  error
+		want string
+	}{
+		{&gitx.PushError{Kind: gitx.PushKindAuth, Stderr: "Authentication failed"}, "Check the git credentials for origin (gh auth status, or the SSH key), then retry pr_apply."},
+		{&gitx.PushError{Kind: gitx.PushKindNetwork, Stderr: "could not resolve host"}, "Check the network connection to origin, then retry pr_apply."},
+		{&gitx.PushError{Kind: gitx.PushKindNoRemote, Stderr: "no such remote"}, "Add the origin remote (git remote add origin <url>), then retry pr_apply."},
+		{&gitx.PushError{Kind: gitx.PushKindRejected, Stderr: "rejected"}, "Fetch the remote branch, integrate its commits, then retry pr_apply."},
+		{&gitx.PushError{Kind: gitx.PushKindOther, Stderr: "odd"}, "Push the current branch manually (git push -u origin HEAD), then retry pr_apply."},
+		{errors.New("boom"), "Push the current branch manually (git push -u origin HEAD), then retry pr_apply."},
+	}
+	for _, row := range rows {
+		t.Run(row.err.Error(), func(t *testing.T) {
+			rt := prApplyLeaseRuntime()
+			rt.gitRemoteTrackingSHA = func(dir, remote, branchName string) (string, bool, error) { return "", false, nil }
+			rt.gitPushSetUpstream = func(dir, remote string) error { return row.err }
+			_, err := prApplyCoreWith("/mock/root", "/mock/work", prApplyLeaseIn(), rt)
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("expected *mcpserver.InfraError, got %T: %v", err, err)
+			}
+			if ie.Suggestion != row.want {
+				t.Errorf("suggestion: got %q, want %q", ie.Suggestion, row.want)
+			}
+		})
+	}
+}
+
 func TestPRApplyPlainPushRejectedStaysInfraError(t *testing.T) {
 	rt := prApplyLeaseRuntime()
-	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) { return "", false, nil }
+	rt.gitRemoteTrackingSHA = func(dir, remote, branchName string) (string, bool, error) { return "", false, nil }
 	rt.gitPushSetUpstream = func(dir, remote string) error {
 		return &gitx.PushError{Kind: gitx.PushKindRejected, Stderr: "rejected"}
 	}
@@ -3400,10 +3431,10 @@ func TestPRApplyPlainPushRejectedStaysInfraError(t *testing.T) {
 
 func TestPRApplyTrackingRefReadFails(t *testing.T) {
 	rt := prApplyLeaseRuntime()
-	rt.gitRemoteTrackingSHA = func(dir, remote, branch string) (string, bool, error) {
+	rt.gitRemoteTrackingSHA = func(dir, remote, branchName string) (string, bool, error) {
 		return "", false, errors.New("boom")
 	}
-	rt.gitPushForceWithLease = func(dir, remote, branch, sha string) error {
+	rt.gitPushForceWithLease = func(dir, remote string, lease gitx.Lease) error {
 		t.Fatal("no push may run when the tracking ref read fails")
 		return nil
 	}

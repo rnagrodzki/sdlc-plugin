@@ -328,6 +328,20 @@ do not recompute the file count or invent a diff stat; `commit_apply` returns ne
 the result block, verbatim. A push warning never fails the commit: the commit landed. Example:
 `push skipped: main is the default branch`.
 
+After the warnings, print the next action for each kind once:
+
+| Warning | Kind | Next action |
+|---|---|---|
+| skipped: default branch | by design | none; push by hand only on purpose |
+| skipped: no remote `origin` | permanent | add the `origin` remote, then `git push -u origin HEAD` |
+| skipped: cannot read the current branch or remote `origin` | unknown | read the error, fix the repository, then push |
+| failed (`auth`) | permanent | fix the credentials (`gh auth status`, SSH key), then push |
+| failed (`rejected`) | permanent | fetch and integrate the remote commits, then push |
+| failed (`network`) | transient | push again later |
+| failed (`no-remote`) or (`other`) | unknown | read the message, fix the cause, then push |
+
+A warning that starts with `default-branch check skipped:` means the push ran with no default-branch check. Tell the user to confirm that the branch is not the default branch.
+
 **When either skipped list is non-empty:** if the result carries a `**Next:**` line, follow
 it verbatim. If it does not, tell the user to `git add <the listed paths>` and run `/commit`
 again — and say plainly that this creates a **second** commit, because the first one already
@@ -339,13 +353,13 @@ Skip this step when `--no-instructions` was passed, or when `INSTRUCTIONS.count`
 Run it only after Step 6 shows a landed commit. A cancel at Step 5 or a tool error in
 Step 0 to Step 6 ends the skill with no list run.
 
-Read `plugins/sdlc/skills/ship/instructions-run.md` and follow its "Loop without run state"
+Read [`../ship/instructions-run.md`](../ship/instructions-run.md) and follow its "Loop without run state"
 section. The run mode comes from the `--auto` token of the arguments of this skill. Run each
 instruction of `INSTRUCTIONS.instructions` in order, in this session. Then print the summary line:
 
 ```text
 Instructions (commit): N total, X done, Y failed, Z not run.
-- commit #1 (team) failed: <one line of cause>
+- `commit #1 (team) failed: <one line of cause>`
 ```
 
 There is no run state to write. If the list stops before its end (an interrupt), print:

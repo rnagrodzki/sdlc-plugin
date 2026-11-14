@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Instructions check and seed
-The tool SHALL read the `[instructions]` section from the main worktree. A config error SHALL add one `errors` entry that starts with `ship: config error, no step started.` and the tool SHALL write no state. Otherwise the tool SHALL write one pending record for each instruction of the run keys.
+The tool SHALL read the `[instructions]` section from the main worktree. A config error SHALL add one `errors` entry that starts with `ship: config error, no step started.`, or `ship: a config file cannot be read, no step started.` when a file cannot be read, and the tool SHALL write no state. Otherwise the tool SHALL write one pending record for each instruction of the run keys.
 
 - Run keys: the configured steps, received-review and commit-fixes when review is a step, and `ship`.
 

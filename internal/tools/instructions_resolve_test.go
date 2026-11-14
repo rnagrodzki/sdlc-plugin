@@ -155,6 +155,24 @@ func TestInstructionsResolve_RegisteredToolReadsMainWorktree(t *testing.T) {
 	}
 }
 
+// TestInstructionsResolve_KeyEnumMatchesConfig proves that the schema enum of
+// InstructionsResolveIn.Key equals config.StandaloneInstructionKeys, in order.
+func TestInstructionsResolve_KeyEnumMatchesConfig(t *testing.T) {
+	field, ok := reflect.TypeOf(InstructionsResolveIn{}).FieldByName("Key")
+	if !ok {
+		t.Fatal("InstructionsResolveIn.Key field not found")
+	}
+	var enums []string
+	for _, part := range strings.Split(field.Tag.Get("jsonschema"), ",") {
+		if v, found := strings.CutPrefix(part, "enum="); found {
+			enums = append(enums, v)
+		}
+	}
+	if !reflect.DeepEqual(enums, config.StandaloneInstructionKeys) {
+		t.Errorf("Key enum = %v, want config.StandaloneInstructionKeys %v", enums, config.StandaloneInstructionKeys)
+	}
+}
+
 func TestInstructionsResolve_NotStandaloneKey(t *testing.T) {
 	root := instructionsResolveRoot(t, "", "")
 	for _, key := range []string{"", "commit-fixes", "ship", "deploy"} {
@@ -183,7 +201,7 @@ func TestInstructionsResolve_DataError(t *testing.T) {
 	if !errors.As(err, &de) {
 		t.Fatalf("error is %T (%v), want *mcpserver.DataError", err, err)
 	}
-	wantPrefix := "pr: config error, no step started.\nFile: .sdlc-v2/config.toml\nField: instructions.pr[1].onQuestionNotAllowed\n"
+	wantPrefix := "pr: config error, no instruction ran.\nFile: .sdlc-v2/config.toml\nField: instructions.pr[1].onQuestionNotAllowed\n"
 	if !strings.HasPrefix(de.Msg, wantPrefix) {
 		t.Errorf("Msg = %q, want prefix %q", de.Msg, wantPrefix)
 	}

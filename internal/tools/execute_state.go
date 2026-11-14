@@ -114,12 +114,12 @@ type ExecuteStateIn struct {
 	Format              string         `json:"format,omitempty" jsonschema:"enum=json,enum=md" jsonschema_description:"report only: overrides the format normally sourced from config.automation.report.format (\"json\" or \"md\"). Required alongside write=true so the caller's second (body-carrying) call and the tool agree on which file extension to persist."`
 	Body                string         `json:"body,omitempty" jsonschema_description:"report only: rendered markdown body to persist. Required when write=true and format=md (the caller renders markdown itself and hands the tool the exact text to write); ignored for format=json, where the tool recomputes and persists the report struct itself."`
 	Abort               bool           `json:"abort,omitempty" jsonschema_description:"Plain JSON bool. base-sync-resolve only: true aborts the in-progress base merge. Example: true"`
-	// The 4 record inputs are pointers, so the dispatcher can see a field that
+	// The record inputs (instrInputFields) are pointers, so the dispatcher can see a field that
 	// was sent with its zero value and refuse it on every other action.
 	InstructionNumber  *int    `json:"instructionNumber,omitempty" jsonschema_description:"instruction-record only. 1 to the record count. Example: 2"`
-	InstructionAll     *bool   `json:"instructionAll,omitempty" jsonschema_description:"instruction-record only. true marks each open record not run. Example: true"`
-	InstructionStatus  *string `json:"instructionStatus,omitempty" jsonschema_description:"instruction-record only. done, failed or not run. Example: done"`
-	InstructionOutcome *string `json:"instructionOutcome,omitempty" jsonschema_description:"instruction-record only. Max 1000 characters. Required for failed and not run. Example: opened"`
+	InstructionAll     *bool   `json:"instructionAll,omitempty" jsonschema_description:"instruction-record only. true closes each open record; needs instructionStatus not run and an outcome. A pending record becomes not run with the outcome; a running record becomes failed with outcome result not recorded, not run again. Example: true"`
+	InstructionStatus  *string `json:"instructionStatus,omitempty" jsonschema:"enum=done,enum=failed,enum=not run" jsonschema_description:"instruction-record only. done, failed or not run. Example: done"`
+	InstructionOutcome *string `json:"instructionOutcome,omitempty" jsonschema_description:"instruction-record only. Max 1000 characters after trimming; a longer outcome is a DomainError, never cut. Required for failed and not run. Example: opened"`
 }
 
 // ---------------------------------------------------------------------------
@@ -598,9 +598,9 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - issue-draft: Append a pending GH issue draft to the state file's pendingIssueDrafts list (append-only — never goes through the context action, never overwrites). The draft title is also recorded durably in .sdlc-v2/history/deferred.json (source "execute-drift", id "execute-drift-<timestamp>-<N>") so it survives state-file GC — no follow-up deferred_add is needed unless warnings is returned. Requires issueDraftTitle, issueDraftBody. Optional: issueDraftLabels, taskId, branch. Returns {added:true, totalDrafts:N, deferredId (the id just written to deferred.json), next}, plus warnings[] when the deferred.json write failed: the call still succeeds, deferredId is omitted, and next names the exact ship_state action=deferred_add recovery call. Do not retry issue-draft to recover — it appends a second draft under a new id.
 - decide: Record a guardrail decision (append-only — never goes through the context action, never overwrites; distinct from ship state's own "decide" action, which writes a differently-shaped {step, decision} entry under a different key). Appends {decideType, id, decision, reason} to the state file's guardrailDecisions list. Requires decideType (must be "guardrail"; any other value fails with a DomainError), decideId. Optional: decideDecision (override|harden|cancel|fix; any other value fails with a DomainError), decideReason, branch. Returns {ok:true, action:"decide", next:"..."}.
 - report: Assemble the end-of-run execution report (KD-11). With write omitted or false, this is read-only (never writes state or any file). Gated by config automation.report: {enabled:false} returns {skipped:true, written:false} immediately and nothing else — regardless of write. Otherwise returns {branch, runId, planPath, startedAt, duration, format, waves[{number, status, startedAt, completedAt, duration, tasks[{id, name, status, complexity, risk, filesChanged}], committedSha}], totalTasks, completedTasks, failedTasks, skippedTasks, drifts, errors, warnings, concerns, pendingIssueDrafts, deferredFindings, decisions, path, written, next}. deferredFindings comes from the branch's ship state and leaves out each entry with fixedInRun:true (a finding that the ship fix pass fixed); it is absent when no entry is left. format is "json" or "md" (default) from config, or overridden by the format input field. write:true persists the report under <main worktree>/.sdlc-v2/reports/<runId>-report.<ext> and sets path/written on the response instead of leaving the caller to construct that path itself. For format=json, write:true alone is enough — the tool recomputes and writes the full struct. For format=md, write:true additionally requires body (the caller's own rendered markdown) — the tool persists that exact text rather than rendering it again. Optional: branch, write, format, body.
-- instructions-next — Requires: none. Reads the execute state of this run. On the first call, seeds the execute list from the [instructions] config, then starts the next pending record. Also optional: branch. A record left running is marked failed first ("result not recorded, not run again"). Returns summary, instruction (the record {key, number, source, text, normalQuestions, criticalQuestions, onQuestionNotAllowed, status, outcome, startedAt, endedAt}, or (none) when no record is pending), remaining and next: "Do instruction execute #<n>, then call instruction-record." for a record, "No open instruction for execute. Call cleanup." for (none), "No instructions for execute. Call cleanup." when the execute list is empty. Only a standalone execute run calls it; ship passes --no-instructions on its dispatch.
-- instruction-record — Requires: instructionStatus, and instructionNumber or instructionAll. Optional: instructionOutcome. Errors: DomainError for bad input, DataError or InfraError for a config or state problem. Warnings: warnings. Also optional: branch. Closes the running record instructionNumber with instructionStatus (done, failed or not run), or with instructionAll:true and status "not run" marks each open record not run (a running record becomes failed). A closed record never changes. Returns summary, updated (the number of records closed), warnings and next ("Call instructions-next."). A failed write of either action returns InfraError and leaves the stored record as it was (pending after instructions-next, running after instruction-record); the next instructions-next call turns a running record into failed.
-  Both actions: a record input (instructionNumber, instructionAll, instructionStatus, instructionOutcome) sent with any other action returns DomainError "<field> is valid only with instruction-record". Differences from ship_state's actions of the same name: there is no key input (the key is always execute); the record inputs are top-level fields, so the error names <field> and not detail.<field>; there is no runMode and no "flags.auto is not a boolean" warning (the run mode comes from resolve-config); a state with no instructions key is seeded from config, not read as an empty list; a missing or unreadable state file keeps the read error of execute_state.
+- instructions-next — Requires: none. Reads the execute state of this run. On the first call, seeds the execute list from the [instructions] config, then starts the next pending record. Also optional: branch. A record left running is marked failed first ("result not recorded, not run again"). Returns summary, instruction (the record {key, number, source, text, normalQuestions, criticalQuestions, onQuestionNotAllowed, status, outcome, startedAt, endedAt}, or (none) when no record is pending), remaining, failedRunning (the numbers of the records that were still running and that this call marked failed; (none) when none) and next: "Do instruction execute #<n>, then call instruction-record." for a record, "No open instruction for execute. Call cleanup." for (none), "No instructions for execute. Call cleanup." when the execute list is empty. Only a standalone execute run calls it; ship passes --no-instructions on its dispatch.
+- instruction-record — Requires: instructionStatus, and instructionNumber or instructionAll. Optional: instructionOutcome. Errors: DomainError for bad input, DataError or InfraError for a config or state problem. Warnings: warnings. Also optional: branch. Closes the running record instructionNumber with instructionStatus (done, failed or not run), or with instructionAll:true, status "not run" and an outcome closes each open record: a pending record becomes not run with the outcome, a running record becomes failed with outcome "result not recorded, not run again". instructionOutcome is required for failed and not run, is trimmed, and may have at most 1000 characters; a longer outcome is a DomainError, never cut. A closed record never changes. Returns summary, key, updated (the number of records closed), closed (each closed record as stored: number, status, outcome, endedAt), warnings and next ("Call instructions-next." after one record; "No record of execute is open. Call cleanup." after instructionAll). A failed write of either action returns InfraError and leaves the stored record as it was (pending after instructions-next, running after instruction-record); the next instructions-next call turns a running record into failed.
+  Both actions: a record input (instructionNumber, instructionAll, instructionStatus, instructionOutcome) sent with any other action returns DomainError "<field> is valid only with instruction-record". Differences from ship_state's actions of the same name: there is no key input (the key is always execute); the record inputs are top-level fields, so the error names <field> and not detail.<field>; there is no runMode and no flags.auto warning (the run mode comes from resolve-config); a state with no instructions key is seeded from config, not read as an empty list; a missing or unreadable state file keeps the read error of execute_state.
 
 Returns Markdown: a "# execute_state — ok" heading, a **Next:** line, then the fields above. Failures return "# execute_state — error (<code>)" with a "## What happened" and a "## Do this" section.`,
 		mcpserver.Annotations{
@@ -1373,36 +1373,19 @@ func execActionIssueDraft(root, workDir string, in ExecuteStateIn, now func() ti
 // ---------------------------------------------------------------------------
 
 // execInstrKey is the only instruction key of execute state. Only a
-// standalone execute run calls the 2 actions: ship passes --no-instructions
-// on its execute dispatch and runs the ship records through ship_state.
+// standalone execute run calls instructions-next and instruction-record: ship
+// passes --no-instructions on its execute dispatch and runs the ship records
+// through ship_state.
 const execInstrKey = "execute"
 
-// execStateWriteFunc is the write seam of the 2 instruction actions, so a
-// test can make a record write fail. The other actions call state.Write.
+// execStateWriteFunc is the write seam of instructions-next and
+// instruction-record, so a test can make a record write fail. The other
+// actions call state.Write.
 var execStateWriteFunc = state.Write
-
-// ExecInstructionsNextOut is the output of instructions-next. Instruction is
-// nil (rendered "(none)") when no record is pending.
-type ExecInstructionsNextOut struct {
-	Summary     string                `json:"summary"`
-	Instruction *InstructionRecordOut `json:"instruction"`
-	Remaining   int                   `json:"remaining"`
-	Next        string                `json:"next"`
-}
-
-// ExecInstructionRecordOut is the output of instruction-record. Updated is
-// the number of records the call closed. Warnings is [] when empty.
-type ExecInstructionRecordOut struct {
-	Summary  string   `json:"summary"`
-	Updated  int      `json:"updated"`
-	Warnings []string `json:"warnings"`
-	Next     string   `json:"next"`
-}
 
 // execRefuseInstructionInputs returns a DomainError for the first record
 // input set on in. The dispatcher calls it for every action except
-// instruction-record, so a misrouted record call fails loud. The field order
-// is the order of shipInstrInputs.
+// instruction-record, so a misrouted record call fails loud.
 func execRefuseInstructionInputs(in ExecuteStateIn) error {
 	set := map[string]bool{
 		"instructionNumber":  in.InstructionNumber != nil,
@@ -1410,15 +1393,7 @@ func execRefuseInstructionInputs(in ExecuteStateIn) error {
 		"instructionStatus":  in.InstructionStatus != nil,
 		"instructionOutcome": in.InstructionOutcome != nil,
 	}
-	for _, field := range shipInstrInputs {
-		if set[field] {
-			return &mcpserver.DomainError{
-				Msg:        fmt.Sprintf("%s is valid only with instruction-record", field),
-				Suggestion: fmt.Sprintf("Remove %s, or use action instruction-record.", field),
-			}
-		}
-	}
-	return nil
+	return instrRefuseInputs(func(field string) bool { return set[field] }, "")
 }
 
 // execInstrWriteError is the InfraError of a failed record write. The stored
@@ -1449,6 +1424,11 @@ func execInstrState(root, workDir, branchIn string) (*state.State, error) {
 	return st, nil
 }
 
+// execInstrStore is the instrStore of the execute state st.
+func execInstrStore(st *state.State) instrStore {
+	return instrStore{data: st.Data, write: func() error { return execStateWriteFunc(st) }, writeError: execInstrWriteError}
+}
+
 // execActionInstructionsNext seeds the execute list from config on the first
 // call (a state with no "instructions" key), fails each running record, then
 // starts the first pending record and returns it. The state is written only
@@ -1460,8 +1440,7 @@ func execActionInstructionsNext(root, workDir string, in ExecuteStateIn, now fun
 		return nil, err
 	}
 	// A key of the wrong type is a DataError before any config read.
-	records, err := instrRecords(st.Data)
-	if err != nil {
+	if _, err := instrRecords(st.Data); err != nil {
 		return nil, err
 	}
 	raw, present := st.Data[instrStateKey]
@@ -1472,109 +1451,45 @@ func execActionInstructionsNext(root, workDir string, in ExecuteStateIn, now fun
 			return nil, err
 		}
 		if len(resolved.Instructions) == 0 {
-			return ExecInstructionsNextOut{
-				Summary: fmt.Sprintf("%s has 0 instructions.", execInstrKey),
-				Next:    fmt.Sprintf("No instructions for %s. Call cleanup.", execInstrKey),
+			return InstructionsNextOut{
+				Summary:       fmt.Sprintf("%s has 0 instructions.", execInstrKey),
+				FailedRunning: []int{},
+				Next:          fmt.Sprintf("No instructions for %s. Call cleanup.", execInstrKey),
 			}, nil
 		}
 		instrSeed(st.Data, resolved.Instructions)
 		seeded = true
 	}
-
-	stale := 0
-	for _, r := range records {
-		if instrString(r, instrFieldKey) == execInstrKey && instrString(r, instrFieldStatus) == instrRunning {
-			stale++
-		}
-	}
-	rec, remaining, err := instrNext(st.Data, execInstrKey, now())
-	if err != nil {
-		return nil, err
-	}
-	if seeded || rec != nil || stale > 0 {
-		if err := execStateWriteFunc(st); err != nil {
-			return nil, execInstrWriteError(err)
-		}
-	}
-
-	out := ExecInstructionsNextOut{Remaining: remaining}
-	if rec == nil {
-		out.Summary = fmt.Sprintf("No open instruction for %s.", execInstrKey)
-		out.Next = fmt.Sprintf("No open instruction for %s. Call cleanup.", execInstrKey)
-		return out, nil
-	}
-	out.Instruction = shipInstrRecordOut(rec)
-	out.Summary = fmt.Sprintf("%s #%d (%s) %q", execInstrKey, out.Instruction.Number, out.Instruction.Source, out.Instruction.Text)
-	out.Next = fmt.Sprintf("Do instruction %s #%d, then call instruction-record.", execInstrKey, out.Instruction.Number)
-	return out, nil
+	return instrNextAction(execInstrStore(st), execInstrKey, now(), seeded,
+		fmt.Sprintf("No open instruction for %s. Call cleanup.", execInstrKey))
 }
 
 // execActionInstructionRecord closes one running execute record, or with
-// instructionAll:true marks each open execute record not run. The input is
-// checked before the state is read, with the same rules as ship_state's
-// instruction-record. A failed write returns an InfraError and the record
-// stays running in the stored state.
+// instructionAll:true closes each open execute record, with the same rules
+// as ship_state's instruction-record. The input is checked before the state
+// is read. A failed write returns an InfraError and the record stays running
+// in the stored state.
 func execActionInstructionRecord(root, workDir string, in ExecuteStateIn, now func() time.Time) (any, error) {
-	hasNumber := in.InstructionNumber != nil
-	number := 0
-	if hasNumber {
-		number = *in.InstructionNumber
+	input := instrRecordInput{key: execInstrKey, all: in.InstructionAll != nil && *in.InstructionAll}
+	if in.InstructionNumber != nil {
+		input.number, input.hasNumber = *in.InstructionNumber, true
 	}
-	all := in.InstructionAll != nil && *in.InstructionAll
-	status, outcome := "", ""
 	if in.InstructionStatus != nil {
-		status = *in.InstructionStatus
+		input.status = *in.InstructionStatus
 	}
 	if in.InstructionOutcome != nil {
-		outcome = *in.InstructionOutcome
+		input.outcome = *in.InstructionOutcome
 	}
-	switch {
-	case hasNumber && all:
-		return nil, &mcpserver.DomainError{
-			Msg:        "use instructionNumber or instructionAll, not both",
-			Suggestion: "Send instructionNumber for one record, or instructionAll:true for each open record.",
-		}
-	case !hasNumber && !all:
-		return nil, &mcpserver.DomainError{
-			Msg:        "instructionNumber or instructionAll is required",
-			Suggestion: "Send the number from instructions-next, or instructionAll:true.",
-		}
-	case all && status != instrNotRun:
-		return nil, &mcpserver.DomainError{
-			Msg:        `instructionAll:true takes only status "not run"`,
-			Suggestion: `Send instructionStatus "not run" with instructionAll:true.`,
-		}
+	if err := input.check(); err != nil {
+		return nil, err
 	}
-
 	st, err := execInstrState(root, workDir, in.Branch)
 	if err != nil {
 		return nil, err
 	}
-	updated := 1
-	if all {
-		updated, err = instrRecordAll(st.Data, execInstrKey, outcome, now())
-	} else {
-		err = instrRecord(st.Data, execInstrKey, number, status, outcome, now())
-	}
-	if err != nil {
-		return nil, err
-	}
-	if updated > 0 {
-		if err := execStateWriteFunc(st); err != nil {
-			return nil, execInstrWriteError(err)
-		}
-	}
-
-	summary := fmt.Sprintf("Instruction %s #%d recorded as %s.", execInstrKey, number, status)
-	if all {
-		summary = fmt.Sprintf("%d open instructions of %s closed.", updated, execInstrKey)
-	}
-	return ExecInstructionRecordOut{
-		Summary:  summary,
-		Updated:  updated,
-		Warnings: []string{},
-		Next:     "Call instructions-next.",
-	}, nil
+	return instrRecordAction(execInstrStore(st), input, now(),
+		"Call instructions-next.",
+		fmt.Sprintf("No record of %s is open. Call cleanup.", execInstrKey))
 }
 
 // ---------------------------------------------------------------------------

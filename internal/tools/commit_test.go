@@ -623,7 +623,7 @@ func TestCommitApply_PushRequested(t *testing.T) {
 	}{
 		{"push works", true, "", nil},
 		{"push skipped", false, "push skipped: main is the default branch", []string{"push skipped: main is the default branch"}},
-		{"auth failure", false, "push failed (auth): Authentication failed. The pr step pushes again.", []string{"push failed (auth): Authentication failed. The pr step pushes again."}},
+		{"auth failure", false, pushFailedWarning("auth", "Authentication failed"), []string{pushFailedWarning("auth", "Authentication failed")}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

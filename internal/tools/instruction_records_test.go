@@ -116,7 +116,7 @@ func TestInstrSeed_TextNeverChangesFlags(t *testing.T) {
 
 func TestInstrNext_StartsFirstPendingAndCountsRemaining(t *testing.T) {
 	data := instrSeeded()
-	rec, remaining, err := instrNext(data, "pr", instrNow)
+	rec, remaining, _, err := instrNext(data, "pr", instrNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,11 +133,11 @@ func TestInstrNext_StartsFirstPendingAndCountsRemaining(t *testing.T) {
 
 func TestInstrNext_FailsRunningRecordOfSameKey(t *testing.T) {
 	data := instrSeeded()
-	if _, _, err := instrNext(data, "pr", instrNow); err != nil {
+	if _, _, _, err := instrNext(data, "pr", instrNow); err != nil {
 		t.Fatal(err)
 	}
 	later := instrNow.Add(time.Minute)
-	rec, _, err := instrNext(data, "pr", later)
+	rec, _, _, err := instrNext(data, "pr", later)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestInstrNext_FailsRunningRecordOfSameKey(t *testing.T) {
 
 func TestInstrNext_NoPendingRecord(t *testing.T) {
 	data := instrSeeded()
-	rec, remaining, err := instrNext(data, "harden", instrNow)
+	rec, remaining, _, err := instrNext(data, "harden", instrNow)
 	if err != nil || rec != nil || remaining != 0 {
 		t.Fatalf("got %v, %d, %v; want nil, 0, nil", rec, remaining, err)
 	}
@@ -160,7 +160,7 @@ func TestInstrNext_NoPendingRecord(t *testing.T) {
 
 func TestInstrNext_MissingKeyActsAsEmptyList(t *testing.T) {
 	data := map[string]any{}
-	rec, remaining, err := instrNext(data, "pr", instrNow)
+	rec, remaining, _, err := instrNext(data, "pr", instrNow)
 	if err != nil || rec != nil || remaining != 0 {
 		t.Fatalf("got %v, %d, %v; want nil, 0, nil", rec, remaining, err)
 	}
@@ -185,11 +185,11 @@ func TestInstrRecord_Transitions(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			data := instrSeeded()
-			if _, _, err := instrNext(data, "pr", instrNow); err != nil {
+			if _, _, _, err := instrNext(data, "pr", instrNow); err != nil {
 				t.Fatal(err)
 			}
 			end := instrNow.Add(time.Minute)
-			if err := instrRecord(data, "pr", 1, tt.status, tt.outcome, end); err != nil {
+			if _, err := instrRecord(data, "pr", 1, tt.status, tt.outcome, end); err != nil {
 				t.Fatal(err)
 			}
 			rec := instrStatusOf(t, data, "pr", 1)
@@ -207,13 +207,13 @@ func TestInstrRecord_ClosedRecordNeverChanges(t *testing.T) {
 	for _, status := range []string{instrDone, instrFailed, instrNotRun} {
 		t.Run(status, func(t *testing.T) {
 			data := instrSeeded()
-			if _, _, err := instrNext(data, "pr", instrNow); err != nil {
+			if _, _, _, err := instrNext(data, "pr", instrNow); err != nil {
 				t.Fatal(err)
 			}
-			if err := instrRecord(data, "pr", 1, status, "first", instrNow); err != nil {
+			if _, err := instrRecord(data, "pr", 1, status, "first", instrNow); err != nil {
 				t.Fatal(err)
 			}
-			err := instrRecord(data, "pr", 1, instrDone, "second", instrNow)
+			_, err := instrRecord(data, "pr", 1, instrDone, "second", instrNow)
 			instrWantDomain(t, err, "instruction pr #1 is closed ("+status+")",
 				"Call instructions-next for the next open instruction.")
 			if got := instrStatusOf(t, data, "pr", 1)["outcome"]; got != "first" {
@@ -225,7 +225,7 @@ func TestInstrRecord_ClosedRecordNeverChanges(t *testing.T) {
 
 func TestInstrRecord_PendingRecordIsRefused(t *testing.T) {
 	data := instrSeeded()
-	err := instrRecord(data, "pr", 1, instrDone, "", instrNow)
+	_, err := instrRecord(data, "pr", 1, instrDone, "", instrNow)
 	instrWantDomain(t, err, "instruction pr #1 is not running (pending)",
 		"Call instructions-next to start the next open instruction.")
 }
@@ -234,13 +234,13 @@ func TestInstrRecord_NumberRange(t *testing.T) {
 	data := instrSeeded()
 	count := instrCountKey(instrTestList(), "pr")
 	for _, n := range []int{0, count + 1} {
-		err := instrRecord(data, "pr", n, instrDone, "", instrNow)
+		_, err := instrRecord(data, "pr", n, instrDone, "", instrNow)
 		instrWantDomain(t, err,
-			"pr has "+itoa(count)+" instructions. Number "+itoa(n)+" is out of range.",
+			"instruction number "+itoa(n)+" is out of range: pr has "+itoa(count)+" instructions",
 			"Use the number from instructions-next.")
 	}
 	// The upper boundary itself is in range: it reaches the state check.
-	err := instrRecord(data, "pr", count, instrDone, "", instrNow)
+	_, err := instrRecord(data, "pr", count, instrDone, "", instrNow)
 	instrWantDomain(t, err, "instruction pr #"+itoa(count)+" is not running (pending)",
 		"Call instructions-next to start the next open instruction.")
 }
@@ -250,7 +250,7 @@ func itoa(n int) string { return strconv.Itoa(n) }
 func TestInstrRecord_StatusRejected(t *testing.T) {
 	data := instrSeeded()
 	for _, status := range []string{"", "pending", "running", "ok"} {
-		err := instrRecord(data, "pr", 1, status, "x", instrNow)
+		_, err := instrRecord(data, "pr", 1, status, "x", instrNow)
 		instrWantDomain(t, err, `status "`+status+`" is not valid`, "Use done, failed or not run.")
 	}
 }
@@ -262,17 +262,17 @@ func TestInstrRecord_OutcomeLimit(t *testing.T) {
 		t.Fatal("test input is wrong")
 	}
 	data := instrSeeded()
-	if _, _, err := instrNext(data, "pr", instrNow); err != nil {
+	if _, _, _, err := instrNext(data, "pr", instrNow); err != nil {
 		t.Fatal(err)
 	}
-	err := instrRecord(data, "pr", 1, instrFailed, overLimit, instrNow)
+	_, err := instrRecord(data, "pr", 1, instrFailed, overLimit, instrNow)
 	instrWantDomain(t, err,
-		"the outcome has "+itoa(MaxInstructionOutcome+1)+" characters. The limit is "+itoa(MaxInstructionOutcome)+".",
+		"the outcome has "+itoa(MaxInstructionOutcome+1)+" characters, over the limit of "+itoa(MaxInstructionOutcome),
 		"Shorten the outcome.")
 	if got := instrStatusOf(t, data, "pr", 1)["status"]; got != instrRunning {
 		t.Fatalf("status = %v: a rejected call wrote", got)
 	}
-	if err := instrRecord(data, "pr", 1, instrFailed, atLimit, instrNow); err != nil {
+	if _, err := instrRecord(data, "pr", 1, instrFailed, atLimit, instrNow); err != nil {
 		t.Fatalf("outcome at the limit: %v", err)
 	}
 }
@@ -281,7 +281,7 @@ func TestInstrRecord_OutcomeRequiredExceptDone(t *testing.T) {
 	for _, status := range []string{instrFailed, instrNotRun} {
 		for _, outcome := range []string{"", "   \n"} {
 			data := instrSeeded()
-			err := instrRecord(data, "pr", 1, status, outcome, instrNow)
+			_, err := instrRecord(data, "pr", 1, status, outcome, instrNow)
 			instrWantDomain(t, err, "outcome is required for failed and not run",
 				"Add an outcome that says why the instruction failed or did not run.")
 		}
@@ -290,14 +290,14 @@ func TestInstrRecord_OutcomeRequiredExceptDone(t *testing.T) {
 
 func TestInstrRecordAll_ClosesEachOpenRecordOfKey(t *testing.T) {
 	data := instrSeeded()
-	if _, _, err := instrNext(data, "pr", instrNow); err != nil { // pr #1 running
+	if _, _, _, err := instrNext(data, "pr", instrNow); err != nil { // pr #1 running
 		t.Fatal(err)
 	}
-	updated, err := instrRecordAll(data, "pr", "step failed or stopped", instrNow)
+	closed, err := instrRecordAll(data, "pr", "step failed or stopped", instrNow)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated != 3 {
+	if updated := len(closed); updated != 3 {
 		t.Fatalf("updated = %d, want 3", updated)
 	}
 	running := instrStatusOf(t, data, "pr", 1)
@@ -319,9 +319,9 @@ func TestInstrRecordAll_NoOpenRecordIsNotAnError(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := instrRoundTrip(t, data)
-	updated, err := instrRecordAll(data, "pr", "stopped again", instrNow.Add(time.Hour))
-	if err != nil || updated != 0 {
-		t.Fatalf("got %d, %v; want 0, nil", updated, err)
+	closed, err := instrRecordAll(data, "pr", "stopped again", instrNow.Add(time.Hour))
+	if err != nil || len(closed) != 0 {
+		t.Fatalf("got %d, %v; want 0, nil", len(closed), err)
 	}
 	if !reflect.DeepEqual(before, instrRoundTrip(t, data)) {
 		t.Fatal("a call with no open record wrote")
@@ -335,7 +335,7 @@ func TestInstrRecordAll_OutcomeRules(t *testing.T) {
 		"Add an outcome that says why the instruction failed or did not run.")
 	_, err = instrRecordAll(data, "pr", strings.Repeat("x", MaxInstructionOutcome+1), instrNow)
 	instrWantDomain(t, err,
-		"the outcome has "+itoa(MaxInstructionOutcome+1)+" characters. The limit is "+itoa(MaxInstructionOutcome)+".",
+		"the outcome has "+itoa(MaxInstructionOutcome+1)+" characters, over the limit of "+itoa(MaxInstructionOutcome),
 		"Shorten the outcome.")
 	if _, err := instrRecordAll(data, "pr", strings.Repeat("x", MaxInstructionOutcome), instrNow); err != nil {
 		t.Fatalf("outcome at the limit: %v", err)
@@ -344,21 +344,21 @@ func TestInstrRecordAll_OutcomeRules(t *testing.T) {
 
 func TestInstrSweep_ClosesMatchingOpenRecords(t *testing.T) {
 	data := instrSeeded()
-	if _, _, err := instrNext(data, "ship", instrNow); err != nil {
+	if _, _, _, err := instrNext(data, "ship", instrNow); err != nil {
 		t.Fatal(err)
 	}
-	if err := instrRecord(data, "ship", 1, instrDone, "", instrNow); err != nil {
+	if _, err := instrRecord(data, "ship", 1, instrDone, "", instrNow); err != nil {
 		t.Fatal(err)
 	}
-	n := instrSweep(data, func(rec map[string]any) bool { return instrString(rec, "key") != "ship" },
+	n, err := instrSweep(data, func(rec map[string]any) bool { return instrString(rec, "key") != "ship" },
 		"step failed or stopped", instrNow)
-	if n != 3 {
+	if err != nil || n != 3 {
 		t.Fatalf("swept = %d, want 3", n)
 	}
 	if got := instrStatusOf(t, data, "ship", 1)["status"]; got != instrDone {
 		t.Fatalf("closed record changed: %v", got)
 	}
-	if n := instrSweep(data, func(map[string]any) bool { return true }, "again", instrNow); n != 0 {
+	if n, err := instrSweep(data, func(map[string]any) bool { return true }, "again", instrNow); err != nil || n != 0 {
 		t.Fatalf("second sweep = %d, want 0", n)
 	}
 }
@@ -384,12 +384,15 @@ func TestInstrHelpers_DamagedListIsRefusedBeforeAnyWrite(t *testing.T) {
 					t.Fatalf("error = %q / %q", de.Msg, de.Suggestion)
 				}
 			}
-			_, _, err := instrNext(data, "pr", instrNow)
+			_, _, _, err := instrNext(data, "pr", instrNow)
 			check(err)
-			check(instrRecord(data, "pr", 1, instrDone, "", instrNow))
+			_, err = instrRecord(data, "pr", 1, instrDone, "", instrNow)
+			check(err)
 			_, err = instrRecordAll(data, "pr", "x", instrNow)
 			check(err)
-			if n := instrSweep(data, func(map[string]any) bool { return true }, "x", instrNow); n != 0 {
+			n, err := instrSweep(data, func(map[string]any) bool { return true }, "x", instrNow)
+			check(err)
+			if n != 0 {
 				t.Fatalf("sweep = %d, want 0", n)
 			}
 			sum, warnings := instrSummary(data)
@@ -417,18 +420,18 @@ func TestInstrSummary_CountsAndLines(t *testing.T) {
 	run := func(key string, number int, status, outcome string) {
 		t.Helper()
 		for {
-			rec, _, err := instrNext(data, key, instrNow)
+			rec, _, _, err := instrNext(data, key, instrNow)
 			if err != nil || rec == nil {
 				t.Fatalf("next %s: %v, %v", key, rec, err)
 			}
 			if instrInt(rec, "number") == number {
 				break
 			}
-			if err := instrRecord(data, key, instrInt(rec, "number"), instrDone, "", instrNow); err != nil {
+			if _, err := instrRecord(data, key, instrInt(rec, "number"), instrDone, "", instrNow); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if err := instrRecord(data, key, number, status, outcome, instrNow); err != nil {
+		if _, err := instrRecord(data, key, number, status, outcome, instrNow); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -470,11 +473,11 @@ func TestInstrSummary_NoLineIsEmptyListNotNil(t *testing.T) {
 
 func TestInstrRecords_SurviveJSONRoundTrip(t *testing.T) {
 	data := instrRoundTrip(t, instrSeeded())
-	rec, _, err := instrNext(data, "pr", instrNow)
+	rec, _, _, err := instrNext(data, "pr", instrNow)
 	if err != nil || instrInt(rec, "number") != 1 {
 		t.Fatalf("rec = %#v, err = %v", rec, err)
 	}
-	if err := instrRecord(data, "pr", 1, instrDone, "ok", instrNow); err != nil {
+	if _, err := instrRecord(data, "pr", 1, instrDone, "ok", instrNow); err != nil {
 		t.Fatal(err)
 	}
 }

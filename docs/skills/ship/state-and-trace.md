@@ -43,11 +43,16 @@ records, alongside the resolved pipeline flags:
 - **`binaryVersion`** — the sdlc binary's build metadata (plugin version,
   commit, build time), so a state file can be traced back to the binary
   that produced it.
+- **`instructions`** — one record for each follow-up instruction of the
+  run: key, number, source, text, question flags, status (`pending`,
+  `running`, `done`, `failed` or `not run`), outcome, and start and end
+  times. See [Follow-up instructions](../../instructions.md).
 - **`reportData`** — step counts (total/completed/pending/skipped/failed),
   duration, decisions, deferred-finding count, bump provenance, the
   self-healing record (`healing`: fixed findings, fix progress of each
-  finding, and harden runs, `{}` when none were recorded), and the review
-  ledger (below), computed on the fly each time state is read (not
+  finding, and harden runs, `{}` when none were recorded), the instruction
+  summary (`instructionSummary`: total, done, failed, notRun, and one line
+  for each record), and the review ledger (below), computed on the fly each time state is read (not
   persisted to disk). This lets the final pipeline report be rendered from
   already-computed values instead of re-deriving them from raw step/decision
   arrays.
@@ -94,9 +99,10 @@ deferred findings. Five parts of that summary are worth knowing about:
   with an answer that the agent decided:
 
       Ship instructions: 6 total, 4 done, 1 failed, 1 not run.
-      - pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.
+      - `pr #1 (team) failed: Jira transition 'In Review' not found for ticket INT-123.`
 
-  A run with no instruction prints no instructions line. A failed instruction
+  Each line is in an inline code span, because an outcome can quote outside
+  text. A run with no instruction prints no instructions line. A failed instruction
   does not change the result of the run.
 
 - **Deferred follow-ups.** After the summary, ship checks for deferred items

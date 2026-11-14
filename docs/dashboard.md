@@ -975,7 +975,7 @@ collector reads the data, and the tool action that writes it.
 | `steps[].detail.reviewTotals` (`found`, `fixed`, `deferred`, `unaccounted`) | Ship state: `healing.reviewTotal`, `healing.fixed[]` with origin `local-review`, and `deferredFindings[]` without `fixedInRun:true`. `unaccounted` is `found` minus `fixed` minus `deferred`. | ship_state `healing_record` (kinds `review-total` and `fixed`), ship_state `defer` |
 | `steps[].detail.findings` | The `findings` text of one completed dimension file, for a review run that has its own block. | execute_state `ledger_checkout` |
 | `steps[].detail.result` | The `result` of the ship `commit` step, when it starts with `nothing to commit`. | ship_state `commit-check` |
-| `DashboardStep.instructions` (`steps[].instructions`) | The records of the ship state `instructions` whose `key` names the step, in list order. A `commit-fixes` record goes to the `received-review` step. Each item has `key`, `number`, `source`, `text`, `status` and `outcome`. A record with no key, or with a status outside `pending`, `running`, `done`, `failed` and `not run`, is not listed. Absent when the run has no record. It is not part of `detail`, so a completed or failed run keeps it in the page snapshot. | ship_prepare, ship_state `instructions-next`, `instruction-record` |
+| `DashboardStep.instructions` (`steps[].instructions`) | The records of the ship state `instructions` whose `key` names the step, in list order. A `commit-fixes` record goes to the `received-review` step. Each item has `key`, `number`, `source`, `text`, `status` and `outcome`. A damaged list (a record with a missing or wrong-type field, or a status outside `pending`, `running`, `done`, `failed` and `not run`) lists no record: the block gets one issue with the ref `instructions` that names the damage and says the page shows no instruction of this run. Absent when the run has no record. It is not part of `detail`, so a completed or failed run keeps it in the page snapshot. | ship_prepare, ship_state `instructions-next`, `instruction-record` |
 | `DashboardPipeline.endInstructions` (`endInstructions`) | In a ship block: the records with the key `ship`, then the records whose key names no step of the block. In an execute block: the records of the execute state. Same item shape as `steps[].instructions`. Absent when the run has no record. | ship_prepare, ship_state and execute_state `instructions-next`, `instruction-record` |
 | `DashboardPipeline.endLabel` (`endLabel`) | `end of run (ship)` for a ship block, `end of run (execute)` for an execute block. Absent when `endInstructions` is absent. | Collector, not stored |
 | `steps[].detail.guardrails` | `guardrailCounts` of the plan state: `total`, `error`, and `warning`. | `plan_prepare` |
@@ -1153,6 +1153,8 @@ Two consumers keep the entry:
   lamp for the status, the label `<key> #<number> (<source>)`, the text cut
   to 60 characters, and the outcome. The `title` of the text holds the full
   text. The page sets the text and the outcome as text, never as markup.
+  A damaged `instructions` list shows no row. The block then gets one
+  issue with the ref `instructions` that names the damage.
 
 ### How runs join a ship block
 

@@ -14,7 +14,7 @@ The [overview page](../received-review.md#example) shows an example.
 | Flag | Description | Default |
 |------|-------------|---------|
 | `--pr <number>` | The pull request whose review comments the skill reads and answers. | none. With no PR number, the skill takes the feedback from the dispatch prompt, the conversation or your paste, and posts no reply. |
-| `--auto` | Run without prompts. Only "agree, will fix" ends a finding. Every other outcome is recorded as a `needs-direction` follow-up and is not closed. See [Auto mode](#auto-mode). | off |
+| `--auto` | Run without prompts. One exception: a follow-up instruction still asks a critical question when its `criticalQuestions` flag allows it (see [Follow-up instructions](#follow-up-instructions)). Only "agree, will fix" ends a finding. Every other outcome is recorded as a `needs-direction` follow-up and is not closed. See [Auto mode](#auto-mode). | off |
 | `--no-harden` | Skip the harden dispatch in Step 11.6. Use it when a caller already owns hardening for the run, for example the `harden` step of `/sdlc:ship`. See [The harden dispatch](#the-harden-dispatch). | off |
 | `--no-instructions` | Do not run the follow-up instructions of the skill. Ship passes this flag, because ship runs the lists itself. See [Follow-up instructions](#follow-up-instructions). | off |
 
@@ -111,7 +111,7 @@ failure does not stop the replies.
 
 - **Manual run.** The skill asks `dispatch` or `skip` for each group that is
   not hardened yet.
-- **`--auto`.** The skill asks nothing and passes `--auto` to each
+- **`--auto`.** The skill asks nothing about the groups and passes `--auto` to each
   `/sdlc:harden` run. `/sdlc:harden` then applies guardrail edits and
   review-dimension edits to your project with no prompt: add, strengthen,
   consolidate, repair, and the removal of a rule with a dead reference. Merges and other removals

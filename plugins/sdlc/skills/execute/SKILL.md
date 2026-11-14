@@ -302,11 +302,11 @@ The only other commits in a run are merge commits made by the tool itself in `##
 6. Load `context` (`completedTaskIds`, `filesAdded`/`filesModified`, `interfacesCreated`, `decisionsFromPriorWaves`) into the resumed session's understanding. Load `quality` from state with explicit three-way branching: if `sources.quality == "cli"` (an explicit `--quality` was passed), use EXECUTE_QUALITY; else if `state.quality` is non-empty (the tier stamped when this run was initialized), use `state.quality`; else use EXECUTE_QUALITY (config or auto default), which is empty only when EXECUTE_AUTO is false and no config set a tier — prompt for the tier in that one case.
 7. Resume from the first wave with status `in_progress` or `pending`, per `willRedo`/`willSkip` on the briefing.
 
-**All tasks done, open instruction records.** An interrupt during Step 9a leaves the run with no `cleanup` call, so the run stays unfinished. The `read` result then has no `resumeBriefing`, because every task is done. Use this table for that case:
+**All tasks done, open instruction records.** An interrupt during Step 9a, or after the last wave and before the first `instructions-next` call, leaves the run with no `cleanup` call, so the run stays unfinished. The `read` result then has no `resumeBriefing`, because every task is done. Use this table for that case:
 
 | `read` result on `--resume` | Action |
 |---|---|
-| `runStatus` is not `"completed"`, every `plannedTaskIds` entry is in `context.completedTaskIds`, and an `instructions` record has status `pending` or `running` | Skip steps 3-7 above, the waves and Steps 7-8. Run Step 9a: `instructions-next` turns the running record into failed and returns the next open record. Then run the Completion call (`cleanup`) of Step 9 and print the summary line. With `--no-instructions`, skip Step 9a and call `cleanup`. |
+| `runStatus` is not `"completed"`, every `plannedTaskIds` entry is in `context.completedTaskIds`, and either the state has no `instructions` key (the first `instructions-next` call seeds it) or an `instructions` record has status `pending` or `running` | Skip steps 3-7 above, the waves and Steps 7-8. Run Step 9a: `instructions-next` turns the running record into failed and returns the next open record. Then run the Completion call (`cleanup`) of Step 9 and print the summary line. With `--no-instructions`, skip Step 9a and call `cleanup`. |
 
 The small-plan direct-execution path (Step 2b) never writes a state file or commits per-wave, so it never produces a `committedSha` to reconcile here.
 
@@ -389,9 +389,9 @@ Base sync aborted at wave <N>: conflicts left for ship rebase
 
 ### Step 9a: Run instructions
 
-Skip this step when `--no-instructions` was passed. Run it only when all tasks completed, before the Completion call (`cleanup`) below. A wave `cancel`, a failed or partial run (Step 6) or an interrupt before Step 9 runs no instruction: the records stay pending and the state stays resumable.
+Skip this step when `--no-instructions` was passed. Run it only when all tasks completed, before the Completion call (`cleanup`) below. A wave `cancel`, a failed or partial run (Step 6) or an interrupt before Step 9 runs no instruction: no record is seeded or closed, and the state stays resumable.
 
-Read `plugins/sdlc/skills/ship/instructions-run.md` and follow its "Loop with run state" section. The run mode is EXECUTE_AUTO, the auto value of `resolve-config` (Step 0). The loop uses these calls:
+Read [`../ship/instructions-run.md`](../ship/instructions-run.md) and follow its "Loop with run state" section. The run mode is EXECUTE_AUTO, the auto value of `resolve-config` (Step 0). The loop uses these calls:
 
 ```
 loop: execute_state({ action: "instructions-next" })
@@ -410,7 +410,7 @@ After the Completion call below, print the summary line. With count 0, print no 
 
 ```text
 Instructions (execute): N total, X done, Y failed, Z not run.
-- execute #1 (team) failed: <one line of cause>
+- `execute #1 (team) failed: <one line of cause>`
 ```
 
 If the list stops before its end (an interrupt), do not call `cleanup`. A record stays running and the run stays in flight. Print:

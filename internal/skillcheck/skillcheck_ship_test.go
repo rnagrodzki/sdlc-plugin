@@ -388,7 +388,7 @@ func TestShipSkillsInstructionLists(t *testing.T) {
 		"  g. **7g instruction loop.**",
 		`ship_state({action:"instructions-next", detail:{key}})`,
 		`ship_state({action:"instruction-record", detail:{key, instructionNumber:<record.number>`,
-		"Skip c2 and d for that step. Print each push warning in its `warnings`, then run (g) for key `commit`.",
+		"Skip c2 and d for that step. Print each entry of the `commit-check` `warnings`, then run (g) for key `commit`.",
 		"(g) follows (d), so the resumed step still runs its open list.",
 		"so a failed step skips all later lists, the `ship` list included.",
 		"(g) does not run: `skip` sweeps the records of that step.",

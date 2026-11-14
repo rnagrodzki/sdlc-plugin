@@ -98,6 +98,23 @@ func validateRef(ref, context string) error {
 	return nil
 }
 
+// validateRemoteName checks that remote is a remote name, not a URL or a
+// transport string such as "ext::cmd". git accepts a URL in the remote
+// position, so a value from config could reach a host or a command that is
+// not a configured remote.
+func validateRemoteName(remote, context string) error {
+	if err := validateRef(remote, context); err != nil {
+		return err
+	}
+	if strings.Contains(remote, "://") || strings.Contains(remote, "::") {
+		return fmt.Errorf("gitx: %s: remote %q is a URL or a transport, not a remote name", context, remote)
+	}
+	return nil
+}
+
+// hexSHARe matches an abbreviated or full commit id.
+var hexSHARe = regexp.MustCompile(`^[0-9a-fA-F]{4,64}$`)
+
 // DiffOpts configures the Diff function.
 type DiffOpts struct {
 	// Base is the base ref for a three-dot range (base...HEAD).
@@ -333,23 +350,6 @@ func FetchTags(dir string) error {
 	return nil
 }
 
-// PushSetUpstream pushes HEAD to remote and sets it as the current branch's
-// upstream (git push -u <remote> HEAD). Returns an actionable error when
-// remote is empty, looks like a flag, or the push itself fails (auth,
-// network, rejected non-fast-forward, etc).
-func PushSetUpstream(dir, remote string) error {
-	if remote == "" {
-		return fmt.Errorf("gitx: push set upstream: remote is empty")
-	}
-	if err := validateRef(remote, "push set upstream"); err != nil {
-		return err
-	}
-	if _, err := execx.Run("git", []string{"push", "-u", remote, "HEAD"}, execx.Options{Dir: dir}); err != nil {
-		return fmt.Errorf("gitx: push set upstream: %w", err)
-	}
-	return nil
-}
-
 // HasUpstream reports whether the current branch has an upstream configured,
 // via "git rev-parse --abbrev-ref @{upstream}". Returns (false, nil) when no
 // upstream is configured — that is the expected, non-error outcome for a
@@ -507,22 +507,31 @@ type PushError struct {
 	// Stderr is the first line of the git stderr text, with URL credentials
 	// hidden.
 	Stderr string
+	// Cause is the run error when git did not run to an exit code, such as
+	// a missing git binary. It is nil when git exited with a non-zero code.
+	Cause error
 }
 
 func (e *PushError) Error() string {
 	return fmt.Sprintf("gitx: push failed (%s): %s", e.Kind, e.Stderr)
 }
 
+// Unwrap returns Cause, so errors.Is and errors.As see the run error.
+func (e *PushError) Unwrap() error { return e.Cause }
+
 // pushKindRules maps git stderr text to a kind. The rows are checked in
-// order and the first match wins. Matching is case-insensitive.
+// order and the first match wins. Matching is case-insensitive. The HTTP
+// status rows come before the network row: git prints "unable to access"
+// for a 401, 403 or 404 too, and those are not transient. A bare
+// "permission denied" is not an auth phrase: a local file error prints it.
 var pushKindRules = []struct {
 	kind string
 	subs []string
 }{
-	{PushKindNoRemote, []string{"does not appear to be a git repository", "no such remote"}},
-	{PushKindAuth, []string{"authentication failed", "permission denied", "could not read username"}},
+	{PushKindNoRemote, []string{"does not appear to be a git repository", "no such remote", "the requested url returned error: 404"}},
+	{PushKindAuth, []string{"authentication failed", "permission denied (publickey", "could not read username", "could not read password", "the requested url returned error: 401", "the requested url returned error: 403"}},
 	{PushKindRejected, []string{"[rejected]", "stale info", "non-fast-forward"}},
-	{PushKindNetwork, []string{"could not resolve host", "connection timed out", "unable to access"}},
+	{PushKindNetwork, []string{"could not resolve host", "connection timed out", "connection refused", "unable to access"}},
 }
 
 // classifyPushStderr returns the PushError kind for git stderr text.
@@ -539,8 +548,9 @@ func classifyPushStderr(stderr string) string {
 }
 
 // credentialURLRe matches the user info part of a URL, such as
-// https://user:token@host.
-var credentialURLRe = regexp.MustCompile(`://[^/@\s]+@`)
+// https://user:token@host. The match runs to the last '@' before the first
+// '/', so a password that holds an unencoded '@' is hidden in full.
+var credentialURLRe = regexp.MustCompile(`://[^/\s]*@`)
 
 // firstStderrLine returns the first non-empty line of stderr with URL
 // credentials hidden and the length capped.
@@ -559,13 +569,22 @@ func firstStderrLine(stderr string) string {
 	return line
 }
 
-// runPush runs git push with args and returns a *PushError on any failure.
-// The kind comes from the whole stderr text, the Stderr field from its
-// first line.
+// SafeLine returns the first non-empty line of text with URL credentials
+// hidden and the length capped, as PushError.Stderr holds it. Use it before
+// git error text reaches a warning.
+func SafeLine(text string) string { return firstStderrLine(text) }
+
+// runPush runs git push with args and returns a *PushError on a failed
+// push. The kind comes from the whole stderr text, the Stderr field from its
+// first line. An output over the execx cap is not a push failure: it returns
+// an error that wraps execx.ErrOutputCap and is not a *PushError.
 func runPush(dir string, args []string) error {
 	_, stderr, exitCode, err := pushRun("git", args, execx.Options{Dir: dir})
+	if errors.Is(err, execx.ErrOutputCap) {
+		return fmt.Errorf("gitx: push: %w", err)
+	}
 	if err != nil {
-		return &PushError{Kind: PushKindOther, Stderr: firstStderrLine(err.Error())}
+		return &PushError{Kind: PushKindOther, Stderr: firstStderrLine(err.Error()), Cause: err}
 	}
 	if exitCode == 0 {
 		return nil
@@ -579,18 +598,27 @@ func Push(dir, remote string) error {
 	if remote == "" {
 		return fmt.Errorf("gitx: push: remote is empty")
 	}
-	if err := validateRef(remote, "push"); err != nil {
+	if err := validateRemoteName(remote, "push"); err != nil {
 		return err
 	}
 	return runPush(dir, []string{"push", "-u", remote, "HEAD"})
 }
 
+// Lease names the remote branch that PushForceWithLease replaces and the
+// commit that the branch must still be at.
+type Lease struct {
+	Branch      string
+	ExpectedSHA string
+}
+
 // PushForceWithLease pushes HEAD to remote with
-// --force-with-lease=refs/heads/<branch>:<expectedSHA> and sets the upstream
-// (git push --force-with-lease=refs/heads/<branch>:<sha> -u <remote> HEAD).
-// The push replaces the remote branch only when it is still at expectedSHA.
-// A lease failure returns a *PushError with kind "rejected".
-func PushForceWithLease(dir, remote, branch, expectedSHA string) error {
+// --force-with-lease=refs/heads/<lease.Branch>:<lease.ExpectedSHA> and sets
+// the upstream (git push --force-with-lease=refs/heads/<branch>:<sha> -u
+// <remote> HEAD). The push replaces the remote branch only when it is still
+// at lease.ExpectedSHA. A lease failure returns a *PushError with kind
+// "rejected".
+func PushForceWithLease(dir, remote string, lease Lease) error {
+	branch, expectedSHA := lease.Branch, lease.ExpectedSHA
 	args := []struct{ name, value string }{{"remote", remote}, {"branch", branch}, {"expected sha", expectedSHA}}
 	for _, a := range args {
 		if a.value == "" {
@@ -600,15 +628,24 @@ func PushForceWithLease(dir, remote, branch, expectedSHA string) error {
 			return err
 		}
 	}
-	lease := "--force-with-lease=refs/heads/" + branch + ":" + expectedSHA
-	return runPush(dir, []string{"push", lease, "-u", remote, "HEAD"})
+	if err := validateRemoteName(remote, "push force with lease"); err != nil {
+		return err
+	}
+	if strings.Contains(branch, ":") {
+		return fmt.Errorf("gitx: push force with lease: branch %q holds ':'", branch)
+	}
+	if !hexSHARe.MatchString(expectedSHA) {
+		return fmt.Errorf("gitx: push force with lease: expected sha %q is not a hex commit id", expectedSHA)
+	}
+	leaseArg := "--force-with-lease=refs/heads/" + branch + ":" + expectedSHA
+	return runPush(dir, []string{"push", leaseArg, "-u", remote, "HEAD"})
 }
 
 // RemoteTrackingSHA returns the commit of refs/remotes/<remote>/<branch>.
 // ok is false, with no error, when the ref does not exist: git rev-parse
 // --verify --quiet exits 1 in that case. Any other failure is an error.
 func RemoteTrackingSHA(dir, remote, branch string) (sha string, ok bool, err error) {
-	if err := validateRef(remote, "remote tracking sha"); err != nil {
+	if err := validateRemoteName(remote, "remote tracking sha"); err != nil {
 		return "", false, err
 	}
 	if err := validateRef(branch, "remote tracking sha"); err != nil {
@@ -638,7 +675,7 @@ func HasRemote(dir, remote string) (bool, error) {
 	if remote == "" {
 		return false, fmt.Errorf("gitx: has remote: remote is empty")
 	}
-	if err := validateRef(remote, "has remote"); err != nil {
+	if err := validateRemoteName(remote, "has remote"); err != nil {
 		return false, err
 	}
 	_, stderr, exitCode, err := execx.RunAllowExit("git", []string{"remote", "get-url", remote}, execx.Options{Dir: dir})
