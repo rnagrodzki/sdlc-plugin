@@ -1,5 +1,6 @@
-// The other benefits of the Home page: the benefits that the workflow panel
-// and the self-healing section do not show. Each one names the skills that
+// The other benefits of the Home page: the benefits that the workflow panel,
+// the customization section (src/data/customize.mjs) and the self-healing
+// section do not show. Each one names the skills that
 // give it, and Home links each name to its skill page. A text may hold `code`
 // spans.
 // src/lib/home-data.test.mjs checks each skill name against the skill map of
@@ -24,11 +25,6 @@ export const benefits = [
     title: 'Supervised or unattended, by your choice',
     text: 'Each commit and each pull request waits for your `yes`. `--auto` removes the questions, and `--dry-run` shows the steps before a run.',
     skills: ['ship', 'commit', 'pr'],
-  },
-  {
-    title: 'Your follow-up steps, run for you',
-    text: 'Write the steps you repeat after a run in config, such as a ticket move or a channel post. Ship, or the skill you run alone, runs each one after its step and reports the result.',
-    skills: ['ship', 'execute', 'commit', 'review', 'received-review', 'pr', 'harden', 'verify-pipeline'],
   },
   {
     title: 'Output in the style of your project',
