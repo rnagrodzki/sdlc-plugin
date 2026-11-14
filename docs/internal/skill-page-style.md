@@ -33,7 +33,7 @@ An overview page is `docs/skills/<skill>.md`. It has these sections, in this ord
 | 3 | `## Why use it` | The problem, then the result. A user story is fine | 2 to 4 lines |
 | 4 | `## Example` | One real command and what the user sees or gets | 15 lines or fewer, one code block |
 | 5 | `## What you get` | The capabilities, benefit first | 3 to 5 bullets, 1 line each |
-| 6 | `## Steps` | The Steps table. Its columns are fixed by the site scan | the table only |
+| 6 | `## Steps` | The Steps table, then the `### Run facts` table (Starts, Ends, Asks the user, Resume). The columns and keys are fixed by `site/src/lib/steps-table.mjs` | the two tables only |
 | 7 | `## More examples` (optional) | 1 to 3 more cases, each with its command and result | 10 lines each |
 | 8 | `## Reference` (optional) | Links to reference pages, one line each | one line per page |
 | 9 | `## Related skills` | The skills that run before or after this one | one line per skill |
@@ -72,7 +72,7 @@ A page is ready when all answers are yes.
 - [ ] A new reader knows the problem and the result after the first screen.
 - [ ] An example comes before any explanation of how the skill works.
 - [ ] The page has no section that explains internals. Internals are in a reference page.
-- [ ] The `## Steps` table is present and valid for the site scan.
+- [ ] The `## Steps` table and the `### Run facts` table are present and valid for the site scan.
 - [ ] Each claim matches `SKILL.md`.
 - [ ] Each link and heading anchor resolves. `bun run verify` in `site/` prints no line.
 - [ ] The page has 150 lines or fewer.

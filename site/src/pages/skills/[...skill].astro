@@ -1,16 +1,20 @@
 ---
-// The page of one skill: /skills/<skill>/ (reference Skill page,
+// The pages of one skill.
+// /skills/<skill>/ is the overview page docs/skills/<skill>.md (reference Skill page,
 // site-preview.src.html:463-543, ref-skill-page.jpeg). The steps and facts come
 // from the docs page at build time; the Steps section itself is removed from the
 // rendered Markdown by remarkStripSteps, so it shows only once.
+// /skills/<skill>/<topic>/ is a reference page docs/skills/<skill>/<topic>.md. It has the
+// DocLayout look (SkillRefPage) with the page list of the skill on the left.
 import path from 'node:path';
 import { getCollection, render } from 'astro:content';
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import InstallCommand from '../../components/InstallCommand.astro';
 import FactPanel from '../../components/FactPanel.astro';
 import SkillSequence from '../../components/SkillSequence.astro';
+import SkillRefPage from '../../components/SkillRefPage.astro';
 import { BASE } from '../../../site.config.mjs';
-import { pageKind, routeFor } from '../../lib/doc-links.mjs';
+import { pageKind, routeFor, skillsShapeErrors } from '../../lib/doc-links.mjs';
 import { parseSteps } from '../../lib/steps-table.mjs';
 import { stepShares, timesFor } from '../../lib/timing.mjs';
 import { inlineParts } from '../../lib/sequence-state.mjs';
@@ -18,24 +22,32 @@ import stepTimes from '../../data/step-times.json';
 
 export async function getStaticPaths() {
   const repoRoot = path.resolve('..');
-  const entries = await getCollection('docs');
-  return entries.flatMap((entry) => {
+  const entries = (await getCollection('docs')).flatMap((entry) => {
     if (!entry.filePath) return [];
     // entry.filePath is relative to site/.
     const repoPath = path.relative(repoRoot, path.resolve(entry.filePath)).split(path.sep).join('/');
-    if (pageKind(repoPath) !== 'skill') return [];
-    const skill = /^\/skills\/([^/]+)\/$/.exec(routeFor(repoPath, { base: '' }))?.[1];
-    if (!skill) throw new Error(`no skill route for ${repoPath}`);
-    return [{ params: { skill }, props: { entry } }];
+    return [{ entry, repoPath }];
+  });
+  // A reference page needs its overview page, and docs/skills/ holds no other shape of page.
+  const shapeErrors = skillsShapeErrors(entries.map((e) => e.repoPath));
+  if (shapeErrors.length > 0) throw new Error(shapeErrors.map((e) => e.message).join('\n'));
+  return entries.flatMap(({ entry, repoPath }) => {
+    const kind = pageKind(repoPath);
+    if (kind !== 'skill' && kind !== 'skill-ref') return [];
+    // The route tail: <skill> for an overview page, <skill>/<topic> for a reference page.
+    const tail = /^\/skills\/(.+)\/$/.exec(routeFor(repoPath, { base: '' }))?.[1];
+    if (!tail) throw new Error(`no skill route for ${repoPath}`);
+    return [{ params: { skill: tail }, props: { entry, kind, skill: tail.split('/')[0] } }];
   });
 }
 
-const { entry } = Astro.props;
-const { skill } = Astro.params;
-const { steps, facts } = parseSteps(entry.body ?? '');
-const run = timesFor(stepTimes, skill);
-const times = run ? stepShares(steps, run.times) : null;
-const { Content } = await render(entry);
+const { entry, kind, skill } = Astro.props;
+const isOverview = kind === 'skill';
+// The steps, the timing and the lead belong to the overview page only.
+const parsed = isOverview ? parseSteps(entry.body ?? '') : null;
+const run = parsed ? timesFor(stepTimes, skill) : null;
+const times = parsed && run ? stepShares(parsed.steps, run.times) : null;
+const Content = parsed ? (await render(entry)).Content : null;
 
 /** The first paragraph under the H1 of the docs page, with links reduced to their text. */
 function leadParagraph(markdown: string): string {
@@ -51,40 +63,45 @@ function leadParagraph(markdown: string): string {
 }
 
 const command = `/sdlc:${skill}`;
-const lead = leadParagraph(entry.body ?? '');
+const lead = isOverview ? leadParagraph(entry.body ?? '') : '';
 const description = lead.replace(/[`*]/g, '') || `The ${command} skill of the sdlc plugin.`;
 ---
 
-<BaseLayout title={`${command} | sdlc`} description={description} current="skills">
-  <div class="fields" aria-hidden="true">
-    <span class="field f1"></span><span class="field f2"></span><span class="field f3"></span>
-  </div>
-  <div class="skill wrap">
-    <div class="sk-head">
-      <div class="sk-lead">
-        <p class="crumb"><a href={`${BASE}/skills/`}>Skills</a> / {skill}</p>
-        <h1 class="sk-h1">
-          <span class="typed" style={`--n: ${command.length}`}>{command}</span><span class="caret" aria-hidden="true"></span>
-        </h1>
-        {
-          lead && (
-            <p class="sub">
-              {inlineParts(lead).map((part) =>
-                part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
-              )}
-            </p>
-          )
-        }
+{!isOverview && <SkillRefPage entry={entry} skill={skill} />}
+{
+  parsed && Content && (
+    <BaseLayout title={`${command} | sdlc`} description={description} current="skills">
+      <div class="fields" aria-hidden="true">
+        <span class="field f1"></span><span class="field f2"></span><span class="field f3"></span>
       </div>
-      <InstallCommand lines={[command]} label="Run it in Claude Code" />
-    </div>
-    <FactPanel facts={facts} />
-    <SkillSequence steps={steps} times={times} run={run ? { version: run.version, runDate: run.runDate } : null} />
-    <article class="doc">
-      <Content />
-    </article>
-  </div>
-</BaseLayout>
+      <div class="skill wrap">
+        <div class="sk-head">
+          <div class="sk-lead">
+            <p class="crumb"><a href={`${BASE}/skills/`}>Skills</a> / {skill}</p>
+            <h1 class="sk-h1">
+              <span class="typed" style={`--n: ${command.length}`}>{command}</span><span class="caret" aria-hidden="true"></span>
+            </h1>
+            {
+              lead && (
+                <p class="sub">
+                  {inlineParts(lead).map((part) =>
+                    part.kind === 'code' ? <code>{part.value}</code> : part.kind === 'strong' ? <strong>{part.value}</strong> : part.value,
+                  )}
+                </p>
+              )
+            }
+          </div>
+          <InstallCommand lines={[command]} label="Run it in Claude Code" />
+        </div>
+        <FactPanel facts={parsed.facts} />
+        <SkillSequence steps={parsed.steps} times={times} run={run ? { version: run.version, runDate: run.runDate } : null} />
+        <article class="doc">
+          <Content />
+        </article>
+      </div>
+    </BaseLayout>
+  )
+}
 
 <style>
   /* The colour fields behind the glass, as on the Home page. */

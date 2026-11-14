@@ -1,8 +1,9 @@
-// The flat list of the docs pages, for the page list of DocLayout and the index at /docs/.
+// The flat list of the docs pages, for the page list of DocLayout and the index at /docs/,
+// and the page list of one skill, for the reference pages of that skill.
 import path from 'node:path';
 import { getCollection } from 'astro:content';
 import { BASE } from '../../site.config.mjs';
-import { pageKind, routeFor } from './doc-links.mjs';
+import { pageKind, routeFor, skillOf } from './doc-links.mjs';
 import { docMeta } from './doc-meta.mjs';
 
 export interface DocsPage {
@@ -27,6 +28,26 @@ export async function docsPages(): Promise<DocsPage[]> {
       return [{ repoPath, title, lead, href: routeFor(repoPath, { base: BASE }) }];
     })
     .sort((a, b) => Number(b.repoPath === FIRST) - Number(a.repoPath === FIRST) || a.title.localeCompare(b.title))
+    .map(({ title, lead, href }) => ({ title, lead, href }));
+}
+
+/**
+ * @returns the page list of one skill: the overview page first (title Overview),
+ * then its reference pages in the order of their titles
+ */
+export async function skillPages(skill: string /* lower case, as in the route */): Promise<DocsPage[]> {
+  const repoRoot = path.resolve('..');
+  const pages = (await getCollection('docs')).flatMap((entry) => {
+    if (!entry.filePath) return [];
+    // entry.filePath is relative to site/.
+    const repoPath = path.relative(repoRoot, path.resolve(entry.filePath)).split(path.sep).join('/');
+    const kind = pageKind(repoPath);
+    if ((kind !== 'skill' && kind !== 'skill-ref') || skillOf(repoPath).toLowerCase() !== skill) return [];
+    const { title, lead } = docMeta(entry.body ?? '', repoPath);
+    return [{ kind, title: kind === 'skill' ? 'Overview' : title, lead, href: routeFor(repoPath, { base: BASE }) }];
+  });
+  return pages
+    .sort((a, b) => Number(b.kind === 'skill') - Number(a.kind === 'skill') || a.title.localeCompare(b.title))
     .map(({ title, lead, href }) => ({ title, lead, href }));
 }
 

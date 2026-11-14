@@ -255,7 +255,7 @@ const TREE = {
 const DIST_FILES = ['index.html', 'docs/index.html', 'skills/index.html', 'releases/index.html', 'skills/ship/index.html'];
 
 // Builds the deps of runCheck. Each argument replaces the part of the default build that it names.
-function deps({ md = {}, html = {}, files = DIST_FILES, listFilesError } = {}) {
+function deps({ md = {}, html = {}, files = DIST_FILES, listFilesError, tree = TREE } = {}) {
   const contents = {
     '/repo/docs/skills/ship.md': SKILL_MD(),
     '/repo/docs/skills/README.md': '# Skills\n\nNo Steps table here.\n',
@@ -279,9 +279,18 @@ function deps({ md = {}, html = {}, files = DIST_FILES, listFilesError } = {}) {
       if (!(file in contents)) throw new Error(`ENOENT: ${file}`);
       return contents[file];
     },
-    readdirSync: (dir) => TREE[dir],
+    readdirSync: (dir) => tree[dir],
   };
 }
+
+// TREE plus a skills folder that holds the given entries.
+const treeWith = (folder, entries) => ({
+  ...TREE,
+  '/repo/docs/skills': [...TREE['/repo/docs/skills'], dirent(folder, 'dir')],
+  [`/repo/docs/skills/${folder}`]: entries,
+});
+const REF_TREE = treeWith('ship', [dirent('flags.md', 'file')]);
+const REF_FILES = [...DIST_FILES, 'skills/ship/flags/index.html'];
 
 describe('runCheck', () => {
   test('returns exit code 0 and no line when dist is clean', () => {
@@ -328,6 +337,33 @@ describe('runCheck', () => {
     assert.deepEqual(runCheck(deps({ md })).lines, ['/skills/ship/ missing-step-text Review']);
     const html = { 'skills/ship/index.html': page('<li>Plan</li><li>Review</li>') };
     assert.deepEqual(runCheck(deps({ md, html })), { exitCode: 0, lines: [] });
+  });
+
+  test('requires the page of a reference page and passes when it is in dist', () => {
+    const html = { 'skills/ship/flags/index.html': page('<h2 id="a">A</h2><a href="../">ship</a><a href="#a">a</a>') };
+    assert.deepEqual(runCheck(deps({ tree: REF_TREE, files: REF_FILES, html })), { exitCode: 0, lines: [] });
+    assert.deepEqual(runCheck(deps({ tree: REF_TREE })).lines, ['/skills/ship/flags/ missing-route no page in dist']);
+  });
+
+  test('checks the links and anchors of a reference page', () => {
+    const html = { 'skills/ship/flags/index.html': page('<a href="../#nope">x</a><a href="../../plan/">y</a>') };
+    assert.deepEqual(runCheck(deps({ tree: REF_TREE, files: REF_FILES, html })).lines, [
+      '/skills/ship/flags/ broken-anchor ../#nope',
+      '/skills/ship/flags/ broken-link ../../plan/',
+    ]);
+  });
+
+  test('reports a reference page that has no overview page, and does not crash', () => {
+    const result = runCheck(deps({ tree: treeWith('nope', [dirent('x.md', 'file')]) }));
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(result.lines, ['/skills/ bad-skills-page docs/skills/nope/x.md (no overview page)']);
+  });
+
+  test('reports a page nested deeper than a reference page, and does not crash', () => {
+    const tree = { ...treeWith('ship', [dirent('deep', 'dir')]), '/repo/docs/skills/ship/deep': [dirent('x.md', 'file')] };
+    const result = runCheck(deps({ tree }));
+    assert.equal(result.exitCode, 1);
+    assert.deepEqual(result.lines, ['/skills/ bad-skills-page docs/skills/ship/deep/x.md (not a skill overview or reference page)']);
   });
 
   test('returns exit code 2 and the file name when a dist page cannot be read', () => {

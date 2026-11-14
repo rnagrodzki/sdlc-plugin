@@ -7,12 +7,12 @@
 //   Below 1100px: one column. The page list is a block of pills, the "On this page" list folds.
 import BaseLayout from './BaseLayout.astro';
 import { BASE } from '../../site.config.mjs';
-import { docsPages, MORE_PAGES } from '../lib/docs-pages';
+import { docsPages, MORE_PAGES, type DocsPage } from '../lib/docs-pages';
 
 interface Props {
   title: string; // page title and og:title
   description: string; // meta description and og:description
-  current: 'docs' | 'releases';
+  current: 'docs' | 'releases' | 'skills';
   heading: string; // the H1 of the title block
   lead?: string; // one line under the H1. Leave it out when the body starts with the same sentence
   crumb: string; // the last part of the crumb line
@@ -20,11 +20,16 @@ interface Props {
   crumbLabel?: string; // the text of that link
   toc: { depth: number; slug: string; text: string }[]; // the "On this page" entries
   hideIntro?: boolean; // true when the lead is the complete first block of the body
+  // The left page list. Leave it out for the docs page list. A reference page of a skill sets it.
+  nav?: { label: string; groups: DocsPage[][] };
 }
-const { title, description, current, heading, lead, crumb, crumbHref, crumbLabel, toc, hideIntro = false } = Astro.props;
+const { title, description, current, heading, lead, crumb, crumbHref, crumbLabel, toc, hideIntro = false, nav } = Astro.props;
 
 const here = Astro.url.pathname;
-const groups = [[{ title: 'Overview', href: `${BASE}/docs/` }, ...(await docsPages())], MORE_PAGES];
+const { label: navLabel, groups } = nav ?? {
+  label: 'Docs',
+  groups: [[{ title: 'Overview', lead: '', href: `${BASE}/docs/` }, ...(await docsPages())], MORE_PAGES],
+};
 ---
 
 <BaseLayout title={title} description={description} current={current}>
@@ -40,8 +45,8 @@ const groups = [[{ title: 'Overview', href: `${BASE}/docs/` }, ...(await docsPag
       {lead && <p class="sub">{lead}</p>}
     </header>
     <div class="doc-grid">
-      <nav class="doc-nav" aria-label="Docs pages">
-        <p class="side-h">Docs</p>
+      <nav class="doc-nav" aria-label={`${navLabel} pages`}>
+        <p class="side-h">{navLabel}</p>
         {
           groups.map((group) => (
             <ul>

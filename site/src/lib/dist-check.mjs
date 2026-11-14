@@ -3,10 +3,10 @@
 // The pure functions take a map of pages and injected file reads, so tests need no disk.
 import path from 'node:path';
 import { listPublished } from './published-paths.mjs';
-import { pageKind, routeFor } from './doc-links.mjs';
+import { pageKind, routeFor, skillsShapeErrors } from './doc-links.mjs';
 import { parseSteps, StepsTableError } from './steps-table.mjs';
 
-/** @typedef {{ route: string, kind: 'broken-link'|'broken-anchor'|'broken-media'|'leftover-md-link'|'missing-route'|'missing-step-text'|'bad-steps-table', detail: string }} Finding */
+/** @typedef {{ route: string, kind: 'broken-link'|'broken-anchor'|'broken-media'|'leftover-md-link'|'missing-route'|'missing-step-text'|'bad-steps-table'|'bad-skills-page', detail: string }} Finding */
 
 const ORIGIN = 'http://dist.invalid';
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
@@ -218,6 +218,17 @@ export function runCheck({ distDir, repoRoot, base, listFiles, readFile, readdir
       throw new ReadError(`read error ${repoRoot}: ${err.message}`);
     }
 
+    // A page under docs/skills/ with a bad shape has no route (routeFor throws for it), so the
+    // scan reports it once and leaves it out of the other checks.
+    const shapeErrors = skillsShapeErrors(published);
+    const badShape = new Set(shapeErrors.map((e) => e.repoPath));
+    const shapeFindings = shapeErrors.map(({ repoPath, reason }) => ({
+      route: '/skills/',
+      kind: /** @type {const} */ ('bad-skills-page'),
+      detail: reason === 'no-overview' ? `${repoPath} (no overview page)` : `${repoPath} (not a skill overview or reference page)`,
+    }));
+    published = published.filter((p) => !badShape.has(p));
+
     const requiredRoutes = new Set(['/', '/skills/', '/docs/', '/releases/']);
     for (const p of published) requiredRoutes.add(routeFor(p, { base: '' }));
 
@@ -234,7 +245,7 @@ export function runCheck({ distDir, repoRoot, base, listFiles, readFile, readdir
       }
     }
 
-    const findings = [...checkDist(pages, files, { base, requiredRoutes, skillSteps }), ...stepFindings];
+    const findings = [...shapeFindings, ...checkDist(pages, files, { base, requiredRoutes, skillSteps }), ...stepFindings];
     return {
       exitCode: findings.length > 0 ? 1 : 0,
       lines: findings.map((f) => `${f.route} ${f.kind} ${f.detail}`),

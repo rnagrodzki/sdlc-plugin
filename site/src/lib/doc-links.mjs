@@ -33,6 +33,15 @@ function isPublishable(repoPath) {
   );
 }
 
+// docs/skills/<skill>.md is the overview page of a skill.
+const SKILL_OVERVIEW = /^docs\/skills\/([^/]+)\.md$/;
+// docs/skills/<skill>/<topic>.md is a reference page of that skill.
+const SKILL_REF = /^docs\/skills\/([^/]+)\/([^/]+)\.md$/;
+
+function strayMessage(repoPath) {
+  return `"${repoPath}" is not docs/skills/README.md, a skill overview page (docs/skills/<skill>.md) or a reference page (docs/skills/<skill>/<topic>.md). Move or remove the file.`;
+}
+
 // Returns the page kind and the route path (no base, no slashes at the ends).
 function classify(repoPath) {
   if (repoPath === 'README.md') return { kind: 'docs-index', tail: '' };
@@ -41,8 +50,11 @@ function classify(repoPath) {
   if (!isPublishable(repoPath)) {
     throw new Error(`"${repoPath}" is not a published Markdown path`);
   }
-  const skill = /^docs\/skills\/([^/]+)\.md$/.exec(repoPath);
+  const skill = SKILL_OVERVIEW.exec(repoPath);
   if (skill) return { kind: 'skill', tail: skill[1].toLowerCase() };
+  const ref = SKILL_REF.exec(repoPath);
+  if (ref) return { kind: 'skill-ref', tail: `${ref[1].toLowerCase()}/${ref[2].toLowerCase()}` };
+  if (repoPath.startsWith('docs/skills/')) throw new Error(strayMessage(repoPath));
   // docs/index.md and docs/<dir>/index.md take the route of their folder.
   let tail = repoPath.slice('docs/'.length, -'.md'.length);
   if (tail === 'index') tail = '';
@@ -62,6 +74,7 @@ export function routeFor(repoPath, { base }) {
     case 'skills-index':
       return `${b}/skills/`;
     case 'skill':
+    case 'skill-ref':
       return `${b}/skills/${tail}/`;
     case 'releases':
       return `${b}/releases/`;
@@ -71,11 +84,48 @@ export function routeFor(repoPath, { base }) {
 }
 
 /**
- * @returns {'docs-index'|'skills-index'|'skill'|'doc'|'releases'} the page kind of a published path.
+ * @returns {'docs-index'|'skills-index'|'skill'|'skill-ref'|'doc'|'releases'} the page kind of a published path.
  * Tasks 21 and 23 filter the collection entries with it.
+ * Throws for a path under docs/skills/ that has none of the 3 skills shapes.
  */
 export function pageKind(repoPath) {
   return classify(repoPath).kind;
+}
+
+/**
+ * @returns {string} the skill name of an overview page or a reference page, as in the repository path
+ */
+export function skillOf(repoPath) {
+  const m = SKILL_OVERVIEW.exec(repoPath) ?? SKILL_REF.exec(repoPath);
+  if (!m) throw new Error(`"${repoPath}" is not a skill overview page or a reference page`);
+  return m[1];
+}
+
+/**
+ * Checks the shape of the published paths under docs/skills/. A path is good when it is
+ * docs/skills/README.md, an overview page docs/skills/<skill>.md, or a reference page
+ * docs/skills/<skill>/<topic>.md whose overview page is also in the list.
+ * @param {Iterable<string>} repoPaths
+ * @returns {{ repoPath: string, reason: 'no-overview'|'bad-path', message: string }[]} one entry for each bad path, in input order
+ */
+export function skillsShapeErrors(repoPaths) {
+  const paths = [...repoPaths];
+  const all = new Set(paths);
+  const errors = [];
+  for (const repoPath of paths) {
+    if (!repoPath.startsWith('docs/skills/') || repoPath === 'docs/skills/README.md' || SKILL_OVERVIEW.test(repoPath)) continue;
+    const ref = SKILL_REF.exec(repoPath);
+    if (!ref) {
+      errors.push({ repoPath, reason: 'bad-path', message: strayMessage(repoPath) });
+    } else if (!all.has(`docs/skills/${ref[1]}.md`)) {
+      errors.push({
+        repoPath,
+        reason: 'no-overview',
+        message: `The reference page "${repoPath}" has no overview page "docs/skills/${ref[1]}.md". Add the overview page or move the file.`,
+      });
+    }
+  }
+  return errors;
 }
 
 /**
