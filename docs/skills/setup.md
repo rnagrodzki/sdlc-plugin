@@ -1,60 +1,36 @@
-# /setup
+# /sdlc:setup
 
-Configure the SDLC plugin for your project. Walks you through an interactive
-menu to set up versioning, ship pipeline, review dimensions, Jira, PR
-templates, plan templates, guardrails, and more.
+Configure the sdlc plugin for your project from one menu: pick a section, answer its questions, confirm the diff.
 
-## When to use
+## Why use it
 
-- You just installed the plugin and need to configure it for your project.
-- A skill reported "missing config" — run `/setup` to fix it.
-- You want to add or change review dimensions, guardrails, or pipeline settings.
-- You are migrating from a legacy configuration.
+You installed the plugin, or a skill reported missing config, and you do not want to learn two TOML files by hand.
+`/sdlc:setup` shows each config section with its current state, and you choose the sections to configure.
+For each section, it explains every option, asks its questions and shows the change before it writes.
+The result is the config that `/sdlc:ship`, `/sdlc:review`, `/sdlc:plan` and the other skills read.
 
-## Syntax
+## Example
 
-    /setup [options]
+Run the skill with no flag:
 
-## Flags
+```text
+/sdlc:setup
+```
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `--migrate` | Migrate legacy config files. | off |
-| `--force` | Reconfigure all sections, including ones already set. | off |
-| `--only <ids>` | Comma-separated section IDs to configure directly (use section IDs from the table below). | none |
-| `--dimensions` | Jump to review dimensions setup. | off |
-| `--pr-template` | Jump to PR template setup. | off |
-| `--guardrails` | Jump to plan guardrails setup. | off |
-| `--execution-guardrails` | Jump to execution guardrails setup. | off |
-| `--plan-template` | Jump to plan template setup. | off |
-| `--openspec-enrich` | Jump to OpenSpec config enrichment. | off |
-| `--remove-openspec` | Remove the managed block from `openspec/config.yaml` (use with `--openspec-enrich`). | off |
-| `--add` | Add new items instead of reconfiguring all (for dimensions). In the guardrail sub-flows (`--guardrails`, `--execution-guardrails`), `--add` and the default mode behave the same. The guardrail sub-flows write one id at a time and never remove a guardrail. They do not check which ids are already configured, so a reselected id overwrites its description and severity. When the tool refuses a write (the guardrails section is an array of tables, `[[plan.guardrails]]`), the sub-flow stops. There is no bypass. To remove a guardrail on purpose, send JSON null on `<section>.guardrails.<id>` with `setup_write_sections`. | off |
-| `--no-copilot` | Skip copilot instructions section (Step 8 of the dimensions setup). Without this flag, Step 8 writes one Copilot mirror per dimension. Each mirror ends with an `<!-- sdlc:generated sha256=<hash> -->` marker line. Setup passes `overwrite: true` only for a mirror whose overwrite you confirmed. Without `overwrite`, the tool refuses a mirror with no valid marker (`has hand-written content`), and setup skips that mirror. To recover, move the hand-written rows into the dimension file, then call `dimensions_render_instructions` for that dimension with `overwrite: true`. | off |
+The skill creates `.sdlc-v2/` and its two commented config files when they are absent. Then you see:
 
-### Section IDs
+- A status block: 19 sections, each with `[set]` or `[not set]` and a summary of its current value.
+- A numbered menu. You reply with numbers such as `1,3,5`, or with `all`, `not-set` or `none`.
+- For each section you chose: its purpose, the files it changes, the skills that read it, and its options.
+- A before/after table of the config values that change. The skill writes them after you confirm, then lists the files it created or updated.
 
-| ID | What it configures |
-|----|-------------------|
-| `version` | Where the version string lives |
-| `ship` | Ship pipeline preferences |
-| `jira` | Default Jira project key and allowed project list |
-| `review` | Review scope and settings |
-| `received-review` | How review feedback is processed |
-| `commit` | Commit message style |
-| `pr` | PR description settings |
-| `github` | Your GitHub login for the /pr account check (local.toml) |
-| `pr-labels` | Auto-labeling rules |
-| `review-dimensions` | Review dimensions |
-| `pr-template` | Custom PR description template |
-| `plan-template` | Custom plan template |
-| `communication-style` | How every sdlc skill talks to you: reader level, writing standard, tone, language (local.toml) |
-| `plan-style` | Plan-only style: visual density, extra writing rules, custom plan instructions (local.toml) |
-| `plan-tasks` | Plan task defaults |
-| `plan-guardrails` | Plan guardrail rules |
-| `execution-guardrails` | Execution guardrail rules |
-| `openspec-block` | OpenSpec configuration |
-| `automation` | Unattended-run behavior for /ship and /execute (local.toml) |
+## What you get
+
+- Configure only what you need: choose sections by number, take `all`, or take only the sections that are not set.
+- Understand each option before you answer: each field shows its type, default, description and examples, and you can ask for more.
+- See each change before it lands: a before/after table shows the changed values, and you confirm it before the write.
+- Keep personal settings personal: save them for this project only, or in your user profile for every project on your machine.
+- Run it again safely: setup never replaces an existing config file with the template, and a run writes only the sections you configure.
 
 ## Steps
 
@@ -72,126 +48,54 @@ templates, plan templates, guardrails, and more.
 
 | Fact | Value |
 |---|---|
-| Starts | With `/setup`, with or without a flag. The skill stops when plan mode is active. |
+| Starts | With `/sdlc:setup`, with or without a flag. The skill stops when plan mode is active. |
 | Ends | After Step 4 prints the summary. When the user selects no section, the run goes to Step 4 and changes nothing. |
 | Asks the user | At the section menu, at the migration question, at the save-target question, for each field of each selected section, and at the diff preview before the write. |
 | Resume | none |
 
-## Examples
+## More examples
 
-**Full interactive setup:**
+**Go directly to one section:**
 
-    /setup
+```text
+/sdlc:setup --dimensions
+```
 
-Shows a menu of all sections with their status. Pick which to configure.
+No menu. The skill scans your project, proposes review dimensions with evidence, and writes the dimensions you select to `.sdlc-v2/review-dimensions/`.
+`--guardrails`, `--execution-guardrails`, `--pr-template`, `--plan-template` and `--openspec-enrich` also open one section directly.
 
-**Configure only review dimensions:**
+**Configure a set of sections:**
 
-    /setup --dimensions
+```text
+/sdlc:setup --only version,ship,review
+```
 
-**Add plan guardrails (here `--add` behaves the same as the default mode; no configured guardrail is removed):**
-
-    /setup --guardrails --add
-
-**Configure specific sections:**
-
-    /setup --only version,ship,review
+No menu. The skill configures the three sections, then shows the diff and the summary.
+`ship` and `review` are personal settings, so the skill asks one time where to save them.
 
 **Reconfigure everything:**
 
-    /setup --force
+```text
+/sdlc:setup --force
+```
 
-## Asking what an option means
-
-Each section's `Options:` block lists every field with its type, default, description, and
-one or more `Examples:` lines. If a prompt is still unclear, tell `/setup` you want an
-explanation instead of answering — it calls `setup_prepare({ explain: "<section>.<field>" })`,
-shows the returned details and examples, then asks the same question again. There is no retry
-limit: keep asking for an explanation until you are ready to answer.
-
-## CI script drift detection
-
-Running `/setup` (or any skill that calls `setup_prepare`) also compares
-every CI scaffold script/workflow already installed in your repo against the
-version bundled with the plugin, and reports the result as `ciScriptDrift`:
-one entry per scaffolded script, each flagged `current`, `outdated`, or
-`missing`, with the installed and current version numbers.
-
-- **Remediate all of them at once:** re-run `scaffold_ci({force: true})` (or
-  `/setup` and re-confirm the `ship` section) to overwrite outdated scripts
-  with the bundled versions.
-- **Check drift independently**, without touching `/setup`'s other sections,
-  by calling `validate({action: "ci_script_drift"})`.
+No menu. The skill selects all 19 sections, including the sections that are already set.
 
 ## Config templates
 
-`/setup` writes `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` verbatim
-from the plugin's own template files at `plugins/sdlc/templates/config.toml`
-and `plugins/sdlc/templates/local.toml`. Both are plain, fully-commented TOML
-— open them directly if you want to see every available option (including
-ones `/setup`'s menu doesn't prompt for) before or instead of running the
-interactive flow.
+`/sdlc:setup` writes `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` from the template files of the plugin.
+Both files are commented TOML that lists every option, so you can also change a setting by hand.
+The menu does not ask about some options. One of them is `[harden.instructions]`: see [Custom instructions](./harden/custom-instructions.md).
+[Config files](./setup/config-files.md#options-that-setup-does-not-ask-about) lists the others.
 
-`/setup` does not ask about the `[harden.instructions]` section. Edit it by
-hand in `.sdlc-v2/config.toml`. See [Custom instructions](harden.md#custom-instructions).
+## Reference
 
-If your project needs a custom CI push-auth secret — e.g. because
-branch-protection rulesets block the default token — its
-`[version.pushAuth]` section is documented in the `version` section of the
-config template and in [the versioning
-docs](../versioning.md#protected-branches-and-rulesets).
-
-The `[git]` section's `baseBranch` key (default `""`) sets the integration
-branch for `execute`, `ship`, `pr`, `review`, and `commit`. Leave it empty to
-use the repository's default branch. An explicit `--base` flag on `pr` or
-`review` still wins; `execute`, `ship`, and `commit` have no `--base` flag
-and always use the resolved value. See [Getting started → Integration
-branch](../getting-started.md#integration-branch).
-
-The `[execute]` section's `baseSync` key (default `true`) controls whether
-`execute` merges `origin/<base>` into the branch between waves.
-
-## Where personal settings are saved
-
-Seven sections are personal settings, not project settings: `ship`, `review`,
-`received-review`, `communication-style`, `plan-style`, `github`, and
-`automation`. The first time a run of `/setup` configures any of them, it
-asks where to save your answers:
-
-1. **Defaults per section (recommended)** — `communication-style`,
-   `plan-style`, `review`, `received-review`, `automation`, and `github` go
-   to `~/.sdlc/local.toml` (shared across every project on your machine);
-   `ship` goes to this project's `.sdlc-v2/local.toml`.
-2. **All to this project** — every personal section goes to
-   `.sdlc-v2/local.toml`. Other projects on your machine do not see them.
-3. **All to your user profile** — every personal section goes to
-   `~/.sdlc/local.toml` (or `$SDLC_USER_CONFIG` if you set it). A key already
-   set in this project's `.sdlc-v2/local.toml` still overrides the
-   user-profile value, for this project only.
-
-The menu's status block marks each personal section `[set] (user)`,
-`[set] (project)`, or `[set] (user+project)`, depending on which file its
-current values come from. This question is not saved: a later `/setup` run
-that configures a personal section asks again.
+- [Flags and sections](./setup/flags-and-sections.md): each flag, the menu replies, the 19 section IDs, and how to ask what an option means.
+- [Config files](./setup/config-files.md): where each setting is saved, the options that setup does not ask about, migration, and the CI script check.
 
 ## Related skills
 
-- Every skill depends on `/setup` for its config. "Missing config" errors point
-  here.
-- [/ship](ship.md) — Pipeline steps and review threshold configured here.
-- [/review](review.md) — Dimensions and scope configured here.
-- [/plan](plan.md) — Plan template and guardrails configured here.
-- [/jira](jira.md) — Jira project key configured here.
-
-## Tips and gotchas
-
-- **Run once per project.** After initial setup, you only need `/setup` again
-  to add dimensions, change settings, or migrate legacy config.
-- **Section shortcuts save time.** Use `--dimensions`, `--guardrails`, or
-  `--only <id>` to jump to what you need.
-- **Config location.** Project config: `.sdlc-v2/config.toml` (committed).
-  Personal preferences: `.sdlc-v2/local.toml` (gitignored, this project only)
-  or `~/.sdlc/local.toml` (shared across every project) — see "Where personal
-  settings are saved" above.
-- **Migration is usually automatic.** If legacy config is detected, skills tell
-  you to run `--migrate`. You do not need to guess in advance.
+- [/sdlc:ship](./ship.md): reads the pipeline steps and the review threshold that you set here.
+- [/sdlc:review](./review.md): reads the review dimensions and the review scope that you set here.
+- [/sdlc:plan](./plan.md): reads the plan template and the plan guardrails that you set here.
+- [/sdlc:jira](./jira.md): reads the default Jira project key that you set here.

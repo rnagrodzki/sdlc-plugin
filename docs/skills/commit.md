@@ -1,92 +1,37 @@
-# Commit Skill
+# /sdlc:commit
 
-Use `/commit` to generate a commit message that matches your project's style, review it, and commit.
+Commit your work with a message in the style of your project, after you see the full commit plan.
 
-What ends up in the commit: every tracked file with working-tree changes (modified or
-deleted), except anything under `.sdlc-v2/`, plus whatever you already staged. Untracked
-files are never committed. At least one file must be staged before you run the skill.
+## Why use it
 
-## When to use it
+You have changes ready, and the message must follow the commit style and the commit rules of your project.
+A message that breaks a rule, or a file that is missing from the commit, costs you a second commit.
+`/sdlc:commit` writes the message from your staged diff and your recent commits, and shows the message with the files.
+It commits after you answer `yes`.
 
-- You have changes ready to commit, with at least one file staged
-- You want the commit message to automatically match your project's existing style (e.g., conventional commits)
-- You need to review what goes into the commit before it is made
+## Example
 
-## Usage
+Stage at least one file with `git add <files>`, then run:
 
-```
-/commit [options]
-```
-
-### Options
-
-- `--scope <scope>` — Hint for the commit scope (forwarded to the message generator)
-- `--type <type>` — Hint for the commit type (forwarded to the message generator)
-- `--auto` — Skip interactive approval and commit automatically
-- `--force-default-branch` — Deprecated; no effect in this port
-
-`--no-stash` and `--amend` are legacy flags from the old script-driven skill. They are gone
-from the argument hint and are ignored if you still type them: this port never stashes and
-never amends.
-
-## Workflow
-
-### Step 1: Stage at least one change
-
-Before running `/commit`, stage something — the skill refuses to run with an empty index
-("no files staged for commit"):
-
-```bash
-git add <files>
+```text
+/sdlc:commit
 ```
 
-Staging does **not** narrow the commit. The skill commits every tracked file that has
-working-tree changes (except under `.sdlc-v2/`) along with what you staged. Untracked files
-are never committed — `git add` a new file first if you want it in.
+The skill shows the commit plan and asks `Commit as shown?`. The plan has the message, then these file lists:
 
-### Step 2: Run the skill
+- `Staged:` the files that you staged.
+- `Also staged by commit_apply:` the other tracked files that have changes. They go into the commit too.
+- `Left out (.sdlc-v2/):` and `Not committed (untracked):` the files that stay out of the commit.
 
-```
-/commit
-```
+Answer `yes`, `edit` or `cancel`. After `yes`, the skill shows the short SHA of the new commit and names each path that it did not commit.
 
-The skill will:
+## What you get
 
-1. **Analyze** your staged diff and recent commits
-2. **Generate** a commit message that matches your project's style
-3. **Present** the message plus the file breakdown — staged, also-staged tracked changes, paths left out under `.sdlc-v2/`, and untracked files that stay out
-4. **Verify** the message against any project-configured commit rules (subject pattern, required trailers, etc.)
-5. **Commit** after you approve
-
-The message is drafted from the **staged** diff. If the also-staged tracked files change what
-the commit means, choose `edit` and adjust the message before confirming.
-
-### Step 3: Review and confirm
-
-The skill shows:
-- The generated commit message (subject and body)
-- Files included in the commit and their changes
-- Files left out: untracked paths, and tracked paths under `.sdlc-v2/`
-- Any detected issues (e.g., breaking rules defined in your project config)
-
-After the commit, the skill reports the result summary from `commit_apply` and names any path
-it skipped (`skippedUntrackedPaths`, `skippedTrackedPaths`). Anything named there is still
-uncommitted — `git add` it and run `/commit` again to put it in a second commit.
-
-Review the message and choose one of:
-- **yes** — commit as shown
-- **edit** — make manual changes to the message
-- **cancel** — abort without committing
-
-### Step 4: Auto mode
-
-Pass `--auto` to skip the interactive approval prompt:
-
-```
-/commit --auto
-```
-
-The message is still displayed for visibility, but the commit proceeds automatically. Use this in unattended workflows (e.g., with `/ship`).
+- **A message in the style of your project.** The skill finds the style in your recent commits and writes the message from the staged diff only.
+- **Commit rules applied for you.** The message follows the subject pattern, the allowed types and scopes, the required body and the required trailers of your project config.
+- **No surprise in the commit.** You see the files that go in and the files that stay out before you answer.
+- **Control of each commit.** The skill commits nothing before your `yes`. Only `--auto` skips the question.
+- **Bad links stopped before the commit.** The skill checks the links in the message body and stops when a link fails the check.
 
 ## Steps
 
@@ -106,84 +51,46 @@ The message is still displayed for visibility, but the commit proceeds automatic
 
 | Fact | Value |
 |---|---|
-| Starts | With `/commit`. At least one file must be staged. |
+| Starts | With `/sdlc:commit`. At least one file must be staged. |
 | Ends | After Step 6 shows the commit result. A `cancel`, an error or a rejected commit hook ends the run with no commit. |
 | Asks the user | At Step 5: `yes`, `edit` or `cancel`. When the subject does not match `commitConfig.subjectPattern`: `edit subject`, `harden` or `cancel`. `--auto` skips the first question only. |
 | Resume | none |
 
-## What the skill detects
+## More examples
 
-### Commit style
+**Commit with no question:**
 
-The skill learns your project's commit style from recent commits. Common patterns:
-
-- **Conventional commits** — `feat:`, `fix:`, `refactor:`, etc.
-- **Scope** — `feat(auth):`, `fix(db):`, etc.
-- **Body and trailers** — Multi-line messages with structured details
-
-If your project has a custom `.sdlc-v2/config.toml` with `commit` rules, those are enforced (subject pattern, required body, required trailers).
-
-### WIP commits
-
-If the skill detects work-in-progress commits (subjects starting with `wip:`), it warns you but does not automatically squash them. Squash them manually if you want a single commit.
-
-### Default branch warning
-
-If you're committing directly to the default branch (e.g., `main`), the skill warns you before confirming. This is a warning only — the decision remains yours.
-
-## Quality gates
-
-The generated message is checked against:
-
-- **Style** — Consistent with project patterns
-- **Subject length** — ≤ 72 characters
-- **Subject pattern** — Matches `commitConfig.subjectPattern` regex (if configured)
-- **Accuracy** — Describes only the actual staged diff
-- **Imperative mood** — Uses "add" not "adds" or "added"
-- **Required body** — Included when type is in `commitConfig.requireBodyFor` (if configured)
-- **Required trailers** — All keys from `commitConfig.requiredTrailers` present (if configured)
-- **No fabrication** — Everything must trace back to staged changes
-- **No WIP prefix** — Subject never starts with `wip:` or `wip(execute):`
-
-## Configuration
-
-The skill respects project settings in `.sdlc-v2/config.toml`:
-
-- `commit.subjectPattern` — Regex the subject must match
-- `commit.subjectPatternError` — Custom error message when pattern fails
-- `commit.allowedTypes` — Allowed commit types (e.g., `["feat", "fix", "refactor"]`)
-- `commit.allowedScopes` — Allowed scopes (optional)
-- `commit.requireBodyFor` — Types that require a commit body (e.g., `["feat", "breaking"]`)
-- `commit.requiredTrailers` — Trailers that must appear in every commit body (e.g., `["Reviewed-By", "Closes"]`)
-
-To set these up, run:
-
-```
-/setup --pr-template
+```text
+/sdlc:commit --auto
 ```
 
-Or edit `.sdlc-v2/config.toml` directly.
+The skill shows the commit plan, then commits with no question. Use it in an unattended workflow, for example with `/sdlc:ship`.
 
-## Limitations
+**Give a hint for the type and the scope:**
 
-- **No amend support** — To change the last commit, use `git commit --amend` directly or reset and re-commit.
-- **No stash isolation** — Tracked changes and staged files are committed together, so staging a subset does not produce a partial commit. To commit only part of your working tree, move the rest out first with `git stash push -- <paths>`, or commit by hand with plain `git commit`.
-- **Untracked files are never committed** — `git add` a new file before running the skill, or it stays out.
-- **`.sdlc-v2/` is never committed by the skill** — Changes to the runtime state directory are left in the working tree; commit them yourself if you mean to.
-- **No WIP squashing** — WIP commits remain as separate commits; squash them manually if needed.
-- **Commit on default branch** — Allowed but warned about; you must confirm.
+```text
+/sdlc:commit --type fix --scope auth
+```
 
-## Next steps
+The message generator gets `fix` as the type hint and `auth` as the scope hint. The skill drops a hint that your commit rules do not allow, and tells you.
 
-After committing:
+**Commit only a part of your changes:**
 
-- Run [`/review`](review.md) to review the changes
-- Run [`/pr`](pr.md) to create a pull request
-- Or use [`/ship`](ship.md) to automate the full workflow
+```text
+git stash push -- <paths>
+```
 
-## See also
+Staging a subset does not narrow the commit: each tracked file with changes goes in. Move the edits that must stay out with this command, then run `/sdlc:commit`.
 
-- [`/review`](review.md) — Review your changes
-- [`/pr`](pr.md) — Create a pull request
-- [`/ship`](ship.md) — Automated end-to-end pipeline
-- [`/setup`](setup.md) — Configure commit rules
+## Reference
+
+- [Flags and limits](./commit/flags-and-limits.md): the 4 flags, the files that go into the commit, the commit plan, the errors and the limits.
+- [Message rules](./commit/message-rules.md): the style detection, the commit rules of the project config, the checks on each message and the two gates before the commit.
+
+## Related skills
+
+- [/sdlc:setup](./setup.md): sets the commit rules of your project.
+- [/sdlc:execute](./execute.md): makes the WIP commits that this skill reports.
+- [/sdlc:review](./review.md): reviews the changes after the commit.
+- [/sdlc:pr](./pr.md): opens a pull request after the commit.
+- [/sdlc:ship](./ship.md): runs execute, commit, review and the pull request as one pipeline.
