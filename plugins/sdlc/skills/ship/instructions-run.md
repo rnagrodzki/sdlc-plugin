@@ -86,10 +86,10 @@ The tool owns the order of the list. After a resume, `instructions-next` returns
 
 ## Loop without run state
 
-Commit, review, received-review, pr, harden and verify-pipeline keep no run state. They call `instructions_resolve` once.
+Commit, review, received-review, pr, harden and verify-pipeline keep no run state. Execute keeps none on its small-plan direct route, which writes no state file. They call `instructions_resolve` once.
 
 ```text
-Loop without run state (commit, review, received-review, pr, harden, verify-pipeline):
+Loop without run state (commit, review, received-review, pr, harden, verify-pipeline, execute small-plan direct route):
   for rec in instructions_resolve.instructions, in order:
         do rec.text with the question rules → keep status and outcome in the session
   then print the summary line

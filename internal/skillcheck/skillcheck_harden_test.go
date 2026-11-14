@@ -431,3 +431,49 @@ func hardenSkillsAssertOnce(t *testing.T, label, text, want string) {
 		t.Errorf("%s holds %q %d times, want exactly once", label, want, n)
 	}
 }
+
+// TestHardenSkillInstructionsText pins the standalone instructions steps of
+// the harden skill: the flag, the resolve call in Step 0, the Step 8 list
+// after Step 7 under the name "Run instructions" and the routes that run no
+// list.
+func TestHardenSkillInstructionsText(t *testing.T) {
+	const label = "skills/harden/SKILL.md"
+	skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "harden", "SKILL.md"))
+
+	flagParityAssertToolsResolve(t, "harden", "instructions_resolve")
+
+	if !flagParityHintFlags(skill)["--no-instructions"] {
+		t.Errorf("%s: argument-hint does not list --no-instructions", label)
+	}
+	if !flagParityTableFlags(flagParityBody(skill))["--no-instructions"] {
+		t.Errorf("%s: Step 0 flag table has no --no-instructions row", label)
+	}
+
+	for _, want := range []string{
+		"**Resolve instructions.** Skip this item when `--no-instructions` or\n`--from-learnings` was passed.",
+		`instructions_resolve({ key: "harden" })`,
+		"then stop before Step 1. No step ran.",
+		"## Step 8 — Run instructions",
+		"Instructions (harden): N total, X done, Y failed, Z not run.",
+		"Run the remaining instructions by hand.",
+		"The run mode comes from the `--auto` token of the\narguments of this skill.",
+		"| resolve error (Step 0) | no |",
+		"| `--from-learnings` mode | no. The list belongs to a failure run. |",
+		"| stop in Step 5, or the plugin-defect route (Step 6) | no |",
+		"| Step 7 done on a successful run, no `--no-instructions` | yes |",
+		"| Step 8 interrupted | partial |",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Errorf("%s: missing %q", label, want)
+		}
+	}
+
+	executeSkillsHeadingOrder(t, label, skill, []string{
+		"## Step 0 — Parse Arguments",
+		"**Resolve instructions.**",
+		"## Step 1 — CONSUME",
+		"## Step 7 — Learning Capture",
+		"## Step 8 — Run instructions",
+		"## DO NOT",
+	})
+}

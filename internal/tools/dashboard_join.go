@@ -115,6 +115,89 @@ func dashboardShipDetail(p *DashboardPipeline, st *state.State) {
 		}
 		dashboardInsertPlanStation(p, plan)
 	}
+	// Last, so each step the records can name is in p.Steps.
+	dashboardAttachShipInstructions(p, data)
+}
+
+// Group labels of the end instruction list (DashboardPipeline.EndLabel).
+const (
+	dashboardEndLabelShip    = "end of run (ship)"
+	dashboardEndLabelExecute = "end of run (execute)"
+)
+
+// Record keys of ship state that have a fixed place on the page.
+const (
+	dashboardInstructionKeyShip      = "ship"
+	dashboardInstructionKeyCommitFix = "commit-fixes"
+)
+
+// dashboardInstructionRows reads data.instructions into rows, in list order.
+// It returns no row when the key is absent, or is not a list of records. A
+// record with no key, or with a status outside the 5 record statuses, is
+// skipped: the page puts the status into a CSS class name.
+func dashboardInstructionRows(data map[string]any) []DashboardInstruction {
+	records, err := instrRecords(data)
+	if err != nil {
+		return nil
+	}
+	var rows []DashboardInstruction
+	for _, rec := range records {
+		row := DashboardInstruction{
+			Key:     instrString(rec, instrFieldKey),
+			Number:  instrInt(rec, instrFieldNumber),
+			Source:  instrString(rec, instrFieldSource),
+			Text:    instrString(rec, instrFieldText),
+			Status:  instrString(rec, instrFieldStatus),
+			Outcome: instrString(rec, instrFieldOutcome),
+		}
+		switch row.Status {
+		case instrPending, instrRunning, instrDone, instrFailed, instrNotRun:
+		default:
+			continue
+		}
+		if row.Key == "" {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows
+}
+
+// dashboardAttachShipInstructions maps the records of a ship state to the
+// steps of p. A record goes to the step named by its key. A commit-fixes
+// record goes to the received-review step. The ship records go to
+// EndInstructions, then the records whose key names no step. EndLabel is set
+// only when EndInstructions is not empty.
+func dashboardAttachShipInstructions(p *DashboardPipeline, data map[string]any) {
+	var shipRows, otherRows []DashboardInstruction
+	for _, row := range dashboardInstructionRows(data) {
+		target := row.Key
+		switch row.Key {
+		case dashboardInstructionKeyShip:
+			shipRows = append(shipRows, row)
+			continue
+		case dashboardInstructionKeyCommitFix:
+			target = dashboardShipStepReceivedReview
+		}
+		if step := dashboardStepNamed(p, target); step != nil {
+			step.Instructions = append(step.Instructions, row)
+			continue
+		}
+		otherRows = append(otherRows, row)
+	}
+	if end := append(shipRows, otherRows...); len(end) > 0 {
+		p.EndInstructions, p.EndLabel = end, dashboardEndLabelShip
+	}
+}
+
+// dashboardAttachExecuteInstructions puts the records of an execute state in
+// EndInstructions. An execute run that nests under a ship run is dropped by
+// dashboardJoinRuns, and its rows with it: ship passes --no-instructions, so
+// such a run has no record.
+func dashboardAttachExecuteInstructions(p *DashboardPipeline, data map[string]any) {
+	if rows := dashboardInstructionRows(data); len(rows) > 0 {
+		p.EndInstructions, p.EndLabel = rows, dashboardEndLabelExecute
+	}
 }
 
 // dashboardAttachHarden gives the harden step of p the detail of

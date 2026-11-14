@@ -8338,6 +8338,8 @@ func commitCheckFixture(t *testing.T, branch string) (string, string) {
 	path := shipStateInitFixture(t, dir, branch)
 	setStepStatus(t, path, "execute", "completed", map[string]any{"completedAt": "2026-01-01T00:00:00Z"})
 	setStepStatus(t, path, "commit", "in_progress", map[string]any{"startedAt": "2026-01-01T00:00:00Z"})
+	// No test pushes for real. A test that checks the push stubs it again.
+	stubPushBestEffort(t, true, "")
 	return dir, path
 }
 
@@ -8445,7 +8447,7 @@ func TestShipState_CommitCheck_CleanCountsWaveCommits(t *testing.T) {
 	if !out.Clean || out.StagedCount != 0 || out.WaveCommits != 2 || !out.StepCompleted || out.Result != wantResult {
 		t.Errorf("out = %+v, want clean, waveCommits=2, stepCompleted, result %q", out, wantResult)
 	}
-	if out.Next != "Commit step completed. Skip 7c2 and 7d. Go to the next step." {
+	if out.Next != "Commit step completed. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step." {
 		t.Errorf("next = %q", out.Next)
 	}
 	if len(out.Todos) == 0 || out.Display == "" {
@@ -8566,7 +8568,7 @@ func TestShipState_CommitCheck_LandedCommitAfterInterrupt(t *testing.T) {
 	if !out.Clean || !out.StepCompleted || out.Result != want {
 		t.Errorf("third out = %+v, want clean, completed, result %q", out, want)
 	}
-	if out.Next != "Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step." {
+	if out.Next != "Commit step completed from the landed commit. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step." {
 		t.Errorf("next = %q", out.Next)
 	}
 	data := readStateData(t, path)
@@ -8582,6 +8584,84 @@ func TestShipState_CommitCheck_LandedCommitAfterInterrupt(t *testing.T) {
 	}
 	if step := commitStepEntry(t, path); step["status"] != "completed" || step["result"] != want || step["completedAt"] != "2026-01-01T00:05:00Z" {
 		t.Errorf("commit step = %v, want completed with result %q and completedAt 2026-01-01T00:05:00Z", step, want)
+	}
+}
+
+// TestShipStateCommitCheck_PushOnCompletedStep checks that commit-check pushes the work directory when it completes the step, for a clean tree and for a landed commit, and adds the push warning without changing stepCompleted.
+func TestShipStateCommitCheck_PushOnCompletedStep(t *testing.T) {
+	t.Run("nothing to commit pushes with no warning", func(t *testing.T) {
+		branch := "feat/cc-push-clean"
+		dir, _ := commitCheckFixture(t, branch)
+		calls := stubPushBestEffort(t, true, "")
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("commit-check: %v", err)
+		}
+		if !out.StepCompleted || len(out.Warnings) != 0 {
+			t.Errorf("out = %+v, want stepCompleted and no warnings", out)
+		}
+		if len(*calls) != 1 || (*calls)[0] != dir {
+			t.Errorf("push calls = %v, want one call in %s", *calls, dir)
+		}
+	})
+	t.Run("push warning is added and the step stays completed", func(t *testing.T) {
+		branch := "feat/cc-push-warn"
+		dir, path := commitCheckFixture(t, branch)
+		want := "push failed (auth): denied. The pr step pushes again."
+		calls := stubPushBestEffort(t, false, want)
+		writeFile(t, filepath.Join(dir, "a.txt"), "a")
+		if _, err := runCommitCheck(t, dir, branch); err != nil {
+			t.Fatalf("first commit-check: %v", err)
+		}
+		mustRun(t, dir, "git", "commit", "-m", "first")
+		if len(*calls) != 0 {
+			t.Fatalf("push calls after a dirty check = %v, want none", *calls)
+		}
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("second commit-check: %v", err)
+		}
+		if !out.StepCompleted || len(out.Warnings) != 1 || out.Warnings[0] != want {
+			t.Errorf("out = %+v, want stepCompleted and warnings [%q]", out, want)
+		}
+		if len(*calls) != 1 {
+			t.Errorf("push calls = %v, want 1", *calls)
+		}
+		if got := commitStepEntry(t, path)["status"]; got != "completed" {
+			t.Errorf("commit status = %v, want completed", got)
+		}
+	})
+	t.Run("push warning joins an execute-state warning", func(t *testing.T) {
+		branch := "feat/cc-push-both"
+		dir, _ := commitCheckFixture(t, branch)
+		stubPushBestEffort(t, false, "push skipped: no remote origin")
+		writeFile(t, filepath.Join(dir, paths.DataDir, paths.RunsSubdir,
+			fmt.Sprintf("execute-%s-20260101T000000Z.json", state.SlugifyBranch(branch))), "{not json")
+		out, err := runCommitCheck(t, dir, branch)
+		if err != nil {
+			t.Fatalf("commit-check: %v", err)
+		}
+		if len(out.Warnings) != 2 || out.Warnings[1] != "push skipped: no remote origin" {
+			t.Errorf("warnings = %v, want the execute-state warning then the push warning", out.Warnings)
+		}
+	})
+}
+
+// TestShipStateCommitCheck_DirtyTreeDoesNotPush checks that a call that hands the step to the commit skill does not push.
+func TestShipStateCommitCheck_DirtyTreeDoesNotPush(t *testing.T) {
+	branch := "feat/cc-push-dirty"
+	dir, _ := commitCheckFixture(t, branch)
+	calls := stubPushBestEffort(t, true, "")
+	writeFile(t, filepath.Join(dir, "a.txt"), "a")
+	out, err := runCommitCheck(t, dir, branch)
+	if err != nil {
+		t.Fatalf("commit-check: %v", err)
+	}
+	if out.StepCompleted || len(out.Warnings) != 0 {
+		t.Errorf("out = %+v, want a dirty hand-off with no warnings", out)
+	}
+	if len(*calls) != 0 {
+		t.Errorf("push calls = %v, want none", *calls)
 	}
 }
 
