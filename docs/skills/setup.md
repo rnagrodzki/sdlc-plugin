@@ -56,6 +56,27 @@ templates, plan templates, guardrails, and more.
 | `openspec-block` | OpenSpec configuration |
 | `automation` | Unattended-run behavior for /ship and /execute (local.toml) |
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0: Pre-flight | tool | Calls `setup_prepare` and `setup_init`, scaffolds `.sdlc-v2/`, snapshots the current config and routes the flags to a list of section IDs. | The section list and the config snapshot | no | always |
+| Step 1: Selective-section menu | user | Prints the numbered list of sections with their state. The user replies with the numbers to configure, `all`, `not-set`, `none` or `cancel`. | The selected section IDs | no | no `--only`, `--force` or direct-entry flag is given |
+| Step 2: Migration | skill | Asks whether to migrate legacy config files, then runs the `migrate` tool for the import, the config check and the layout move. | The migrated config files | yes | legacy config is found, or `--migrate` is given. The user can answer no |
+| Step 2b: Save-target question | user | Asks where to save personal settings: per section, this project, or the user profile. | The save target for the run | no | a selected section is stored in `local.toml` |
+| Step 3: Dispatch loop | skill | Configures each selected section in order: prints the section header and options, asks one question for each field, or follows the sub-flow of the section. Shows a diff preview, asks the user to confirm it and writes the config files with `setup_write_sections`. | The written config sections | no | at least one section is selected |
+| Step 3b: Validate written config | tool | Reads the config again and checks that each written section now shows as set. It warns and offers a retry when a section does not. | The validation result | no | at least one section was written |
+| Step 4: Summary | skill | Shows the files created, updated or migrated, and the CI scripts that need an update. | The setup summary | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/setup`, with or without a flag. The skill stops when plan mode is active. |
+| Ends | After Step 4 prints the summary. When the user selects no section, the run goes to Step 4 and changes nothing. |
+| Asks the user | At the section menu, at the migration question, at the save-target question, for each field of each selected section, and at the diff preview before the write. |
+| Resume | none |
+
 ## Examples
 
 **Full interactive setup:**

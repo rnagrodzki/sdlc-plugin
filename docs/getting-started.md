@@ -122,8 +122,8 @@ For the full end-to-end flow instead of running each stage by hand:
 /ship
 ```
 
-runs execute → commit → review → PR → CI verification as one
-pipeline, stopping for confirmation between steps by default.
+runs execute → commit → review → PR as one pipeline. Optional steps
+add OpenSpec checks, harden, CI verification and a remote review wait.
 
 It accepts `--resume` to pick back up from a saved state file if
 interrupted.

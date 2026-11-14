@@ -39,6 +39,30 @@ Every matching dimension runs, most severe first, in waves of this size.
 To change it, run `/setup`, or edit the `[review]` section of
 `.sdlc-v2/local.toml` directly. The old key `maxDimensions` is an error.
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0 — Run `review_prepare` | tool | Calls `review_prepare`, reads the manifest and shows each warning. On a tool error it shows the error and stops. | The manifest with the dimensions and the waves | no | always |
+| Step 1 — Dry Run Check | skill | Prints the review plan, cleans up the files of the run and stops. No agent starts. | The review plan | yes | `--dry-run` is passed |
+| Step 2 — Wave Dispatch | agent | Starts one background agent for each dimension, wave by wave, with at most `maxParallelDimensions` agents in a wave. | Workers that write their findings to the ledger | no | always, unless `manifest.waves` is empty |
+| Step 3 — Poll Ledger Status (per wave) | tool | Polls `ledger_status` for each wave. It stops and skips a worker that stalls or is missing on two polls in a row. | The findings of each worker | no | always, unless `manifest.waves` is empty |
+| Step 4 — Consolidate Findings (relocated critique/dedupe pass) | skill | Removes duplicates, marks contradictions and corrects wrong severities. It ignores the findings of a stopped worker. | The consolidated findings | no | always |
+| Step 5 — Build and Persist Consolidated Comment | skill | Builds the review comment with the verdict and saves it as `review-comment.md` in the diff directory. | The comment file and the verdict | no | always |
+| Step 6 — Display Full Comment Body | skill | Shows the full text of the comment in the terminal, with no summary. | The visible review | no | always |
+| Step 7 — Handle Posting | skill | Checks the links in the comment, then posts it to the PR, saves it under `.sdlc-v2/reviews/` or keeps it in the terminal. | A posted comment or a saved review file | no | always. The options depend on the PR and the scope |
+| Step 8 — Offer Self-Fix | skill | Offers `fix` (runs `received-review`), `harden` (only when the verdict is `CHANGES REQUESTED`) or `no`. | A `received-review` run, a `harden` run or nothing | yes | the verdict is `CHANGES REQUESTED` or `APPROVED WITH NOTES` |
+| Step 9 — Cleanup | tool | Stops the workers that did not finish. Deletes the manifest file. Deletes the diff directory only when no worker could be left running. | A clean working state | no | always, on every end of the run |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/review`. `--base <branch>` sets the base branch. `--dry-run` shows the plan only. |
+| Ends | After Step 9. A dry run ends after the cleanup of Step 1. |
+| Asks the user | At Step 7: post, save or keep in the terminal. At Step 8: fix, harden or no. |
+| Resume | none |
+
 ## Examples
 
 **Review all current changes:**

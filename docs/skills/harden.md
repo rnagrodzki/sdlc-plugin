@@ -23,6 +23,29 @@ repair that splits an oversize rule. Each removal needs approval, except under
     /harden --from-issue <num> --skill <name> [options]
     /harden --from-learnings
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0: Parse arguments | skill | Reads the flags and checks them. It stops with an error when two inputs are given, when no input is given, or when `--auto` is used with `--from-learnings`. | The failure input and the flags | no | always |
+| Step 1: Load state with `prepare_orchestrator` | tool | Calls `prepare_orchestrator` in mode `harden`. It loads the failure, the hardening surfaces and the pre-flight findings into a manifest, and prints the custom instructions. | The manifest path | no | no `--from-learnings` |
+| Step 1 (alternative): `--from-learnings` mode | skill | Reads the learnings log, skips the entries that harden wrote, and sends each other entry through the orchestrator. It groups the results by classification and removes the addressed entries. | The grouped results for Step 5 | yes | `--from-learnings` is given. It replaces Steps 1 to 4 |
+| Step 2: Classify | skill | Prints a short preview of the failure and the classification hint. A `plugin-defect` hint from an issue with the `mcp-failure` label builds the result without the orchestrator. | The failure preview and the hint | no | no `--from-learnings` |
+| Step 3: Analyze | agent | Dispatches the `harden-orchestrator` agent. The agent returns the classification and the list of proposals as one JSON object. | The classification and the proposals | no | no `--from-learnings`, and the hint is not `plugin-defect` |
+| Step 4: Branch on classification | skill | Prints the classification and the proposals that were not made. It routes to Step 5, to Step 6, or to the report that no proposal is useful. | The route | no | no `--from-learnings` |
+| Step 5: Present and apply | skill | Shows each proposal, asks for approval, and checks the edit before and after the write. It reverts a bad edit. With `--auto` it applies only the safe actions and stores the rest as pending deferred items. | The edits to the hardening surfaces, and the ship state record in a ship run | no | the route has at least one proposal |
+| Step 6: Plugin-defect route | skill | Shows the error report payload and asks whether to run `error-report`. With `--auto` it only shows the payload. | The filed issue, or the shown payload | no | the classification is `plugin-defect` |
+| Step 7: Learning capture | tool | Appends one entry to the learnings log with the classification, the counts and the route. | The learnings entry | no | always. A halt or a cancel skips it |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/harden` and one input: `--failure-text`, `--from-issue` or `--from-learnings`. Other skills start it after a failure. |
+| Ends | After Step 7 writes the learnings entry. It ends earlier on an argument error, on a bad orchestrator result, on a halt, or when the user cancels. |
+| Asks the user | At each proposal in Step 5, at each validation failure, at the ambiguous upstream-report offer, and at the `error-report` offer in Step 6. With `--auto` it asks nothing. |
+| Resume | none |
+
 ## Flags
 
 | Flag | Description | Default |

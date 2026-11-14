@@ -28,6 +28,22 @@ With no flag, `/deferred` runs the triage flow.
 | `--list` | Print the open items as a table and stop. Asks nothing and changes nothing. Cannot be combined with `--resolve`. | off |
 | `--resolve <id>` | Mark the item with this id as resolved, without filing an issue. Asks nothing. An id that is already resolved is reported as such and nothing changes. Cannot be combined with `--list`. | — |
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 1: Parse arguments | skill | Reads the flags and picks the mode: triage, list, or resolve one item. It stops with a usage line when both flags are given, when `--resolve` has no id, or when another argument appears. | The chosen mode | no | always |
+| Step 2: Run the mode | skill | Runs the list, resolve, or triage mode through the `ship_state` tool. Triage shows the open items, asks which to file, and drafts each GitHub issue for approval before it files it. | The printed items, the resolved item, or the filed issues | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/deferred`, with no flag, with `--list`, or with `--resolve <id>`. |
+| Ends | After Step 2 runs its mode. It also ends at once when no item is open and it prints `No deferred items open.` |
+| Asks the user | In triage mode only. It always asks before it acts and shows the full issue draft first. It has no auto mode. `--list` and `--resolve` ask nothing. |
+| Resume | none |
+
 ## Examples
 
 **Triage the open items:**

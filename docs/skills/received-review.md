@@ -25,6 +25,38 @@ technical justification.
 | `--auto` | Run without prompts. Only "agree — will fix" ends a finding; every other outcome is recorded as a `needs-direction` follow-up instead of being closed. See [Auto mode](#auto-mode). | off |
 | `--no-harden` | Skip the harden dispatch in Step 11.6. Use when a caller (e.g. `/ship`'s own `harden` step) already owns hardening for this run. | off |
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0 — Plan Mode Check | skill | Stops the run when plan mode is active, because the skill writes files and posts replies. | The go-ahead for the next step | no | always. It stops the run only in plan mode |
+| Step 1 — READ: Gather Review Feedback | skill | Reads `--auto`, `--no-harden` and `--pr` from the arguments and keeps them for the later steps. | The parsed flags | no | always |
+| Step 1a — Fetch PR overview and the auto-apply severities (every run) | tool | Calls `received_review_prepare` for the PR overview, the CI status and `alwaysFixSeverities`. | The PR overview and the pre-approved severities | no | always. With no PR number the overview is skipped |
+| Step 1b — Fetch actual comments (always required — the tool above does not return them) | tool | Fetches the reviewer comments with `gh` and parses each one into a list. Skips the comments that are already addressed and records why. | The list of feedback items | no | always |
+| Step 2 — UNDERSTAND: Categorize and Flag | skill | Gives each item a type and flags the unclear items. Without `--auto` it asks about all unclear items at once. With `--auto` it records each one as `needs-direction`. | The typed items | no | always |
+| Step 3 — VERIFY: Check Against Full Codebase Context | skill | Checks each item against the code, the callers and the tests, and sets a verification status. | The verified items | no | always |
+| Step 4 — EVALUATE: Assess Each Item | skill | Sets a verdict for each item: agree will fix, agree won't fix, disagree or needs direction. With `--auto` only agree will fix and needs direction can remain. | The verdicts | no | always |
+| Step 5 — CRITIQUE #1: Self-Critique the Evaluation | skill | Checks the evaluation against the gates. It shows nothing to the user. | A list of failing gates | no | always |
+| Step 6 — IMPROVE #1: Revise Evaluation | skill | Fixes each failing gate, with at most 2 rounds for each gate. | The revised evaluation | no | always |
+| Step 7 — RESPOND (DO): Draft Responses | skill | Drafts one reply for each item. Each reply starts with the substance and has no praise. | The drafted replies | no | always |
+| Step 8 — CRITIQUE #2: Self-Critique the Responses | skill | Checks the replies against the gates. It shows nothing to the user. | A list of failing gates | no | always |
+| Step 9 — IMPROVE #2: Revise Responses | skill | Fixes each failing gate of the replies, with at most 2 rounds for each gate. | The revised replies | no | always |
+| Step 10 — PRESENT: Show Findings and Proposed Plan | skill | Shows the summary table, the action plan and the drafted replies. Asks `implement`, `edit` or `skip`. | The approved findings | no | always. `--auto` skips the question, and findings in `alwaysFixSeverities` need no approval |
+| Step 11 — IMPLEMENT: Execute Changes | skill | Applies the code fixes in order of importance, records the fix progress and records every finding that stays unfixed. | The fixes and the records of unfixed findings | no | there is an approved finding |
+| Step 11.6 — META-ANALYZE: Cluster Findings and Dispatch harden | skill | Groups the findings that have a verdict and runs `harden` for each approved group through the Skill tool. A failure here does not stop the run. | A `harden` run | yes | `--no-harden` is not passed, and `AskUserQuestion` or `--auto` is available |
+| Step 11.7 — LINK VERIFICATION — HARD GATE | tool | Checks every URL in the reply bodies with `links_validate`. On a violation the skill posts no reply and stops. | The link check result | no | always, before replies are posted |
+| Step 12 — REPLY: Post PR Thread Replies | tool | Prints the summary and the ledger. Without `--auto` it asks `yes`, `skip` or `selective`. Then it posts each reply in its comment thread with `gh api`. | The posted replies | no | always. With no PR number only the summary and the ledger are printed |
+| Step 12.5 — VERIFY: Confirm All Threads Replied | tool | Calls `received_review_verify` and replies to each thread that is still outstanding, in at most 2 rounds. | The final thread status | no | a PR number exists |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/received-review`. `--pr <number>` selects the PR. `--auto` and `--no-harden` change the run. |
+| Ends | After Step 12.5, or after Step 12 when there is no PR number. A link violation at Step 11.7 stops the run. |
+| Asks the user | At Step 2 for unclear items, at Step 3 for items that cannot be verified, at Step 10: `implement`, `edit` or `skip`, at Step 11.6: `dispatch` or `skip` for each group, and at Step 12: `yes`, `skip` or `selective`. `--auto` asks nothing. |
+| Resume | none |
+
 ## Examples
 
 **Process feedback on the current branch's PR:**

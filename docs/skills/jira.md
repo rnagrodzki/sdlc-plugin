@@ -26,6 +26,34 @@ After invoking `/jira`, describe what you want in natural language.
 | `--site <host>` | Jira site hostname (e.g., `mycompany.atlassian.net`). Disambiguates cached projects that exist under more than one site. | unset |
 | `--skip-workflow-discovery` | Skip loading workflows and transitions (faster startup; useful in CI). | off |
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0: Parse arguments and check cache | skill | Reads the flags, finds the project key and checks the cache with `jira check`. With `--init-templates` it copies the templates and stops. | The project key and the cache state | no | always |
+| Step 1: Deterministic cache initialization | skill | Announces the cache build and runs the six phases below. After it, the skill makes no more discovery calls until the next refresh. | The cache of the project | no | the cache is missing or incomplete, `--force-refresh` is set, a TTL expired, or an operation error forces a refresh |
+| Step 1, Phase 1: Identity | tool | Reads the cloud ID, site URL and current user from Atlassian. | The cloud ID and the user | no | the cache is rebuilt |
+| Step 1, Phase 2: Project metadata | tool | Reads the project and the issue link types. | The project and the link types | no | the cache is rebuilt |
+| Step 1, Phase 3: Issue types | tool | Reads the issue types of the project. | The issue type list | no | the cache is rebuilt |
+| Step 1, Phase 4: Field schemas | tool | Reads the standard and custom fields of each issue type. | The field schemas | no | the cache is rebuilt |
+| Step 1, Phase 5: Workflow discovery | tool | Reads the statuses and the transitions of each issue type that is not a subtask. | The workflow graph, or an `unsampled` marker | yes | the cache is rebuilt. `--skip-workflow-discovery` skips it |
+| Step 1, Phase 6: Assemble and save cache | tool | Builds the cache object and saves it with `jira save`. | The saved cache file | no | the cache is rebuilt |
+| Step 2: Classify operation | skill | Sorts the request into one of the operations: create, edit, search, transition, comment, link, assign, worklog, view or bulk. | The operation type | no | always |
+| Step 2.5: Critique | skill | Builds the payload, checks it against the template and the cache, and shows an Initial, Critique and Final block. | The checked payload and the critique file | no | write operations only. Search and view skip it |
+| Step 2.6: Approval | user | Shows the full payload. The user chooses approve, change or cancel. | The approval token | no | write operations only |
+| Step 2.7: Link verification | tool | Checks every URL in the payload with `jira validate-body`. A failed check stops the operation. This is a hard gate. | The link check result and the ADF body | no | write operations only |
+| Step 3: Execute operation | tool | Sends the call to Jira for the operation, from the cached values. | The Jira result | no | always |
+| Step 4: Post-operation cache updates | tool | Saves new user mappings and new transitions to the cache. A stale cache triggers a refresh and one retry. | The updated cache | no | the operation showed new information or a stale cache |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/jira`, with or without a flag. Then the user describes the operation in natural language. |
+| Ends | After Step 4. It ends earlier with `--init-templates`, with a cancelled approval, or with a failed link check. |
+| Asks the user | When the project key is unknown, when the cache exists under more than one site, when the request is ambiguous, for each required field the user did not give, and at the approval of every write operation. |
+| Resume | none |
+
 ## Examples
 
 **Create an issue:**

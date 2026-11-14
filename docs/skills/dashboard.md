@@ -40,6 +40,22 @@ then opens it in your default browser.
 | `--stop` | End the running server. Cannot be combined with `--status` or `--no-open`. | off |
 | `--no-open` | Start the server if it is not already running, but do not open a browser. Cannot be combined with `--status` or `--stop`. | off |
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 1: Parse arguments | skill | Reads the flag and picks the mode: ensure and open, ensure without opening, status, or stop. It stops with a usage line when two flags or an unknown argument are given. | The chosen mode | no | always |
+| Step 2: Call the tool and print the message | tool | Makes one `dashboard` tool call for the mode. It prints `Dashboard: <url>` for ensure, or the tool `summary` for status and stop. | The dashboard address, or the status text | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/dashboard`, with or without one flag: `--status`, `--stop` or `--no-open`. |
+| Ends | After Step 2 prints one message. A tool error stops the skill after it prints the error `## Do this` text as it is. |
+| Asks the user | Never. The skill has no question and no gate. |
+| Resume | none |
+
 ## Examples
 
 **Open the dashboard:**

@@ -1,3 +1,139 @@
 ---
+// The Home page of the reference (site-preview.src.html:403-458, ref-home.jpeg).
+import BaseLayout from '../layouts/BaseLayout.astro';
+import InstallCommand from '../components/InstallCommand.astro';
+import RunPanel from '../components/RunPanel.astro';
+import MediaFrame from '../components/MediaFrame.astro';
+import ChangeRow from '../components/ChangeRow.astro';
+
+const sub =
+  'sdlc is a plugin for Claude Code. It plans the work, builds it in waves, commits, reviews, opens the pull request and checks CI. You watch every run on one dashboard.';
 ---
-<html lang="en"><head><meta charset="utf-8" /><title>sdlc</title></head><body>sdlc site build stub</body></html>
+
+<BaseLayout title="sdlc: one pipeline from idea to merged pull request" description={sub} current="home">
+  <div class="fields" aria-hidden="true">
+    <span class="field f1"></span><span class="field f2"></span><span class="field f3"></span>
+  </div>
+  <div class="home wrap">
+    <div class="hero">
+      <div class="lead">
+        <h1 class="h1">One pipeline from idea to merged pull request.</h1>
+        <p class="sub">{sub}</p>
+        <InstallCommand />
+      </div>
+      <RunPanel />
+    </div>
+    <section class="block" aria-labelledby="dashboard-heading">
+      <div class="block-head">
+        <h2 class="h2" id="dashboard-heading">Every run on one page.</h2>
+        <p class="block-text">The dashboard shows each pipeline step by step, with the time of every step and the open issues.</p>
+      </div>
+      <MediaFrame assetId="dashboard-main" />
+    </section>
+    <ChangeRow />
+  </div>
+</BaseLayout>
+
+<style>
+  /* The colour fields behind the glass. They sit under the page content and
+     never cause a horizontal scroll. */
+  .fields {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1300px;
+    overflow: hidden;
+    z-index: -1;
+    pointer-events: none;
+  }
+  .field {
+    position: absolute;
+    border-radius: var(--r-round);
+    filter: blur(70px);
+  }
+  .f1 {
+    width: 540px;
+    height: 540px;
+    right: -90px;
+    top: 30px;
+    background: var(--f1);
+  }
+  .f2 {
+    width: 420px;
+    height: 420px;
+    right: 30%;
+    top: 280px;
+    background: var(--f2);
+  }
+  .f3 {
+    width: 480px;
+    height: 480px;
+    left: -120px;
+    top: 760px;
+    background: var(--f1);
+  }
+  .home {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-44);
+  }
+  .hero {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+    gap: var(--space-40) var(--space-64);
+    align-items: center;
+  }
+  .lead {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-22);
+  }
+  .h1 {
+    font-family: var(--font-display);
+    margin: 0;
+    text-wrap: balance;
+    font-size: var(--text-h1);
+    line-height: var(--leading-h1);
+    letter-spacing: var(--tracking-4);
+    font-weight: var(--weight-semibold);
+  }
+  .h2 {
+    font-family: var(--font-display);
+    margin: 0;
+    font-size: var(--text-h2);
+    line-height: var(--leading-tight);
+    letter-spacing: var(--tracking-3);
+    font-weight: var(--weight-semibold);
+    text-wrap: balance;
+  }
+  .sub {
+    margin: 0;
+    color: var(--muted);
+    font-size: var(--text-xl);
+    line-height: var(--leading-sub);
+    max-width: 54ch;
+  }
+  .block {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-20);
+  }
+  .block-head {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-8) var(--space-40);
+    align-items: end;
+    justify-content: space-between;
+  }
+  .block-text {
+    margin: 0;
+    color: var(--muted);
+    max-width: 46ch;
+  }
+  @media (max-width: 900px) {
+    .hero {
+      grid-template-columns: minmax(0, 1fr);
+    }
+  }
+</style>

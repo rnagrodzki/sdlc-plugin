@@ -54,6 +54,24 @@ The plan path is required. The skill never picks a plan for you.
 A relative path is resolved against the current working directory. The
 `openspec_save` tool takes an absolute path only.
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 1: Save | tool | Calls `openspec_save` with the absolute plan path. The tool creates the branch `openspec/<change>`, moves the change into `openspec/changes/<change>/` and stages it. | The list of staged files | no | always |
+| Step 2: Commit | skill | Runs the commit skill with `--type docs --scope openspec`, and with `--auto` when you passed it. | The commit on the branch | yes | `stagedFiles` has paths |
+| Step 3: PR | skill | Runs the pr skill with no `--auto`. It asks you for release intent and approval. Choose **Skip release (acknowledged)**. | The PR URL | no | always |
+| Step 4: Report | skill | Prints the change name, the branch and the PR URL. It tells you to merge the PR and then run `/sdlc:ship --plan <plan-path>`. | The report | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/sdlc:openspec-save <plan-path>` or `--plan <path>`. The plan path is required. |
+| Ends | After the Step 4 report. It also ends at once when the tool fails or you decline the commit or the PR. It reports the branch. |
+| Asks the user | In the commit skill and the pr skill, which ask you directly. It never answers for you. `--auto` skips only the commit approval. |
+| Resume | Run the skill again on the saved branch. The saved plan header makes `openspec_save` return `already`, and the run continues at Step 2 or Step 3. |
+
 ## What the skill does
 
 | Step | Action |

@@ -88,6 +88,29 @@ Pass `--auto` to skip the interactive approval prompt:
 
 The message is still displayed for visibility, but the commit proceeds automatically. Use this in unattended workflows (e.g., with `/ship`).
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 0: Plan Mode Check | skill | Stops the run when plan mode is active, because the skill writes to git. | The go-ahead for the next step | no | always. It stops the run only in plan mode |
+| Step 0 (CONSUME): Call `commit_prepare` | tool | Calls `commit_prepare`. Shows each error and stops, or shows each warning and continues. | `COMMIT_CONTEXT` and the manifest file | no | always |
+| Step 0.5 (BRANCH-GUARD): not functional in this port | skill | Does nothing. `branchGuard` is always `ok` in this port, so the skill goes to Step 1. | Nothing | yes | never. The branch guard is not functional in this port |
+| Step 1 (CONSUME): Quick Context Read | skill | Reads the branch, the staged, unstaged and untracked files, the recent commits and `commitConfig` from `COMMIT_CONTEXT`. | The facts for the commit plan | no | always |
+| Step 1c (WIP-commit squash detection — reporting only) | skill | Reports the WIP commits (subjects that start with `wip(` or `wip:`). It does not squash them. | A WIP notice | yes | `wipSquash.commits` is not empty |
+| Step 2 (PLAN): Dispatch the commit-orchestrator Agent | agent | Dispatches `sdlc:commit-orchestrator` with the manifest path. The agent drafts the message and applies every `commitConfig` rule. | `MESSAGE` | no | always |
+| Step 3 (CRITIQUE) and Step 4 (IMPROVE) | agent | The orchestrator agent runs the critique and the improvement inside Step 2. The main session does not repeat them. | The critiqued `MESSAGE` | no | always |
+| Step 5 (DO): Present and Execute | skill | Shows the commit plan and asks `yes`, `edit` or `cancel`. On `yes` it checks the subject pattern and the links, then calls `commit_apply`. | The new commit and its `sha` | no | always. `--auto` skips the question |
+| Step 6 (CRITIQUE): Verify | skill | Reads `sha`, `summary` and the skipped paths. Shows the result and names each path that was not committed. | The commit report | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/commit`. At least one file must be staged. |
+| Ends | After Step 6 shows the commit result. A `cancel`, an error or a rejected commit hook ends the run with no commit. |
+| Asks the user | At Step 5: `yes`, `edit` or `cancel`. When the subject does not match `commitConfig.subjectPattern`: `edit subject`, `harden` or `cancel`. `--auto` skips the first question only. |
+| Resume | none |
+
 ## What the skill detects
 
 ### Commit style

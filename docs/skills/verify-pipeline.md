@@ -23,6 +23,24 @@ either applies a minimal fix or reports a proposal.
 
 At least one of `--pr` or `--logs` is required.
 
+## Steps
+
+| Step | Actor | What it does | Hands over | Optional | When |
+|---|---|---|---|---|---|
+| Step 1: CONSUME — parse args, load logs (R1, R6) | tool | Reads `--pr`, `--logs` and `--auto`. With `--pr` only, it gets the failing check log with `gh`. It stops with an `abort` verdict when no log is found. | The log text | no | always |
+| Step 2: CLASSIFY — invoke the classification tool (R2) | tool | Calls `verify_pipeline_classify` with the log text. | The category and the matched signals | no | always |
+| Step 3: PROPOSE OR APPLY (R3, R4, R9) | skill | For `lint`, `test-failure` and `type-error` with `--auto`, it edits the source files. For every other case it writes a proposal. It runs no `git commit` or `git push`. | The fix or the proposal | no | always |
+| Step 4: VERDICT — single JSON line on stdout (R5) | skill | Prints one JSON line: `fix-applied`, `proposal` or `abort`. | The verdict line for the caller | no | always |
+
+### Run facts
+
+| Fact | Value |
+|---|---|
+| Starts | With `/verify-pipeline`. `--pr <number>` or `--logs <path-or-text>` is required. `/ship` runs it when a CI poll fails under `automation.mode: auto`. |
+| Ends | After Step 4 prints the verdict line. |
+| Asks the user | Nothing. The skill has no prompt. |
+| Resume | none |
+
 ## Examples
 
 **Analyze a failing PR:**

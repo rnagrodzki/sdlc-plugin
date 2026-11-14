@@ -1,0 +1,90 @@
+---
+// One entry of src/data/assets.json in a glass frame with its caption and the
+// plugin version of the capture (site-preview.src.html:447-450).
+// An unknown asset id stops the build. A video never plays by itself.
+import type { ImageMetadata } from 'astro';
+import { Image } from 'astro:assets';
+import { BASE } from '../../site.config.mjs';
+import assets from '../data/assets.json';
+import { findAsset, mediaKind, mediaSrc } from '../lib/assets.mjs';
+
+interface Props {
+  assetId: string;
+}
+const { assetId } = Astro.props;
+
+const asset = findAsset(assets, assetId);
+const kind = mediaKind(asset);
+
+// <Image> needs an imported asset. Glob keys start with '/', so
+// 'src/assets/dashboard.png' is the key '/src/assets/dashboard.png'.
+const images = import.meta.glob<{ default: ImageMetadata }>('/src/assets/*', { eager: true });
+let image: ImageMetadata | undefined;
+if (kind === 'image') {
+  image = images[`/${asset.file}`]?.default;
+  if (!image) {
+    throw new Error(`asset ${asset.id}: no file ${asset.file} under src/assets`);
+  }
+}
+const poster = 'poster' in asset && typeof asset.poster === 'string' ? mediaSrc(asset.poster, BASE) : undefined;
+---
+
+<figure class="shot glass">
+  {
+    image ? (
+      <Image
+        class="shot-img"
+        src={image}
+        alt={asset.alt}
+        widths={[480, 960, 1440]}
+        sizes="(max-width: 1200px) 100vw, 1180px"
+        loading="lazy"
+      />
+    ) : (
+      <video class="shot-img" src={mediaSrc(asset.file, BASE)} poster={poster} preload="none" muted playsinline controls aria-label={asset.alt} />
+    )
+  }
+  <figcaption class="shot-cap">
+    <span>{asset.caption}<span class="sep"> · </span></span>
+    <span class="ver">sdlc v{asset.version}</span>
+  </figcaption>
+</figure>
+
+<style>
+  .shot {
+    margin: 0;
+    border-radius: var(--r-panel);
+    padding: var(--space-10);
+  }
+  .shot-img {
+    display: block;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1440 / 730;
+    object-fit: cover;
+    object-position: top;
+    border-radius: var(--r-10);
+  }
+  .shot-cap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-6) var(--space-16);
+    justify-content: space-between;
+    padding: var(--space-10) var(--space-8) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--muted);
+  }
+  .ver {
+    font-family: var(--font-mono);
+  }
+  /* The separator is for screen readers and copied text. The look keeps the
+     version at the right edge, as in the reference. */
+  .sep {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+</style>
