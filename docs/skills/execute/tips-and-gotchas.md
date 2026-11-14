@@ -68,4 +68,4 @@ A server-driven poll supervises the waves, not the session itself. After the ski
 
 - [Execute wave supervision](../../internal/execute-wave-supervision.md): how heartbeats, the three ceilings, reclaim and retries work.
 - [Flags and configuration](./flags-and-configuration.md): every flag and config key.
-- [/sdlc:execute](../execute.md#steps): the overview and the Steps table.
+- [/sdlc:execute](../execute.md): the overview and the Steps table.

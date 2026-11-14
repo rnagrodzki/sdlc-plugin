@@ -67,8 +67,9 @@ func verifyRequirementsArgDiff(docs, hint map[string]bool) []string {
 func TestVerifyRequirementsSkillParity(t *testing.T) {
 	pluginRoot := executeSkillsRepoRoot(t)
 	skill := executeSkillsReadFile(t, filepath.Join(pluginRoot, "skills", verifyRequirementsWantName, "SKILL.md"))
-	// docs/ sits beside plugins/ at the repository root.
-	docsPath := filepath.Join(filepath.Dir(filepath.Dir(pluginRoot)), "docs", "skills", verifyRequirementsWantName+".md")
+	// docs/ sits beside plugins/ at the repository root. The Flags table sits
+	// on the checks reference page, not on the overview page.
+	docsPath := filepath.Join(filepath.Dir(filepath.Dir(pluginRoot)), "docs", "skills", verifyRequirementsWantName, "checks.md")
 	docs := executeSkillsReadFile(t, docsPath)
 
 	t.Run("frontmatter", func(t *testing.T) {
@@ -113,7 +114,7 @@ func TestVerifyRequirementsSkillParity(t *testing.T) {
 			t.Fatalf("verify-requirements/SKILL.md argument-hint %q holds no argument", hintValue)
 		}
 		for _, d := range verifyRequirementsArgDiff(preplanSkillsFlagsTableArgs(t, docs), canonical) {
-			t.Errorf("docs/skills/verify-requirements.md Flags table and argument-hint disagree: %s", d)
+			t.Errorf("docs/skills/verify-requirements/checks.md Flags table and argument-hint disagree: %s", d)
 		}
 	})
 

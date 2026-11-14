@@ -203,4 +203,4 @@ staleness check is not a perfect proxy for worker health — only for
 | Five phases | `plugins/sdlc/skills/execute/state-format.md` (Progress Markers), `internal/wave/progress.go` |
 | Three ceilings, classification precedence | `internal/wave/serverstate.go` (`ClassifyTask`), `internal/tools/execute_wave_await.go` (`execWaveStallTimeouts`) |
 | Reclaim, failure causes, retries | `internal/tools/execute_wave_await.go` (`execActionWaveAwait`), `plugins/sdlc/skills/execute/recovering-from-failures.md` |
-| Tuning | `plugins/sdlc/skills/execute/SKILL.md` (Step 0), `docs/skills/execute.md` |
+| Tuning | `plugins/sdlc/skills/execute/SKILL.md` (Step 0), `docs/skills/execute/flags-and-configuration.md` |
