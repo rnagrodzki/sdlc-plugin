@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -115,6 +116,8 @@ type SetupPrepareOut struct {
 	// Best-effort: degrades to an empty list rather than failing
 	// setup_prepare if the comparison errors.
 	CIScriptDrift []CIScriptDriftEntry `json:"ciScriptDrift"`
+	// CIScriptDriftError holds the drift check error and its Suggestion. Absent when the check works.
+	CIScriptDriftError string `json:"ciScriptDriftError,omitempty"`
 	// UserConfigPath is the absolute path of the user-level local config
 	// (~/.sdlc/local.toml or $SDLC_USER_CONFIG). Empty when no home
 	// directory is available (see config.UserConfigPath).
@@ -277,23 +280,39 @@ func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrep
 	// Best-effort CI script drift comparison (Task 3, R2): never fails
 	// setup_prepare, degrades to an empty list on error.
 	ciDrift, driftErr := ciScriptDrift(driftRoot)
+	ciDriftErrText := ""
 	if driftErr != nil {
 		ciDrift = nil
+		ciDriftErrText = ciDriftErrorText(driftErr)
 	}
 	if ciDrift == nil {
 		ciDrift = []CIScriptDriftEntry{}
 	}
 
 	return SetupPrepareOut{
-		OK:             true,
-		NeedsMigration: needsMigration,
-		Sections:       rows,
-		DefaultBranch:  defaultBranch,
-		RemoteOwner:    remoteOwner,
-		CIScriptDrift:  ciDrift,
-		UserConfigPath: userConfigPath,
-		LocalValues:    localValues,
+		OK:                 true,
+		NeedsMigration:     needsMigration,
+		Sections:           rows,
+		DefaultBranch:      defaultBranch,
+		RemoteOwner:        remoteOwner,
+		CIScriptDrift:      ciDrift,
+		CIScriptDriftError: ciDriftErrText,
+		UserConfigPath:     userConfigPath,
+		LocalValues:        localValues,
 	}, nil
+}
+
+// ciDriftErrorText joins the error message and its Suggestion, so the skill can print one actionable line.
+func ciDriftErrorText(err error) string {
+	var de *mcpserver.DataError
+	var ie *mcpserver.InfraError
+	switch {
+	case errors.As(err, &de):
+		return de.Msg + " " + de.Suggestion
+	case errors.As(err, &ie):
+		return ie.Msg + " " + ie.Suggestion
+	}
+	return err.Error()
 }
 
 // extractLocalPath walks a dotted path (e.g. "plan.guardrails") through raw
@@ -1107,7 +1126,7 @@ func setupReadPlanTemplate(root string) (SetupInitOut, error) {
 // RegisterSetupTools registers setup_prepare and setup_init on the server.
 func RegisterSetupTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_prepare",
-		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state. Also reports ciScriptDrift: per-script version comparison against the embedded scaffold_ci payloads, flagging outdated or not-yet-installed CI scripts (remediate with scaffold_ci({force:true})). Optional: explain (\"<sectionId>.<fieldName>\", for example \"ship.rebase\") returns only the explanation of that option (details, examples, type, options, default, config file and path) with a next step: next tells the skill to show the explanation and ask the open question again. A value without a dot, an unknown section, a section with no fields, or an unknown field returns a DomainError with a Suggestion.",
+		"Returns the canonical section descriptors for setup, with per-section field metadata and runtime-detected defaults (defaultBranch, remoteOwner). Optionally checks config migration state. Also reports ciScriptDrift: per-script version comparison against the embedded scaffold_ci payloads, flagging outdated or not-yet-installed CI scripts (remediate with scaffold_ci({updateOutdated:true})). If the comparison fails, ciScriptDrift is [] and ciScriptDriftError holds the error and its Suggestion; setup_prepare itself does not fail. Optional: explain (\"<sectionId>.<fieldName>\", for example \"ship.rebase\") returns only the explanation of that option (details, examples, type, options, default, config file and path) with a next step: next tells the skill to show the explanation and ask the open question again. A value without a dot, an unknown section, a section with no fields, or an unknown field returns a DomainError with a Suggestion.",
 		mcpserver.Annotations{
 			Title:      "Prepare SDLC setup context",
 			ReadOnly:   true,
