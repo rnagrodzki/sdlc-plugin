@@ -29,6 +29,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
   "steps": [ ... ],
   "decisions": [ ... ],
   "deferredFindings": [ ... ],
+  "instructions": [ ... ],
   "issues": [ ... ],
   "lastFailedStep": null,
   "historyFailureRecorded": true,
@@ -55,6 +56,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `steps` | array | One entry per configured step, plus a seeded `received-review` entry when `review` is configured. See "The `steps[]` scaffold" below — this is config-driven, not a fixed list. |
 | `decisions` | array | Appended by `ship_state{action:"decide"}` and by `ship_state{action:"commit-check"}`. See "`decisions` Array" below. |
 | `deferredFindings` | array | Appended by `ship_state{action:"defer"}`. `healing_record` kind `fixed` with `detail.deferredId` sets `fixedInRun:true` on the matching entries. |
+| `instructions` | array | One record for each configured instruction of the run, seeded `pending` by `ship_prepare`. Absent on a state file from an older version. See "instructions" below. |
 | `issues` | array | Structured issue accumulator, appended by `ship_state{action:"fail"}`. See "Issues and `lastFailedStep`" below. |
 | `lastFailedStep` | string \| null | Name of the most recent step passed to `fail`. |
 | `historyFailureRecorded` | boolean | Absent until the first `fail` of the run. The first `ship_state{action:"fail"}` of a run sets it to `true` before it appends the failure row to `runs.jsonl`. `true` does not prove the row exists: a failed append leaves the flag set. It stops a second `fail` row for the same run. It does not stop Step 10c's `history_record` row, so a run that fails, resumes, and completes has two rows: the `failure` row and the final row. See "Issues and `lastFailedStep`" below. |
@@ -198,8 +200,8 @@ The response carries `clean`, `stagedCount`, `waveCommits`, `stepCompleted`, `re
 | Outcome | `next` |
 |---|---|
 | dirty | `Changes are staged. Dispatch the commit agent, then 7c2, then complete-step.` |
-| clean, nothing to commit | `Commit step completed. Skip 7c2 and 7d. Go to the next step.` |
-| clean, commit landed | `Commit step completed from the landed commit. Skip 7c2 and 7d. Go to the next step.` |
+| clean, nothing to commit | `Commit step completed. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step.` |
+| clean, commit landed | `Commit step completed from the landed commit. Skip 7c2 and 7d. Run the 7g instruction loop for key commit, then go to the next step.` |
 
 ---
 
@@ -243,6 +245,53 @@ After a good deferred.json write, `defer` also sets the matching `data.healing.f
 The top-level `deferredFindings` array of the `read` response holds every entry, `fixedInRun:true` entries included. `reportData.deferredFindings` and `reportData.reviewLedger` skip an entry with `fixedInRun:true`: the fix is counted once, under `data.healing.fixed`.
 
 Ship's review routing defers each finding below `flags.reviewThreshold` this way, with `reason: "below-threshold"`. `received-review` defers the findings it does not fix (`needs-direction`, `disagree`, `wont-fix`) at any severity.
+
+---
+
+## instructions
+
+`ship_prepare` writes `instructions` once, when it starts the run (`instrSeed` in `internal/tools/instruction_records.go`). The array holds one record for each instruction of the `[instructions]` config section that belongs to the run: the keys of the resolved steps, `received-review` and `commit-fixes` when `review` is a step, and `ship`. It is `[]` when the config has no such instruction. `source` is `team`, `project local` or `user`.
+
+| Field | Values |
+|---|---|
+| key, number, source, text | from config |
+| normalQuestions, criticalQuestions, onQuestionNotAllowed | from config |
+| status | pending, running, done, failed, not run |
+| outcome | result line, error, question not allowed, decided, step failed or stopped, step skipped, step did not run, result not recorded, not run again |
+| startedAt, endedAt | RFC 3339 or "" |
+
+A record moves in one direction: `pending`, then `running`, then `done`, `failed` or `not run`. A closed record does not change again.
+
+Two actions change the records. Both take `detail.key`, one of the 13 instruction keys.
+
+| Action | What it does |
+|---|---|
+| `instructions-next` | Marks each `running` record of the key `failed` with the outcome `result not recorded, not run again`. Starts the first `pending` record of the key and returns it with `remaining` and `runMode` (`--auto`, or `interactive` when `flags.auto` is `false`). Returns no instruction when the key has no `pending` record. |
+| `instruction-record` | Closes one `running` record with `detail.instructionNumber`, `detail.instructionStatus` (`done`, `failed` or `not run`) and `detail.instructionOutcome` (at most 1000 characters; required for `failed` and `not run`). With `detail.instructionAll:true` and the status `not run`, it closes every open record of the key. |
+
+The sweeps of `fail`, `skip` and `cleanup-pipeline` close open records in the same write as their own change. A `pending` record becomes `not run`. A `running` record becomes `failed` with the outcome `result not recorded, not run again`.
+
+| Action | Records it sweeps | Outcome of a `pending` record |
+|---|---|---|
+| `fail` | every open record of the run | `step failed or stopped` |
+| `skip` | the open records of the skipped step | `step skipped` |
+| `cleanup-pipeline` | every open record of the run | `step did not run` |
+
+| Reader | Treats a record as |
+|---|---|
+| ship_state instructions-next, instruction-record | the live list |
+| ship_state fail, skip, cleanup-pipeline | open records to sweep |
+| ship_state read, report | counted in the summary |
+| in-flight check | an open record keeps the run in flight |
+| execute_state instructions-next, instruction-record | the live list (standalone execute) |
+| ship skill 7g, item 8, 9-pre, item 10, resume | the live list and the summary |
+| dashboard collector | rows under steps and the end group |
+
+`read` returns the summary as `reportData.instructionSummary` (`{total, done, failed, notRun, lines}`). `lines` holds one line for each `failed`, `not run` or `decided:` record. A damaged `instructions` value gives a zero summary and one warning.
+
+The in-flight check (`shipRunInFlight`) reports a started run as in flight when a step blocks proceed or a record is `pending` or `running`. A `pipelineStatus` of `completed` is never in flight.
+
+Older form: a state file with no instructions key (a run from an older version) is an empty list for each reader.
 
 ---
 
@@ -340,6 +389,7 @@ Self-healing ledger. `ship_state{action:"healing_record", step?, detail:{kind, .
 | `reviewLedgerNote` | string | Present only when `reviewLedger` is `null`: `"review did not run or its total was not recorded"`. |
 | `deferredFindings` | number | Count of `data.deferredFindings` entries without `fixedInRun:true` — a plain, already-computed count. Do not re-derive it by summing `reviewLedger.deferredByReason`'s values yourself; read this field instead. Not the same thing as the top-level `deferredFindings` array on the `read` response, which holds the entries themselves, including entries with `fixedInRun:true`. |
 | `healing` | object | `data.healing` verbatim (`{reviewTotal?, fixed?, fixProgress?, hardened?}` — see `data.healing` above), or `{}` when no `healing_record` call has been made. Ship's harden step reads `reportData.healing.fixed` from here. |
+| `instructionSummary` | object | `{total, done, failed, notRun, lines}` counted from `data.instructions`. See "instructions" above. |
 
 `reviewLedger`'s own fields, computed server-side, never by the calling skill:
 - `total` is `data.healing.reviewTotal.total` verbatim.

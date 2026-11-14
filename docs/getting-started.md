@@ -72,6 +72,10 @@ files shipped with the plugin at `plugins/sdlc/templates/config.toml` and
 `plugins/sdlc/templates/local.toml` — read them directly to preview the
 whole config shape before running `/setup`.
 
+To add fixed actions that run after a ship step, after a ship run, or after
+a skill, see [Follow-up instructions](./instructions.md). `/setup` does not
+write that section: edit the files by hand.
+
 ### User-level personal settings
 Put values that you want in every project in `~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`).
 The file uses the same sections as `.sdlc-v2/local.toml`.
