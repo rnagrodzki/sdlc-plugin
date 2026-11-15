@@ -18,18 +18,26 @@ In classify mode, after the comment fetch, the tool SHALL read the review bodies
 ### Requirement: Read warning text
 Each failed read SHALL give two `warnings` lines: the cause line, then the recovery step. The cause line SHALL start with the name of the failed read, the failure class and the cause, and SHALL name the fields that stay empty.
 
-| Id | Cause line starts with | Empty fields |
-|---|---|---|
-| W1 | `Review body not read (<class>): <cause>.` | `severityIcon`, `overviewSection`, `overview`, `overviewFindings` |
-| W2 | `Thread state not read (<class>): <cause>.` | `isResolved`, `isOutdated` |
-
-- W2 also says `do not use them to skip a thread`.
-- The recovery step depends on the class. A permanent failure (forbidden, output cap) starts with `Do not retry`. A retry step names `received_review_verify({pr: <pr>})`.
+#### Scenario: Review body read fails
+- **WHEN** the review read fails
+- **THEN** the cause line (W1) starts with `Review body not read (<class>): <cause>.`
+- **AND** it names `severityIcon`, `overviewSection`, `overview` and `overviewFindings`
 
 #### Scenario: Thread state read fails
 - **WHEN** the GraphQL read exits 1 with `HTTP 403`
-- **THEN** `warnings` holds a line that starts with `Thread state not read (forbidden):`
-- **AND** the next line starts with `Do not retry`
+- **THEN** `warnings` holds a line (W2) that starts with `Thread state not read (forbidden):`
+- **AND** it names `isResolved` and `isOutdated`, and says `do not use them to skip a thread`
+
+### Requirement: Read warning recovery step
+The recovery step SHALL depend on the failure class. A permanent failure (forbidden, output cap) SHALL start with `Do not retry`. A retry step SHALL name `received_review_verify({pr: <pr>})`.
+
+#### Scenario: Permanent failure
+- **WHEN** the GraphQL read exits 1 with `HTTP 403`
+- **THEN** the recovery line starts with `Do not retry`
+
+#### Scenario: Transient failure
+- **WHEN** the review read exits 1 with `HTTP 502`
+- **THEN** the recovery line names `received_review_verify({pr: <pr>})`
 
 ### Requirement: Warning cause
 The `<cause>` of a warning SHALL be the gh error text on one line, masked and cut to 200 characters, or `gh is not installed or not on PATH`, `gh output exceeded the size cap`, or `gh call failed or gave output that could not be read`. It SHALL name no Go package or function.
@@ -43,14 +51,23 @@ The `<cause>` of a warning SHALL be the gh error text on one line, masked and cu
 - **THEN** the W1 line holds neither `ghx:` nor `execx:`
 
 ### Requirement: Other warnings
-The tool SHALL add one `warnings` line for each of these cases:
+The tool SHALL add one `warnings` line for each of the four cases in the scenarios below.
 
-| Starts with | Case |
-|---|---|
-| `Thread state missing` | the state read succeeded, but threads have no state entry; the line names their ids |
-| `Copilot overview partly read` | an overview block has an item count that differs from its summary, or no closing `</details>` |
-| `Copilot overview item with no thread` | open overview items match no review thread; the line names their comment ids |
-| `Overview findings cut` | more than 50 missed findings, or a finding body over 2000 characters |
+#### Scenario: Thread state missing
+- **WHEN** the state read succeeds but threads have no state entry
+- **THEN** a line starts with `Thread state missing` and names their ids
+
+#### Scenario: Overview block count differs
+- **WHEN** an overview block says `2 open issues` but only 1 item parses, or the block has no closing `</details>`
+- **THEN** `warnings` has one line that starts with `Copilot overview partly read`
+
+#### Scenario: Overview item with no thread
+- **WHEN** open overview items match no review thread
+- **THEN** a line starts with `Copilot overview item with no thread` and names their comment ids
+
+#### Scenario: Overview findings cut
+- **WHEN** the overview has more than 50 missed findings, or a finding body is over 2000 characters
+- **THEN** a line starts with `Overview findings cut`
 
 ### Requirement: Read warnings in next
 When `warnings` is not empty, `next` SHALL end with one sentence that tells the caller to read the warnings list first, one time.

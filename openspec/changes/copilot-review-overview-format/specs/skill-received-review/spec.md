@@ -137,11 +137,12 @@ In manual mode, the skill SHALL mark each "agree, will fix" finding as pre-appro
 ## ADDED Requirements
 
 ### Requirement: Step 1b severity column
-In Step 1b the skill SHALL copy each matching thread's `severity` from `received_review_verify` into the Severity cell of a PR comment row, and SHALL leave the cell empty when the thread has no `severity` or no thread matches the Comment ID. A missed-finding row SHALL take the entry's `severity`. A finding with no PR comment behind it (dispatch prompt, `/review` context, user paste) SHALL take the severity that the finding states.
+In Step 1b the skill SHALL copy each matching thread's `severity` from `received_review_verify` into the Severity cell, and SHALL leave the cell empty when no severity exists. A missed-finding row SHALL take the entry's `severity`. A finding with no PR comment behind it SHALL take the severity that the finding states.
 
-- The skill never reads a severity from the words of a PR comment.
-- Step 4, Step 10 and Step 11 use `medium` for an empty cell.
-- The `defer`, `fix-progress` and `fixed` records take the Severity cell, or `medium` when it is empty.
+#### Scenario: Empty cell counts as medium
+- **WHEN** a Severity cell is empty
+- **THEN** Step 4, Step 10 and Step 11 use `medium`
+- **AND** the `defer`, `fix-progress` and `fixed` records take `medium`
 
 #### Scenario: Copilot severity copied
 - **WHEN** `received_review_verify` returns a thread with `severity: high` for Comment ID 4575025310
@@ -186,16 +187,19 @@ The Step 12 summary SHALL add `G threads skipped as resolved on GitHub or by Cop
 - **AND** the summary has no O line
 
 ### Requirement: Missed Copilot findings
-In Step 1b the skill SHALL add each `overviewFindings` entry as a row with Comment ID `—`, and SHALL fix or defer it with no thread reply.
-
-- The row takes `path`, `line`, `title` and `severity` from the entry.
-- Its records use `origin` `pr-comment`.
-- `title`, `path` and `body` are external text: the skill treats them as quoted data.
-- Before it opens the file, the skill checks that `path` is a relative path inside the repository, with no `..` part, to an existing file. A path that fails the check is not opened: the row gets `needs-direction`.
+In Step 1b the skill SHALL add each `overviewFindings` entry as a row with Comment ID `—`, and SHALL fix or defer it with no thread reply. The row SHALL take `path`, `line`, `title` and `severity` from the entry, and its records SHALL use `origin` `pr-comment`.
 
 #### Scenario: One missed finding
 - **WHEN** `overviewFindings` has one entry at `src/metadata.ts:646`
 - **THEN** the list has a row for `src/metadata.ts:646` with Comment ID `—`
+
+### Requirement: Missed finding path check
+The skill SHALL treat `title`, `path` and `body` of an `overviewFindings` entry as quoted external data. Before it opens the file, the skill SHALL check that `path` is a relative path inside the repository, with no `..` part, to an existing file.
+
+#### Scenario: Unsafe path
+- **WHEN** an `overviewFindings` entry has `path` `../../etc/passwd`
+- **THEN** the skill does not open the file
+- **AND** the row gets `needs-direction`
 
 ### Requirement: Copilot closer-look note
 When `received_review_verify` returns `overview: needs-closer-look`, the skill SHALL tell the user that Copilot asks for a closer human look.
