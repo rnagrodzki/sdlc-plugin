@@ -82,7 +82,13 @@ The server SHALL serve `GET /api/setup-state?repo=<root>` with no Origin check a
 - **AND** `configError` holds the error text
 
 ### Requirement: Setup save route
-The server SHALL serve `POST /api/setup-save` `{repo, changes, targets}` behind the Origin and token checks. Each change SHALL be `{section, field, op, value}` with `op` `set` or `reset`. The server SHALL build each section from its target file, keep every key that the request does not name, and write through the setup write code after the value check. A refused value SHALL write no file. A save that writes the `version` section SHALL create each missing CI script file, SHALL not change an existing one, and SHALL list the created files in `ciFiles`.
+The server SHALL serve `POST /api/setup-save` `{repo, changes, targets}` behind the Origin and token checks. Each change SHALL be `{section, field, op, value}` with `op` `set` or `reset`. The server SHALL build each section from its target file, keep every key that the request does not name, and write through the setup write code after the value check. A refused value SHALL write no file.
+
+#### Scenario: Version save creates missing CI files
+- **WHEN** a save writes the `version` section
+- **THEN** each missing CI script file is created
+- **AND** an existing CI script file does not change
+- **AND** `ciFiles` lists the created files
 
 #### Scenario: Refused value writes nothing
 - **WHEN** a save sets `ship.verifyPipelineMaxIterations` to `0`
