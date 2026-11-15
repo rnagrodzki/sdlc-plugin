@@ -82,7 +82,7 @@ The server SHALL serve `GET /api/setup-state?repo=<root>` with no Origin check a
 - **AND** `configError` holds the error text
 
 ### Requirement: Setup save route
-The server SHALL serve `POST /api/setup-save` `{repo, changes, targets}` behind the Origin and token checks. Each change SHALL be `{section, field, op, value}` with `op` `set` or `reset`. The server SHALL build each section from its target file, keep every key that the request does not name, and write through the setup write code after the value check. A refused value SHALL write no file.
+The server SHALL serve `POST /api/setup-save` `{repo, changes, targets}` behind the Origin and token checks. Each change SHALL be `{section, field, op, value}` with `op` `set` or `reset`. The server SHALL build each section from its target file, keep every key that the request does not name, and write through the setup write code after the value check. A refused value SHALL write no file. A save that writes the `version` section SHALL create each missing CI script file, SHALL not change an existing one, and SHALL list the created files in `ciFiles`.
 
 #### Scenario: Refused value writes nothing
 - **WHEN** a save sets `ship.verifyPipelineMaxIterations` to `0`
@@ -102,7 +102,7 @@ The server SHALL serve `POST /api/setup-save` `{repo, changes, targets}` behind 
 - **THEN** the answer is `409 SETUP_NOT_READY`
 
 ### Requirement: Setup create route
-The server SHALL serve `POST /api/setup-create` `{repo}` behind the Origin and token checks. For a repo with the state `no-config`, it SHALL create `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` from the templates and answer 200 `{ok, created, changed, errors}`. Any other state SHALL get `409 SETUP_NOT_READY` with no change.
+The server SHALL serve `POST /api/setup-create` `{repo}` behind the Origin and token checks. For a repo with the state `no-config`, it SHALL create `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` from the templates, each one only when it is absent, and answer 200 `{ok, created, changed, errors}`. Any other state SHALL get `409 SETUP_NOT_READY` with no change.
 
 #### Scenario: First config
 - **WHEN** a create names a repo with no `.sdlc-v2` folder
@@ -162,7 +162,7 @@ The server SHALL serve these endpoints and no others.
 | POST | `/api/preplan-status` | 200, `{"changed","status","message"}` |
 | POST | `/api/history-delete` | 200, `{"deleted","alreadyGone","message"}` |
 | POST | `/api/wait-dismiss` | 200, `{"deleted","alreadyGone","message"}` |
-| POST | `/api/setup-save` | 200, `{"ok","written","failed","warnings","ciFiles"}` |
+| POST | `/api/setup-save` | 200, `{"ok","written","failed","warnings","ciFiles","next"}` |
 | POST | `/api/setup-create` | 200, `{"ok","created","changed","errors"}` |
 
 #### Scenario: Health answer

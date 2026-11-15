@@ -314,6 +314,19 @@ describe('saveNote', () => {
     });
   });
 
+  test('200 with ok false adds the suggestion of a failed section and next', () => {
+    const out = sv.saveNote(200, {
+      ok: false,
+      written: [],
+      failed: [
+        { section: 'ship', file: '/r/.sdlc-v2/local.toml', message: 'would drop comments', suggestion: 'Edit it by hand.' },
+      ],
+      next: 'Edit section ship in .sdlc-v2/local.toml by hand, then run setup again for that section.',
+    }, 1);
+    assert.equal(out.note, 'Saved 0 of 1 sections. Not saved: ship (/r/.sdlc-v2/local.toml). would drop comments'
+      + ' Edit it by hand. Edit section ship in .sdlc-v2/local.toml by hand, then run setup again for that section.');
+  });
+
   test('400 SETUP_INVALID gives the field errors', () => {
     const fields = [{ section: 'ship', field: 'bump', path: 'ship.bump', message: 'bad' }];
     assert.deepEqual(sv.saveNote(400, { error: { code: 'SETUP_INVALID', fields } }, 2), {

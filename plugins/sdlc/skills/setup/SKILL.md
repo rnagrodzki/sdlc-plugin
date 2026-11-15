@@ -934,6 +934,15 @@ After collecting all answers AND confirming the diff preview above:
    Omit any key whose section was skipped or not selected. Display `written[]` and any
    `errors[]` from both responses.
 
+5. **A refused value.** Before any write, `setup_write_sections` checks each new form
+   field value. A refused value fails the whole call with the error
+   `setup_write_sections: N field values are refused. <path>: <message> ...` (for one
+   field: `1 field value is refused.`), and nothing is written. On this error:
+   - Show the user each named `<path>` and its `<message>`.
+   - Ask one AskUserQuestion for each named field: a corrected value, or the default.
+     For the default, leave the field out of its section.
+   - Call `setup_write_sections` again with the same sections and the corrected values.
+
 ---
 
 ### Step 3b — Validate Written Config
@@ -1119,7 +1128,11 @@ exception holds for guardrails: a key that replaces a whole guardrails table (`p
 `config.toml`, or the call fails with `would remove guardrails` and writes nothing. To remove
 one guardrail, send JSON null on `plan.guardrails.<id>` or `execute.guardrails.<id>`. When
 `config.toml` holds a guardrails section as an array of tables (`[[plan.guardrails]]`), the
-tool refuses every key inside that section and writes nothing. `pr`'s own
+tool refuses every key inside that section and writes nothing. The tool also refuses a
+call with a bad form field value and writes nothing: a text over 1024 bytes, a list over 64
+entries, a number outside its min and max, a choice that is not an option, a bad
+`version.pushAuth.secretName`, or a drift rate outside 0 to 1 (see "Writing config files",
+step 5). `pr`'s own
 fields are the one other exception: they are scalars, not a table, so they cannot be addressed as a
 dotted leaf (`pr.titlePattern` would try to write a table where a string belongs, and fails)
 — 3.pr must write the `pr` top-level key wholesale, which is why "Writing config files" still

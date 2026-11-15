@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 )
 
@@ -114,9 +116,9 @@ func TestCheckSetupValues(t *testing.T) {
 		{name: "secret name valid", json: `{"version":{"pushAuth":{"secretName":"RELEASE_TOKEN"}}}`},
 		{name: "secret name empty", json: `{"version":{"pushAuth.secretName":""}}`},
 		{name: "secret name starts with a digit", json: `{"version":{"pushAuth.secretName":"1TOKEN"}}`, want: []SetupFieldError{
-			{Section: "version", Field: "pushAuth.secretName", Path: "version.pushAuth.secretName", Message: `version.pushAuth.secretName "1TOKEN" is not a valid GitHub Actions secret name`}}},
+			{Section: "version", Field: "pushAuth.secretName", Path: "version.pushAuth.secretName", Message: `"1TOKEN" is not a valid GitHub Actions secret name. Use only letters, digits and underscores, and do not start with a digit or with GITHUB_ (for example RELEASE_TOKEN).`}}},
 		{name: "secret name GITHUB_", json: `{"version":{"pushAuth.secretName":"GITHUB_TOKEN"}}`, want: []SetupFieldError{
-			{Section: "version", Field: "pushAuth.secretName", Path: "version.pushAuth.secretName", Message: `version.pushAuth.secretName "GITHUB_TOKEN" is not a valid GitHub Actions secret name`}}},
+			{Section: "version", Field: "pushAuth.secretName", Path: "version.pushAuth.secretName", Message: `"GITHUB_TOKEN" is not a valid GitHub Actions secret name. Use only letters, digits and underscores, and do not start with a digit or with GITHUB_ (for example RELEASE_TOKEN).`}}},
 		// key forms
 		{name: "dotted key", json: `{"plan.tasks":{"contractShape":"x"}}`, want: []SetupFieldError{
 			{Section: "plan-tasks", Field: "contractShape", Path: "plan.tasks.contractShape", Message: `"x" is not an option. Options: full, minimal, none.`}}},
@@ -284,8 +286,28 @@ func TestReadSetupFile(t *testing.T) {
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %T %v, want *mcpserver.DataError", err, err)
 		}
-		if !strings.Contains(de.Msg, path) || !strings.Contains(de.Suggestion, "by hand") || !strings.HasSuffix(de.Suggestion, "Nothing was written.") {
-			t.Errorf("error = %q / %q", de.Msg, de.Suggestion)
+		if !errors.Is(err, fsx.ErrParse) {
+			t.Errorf("err %v does not wrap fsx.ErrParse", err)
+		}
+		if de.Cause == nil {
+			t.Fatal("Cause = nil, want the parse error")
+		}
+		if want := fmt.Sprintf("setup_write_sections: %s is not valid TOML: %s", path, de.Cause.Error()); de.Msg != want {
+			t.Errorf("Msg =\n%s\nwant\n%s", de.Msg, want)
+		}
+		if want := "Fix the TOML syntax of " + path + " by hand, then retry. Nothing was written."; de.Suggestion != want {
+			t.Errorf("Suggestion = %q, want %q", de.Suggestion, want)
+		}
+	})
+
+	t.Run("empty file", func(t *testing.T) {
+		path := filepath.Join(dir, "empty.toml")
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		doc, err := readSetupFile(path)
+		if err != nil || doc == nil || len(doc) != 0 {
+			t.Errorf("got %v (nil: %t), %v; want an empty map and no error", doc, doc == nil, err)
 		}
 	})
 
@@ -299,8 +321,308 @@ func TestReadSetupFile(t *testing.T) {
 		if !errors.As(err, &ie) {
 			t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
 		}
-		if !strings.Contains(ie.Msg, path) || !strings.HasSuffix(ie.Suggestion, "Nothing was written.") {
-			t.Errorf("error = %q / %q", ie.Msg, ie.Suggestion)
+		if ie.Cause == nil {
+			t.Fatal("Cause = nil, want the read error")
+		}
+		if want := "setup_write_sections: read " + path + ": " + ie.Cause.Error(); ie.Msg != want {
+			t.Errorf("Msg =\n%s\nwant\n%s", ie.Msg, want)
+		}
+		if want := "Check that " + path + " is a readable file, then retry. Nothing was written."; ie.Suggestion != want {
+			t.Errorf("Suggestion = %q, want %q", ie.Suggestion, want)
+		}
+	})
+
+	t.Run("parent is a regular file", func(t *testing.T) {
+		parent := filepath.Join(dir, "plain")
+		if err := os.WriteFile(parent, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(parent, "local.toml")
+		_, err := readSetupFile(path)
+		var ie *mcpserver.InfraError
+		if !errors.As(err, &ie) {
+			t.Fatalf("err = %T %v, want *mcpserver.InfraError", err, err)
+		}
+		var pe *fs.PathError
+		if !errors.As(ie.Cause, &pe) || pe.Op != "stat" {
+			t.Fatalf("Cause = %T %v, want the *fs.PathError of os.Stat", ie.Cause, ie.Cause)
+		}
+		if errors.Is(ie.Cause, os.ErrNotExist) {
+			t.Errorf("Cause %v matches os.ErrNotExist; the test needs the other stat branch", ie.Cause)
+		}
+		if want := "setup_write_sections: read " + path + ": " + ie.Cause.Error(); ie.Msg != want {
+			t.Errorf("Msg =\n%s\nwant\n%s", ie.Msg, want)
+		}
+		if want := "Check that " + path + " is a readable file, then retry. Nothing was written."; ie.Suggestion != want {
+			t.Errorf("Suggestion = %q, want %q", ie.Suggestion, want)
+		}
+	})
+
+	t.Run("read-only reader has no tail", func(t *testing.T) {
+		path := filepath.Join(dir, "bad-state.toml")
+		if err := os.WriteFile(path, []byte("[ship\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := readCheckedTOML(path, setupStateReader)
+		var de *mcpserver.DataError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %T %v, want *mcpserver.DataError", err, err)
+		}
+		if want := fmt.Sprintf("dashboard setup: %s is not valid TOML: %s", path, de.Cause.Error()); de.Msg != want {
+			t.Errorf("Msg =\n%s\nwant\n%s", de.Msg, want)
+		}
+		if want := "Fix the TOML syntax of " + path + " by hand, then retry."; de.Suggestion != want {
+			t.Errorf("Suggestion = %q, want %q", de.Suggestion, want)
+		}
+	})
+}
+
+// TestSetupQuote covers the cut of a long text at maxSetupQuoteBytes: no cut
+// at the limit, a cut one byte over it, a cut that would end inside a
+// multi-byte rune, and text that is not valid UTF-8.
+func TestSetupQuote(t *testing.T) {
+	a := func(n int) string { return strings.Repeat("a", n) }
+	if maxSetupQuoteBytes != 64 {
+		t.Fatalf("maxSetupQuoteBytes = %d; the cases below expect 64", maxSetupQuoteBytes)
+	}
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "empty", in: "", want: `""`},
+		{name: "short", in: "abc", want: `"abc"`},
+		{name: "quote and backslash are escaped", in: `a"b\c`, want: `"a\"b\\c"`},
+		{name: "exactly 64 bytes", in: a(64), want: `"` + a(64) + `"`},
+		{name: "65 bytes", in: a(65), want: `"` + a(64) + `" (cut)`},
+		{name: "64 bytes ending in a 2-byte rune", in: a(62) + "é", want: `"` + a(62) + `é"`},
+		{name: "cut inside a 2-byte rune", in: a(63) + "é", want: `"` + a(63) + `" (cut)`},
+		{name: "cut inside a 3-byte rune", in: a(62) + "€" + a(5), want: `"` + a(62) + `" (cut)`},
+		{name: "cut after a whole 3-byte rune", in: a(61) + "€" + a(5), want: `"` + a(61) + `€" (cut)`},
+		{name: "short invalid UTF-8", in: "a\xffb", want: `"a\xffb"`},
+		{name: "long text with an invalid byte at the end of the cut", in: a(63) + "\xff" + a(5), want: `"` + a(63) + `" (cut)`},
+		{name: "long text with an invalid byte early", in: a(10) + "\xff" + a(60), want: `"` + a(10) + `" (cut)`},
+		{name: "long text of invalid bytes only", in: strings.Repeat("\xff", 70), want: `"" (cut)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := setupQuote(tc.in); got != tc.want {
+				t.Errorf("setupQuote(%q) =\n%s\nwant\n%s", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSetupTypeName pins the type name of each JSON type in a message.
+func TestSetupTypeName(t *testing.T) {
+	cases := []struct {
+		in   any
+		want string
+	}{
+		{"x", "a text"},
+		{"", "a text"},
+		{true, "a boolean"},
+		{float64(3), "a number"},
+		{[]any{"x"}, "a list"},
+		{map[string]any{"k": "v"}, "a table"},
+		{int64(3), "a int64"},
+	}
+	for _, tc := range cases {
+		if got := setupTypeName(tc.in); got != tc.want {
+			t.Errorf("setupTypeName(%#v) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestSetupValueText pins how a message prints each value, with the exponent
+// form for a number of 21 or more digits.
+func TestSetupValueText(t *testing.T) {
+	cases := []struct {
+		name string
+		in   any
+		want string
+	}{
+		{name: "text", in: "yes", want: `"yes"`},
+		{name: "long text is cut", in: strings.Repeat("b", 65), want: `"` + strings.Repeat("b", 64) + `" (cut)`},
+		{name: "true", in: true, want: "true"},
+		{name: "false", in: false, want: "false"},
+		{name: "zero", in: float64(0), want: "0"},
+		{name: "fraction", in: 0.5, want: "0.5"},
+		{name: "negative fraction", in: -0.1, want: "-0.1"},
+		{name: "one over maxSetupNumber", in: float64(2147483648), want: "2147483648"},
+		{name: "20 digits", in: 1e20, want: "100000000000000000000"},
+		{name: "21 digits", in: 1e21, want: "1e+21"},
+		{name: "1e300", in: 1e300, want: "1e+300"},
+		{name: "-1e300", in: -1e300, want: "-1e+300"},
+		{name: "list", in: []any{"a", "b"}, want: "a list"},
+		{name: "table", in: map[string]any{"k": 1.0}, want: "a table"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := setupValueText(tc.in); got != tc.want {
+				t.Errorf("setupValueText(%#v) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSetupRefusedText pins the count text for 0, 1 and 2 refused values.
+func TestSetupRefusedText(t *testing.T) {
+	for n, want := range map[int]string{
+		0: "0 field values are refused",
+		1: "1 field value is refused",
+		2: "2 field values are refused",
+	} {
+		if got := SetupRefusedText(n); got != want {
+			t.Errorf("SetupRefusedText(%d) = %q, want %q", n, got, want)
+		}
+	}
+}
+
+// TestSetupFieldErrorsText pins the full text for 0, 1 and 2 refused values.
+func TestSetupFieldErrorsText(t *testing.T) {
+	cases := []struct {
+		name string
+		errs []SetupFieldError
+		want string
+	}{
+		{name: "none", errs: nil, want: "0 field values are refused. "},
+		{name: "one", errs: []SetupFieldError{
+			{Section: "ship", Field: "draft", Path: "ship.draft", Message: `true or false is required, got "yes".`},
+		}, want: `1 field value is refused. ship.draft: true or false is required, got "yes".`},
+		{name: "two", errs: []SetupFieldError{
+			{Section: "review", Field: "scope", Path: "review.scope", Message: `"everything" is not an option. Options: all, committed, staged, working, worktree.`},
+			{Section: "ship", Field: "draft", Path: "ship.draft", Message: `true or false is required, got "yes".`},
+		}, want: `2 field values are refused. review.scope: "everything" is not an option. Options: all, committed, staged, working, worktree. ship.draft: true or false is required, got "yes".`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := setupFieldErrorsText(tc.errs); got != tc.want {
+				t.Errorf("setupFieldErrorsText =\n%q\nwant\n%q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNormalizeSetupRates covers each form of a rate field value that
+// normalizeSetupRates changes to a number, and the values it leaves as they
+// are.
+func TestNormalizeSetupRates(t *testing.T) {
+	cases := []struct {
+		name    string
+		key     string
+		section string // JSON of the section value
+		want    string // JSON of the section after the call
+	}{
+		{name: "nested form", key: "automation",
+			section: `{"drift":{"maxErrorRate":"0.3","maxWarningRate":"0.5"}}`,
+			want:    `{"drift":{"maxErrorRate":0.3,"maxWarningRate":0.5}}`},
+		{name: "dotted form", key: "automation",
+			section: `{"drift.maxErrorRate":"0.3","drift.maxWarningRate":"0.4"}`,
+			want:    `{"drift.maxErrorRate":0.3,"drift.maxWarningRate":0.4}`},
+		{name: "text with spaces", key: "automation",
+			section: `{"drift":{"maxErrorRate":" 0.3 "}}`,
+			want:    `{"drift":{"maxErrorRate":0.3}}`},
+		{name: "key is the drift table", key: "automation.drift",
+			section: `{"maxErrorRate":"0.25","maxWarningRate":"1"}`,
+			want:    `{"maxErrorRate":0.25,"maxWarningRate":1}`},
+		{name: "number stays a number", key: "automation",
+			section: `{"drift":{"maxErrorRate":0.3}}`,
+			want:    `{"drift":{"maxErrorRate":0.3}}`},
+		{name: "text out of range is still converted", key: "automation",
+			section: `{"drift":{"maxErrorRate":"1.5"}}`,
+			want:    `{"drift":{"maxErrorRate":1.5}}`},
+		{name: "text that is not a number stays", key: "automation",
+			section: `{"drift":{"maxErrorRate":"banana","maxWarningRate":""}}`,
+			want:    `{"drift":{"maxErrorRate":"banana","maxWarningRate":""}}`},
+		{name: "infinity and NaN text stay", key: "automation",
+			section: `{"drift":{"maxErrorRate":"Inf","maxWarningRate":"NaN"}}`,
+			want:    `{"drift":{"maxErrorRate":"Inf","maxWarningRate":"NaN"}}`},
+		{name: "other drift fields stay", key: "automation",
+			section: `{"drift":{"minErrorFloor":"2","maxErrorRate":"0.1"}}`,
+			want:    `{"drift":{"maxErrorRate":0.1,"minErrorFloor":"2"}}`},
+		{name: "other section stays", key: "ship",
+			section: `{"maxErrorRate":"0.3","drift":{"maxErrorRate":"0.3"}}`,
+			want:    `{"drift":{"maxErrorRate":"0.3"},"maxErrorRate":"0.3"}`},
+		{name: "drift not a table", key: "automation",
+			section: `{"drift":"0.3"}`,
+			want:    `{"drift":"0.3"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var section map[string]any
+			if err := json.Unmarshal([]byte(tc.section), &section); err != nil {
+				t.Fatal(err)
+			}
+			normalizeSetupRates(tc.key, section)
+			got, _ := json.Marshal(section)
+			if string(got) != tc.want {
+				t.Errorf("normalizeSetupRates(%q, %s) = %s, want %s", tc.key, tc.section, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil section", func(t *testing.T) {
+		normalizeSetupRates("automation", nil)
+		normalizeSetupRates("automation.drift", nil)
+	})
+}
+
+// TestCheckSetupValues_RateFields covers the value check of the two rate
+// fields, after normalizeSetupRates as setupWriteSections runs it.
+func TestCheckSetupValues_RateFields(t *testing.T) {
+	refused := func(field, got string) []SetupFieldError {
+		return []SetupFieldError{{Section: "automation", Field: field, Path: "automation." + field,
+			Message: "a number from 0 to 1 is required, got " + got + "."}}
+	}
+	cases := []struct {
+		name string
+		json string
+		want []SetupFieldError // nil: the check accepts the call
+	}{
+		{name: "zero", json: `{"automation":{"drift":{"maxErrorRate":0}}}`},
+		{name: "one", json: `{"automation":{"drift":{"maxErrorRate":1}}}`},
+		{name: "fraction", json: `{"automation":{"drift":{"maxErrorRate":0.15}}}`},
+		{name: "decimal text", json: `{"automation":{"drift":{"maxErrorRate":"0.15"}}}`},
+		{name: "decimal text with spaces, dotted", json: `{"automation":{"drift.maxWarningRate":" 0.4 "}}`},
+		{name: "decimal text, key is the drift table", json: `{"automation.drift":{"maxWarningRate":"0.6"}}`},
+		{name: "over one", json: `{"automation":{"drift":{"maxErrorRate":1.5}}}`, want: refused("drift.maxErrorRate", "1.5")},
+		{name: "over one as text", json: `{"automation":{"drift":{"maxErrorRate":"1.5"}}}`, want: refused("drift.maxErrorRate", "1.5")},
+		{name: "under zero", json: `{"automation":{"drift":{"maxWarningRate":-0.1}}}`, want: refused("drift.maxWarningRate", "-0.1")},
+		{name: "text not a number", json: `{"automation":{"drift":{"maxErrorRate":"banana"}}}`, want: refused("drift.maxErrorRate", `"banana"`)},
+		{name: "boolean", json: `{"automation":{"drift":{"maxErrorRate":true}}}`, want: refused("drift.maxErrorRate", "true")},
+		{name: "list", json: `{"automation":{"drift":{"maxErrorRate":[0.1]}}}`, want: refused("drift.maxErrorRate", "a list")},
+		{name: "large number", json: `{"automation":{"drift":{"maxErrorRate":1e300}}}`, want: refused("drift.maxErrorRate", "1e+300")},
+		{name: "both refused, sorted by path", json: `{"automation":{"drift":{"maxWarningRate":2,"maxErrorRate":3}}}`, want: []SetupFieldError{
+			refused("drift.maxErrorRate", "3")[0], refused("drift.maxWarningRate", "2")[0]}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var sections map[string]map[string]any
+			if err := json.Unmarshal([]byte(tc.json), &sections); err != nil {
+				t.Fatal(err)
+			}
+			for key := range sections {
+				normalizeSetupRates(key, sections[key])
+			}
+			got, err := checkSetupValues(sections, func(string) (map[string]any, error) { return map[string]any{}, nil })
+			if err != nil {
+				t.Fatal(err)
+			}
+			gotJSON, _ := json.Marshal(got)
+			wantJSON, _ := json.Marshal(tc.want)
+			if string(gotJSON) != string(wantJSON) {
+				t.Errorf("checkSetupValues(%s)\n got: %s\nwant: %s", tc.json, gotJSON, wantJSON)
+			}
+		})
+	}
+
+	t.Run("text without normalizeSetupRates is refused", func(t *testing.T) {
+		got, _ := runSetupCheck(t, `{"automation":{"drift":{"maxErrorRate":"0.3"}}}`, nil)
+		gotJSON, _ := json.Marshal(got)
+		wantJSON, _ := json.Marshal(refused("drift.maxErrorRate", `"0.3"`))
+		if string(gotJSON) != string(wantJSON) {
+			t.Errorf("got %s, want %s", gotJSON, wantJSON)
 		}
 	})
 }

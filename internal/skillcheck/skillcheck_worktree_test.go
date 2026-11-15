@@ -221,7 +221,7 @@ var worktreeSkillsDisclosedGapExceptions = map[string]worktreeSkillsException{
 		contains: "Read the current",
 		reason:   `Read of config.toml; the line immediately below reads "No MCP tool returns this value, so this Read is a deliberate, disclosed exception"`,
 	},
-	"skills/setup/SKILL.md:942": {
+	"skills/setup/SKILL.md:951": {
 		contains: "re-Read `.sdlc-v2/config.toml` only",
 		reason:   `re-Read of config.toml only (local.toml values come from setup_prepare's localValues, Task 16); the line itself reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},

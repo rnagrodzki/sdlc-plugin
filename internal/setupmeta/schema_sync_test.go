@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -321,6 +322,77 @@ func TestReviewMaxParallelDimensionsSchemaMatchesField(t *testing.T) {
 	if def, ok := node["default"].(float64); !ok || def != 8 {
 		t.Errorf("schema default = %v, want 8", node["default"])
 	}
+}
+
+// schemaBound reads the integer bound key ("minimum" or "maximum") of a
+// schema node. It returns nil when the node has no such key, and fails the
+// test when the bound is not a whole number.
+func schemaBound(t *testing.T, label string, node map[string]interface{}, key string) *int {
+	t.Helper()
+	raw, ok := node[key]
+	if !ok {
+		return nil
+	}
+	f, ok := raw.(float64)
+	if !ok || f != float64(int(f)) {
+		t.Errorf("%s: schema %s = %v, want a whole number", label, key, raw)
+		return nil
+	}
+	v := int(f)
+	return &v
+}
+
+// boundText prints a bound for a test message: the number, or "none".
+func boundText(b *int) string {
+	if b == nil {
+		return "none"
+	}
+	return strconv.Itoa(*b)
+}
+
+// TestFieldMinMax_MatchSchema finds the schema property of every field that
+// sets Min or Max, through Section.ConfigFile, Section.ConfigPath and
+// Field.Name, and checks that Min equals the schema "minimum" and Max equals
+// the schema "maximum". A nil Min or Max must match a schema node with no
+// such key.
+func TestFieldMinMax_MatchSchema(t *testing.T) {
+	schemas := map[string]rawSchema{}
+	checked := 0
+	for _, section := range Sections() {
+		for _, f := range section.Fields {
+			if f.Min == nil && f.Max == nil {
+				continue
+			}
+			label := section.ID + "." + f.Name
+			schemaFile := schemaFileForConfigFile(section.ConfigFile)
+			if schemaFile == "" {
+				t.Errorf("%s: field sets Min or Max, but ConfigFile %q has no schema", label, section.ConfigFile)
+				continue
+			}
+			doc, ok := schemas[schemaFile]
+			if !ok {
+				doc = loadRawSchema(t, schemaFile)
+				schemas[schemaFile] = doc
+			}
+			root := map[string]interface{}{"properties": doc["properties"]}
+			node := schemaNodeFromNode(doc, root, section.ConfigPath+"."+f.Name)
+			if node == nil {
+				t.Errorf("%s: schema %s has no property at %s.%s", label, schemaFile, section.ConfigPath, f.Name)
+				continue
+			}
+			checked++
+			if got := schemaBound(t, label, node, "minimum"); boundText(f.Min) != boundText(got) {
+				t.Errorf("%s: field Min = %s, schema minimum = %s (%s)", label, boundText(f.Min), boundText(got), schemaFile)
+			}
+			if got := schemaBound(t, label, node, "maximum"); boundText(f.Max) != boundText(got) {
+				t.Errorf("%s: field Max = %s, schema maximum = %s (%s)", label, boundText(f.Max), boundText(got), schemaFile)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no field with Min or Max found; the test checked nothing")
+	}
+	t.Logf("checked the bounds of %d fields", checked)
 }
 
 // uncoveredSchemaKeys lists each schema leaf key that has no form field and

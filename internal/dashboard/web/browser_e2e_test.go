@@ -28,6 +28,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
@@ -1760,14 +1761,25 @@ func TestBrowserE2E_Setup(t *testing.T) {
 	}
 	base, page := browserLaunch(t, chrome, []string{repoA, repoB})
 
-	// Step 1: open #setup. The form shows 10 form sections and 9 delegated cards.
-	page.do("open the Setup tab", chromedp.Navigate(base+"/#setup"))
-	page.wait("the form sections", `document.querySelectorAll(`+browserJSON(browserSetupForm)+`).length === 10`)
-	if n := page.count(browserSetupForm); n != 10 {
-		t.Errorf("form sections = %d; want 10", n)
+	// Step 1: open #setup. The form shows one form section for each section
+	// of setupmeta.Sections() with a config path and fields, and one card for
+	// each delegated section.
+	wantForm, wantDeleg := 0, 0
+	for _, sec := range setupmeta.Sections() {
+		if sec.ConfigPath != "" && len(sec.Fields) > 0 {
+			wantForm++
+		}
+		if sec.DelegatedTo != "" {
+			wantDeleg++
+		}
 	}
-	if n := page.count(browserSetupDeleg); n != 9 {
-		t.Errorf("delegated cards = %d; want 9", n)
+	page.do("open the Setup tab", chromedp.Navigate(base+"/#setup"))
+	page.wait("the form sections", `document.querySelectorAll(`+browserJSON(browserSetupForm)+`).length === `+strconv.Itoa(wantForm))
+	if n := page.count(browserSetupForm); n != wantForm {
+		t.Errorf("form sections = %d; want %d", n, wantForm)
+	}
+	if n := page.count(browserSetupDeleg); n != wantDeleg {
+		t.Errorf("delegated cards = %d; want %d", n, wantDeleg)
 	}
 
 	// Step 2: a number below the minimum shows the error and blocks the save.

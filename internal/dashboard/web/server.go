@@ -671,14 +671,24 @@ func (h *handler) serveCacheClear(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveWrite runs the steps that every delete, status and dismiss route
-// shares. The request must pass guardMutation. A false configured (the
-// Options function is nil) writes the NOT_CONFIGURED error with name. The body
-// must decode into Req, and repo(req) must name a display root. Then call runs
-// the Options function with that root and the request. Its error goes through
-// writeDeleteError; its result is the 200 body. The function is the one check
-// of the other fields of the body: its DomainError is a 400.
+// shares (serveWriteWith). Its errors go through writeDeleteError. The
+// function is the one check of the other fields of the body: its DomainError
+// is a 400.
 func serveWrite[Req any](h *handler, w http.ResponseWriter, r *http.Request, name string, configured bool,
 	repo func(Req) string, call func(root string, req Req) (any, error)) {
+	serveWriteWith(h, w, r, name, configured, repo, call, func(w http.ResponseWriter, err error) {
+		writeDeleteError(w, strings.ToLower(name), err)
+	})
+}
+
+// serveWriteWith runs the steps of a route that changes repo files. The
+// request must pass guardMutation. A false configured (the Options function
+// is nil) writes the NOT_CONFIGURED error with name. The body must decode into
+// Req, repo(req) must be at most maxDetailRepo bytes, and it must name a
+// display root. Then call runs the Options function with that root and the
+// request. Its error goes to writeErr; its result is the 200 body.
+func serveWriteWith[Req any](h *handler, w http.ResponseWriter, r *http.Request, name string, configured bool,
+	repo func(Req) string, call func(root string, req Req) (any, error), writeErr func(http.ResponseWriter, error)) {
 	if !h.guardMutation(w, r, true) {
 		return
 	}
@@ -690,16 +700,29 @@ func serveWrite[Req any](h *handler, w http.ResponseWriter, r *http.Request, nam
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	if repoTooLong(w, repo(req)) {
+		return
+	}
 	root, ok := h.displayRoot(w, now(), repo(req))
 	if !ok {
 		return
 	}
 	out, err := call(root, req)
 	if err != nil {
-		writeDeleteError(w, strings.ToLower(name), err)
+		writeErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// repoTooLong writes the 400 error and returns true when repo is longer than
+// maxDetailRepo bytes, so a large value never reaches displayRoot.
+func repoTooLong(w http.ResponseWriter, repo string) bool {
+	if len(repo) <= maxDetailRepo {
+		return false
+	}
+	writeBadRequest(w, fmt.Sprintf("The repo field is longer than %d bytes", maxDetailRepo))
+	return true
 }
 
 // servePreplanDelete deletes one preplan topic file of a registered repo

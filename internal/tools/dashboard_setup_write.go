@@ -11,6 +11,7 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -22,9 +23,24 @@ import (
 )
 
 // maxSetupChanges is the largest number of entries in one request. The
-// count rule runs before each other request rule. The field list has 48
-// form fields. A valid save holds at most 48 changes.
+// count rule runs before each other request rule. A valid save holds at most
+// one change for each form field of setupmeta.Sections();
+// TestDashboardSetupSave_MaxChangesCoversFields checks that this limit is not
+// below that count.
 const maxSetupChanges = 64
+
+// The ops of a change.
+const (
+	setupOpSet   = "set"
+	setupOpReset = "reset"
+)
+
+// The targets of a save section, and the sources of a field value.
+const (
+	setupTargetConfig  = "config"  // .sdlc-v2/config.toml
+	setupTargetProject = "project" // .sdlc-v2/local.toml
+	setupTargetUser    = "user"    // the user file (config.UserConfigPath)
+)
 
 // DashboardSetupChange is one changed field of the Setup form.
 type DashboardSetupChange struct {
@@ -48,9 +64,10 @@ type DashboardSetupWrite struct {
 
 // DashboardSetupFailure is one section that a save did not write.
 type DashboardSetupFailure struct {
-	Section string `json:"section"` // form section id
-	File    string `json:"file"`
-	Message string `json:"message"`
+	Section    string `json:"section"` // form section id
+	File       string `json:"file"`
+	Message    string `json:"message"`
+	Suggestion string `json:"suggestion,omitempty"` // the recovery step of the error; absent when there is none
 }
 
 // DashboardSetupSaveOut is the result of a save.
@@ -59,7 +76,8 @@ type DashboardSetupSaveOut struct {
 	Written  []DashboardSetupWrite   `json:"written"`  // [] when none
 	Failed   []DashboardSetupFailure `json:"failed"`   // [] when none
 	Warnings []string                `json:"warnings"` // [] when none
-	CIFiles  []string                `json:"ciFiles"`  // CI files that the save created or updated; [] when none
+	CIFiles  []string                `json:"ciFiles"`  // CI script files that the save created; [] when none
+	Next     string                  `json:"next"`     // hand-edit step for a section that could not be written without deleting comments; "" when none
 }
 
 // DashboardSetupCreateOut is the result of a create.
@@ -75,15 +93,7 @@ type DashboardSetupInvalid struct{ Fields []SetupFieldError }
 
 // Error states the count of the refused values, then the message of each one.
 func (e *DashboardSetupInvalid) Error() string {
-	noun := "field values are"
-	if len(e.Fields) == 1 {
-		noun = "field value is"
-	}
-	parts := make([]string, 0, len(e.Fields))
-	for _, f := range e.Fields {
-		parts = append(parts, f.Path+": "+f.Message)
-	}
-	return fmt.Sprintf("dashboard setup save: %d %s refused. %s", len(e.Fields), noun, strings.Join(parts, " "))
+	return "dashboard setup save: " + setupFieldErrorsText(e.Fields)
 }
 
 // DashboardSetupNotReady is the error of a save or a create in a repo
@@ -96,7 +106,8 @@ func (e *DashboardSetupNotReady) Error() string {
 }
 
 // setupWriteFunc is the write call of the save. A test replaces it to make
-// the second write fail (pattern: internal/tools/fsseam.go:18-25).
+// the second write fail (the same pattern as mkdirTempFunc, writeFileFunc and
+// readFileFunc in fsseam.go).
 var setupWriteFunc = setupWriteSections
 
 // Suggestion texts of the save and the create.
@@ -111,7 +122,7 @@ const (
 type setupSaveSection struct {
 	sec     setupmeta.Section
 	key     string                 // config path of the section
-	target  string                 // "config" | "project" | "user"
+	target  string                 // setupTargetConfig | setupTargetProject | setupTargetUser
 	changes []DashboardSetupChange // the changes of this section, in request order
 	stored  map[string]any         // the table that the target file holds now
 	next    map[string]any         // stored, with each change applied
@@ -166,7 +177,7 @@ func (c setupDocCache) read(path string) (map[string]any, error) {
 	if doc, ok := c[path]; ok {
 		return doc, nil
 	}
-	doc, err := readSetupFile(path)
+	doc, err := readCheckedTOML(path, setupSaveReader)
 	if err != nil {
 		return nil, err
 	}
@@ -187,56 +198,52 @@ func readSetupSaveSections(root, userPath string, sections []*setupSaveSection) 
 }
 
 // readSetupSaveSection reads the table of one section from its target file
-// and applies the changes to a copy of it.
+// and applies the changes to a copy of it. For a user target it also reads
+// the table of the project file, and resets each changed key in a copy of it.
 func readSetupSaveSection(root, userPath string, s *setupSaveSection, docs setupDocCache) error {
+	var err error
 	file := setupSavePath(root, userPath, s.target, s.key)
-	doc, err := docs.read(file)
-	if err != nil {
+	if s.stored, s.next, _, err = readSetupSaveTable(docs, file, s.key, s.changes, false); err != nil {
 		return err
 	}
-	stored, ok := setupTable(doc, s.key)
-	if !ok {
-		return setupSaveNotTableError(s.key, file)
-	}
-	s.stored = stored
-	s.next = setupDeepCopy(stored).(map[string]any)
-	for _, c := range s.changes {
-		bad, _ := setupApplyChange(s.next, c.Field, c.Op, c.Value)
-		if bad != "" {
-			return setupSaveNotTableError(s.key+"."+bad, file)
-		}
-	}
-	if s.target != "user" {
+	if s.target != setupTargetUser {
 		return nil
 	}
-	return readSetupSaveProject(root, userPath, s, docs)
+	projectFile := setupSavePath(root, userPath, setupTargetProject, s.key)
+	_, s.project, s.projectRemoved, err = readSetupSaveTable(docs, projectFile, s.key, s.changes, true)
+	return err
 }
 
-// readSetupSaveProject sets project of a user-target section: a copy of the
-// table of the project file without each changed key.
-func readSetupSaveProject(root, userPath string, s *setupSaveSection, docs setupDocCache) error {
-	projectFile := setupSavePath(root, userPath, "project", s.key)
-	projectDoc, err := docs.read(projectFile)
+// readSetupSaveTable reads the table at the config path key from file. It
+// returns the table and a copy of it with each change applied. resetAll
+// true resets each changed field in the copy in place of the op of the
+// change. removed is true when a reset removed a key.
+func readSetupSaveTable(docs setupDocCache, file, key string, changes []DashboardSetupChange, resetAll bool) (stored, next map[string]any, removed bool, err error) {
+	doc, err := docs.read(file)
 	if err != nil {
-		return err
+		return nil, nil, false, err
 	}
-	projectStored, ok := setupTable(projectDoc, s.key)
+	stored, ok := setupTable(doc, key)
 	if !ok {
-		return setupSaveNotTableError(s.key, projectFile)
+		return nil, nil, false, setupSaveNotTableError(key, file)
 	}
-	s.project = setupDeepCopy(projectStored).(map[string]any)
-	for _, c := range s.changes {
-		bad, removed := setupApplyChange(s.project, c.Field, "reset", nil)
-		if bad != "" {
-			return setupSaveNotTableError(s.key+"."+bad, projectFile)
+	next = setupCopyTable(stored)
+	for _, c := range changes {
+		op, value := c.Op, c.Value
+		if resetAll {
+			op, value = setupOpReset, nil
 		}
-		s.projectRemoved = s.projectRemoved || removed
+		bad, rm := setupApplyChange(next, c.Field, op, value)
+		if bad != "" {
+			return nil, nil, false, setupSaveNotTableError(key+"."+bad, file)
+		}
+		removed = removed || rm
 	}
-	return nil
+	return stored, next, removed, nil
 }
 
-// checkSetupSaveValues turns flag lists to tables, then checks the values of
-// each new section.
+// checkSetupSaveValues turns flag lists to tables and the text of a rate
+// field to a number, then checks the values of each new section.
 func checkSetupSaveValues(sections []*setupSaveSection) error {
 	newSections := map[string]map[string]any{}
 	storedByKey := map[string]map[string]any{}
@@ -244,6 +251,7 @@ func checkSetupSaveValues(sections []*setupSaveSection) error {
 		if err := normalizeFlagSetFields(s.key, s.next); err != nil {
 			return err
 		}
+		normalizeSetupRates(s.key, s.next)
 		newSections[s.key] = s.next
 		storedByKey[s.key] = s.stored
 	}
@@ -288,7 +296,7 @@ func writeSetupSave(root, userPath string, sections []*setupSaveSection) (Dashbo
 func writeSetupSaveUser(root, userPath string, sections []*setupSaveSection, byKey map[string]*setupSaveSection, out *DashboardSetupSaveOut) (map[string]bool, bool, error) {
 	userSections := map[string]map[string]any{}
 	for _, s := range sections {
-		if s.target == "user" {
+		if s.target == setupTargetUser {
 			userSections[s.key] = s.next
 		}
 	}
@@ -296,14 +304,14 @@ func writeSetupSaveUser(root, userPath string, sections []*setupSaveSection, byK
 	if len(userSections) == 0 {
 		return userWritten, false, nil
 	}
-	res, err := setupSaveCall(root, userSections, "user")
+	res, err := setupSaveCall(root, userSections, setupTargetUser)
 	if err != nil {
 		return nil, false, err
 	}
 	for _, key := range res.Written {
 		userWritten[key] = true
 	}
-	setupSaveCollect(out, root, userPath, "user", userSections, res, byKey)
+	setupSaveCollect(out, root, userPath, setupTargetUser, userSections, res, byKey)
 	return userWritten, true, nil
 }
 
@@ -316,7 +324,7 @@ func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, 
 	projectSections := map[string]map[string]any{}
 	for _, s := range sections {
 		switch {
-		case s.target != "user":
+		case s.target != setupTargetUser:
 			projectSections[s.key] = s.next
 		case s.projectRemoved && userWritten[s.key]:
 			projectSections[s.key] = s.project
@@ -331,22 +339,28 @@ func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, 
 			return err
 		}
 		for _, key := range sortedSetupKeys(projectSections) {
-			out.Failed = append(out.Failed, DashboardSetupFailure{
-				Section: byKey[key].sec.ID,
-				File:    setupTargetPath(root, root, userPath, "", key),
-				Message: err.Error(),
-			})
+			out.Failed = append(out.Failed, setupFailure(byKey[key].sec.ID, setupTargetPath(root, root, userPath, "", key), err))
 		}
 		return nil
 	}
 	setupSaveCollect(out, root, userPath, "", projectSections, res, byKey)
 	for _, rep := range res.Scaffold {
-		switch rep.Action {
-		case "created", "overwritten", "migrated":
+		if scaffoldActionWrites(rep.Action) {
 			out.CIFiles = append(out.CIFiles, rep.Path)
 		}
 	}
 	return nil
+}
+
+// setupFailure is the failure of a section whose write call returned err. The
+// message is the message of err, with the text of its cause when the message
+// does not hold it. The suggestion is the Suggestion of err.
+func setupFailure(section, file string, err error) DashboardSetupFailure {
+	_, msg, suggestion := mcpserver.ErrorParts(err)
+	if cause := errors.Unwrap(err); cause != nil && !strings.Contains(msg, cause.Error()) {
+		msg += ": " + cause.Error()
+	}
+	return DashboardSetupFailure{Section: section, File: file, Message: msg, Suggestion: suggestion}
 }
 
 // setupFormIndex lists the sections that the form can change.
@@ -433,12 +447,16 @@ func checkSetupChange(c DashboardSetupChange, idx setupFormIndex, seen map[strin
 	sec, ok := idx.sections[c.Section]
 	if !ok {
 		if idx.delegated[c.Section] {
-			return sec, setupRequestError(fmt.Sprintf("section %q is a delegated section; the form cannot change it", c.Section))
+			return sec, setupRequestError(fmt.Sprintf("section %q is a delegated section; the form cannot change it. Form sections: %s", c.Section, strings.Join(idx.order, ", ")))
 		}
-		return sec, setupRequestError(fmt.Sprintf("section %q is not a form section", c.Section))
+		return sec, setupRequestError(fmt.Sprintf("section %q is not a form section. Form sections: %s", c.Section, strings.Join(idx.order, ", ")))
 	}
 	if !slices.ContainsFunc(sec.Fields, func(f setupmeta.Field) bool { return f.Name == c.Field }) {
-		return sec, setupRequestError(fmt.Sprintf("field %q is not a field of section %q", c.Field, c.Section))
+		names := make([]string, 0, len(sec.Fields))
+		for _, f := range sec.Fields {
+			names = append(names, f.Name)
+		}
+		return sec, setupRequestError(fmt.Sprintf("field %q is not a field of section %q. Fields: %s", c.Field, c.Section, strings.Join(names, ", ")))
 	}
 	pair := c.Section + "\x00" + c.Field
 	if seen[pair] {
@@ -446,11 +464,11 @@ func checkSetupChange(c DashboardSetupChange, idx setupFormIndex, seen map[strin
 	}
 	seen[pair] = true
 	switch c.Op {
-	case "set":
+	case setupOpSet:
 		if c.Value == nil {
 			return sec, setupRequestError(fmt.Sprintf("section %q field %q has op set with no value; use op reset to remove a value", c.Section, c.Field))
 		}
-	case "reset":
+	case setupOpReset:
 		if c.Value != nil {
 			return sec, setupRequestError(fmt.Sprintf("section %q field %q has op reset with a value; op reset takes no value", c.Section, c.Field))
 		}
@@ -474,7 +492,7 @@ func checkSetupTargets(targets map[string]string, byID map[string]*setupSaveSect
 		if s == nil || !setupLocalKey(s.key) {
 			return setupRequestError(fmt.Sprintf("targets names section %q, which is not a local form section with a change", id))
 		}
-		if v := targets[id]; v != "project" && v != "user" {
+		if v := targets[id]; v != setupTargetProject && v != setupTargetUser {
 			return setupRequestError(fmt.Sprintf("target %q is not project or user", v))
 		}
 	}
@@ -491,15 +509,15 @@ func resolveSetupTargets(targets map[string]string, order []string, byID map[str
 		}
 		switch {
 		case !setupLocalKey(s.key):
-			s.target = "config"
+			s.target = setupTargetConfig
 		case targets[id] != "":
 			s.target = targets[id]
-		case s.sec.DefaultTarget == "user":
-			s.target = "user"
+		case s.sec.DefaultTarget == setupTargetUser:
+			s.target = setupTargetUser
 		default:
-			s.target = "project"
+			s.target = setupTargetProject
 		}
-		needUser = needUser || s.target == "user"
+		needUser = needUser || s.target == setupTargetUser
 		out = append(out, s)
 	}
 	return out, needUser
@@ -521,10 +539,10 @@ func setupLocalKey(key string) bool {
 }
 
 // setupSavePath returns the absolute path of the target file of a save
-// section. target is "config", "project" or "user".
+// section. target is setupTargetConfig, setupTargetProject or setupTargetUser.
 func setupSavePath(root, userPath, target, key string) string {
-	if target == "user" {
-		return setupTargetPath(root, root, userPath, "user", key)
+	if target == setupTargetUser {
+		return setupTargetPath(root, root, userPath, setupTargetUser, key)
 	}
 	return setupTargetPath(root, root, userPath, "", key)
 }
@@ -550,7 +568,7 @@ func setupApplyChange(table map[string]any, name, op string, value any) (badPare
 	for i, part := range parts[:len(parts)-1] {
 		next, present := cur[part]
 		if !present {
-			if op == "reset" {
+			if op == setupOpReset {
 				return "", false
 			}
 			child := map[string]any{}
@@ -565,7 +583,7 @@ func setupApplyChange(table map[string]any, name, op string, value any) (badPare
 		cur = child
 	}
 	leaf := parts[len(parts)-1]
-	if op == "set" {
+	if op == setupOpSet {
 		cur[leaf] = value
 		return "", false
 	}
@@ -579,11 +597,7 @@ func setupApplyChange(table map[string]any, name, op string, value any) (badPare
 func setupDeepCopy(v any) any {
 	switch val := v.(type) {
 	case map[string]any:
-		out := make(map[string]any, len(val))
-		for k, item := range val {
-			out[k] = setupDeepCopy(item)
-		}
-		return out
+		return setupCopyTable(val)
 	case []any:
 		out := make([]any, len(val))
 		for i, item := range val {
@@ -593,12 +607,21 @@ func setupDeepCopy(v any) any {
 	case []map[string]any:
 		out := make([]map[string]any, len(val))
 		for i, item := range val {
-			out[i] = setupDeepCopy(item).(map[string]any)
+			out[i] = setupCopyTable(item)
 		}
 		return out
 	default:
 		return v
 	}
+}
+
+// setupCopyTable returns a deep copy of the table m (setupDeepCopy).
+func setupCopyTable(m map[string]any) map[string]any {
+	out := make(map[string]any, len(m))
+	for k, item := range m {
+		out[k] = setupDeepCopy(item)
+	}
+	return out
 }
 
 // setupSaveCall sends sections to setupWriteFunc with target ("" or "user").
@@ -614,8 +637,10 @@ func setupSaveCall(root string, sections map[string]map[string]any, target strin
 	return setupWriteFunc(root, root, SetupWriteSectionsIn{SectionsJSON: string(data), Target: target})
 }
 
-// setupSaveCollect adds the written and the failed sections, and the
-// warnings, of one write call to out. sent holds the keys of that call.
+// setupSaveCollect adds the written and the failed sections, the warnings,
+// and the hand-edit step of one write call to out. sent holds the keys of
+// that call. The message of a failed section is its entry in
+// res.sectionErrs.
 func setupSaveCollect(out *DashboardSetupSaveOut, root, userPath, target string,
 	sent map[string]map[string]any, res SetupWriteSectionsOut, byKey map[string]*setupSaveSection) {
 	for _, key := range res.Written {
@@ -632,13 +657,9 @@ func setupSaveCollect(out *DashboardSetupSaveOut, root, userPath, target string,
 		if slices.Contains(res.Written, key) {
 			continue
 		}
-		msg := "the section was not written"
-		prefix := "section " + key + ": "
-		for _, e := range res.Errors {
-			if rest, ok := strings.CutPrefix(e, prefix); ok {
-				msg = rest
-				break
-			}
+		msg, ok := res.sectionErrs[key]
+		if !ok {
+			msg = "setup_write_sections did not write the section and gave no reason"
 		}
 		out.Failed = append(out.Failed, DashboardSetupFailure{
 			Section: byKey[key].sec.ID,
@@ -647,6 +668,12 @@ func setupSaveCollect(out *DashboardSetupSaveOut, root, userPath, target string,
 		})
 	}
 	out.Warnings = append(out.Warnings, res.Warnings...)
+	if res.Next != "" {
+		if out.Next != "" {
+			out.Next += " "
+		}
+		out.Next += res.Next
+	}
 }
 
 // sortedSetupKeys returns the keys of m in sorted order.
@@ -674,15 +701,5 @@ func DashboardSetupCreate(root string) (DashboardSetupCreateOut, error) {
 	if err != nil {
 		return DashboardSetupCreateOut{}, err
 	}
-	out := DashboardSetupCreateOut{OK: res.OK, Created: res.Created, Changed: res.Changed, Errors: res.Errors}
-	if out.Created == nil {
-		out.Created = []string{}
-	}
-	if out.Changed == nil {
-		out.Changed = []string{}
-	}
-	if out.Errors == nil {
-		out.Errors = []string{}
-	}
-	return out, nil
+	return DashboardSetupCreateOut{OK: res.OK, Created: nonNilStrings(res.Created), Changed: nonNilStrings(res.Changed), Errors: nonNilStrings(res.Errors)}, nil
 }

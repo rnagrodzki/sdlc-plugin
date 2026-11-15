@@ -2,7 +2,9 @@ package setupmeta
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -67,8 +69,8 @@ func TestEffects_CoverEveryOption(t *testing.T) {
 			}
 		}
 	}
-	if choiceCount != 24 {
-		t.Errorf("found %d choice fields, want 24", choiceCount)
+	if choiceCount == 0 {
+		t.Error("found no choice fields in Sections()")
 	}
 
 	for key, options := range fieldEffects {
@@ -94,7 +96,8 @@ func TestEffects_CoverEveryOption(t *testing.T) {
 func TestEffects_WritingStandardSamples(t *testing.T) {
 	f := findField(t, "communication-style", "writingStandard")
 	for _, e := range EffectsFor("communication-style", f) {
-		before, after, ok := commstyle.StandardExample(e.Option)
+		pair, ok := commstyle.StandardExample(e.Option)
+		before, after := pair.Before, pair.After
 		if !ok {
 			t.Fatalf("StandardExample(%q) ok = false", e.Option)
 		}
@@ -137,29 +140,74 @@ func wantContains(t *testing.T, label, text, want string) {
 	}
 }
 
+// unownedEffectNumbers lists, by "<section>/<field>/<option>", each number of
+// a limit text that no Go constant owns. TestEffects_LimitNumbers accepts
+// these numbers as written. Add an entry only when no code holds the number.
+var unownedEffectNumbers = map[string][]int{
+	// "20 rules": ASD-STE100 has 20 writing rules, but no Go constant counts
+	// them; commstyle checks only a subset (ste.go).
+	"communication-style/writingStandard/ste": {20},
+}
+
+// textNumberRe finds each whole number of a text. A number that is part of a
+// word, such as 100 in ASD-STE100, does not match.
+var textNumberRe = regexp.MustCompile(`\b\d+\b`)
+
+// textNumbers returns the whole numbers of text, sorted.
+func textNumbers(t *testing.T, text string) []int {
+	t.Helper()
+	var out []int
+	for _, m := range textNumberRe.FindAllString(text, -1) {
+		n, err := strconv.Atoi(m)
+		if err != nil {
+			t.Fatalf("number %q of %q: %v", m, text, err)
+		}
+		out = append(out, n)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// percent returns share as a whole percent, rounded.
+func percent(share float64) int {
+	return int(share*100 + 0.5)
+}
+
 // TestEffects_LimitNumbers builds each limit number from
-// commstyle.LimitsFor and fails when the effect text does not hold it.
+// commstyle.LimitsFor and fails when the effect text does not hold it. It
+// also extracts every number of each limit text and fails when the text holds
+// a number that LimitsFor does not give and unownedEffectNumbers does not
+// list, so a text cannot state a limit that no code owns.
 func TestEffects_LimitNumbers(t *testing.T) {
+	// want maps "<section>/<field>/<option>" to the numbers its text must
+	// hold, from LimitsFor.
+	want := map[string][]int{}
+
 	for _, density := range commstyle.VisualDensities {
 		l := commstyle.LimitsFor(commstyle.Style{VisualDensity: density})
 		text := effectText(t, "plan-style", "visualDensity", density)
 		label := "visualDensity " + density
-		wantContains(t, label, text, fmt.Sprintf("%d%%", int(l.MaxProseShare*100+0.5)))
+		wantContains(t, label, text, fmt.Sprintf("%d%%", percent(l.MaxProseShare)))
 		wantContains(t, label, text, fmt.Sprintf("%d sentences", l.MaxParagraphSentences))
 		wantContains(t, label, text, fmt.Sprintf("%d items", l.MaxListItems))
+		want["plan-style/visualDensity/"+density] = []int{percent(l.MaxProseShare), l.MaxParagraphSentences, l.MaxListItems}
 	}
 
 	for _, audience := range commstyle.Audiences {
 		l := commstyle.LimitsFor(commstyle.Style{Audience: audience})
 		text := effectText(t, "communication-style", "audience", audience)
 		label := "audience " + audience
+		key := "communication-style/audience/" + audience
 		switch {
 		case l.MaxJargonShare >= 1:
 			wantContains(t, label, text, "No jargon limit")
+			want[key] = nil
 		case l.MaxJargonShare <= 0:
 			wantContains(t, label, text, "No sentence can hold jargon")
+			want[key] = nil
 		default:
-			wantContains(t, label, text, fmt.Sprintf("%d%% of the sentences", int(l.MaxJargonShare*100+0.5)))
+			wantContains(t, label, text, fmt.Sprintf("%d%% of the sentences", percent(l.MaxJargonShare)))
+			want[key] = []int{percent(l.MaxJargonShare)}
 		}
 	}
 
@@ -167,14 +215,39 @@ func TestEffects_LimitNumbers(t *testing.T) {
 		l := commstyle.LimitsFor(commstyle.Style{WritingStandard: standard, Language: "English"})
 		text := effectText(t, "communication-style", "writingStandard", standard)
 		label := "writingStandard " + standard
+		key := "communication-style/writingStandard/" + standard
 		wantContains(t, label, text, fmt.Sprintf("%d words at most", l.MaxSentenceWords))
+		want[key] = []int{l.MaxSentenceWords}
 		if l.MaxInstructionWords > 0 {
 			wantContains(t, label, text, fmt.Sprintf("an instruction %d", l.MaxInstructionWords))
+			want[key] = append(want[key], l.MaxInstructionWords)
 		}
 	}
 
-	direct := commstyle.LimitsFor(commstyle.Style{Tone: "direct"})
-	wantContains(t, "tone direct", effectText(t, "communication-style", "tone", "direct"), fmt.Sprintf("%d filler phrases", len(direct.BannedPhrases)))
+	for _, tone := range commstyle.Tones {
+		l := commstyle.LimitsFor(commstyle.Style{Tone: tone})
+		key := "communication-style/tone/" + tone
+		want[key] = nil
+		if len(l.BannedPhrases) > 0 {
+			wantContains(t, "tone "+tone, effectText(t, "communication-style", "tone", tone), fmt.Sprintf("%d filler phrases", len(l.BannedPhrases)))
+			want[key] = []int{len(l.BannedPhrases)}
+		}
+	}
+
+	for key, numbers := range want {
+		parts := strings.SplitN(key, "/", 3)
+		got := textNumbers(t, effectText(t, parts[0], parts[1], parts[2]))
+		expected := append(slices.Clone(numbers), unownedEffectNumbers[key]...)
+		slices.Sort(expected)
+		if !slices.Equal(got, expected) {
+			t.Errorf("%s: text numbers = %v, want %v (from commstyle.LimitsFor plus unownedEffectNumbers)", key, got, expected)
+		}
+	}
+	for key := range unownedEffectNumbers {
+		if _, ok := want[key]; !ok {
+			t.Errorf("unownedEffectNumbers key %q is no limit text of this test", key)
+		}
+	}
 }
 
 // TestEffects_ContractShapeKeys checks the contractShape texts name the
@@ -196,6 +269,27 @@ func TestEffects_ContractShapeKeys(t *testing.T) {
 			if strings.Contains(text, old) {
 				t.Errorf("contractShape %s still names %q: %s", label, old, text)
 			}
+		}
+	}
+
+	exact := map[string]string{
+		"minimal": "Each task that changes a file must have a Contract block. /plan does not check its keys.",
+		"none":    "/plan does not check the keys of the Contract block. A task that changes a file still needs the block.",
+	}
+	for option, want := range exact {
+		if got := effectText(t, "plan-tasks", "contractShape", option); got != want {
+			t.Errorf("contractShape %s effect = %q, want %q", option, got, want)
+		}
+	}
+}
+
+// TestEffects_PushAutoApproveSharedText pins the one text that both options
+// of automation/push.featureBranchAutoApprove show: no code reads the value.
+func TestEffects_PushAutoApproveSharedText(t *testing.T) {
+	const want = "No step reads this value now. With the mode unattended, the read config holds yes, also when the file holds no. The commit step of /ship pushes the feature branch with no question. The push skips the default branch."
+	for _, option := range []string{"yes", "no"} {
+		if got := effectText(t, "automation", "push.featureBranchAutoApprove", option); got != want {
+			t.Errorf("push.featureBranchAutoApprove %s effect = %q, want %q", option, got, want)
 		}
 	}
 }

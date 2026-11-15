@@ -164,8 +164,8 @@ func EffectsFor(sectionID string, f Field) []OptionEffect {
 	for _, opt := range f.Options {
 		e := OptionEffect{Option: opt, Text: texts[opt]}
 		if sectionID == "communication-style" && f.Name == "writingStandard" {
-			if before, after, ok := commstyle.StandardExample(opt); ok {
-				e.Before, e.After = before, after
+			if pair, ok := commstyle.StandardExample(opt); ok {
+				e.Before, e.After = pair.Before, pair.After
 			}
 		}
 		out = append(out, e)

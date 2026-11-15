@@ -55,8 +55,7 @@ func (h *handler) serveSetupState(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repo := r.URL.Query().Get("repo")
-	if len(repo) > maxDetailRepo {
-		writeBadRequest(w, fmt.Sprintf("The repo field is longer than %d bytes", maxDetailRepo))
+	if repoTooLong(w, repo) {
 		return
 	}
 	root, ok := h.displayRoot(w, now(), repo)
@@ -72,66 +71,24 @@ func (h *handler) serveSetupState(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveSetupSave saves changed fields of the Setup form in one registered
-// repo. serveWrite cannot serve it: its error path maps two codes only. This
-// handler repeats the four steps of serveWrite (guard, decode, repo check,
-// call) and maps the errors with writeSetupError. A save that wrote only some
-// sections is a 200 with ok false.
+// repo (serveWriteWith). Its errors go through writeSetupError. A save that
+// wrote only some sections is a 200 with ok false.
 func (h *handler) serveSetupSave(w http.ResponseWriter, r *http.Request) {
-	if !h.guardMutation(w, r, true) {
-		return
-	}
-	if h.o.SetupSave == nil {
-		writeNotConfigured(w, "Setup save")
-		return
-	}
-	var req setupSaveRequest
-	if !decodeBody(w, r, &req) {
-		return
-	}
-	if len(req.Repo) > maxDetailRepo {
-		writeBadRequest(w, fmt.Sprintf("The repo field is longer than %d bytes", maxDetailRepo))
-		return
-	}
-	root, ok := h.displayRoot(w, now(), req.Repo)
-	if !ok {
-		return
-	}
-	out, err := h.o.SetupSave(root, req.DashboardSetupSaveIn)
-	if err != nil {
-		writeSetupError(w, codeSetupSaveFailed, "setup save", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
+	serveWriteWith(h, w, r, "Setup save", h.o.SetupSave != nil,
+		func(req setupSaveRequest) string { return req.Repo },
+		func(root string, req setupSaveRequest) (any, error) {
+			return h.o.SetupSave(root, req.DashboardSetupSaveIn)
+		},
+		func(w http.ResponseWriter, err error) { writeSetupError(w, codeSetupSaveFailed, "setup save", err) })
 }
 
-// serveSetupCreate creates the first config files of one registered repo. It
-// repeats the four steps of serveWrite, like serveSetupSave.
+// serveSetupCreate creates the first config files of one registered repo
+// (serveWriteWith). Its errors go through writeSetupError.
 func (h *handler) serveSetupCreate(w http.ResponseWriter, r *http.Request) {
-	if !h.guardMutation(w, r, true) {
-		return
-	}
-	if h.o.SetupCreate == nil {
-		writeNotConfigured(w, "Setup create")
-		return
-	}
-	var req setupCreateRequest
-	if !decodeBody(w, r, &req) {
-		return
-	}
-	if len(req.Repo) > maxDetailRepo {
-		writeBadRequest(w, fmt.Sprintf("The repo field is longer than %d bytes", maxDetailRepo))
-		return
-	}
-	root, ok := h.displayRoot(w, now(), req.Repo)
-	if !ok {
-		return
-	}
-	out, err := h.o.SetupCreate(root)
-	if err != nil {
-		writeSetupError(w, codeSetupCreateFailed, "setup create", err)
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
+	serveWriteWith(h, w, r, "Setup create", h.o.SetupCreate != nil,
+		func(req setupCreateRequest) string { return req.Repo },
+		func(root string, _ setupCreateRequest) (any, error) { return h.o.SetupCreate(root) },
+		func(w http.ResponseWriter, err error) { writeSetupError(w, codeSetupCreateFailed, "setup create", err) })
 }
 
 // writeSetupError maps an error of a Setup function to a status and a code.
@@ -143,10 +100,7 @@ func (h *handler) serveSetupCreate(w http.ResponseWriter, r *http.Request) {
 func writeSetupError(w http.ResponseWriter, failCode, what string, err error) {
 	var invalid *tools.DashboardSetupInvalid
 	if errors.As(err, &invalid) {
-		message := fmt.Sprintf("%d fields have a value that the config check refuses", len(invalid.Fields))
-		if len(invalid.Fields) == 1 {
-			message = "1 field has a value that the config check refuses"
-		}
+		message := tools.SetupRefusedText(len(invalid.Fields)) + " by the config check"
 		fields := invalid.Fields
 		if fields == nil {
 			fields = []tools.SetupFieldError{}

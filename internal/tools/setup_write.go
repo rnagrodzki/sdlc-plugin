@@ -26,7 +26,6 @@ import (
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
-	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
@@ -50,7 +49,7 @@ type SetupWriteSectionsIn struct {
 	// must keep every guardrail id that config.toml holds, and a key inside a
 	// guardrails table that config.toml holds as an array of tables is refused.
 	// Both refusals happen before any write (see checkGuardrailWrites).
-	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. A plain top-level id REPLACES that section wholesale. A dotted id (e.g. \"plan.guardrails\") merges at that nested leaf instead, preserving sibling keys under the same top-level section — the leaf itself is still replaced wholesale, not patched. Pass the complete object for the id you name. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table. A null on a missing guardrail id changes nothing. A null on any other id clears it to an empty table, as before, unless that id is a whole guardrails table that holds guardrail ids (see the next sentence). A key that replaces a whole guardrails table (plan, plan.guardrails, execute, execute.guardrails), with a value or a null, must keep every guardrail id that config.toml holds: a key that drops one fails with a DomainError and nothing is written. Add or change one guardrail with \"<section>.guardrails.<id>\", and remove one with a null on that key. A key inside a guardrails table that config.toml holds as an array of tables ([[plan.guardrails]]) fails with a DomainError and nothing is written: the user must first convert the entries to named tables. A guardrail table that holds a comment line is not deleted: the call returns the comment refusal. Each value of a setup form field must pass the value check that the tool description states. A refused value returns a DomainError and nothing is written."`
+	SectionsJSON string `json:"sectionsJson" jsonschema_description:"JSON-encoded object mapping section id (e.g. \"version\", \"commit\") to the full field-value object for that section, e.g. {\"version\":{\"mode\":\"file\",\"versionFile\":\"package.json\"}}. A plain top-level id REPLACES that section wholesale. A dotted id (e.g. \"plan.guardrails\") merges at that nested leaf instead, preserving sibling keys under the same top-level section — the leaf itself is still replaced wholesale, not patched. Pass the complete object for the id you name. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table. A null on a missing guardrail id changes nothing. A null on any other id clears it to an empty table, as before, unless that id is a whole guardrails table that holds guardrail ids (see the next sentence). A key that replaces a whole guardrails table (plan, plan.guardrails, execute, execute.guardrails), with a value or a null, must keep every guardrail id that config.toml holds: a key that drops one fails with a DomainError and nothing is written. Add or change one guardrail with \"<section>.guardrails.<id>\", and remove one with a null on that key. A key inside a guardrails table that config.toml holds as an array of tables ([[plan.guardrails]]) fails with a DomainError and nothing is written: the user must first convert the entries to named tables. A guardrail table that holds a comment line is not deleted: the call returns the comment refusal. Each value of a setup form field must pass the value check before any write: a boolean field takes true or false; an enum field takes one of its options; a multi-enum field takes a list of its options with no repeat; a number field takes a whole number inside its min and max (at most 2147483647 with no max); a text field takes a text of at most 1024 bytes; a list field takes at most 64 text entries of at most 1024 bytes each; automation.drift.maxErrorRate and automation.drift.maxWarningRate take a number from 0 to 1 or a decimal text that is stored as a number; version.pushAuth.secretName takes a GitHub Actions secret name. setup_prepare returns the fields, their types, options, min and max. A value equal to the stored value is not checked. A refused value returns a DomainError and nothing is written."`
 
 	// Target selects which file a local section is written to: the
 	// project's own .sdlc-v2/local.toml (default) or the user-level file
@@ -70,6 +69,12 @@ type SetupWriteSectionsOut struct {
 	Scaffold []ScaffoldFileReport `json:"scaffold,omitempty"`
 	Warnings []string             `json:"warnings,omitempty"`
 	Next     string               `json:"next,omitempty" jsonschema_description:"Plain text. Recovery step when a section could not be written without deleting comments, or a note when a null on a guardrail id found no table to delete. Example: Edit section ship in .sdlc-v2/local.toml by hand, then run setup again for that section."`
+
+	// sectionErrs maps each section id that the call did not write to the
+	// reason, without the "section <id>: " prefix of Errors. It is not part of
+	// the tool output: the dashboard save reads it, so it does not parse the
+	// text of Errors.
+	sectionErrs map[string]string
 }
 
 // DeletedSection is one guardrail table that a JSON null deleted.
@@ -88,7 +93,7 @@ func rewroteWarning(id, file string) string {
 // RegisterSetupWriteTools registers setup_write_sections on the server.
 func RegisterSetupWriteTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "setup_write_sections",
-		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table from config.toml instead: the lines of the table and one blank line next to it go, and deleted lists the id with the removed data. A null on a missing guardrail id changes nothing and adds a warning. A guardrail table that holds a comment line is not deleted: errors gets the comment refusal. A null guardrail id with target \"user\" is rejected and nothing is written. Missing template tips are added back above their keys. A flag-set field (ship.steps, ship.quick) sent as an array of step names is stored as a table of every step set to true or false, and an old list line for that key is replaced. An unknown step name or a non-boolean value returns an error and nothing is written. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written. A key that writes guardrails (plan, execute, or any key that starts with plan.guardrails or execute.guardrails), with a value or a null, makes the tool read config.toml first. If a key that replaces a whole guardrails table (plan, plan.guardrails, execute, execute.guardrails) drops a guardrail id that config.toml holds, the call fails with a DomainError that names the key and the ids, and nothing is written. If config.toml holds the guardrails of a section as an array of tables ([[plan.guardrails]]), a key inside that table, such as plan.guardrails.<id>, fails with a DomainError and nothing is written, because the write would replace the whole array. If config.toml cannot be read, is not valid TOML, or is over "+maxCheckedFileText+", the call also fails before any write. Before any write the tool also checks each value of a setup form field against the field list of setup_prepare: a boolean is true or false, an enum is one of the options, a multi-enum is a list of options with no repeat, a number is a whole number inside min and max (a field with no max accepts at most 2147483647), a text has at most 1024 bytes, a list has at most 64 text entries, and version.pushAuth.secretName is a valid GitHub Actions secret name. For this check the tool reads the target file of each section: config.toml, .sdlc-v2/local.toml, or the user file with target user. A value equal to the value that the target file holds is not checked. A null value, a key with no form field and a flag-set value are not checked here. A stored section that is not a table counts as empty for this check. A refused value returns a DomainError that names each field and what the field accepts. A target file that is not valid TOML or is over "+maxCheckedFileText+" returns a DataError, and a failed read returns an InfraError. Nothing is written in each of these cases.",
+		"INTERNAL — called by sdlc skills only. Writes real field-value data into one or more sdlc-v2 config sections (config.toml for project sections, local.toml for local sections), routing and validating via the same config.WriteSection primitive setup_init uses. Unlike setup_init (which writes the full config.toml/local.toml templates verbatim for the user to hand-edit), this accepts the actual assembled values collected during setup's per-section field loop. Git-tracked files (config.toml and the CI files scaffolded after a version write) go under the active git worktree, returned as root; local.toml goes under the main worktree, shared by all worktrees. With target \"user\", local sections go to the user-level file (~/.sdlc/local.toml or $SDLC_USER_CONFIG), outside every repository; a project section with target \"user\" is rejected and nothing is written. Each write changes only the lines of changed keys and keeps every comment line. A JSON null on a guardrail id (plan.guardrails.<id> or execute.guardrails.<id>) deletes that table from config.toml instead: the lines of the table and one blank line next to it go, and deleted lists the id with the removed data. A null on a missing guardrail id changes nothing and adds a warning. A guardrail table that holds a comment line is not deleted: errors gets the comment refusal. A null guardrail id with target \"user\" is rejected and nothing is written. Missing template tips are added back above their keys. A flag-set field (ship.steps, ship.quick) sent as an array of step names is stored as a table of every step set to true or false, and an old list line for that key is replaced. An unknown step name or a non-boolean value returns an error and nothing is written. If a section cannot be edited in place and the file has comments, that section is not written: errors gets \"section <id>: <reason>\" and next gets the hand-edit step. Other sections are still written. A key that writes guardrails (plan, execute, or any key that starts with plan.guardrails or execute.guardrails), with a value or a null, makes the tool read config.toml first. If a key that replaces a whole guardrails table (plan, plan.guardrails, execute, execute.guardrails) drops a guardrail id that config.toml holds, the call fails with a DomainError that names the key and the ids, and nothing is written. If config.toml holds the guardrails of a section as an array of tables ([[plan.guardrails]]), a key inside that table, such as plan.guardrails.<id>, fails with a DomainError and nothing is written, because the write would replace the whole array. If config.toml cannot be read, is not valid TOML, or is over "+maxCheckedFileText+", the call also fails before any write. Before any write the tool also checks each value of a setup form field against the field list of setup_prepare: a boolean is true or false, an enum is one of the options, a multi-enum is a list of options with no repeat, a number is a whole number inside min and max (a field with no max accepts at most "+setupNumberText+"), a text has at most "+setupTextBytesText+" bytes, a list has at most "+setupListItemsText+" text entries, automation.drift.maxErrorRate and automation.drift.maxWarningRate are a number from 0 to 1 (a decimal text such as \"0.15\" is stored as a number), and version.pushAuth.secretName is a valid GitHub Actions secret name. For this check the tool reads the target file of each section: config.toml, .sdlc-v2/local.toml, or the user file with target user. A value equal to the value that the target file holds is not checked. A null value, a key with no form field and a flag-set value are not checked here. A stored section that is not a table counts as empty for this check. A refused value returns a DomainError that names each field and what the field accepts. A target file that is not valid TOML or is over "+maxCheckedFileText+" returns a DataError, and a failed read returns an InfraError. Nothing is written in each of these cases.",
 		mcpserver.Annotations{
 			Title:       "Write SDLC config sections",
 			ReadOnly:    false,
@@ -348,34 +353,7 @@ func checkGuardrailWrites(contentRoot string, ids []string, sections map[string]
 // ReadSection changes the named-table form of a guardrails table to a list, so
 // the check could no longer see the array-of-tables form that it refuses.
 func readGuardrailCheckFile(path string) (map[string]any, error) {
-	info, err := os.Stat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, readFileError("setup_write_sections: read", path, err)
-	}
-	if info.Size() > maxCheckedFileBytes {
-		return nil, &mcpserver.DataError{
-			Msg:        fmt.Sprintf("setup_write_sections: %s is %d bytes, over the %d byte limit of the guardrail check", path, info.Size(), maxCheckedFileBytes),
-			Suggestion: fmt.Sprintf("Reduce %s to %d bytes or less, then retry. Nothing was written.", path, maxCheckedFileBytes),
-		}
-	}
-	var raw map[string]any
-	if err := fsx.ReadTOML(path, &raw); err != nil {
-		if errors.Is(err, fsx.ErrParse) {
-			return nil, &mcpserver.DataError{
-				Msg:        fmt.Sprintf("setup_write_sections: %s is not valid TOML: %s", path, err.Error()),
-				Suggestion: "Fix the TOML syntax in " + path + ", then retry. Nothing was written.",
-				Cause:      err,
-			}
-		}
-		return nil, readFileError("setup_write_sections: read", path, err)
-	}
-	if raw == nil {
-		raw = map[string]any{}
-	}
-	return raw, nil
+	return readCheckedTOML(path, guardrailCheckReader)
 }
 
 // sectionGuardrails returns the value of <section>.guardrails in raw, or nil.
@@ -628,7 +606,15 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		}
 	}
 
-	// Check each new form field value before any write. A bad value writes nothing.
+	// Store a decimal text of a drift rate field as a number, so config reads it.
+	for _, id := range ids {
+		normalizeSetupRates(id, sections[id])
+	}
+
+	// Check each new form field value before any write. A bad value writes
+	// nothing. The dashboard save runs the same check on the same values
+	// before it calls this function, so this check refuses a dashboard save
+	// only when a target file changed between the two reads.
 	fieldErrs, err := checkSetupValues(sections, func(key string) (map[string]any, error) {
 		return readTargetSection(setupTargetPath(contentRoot, stateRoot, userPath, in.Target, key), key)
 	})
@@ -647,6 +633,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 	var written []string
 	var deleted []DeletedSection
 	var errs []string
+	sectionErrs := map[string]string{}
 	var warnings []string
 	var refused []string // one "Edit section <id> in <file> by hand" per ErrWouldDropComments section
 	var absent []string  // guardrail ids whose null found no table to delete
@@ -656,6 +643,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 			rep, err := config.DeleteSectionReport(sectionRoot(contentRoot, stateRoot, id), id)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
+				sectionErrs[id] = err.Error()
 				if errors.Is(err, config.ErrWouldDropComments) {
 					refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id, in.Target, userPath)))
 				}
@@ -689,6 +677,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		}
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
+			sectionErrs[id] = err.Error()
 			if errors.Is(err, config.ErrWouldDropComments) {
 				refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id, in.Target, userPath)))
 			}
@@ -716,7 +705,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		next = note
 	}
 
-	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Deleted: deleted, Root: contentRoot, Warnings: warnings, Next: next}
+	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Deleted: deleted, Root: contentRoot, Warnings: warnings, Next: next, sectionErrs: sectionErrs}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}

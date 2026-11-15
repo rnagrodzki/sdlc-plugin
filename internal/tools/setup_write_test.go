@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -416,11 +418,9 @@ func TestSetupWriteSections_WholeNumbersWrittenAsIntegers(t *testing.T) {
 	path := writeSDLCFile(t, dir, "local.toml", "# local settings\n[review]\nscope = \"all\"\n")
 
 	// testList is not a real review key; local.toml sections are not
-	// key-checked, and it exercises numbers inside an array. testRate is not
-	// a real drift key either: the form field drift.maxErrorRate is a text
-	// field, so the value check refuses a number for it.
+	// key-checked, and it exercises numbers inside an array.
 	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
-		`{"automation":{"reviewFixIterations":3,"drift":{"testRate":0.5,"minErrorFloor":2}},`+
+		`{"automation":{"reviewFixIterations":3,"drift":{"maxErrorRate":0.5,"minErrorFloor":2}},`+
 			`"review":{"scope":"all","testList":[1,2.5]}}`)
 	if res.IsError {
 		t.Fatalf("expected success, got tool error:\n%s", text)
@@ -435,7 +435,7 @@ func TestSetupWriteSections_WholeNumbersWrittenAsIntegers(t *testing.T) {
 	for _, want := range []string{
 		"reviewFixIterations = 3\n",
 		"minErrorFloor = 2\n",
-		"testRate = 0.5\n",
+		"maxErrorRate = 0.5\n",
 		"testList = [1, 2.5]\n",
 		"# local settings\n",
 	} {
@@ -2745,19 +2745,17 @@ func TestSetupWriteSections_RefusesBadValue(t *testing.T) {
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
 		}
-		for _, want := range []string{
-			"4 field values are refused",
-			`plan.tasks.contractShape: "x" is not an option. Options: full, minimal, none.`,
-			`review.scope: "everything" is not an option. Options: all, committed, staged, working, worktree.`,
-			`ship.draft: true or false is required, got "yes".`,
-			`version.tag.enabled: true or false is required, got "no".`,
-		} {
-			if !strings.Contains(de.Msg, want) {
-				t.Errorf("Msg does not hold %q:\n%s", want, de.Msg)
-			}
+		// The errors are sorted by path, not by the order of the keys.
+		wantMsg := `setup_write_sections: 4 field values are refused. ` +
+			`plan.tasks.contractShape: "x" is not an option. Options: full, minimal, none. ` +
+			`review.scope: "everything" is not an option. Options: all, committed, staged, working, worktree. ` +
+			`ship.draft: true or false is required, got "yes". ` +
+			`version.tag.enabled: true or false is required, got "no".`
+		if de.Msg != wantMsg {
+			t.Errorf("Msg =\n%s\nwant\n%s", de.Msg, wantMsg)
 		}
-		if de.Suggestion == "" || !strings.HasSuffix(de.Suggestion, "Nothing was written.") {
-			t.Errorf("Suggestion = %q", de.Suggestion)
+		if want := "Correct each named field, then call setup_write_sections again. Nothing was written."; de.Suggestion != want {
+			t.Errorf("Suggestion = %q, want %q", de.Suggestion, want)
 		}
 		for path, before := range map[string]string{localPath: localBefore, configPath: configBefore} {
 			got, err := os.ReadFile(path)
@@ -2797,14 +2795,22 @@ func TestSetupWriteSections_RefusesBadValue(t *testing.T) {
 		cases := []struct {
 			name  string
 			setup func(t *testing.T, root string) string // returns the path that the error names
-			check func(err error) bool
+			kind  string                                 // "data" or "infra"
+			// want returns the Msg and the Suggestion for path. cause is the
+			// Cause of the error, for the part of a Msg that the OS or the
+			// TOML decoder writes.
+			want func(path string, cause error) (msg, suggestion string)
 		}{
 			{
 				name: "not valid TOML",
 				setup: func(t *testing.T, root string) string {
 					return writeSDLCFile(t, root, "local.toml", "[ship\n")
 				},
-				check: func(err error) bool { var de *mcpserver.DataError; return errors.As(err, &de) },
+				kind: "data",
+				want: func(path string, cause error) (string, string) {
+					return fmt.Sprintf("setup_write_sections: %s is not valid TOML: %s", path, cause.Error()),
+						"Fix the TOML syntax of " + path + " by hand, then retry. Nothing was written."
+				},
 			},
 			{
 				name: "over the size limit",
@@ -2813,7 +2819,11 @@ func TestSetupWriteSections_RefusesBadValue(t *testing.T) {
 					writeSizedTOML(t, path, maxCheckedFileBytes+1)
 					return path
 				},
-				check: func(err error) bool { var de *mcpserver.DataError; return errors.As(err, &de) },
+				kind: "data",
+				want: func(path string, _ error) (string, string) {
+					return fmt.Sprintf("setup_write_sections: %s is %d bytes, over the %d byte limit of the setup value check", path, maxCheckedFileBytes+1, maxCheckedFileBytes),
+						fmt.Sprintf("Reduce %s to %d bytes or less, then retry. Nothing was written.", path, maxCheckedFileBytes)
+				},
 			},
 			{
 				name: "a directory",
@@ -2824,7 +2834,11 @@ func TestSetupWriteSections_RefusesBadValue(t *testing.T) {
 					}
 					return path
 				},
-				check: func(err error) bool { var ie *mcpserver.InfraError; return errors.As(err, &ie) },
+				kind: "infra",
+				want: func(path string, cause error) (string, string) {
+					return "setup_write_sections: read " + path + ": " + cause.Error(),
+						"Check that " + path + " is a readable file, then retry. Nothing was written."
+				},
 			},
 		}
 		for _, tc := range cases {
@@ -2832,13 +2846,54 @@ func TestSetupWriteSections_RefusesBadValue(t *testing.T) {
 				root := t.TempDir()
 				path := tc.setup(t, root)
 				_, err := setupWriteSections(root, root, SetupWriteSectionsIn{SectionsJSON: `{"ship":{"draft":true}}`})
-				if err == nil || !tc.check(err) {
-					t.Fatalf("err = %T %v, wrong kind", err, err)
+				var (
+					kind, msg, suggestion string
+					cause                 error
+				)
+				var de *mcpserver.DataError
+				var ie *mcpserver.InfraError
+				switch {
+				case errors.As(err, &de):
+					kind, msg, suggestion, cause = "data", de.Msg, de.Suggestion, de.Cause
+				case errors.As(err, &ie):
+					kind, msg, suggestion, cause = "infra", ie.Msg, ie.Suggestion, ie.Cause
 				}
-				if !strings.Contains(err.Error(), path) {
-					t.Errorf("error %q does not name %s", err.Error(), path)
+				if kind != tc.kind {
+					t.Fatalf("err = %T %v, want a %s error", err, err, tc.kind)
+				}
+				if tc.kind == "infra" && cause == nil {
+					t.Fatal("Cause = nil, want the read error")
+				}
+				if tc.name == "not valid TOML" && !errors.Is(err, fsx.ErrParse) {
+					t.Errorf("err %v does not wrap fsx.ErrParse", err)
+				}
+				wantMsg, wantSuggestion := tc.want(path, cause)
+				if msg != wantMsg {
+					t.Errorf("Msg =\n%s\nwant\n%s", msg, wantMsg)
+				}
+				if suggestion != wantSuggestion {
+					t.Errorf("Suggestion = %q, want %q", suggestion, wantSuggestion)
 				}
 			})
+		}
+	})
+
+	t.Run("registered tool renders the refusal", func(t *testing.T) {
+		dir := t.TempDir()
+		res, text := callRegisteredSetupWriteSectionsIn(t, dir, `{"ship":{"draft":"yes"}}`)
+		if !res.IsError {
+			t.Fatalf("IsError = false, want a refused call:\n%s", text)
+		}
+		for _, want := range []string{
+			`setup_write_sections: 1 field value is refused. ship.draft: true or false is required, got "yes".`,
+			"Correct each named field, then call setup_write_sections again. Nothing was written.",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("rendered error does not hold %q:\n%s", want, text)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(dir, ".sdlc-v2", "local.toml")); !os.IsNotExist(err) {
+			t.Errorf("local.toml exists after a refused call (stat err: %v)", err)
 		}
 	})
 
@@ -2938,4 +2993,103 @@ func TestSetupWriteSections_TemplateValuesPass(t *testing.T) {
 	if err != nil || !out.OK {
 		t.Fatalf("write of the template values without fileType: %+v, %v; want a write", out, err)
 	}
+}
+
+// TestSetupWriteSections_ValueLimitsMatchConstants verifies that the tool
+// description and the sectionsJson field description state the three value
+// limits of the check as the constants hold them. The field description is a
+// struct tag literal, so a change of a constant must fail this test.
+func TestSetupWriteSections_ValueLimitsMatchConstants(t *testing.T) {
+	textBytes := strconv.Itoa(maxSetupTextBytes)
+	listItems := strconv.Itoa(maxSetupListItems)
+	number := strconv.Itoa(maxSetupNumber)
+
+	desc := registeredToolDescription(t, RegisterSetupWriteTools, "setup_write_sections")
+	for _, want := range []string{
+		"(a field with no max accepts at most " + number + ")",
+		"a text has at most " + textBytes + " bytes",
+		"a list has at most " + listItems + " text entries",
+	} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("tool description does not hold %q", want)
+		}
+	}
+
+	field, ok := reflect.TypeOf(SetupWriteSectionsIn{}).FieldByName("SectionsJSON")
+	if !ok {
+		t.Fatal("SetupWriteSectionsIn has no SectionsJSON field")
+	}
+	tag := field.Tag.Get("jsonschema_description")
+	for _, want := range []string{
+		"(at most " + number + " with no max)",
+		"a text field takes a text of at most " + textBytes + " bytes",
+		"a list field takes at most " + listItems + " text entries of at most " + textBytes + " bytes each",
+	} {
+		if !strings.Contains(tag, want) {
+			t.Errorf("SectionsJSON jsonschema_description does not hold %q", want)
+		}
+	}
+}
+
+// TestSetupWriteSections_RateTextStoredAsNumber verifies that a decimal text
+// of a drift rate field is written to local.toml as a TOML number, and that a
+// rate out of range is refused before any write.
+func TestSetupWriteSections_RateTextStoredAsNumber(t *testing.T) {
+	cases := []struct {
+		name     string
+		sections string
+		wantLine string
+		key      string
+		want     float64
+	}{
+		{name: "nested", sections: `{"automation":{"drift":{"maxErrorRate":"0.25"}}}`, wantLine: "maxErrorRate = 0.25", key: "maxErrorRate", want: 0.25},
+		{name: "dotted with spaces", sections: `{"automation":{"drift.maxWarningRate":" 0.5 "}}`, wantLine: "maxWarningRate = 0.5", key: "maxWarningRate", want: 0.5},
+		{name: "key is the drift table", sections: `{"automation.drift":{"maxErrorRate":"0.1"}}`, wantLine: "maxErrorRate = 0.1", key: "maxErrorRate", want: 0.1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			out, err := setupWriteSections(root, root, SetupWriteSectionsIn{SectionsJSON: tc.sections})
+			if err != nil || !out.OK {
+				t.Fatalf("setupWriteSections: %+v, %v; want a write", out, err)
+			}
+			path := filepath.Join(root, ".sdlc-v2", "local.toml")
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), tc.wantLine+"\n") {
+				t.Errorf("local.toml misses the line %q:\n%s", tc.wantLine, got)
+			}
+			if strings.Contains(string(got), `"`+strings.TrimSpace(strings.SplitN(tc.wantLine, "=", 2)[1])) {
+				t.Errorf("local.toml holds the rate as a quoted text:\n%s", got)
+			}
+			var doc map[string]any
+			if err := fsx.ReadTOML(path, &doc); err != nil {
+				t.Fatal(err)
+			}
+			drift, _ := doc["automation"].(map[string]any)["drift"].(map[string]any)
+			if v, ok := drift[tc.key].(float64); !ok || v != tc.want {
+				t.Errorf("automation.drift.%s = %#v, want the number %v", tc.key, drift[tc.key], tc.want)
+			}
+		})
+	}
+
+	t.Run("out of range text is refused", func(t *testing.T) {
+		root := t.TempDir()
+		_, err := setupWriteSections(root, root, SetupWriteSectionsIn{SectionsJSON: `{"automation":{"drift":{"maxErrorRate":"1.5","maxWarningRate":"banana"}}}`})
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+		}
+		wantMsg := `setup_write_sections: 2 field values are refused. ` +
+			`automation.drift.maxErrorRate: a number from 0 to 1 is required, got 1.5. ` +
+			`automation.drift.maxWarningRate: a number from 0 to 1 is required, got "banana".`
+		if de.Msg != wantMsg {
+			t.Errorf("Msg =\n%s\nwant\n%s", de.Msg, wantMsg)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "local.toml")); !os.IsNotExist(err) {
+			t.Errorf("local.toml exists after a refused call (stat err: %v)", err)
+		}
+	})
 }

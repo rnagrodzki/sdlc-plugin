@@ -682,7 +682,9 @@ Three limits apply to the tab:
   never writes to a linked worktree.
 - The tab does not lock the config. A save while a pipeline runs is possible,
   and the next steps of the pipeline read the new config.
-- The page has no undo. To go back, set the old value again.
+- The page has no undo. To go back, set the old value again. This does not
+  delete a CI script file that a save created, and it does not restore a key
+  that a save removed from `.sdlc-v2/local.toml`. See [Save](#save).
 
 ### What the form shows
 
@@ -750,13 +752,34 @@ is outside the limits of its field:
   options with no repeat.
 - A number field takes a whole number from `min` to `max`. With no `max`, the
   limit is 2147483647.
+- `automation.drift.maxErrorRate` and `automation.drift.maxWarningRate` take a
+  number from 0 to 1. They also take a decimal text from 0 to 1, for example
+  `"0.25"`. The save stores that text as a number.
 - A text is at most 1024 bytes.
 - A list has at most 64 entries of at most 1024 bytes each.
 
-The server refuses a save in these cases:
+The server refuses a save in these cases, with `400 BAD_REQUEST` and no file
+change:
 
-- The save holds more than 64 changes.
-- The body is over 8 KiB. Save fewer fields at one time.
+- The body has no `repo`, or a `repo` over 4096 bytes.
+- The save holds more than 64 changes, or no change.
+- A change names a delegated section, or a section that is not a form section.
+  For an unknown section, the message lists the allowed sections.
+- A change names a field that the section does not have. The message lists the
+  allowed fields.
+- Two changes name the same section and field.
+- The `op` is not `set` or `reset`. Or a `set` has no value. Or a `reset` has a
+  value.
+- A `targets` entry names a section that is not a local form section with a
+  change. Or its value is not `project` or `user`.
+- A section has the target `user`, and there is no user file path:
+  `$SDLC_USER_CONFIG` is not set and the server finds no home directory.
+
+The server also refuses a save in these cases:
+
+- The body is over 8 KiB (`413 BODY_TOO_LARGE`). Save fewer fields at one time.
+- The repo has the state `no-config` or `legacy-config`
+  (`409 SETUP_NOT_READY`).
 - A stored section in the target file is not a table. The error names the key
   and the file.
 
@@ -772,6 +795,25 @@ A change of the Save to switch with no field change saves nothing. After "Use
 default" with the target "This project", a value in the user file applies, and
 the page shows that value with its source. An empty table stays in the file
 after a reset of the last key. Every reader accepts an empty table.
+
+A save that writes the `version` section also runs `scaffold_ci` in its
+default mode. This mode creates each missing CI script file. It does not change
+an existing CI script file, and it leaves an old `.js` script as it is. To set
+the old value again does not delete a created file. Delete each file of
+`ciFiles` by hand.
+
+The answer of a save is:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `ok` | boolean | `true` when the save wrote each section |
+| `written[]` | list | Each written section: `section` (the form section id) and `file` (the absolute path) |
+| `failed[]` | list | Each section that the save did not write: `section`, `file`, `message` and `suggestion`. `suggestion` is the recovery step of the error. It is absent when the error has none |
+| `warnings[]` | list | The warnings of the write and of `scaffold_ci`, for example an outdated CI script file |
+| `ciFiles[]` | list | The CI script files that the save created, as paths in the repo |
+| `next` | string | The step to edit a failed section by hand. The write did not change that section, because the write would delete comment lines of the file. `""` when there is none |
+
+An empty list is `[]`.
 
 What the user sees when a save fails:
 
@@ -823,17 +865,26 @@ Create changes these paths of the repo:
 | `.sdlc-v2/` and `.sdlc-v2/runs/` | Created when absent |
 | `.sdlc-v2/.gitignore` | Created, or its sdlc block updated |
 | `.gitignore` of the repo root | Created, or its sdlc block updated |
-| `.sdlc-v2/config.toml`, `.sdlc-v2/local.toml` | Created from the templates |
+| `.sdlc-v2/config.toml`, `.sdlc-v2/local.toml` | Created from the templates, each one only when it is absent. A repo with the state `no-config` can already have `.sdlc-v2/local.toml` |
 | `.sdlc-v2/local.json` of the old JSON form | Gets the new name `local.json.bak` when no `local.json.bak` exists. With a `local.json.bak`, both files stay as they are |
 
-The answer is `{ok, created, changed, errors}`. `changed` lists a rename of
-`local.json`. A repo in any other state gets `409 SETUP_NOT_READY` and no
-change.
+The answer is `{ok, created, changed, errors}`:
 
-To undo a create, delete `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml`.
-Rename `local.json.bak` back to `local.json` only when `changed` lists that
-rename. A `local.json.bak` from before the call is an older backup, and it
-stays as it is.
+| Field | Meaning |
+|---|---|
+| `created` | Each path that Create created: `.sdlc-v2/.gitignore`, `.gitignore`, `.sdlc-v2/config.toml`, `.sdlc-v2/local.toml` |
+| `changed` | Each `.gitignore` file whose sdlc block Create updated (`.sdlc-v2/.gitignore`, `.gitignore`), and the rename `.sdlc-v2/local.json → local.json.bak` |
+| `errors` | One text for each write that failed |
+
+A write that fails inside Create does not stop the other writes. The answer is
+then `200` with `ok` false and a non-empty `errors` list. Other failures of
+Create get `500 SETUP_CREATE_FAILED`. A repo in any other state gets
+`409 SETUP_NOT_READY` and no change.
+
+To undo a create, delete each config file that `created` lists. Rename
+`local.json.bak` back to `local.json` only when `changed` lists that rename. A
+`local.json.bak` from before the call is an older backup, and it stays as it
+is.
 
 ### Sections that the assistant handles
 
@@ -853,13 +904,13 @@ add these codes:
 | Code | HTTP status | Cause | What to do |
 |---|---|---|---|
 | `SETUP_INVALID` | 400 | The value check refused one or more fields. The answer has a `fields` list. No file changed. | Correct each field that the page marks, then save again. |
-| `SETUP_NOT_READY` | 409 | The state of the repo does not allow the call: a save for a repo with no config, or a create for a repo that has a config. The message names the state. | Reload the page. Use Create config, or `/sdlc:setup --migrate`. |
+| `SETUP_NOT_READY` | 409 | The state of the repo does not allow the call: a save for a repo with the state `no-config` or `legacy-config`, or a create for a repo that has a config. The message names the state. | Reload the page. Use Create config, or `/sdlc:setup --migrate`. |
 | `SETUP_READ_FAILED` | 500 | The server could not read the config files of the repo. | Read the suggestion in the message. It names the file to check. |
 | `SETUP_SAVE_FAILED` | 500 | The save failed with an error. | Read the suggestion in the message. Load the form again to see what was written. |
 | `SETUP_CREATE_FAILED` | 500 | The create failed with an error. | Read the suggestion in the message. See [Create config](#create-config) to undo a part. |
 
-`SETUP_INVALID` reads `1 field has a value that the config check refuses` or
-`<n> fields have a value that the config check refuses`. The other codes of
+`SETUP_INVALID` reads `1 field value is refused by the config check` or
+`<n> field values are refused by the config check`. The other codes of
 these routes (`BAD_REQUEST`, `REPO_NOT_FOUND`, `BODY_TOO_LARGE`,
 `BAD_CONTENT_TYPE`, `BAD_BODY`, `NOT_CONFIGURED`) are in the error table of
 [Security](#security).
@@ -924,19 +975,20 @@ port = 7385         # 1024-65535, loopback only
 | `<repo>/.sdlc-v2/history/runs.jsonl` | ship_state `history_record` and `fail`; plan_mark `done`; server | run history. The server rewrites it without the checked rows (see [Delete History rows](#delete-history-rows)) |
 | `<repo>/.sdlc-v2/evidence/attention/*.json` | hooks `block-askuserquestion-auto`, `record-permission-wait`; server | one record for each open wait. The server deletes one record (see [Dismiss a wait](#dismiss-a-wait)) |
 | `<repo>/.sdlc-v2/config.toml` | setup tools; server | project config. The server rewrites the changed keys (see [Setup tab](#setup-tab)) |
-| `<repo>/.sdlc-v2/local.toml` | setup tools; server | local config of the project. The server rewrites the changed keys |
+| `<repo>/.github/scripts/*.cjs`, `<repo>/.github/workflows/*.yml` | `scaffold_ci`; server | CI script files. A save of the `version` section creates each missing file. It does not change an existing file (see [Save](#save)) |
+| `<repo>/.sdlc-v2/local.toml` | setup tools; server | local config of the project. The server rewrites the changed keys. A save to "All my projects" removes each changed key from this file |
 | `~/.sdlc/local.toml` (or `$SDLC_USER_CONFIG`) | setup tools; server | local config of the user. The server rewrites the changed keys when the target is "All my projects" |
 | `<repo>/.sdlc-v2/.gitignore`, `<repo>/.gitignore` | setup tools; server | the sdlc block of each file. Create config adds or updates the block (see [Create config](#create-config)) |
 
 `~/.sdlc-cache` is `paths.CacheDir()`: `$SDLC_CACHE_DIR` when set, else the
 user's home directory, shared with `sdlc-launcher.sh`. `dashboard.Dir()`
 joins `dashboard` onto that root for the first three paths above. The last
-thirteen paths do not live under `~/.sdlc-cache/dashboard/`. See
+fourteen paths do not live under `~/.sdlc-cache/dashboard/`. See
 [Archive a run](#archive-a-run), [Clear cache files](#clear-cache-files),
 [Delete an item](#delete-an-item),
 [Change a preplan status](#change-a-preplan-status),
 [Delete History rows](#delete-history-rows), and
-[Dismiss a wait](#dismiss-a-wait), and [Setup tab](#setup-tab) for the rules of the last thirteen paths.
+[Dismiss a wait](#dismiss-a-wait), and [Setup tab](#setup-tab) for the rules of the last fourteen paths.
 
 - **`server.json`** is written once the listener binds and is removed when
   the server stops — but only by the process whose own PID still matches
@@ -1035,7 +1087,7 @@ with a wrong method (`405`) answer with plain text. The Setup routes add more co
 | 415 | `BAD_CONTENT_TYPE` | The content type is not `application/json` | Archive, clear, delete, status, dismiss, setup save, setup create |
 | 413 | `BODY_TOO_LARGE` | The body is over 8 KiB | Archive, clear, delete, status, dismiss, setup save, setup create |
 | 400 | `BAD_BODY` | The server could not read the body | Archive, clear, delete, status, dismiss, setup save, setup create |
-| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo` or `slug` is missing, or `slug` is not a file name, or the topic path is a folder (preplan delete). Or `repo` or `id` is missing (deferred delete). Or `repo`, `date` or `heading` is missing (learning delete, or `GET /api/learning`). Or `repo` or `id` is missing or too long (run detail, session detail). Or the `slug` or the `status` breaks a rule, or the topic file is gone, a folder or a link (preplan status). Or `rows` is empty or holds more than 50 keys, a key is not valid, or a key matches no line (History delete). Or `kind`, `sessionId` or `toolUseId` breaks a rule (wait dismiss). Or a Setup save holds more than 64 changes (setup save). Or `repo` is missing (setup state, setup create). | Archive, clear, delete, status, dismiss, learning, run detail, session detail, setup state, setup save, setup create |
+| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo` or `slug` is missing, or `slug` is not a file name, or the topic path is a folder (preplan delete). Or `repo` or `id` is missing (deferred delete). Or `repo`, `date` or `heading` is missing (learning delete, or `GET /api/learning`). Or `repo` or `id` is missing or too long (run detail, session detail). Or the `slug` or the `status` breaks a rule, or the topic file is gone, a folder or a link (preplan status). Or `rows` is empty or holds more than 50 keys, a key is not valid, or a key matches no line (History delete). Or `kind`, `sessionId` or `toolUseId` breaks a rule (wait dismiss). Or `repo` is missing, or a Setup save breaks a request rule of [Save](#save) (setup save). Or `repo` is missing (setup state, setup create). | Archive, clear, delete, status, dismiss, learning, run detail, session detail, setup state, setup save, setup create |
 | 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, delete, status, dismiss, learning, run detail, session detail, setup state, setup save, setup create |
 | 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, delete, status, dismiss, learning, run detail, session detail, setup fields, setup state, setup save, setup create |
 | 500 | `CLEAR_FAILED` | Clear cannot read the repo folder | Clear |

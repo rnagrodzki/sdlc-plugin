@@ -238,8 +238,11 @@
       var failed = obj.failed || [];
       var parts = ['Saved ' + written + ' of ' + (written + failed.length) + ' sections.'];
       failed.forEach(function (f) {
-        parts.push('Not saved: ' + f.section + ' (' + f.file + '). ' + f.message);
+        parts.push('Not saved: ' + f.section + ' (' + f.file + '). ' + f.message + (f.suggestion ? ' ' + f.suggestion : ''));
       });
+      if (obj.next) {
+        parts.push(obj.next);
+      }
       return { note: parts.join(' '), noteState: 'error', errors: [], reload: true };
     }
     var code = obj && obj.error && typeof obj.error === 'object' ? obj.error.code : '';

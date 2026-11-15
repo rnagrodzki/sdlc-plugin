@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -79,23 +80,92 @@ func dashSetupDelegated(t *testing.T, out DashboardSetupStateOut, id string) Das
 	return DashboardDelegatedState{}
 }
 
+// dashSetupIsChoice reports whether a field of type typ is a choice field:
+// a field that has one effect for each option.
+func dashSetupIsChoice(typ string) bool {
+	switch typ {
+	case "enum", "multi-enum", "flag-set", "boolean":
+		return true
+	}
+	return false
+}
+
+// dashSetupFormIDs returns the ids of the form sections of
+// setupmeta.Sections(), in order: each section with a config path and at
+// least one field.
+func dashSetupFormIDs() []string {
+	ids := []string{}
+	for _, sec := range setupmeta.Sections() {
+		if sec.ConfigPath != "" && len(sec.Fields) > 0 {
+			ids = append(ids, sec.ID)
+		}
+	}
+	return ids
+}
+
+// dashSetupDelegatedIDs returns the ids of the delegated sections of
+// setupmeta.Sections(), in order.
+func dashSetupDelegatedIDs() []string {
+	ids := []string{}
+	for _, sec := range setupmeta.Sections() {
+		if sec.DelegatedTo != "" {
+			ids = append(ids, sec.ID)
+		}
+	}
+	return ids
+}
+
+// dashSetupWantConfigError returns the ConfigError that DashboardSetupState
+// gives for root: the text of the config.Read error first, then each note,
+// joined with one space.
+func dashSetupWantConfigError(root string, notes ...string) string {
+	var parts []string
+	if _, err := config.Read(root); err != nil {
+		parts = append(parts, err.Error())
+	}
+	return strings.Join(append(parts, notes...), " ")
+}
+
+// dashSetupConfig writes content to .sdlc-v2/config.toml of root and returns
+// the path of the file.
+func dashSetupConfig(t *testing.T, root, content string) string {
+	t.Helper()
+	cfg := filepath.Join(root, ".sdlc-v2", "config.toml")
+	dashSetupWrite(t, cfg, content)
+	return cfg
+}
+
 func TestDashboardSetupFields(t *testing.T) {
 	out := DashboardSetupFields()
 	meta := setupmeta.Sections()
-	if len(out.Sections) != 19 {
-		t.Fatalf("sections = %d, want 19", len(out.Sections))
+	if len(meta) == 0 {
+		t.Fatal("setupmeta.Sections() is empty")
+	}
+	if len(out.Sections) != len(meta) {
+		t.Fatalf("sections = %d, want %d (setupmeta.Sections())", len(out.Sections), len(meta))
+	}
+	wantChoice := 0
+	for _, sec := range meta {
+		for _, f := range sec.Fields {
+			if dashSetupIsChoice(f.Type) {
+				wantChoice++
+			}
+		}
 	}
 	choice := 0
 	for i, sec := range out.Sections {
 		if sec.ID != meta[i].ID {
 			t.Errorf("section %d is %q, want %q", i, sec.ID, meta[i].ID)
 		}
+		if len(sec.Fields) != len(meta[i].Fields) {
+			t.Errorf("section %q has %d fields, want %d", sec.ID, len(sec.Fields), len(meta[i].Fields))
+		}
 		for _, f := range sec.Fields {
 			if f.Details == "" {
 				t.Errorf("%s.%s has no details", sec.ID, f.Name)
 			}
-			switch f.Type {
-			case "enum", "multi-enum", "flag-set", "boolean":
+			switch {
+			case dashSetupIsChoice(f.Type):
 				choice++
 				if len(f.Effects) == 0 {
 					t.Errorf("%s.%s has no effects", sec.ID, f.Name)
@@ -107,8 +177,8 @@ func TestDashboardSetupFields(t *testing.T) {
 			}
 		}
 	}
-	if choice != 24 {
-		t.Errorf("choice fields = %d, want 24", choice)
+	if wantChoice == 0 || choice != wantChoice {
+		t.Errorf("choice fields = %d, want %d (setupmeta.Sections())", choice, wantChoice)
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
@@ -159,11 +229,12 @@ guardrails = [{id = "d"}]
 		t.Errorf("configError = %q, want empty", out.ConfigError)
 	}
 
-	// One key for each of the 10 form sections.
-	if len(out.Values) != 10 {
-		t.Errorf("values has %d sections, want 10: %v", len(out.Values), out.Values)
+	// One key for each form section of setupmeta.Sections().
+	formIDs := dashSetupFormIDs()
+	if len(formIDs) == 0 || len(out.Values) != len(formIDs) {
+		t.Errorf("values has %d sections, want %d: %v", len(out.Values), len(formIDs), out.Values)
 	}
-	for _, id := range []string{"version", "ship", "jira", "review", "received-review", "github", "communication-style", "plan-style", "plan-tasks", "automation"} {
+	for _, id := range formIDs {
 		if out.Values[id] == nil {
 			t.Errorf("values[%q] is missing or nil", id)
 		}
@@ -186,8 +257,14 @@ guardrails = [{id = "d"}]
 
 	two, one, three := 2, 1, 3
 	wantCount := map[string]*int{"commit": &two, "pr": &one, "review-dimensions": &one, "plan-guardrails": &three, "execution-guardrails": &one}
-	if len(out.Delegated) != 9 {
-		t.Fatalf("delegated = %d rows, want 9", len(out.Delegated))
+	delegatedIDs := dashSetupDelegatedIDs()
+	if len(delegatedIDs) == 0 || len(out.Delegated) != len(delegatedIDs) {
+		t.Fatalf("delegated = %d rows, want %d", len(out.Delegated), len(delegatedIDs))
+	}
+	for i, d := range out.Delegated {
+		if d.ID != delegatedIDs[i] {
+			t.Errorf("delegated row %d is %q, want %q (setupmeta.Sections() order)", i, d.ID, delegatedIDs[i])
+		}
 	}
 	for id, want := range wantCount {
 		d := dashSetupDelegated(t, out, id)
@@ -259,8 +336,8 @@ func TestDashboardSetupState_NoConfig(t *testing.T) {
 	if out.Delegated == nil || len(out.Delegated) != 0 {
 		t.Errorf("delegated = %v, want []", out.Delegated)
 	}
-	if out.Values == nil || len(out.Values) != 10 {
-		t.Errorf("values = %v, want 10 empty sections", out.Values)
+	if want := len(dashSetupFormIDs()); out.Values == nil || len(out.Values) != want {
+		t.Errorf("values = %v, want %d empty sections", out.Values, want)
 	}
 	b, _ := json.Marshal(out)
 	if strings.Contains(string(b), "null") {
@@ -314,8 +391,28 @@ func TestDashboardSetupState_FileOverSizeLimit(t *testing.T) {
 	dashSetupEachFile(t, func(t *testing.T, root, file string) {
 		dashSetupWrite(t, file, big)
 		kind, msg, suggestion := dashSetupSuggestion(dashSetupErr(t, root))
-		if kind != "data" || !strings.Contains(msg, file) || !strings.Contains(msg, "1048577") || !strings.Contains(msg, "1048576") || suggestion == "" {
-			t.Errorf("error = %s %q suggestion %q, want size, limit and file", kind, msg, suggestion)
+		wantMsg := fmt.Sprintf("dashboard setup: %s is %d bytes, over the %d byte limit of the Setup tab", file, maxCheckedFileBytes+1, maxCheckedFileBytes)
+		wantSuggestion := fmt.Sprintf("Reduce %s to %d bytes or less, then retry.", file, maxCheckedFileBytes)
+		if kind != "data" || msg != wantMsg || suggestion != wantSuggestion {
+			t.Errorf("error = %s %q suggestion %q, want data %q suggestion %q", kind, msg, suggestion, wantMsg, wantSuggestion)
+		}
+	})
+}
+
+// A file of exactly maxCheckedFileBytes bytes is read: the limit is not an
+// error. The content is one TOML comment line, so it is valid TOML.
+func TestDashboardSetupState_FileAtSizeLimit(t *testing.T) {
+	atLimit := strings.Repeat("#", maxCheckedFileBytes)
+	dashSetupEachFile(t, func(t *testing.T, root, file string) {
+		dashSetupWrite(t, file, atLimit)
+		if info, err := os.Stat(file); err != nil || info.Size() != maxCheckedFileBytes {
+			t.Fatalf("stat %s = %v, %v; want %d bytes", file, info, err, maxCheckedFileBytes)
+		}
+		out := dashSetupState(t, root)
+		for id, values := range out.Values {
+			if len(values) != 0 {
+				t.Errorf("values[%q] = %v, want none from a comment-only file", id, values)
+			}
 		}
 	})
 }
@@ -402,8 +499,37 @@ func TestDashboardSetupState_OpenspecOverSizeLimit(t *testing.T) {
 	file := filepath.Join(root, "openspec", "config.yaml")
 	dashSetupWrite(t, file, strings.Repeat("#", maxCheckedFileBytes+1))
 	kind, msg, suggestion := dashSetupSuggestion(dashSetupErr(t, root))
-	if kind != "data" || !strings.Contains(msg, file) || !strings.Contains(msg, "1048577") || !strings.Contains(msg, "1048576") || suggestion == "" {
-		t.Errorf("error = %s %q suggestion %q", kind, msg, suggestion)
+	wantMsg := fmt.Sprintf("dashboard setup: %s is %d bytes, over the %d byte limit", file, maxCheckedFileBytes+1, maxCheckedFileBytes)
+	wantSuggestion := fmt.Sprintf("Reduce %s to %d bytes or less, then reload the tab.", file, maxCheckedFileBytes)
+	if kind != "data" || msg != wantMsg || suggestion != wantSuggestion {
+		t.Errorf("error = %s %q suggestion %q, want data %q suggestion %q", kind, msg, suggestion, wantMsg, wantSuggestion)
+	}
+}
+
+// An openspec/config.yaml of exactly maxCheckedFileBytes bytes is read: with
+// no managed block the row is not set, with the block it is set.
+func TestDashboardSetupState_OpenspecAtSizeLimit(t *testing.T) {
+	block := "# BEGIN MANAGED BY sdlc-v2 (v2)\ncontext: x\n# END MANAGED BY sdlc-v2 (v2)\n"
+	for _, tc := range []struct {
+		name    string
+		content string
+		wantSet bool
+	}{
+		{"no block", strings.Repeat("#", maxCheckedFileBytes), false},
+		{"with block", block + strings.Repeat("#", maxCheckedFileBytes-len(block)), true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := dashSetupRoot(t)
+			dashSetupConfig(t, root, "")
+			file := filepath.Join(root, "openspec", "config.yaml")
+			dashSetupWrite(t, file, tc.content)
+			if info, err := os.Stat(file); err != nil || info.Size() != maxCheckedFileBytes {
+				t.Fatalf("stat %s = %v, %v; want %d bytes", file, info, err, maxCheckedFileBytes)
+			}
+			if d := dashSetupDelegated(t, dashSetupState(t, root), "openspec-block"); d.Set != tc.wantSet {
+				t.Errorf("openspec-block = %+v, want set %v", d, tc.wantSet)
+			}
+		})
 	}
 }
 
@@ -459,5 +585,268 @@ func TestDashboardSetupState_NoUserFilePath(t *testing.T) {
 	out := dashSetupState(t, root)
 	if out.Files.User != "" {
 		t.Errorf("files.user = %q, want empty", out.Files.User)
+	}
+}
+
+// setupGuardrailCount counts each arm of the decoded guardrails value: a
+// list, a list of tables, and the named-table form, where only the entries
+// that hold a table count.
+func TestSetupGuardrailCount(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		section  map[string]any
+		want     int
+		wantNote bool
+	}{
+		{"absent", map[string]any{}, 0, false},
+		{"list", map[string]any{"guardrails": []any{map[string]any{"id": "a"}, map[string]any{"id": "b"}}}, 2, false},
+		{"empty list", map[string]any{"guardrails": []any{}}, 0, false},
+		{"list of tables", map[string]any{"guardrails": []map[string]any{{"id": "a"}, {"id": "b"}, {"id": "c"}}}, 3, false},
+		{"named tables", map[string]any{"guardrails": map[string]any{"a": map[string]any{}, "b": map[string]any{"x": 1}, "note": "x"}}, 2, false},
+		{"text", map[string]any{"guardrails": "x"}, 0, true},
+		{"number", map[string]any{"guardrails": int64(3)}, 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var notes []string
+			got := setupGuardrailCount(tc.section, "plan.guardrails", "/r/config.toml", func(s string) { notes = append(notes, s) })
+			if got != tc.want {
+				t.Errorf("count = %d, want %d", got, tc.want)
+			}
+			wantNotes := []string(nil)
+			if tc.wantNote {
+				wantNotes = []string{"/r/config.toml: plan.guardrails is not a list or a table."}
+			}
+			if strings.Join(notes, "|") != strings.Join(wantNotes, "|") {
+				t.Errorf("notes = %q, want %q", notes, wantNotes)
+			}
+		})
+	}
+}
+
+// Guardrails in the named-table form ([plan.guardrails.<id>]) and in the
+// array-of-tables form ([[plan.guardrails]]) count, and the row is set.
+func TestDashboardSetupState_GuardrailForms(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		plan    int
+		execute int
+	}{
+		{"named tables", "[plan.guardrails]\nnote = \"x\"\n[plan.guardrails.a]\ndescription = \"a\"\n[plan.guardrails.b]\ndescription = \"b\"\n" +
+			"[execute.guardrails.c]\ndescription = \"c\"\n", 2, 1},
+		{"array of tables", "[[plan.guardrails]]\nid = \"a\"\n[[plan.guardrails]]\nid = \"b\"\n[[plan.guardrails]]\nid = \"c\"\n" +
+			"[[execute.guardrails]]\nid = \"d\"\n[[execute.guardrails]]\nid = \"e\"\n", 3, 2},
+		{"inline list", "[plan]\nguardrails = [{id = \"a\"}]\n[execute]\nguardrails = []\n", 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := dashSetupRoot(t)
+			dashSetupConfig(t, root, tc.content)
+			out := dashSetupState(t, root)
+			for id, want := range map[string]int{"plan-guardrails": tc.plan, "execution-guardrails": tc.execute} {
+				d := dashSetupDelegated(t, out, id)
+				if d.Count == nil || *d.Count != want || d.Set != (want > 0) {
+					t.Errorf("%s = %+v, want count %d and set %v", id, d, want, want > 0)
+				}
+			}
+			if strings.Contains(out.ConfigError, "guardrails is not") {
+				t.Errorf("configError = %q, want no guardrails note", out.ConfigError)
+			}
+		})
+	}
+}
+
+// A value of config.toml that does not have the type a delegated row reads
+// gives the exact note in ConfigError, after the config.Read error, and the
+// row counts it as not set.
+func TestDashboardSetupState_DelegatedWrongType(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		content string
+		row     string
+		notes   []string // each is appended to "<config.toml path>: "
+	}{
+		{"commit", "commit = \"x\"\n", "commit", []string{"commit is not a table."}},
+		// pr-labels reads pr.labels under pr, so it gives a second note.
+		{"pr", "pr = \"x\"\n", "pr", []string{"pr is not a table.", "pr.labels is not a table."}},
+		{"pr.labels", "[pr]\nlabels = \"x\"\n", "pr-labels", []string{"pr.labels is not a table."}},
+		// plan-tasks is a form section at plan.tasks, so its note comes first.
+		{"plan", "plan = \"x\"\n", "plan-guardrails", []string{"plan.tasks is not a table.", "plan is not a table."}},
+		{"execute", "execute = \"x\"\n", "execution-guardrails", []string{"execute is not a table."}},
+		{"plan.guardrails text", "[plan]\nguardrails = \"x\"\n", "plan-guardrails", []string{"plan.guardrails is not a list or a table."}},
+		{"execute.guardrails number", "[execute]\nguardrails = 5\n", "execution-guardrails", []string{"execute.guardrails is not a list or a table."}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := dashSetupRoot(t)
+			cfg := dashSetupConfig(t, root, tc.content)
+			out := dashSetupState(t, root)
+			notes := make([]string, len(tc.notes))
+			for i, n := range tc.notes {
+				notes[i] = cfg + ": " + n
+			}
+			if want := dashSetupWantConfigError(root, notes...); out.ConfigError != want {
+				t.Errorf("configError = %q\nwant %q", out.ConfigError, want)
+			}
+			d := dashSetupDelegated(t, out, tc.row)
+			if d.Set {
+				t.Errorf("%s = %+v, want not set", tc.row, d)
+			}
+			if d.Count != nil && *d.Count != 0 {
+				t.Errorf("%s count = %d, want 0", tc.row, *d.Count)
+			}
+		})
+	}
+}
+
+// A pr.labels.mode that is not a text gives a note, and the row has no mode.
+// The table holds a second key, so the row stays set.
+func TestDashboardSetupState_PRLabelsModeNotText(t *testing.T) {
+	root, _ := dashSetupRoot(t)
+	cfg := dashSetupConfig(t, root, "[pr.labels]\nmode = 3\nexclude = [\"wip\"]\n")
+	out := dashSetupState(t, root)
+	if want := dashSetupWantConfigError(root, cfg+": pr.labels.mode is not a text."); out.ConfigError != want {
+		t.Errorf("configError = %q\nwant %q", out.ConfigError, want)
+	}
+	if d := dashSetupDelegated(t, out, "pr-labels"); !d.Set || d.Mode != "" || d.Count != nil {
+		t.Errorf("pr-labels = %+v, want set with no mode and no count", d)
+	}
+}
+
+// Edge cases of the delegated rows that give no note.
+func TestDashboardSetupState_DelegatedEdgeCases(t *testing.T) {
+	t.Run("pr holds only labels", func(t *testing.T) {
+		root, _ := dashSetupRoot(t)
+		dashSetupConfig(t, root, "[pr.labels]\nmode = \"rules\"\n")
+		out := dashSetupState(t, root)
+		if d := dashSetupDelegated(t, out, "pr"); d.Set || d.Count == nil || *d.Count != 0 {
+			t.Errorf("pr = %+v, want count 0 and not set", d)
+		}
+		if d := dashSetupDelegated(t, out, "pr-labels"); !d.Set || d.Mode != "rules" {
+			t.Errorf("pr-labels = %+v, want set with mode rules", d)
+		}
+	})
+	t.Run("pr.labels with no mode", func(t *testing.T) {
+		root, _ := dashSetupRoot(t)
+		dashSetupConfig(t, root, "[pr.labels]\nexclude = [\"wip\"]\n")
+		out := dashSetupState(t, root)
+		if d := dashSetupDelegated(t, out, "pr-labels"); !d.Set || d.Mode != "" {
+			t.Errorf("pr-labels = %+v, want set with no mode", d)
+		}
+		if strings.Contains(out.ConfigError, "pr.labels") {
+			t.Errorf("configError = %q, want no pr.labels note", out.ConfigError)
+		}
+	})
+	t.Run("empty pr.labels", func(t *testing.T) {
+		root, _ := dashSetupRoot(t)
+		dashSetupConfig(t, root, "[pr.labels]\n")
+		if d := dashSetupDelegated(t, dashSetupState(t, root), "pr-labels"); d.Set || d.Mode != "" {
+			t.Errorf("pr-labels = %+v, want not set", d)
+		}
+	})
+	for _, tc := range []struct {
+		name    string
+		content string
+		wantSet bool
+	}{
+		{"openspec without block", "context: x\n", false},
+		{"openspec with block", "rules: {}\n# BEGIN MANAGED BY sdlc-v2 (v2)\ncontext: x\n# END MANAGED BY sdlc-v2 (v2)\n", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, _ := dashSetupRoot(t)
+			dashSetupConfig(t, root, "")
+			dashSetupWrite(t, filepath.Join(root, "openspec", "config.yaml"), tc.content)
+			if d := dashSetupDelegated(t, dashSetupState(t, root), "openspec-block"); d.Set != tc.wantSet {
+				t.Errorf("openspec-block = %+v, want set %v", d, tc.wantSet)
+			}
+		})
+	}
+}
+
+// ConfigError is the config.Read error text, then each note, joined with one
+// space; the read error comes first.
+func TestDashboardSetupState_ConfigErrorText(t *testing.T) {
+	t.Run("read error alone", func(t *testing.T) {
+		root, _ := dashSetupRoot(t)
+		dashSetupConfig(t, root, "[version]\n")
+		_, readErr := config.Read(root)
+		if readErr == nil {
+			t.Fatal("config.Read gives no error for an empty [version] table")
+		}
+		if out := dashSetupState(t, root); out.ConfigError != readErr.Error() {
+			t.Errorf("configError = %q, want %q", out.ConfigError, readErr.Error())
+		}
+	})
+	t.Run("note alone", func(t *testing.T) {
+		root, _ := dashSetupRoot(t)
+		dashSetupConfig(t, root, "[version.tag]\nenabled = true\n")
+		local := filepath.Join(root, ".sdlc-v2", "local.toml")
+		dashSetupWrite(t, local, "ship = \"x\"\n")
+		if _, err := config.Read(root); err != nil {
+			t.Fatalf("config.Read gives an error for this input, so the note is not alone: %v", err)
+		}
+		if out, want := dashSetupState(t, root), local+": ship is not a table."; out.ConfigError != want {
+			t.Errorf("configError = %q, want %q", out.ConfigError, want)
+		}
+	})
+	t.Run("read error then note", func(t *testing.T) {
+		root, _ := dashSetupRoot(t)
+		dashSetupConfig(t, root, "[version]\n")
+		local := filepath.Join(root, ".sdlc-v2", "local.toml")
+		dashSetupWrite(t, local, "ship = \"x\"\n")
+		_, readErr := config.Read(root)
+		if readErr == nil {
+			t.Fatal("config.Read gives no error for an empty [version] table")
+		}
+		want := readErr.Error() + " " + local + ": ship is not a table."
+		if out := dashSetupState(t, root); out.ConfigError != want {
+			t.Errorf("configError = %q\nwant %q", out.ConfigError, want)
+		}
+	})
+}
+
+// A stat of config.toml that fails with an error other than "not exist" is
+// an InfraError: here .sdlc-v2 is a regular file, so the stat gives ENOTDIR.
+func TestDashboardSetupState_RepoStatError(t *testing.T) {
+	root, _ := dashSetupRoot(t)
+	dashSetupWrite(t, filepath.Join(root, ".sdlc-v2"), "x")
+	configPath := filepath.Join(root, ".sdlc-v2", "config.toml")
+	err := dashSetupErr(t, root)
+	var infra *mcpserver.InfraError
+	if !errors.As(err, &infra) {
+		t.Fatalf("error = %T %v, want *mcpserver.InfraError", err, err)
+	}
+	if want := "dashboard setup: stat " + configPath + ": "; !strings.HasPrefix(infra.Msg, want) {
+		t.Errorf("msg = %q, want prefix %q", infra.Msg, want)
+	}
+	if want := "Check that " + configPath + " is readable, then reload the tab."; infra.Suggestion != want {
+		t.Errorf("suggestion = %q, want %q", infra.Suggestion, want)
+	}
+	cause := errors.Unwrap(err)
+	if cause == nil || errors.Is(cause, os.ErrNotExist) {
+		t.Errorf("cause = %v, want a stat error that is not ErrNotExist", cause)
+	}
+	if _, stateErr := setupRepoState(root); stateErr == nil {
+		t.Error("setupRepoState gives no error")
+	}
+}
+
+// A read error of DashboardSetupState names the caller "dashboard setup",
+// not setup_write_sections, and its Suggestion does not say that nothing
+// was written: the call writes nothing.
+func TestDashboardSetupState_ReadErrorNamesCaller(t *testing.T) {
+	root, _ := dashSetupRoot(t)
+	local := filepath.Join(root, ".sdlc-v2", "local.toml")
+	dashSetupWrite(t, local, "[ship")
+	kind, msg, suggestion := dashSetupSuggestion(dashSetupErr(t, root))
+	if kind != "data" {
+		t.Fatalf("kind = %s, want data", kind)
+	}
+	if want := "dashboard setup: " + local + " is not valid TOML: "; !strings.HasPrefix(msg, want) {
+		t.Errorf("msg = %q, want prefix %q", msg, want)
+	}
+	if strings.Contains(msg, "setup_write_sections") {
+		t.Errorf("msg = %q names setup_write_sections", msg)
+	}
+	if want := "Fix the TOML syntax of " + local + " by hand, then retry."; suggestion != want {
+		t.Errorf("suggestion = %q, want %q", suggestion, want)
 	}
 }

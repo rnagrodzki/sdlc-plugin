@@ -3,6 +3,7 @@
 // DashboardSetupFields returns the full field list. DashboardSetupState reads
 // the config files of one repo and returns the state of the repo, the value
 // of each form field with its source, and the state of the delegated rows.
+
 package tools
 
 import (
@@ -20,6 +21,8 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 )
 
+// The states of a repo for the Setup tab. setupRepoState returns one of
+// them, and the save and the create allow only some of them.
 const (
 	SetupStateReady    = "ready"         // .sdlc-v2/config.toml exists
 	SetupStateNoConfig = "no-config"     // no config.toml and no config.json
@@ -34,7 +37,7 @@ type DashboardSetupFieldsOut struct {
 // DashboardSetupValue is the value of one field and the file it comes from.
 type DashboardSetupValue struct {
 	Value  any    `json:"value"`  // the value as the file holds it
-	Source string `json:"source"` // "config" | "project" | "user"
+	Source string `json:"source"` // setupTargetConfig | setupTargetProject | setupTargetUser
 }
 
 // DashboardSetupFiles holds the absolute path of each config file.
@@ -80,7 +83,7 @@ func setupRepoState(root string) (string, error) {
 		return SetupStateReady, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		return "", readFileError("dashboard setup: stat", configPath, err)
+		return "", dashboardSetupReadError("stat", configPath, err)
 	}
 	if errors.Is(configmigrate.Verify(root), configmigrate.ErrVersionStale) {
 		return SetupStateLegacy, nil
@@ -107,17 +110,17 @@ func DashboardSetupState(root string) (DashboardSetupStateOut, error) {
 		out.Files.User = p
 	}
 
-	configDoc, err := readSetupFile(out.Files.Config)
+	configDoc, err := readCheckedTOML(out.Files.Config, setupStateReader)
 	if err != nil {
 		return DashboardSetupStateOut{}, err
 	}
-	projectDoc, err := readSetupFile(out.Files.Project)
+	projectDoc, err := readCheckedTOML(out.Files.Project, setupStateReader)
 	if err != nil {
 		return DashboardSetupStateOut{}, err
 	}
 	var userDoc map[string]any
 	if out.Files.User != "" {
-		if userDoc, err = readSetupFile(out.Files.User); err != nil {
+		if userDoc, err = readCheckedTOML(out.Files.User, setupStateReader); err != nil {
 			return DashboardSetupStateOut{}, err
 		}
 	}
@@ -142,7 +145,7 @@ func DashboardSetupState(root string) (DashboardSetupStateOut, error) {
 		if _, err := config.Read(root); err != nil {
 			out.ConfigError = err.Error()
 		}
-		if out.Delegated, err = dashboardDelegated(root, configDoc); err != nil {
+		if out.Delegated, err = dashboardDelegated(root, out.Files.Config, configDoc, addNote); err != nil {
 			return DashboardSetupStateOut{}, err
 		}
 	}
@@ -167,10 +170,10 @@ func setupSectionValues(sec setupmeta.Section, files DashboardSetupFiles,
 		file   string
 		doc    map[string]any
 	}
-	layers := []layer{{"project", files.Project, projectDoc}, {"user", files.User, userDoc}}
+	layers := []layer{{setupTargetProject, files.Project, projectDoc}, {setupTargetUser, files.User, userDoc}}
 	top, _, _ := strings.Cut(sec.ConfigPath, ".")
 	if config.ProjectSections[top] {
-		layers = []layer{{"config", files.Config, configDoc}}
+		layers = []layer{{setupTargetConfig, files.Config, configDoc}}
 	}
 
 	values := map[string]DashboardSetupValue{}
@@ -224,8 +227,18 @@ func setupFieldValue(table map[string]any, name string) (value any, present bool
 }
 
 // dashboardDelegated returns the state of each row that the form cannot edit,
-// in the order of setupmeta.Sections().
-func dashboardDelegated(root string, configDoc map[string]any) ([]DashboardDelegatedState, error) {
+// in the order of setupmeta.Sections(). configFile is the path of
+// config.toml. addNote receives the sentence for a value of config.toml that
+// does not have the type that a row reads; the row then counts that value as
+// not set.
+func dashboardDelegated(root, configFile string, configDoc map[string]any, addNote func(string)) ([]DashboardDelegatedState, error) {
+	table := func(key string) map[string]any {
+		t, ok := setupTable(configDoc, key)
+		if !ok {
+			addNote(fmt.Sprintf("%s: %s is not a table.", configFile, key))
+		}
+		return t
+	}
 	rows := []DashboardDelegatedState{}
 	for _, sec := range setupmeta.Sections() {
 		if sec.DelegatedTo == "" {
@@ -238,20 +251,23 @@ func dashboardDelegated(root string, configDoc map[string]any) ([]DashboardDeleg
 		}
 		switch sec.ID {
 		case "commit":
-			table, _ := setupTable(configDoc, "commit")
-			count(len(table))
+			count(len(table("commit")))
 		case "pr":
-			table, _ := setupTable(configDoc, "pr")
-			n := len(table)
-			if _, hasLabels := table["labels"]; hasLabels {
+			pr := table("pr")
+			n := len(pr)
+			if _, hasLabels := pr["labels"]; hasLabels {
 				n--
 			}
 			count(n)
 		case "pr-labels":
-			table, _ := setupTable(configDoc, "pr.labels")
-			row.Set = len(table) > 0
-			if mode, ok := table["mode"].(string); ok {
-				row.Mode = mode
+			labels := table("pr.labels")
+			row.Set = len(labels) > 0
+			if raw, present := labels["mode"]; present {
+				if mode, ok := raw.(string); ok {
+					row.Mode = mode
+				} else {
+					addNote(fmt.Sprintf("%s: pr.labels.mode is not a text.", configFile))
+				}
 			}
 		case "review-dimensions":
 			loaded, err := dimensions.Load(filepath.Join(root, paths.DataDir, paths.ReviewDimensionsSubdir))
@@ -270,9 +286,9 @@ func dashboardDelegated(root string, configDoc map[string]any) ([]DashboardDeleg
 			}
 			row.Set = res.Exists
 		case "plan-guardrails":
-			count(setupListLen(configDoc, "plan", "guardrails"))
+			count(setupGuardrailCount(table("plan"), "plan.guardrails", configFile, addNote))
 		case "execution-guardrails":
-			count(setupListLen(configDoc, "execute", "guardrails"))
+			count(setupGuardrailCount(table("execute"), "execute.guardrails", configFile, addNote))
 		case "openspec-block":
 			set, err := openspecBlockSet(root)
 			if err != nil {
@@ -285,31 +301,44 @@ func dashboardDelegated(root string, configDoc map[string]any) ([]DashboardDeleg
 	return rows, nil
 }
 
-// setupListLen returns the number of entries of the list at table.key in
-// doc. An absent key, or a value that is not a list, gives 0.
-func setupListLen(doc map[string]any, table, key string) int {
-	t, _ := setupTable(doc, table)
-	switch list := t[key].(type) {
+// setupGuardrailCount returns the number of guardrails in the guardrails key
+// of section. It counts each entry of the array-of-tables form
+// ([[plan.guardrails]]) and each table of the named-table form
+// ([plan.guardrails.<id>]). An absent key gives 0. A value of another type
+// gives 0, and addNote receives a sentence that names path in configFile.
+func setupGuardrailCount(section map[string]any, path, configFile string, addNote func(string)) int {
+	raw, present := section["guardrails"]
+	if !present {
+		return 0
+	}
+	switch list := raw.(type) {
 	case []any:
 		return len(list)
 	case []map[string]any:
 		return len(list)
-	case []string:
-		return len(list)
+	case map[string]any:
+		n := 0
+		for _, entry := range list {
+			if _, isTable := entry.(map[string]any); isTable {
+				n++
+			}
+		}
+		return n
 	}
+	addNote(fmt.Sprintf("%s: %s is not a list or a table.", configFile, path))
 	return 0
 }
 
 // openspecBlockSet reports whether openspec/config.yaml holds the managed
 // block of /setup. An absent file gives false.
 func openspecBlockSet(root string) (bool, error) {
-	path := filepath.Join(root, "openspec", "config.yaml")
+	path := openspecConfigPath(root)
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
-		return false, readFileError("dashboard setup: stat", path, err)
+		return false, dashboardSetupReadError("stat", path, err)
 	}
 	if info.Size() > maxCheckedFileBytes {
 		return false, &mcpserver.DataError{
@@ -319,9 +348,20 @@ func openspecBlockSet(root string) (bool, error) {
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return false, readFileError("dashboard setup: read", path, err)
+		return false, dashboardSetupReadError("read", path, err)
 	}
 	return enrichBeginRe.Match(data), nil
+}
+
+// dashboardSetupReadError is the InfraError of a failed stat or read of path
+// by the Setup tab. op is "stat" or "read". Its Suggestion does not say that
+// nothing was written, because the state read writes nothing.
+func dashboardSetupReadError(op, path string, cause error) error {
+	return &mcpserver.InfraError{
+		Msg:        fmt.Sprintf("dashboard setup: %s %s: %s", op, path, cause.Error()),
+		Suggestion: fmt.Sprintf("Check that %s is readable, then reload the tab.", path),
+		Cause:      cause,
+	}
 }
 
 // dashboardSetupInfraError wraps a failed read of a delegated row.

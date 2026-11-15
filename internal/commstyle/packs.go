@@ -143,16 +143,16 @@ func buildDensityPack(maxListItems int) string {
 	return fmt.Sprintf("- Compare 2+ options with 2+ attributes in a table.\n- Show each changed flow as a before/after Mermaid diagram.\n- Keep lists to %d items or fewer.\n- %s", maxListItems, mermaidContrastRule)
 }
 
-// standardExample is one same-content rewrite: the text before and after
-// a writing standard is applied.
-type standardExample struct {
+// StandardPair is one same-content rewrite: the text before and after a
+// writing standard is applied.
+type StandardPair struct {
 	Before string
 	After  string
 }
 
 // standardExamples hold one same-content before/after pair per
 // WritingStandards value, shown in the guide's <example> tag.
-var standardExamples = map[string]standardExample{
+var standardExamples = map[string]StandardPair{
 	"ste": {
 		"The validator, which is responsible for checking audience values, will reject values that are unknown.",
 		"The validator checks each audience value. It rejects a value that is not in the list.",
@@ -173,12 +173,9 @@ var standardExamples = map[string]standardExample{
 
 // StandardExample returns one text before and after the writing standard
 // applies. ok is false when standard is not a writing standard.
-func StandardExample(standard string) (before, after string, ok bool) {
+func StandardExample(standard string) (StandardPair, bool) {
 	ex, ok := standardExamples[standard]
-	if !ok {
-		return "", "", false
-	}
-	return ex.Before, ex.After, true
+	return ex, ok
 }
 
 // steAvoidWords are the avoid-list pairs behind standardPacks["ste"]

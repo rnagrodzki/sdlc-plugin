@@ -4,6 +4,7 @@
 // list of setupmeta.Sections, which setup_prepare returns) before any write.
 // A value equal to the value that the target file already holds is not
 // checked, so a repo with a hand-written value can still save.
+
 package tools
 
 import (
@@ -32,9 +33,54 @@ const (
 	maxSetupNumber    = 2147483647 // largest number of a field with no Max
 )
 
+// The limits as text, for the tool description of setup_write_sections.
+var (
+	setupTextBytesText = strconv.Itoa(maxSetupTextBytes)
+	setupListItemsText = strconv.Itoa(maxSetupListItems)
+	setupNumberText    = strconv.Itoa(maxSetupNumber)
+)
+
 // maxSetupQuoteBytes bounds a text value that an error message quotes, so a
 // long refused text does not fill the message.
 const maxSetupQuoteBytes = 64
+
+// setupRateFields are the config paths of the string fields that hold a
+// fraction from 0 to 1. config.parseAutomation reads them as numbers only, so
+// normalizeSetupRates stores a decimal text as a number, and the value check
+// accepts only a number from 0 to 1.
+var setupRateFields = map[string]bool{
+	"automation.drift.maxErrorRate":   true,
+	"automation.drift.maxWarningRate": true,
+}
+
+// normalizeSetupRates changes, in place, each decimal text of a rate field in
+// section to a number. key is the config path of section, as in
+// checkSetupValues. A text that is not a number stays as it is, so the value
+// check refuses it. A nil section changes nothing.
+func normalizeSetupRates(key string, section map[string]any) {
+	for path := range setupRateFields {
+		if rel, ok := strings.CutPrefix(path, key+"."); ok {
+			setupConvertRate(section, strings.Split(rel, "."))
+		}
+	}
+}
+
+// setupConvertRate converts the text at the path parts in m to a number. It
+// finds the value in the nested form ({"drift":{"maxErrorRate":...}}) and in
+// the dotted form ({"drift.maxErrorRate":...}).
+func setupConvertRate(m map[string]any, parts []string) {
+	joined := strings.Join(parts, ".")
+	if s, ok := m[joined].(string); ok {
+		if n, err := strconv.ParseFloat(strings.TrimSpace(s), 64); err == nil && !math.IsInf(n, 0) && !math.IsNaN(n) {
+			m[joined] = n
+		}
+	}
+	if len(parts) > 1 {
+		if child, ok := m[parts[0]].(map[string]any); ok {
+			setupConvertRate(child, parts[1:])
+		}
+	}
+}
 
 // SetupFieldError names one field value that the check refuses.
 type SetupFieldError struct {
@@ -186,14 +232,15 @@ func checkSetupField(sec setupmeta.Section, field setupmeta.Field, v any) string
 	case "number":
 		return checkSetupNumber(field, v)
 	case "string":
+		if setupRateFields[sec.ConfigPath+"."+field.Name] {
+			return checkSetupRate(v)
+		}
 		if msg := checkSetupText(v, "a text value is required"); msg != "" {
 			return msg
 		}
 		if sec.ConfigPath == "version" && field.Name == "pushAuth.secretName" {
-			if name := v.(string); name != "" {
-				if err := validateSecretName(name); err != nil {
-					return err.Error()
-				}
+			if name, _ := v.(string); name != "" && validateSecretName(name) != nil {
+				return fmt.Sprintf("%s is not a valid GitHub Actions secret name. Use only letters, digits and underscores, and do not start with a digit or with GITHUB_ (for example RELEASE_TOKEN).", setupQuote(name))
 			}
 		}
 	case "list":
@@ -235,6 +282,17 @@ func checkSetupNumber(field setupmeta.Field, v any) string {
 	return ""
 }
 
+// checkSetupRate checks the value of a rate field (setupRateFields): a number
+// from 0 to 1. normalizeSetupRates has already changed a decimal text to a
+// number.
+func checkSetupRate(v any) string {
+	n, ok := v.(float64)
+	if !ok || math.IsNaN(n) || n < 0 || n > 1 {
+		return fmt.Sprintf("a number from 0 to 1 is required, got %s.", setupValueText(v))
+	}
+	return ""
+}
+
 // checkSetupText checks one text value against maxSetupTextBytes. want starts
 // the message for a value that is not a text.
 func checkSetupText(v any, want string) string {
@@ -261,6 +319,8 @@ func setupTypeName(v any) string {
 		return "a list"
 	case map[string]any:
 		return "a table"
+	case nil:
+		return "null"
 	default:
 		return fmt.Sprintf("a %T", v)
 	}
@@ -268,7 +328,8 @@ func setupTypeName(v any) string {
 
 // setupValueText renders a decoded value for a message: a text is quoted, a
 // number or a boolean is printed as is, and a list or a table gets its type
-// name.
+// name. A number uses the exponent form when it has 21 or more digits, so a
+// large refused number such as 1e300 stays short.
 func setupValueText(v any) string {
 	switch val := v.(type) {
 	case string:
@@ -276,6 +337,9 @@ func setupValueText(v any) string {
 	case bool:
 		return strconv.FormatBool(val)
 	case float64:
+		if math.Abs(val) >= 1e21 {
+			return strconv.FormatFloat(val, 'e', -1, 64)
+		}
 		return strconv.FormatFloat(val, 'f', -1, 64)
 	default:
 		return setupTypeName(v)
@@ -294,54 +358,98 @@ func setupQuote(s string) string {
 	return strconv.Quote(cut) + " (cut)"
 }
 
-// setupValuesError is the DomainError of a call that the value check refuses.
-func setupValuesError(errs []SetupFieldError) error {
-	noun := "field values are"
-	if len(errs) == 1 {
-		noun = "field value is"
+// SetupRefusedText states the count of the values that the value check
+// refuses, for example "1 field value is refused".
+func SetupRefusedText(n int) string {
+	if n == 1 {
+		return "1 field value is refused"
 	}
+	return fmt.Sprintf("%d field values are refused", n)
+}
+
+// setupFieldErrorsText states the count of the refused values, then the path
+// and the message of each one.
+func setupFieldErrorsText(errs []SetupFieldError) string {
 	parts := make([]string, 0, len(errs))
 	for _, e := range errs {
 		parts = append(parts, e.Path+": "+e.Message)
 	}
+	return SetupRefusedText(len(errs)) + ". " + strings.Join(parts, " ")
+}
+
+// setupValuesError is the DomainError of a call that the value check refuses.
+func setupValuesError(errs []SetupFieldError) error {
 	return &mcpserver.DomainError{
-		Msg:        fmt.Sprintf("setup_write_sections: %d %s refused. %s", len(errs), noun, strings.Join(parts, " ")),
+		Msg:        "setup_write_sections: " + setupFieldErrorsText(errs),
 		Suggestion: "Correct each named field, then call setup_write_sections again. Nothing was written.",
 	}
 }
 
-// readSetupFile reads and decodes the TOML file at path. An absent file
-// gives a nil map and no error. It checks the file size against
-// maxCheckedFileBytes before the read, as readGuardrailCheckFile does.
-func readSetupFile(path string) (map[string]any, error) {
+// tomlReader names the caller of readCheckedTOML in its error texts.
+type tomlReader struct {
+	caller string // starts each Msg, for example "setup_write_sections"
+	check  string // the check that the byte limit belongs to
+	tail   string // ends each Suggestion: " Nothing was written." for a write, "" for a read-only call
+}
+
+// The readers of the TOML files of setup_write_sections and of the dashboard
+// Setup tab.
+var (
+	guardrailCheckReader = tomlReader{caller: "setup_write_sections", check: "the guardrail check", tail: " Nothing was written."}
+	setupValueReader     = tomlReader{caller: "setup_write_sections", check: "the setup value check", tail: " Nothing was written."}
+	setupSaveReader      = tomlReader{caller: "dashboard setup save", check: "the setup value check", tail: " Nothing was written."}
+	setupStateReader     = tomlReader{caller: "dashboard setup", check: "the Setup tab"}
+)
+
+// readCheckedTOML reads and decodes the TOML file at path. An absent file
+// gives a nil map and no error; an empty file gives an empty map. It checks
+// the file size against maxCheckedFileBytes before the read. A file over the
+// limit or with bad TOML is a DataError; a failed stat or read is an
+// InfraError. r names the caller in each error text.
+func readCheckedTOML(path string, r tomlReader) (map[string]any, error) {
 	info, err := os.Stat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, readFileError("setup_write_sections: read", path, err)
+		return nil, r.readError(path, err)
 	}
 	if info.Size() > maxCheckedFileBytes {
 		return nil, &mcpserver.DataError{
-			Msg:        fmt.Sprintf("setup_write_sections: %s is %d bytes, over the %d byte limit of the setup value check", path, info.Size(), maxCheckedFileBytes),
-			Suggestion: fmt.Sprintf("Reduce %s to %d bytes or less, then retry. Nothing was written.", path, maxCheckedFileBytes),
+			Msg:        fmt.Sprintf("%s: %s is %d bytes, over the %d byte limit of %s", r.caller, path, info.Size(), maxCheckedFileBytes, r.check),
+			Suggestion: fmt.Sprintf("Reduce %s to %d bytes or less, then retry.%s", path, maxCheckedFileBytes, r.tail),
 		}
 	}
 	var raw map[string]any
 	if err := fsx.ReadTOML(path, &raw); err != nil {
 		if errors.Is(err, fsx.ErrParse) {
 			return nil, &mcpserver.DataError{
-				Msg:        fmt.Sprintf("setup_write_sections: %s is not valid TOML: %s", path, err.Error()),
-				Suggestion: "Correct the TOML syntax of " + path + " by hand, then retry. Nothing was written.",
+				Msg:        fmt.Sprintf("%s: %s is not valid TOML: %s", r.caller, path, err.Error()),
+				Suggestion: "Fix the TOML syntax of " + path + " by hand, then retry." + r.tail,
 				Cause:      err,
 			}
 		}
-		return nil, readFileError("setup_write_sections: read", path, err)
+		return nil, r.readError(path, err)
 	}
 	if raw == nil {
 		raw = map[string]any{}
 	}
 	return raw, nil
+}
+
+// readError is the InfraError of a failed stat or read of path.
+func (r tomlReader) readError(path string, cause error) error {
+	return &mcpserver.InfraError{
+		Msg:        fmt.Sprintf("%s: read %s: %s", r.caller, path, cause.Error()),
+		Suggestion: fmt.Sprintf("Check that %s is a readable file, then retry.%s", path, r.tail),
+		Cause:      cause,
+	}
+}
+
+// readSetupFile reads the TOML file at path for the setup value check of
+// setup_write_sections (readCheckedTOML).
+func readSetupFile(path string) (map[string]any, error) {
+	return readCheckedTOML(path, setupValueReader)
 }
 
 // setupTable returns the table at the dotted config path key in doc. An

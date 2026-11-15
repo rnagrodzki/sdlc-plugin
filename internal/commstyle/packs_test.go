@@ -6,7 +6,8 @@ import "testing"
 // writing standard, and reports ok == false for any other value.
 func TestStandardExample(t *testing.T) {
 	for _, standard := range WritingStandards {
-		before, after, ok := StandardExample(standard)
+		pair, ok := StandardExample(standard)
+		before, after := pair.Before, pair.After
 		if !ok {
 			t.Errorf("StandardExample(%q) ok = false, want true", standard)
 			continue
@@ -21,7 +22,8 @@ func TestStandardExample(t *testing.T) {
 	}
 
 	for _, bad := range []string{"x", "", "STE"} {
-		before, after, ok := StandardExample(bad)
+		pair, ok := StandardExample(bad)
+		before, after := pair.Before, pair.After
 		if ok || before != "" || after != "" {
 			t.Errorf("StandardExample(%q) = (%q, %q, %v), want (\"\", \"\", false)", bad, before, after, ok)
 		}

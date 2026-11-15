@@ -199,9 +199,9 @@ func runSetupErrorRows(t *testing.T) {
 		{"state: read fails with a typed error", "state", data, 500, codeSetupReadFailed, "cannot read config.toml", "Check the file.", 0},
 		{"state: read fails with a plain error", "state", errors.New("boom"), 500, codeSetupReadFailed, "boom", suggestReadLog, 0},
 		{"save: domain error", "save", domain, 400, codeBadRequest, "changes holds too many entries", "Send fewer.", 0},
-		{"save: one refused value", "save", invalid1, 400, codeSetupInvalid, "1 field has a value that the config check refuses", "Correct each field, then save again. No file changed.", 1},
-		{"save: two refused values", "save", invalid2, 400, codeSetupInvalid, "2 fields have a value that the config check refuses", "Correct each field, then save again. No file changed.", 2},
-		{"save: refused with a nil fields list", "save", invalidNil, 400, codeSetupInvalid, "0 fields have a value that the config check refuses", "Correct each field, then save again. No file changed.", 0},
+		{"save: one refused value", "save", invalid1, 400, codeSetupInvalid, "1 field value is refused by the config check", "Correct each field, then save again. No file changed.", 1},
+		{"save: two refused values", "save", invalid2, 400, codeSetupInvalid, "2 field values are refused by the config check", "Correct each field, then save again. No file changed.", 2},
+		{"save: refused with a nil fields list", "save", invalidNil, 400, codeSetupInvalid, "0 field values are refused by the config check", "Correct each field, then save again. No file changed.", 0},
 		{"save: state does not allow", "save", notReady, 409, codeSetupNotReady, notReady.Error(), "Select Create config.", 0},
 		{"save: state does not allow, no suggestion", "save", notReadyBare, 409, codeSetupNotReady, notReadyBare.Error(), suggestReloadPage, 0},
 		{"save: fails with a typed error", "save", data, 500, codeSetupSaveFailed, "cannot read config.toml", "Check the file.", 0},
@@ -280,12 +280,89 @@ func runSetupRepoErrors(t *testing.T) {
 				if tc.code == codeRepoNotFound && body.Error.Message != repoNotFoundMessage("/repo/other") {
 					t.Errorf("message = %q", body.Error.Message)
 				}
+				if strings.HasSuffix(tc.name, "repo too long") && body.Error.Message != repoTooLongMessage {
+					t.Errorf("message = %q; want %q", body.Error.Message, repoTooLongMessage)
+				}
 				if f.calls() != 0 {
 					t.Errorf("a Setup function ran %d times; want 0", f.calls())
 				}
 			})
 		}
 	})
+}
+
+// repoTooLongMessage is the 400 message of repoTooLong.
+const repoTooLongMessage = "The repo field is longer than 4096 bytes"
+
+// TestHandler_SetupRepoAtLengthLimit pins that a repo of exactly
+// maxDetailRepo bytes passes the length check of the state, save and create
+// routes. No repo of that name is registered, so the route answers 404
+// REPO_NOT_FOUND, not the 400 of repoTooLong, and calls no Setup function.
+func TestHandler_SetupRepoAtLengthLimit(t *testing.T) {
+	repo := detailLongRepo(maxDetailRepo)
+	if len(repo) != maxDetailRepo {
+		t.Fatalf("test repo has %d bytes; want %d", len(repo), maxDetailRepo)
+	}
+	cases := []struct {
+		name, method, path, body string
+	}{
+		{"state", "GET", "/api/setup-state?repo=" + url.QueryEscape(repo), ""},
+		{"save", "POST", "/api/setup-save", `{"repo":"` + repo + `","changes":[]}`},
+		{"create", "POST", "/api/setup-create", `{"repo":"` + repo + `"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeSetup{}
+			h := newSetupHandler(t, f)
+			var rec = do(h, tc.method, tc.path, testHost, nil)
+			if tc.method == "POST" {
+				rec = postJSON(h, tc.path, tc.body, mutationHeader())
+			}
+			body := wantAPIError(t, rec, http.StatusNotFound, codeRepoNotFound)
+			if body.Error.Message != repoNotFoundMessage(repo) {
+				t.Errorf("message = %.80q...; want the not-found message of the repo", body.Error.Message)
+			}
+			if f.calls() != 0 {
+				t.Errorf("a Setup function ran %d times; want 0", f.calls())
+			}
+		})
+	}
+}
+
+// TestHandler_ServeWriteRepoLengthLimit pins that the repo length check of
+// serveWriteWith also guards the serveWrite routes: a repo of maxDetailRepo+1
+// bytes is a 400 before the repo is resolved, and a repo of maxDetailRepo
+// bytes passes the check and fails only as an unknown repo.
+func TestHandler_ServeWriteRepoLengthLimit(t *testing.T) {
+	atLimit := detailLongRepo(maxDetailRepo)
+	routes := []struct{ path, extra string }{
+		{"/api/preplan-delete", `,"slug":"auth-flow"`},
+		{"/api/deferred-delete", `,"id":"review-deferred-a1"`},
+	}
+	for _, rt := range routes {
+		t.Run(strings.TrimPrefix(rt.path, "/api/")+" over the limit", func(t *testing.T) {
+			f := &fakeActions{}
+			rec := postJSON(newActionHandler(t, f), rt.path, `{"repo":"`+atLimit+`x"`+rt.extra+`}`, mutationHeader())
+			body := wantAPIError(t, rec, http.StatusBadRequest, codeBadRequest)
+			if body.Error.Message != repoTooLongMessage {
+				t.Errorf("message = %q; want %q", body.Error.Message, repoTooLongMessage)
+			}
+			if f.calls() != 0 {
+				t.Errorf("a function ran %d times; want 0", f.calls())
+			}
+		})
+		t.Run(strings.TrimPrefix(rt.path, "/api/")+" at the limit", func(t *testing.T) {
+			f := &fakeActions{}
+			rec := postJSON(newActionHandler(t, f), rt.path, `{"repo":"`+atLimit+`"`+rt.extra+`}`, mutationHeader())
+			body := wantAPIError(t, rec, http.StatusNotFound, codeRepoNotFound)
+			if body.Error.Message != repoNotFoundMessage(atLimit) {
+				t.Errorf("message = %.80q...; want the not-found message of the repo", body.Error.Message)
+			}
+			if f.calls() != 0 {
+				t.Errorf("a function ran %d times; want 0", f.calls())
+			}
+		})
+	}
 }
 
 // TestHandler_SetupPostGuards pins that both POST routes refuse a wrong

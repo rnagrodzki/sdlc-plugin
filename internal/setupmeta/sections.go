@@ -561,7 +561,9 @@ var githubFields = []Field{
 // variant (Min/Max are *int), so the two drift rate fields are typed
 // "string" with string-literal defaults, matching how DriftConfig's
 // MaxErrorRate/MaxWarningRate (float64, range 0-1) are questionnaire-input
-// as decimal text rather than a numeric spinner.
+// as decimal text rather than a numeric spinner. setup_write_sections and
+// the dashboard save store that decimal text as a number from 0 to 1
+// (setupRateFields in internal/tools), because config reads only a number.
 var automationFields = []Field{
 	{
 		Name:        "mode",
@@ -616,8 +618,7 @@ var automationFields = []Field{
 		Label:       "Minimum error floor",
 		Type:        "number",
 		Default:     2,
-		Min:         intPtr(1),
-		Max:         intPtr(100),
+		Min:         intPtr(0),
 		Description: "Minimum absolute error count tolerated regardless of drift.maxErrorRate, so small plans aren't held to an unreachable fractional threshold.",
 		Details:     "This value is the minimum absolute error count tolerated regardless of drift.maxErrorRate. It stops a small plan from being held to an unreachable fractional threshold.",
 		Examples:    []string{"2 — halts after 2 errors even on a tiny plan", "5 — tolerates up to 5 errors on a tiny plan"},

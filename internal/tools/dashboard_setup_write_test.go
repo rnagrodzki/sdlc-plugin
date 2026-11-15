@@ -260,7 +260,7 @@ func TestDashboardSetupSave_DottedField(t *testing.T) {
 	before := saveSnapshot(saveConfigPath(root), userPath)
 	_, err := DashboardSetupSave(root, DashboardSetupSaveIn{Changes: []DashboardSetupChange{
 		saveSet("version", "tag.prefix", strings.Repeat("x", maxSetupTextBytes+1)),
-		saveSet("automation", "drift.minErrorFloor", float64(500)),
+		saveSet("automation", "drift.minErrorFloor", float64(-1)),
 	}})
 	var invalid *DashboardSetupInvalid
 	if !errors.As(err, &invalid) {
@@ -344,32 +344,84 @@ func TestDashboardSetupSave_KeepsTemplateComments(t *testing.T) {
 	}
 }
 
-// TestDashboardSetupSave_RequestRules covers each row of the request rule
-// table. Each case returns a DomainError that names the rule, and no file
-// changes.
-func TestDashboardSetupSave_RequestRules(t *testing.T) {
-	tooMany := make([]DashboardSetupChange, maxSetupChanges+1)
-	for i := range tooMany {
-		tooMany[i] = DashboardSetupChange{Section: "nope", Field: "x", Op: "bad"}
+// saveFormSections returns the sections of setupmeta.Sections() that the form
+// can change: not delegated, with a config path and with fields.
+func saveFormSections() []setupmeta.Section {
+	var out []setupmeta.Section
+	for _, sec := range setupmeta.Sections() {
+		if sec.DelegatedTo == "" && sec.ConfigPath != "" && len(sec.Fields) > 0 {
+			out = append(out, sec)
+		}
 	}
+	return out
+}
+
+// saveFormSectionIDs returns the ids of saveFormSections, joined by ", ".
+func saveFormSectionIDs() string {
+	var ids []string
+	for _, sec := range saveFormSections() {
+		ids = append(ids, sec.ID)
+	}
+	return strings.Join(ids, ", ")
+}
+
+// saveFieldNames returns the field names of the form section id, joined by
+// ", ".
+func saveFieldNames(t *testing.T, id string) string {
+	t.Helper()
+	for _, sec := range saveFormSections() {
+		if sec.ID == id {
+			var names []string
+			for _, f := range sec.Fields {
+				names = append(names, f.Name)
+			}
+			return strings.Join(names, ", ")
+		}
+	}
+	t.Fatalf("no form section %q", id)
+	return ""
+}
+
+// saveRequestMsg is the Msg of the DomainError of a broken request rule.
+func saveRequestMsg(rule string) string {
+	return "dashboard setup save: " + rule + ". Nothing was written."
+}
+
+// TestDashboardSetupSave_RequestRules covers each row of the request rule
+// table. Each case returns a DomainError with the exact Msg and Suggestion of
+// the rule, and no file changes.
+func TestDashboardSetupSave_RequestRules(t *testing.T) {
+	bad := DashboardSetupChange{Section: "nope", Field: "x", Op: "bad"}
+	tooMany := slices.Repeat([]DashboardSetupChange{bad}, maxSetupChanges+1)
+	// Exactly maxSetupChanges entries pass the count rule, so the next rule
+	// (the section of the first change) refuses the request.
+	atLimit := slices.Repeat([]DashboardSetupChange{bad}, maxSetupChanges)
+	unknownSection := fmt.Sprintf(`section "nope" is not a form section. Form sections: %s`, saveFormSectionIDs())
 	cases := []struct {
 		name string
 		in   DashboardSetupSaveIn
-		want string
+		rule string
 	}{
 		{"absent changes", DashboardSetupSaveIn{}, "changes is empty"},
 		{"empty changes", DashboardSetupSaveIn{Changes: []DashboardSetupChange{}}, "changes is empty"},
 		{"too many changes", DashboardSetupSaveIn{Changes: tooMany}, fmt.Sprintf("changes has %d entries, over the limit of %d", maxSetupChanges+1, maxSetupChanges)},
-		{"unknown section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("nope", "x", "y")}}, `section "nope" is not a form section`},
-		{"delegated section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("commit", "allowedTypes", []any{"feat"})}}, `section "commit" is a delegated section`},
-		{"unknown field", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "nope", "y")}}, `field "nope" is not a field of section "ship"`},
+		{"changes at the limit", DashboardSetupSaveIn{Changes: atLimit}, unknownSection},
+		{"unknown section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("nope", "x", "y")}}, unknownSection},
+		{"delegated section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("commit", "allowedTypes", []any{"feat"})}},
+			fmt.Sprintf(`section "commit" is a delegated section; the form cannot change it. Form sections: %s`, saveFormSectionIDs())},
+		{"unknown field", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "nope", "y")}},
+			fmt.Sprintf(`field "nope" is not a field of section "ship". Fields: %s`, saveFieldNames(t, "ship"))},
 		{"same field twice", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor"), saveReset("ship", "bump")}}, `section "ship" field "bump" is in changes more than once`},
 		{"bad op", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "delete"}}}, `op "delete" is not set or reset`},
-		{"set with no value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "set"}}}, "use op reset to remove a value"},
-		{"reset with a value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "reset", Value: "minor"}}}, `section "ship" field "bump" has op reset with a value`},
-		{"target of a config.toml section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("jira", "defaultProject", "A")}, Targets: map[string]string{"jira": "user"}}, `targets names section "jira"`},
-		{"target with no change", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"review": "user"}}, `targets names section "review"`},
+		{"set with no value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "set"}}}, `section "ship" field "bump" has op set with no value; use op reset to remove a value`},
+		{"reset with a value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "reset", Value: "minor"}}}, `section "ship" field "bump" has op reset with a value; op reset takes no value`},
+		{"target of a config.toml section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("jira", "defaultProject", "A")}, Targets: map[string]string{"jira": "user"}}, `targets names section "jira", which is not a local form section with a change`},
+		{"target with no change", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"review": "user"}}, `targets names section "review", which is not a local form section with a change`},
 		{"bad target value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"ship": "both"}}, `target "both" is not project or user`},
+		// Two bad targets: the ids are checked in sorted order, so the first
+		// id (automation, no change) is reported, not the bad value of ship.
+		{"two bad targets", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"ship": "both", "automation": "user"}}, `targets names section "automation", which is not a local form section with a change`},
+		{"two targets with no change", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"review": "user", "github": "project"}}, `targets names section "github", which is not a local form section with a change`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -380,8 +432,11 @@ func TestDashboardSetupSave_RequestRules(t *testing.T) {
 			if !errors.As(err, &de) {
 				t.Fatalf("err = %v, want a DomainError", err)
 			}
-			if !strings.Contains(de.Msg, tc.want) || de.Suggestion == "" {
-				t.Errorf("msg = %q, suggestion = %q; want the msg to name %q", de.Msg, de.Suggestion, tc.want)
+			if want := saveRequestMsg(tc.rule); de.Msg != want {
+				t.Errorf("msg = %q, want %q", de.Msg, want)
+			}
+			if want := "The page sent a request that breaks this rule. Reload the Setup tab, then save again."; de.Suggestion != want {
+				t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
 			}
 			if got := saveSnapshot(saveConfigPath(root), saveLocalPath(root), userPath); fmt.Sprint(got) != fmt.Sprint(before) {
 				t.Error("a refused request changed a file")
@@ -430,28 +485,50 @@ func saveFieldValue(sec setupmeta.Section, f setupmeta.Field) any {
 	if sec.ConfigPath == "version" && f.Name == "pushAuth.secretName" {
 		return "RELEASE_TOKEN"
 	}
+	if setupRateFields[sec.ConfigPath+"."+f.Name] {
+		return float64(0.5)
+	}
 	return "x"
 }
 
-// TestDashboardSetupSave_AllFields checks that a save of all 48 form fields
-// passes the request rules and the value check.
+// TestDashboardSetupSave_AllFields checks that a save of every form field of
+// setupmeta.Sections() passes the request rules and the value check, and
+// writes each form section one time.
 func TestDashboardSetupSave_AllFields(t *testing.T) {
 	root, _ := saveRepo(t, "", "", "")
 	var changes []DashboardSetupChange
-	for _, sec := range setupmeta.Sections() {
-		if sec.DelegatedTo != "" || sec.ConfigPath == "" {
-			continue
-		}
+	var wantIDs []string
+	for _, sec := range saveFormSections() {
+		wantIDs = append(wantIDs, sec.ID)
 		for _, f := range sec.Fields {
 			changes = append(changes, saveSet(sec.ID, f.Name, saveFieldValue(sec, f)))
 		}
 	}
-	if len(changes) != 48 {
-		t.Fatalf("the form has %d fields, want 48", len(changes))
+	if len(changes) == 0 || len(wantIDs) == 0 {
+		t.Fatal("setupmeta.Sections() has no form field")
 	}
 	out := saveOK(t, root, DashboardSetupSaveIn{Changes: changes})
-	if len(out.Written) != 10 {
-		t.Errorf("written = %+v, want 10 sections", out.Written)
+	var gotIDs []string
+	for _, w := range out.Written {
+		gotIDs = append(gotIDs, w.Section)
+	}
+	slices.Sort(gotIDs)
+	slices.Sort(wantIDs)
+	if !slices.Equal(gotIDs, wantIDs) {
+		t.Errorf("written sections = %v, want each form section one time: %v", gotIDs, wantIDs)
+	}
+}
+
+// TestDashboardSetupSave_MaxChangesCoversFields checks that maxSetupChanges
+// is not below the count of the form fields: a save of each form field one
+// time passes the count rule.
+func TestDashboardSetupSave_MaxChangesCoversFields(t *testing.T) {
+	n := 0
+	for _, sec := range saveFormSections() {
+		n += len(sec.Fields)
+	}
+	if n > maxSetupChanges {
+		t.Errorf("the form has %d fields, over maxSetupChanges %d", n, maxSetupChanges)
 	}
 }
 
@@ -533,7 +610,7 @@ func TestDashboardSetupSave_UserWriteFails(t *testing.T) {
 	root, userPath := saveRepo(t, "", "[ship]\nbump = \"patch\"\n", "")
 	calls := replaceSetupWrite(t, func(call int, contentRoot, stateRoot string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
 		if in.Target == "user" {
-			return SetupWriteSectionsOut{OK: false, Written: nil, Errors: []string{"section ship: disk full"}}, nil
+			return SetupWriteSectionsOut{OK: false, Written: nil, Errors: []string{"section ship: disk full"}, sectionErrs: map[string]string{"ship": "disk full"}}, nil
 		}
 		return setupWriteSections(contentRoot, stateRoot, in)
 	})
@@ -561,40 +638,92 @@ func TestDashboardSetupSave_UserWriteFails(t *testing.T) {
 }
 
 // TestDashboardSetupSave_SecondWriteFails checks the result of a save whose
-// project file write fails after the user file write.
+// project file write fails after the user file write: each failed section
+// gets the message of the error (with the cause text when the message does
+// not hold it) and the Suggestion of the error.
 func TestDashboardSetupSave_SecondWriteFails(t *testing.T) {
+	const suggestion = "Free disk space, then save again."
+	cases := []struct {
+		name        string
+		err         error
+		wantMessage string
+	}{
+		{"cause not in the message",
+			&mcpserver.InfraError{Msg: "write refused", Suggestion: suggestion, Cause: errors.New("disk full")},
+			"write refused: disk full"},
+		{"cause in the message",
+			&mcpserver.DataError{Msg: "write refused: disk full", Suggestion: suggestion, Cause: errors.New("disk full")},
+			"write refused: disk full"},
+		{"no cause",
+			&mcpserver.InfraError{Msg: "write refused", Suggestion: suggestion},
+			"write refused"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, userPath := saveRepo(t, "[jira]\ndefaultProject = \"X\"\n", "[ship]\nbump = \"patch\"\n", "")
+			replaceSetupWrite(t, func(call int, contentRoot, stateRoot string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
+				if call == 2 {
+					return SetupWriteSectionsOut{}, tc.err
+				}
+				return setupWriteSections(contentRoot, stateRoot, in)
+			})
+			out, err := DashboardSetupSave(root, DashboardSetupSaveIn{
+				Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor"), saveSet("jira", "defaultProject", "Y")},
+				Targets: map[string]string{"ship": "user"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if out.OK {
+				t.Error("ok = true, want false")
+			}
+			if want := []DashboardSetupWrite{{Section: "ship", File: userPath}}; !slices.Equal(out.Written, want) {
+				t.Errorf("written = %+v, want %+v", out.Written, want)
+			}
+			wantFailed := []DashboardSetupFailure{
+				{Section: "jira", File: saveConfigPath(root), Message: tc.wantMessage, Suggestion: suggestion},
+				{Section: "ship", File: saveLocalPath(root), Message: tc.wantMessage, Suggestion: suggestion},
+			}
+			if !slices.Equal(out.Failed, wantFailed) {
+				t.Errorf("failed = %+v, want %+v", out.Failed, wantFailed)
+			}
+			if v, _ := saveValue(t, saveLocalPath(root), "ship.bump"); v != "patch" {
+				t.Errorf("project ship.bump = %v, want the old value patch", v)
+			}
+			if v, _ := saveValue(t, userPath, "ship.bump"); v != "minor" {
+				t.Errorf("user ship.bump = %v, want minor", v)
+			}
+		})
+	}
+}
+
+// TestDashboardSetupSave_UserCallError checks that a Go error of the user
+// file write call is the error of the save, and that no project write runs.
+func TestDashboardSetupSave_UserCallError(t *testing.T) {
 	root, userPath := saveRepo(t, "[jira]\ndefaultProject = \"X\"\n", "[ship]\nbump = \"patch\"\n", "")
-	replaceSetupWrite(t, func(call int, contentRoot, stateRoot string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
-		if call == 2 {
-			return SetupWriteSectionsOut{}, &mcpserver.InfraError{Msg: "write refused"}
+	boom := errors.New("user write boom")
+	calls := replaceSetupWrite(t, func(_ int, contentRoot, stateRoot string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
+		if in.Target == "user" {
+			return SetupWriteSectionsOut{}, boom
 		}
 		return setupWriteSections(contentRoot, stateRoot, in)
 	})
+	before := saveSnapshot(saveConfigPath(root), saveLocalPath(root), userPath)
 	out, err := DashboardSetupSave(root, DashboardSetupSaveIn{
 		Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor"), saveSet("jira", "defaultProject", "Y")},
 		Targets: map[string]string{"ship": "user"},
 	})
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want the user write error", err)
 	}
-	if out.OK {
-		t.Error("ok = true, want false")
+	if out.Written != nil || out.Failed != nil || out.OK {
+		t.Errorf("out = %+v, want the zero result", out)
 	}
-	if want := []DashboardSetupWrite{{Section: "ship", File: userPath}}; !slices.Equal(out.Written, want) {
-		t.Errorf("written = %+v, want %+v", out.Written, want)
+	if len(*calls) != 1 || (*calls)[0].Target != "user" {
+		t.Errorf("write calls = %+v, want only the user call", *calls)
 	}
-	wantFailed := []DashboardSetupFailure{
-		{Section: "jira", File: saveConfigPath(root), Message: "write refused"},
-		{Section: "ship", File: saveLocalPath(root), Message: "write refused"},
-	}
-	if !slices.Equal(out.Failed, wantFailed) {
-		t.Errorf("failed = %+v, want %+v", out.Failed, wantFailed)
-	}
-	if v, _ := saveValue(t, saveLocalPath(root), "ship.bump"); v != "patch" {
-		t.Errorf("project ship.bump = %v, want the old value patch", v)
-	}
-	if v, _ := saveValue(t, userPath, "ship.bump"); v != "minor" {
-		t.Errorf("user ship.bump = %v, want minor", v)
+	if got := saveSnapshot(saveConfigPath(root), saveLocalPath(root), userPath); fmt.Sprint(got) != fmt.Sprint(before) {
+		t.Error("a file changed")
 	}
 }
 
@@ -772,6 +901,8 @@ func TestSetupParity_ToolAndSave(t *testing.T) {
 		}
 		tk, tm, _ := dashSetupSuggestion(toolErr)
 		sk, sm, _ := dashSetupSuggestion(saveErr)
+		// The save names itself as the caller; the rest of the text is the same.
+		sm = strings.Replace(sm, "dashboard setup save:", "setup_write_sections:", 1)
 		if tk != sk || strings.ReplaceAll(tm, toolRoot, "<root>") != strings.ReplaceAll(sm, saveRoot, "<root>") {
 			t.Errorf("tool %s %q, save %s %q; want the same class and text", tk, tm, sk, sm)
 		}
@@ -909,8 +1040,8 @@ func TestDashboardSetupCreate(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !out.OK || len(out.Errors) != 0 {
-			t.Fatalf("out = %+v", out)
+		if !out.OK || out.Errors == nil || len(out.Errors) != 0 {
+			t.Fatalf("out = %+v, want ok with errors []", out)
 		}
 		for _, want := range []string{".sdlc-v2/.gitignore", ".gitignore", ".sdlc-v2/config.toml", ".sdlc-v2/local.toml"} {
 			if !slices.Contains(out.Created, want) {
@@ -977,6 +1108,57 @@ func TestDashboardSetupCreate(t *testing.T) {
 		}
 	})
 
+	t.Run(".sdlc-v2 is a file", func(t *testing.T) {
+		root, _ := dashSetupRoot(t)
+		dashSetupWrite(t, filepath.Join(root, ".sdlc-v2"), "not a folder")
+		_, err := DashboardSetupCreate(root)
+		var infra *mcpserver.InfraError
+		if !errors.As(err, &infra) {
+			t.Fatalf("err = %v, want an InfraError", err)
+		}
+		if want := "dashboard setup: stat " + saveConfigPath(root) + ": "; !strings.HasPrefix(infra.Msg, want) {
+			t.Errorf("msg = %q, want the prefix %q", infra.Msg, want)
+		}
+		if _, err := os.Stat(filepath.Join(root, ".gitignore")); !errors.Is(err, os.ErrNotExist) {
+			t.Error(".gitignore was created")
+		}
+	})
+
+	t.Run("write error", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("root ignores the folder mode")
+		}
+		root, _ := dashSetupRoot(t)
+		if _, err := DashboardSetupCreate(root); err != nil {
+			t.Fatal(err)
+		}
+		// Each file but config.toml exists, and config.toml cannot be written.
+		if err := os.Remove(saveConfigPath(root)); err != nil {
+			t.Fatal(err)
+		}
+		dataDir := filepath.Join(root, ".sdlc-v2")
+		if err := os.Chmod(dataDir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dataDir, 0o755) })
+		out, err := DashboardSetupCreate(root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out.OK {
+			t.Error("ok = true, want false")
+		}
+		if !slices.ContainsFunc(out.Errors, func(e string) bool { return strings.HasPrefix(e, "config.toml: ") }) {
+			t.Errorf("errors = %q, want a config.toml entry", out.Errors)
+		}
+		if out.Created == nil || len(out.Created) != 0 {
+			t.Errorf("created = %#v, want []", out.Created)
+		}
+		if out.Changed == nil || len(out.Changed) != 0 {
+			t.Errorf("changed = %#v, want []", out.Changed)
+		}
+	})
+
 	for _, tc := range []struct {
 		name, state string
 		seed        func(t *testing.T, root string)
@@ -1002,4 +1184,379 @@ func TestDashboardSetupCreate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDashboardSetupSave_CollectFallbackMessage checks the message of a
+// section that the write call did not write and gave no reason for.
+func TestDashboardSetupSave_CollectFallbackMessage(t *testing.T) {
+	root, _ := saveRepo(t, "[jira]\ndefaultProject = \"X\"\n", "", "")
+	replaceSetupWrite(t, func(int, string, string, SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
+		return SetupWriteSectionsOut{}, nil
+	})
+	out, err := DashboardSetupSave(root, DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("jira", "defaultProject", "Y")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.OK {
+		t.Error("ok = true, want false")
+	}
+	want := []DashboardSetupFailure{{Section: "jira", File: saveConfigPath(root), Message: "setup_write_sections did not write the section and gave no reason"}}
+	if !slices.Equal(out.Failed, want) || len(out.Written) != 0 {
+		t.Errorf("failed = %+v, written = %+v; want failed %+v", out.Failed, out.Written, want)
+	}
+}
+
+// TestDashboardSetupSave_CollectSectionErrors checks that each failed section
+// of one write call gets its own message from the result of that call.
+func TestDashboardSetupSave_CollectSectionErrors(t *testing.T) {
+	root, _ := saveRepo(t, "[jira]\ndefaultProject = \"X\"\n", "", "")
+	replaceSetupWrite(t, func(int, string, string, SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
+		return SetupWriteSectionsOut{
+			Written:     []string{"ship"},
+			Errors:      []string{"section jira: jira reason", "section plan.tasks: plan reason"},
+			sectionErrs: map[string]string{"jira": "jira reason", "plan.tasks": "plan reason"},
+		}, nil
+	})
+	out, err := DashboardSetupSave(root, DashboardSetupSaveIn{
+		Changes: []DashboardSetupChange{
+			saveSet("jira", "defaultProject", "Y"),
+			saveSet("plan-tasks", "contractShape", "minimal"),
+			saveSet("ship", "bump", "minor"),
+		},
+		Targets: map[string]string{"ship": "project"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.OK {
+		t.Error("ok = true, want false")
+	}
+	if want := []DashboardSetupWrite{{Section: "ship", File: saveLocalPath(root)}}; !slices.Equal(out.Written, want) {
+		t.Errorf("written = %+v, want %+v", out.Written, want)
+	}
+	wantFailed := []DashboardSetupFailure{
+		{Section: "jira", File: saveConfigPath(root), Message: "jira reason"},
+		{Section: "plan-tasks", File: saveConfigPath(root), Message: "plan reason"},
+	}
+	if !slices.Equal(out.Failed, wantFailed) {
+		t.Errorf("failed = %+v, want %+v", out.Failed, wantFailed)
+	}
+}
+
+// TestDashboardSetupSave_CollectWarningsAndNext checks that the save keeps
+// the warnings of the user call and of the project call in call order, and
+// joins the Next texts of both calls with a space.
+func TestDashboardSetupSave_CollectWarningsAndNext(t *testing.T) {
+	cases := []struct {
+		name, userNext, projectNext, wantNext string
+	}{
+		{"both calls", "Edit the user file by hand.", "Edit config.toml by hand.", "Edit the user file by hand. Edit config.toml by hand."},
+		{"project call only", "", "Edit config.toml by hand.", "Edit config.toml by hand."},
+		{"user call only", "Edit the user file by hand.", "", "Edit the user file by hand."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, userPath := saveRepo(t, "[jira]\ndefaultProject = \"X\"\n", "", "")
+			calls := replaceSetupWrite(t, func(call int, _, _ string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
+				if in.Target == "user" {
+					return SetupWriteSectionsOut{OK: true, Written: []string{"ship"}, Warnings: []string{"user warning 1", "user warning 2"}, Next: tc.userNext}, nil
+				}
+				return SetupWriteSectionsOut{OK: true, Written: []string{"jira"}, Warnings: []string{"project warning"}, Next: tc.projectNext}, nil
+			})
+			out := saveOK(t, root, DashboardSetupSaveIn{
+				Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor"), saveSet("jira", "defaultProject", "Y")},
+				Targets: map[string]string{"ship": "user"},
+			})
+			if len(*calls) != 2 || (*calls)[0].Target != "user" || (*calls)[1].Target != "" {
+				t.Fatalf("write calls = %+v, want the user call, then the project call", *calls)
+			}
+			if want := []string{"user warning 1", "user warning 2", "project warning"}; !slices.Equal(out.Warnings, want) {
+				t.Errorf("warnings = %q, want %q", out.Warnings, want)
+			}
+			if out.Next != tc.wantNext {
+				t.Errorf("next = %q, want %q", out.Next, tc.wantNext)
+			}
+			want := []DashboardSetupWrite{{Section: "ship", File: userPath}, {Section: "jira", File: saveConfigPath(root)}}
+			if !slices.Equal(out.Written, want) {
+				t.Errorf("written = %+v, want %+v", out.Written, want)
+			}
+		})
+	}
+}
+
+// TestDashboardSetupSave_ShipDefaultTarget checks that a save of the ship
+// section with no targets entry uses its default target: the project file.
+func TestDashboardSetupSave_ShipDefaultTarget(t *testing.T) {
+	root, userPath := saveRepo(t, "", "[ship]\nauto = true\n", "")
+	out := saveOK(t, root, DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}})
+	if want := []DashboardSetupWrite{{Section: "ship", File: saveLocalPath(root)}}; !slices.Equal(out.Written, want) {
+		t.Errorf("written = %+v, want %+v", out.Written, want)
+	}
+	if v, _ := saveValue(t, saveLocalPath(root), "ship.bump"); v != "minor" {
+		t.Errorf("project ship.bump = %v, want minor", v)
+	}
+	if v, _ := saveValue(t, saveLocalPath(root), "ship.auto"); v != true {
+		t.Errorf("project ship.auto = %v, want it kept", v)
+	}
+	if _, err := os.Stat(userPath); !errors.Is(err, os.ErrNotExist) {
+		t.Error("the user file was created")
+	}
+}
+
+// TestDashboardSetupSave_MixedTargets checks one save with three local
+// sections and different targets: each section goes to its own file.
+func TestDashboardSetupSave_MixedTargets(t *testing.T) {
+	root, userPath := saveRepo(t, "", "", "")
+	out := saveOK(t, root, DashboardSetupSaveIn{
+		Changes: []DashboardSetupChange{
+			saveSet("ship", "bump", "minor"),
+			saveSet("review", "scope", "staged"),
+			saveSet("automation", "mode", "unattended"),
+		},
+		// ship defaults to project and review to user: both are overridden.
+		// automation has no entry, so it uses its default, user.
+		Targets: map[string]string{"ship": "user", "review": "project"},
+	})
+	want := []DashboardSetupWrite{
+		{Section: "automation", File: userPath},
+		{Section: "review", File: saveLocalPath(root)},
+		{Section: "ship", File: userPath},
+	}
+	slices.SortFunc(out.Written, func(a, b DashboardSetupWrite) int { return strings.Compare(a.Section, b.Section) })
+	if !slices.Equal(out.Written, want) {
+		t.Errorf("written = %+v, want %+v", out.Written, want)
+	}
+	checks := []struct{ path, dotted, want string }{
+		{userPath, "ship.bump", "minor"},
+		{saveLocalPath(root), "review.scope", "staged"},
+		{userPath, "automation.mode", "unattended"},
+	}
+	for _, c := range checks {
+		if v, _ := saveValue(t, c.path, c.dotted); v != c.want {
+			t.Errorf("%s %s = %v, want %s", c.path, c.dotted, v, c.want)
+		}
+	}
+	if _, ok := saveValue(t, saveLocalPath(root), "ship"); ok {
+		t.Error("ship was written to the project file")
+	}
+	if _, ok := saveValue(t, userPath, "review"); ok {
+		t.Error("review was written to the user file")
+	}
+}
+
+// TestDashboardSetupSave_UserTargetProjectFileErrors checks the errors of the
+// project file read of a section with the target user. The save writes no
+// file.
+func TestDashboardSetupSave_UserTargetProjectFileErrors(t *testing.T) {
+	cases := []struct {
+		name    string
+		seed    func(t *testing.T, root string)
+		change  DashboardSetupChange
+		section string
+		kind    string
+		msg     func(root string) string // exact Msg; nil checks the prefix only
+	}{
+		{"directory at the path", func(t *testing.T, root string) {
+			if err := os.MkdirAll(saveLocalPath(root), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, saveSet("ship", "bump", "minor"), "ship", "infra", nil},
+		{"over the size limit", func(t *testing.T, root string) {
+			writeSizedTOML(t, saveLocalPath(root), maxCheckedFileBytes+1)
+		}, saveSet("ship", "bump", "minor"), "ship", "data", nil},
+		{"not valid TOML", func(t *testing.T, root string) {
+			dashSetupWrite(t, saveLocalPath(root), "[ship\n")
+		}, saveSet("ship", "bump", "minor"), "ship", "data", nil},
+		{"section not a table", func(t *testing.T, root string) {
+			dashSetupWrite(t, saveLocalPath(root), "ship = \"x\"\n")
+		}, saveSet("ship", "bump", "minor"), "ship", "data", func(root string) string {
+			return "dashboard setup save: ship in " + saveLocalPath(root) + " is not a table."
+		}},
+		{"parent of a dotted field not a table", func(t *testing.T, root string) {
+			dashSetupWrite(t, saveLocalPath(root), "[automation]\ndrift = \"x\"\n")
+		}, saveSet("automation", "drift.maxErrorRate", float64(0.5)), "automation", "data", func(root string) string {
+			return "dashboard setup save: automation.drift in " + saveLocalPath(root) + " is not a table."
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, userPath := saveRepo(t, "", "", "")
+			tc.seed(t, root)
+			before := saveSnapshot(saveConfigPath(root), userPath)
+			_, err := DashboardSetupSave(root, DashboardSetupSaveIn{
+				Changes: []DashboardSetupChange{tc.change},
+				Targets: map[string]string{tc.section: "user"},
+			})
+			kind, msg, suggestion := dashSetupSuggestion(err)
+			if kind != tc.kind {
+				t.Fatalf("err = %T %v, want a %s error", err, err, tc.kind)
+			}
+			if !strings.HasPrefix(msg, "dashboard setup save:") || suggestion == "" {
+				t.Errorf("msg = %q, suggestion = %q; want the save prefix and a suggestion", msg, suggestion)
+			}
+			if tc.msg != nil && msg != tc.msg(root) {
+				t.Errorf("msg = %q, want %q", msg, tc.msg(root))
+			}
+			if got := saveSnapshot(saveConfigPath(root), userPath); fmt.Sprint(got) != fmt.Sprint(before) {
+				t.Error("a file changed")
+			}
+		})
+	}
+}
+
+// TestDashboardSetupSave_RateFields checks the rate fields of the automation
+// section: a decimal text is stored as a number, a value that is not a number
+// from 0 to 1 is refused, and minErrorFloor accepts 0.
+func TestDashboardSetupSave_RateFields(t *testing.T) {
+	t.Run("decimal text stored as a number", func(t *testing.T) {
+		root, _ := saveRepo(t, "", "", "")
+		saveOK(t, root, DashboardSetupSaveIn{
+			Changes: []DashboardSetupChange{
+				saveSet("automation", "drift.maxErrorRate", "0.3"),
+				saveSet("automation", "drift.minErrorFloor", float64(0)),
+			},
+			Targets: map[string]string{"automation": "project"},
+		})
+		v, _ := saveValue(t, saveLocalPath(root), "automation.drift.maxErrorRate")
+		if n, ok := v.(float64); !ok || n != 0.3 {
+			t.Errorf("automation.drift.maxErrorRate = %#v, want the number 0.3", v)
+		}
+		if v, ok := saveValue(t, saveLocalPath(root), "automation.drift.minErrorFloor"); !ok || fmt.Sprint(v) != "0" {
+			t.Errorf("automation.drift.minErrorFloor = %#v, want 0", v)
+		}
+	})
+
+	t.Run("minErrorFloor bounds", func(t *testing.T) {
+		for _, sec := range saveFormSections() {
+			for _, f := range sec.Fields {
+				if sec.ID == "automation" && f.Name == "drift.minErrorFloor" {
+					if f.Min == nil || *f.Min != 0 || f.Max != nil {
+						t.Errorf("minErrorFloor min = %v, max = %v; want min 0 and no max", f.Min, f.Max)
+					}
+					return
+				}
+			}
+		}
+		t.Error("no field automation drift.minErrorFloor")
+	})
+
+	cases := []struct {
+		name    string
+		changes []DashboardSetupChange
+		want    string
+	}{
+		{"one refused value", []DashboardSetupChange{saveSet("automation", "drift.maxErrorRate", "banana")},
+			`dashboard setup save: 1 field value is refused. automation.drift.maxErrorRate: a number from 0 to 1 is required, got "banana".`},
+		{"two refused values", []DashboardSetupChange{
+			saveSet("automation", "drift.maxWarningRate", float64(1.5)),
+			saveSet("automation", "drift.maxErrorRate", "banana"),
+		}, `dashboard setup save: 2 field values are refused. automation.drift.maxErrorRate: a number from 0 to 1 is required, got "banana". automation.drift.maxWarningRate: a number from 0 to 1 is required, got 1.5.`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, userPath := saveRepo(t, "", "", "")
+			before := saveSnapshot(saveLocalPath(root), userPath)
+			_, err := DashboardSetupSave(root, DashboardSetupSaveIn{Changes: tc.changes, Targets: map[string]string{"automation": "project"}})
+			var invalid *DashboardSetupInvalid
+			if !errors.As(err, &invalid) {
+				t.Fatalf("err = %v, want *DashboardSetupInvalid", err)
+			}
+			if err.Error() != tc.want {
+				t.Errorf("Error() = %q, want %q", err.Error(), tc.want)
+			}
+			if got := saveSnapshot(saveLocalPath(root), userPath); fmt.Sprint(got) != fmt.Sprint(before) {
+				t.Error("a refused save changed a file")
+			}
+		})
+	}
+}
+
+// TestSetupApplyChange_Edges covers the parent arms of setupApplyChange.
+func TestSetupApplyChange_Edges(t *testing.T) {
+	t.Run("reset with an absent parent", func(t *testing.T) {
+		table := map[string]any{"a": "1"}
+		bad, removed := setupApplyChange(table, "x.y.z", setupOpReset, nil)
+		if bad != "" || removed {
+			t.Errorf("got bad %q, removed %v; want no change", bad, removed)
+		}
+		if fmt.Sprint(table) != "map[a:1]" {
+			t.Errorf("table = %v, want it unchanged", table)
+		}
+	})
+
+	t.Run("set creates each absent parent", func(t *testing.T) {
+		table := map[string]any{"keep": true}
+		bad, removed := setupApplyChange(table, "a.b.c", setupOpSet, "v")
+		if bad != "" || removed {
+			t.Errorf("got bad %q, removed %v", bad, removed)
+		}
+		if got, ok := setupLookup(table, []string{"a", "b", "c"}); !ok || got != "v" {
+			t.Errorf("a.b.c = %v, want v; table = %v", got, table)
+		}
+		if table["keep"] != true {
+			t.Errorf("table = %v, want keep kept", table)
+		}
+	})
+
+	t.Run("set below a present parent", func(t *testing.T) {
+		table := map[string]any{"a": map[string]any{"old": "1"}}
+		setupApplyChange(table, "a.b.c", setupOpSet, "v")
+		if fmt.Sprint(table) != "map[a:map[b:map[c:v] old:1]]" {
+			t.Errorf("table = %v", table)
+		}
+	})
+
+	t.Run("reset of an absent leaf", func(t *testing.T) {
+		table := map[string]any{"a": map[string]any{"b": "1"}}
+		bad, removed := setupApplyChange(table, "a.c", setupOpReset, nil)
+		if bad != "" || removed {
+			t.Errorf("got bad %q, removed %v; want no change", bad, removed)
+		}
+	})
+
+	t.Run("deep parent not a table", func(t *testing.T) {
+		table := map[string]any{"a": map[string]any{"b": "scalar"}}
+		bad, _ := setupApplyChange(table, "a.b.c", setupOpSet, "v")
+		if bad != "a.b" {
+			t.Errorf("bad = %q, want a.b", bad)
+		}
+		if fmt.Sprint(table) != "map[a:map[b:scalar]]" {
+			t.Errorf("table = %v, want it unchanged", table)
+		}
+	})
+}
+
+// TestSetupDeepCopy_Lists checks that a copy of a list shares no table or
+// list with the original.
+func TestSetupDeepCopy_Lists(t *testing.T) {
+	t.Run("[]any", func(t *testing.T) {
+		orig := []any{map[string]any{"k": "v"}, []any{"x"}, "s"}
+		cp := setupDeepCopy(orig).([]any)
+		cp[0].(map[string]any)["k"] = "changed"
+		cp[1].([]any)[0] = "changed"
+		cp[2] = "changed"
+		if fmt.Sprint(orig) != "[map[k:v] [x] s]" {
+			t.Errorf("original = %v, want it unchanged", orig)
+		}
+	})
+
+	t.Run("[]map[string]any", func(t *testing.T) {
+		orig := []map[string]any{{"k": "v", "nested": map[string]any{"n": "1"}}}
+		cp := setupDeepCopy(orig).([]map[string]any)
+		cp[0]["k"] = "changed"
+		cp[0]["nested"].(map[string]any)["n"] = "changed"
+		if fmt.Sprint(orig) != "[map[k:v nested:map[n:1]]]" {
+			t.Errorf("original = %v, want it unchanged", orig)
+		}
+	})
+
+	t.Run("table holding lists", func(t *testing.T) {
+		orig := map[string]any{"list": []any{"a"}, "rows": []map[string]any{{"r": "1"}}}
+		cp := setupCopyTable(orig)
+		cp["list"].([]any)[0] = "changed"
+		cp["rows"].([]map[string]any)[0]["r"] = "changed"
+		if fmt.Sprint(orig) != "map[list:[a] rows:[map[r:1]]]" {
+			t.Errorf("original = %v, want it unchanged", orig)
+		}
+	})
 }
