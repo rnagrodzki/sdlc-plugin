@@ -316,6 +316,24 @@ type CommentThread struct {
 	Body       string `json:"body"`
 	Status     string `json:"status" jsonschema:"enum=outstanding,enum=replied,enum=self-replied" jsonschema_description:"Thread classification relative to the PR author's replies: \"outstanding\" (no replies at all), \"self-replied\" (has replies, but none from the PR author), or \"replied\" (the PR author has replied)."`
 	ReplyCount int    `json:"replyCount"`
+	// Severity is the higher of SeverityPrefix and SeverityIcon.
+	Severity string `json:"severity,omitempty" jsonschema:"enum=critical,enum=high,enum=medium,enum=low" jsonschema_description:"Severity of the thread: the higher of severityPrefix and severityIcon (critical, high, medium, low). Absent when neither value exists."`
+	// SeverityPrefix is the leading [level] tag of a Copilot comment.
+	SeverityPrefix string `json:"severityPrefix,omitempty" jsonschema_description:"Level from the leading [level] tag of the comment text, lower case (minor maps to low). Set for Copilot comments only. Absent when the comment has no tag."`
+	// SeverityIcon is the level of the severity icon in the latest Copilot overview.
+	SeverityIcon string `json:"severityIcon,omitempty" jsonschema_description:"Level (high, medium, low) of the severity icon that the latest Copilot review overview shows for this thread. Absent when the thread is not in the overview or the entry has no icon."`
+	// OverviewSection is the block of the latest overview that lists the thread.
+	OverviewSection string `json:"overviewSection,omitempty" jsonschema:"enum=open,enum=resolved" jsonschema_description:"Block of the latest Copilot review overview that lists this thread: \"open\" or \"resolved\" (resolved since the last Copilot review). Absent when the overview does not list the thread."`
+}
+
+// OverviewFinding is a problem that the latest Copilot review overview lists
+// in its "previously missed" block. It has no review thread and no comment ID.
+type OverviewFinding struct {
+	Title    string `json:"title" jsonschema_description:"Title of the finding, as the overview shows it."`
+	Path     string `json:"path" jsonschema_description:"File path of the finding."`
+	Line     int    `json:"line,omitempty" jsonschema_description:"Line number of the finding. Absent when the overview gives none."`
+	Severity string `json:"severity,omitempty" jsonschema_description:"Level (high, medium, low) of the severity icon. Absent when the overview shows no icon."`
+	Body     string `json:"body" jsonschema_description:"Paragraph text of the finding."`
 }
 
 // ReceivedReviewVerifyOut is the payload returned by received_review_verify.
@@ -327,7 +345,11 @@ type ReceivedReviewVerifyOut struct {
 	Outstanding int              `json:"outstanding"`
 	Replied     int              `json:"replied"`
 	Total       int              `json:"total"`
-	Next        string           `json:"next" jsonschema_description:"Actionable next-step guidance after classifying review threads."`
+	// Overview is the header value of the latest Copilot review overview.
+	Overview string `json:"overview" jsonschema_description:"Header of the latest Copilot review that has an overview header: approval-recommended, changes-recommended or needs-closer-look. Empty string when no Copilot review has one."`
+	// OverviewFindings lists the "previously missed" items. Never nil.
+	OverviewFindings []OverviewFinding `json:"overviewFindings" jsonschema_description:"Findings that the latest Copilot review overview lists as previously missed. They have no review thread and no comment ID, so they take no reply. Empty list when there is none."`
+	Next             string            `json:"next" jsonschema_description:"Actionable next-step guidance after classifying review threads."`
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +409,76 @@ func classifyCommentThreads(comments []ghx.PRReviewComment, login string) []Comm
 	}
 
 	return threads
+}
+
+// latestCopilotOverview returns the parsed overview of the newest Copilot
+// review that has an overview header. It skips PENDING reviews and reviews
+// with no header. Ties and missing timestamps keep gh's oldest-first order,
+// as evaluateReviews does.
+func latestCopilotOverview(reviews []ghx.PRReview) (CopilotOverview, bool) {
+	var latest *ghx.PRReview
+	var found CopilotOverview
+	for i := range reviews {
+		rv := &reviews[i]
+		if canonicalReviewer(rv.Login) != "copilot" || strings.EqualFold(rv.State, "PENDING") {
+			continue
+		}
+		ov, ok := parseCopilotOverview(rv.Body)
+		if !ok {
+			continue
+		}
+		if latest == nil || !submittedBefore(rv.SubmittedAt, latest.SubmittedAt) {
+			latest = rv
+			found = ov
+		}
+	}
+	return found, latest != nil
+}
+
+// joinCopilotOverview adds overview data to threads. It makes no gh call.
+// A thread is "by Copilot" when canonicalReviewer(t.Reviewer) == "copilot".
+// It returns a copy of threads, the header of the latest overview ("" when
+// none) and the missed findings (empty, never nil).
+func joinCopilotOverview(threads []CommentThread, reviews []ghx.PRReview) (out []CommentThread, overview string, findings []OverviewFinding) {
+	out = make([]CommentThread, len(threads))
+	copy(out, threads)
+	findings = []OverviewFinding{}
+
+	ov, hasOverview := latestCopilotOverview(reviews)
+
+	type listed struct{ section, icon string }
+	byID := map[int]listed{}
+	if hasOverview {
+		overview = ov.Header
+		for _, it := range ov.Open {
+			byID[it.CommentID] = listed{"open", it.Severity}
+		}
+		for _, it := range ov.Resolved {
+			byID[it.CommentID] = listed{"resolved", it.Severity}
+		}
+		for _, it := range ov.Missed {
+			findings = append(findings, OverviewFinding{
+				Title:    it.Title,
+				Path:     it.Path,
+				Line:     it.Line,
+				Severity: it.Severity,
+				Body:     it.Body,
+			})
+		}
+	}
+
+	for i := range out {
+		t := &out[i]
+		if canonicalReviewer(t.Reviewer) == "copilot" {
+			t.SeverityPrefix = inlineSeverityPrefix(t.Body)
+		}
+		if l, ok := byID[t.ID]; ok {
+			t.OverviewSection = l.section
+			t.SeverityIcon = l.icon
+		}
+		t.Severity = higherSeverity(t.SeverityPrefix, t.SeverityIcon)
+	}
+	return out, overview, findings
 }
 
 func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerifyIn) (ReceivedReviewVerifyOut, error) {
@@ -454,6 +546,13 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 
 	threads := classifyCommentThreads(comments, login)
 
+	// The reviews feed the overview join. A fetch failure leaves them empty.
+	reviews, err := ghx.PRReviews(activeRoot, in.PR)
+	if err != nil {
+		reviews = nil
+	}
+	threads, overview, findings := joinCopilotOverview(threads, reviews)
+
 	outstanding := 0
 	replied := 0
 	for _, t := range threads {
@@ -468,16 +567,21 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 	if outstanding > 0 {
 		next = "Outstanding review threads remain — reply to each and address the feedback before proceeding."
 	}
+	if len(findings) > 0 {
+		next += fmt.Sprintf(" The latest Copilot review also lists %d finding(s) with no thread (overviewFindings): fix or defer each; they take no reply.", len(findings))
+	}
 
 	return ReceivedReviewVerifyOut{
-		Version:     1,
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		PR:          receivedReviewPR{Number: in.PR, Owner: owner, Repo: repo},
-		Threads:     threads,
-		Outstanding: outstanding,
-		Replied:     replied,
-		Total:       len(threads),
-		Next:        next,
+		Version:          1,
+		Timestamp:        time.Now().UTC().Format(time.RFC3339),
+		PR:               receivedReviewPR{Number: in.PR, Owner: owner, Repo: repo},
+		Threads:          threads,
+		Outstanding:      outstanding,
+		Replied:          replied,
+		Total:            len(threads),
+		Overview:         overview,
+		OverviewFindings: findings,
+		Next:             next,
 	}, nil
 }
 
@@ -514,10 +618,11 @@ func writeReplyBodies(root string, in ReceivedReviewVerifyIn) (ReceivedReviewVer
 	}
 
 	return ReceivedReviewVerifyOut{
-		Version:   1,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
-		Threads:   []CommentThread{},
-		Next:      "Reply bodies written — call links_validate with the same file path before posting.",
+		Version:          1,
+		Timestamp:        time.Now().UTC().Format(time.RFC3339),
+		Threads:          []CommentThread{},
+		OverviewFindings: []OverviewFinding{},
+		Next:             "Reply bodies written — call links_validate with the same file path before posting.",
 	}, nil
 }
 

@@ -176,8 +176,12 @@ func submittedBefore(a, b string) bool {
 // order given, it takes that reviewer's most recent submitted review and maps
 // its state to the JS source's verdict buckets:
 //
-//	APPROVED                          -> "approved-clean"
-//	COMMENTED / CHANGES_REQUESTED     -> "actionable"
+//	CHANGES_REQUESTED                 -> "actionable"
+//	APPROVED / COMMENTED, with a Copilot overview header in the body:
+//	  green header, 0 open and 0 missed items -> "approved-clean"
+//	  any other case                          -> "actionable"
+//	APPROVED / COMMENTED, with no header: APPROVED -> "approved-clean",
+//	  COMMENTED -> "actionable"
 //	anything else (DISMISSED)         -> no verdict (keep waiting)
 //
 // The first configured reviewer with a verdict wins. Reviewer logins are
@@ -187,8 +191,9 @@ func submittedBefore(a, b string) bool {
 // unparseable, later entries in gh's oldest-first order win.
 //
 // The returned reviewer is the configured name that matched (as passed in,
-// not the login gh reported) and rawState is gh's raw review state.
-func evaluateReviews(reviews []ghx.PRReview, reviewers []string) (status, reviewer, rawState string) {
+// not the login gh reported) and rawState is gh's raw review state. overview
+// is the header value of the verdict review ("" when its body has no header).
+func evaluateReviews(reviews []ghx.PRReview, reviewers []string) (status, reviewer, rawState, overview string) {
 	for _, r := range reviewers {
 		want := canonicalReviewer(r)
 		if want == "" {
@@ -207,14 +212,30 @@ func evaluateReviews(reviews []ghx.PRReview, reviewers []string) (status, review
 		if latest == nil {
 			continue
 		}
-		switch strings.ToUpper(latest.State) {
-		case "APPROVED":
-			return "approved-clean", r, latest.State
-		case "COMMENTED", "CHANGES_REQUESTED":
-			return "actionable", r, latest.State
+		// The header is local to this pass: a DISMISSED review of one
+		// reviewer never gives its header to the verdict of the next one.
+		ov, hasOverview := parseCopilotOverview(latest.Body)
+		header := ""
+		if hasOverview {
+			header = ov.Header
+		}
+		switch state := strings.ToUpper(latest.State); state {
+		case "CHANGES_REQUESTED":
+			return "actionable", r, latest.State, header
+		case "APPROVED", "COMMENTED":
+			if hasOverview {
+				if ov.Header == overviewApprovalRecommended && len(ov.Open)+len(ov.Missed) == 0 {
+					return "approved-clean", r, latest.State, header
+				}
+				return "actionable", r, latest.State, header
+			}
+			if state == "APPROVED" {
+				return "approved-clean", r, latest.State, header
+			}
+			return "actionable", r, latest.State, header
 		}
 	}
-	return "", "", ""
+	return "", "", "", ""
 }
 
 // awaitRemoteReview implements one KD8 probe of await_remote_review.
@@ -266,12 +287,13 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 		})
 	}
 
-	status, reviewer, rawState := evaluateReviews(reviews, reviewers)
+	status, reviewer, rawState, overview := evaluateReviews(reviews, reviewers)
 	if status != "" {
 		return stepper.Done(stateFile, "", map[string]any{
 			"verdict":   status,
 			"reviewer":  reviewer,
 			"state":     rawState,
+			"overview":  overview,
 			"pr_number": in.PR,
 		}), nil
 	}
@@ -873,7 +895,7 @@ func ClassifyLogs(text string) VerifyPipelineClassifyOut {
 // registered so far.
 func RegisterPollingTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "poll_await",
-		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. For target "remote_review" ext.verdict is one of "approved-clean" (reviewer approved), "actionable" (reviewer commented or requested changes), "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out; ext.reason "exhausted"). For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped" (ext.reason "exhausted", or "no-ci" when gh reports no checks and the repo has no CI config: no .github/workflows/*.yml|*.yaml, no .circleci/, no Jenkinsfile). Every "done" verdict ends the poll.`,
+		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. For target "remote_review" ext.verdict is one of "approved-clean", "actionable", "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out; ext.reason "exhausted"). When the latest review body has a Copilot overview header, the header decides: "🟢 Approval recommended" with no open or previously missed item gives "approved-clean", every other header gives "actionable"; CHANGES_REQUESTED always gives "actionable". With no header, APPROVED gives "approved-clean" and COMMENTED gives "actionable". ext.overview is "approval-recommended", "changes-recommended", "needs-closer-look", or "" when the body has no header. For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped" (ext.reason "exhausted", or "no-ci" when gh reports no checks and the repo has no CI config: no .github/workflows/*.yml|*.yaml, no .circleci/, no Jenkinsfile). Every "done" verdict ends the poll.`,
 		mcpserver.Annotations{
 			Title:       "Await CI or PR completion",
 			ReadOnly:    false,
