@@ -1290,10 +1290,10 @@ describe('nextTabIndex', () => {
     assert.equal(view.nextTabIndex(1, 'Enter', 3), 1);
   });
 
-  test('with 4 tabs ArrowRight goes from History to Preplans and End goes to Preplans', () => {
-    assert.equal(view.nextTabIndex(2, 'ArrowRight', 4), 3);
-    assert.equal(view.nextTabIndex(3, 'ArrowRight', 4), 0);
-    assert.equal(view.nextTabIndex(0, 'End', 4), 3);
+  test('with 5 tabs ArrowRight goes from Preplans to Setup and End goes to Setup', () => {
+    assert.equal(view.nextTabIndex(3, 'ArrowRight', 5), 4);
+    assert.equal(view.nextTabIndex(4, 'ArrowRight', 5), 0);
+    assert.equal(view.nextTabIndex(0, 'End', 5), 4);
   });
 });
 
@@ -1312,8 +1312,8 @@ describe('pipelineKey / sectionKey', () => {
 describe('parseHash', () => {
   const tabs = view.TAB_NAMES;
 
-  test('TAB_NAMES lists the 4 tabs', () => {
-    assert.deepEqual(view.TAB_NAMES, ['pipelines', 'activity', 'history', 'preplans']);
+  test('TAB_NAMES lists the 5 tabs', () => {
+    assert.deepEqual(view.TAB_NAMES, ['pipelines', 'activity', 'history', 'preplans', 'setup']);
   });
 
   test('a tab name selects the tab', () => {
@@ -1569,6 +1569,7 @@ describe('panelSignatures', () => {
       activity: ['name', 'root', 'deferred', 'learnings'],
       history: ['name', 'root', 'history'],
       preplans: ['name', 'root', 'warnings', 'preplans'],
+      setup: ['name', 'root'],
     });
   });
 

@@ -85,7 +85,12 @@ var tabs = {
   activity: { tab: byId('tab-activity'), panel: byId('panel-activity'), count: byId('n-activity') },
   history: { tab: byId('tab-history'), panel: byId('panel-history'), count: byId('n-history') },
   preplans: { tab: byId('tab-preplans'), panel: byId('panel-preplans'), count: byId('n-preplans') },
+  // The count of the Setup tab is the number of unsaved changes. setup.js writes it.
+  setup: { tab: byId('tab-setup'), panel: byId('panel-setup'), count: byId('n-setup') },
 };
+
+// The Setup tab: the form state, its DOM, and its requests are in setup.js.
+var setup = window.sdlcSetup;
 
 function storage() {
   // window.localStorage can throw (file://, blocked storage). view.js
@@ -460,8 +465,10 @@ function render(snapshot, reason) {
 
   var counts = view.scopedCounts(repos, scope);
   view.TAB_NAMES.forEach(function (name) {
-    tabs[name].count.textContent = String(counts[name]);
+    if (name !== 'setup') tabs[name].count.textContent = String(counts[name]);
   });
+  // The pipeline warning of the Setup tab follows each snapshot.
+  setup.live(repos);
 
   var now = Date.now();
   var tz = timeZone();
@@ -471,6 +478,7 @@ function render(snapshot, reason) {
     if (name === 'preplans') replaceChildren(tabs.preplans.panel, [draw.preplanPanel(document, view, repos, scope, ui)]);
     if (name === 'activity') replaceChildren(tabs.activity.panel, [draw.activityPanel(document, view, repos, scope, ui)]);
     if (name === 'history') replaceChildren(tabs.history.panel, [draw.historyTable(document, view, repos, scope, now, tz, ui)]);
+    if (name === 'setup') setup.draw(tabs.setup.panel, repos, scope);
     ui.panelSig[name] = sigs[name];
   });
   syncToggleAll();
@@ -499,6 +507,8 @@ function selectTab(name, focus) {
     tabs[t].panel.hidden = !on;
   });
   ui.tab = name;
+  // The Setup tab edits one repo, so it has its own repo bar.
+  document.querySelector('.filter-bar').hidden = name === 'setup';
   view.saveTab(storage(), name);
   // A snapshot event draws only the active panel tab, so the newly selected one draws now.
   if (changed && ui.lastSnapshot) render(ui.lastSnapshot, 'select');
@@ -595,7 +605,7 @@ function selectStation(key, index, reveal) {
   tile.scrollIntoView({ block: 'nearest', behavior: reducedMotion() ? 'auto' : 'smooth' });
 }
 
-// '#activity', '#history' and '#preplans' pick a tab. '#<pipeline id>[/<n>]'
+// '#activity', '#history', '#preplans' and '#setup' pick a tab. '#<pipeline id>[/<n>]'
 // scrolls to the first block with that id and selects station n.
 function applyHash(hash) {
   var target = view.parseHash(hash, view.TAB_NAMES);
@@ -1015,6 +1025,7 @@ function clearCache() {
 // opens the event stream. A page that opens hidden shows the paused light and
 // opens the stream at its first visibilitychange to visible.
 function init() {
+  setup.init({ fetchJSON: fetchJSON, post: post, pageToken: pageToken });
   view.TAB_NAMES.forEach(function (name, index) {
     var tab = tabs[name].tab;
     tab.addEventListener('click', function () {

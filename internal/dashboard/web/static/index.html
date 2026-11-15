@@ -7,8 +7,11 @@
   <meta name="sdlc-token" content="{{SDLC_TOKEN}}">
   <title>sdlc signal room</title>
   <link rel="stylesheet" href="static/app.css">
+  <link rel="stylesheet" href="static/setup.css">
   <script src="static/view.js" defer></script>
   <script src="static/render.js" defer></script>
+  <script src="static/setup-view.js" defer></script>
+  <script src="static/setup.js" defer></script>
   <script src="static/app.js" defer></script>
 </head>
 <body>
@@ -20,6 +23,7 @@
         <button class="tab" role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1" type="button">Activity <span class="tab-n" id="n-activity"></span></button>
         <button class="tab" role="tab" id="tab-history" aria-controls="panel-history" aria-selected="false" tabindex="-1" type="button">History <span class="tab-n" id="n-history"></span></button>
         <button class="tab" role="tab" id="tab-preplans" aria-controls="panel-preplans" aria-selected="false" tabindex="-1" type="button">Preplans <span class="tab-n" id="n-preplans"></span></button>
+        <button class="tab" role="tab" id="tab-setup" aria-controls="panel-setup" aria-selected="false" tabindex="-1" type="button">Setup <span class="tab-n" id="n-setup"></span></button>
       </nav>
       <div class="spacer"></div>
       <p class="conn" id="conn" data-state="connecting" role="status" aria-live="polite">
@@ -49,6 +53,7 @@
       <section id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" hidden></section>
       <section id="panel-history" role="tabpanel" aria-labelledby="tab-history" hidden></section>
       <section id="panel-preplans" role="tabpanel" aria-labelledby="tab-preplans" hidden></section>
+      <section id="panel-setup" role="tabpanel" aria-labelledby="tab-setup" hidden></section>
     </main>
   </div>
 
@@ -66,6 +71,15 @@
     </button>
     <h2 id="detail-title" tabindex="-1"></h2>
     <div id="detail-content"></div>
+  </dialog>
+
+  <dialog class="stop-dialog setup-review" id="setup-review" aria-labelledby="setup-review-title">
+    <h2 id="setup-review-title" tabindex="-1"></h2>
+    <div id="setup-review-body"></div>
+    <div class="dialog-actions">
+      <button type="button" class="setup-save" id="setup-review-ok"></button>
+      <button type="button" id="setup-review-cancel" autofocus>Cancel</button>
+    </div>
   </dialog>
 
   <dialog class="stop-dialog" id="confirm-dialog" aria-labelledby="confirm-text">
