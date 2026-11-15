@@ -6,16 +6,29 @@ The `dashboard` MCP tool starts, checks, and stops the local dashboard server so
 ## Requirements
 
 ### Requirement: Actions and inputs
-The tool SHALL select its operation from `action`, one of `ensure`, `status`, `stop`, and SHALL read `open` only for `ensure`.
+The tool SHALL select its operation from `action`, one of `ensure`, `status`, `stop`, and SHALL read `open` and `tab` only for `ensure`.
 
 | Input | Encoding | Example |
 |---|---|---|
 | `action` | plain text, `ensure`, `status`, or `stop` | `ensure` |
 | `open` | JSON bool, `ensure` only | `true` |
+| `tab` | plain text, `ensure` only, one of `pipelines`, `activity`, `history`, `preplans`, `setup` | `setup` |
 
 #### Scenario: Unknown action
 - **WHEN** the call passes `action:"restart"`
 - **THEN** the result is a `DomainError` that lists `ensure`, `status`, `stop`
+- **AND** the error has a Suggestion
+
+#### Scenario: Unknown tab
+- **WHEN** the call passes `action:"ensure"` and `tab:"bogus"`
+- **THEN** the result is a `DomainError` that lists `pipelines, activity, history, preplans, setup`
+- **AND** the error has a Suggestion
+- **AND** no server starts
+
+#### Scenario: Tab with status or stop
+- **WHEN** the call passes `action:"status"` or `action:"stop"` with a `tab` that is not empty
+- **THEN** the result is a `DomainError` with the message `dashboard: tab is for action ensure only, got action "<action>"`
+- **AND** no server starts or stops
 
 ### Requirement: Ensure
 The `ensure` action SHALL register the main worktree root of the repo, SHALL use the `port` of the `[dashboard]` settings, SHALL reuse an active server of the same version and port, SHALL replace a server of another version or port, and SHALL wait up to 3 s for the health answer of a new server.
@@ -72,6 +85,16 @@ sequenceDiagram
 #### Scenario: Open the browser
 - **WHEN** the call passes `action:"ensure"` and `open:true`
 - **THEN** the tool opens the URL with `open` on macOS or `xdg-open` on Linux
+
+#### Scenario: Open a tab
+- **WHEN** the call passes `action:"ensure"`, `open:true` and `tab:"setup"`
+- **THEN** the tool opens `http://127.0.0.1:<port>#setup`
+- **AND** the result URL stays `http://127.0.0.1:<port>`
+
+#### Scenario: Name a tab without open
+- **WHEN** the call passes `action:"ensure"` and `tab:"setup"` with no `open`
+- **THEN** the tool opens no browser
+- **AND** `next` names `<url>#setup`
 
 ### Requirement: Port conflict error
 The `ensure` action SHALL return a `DomainError` with the suggestion of this table when the port answers, but not with an sdlc health body.
