@@ -129,6 +129,7 @@ func setupSkillsListTools(t *testing.T) []*mcp.Tool {
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterLearningsTools(srv)
 	tools.RegisterInstructionsTools(srv)
+	tools.RegisterDashboardTools(srv)
 
 	mcpSrv := srv.MCPServer()
 
@@ -395,6 +396,7 @@ func TestSetupSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"validate",
 		"dimensions_render_instructions",
 		"scaffold_ci",
+		"dashboard",
 	}
 
 	for _, name := range expected {
@@ -706,5 +708,82 @@ func TestSetupSkillsRoutesReachStep3c(t *testing.T) {
 		if !strings.HasSuffix(m, "3c") {
 			t.Errorf("skills/setup/SKILL.md: route %q does not continue to Step 3b and Step 3c", m)
 		}
+	}
+}
+
+// setupSkillsSection returns the text of skills/setup/SKILL.md from the first
+// occurrence of start up to the first occurrence of end after it.
+func setupSkillsSection(t *testing.T, start, end string) string {
+	t.Helper()
+	path := filepath.Join(setupSkillsRepoRoot(t), "skills/setup/SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	text := string(data)
+	from := strings.Index(text, start)
+	if from < 0 {
+		t.Fatalf("skills/setup/SKILL.md: %q not found", start)
+	}
+	to := strings.Index(text[from+len(start):], end)
+	if to < 0 {
+		t.Fatalf("skills/setup/SKILL.md: %q not found after %q", end, start)
+	}
+	return text[from : from+len(start)+to]
+}
+
+// TestSetupSkillsStep1bSetupTabQuestion asserts the Step 1b section of the
+// setup skill holds the Setup tab call, the values of its conditions and the
+// empty-list route. Step 2 also names needsMigration and --migrate, so the
+// check reads only the Step 1b body.
+func TestSetupSkillsStep1bSetupTabQuestion(t *testing.T) {
+	section := setupSkillsSection(t, "### Step 1b", "### Step 2")
+	for _, want := range []string{
+		`dashboard({ action: "ensure", open: true, tab: "setup" })`,
+		"freshConfig",
+		"mainWorktree",
+		"needsMigration",
+		"--migrate",
+		"No sections left for this run.",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("skills/setup/SKILL.md Step 1b: missing %q", want)
+		}
+	}
+}
+
+// TestSetupSkillsStep4SetupTabPointer asserts the Step 4 section of the setup
+// skill holds the Setup tab pointer.
+func TestSetupSkillsStep4SetupTabPointer(t *testing.T) {
+	section := setupSkillsSection(t, "### Step 4", "## Idempotency")
+	for _, want := range []string{
+		`dashboard({ action: "status" })`,
+		"#setup",
+		"/sdlc:dashboard",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("skills/setup/SKILL.md Step 4: missing %q", want)
+		}
+	}
+}
+
+// TestSetupSkillsStep0ValueRules asserts the Step 0 section of the setup skill
+// defines freshConfig, mainWorktree and formIds, with the false or empty
+// result for a missing value or a failed call.
+func TestSetupSkillsStep0ValueRules(t *testing.T) {
+	section := setupSkillsSection(t, "### Step 0", "### Step 1")
+	for _, want := range []string{
+		"--path-format=absolute",
+		"exactly 2 lines",
+		"else empty",
+		"`freshConfig` is false",
+		"`mainWorktree` is false",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("skills/setup/SKILL.md Step 0: missing %q", want)
+		}
+	}
+	if got := strings.Count(section, "else false"); got < 2 {
+		t.Errorf("skills/setup/SKILL.md Step 0: %q appears %d times, want 2 (freshConfig, mainWorktree)", "else false", got)
 	}
 }
