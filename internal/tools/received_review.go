@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -324,6 +325,9 @@ type CommentThread struct {
 	SeverityIcon string `json:"severityIcon,omitempty" jsonschema_description:"Level (high, medium, low) of the severity icon that the latest Copilot review overview shows for this thread. Absent when the thread is not in the overview or the entry has no icon."`
 	// OverviewSection is the block of the latest overview that lists the thread.
 	OverviewSection string `json:"overviewSection,omitempty" jsonschema:"enum=open,enum=resolved" jsonschema_description:"Block of the latest Copilot review overview that lists this thread: \"open\" or \"resolved\" (resolved since the last Copilot review). Absent when the overview does not list the thread."`
+	// IsResolved and IsOutdated come from the GitHub GraphQL thread state.
+	IsResolved bool `json:"isResolved" jsonschema_description:"true when the GitHub review thread is marked resolved"`
+	IsOutdated bool `json:"isOutdated" jsonschema_description:"true when the code under the thread changed after the comment"`
 }
 
 // OverviewFinding is a problem that the latest Copilot review overview lists
@@ -349,8 +353,31 @@ type ReceivedReviewVerifyOut struct {
 	Overview string `json:"overview" jsonschema_description:"Header of the latest Copilot review that has an overview header: approval-recommended, changes-recommended or needs-closer-look. Empty string when no Copilot review has one."`
 	// OverviewFindings lists the "previously missed" items. Never nil.
 	OverviewFindings []OverviewFinding `json:"overviewFindings" jsonschema_description:"Findings that the latest Copilot review overview lists as previously missed. They have no review thread and no comment ID, so they take no reply. Empty list when there is none."`
-	Next             string            `json:"next" jsonschema_description:"Actionable next-step guidance after classifying review threads."`
+	// Warnings holds one line for each extra read that failed. Never nil.
+	Warnings []string `json:"warnings" jsonschema_description:"one line for each extra read that failed; [] when none"`
+	Next     string   `json:"next" jsonschema_description:"Actionable next-step guidance after classifying review threads."`
 }
+
+// ghExitRe finds the gh error output that execx puts after "exit status N: ".
+var ghExitRe = regexp.MustCompile(`(?s)exit status \d+: (.+)$`)
+
+// ghCause gives warning text with no "ghx:" or "execx:" prefix.
+func ghCause(err error) string {
+	if errors.Is(err, execx.ErrOutputCap) {
+		return "gh output exceeded the size cap"
+	}
+	if m := ghExitRe.FindStringSubmatch(err.Error()); m != nil {
+		return strings.TrimSpace(m[1])
+	}
+	return "gh call failed or gave output that could not be read"
+}
+
+// Warning texts of received_review_verify for the two extra reads.
+const (
+	reviewReadWarningFmt      = "review body not read: %s; severityIcon, overview and overviewFindings are empty. Retry received_review_verify, or check gh auth status."
+	threadStateWarningFmt     = "thread state not read: %s; isResolved and isOutdated are false for every thread. Do not use isResolved or isOutdated to skip a thread. Retry received_review_verify."
+	receivedReviewWarningNext = " Read warnings: some fields are empty."
+)
 
 // ---------------------------------------------------------------------------
 // Core logic
@@ -546,12 +573,26 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 
 	threads := classifyCommentThreads(comments, login)
 
-	// The reviews feed the overview join. A fetch failure leaves them empty.
+	// The two extra reads are best effort: a failure adds a warning and
+	// leaves the related fields empty. Only the comment fetch stops the tool.
+	warnings := []string{}
 	reviews, err := ghx.PRReviews(activeRoot, in.PR)
 	if err != nil {
+		warnings = append(warnings, fmt.Sprintf(reviewReadWarningFmt, ghCause(err)))
 		reviews = nil
 	}
+	states, err := ghx.PRReviewThreadStates(activeRoot, owner, repo, in.PR)
+	if err != nil {
+		warnings = append(warnings, fmt.Sprintf(threadStateWarningFmt, ghCause(err)))
+		states = nil
+	}
 	threads, overview, findings := joinCopilotOverview(threads, reviews)
+	for i := range threads {
+		if st, ok := states[threads[i].ID]; ok {
+			threads[i].IsResolved = st.IsResolved
+			threads[i].IsOutdated = st.IsOutdated
+		}
+	}
 
 	outstanding := 0
 	replied := 0
@@ -570,6 +611,9 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 	if len(findings) > 0 {
 		next += fmt.Sprintf(" The latest Copilot review also lists %d finding(s) with no thread (overviewFindings): fix or defer each; they take no reply.", len(findings))
 	}
+	if len(warnings) > 0 {
+		next += receivedReviewWarningNext
+	}
 
 	return ReceivedReviewVerifyOut{
 		Version:          1,
@@ -581,6 +625,7 @@ func receivedReviewVerify(projectRoot, activeRoot string, in ReceivedReviewVerif
 		Total:            len(threads),
 		Overview:         overview,
 		OverviewFindings: findings,
+		Warnings:         warnings,
 		Next:             next,
 	}, nil
 }
@@ -622,6 +667,7 @@ func writeReplyBodies(root string, in ReceivedReviewVerifyIn) (ReceivedReviewVer
 		Timestamp:        time.Now().UTC().Format(time.RFC3339),
 		Threads:          []CommentThread{},
 		OverviewFindings: []OverviewFinding{},
+		Warnings:         []string{},
 		Next:             "Reply bodies written — call links_validate with the same file path before posting.",
 	}, nil
 }
@@ -658,7 +704,7 @@ func RegisterReceivedReviewTools(s *mcpserver.Server) {
 	)
 
 	mcpserver.Register(s, "received_review_verify",
-		"INTERNAL — called by sdlc skills only. Fetch all review comment threads on a PR and classify each as outstanding, replied, or self-replied relative to the PR author's login. Returns per-thread status plus outstanding/replied/total counts. With writeReplyBodies:true, persists content verbatim to .sdlc-v2/state/artifacts/received-review-reply-bodies.md instead.",
+		"INTERNAL — called by sdlc skills only. Fetch all review comment threads on a PR and classify each as outstanding, replied, or self-replied relative to the PR author's login. Also reads the review bodies (gh pr view --json reviews) and the GraphQL thread state: each thread gets severity, severityPrefix and severityIcon (Copilot), overviewSection, isResolved and isOutdated; the latest Copilot overview gives overview and overviewFindings (findings with no thread). A failure of these two extra reads adds a line to warnings and leaves the related fields empty; a failure of the comment fetch returns InfraError. Returns per-thread status plus outstanding/replied/total counts. With writeReplyBodies:true, persists content verbatim to .sdlc-v2/state/artifacts/received-review-reply-bodies.md instead.",
 		mcpserver.Annotations{
 			Title:      "Verify review replies posted",
 			ReadOnly:   true,

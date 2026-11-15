@@ -43,7 +43,7 @@ At the end, ship prints the step table, the decisions log and the deferred findi
 | harden | skill | Runs `/sdlc:harden` through the Skill tool to propose guardrail edits. | Approved guardrail edits | yes | in the steps list |
 | pr | agent | Creates the pull request, or updates the open one. Pushes with a lease when the branch is already on the remote. | The PR URL | no | always |
 | verify-pipeline | tool | Polls the CI checks of the PR. An agent fixes a failed run. | The CI verdict | yes | in the steps list |
-| await-remote-review | tool | Polls for the review of an automated reviewer. An agent runs `/sdlc:received-review` when the review is actionable. | The remote review verdict | yes | in the steps list |
+| await-remote-review | tool | Polls for the review of an automated reviewer and reads the Copilot overview header. An agent runs `/sdlc:received-review` when the review is actionable. | The remote review verdict | yes | in the steps list |
 | learnings-commit | tool | Logs the learnings of the run. It does not touch git. | The learnings log | no | always |
 | step instructions | skill | After each step, runs the follow-up instructions of that step from the `[instructions]` config. | One result for each instruction | yes | the step has a list |
 | ship instructions | skill | After the last step, runs the `ship` list. | One result for each instruction | yes | the config has a `ship` list |

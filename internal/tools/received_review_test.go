@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -1238,10 +1240,120 @@ func TestReceivedReviewVerify_NoMissedFindings(t *testing.T) {
 	}
 }
 
-// A failed review fetch leaves the join empty and does not fail the tool.
-func TestReceivedReviewVerify_ReviewFetchFailureIsSilent(t *testing.T) {
+func TestGhCause(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"output cap", fmt.Errorf("ghx: X: %w", execx.ErrOutputCap), "gh output exceeded the size cap"},
+		{"exit status", fmt.Errorf("ghx: X: %w", fmt.Errorf("execx: gh api: exit status 1: HTTP 404")), "HTTP 404"},
+		{"fallback", errors.New("ghx: X: parse threads: bad json"), "gh call failed or gave output that could not be read"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ghCause(tt.err); got != tt.want {
+				t.Errorf("ghCause = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// verifyStubWithFailures builds a gh stub. A failing case exits 1 with an
+// error line on stderr. The other cases give an empty reviews list, no threads
+// and one comment.
+func verifyStubWithFailures(failView, failGraphQL bool) string {
+	view := `echo '{"reviews":[]}'`
+	if failView {
+		view = `echo 'HTTP 502 view' >&2; exit 1`
+	}
+	graphql := ``
+	if failGraphQL {
+		graphql = `echo 'HTTP 403 graphql' >&2; exit 1`
+	}
+	return "#!/bin/sh\ncase \"$2\" in\n  user) echo octocat ;;\n  view) " + view + " ;;\n  graphql) " + graphql + " ;;\n  *) printf '%s\\n' '{\"id\":1,\"path\":\"a.go\",\"line\":1,\"login\":\"r\",\"body\":\"x\",\"in_reply_to_id\":null}' ;;\nesac\n"
+}
+
+func TestReceivedReviewVerify_ReviewFetchFails(t *testing.T) {
 	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
-	script := "#!/bin/sh\ncase \"$2\" in\n  user) echo octocat ;;\n  view) exit 1 ;;\n  graphql) ;;\n  *) printf '%s\\n' '{\"id\":1,\"path\":\"a.go\",\"line\":1,\"login\":\"r\",\"body\":\"x\",\"in_reply_to_id\":null}' ;;\nesac\n"
+	cleanup := stubGH(t, verifyStubWithFailures(true, false))
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "review body not read: HTTP 502 view; severityIcon, overview and overviewFindings are empty. Retry received_review_verify, or check gh auth status."
+	if len(out.Warnings) != 1 || out.Warnings[0] != want {
+		t.Errorf("Warnings = %q, want [%q]", out.Warnings, want)
+	}
+	if strings.Contains(out.Warnings[0], "ghx:") || strings.Contains(out.Warnings[0], "execx:") {
+		t.Errorf("warning has a package prefix: %q", out.Warnings[0])
+	}
+	if out.Overview != "" || out.OverviewFindings == nil || len(out.OverviewFindings) != 0 || out.Total != 1 {
+		t.Errorf("out = %+v", out)
+	}
+	if strings.Count(out.Next, receivedReviewWarningNext) != 1 {
+		t.Errorf("Next = %q, want the warning text once", out.Next)
+	}
+}
+
+func TestReceivedReviewVerify_ThreadStateFails(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	cleanup := stubGH(t, verifyStubWithFailures(false, true))
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "thread state not read: HTTP 403 graphql; isResolved and isOutdated are false for every thread. Do not use isResolved or isOutdated to skip a thread. Retry received_review_verify."
+	if len(out.Warnings) != 1 || out.Warnings[0] != want {
+		t.Errorf("Warnings = %q, want [%q]", out.Warnings, want)
+	}
+	if out.Total != 1 || out.Threads[0].IsResolved || out.Threads[0].IsOutdated {
+		t.Errorf("out = %+v", out)
+	}
+	if strings.Count(out.Next, receivedReviewWarningNext) != 1 {
+		t.Errorf("Next = %q, want the warning text once", out.Next)
+	}
+}
+
+func TestReceivedReviewVerify_BothExtraReadsFail(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	cleanup := stubGH(t, verifyStubWithFailures(true, true))
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Warnings) != 2 || !strings.HasPrefix(out.Warnings[0], "review body not read: ") || !strings.HasPrefix(out.Warnings[1], "thread state not read: ") {
+		t.Errorf("Warnings = %q, want [W1, W2]", out.Warnings)
+	}
+	if strings.Count(out.Next, receivedReviewWarningNext) != 1 {
+		t.Errorf("Next = %q, want the warning text once", out.Next)
+	}
+}
+
+// Both reads succeed: warnings is [] (not null) and the state joins by thread ID.
+func TestReceivedReviewVerify_ThreadStateJoin(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	script := `#!/bin/sh
+case "$2" in
+  user) echo octocat ;;
+  view) echo '{"reviews":[]}' ;;
+  graphql)
+    printf '{"id":1,"isResolved":true,"isOutdated":false}\n'
+    printf '{"id":2,"isResolved":false,"isOutdated":true}\n'
+    ;;
+  *)
+    printf '{"id":1,"path":"a.go","line":1,"login":"r","body":"x","in_reply_to_id":null}\n'
+    printf '{"id":2,"path":"b.go","line":1,"login":"r","body":"y","in_reply_to_id":null}\n'
+    printf '{"id":3,"path":"c.go","line":1,"login":"r","body":"z","in_reply_to_id":null}\n'
+    ;;
+esac
+`
 	cleanup := stubGH(t, script)
 	defer cleanup()
 
@@ -1249,7 +1361,42 @@ func TestReceivedReviewVerify_ReviewFetchFailureIsSilent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if out.Overview != "" || out.OverviewFindings == nil || len(out.OverviewFindings) != 0 || out.Total != 1 {
-		t.Errorf("out = %+v", out)
+	if out.Warnings == nil || len(out.Warnings) != 0 {
+		t.Errorf("Warnings = %#v, want empty non-nil", out.Warnings)
+	}
+	if strings.Contains(out.Next, receivedReviewWarningNext) {
+		t.Errorf("Next = %q, want no warning text", out.Next)
+	}
+	if len(out.Threads) != 3 {
+		t.Fatalf("Threads = %+v", out.Threads)
+	}
+	got := [][2]bool{}
+	for _, th := range out.Threads {
+		got = append(got, [2]bool{th.IsResolved, th.IsOutdated})
+	}
+	want := [][2]bool{{true, false}, {false, true}, {false, false}}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("thread %d (resolved, outdated) = %v, want %v", out.Threads[i].ID, got[i], want[i])
+		}
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"warnings":[]`) {
+		t.Errorf("JSON = %s, want warnings:[]", raw)
+	}
+}
+
+// Write mode makes no gh call and returns warnings as [] (not null).
+func TestReceivedReviewVerify_WriteModeWarningsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{WriteReplyBodies: true, Content: "reply"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Warnings == nil || len(out.Warnings) != 0 {
+		t.Errorf("Warnings = %#v, want empty non-nil", out.Warnings)
 	}
 }

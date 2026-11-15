@@ -86,7 +86,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  true,
-		reason:     "ghx.PRReviewComments; writeReplyBodies mode writes only to gitignored .sdlc-v2/state/artifacts/received-review-reply-bodies.md",
+		reason:     "ghx.PRReviewComments, ghx.PRReviews, ghx.PRReviewThreadStates; writeReplyBodies mode writes only to gitignored .sdlc-v2/state/artifacts/received-review-reply-bodies.md",
 	},
 	"plan_mark": {
 		title:      "Record plan progress marker",

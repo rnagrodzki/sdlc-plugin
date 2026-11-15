@@ -243,6 +243,17 @@ Polls CI after the PR is created and analyzes or fixes failures. See
 
 Waits for an automated reviewer (for example Copilot) to respond.
 
+#### How the verdict is chosen
+
+| Copilot review | Verdict | Ship does |
+|---|---|---|
+| state Changes requested, any header | actionable | runs received-review |
+| state Commented or Approved, 🟢 Approval recommended, no open or missed issue | approved-clean | continues |
+| state Commented or Approved, 🟢 Approval recommended, an open or missed issue | actionable | runs received-review |
+| state Commented or Approved, 🟡 Changes recommended | actionable | runs received-review |
+| state Commented or Approved, 🔵 Needs a closer look | actionable | runs received-review and asks for a closer human look |
+| no overview header | Approved gives approved-clean, Commented gives actionable | as before |
+
 ## Conditional steps
 
 These steps start automatically. They are not part of the step list that you
