@@ -138,11 +138,24 @@ type Options struct {
 	// SessionDetail returns the timeline and command groups of one session
 	// (production: tools.DashboardSessionDetail). GET /api/session-detail calls it.
 	SessionDetail func(root, id string, now time.Time) (tools.DashboardSessionDetailOut, error)
+	// SetupFields returns the setup sections and the fields of each one
+	// (production: tools.DashboardSetupFields). GET /api/setup-fields calls it.
+	SetupFields func() tools.DashboardSetupFieldsOut
+	// SetupState returns the config state and values of one repo
+	// (production: tools.DashboardSetupState). GET /api/setup-state calls it.
+	SetupState func(root string) (tools.DashboardSetupStateOut, error)
+	// SetupSave saves changed fields of the Setup form (production:
+	// tools.DashboardSetupSave). POST /api/setup-save calls it.
+	SetupSave func(root string, in tools.DashboardSetupSaveIn) (tools.DashboardSetupSaveOut, error)
+	// SetupCreate creates the first config files of one repo (production:
+	// tools.DashboardSetupCreate). POST /api/setup-create calls it.
+	SetupCreate func(root string) (tools.DashboardSetupCreateOut, error)
 }
 
 // WithToolRoutes returns o with every route function set to the tools
 // function that production uses: Archive, ClearCache, LearningBody, the
-// delete, status and dismiss functions, and the two detail functions.
+// delete, status and dismiss functions, the two detail functions, and the four
+// Setup functions.
 // ClearCache calls clearCache (production: tools.ClearCache) with
 // dashboard.LogPath(), the file that receives the output of the server when it
 // runs in the background. "sdlc dashboard serve" and the browser e2e test both
@@ -162,6 +175,10 @@ func WithToolRoutes(o Options, clearCache func(root, serverLog string, now time.
 	o.DismissWait = tools.DashboardDismissWait
 	o.RunDetail = tools.DashboardRunDetail
 	o.SessionDetail = tools.DashboardSessionDetail
+	o.SetupFields = tools.DashboardSetupFields
+	o.SetupState = tools.DashboardSetupState
+	o.SetupSave = tools.DashboardSetupSave
+	o.SetupCreate = tools.DashboardSetupCreate
 	return o
 }
 
@@ -332,6 +349,8 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 	h.mux.HandleFunc("GET /api/learning", h.serveLearning)
 	h.mux.HandleFunc("GET /api/run-detail", h.serveRunDetail)
 	h.mux.HandleFunc("GET /api/session-detail", h.serveSessionDetail)
+	h.mux.HandleFunc("GET /api/setup-fields", h.serveSetupFields)
+	h.mux.HandleFunc("GET /api/setup-state", h.serveSetupState)
 	h.mux.HandleFunc("POST /api/stop", h.serveStop)
 	h.mux.HandleFunc("POST /api/run-archive", h.serveRunArchive)
 	h.mux.HandleFunc("POST /api/cache-clear", h.serveCacheClear)
@@ -341,6 +360,8 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 	h.mux.HandleFunc("POST /api/preplan-status", h.servePreplanStatus)
 	h.mux.HandleFunc("POST /api/history-delete", h.serveHistoryDelete)
 	h.mux.HandleFunc("POST /api/wait-dismiss", h.serveWaitDismiss)
+	h.mux.HandleFunc("POST /api/setup-save", h.serveSetupSave)
+	h.mux.HandleFunc("POST /api/setup-create", h.serveSetupCreate)
 	return h
 }
 

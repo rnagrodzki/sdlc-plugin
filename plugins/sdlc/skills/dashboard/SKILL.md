@@ -25,6 +25,8 @@ The page can also change files. It has no undo for any change. When the user ask
 | Set a preplan status | rewrites the `**Status:**` line of `.sdlc-v2/preplan/<slug>.md` | Set the old status again on the page |
 | Delete History rows | rewrites `.sdlc-v2/history/runs.jsonl` | None |
 | Dismiss a wait | deletes one record in `.sdlc-v2/evidence/attention/` | None needed. The session still waits for its answer |
+| Save in the Setup tab | rewrites the changed keys in `.sdlc-v2/config.toml`, `.sdlc-v2/local.toml`, or the user file `~/.sdlc/local.toml`. A save of the Version section also updates the CI script files | Set the old value again on the page |
+| Create config in the Setup tab | creates `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml` from the templates, creates the folder `.sdlc-v2/runs/`, and adds or updates the sdlc block in `.sdlc-v2/.gitignore` and in the root `.gitignore`. It renames a leftover `.sdlc-v2/local.json` to `local.json.bak` when no `local.json.bak` exists | Delete the two config files by hand. If Create renamed `local.json`, rename `local.json.bak` back. The other changes can stay |
 
 **Announce at start:** "I'm using dashboard (sdlc v{sdlc_version})." - extract the version from the `sdlc:` line in the session-start system-reminder. If no version is in context, omit the parenthetical.
 
