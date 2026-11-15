@@ -347,3 +347,16 @@ new changes to that same bar:
   outcome.
 - A test of an action that has several modes or paths (plain, force, update, migrate, legacy name) runs the checks above in each mode, not only in the default mode. Each test of a path that can warn asserts the whole Warnings list, also when it must be empty, so a migrate test that skips the warnings leaves them unpinned. A limit that more than one mode reads is tested at the limit and one past it in each mode, with both sizes built from the limit constant. A failure test asserts the Msg, the Suggestion and the cause (`errors.Is` or `errors.As`); a test that asserts only the Msg, or only the Go type of the error, leaves the other fields unpinned. A write that replaces a file through a temp file and a rename has a success-path test that asserts the new bytes, the mode and that no temp file remains, next to the failure test that fails the write step itself (not an earlier refusal) and asserts the old bytes. This extends the limit-boundary, message-text and multi-step-write bullets above.
 - Code that picks one item from a list by a key (the latest by timestamp, the highest by rank, the first match) is tested with two items that share the key, with an item whose key is missing, zero or unparsable, and with the input in a different order. Each test asserts which item wins and that the tie rule holds. A test set with distinct keys in one order passes when the comparison runs the wrong way or a tie breaks by chance. Example: a latest-review selection with no tie test and no test for a missing timestamp.
+- A test that asserts the size or the members of a set that the code or a data file owns (the fields of a form, the sections of a config) takes its expected value from an independent source (the schema, the template, a fixture) or names each member. A typed-in count is a finding, unless the count is the contract and is built from a named constant. A list input that the handler stores is tested with two bad entries in one call as well as one bad entry at an index other than 0, and the test asserts every index that the error names. Example: a test that hard-codes the number of form fields, and a validator with no test for several bad targets.
+- A validator or pattern that accepts a range of forms (a hash of 40 or 64
+  hex digits, a name pattern, a length range) is tested at the shortest
+  accepted form, the longest accepted form, one form below, one form
+  above, and a character of the wrong class, each built from the constants
+  of the pattern. A test with one accepted form leaves the bounds unpinned.
+  Code that cuts text to a byte or rune cap, including a helper that quotes,
+  previews or labels a value, has a test whose cut falls inside a multi-byte
+  character and a test with invalid UTF-8, each asserting the exact result
+  and the warning. A cut helper with no test of its own is a finding. Every
+  row of a table-driven test runs in its own `t.Run` with a name that states
+  the row, so a failure names the row. This extends the limit-boundary
+  bullet above to format ranges and cuts.
