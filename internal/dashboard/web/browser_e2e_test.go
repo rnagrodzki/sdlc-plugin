@@ -24,6 +24,7 @@ import (
 	"github.com/chromedp/chromedp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 	"github.com/rnagrodzki/sdlc-plugin/internal/history"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
@@ -1626,6 +1627,181 @@ func TestBrowserE2E_Instructions(t *testing.T) {
 	}
 	if got.EndLabel != "end of run (ship)" || !slices.Equal(got.EndRows, []string{browserInstrEndText}) || !got.EndAfter {
 		t.Errorf("end group = label %q, rows %q, after the last tile %v; want %q, [%q], true", got.EndLabel, got.EndRows, got.EndAfter, "end of run (ship)", browserInstrEndText)
+	}
+}
+
+// browserSetupStepsLine turns the verify-pipeline step on in the seeded
+// local.toml, so the form shows the verifyPipelineMaxIterations field.
+const browserSetupStepsLine = "steps = { execute = true, commit = true, review = true, archive-openspec = true, pr = true, learnings-commit = true, verify-pipeline = true }"
+
+// browserSetupSeedA makes the files of repo A with the real create function,
+// then turns on the verify-pipeline step. The shipped templates hold the
+// comment lines that the save must keep.
+func browserSetupSeedA(t *testing.T, root string) (configPath, localPath string) {
+	t.Helper()
+	out, err := tools.DashboardSetupCreate(root)
+	if err != nil || !out.OK {
+		t.Fatalf("seed repo A: create = %+v, %v", out, err)
+	}
+	configPath = filepath.Join(root, ".sdlc-v2", "config.toml")
+	localPath = filepath.Join(root, ".sdlc-v2", "local.toml")
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const anchor = "# steps = {"
+	text := string(data)
+	at := strings.Index(text, anchor)
+	if at < 0 {
+		t.Fatalf("the local.toml template has no %q line", anchor)
+	}
+	end := at + strings.Index(text[at:], "\n") + 1
+	e2eWriteFile(t, localPath, text[:end]+browserSetupStepsLine+"\n"+text[end:])
+	return configPath, localPath
+}
+
+// browserCommentLines returns the comment lines of a TOML text, in order.
+func browserCommentLines(text string) []string {
+	var out []string
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "#") {
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
+// Selectors and note text of the Setup tab, shared by the Setup test and its
+// helpers.
+const (
+	browserSetupForm      = ".setup-sec:not(.setup-deleg)"
+	browserSetupDeleg     = ".setup-sec.setup-deleg"
+	browserSetupNote      = ".setup-save-note"
+	browserSetupField     = "#setup-f-ship-verifyPipelineMaxIterations"
+	browserSetupError     = browserSetupField + "-error"
+	browserSetupSave      = "#setup-save"
+	browserSetupBump      = `#setup-sec-ship [data-key="ship/bump"] [data-opt="minor"]`
+	browserSetupNoteSaved = "Saved 2 changes."
+)
+
+// browserReadFile returns the text of the file at path. It fails the test on an
+// error.
+func browserReadFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+// browserSetupSaveAndCheck corrects the iterations field, picks bump = minor,
+// saves through the review dialog, and checks the files. local.toml must hold
+// both new values and keep every comment line of commentsBefore, except the
+// two placeholders that the writer turns into live lines. config.toml must
+// equal configBefore.
+func browserSetupSaveAndCheck(t *testing.T, page *browserPage, localPath, configPath, configBefore string, commentsBefore []string) {
+	t.Helper()
+	page.do("clear the iterations field again", chromedp.Clear(chromedp.CSS(browserSetupField)))
+	page.do("type 5", chromedp.SendKeys(chromedp.CSS(browserSetupField), "5"))
+	page.click("the minor option of bump", browserSetupBump)
+	page.wait("two unsaved changes", `(function () {
+		var b = document.querySelector(`+browserJSON(browserSetupSave)+`);
+		return !!b && !b.hidden && !b.disabled && document.getElementById('n-setup').textContent === '2';
+	})()`)
+	page.click("Review and save", browserSetupSave)
+	page.wait("the review dialog", `document.getElementById('setup-review').open`)
+	page.click("Save in the review dialog", "#setup-review-ok")
+	page.wait("the save note", `(function () {
+		var n = document.querySelector(`+browserJSON(browserSetupNote)+`);
+		return !!n && n.textContent === `+browserJSON(browserSetupNoteSaved)+`;
+	})()`)
+	page.wait("the focus on the save note", `document.activeElement === document.querySelector(`+browserJSON(browserSetupNote)+`)`)
+
+	after := browserReadFile(t, localPath)
+	if !regexp.MustCompile(`(?m)^verifyPipelineMaxIterations\s*=\s*5\s*$`).MatchString(after) {
+		t.Errorf("local.toml has no verifyPipelineMaxIterations = 5:\n%s", after)
+	}
+	if !regexp.MustCompile(`(?m)^bump\s*=\s*['"]minor['"]\s*$`).MatchString(after) {
+		t.Errorf("local.toml has no bump = \"minor\":\n%s", after)
+	}
+	commentsAfter := browserCommentLines(after)
+	// The writer turns the commented placeholder of a key that it sets into the
+	// live line (internal/config/splice.go). Every other comment line stays.
+	replaced := []string{`# bump = "patch"`, "# verifyPipelineMaxIterations = 3"}
+	for _, line := range commentsBefore {
+		if slices.Contains(replaced, line) {
+			continue
+		}
+		if !slices.Contains(commentsAfter, line) {
+			t.Errorf("local.toml lost the comment line %q", line)
+		}
+	}
+	if got := browserReadFile(t, configPath); got != configBefore {
+		t.Errorf("config.toml changed by a save to local.toml:\n%s", got)
+	}
+}
+
+// TestBrowserE2E_Setup drives the Setup tab in a real browser: field
+// error, save with review, comments kept, and Create config.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_Setup(t *testing.T) {
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "local.toml"))
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+
+	repoA, repoB := t.TempDir(), t.TempDir()
+	configPath, localPath := browserSetupSeedA(t, repoA)
+	configBefore, localBefore := browserReadFile(t, configPath), browserReadFile(t, localPath)
+	commentsBefore := browserCommentLines(localBefore)
+	if len(commentsBefore) < 10 {
+		t.Fatalf("seeded local.toml has %d comment lines; want a template with many", len(commentsBefore))
+	}
+	base, page := browserLaunch(t, chrome, []string{repoA, repoB})
+
+	// Step 1: open #setup. The form shows 10 form sections and 9 delegated cards.
+	page.do("open the Setup tab", chromedp.Navigate(base+"/#setup"))
+	page.wait("the form sections", `document.querySelectorAll(`+browserJSON(browserSetupForm)+`).length === 10`)
+	if n := page.count(browserSetupForm); n != 10 {
+		t.Errorf("form sections = %d; want 10", n)
+	}
+	if n := page.count(browserSetupDeleg); n != 9 {
+		t.Errorf("delegated cards = %d; want 9", n)
+	}
+
+	// Step 2: a number below the minimum shows the error and blocks the save.
+	page.do("clear the iterations field", chromedp.Clear(chromedp.CSS(browserSetupField)))
+	page.do("type 0", chromedp.SendKeys(chromedp.CSS(browserSetupField), "0"))
+	page.wait("the minimum error", `(function () {
+		var e = document.querySelector(`+browserJSON(browserSetupError)+`);
+		return !!e && !e.hidden && e.textContent === 'The minimum is 1.';
+	})()`)
+	page.wait("the save button to be disabled", `(function () {
+		var b = document.querySelector(`+browserJSON(browserSetupSave)+`);
+		return !!b && !b.hidden && b.disabled;
+	})()`)
+	if got := browserReadFile(t, localPath); got != localBefore {
+		t.Errorf("local.toml changed after an invalid value:\n%s", got)
+	}
+	if got := browserReadFile(t, configPath); got != configBefore {
+		t.Errorf("config.toml changed after an invalid value:\n%s", got)
+	}
+
+	// Step 3: correct the number, pick bump = minor, review, and save.
+	browserSetupSaveAndCheck(t, page, localPath, configPath, configBefore, commentsBefore)
+
+	// Step 4: the repo with no config shows Create config.
+	page.click("the chip of repo B", `.setup-bar .chip[title=`+browserJSON(repoB)+`]`)
+	page.wait("the Create config button", `!!document.getElementById('setup-create')`)
+	page.click("Create config", "#setup-create")
+	page.wait("the create note", `(function () {
+		var n = document.querySelector(`+browserJSON(browserSetupNote)+`);
+		return !!n && n.textContent === 'Config created with the default values.';
+	})()`)
+	page.wait("the form of repo B", `document.querySelectorAll(`+browserJSON(browserSetupForm)+`).length === 10`)
+	if _, err := os.Stat(filepath.Join(repoB, ".sdlc-v2", "config.toml")); err != nil {
+		t.Errorf("config.toml of repo B after Create config: %v", err)
 	}
 }
 
