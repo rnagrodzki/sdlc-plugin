@@ -82,11 +82,13 @@ func PRView(dir string, n int) (string, error) {
 // (APPROVED, COMMENTED, CHANGES_REQUESTED, DISMISSED, PENDING); Login is the
 // reviewer's GitHub login exactly as gh reports it (no case or [bot]
 // normalization); SubmittedAt is gh's RFC3339 timestamp, empty for a review
-// that has not been submitted.
+// that has not been submitted. Body is the review body as gh reports it, ""
+// when the review has none.
 type PRReview struct {
 	Login       string
 	State       string
 	SubmittedAt string
+	Body        string // review body as gh reports it; "" when the review has none
 }
 
 // PRReviews returns the reviews on PR n via `gh pr view <n> --json
@@ -119,6 +121,7 @@ func PRReviews(dir string, n int) ([]PRReview, error) {
 			} `json:"author"`
 			State       string `json:"state"`
 			SubmittedAt string `json:"submittedAt"`
+			Body        string `json:"body"`
 		} `json:"reviews"`
 	}
 	if jsonErr := json.Unmarshal([]byte(raw), &parsed); jsonErr != nil {
@@ -131,6 +134,7 @@ func PRReviews(dir string, n int) ([]PRReview, error) {
 			Login:       r.Author.Login,
 			State:       r.State,
 			SubmittedAt: r.SubmittedAt,
+			Body:        r.Body,
 		})
 	}
 	return reviews, nil
@@ -833,6 +837,73 @@ func PRReviewComments(dir string, owner, repo string, number int) ([]PRReviewCom
 	}
 
 	return comments, nil
+}
+
+// ThreadState is the GitHub state of one review thread.
+type ThreadState struct {
+	IsResolved bool
+	IsOutdated bool
+}
+
+// prReviewThreadsQuery pages through the review threads of one PR. The
+// $endCursor variable is filled by `gh api graphql --paginate`.
+const prReviewThreadsQuery = `query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$pr){reviewThreads(first:100,after:$endCursor){nodes{isResolved isOutdated comments(first:1){nodes{databaseId}}} pageInfo{hasNextPage endCursor}}}}}`
+
+// PRReviewThreadStates returns the state of every review thread on PR n,
+// keyed by the databaseId of the thread's first comment (== REST comment id).
+// It reads all pages in a single `gh api graphql --paginate` call. As with
+// PRReviewComments, the `--jq` filter yields a stream of concatenated JSON
+// objects, one per thread, which json.Decoder reads one value at a time. A
+// thread whose first comment id is 0 or null is skipped without an error.
+// Empty output yields an empty map and a nil error.
+func PRReviewThreadStates(dir, owner, repo string, n int) (map[int]ThreadState, error) {
+	if n <= 0 {
+		return nil, fmt.Errorf("ghx: PRReviewThreadStates: invalid PR number %d", n)
+	}
+	if err := validatePositionalArg(owner, "PRReviewThreadStates owner"); err != nil {
+		return nil, err
+	}
+	if err := validatePositionalArg(repo, "PRReviewThreadStates repo"); err != nil {
+		return nil, err
+	}
+
+	// -f keeps owner and repo as strings; -F makes pr an Int.
+	raw, err := run(dir, "api", "graphql", "--paginate",
+		"-f", "owner="+owner,
+		"-f", "repo="+repo,
+		"-F", fmt.Sprintf("pr=%d", n),
+		"-f", "query="+prReviewThreadsQuery,
+		"--jq", `.data.repository.pullRequest.reviewThreads.nodes[] | {id: .comments.nodes[0].databaseId, isResolved: .isResolved, isOutdated: .isOutdated}`)
+	if err != nil {
+		return nil, fmt.Errorf("ghx: PRReviewThreadStates: fetch threads: %w", err)
+	}
+
+	states := map[int]ThreadState{}
+	if strings.TrimSpace(raw) == "" {
+		return states, nil
+	}
+
+	dec := json.NewDecoder(strings.NewReader(raw))
+	for {
+		var node struct {
+			ID         int  `json:"id"`
+			IsResolved bool `json:"isResolved"`
+			IsOutdated bool `json:"isOutdated"`
+		}
+		decErr := dec.Decode(&node)
+		if decErr == io.EOF {
+			break
+		}
+		if decErr != nil {
+			return nil, fmt.Errorf("ghx: PRReviewThreadStates: parse threads: %w", decErr)
+		}
+		if node.ID == 0 {
+			continue
+		}
+		states[node.ID] = ThreadState{IsResolved: node.IsResolved, IsOutdated: node.IsOutdated}
+	}
+
+	return states, nil
 }
 
 // CurrentLogin returns the GitHub login of the currently authenticated gh
