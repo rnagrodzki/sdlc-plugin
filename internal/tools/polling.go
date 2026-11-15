@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -149,17 +150,27 @@ type AwaitRemoteReviewIn struct {
 	StateFile       string   `json:"state_file,omitempty"`
 }
 
+// copilotReviewer is the canonical name of Copilot, as canonicalReviewer
+// returns it and as the default reviewer list holds it.
+const copilotReviewer = "copilot"
+
 // canonicalReviewer normalizes a GitHub login for comparison: trimmed,
 // lower-cased, without a "[bot]" suffix, with Copilot's reviewer-bot login
 // ("copilot-pull-request-reviewer") folded into "copilot" — the name the
 // default reviewer list uses — mirroring the JS source's evaluateReviews
-// (R56) [bot]-suffix strip and copilot-variant canonicalization.
+// (R56) [bot]-suffix strip and copilot-variant canonicalization. The match is
+// exact on the whole login: "copilot-xyz" stays "copilot-xyz".
 func canonicalReviewer(login string) string {
 	l := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(login)), "[bot]")
 	if l == "copilot-pull-request-reviewer" {
-		return "copilot"
+		return copilotReviewer
 	}
 	return l
+}
+
+// isCopilotReviewer reports whether login is a Copilot login.
+func isCopilotReviewer(login string) bool {
+	return canonicalReviewer(login) == copilotReviewer
 }
 
 // submittedBefore reports whether RFC3339 timestamp a is strictly earlier
@@ -171,71 +182,96 @@ func submittedBefore(a, b string) bool {
 	return errA == nil && errB == nil && ta.Before(tb)
 }
 
+// latestReviewBy returns the most recent submitted review whose canonical
+// login is want and that keep accepts (a nil keep accepts every review). A
+// PENDING review (an unsubmitted draft) is never returned. "Most recent" is
+// by SubmittedAt; when a timestamp is missing or unparseable, or two are
+// equal, the later entry in gh's oldest-first order wins. nil when no review
+// matches.
+func latestReviewBy(reviews []ghx.PRReview, want string, keep func(*ghx.PRReview) bool) *ghx.PRReview {
+	var latest *ghx.PRReview
+	for i := range reviews {
+		rv := &reviews[i]
+		if canonicalReviewer(rv.Login) != want || strings.EqualFold(rv.State, "PENDING") {
+			continue
+		}
+		if keep != nil && !keep(rv) {
+			continue
+		}
+		if latest == nil || !submittedBefore(rv.SubmittedAt, latest.SubmittedAt) {
+			latest = rv
+		}
+	}
+	return latest
+}
+
+// reviewVerdict is the result of evaluateReviews.
+type reviewVerdict struct {
+	Status   string // "approved-clean", "actionable", or "" for no verdict
+	Reviewer string // the configured name that matched, as passed in
+	RawState string // gh's raw review state
+	Overview string // header value of the verdict review; "" when none
+}
+
 // evaluateReviews ports evaluateReviews (R51-R53, R56) over the structured
 // review list from ghx.PRReviews. For each configured reviewer, in the
-// order given, it takes that reviewer's most recent submitted review and maps
-// its state to the JS source's verdict buckets:
+// order given, it takes that reviewer's most recent submitted review
+// (latestReviewBy) and maps its state to the JS source's verdict buckets:
 //
-//	CHANGES_REQUESTED                 -> "actionable"
-//	APPROVED / COMMENTED, with a Copilot overview header in the body:
-//	  green header, 0 open and 0 missed items -> "approved-clean"
-//	  any other case                          -> "actionable"
-//	APPROVED / COMMENTED, with no header: APPROVED -> "approved-clean",
-//	  COMMENTED -> "actionable"
-//	anything else (DISMISSED)         -> no verdict (keep waiting)
+//	CHANGES_REQUESTED         -> "actionable"
+//	APPROVED / COMMENTED      -> approvedOrCommentedStatus
+//	anything else (DISMISSED) -> no verdict (keep waiting)
 //
 // The first configured reviewer with a verdict wins. Reviewer logins are
 // compared case-insensitively via canonicalReviewer. A review by anyone not
-// in the configured list is ignored, as is a PENDING review (an unsubmitted
-// draft). "Most recent" is by SubmittedAt; when a timestamp is missing or
-// unparseable, later entries in gh's oldest-first order win.
-//
-// The returned reviewer is the configured name that matched (as passed in,
-// not the login gh reported) and rawState is gh's raw review state. overview
-// is the header value of the verdict review ("" when its body has no header).
-func evaluateReviews(reviews []ghx.PRReview, reviewers []string) (status, reviewer, rawState, overview string) {
+// in the configured list is ignored.
+func evaluateReviews(reviews []ghx.PRReview, reviewers []string) reviewVerdict {
 	for _, r := range reviewers {
 		want := canonicalReviewer(r)
 		if want == "" {
 			continue
 		}
-		var latest *ghx.PRReview
-		for i := range reviews {
-			rv := &reviews[i]
-			if canonicalReviewer(rv.Login) != want || strings.EqualFold(rv.State, "PENDING") {
-				continue
-			}
-			if latest == nil || !submittedBefore(rv.SubmittedAt, latest.SubmittedAt) {
-				latest = rv
-			}
-		}
+		latest := latestReviewBy(reviews, want, nil)
 		if latest == nil {
 			continue
 		}
 		// The header is local to this pass: a DISMISSED review of one
 		// reviewer never gives its header to the verdict of the next one.
 		ov, hasOverview := parseCopilotOverview(latest.Body)
-		header := ""
+		v := reviewVerdict{Reviewer: r, RawState: latest.State}
 		if hasOverview {
-			header = ov.Header
+			v.Overview = ov.Header
 		}
 		switch state := strings.ToUpper(latest.State); state {
 		case "CHANGES_REQUESTED":
-			return "actionable", r, latest.State, header
+			v.Status = "actionable"
 		case "APPROVED", "COMMENTED":
-			if hasOverview {
-				if ov.Header == overviewApprovalRecommended && len(ov.Open)+len(ov.Missed) == 0 {
-					return "approved-clean", r, latest.State, header
-				}
-				return "actionable", r, latest.State, header
-			}
-			if state == "APPROVED" {
-				return "approved-clean", r, latest.State, header
-			}
-			return "actionable", r, latest.State, header
+			v.Status = approvedOrCommentedStatus(state, ov, hasOverview)
+		default:
+			continue
 		}
+		return v
 	}
-	return "", "", "", ""
+	return reviewVerdict{}
+}
+
+// approvedOrCommentedStatus gives the verdict of an APPROVED or COMMENTED
+// review. With a Copilot overview header in the body, only the green header
+// with 0 open items, 0 missed items and no parse problem gives
+// "approved-clean"; every other overview gives "actionable", so a damaged
+// overview never reads as clean. With no header, APPROVED gives
+// "approved-clean" and COMMENTED gives "actionable".
+func approvedOrCommentedStatus(state string, ov CopilotOverview, hasOverview bool) string {
+	if !hasOverview {
+		if state == "APPROVED" {
+			return "approved-clean"
+		}
+		return "actionable"
+	}
+	if ov.Header == overviewApprovalRecommended && len(ov.Open)+len(ov.Missed) == 0 && len(ov.Problems) == 0 {
+		return "approved-clean"
+	}
+	return "actionable"
 }
 
 // awaitRemoteReview implements one KD8 probe of await_remote_review.
@@ -257,7 +293,7 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 	}
 	reviewers := in.Reviewers
 	if len(reviewers) == 0 {
-		reviewers = []string{"copilot"}
+		reviewers = []string{copilotReviewer}
 	}
 
 	stateFile := in.StateFile
@@ -287,13 +323,13 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 		})
 	}
 
-	status, reviewer, rawState, overview := evaluateReviews(reviews, reviewers)
-	if status != "" {
+	v := evaluateReviews(reviews, reviewers)
+	if v.Status != "" {
 		return stepper.Done(stateFile, "", map[string]any{
-			"verdict":   status,
-			"reviewer":  reviewer,
-			"state":     rawState,
-			"overview":  overview,
+			"verdict":   v.Status,
+			"reviewer":  v.Reviewer,
+			"state":     v.RawState,
+			"overview":  v.Overview,
 			"pr_number": in.PR,
 		}), nil
 	}
@@ -889,13 +925,28 @@ func ClassifyLogs(text string) VerifyPipelineClassifyOut {
 // Registration
 // ---------------------------------------------------------------------------
 
+// pollAwaitDescription builds the poll_await tool description. The overview
+// header texts and values come from overviewHeaders, so a new header changes
+// the description with no second edit.
+func pollAwaitDescription() string {
+	quoted := make([]string, 0, len(overviewHeaders))
+	for _, v := range overviewValues() {
+		quoted = append(quoted, strconv.Quote(v))
+	}
+	return `INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. ` +
+		`For target "remote_review" ext.verdict is one of "approved-clean", "actionable", "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out; ext.reason "exhausted"). ` +
+		`The verdict comes from the latest submitted review of the first configured reviewer that has one: CHANGES_REQUESTED gives "actionable" and DISMISSED gives no verdict. For APPROVED or COMMENTED, a Copilot overview header line in the body decides: "` + overviewHeaders[0].text + `" with no open item, no previously missed item and every block read in full gives "approved-clean"; every other overview, a partly read one included, gives "actionable". With no header line, APPROVED gives "approved-clean" and COMMENTED gives "actionable". ` +
+		`Only the "approved-clean" and "actionable" results carry ext.overview: one of ` + strings.Join(quoted, ", ") + `, or "" when the body has no header line. The "timeout" and "skipped" results have no ext.overview key. ` +
+		`For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped" (ext.reason "exhausted", or "no-ci" when gh reports no checks and the repo has no CI config: no .github/workflows/*.yml|*.yaml, no .circleci/, no Jenkinsfile). Every "done" verdict ends the poll.`
+}
+
 // RegisterPollingTools registers poll_await and verify_pipeline_classify on
 // the server. Registration-only: wiring these into runMCP's live server is
 // Task 40's job, matching the pattern already established for every tool
 // registered so far.
 func RegisterPollingTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "poll_await",
-		`INTERNAL — called by sdlc skills only. Run one bounded KD8 probe for a polling target: target: "remote_review" polls gh for a remote reviewer's verdict on a PR; target: "pipeline" polls gh PR checks. One non-blocking probe per call. Returns a stepper envelope: status "pending" means no verdict yet — wait interval_seconds and call again with the returned state_file; status "error" means the gh probe failed before the deadline (ext.retryable says whether re-probing can help); status "done" carries a terminal ext.verdict. For target "remote_review" ext.verdict is one of "approved-clean", "actionable", "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out; ext.reason "exhausted"). When the latest review body has a Copilot overview header, the header decides: "🟢 Approval recommended" with no open or previously missed item gives "approved-clean", every other header gives "actionable"; CHANGES_REQUESTED always gives "actionable". With no header, APPROVED gives "approved-clean" and COMMENTED gives "actionable". ext.overview is "approval-recommended", "changes-recommended", "needs-closer-look", or "" when the body has no header. For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped" (ext.reason "exhausted", or "no-ci" when gh reports no checks and the repo has no CI config: no .github/workflows/*.yml|*.yaml, no .circleci/, no Jenkinsfile). Every "done" verdict ends the poll.`,
+		pollAwaitDescription(),
 		mcpserver.Annotations{
 			Title:       "Await CI or PR completion",
 			ReadOnly:    false,

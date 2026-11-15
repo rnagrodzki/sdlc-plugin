@@ -1,15 +1,18 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -326,6 +329,9 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 	if env.Status != "done" || env.Ext["verdict"] != "timeout" {
 		t.Fatalf("got status=%q verdict=%v, want done/timeout", env.Status, env.Ext["verdict"])
 	}
+	if _, ok := env.Ext["overview"]; ok {
+		t.Errorf("timeout result has an overview key: %v", env.Ext)
+	}
 
 	// A subsequent call against the now-exhausted state file short-circuits
 	// to "skipped" without probing gh again.
@@ -335,6 +341,9 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 	}
 	if env2.Ext["verdict"] != "skipped" {
 		t.Fatalf("got verdict %v, want skipped", env2.Ext["verdict"])
+	}
+	if _, ok := env2.Ext["overview"]; ok {
+		t.Errorf("skipped result has an overview key: %v", env2.Ext)
 	}
 }
 
@@ -1250,7 +1259,8 @@ func TestEvaluateReviews(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, reviewer, rawState, _ := evaluateReviews(tt.reviews, tt.reviewers)
+			v := evaluateReviews(tt.reviews, tt.reviewers)
+			status, reviewer, rawState := v.Status, v.Reviewer, v.RawState
 			if status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q", status, tt.wantStatus)
 			}
@@ -1310,6 +1320,17 @@ func TestEvaluateReviewsOverview(t *testing.T) {
 		{name: "approved blue",
 			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: blueBody}},
 			wantStatus: "actionable", wantOverview: "needs-closer-look"},
+		{name: "approved green whose open rows do not parse",
+			reviews: []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: "### 🟢 Approval recommended\n\n" +
+				"<details open><summary><strong>2 open issues</strong></summary>\n\n* changed row format\n* another row\n\n</details>\n"}},
+			wantStatus: "actionable", wantOverview: "approval-recommended"},
+		{name: "approved green with an unclosed block",
+			reviews: []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: "### 🟢 Approval recommended\n\n" +
+				"<details open><summary><strong>0 open issues</strong></summary>\n\nno closing tag\n"}},
+			wantStatus: "actionable", wantOverview: "approval-recommended"},
+		{name: "approved green with CRLF and an indented header",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: "  ### 🟢 Approval recommended\r\n\r\n**No open issues**\r\n"}},
+			wantStatus: "approved-clean", wantOverview: "approval-recommended"},
 		{name: "approved with no header",
 			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: "Looks good."}},
 			wantStatus: "approved-clean", wantOverview: ""},
@@ -1330,7 +1351,8 @@ func TestEvaluateReviewsOverview(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, _, _, overview := evaluateReviews(tt.reviews, []string{"copilot", "alice"})
+			v := evaluateReviews(tt.reviews, []string{"copilot", "alice"})
+			status, overview := v.Status, v.Overview
 			if status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q", status, tt.wantStatus)
 			}
@@ -1357,5 +1379,98 @@ func TestEvaluateChecksText_AllGreen(t *testing.T) {
 	failed, pending := evaluateChecksText(text)
 	if len(failed) != 0 || len(pending) != 0 {
 		t.Fatalf("expected no failed/pending, got failed=%+v pending=%+v", failed, pending)
+	}
+}
+
+// The poll_await description and the received_review_verify overview tag name
+// every overview value and the green header text, so a new header in
+// overviewHeaders cannot leave either text stale.
+func TestOverviewValuesInDescriptions(t *testing.T) {
+	desc := pollAwaitDescription()
+	field, ok := reflect.TypeOf(ReceivedReviewVerifyOut{}).FieldByName("Overview")
+	if !ok {
+		t.Fatal("ReceivedReviewVerifyOut has no Overview field")
+	}
+	tag := field.Tag.Get("jsonschema_description")
+	for _, v := range overviewValues() {
+		if !strings.Contains(desc, `"`+v+`"`) {
+			t.Errorf("poll_await description does not name %q", v)
+		}
+		if !strings.Contains(tag, v) {
+			t.Errorf("Overview tag does not name %q", v)
+		}
+	}
+	if !strings.Contains(desc, overviewHeaders[0].text) {
+		t.Errorf("poll_await description does not name the header %q", overviewHeaders[0].text)
+	}
+}
+
+// callRegisteredPollAwait calls the registered poll_await tool through an
+// in-memory MCP client and returns the rendered Markdown text.
+func callRegisteredPollAwait(t *testing.T, args map[string]any) string {
+	t.Helper()
+	s := mcpserver.New("test", "0.0.0-test")
+	RegisterPollingTools(s)
+
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	res, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "poll_await", Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("CallTool: no content")
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content[0] is %T, want *mcp.TextContent", res.Content[0])
+	}
+	if res.IsError {
+		t.Fatalf("poll_await failed: %s", text.Text)
+	}
+	return text.Text
+}
+
+func TestPollAwait_RegisteredOverview(t *testing.T) {
+	const copilot = "copilot-pull-request-reviewer[bot]"
+	tests := []struct {
+		name     string
+		review   ghx.PRReview
+		wantLine string
+	}{
+		{"blue header", ghx.PRReview{Login: copilot, State: "COMMENTED", Body: blueBody}, "- overview: needs-closer-look\n"},
+		{"no header", ghx.PRReview{Login: copilot, State: "APPROVED", Body: "Looks good."}, "- overview: (none)\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanup := stubGHReviewsFile(t, 539, tt.review)
+			defer cleanup()
+			text := callRegisteredPollAwait(t, map[string]any{"target": "remote_review", "pr": 539})
+			removeRenderedStateFile(t, text)
+			if !strings.Contains(text, tt.wantLine) {
+				t.Errorf("rendered text missing %q:\n%s", tt.wantLine, text)
+			}
+		})
+	}
+}
+
+// removeRenderedStateFile deletes the poll state file named on the rendered
+// "- state_file: " line.
+func removeRenderedStateFile(t *testing.T, text string) {
+	t.Helper()
+	for _, line := range strings.Split(text, "\n") {
+		if p, ok := strings.CutPrefix(line, "- state_file: "); ok && p != "(none)" {
+			os.Remove(p)
+		}
 	}
 }

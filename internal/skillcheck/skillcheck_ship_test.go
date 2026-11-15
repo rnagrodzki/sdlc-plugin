@@ -710,8 +710,9 @@ func TestShipSkillsRemoteReviewOverviewNote(t *testing.T) {
 	}
 	for _, pin := range []string{
 		"Copilot asks for a closer human look (🔵).",
-		"`verdict: <ext.verdict>; overview: <ext.overview, or none when empty>`",
+		"`verdict: <ext.verdict>; overview: <ext.overview, or none when absent or empty>`",
 		"### await-remote-review (inline, opt-in)",
+		"Do not add it to the dispatch prompt",
 	} {
 		if !strings.Contains(content, pin) {
 			t.Errorf("skills/ship/SKILL.md does not contain %q", pin)

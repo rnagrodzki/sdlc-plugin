@@ -6,8 +6,8 @@ For `target: remote_review` the tool SHALL read the PR's reviews and return a ve
 | Latest review state | Copilot overview header in the review body | `ext.verdict` |
 |---|---|---|
 | `CHANGES_REQUESTED` | any | `actionable` |
-| `APPROVED` or `COMMENTED` | `🟢 Approval recommended`, with no open and no previously missed item | `approved-clean` |
-| `APPROVED` or `COMMENTED` | `🟢 Approval recommended` with an open or previously missed item, `🟡 Changes recommended`, or `🔵 Needs a closer look` | `actionable` |
+| `APPROVED` or `COMMENTED` | `🟢 Approval recommended`, with no open and no previously missed item, and every block read in full | `approved-clean` |
+| `APPROVED` or `COMMENTED` | `🟢 Approval recommended` with an open or previously missed item or a block not read in full (a summary count that differs from the parsed items, or no closing `</details>`), `🟡 Changes recommended`, or `🔵 Needs a closer look` | `actionable` |
 | `APPROVED` | none | `approved-clean` |
 | `COMMENTED` | none | `actionable` |
 | `DISMISSED` or no review | — | none; keep polling |

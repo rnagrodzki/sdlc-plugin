@@ -160,3 +160,111 @@ func TestParseCopilotOverview_TwoMissedItems(t *testing.T) {
 		t.Errorf("Missed = %+v, want %+v", got.Missed, want)
 	}
 }
+
+func TestParseCopilotOverview_DamagedRowAmongValidRows(t *testing.T) {
+	body := "### 🟡 Changes recommended\n\n" +
+		"<details open><summary><strong>2 open issues</strong></summary>\n\n" +
+		"- [Valid row](https://github.com/o/r/pull/1#discussion_r21)\n" +
+		"- Row with no link\n\n</details>\n"
+	got, ok := parseCopilotOverview(body)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := CopilotOverview{
+		Header:   overviewChangesRecommended,
+		Open:     []OverviewItem{{Title: "Valid row", CommentID: 21}},
+		Problems: []string{`the "open issues" block declares 2 item(s), 1 read`},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("overview mismatch\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestParseCopilotOverview_DeclaredCountWithNoParsedRow(t *testing.T) {
+	body := "### 🟢 Approval recommended\n\n" +
+		"<details open><summary><strong>1 open issue</strong></summary>\n\n" +
+		"- [Wrong host](https://example.com/o/r/pull/1#discussion_r9)\n\n</details>\n"
+	got, _ := parseCopilotOverview(body)
+	want := CopilotOverview{
+		Header:   overviewApprovalRecommended,
+		Problems: []string{`the "open issue" block declares 1 item(s), 0 read`},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("overview mismatch\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestParseCopilotOverview_UnclosedBlock(t *testing.T) {
+	body := "### 🟡 Changes recommended\n\n" +
+		"<details open><summary><strong>1 open issue</strong></summary>\n\n" +
+		"- [Only row](https://github.com/o/r/pull/1#discussion_r31)\n"
+	got, _ := parseCopilotOverview(body)
+	want := CopilotOverview{
+		Header:   overviewChangesRecommended,
+		Open:     []OverviewItem{{Title: "Only row", CommentID: 31}},
+		Problems: []string{`the "open issue" block has no closing </details>`},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("overview mismatch\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestParseCopilotOverview_MissedItemWithoutSummary(t *testing.T) {
+	body := "### 🟡 Changes recommended\n\n" +
+		"<details><summary><strong>1 previously missed issue</strong></summary>\n\n" +
+		"<details>\n\n`a.go:1`\n\nNo summary.\n\n</details>\n\n</details>\n"
+	got, _ := parseCopilotOverview(body)
+	want := CopilotOverview{
+		Header:   overviewChangesRecommended,
+		Problems: []string{`the "previously missed issue" block declares 1 item(s), 0 read`},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("overview mismatch\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestParseCopilotOverview_CRLFMatchesLF(t *testing.T) {
+	lf := readOverviewFixture(t, "changes_recommended.md")
+	crlf := strings.ReplaceAll(lf, "\n", "\r\n")
+	want, _ := parseCopilotOverview(lf)
+	got, ok := parseCopilotOverview(crlf)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("CRLF overview differs\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestParseCopilotOverview_LeadingSpaces(t *testing.T) {
+	body := "   ### 🟡 Changes recommended\n\n" +
+		"<details open><summary><strong>1 open issue</strong></summary>\n\n" +
+		"  - [Indented row](https://github.com/o/r/pull/1#discussion_r41)\n\n</details>\n\n" +
+		"<details><summary><strong>1 previously missed issue</strong></summary>\n\n" +
+		"<details><summary>Indented path</summary>\n\n  `a/b.go:7`\n\nText.\n\n</details>\n\n</details>\n"
+	got, ok := parseCopilotOverview(body)
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	want := CopilotOverview{
+		Header: overviewChangesRecommended,
+		Open:   []OverviewItem{{Title: "Indented row", CommentID: 41}},
+		Missed: []OverviewItem{{Title: "Indented path", Path: "a/b.go", Line: 7, Body: "Text."}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("overview mismatch\n got: %+v\nwant: %+v", got, want)
+	}
+}
+
+func TestParseCopilotOverview_FourSpaceHeaderIsNotAHeader(t *testing.T) {
+	if _, ok := parseCopilotOverview("    ### 🟢 Approval recommended\n"); ok {
+		t.Error("ok = true, want false: 4 leading spaces make a code block in Markdown")
+	}
+}
+
+func TestOverviewValuesFollowHeaderTable(t *testing.T) {
+	want := []string{overviewApprovalRecommended, overviewChangesRecommended, overviewNeedsCloserLook}
+	if got := overviewValues(); !reflect.DeepEqual(got, want) {
+		t.Errorf("overviewValues = %v, want %v", got, want)
+	}
+}

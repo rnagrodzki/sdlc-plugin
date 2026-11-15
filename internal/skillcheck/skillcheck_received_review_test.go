@@ -38,8 +38,8 @@ var receivedReviewSkillsNoDeferRe = regexp.MustCompile("already\\s+deferred:\\s+
 var receivedReviewSkillsPreApprovalRe = regexp.MustCompile(`mark\s+each\s+"agree,\s+will\s+fix"\s+finding\s+as\s+\*\*pre-approved\*\*`)
 
 // receivedReviewSkillsEmptySeverityRe matches the Step 1b rule that gives an
-// empty Severity cell the value `medium` in Step 10 and Step 11.
-var receivedReviewSkillsEmptySeverityRe = regexp.MustCompile("Step\\s+10\\s+and\\s+Step\\s+11\\s+use\\s+`medium`\\s+for\\s+an\\s+empty\\s+cell")
+// empty Severity cell the value `medium` in Step 4, Step 10 and Step 11.
+var receivedReviewSkillsEmptySeverityRe = regexp.MustCompile("Step\\s+4,\\s+Step\\s+10\\s+and\\s+Step\\s+11\\s+use\\s+`medium`\\s+for\\s+an\\s+empty\\s+cell")
 
 // receivedReviewSkillsPartialSkipRe matches the Step 11 rule that keeps a
 // finding skipped at the Step 10 prompt out of the fix, defer and reply passes.
@@ -263,8 +263,8 @@ func TestReceivedReviewSkillParity(t *testing.T) {
 		}
 	})
 
-	// A finding with an empty Severity cell must count as `medium` in Step 10
-	// and Step 11. A wrong edit of this sentence changes which findings are
+	// A finding with an empty Severity cell must count as `medium` in Step 4,
+	// Step 10 and Step 11. A wrong edit of this sentence changes which findings are
 	// pre-approved.
 	t.Run("empty_severity_cell_rule", func(t *testing.T) {
 		body := flagParityBody(executeSkillsReadFile(t,
@@ -272,6 +272,29 @@ func TestReceivedReviewSkillParity(t *testing.T) {
 
 		if !receivedReviewSkillsEmptySeverityRe.MatchString(body) {
 			t.Error("received-review/SKILL.md does not match receivedReviewSkillsEmptySeverityRe")
+		}
+	})
+
+	// Step 1b reads the received_review_verify fields that decide a skip or
+	// add a row: isResolved, overviewSection, isOutdated, overviewFindings
+	// and the thread-state warning prefixes. A lost rule silently drops or
+	// keeps live feedback.
+	t.Run("step_1b_overview_rules", func(t *testing.T) {
+		body := flagParityBody(executeSkillsReadFile(t,
+			filepath.Join(executeSkillsRepoRoot(t), "skills", "received-review", "SKILL.md")))
+		for _, pin := range []string{
+			"skip a thread with `isResolved: true`",
+			"for a thread with `overviewSection: \"resolved\"`, read the current",
+			"for a thread with `isOutdated: true`, read the current code at its path",
+			"add each `overviewFindings` entry as a row with Comment ID `—`",
+			"the `overviewFindings` entry `severity`",
+			"it must be a relative path inside the repository, with no `..` part",
+			"If a line starts with `Thread state not read`",
+			"If a line starts with `Thread state missing`",
+		} {
+			if !strings.Contains(strings.Join(strings.Fields(body), " "), pin) {
+				t.Errorf("received-review/SKILL.md does not contain %q", pin)
+			}
 		}
 	})
 

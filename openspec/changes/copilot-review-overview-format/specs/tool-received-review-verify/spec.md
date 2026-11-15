@@ -1,53 +1,64 @@
 ## ADDED Requirements
 
 ### Requirement: Review body and thread state reads
-In classify mode, after the comment fetch, the tool SHALL read the review bodies with `gh pr view <pr> --json reviews` and the thread state with one paginated `gh api graphql` call. A failure of either read SHALL add a `warnings` line, not an error.
+In classify mode, after the comment fetch, the tool SHALL read the review bodies with `gh pr view <pr> --json reviews` and the thread state with one paginated `gh api graphql` call. A failure of either read SHALL add `warnings` lines, not an error.
 
 - A comment fetch failure still fails the call with an `InfraError`.
-- `warnings` is `[]` when both reads succeed, and in write mode.
+- `warnings` is `[]` when both reads succeed and every thread has a state entry, and in write mode.
 
 #### Scenario: Review read fails
 - **WHEN** `gh pr view <pr> --json reviews` exits 1 with `HTTP 502`
 - **THEN** the call succeeds and returns `threads`
-- **AND** `warnings` holds one line that starts with `review body not read: HTTP 502`
+- **AND** `warnings` holds a line that starts with `Review body not read (unknown): HTTP 502`
 
 #### Scenario: Thread state
 - **WHEN** the GraphQL read reports the thread of root comment 4575025310 as resolved
 - **THEN** that thread has `isResolved: true`
 
 ### Requirement: Read warning text
-Each warning SHALL start with the name of the failed read and its cause, and SHALL name the fields that stay empty.
+Each failed read SHALL give two `warnings` lines: the cause line, then the recovery step. The cause line SHALL start with the name of the failed read, the failure class and the cause, and SHALL name the fields that stay empty.
 
-| Id | Starts with | Empty fields |
+| Id | Cause line starts with | Empty fields |
 |---|---|---|
-| W1 | `review body not read: <cause>;` | `severityIcon`, `overview`, `overviewFindings` |
-| W2 | `thread state not read: <cause>;` | `isResolved`, `isOutdated` |
+| W1 | `Review body not read (<class>): <cause>.` | `severityIcon`, `overviewSection`, `overview`, `overviewFindings` |
+| W2 | `Thread state not read (<class>): <cause>.` | `isResolved`, `isOutdated` |
 
-- W2 also says `Do not use isResolved or isOutdated to skip a thread.`
+- W2 also says `do not use them to skip a thread`.
+- The recovery step depends on the class. A permanent failure (forbidden, output cap) starts with `Do not retry`. A retry step names `received_review_verify({pr: <pr>})`.
 
 #### Scenario: Thread state read fails
-- **WHEN** the GraphQL read exits 1
-- **THEN** `warnings` holds one line that starts with `thread state not read:`
-- **AND** that line holds `Do not use isResolved or isOutdated to skip a thread.`
+- **WHEN** the GraphQL read exits 1 with `HTTP 403`
+- **THEN** `warnings` holds a line that starts with `Thread state not read (forbidden):`
+- **AND** the next line starts with `Do not retry`
 
 ### Requirement: Warning cause
-The `<cause>` of a warning SHALL be the gh error text, `gh output exceeded the size cap`, or `gh call failed or gave output that could not be read`. It SHALL name no Go package or function.
+The `<cause>` of a warning SHALL be the gh error text on one line, masked and cut to 200 characters, or `gh is not installed or not on PATH`, `gh output exceeded the size cap`, or `gh call failed or gave output that could not be read`. It SHALL name no Go package or function.
 
 #### Scenario: Output cap
 - **WHEN** the review read stops at the gh output size cap
-- **THEN** the W1 line starts with `review body not read: gh output exceeded the size cap;`
+- **THEN** the W1 line starts with `Review body not read (output-cap): gh output exceeded the size cap.`
 
 #### Scenario: No package names
 - **WHEN** the review read exits 1 with `HTTP 404`
 - **THEN** the W1 line holds neither `ghx:` nor `execx:`
 
+### Requirement: Other warnings
+The tool SHALL add one `warnings` line for each of these cases:
+
+| Starts with | Case |
+|---|---|
+| `Thread state missing` | the state read succeeded, but threads have no state entry; the line names their ids |
+| `Copilot overview partly read` | an overview block has an item count that differs from its summary, or no closing `</details>` |
+| `Copilot overview item with no thread` | open overview items match no review thread; the line names their comment ids |
+| `Overview findings cut` | more than 50 missed findings, or a finding body over 2000 characters |
+
 ### Requirement: Read warnings in next
-When `warnings` is not empty, `next` SHALL end with ` Read warnings: some fields are empty.` one time.
+When `warnings` is not empty, `next` SHALL end with one sentence that tells the caller to read the warnings list first, one time.
 
 #### Scenario: Both extra reads fail
 - **WHEN** the review read and the GraphQL read both fail
-- **THEN** `warnings` has 2 lines, W1 then W2
-- **AND** `next` holds ` Read warnings: some fields are empty.` one time
+- **THEN** `warnings` has 4 lines: W1, its recovery step, W2, its recovery step
+- **AND** `next` holds the warnings sentence one time
 
 ### Requirement: Copilot comment severity
 The tool SHALL give a thread by Copilot a `severity` that is the higher of its inline prefix and its overview icon, by the rank critical > high > medium > low. It SHALL keep both values in `severityPrefix` and `severityIcon`.

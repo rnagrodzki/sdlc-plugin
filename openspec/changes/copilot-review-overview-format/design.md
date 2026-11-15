@@ -98,7 +98,7 @@ Data contracts:
 | `threads[].isOutdated` | bool | JSON boolean | `true` |
 | `overview` | string | one of 3 values or `""` | `changes-recommended` |
 | `overviewFindings` | array | `[{title, path, line, severity, body}]`, `[]` when none | `[{"title":"Stale metadata key","path":"src/metadata.ts","line":646,"severity":"low","body":"..."}]` |
-| `warnings` | string array | `[]` when none | `["thread state not read: HTTP 502; ..."]` |
+| `warnings` | string array | `[]` when none | `["Thread state not read (unknown): HTTP 502. ...", "This failure can be temporary. ..."]` |
 | poll `ext.overview` | string | one of 3 values or `""` | `approval-recommended` |
 
 ## Risks / Trade-offs

@@ -3,12 +3,16 @@ package ghx
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 )
 
 // ── ParseRemoteOwner table test ─────────────────────────────────────────
@@ -876,6 +880,71 @@ func TestPRReviewThreadStates_GHCommandError(t *testing.T) {
 	if !strings.Contains(err.Error(), "ghx: PRReviewThreadStates: fetch threads: ") {
 		t.Errorf("expected fetch error prefix, got: %v", err)
 	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Errorf("cause = %v, want an *exec.ExitError with exit code 1", err)
+	}
+}
+
+func TestPRReviewThreadStates_GHNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := PRReviewThreadStates(".", "owner", "repo", 42)
+	if !errors.Is(err, ErrGHNotFound) {
+		t.Errorf("err = %v, want ErrGHNotFound in the chain", err)
+	}
+}
+
+func TestPRReviewThreadStates_OutputCap(t *testing.T) {
+	// One byte past execx's 50MB default cap.
+	cleanup := stubGH(t, "#!/bin/sh\nhead -c 52428801 /dev/zero\n")
+	defer cleanup()
+
+	_, err := PRReviewThreadStates(".", "owner", "repo", 42)
+	if !errors.Is(err, execx.ErrOutputCap) {
+		t.Fatalf("err = %v, want execx.ErrOutputCap in the chain", err)
+	}
+	if !strings.HasPrefix(err.Error(), "ghx: PRReviewThreadStates: output exceeded cap: ") {
+		t.Errorf("err = %q, want the output-cap prefix", err.Error())
+	}
+}
+
+// An owner or repo that is empty, holds whitespace, a control character or a
+// "/", or starts with "-" is refused before gh runs.
+func TestPRReviewThreadStates_BadOwnerRepoRunsNoGH(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "gh-ran")
+	cleanup := stubGH(t, "#!/bin/sh\ntouch '"+marker+"'\n")
+	defer cleanup()
+
+	tests := []struct{ name, owner, repo, field string }{
+		{"empty owner", "", "repo", "owner"},
+		{"owner with a space", "own er", "repo", "owner"},
+		{"owner with a newline", "own\ner", "repo", "owner"},
+		{"owner with NUL", "own\x00er", "repo", "owner"},
+		{"owner with a slash", "own/er", "repo", "owner"},
+		{"flag-like owner", "-invalid", "repo", "owner"},
+		{"empty repo", "owner", "", "repo"},
+		{"repo with a tab", "owner", "re\tpo", "repo"},
+		{"flag-like repo", "owner", "-invalid", "repo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := PRReviewThreadStates(".", tt.owner, tt.repo, 1)
+			if err == nil {
+				t.Fatal("expected a validation error")
+			}
+			bad := tt.owner
+			if tt.field == "repo" {
+				bad = tt.repo
+			}
+			want := fmt.Sprintf("ghx: PRReviewThreadStates %s: %q is not a valid GitHub name", tt.field, bad)
+			if !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("err = %q, want prefix %q", err.Error(), want)
+			}
+			if _, statErr := os.Stat(marker); statErr == nil {
+				t.Fatal("gh ran for an invalid owner or repo")
+			}
+		})
+	}
 }
 
 func TestPRReviewThreadStates_MalformedJSON(t *testing.T) {
@@ -888,6 +957,9 @@ func TestPRReviewThreadStates_MalformedJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "ghx: PRReviewThreadStates: parse threads: ") {
 		t.Errorf("expected parse error prefix, got: %v", err)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("cause = %v, want io.ErrUnexpectedEOF from the cut JSON", err)
 	}
 }
 

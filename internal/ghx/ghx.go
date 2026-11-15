@@ -60,6 +60,20 @@ func isBinaryNotFound(err error) bool {
 	return strings.Contains(err.Error(), "executable file not found")
 }
 
+// ownerRepoRe is the shape of a GitHub owner or repository name.
+var ownerRepoRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// validateOwnerRepo rejects an owner or repository name that is empty,
+// starts with "-", or holds a character outside [A-Za-z0-9._-] (whitespace,
+// a control character or "/" included). The error names the value and the
+// rule.
+func validateOwnerRepo(value, context string) error {
+	if strings.HasPrefix(value, "-") || !ownerRepoRe.MatchString(value) {
+		return fmt.Errorf("ghx: %s: %q is not a valid GitHub name: it must be non-empty, must not start with '-', and may hold only letters, digits, '.', '_' and '-'", context, value)
+	}
+	return nil
+}
+
 // validatePositionalArg rejects positional arguments that start with "-" to
 // prevent them being interpreted as flags by the gh CLI.
 func validatePositionalArg(arg, context string) error {
@@ -88,7 +102,7 @@ type PRReview struct {
 	Login       string
 	State       string
 	SubmittedAt string
-	Body        string // review body as gh reports it; "" when the review has none
+	Body        string
 }
 
 // PRReviews returns the reviews on PR n via `gh pr view <n> --json
@@ -854,16 +868,17 @@ const prReviewThreadsQuery = `query($owner:String!,$repo:String!,$pr:Int!,$endCu
 // It reads all pages in a single `gh api graphql --paginate` call. As with
 // PRReviewComments, the `--jq` filter yields a stream of concatenated JSON
 // objects, one per thread, which json.Decoder reads one value at a time. A
-// thread whose first comment id is 0 or null is skipped without an error.
-// Empty output yields an empty map and a nil error.
+// thread whose first comment id is 0 or null has no key and is left out;
+// the caller sees it as a thread with no state entry (received_review_verify
+// warns about each one). Empty output yields an empty map and a nil error.
 func PRReviewThreadStates(dir, owner, repo string, n int) (map[int]ThreadState, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("ghx: PRReviewThreadStates: invalid PR number %d", n)
 	}
-	if err := validatePositionalArg(owner, "PRReviewThreadStates owner"); err != nil {
+	if err := validateOwnerRepo(owner, "PRReviewThreadStates owner"); err != nil {
 		return nil, err
 	}
-	if err := validatePositionalArg(repo, "PRReviewThreadStates repo"); err != nil {
+	if err := validateOwnerRepo(repo, "PRReviewThreadStates repo"); err != nil {
 		return nil, err
 	}
 
@@ -875,6 +890,9 @@ func PRReviewThreadStates(dir, owner, repo string, n int) (map[int]ThreadState, 
 		"-f", "query="+prReviewThreadsQuery,
 		"--jq", `.data.repository.pullRequest.reviewThreads.nodes[] | {id: .comments.nodes[0].databaseId, isResolved: .isResolved, isOutdated: .isOutdated}`)
 	if err != nil {
+		if errors.Is(err, execx.ErrOutputCap) {
+			return nil, fmt.Errorf("ghx: PRReviewThreadStates: output exceeded cap: %w", err)
+		}
 		return nil, fmt.Errorf("ghx: PRReviewThreadStates: fetch threads: %w", err)
 	}
 
@@ -891,7 +909,7 @@ func PRReviewThreadStates(dir, owner, repo string, n int) (map[int]ThreadState, 
 			IsOutdated bool `json:"isOutdated"`
 		}
 		decErr := dec.Decode(&node)
-		if decErr == io.EOF {
+		if errors.Is(decErr, io.EOF) {
 			break
 		}
 		if decErr != nil {
