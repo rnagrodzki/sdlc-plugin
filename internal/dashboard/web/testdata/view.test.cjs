@@ -1726,6 +1726,15 @@ describe('stopResult', () => {
 });
 
 describe('archiveRequest / clearRequest', () => {
+  test('guardedPost is an export and builds a POST request with the token', () => {
+    assert.deepEqual(view.guardedPost('t', '/api/x', { a: 1 }), {
+      method: 'POST',
+      url: '/api/x',
+      headers: { 'X-Sdlc-Token': 't', 'Content-Type': 'application/json' },
+      body: '{"a":1}',
+    });
+  });
+
   test('archiveRequest returns null when the token, repo, or run id is empty', () => {
     assert.equal(view.archiveRequest('', '/abs/repo', 'ship-x-1', false), null);
     assert.equal(view.archiveRequest('abc123', '', 'ship-x-1', false), null);

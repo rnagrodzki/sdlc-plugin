@@ -2288,6 +2288,7 @@
     preplanSummaryLine: preplanSummaryLine,
     PREPLAN_UNREAD_LABELS: PREPLAN_UNREAD_LABELS,
     priorityCounts: priorityCounts,
+    guardedPost: guardedPost,
   };
 
   if (typeof module === 'object' && module.exports) {

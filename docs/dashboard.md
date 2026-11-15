@@ -16,8 +16,9 @@ stays listed for up to 7 days without a new session, or until its
 `.sdlc-v2` directory disappears (`internal/dashboard/registry.go`'s `Roots`
 self-cleans both cases).
 
-The header has four tabs: Pipelines, Activity, History, and Preplans. A repo filter
-under the header applies to all four tabs. With no repo chip on, the page
+The header has five tabs: Pipelines, Activity, History, Preplans, and Setup. A repo filter
+under the header applies to Pipelines, Activity, History, and Preplans. The Setup tab has its own repo bar
+(see [Setup tab](#setup-tab)). With no repo chip on, the page
 shows all repos. The header also has a **Clear cache** button (see
 [Clear cache files](#clear-cache-files)) and a **Stop server** button.
 
@@ -148,6 +149,10 @@ For each registered repo, the page shows:
   `1h 20m`. A status change or any other edit of the file is a change, so
   the duration grows with each one. It is not the time spent on the topic.
   A row with no duration shows `—` and goes last in both duration orders. See `durationMs` in the [Snapshot contract](#snapshot-contract).
+- **Setup tab** — one form for the config of one repo. The form shows each
+  option of the plugin with its value, and it saves the changed values into
+  the config files of the repo. The count on the tab is the number of unsaved
+  changes. The tab has its own section: see [Setup tab](#setup-tab).
 
 A link `#<pipeline id>` scrolls to that block. `#<pipeline id>/<n>` also
 opens the block and selects step n of its track, counted from 0. `#activity`,
@@ -664,6 +669,201 @@ when the server does not answer. The other errors of the routes are in
 | `BAD_REQUEST` | 400 | A field is missing or breaks the rules above. Or the topic file, the History file, or a History line is gone. | Reload the page, then try again. |
 | `DELETE_FAILED` | 500 | A read, a write, or a remove failed. Or a file is larger than 8 MiB. Or a topic file has no `**Status:**` line in its first 4 KiB. Or `runs.jsonl` changed during two tries. | Read the suggestion in the message. It names the permission to check, or the file to edit by hand. |
 
+## Setup tab
+
+The Setup tab shows and changes the config of one repo. It is the form
+version of `/sdlc:setup`. The tab writes with the same code as the
+`setup_write_sections` tool. It keeps every comment line and the key order of
+the file.
+
+Three limits apply to the tab:
+
+- The dashboard server reads and writes only the main worktree of a repo. It
+  never writes to a linked worktree.
+- The tab does not lock the config. A save while a pipeline runs is possible,
+  and the next steps of the pipeline read the new config.
+- The page has no undo. To go back, set the old value again.
+
+### What the form shows
+
+- **Repo bar.** The tab has its own repo bar. It selects exactly one repo.
+  The repo filter of the other tabs is hidden here. The count on the tab is the
+  number of unsaved changes of the selected repo. A `snapshot` event does not
+  build the form again while the list of repos stays the same. It updates only
+  the pipeline notice. A value that you typed and the focus stay.
+- **Form sections.** The form has 10 cards, one for each form section, with
+  48 fields in all. Each card shows the file that holds its values and whether
+  that file is in git. The page builds the form from the field list of
+  `GET /api/setup-fields`. A new option in the field list gets a field with no
+  change of the page.
+- **Fields.** A field shows its label, its description, its default, and the
+  file that holds its current value. A field with a list of options shows one
+  row for each option with its effect on the plugin. A choice field can also
+  show a sample text before and after the selected option.
+- **Hidden step fields.** A field of one pipeline step is hidden when that
+  step is off in the `ship.steps` field of the form. The card shows how many
+  fields are hidden and for which steps.
+- **Index, filter and views.** An index lists the sections. A filter limits the
+  fields by text. The views All, Changed and Not set limit the fields.
+- **Pipeline notice.** When a pipeline of the selected repo has the status
+  `running`, the notice `PIPELINE RUNS` shows above the form and in the review
+  dialog. The save stays possible.
+
+`GET /api/setup-state?repo=<root>` gives the values of the repo. Each value
+names its source file: `config`, `project` or `user`. When both
+`.sdlc-v2/local.toml` and the user file hold a key, the source is `project`.
+When the config check of the whole config fails, the state stays `ready` and
+`configError` holds the error text. An empty `[version]` table gives this
+notice too. Set `tag.enabled` or `versionFile.enabled` again to clear it.
+
+### Save
+
+1. Change one or more fields. The save bar shows the count of unsaved changes
+   for each file.
+2. Select **Review and save**. A dialog lists each change as the old value and
+   the new value, grouped by file.
+3. Select **Save**. The page sends `POST /api/setup-save` with the changed
+   fields only. The save writes the user file first and the project file
+   second.
+
+The body of the save is:
+
+| Field | Type | Meaning | Example |
+|---|---|---|---|
+| `repo` | string | The repo root | `/repo` |
+| `changes[].section` | string | The form section id | `plan-tasks` |
+| `changes[].field` | string | The field name. It may be dotted. | `tag.enabled` |
+| `changes[].op` | string | `set` or `reset` | `set` |
+| `changes[].value` | any | A JSON value. `reset` takes none. | `"minor"` |
+| `targets` | object | Local form section id to `project` or `user` | `{"ship":"project"}` |
+
+The server builds each complete section from its target file, keeps every key
+that the request does not name, and writes through the setup write code.
+
+The value check runs before any write. It checks new values only. A value that
+the target file already holds passes, so a repo with a hand-written value can
+still save. `/sdlc:setup` uses the same check. The check refuses a value that
+is outside the limits of its field:
+
+- A boolean field takes `true` or `false`.
+- A choice field takes one of its options. A multi-choice field takes a list of
+  options with no repeat.
+- A number field takes a whole number from `min` to `max`. With no `max`, the
+  limit is 2147483647.
+- A text is at most 1024 bytes.
+- A list has at most 64 entries of at most 1024 bytes each.
+
+The server refuses a save in these cases:
+
+- The save holds more than 64 changes.
+- The body is over 8 KiB. Save fewer fields at one time.
+- A stored section in the target file is not a table. The error names the key
+  and the file.
+
+What the save does to each file, for each target and each change:
+
+| Save to | Field with a new value | Field set to "Use default" |
+|---|---|---|
+| Section in `config.toml` | Sets the key in `config.toml` | Removes the key from `config.toml` |
+| This project | Sets the key in `.sdlc-v2/local.toml` | Removes the key from `.sdlc-v2/local.toml` |
+| All my projects | Sets the key in the user file. Removes the key from `.sdlc-v2/local.toml` | Removes the key from the user file and from `.sdlc-v2/local.toml` |
+
+A change of the Save to switch with no field change saves nothing. After "Use
+default" with the target "This project", a value in the user file applies, and
+the page shows that value with its source. An empty table stays in the file
+after a reset of the last key. Every reader accepts an empty table.
+
+What the user sees when a save fails:
+
+| Step that fails | Files changed | What the page shows |
+|---|---|---|
+| Request check, state check, value check | None | An error at each field, and the error text in the save bar note |
+| Write of one section | Other sections of the same save | A save bar note that lists each failed section with its file |
+| User file write of one section | No file for that section. The project file keeps its key | A save bar note that lists the section with the user file |
+| Project file write after the user file write | The user file | A save bar note that lists the section. The old project value still applies |
+
+A save that succeeds shows the note `Saved 2 changes.` (with the count of the
+changes), and the form loads the state of the repo again. A refused value shows
+the message of the server under the field, and the note `Not saved. The config
+check refused 1 field. No file changed.` A save that is partly written answers
+`200` with `ok` false.
+
+### Save to: this project or all my projects
+
+A form section is stored in one of three files:
+
+| File | Sections | Notes |
+|---|---|---|
+| `<repo>/.sdlc-v2/config.toml` | Team sections such as `version`, `jira` and `commit` | Usually in git. Shared with the team. |
+| `<repo>/.sdlc-v2/local.toml` | Local sections such as `ship` and `review`, with Save to `This project` | Not in git. Per developer. |
+| `~/.sdlc/local.toml` (or `$SDLC_USER_CONFIG`) | Local sections, with Save to `All my projects` | Outside every repo. Shared by all projects. |
+
+Each local section has a **Save to** switch. It has one choice for the whole
+section, not one choice for each field. The default of the switch comes from
+the `defaultTarget` of the section: `project` for `ship`, and `user` for
+`communication-style`, `plan-style`, `review`, `received-review`,
+`automation` and `github`.
+
+When you change the switch of a section that already holds saved values, the
+save moves only the fields that you changed. The other saved values stay in
+their old file. The project file wins over the user file for a key that both
+files set.
+
+### Create config
+
+A repo with the state `no-config` shows the button **Create config** and the
+command `/sdlc:setup`. The button calls `POST /api/setup-create`. A repo with
+the state `legacy-config` (an old `config.json` and no `config.toml`) shows the
+command `/sdlc:setup --migrate` and no button. The page does not migrate.
+
+Create changes these paths of the repo:
+
+| Path in the repo | Change |
+|---|---|
+| `.sdlc-v2/` and `.sdlc-v2/runs/` | Created when absent |
+| `.sdlc-v2/.gitignore` | Created, or its sdlc block updated |
+| `.gitignore` of the repo root | Created, or its sdlc block updated |
+| `.sdlc-v2/config.toml`, `.sdlc-v2/local.toml` | Created from the templates |
+| `.sdlc-v2/local.json` of the old JSON form | Gets the new name `local.json.bak` when no `local.json.bak` exists. With a `local.json.bak`, both files stay as they are |
+
+The answer is `{ok, created, changed, errors}`. `changed` lists a rename of
+`local.json`. A repo in any other state gets `409 SETUP_NOT_READY` and no
+change.
+
+To undo a create, delete `.sdlc-v2/config.toml` and `.sdlc-v2/local.toml`.
+Rename `local.json.bak` back to `local.json` only when `changed` lists that
+rename. A `local.json.bak` from before the call is an older backup, and it
+stays as it is.
+
+### Sections that the assistant handles
+
+9 read-only cards show the state of the sections that need a scan of the
+codebase or generated text: the commit and PR builders, the PR labels, the
+review dimensions, the PR template, the plan template, the plan and execution
+guardrails, and the OpenSpec block. The server has no model, so the page does
+not edit them. Each card names the `/sdlc:setup` command that changes the
+section. The route `GET /api/setup-state` gives the state of each card in
+`delegated`.
+
+### Errors of the Setup tab
+
+The four Setup routes use the error body of [Security](#security). The routes
+add these codes:
+
+| Code | HTTP status | Cause | What to do |
+|---|---|---|---|
+| `SETUP_INVALID` | 400 | The value check refused one or more fields. The answer has a `fields` list. No file changed. | Correct each field that the page marks, then save again. |
+| `SETUP_NOT_READY` | 409 | The state of the repo does not allow the call: a save for a repo with no config, or a create for a repo that has a config. The message names the state. | Reload the page. Use Create config, or `/sdlc:setup --migrate`. |
+| `SETUP_READ_FAILED` | 500 | The server could not read the config files of the repo. | Read the suggestion in the message. It names the file to check. |
+| `SETUP_SAVE_FAILED` | 500 | The save failed with an error. | Read the suggestion in the message. Load the form again to see what was written. |
+| `SETUP_CREATE_FAILED` | 500 | The create failed with an error. | Read the suggestion in the message. See [Create config](#create-config) to undo a part. |
+
+`SETUP_INVALID` reads `1 field has a value that the config check refuses` or
+`<n> fields have a value that the config check refuses`. The other codes of
+these routes (`BAD_REQUEST`, `REPO_NOT_FOUND`, `BODY_TOO_LARGE`,
+`BAD_CONTENT_TYPE`, `BAD_BODY`, `NOT_CONFIGURED`) are in the error table of
+[Security](#security).
+
 ## Settings
 
 | key | default | range | file |
@@ -723,16 +923,20 @@ port = 7385         # 1024-65535, loopback only
 | `<repo>/.sdlc-v2/preplan/<slug>.md` | plan_support `preplan_context`, `preplan_check` and `preplan_write`; server | preplan topic files. The server deletes one file (see [Delete an item](#delete-an-item)) or rewrites its `**Status:**` line (see [Change a preplan status](#change-a-preplan-status)) |
 | `<repo>/.sdlc-v2/history/runs.jsonl` | ship_state `history_record` and `fail`; plan_mark `done`; server | run history. The server rewrites it without the checked rows (see [Delete History rows](#delete-history-rows)) |
 | `<repo>/.sdlc-v2/evidence/attention/*.json` | hooks `block-askuserquestion-auto`, `record-permission-wait`; server | one record for each open wait. The server deletes one record (see [Dismiss a wait](#dismiss-a-wait)) |
+| `<repo>/.sdlc-v2/config.toml` | setup tools; server | project config. The server rewrites the changed keys (see [Setup tab](#setup-tab)) |
+| `<repo>/.sdlc-v2/local.toml` | setup tools; server | local config of the project. The server rewrites the changed keys |
+| `~/.sdlc/local.toml` (or `$SDLC_USER_CONFIG`) | setup tools; server | local config of the user. The server rewrites the changed keys when the target is "All my projects" |
+| `<repo>/.sdlc-v2/.gitignore`, `<repo>/.gitignore` | setup tools; server | the sdlc block of each file. Create config adds or updates the block (see [Create config](#create-config)) |
 
 `~/.sdlc-cache` is `paths.CacheDir()`: `$SDLC_CACHE_DIR` when set, else the
 user's home directory, shared with `sdlc-launcher.sh`. `dashboard.Dir()`
 joins `dashboard` onto that root for the first three paths above. The last
-nine paths do not live under `~/.sdlc-cache/dashboard/`. See
+thirteen paths do not live under `~/.sdlc-cache/dashboard/`. See
 [Archive a run](#archive-a-run), [Clear cache files](#clear-cache-files),
 [Delete an item](#delete-an-item),
 [Change a preplan status](#change-a-preplan-status),
 [Delete History rows](#delete-history-rows), and
-[Dismiss a wait](#dismiss-a-wait) for the rules of the last nine paths.
+[Dismiss a wait](#dismiss-a-wait), and [Setup tab](#setup-tab) for the rules of the last thirteen paths.
 
 - **`server.json`** is written once the listener binds and is removed when
   the server stops — but only by the process whose own PID still matches
@@ -763,12 +967,14 @@ names pass. On its own, this check does **not** stop a cross-origin `POST`
 from a browser tab open on another site: a page can issue a request that
 correctly targets `127.0.0.1:<port>` and still originate from anywhere.
 
-Nine `POST` routes change files: `POST /api/stop`, `POST /api/run-archive`,
+Eleven `POST` routes change files: `POST /api/stop`, `POST /api/run-archive`,
 `POST /api/cache-clear`, `POST /api/preplan-delete`, `POST /api/deferred-delete`,
 `POST /api/learning-delete`, `POST /api/preplan-status`,
-`POST /api/history-delete` and `POST /api/wait-dismiss`. Each one checks the
+`POST /api/history-delete`, `POST /api/wait-dismiss`, `POST /api/setup-save`
+and `POST /api/setup-create`. Each one checks the
 Origin and the token. Every other route is `GET`, including the read-only
-`GET /api/learning`, `GET /api/run-detail` and `GET /api/session-detail`.
+`GET /api/learning`, `GET /api/run-detail`, `GET /api/session-detail`,
+`GET /api/setup-fields` and `GET /api/setup-state`.
 `GET /` additionally serves `index.html` with its `{{SDLC_TOKEN}}` placeholder
 replaced by this server start's token (`Cache-Control: no-store`, so the
 token is never cached) — only a client that has actually loaded the page has
@@ -790,7 +996,7 @@ automatically to every request, including one a malicious page fires at
 same-origin request forged by something that was never served the page at
 all, such as a `curl` replay run from the same machine.
 
-The archive, clear, delete, status and dismiss routes read a JSON body. After the Origin and token
+The archive, clear, delete, status, dismiss, save and create routes read a JSON body. After the Origin and token
 checks, they also need the header `Content-Type: application/json` (else
 `415`) and a body of at most 8 KiB (else `413`). The stop route has no body,
 so it skips these two checks.
@@ -806,28 +1012,32 @@ so it skips these two checks.
 | `POST /api/preplan-status` | Sets the `**Status:**` line of one preplan topic file. See [Change a preplan status](#change-a-preplan-status). | Same. The body is `{"repo", "slug", "status"}`. All are required. `status` is `in progress`, `ready for plan` or `paused`. |
 | `POST /api/history-delete` | Deletes the `runs.jsonl` lines that match the keys. See [Delete History rows](#delete-history-rows). | Same. The body is `{"repo", "rows"}`. `rows` holds 1 to 50 keys `{"kind", "branch", "endedAt"}`. `repo`, `rows`, and `kind` and `endedAt` of each key are required. |
 | `POST /api/wait-dismiss` | Deletes one wait record. See [Dismiss a wait](#dismiss-a-wait). | Same. The body is `{"repo", "kind", "sessionId", "toolUseId"}`. `repo`, `kind` and `sessionId` are required. `kind` is `question` or `permission`. A question needs `toolUseId`. A permission has none. |
+| `POST /api/setup-save` | Saves the changed fields of the Setup form. See [Setup tab](#setup-tab). | Same. The body is `{"repo", "changes", "targets"}`. `repo` and `changes` are required. |
+| `POST /api/setup-create` | Creates the first config files of one repo. See [Setup tab](#setup-tab). | Same. The body is `{"repo"}`, and `repo` is required. |
 | `GET /api/learning?repo=…&date=…&heading=…` | Returns the text of one learning. See [Detail viewer](#detail-viewer). | No Origin check and no token: the route only reads, like `GET /api/snapshot`. `repo`, `date` and `heading` are required. The text is redacted and cut at 8000 characters. |
 | `GET /api/run-detail?repo=…&id=…` | Returns the full steps and issues of one run. See [Detail on open](#detail-on-open). | No Origin check and no token: the route only reads. `repo` and `id` are required. `id` is at most 256 bytes and `repo` is at most 4096 bytes. A longer value gets `400` with the code `BAD_REQUEST`. |
 | `GET /api/session-detail?repo=…&id=…` | Returns the timeline and command groups of one session. | Same as `run-detail`. |
+| `GET /api/setup-fields` | Returns the setup sections and the fields of each one. | No Origin check and no token: the route only reads. |
+| `GET /api/setup-state?repo=…` | Returns the config state and the values of one repo. | Same as `run-detail`. `repo` is required. |
 
-For the archive, clear, delete, status, dismiss, learning, run detail and session detail routes, `repo` must be the path of a
+For the archive, clear, delete, status, dismiss, learning, run detail, session detail, setup state, save and create routes, `repo` must be the path of a
 repo that the page shows. The server compares it with the registered repos,
 where a linked worktree counts as its main repo. Any other path gets `404`,
 and the server does no file work.
 
 Each error answer of these routes has the body
 `{"error":{"code","message","suggestion"}}`. The `Host` check and a request
-with a wrong method (`405`) answer with plain text. The error answers are:
+with a wrong method (`405`) answer with plain text. The Setup routes add more codes. See [Errors of the Setup tab](#errors-of-the-setup-tab). The error answers are:
 
 | Status | Code | Cause | Route |
 |---|---|---|---|
-| 403 | `FORBIDDEN_ORIGIN`, `FORBIDDEN_TOKEN` | The Origin or the token check failed | The nine `POST` routes |
-| 415 | `BAD_CONTENT_TYPE` | The content type is not `application/json` | Archive, clear, delete, status, dismiss |
-| 413 | `BODY_TOO_LARGE` | The body is over 8 KiB | Archive, clear, delete, status, dismiss |
-| 400 | `BAD_BODY` | The server could not read the body | Archive, clear, delete, status, dismiss |
-| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo` or `slug` is missing, or `slug` is not a file name, or the topic path is a folder (preplan delete). Or `repo` or `id` is missing (deferred delete). Or `repo`, `date` or `heading` is missing (learning delete, or `GET /api/learning`). Or `repo` or `id` is missing or too long (run detail, session detail). Or the `slug` or the `status` breaks a rule, or the topic file is gone, a folder or a link (preplan status). Or `rows` is empty or holds more than 50 keys, a key is not valid, or a key matches no line (History delete). Or `kind`, `sessionId` or `toolUseId` breaks a rule (wait dismiss). | Archive, clear, delete, status, dismiss, learning, run detail, session detail |
-| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, delete, status, dismiss, learning, run detail, session detail |
-| 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, delete, status, dismiss, learning, run detail, session detail |
+| 403 | `FORBIDDEN_ORIGIN`, `FORBIDDEN_TOKEN` | The Origin or the token check failed | The eleven `POST` routes |
+| 415 | `BAD_CONTENT_TYPE` | The content type is not `application/json` | Archive, clear, delete, status, dismiss, setup save, setup create |
+| 413 | `BODY_TOO_LARGE` | The body is over 8 KiB | Archive, clear, delete, status, dismiss, setup save, setup create |
+| 400 | `BAD_BODY` | The server could not read the body | Archive, clear, delete, status, dismiss, setup save, setup create |
+| 400 | `BAD_REQUEST` | The body is not a JSON object of the shape of the route. Or `repo` or `runId` is missing (archive). Or `repo` is missing (clear). Or `repo` or `slug` is missing, or `slug` is not a file name, or the topic path is a folder (preplan delete). Or `repo` or `id` is missing (deferred delete). Or `repo`, `date` or `heading` is missing (learning delete, or `GET /api/learning`). Or `repo` or `id` is missing or too long (run detail, session detail). Or the `slug` or the `status` breaks a rule, or the topic file is gone, a folder or a link (preplan status). Or `rows` is empty or holds more than 50 keys, a key is not valid, or a key matches no line (History delete). Or `kind`, `sessionId` or `toolUseId` breaks a rule (wait dismiss). Or a Setup save holds more than 64 changes (setup save). Or `repo` is missing (setup state, setup create). | Archive, clear, delete, status, dismiss, learning, run detail, session detail, setup state, setup save, setup create |
+| 404 | `REPO_NOT_FOUND` | `repo` is not a repo that the page shows. | Archive, clear, delete, status, dismiss, learning, run detail, session detail, setup state, setup save, setup create |
+| 500 | `NOT_CONFIGURED` | The server runs without the function of the route. This is a wiring defect. | Archive, clear, delete, status, dismiss, learning, run detail, session detail, setup fields, setup state, setup save, setup create |
 | 500 | `CLEAR_FAILED` | Clear cannot read the repo folder | Clear |
 | 500 | `DELETE_FAILED` | The file could not be read or written. The suggestion names the fix. | Delete, status, dismiss |
 | 500 | `LEARNING_READ_FAILED` | The server cannot read the learnings log | Learning |

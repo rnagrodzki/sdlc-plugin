@@ -171,6 +171,16 @@ var standardExamples = map[string]standardExample{
 	},
 }
 
+// StandardExample returns one text before and after the writing standard
+// applies. ok is false when standard is not a writing standard.
+func StandardExample(standard string) (before, after string, ok bool) {
+	ex, ok := standardExamples[standard]
+	if !ok {
+		return "", "", false
+	}
+	return ex.Before, ex.After, true
+}
+
 // steAvoidWords are the avoid-list pairs behind standardPacks["ste"]
 // rule 4: a plugin approximation of common non-STE words, not the
 // ASD-STE100 dictionary (copyrighted). internal/commstyle/ste.go reads

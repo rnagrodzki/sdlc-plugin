@@ -30,7 +30,7 @@ The skill starts the server when it is not active, opens the page in your defaul
 - Run the command again at no risk: when a server of the current version is active, you get the same address and no second server.
 - Check or stop the server with one flag: `--status` reports the address, the pid and the version, and `--stop` ends the server.
 - Work over SSH: `--no-open` starts the server and prints the address, and opens no browser.
-- Act from the page: [archive a run](../dashboard.md#archive-a-run), [clear the cache](../dashboard.md#clear-cache-files), [delete an item](../dashboard.md#delete-an-item), or [change a preplan status, delete History rows and dismiss a wait](../dashboard.md#change-a-preplan-status-delete-history-rows-dismiss-a-wait). The page has no undo.
+- Act from the page: [archive a run](../dashboard.md#archive-a-run), [clear the cache](../dashboard.md#clear-cache-files), [delete an item](../dashboard.md#delete-an-item), [change a preplan status, delete History rows and dismiss a wait](../dashboard.md#change-a-preplan-status-delete-history-rows-dismiss-a-wait), or [change the config of a repo in the Setup tab](../dashboard.md#setup-tab). The page has no undo.
 
 ## Steps
 
