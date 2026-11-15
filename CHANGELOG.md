@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.6.0] - 2026-11-15
+
+### RC 1
+
+- `/setup` now lists CI scripts that are outdated or missing and asks before it updates them. It rewrites only the listed scripts. Scripts that are current stay unchanged.
+- `scaffold_ci` has a new input, `updateOutdated`, that overwrites only outdated files, migrates legacy `.js` files and creates missing files. Use it instead of `force` to keep local edits in current scripts.
+- CI script writes are now atomic and keep the file permissions. A failed migration keeps the legacy file.
+- A CI file larger than 1 MiB now gives a clear error.
+- `setup_prepare` reports a failed CI script check in the new `ciScriptDriftError` field.
+
+### RC 2
+
+- Read the Copilot review overview, comment severity and review thread state in the review tools.
+- received-review Step 1b uses Copilot severity and thread state; received_review_verify reports thread state and read warnings.
+- Poll verdict and review-verify output include the Copilot overview; /ship adds a closer-look note.
+- review dimensions gain checks for external text and skill flow.
+
+### RC 3
+
+- Dashboard: new Setup tab. It shows the sdlc config of one repo as a form, with a count of unsaved changes.
+- Dashboard: a review dialog shows the changes before a save. The save writes only the changed fields and keeps the comments of the config file.
+- Dashboard: a repo with no config gets a Create config button.
+- Setup: `setup_write_sections` now checks each new value. It refuses a bad value with an error message for that field. The `/sdlc:setup` skill and the Setup tab use the same check.
+- Dashboard skill: new recovery rows for a failed save and a failed create.
+
 ## [0.5.1] - 2026-11-14
 
 ### RC 1
