@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.6.1] - 2026-11-15
+
+### RC 1
+
+- Setup skill offers the dashboard Setup tab on a fresh repository
+- Dashboard tool takes a tab input, reports the tab address and gives tighter errors for bad tab input
+- Getting-started guide and setup skill guide describe the fresh-repo path, the owner table and the Setup tab
+- Home page shows the setup steps and a dashboard screenshot gallery
+- OpenSpec changes setup-onboarding-story and github-pages-site archived and their specs synced
+- Guardrail rules for plan, execute and review hardened
+
 ## [0.6.0] - 2026-11-15
 
 ### RC 1
