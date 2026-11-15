@@ -15,6 +15,8 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	version "github.com/rnagrodzki/sdlc-plugin"
+
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -414,9 +416,11 @@ func TestSetupWriteSections_WholeNumbersWrittenAsIntegers(t *testing.T) {
 	path := writeSDLCFile(t, dir, "local.toml", "# local settings\n[review]\nscope = \"all\"\n")
 
 	// testList is not a real review key; local.toml sections are not
-	// key-checked, and it exercises numbers inside an array.
+	// key-checked, and it exercises numbers inside an array. testRate is not
+	// a real drift key either: the form field drift.maxErrorRate is a text
+	// field, so the value check refuses a number for it.
 	res, text := callRegisteredSetupWriteSectionsIn(t, dir,
-		`{"automation":{"reviewFixIterations":3,"drift":{"maxErrorRate":0.5,"minErrorFloor":2}},`+
+		`{"automation":{"reviewFixIterations":3,"drift":{"testRate":0.5,"minErrorFloor":2}},`+
 			`"review":{"scope":"all","testList":[1,2.5]}}`)
 	if res.IsError {
 		t.Fatalf("expected success, got tool error:\n%s", text)
@@ -431,7 +435,7 @@ func TestSetupWriteSections_WholeNumbersWrittenAsIntegers(t *testing.T) {
 	for _, want := range []string{
 		"reviewFixIterations = 3\n",
 		"minErrorFloor = 2\n",
-		"maxErrorRate = 0.5\n",
+		"testRate = 0.5\n",
 		"testList = [1, 2.5]\n",
 		"# local settings\n",
 	} {
@@ -2721,4 +2725,217 @@ func TestToolErrorSites_SetupWriteGuardrailGuard(t *testing.T) {
 			t.Errorf("setupWriteSections at the limit: %v, want no error", err)
 		}
 	})
+}
+
+// TestSetupWriteSections_RefusesBadValue verifies that a bad new value of a
+// form field fails the call with a DomainError that names each field, before
+// any write, and that each failed read of the target file stops the call.
+func TestSetupWriteSections_RefusesBadValue(t *testing.T) {
+	t.Run("bad values", func(t *testing.T) {
+		root := t.TempDir()
+		localBefore := "# keep\n[ship]\ndraft = false\n"
+		configBefore := "# keep\n[version]\nmethod = \"push\"\n"
+		localPath := writeSDLCFile(t, root, "local.toml", localBefore)
+		configPath := writeSDLCFile(t, root, "config.toml", configBefore)
+
+		_, err := setupWriteSections(root, root, SetupWriteSectionsIn{
+			SectionsJSON: `{"ship":{"draft":"yes"},"review":{"scope":"everything"},"version":{"tag.enabled":"no"},"plan.tasks":{"contractShape":"x"}}`,
+		})
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) {
+			t.Fatalf("err = %T %v, want *mcpserver.DomainError", err, err)
+		}
+		for _, want := range []string{
+			"4 field values are refused",
+			`plan.tasks.contractShape: "x" is not an option. Options: full, minimal, none.`,
+			`review.scope: "everything" is not an option. Options: all, committed, staged, working, worktree.`,
+			`ship.draft: true or false is required, got "yes".`,
+			`version.tag.enabled: true or false is required, got "no".`,
+		} {
+			if !strings.Contains(de.Msg, want) {
+				t.Errorf("Msg does not hold %q:\n%s", want, de.Msg)
+			}
+		}
+		if de.Suggestion == "" || !strings.HasSuffix(de.Suggestion, "Nothing was written.") {
+			t.Errorf("Suggestion = %q", de.Suggestion)
+		}
+		for path, before := range map[string]string{localPath: localBefore, configPath: configBefore} {
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != before {
+				t.Errorf("%s changed:\n%s", path, got)
+			}
+		}
+		if _, err := os.Stat(filepath.Join(root, ".github")); !os.IsNotExist(err) {
+			t.Errorf("scaffold ran for a refused call (stat err: %v)", err)
+		}
+	})
+
+	t.Run("target user reads the user file", func(t *testing.T) {
+		root := t.TempDir()
+		userPath := filepath.Join(t.TempDir(), "user.toml")
+		userBefore := "[ship]\nbump = \"rc\"\n"
+		if err := os.WriteFile(userPath, []byte(userBefore), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(config.UserConfigPathEnv, userPath)
+		// local.toml holds the label too, but target user checks the user file.
+		writeSDLCFile(t, root, "local.toml", "[ship]\nbump = \"beta\"\n")
+		_, err := setupWriteSections(root, root, SetupWriteSectionsIn{SectionsJSON: `{"ship":{"bump":"beta"}}`, Target: "user"})
+		var de *mcpserver.DomainError
+		if !errors.As(err, &de) || !strings.Contains(de.Msg, `ship.bump: "beta" is not an option.`) {
+			t.Fatalf("err = %v, want the refusal of ship.bump", err)
+		}
+		if got, _ := os.ReadFile(userPath); string(got) != userBefore {
+			t.Errorf("user file changed:\n%s", got)
+		}
+	})
+
+	t.Run("read failures", func(t *testing.T) {
+		cases := []struct {
+			name  string
+			setup func(t *testing.T, root string) string // returns the path that the error names
+			check func(err error) bool
+		}{
+			{
+				name: "not valid TOML",
+				setup: func(t *testing.T, root string) string {
+					return writeSDLCFile(t, root, "local.toml", "[ship\n")
+				},
+				check: func(err error) bool { var de *mcpserver.DataError; return errors.As(err, &de) },
+			},
+			{
+				name: "over the size limit",
+				setup: func(t *testing.T, root string) string {
+					path := writeSDLCFile(t, root, "local.toml", "")
+					writeSizedTOML(t, path, maxCheckedFileBytes+1)
+					return path
+				},
+				check: func(err error) bool { var de *mcpserver.DataError; return errors.As(err, &de) },
+			},
+			{
+				name: "a directory",
+				setup: func(t *testing.T, root string) string {
+					path := filepath.Join(root, ".sdlc-v2", "local.toml")
+					if err := os.MkdirAll(path, 0o755); err != nil {
+						t.Fatal(err)
+					}
+					return path
+				},
+				check: func(err error) bool { var ie *mcpserver.InfraError; return errors.As(err, &ie) },
+			},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				root := t.TempDir()
+				path := tc.setup(t, root)
+				_, err := setupWriteSections(root, root, SetupWriteSectionsIn{SectionsJSON: `{"ship":{"draft":true}}`})
+				if err == nil || !tc.check(err) {
+					t.Fatalf("err = %T %v, wrong kind", err, err)
+				}
+				if !strings.Contains(err.Error(), path) {
+					t.Errorf("error %q does not name %s", err.Error(), path)
+				}
+			})
+		}
+	})
+
+	t.Run("stored section not a table counts as empty", func(t *testing.T) {
+		root := t.TempDir()
+		writeSDLCFile(t, root, "local.toml", "ship = \"x\"\n")
+		out, err := setupWriteSections(root, root, SetupWriteSectionsIn{SectionsJSON: `{"ship":{"draft":true}}`})
+		if err != nil || !out.OK {
+			t.Fatalf("got %+v, %v; want a write", out, err)
+		}
+		_, err = setupWriteSections(root, root, SetupWriteSectionsIn{SectionsJSON: `{"ship":{"bump":"x"}}`})
+		if err == nil || !strings.Contains(err.Error(), "ship.bump") {
+			t.Errorf("err = %v, want the refusal of ship.bump", err)
+		}
+	})
+}
+
+// TestSetupWriteSections_KeepsFileValue verifies that a value equal to the
+// value that the target file holds passes, even when the check refuses the
+// same value as a new value.
+func TestSetupWriteSections_KeepsFileValue(t *testing.T) {
+	root := t.TempDir()
+	localPath := writeSDLCFile(t, root, "local.toml", "[ship]\nbump = \"rc\"\nrebase = true\n")
+	writeSDLCFile(t, root, "config.toml", "[version.versionFile]\nfileType = \"\"\n")
+
+	out, err := setupWriteSections(root, root, SetupWriteSectionsIn{
+		SectionsJSON: `{"ship":{"bump":"rc","rebase":true,"draft":true},"version":{"versionFile.fileType":"","tag.prefix":"v"}}`,
+	})
+	if err != nil {
+		t.Fatalf("setupWriteSections: %v", err)
+	}
+	if !out.OK || !slices.Contains(out.Written, "ship") || !slices.Contains(out.Written, "version") {
+		t.Fatalf("got %+v, want ship and version written", out)
+	}
+	got, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`bump = "rc"`, "rebase = true", "draft = true"} {
+		if !strings.Contains(string(got), want) {
+			t.Errorf("local.toml misses %q:\n%s", want, got)
+		}
+	}
+
+	// The same values in an empty repo are new values: the check refuses them.
+	_, err = setupWriteSections(t.TempDir(), t.TempDir(), SetupWriteSectionsIn{
+		SectionsJSON: `{"ship":{"bump":"rc","rebase":true},"version":{"versionFile.fileType":""}}`,
+	})
+	for _, want := range []string{"3 field values are refused", "ship.bump", "ship.rebase", "version.versionFile.fileType"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to hold %q", err, want)
+		}
+	}
+}
+
+// TestSetupWriteSections_TemplateValuesPass verifies that the values of both
+// shipped config templates, sent as new values to an empty repo, pass the
+// check. The placeholder fileType = "" is the one value the check refuses.
+func TestSetupWriteSections_TemplateValuesPass(t *testing.T) {
+	sections := map[string]map[string]any{}
+	for name, tmpl := range map[string]string{"config.toml": version.ConfigTemplate, "local.toml": version.LocalTemplate} {
+		var doc map[string]any
+		if err := fsx.DecodeTOML([]byte(tmpl), &doc); err != nil {
+			t.Fatalf("decode %s: %v", name, err)
+		}
+		for key, value := range doc {
+			table, ok := value.(map[string]any)
+			if !ok {
+				t.Fatalf("%s: top-level key %q is not a table", name, key)
+			}
+			sections[key] = table
+		}
+	}
+	data, err := json.Marshal(sections)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = setupWriteSections(t.TempDir(), t.TempDir(), SetupWriteSectionsIn{SectionsJSON: string(data)})
+	want := `setup_write_sections: 1 field value is refused. version.versionFile.fileType: "" is not an option.`
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("err = %v, want only the refusal of the fileType placeholder", err)
+	}
+
+	versionFile := sections["version"]["versionFile"].(map[string]any)
+	delete(versionFile, "fileType")
+	data, err = json.Marshal(sections)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errs, err := checkSetupValues(sections, func(string) (map[string]any, error) { return map[string]any{}, nil })
+	if err != nil || len(errs) != 0 {
+		t.Fatalf("check of the template values without fileType: %v, %v; want no refusal", errs, err)
+	}
+	root := t.TempDir()
+	out, err := setupWriteSections(root, root, SetupWriteSectionsIn{SectionsJSON: string(data)})
+	if err != nil || !out.OK {
+		t.Fatalf("write of the template values without fileType: %+v, %v; want a write", out, err)
+	}
 }
