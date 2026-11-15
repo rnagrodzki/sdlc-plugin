@@ -37,6 +37,10 @@ var receivedReviewSkillsNoDeferRe = regexp.MustCompile("already\\s+deferred:\\s+
 // will-fix finding with a listed severity as pre-approved.
 var receivedReviewSkillsPreApprovalRe = regexp.MustCompile(`mark\s+each\s+"agree,\s+will\s+fix"\s+finding\s+as\s+\*\*pre-approved\*\*`)
 
+// receivedReviewSkillsEmptySeverityRe matches the Step 1b rule that gives an
+// empty Severity cell the value `medium` in Step 10 and Step 11.
+var receivedReviewSkillsEmptySeverityRe = regexp.MustCompile("Step\\s+10\\s+and\\s+Step\\s+11\\s+use\\s+`medium`\\s+for\\s+an\\s+empty\\s+cell")
+
 // receivedReviewSkillsPartialSkipRe matches the Step 11 rule that keeps a
 // finding skipped at the Step 10 prompt out of the fix, defer and reply passes.
 var receivedReviewSkillsPartialSkipRe = regexp.MustCompile("skipped\\s+at\\s+the\\s+Step\\s+10\\s+prompt\\s+gets\\s+no\\s+`fix-progress`\\s+call,\\s+no\\s+fix,\\s+no\\s+`defer`\\s+record\\s+and\\s+no\\s+reply")
@@ -256,6 +260,18 @@ func TestReceivedReviewSkillParity(t *testing.T) {
 			if !c.re.MatchString(body) {
 				t.Errorf("received-review/SKILL.md does not match %s", c.name)
 			}
+		}
+	})
+
+	// A finding with an empty Severity cell must count as `medium` in Step 10
+	// and Step 11. A wrong edit of this sentence changes which findings are
+	// pre-approved.
+	t.Run("empty_severity_cell_rule", func(t *testing.T) {
+		body := flagParityBody(executeSkillsReadFile(t,
+			filepath.Join(executeSkillsRepoRoot(t), "skills", "received-review", "SKILL.md")))
+
+		if !receivedReviewSkillsEmptySeverityRe.MatchString(body) {
+			t.Error("received-review/SKILL.md does not match receivedReviewSkillsEmptySeverityRe")
 		}
 	})
 

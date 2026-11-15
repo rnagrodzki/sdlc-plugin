@@ -50,7 +50,7 @@ alwaysFixSeverities = ["critical", "high"]
 |---|---|
 | `--auto` | Every "will fix" finding gets its fix. The setting adds nothing. |
 | A "will fix" finding with a listed severity | It gets its fix with no prompt. One `pre-approved` line shows it, for example `pre-approved (high in alwaysFixSeverities): internal/api/user.go:42 — <title>`. |
-| A comment with no severity | It counts as `medium`. |
+| A comment with no severity | A Copilot comment gets the higher of its `[level]` prefix and its overview icon. Another comment with no severity counts as `medium`. |
 | Other findings exist | One prompt asks about them only. |
 | You answer skip | Only the pre-approved findings get their fix. Skipped findings get no fix, no reply and no record. |
 | You answer edit | The skill shows the plan again and computes the pre-approved findings again. |
