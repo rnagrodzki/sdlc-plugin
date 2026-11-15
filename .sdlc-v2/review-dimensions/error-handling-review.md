@@ -71,6 +71,18 @@ Several `internal/tools/*.go` files already follow this with their own
   (`state.Write`, state reads) when the next line reports success to the
   caller — never discard a file-system or state-persistence error when the
   next line reports success to the caller.
+- A conversion or parse call whose error is assigned to `_` (`n, _ := strconv.Atoi(s)`,
+  `strconv.ParseInt`, `time.Parse`, `url.Parse`) is a finding unless a comment on the line states why the zero value is safe. The zero
+  value then flows into a count, a verdict or a sort key and reads as a real
+  answer: a count that did not parse reads as `0`. Follow each such value to
+  its use. When it reaches an output or a decision, the code MUST return the
+  error, or skip the item and count it in a warning that names the text and
+  the expected format. A guard on the input, such as a pattern that matches
+  digits only, removes the finding only when the comment names it. A test
+  passes an unparsable value and an out-of-range value, and asserts the result
+  and the warning. This extends the discarded-error bullet above, which names
+  file-system and state calls and not value conversions. Example: a count read
+  from an overview heading with `strconv.Atoi` and the error ignored.
 - When wrapping an error into a structured error type (`DataError`,
   `DomainError`, `InfraError`), the `Cause` field MUST be populated with
   the original error — never omit it. This preserves the error chain for
