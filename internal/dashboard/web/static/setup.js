@@ -18,6 +18,8 @@
   var REPO_KEY = 'sdlc-dashboard-setup-repo';
   // The effect of each option of a field, by '<section id>/<field name>'.
   var help = {};
+  var sv = window.sdlcSetupView;
+  var deps = null;
   var CLIP = 90;
 
   var TARGETS = [
@@ -45,6 +47,11 @@
     note: '', // the result line of the save bar
     noteState: '',
     refs: null,
+    load: '', // '' | 'loading' | 'error' | the state of GET /api/setup-state
+    error: '', // the text of the error notice
+    configError: '', // the configError of the state answer
+    req: 0, // the number of the last state request
+    fields: null, // the promise of the field list
   };
   // The form state of each repo, by root. A repo switch keeps unsaved changes.
   var byRoot = Object.create(null);
@@ -144,7 +151,7 @@
   }
 
   function freshState(withValues) {
-    var st = { base: {}, draft: {}, source: {}, baseTarget: {}, target: {}, errors: {}, hasConfig: true };
+    var st = { base: {}, draft: {}, source: {}, baseTarget: {}, target: {}, errors: {} };
     formSections.forEach(function (sec) {
       var values = withValues ? data.values[sec.id] || {} : {};
       var seen = {};
@@ -183,6 +190,14 @@
     var repo = repoOf(ui.root);
     return !!repo && (repo.pipelines || []).some(function (p) {
       return p && RUNNING.indexOf(p.status) !== -1;
+    });
+  }
+
+  // A stalled pipeline can continue. It then reads the saved config.
+  function isStalled() {
+    var repo = repoOf(ui.root);
+    return !isRunning() && !!repo && (repo.pipelines || []).some(function (p) {
+      return p && p.status === 'stalled';
     });
   }
 
@@ -836,7 +851,7 @@
         } catch (e) {
           // The saved repo is a convenience only.
         }
-        build();
+        loadState();
       });
       chips.appendChild(chip);
     });
@@ -877,7 +892,18 @@
     warn.setAttribute('role', 'status');
     add(warn, h('b', '', 'PIPELINE RUNS'), h('span', '', 'A pipeline runs in this repo. A save can change how its next steps run.'));
     ui.refs.warn = warn;
-    return add(box, warn);
+    var stall = h('p', 'setup-warn');
+    var conf = h('p', 'setup-warn');
+    var err = h('p', 'setup-warn');
+    stall.setAttribute('role', 'status');
+    add(stall, h('b', '', 'PIPELINE STALLED'), h('span', '', 'A pipeline is stalled in this repo. A save can change how its next steps run.'));
+    add(conf, h('b', '', 'CONFIG PROBLEM'), h('span', '', ui.configError));
+    conf.hidden = ui.load !== 'ready' || !ui.configError;
+    err.setAttribute('role', 'alert');
+    add(err, h('b', '', 'ERROR'), h('span', '', ui.error));
+    err.hidden = !ui.error;
+    ui.refs.stall = stall;
+    return add(box, warn, stall, conf, err);
   }
 
   function railItem(sec, onClick) {
@@ -974,10 +1000,19 @@
     create.id = 'setup-create';
     create.textContent = 'Create config';
     create.addEventListener('click', function () {
-      cur().hasConfig = true;
-      ui.note = 'Config created with the default values. Draft only: no file changed.';
-      ui.noteState = 'set';
-      build();
+      var root = ui.root;
+      create.disabled = true;
+      deps.post(sv.createRequest(deps.pageToken(), root)).then(function (res) {
+        if (root !== ui.root) return;
+        if (res.status === 200 && res.body && res.body.ok) {
+          ui.note = 'Config created with the default values.';
+          ui.noteState = 'set';
+          loadState(true).then(focusNote);
+          return;
+        }
+        ui.error = 'Not created. ' + sv.answerText(res.status, res.body);
+        build();
+      });
     });
     add(
       hint,
@@ -986,6 +1021,17 @@
       doc.createTextNode(' in the repo.')
     );
     return add(box, h('h3', '', 'This repo has no sdlc config yet'), text, create, hint);
+  }
+
+  function buildLegacy() {
+    var box = h('div', 'setup-empty list-panel');
+    var text = h('p');
+    var hint = h('p');
+    add(text, doc.createTextNode('This repo has the old config file '), h('code', '', '.sdlc-v2/config.json'),
+      doc.createTextNode('. The form needs '), h('code', '', '.sdlc-v2/config.toml'), doc.createTextNode('.'));
+    add(hint, doc.createTextNode('To convert the old file, run '), h('code', '', '/sdlc:setup --migrate'),
+      doc.createTextNode(' in the repo.'));
+    return add(box, h('h3', '', 'This repo has an old sdlc config'), text, hint);
   }
 
   // --- Refresh -----------------------------------------------------------------------
@@ -1094,6 +1140,7 @@
 
     if (badge) badge.textContent = changes.length ? String(changes.length) : '';
     ui.refs.warn.hidden = !isRunning();
+    ui.refs.stall.hidden = !isStalled();
 
     var save = ui.refs.save;
     var perFile = {};
@@ -1142,6 +1189,10 @@
       var warn = h('p', 'setup-warn');
       add(warn, h('b', '', 'PIPELINE RUNS'), h('span', '', 'A pipeline runs in this repo. A save can change how its next steps run.'));
       nodes.push(warn);
+    } else if (isStalled()) {
+      var stall = h('p', 'setup-warn');
+      add(stall, h('b', '', 'PIPELINE STALLED'), h('span', '', 'A pipeline is stalled in this repo. A save can change how its next steps run.'));
+      nodes.push(stall);
     }
     changes.forEach(function (c) {
       if (files.indexOf(c.file) === -1) files.push(c.file);
@@ -1168,20 +1219,32 @@
 
   function save() {
     var st = cur();
+    var root = ui.root;
     var changes = listChanges();
     doc.getElementById('setup-review').close();
     if (!changes.length) return;
-    st.base = clone(st.draft);
-    st.baseTarget = clone(st.target);
-    formSections.forEach(function (sec) {
-      Object.keys(st.base[sec.id]).forEach(function (name) {
-        st.source[sec.id][name] = isLocal(sec) ? st.target[sec.id] : 'config';
+    ui.refs.save.save.disabled = true;
+    deps.post(sv.saveRequest(deps.pageToken(), root, formSections, st)).then(function (res) {
+      var out = sv.saveNote(res.status, res.body, changes.length);
+      if (root !== ui.root) {
+        // The user selected another repo. The files changed, so the old form state goes.
+        if (out.reload) delete byRoot[root];
+        return;
+      }
+      ui.note = out.note;
+      ui.noteState = out.noteState;
+      if (out.reload) {
+        loadState(true).then(focusNote);
+        return;
+      }
+      out.errors.forEach(function (e) {
+        st.errors[e.section + '/' + e.field] = e.message;
       });
+      refreshAll();
+      var first = out.errors[0] && ui.refs.fields[out.errors[0].section + '/' + out.errors[0].field];
+      if (first) first.control.focus();
+      else focusNote();
     });
-    st.errors = {};
-    ui.note = 'Saved ' + plural(changes.length, 'change') + '. Draft only: no file changed.';
-    ui.noteState = 'set';
-    refreshAll();
   }
 
   // --- Build ---------------------------------------------------------------------------
@@ -1194,16 +1257,17 @@
     if (!ui.repos.length) {
       kids.push(h('p', 'setup-none', 'No repo is registered. Run an sdlc skill in a repo. Then the repo shows here.'));
     } else {
-      var st = cur();
       kids.push(buildBar(), buildNotes());
-      if (st.hasConfig) kids.push(buildBody(), buildSaveBar());
-      else kids.push(buildNoConfig());
+      if (ui.load === 'ready') kids.push(buildBody(), buildSaveBar());
+      else if (ui.load === 'no-config') kids.push(buildNoConfig());
+      else if (ui.load === 'legacy-config') kids.push(buildLegacy());
     }
     panel.replaceChildren.apply(panel, kids);
     if (ui.refs.save) refreshAll();
     else {
       refreshChrome();
       if (ui.refs.warn) ui.refs.warn.hidden = !isRunning();
+      if (ui.refs.stall) ui.refs.stall.hidden = !isStalled();
     }
   }
 
@@ -1220,6 +1284,74 @@
       if (roots.indexOf(only) !== -1) return only;
     }
     return roots[0] || null;
+  }
+
+  // --- Dashboard API ---------------------------------------------------------
+
+  function init(d) {
+    deps = d;
+  }
+
+  // The field list is the same for each repo. The page loads it one time.
+  function loadFields() {
+    if (ui.fields) return ui.fields;
+    ui.fields = deps.fetchJSON(sv.FIELDS_URL).then(function (res) {
+      if (res.status !== 200 || !res.body) {
+        ui.fields = null;
+        throw new Error(sv.answerText(res.status, res.body));
+      }
+      data.sections = sv.draftSections(res.body);
+      help = sv.helpTable(data.sections);
+      formSections = data.sections.filter(function (sec) {
+        return !sec.delegatedTo;
+      });
+      delegSections = data.sections.filter(function (sec) {
+        return !!sec.delegatedTo;
+      });
+    });
+    return ui.fields;
+  }
+
+  // Loads the state of the selected repo, then draws the tab. The script drops
+  // an answer for a repo that is no longer selected. fresh is true after a save
+  // or a create: the form stays on the page until the answer arrives, and the
+  // answer replaces the form state of the repo.
+  function loadState(fresh) {
+    var root = ui.root;
+    var req = ++ui.req;
+    ui.error = '';
+    if (!fresh) {
+      ui.load = 'loading';
+      build();
+    }
+    return loadFields()
+      .then(function () {
+        return deps.fetchJSON(sv.stateURL(root));
+      })
+      .then(function (res) {
+        if (req !== ui.req) return;
+        if (res.status !== 200 || !res.body) {
+          ui.load = 'error';
+          ui.error = 'The config of this repo did not load. ' + sv.answerText(res.status, res.body);
+        } else {
+          var state = sv.draftState(res.body);
+          data.values = state.values;
+          data.delegated = state.delegated;
+          ui.configError = res.body.configError || '';
+          ui.load = res.body.state;
+          if (fresh) delete byRoot[root];
+        }
+        build();
+      }, function (e) {
+        if (req !== ui.req) return;
+        ui.load = 'error';
+        ui.error = 'The field list did not load. ' + e.message;
+        build();
+      });
+  }
+
+  function focusNote() {
+    if (ui.refs && ui.refs.save) ui.refs.save.note.focus();
   }
 
   /**
@@ -1240,8 +1372,15 @@
         return [repo.root, repo.name];
       })
     );
-    if (roots.indexOf(ui.root) === -1) ui.root = pickRoot(roots, scope);
-    else if (sig === ui.sig && panel.firstChild) return;
+    if (!deps) return;
+    if (roots.indexOf(ui.root) === -1) {
+      ui.root = pickRoot(roots, scope);
+      ui.sig = sig;
+      if (ui.root) loadState();
+      else build();
+      return;
+    }
+    if (sig === ui.sig && panel.firstChild) return;
     ui.sig = sig;
     build();
   }
@@ -1253,6 +1392,7 @@
   function live(repos) {
     ui.repos = repos || [];
     if (ui.refs && ui.refs.warn) ui.refs.warn.hidden = !isRunning();
+    if (ui.refs && ui.refs.stall) ui.refs.stall.hidden = !isStalled();
   }
 
   // The section index follows the scroll position.
@@ -1290,5 +1430,5 @@
     doc.getElementById('setup-review').close();
   });
 
-  window.sdlcSetup = { draw: draw, live: live };
+  window.sdlcSetup = { init: init, draw: draw, live: live };
 })();

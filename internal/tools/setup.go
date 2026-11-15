@@ -69,6 +69,74 @@ type fieldRow struct {
 	// Examples holds 1 to 3 sample values for this field, mirroring
 	// setupmeta.Field.Examples (see explain mode on setup_prepare).
 	Examples []string `json:"examples,omitempty"`
+	// Details and Effects are set only in the full rows of the dashboard.
+	// setup_prepare leaves them empty, so its JSON does not change.
+	Details string      `json:"details,omitempty"`
+	Effects []effectRow `json:"effects,omitempty"`
+}
+
+// effectRow is the JSON form of setupmeta.OptionEffect.
+type effectRow struct {
+	Option string `json:"option"`
+	Text   string `json:"text"`
+	Before string `json:"before,omitempty"`
+	After  string `json:"after,omitempty"`
+}
+
+// setupSectionRows converts setupmeta.Sections() to rows. full adds the
+// details and the effects of each field.
+func setupSectionRows(full bool) []sectionRow {
+	meta := setupmeta.Sections()
+	rows := make([]sectionRow, len(meta))
+	for i, s := range meta {
+		fields := make([]fieldRow, len(s.Fields))
+		for j, f := range s.Fields {
+			fields[j] = fieldRow{
+				Name:                  f.Name,
+				Label:                 f.Label,
+				Type:                  f.Type,
+				Options:               f.Options,
+				Default:               f.Default,
+				Description:           f.Description,
+				Min:                   f.Min,
+				Max:                   f.Max,
+				WhenStepInActiveSteps: f.WhenStepInActiveSteps,
+				Examples:              f.Examples,
+			}
+			if full {
+				fields[j].Details = f.Details
+				fields[j].Effects = effectRows(setupmeta.EffectsFor(s.ID, f))
+			}
+		}
+		rows[i] = sectionRow{
+			ID:              s.ID,
+			Label:           s.Label,
+			Purpose:         s.Purpose,
+			ConfigFile:      s.ConfigFile,
+			ConfigPath:      s.ConfigPath,
+			ConsumedBy:      s.ConsumedBy,
+			FilesModified:   s.FilesModified,
+			Optional:        s.Optional,
+			DelegatedTo:     s.DelegatedTo,
+			ConfirmDetected: s.ConfirmDetected,
+			Fields:          fields,
+			DefaultTarget:   s.DefaultTarget,
+		}
+	}
+	return rows
+}
+
+// effectRows converts the effects of one field. An empty list gives nil,
+// so the JSON key is absent.
+func effectRows(in []setupmeta.OptionEffect) []effectRow {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]effectRow, len(in))
+	for i, e := range in {
+		out[i] = effectRow{Option: e.Option, Text: e.Text, Before: e.Before, After: e.After}
+	}
+	return out
 }
 
 // optionExplanation is explain mode's result: the full explanation of one
@@ -202,39 +270,8 @@ func setupPrepareWithDrift(root, driftRoot string, in SetupPrepareIn) (SetupPrep
 	}
 
 	// Convert setupmeta.Sections() to JSON-friendly rows.
+	rows := setupSectionRows(false)
 	meta := setupmeta.Sections()
-	rows := make([]sectionRow, len(meta))
-	for i, s := range meta {
-		fields := make([]fieldRow, len(s.Fields))
-		for j, f := range s.Fields {
-			fields[j] = fieldRow{
-				Name:                  f.Name,
-				Label:                 f.Label,
-				Type:                  f.Type,
-				Options:               f.Options,
-				Default:               f.Default,
-				Description:           f.Description,
-				Min:                   f.Min,
-				Max:                   f.Max,
-				WhenStepInActiveSteps: f.WhenStepInActiveSteps,
-				Examples:              f.Examples,
-			}
-		}
-		rows[i] = sectionRow{
-			ID:              s.ID,
-			Label:           s.Label,
-			Purpose:         s.Purpose,
-			ConfigFile:      s.ConfigFile,
-			ConfigPath:      s.ConfigPath,
-			ConsumedBy:      s.ConsumedBy,
-			FilesModified:   s.FilesModified,
-			Optional:        s.Optional,
-			DelegatedTo:     s.DelegatedTo,
-			ConfirmDetected: s.ConfirmDetected,
-			Fields:          fields,
-			DefaultTarget:   s.DefaultTarget,
-		}
-	}
 
 	// Personal settings: merge the user-level local config with the
 	// project's .sdlc-v2/local.toml for every section stored there, so
