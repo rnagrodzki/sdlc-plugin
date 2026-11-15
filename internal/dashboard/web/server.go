@@ -138,11 +138,24 @@ type Options struct {
 	// SessionDetail returns the timeline and command groups of one session
 	// (production: tools.DashboardSessionDetail). GET /api/session-detail calls it.
 	SessionDetail func(root, id string, now time.Time) (tools.DashboardSessionDetailOut, error)
+	// SetupFields returns the setup sections and the fields of each one
+	// (production: tools.DashboardSetupFields). GET /api/setup-fields calls it.
+	SetupFields func() tools.DashboardSetupFieldsOut
+	// SetupState returns the config state and values of one repo
+	// (production: tools.DashboardSetupState). GET /api/setup-state calls it.
+	SetupState func(root string) (tools.DashboardSetupStateOut, error)
+	// SetupSave saves changed fields of the Setup form (production:
+	// tools.DashboardSetupSave). POST /api/setup-save calls it.
+	SetupSave func(root string, in tools.DashboardSetupSaveIn) (tools.DashboardSetupSaveOut, error)
+	// SetupCreate creates the first config files of one repo (production:
+	// tools.DashboardSetupCreate). POST /api/setup-create calls it.
+	SetupCreate func(root string) (tools.DashboardSetupCreateOut, error)
 }
 
 // WithToolRoutes returns o with every route function set to the tools
 // function that production uses: Archive, ClearCache, LearningBody, the
-// delete, status and dismiss functions, and the two detail functions.
+// delete, status and dismiss functions, the two detail functions, and the four
+// Setup functions.
 // ClearCache calls clearCache (production: tools.ClearCache) with
 // dashboard.LogPath(), the file that receives the output of the server when it
 // runs in the background. "sdlc dashboard serve" and the browser e2e test both
@@ -162,6 +175,10 @@ func WithToolRoutes(o Options, clearCache func(root, serverLog string, now time.
 	o.DismissWait = tools.DashboardDismissWait
 	o.RunDetail = tools.DashboardRunDetail
 	o.SessionDetail = tools.DashboardSessionDetail
+	o.SetupFields = tools.DashboardSetupFields
+	o.SetupState = tools.DashboardSetupState
+	o.SetupSave = tools.DashboardSetupSave
+	o.SetupCreate = tools.DashboardSetupCreate
 	return o
 }
 
@@ -332,6 +349,8 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 	h.mux.HandleFunc("GET /api/learning", h.serveLearning)
 	h.mux.HandleFunc("GET /api/run-detail", h.serveRunDetail)
 	h.mux.HandleFunc("GET /api/session-detail", h.serveSessionDetail)
+	h.mux.HandleFunc("GET /api/setup-fields", h.serveSetupFields)
+	h.mux.HandleFunc("GET /api/setup-state", h.serveSetupState)
 	h.mux.HandleFunc("POST /api/stop", h.serveStop)
 	h.mux.HandleFunc("POST /api/run-archive", h.serveRunArchive)
 	h.mux.HandleFunc("POST /api/cache-clear", h.serveCacheClear)
@@ -341,6 +360,8 @@ func newHandler(ctx context.Context, o Options, token string, pid int, startedAt
 	h.mux.HandleFunc("POST /api/preplan-status", h.servePreplanStatus)
 	h.mux.HandleFunc("POST /api/history-delete", h.serveHistoryDelete)
 	h.mux.HandleFunc("POST /api/wait-dismiss", h.serveWaitDismiss)
+	h.mux.HandleFunc("POST /api/setup-save", h.serveSetupSave)
+	h.mux.HandleFunc("POST /api/setup-create", h.serveSetupCreate)
 	return h
 }
 
@@ -650,14 +671,24 @@ func (h *handler) serveCacheClear(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveWrite runs the steps that every delete, status and dismiss route
-// shares. The request must pass guardMutation. A false configured (the
-// Options function is nil) writes the NOT_CONFIGURED error with name. The body
-// must decode into Req, and repo(req) must name a display root. Then call runs
-// the Options function with that root and the request. Its error goes through
-// writeDeleteError; its result is the 200 body. The function is the one check
-// of the other fields of the body: its DomainError is a 400.
+// shares (serveWriteWith). Its errors go through writeDeleteError. The
+// function is the one check of the other fields of the body: its DomainError
+// is a 400.
 func serveWrite[Req any](h *handler, w http.ResponseWriter, r *http.Request, name string, configured bool,
 	repo func(Req) string, call func(root string, req Req) (any, error)) {
+	serveWriteWith(h, w, r, name, configured, repo, call, func(w http.ResponseWriter, err error) {
+		writeDeleteError(w, strings.ToLower(name), err)
+	})
+}
+
+// serveWriteWith runs the steps of a route that changes repo files. The
+// request must pass guardMutation. A false configured (the Options function
+// is nil) writes the NOT_CONFIGURED error with name. The body must decode into
+// Req, repo(req) must be at most maxDetailRepo bytes, and it must name a
+// display root. Then call runs the Options function with that root and the
+// request. Its error goes to writeErr; its result is the 200 body.
+func serveWriteWith[Req any](h *handler, w http.ResponseWriter, r *http.Request, name string, configured bool,
+	repo func(Req) string, call func(root string, req Req) (any, error), writeErr func(http.ResponseWriter, error)) {
 	if !h.guardMutation(w, r, true) {
 		return
 	}
@@ -669,16 +700,29 @@ func serveWrite[Req any](h *handler, w http.ResponseWriter, r *http.Request, nam
 	if !decodeBody(w, r, &req) {
 		return
 	}
+	if repoTooLong(w, repo(req)) {
+		return
+	}
 	root, ok := h.displayRoot(w, now(), repo(req))
 	if !ok {
 		return
 	}
 	out, err := call(root, req)
 	if err != nil {
-		writeDeleteError(w, strings.ToLower(name), err)
+		writeErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// repoTooLong writes the 400 error and returns true when repo is longer than
+// maxDetailRepo bytes, so a large value never reaches displayRoot.
+func repoTooLong(w http.ResponseWriter, repo string) bool {
+	if len(repo) <= maxDetailRepo {
+		return false
+	}
+	writeBadRequest(w, fmt.Sprintf("The repo field is longer than %d bytes", maxDetailRepo))
+	return true
 }
 
 // servePreplanDelete deletes one preplan topic file of a registered repo

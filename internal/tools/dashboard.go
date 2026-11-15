@@ -8,8 +8,10 @@ import (
 	"time"
 
 	version "github.com/rnagrodzki/sdlc-plugin"
+	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -209,10 +211,24 @@ func dashboardSummary(result dashboard.Result, repos []string) string {
 // Registration
 // ---------------------------------------------------------------------------
 
+// dashboardToolDescription is the description of the dashboard tool. The
+// paths of the data dir and the user file are built from their constants.
+var dashboardToolDescription = "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open (ensure only). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: " +
+	"archive a finished run (moves its files to " + paths.DataDir + "/run-archive/ and deletes its working files; the moved files stay there), " +
+	"clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* temp dirs, and empties the server log), " +
+	"delete a preplan topic file (" + paths.DataDir + "/preplan/<slug>.md; no recovery), " +
+	"delete a deferred item (rewrites " + paths.DataDir + "/history/deferred.json; to recover, add it again with ship_state deferred_add), " +
+	"delete a learning (rewrites " + paths.DataDir + "/learnings/log.md; to recover, add it again with learnings_log append), " +
+	"set the status of a preplan topic file (rewrites its **Status:** line; to recover, set the old status again), " +
+	"delete History rows (rewrites " + paths.DataDir + "/history/runs.jsonl; no recovery), " +
+	"dismiss a wait (deletes one record in " + paths.DataDir + "/evidence/attention/; the session still waits for its answer), " +
+	"save the Setup form (rewrites the changed keys of " + paths.DataDir + "/" + paths.ConfigFile + ", " + paths.DataDir + "/" + paths.LocalConfigFile + " or the user file ($" + config.UserConfigPathEnv + " when set, else ~/.sdlc/local.toml); a save to the user file also removes each changed key from " + paths.DataDir + "/" + paths.LocalConfigFile + "; a save of the version section also creates each missing CI script file and lists it in ciFiles; a refused field value changes no file; to recover, set the old value again, set a removed project key again with the target This project, and delete by hand each file listed in ciFiles), " +
+	"and create the first config of a repo (creates " + paths.DataDir + "/" + paths.ConfigFile + " and " + paths.DataDir + "/" + paths.LocalConfigFile + " from the templates, each only when it is absent, creates " + paths.DataDir + "/runs/, and adds or updates the sdlc block in " + paths.DataDir + "/.gitignore and in the root .gitignore, and renames a leftover " + paths.DataDir + "/local.json to local.json.bak when no local.json.bak exists; to recover, delete each config file listed in created, and rename local.json.bak back to local.json only when the result lists that rename)."
+
 // RegisterDashboardTools registers the dashboard tool on the server.
 func RegisterDashboardTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "dashboard",
-		"Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open (ensure only). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: archive a finished run (moves its files to .sdlc-v2/run-archive/ and deletes its working files; the moved files stay there), clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* temp dirs, and empties the server log), delete a preplan topic file (.sdlc-v2/preplan/<slug>.md; no recovery), delete a deferred item (rewrites .sdlc-v2/history/deferred.json; to recover, add it again with ship_state deferred_add), delete a learning (rewrites .sdlc-v2/learnings/log.md; to recover, add it again with learnings_log append), set the status of a preplan topic file (rewrites its **Status:** line; to recover, set the old status again), delete History rows (rewrites .sdlc-v2/history/runs.jsonl; no recovery), and dismiss a wait (deletes one record in .sdlc-v2/evidence/attention/; the session still waits for its answer).",
+		dashboardToolDescription,
 		mcpserver.Annotations{
 			Title:       "Start, check, or stop the local dashboard",
 			ReadOnly:    false,

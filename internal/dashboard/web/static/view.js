@@ -77,7 +77,7 @@
 
   var TAB_KEY = 'sdlc-dashboard-tab';
   var REPO_FILTER_KEY = 'sdlc-dashboard-repo-filter';
-  var TAB_NAMES = ['pipelines', 'activity', 'history', 'preplans'];
+  var TAB_NAMES = ['pipelines', 'activity', 'history', 'preplans', 'setup'];
   // The repo fields that the draw function of each panel tab reads. A
   // snapshot that changes none of them leaves the panel tab as drawn.
   var PANEL_FIELDS = {
@@ -85,6 +85,9 @@
     activity: ['name', 'root', 'deferred', 'learnings'],
     history: ['name', 'root', 'history'],
     preplans: ['name', 'root', 'warnings', 'preplans'],
+    // The Setup tab keeps its own form state. It draws again only when the
+    // list of repos changes.
+    setup: ['name', 'root'],
   };
   // The status values of a preplan topic file, in chip order. Must equal
   // tools.PreplanStatuses (TestPreplanStatusParity in server_test.go).
@@ -2288,6 +2291,7 @@
     preplanSummaryLine: preplanSummaryLine,
     PREPLAN_UNREAD_LABELS: PREPLAN_UNREAD_LABELS,
     priorityCounts: priorityCounts,
+    guardedPost: guardedPost,
   };
 
   if (typeof module === 'object' && module.exports) {

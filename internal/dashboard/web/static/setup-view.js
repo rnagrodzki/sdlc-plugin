@@ -1,0 +1,288 @@
+/**
+ * Page adapter for the Setup tab of the sdlc dashboard. It converts the
+ * answers of the setup routes to the data shape that setup.js reads, and it
+ * builds the change requests and the result texts of a save. No DOM access:
+ * the same file runs unmodified as a browser script (window.sdlcSetupView)
+ * and under Node's test runner (module.exports).
+ *
+ * The URLs and JSON keys follow the routes of internal/dashboard/web
+ * (setup_routes.go): GET /api/setup-fields, GET /api/setup-state,
+ * POST /api/setup-save, POST /api/setup-create.
+ */
+(function (root) {
+  'use strict';
+
+  // Node loads view.js as a module. In the browser, view.js runs first and sets root.sdlcView.
+  var view = (typeof module === 'object' && module.exports) ? require('./view.js') : root.sdlcView;
+
+  var FIELDS_URL = '/api/setup-fields';
+  var SAVE_URL = '/api/setup-save';
+  var CREATE_URL = '/api/setup-create';
+
+  /**
+   * The URL that reads the state of one repo.
+   * @param {string} repo repo root
+   * @returns {string}
+   */
+  function stateURL(repo) {
+    return '/api/setup-state?repo=' + encodeURIComponent(repo);
+  }
+
+  /**
+   * Same as plural() of the draft script (setup.js).
+   * @param {number} n
+   * @param {string} word
+   * @returns {string}
+   */
+  function plural(n, word) {
+    return n + ' ' + word + (n === 1 ? '' : 's');
+  }
+
+  function same(a, b) {
+    return JSON.stringify(a) === JSON.stringify(b);
+  }
+
+  function isLocal(sec) {
+    return /local\.toml$/.test(sec.configFile || '');
+  }
+
+  function copyKeys(from) {
+    var out = {};
+    Object.keys(from).forEach(function (key) {
+      out[key] = from[key];
+    });
+    return out;
+  }
+
+  /**
+   * The field list of the API as data.sections of the draft script. Each key
+   * is copied. The one exception is whenStepInActiveSteps of a field, which
+   * the draft reads as whenStep.
+   * @param {{sections: object[]}} fieldsOut answer of GET /api/setup-fields
+   * @returns {object[]}
+   */
+  function draftSections(fieldsOut) {
+    var sections = (fieldsOut && fieldsOut.sections) || [];
+    return sections.map(function (sec) {
+      var out = copyKeys(sec);
+      out.fields = (sec.fields || []).map(function (field) {
+        var f = copyKeys(field);
+        if (Object.prototype.hasOwnProperty.call(f, 'whenStepInActiveSteps')) {
+          f.whenStep = f.whenStepInActiveSteps;
+          delete f.whenStepInActiveSteps;
+        }
+        return f;
+      });
+      return out;
+    });
+  }
+
+  /**
+   * The state of the API as the values and the delegated state of the draft
+   * script. A delegated row with no count gives the count 0.
+   * @param {object} stateOut answer of GET /api/setup-state
+   * @returns {{values: object, delegated: object}}
+   */
+  function draftState(stateOut) {
+    var delegated = {};
+    ((stateOut && stateOut.delegated) || []).forEach(function (row) {
+      var count = row.count || 0;
+      switch (row.id) {
+        case 'commit':
+        case 'pr':
+          delegated[row.id] = { configured: row.set === true, keys: count };
+          break;
+        case 'pr-labels':
+          delegated[row.id] = { mode: row.mode ? row.mode : null };
+          break;
+        case 'review-dimensions':
+        case 'plan-guardrails':
+        case 'execution-guardrails':
+          delegated[row.id] = { count: count };
+          break;
+        case 'pr-template':
+        case 'plan-template':
+          delegated[row.id] = { exists: row.set === true };
+          break;
+        case 'openspec-block':
+          delegated[row.id] = { present: row.set === true };
+          break;
+        default:
+          break;
+      }
+    });
+    return { values: (stateOut && stateOut.values) || {}, delegated: delegated };
+  }
+
+  /**
+   * The effect of each option, as the draft script reads it. The options yes
+   * and no of a boolean field become on and off.
+   * @param {object[]} sections sections of the field list
+   * @returns {Object<string, Object<string, {text: string, before?: string, after?: string}>>}
+   *   '<section id>/<field name>' -> option -> effect
+   */
+  function helpTable(sections) {
+    var table = {};
+    (sections || []).forEach(function (sec) {
+      (sec.fields || []).forEach(function (field) {
+        if (!field.effects || !field.effects.length) return;
+        var entry = {};
+        field.effects.forEach(function (effect) {
+          var option = effect.option;
+          if (field.type === 'boolean') {
+            if (option === 'yes') option = 'on';
+            else if (option === 'no') option = 'off';
+          }
+          var out = { text: effect.text };
+          if (effect.before) out.before = effect.before;
+          if (effect.after) out.after = effect.after;
+          entry[option] = out;
+        });
+        table[sec.id + '/' + field.name] = entry;
+      });
+    });
+    return table;
+  }
+
+  /**
+   * The body of POST /api/setup-save: one entry for each changed field, and
+   * the target file of each local section with a change.
+   * @param {string} repo repo root
+   * @param {object[]} sections the form sections of the draft
+   * @param {{base: object, draft: object, target: object}} st form state of the repo
+   * @returns {{repo: string, changes: object[], targets: Object<string, string>}}
+   */
+  function saveBody(repo, sections, st) {
+    var changes = [];
+    var targets = {};
+    (sections || []).forEach(function (sec) {
+      var base = (st.base && st.base[sec.id]) || {};
+      var draft = (st.draft && st.draft[sec.id]) || {};
+      var count = changes.length;
+      (sec.fields || []).forEach(function (field) {
+        var was = base[field.name];
+        var now = draft[field.name];
+        if (same(was, now)) return;
+        if (now === undefined) {
+          changes.push({ section: sec.id, field: field.name, op: 'reset' });
+        } else {
+          changes.push({ section: sec.id, field: field.name, op: 'set', value: now });
+        }
+      });
+      if (changes.length > count && isLocal(sec) && st.target && st.target[sec.id]) {
+        targets[sec.id] = st.target[sec.id];
+      }
+    });
+    return { repo: repo, changes: changes, targets: targets };
+  }
+
+  /**
+   * The request that saves the changes of one repo. Use it as
+   * `fetch(req.url, req)`.
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token or repo is ''
+   */
+  function saveRequest(token, repo, sections, st) {
+    if (!token || !repo) return null;
+    return view.guardedPost(token, SAVE_URL, saveBody(repo, sections, st));
+  }
+
+  /**
+   * The request that creates the config of one repo. Use it as
+   * `fetch(req.url, req)`.
+   * @returns {{method: string, url: string, headers: object, body: string}|null}
+   *   null when token or repo is ''
+   */
+  function createRequest(token, repo) {
+    if (!token || !repo) return null;
+    return view.guardedPost(token, CREATE_URL, { repo: repo });
+  }
+
+  /**
+   * The text of a failed answer.
+   * @param {number} status HTTP status; 0 for no answer
+   * @param {*} body parsed JSON body, or null
+   * @returns {string}
+   */
+  function answerText(status, body) {
+    if (body && typeof body === 'object') {
+      if (body.error && typeof body.error === 'object') {
+        var text = String(body.error.message || '');
+        if (body.error.suggestion) text += ' ' + body.error.suggestion;
+        return text;
+      }
+      if (Array.isArray(body.errors) && body.errors.length) {
+        return body.errors.join(' ');
+      }
+    }
+    if (body === null || body === undefined) {
+      return 'The dashboard server gave no answer (HTTP ' + status + ').';
+    }
+    return 'The dashboard server gave an answer that the page cannot read (HTTP ' + status + ').';
+  }
+
+  /**
+   * The note, the note state, and the field errors that follow a save.
+   * @param {number} status HTTP status
+   * @param {*} body parsed JSON body, or null
+   * @param {number} count number of changes that the save sent
+   * @returns {{note: string, noteState: string, errors: object[], reload: boolean}}
+   */
+  function saveNote(status, body, count) {
+    var obj = body && typeof body === 'object' ? body : null;
+    if (status === 200 && obj && obj.ok === true) {
+      return { note: 'Saved ' + plural(count, 'change') + '.', noteState: 'set', errors: [], reload: true };
+    }
+    if (status === 200 && obj && obj.ok === false) {
+      var written = (obj.written || []).length;
+      var failed = obj.failed || [];
+      var parts = ['Saved ' + written + ' of ' + (written + failed.length) + ' sections.'];
+      failed.forEach(function (f) {
+        parts.push('Not saved: ' + f.section + ' (' + f.file + '). ' + f.message + (f.suggestion ? ' ' + f.suggestion : ''));
+      });
+      if (obj.next) {
+        parts.push(obj.next);
+      }
+      return { note: parts.join(' '), noteState: 'error', errors: [], reload: true };
+    }
+    var code = obj && obj.error && typeof obj.error === 'object' ? obj.error.code : '';
+    if (status === 400 && code === 'SETUP_INVALID') {
+      var fields = Array.isArray(obj.error.fields) ? obj.error.fields : [];
+      return {
+        note: 'Not saved. The config check refused ' + plural(fields.length, 'field') + '. No file changed.',
+        noteState: 'error',
+        errors: fields,
+        reload: false,
+      };
+    }
+    if (status === 413 && code === 'BODY_TOO_LARGE') {
+      return {
+        note: 'Not saved. The save is larger than the server accepts. Save fewer fields at one time.',
+        noteState: 'error',
+        errors: [],
+        reload: false,
+      };
+    }
+    return { note: 'Not saved. ' + answerText(status, body), noteState: 'error', errors: [], reload: false };
+  }
+
+  var api = {
+    FIELDS_URL: FIELDS_URL,
+    stateURL: stateURL,
+    draftSections: draftSections,
+    draftState: draftState,
+    helpTable: helpTable,
+    saveBody: saveBody,
+    saveRequest: saveRequest,
+    createRequest: createRequest,
+    answerText: answerText,
+    saveNote: saveNote,
+    plural: plural,
+  };
+
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.sdlcSetupView = api;
+  }
+})(this);

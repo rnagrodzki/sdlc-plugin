@@ -15,3 +15,4 @@ Default severity: medium
 - [ ] When a schema enum, property, minItems, or other constraint changes, open `plugins/sdlc/templates/*.toml` and verify every default value and every comment-listed option still validates against the schema.
 - [ ] Look for stale examples in templates (e.g., `rebase = auto` when schema only accepts boolean or prompt).
 - [ ] If a schema property is removed, confirm the corresponding template entry is also removed or updated.
+- [ ] When Go code holds its own list of config keys (a form field list, a validator), compare each key's type, enum values, minimum and maximum with its schema entry, and flag a test that pins a type or a range that the schema does not state.

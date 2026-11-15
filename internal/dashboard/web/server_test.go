@@ -474,6 +474,10 @@ func TestHandler_HostCheck(t *testing.T) {
 		{"POST", "/api/preplan-status"},
 		{"POST", "/api/history-delete"},
 		{"POST", "/api/wait-dismiss"},
+		{"GET", "/api/setup-fields"},
+		{"GET", "/api/setup-state?repo=%2Frepo%2Fa"},
+		{"POST", "/api/setup-save"},
+		{"POST", "/api/setup-create"},
 		{"GET", "/api/learning?repo=%2Frepo%2Fa&date=2026-10-08&heading=x"},
 		{"GET", "/nope"},
 	}
@@ -544,6 +548,12 @@ func TestHandler_Routes(t *testing.T) {
 		{"POST", "/api/learning", 405},
 		{"PUT", "/api/learning", 405},
 		{"DELETE", "/api/learning", 405},
+		{"POST", "/api/setup-fields", 405},
+		{"POST", "/api/setup-state", 405},
+		{"GET", "/api/setup-save", 405},
+		{"PUT", "/api/setup-save", 405},
+		{"GET", "/api/setup-create", 405},
+		{"PUT", "/api/setup-create", 405},
 	}
 	for _, tc := range cases {
 		if rec := do(h, tc.method, tc.path, testHost, nil); rec.Code != tc.want {
@@ -2229,6 +2239,10 @@ func TestHandler_NilActionFields(t *testing.T) {
 		{"preplan status", postJSON(h, "/api/preplan-status", `{"repo":"/repo/a","slug":"x","status":"paused"}`, mutationHeader()), "Preplan status is not available on this server"},
 		{"history delete", postJSON(h, "/api/history-delete", `{"repo":"/repo/a","rows":[]}`, mutationHeader()), "History delete is not available on this server"},
 		{"wait dismiss", postJSON(h, "/api/wait-dismiss", `{"repo":"/repo/a","kind":"permission","sessionId":"s1"}`, mutationHeader()), "Wait dismiss is not available on this server"},
+		{"setup fields", do(h, "GET", "/api/setup-fields", testHost, nil), "Setup fields is not available on this server"},
+		{"setup state", do(h, "GET", "/api/setup-state?repo=%2Frepo%2Fa", testHost, nil), "Setup state is not available on this server"},
+		{"setup save", postJSON(h, "/api/setup-save", `{"repo":"/repo/a","changes":[]}`, mutationHeader()), "Setup save is not available on this server"},
+		{"setup create", postJSON(h, "/api/setup-create", `{"repo":"/repo/a"}`, mutationHeader()), "Setup create is not available on this server"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2246,7 +2260,8 @@ func TestHandler_NilActionFields(t *testing.T) {
 	// function is missing.
 	for _, path := range []string{"/api/run-archive", "/api/cache-clear",
 		"/api/preplan-delete", "/api/deferred-delete", "/api/learning-delete",
-		"/api/preplan-status", "/api/history-delete", "/api/wait-dismiss"} {
+		"/api/preplan-status", "/api/history-delete", "/api/wait-dismiss",
+		"/api/setup-save", "/api/setup-create"} {
 		header := mutationHeader()
 		delete(header, tokenHeader)
 		wantAPIError(t, postJSON(h, path, `{"repo":"/repo/a","runId":"run-1"}`, header), 403, "FORBIDDEN_TOKEN")
@@ -2819,11 +2834,13 @@ func TestStaticIndex_IdsAndScripts(t *testing.T) {
 	}
 	for _, id := range []string{
 		"conn", "conn-text", "totals", "stop-btn", "stop-dialog", "stop-dialog-text", "stop-confirm", "stop-cancel",
-		"tab-pipelines", "tab-activity", "tab-history", "tab-preplans",
-		"n-pipelines", "n-activity", "n-history", "n-preplans",
+		"tab-pipelines", "tab-activity", "tab-history", "tab-preplans", "tab-setup",
+		"n-pipelines", "n-activity", "n-history", "n-preplans", "n-setup",
 		"filter-chips", "toggle-all", "panel-pipelines", "panel-activity", "panel-history", "panel-preplans", "feed",
+		"panel-setup",
 		"detail-dialog", "detail-title", "detail-content", "detail-close",
 		"confirm-dialog", "confirm-text", "confirm-ok", "confirm-cancel", "clear-btn",
+		"setup-review", "setup-review-title", "setup-review-body", "setup-review-ok", "setup-review-cancel",
 	} {
 		if counts[id] != 1 {
 			t.Errorf("index.html has id %q %d times; want 1", id, counts[id])
@@ -2841,7 +2858,7 @@ func TestStaticIndex_IdsAndScripts(t *testing.T) {
 	if n := strings.Count(page, `role="tablist"`); n != 1 {
 		t.Errorf("index.html has %d tablists; want 1", n)
 	}
-	for _, name := range []string{"pipelines", "activity", "history", "preplans"} {
+	for _, name := range []string{"pipelines", "activity", "history", "preplans", "setup"} {
 		tab, panel := htmlOpenTag(page, "tab-"+name), htmlOpenTag(page, "panel-"+name)
 		if !strings.Contains(tab, `role="tab"`) || !strings.Contains(tab, `aria-controls="panel-`+name+`"`) {
 			t.Errorf("tab %q = %s; want role=tab and aria-controls panel-%s", name, tab, name)
@@ -2858,7 +2875,7 @@ func TestStaticIndex_IdsAndScripts(t *testing.T) {
 	for _, m := range htmlScriptSrcRe.FindAllStringSubmatch(page, -1) {
 		scripts = append(scripts, m[1])
 	}
-	want := []string{"static/view.js", "static/render.js", "static/app.js"}
+	want := []string{"static/view.js", "static/render.js", "static/setup-view.js", "static/setup.js", "static/app.js"}
 	if strings.Join(scripts, ",") != strings.Join(want, ",") {
 		t.Errorf("script order = %v; want %v", scripts, want)
 	}
@@ -3497,7 +3514,7 @@ func TestFindHTMLSinks(t *testing.T) {
 // TestStaticJS_NoHTMLStringSinks pins that no page script turns a string into markup. Snapshot
 // text must enter the page through textContent only.
 func TestStaticJS_NoHTMLStringSinks(t *testing.T) {
-	for _, name := range []string{"app.js", "view.js", "render.js"} {
+	for _, name := range []string{"app.js", "view.js", "render.js", "setup-view.js", "setup.js"} {
 		sinks, err := findHTMLSinks(staticFile(t, name))
 		if err != nil {
 			t.Errorf("%s: %v", name, err)
@@ -3582,6 +3599,22 @@ func TestStaticRenderJS_NoPageGlobals(t *testing.T) {
 	}
 	if len(found) > 0 {
 		t.Errorf("render.js uses the page globals %v outside comments; take the document as the doc argument", found)
+	}
+}
+
+// TestStaticSetupJS_NoPageGlobals pins that the Setup adapter reaches the page only
+// through its inputs. The Node test loads the file. setup.js is a copy of the
+// approved draft and keeps its page globals.
+func TestStaticSetupJS_NoPageGlobals(t *testing.T) {
+	for _, name := range []string{"setup-view.js"} {
+		found, err := findPageGlobals(staticFile(t, name))
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		if len(found) > 0 {
+			t.Errorf("%s uses the page globals %v outside comments", name, found)
+		}
 	}
 }
 

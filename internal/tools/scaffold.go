@@ -359,6 +359,23 @@ func validateSecretName(name string) error {
 	return nil
 }
 
+// The actions of a ScaffoldFileReport that write the CI script file.
+const (
+	scaffoldActionCreated     = "created"
+	scaffoldActionOverwritten = "overwritten"
+	scaffoldActionMigrated    = "migrated"
+)
+
+// scaffoldActionWrites reports whether the action of a ScaffoldFileReport
+// writes the file: created, overwritten or migrated.
+func scaffoldActionWrites(action string) bool {
+	switch action {
+	case scaffoldActionCreated, scaffoldActionOverwritten, scaffoldActionMigrated:
+		return true
+	}
+	return false
+}
+
 // scaffoldCI runs scaffoldCIWith with the real git and gh binaries. force
 // true selects the force mode; false selects the default mode, which writes
 // only missing files.
@@ -464,7 +481,7 @@ func scaffoldCIWith(root string, opts scaffoldOptions, execRun scaffoldExecFunc)
 			action = "skipped"
 		}
 
-		if action == "created" || action == "overwritten" || action == "migrated" {
+		if scaffoldActionWrites(action) {
 			destDir := filepath.Dir(st.destPath)
 			if err := os.MkdirAll(destDir, 0755); err != nil {
 				return ScaffoldCIOut{}, &mcpserver.InfraError{

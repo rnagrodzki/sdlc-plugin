@@ -97,7 +97,7 @@ button { font-family: inherit; }
   position: relative;
   display: flex;
   align-items: center;
-  gap: 20px;
+  gap: 14px;
   padding: 0 20px;
   background: var(--glass-fill-strong);
   backdrop-filter: blur(6px) saturate(160%);
@@ -209,6 +209,10 @@ button { font-family: inherit; }
 @media (max-width: 1000px) {
   .counts { display: none; }
 }
+/* Five tabs need the room of the header counts on a narrow window. */
+@media (max-width: 1420px) {
+  .counts { display: none; }
+}
 
 .stop-btn, .archive-btn, #clear-btn {
   flex: 0 0 auto;
@@ -265,9 +269,9 @@ button { font-family: inherit; }
 .gh-link:focus-visible { outline-offset: 3px; border-radius: 4px; }
 .gh-link svg { width: 19px; height: 19px; display: block; }
 
-/* ---------- Tabs in the header: Pipelines, Activity, History, Preplans ---------- */
+/* ---------- Tabs in the header: Pipelines, Activity, History, Preplans, Setup ---------- */
 
-.tabs { display: flex; align-self: stretch; gap: 4px; margin-left: 6px; }
+.tabs { display: flex; align-self: stretch; gap: 0; margin-left: 0; }
 
 .tab {
   appearance: none;
@@ -279,7 +283,7 @@ button { font-family: inherit; }
   color: var(--rail);
   border: none;
   border-bottom: 2px solid transparent;
-  padding: 0 14px;
+  padding: 0 12px;
   font-family: var(--font-sign);
   font-weight: 600;
   font-size: 15px;

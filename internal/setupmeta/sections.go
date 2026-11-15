@@ -522,9 +522,9 @@ var planTasksFields = []Field{
 		Type:        "enum",
 		Options:     []string{"full", "minimal", "none"},
 		Default:     "full",
-		Description: "Shape of the required task contract /plan enforces on every task: `full` (Complexity, Risk, Files, Verify, Depends on), `minimal` (essential fields only), `none` (flexible, no fixed shape).",
-		Details:     "This value sets the task contract /plan enforces on every task. full requires Complexity, Risk, Files, Verify, and Depends on; none allows any shape.",
-		Examples:    []string{"\"full\" — requires Complexity, Risk, Files, Verify, and Depends on", "\"minimal\" — requires only the essential fields"},
+		Description: "Check that /plan runs on the Contract block of each task that changes a file: `full` (the block has the keys shape, names, mirror, decisions, sync), `minimal` (the block is present), `none` (no check).",
+		Details:     "This value sets the check that /plan runs on the Contract block of each task that changes a file. full requires the keys shape, names, mirror, decisions, and sync. minimal requires only the block. none runs no check. An absent value works as full.",
+		Examples:    []string{"\"full\" — requires a Contract block with the keys shape, names, mirror, decisions, and sync", "\"minimal\" — requires only that the Contract block is present"},
 	},
 	{
 		Name:        "requiredFields",
@@ -561,7 +561,9 @@ var githubFields = []Field{
 // variant (Min/Max are *int), so the two drift rate fields are typed
 // "string" with string-literal defaults, matching how DriftConfig's
 // MaxErrorRate/MaxWarningRate (float64, range 0-1) are questionnaire-input
-// as decimal text rather than a numeric spinner.
+// as decimal text rather than a numeric spinner. setup_write_sections and
+// the dashboard save store that decimal text as a number from 0 to 1
+// (setupRateFields in internal/tools), because config reads only a number.
 var automationFields = []Field{
 	{
 		Name:        "mode",
@@ -616,8 +618,7 @@ var automationFields = []Field{
 		Label:       "Minimum error floor",
 		Type:        "number",
 		Default:     2,
-		Min:         intPtr(1),
-		Max:         intPtr(100),
+		Min:         intPtr(0),
 		Description: "Minimum absolute error count tolerated regardless of drift.maxErrorRate, so small plans aren't held to an unreachable fractional threshold.",
 		Details:     "This value is the minimum absolute error count tolerated regardless of drift.maxErrorRate. It stops a small plan from being held to an unreachable fractional threshold.",
 		Examples:    []string{"2 — halts after 2 errors even on a tiny plan", "5 — tolerates up to 5 errors on a tiny plan"},
@@ -763,11 +764,11 @@ func Sections() []Section {
 		{
 			ID:              "review-dimensions",
 			Label:           "review-dimensions",
-			Purpose:         "Review dimensions installed under .sdlc-v2/review-dimensions/*.yaml. Each dimension is a focused check set (security, performance, type safety, etc.) that /review applies as a pass over the diff. Without dimensions installed, /review has nothing to evaluate.",
+			Purpose:         "Review dimensions installed under .sdlc-v2/review-dimensions/*.md. Each dimension is a focused check set (security, performance, type safety, etc.) that /review applies as a pass over the diff. Without dimensions installed, /review has nothing to evaluate.",
 			ConfigFile:      "<delegated>",
 			ConfigPath:      "",
 			ConsumedBy:      []string{"review"},
-			FilesModified:   []string{".sdlc-v2/review-dimensions/*.yaml"},
+			FilesModified:   []string{".sdlc-v2/review-dimensions/*.md"},
 			Optional:        true,
 			DelegatedTo:     "setup-dimensions",
 			ConfirmDetected: false,

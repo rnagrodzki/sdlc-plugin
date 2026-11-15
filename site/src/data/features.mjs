@@ -30,6 +30,7 @@ export const features = [
     claims: [
       { text: 'Live progress of each run in every registered repository', doc: 'docs/dashboard.md#what-it-shows' },
       { text: 'Each step lists its follow-up instructions, one row for each, with the status of each instruction', doc: 'docs/instructions.md#what-you-see' },
+      { text: 'One form shows and saves the plugin config of a repo', doc: 'docs/dashboard.md#setup-tab' },
       { text: 'Open it with one command', doc: 'docs/skills/dashboard.md' },
     ],
   },

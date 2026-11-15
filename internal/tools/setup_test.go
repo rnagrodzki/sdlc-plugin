@@ -1649,3 +1649,51 @@ func TestCIDriftErrorText(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// setup_prepare rows shared with the dashboard (setupSectionRows)
+// ---------------------------------------------------------------------------
+
+// TestSetupPrepare_RowsHaveNoDetailsOrEffects pins the setup_prepare output:
+// the rows hold no details key and no effects key, which only the dashboard
+// field list adds.
+func TestSetupPrepare_RowsHaveNoDetailsOrEffects(t *testing.T) {
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "user-local.toml"))
+	out, err := setupPrepare(t.TempDir(), SetupPrepareIn{})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+	b, err := json.Marshal(out.Sections)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{`"details"`, `"effects"`} {
+		if strings.Contains(string(b), key) {
+			t.Errorf("setup_prepare rows hold the key %s, want none", key)
+		}
+	}
+}
+
+// TestSetupPrepare_EmptyTable verifies that an empty [ship] table in the
+// project local.toml gives a section with no local value.
+func TestSetupPrepare_EmptyTable(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "user-local.toml"))
+	if err := os.MkdirAll(filepath.Join(root, ".sdlc-v2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".sdlc-v2", "local.toml"), []byte("[ship]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := setupPrepare(root, SetupPrepareIn{})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+	entry, ok := out.LocalValues["ship"]
+	if !ok {
+		t.Fatal("localValues has no entry for ship")
+	}
+	if len(entry.Values) != 0 || len(entry.Sources) != 0 {
+		t.Errorf("localValues[ship] = %+v, want no value and no source", entry)
+	}
+}

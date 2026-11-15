@@ -105,6 +105,8 @@ Each `fields[]` entry:
 | `min` / `max` | Numeric bounds; omitted when unset. |
 | `whenStepInActiveSteps` | Ask the field only when this step is one of the selected names of the `ship.steps` answer; omitted when unset. |
 
+The `fields[]` entries SHALL hold no `details` key and no `effects` key. The dashboard route `GET /api/setup-fields` returns these two keys.
+
 - The `ship` fields `steps` and `quick` have type `flag-set`. Their `options` are the ship step list in the fixed pipeline order: `execute`, `commit`, `review`, `verify-openspec`, `archive-openspec`, `harden`, `pr`, `verify-pipeline`, `await-remote-review`, `learnings-commit`.
 - Every other `multi-select` field stays `multi-select`.
 - The `steps` field `description` names the steps in the same fixed order.
@@ -173,6 +175,10 @@ Each `fields[]` entry:
 - **WHEN** the caller reads the `review` row
 - **THEN** it has a field `maxParallelDimensions` with `type: "number"`, `min` `1` and `default` `8`
 - **AND** it has no field `maxDimensions`
+
+#### Scenario: No dashboard keys in the rows
+- **WHEN** the output is serialized
+- **THEN** no `fields[]` entry holds the key `details` or the key `effects`
 
 ### Requirement: Config-migration flag
 The tool SHALL set `needsMigration: true` when `skipConfigCheck` is `false` and a JSON-era `.sdlc-v2/config.json` exists in the project root without `.sdlc-v2/config.toml`. In every other case it SHALL set `needsMigration: false`.

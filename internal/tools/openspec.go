@@ -174,9 +174,14 @@ func materializeReadText(change string) string {
 		target + " already holds the same files."
 }
 
+// openspecConfigPath returns the path of openspec/config.yaml under root.
+func openspecConfigPath(root string) string {
+	return filepath.Join(root, "openspec", "config.yaml")
+}
+
 // enrichConfig is the core logic, separated from the handler for testability.
 func enrichConfig(root string, in OpenspecEnrichIn) (OpenspecEnrichOut, error) {
-	configPath := filepath.Join(root, "openspec", "config.yaml")
+	configPath := openspecConfigPath(root)
 
 	// Resolve optional change input via openspec.Detect.
 	var matchedChange *openspec.Change
