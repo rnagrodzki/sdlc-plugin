@@ -115,7 +115,8 @@ field that does not exist. Deviations, one line each:
 - **Tool map:** `setup_prepare` (Step 0, the Step 2 snapshot re-run, the Step 3 option
   explain, Steps 3b and 3c), `setup_init` (Step 0, scaffold-only),
   `migrate` (Step 2), `setup_write_sections` (Step 3 "Writing config files"), `scaffold_ci`
-  (Step 3c, only after the user confirms). `validate` is called only inside the delegated
+  (Step 3c, only after the user confirms), `dashboard` (Step 1b `ensure`, Step 4 `status`).
+  `validate` is called only inside the delegated
   companion sub-flows (`setup-dimensions.md`, `setup-pr-template.md`, `setup-guardrails.md`,
   `setup-execution-guardrails.md`), never directly by this file.
 
@@ -180,6 +181,11 @@ If the system context contains "Plan mode is active":
    `config.toml` / `local.toml` holds the full commented template (every field, heavily
    commented), so users can also edit settings by hand. An existing file is left unchanged.
 
+   Keep three values for Step 1b and Step 4:
+   - `freshConfig` — true when `ok` of `setup_init` is true and its `created[]` holds `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml`, else false. If `setup_init` returns an error, or returns `ok` false, `freshConfig` is false.
+   - `mainWorktree` — run `git rev-parse --path-format=absolute --git-dir --git-common-dir`. True when the output is exactly 2 lines and the 2 lines are the same path, else false. If the command fails, `mainWorktree` is false.
+   - `formIds` — the ids of the `sections[]` rows of the item 1 `setup_prepare` call where the `delegatedTo` key is absent or empty. When no row matches, `formIds` is empty. `<F>` is the count of `formIds`, and `<N>` is the sum of the lengths of their `fields[]` arrays.
+
 3. **Snapshot current config** (cache for the rest of this run — do not re-read mid-run
    unless Step 2 migration or a write changes the files):
    - Read `.sdlc-v2/config.toml` → `projectConfig` (absent file = `{}`, not an error).
@@ -239,7 +245,7 @@ If the system context contains "Plan mode is active":
    ignore `--force`; the `--only` id set wins.
 
    If none of the direct-entry flags, `--only`, or `--force` were passed: continue with the
-   full interactive flow (Steps 1 → 2 → 2b → 3 → 3b → 3c → 4).
+   full interactive flow (Steps 1 → 1b → 2 → 2b → 3 → 3b → 3c → 4).
 
 ---
 
@@ -388,8 +394,35 @@ default is always `all`.)
   re-print the numbered list and the prompt; wait for a new reply. Maximum 3 retries; after
   that, exit with `No valid input after 3 attempts — no changes made.`
 
-Store the resolved section ids as `selectedIds`. Defer migration and field collection to
-Step 2 / Step 2b / Step 3.
+Store the resolved section ids as `selectedIds`. Go to Step 1b. Defer migration and field
+collection to Step 2 / Step 2b / Step 3.
+
+---
+
+### Step 1b — Form sections: dialogue or Setup tab
+
+Ask the question below only when all 5 conditions are true. Otherwise go to Step 2.
+
+| Condition (all must be true) | Source |
+|---|---|
+| `freshConfig` is true | Step 0 |
+| no `--only`, `--force` or direct-entry flag | Step 0 item 5 |
+| `selectedIds` holds at least one id of `formIds` | Step 1 |
+| `mainWorktree` is true | Step 0 |
+| `needsMigration` is false and `--migrate` is not passed | Step 0 item 1, Arguments |
+
+Question (the same question tool as Step 3c): `This run created a config file. The dashboard Setup tab shows the <F> form sections (<N> fields) in one form. Where do you want to change the selected form sections?` Options: `Setup tab (Recommended)`, `Dialogue`.
+
+| Answer | Call | Effect on `selectedIds` | Print |
+|---|---|---|---|
+| Setup tab, call returns | `dashboard({ action: "ensure", open: true, tab: "setup" })` | remove each id of `formIds`; set `formsDeferred` to true and keep `<url>` for Step 4 | `Setup tab: <url>#setup — save the form sections there. This run continues with the sections that need the assistant.`, then `next` |
+| Setup tab, call error | same | unchanged | `Tool error text (dashboard):`, the error in a `text` fence, then `The form sections continue here.` |
+| Dialogue, free text, dismissed | none | unchanged | nothing |
+| the question tool is not available | none | unchanged | nothing (the same rule as Step 3c) |
+
+`formsDeferred` is false on every other row and on every run that skips this question.
+
+If selectedIds is now empty, print "No sections left for this run." and go to Step 3c. Otherwise go to Step 2.
 
 ---
 
@@ -1030,6 +1063,9 @@ Content:
   PR template             — [installed via PR template sub-flow | skipped]
   Plan guardrails         — [N configured via guardrails sub-flow | skipped]
 
+Deferred:
+  Form sections           — <F> sections deferred to the dashboard Setup tab; this run did not save them
+
 Migrated:
   .sdlc-v2/review-dimensions/  — imported from .sdlc/ (one line per migrate `changed[]` entry)
   ...
@@ -1041,7 +1077,7 @@ CI scripts needing an update:
 ```
 
 Only show sections that were actually created, updated, or migrated. Omit sections that were
-skipped or unchanged.
+skipped or unchanged. Show the `Deferred` block only when `formsDeferred` is true (Step 1b).
 
 The `CI scripts needing an update` block comes from `ciScriptDrift[]` of the latest drift
 result: the Step 3c re-check when Step 3c made one, else Step 3b's `setup_prepare` call,
@@ -1056,6 +1092,22 @@ Two cases replace the block:
 - **`ciScriptDriftError` of the latest drift result is not empty.** Print
   `CI script check failed. Tool error text (setup_prepare):`, then the value in a `text`
   fence. This is the only place that prints the drift error.
+
+Print the Setup tab pointer last.
+
+When `formsDeferred` is true, call no tool. Print
+`Save the form sections in the dashboard Setup tab: <url>#setup`, with the `<url>` that Step 1b
+kept. The form sections are not saved yet, so do not print a `Change the form sections later`
+line.
+
+Otherwise call `dashboard({ action: "status" })`:
+
+| `dashboard({ action: "status" })` result | Print |
+|---|---|
+| `running` true | `Change the form sections later in the dashboard Setup tab: <url>#setup` |
+| `running` false | `Change the form sections later in the dashboard Setup tab. Run /sdlc:dashboard, then open the Setup tab.` |
+| tool error | `Tool error text (dashboard):`, the error in a `text` fence, then the `running` false line |
+| any result, `mainWorktree` false | also `The Setup tab changes the config of the main worktree of this repo.` |
 
 ---
 

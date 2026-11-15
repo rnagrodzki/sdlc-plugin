@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { benefits } from '../data/benefits.mjs';
 import { customizations, customizeNote, followUps } from '../data/customize.mjs';
 import { features } from '../data/features.mjs';
+import { homeGallery, homeSetupAsset } from '../data/home.mjs';
 import { pillars } from '../data/pillars.mjs';
 import { learnLoop, workflow } from '../data/workflow.mjs';
 import { listPublished } from './published-paths.mjs';
@@ -149,4 +150,13 @@ test('the learn loop names a skill of the skill map and returns to a workflow st
     workflow.some((step) => step.skill === learnLoop.to),
     `the learn loop returns to "${learnLoop.to}", which is not a workflow step`,
   );
+});
+
+test('each asset id of the Home page is in assets.json with a version x.y.z', () => {
+  const assets = JSON.parse(fs.readFileSync(new URL('../data/assets.json', import.meta.url), 'utf8'));
+  for (const id of [homeSetupAsset, ...homeGallery]) {
+    const asset = assets.find((a) => a.id === id);
+    assert.ok(asset, `the Home page uses the asset "${id}", which is not in assets.json`);
+    assert.match(asset.version, /^\d+\.\d+\.\d+$/, `the asset "${id}" has no version x.y.z`);
+  }
 });

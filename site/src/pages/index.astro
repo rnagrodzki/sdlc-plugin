@@ -6,12 +6,13 @@
 //
 // The order of the page:
 //   1. hero: the result, the install command, the stack and a sample run
-//   2. the recommended workflow: 4 commands
-//   3. the customization: the rules and the follow-up actions of the project
-//   4. what makes the pipeline different: it heals and it learns
-//   5. the dashboard
-//   6. the other benefits
-//   7. each skill, as a direct link
+//   2. the setup: 3 steps, the Setup tab and the guide link
+//   3. the recommended workflow: 4 commands
+//   4. the customization: the rules and the follow-up actions of the project
+//   5. what makes the pipeline different: it heals and it learns
+//   6. the dashboard: a gallery of 4 images
+//   7. the other benefits
+//   8. each skill, as a direct link
 import BaseLayout from '../layouts/BaseLayout.astro';
 import InstallCommand from '../components/InstallCommand.astro';
 import StackStrip from '../components/StackStrip.astro';
@@ -24,6 +25,7 @@ import BenefitGrid from '../components/BenefitGrid.astro';
 import SkillIndex from '../components/SkillIndex.astro';
 import { BASE } from '../../site.config.mjs';
 import { features } from '../data/features.mjs';
+import { homeSetupSteps, homeSetupAsset, homeGallery } from '../data/home.mjs';
 import { workflow } from '../data/workflow.mjs';
 import { isRoutable } from '../lib/assets.mjs';
 import { readSkillMap } from '../lib/skill-map.mjs';
@@ -50,6 +52,17 @@ const skillCount = readSkillMap().length;
       </div>
       <RunPanel />
     </div>
+    <section class="block" aria-labelledby="setup-heading">
+      <div class="block-head">
+        <h2 class="h2" id="setup-heading">Set it up in three steps.</h2>
+        <p class="block-text">
+          The skill writes the first config. The Setup tab shows every form field in one form.
+          <a href={`${BASE}/docs/getting-started/#2-set-up-a-project`}>Read the setup guide</a>.
+        </p>
+      </div>
+      <ol class="setup-steps">{homeSetupSteps.map((step) => <li>{step}</li>)}</ol>
+      <MediaFrame assetId={homeSetupAsset} />
+    </section>
     <section class="block" aria-labelledby="workflow-heading">
       <div class="block-head">
         <h2 class="h2" id="workflow-heading">The workflow: {workflow.length} commands.</h2>
@@ -76,7 +89,9 @@ const skillCount = readSkillMap().length;
         <h2 class="h2" id="dashboard-heading">Every run on one page.</h2>
         <p class="block-text">The dashboard shows each pipeline step by step, with the time of every step and the open issues.</p>
       </div>
-      <MediaFrame assetId="dashboard-main" />
+      <div class="gallery">
+        {homeGallery.map((id) => <MediaFrame assetId={id} />)}
+      </div>
       {
         dashboardPages.length > 0 && (
           <ul class="more">
@@ -224,8 +239,25 @@ const skillCount = readSkillMap().length;
     color: var(--accent);
     text-underline-offset: var(--space-3);
   }
+  .setup-steps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-22);
+    margin: 0;
+    padding-left: var(--space-22);
+    font-size: var(--text-md);
+  }
+  .gallery {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-28);
+  }
   @media (max-width: 900px) {
     .hero {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .setup-steps,
+    .gallery {
       grid-template-columns: minmax(0, 1fr);
     }
   }

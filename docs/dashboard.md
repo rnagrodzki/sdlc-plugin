@@ -156,7 +156,7 @@ For each registered repo, the page shows:
 
 A link `#<pipeline id>` scrolls to that block. `#<pipeline id>/<n>` also
 opens the block and selects step n of its track, counted from 0. `#activity`,
-`#history` and `#preplans` open that tab.
+`#history`, `#preplans` and `#setup` open that tab.
 
 The page updates itself: it opens a server-sent-events stream
 (`GET /api/events`). One shared loop collects the snapshot every 2 seconds
@@ -671,6 +671,8 @@ when the server does not answer. The other errors of the routes are in
 
 ## Setup tab
 
+For the order of the setup steps on a fresh repo, see [Getting started](getting-started.md#2-set-up-a-project).
+
 The Setup tab shows and changes the config of one repo. It is the form
 version of `/sdlc:setup`. The tab writes with the same code as the
 `setup_write_sections` tool. It keeps every comment line and the key order of
@@ -836,7 +838,7 @@ A form section is stored in one of three files:
 
 | File | Sections | Notes |
 |---|---|---|
-| `<repo>/.sdlc-v2/config.toml` | Team sections such as `version`, `jira` and `commit` | Usually in git. Shared with the team. |
+| `<repo>/.sdlc-v2/config.toml` | Team sections such as `version`, `jira` and `plan-tasks` | Usually in git. Shared with the team. |
 | `<repo>/.sdlc-v2/local.toml` | Local sections such as `ship` and `review`, with Save to `This project` | Not in git. Per developer. |
 | `~/.sdlc/local.toml` (or `$SDLC_USER_CONFIG`) | Local sections, with Save to `All my projects` | Outside every repo. Shared by all projects. |
 

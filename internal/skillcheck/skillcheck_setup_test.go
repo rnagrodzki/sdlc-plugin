@@ -16,6 +16,7 @@ package skillcheck
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -129,6 +130,7 @@ func setupSkillsListTools(t *testing.T) []*mcp.Tool {
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterLearningsTools(srv)
 	tools.RegisterInstructionsTools(srv)
+	tools.RegisterDashboardTools(srv)
 
 	mcpSrv := srv.MCPServer()
 
@@ -395,6 +397,7 @@ func TestSetupSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"validate",
 		"dimensions_render_instructions",
 		"scaffold_ci",
+		"dashboard",
 	}
 
 	for _, name := range expected {
@@ -706,5 +709,154 @@ func TestSetupSkillsRoutesReachStep3c(t *testing.T) {
 		if !strings.HasSuffix(m, "3c") {
 			t.Errorf("skills/setup/SKILL.md: route %q does not continue to Step 3b and Step 3c", m)
 		}
+	}
+}
+
+// setupSkillsSection returns the text of skills/setup/SKILL.md from the first
+// occurrence of start up to the first occurrence of end after it.
+func setupSkillsSection(t *testing.T, start, end string) string {
+	t.Helper()
+	path := filepath.Join(setupSkillsRepoRoot(t), "skills/setup/SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	section, err := setupSkillsTextSection(string(data), start, end)
+	if err != nil {
+		t.Fatalf("skills/setup/SKILL.md: %v", err)
+	}
+	return section
+}
+
+// setupSkillsTextSection returns text from the first occurrence of start up to the first
+// occurrence of end after it, or an error that names the missing marker.
+func setupSkillsTextSection(text, start, end string) (string, error) {
+	from := strings.Index(text, start)
+	if from < 0 {
+		return "", fmt.Errorf("%q not found", start)
+	}
+	to := strings.Index(text[from+len(start):], end)
+	if to < 0 {
+		return "", fmt.Errorf("%q not found after %q", end, start)
+	}
+	return text[from : from+len(start)+to], nil
+}
+
+// TestSetupSkillsTextSection pins the section cut that the Step tests below use: the
+// bounds, the first match of each marker and both failure branches.
+func TestSetupSkillsTextSection(t *testing.T) {
+	text := "intro\n### A\nbody a\n### B\nbody b\n### A\nlater\n"
+	for _, tc := range []struct {
+		name, start, end, want, wantErr string
+	}{
+		{"cut", "### A", "### B", "### A\nbody a\n", ""},
+		{"end only after start", "### B", "### A", "### B\nbody b\n", ""},
+		{"no start", "### C", "### B", "", `"### C" not found`},
+		{"no end after start", "### B", "### B", "", `"### B" not found after "### B"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := setupSkillsTextSection(text, tc.start, tc.end)
+			if tc.wantErr != "" {
+				if err == nil || err.Error() != tc.wantErr {
+					t.Fatalf("err = %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v, want nil", err)
+			}
+			if got != tc.want {
+				t.Errorf("section = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// setupSkillsAssertInOrder checks that each part appears in text, after the part before
+// it. label names the text in a failure message.
+func setupSkillsAssertInOrder(t *testing.T, label, text string, parts []string) {
+	t.Helper()
+	pos := 0
+	for _, part := range parts {
+		i := strings.Index(text[pos:], part)
+		if i < 0 {
+			if strings.Contains(text, part) {
+				t.Errorf("%s: %q is out of order (it must come after the part before it)", label, part)
+			} else {
+				t.Errorf("%s: missing %q", label, part)
+			}
+			continue
+		}
+		pos += i + len(part)
+	}
+}
+
+// TestSetupSkillsStep1bSetupTabQuestion asserts the Step 1b section of the
+// setup skill holds, in order, its 5 conditions, the question, the answer
+// rows and the empty-list route. Step 2 also names needsMigration and
+// --migrate, so the check reads only the Step 1b body.
+func TestSetupSkillsStep1bSetupTabQuestion(t *testing.T) {
+	section := setupSkillsSection(t, "### Step 1b", "### Step 2")
+	setupSkillsAssertInOrder(t, "skills/setup/SKILL.md Step 1b", section, []string{
+		"all 5 conditions",
+		"| `freshConfig` is true |",
+		"| no `--only`, `--force` or direct-entry flag |",
+		"| `selectedIds` holds at least one id of `formIds` |",
+		"| `mainWorktree` is true |",
+		"| `needsMigration` is false and `--migrate` is not passed | Step 0 item 1, Arguments |",
+		"Options: `Setup tab (Recommended)`, `Dialogue`.",
+		"| Setup tab, call returns | `dashboard({ action: \"ensure\", open: true, tab: \"setup\" })` | remove each id of `formIds`; set `formsDeferred` to true",
+		"| Setup tab, call error |",
+		"The form sections continue here.",
+		"| Dialogue, free text, dismissed | none | unchanged |",
+		"| the question tool is not available | none | unchanged |",
+		"`formsDeferred` is false on every other row",
+		"No sections left for this run.",
+	})
+}
+
+// TestSetupSkillsStep4SetupTabPointer asserts the Step 4 section of the setup
+// skill holds, in order, the Deferred summary block, the pointer after the
+// Step 1b Setup tab answer and the dashboard status pointer rows.
+func TestSetupSkillsStep4SetupTabPointer(t *testing.T) {
+	section := setupSkillsSection(t, "### Step 4", "## Idempotency")
+	setupSkillsAssertInOrder(t, "skills/setup/SKILL.md Step 4", section, []string{
+		"Deferred:",
+		"deferred to the dashboard Setup tab; this run did not save them",
+		"Show the `Deferred` block only when `formsDeferred` is true",
+		"Print the Setup tab pointer last.",
+		"When `formsDeferred` is true, call no tool.",
+		"`Save the form sections in the dashboard Setup tab: <url>#setup`",
+		"Otherwise call `dashboard({ action: \"status\" })`",
+		"| `running` true | `Change the form sections later in the dashboard Setup tab: <url>#setup` |",
+		"| `running` false |",
+		"/sdlc:dashboard",
+		"| tool error | `Tool error text (dashboard):`",
+		"| any result, `mainWorktree` false |",
+	})
+}
+
+// TestSetupSkillsStep0ValueRules asserts the Step 0 section of the setup skill
+// defines freshConfig, mainWorktree and formIds, with the false or empty
+// result for a missing value or a failed call.
+func TestSetupSkillsStep0ValueRules(t *testing.T) {
+	section := setupSkillsSection(t, "### Step 0", "### Step 1")
+	for _, want := range []string{
+		"--path-format=absolute",
+		"exactly 2 lines",
+		"`freshConfig` is false",
+		"`ok` false",
+		"`mainWorktree` is false",
+		"`formIds` — the ids of the `sections[]` rows",
+		"the `delegatedTo` key is absent or empty",
+		"When no row matches, `formIds` is empty.",
+		"the sum of the lengths of their `fields[]` arrays",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("skills/setup/SKILL.md Step 0: missing %q", want)
+		}
+	}
+	if got := strings.Count(section, "else false"); got != 2 {
+		t.Errorf("skills/setup/SKILL.md Step 0: %q appears %d times, want 2 (freshConfig, mainWorktree)", "else false", got)
 	}
 }

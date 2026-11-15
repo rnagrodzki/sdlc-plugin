@@ -55,26 +55,61 @@ Full detail: `README.md` → "First-run binary fetch".
 
 ## 2. Set up a project
 
-Run once per repository, before using any other `sdlc` skill in it:
+Run `/sdlc:setup` first in each repository. A second run is safe: run it again at any time to change a section.
 
-```
-/setup
-```
+### Order of the steps on a fresh repo
 
-This scaffolds `.sdlc-v2/config.toml` (project config, committed) and
-`.sdlc-v2/local.toml` (user-local, gitignored) and walks you through a
-selective-section menu — review dimensions, PR template, guardrails, and
-more. Every section explains what it changes and which skills consume it
-before it prompts you for anything.
+1. Install the plugin (section 1).
+2. Run `/sdlc:setup` in the repo. It creates `.sdlc-v2/config.toml`, `.sdlc-v2/local.toml` and `.sdlc-v2/runs/`, and adds the sdlc block to `.sdlc-v2/.gitignore` and to the root `.gitignore`.
+3. Select the sections in the menu.
+4. When this run creates `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml`, in the main worktree, with no old config to migrate, and you select a form section, answer the Setup tab question. `Setup tab` opens the [dashboard Setup tab](dashboard.md#setup-tab) for the form sections. `Dialogue` asks each field here.
+5. `/sdlc:setup` asks the sections that need the assistant. It then prints the summary and a pointer: after a `Setup tab` answer, the address to save the form sections; else the Setup tab address when the dashboard runs, or `/sdlc:dashboard`.
+
+### Two start points
+
+| Start | First action | Then |
+|---|---|---|
+| Skill first | `/sdlc:setup` | the Setup tab for the form sections |
+| Tab first | **Create config** in the Setup tab | `/sdlc:setup` for the sections that need the assistant |
 
 Both files are written verbatim from browsable, fully-commented template
 files shipped with the plugin at `plugins/sdlc/templates/config.toml` and
 `plugins/sdlc/templates/local.toml` — read them directly to preview the
-whole config shape before running `/setup`.
+whole config shape before running `/sdlc:setup`.
 
 To add fixed actions that run after a ship step, after a ship run, or after
-a skill, see [Follow-up instructions](./instructions.md). `/setup` does not
+a skill, see [Follow-up instructions](./instructions.md). `/sdlc:setup` does not
 write that section: edit the files by hand.
+
+### Who changes each section
+
+The Setup tab shows the 10 form sections (48 fields). Only `/sdlc:setup` changes the other 9 sections.
+
+<!-- setup-owner-table:start -->
+
+| Section | Changed by |
+|---|---|
+| `version` | Setup tab and `/sdlc:setup` |
+| `ship` | Setup tab and `/sdlc:setup` |
+| `jira` | Setup tab and `/sdlc:setup` |
+| `review` | Setup tab and `/sdlc:setup` |
+| `received-review` | Setup tab and `/sdlc:setup` |
+| `commit` | `/sdlc:setup` only |
+| `pr` | `/sdlc:setup` only |
+| `github` | Setup tab and `/sdlc:setup` |
+| `pr-labels` | `/sdlc:setup` only |
+| `review-dimensions` | `/sdlc:setup` only |
+| `pr-template` | `/sdlc:setup` only |
+| `plan-template` | `/sdlc:setup` only |
+| `communication-style` | Setup tab and `/sdlc:setup` |
+| `plan-style` | Setup tab and `/sdlc:setup` |
+| `plan-tasks` | Setup tab and `/sdlc:setup` |
+| `plan-guardrails` | `/sdlc:setup` only |
+| `execution-guardrails` | `/sdlc:setup` only |
+| `openspec-block` | `/sdlc:setup` only |
+| `automation` | Setup tab and `/sdlc:setup` |
+
+<!-- setup-owner-table:end -->
 
 ### User-level personal settings
 Put values that you want in every project in `~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`).
@@ -89,10 +124,10 @@ If the repo already has SDLC config from the old Node-based plugin
 instead. Run:
 
 ```
-/setup --migrate
+/sdlc:setup --migrate
 ```
 
-Don't run plain `/setup` on a project you're not sure about — if it
+Don't run plain `/sdlc:setup` on a project you're not sure about — if it
 turns out to have legacy config, a skill will tell you so and name
 `--migrate` explicitly; you don't need to guess in advance.
 

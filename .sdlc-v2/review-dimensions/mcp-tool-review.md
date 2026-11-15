@@ -364,6 +364,18 @@ those same guardrails:
   bullet, which asks for the expected format with one example for warnings
   only. Example: an unknown-section error that did not list the valid section
   names.
+- A rule that ties one input to some actions of a multi-action tool (a field
+  that is valid for one action only, a field that needs another field) MUST
+  refuse the other combinations with an error that names the input, the action
+  the caller sent, and the actions that accept the input. The `Suggestion` lists
+  those actions, built from the constant or table that the check uses, and the
+  `jsonschema_description` of the input states the same rule. An error that
+  names only the accepted action, or that does not say which action the caller
+  sent, is a finding. A test sends the input with each other action and asserts
+  the whole `Msg` and `Suggestion`. This extends the closed-set rejection bullet
+  above, which covers an unknown value and not a known value sent with the wrong
+  action. Example: a `tab` input refused for every action except `ensure`, with
+  a text that did not name the action of the caller.
 - A struct tag must be a string literal, so a number in a `jsonschema_description`
   tag (a limit, a cap, a fixed count) cannot be built from the constant that
   holds it. Such a tag leaves the number out, or a test reads the tag and
