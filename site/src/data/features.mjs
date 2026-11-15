@@ -26,11 +26,12 @@ export const features = [
     title: 'See every pipeline at once',
     summary: 'One page shows every pipeline in every repository: progress, session activity and issues.',
     description: 'The dashboard is one local page that lists the pipelines of every registered repository, not only the repository of the current session.',
-    media: ['dashboard-main'],
+    media: ['dashboard-main', 'dashboard-activity', 'dashboard-stats', 'dashboard-preplans', 'dashboard-setup', 'dashboard-setup-review', 'dashboard-setup-create', 'dashboard-long-run', 'dashboard-ship-detail'],
     claims: [
       { text: 'Live progress of each run in every registered repository', doc: 'docs/dashboard.md#what-it-shows' },
       { text: 'Each step lists its follow-up instructions, one row for each, with the status of each instruction', doc: 'docs/instructions.md#what-you-see' },
       { text: 'One form shows and saves the plugin config of a repo', doc: 'docs/dashboard.md#setup-tab' },
+      { text: 'On a new repo, /sdlc:setup offers to open the Setup tab for the form sections', doc: 'docs/getting-started.md#2-set-up-a-project' },
       { text: 'Open it with one command', doc: 'docs/skills/dashboard.md' },
     ],
   },

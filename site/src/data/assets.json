@@ -3,36 +3,81 @@
     "id": "dashboard-main",
     "kind": "image",
     "file": "src/assets/dashboard.png",
-    "version": "0.4.12",
-    "captured": "2026-11-13",
-    "alt": "The sdlc dashboard with three finished pipelines of the sdlc-plugin repository: one ship run with ten steps and two plan runs with five steps each.",
-    "caption": "The dashboard with three finished pipelines"
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The Pipelines tab of the sdlc dashboard with finished runs of the sdlc-plugin repository: one plan run with five steps and ship runs with ten steps, each step with its time.",
+    "caption": "The dashboard with the finished pipelines"
+  },
+  {
+    "id": "dashboard-activity",
+    "kind": "image",
+    "file": "src/assets/dashboard-activity.png",
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The Activity tab of the sdlc dashboard with a list of open deferred findings, sorted by severity, and a list of the learnings of today.",
+    "caption": "Deferred findings and learnings in the Activity tab"
   },
   {
     "id": "dashboard-stats",
     "kind": "image",
     "file": "src/assets/dashboard-stats.png",
-    "version": "0.4.12",
-    "captured": "2026-11-14",
-    "alt": "sdlc dashboard stats of ship runs",
-    "caption": "Run stats in the dashboard"
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The History tab of the sdlc dashboard with a table of 50 finished runs. Each row shows the outcome, the branch, and the plan, ship and total time.",
+    "caption": "Run stats in the History tab"
+  },
+  {
+    "id": "dashboard-preplans",
+    "kind": "image",
+    "file": "src/assets/dashboard-preplans.png",
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The Preplans tab of the sdlc dashboard with two topic files that are ready for a plan.",
+    "caption": "Topic files in the Preplans tab"
+  },
+  {
+    "id": "dashboard-setup",
+    "kind": "image",
+    "file": "src/assets/dashboard-setup.png",
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The Setup tab of the sdlc dashboard with the form sections of the sdlc-plugin repository on the left and the fields of the version section in the form.",
+    "caption": "The Setup tab"
+  },
+  {
+    "id": "dashboard-setup-review",
+    "kind": "image",
+    "file": "src/assets/dashboard-setup-review.png",
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The review dialog of the Setup tab with the question Save 1 change to sdlc-plugin?, the config file, and one changed value from on to off.",
+    "caption": "The review dialog before a save"
+  },
+  {
+    "id": "dashboard-setup-create",
+    "kind": "image",
+    "file": "src/assets/dashboard-setup-create.png",
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The Setup tab for a repository with no sdlc config, with the Create config button and a hint to run /sdlc:setup for the sections that need the assistant.",
+    "caption": "Create config in a new repository"
   },
   {
     "id": "dashboard-long-run",
     "kind": "image",
     "file": "src/assets/dashboard-long-run.png",
-    "version": "0.4.12",
-    "captured": "2026-11-14",
-    "alt": "sdlc dashboard with a long ship run in progress",
-    "caption": "A long run, step by step"
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The detail of a ship run in the sdlc dashboard: the execute step with seven waves and 13 of 13 tasks done, and the review step with 64 findings.",
+    "caption": "A long run, wave by wave"
   },
   {
     "id": "dashboard-ship-detail",
     "kind": "image",
     "file": "src/assets/dashboard-ship-detail.png",
-    "version": "0.4.12",
-    "captured": "2026-11-14",
-    "alt": "sdlc dashboard with the detail of one ship run open",
+    "version": "0.6.0",
+    "captured": "2026-11-15",
+    "alt": "The detail of one ship run in the sdlc dashboard: the ten steps with their times, the plan findings by area, and the review rounds with the verdict of each lens.",
     "caption": "The detail of one ship run"
   }
 ]
