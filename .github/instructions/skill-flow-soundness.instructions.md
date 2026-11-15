@@ -21,3 +21,4 @@ Default severity: high
 - A counter, flag or note in a checkpoint or run record that serves two or more gates, lanes or items holds one value for each of them. A field keyed by a step name that two gates share is a finding.
 - A paragraph, rule, table row or list that names the writers of a stored value, the routes into a stop, the steps that a flag changes (an Arguments row for `--auto`) or the errors a resume flow can return names every one, or says that it names only some. Grep for each route and compare.
 - A resume or restart step names how it finds each stored list or record that it reads, and says what it does with a list that an earlier exit swept.
+- A condition that the user can see at two steps of one route (a tool error, a drift report, a warning list, a stop cause) is printed by one named step, and each other step on that route says that it does not print it again. A route that prints the same text twice, or prints it nowhere, is a finding.
