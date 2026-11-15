@@ -373,6 +373,18 @@ those same guardrails:
   above, which asks that a description build its number from the constant and
   which a tag cannot meet. Example: the tag of a ready-list output field that
   typed its count limits as numbers.
+- A verdict that a handler or check derives from a list it parsed out of
+  external or stored text (clean, approved, none found, a count of N) MUST
+  be compared with every count that the text declares for itself, such as an
+  overview that states how many comments it holds. A mismatch between the
+  declared count and the parsed set, or a declared count with an empty
+  parsed set, MUST report 'not verified' with a warning that names both
+  numbers, and never reports clean or approved. A test drives a declared
+  count above, equal to and absent from the parsed count, and asserts the
+  verdict and the warning. This extends the zero-count bullet above, which
+  covers an empty item set and a skipped entry but not a count that the
+  source declares. Example: an approved-clean verdict that ignored the item
+  counts declared in a review overview.
 
 ## Cross-references
 

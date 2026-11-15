@@ -693,3 +693,29 @@ var shipSkillsHardenFixPassPins = []string{
 	"is followed by one more NUL-separated token, the old path. Take the new path and skip the old one.",
 	"Run this `git add` with the environment variable `GIT_LITERAL_PATHSPECS=1`, which has the same effect.",
 }
+
+// shipSkillsOverviewNoteRE pins the poll-loop rule for the Copilot overview
+// value needs-closer-look: ship prints a note before the received-review
+// dispatch.
+var shipSkillsOverviewNoteRE = regexp.MustCompile("When\\s+`ext.overview`\\s+is\\s+`needs-closer-look`,\\s+print")
+
+// TestShipSkillsRemoteReviewOverviewNote pins the overview handling of the
+// await-remote-review step in skills/ship/SKILL.md: the poll loop prints the
+// closer-look line, and the step entry records the overview in the decide
+// text.
+func TestShipSkillsRemoteReviewOverviewNote(t *testing.T) {
+	content := shipSkillsReadFile(t, shipSkillsRepoRoot(t), "skills/ship/SKILL.md")
+	if !shipSkillsOverviewNoteRE.MatchString(content) {
+		t.Errorf("skills/ship/SKILL.md does not match %s", shipSkillsOverviewNoteRE)
+	}
+	for _, pin := range []string{
+		"Copilot asks for a closer human look (🔵).",
+		"`verdict: <ext.verdict>; overview: <ext.overview, or none when absent or empty>`",
+		"### await-remote-review (inline, opt-in)",
+		"Do not add it to the dispatch prompt",
+	} {
+		if !strings.Contains(content, pin) {
+			t.Errorf("skills/ship/SKILL.md does not contain %q", pin)
+		}
+	}
+}

@@ -47,6 +47,17 @@ new changes to that same bar:
   MCP layer: one test calls the registered tool and asserts the rendered
   line, including the `(none)` form of an empty value. A test of the Go
   struct alone does not pin the rendering.
+- A new or changed output field of a tool, including a value nested in a
+  container field that holds extension data (for example a field of an `ext`
+  map), is pinned through the MCP layer in its set form as well as its empty
+  form: one test calls the registered tool with input that fills the field
+  and asserts the rendered line of the field with its value. A test of the
+  Go struct, or of the helper that builds the value, does not show that the
+  renderer prints it. A field that no test reads through the registered tool
+  is a finding. This extends the MCP-layer bullet above, which names the
+  empty form of a field that the caller acts on. Example: an overview value
+  added to the output of a poll tool with no test through the registered
+  tool.
 - Test fixtures that hardcode system state (e.g. Register*Tools call lists
   in skillcheck helpers) must be maintained in a single location, not
   duplicated across multiple test files. When system state changes, all
@@ -307,6 +318,20 @@ new changes to that same bar:
   Each form can reach another branch of the blank check, and a text made of
   line ends alone can read as blank or as one empty line. A test set with one
   blank form leaves the others unpinned.
+- A parser or check that classifies the lines of a text it reads (a review
+  overview, a Markdown file, a stored list), with or without a replace, needs
+  damaged-input tests. One test per form drives the parser with a row or
+  heading with leading spaces, CRLF line ends, a block that never closes (an
+  unclosed code fence or `<details>` element), a row with a missing cell, and
+  a number that is missing, not a number or out of range. Each test asserts
+  the whole parsed result and the count of skipped rows, or the warning that
+  names them, and compares the result with the plain form of the same input.
+  A test set with well-formed rows only passes when the parser drops a damaged
+  row with no signal or reads a number error as zero. This extends the
+  find-and-replace bullet above, whose edges name a search window and a
+  replace, not a read-only parser. Example: an overview parser with no test
+  for an indented row, CRLF line ends, an unclosed `<details>` block or a
+  count that `strconv.Atoi` cannot read.
 - When an action can return a normal outcome and a warning in one result (an
   existing file that is reused and a warning about it), one test asserts both
   the outcome and the warning text, for every action that reaches the state.
@@ -321,3 +346,4 @@ new changes to that same bar:
   actions, passes when the other action drops the warning or reports another
   outcome.
 - A test of an action that has several modes or paths (plain, force, update, migrate, legacy name) runs the checks above in each mode, not only in the default mode. Each test of a path that can warn asserts the whole Warnings list, also when it must be empty, so a migrate test that skips the warnings leaves them unpinned. A limit that more than one mode reads is tested at the limit and one past it in each mode, with both sizes built from the limit constant. A failure test asserts the Msg, the Suggestion and the cause (`errors.Is` or `errors.As`); a test that asserts only the Msg, or only the Go type of the error, leaves the other fields unpinned. A write that replaces a file through a temp file and a rename has a success-path test that asserts the new bytes, the mode and that no temp file remains, next to the failure test that fails the write step itself (not an earlier refusal) and asserts the old bytes. This extends the limit-boundary, message-text and multi-step-write bullets above.
+- Code that picks one item from a list by a key (the latest by timestamp, the highest by rank, the first match) is tested with two items that share the key, with an item whose key is missing, zero or unparsable, and with the input in a different order. Each test asserts which item wins and that the tie rule holds. A test set with distinct keys in one order passes when the comparison runs the wrong way or a tie breaks by chance. Example: a latest-review selection with no tie test and no test for a missing timestamp.

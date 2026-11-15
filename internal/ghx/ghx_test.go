@@ -3,12 +3,16 @@ package ghx
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 )
 
 // ── ParseRemoteOwner table test ─────────────────────────────────────────
@@ -702,7 +706,7 @@ func TestPRReviews(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"[ \"$*\" = \"pr view 42 --json reviews\" ] || { echo \"unexpected gh args: $*\" >&2; exit 3; }\n" +
 		"printf '%s\\n' '{\"reviews\":[" +
-		"{\"author\":{\"login\":\"alice\"},\"state\":\"COMMENTED\",\"submittedAt\":\"2026-01-01T10:00:00Z\"}," +
+		"{\"author\":{\"login\":\"alice\"},\"state\":\"COMMENTED\",\"submittedAt\":\"2026-01-01T10:00:00Z\",\"body\":\"Looks risky\"}," +
 		"{\"author\":{\"login\":\"copilot-pull-request-reviewer\"},\"state\":\"APPROVED\",\"submittedAt\":\"2026-01-01T11:00:00Z\"}" +
 		"]}'\n"
 	cleanup := stubGH(t, script)
@@ -715,10 +719,10 @@ func TestPRReviews(t *testing.T) {
 	if len(reviews) != 2 {
 		t.Fatalf("got %d reviews, want 2", len(reviews))
 	}
-	if reviews[0].Login != "alice" || reviews[0].State != "COMMENTED" || reviews[0].SubmittedAt != "2026-01-01T10:00:00Z" {
+	if reviews[0].Login != "alice" || reviews[0].State != "COMMENTED" || reviews[0].SubmittedAt != "2026-01-01T10:00:00Z" || reviews[0].Body != "Looks risky" {
 		t.Errorf("unexpected first review: %+v", reviews[0])
 	}
-	if reviews[1].Login != "copilot-pull-request-reviewer" || reviews[1].State != "APPROVED" || reviews[1].SubmittedAt != "2026-01-01T11:00:00Z" {
+	if reviews[1].Login != "copilot-pull-request-reviewer" || reviews[1].State != "APPROVED" || reviews[1].SubmittedAt != "2026-01-01T11:00:00Z" || reviews[1].Body != "" {
 		t.Errorf("unexpected second review: %+v", reviews[1])
 	}
 }
@@ -785,6 +789,214 @@ func TestPRReviews_MalformedJSON(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "parse gh pr view output") {
 		t.Errorf("expected parse error message, got: %v", err)
+	}
+}
+
+// ── PRReviewThreadStates ─────────────────────────────────────────────────
+
+func TestPRReviewThreadStates(t *testing.T) {
+	// The stub checks the gh call shape, counts invocations (one call must
+	// read all pages), and prints one JSON object per thread, as --jq does.
+	dir := t.TempDir()
+	countFile := filepath.Join(dir, "calls")
+	script := fmt.Sprintf(`#!/bin/sh
+echo x >> %q
+case "$*" in
+  "api graphql --paginate -f owner=acme -f repo=widgets -F pr=42 -f query="*) ;;
+  *) echo "unexpected gh args: $*" >&2; exit 3 ;;
+esac
+printf '{"id":11,"isResolved":true,"isOutdated":false}\n'
+printf '{"id":22,"isResolved":false,"isOutdated":true}\n'
+printf '{"id":33,"isResolved":false,"isOutdated":false}\n'
+`, countFile)
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	states, err := PRReviewThreadStates(".", "acme", "widgets", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := map[int]ThreadState{
+		11: {IsResolved: true, IsOutdated: false},
+		22: {IsResolved: false, IsOutdated: true},
+		33: {IsResolved: false, IsOutdated: false},
+	}
+	if len(states) != len(want) {
+		t.Fatalf("got %d states, want %d: %+v", len(states), len(want), states)
+	}
+	for id, w := range want {
+		if got := states[id]; got != w {
+			t.Errorf("thread %d: got %+v, want %+v", id, got, w)
+		}
+	}
+
+	data, readErr := os.ReadFile(countFile)
+	if readErr != nil {
+		t.Fatalf("reading call-count file: %v", readErr)
+	}
+	if calls := len(strings.Split(strings.TrimSpace(string(data)), "\n")); calls != 1 {
+		t.Errorf("gh invoked %d times, want exactly 1", calls)
+	}
+}
+
+func TestPRReviewThreadStates_InvalidPRNumber(t *testing.T) {
+	_, err := PRReviewThreadStates(".", "owner", "repo", 0)
+	if err == nil {
+		t.Fatal("expected error for invalid PR number")
+	}
+	if want := "ghx: PRReviewThreadStates: invalid PR number 0"; err.Error() != want {
+		t.Errorf("got %q, want %q", err.Error(), want)
+	}
+}
+
+func TestPRReviewThreadStates_InvalidOwner(t *testing.T) {
+	_, err := PRReviewThreadStates(".", "-invalid", "repo", 1)
+	if err == nil {
+		t.Fatal("expected error for invalid owner")
+	}
+	if !strings.Contains(err.Error(), "PRReviewThreadStates owner") {
+		t.Errorf("expected owner validation error, got: %v", err)
+	}
+}
+
+func TestPRReviewThreadStates_InvalidRepo(t *testing.T) {
+	_, err := PRReviewThreadStates(".", "owner", "-invalid", 1)
+	if err == nil {
+		t.Fatal("expected error for invalid repo")
+	}
+	if !strings.Contains(err.Error(), "PRReviewThreadStates repo") {
+		t.Errorf("expected repo validation error, got: %v", err)
+	}
+}
+
+func TestPRReviewThreadStates_GHCommandError(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 1\n")
+	defer cleanup()
+
+	_, err := PRReviewThreadStates(".", "owner", "repo", 42)
+	if err == nil {
+		t.Fatal("expected error from failing gh command")
+	}
+	if !strings.Contains(err.Error(), "ghx: PRReviewThreadStates: fetch threads: ") {
+		t.Errorf("expected fetch error prefix, got: %v", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) || exitErr.ExitCode() != 1 {
+		t.Errorf("cause = %v, want an *exec.ExitError with exit code 1", err)
+	}
+}
+
+func TestPRReviewThreadStates_GHNotFound(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	_, err := PRReviewThreadStates(".", "owner", "repo", 42)
+	if !errors.Is(err, ErrGHNotFound) {
+		t.Errorf("err = %v, want ErrGHNotFound in the chain", err)
+	}
+}
+
+func TestPRReviewThreadStates_OutputCap(t *testing.T) {
+	// One byte past execx's 50MB default cap.
+	cleanup := stubGH(t, "#!/bin/sh\nhead -c 52428801 /dev/zero\n")
+	defer cleanup()
+
+	_, err := PRReviewThreadStates(".", "owner", "repo", 42)
+	if !errors.Is(err, execx.ErrOutputCap) {
+		t.Fatalf("err = %v, want execx.ErrOutputCap in the chain", err)
+	}
+	if !strings.HasPrefix(err.Error(), "ghx: PRReviewThreadStates: output exceeded cap: ") {
+		t.Errorf("err = %q, want the output-cap prefix", err.Error())
+	}
+}
+
+// An owner or repo that is empty, holds whitespace, a control character or a
+// "/", or starts with "-" is refused before gh runs.
+func TestPRReviewThreadStates_BadOwnerRepoRunsNoGH(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "gh-ran")
+	cleanup := stubGH(t, "#!/bin/sh\ntouch '"+marker+"'\n")
+	defer cleanup()
+
+	tests := []struct{ name, owner, repo, field string }{
+		{"empty owner", "", "repo", "owner"},
+		{"owner with a space", "own er", "repo", "owner"},
+		{"owner with a newline", "own\ner", "repo", "owner"},
+		{"owner with NUL", "own\x00er", "repo", "owner"},
+		{"owner with a slash", "own/er", "repo", "owner"},
+		{"flag-like owner", "-invalid", "repo", "owner"},
+		{"empty repo", "owner", "", "repo"},
+		{"repo with a tab", "owner", "re\tpo", "repo"},
+		{"flag-like repo", "owner", "-invalid", "repo"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := PRReviewThreadStates(".", tt.owner, tt.repo, 1)
+			if err == nil {
+				t.Fatal("expected a validation error")
+			}
+			bad := tt.owner
+			if tt.field == "repo" {
+				bad = tt.repo
+			}
+			want := fmt.Sprintf("ghx: PRReviewThreadStates %s: %q is not a valid GitHub name", tt.field, bad)
+			if !strings.HasPrefix(err.Error(), want) {
+				t.Errorf("err = %q, want prefix %q", err.Error(), want)
+			}
+			if _, statErr := os.Stat(marker); statErr == nil {
+				t.Fatal("gh ran for an invalid owner or repo")
+			}
+		})
+	}
+}
+
+func TestPRReviewThreadStates_MalformedJSON(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nprintf '{\"id\":1,\"isResolved\"'\n")
+	defer cleanup()
+
+	_, err := PRReviewThreadStates(".", "owner", "repo", 42)
+	if err == nil {
+		t.Fatal("expected error for malformed JSON output")
+	}
+	if !strings.Contains(err.Error(), "ghx: PRReviewThreadStates: parse threads: ") {
+		t.Errorf("expected parse error prefix, got: %v", err)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Errorf("cause = %v, want io.ErrUnexpectedEOF from the cut JSON", err)
+	}
+}
+
+func TestPRReviewThreadStates_SkipsNodeWithoutID(t *testing.T) {
+	script := `#!/bin/sh
+printf '{"id":0,"isResolved":true,"isOutdated":false}\n'
+printf '{"id":null,"isResolved":true,"isOutdated":false}\n'
+printf '{"id":7,"isResolved":true,"isOutdated":true}\n'
+`
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	states, err := PRReviewThreadStates(".", "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(states) != 1 {
+		t.Fatalf("got %d states, want 1: %+v", len(states), states)
+	}
+	if got := states[7]; !got.IsResolved || !got.IsOutdated {
+		t.Errorf("thread 7: got %+v, want resolved and outdated", got)
+	}
+}
+
+func TestPRReviewThreadStates_EmptyOutput(t *testing.T) {
+	cleanup := stubGH(t, "#!/bin/sh\nexit 0\n")
+	defer cleanup()
+
+	states, err := PRReviewThreadStates(".", "owner", "repo", 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if states == nil {
+		t.Fatal("expected non-nil empty map for empty gh output")
+	}
+	if len(states) != 0 {
+		t.Errorf("got %d states, want 0", len(states))
 	}
 }
 

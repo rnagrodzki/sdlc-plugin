@@ -1,15 +1,18 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
@@ -68,6 +71,52 @@ func stubGHReviews(t *testing.T, pr int, reviews ...ghx.PRReview) func() {
 		"printf '%%s\\n' '%s'\n", pr, body)
 	return stubGH(t, script)
 }
+
+// stubGHReviewsFile is stubGHReviews for reviews that carry a body. The
+// stub prints the JSON from a file in t.TempDir() instead of a single-quoted
+// shell string, because a review body can hold a single quote.
+func stubGHReviewsFile(t *testing.T, pr int, reviews ...ghx.PRReview) func() {
+	t.Helper()
+
+	entries := make([]map[string]any, 0, len(reviews))
+	for _, r := range reviews {
+		entries = append(entries, map[string]any{
+			"author":      map[string]string{"login": r.Login},
+			"state":       r.State,
+			"submittedAt": r.SubmittedAt,
+			"body":        r.Body,
+		})
+	}
+	data, err := json.Marshal(map[string]any{"reviews": entries})
+	if err != nil {
+		t.Fatalf("marshal stub reviews: %v", err)
+	}
+	jsonFile := filepath.Join(t.TempDir(), "reviews.json")
+	if err := os.WriteFile(jsonFile, data, 0o600); err != nil {
+		t.Fatalf("writing stub reviews file: %v", err)
+	}
+
+	script := fmt.Sprintf("#!/bin/sh\n"+
+		"[ \"$*\" = \"pr view %d --json reviews\" ] || { echo \"unexpected gh args: $*\" >&2; exit 3; }\n"+
+		"cat '%s'\n", pr, jsonFile)
+	return stubGH(t, script)
+}
+
+// Review bodies for the overview-header tests. greenNoIssuesBody is the
+// fixture text; the others are a header line and one open-issue block.
+const (
+	greenWithFindingBody = "### 🟢 Approval recommended\n\n" + overviewOneOpenIssueBlock
+	yellowBody           = "### 🟡 Changes recommended\n\n" + overviewOneOpenIssueBlock
+	blueBody             = "### 🔵 Needs a closer look\n\n" + overviewOneOpenIssueBlock
+	greenWithMissedBody  = "### 🟢 Approval recommended\n\n" +
+		"<details><summary><strong>1 previously missed issue</strong></summary>\n\n" +
+		"<details><summary><picture><img alt=\"Low severity\" src=\"x\"></picture> Stale key</summary>\n\n" +
+		"`a.go:1`\n\nIt's read before it is set.\n\n</details>\n\n</details>\n"
+
+	overviewOneOpenIssueBlock = "<details open><summary><strong>1 open issue</strong></summary>\n\n" +
+		"- <picture><img alt=\"Medium severity\" src=\"x\"></picture> [Title](https://github.com/o/r/pull/1#discussion_r1)\n\n" +
+		"</details>\n"
+)
 
 // newTimedOutPollState persists a poll state for skill whose deadline has
 // already passed and returns its state file path. skill is the poll's own
@@ -139,6 +188,50 @@ func TestAwaitRemoteReview_ActionableOnChangesRequested(t *testing.T) {
 	}
 	if env.Status != "done" || env.Ext["verdict"] != "actionable" {
 		t.Fatalf("got status=%q verdict=%v, want done/actionable", env.Status, env.Ext["verdict"])
+	}
+}
+
+func TestAwaitRemoteReview_OverviewKey(t *testing.T) {
+	const copilot = "copilot-pull-request-reviewer[bot]"
+	tests := []struct {
+		name         string
+		review       ghx.PRReview
+		wantVerdict  string
+		wantOverview string
+	}{
+		{"header with a single quote in the body",
+			ghx.PRReview{Login: copilot, State: "COMMENTED", Body: blueBody + "\nIt's worth a look.\n"},
+			"actionable", "needs-closer-look"},
+		{"green header with no open item",
+			ghx.PRReview{Login: copilot, State: "COMMENTED", Body: readOverviewFixture(t, "approval_no_issues.md")},
+			"approved-clean", "approval-recommended"},
+		{"no header",
+			ghx.PRReview{Login: copilot, State: "APPROVED", Body: "Looks good to me."},
+			"approved-clean", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanup := stubGHReviewsFile(t, 538, tt.review)
+			defer cleanup()
+
+			env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 538, TimeoutSeconds: 600, IntervalSeconds: 60})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if env.StateFile != nil {
+				defer os.Remove(*env.StateFile)
+			}
+			if env.Status != "done" || env.Ext["verdict"] != tt.wantVerdict {
+				t.Fatalf("got status=%q verdict=%v, want done/%s", env.Status, env.Ext["verdict"], tt.wantVerdict)
+			}
+			got, ok := env.Ext["overview"]
+			if !ok {
+				t.Fatalf("done result has no overview key: %v", env.Ext)
+			}
+			if got != tt.wantOverview {
+				t.Fatalf("overview = %v, want %q", got, tt.wantOverview)
+			}
+		})
 	}
 }
 
@@ -236,6 +329,9 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 	if env.Status != "done" || env.Ext["verdict"] != "timeout" {
 		t.Fatalf("got status=%q verdict=%v, want done/timeout", env.Status, env.Ext["verdict"])
 	}
+	if _, ok := env.Ext["overview"]; ok {
+		t.Errorf("timeout result has an overview key: %v", env.Ext)
+	}
 
 	// A subsequent call against the now-exhausted state file short-circuits
 	// to "skipped" without probing gh again.
@@ -245,6 +341,9 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 	}
 	if env2.Ext["verdict"] != "skipped" {
 		t.Fatalf("got verdict %v, want skipped", env2.Ext["verdict"])
+	}
+	if _, ok := env2.Ext["overview"]; ok {
+		t.Errorf("skipped result has an overview key: %v", env2.Ext)
 	}
 }
 
@@ -1160,7 +1259,8 @@ func TestEvaluateReviews(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			status, reviewer, rawState := evaluateReviews(tt.reviews, tt.reviewers)
+			v := evaluateReviews(tt.reviews, tt.reviewers)
+			status, reviewer, rawState := v.Status, v.Reviewer, v.RawState
 			if status != tt.wantStatus {
 				t.Fatalf("status = %q, want %q", status, tt.wantStatus)
 			}
@@ -1169,6 +1269,95 @@ func TestEvaluateReviews(t *testing.T) {
 			}
 			if rawState != tt.wantState {
 				t.Fatalf("rawState = %q, want %q", rawState, tt.wantState)
+			}
+		})
+	}
+}
+
+func TestEvaluateReviewsOverview(t *testing.T) {
+	const copilot = "copilot-pull-request-reviewer[bot]"
+	greenNoIssuesBody := readOverviewFixture(t, "approval_no_issues.md")
+
+	tests := []struct {
+		name         string
+		reviews      []ghx.PRReview
+		wantStatus   string
+		wantOverview string
+	}{
+		{name: "changes requested with a green header stays actionable",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "CHANGES_REQUESTED", Body: greenNoIssuesBody}},
+			wantStatus: "actionable", wantOverview: "approval-recommended"},
+		{name: "changes requested with a blue header",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "CHANGES_REQUESTED", Body: blueBody}},
+			wantStatus: "actionable", wantOverview: "needs-closer-look"},
+		{name: "changes requested with no header",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "CHANGES_REQUESTED"}},
+			wantStatus: "actionable", wantOverview: ""},
+		{name: "commented green no live finding",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "COMMENTED", Body: greenNoIssuesBody}},
+			wantStatus: "approved-clean", wantOverview: "approval-recommended"},
+		{name: "approved green no live finding",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: greenNoIssuesBody}},
+			wantStatus: "approved-clean", wantOverview: "approval-recommended"},
+		{name: "commented green with an open finding",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "COMMENTED", Body: greenWithFindingBody}},
+			wantStatus: "actionable", wantOverview: "approval-recommended"},
+		{name: "approved green with an open finding",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: greenWithFindingBody}},
+			wantStatus: "actionable", wantOverview: "approval-recommended"},
+		{name: "commented green with a missed finding",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "COMMENTED", Body: greenWithMissedBody}},
+			wantStatus: "actionable", wantOverview: "approval-recommended"},
+		{name: "commented yellow",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "COMMENTED", Body: yellowBody}},
+			wantStatus: "actionable", wantOverview: "changes-recommended"},
+		{name: "approved yellow",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: yellowBody}},
+			wantStatus: "actionable", wantOverview: "changes-recommended"},
+		{name: "commented blue",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "COMMENTED", Body: blueBody}},
+			wantStatus: "actionable", wantOverview: "needs-closer-look"},
+		{name: "approved blue",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: blueBody}},
+			wantStatus: "actionable", wantOverview: "needs-closer-look"},
+		{name: "approved green whose open rows do not parse",
+			reviews: []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: "### 🟢 Approval recommended\n\n" +
+				"<details open><summary><strong>2 open issues</strong></summary>\n\n* changed row format\n* another row\n\n</details>\n"}},
+			wantStatus: "actionable", wantOverview: "approval-recommended"},
+		{name: "approved green with an unclosed block",
+			reviews: []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: "### 🟢 Approval recommended\n\n" +
+				"<details open><summary><strong>0 open issues</strong></summary>\n\nno closing tag\n"}},
+			wantStatus: "actionable", wantOverview: "approval-recommended"},
+		{name: "approved green with CRLF and an indented header",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: "  ### 🟢 Approval recommended\r\n\r\n**No open issues**\r\n"}},
+			wantStatus: "approved-clean", wantOverview: "approval-recommended"},
+		{name: "approved with no header",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "APPROVED", Body: "Looks good."}},
+			wantStatus: "approved-clean", wantOverview: ""},
+		{name: "commented with no header",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "COMMENTED", Body: "Some remarks."}},
+			wantStatus: "actionable", wantOverview: ""},
+		{name: "dismissed header review gives no verdict",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "DISMISSED", Body: blueBody}},
+			wantStatus: "", wantOverview: ""},
+		{name: "pending header review gives no verdict",
+			reviews:    []ghx.PRReview{{Login: copilot, State: "PENDING", Body: blueBody}},
+			wantStatus: "", wantOverview: ""},
+		{name: "dismissed header review gives no overview to the next reviewer",
+			reviews: []ghx.PRReview{
+				{Login: copilot, State: "DISMISSED", Body: blueBody},
+				{Login: "alice", State: "COMMENTED"}},
+			wantStatus: "actionable", wantOverview: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := evaluateReviews(tt.reviews, []string{"copilot", "alice"})
+			status, overview := v.Status, v.Overview
+			if status != tt.wantStatus {
+				t.Fatalf("status = %q, want %q", status, tt.wantStatus)
+			}
+			if overview != tt.wantOverview {
+				t.Fatalf("overview = %q, want %q", overview, tt.wantOverview)
 			}
 		})
 	}
@@ -1190,5 +1379,98 @@ func TestEvaluateChecksText_AllGreen(t *testing.T) {
 	failed, pending := evaluateChecksText(text)
 	if len(failed) != 0 || len(pending) != 0 {
 		t.Fatalf("expected no failed/pending, got failed=%+v pending=%+v", failed, pending)
+	}
+}
+
+// The poll_await description and the received_review_verify overview tag name
+// every overview value and the green header text, so a new header in
+// overviewHeaders cannot leave either text stale.
+func TestOverviewValuesInDescriptions(t *testing.T) {
+	desc := pollAwaitDescription()
+	field, ok := reflect.TypeOf(ReceivedReviewVerifyOut{}).FieldByName("Overview")
+	if !ok {
+		t.Fatal("ReceivedReviewVerifyOut has no Overview field")
+	}
+	tag := field.Tag.Get("jsonschema_description")
+	for _, v := range overviewValues() {
+		if !strings.Contains(desc, `"`+v+`"`) {
+			t.Errorf("poll_await description does not name %q", v)
+		}
+		if !strings.Contains(tag, v) {
+			t.Errorf("Overview tag does not name %q", v)
+		}
+	}
+	if !strings.Contains(desc, overviewHeaders[0].text) {
+		t.Errorf("poll_await description does not name the header %q", overviewHeaders[0].text)
+	}
+}
+
+// callRegisteredPollAwait calls the registered poll_await tool through an
+// in-memory MCP client and returns the rendered Markdown text.
+func callRegisteredPollAwait(t *testing.T, args map[string]any) string {
+	t.Helper()
+	s := mcpserver.New("test", "0.0.0-test")
+	RegisterPollingTools(s)
+
+	ctx := context.Background()
+	serverTransport, clientTransport := mcp.NewInMemoryTransports()
+	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
+		t.Fatalf("server Connect: %v", err)
+	}
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	c, err := client.Connect(ctx, clientTransport, nil)
+	if err != nil {
+		t.Fatalf("client Connect: %v", err)
+	}
+	t.Cleanup(func() { c.Close() })
+
+	res, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "poll_await", Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if len(res.Content) == 0 {
+		t.Fatal("CallTool: no content")
+	}
+	text, ok := res.Content[0].(*mcp.TextContent)
+	if !ok {
+		t.Fatalf("content[0] is %T, want *mcp.TextContent", res.Content[0])
+	}
+	if res.IsError {
+		t.Fatalf("poll_await failed: %s", text.Text)
+	}
+	return text.Text
+}
+
+func TestPollAwait_RegisteredOverview(t *testing.T) {
+	const copilot = "copilot-pull-request-reviewer[bot]"
+	tests := []struct {
+		name     string
+		review   ghx.PRReview
+		wantLine string
+	}{
+		{"blue header", ghx.PRReview{Login: copilot, State: "COMMENTED", Body: blueBody}, "- overview: needs-closer-look\n"},
+		{"no header", ghx.PRReview{Login: copilot, State: "APPROVED", Body: "Looks good."}, "- overview: (none)\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cleanup := stubGHReviewsFile(t, 539, tt.review)
+			defer cleanup()
+			text := callRegisteredPollAwait(t, map[string]any{"target": "remote_review", "pr": 539})
+			removeRenderedStateFile(t, text)
+			if !strings.Contains(text, tt.wantLine) {
+				t.Errorf("rendered text missing %q:\n%s", tt.wantLine, text)
+			}
+		})
+	}
+}
+
+// removeRenderedStateFile deletes the poll state file named on the rendered
+// "- state_file: " line.
+func removeRenderedStateFile(t *testing.T, text string) {
+	t.Helper()
+	for _, line := range strings.Split(text, "\n") {
+		if p, ok := strings.CutPrefix(line, "- state_file: "); ok && p != "(none)" {
+			os.Remove(p)
+		}
 	}
 }

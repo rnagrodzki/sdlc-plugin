@@ -2,19 +2,24 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/telemetry"
 )
 
 // ---------------------------------------------------------------------------
@@ -196,6 +201,11 @@ case "$2" in
   user)
     echo "octocat"
     ;;
+  view)
+    echo '{"reviews":[]}'
+    ;;
+  graphql)
+    ;;
   *)
     printf '{"id":1,"path":"a.go","line":5,"login":"reviewer1","body":"fix this","in_reply_to_id":null}\n'
     printf '{"id":2,"path":"b.go","line":9,"login":"reviewer2","body":"consider X","in_reply_to_id":null}\n'
@@ -250,6 +260,11 @@ func TestReceivedReviewVerify_ExplicitLogin(t *testing.T) {
 case "$2" in
   user)
     echo "wrong-login"
+    ;;
+  view)
+    echo '{"reviews":[]}'
+    ;;
+  graphql)
     ;;
   *)
     printf '{"id":1,"path":"a.go","line":1,"login":"reviewer1","body":"fix this","in_reply_to_id":null}\n'
@@ -595,6 +610,14 @@ func TestReceivedReviewPrepare_NoPR(t *testing.T) {
 // current directory, and returns the rendered Markdown text.
 func callRegisteredReceivedReviewPrepare(t *testing.T, args map[string]any) string {
 	t.Helper()
+	return callRegisteredReceivedReviewTool(t, "received_review_prepare", args)
+}
+
+// callRegisteredReceivedReviewTool calls the registered tool name through an
+// in-memory MCP client, from the current directory, and returns the rendered
+// Markdown text. A tool error fails the test.
+func callRegisteredReceivedReviewTool(t *testing.T, name string, args map[string]any) string {
+	t.Helper()
 	s := mcpserver.New("test", "0.0.0-test")
 	RegisterReceivedReviewTools(s)
 
@@ -610,7 +633,7 @@ func callRegisteredReceivedReviewPrepare(t *testing.T, args map[string]any) stri
 	}
 	t.Cleanup(func() { c.Close() })
 
-	res, err := c.CallTool(ctx, &mcp.CallToolParams{Name: "received_review_prepare", Arguments: args})
+	res, err := c.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
 	}
@@ -622,7 +645,7 @@ func callRegisteredReceivedReviewPrepare(t *testing.T, args map[string]any) stri
 		t.Fatalf("content[0] is %T, want *mcp.TextContent", res.Content[0])
 	}
 	if res.IsError {
-		t.Fatalf("received_review_prepare failed: %s", text.Text)
+		t.Fatalf("%s failed: %s", name, text.Text)
 	}
 	return text.Text
 }
@@ -965,5 +988,626 @@ func TestReceivedReviewPrepare_ViewFailure(t *testing.T) {
 	}
 	if !strings.Contains(infra.Suggestion, "gh auth status") {
 		t.Errorf("Suggestion = %q, want it to mention gh auth status", infra.Suggestion)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// joinCopilotOverview and the overview fields of received_review_verify
+// ---------------------------------------------------------------------------
+
+// copilotReview builds a Copilot review fixture with the given body.
+func copilotReview(state, submittedAt, body string) ghx.PRReview {
+	return ghx.PRReview{
+		Login:       "copilot-pull-request-reviewer[bot]",
+		State:       state,
+		SubmittedAt: submittedAt,
+		Body:        body,
+	}
+}
+
+const (
+	overviewChangesBody = "### 🟡 Changes recommended\n\n" +
+		"<details open><summary><strong>1 open issue</strong></summary>\n\n" +
+		"- <picture><img alt=\"Medium severity\" src=\"x\"></picture> [Open one](https://github.com/o/r/pull/1#discussion_r10)\n\n</details>\n\n" +
+		"<details><summary><strong>1 resolved since last review</strong></summary>\n\n" +
+		"- <picture><img alt=\"High severity\" src=\"x\"></picture> [Resolved one](https://github.com/o/r/pull/1#discussion_r20)\n\n</details>\n"
+	overviewMissedBody = "### 🟡 Changes recommended\n\n" +
+		"<details><summary><strong>2 previously missed issues</strong></summary>\n\n" +
+		"<details><summary><picture><img alt=\"Low severity\" src=\"x\"></picture> First</summary>\n\n`a.go:3`\n\nBody one.\n\n</details>\n\n" +
+		"<details><summary>Second</summary>\n\n`b.go:9`\n\nBody two.\n\n</details>\n\n</details>\n"
+)
+
+func TestJoinCopilotOverview(t *testing.T) {
+	tests := []struct {
+		name         string
+		threads      []CommentThread
+		reviews      []ghx.PRReview
+		wantOverview string
+		wantFindings int
+		check        func(t *testing.T, out []CommentThread)
+	}{
+		{
+			name:    "no reviews leaves threads unchanged except the inline prefix",
+			threads: []CommentThread{{ID: 1, Reviewer: "Copilot", Body: "[HIGH] x"}},
+			check: func(t *testing.T, out []CommentThread) {
+				if out[0].SeverityPrefix != "high" || out[0].Severity != "high" || out[0].SeverityIcon != "" || out[0].OverviewSection != "" {
+					t.Errorf("got %+v", out[0])
+				}
+			},
+		},
+		{
+			name:    "icon and prefix: higher wins, both stay",
+			threads: []CommentThread{{ID: 10, Reviewer: "Copilot", Body: "[low] x"}},
+			reviews: []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewChangesBody)},
+			check: func(t *testing.T, out []CommentThread) {
+				got := out[0]
+				if got.SeverityPrefix != "low" || got.SeverityIcon != "medium" || got.Severity != "medium" || got.OverviewSection != "open" {
+					t.Errorf("got %+v", got)
+				}
+			},
+			wantOverview: overviewChangesRecommended,
+		},
+		{
+			name:    "prefix higher than icon wins",
+			threads: []CommentThread{{ID: 10, Reviewer: "Copilot", Body: "[critical] x"}},
+			reviews: []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewChangesBody)},
+			check: func(t *testing.T, out []CommentThread) {
+				if out[0].Severity != "critical" || out[0].SeverityIcon != "medium" {
+					t.Errorf("got %+v", out[0])
+				}
+			},
+			wantOverview: overviewChangesRecommended,
+		},
+		{
+			name:    "resolved section",
+			threads: []CommentThread{{ID: 20, Reviewer: "Copilot", Body: "plain"}},
+			reviews: []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewChangesBody)},
+			check: func(t *testing.T, out []CommentThread) {
+				if out[0].OverviewSection != "resolved" || out[0].Severity != "high" || out[0].SeverityPrefix != "" {
+					t.Errorf("got %+v", out[0])
+				}
+			},
+			wantOverview: overviewChangesRecommended,
+		},
+		{
+			name:    "person gets no prefix",
+			threads: []CommentThread{{ID: 5, Reviewer: "alice", Body: "[high] please fix"}},
+			reviews: []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewChangesBody)},
+			check: func(t *testing.T, out []CommentThread) {
+				if out[0].SeverityPrefix != "" || out[0].Severity != "" || out[0].OverviewSection != "" {
+					t.Errorf("got %+v", out[0])
+				}
+			},
+			wantOverview: overviewChangesRecommended,
+		},
+		{
+			name:    "thread not in overview gets no section",
+			threads: []CommentThread{{ID: 99, Reviewer: "Copilot", Body: "plain"}},
+			reviews: []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewChangesBody)},
+			check: func(t *testing.T, out []CommentThread) {
+				if out[0].OverviewSection != "" || out[0].Severity != "" {
+					t.Errorf("got %+v", out[0])
+				}
+			},
+			wantOverview: overviewChangesRecommended,
+		},
+		{
+			name:         "each missed item is one finding",
+			reviews:      []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewMissedBody)},
+			wantOverview: overviewChangesRecommended,
+			wantFindings: 2,
+		},
+		{
+			name: "latest review with a header wins over a later review with no header",
+			reviews: []ghx.PRReview{
+				copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewMissedBody),
+				copilotReview("COMMENTED", "2026-11-02T10:00:00Z", "no header here"),
+			},
+			wantOverview: overviewChangesRecommended,
+			wantFindings: 2,
+		},
+		{
+			name: "newer overview replaces an older one",
+			reviews: []ghx.PRReview{
+				copilotReview("COMMENTED", "2026-11-02T10:00:00Z", "### 🟢 Approval recommended\n"),
+				copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewMissedBody),
+			},
+			wantOverview: overviewApprovalRecommended,
+		},
+		{
+			name: "pending review and a person's review are skipped",
+			reviews: []ghx.PRReview{
+				copilotReview("PENDING", "2026-11-03T10:00:00Z", "### 🟢 Approval recommended\n"),
+				{Login: "alice", State: "COMMENTED", SubmittedAt: "2026-11-04T10:00:00Z", Body: "### 🟢 Approval recommended\n"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out, overview, findings, _ := joinCopilotOverview(tt.threads, tt.reviews)
+			if overview != tt.wantOverview {
+				t.Errorf("overview = %q, want %q", overview, tt.wantOverview)
+			}
+			if findings == nil {
+				t.Fatal("findings is nil, want an empty slice at least")
+			}
+			if len(findings) != tt.wantFindings {
+				t.Errorf("len(findings) = %d, want %d", len(findings), tt.wantFindings)
+			}
+			if len(out) != len(tt.threads) {
+				t.Fatalf("len(out) = %d, want %d", len(out), len(tt.threads))
+			}
+			if tt.check != nil {
+				tt.check(t, out)
+			}
+		})
+	}
+}
+
+func TestJoinCopilotOverview_FindingFields(t *testing.T) {
+	_, _, findings, _ := joinCopilotOverview(nil, []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewMissedBody)})
+	want := []OverviewFinding{
+		{Title: "First", Path: "a.go", Line: 3, Severity: "low", Body: "Body one."},
+		{Title: "Second", Path: "b.go", Line: 9, Severity: "", Body: "Body two."},
+	}
+	if len(findings) != len(want) {
+		t.Fatalf("got %+v", findings)
+	}
+	for i := range want {
+		if findings[i] != want[i] {
+			t.Errorf("finding %d = %+v, want %+v", i, findings[i], want[i])
+		}
+	}
+}
+
+func TestJoinCopilotOverview_DoesNotMutateInput(t *testing.T) {
+	in := []CommentThread{{ID: 10, Reviewer: "Copilot", Body: "[low] x"}}
+	joinCopilotOverview(in, []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewChangesBody)})
+	if in[0].Severity != "" || in[0].OverviewSection != "" {
+		t.Errorf("input thread was changed: %+v", in[0])
+	}
+}
+
+// copilotOverviewStub writes the reviews JSON to a file and returns a gh stub
+// script that prints it for `gh pr view`. A review body can hold a quote, so
+// the script never inlines the body.
+func copilotOverviewStub(t *testing.T, bodyFile string) string {
+	t.Helper()
+	body, err := os.ReadFile(bodyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(map[string]any{"reviews": []map[string]any{{
+		"author":      map[string]any{"login": "copilot-pull-request-reviewer[bot]"},
+		"state":       "COMMENTED",
+		"submittedAt": "2026-11-01T10:00:00Z",
+		"body":        string(body),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewsPath := filepath.Join(t.TempDir(), "reviews.json")
+	if err := os.WriteFile(reviewsPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return "#!/bin/sh\ncase \"$2\" in\n  user) echo octocat ;;\n  view) cat '" + reviewsPath + "' ;;\n  graphql) printf '%s\\n' '{\"id\":4575025310,\"isResolved\":false,\"isOutdated\":false}' ;;\n  *) printf '%s\\n' '{\"id\":4575025310,\"path\":\"src/bundle.ts\",\"line\":88,\"login\":\"Copilot\",\"body\":\"[low] x\",\"in_reply_to_id\":null}' ;;\nesac\n"
+}
+
+func TestReceivedReviewVerify_CopilotOverview(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	cleanup := stubGH(t, copilotOverviewStub(t, "testdata/copilot_overview/changes_recommended.md"))
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 114})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Overview != overviewChangesRecommended {
+		t.Errorf("Overview = %q, want %q", out.Overview, overviewChangesRecommended)
+	}
+	if out.Total != 1 || out.Outstanding != 1 || out.Replied != 0 {
+		t.Errorf("counts changed: Total=%d Outstanding=%d Replied=%d", out.Total, out.Outstanding, out.Replied)
+	}
+	th := out.Threads[0]
+	if th.SeverityPrefix != "low" || th.SeverityIcon != "medium" || th.Severity != "medium" || th.OverviewSection != "open" {
+		t.Errorf("thread = %+v", th)
+	}
+	if len(out.OverviewFindings) != 1 || out.OverviewFindings[0].Path != "src/metadata.ts" || out.OverviewFindings[0].Line != 646 {
+		t.Errorf("OverviewFindings = %+v", out.OverviewFindings)
+	}
+	if !strings.Contains(out.Next, "also lists 1 finding(s) with no thread (overviewFindings)") {
+		t.Errorf("Next = %q, want the overviewFindings sentence", out.Next)
+	}
+	if !strings.Contains(out.Next, "Outstanding") {
+		t.Errorf("Next = %q, want the outstanding sentence kept", out.Next)
+	}
+}
+
+func TestReceivedReviewVerify_NoMissedFindings(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	cleanup := stubGH(t, copilotOverviewStub(t, "testdata/copilot_overview/approval_no_issues.md"))
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 114})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Overview != overviewApprovalRecommended {
+		t.Errorf("Overview = %q, want %q", out.Overview, overviewApprovalRecommended)
+	}
+	if out.OverviewFindings == nil || len(out.OverviewFindings) != 0 {
+		t.Errorf("OverviewFindings = %#v, want empty non-nil", out.OverviewFindings)
+	}
+	if strings.Contains(out.Next, "overviewFindings") {
+		t.Errorf("Next = %q, want no overviewFindings sentence when none", out.Next)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"overviewFindings":[]`) || !strings.Contains(string(raw), `"overview":"approval-recommended"`) {
+		t.Errorf("JSON = %s", raw)
+	}
+}
+
+func TestGhReadFailure(t *testing.T) {
+	long := strings.Repeat("x", ghCauseCap+50)
+	tests := []struct {
+		name      string
+		err       error
+		wantClass string
+		wantCause string
+	}{
+		{"output cap", fmt.Errorf("ghx: X: %w", execx.ErrOutputCap), ghClassOutputCap, "gh output exceeded the size cap"},
+		{"gh not found", fmt.Errorf("ghx: X: %w", ghx.ErrGHNotFound), ghClassMissing, "gh is not installed or not on PATH"},
+		{"exit status", fmt.Errorf("ghx: X: %w", fmt.Errorf("execx: gh api: exit status 1: HTTP 404")), ghClassNotFound, "HTTP 404"},
+		{"multi-line stderr is one line", errors.New("execx: gh api: exit status 1: line one\nline two"), ghClassUnknown, "line one line two"},
+		{"long stderr is cut", errors.New("execx: gh api: exit status 1: " + long), ghClassUnknown, strings.Repeat("x", ghCauseCap) + "…"},
+		{"email is masked", errors.New("execx: gh api: exit status 1: denied for dev@example.com"), ghClassUnknown, "denied for " + telemetry.Redact("dev@example.com")},
+		{"fallback", errors.New("ghx: X: parse threads: bad json"), ghClassUnknown, "gh call failed or gave output that could not be read"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			class, cause := ghReadFailure(tt.err)
+			if class != tt.wantClass || cause != tt.wantCause {
+				t.Errorf("ghReadFailure = (%q, %q), want (%q, %q)", class, cause, tt.wantClass, tt.wantCause)
+			}
+		})
+	}
+	if strings.Contains(telemetry.Redact("dev@example.com"), "dev@example.com") {
+		t.Fatal("telemetry.Redact no longer masks an email: the masked-email row tests nothing")
+	}
+}
+
+func TestGhReadRecovery(t *testing.T) {
+	tests := []struct {
+		class string
+		want  string
+	}{
+		{ghClassMissing, "Install gh and put it on PATH. Then call received_review_verify({pr: 7}) again."},
+		{ghClassOutputCap, "Do not retry: the same read hits the same size cap. Read the Copilot review on the PR page instead."},
+		{ghClassAuth, "Run gh auth status, and gh auth login if it fails. Then call received_review_verify({pr: 7}) again."},
+		{ghClassForbidden, "Do not retry: the gh token has no access to this read. Check the token scopes with gh auth status."},
+		{ghClassNotFound, "Check that PR 7 exists in this repository. Then call received_review_verify({pr: 7}) again."},
+		{ghClassNetwork, "This failure can be temporary. Call received_review_verify({pr: 7}) again."},
+		{ghClassUnknown, "This failure can be temporary. Call received_review_verify({pr: 7}) again."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.class, func(t *testing.T) {
+			if got := ghReadRecovery(tt.class, 7); got != tt.want {
+				t.Errorf("ghReadRecovery(%q) = %q, want %q", tt.class, got, tt.want)
+			}
+		})
+	}
+}
+
+// verifyStubWithFailures builds a gh stub. A failing case exits 1 with an
+// error line on stderr. The other cases give an empty reviews list, the state
+// of the one thread and one comment.
+func verifyStubWithFailures(failView, failGraphQL bool) string {
+	view := `echo '{"reviews":[]}'`
+	if failView {
+		view = `echo 'HTTP 502 view' >&2; exit 1`
+	}
+	graphql := `echo '{"id":1,"isResolved":false,"isOutdated":false}'`
+	if failGraphQL {
+		graphql = `echo 'HTTP 403 graphql' >&2; exit 1`
+	}
+	return "#!/bin/sh\ncase \"$2\" in\n  user) echo octocat ;;\n  view) " + view + " ;;\n  graphql) " + graphql + " ;;\n  *) printf '%s\\n' '{\"id\":1,\"path\":\"a.go\",\"line\":1,\"login\":\"r\",\"body\":\"x\",\"in_reply_to_id\":null}' ;;\nesac\n"
+}
+
+func TestReceivedReviewVerify_ReviewFetchFails(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	cleanup := stubGH(t, verifyStubWithFailures(true, false))
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		"Review body not read (unknown): HTTP 502 view. severityIcon, overviewSection, overview and overviewFindings are empty.",
+		"This failure can be temporary. Call received_review_verify({pr: 5}) again.",
+	}
+	if !sameStrings(out.Warnings, want) {
+		t.Errorf("Warnings = %q, want %q", out.Warnings, want)
+	}
+	if strings.Contains(out.Warnings[0], "ghx:") || strings.Contains(out.Warnings[0], "execx:") {
+		t.Errorf("warning has a package prefix: %q", out.Warnings[0])
+	}
+	if out.Overview != "" || out.OverviewFindings == nil || len(out.OverviewFindings) != 0 || out.Total != 1 {
+		t.Errorf("out = %+v", out)
+	}
+	if strings.Count(out.Next, receivedReviewWarningNext) != 1 {
+		t.Errorf("Next = %q, want the warning text once", out.Next)
+	}
+}
+
+func TestReceivedReviewVerify_ThreadStateFails(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	cleanup := stubGH(t, verifyStubWithFailures(false, true))
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{
+		"Thread state not read (forbidden): HTTP 403 graphql. isResolved and isOutdated are false for every thread: do not use them to skip a thread.",
+		"Do not retry: the gh token has no access to this read. Check the token scopes with gh auth status.",
+	}
+	if !sameStrings(out.Warnings, want) {
+		t.Errorf("Warnings = %q, want %q", out.Warnings, want)
+	}
+	if out.Total != 1 || out.Threads[0].IsResolved || out.Threads[0].IsOutdated {
+		t.Errorf("out = %+v", out)
+	}
+	if strings.Count(out.Next, receivedReviewWarningNext) != 1 {
+		t.Errorf("Next = %q, want the warning text once", out.Next)
+	}
+}
+
+func TestReceivedReviewVerify_BothExtraReadsFail(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	cleanup := stubGH(t, verifyStubWithFailures(true, true))
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(out.Warnings) != 4 || !strings.HasPrefix(out.Warnings[0], "Review body not read (") || !strings.HasPrefix(out.Warnings[2], "Thread state not read (") {
+		t.Errorf("Warnings = %q, want [cause 1, step 1, cause 2, step 2]", out.Warnings)
+	}
+	if strings.Count(out.Next, receivedReviewWarningNext) != 1 {
+		t.Errorf("Next = %q, want the warning text once", out.Next)
+	}
+}
+
+// Both reads succeed: warnings is [] (not null) and the state joins by thread ID.
+func TestReceivedReviewVerify_ThreadStateJoin(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	script := `#!/bin/sh
+case "$2" in
+  user) echo octocat ;;
+  view) echo '{"reviews":[]}' ;;
+  graphql)
+    printf '{"id":1,"isResolved":true,"isOutdated":false}\n'
+    printf '{"id":2,"isResolved":false,"isOutdated":true}\n'
+    ;;
+  *)
+    printf '{"id":1,"path":"a.go","line":1,"login":"r","body":"x","in_reply_to_id":null}\n'
+    printf '{"id":2,"path":"b.go","line":1,"login":"r","body":"y","in_reply_to_id":null}\n'
+    printf '{"id":3,"path":"c.go","line":1,"login":"r","body":"z","in_reply_to_id":null}\n'
+    ;;
+esac
+`
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 5})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantWarnings := []string{"Thread state missing for 1 thread(s) (ids 3): isResolved and isOutdated are false for them: do not use them to skip these threads."}
+	if !sameStrings(out.Warnings, wantWarnings) {
+		t.Errorf("Warnings = %q, want %q", out.Warnings, wantWarnings)
+	}
+	if len(out.Threads) != 3 {
+		t.Fatalf("Threads = %+v", out.Threads)
+	}
+	got := [][2]bool{}
+	for _, th := range out.Threads {
+		got = append(got, [2]bool{th.IsResolved, th.IsOutdated})
+	}
+	want := [][2]bool{{true, false}, {false, true}, {false, false}}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("thread %d (resolved, outdated) = %v, want %v", out.Threads[i].ID, got[i], want[i])
+		}
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"isResolved":true`) {
+		t.Errorf("JSON = %s, want isResolved:true", raw)
+	}
+}
+
+// Write mode makes no gh call and returns warnings as [] (not null).
+func TestReceivedReviewVerify_WriteModeWarningsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{WriteReplyBodies: true, Content: "reply"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Warnings == nil || len(out.Warnings) != 0 {
+		t.Errorf("Warnings = %#v, want empty non-nil", out.Warnings)
+	}
+	if out.Threads == nil || len(out.Threads) != 0 || out.OverviewFindings == nil || len(out.OverviewFindings) != 0 {
+		t.Errorf("Threads = %#v, OverviewFindings = %#v, want both empty non-nil", out.Threads, out.OverviewFindings)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"threads":[]`, `"overviewFindings":[]`, `"warnings":[]`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("JSON = %s, want %s", raw, want)
+		}
+	}
+}
+
+// Reviews succeed and the thread state read fails: the overview fields are
+// set, isResolved and isOutdated stay false, and only the thread state
+// warning lines appear.
+func TestReceivedReviewVerify_ReviewsOKThreadStateFails(t *testing.T) {
+	dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+	script := strings.Replace(copilotOverviewStub(t, "testdata/copilot_overview/changes_recommended.md"),
+		"  graphql) printf", "  graphql) echo 'HTTP 503 graphql' >&2; exit 1 ;;\n  unused) printf", 1)
+	cleanup := stubGH(t, script)
+	defer cleanup()
+
+	out, err := receivedReviewVerify(dir, dir, ReceivedReviewVerifyIn{PR: 114})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if out.Overview != overviewChangesRecommended || len(out.OverviewFindings) != 1 {
+		t.Errorf("Overview = %q, OverviewFindings = %+v, want the overview read", out.Overview, out.OverviewFindings)
+	}
+	th := out.Threads[0]
+	if th.OverviewSection != overviewSectionOpen || th.SeverityIcon != "medium" || th.IsResolved || th.IsOutdated {
+		t.Errorf("thread = %+v", th)
+	}
+	want := []string{
+		"Thread state not read (unknown): HTTP 503 graphql. isResolved and isOutdated are false for every thread: do not use them to skip a thread.",
+		"This failure can be temporary. Call received_review_verify({pr: 114}) again.",
+	}
+	if !sameStrings(out.Warnings, want) {
+		t.Errorf("Warnings = %q, want %q", out.Warnings, want)
+	}
+}
+
+// received_review_verify through the MCP layer: the clean case renders the
+// overview value and empty lists, and a failed read renders both warning
+// lines and the warning Next text.
+func TestReceivedReviewVerify_RegisteredTool(t *testing.T) {
+	t.Run("clean", func(t *testing.T) {
+		dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+		cleanup := stubGH(t, copilotOverviewStub(t, "testdata/copilot_overview/approval_no_issues.md"))
+		defer cleanup()
+		t.Chdir(dir)
+
+		text := callRegisteredReceivedReviewTool(t, "received_review_verify", map[string]any{"pr": 114})
+		for _, want := range []string{"approval-recommended", "Outstanding review threads remain"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("rendered text missing %q:\n%s", want, text)
+			}
+		}
+		for _, notWant := range []string{"not read", receivedReviewWarningNext} {
+			if strings.Contains(text, notWant) {
+				t.Errorf("rendered text has %q, want none:\n%s", notWant, text)
+			}
+		}
+	})
+	t.Run("warning", func(t *testing.T) {
+		dir := setupGitRepoWithRemote(t, "https://github.com/owner/repo.git")
+		cleanup := stubGH(t, verifyStubWithFailures(true, false))
+		defer cleanup()
+		t.Chdir(dir)
+
+		text := callRegisteredReceivedReviewTool(t, "received_review_verify", map[string]any{"pr": 5})
+		for _, want := range []string{
+			"## Warnings",
+			"Review body not read (unknown): HTTP 502 view.",
+			"This failure can be temporary. Call received_review_verify({pr: 5}) again.",
+			strings.TrimSpace(receivedReviewWarningNext),
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("rendered text missing %q:\n%s", want, text)
+			}
+		}
+	})
+}
+
+func TestJoinCopilotOverview_OpenItemWithNoThread(t *testing.T) {
+	threads := []CommentThread{{ID: 10, Reviewer: "Copilot", Body: "x"}}
+	body := "### 🟡 Changes recommended\n\n" +
+		"<details open><summary><strong>2 open issues</strong></summary>\n\n" +
+		"- [Has a thread](https://github.com/o/r/pull/1#discussion_r10)\n" +
+		"- [No thread](https://github.com/o/r/pull/1#discussion_r77)\n\n</details>\n"
+	_, _, _, warnings := joinCopilotOverview(threads, []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", body)})
+	want := []string{"Copilot overview item with no thread: 1 open item(s) match no review thread (comment ids 77). Read them in the Copilot review on the PR page."}
+	if !sameStrings(warnings, want) {
+		t.Errorf("warnings = %q, want %q", warnings, want)
+	}
+}
+
+func TestJoinCopilotOverview_ProblemWarning(t *testing.T) {
+	body := "### 🟢 Approval recommended\n\n" +
+		"<details open><summary><strong>1 open issue</strong></summary>\n\n* changed row\n\n</details>\n"
+	_, overview, _, warnings := joinCopilotOverview(nil, []ghx.PRReview{copilotReview("COMMENTED", "2026-11-01T10:00:00Z", body)})
+	want := []string{`Copilot overview partly read: the "open issue" block declares 1 item(s), 0 read. overviewFindings, severityIcon and overviewSection can be incomplete: read the Copilot review on the PR page.`}
+	if overview != overviewApprovalRecommended || !sameStrings(warnings, want) {
+		t.Errorf("overview = %q, warnings = %q, want %q", overview, warnings, want)
+	}
+}
+
+func TestCapOverviewFindings(t *testing.T) {
+	missed := make([]OverviewItem, maxOverviewFindings+3)
+	for i := range missed {
+		missed[i] = OverviewItem{Title: fmt.Sprintf("t%d", i), Path: "a.go", Body: "short"}
+	}
+	missed[0].Body = strings.Repeat("é", maxOverviewFindingBodyRunes+10)
+	findings, warnings := capOverviewFindings(missed)
+	if len(findings) != maxOverviewFindings {
+		t.Fatalf("len(findings) = %d, want %d", len(findings), maxOverviewFindings)
+	}
+	if want := strings.Repeat("é", maxOverviewFindingBodyRunes) + "…"; findings[0].Body != want {
+		t.Errorf("findings[0].Body has %d runes, want the cut text", utf8.RuneCountInString(findings[0].Body))
+	}
+	wantWarnings := []string{
+		"Overview findings cut: 3 finding(s) past the limit of 50 are not listed. Read them in the Copilot review on the PR page.",
+		"Overview findings cut: 1 body text(s) longer than 2000 characters end with …. Read the full text in the Copilot review on the PR page.",
+	}
+	if !sameStrings(warnings, wantWarnings) {
+		t.Errorf("warnings = %q, want %q", warnings, wantWarnings)
+	}
+	if f, w := capOverviewFindings(nil); f == nil || len(f) != 0 || w != nil {
+		t.Errorf("capOverviewFindings(nil) = (%#v, %#v), want ([], nil)", f, w)
+	}
+}
+
+// Ties and missing or unparseable timestamps keep gh's oldest-first order:
+// the later entry wins.
+func TestLatestCopilotOverview_TimestampOrder(t *testing.T) {
+	green := "### 🟢 Approval recommended\n"
+	tests := []struct {
+		name         string
+		reviews      []ghx.PRReview
+		wantHeader   string
+		wantFindings int
+	}{
+		{"equal timestamps: later entry wins", []ghx.PRReview{
+			copilotReview("COMMENTED", "2026-11-01T10:00:00Z", overviewMissedBody),
+			copilotReview("COMMENTED", "2026-11-01T10:00:00Z", green),
+		}, overviewApprovalRecommended, 0},
+		{"empty timestamp: later entry wins", []ghx.PRReview{
+			copilotReview("COMMENTED", "2026-11-02T10:00:00Z", green),
+			copilotReview("COMMENTED", "", overviewMissedBody),
+		}, overviewChangesRecommended, 2},
+		{"unparseable timestamp: later entry wins", []ghx.PRReview{
+			copilotReview("COMMENTED", "not a time", overviewMissedBody),
+			copilotReview("COMMENTED", "2026-11-01T10:00:00Z", green),
+		}, overviewApprovalRecommended, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ov, ok := latestCopilotOverview(tt.reviews)
+			if !ok || ov.Header != tt.wantHeader || len(ov.Missed) != tt.wantFindings {
+				t.Errorf("got ok=%v header=%q missed=%d, want header=%q missed=%d", ok, ov.Header, len(ov.Missed), tt.wantHeader, tt.wantFindings)
+			}
+		})
 	}
 }

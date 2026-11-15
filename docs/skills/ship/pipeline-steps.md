@@ -243,6 +243,38 @@ Polls CI after the PR is created and analyzes or fixes failures. See
 
 Waits for an automated reviewer (for example Copilot) to respond.
 
+#### How the verdict is chosen
+
+The step reads the latest submitted review of the first configured reviewer
+that has a verdict (Copilot by default). The body of that review can carry a
+Copilot overview header. An open or missed issue is an item of the "open" or
+"previously missed" block of the overview. Resolved items do not count.
+
+| Latest review | Verdict | Ship does |
+|---|---|---|
+| state Changes requested, with or without a header | actionable | runs received-review |
+| state Commented or Approved, 🟢 Approval recommended, no open or missed issue, every block read in full | approved-clean | continues |
+| state Commented or Approved, 🟢 Approval recommended, an open or missed issue, or a block not read in full | actionable | runs received-review |
+| state Commented or Approved, 🟡 Changes recommended | actionable | runs received-review |
+| state Commented or Approved, 🔵 Needs a closer look | actionable | prints `Copilot asks for a closer human look (🔵).`, then runs received-review |
+| state Approved, no overview header | approved-clean | continues |
+| state Commented, no overview header | actionable | runs received-review |
+| state Dismissed | no verdict | polls again |
+| no verdict before the timeout | timeout | continues |
+| the poll state already timed out | skipped | continues |
+
+A poll that ends in `error` follows the same `ext.retryable` rule as the CI
+poll.
+
+The approved-clean and actionable results also carry `ext.overview`:
+`approval-recommended`, `changes-recommended`, `needs-closer-look`, or empty
+when the body has no header. The timeout and skipped results have no
+`ext.overview`. Ship records the verdict in a `decide` entry, for example:
+
+```text
+verdict: actionable; overview: needs-closer-look
+```
+
 ## Conditional steps
 
 These steps start automatically. They are not part of the step list that you
@@ -288,8 +320,9 @@ In the result text, `K`, `M` and `P` stand for the numbers of the run.
 
 After the routes:
 
-- The `await-remote-review` step can dispatch `/sdlc:received-review` again.
-  That dispatch records a decision only, with `decide` on `received-review`.
+- The `await-remote-review` step records the poll verdict in a `decide`
+  entry. It can dispatch `/sdlc:received-review` again. That dispatch records
+  its outcome only, with `decide` on `received-review`.
   It makes no second `begin-step`, because that would set the completed step
   back to `in_progress`.
 - On routes 3 to 6, ship dispatches nothing. A finding below the threshold is
