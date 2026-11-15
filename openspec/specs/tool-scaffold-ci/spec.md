@@ -6,15 +6,17 @@
 ## Requirements
 
 ### Requirement: Input and output fields
-The tool SHALL accept one input field and return the output fields below.
+The tool SHALL accept two input fields and return the output fields below.
 
 | Field | Type | Required | Encoding | Meaning |
 |---|---|---|---|---|
-| `force` | boolean | optional at call time; missing = `false` | `true` or `false` | Overwrite files that already exist and migrate legacy `.js` files |
+| `force` | boolean | optional at call time; missing = `false` | `true` or `false` | Overwrite every file that already exists, current ones too, and migrate legacy `.js` files |
+| `updateOutdated` | boolean | optional at call time; missing = `false` | `true` or `false` | Overwrite only files whose installed version is below the bundled version, migrate legacy `.js` files and create missing files; current files stay unchanged |
 
 | Field | Meaning |
 |---|---|
 | `root` | Absolute path of the worktree the files were written under |
+| `mode` | Overwrite mode of the call: `default`, `force` or `updateOutdated` |
 | `warnings` | Warning strings; an empty list when there are none |
 | `files` | One entry per manifest file, in manifest order: `path`, `action`, `installedVersion`, `currentVersion`, `group` |
 | `protection` | Branch protection report: `hasRulesets`, `hasClassicProtection`, `defaultBranch`, `rulesetNames`, `notes` |
@@ -26,6 +28,11 @@ The tool SHALL accept one input field and return the output fields below.
 - **WHEN** the caller passes `{}`
 - **THEN** the tool runs with `force: false`
 - **AND** the advertised input schema does not list `force` as required
+
+#### Scenario: updateOutdated omitted
+- **WHEN** the caller passes `{}`
+- **THEN** the tool runs with `updateOutdated: false`
+- **AND** the advertised input schema does not list `updateOutdated` as required
 
 #### Scenario: Fresh project
 - **WHEN** the tool runs with `force: false` in a project with no `.github/` files
@@ -63,14 +70,17 @@ The tool SHALL install exactly the 8 files below, under the active worktree root
 ### Requirement: Per-file action
 The tool SHALL choose one `action` per manifest file from the table below, and SHALL write the file only for `created`, `overwritten`, and `migrated`.
 
-| New path exists | Legacy path exists | `force` | Installed < current | `action` | Effect |
-|---|---|---|---|---|---|
-| no | yes | true | any | `migrated` | Delete legacy file, write new file |
-| no | yes | false | any | `outdated` | Warning `Legacy file found: <legacy> → use --force to migrate to <path>` |
-| no | no | any | n/a | `created` | Write new file (parent folders created) |
-| yes | any | true | any | `overwritten` | Write new file |
-| yes | any | false | yes | `outdated` | Warning `<path> is outdated (installed: v<I>, current: v<C>). Use --force to update.` |
-| yes | any | false | no | `skipped` | None |
+| New path exists | Legacy path exists | `force` | `updateOutdated` | Installed < current | `action` | Effect |
+|---|---|---|---|---|---|---|
+| no | yes | true | false | any | `migrated` | Write new file, then delete legacy file |
+| no | yes | false | true | any | `migrated` | Write new file, then delete legacy file |
+| no | yes | false | false | any | `outdated` | Warning `Legacy file found: <legacy> → run scaffold_ci with updateOutdated true to migrate to <path>` |
+| no | no | any | any | n/a | `created` | Write new file (parent folders created) |
+| yes | any | true | false | any | `overwritten` | Write new file |
+| yes | any | false | true | yes | `overwritten` | Write new file. When the old file has no version marker, warning `<path> had no version marker, so it counted as v1 and was overwritten with v<C>. Git keeps the old content of a committed file.` |
+| yes | any | false | true | no | `skipped` | None |
+| yes | any | false | false | yes | `outdated` | Warning `<path> is outdated (installed: v<I>, current: v<C>). Run scaffold_ci with updateOutdated true to update.` |
+| yes | any | false | false | no | `skipped` | None |
 
 #### Scenario: Second run without force skips
 - **WHEN** the tool runs twice with `force: false`
@@ -89,6 +99,21 @@ The tool SHALL choose one `action` per manifest file from the table below, and S
 - **WHEN** the same legacy file exists and `force` is `true`
 - **THEN** the entry has `action: migrated`
 - **AND** `.github/scripts/retag-release.js` is deleted and `.github/scripts/retag-release.cjs` exists
+
+#### Scenario: updateOutdated updates an outdated file
+- **WHEN** `.github/workflows/release-on-main.yml` holds `# release-on-main-version: 1`
+- **AND** the tool runs with `updateOutdated: true`
+- **THEN** the entry of that file has `action: overwritten`
+
+#### Scenario: updateOutdated keeps a current file
+- **WHEN** `.github/workflows/release-on-main.yml` holds the current version marker and a local edit
+- **AND** the tool runs with `updateOutdated: true`
+- **THEN** the entry of that file has `action: skipped`
+- **AND** the local edit is still in the file
+
+#### Scenario: Second run with updateOutdated skips
+- **WHEN** the tool runs twice with `updateOutdated: true`
+- **THEN** every entry of the second run has `action: skipped`
 
 ### Requirement: Push-auth secret rewrite
 The tool SHALL read `version.pushAuth.secretName` from `.sdlc-v2/config.toml`. When it is set and differs from `RELEASE_TOKEN`, the tool SHALL replace every `secrets.RELEASE_TOKEN` with `secrets.<secretName>` in `release-on-main.yml` and `promote-release.yml` before writing them.
@@ -212,8 +237,8 @@ The tool SHALL stop and return an `InfraError` on the file-system failures below
 |---|---|---|
 | Active worktree root cannot be resolved | `InfraError` | `resolve project root: <cause>` / run `git rev-parse --show-toplevel`, fix, retry |
 | Embedded payload missing | `InfraError` | `embedded payload "<name>" not found` / update or reinstall the plugin |
-| Installed file cannot be read | `InfraError` | `check installed version of CI script <path>: read <file>: <cause>` / check read permission |
-| Legacy file cannot be deleted | `InfraError` | `remove legacy <file>: <cause>` / delete it by hand, rerun with `force: true` |
+| Installed file cannot be checked or read | `InfraError` | `check installed version of CI script <path>: <cause>` / check read permission |
+| Legacy file cannot be deleted after the new file is written | `InfraError` | `remove legacy <file>: <cause> (the new file <path> is already written)` / delete it by hand |
 | Folder cannot be created | `InfraError` | `mkdir <dir>: <cause>` / remove the blocking file, make the parent writable |
 | File cannot be written | `InfraError` | `write <file>: <cause>` / check write permission and disk space |
 
@@ -229,3 +254,47 @@ The tool SHALL resolve its root with `git rev-parse --show-toplevel` (the active
 - **THEN** the 8 files are written under the linked worktree
 - **AND** no file under the main worktree's `.github/` changes
 - **AND** `root` is the linked worktree path
+
+### Requirement: Conflicting overwrite inputs
+The tool SHALL return a `DomainError` and SHALL NOT read or write any file when both `force` and `updateOutdated` are `true`.
+
+#### Scenario: Both inputs true
+- **WHEN** the caller passes `{ "force": true, "updateOutdated": true }` in a project with no `.github/` files
+- **THEN** the result is a `DomainError` with the message `force and updateOutdated cannot both be true`
+- **AND** no file exists under `.github/`
+
+### Requirement: Atomic file writes
+The tool SHALL write each file to a temporary file in the destination folder and then rename it over the destination. A failed write SHALL leave the old file content in place.
+
+- A migration writes the new file first and deletes the legacy `.js` file after it. A failed migration write keeps the legacy file.
+- An overwrite keeps the permission bits of the existing file. A new file gets mode `0644`.
+
+#### Scenario: Migration write fails
+- **WHEN** `.github/scripts/check-changelog.js` exists and a folder blocks `.github/scripts/check-changelog.cjs`
+- **AND** the tool runs with `updateOutdated: true`
+- **THEN** the result is an `InfraError` whose message starts with `write `
+- **AND** `.github/scripts/check-changelog.js` keeps its content
+
+#### Scenario: Overwrite keeps the file mode
+- **WHEN** `.github/workflows/release-on-main.yml` has mode `0755` and holds `# release-on-main-version: 1`
+- **AND** the tool runs with `updateOutdated: true`
+- **THEN** the file holds the bundled content and still has mode `0755`
+
+#### Scenario: Write fails in a read-only folder
+- **WHEN** `.github/workflows/` has mode `0555` and holds `release-on-main.yml` with `# release-on-main-version: 1`
+- **AND** the tool runs with `updateOutdated: true`
+- **THEN** the result is an `InfraError`
+- **AND** `release-on-main.yml` keeps its old content
+
+### Requirement: Installed file size limit
+The tool SHALL read at most 1048576 bytes (1 MiB) of each installed CI file. A larger file SHALL give a `DataError` in every mode, with the message `check installed version of CI script <path>: read <file>: installed CI file is too large: <size> bytes, over the 1048576 byte limit` and the Suggestion `The installed file is larger than 1 MiB, so it is not a plugin CI file. Restore the file with git or delete it. Then run the same call again.`
+
+#### Scenario: File at the limit
+- **WHEN** an installed CI file is exactly 1048576 bytes
+- **THEN** the tool reads the file and chooses an action for it
+
+#### Scenario: File above the limit
+- **WHEN** an installed CI file is 1048577 bytes
+- **AND** the tool runs with `force: true`
+- **THEN** the result is a `DataError`
+- **AND** the file is unchanged

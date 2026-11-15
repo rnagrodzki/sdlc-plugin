@@ -432,14 +432,15 @@ The `ci_script_drift` action SHALL compare each CI file installed by `scaffold_c
 | State | ID | Message |
 |---|---|---|
 | Current | none | none |
-| Installed version lower, or only the legacy `.js` file exists | `CI_SCRIPT_OUTDATED` | `<path> is outdated (installed v<I>, current v<C>) — run scaffold_ci({force:true}) to update.` |
-| Not installed | `CI_SCRIPT_MISSING` | `<path> is not installed (current v<C>) — run scaffold_ci({force:true}) to install.` |
+| Installed version lower, or only the legacy `.js` file exists | `CI_SCRIPT_OUTDATED` | `<path> is outdated (installed v<I>, current v<C>) — run scaffold_ci({updateOutdated:true}) to update.` |
+| Not installed | `CI_SCRIPT_MISSING` | `<path> is not installed (current v<C>) — run scaffold_ci({updateOutdated:true}) to install.` |
 
 - `path` is the file path relative to the project root, e.g. `.github/workflows/release-on-main.yml`.
 
 | Condition | Class | Message / Suggestion (short) |
 |---|---|---|
 | Embedded payload missing | `InfraError` | `embedded payload "<name>" not found` / update or reinstall the plugin |
+| Installed file above 1048576 bytes | `DataError` | `check installed version of CI script <path>: read <file>: installed CI file is too large: <size> bytes, over the 1048576 byte limit` / restore the file with git or delete it, then run the same call again |
 | Installed file cannot be read | `InfraError` | `check installed version of CI script <path>: read <file>: <cause>` / check read permission |
 
 #### Scenario: Freshly scaffolded project
@@ -449,7 +450,11 @@ The `ci_script_drift` action SHALL compare each CI file installed by `scaffold_c
 #### Scenario: One outdated, one missing
 - **WHEN** `.github/workflows/release-on-main.yml` is replaced with `# release-on-main-version: 1` and `.github/workflows/check-changelog.yml` is deleted
 - **THEN** there is one `CI_SCRIPT_OUTDATED` and one `CI_SCRIPT_MISSING` finding
-- **AND** both messages contain `scaffold_ci({force:true})`
+- **AND** both messages contain `scaffold_ci({updateOutdated:true})`
+
+#### Scenario: Installed file above the limit
+- **WHEN** one installed CI file is 1048577 bytes
+- **THEN** the result is a `DataError`
 
 ### Requirement: worktree_anchoring action
 The `worktree_anchoring` action SHALL return `worktreeAnchoring` and report how the `.sdlc-v2/` state directory is anchored.
