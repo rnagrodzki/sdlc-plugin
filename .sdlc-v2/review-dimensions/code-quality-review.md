@@ -14,6 +14,14 @@ Review Go source changes for baseline code quality in this module
 
 - Idiomatic Go: no unnecessary interfaces, no premature abstraction, no
   stuttering names (`tools.ToolsX`), receivers named consistently per type.
+- A hand-written loop that reimplements a standard-library helper is a finding:
+  a membership test over a slice (`slices.Contains`, `slices.Index`), a copy, a
+  sort, a minimum or maximum, or the key list of a map (`maps.Keys`,
+  `slices.Sorted`). Check the Go version in `go.mod`, grep the package for the
+  helper before writing the loop, and call the helper. A membership test over a
+  closed set reads the one canonical list of the set and does not keep a second
+  typed-in list. This extends the idiomatic-Go bullet above. Example: a `for`
+  loop that tested whether a tab name was in the list of known tabs.
 - Errors are wrapped with context (`fmt.Errorf("...: %w", err)`) and never
   silently discarded (`_ = err` requires a comment justifying it).
 - Exported identifiers in `internal/**` are still worth doc comments even

@@ -31,8 +31,13 @@ new changes to that same bar:
   leaves the cause unpinned. A row that injects its failure through a seam
   uses its own sentinel error and asserts it with `errors.Is`, so a failure
   at another step cannot pass; a row that checks only that an error came
-  back pins nothing. Example: a handler with no test for a failed
-  folder listing and none for an oversize folder.
+  back pins nothing. The same holds for a row of bad input whose result is a
+  warning, a skipped entry or a refused value and carries no error value: the
+  row asserts the text or the entry that names its own defect, and the row
+  differs from a valid row in that one property, so a row for another defect
+  cannot pass. Example: a handler with no test for a failed
+  folder listing and none for an oversize folder, and a table of bad-text
+  rows that each assert only that the row was not accepted.
 - Table-driven tests follow the style already established in sibling
   `_test.go` files in the same package rather than introducing a new
   pattern.
@@ -137,6 +142,41 @@ new changes to that same bar:
   branch that is tested for two of its four kinds. This extends the
   discriminating-inputs bullet above from a bool or an enum parameter to each
   kind of an action.
+- A new optional input of a handler action that the code passes on to a call
+  that can fail (an open, a write, a launch) is tested on each outcome branch
+  that the input reaches, not only on success. One test sets the input and makes
+  the call fail, and asserts the whole error: the `Msg`, the `Suggestion` and
+  the cause with `errors.Is` or `errors.As`. Count the outcome branches of the
+  action (success, already running, call failed, input refused) and the
+  branches on which a test sets the input, and confirm that the two numbers
+  match. A branch tested only with the input unset leaves the path of the input
+  through that branch unpinned. This extends the kind-by-kind bullet above,
+  which covers kinds of input and not the outcome branches that one input
+  reaches. Example: a `tab` input tested on the success branch of `ensure` and
+  not on the branch where the open fails.
+- A new or changed input of a tool that has several actions or several values
+  (a `tab`, a kind, a mode) is pinned through the registered tool, not only
+  through the handler function. Each value of a closed-set input has one test
+  that calls the registered tool and asserts the whole output for that value.
+  A value tested through one path leaves the other values unpinned. Each action
+  that must refuse the input has one test that sets it and asserts the whole
+  refusal: the `Msg`, the `Suggestion` and the cause with `errors.Is` or
+  `errors.As`. A test that asserts only that an error came back, or only one
+  phrase of the text, is a finding. An unknown value has one test that asserts
+  the whole error text and that the call changed nothing. Count the values and
+  the actions in the code and in the tests, and confirm that the numbers match.
+  This extends the optional-input bullet above, which covers the outcome
+  branches of one action. Example: a `tab` input with a test for the `setup`
+  value through `ensure` only, an unknown-tab test that checks one phrase, and a
+  `status` and `stop` rejection test that checks only for an error.
+- A new unexported helper that holds logic of its own (it parses a file or a
+  text, derives a set from a source, loops with a branch) has a test of its own
+  that calls it with its edge inputs and asserts the whole result. A test of the
+  handler that calls the helper does not count, unless one case reaches each arm
+  of the helper and fails when the helper breaks. A helper with no test of its
+  own is a finding. This extends the first bullet, which names exported
+  functions only. Example: a helper that reads the tab names out of a
+  JavaScript file, tested only through the handler that uses it.
 - Every rejection branch of an input check needs its own test: a test for
   a nil `wave` does not cover the separate `wave < 1` branch. For an
   error-classification switch (e.g. a helper mapping sentinel errors to
@@ -327,11 +367,17 @@ new changes to that same bar:
   the whole parsed result and the count of skipped rows, or the warning that
   names them, and compares the result with the plain form of the same input.
   A test set with well-formed rows only passes when the parser drops a damaged
-  row with no signal or reads a number error as zero. This extends the
+  row with no signal or reads a number error as zero. Each marker form that
+  the parser or the writer recognizes (a start line, an end line, a flag
+  value) and each duplicate of one (the same marker twice, one inside another
+  block, one with the end line missing) has its own test that asserts the
+  whole result and the warning. A branch that handles a marker or a duplicate
+  and that no test reaches is a finding. This extends the
   find-and-replace bullet above, whose edges name a search window and a
   replace, not a read-only parser. Example: an overview parser with no test
   for an indented row, CRLF line ends, an unclosed `<details>` block or a
-  count that `strconv.Atoi` cannot read.
+  count that `strconv.Atoi` cannot read, or a section writer with a marker
+  branch and a duplicate-entry branch that no test reaches.
 - When an action can return a normal outcome and a warning in one result (an
   existing file that is reused and a warning about it), one test asserts both
   the outcome and the warning text, for every action that reaches the state.

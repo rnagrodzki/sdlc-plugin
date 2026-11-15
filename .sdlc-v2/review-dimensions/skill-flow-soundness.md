@@ -193,6 +193,20 @@ severity: high
 - **Field source per item kind.** When a step reads a field (severity, file, line, status) from a list of items that come from more than one source (for example a review thread, a review overview, a list of missed findings), the skill names, for each source, the step or tool that supplies the field and its format. It also states what the step does for an item whose source gives none. A field read from mixed items that has a named source for only some kinds is a finding, also when a fallback names only some of the steps that use the field. This extends One key, one source and Count and flag sources, which check run-record fields and counts, to the fields of items from several sources.
 - **Call order and shared filters.** When a step makes two or more tool calls whose results feed each other or one decision (for example a verify call before a fix call), the step states their order and what it does when each call fails, returns a warning or returns nothing. A step that leaves the order or the fallback to the model is a finding. A skip set or filter that two steps both apply (for example the skip rules of a read step and of a later step) lists the same members in both steps, or the text states each difference. A step output shape that a later step reads is updated when the producing step changes.
 - **Reader of an added prompt line.** When a step adds a line, a note or an instruction to the prompt that it sends to a dispatched agent or skill (for example a closer-look note appended to the dispatch prompt of a review step), name the step or section of the receiver that reads and acts on it. Open the receiver (its SKILL.md or its agent file) and look for that reader. A line that no step of the receiver reads, or that the receiver has no text to act on, is a finding: it is dead text that implies a behavior that does not exist. The same holds for a line that asks the worker to report a value: a step of the sender must read that report back. Check each dispatch of the same receiver, including a resume or retry dispatch. This extends Arguments-table / Workflow parity, which checks recorded values and tool fields, to the text that one skill passes to another in a dispatch prompt.
+- **Hand-off to an outside actor.** When a step points the user to another
+  skill, tool or page, or waits for an actor outside the skill to write a
+  stored value (the user, a form on a dashboard page), walk the path in two
+  parts. (1) A pointer, hint or offer carries the precondition of its target
+  (for example the target is running, or the file does not exist yet) and is
+  skipped when the precondition fails, as an offer is in Delegated next
+  routes. (2) A later step that routes on the value that the outside actor
+  writes reads that value back with a named tool call first. The prose names
+  the route for a value that is still missing or unchanged (for example the
+  form was closed unsaved): ask again, stop, or continue with a stated
+  default. A path that assumes the write happened is a finding. This extends
+  Delegated next routes, which checks the precondition of an offer, and
+  Mid-run change of stored data, which checks data that an earlier step or
+  the user removed, to a write that the skill waits for.
 
 ## What NOT to flag
 
