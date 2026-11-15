@@ -230,3 +230,71 @@ func TestCIScriptDrift_LinkedWorktree_CurrentAfterScaffold_MainStillMissing(t *t
 		t.Errorf("main worktree must not report current/outdated scripts; it was never scaffolded:\n%s", textMain)
 	}
 }
+
+// TestScaffoldCI_RegisteredHandler_UpdateOutdatedInput proves the registered
+// tool accepts updateOutdated and maps force plus updateOutdated to a
+// domain error.
+func TestScaffoldCI_RegisteredHandler_UpdateOutdatedInput(t *testing.T) {
+	_, linkedDir := scaffoldWorktreeFixture(t)
+
+	res, text := callRegisteredScaffoldCI(t, linkedDir, map[string]any{"force": true, "updateOutdated": true})
+	if !res.IsError {
+		t.Fatalf("force plus updateOutdated must be an error result:\n%s", text)
+	}
+	if !strings.Contains(text, "force and updateOutdated cannot both be true") {
+		t.Errorf("error must name the conflict:\n%s", text)
+	}
+	if scaffoldFileExists(filepath.Join(linkedDir, scaffoldManifest[0].Dest)) {
+		t.Error("no file may be written on the conflict error")
+	}
+
+	res, text = callRegisteredScaffoldCI(t, linkedDir, map[string]any{"updateOutdated": true})
+	if res.IsError {
+		t.Fatalf("updateOutdated alone returned an error:\n%s", text)
+	}
+	for _, entry := range scaffoldManifest {
+		if !scaffoldFileExists(filepath.Join(linkedDir, entry.Dest)) {
+			t.Errorf("file %s: missing file must be created by updateOutdated", entry.Dest)
+		}
+	}
+
+	// A second call over an outdated file and an edited current file proves
+	// the handler passes updateOutdated through: a dropped input would run
+	// the default mode, which reports the outdated file and writes nothing.
+	outdated := filepath.Join(linkedDir, ".github", "workflows", "release-on-main.yml")
+	if err := os.WriteFile(outdated, []byte("# release-on-main-version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	edited := filepath.Join(linkedDir, ".github", "workflows", "check-changelog.yml")
+	editedContent := string(Payloads()["check-changelog.yml"]) + "# local edit\n"
+	if err := os.WriteFile(edited, []byte(editedContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, text = callRegisteredScaffoldCI(t, linkedDir, map[string]any{"updateOutdated": true})
+	if res.IsError {
+		t.Fatalf("updateOutdated over an outdated file returned an error:\n%s", text)
+	}
+	if !strings.Contains(text, "mode: updateOutdated") {
+		t.Errorf("output must echo mode updateOutdated:\n%s", text)
+	}
+	if got := strings.Count(text, "action: overwritten"); got != 1 {
+		t.Errorf("action overwritten count = %d, want 1:\n%s", got, text)
+	}
+	if got, want := strings.Count(text, "action: skipped"), len(scaffoldManifest)-1; got != want {
+		t.Errorf("action skipped count = %d, want %d:\n%s", got, want, text)
+	}
+	got, err := os.ReadFile(outdated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(Payloads()["release-on-main.yml"]) {
+		t.Error("the outdated file must hold the bundled content after updateOutdated")
+	}
+	got, err = os.ReadFile(edited)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != editedContent {
+		t.Error("the local edit in a current file must stay after updateOutdated")
+	}
+}

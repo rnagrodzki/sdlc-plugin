@@ -64,6 +64,7 @@ and `mcp-output-drives-behavior` guardrails.
   which names `*In` fields only. Verify: list each `*Out` field in the diff and
   read its tag. Example: a `Warnings` field added to an existing `*Out` struct
   with no tag.
+- An `*Out` list or count field whose empty or zero value can come from two causes (nothing was found, and the check did not run, was skipped or failed) states both causes in its `jsonschema_description`, or the struct carries a second field (a status, a reason or a warning) that tells the causes apart. A tag that says only 'empty when none' for such a field is a finding: the caller reads 'not checked' as 'clean'. List each code path that leaves the field empty and read the tag against all of them. A test asserts the rendered output for each cause. This extends the `*Out` tag bullet above, which asks the tag to say when the field is empty but not that it names every cause. Example: a drift list that was empty both when no script had drifted and when the drift check did not run.
 - Tools publish no output schema. The renderer in `internal/mcpserver`
   shows the LLM the concrete shape by rendering every field with its JSON
   key as the label, so the output shape is visible in the result itself.

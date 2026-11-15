@@ -53,9 +53,15 @@ When setup finds legacy or outdated config, it asks whether to migrate before it
 
 `/sdlc:setup`, and each skill that calls `setup_prepare`, compares each installed CI scaffold script and workflow with the version that the plugin bundles. The result is `ciScriptDrift`: one entry for each scaffolded script, flagged `current`, `outdated` or `missing`, with the installed version and the current version.
 
-The summary of a setup run lists each script that is not `current`.
+Step 3c of `/sdlc:setup` asks `Update the CI scripts listed above?` when a script is `outdated` or `missing`. Each route of the setup skill that reaches the summary runs the step first, also when you select no section. `--force` and `--only` do not skip it. A companion sub-flow that stops the run ends before Step 3c. The summary lists each script that is still `outdated` or `missing`.
 
-- **Update all of them:** run `scaffold_ci({force: true})`. It overwrites the outdated scripts with the bundled versions.
+When the drift check fails, `setup_prepare` returns `ciScriptDriftError` and Step 3c asks no question. The summary prints `CI script check failed. Tool error text (setup_prepare):` and the error once, in place of the list.
+
+**Size limit:** the check reads at most 1 MiB of each installed CI file. A larger file is not a plugin CI file, so the check stops: `setup_prepare` returns `ciScriptDriftError`, and `scaffold_ci` and `validate({action: "ci_script_drift"})` return a `DataError`. To fix it, restore the file with git or delete it, then run the same call again.
+
+- **Update outdated and missing scripts:** run `scaffold_ci({updateOutdated: true})`. It overwrites only the outdated scripts, migrates legacy `.js` files and creates missing scripts. It leaves current scripts unchanged. Local edits in an overwritten script are lost; git keeps the old content of a committed file. A script with no version marker counts as version 1, so it is overwritten, and the output has a warning for it.
+- **Overwrite all scripts:** run `scaffold_ci({force: true})`. It overwrites every existing script, also the current ones.
+- **Do not pass both:** `scaffold_ci` returns the error `force and updateOutdated cannot both be true`.
 - **Check drift only:** call `validate({action: "ci_script_drift"})`. It does not touch the sections of `/sdlc:setup`.
 
 Back to the [/sdlc:setup overview](../setup.md).

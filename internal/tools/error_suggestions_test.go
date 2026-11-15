@@ -201,7 +201,7 @@ var errSuggestionFuncs = map[string][]string{
 		"execActionTaskDone",
 		"execActionVerifyCompleteness",
 	},
-	"scaffold.go": {"ciScriptDrift", "scaffoldCI"},
+	"scaffold.go": {"ciScriptDrift", "scaffoldCIWith"},
 	"jira.go":     {"jiraSave", "jiraClear"},
 	"setup.go":    {"setupWritePlanTemplate"},
 }

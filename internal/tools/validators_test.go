@@ -2120,7 +2120,7 @@ func TestValidateCIScriptDrift_MissingAndOutdatedProduceDistinctFindings(t *test
 	if len(outdated) != 1 {
 		t.Fatalf("expected 1 CI_SCRIPT_OUTDATED finding, got %d: %v", len(outdated), out.Findings)
 	}
-	if !strings.Contains(outdated[0].Message, "scaffold_ci({force:true})") {
+	if !strings.Contains(outdated[0].Message, "scaffold_ci({updateOutdated:true})") {
 		t.Errorf("outdated finding message missing remediation hint: %s", outdated[0].Message)
 	}
 
@@ -2128,7 +2128,7 @@ func TestValidateCIScriptDrift_MissingAndOutdatedProduceDistinctFindings(t *test
 	if len(missing) != 1 {
 		t.Fatalf("expected 1 CI_SCRIPT_MISSING finding, got %d: %v", len(missing), out.Findings)
 	}
-	if !strings.Contains(missing[0].Message, "scaffold_ci({force:true})") {
+	if !strings.Contains(missing[0].Message, "scaffold_ci({updateOutdated:true})") {
 		t.Errorf("missing finding message missing remediation hint: %s", missing[0].Message)
 	}
 }
@@ -3843,5 +3843,27 @@ func TestPF15_NotInPlanBlockingChecks(t *testing.T) {
 		if c.id == "PF15" {
 			t.Fatalf("planBlockingChecks holds PF15: %+v", c)
 		}
+	}
+}
+
+// TestValidateCIScriptDrift_OversizeFileIsDataError verifies the drift action
+// returns the read-limit DataError for an installed CI file above 1 MiB.
+func TestValidateCIScriptDrift_OversizeFileIsDataError(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".github", "workflows", "release-on-main.yml")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, ciFileOfSize(1048577), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := validate(root, ValidateIn{Action: "ci_script_drift"})
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) {
+		t.Fatalf("expected *mcpserver.DataError, got %T: %v", err, err)
+	}
+	if de.Suggestion != ciFileTooLargeSuggestion {
+		t.Errorf("unexpected suggestion %q", de.Suggestion)
 	}
 }

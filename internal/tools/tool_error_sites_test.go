@@ -17,14 +17,16 @@ import (
 // Suggestion names the failing input or the next tool call. An empty
 // Suggestion would render the generic per-class fallback, so it fails here.
 //
-// Disk failures use a regular file where a folder is needed (ENOTDIR) or a
-// folder where a file is needed (EISDIR). Nothing here uses chmod, so the
-// result does not depend on which user runs the tests.
+// Disk failures use a regular file where a folder is needed (ENOTDIR), a
+// folder where a file is needed (EISDIR), or a symlink that points to itself
+// (ELOOP). Nothing here uses chmod, so the result does not depend on which
+// user runs the tests.
 //
-// Sites that need an unreadable or undeletable file cannot be reached this
-// way and are not covered: scaffold.go "check installed version of CI
-// script" (ciScriptDrift and scaffoldCI), scaffold.go "remove legacy", and
-// jira.go "delete cache file" (jiraClear, both branches).
+// Sites that need an undeletable file cannot be reached this way and are not
+// covered: scaffold.go "remove legacy", and jira.go "delete cache file"
+// (jiraClear, both branches). The open and read failures behind scaffold.go
+// "check installed version of CI script" need an unreadable file; scaffold_test.go
+// (TestScaffoldVersionRead_InfraError) covers them with chmod.
 
 type toolErrSiteClass string
 
@@ -98,6 +100,18 @@ func toolErrSiteDir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// toolErrSiteLoop plants a symlink at path that points to itself, so a stat
+// of path fails with ELOOP. Its parent folders are created first.
+func toolErrSiteLoop(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Base(path), path); err != nil {
+		t.Skipf("symlink not supported: %v", err)
 	}
 }
 
@@ -430,6 +444,26 @@ func TestToolErrorSites_Scaffold(t *testing.T) {
 				swapManifest(t)
 				_, err := scaffoldCI(t.TempDir(), false)
 				return []string{missingKey, "scaffold_ci"}, err
+			},
+		},
+		{
+			name:  "ciScriptDrift/check installed version fails",
+			class: toolErrInfra,
+			run: func(t *testing.T) ([]string, error) {
+				root := t.TempDir()
+				toolErrSiteLoop(t, filepath.Join(root, ".github", "workflows", "release-on-main.yml"))
+				_, err := ciScriptDrift(root)
+				return []string{"CI script file", "setup_prepare or validate"}, err
+			},
+		},
+		{
+			name:  "scaffoldCI/check installed version fails",
+			class: toolErrInfra,
+			run: func(t *testing.T) ([]string, error) {
+				root := t.TempDir()
+				toolErrSiteLoop(t, filepath.Join(root, ".github", "workflows", "release-on-main.yml"))
+				_, err := scaffoldCI(root, false)
+				return []string{"CI script file", "scaffold_ci"}, err
 			},
 		},
 		{

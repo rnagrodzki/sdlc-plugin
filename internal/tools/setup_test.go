@@ -3,6 +3,7 @@ package tools
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1546,5 +1547,105 @@ func TestConfigTemplateIsValidTOML(t *testing.T) {
 	var local map[string]any
 	if err := toml.Unmarshal([]byte(localTemplate), &local); err != nil {
 		t.Errorf("localTemplate is not valid TOML: %v", err)
+	}
+}
+
+// TestSetupPrepare_CIScriptDriftError verifies setup_prepare does not fail when
+// the drift check fails: it returns an empty ciScriptDrift and puts the error
+// and its Suggestion in ciScriptDriftError.
+func TestSetupPrepare_CIScriptDriftError(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".github", "workflows", "release-on-main.yml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, ciFileOfSize(maxCheckedFileBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := setupPrepare(root, SetupPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("setupPrepare: %v", err)
+	}
+	if !out.OK {
+		t.Error("expected ok=true")
+	}
+	if out.CIScriptDrift == nil || len(out.CIScriptDrift) != 0 {
+		t.Errorf("expected an empty non-nil ciScriptDrift, got %v", out.CIScriptDrift)
+	}
+	want := fmt.Sprintf("check installed version of CI script %s: read %s: installed CI file is too large: %d bytes, over the %d byte limit. %s",
+		filepath.Join(".github", "workflows", "release-on-main.yml"), path, maxCheckedFileBytes+1, maxCheckedFileBytes, ciFileTooLargeSuggestion)
+	if out.CIScriptDriftError != want {
+		t.Errorf("ciScriptDriftError mismatch:\n got: %q\nwant: %q", out.CIScriptDriftError, want)
+	}
+}
+
+// TestSetupPrepare_CIScriptDriftAfterUpdate verifies a second setup_prepare
+// call shows an entry as current after an updateOutdated scaffold.
+func TestSetupPrepare_CIScriptDriftAfterUpdate(t *testing.T) {
+	root := t.TempDir()
+	if _, err := scaffoldCIWith(root, scaffoldOptions{}, noGhExec); err != nil {
+		t.Fatalf("scaffoldCIWith (create): %v", err)
+	}
+	rel := filepath.Join(".github", "workflows", "release-on-main.yml")
+	if err := os.WriteFile(filepath.Join(root, rel), []byte("# release-on-main-version: 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	actionOf := func(out SetupPrepareOut) string {
+		for _, e := range out.CIScriptDrift {
+			if e.Script == rel {
+				return e.Action
+			}
+		}
+		return ""
+	}
+
+	first, err := setupPrepare(root, SetupPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("setupPrepare (first): %v", err)
+	}
+	if got := actionOf(first); got != "outdated" {
+		t.Fatalf("first call: expected 'outdated', got %q", got)
+	}
+	if first.CIScriptDriftError != "" {
+		t.Errorf("unexpected ciScriptDriftError %q", first.CIScriptDriftError)
+	}
+	if _, err := scaffoldCIWith(root, scaffoldOptions{UpdateOutdated: true}, noGhExec); err != nil {
+		t.Fatalf("scaffoldCIWith (update): %v", err)
+	}
+	second, err := setupPrepare(root, SetupPrepareIn{SkipConfigCheck: true})
+	if err != nil {
+		t.Fatalf("setupPrepare (second): %v", err)
+	}
+	if got := actionOf(second); got != "current" {
+		t.Errorf("second call: expected 'current', got %q", got)
+	}
+}
+
+// TestCIDriftErrorText verifies the text of each error class.
+func TestCIDriftErrorText(t *testing.T) {
+	data := &mcpserver.DataError{Msg: "data msg", Suggestion: "data fix."}
+	infra := &mcpserver.InfraError{Msg: "infra msg", Suggestion: "infra fix."}
+	domain := &mcpserver.DomainError{Msg: "domain msg", Suggestion: "domain fix."}
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"data error", data, "data msg. data fix."},
+		{"wrapped data error", fmt.Errorf("x: %w", data), "x: data msg. data fix."},
+		{"infra error", infra, "infra msg. infra fix."},
+		{"wrapped infra error", fmt.Errorf("x: %w", infra), "x: infra msg. infra fix."},
+		{"domain error keeps its suggestion", domain, "domain msg. domain fix."},
+		{"message with a final period", &mcpserver.InfraError{Msg: "done.", Suggestion: "retry."}, "done. retry."},
+		{"empty suggestion gives no trailing space", &mcpserver.InfraError{Msg: "infra msg"}, "infra msg"},
+		{"plain error", errors.New("plain"), "plain"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ciDriftErrorText(tc.err); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

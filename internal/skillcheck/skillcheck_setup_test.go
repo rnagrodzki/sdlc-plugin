@@ -394,6 +394,7 @@ func TestSetupSkillsRegistryContainsExpectedTools(t *testing.T) {
 		"openspec_enrich",
 		"validate",
 		"dimensions_render_instructions",
+		"scaffold_ci",
 	}
 
 	for _, name := range expected {
@@ -631,5 +632,79 @@ func TestSetupSkillsOpenspecMarkerMatchesTool(t *testing.T) {
 	}
 	if !foundInSkill {
 		t.Error("skills/setup/SKILL.md names no managed-block begin marker for Step 0 detection")
+	}
+}
+
+// TestSetupSkillsStep3cRules asserts the Step 3c section of the setup skill
+// holds each rule that keeps an unknown value, an absent field, a check error
+// or a missing answer from causing a question or a write.
+func TestSetupSkillsStep3cRules(t *testing.T) {
+	repoRoot := setupSkillsRepoRoot(t)
+	path := filepath.Join(repoRoot, "skills/setup/SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	text := string(data)
+	start := strings.Index(text, "### Step 3c")
+	end := strings.Index(text, "### Step 4")
+	if start < 0 || end < start {
+		t.Fatalf("skills/setup/SKILL.md: Step 3c section not found between %q and %q", "### Step 3c", "### Step 4")
+	}
+	section := text[start:end]
+	for rule, want := range map[string]string{
+		"unknown action gives no question and no write": "Any other `action` value counts as `current`.",
+		"missing field gives no question":               "An absent `ciScriptDrift[]` counts as empty.",
+		"drift check error gives no question":           "Do not print the error here: Step 4 prints it once.",
+		"no question tool gives no write":               "When AskUserQuestion is not available, do not call the tool: treat the answer as Skip.",
+		"unknown answer gives no write":                 "Any other answer (free text or a dismissed question)",
+		"the only write call":                           "scaffold_ci({ updateOutdated: true })",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("skills/setup/SKILL.md Step 3c: missing rule (%s): %q", rule, want)
+		}
+	}
+}
+
+// TestSetupSkillsCIDriftErrorPrintsOnce asserts the setup skill prints the
+// CI script drift error in one place only: the Step 4 summary.
+func TestSetupSkillsCIDriftErrorPrintsOnce(t *testing.T) {
+	repoRoot := setupSkillsRepoRoot(t)
+	path := filepath.Join(repoRoot, "skills/setup/SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	text := string(data)
+	const marker = "CI script check failed"
+	if got := strings.Count(text, marker); got != 1 {
+		t.Fatalf("skills/setup/SKILL.md: %q appears %d times, want 1 (the Step 4 summary)", marker, got)
+	}
+	step4 := strings.Index(text, "### Step 4")
+	if step4 < 0 || strings.Index(text, marker) < step4 {
+		t.Errorf("skills/setup/SKILL.md: %q must be in the Step 4 section", marker)
+	}
+}
+
+// TestSetupSkillsRoutesReachStep3c asserts every route of the setup skill
+// that names Step 2b -> Step 3 continues through Step 3b and Step 3c, so no
+// route skips the CI script update step.
+func TestSetupSkillsRoutesReachStep3c(t *testing.T) {
+	repoRoot := setupSkillsRepoRoot(t)
+	path := filepath.Join(repoRoot, "skills/setup/SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	flat := strings.Join(strings.Fields(string(data)), " ")
+	route := regexp.MustCompile(`2b → (?:Step )?3(?: → (?:Step )?3b → (?:Step )?3c)?`)
+	matches := route.FindAllString(flat, -1)
+	if len(matches) == 0 {
+		t.Fatal("skills/setup/SKILL.md: no route through Step 2b found")
+	}
+	for _, m := range matches {
+		if !strings.HasSuffix(m, "3c") {
+			t.Errorf("skills/setup/SKILL.md: route %q does not continue to Step 3b and Step 3c", m)
+		}
 	}
 }
