@@ -283,56 +283,90 @@ func TestDashboardRunEnsureOpenBrowserErrorDoesNotFailCall(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// tab input
-// ---------------------------------------------------------------------------
-
-func TestDashboardRunEnsureOpenTabOpensTabAddress(t *testing.T) {
+func TestDashboardRunEnsureOpenTabBrowserErrorNamesTabAddress(t *testing.T) {
 	isolateDashboardTest(t)
 	root := mkDashboardRoot(t)
 	w := newFakeDashWorld()
 
-	var openedURL string
 	orig := dashboardOpenBrowser
-	dashboardOpenBrowser = func(url string) error {
-		openedURL = url
-		return nil
-	}
+	dashboardOpenBrowser = func(url string) error { return errors.New("no display") }
 	t.Cleanup(func() { dashboardOpenBrowser = orig })
 
 	out, err := dashboardRun(w.deps(), root, DashboardIn{Action: "ensure", Open: true, Tab: "setup"})
 	if err != nil {
-		t.Fatalf("dashboardRun: %v", err)
+		t.Fatalf("dashboardRun: unexpected error from a failing OpenBrowser: %v", err)
 	}
-	if want := out.URL + "#setup"; openedURL != want {
-		t.Errorf("OpenBrowser called with %q, want %q", openedURL, want)
+	want := fmt.Sprintf("Could not open the browser automatically (no display). Open %s#setup manually.", out.URL)
+	if out.Next != want {
+		t.Errorf("Next = %q, want %q", out.Next, want)
 	}
 	if strings.Contains(out.URL, "#") {
 		t.Errorf("URL = %q, want it without a tab suffix", out.URL)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// tab input
+// ---------------------------------------------------------------------------
+
+func TestDashboardRunEnsureTabOpensTabAddress(t *testing.T) {
+	for _, tab := range dashboardTabs {
+		t.Run(tab, func(t *testing.T) {
+			isolateDashboardTest(t)
+			root := mkDashboardRoot(t)
+			w := newFakeDashWorld()
+
+			var openedURL string
+			orig := dashboardOpenBrowser
+			dashboardOpenBrowser = func(url string) error {
+				openedURL = url
+				return nil
+			}
+			t.Cleanup(func() { dashboardOpenBrowser = orig })
+
+			out, err := dashboardRun(w.deps(), root, DashboardIn{Action: "ensure", Open: true, Tab: tab})
+			if err != nil {
+				t.Fatalf("dashboardRun: %v", err)
+			}
+			want := out.URL + "#" + tab
+			if openedURL != want {
+				t.Errorf("OpenBrowser called with %q, want %q", openedURL, want)
+			}
+			if wantNext := fmt.Sprintf("Opened %s in the default browser.", want); out.Next != wantNext {
+				t.Errorf("Next = %q, want %q", out.Next, wantNext)
+			}
+			if strings.Contains(out.URL, "#") {
+				t.Errorf("URL = %q, want it without a tab suffix", out.URL)
+			}
+		})
+	}
+}
+
 func TestDashboardRunEnsureTabWithoutOpenNamesTabAddress(t *testing.T) {
-	isolateDashboardTest(t)
-	root := mkDashboardRoot(t)
-	w := newFakeDashWorld()
+	for _, tab := range dashboardTabs {
+		t.Run(tab, func(t *testing.T) {
+			isolateDashboardTest(t)
+			root := mkDashboardRoot(t)
+			w := newFakeDashWorld()
 
-	orig := dashboardOpenBrowser
-	dashboardOpenBrowser = func(url string) error {
-		t.Errorf("OpenBrowser called with %q, want no browser without open", url)
-		return nil
-	}
-	t.Cleanup(func() { dashboardOpenBrowser = orig })
+			orig := dashboardOpenBrowser
+			dashboardOpenBrowser = func(url string) error {
+				t.Errorf("OpenBrowser called with %q, want no browser without open", url)
+				return nil
+			}
+			t.Cleanup(func() { dashboardOpenBrowser = orig })
 
-	out, err := dashboardRun(w.deps(), root, DashboardIn{Action: "ensure", Tab: "setup"})
-	if err != nil {
-		t.Fatalf("dashboardRun: %v", err)
-	}
-	if want := out.URL + "#setup"; !strings.Contains(out.Next, want) {
-		t.Errorf("Next = %q, want it to name %q", out.Next, want)
-	}
-	if strings.Contains(out.URL, "#") {
-		t.Errorf("URL = %q, want it without a tab suffix", out.URL)
+			out, err := dashboardRun(w.deps(), root, DashboardIn{Action: "ensure", Tab: tab})
+			if err != nil {
+				t.Fatalf("dashboardRun: %v", err)
+			}
+			if want := fmt.Sprintf("Open %s#%s in a browser to view the dashboard.", out.URL, tab); out.Next != want {
+				t.Errorf("Next = %q, want %q", out.Next, want)
+			}
+			if strings.Contains(out.URL, "#") {
+				t.Errorf("URL = %q, want it without a tab suffix", out.URL)
+			}
+		})
 	}
 }
 
@@ -346,31 +380,150 @@ func TestDashboardRunEnsureUnknownTab(t *testing.T) {
 		t.Fatal("dashboardRun: expected an error for an unknown tab, got nil")
 	}
 	de := domainErrorOf(t, err)
-	if !strings.Contains(de.Msg, "pipelines, activity, history, preplans, setup") {
-		t.Errorf("DomainError.Msg = %q, want it to list every tab", de.Msg)
+	if want := `dashboard: unknown tab "bogus"; must be one of: pipelines, activity, history, preplans, setup`; de.Msg != want {
+		t.Errorf("DomainError.Msg = %q, want %q", de.Msg, want)
 	}
-	if de.Suggestion == "" {
-		t.Error("DomainError.Suggestion is empty, want a suggestion")
+	if want := "Pass one of the listed tab names, or leave tab empty."; de.Suggestion != want {
+		t.Errorf("DomainError.Suggestion = %q, want %q", de.Suggestion, want)
 	}
 	if w.spawns != 0 {
 		t.Errorf("spawns = %d, want 0 (server must not start on an unknown tab)", w.spawns)
 	}
 }
 
+// TestDashboardRunTabWithStatusOrStop checks that a tab, known or unknown,
+// with action status or stop fails before the action runs: no spawn, no
+// signal, and the running server stays up.
 func TestDashboardRunTabWithStatusOrStop(t *testing.T) {
 	for _, action := range []string{"status", "stop"} {
-		t.Run(action, func(t *testing.T) {
-			isolateDashboardTest(t)
-			root := mkDashboardRoot(t)
-			w := newFakeDashWorld()
+		for _, tab := range []string{"setup", "bogus"} {
+			t.Run(action+"/"+tab, func(t *testing.T) {
+				isolateDashboardTest(t)
+				root := mkDashboardRoot(t)
+				if err := dashboard.WriteServerRecord(dashboard.ServerRecord{PID: 42, Port: 7385, Version: "v1"}); err != nil {
+					t.Fatalf("WriteServerRecord: %v", err)
+				}
+				w := newFakeDashWorld()
+				w.servers[7385] = dashboard.Health{PID: 42, Version: "v1"}
 
-			_, err := dashboardRun(w.deps(), root, DashboardIn{Action: action, Tab: "setup"})
-			if err == nil {
-				t.Fatal("dashboardRun: expected an error, got nil")
+				_, err := dashboardRun(w.deps(), root, DashboardIn{Action: action, Tab: tab})
+				if err == nil {
+					t.Fatal("dashboardRun: expected an error, got nil")
+				}
+				de := domainErrorOf(t, err)
+				if want := fmt.Sprintf("dashboard: tab is for action ensure only, got action %q", action); de.Msg != want {
+					t.Errorf("DomainError.Msg = %q, want %q", de.Msg, want)
+				}
+				if want := `Remove tab, or call dashboard with action="ensure".`; de.Suggestion != want {
+					t.Errorf("DomainError.Suggestion = %q, want %q", de.Suggestion, want)
+				}
+				if w.spawns != 0 || w.signals != 0 {
+					t.Errorf("spawns = %d, signals = %d, want 0 and 0", w.spawns, w.signals)
+				}
+				if _, ok := w.servers[7385]; !ok {
+					t.Error("server on port 7385 is gone, want it still running")
+				}
+			})
+		}
+	}
+}
+
+// TestDashboardRunUnknownActionWithTab checks that an unknown action with a
+// tab reports the unknown action, not the tab rule.
+func TestDashboardRunUnknownActionWithTab(t *testing.T) {
+	isolateDashboardTest(t)
+	root := mkDashboardRoot(t)
+	w := newFakeDashWorld()
+
+	_, err := dashboardRun(w.deps(), root, DashboardIn{Action: "bogus", Tab: "setup"})
+	if err == nil {
+		t.Fatal("dashboardRun: expected an error, got nil")
+	}
+	de := domainErrorOf(t, err)
+	if want := `dashboard: unknown action "bogus"; must be one of: ensure, status, stop`; de.Msg != want {
+		t.Errorf("DomainError.Msg = %q, want %q", de.Msg, want)
+	}
+}
+
+// TestDashboardInEnumsMatchLists checks that the enum tags of DashboardIn
+// equal dashboardActions and dashboardTabs, and that the tab description
+// names every tab, so the schema hints cannot drift from the lists.
+func TestDashboardInEnumsMatchLists(t *testing.T) {
+	typ := reflect.TypeOf(DashboardIn{})
+	enumOf := func(field string) []string {
+		f, ok := typ.FieldByName(field)
+		if !ok {
+			t.Fatalf("DashboardIn has no field %s", field)
+		}
+		var vals []string
+		for _, opt := range strings.Split(f.Tag.Get("jsonschema"), ",") {
+			if v, ok := strings.CutPrefix(opt, "enum="); ok {
+				vals = append(vals, v)
 			}
-			de := domainErrorOf(t, err)
-			if de.Msg != "dashboard: tab is for action ensure only" {
-				t.Errorf("DomainError.Msg = %q, want %q", de.Msg, "dashboard: tab is for action ensure only")
+		}
+		return vals
+	}
+	if got := enumOf("Action"); !reflect.DeepEqual(got, dashboardActions) {
+		t.Errorf("DashboardIn.Action enum = %q, dashboardActions = %q", got, dashboardActions)
+	}
+	if got := enumOf("Tab"); !reflect.DeepEqual(got, dashboardTabs) {
+		t.Errorf("DashboardIn.Tab enum = %q, dashboardTabs = %q", got, dashboardTabs)
+	}
+	f, _ := typ.FieldByName("Tab")
+	if want := "one of " + strings.Join(dashboardTabs, ", ") + "."; !strings.Contains(f.Tag.Get("jsonschema_description"), want) {
+		t.Errorf("DashboardIn.Tab description = %q, want it to contain %q", f.Tag.Get("jsonschema_description"), want)
+	}
+}
+
+// TestDashboardRegisteredToolTab calls the registered dashboard tool over an
+// in-memory MCP session with a fake dashboard.Deps, so the tab input is
+// pinned at the MCP layer: the next text names the tab address, the url does
+// not, and a tab with status or an unknown tab is an error result.
+func TestDashboardRegisteredToolTab(t *testing.T) {
+	isolateDashboardTest(t)
+	root := mkDashboardRoot(t)
+	writeDashboardLocalTOML(t, root, map[string]any{"dashboard": map[string]any{"port": 7400}})
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
+	t.Chdir(root)
+	w := newFakeDashWorld()
+	origDeps := dashboardDefaultDeps
+	dashboardDefaultDeps = w.deps
+	t.Cleanup(func() { dashboardDefaultDeps = origDeps })
+	origOpen := dashboardOpenBrowser
+	dashboardOpenBrowser = func(url string) error {
+		t.Errorf("OpenBrowser called with %q, want no browser without open", url)
+		return nil
+	}
+	t.Cleanup(func() { dashboardOpenBrowser = origOpen })
+
+	t.Run("ensure", func(t *testing.T) {
+		res, text := callRegisteredTool(t, RegisterDashboardTools, "dashboard", map[string]any{"action": "ensure", "tab": "setup"})
+		if res.IsError {
+			t.Fatalf("IsError = true, text:\n%s", text)
+		}
+		const url = "http://127.0.0.1:7400"
+		if want := "Open " + url + "#setup in a browser to view the dashboard."; !strings.Contains(text, want) {
+			t.Errorf("text does not contain %q:\n%s", want, text)
+		}
+		if got := strings.Count(text, url+"#setup"); got != 1 {
+			t.Errorf("text names %s#setup %d times, want 1 (only the next text, never the url field):\n%s", url, got, text)
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+		want string
+	}{
+		{"status", map[string]any{"action": "status", "tab": "setup"}, `dashboard: tab is for action ensure only, got action "status"`},
+		{"unknown tab", map[string]any{"action": "ensure", "tab": "bogus"}, `dashboard: unknown tab "bogus"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, text := callRegisteredTool(t, RegisterDashboardTools, "dashboard", tc.args)
+			if !res.IsError {
+				t.Fatalf("IsError = false, want an error result; text:\n%s", text)
+			}
+			if !strings.Contains(text, tc.want) {
+				t.Errorf("text does not contain %q:\n%s", tc.want, text)
 			}
 		})
 	}
@@ -379,12 +532,12 @@ func TestDashboardRunTabWithStatusOrStop(t *testing.T) {
 // dashboardTabNamesRe matches the TAB_NAMES list in view.js.
 var dashboardTabNamesRe = regexp.MustCompile(`TAB_NAMES\s*=\s*\[([^\]]*)\]`)
 
-// dashboardTabsFromJS returns the names in the TAB_NAMES list of a view.js text.
-func dashboardTabsFromJS(t *testing.T, js string) []string {
-	t.Helper()
+// dashboardTabsFromJS returns the names in the TAB_NAMES list of a view.js
+// text, or nil when the text has no TAB_NAMES list.
+func dashboardTabsFromJS(js string) []string {
 	m := dashboardTabNamesRe.FindStringSubmatch(js)
 	if m == nil {
-		t.Fatal("view.js: no TAB_NAMES list found")
+		return nil
 	}
 	var names []string
 	for _, part := range strings.Split(m[1], ",") {
@@ -403,8 +556,35 @@ func TestDashboardTabsMatchPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read view.js: %v", err)
 	}
-	if got := dashboardTabsFromJS(t, string(b)); !reflect.DeepEqual(got, dashboardTabs) {
+	got := dashboardTabsFromJS(string(b))
+	if got == nil {
+		t.Fatal("view.js: no TAB_NAMES list found")
+	}
+	if !reflect.DeepEqual(got, dashboardTabs) {
 		t.Errorf("view.js TAB_NAMES = %q, dashboardTabs = %q", got, dashboardTabs)
+	}
+}
+
+// TestDashboardTabsFromJS pins the TAB_NAMES parser of the parity test, so
+// that test cannot pass by accident on a quote style or layout change.
+func TestDashboardTabsFromJS(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		js   string
+		want []string
+	}{
+		{"single quotes", `const TAB_NAMES = ['a', 'b'];`, []string{"a", "b"}},
+		{"double quotes", `const TAB_NAMES = ["a", "b"];`, []string{"a", "b"}},
+		{"trailing comma", `const TAB_NAMES = ['a', 'b',];`, []string{"a", "b"}},
+		{"multi-line", "const TAB_NAMES = [\n  'a',\n  'b',\n];", []string{"a", "b"}},
+		{"no spaces", `TAB_NAMES=['a','b']`, []string{"a", "b"}},
+		{"no list", `const TABS = ['a', 'b'];`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := dashboardTabsFromJS(tc.js); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("dashboardTabsFromJS(%q) = %q, want %q", tc.js, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -637,7 +817,7 @@ func TestDashboardEnsureUsesMainWorktreeRoot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDashboardToolDescriptionExact(t *testing.T) {
-	want := "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: archive a finished run (moves its files to .sdlc-v2/run-archive/ and deletes its working files; the moved files stay there), clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* temp dirs, and empties the server log), delete a preplan topic file (.sdlc-v2/preplan/<slug>.md; no recovery), delete a deferred item (rewrites .sdlc-v2/history/deferred.json; to recover, add it again with ship_state deferred_add), delete a learning (rewrites .sdlc-v2/learnings/log.md; to recover, add it again with learnings_log append), set the status of a preplan topic file (rewrites its **Status:** line; to recover, set the old status again), delete History rows (rewrites .sdlc-v2/history/runs.jsonl; no recovery), dismiss a wait (deletes one record in .sdlc-v2/evidence/attention/; the session still waits for its answer), save the Setup form (rewrites the changed keys of .sdlc-v2/config.toml, .sdlc-v2/local.toml or the user file ($SDLC_USER_CONFIG when set, else ~/.sdlc/local.toml); a save to the user file also removes each changed key from .sdlc-v2/local.toml; a save of the version section also creates each missing CI script file and lists it in ciFiles; a refused field value changes no file; to recover, set the old value again, set a removed project key again with the target This project, and delete by hand each file listed in ciFiles), and create the first config of a repo (creates .sdlc-v2/config.toml and .sdlc-v2/local.toml from the templates, each only when it is absent, creates .sdlc-v2/runs/, and adds or updates the sdlc block in .sdlc-v2/.gitignore and in the root .gitignore, and renames a leftover .sdlc-v2/local.json to local.json.bak when no local.json.bak exists; to recover, delete each config file listed in created, and rename local.json.bak back to local.json only when the result lists that rename)."
+	want := "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of pipelines, activity, history, preplans, setup; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: archive a finished run (moves its files to .sdlc-v2/run-archive/ and deletes its working files; the moved files stay there), clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* temp dirs, and empties the server log), delete a preplan topic file (.sdlc-v2/preplan/<slug>.md; no recovery), delete a deferred item (rewrites .sdlc-v2/history/deferred.json; to recover, add it again with ship_state deferred_add), delete a learning (rewrites .sdlc-v2/learnings/log.md; to recover, add it again with learnings_log append), set the status of a preplan topic file (rewrites its **Status:** line; to recover, set the old status again), delete History rows (rewrites .sdlc-v2/history/runs.jsonl; no recovery), dismiss a wait (deletes one record in .sdlc-v2/evidence/attention/; the session still waits for its answer), save the Setup form (rewrites the changed keys of .sdlc-v2/config.toml, .sdlc-v2/local.toml or the user file ($SDLC_USER_CONFIG when set, else ~/.sdlc/local.toml); a save to the user file also removes each changed key from .sdlc-v2/local.toml; a save of the version section also creates each missing CI script file and lists it in ciFiles; a refused field value changes no file; to recover, set the old value again, set a removed project key again with the target This project, and delete by hand each file listed in ciFiles), and create the first config of a repo (creates .sdlc-v2/config.toml and .sdlc-v2/local.toml from the templates, each only when it is absent, creates .sdlc-v2/runs/, and adds or updates the sdlc block in .sdlc-v2/.gitignore and in the root .gitignore, and renames a leftover .sdlc-v2/local.json to local.json.bak when no local.json.bak exists; to recover, delete each config file listed in created, and rename local.json.bak back to local.json only when the result lists that rename)."
 
 	s := mcpserver.New("test", "0.0.0-test")
 	RegisterDashboardTools(s)

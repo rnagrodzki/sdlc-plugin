@@ -41,11 +41,16 @@ sequenceDiagram
 - **THEN** the skill does not ask the question
 
 #### Scenario: Second run
-- **WHEN** the config files already exist before the run
+- **WHEN** both config files already exist before the run
 - **THEN** the skill does not ask the question
 
 ### Requirement: Setup tab pointer at the end
-The summary SHALL end with a pointer to the dashboard Setup tab, from `dashboard` with `action:"status"`, on every run that reaches the summary.
+The summary SHALL end with a pointer to the dashboard Setup tab on every run that reaches the summary. After a tab answer the pointer uses the address that the question step kept; on every other run it comes from `dashboard` with `action:"status"`.
+
+#### Scenario: Form sections deferred to the Setup tab
+- **WHEN** the user answered `Setup tab` and the `dashboard` call returned
+- **THEN** the summary has a `Deferred` line that says this run did not save the form sections
+- **AND** the pointer says to save the form sections at `<url>#setup`, with no `status` call
 
 #### Scenario: Server running
 - **WHEN** `status` reports `running:true`

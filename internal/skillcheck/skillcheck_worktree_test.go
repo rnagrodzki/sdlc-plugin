@@ -217,11 +217,11 @@ var worktreeSkillsDisclosedGapExceptions = map[string]worktreeSkillsException{
 		contains: "projectConfig",
 		reason:   `Read of config.toml; lines below carry an explicit "Disclosed gap: setup_prepare returns the merged local values (localValues), but not the contents of the project config file" comment -- local.toml itself is no longer bare-Read here, it comes from setup_prepare's localValues instead (Task 16)`,
 	},
-	"skills/setup/SKILL.md:902": {
+	"skills/setup/SKILL.md:904": {
 		contains: "Read the current",
 		reason:   `Read of config.toml; the line immediately below reads "No MCP tool returns this value, so this Read is a deliberate, disclosed exception"`,
 	},
-	"skills/setup/SKILL.md:982": {
+	"skills/setup/SKILL.md:984": {
 		contains: "re-Read `.sdlc-v2/config.toml` only",
 		reason:   `re-Read of config.toml only (local.toml values come from setup_prepare's localValues, Task 16); the line itself reads "same disclosed gap as Step 0, no tool-backed alternative"`,
 	},

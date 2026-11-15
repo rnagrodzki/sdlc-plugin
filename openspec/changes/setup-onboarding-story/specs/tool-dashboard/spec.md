@@ -14,6 +14,7 @@ The tool SHALL select its operation from `action`, one of `ensure`, `status`, `s
 #### Scenario: Unknown action
 - **WHEN** the call passes `action:"restart"`
 - **THEN** the result is a `DomainError` that lists `ensure`, `status`, `stop`
+- **AND** the error has a Suggestion
 
 #### Scenario: Unknown tab
 - **WHEN** the call passes `action:"ensure"` and `tab:"bogus"`
@@ -23,7 +24,8 @@ The tool SHALL select its operation from `action`, one of `ensure`, `status`, `s
 
 #### Scenario: Tab with status or stop
 - **WHEN** the call passes `action:"status"` or `action:"stop"` with a `tab` that is not empty
-- **THEN** the result is a `DomainError` with the message `dashboard: tab is for action ensure only`
+- **THEN** the result is a `DomainError` with the message `dashboard: tab is for action ensure only, got action "<action>"`
+- **AND** no server starts or stops
 
 ### Requirement: Ensure
 The `ensure` action SHALL register the main worktree root of the repo, SHALL use the `port` of the `[dashboard]` settings, SHALL reuse an active server of the same version and port, SHALL replace a server of another version or port, and SHALL wait up to 3 s for the health answer of a new server.

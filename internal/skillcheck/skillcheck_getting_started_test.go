@@ -102,7 +102,9 @@ func checkOwnerTable(doc string, sections []setupmeta.Section) []string {
 
 // TestGettingStartedOwnerTableMatchesSections reads docs/getting-started.md
 // (same path resolve as skillcheck_openspec_save_test.go) and expects no
-// message. Its sub-tests feed 6 bad texts and expect 1 message each.
+// message. Its sub-tests feed bad texts and expect the one message that names
+// the cause, and feed layout variants (CRLF, an indented row) and expect no
+// message.
 func TestGettingStartedOwnerTableMatchesSections(t *testing.T) {
 	sections := setupmeta.Sections()
 	doc := executeSkillsReadFile(t, filepath.Join(openspecSaveSkillsDocsDir(t), "getting-started.md"))
@@ -120,19 +122,36 @@ func TestGettingStartedOwnerTableMatchesSections(t *testing.T) {
 	cases := []struct {
 		name string
 		edit func(string) string
+		// want is the one expected message; wantPrefix replaces it when the
+		// message carries computed text. Both empty: no message expected.
+		want, wantPrefix string
 	}{
-		{"missing_id", func(d string) string { return strings.Replace(d, firstRow, "", 1) }},
-		{"duplicate_id", func(d string) string { return strings.Replace(d, firstRow, firstRow+firstRow, 1) }},
+		{"missing_id", func(d string) string { return strings.Replace(d, firstRow, "", 1) },
+			fmt.Sprintf("section %q has no row in the owner table", firstID), ""},
+		{"duplicate_id", func(d string) string { return strings.Replace(d, firstRow, firstRow+firstRow, 1) },
+			fmt.Sprintf("section %q has 2 rows in the owner table, want 1", firstID), ""},
+		{"triplicate_id", func(d string) string { return strings.Replace(d, firstRow, firstRow+firstRow+firstRow, 1) },
+			fmt.Sprintf("section %q has 3 rows in the owner table, want 1", firstID), ""},
 		{"unknown_id", func(d string) string {
 			return strings.Replace(d, gettingStartedOwnerEnd, "| `not-a-section` | "+gettingStartedBothOwners+" |\n\n"+gettingStartedOwnerEnd, 1)
-		}},
+		}, `owner table row "not-a-section" is not a section id in setupmeta.Sections()`, ""},
 		{"wrong_owner", func(d string) string {
 			return strings.Replace(d, "| `commit` | "+gettingStartedSkillOnly+" |", "| `commit` | "+gettingStartedBothOwners+" |", 1)
-		}},
+		}, fmt.Sprintf("section %q owner is %q, want %q", "commit", gettingStartedBothOwners, gettingStartedSkillOnly), ""},
 		{"wrong_count_sentence", func(d string) string {
 			return strings.Replace(d, " form sections (", " form sections (999 more than ", 1)
-		}},
-		{"missing_marker", func(d string) string { return strings.Replace(d, gettingStartedOwnerStart, "", 1) }},
+		}, "", "count sentence is missing or wrong, want: "},
+		{"missing_marker", func(d string) string { return strings.Replace(d, gettingStartedOwnerStart, "", 1) },
+			"start marker " + gettingStartedOwnerStart + " is missing", ""},
+		{"missing_end_marker", func(d string) string { return strings.Replace(d, gettingStartedOwnerEnd, "", 1) },
+			"end marker " + gettingStartedOwnerEnd + " is missing", ""},
+		{"reversed_markers", func(d string) string {
+			d = strings.Replace(d, gettingStartedOwnerStart, "\x00", 1)
+			d = strings.Replace(d, gettingStartedOwnerEnd, gettingStartedOwnerStart, 1)
+			return strings.Replace(d, "\x00", gettingStartedOwnerEnd, 1)
+		}, "end marker comes before start marker", ""},
+		{"crlf", func(d string) string { return strings.ReplaceAll(d, "\n", "\r\n") }, "", ""},
+		{"indented_row", func(d string) string { return strings.Replace(d, firstRow, "  "+firstRow, 1) }, "", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -140,8 +159,21 @@ func TestGettingStartedOwnerTableMatchesSections(t *testing.T) {
 			if bad == doc {
 				t.Fatal("the edit did not change the text: the sub-test is stale")
 			}
-			if msgs := checkOwnerTable(bad, sections); len(msgs) != 1 {
-				t.Errorf("got %d messages, want 1: %q", len(msgs), msgs)
+			msgs := checkOwnerTable(bad, sections)
+			if tc.want == "" && tc.wantPrefix == "" {
+				if len(msgs) != 0 {
+					t.Errorf("got %d messages, want 0: %q", len(msgs), msgs)
+				}
+				return
+			}
+			if len(msgs) != 1 {
+				t.Fatalf("got %d messages, want 1: %q", len(msgs), msgs)
+			}
+			if tc.want != "" && msgs[0] != tc.want {
+				t.Errorf("message = %q, want %q", msgs[0], tc.want)
+			}
+			if tc.wantPrefix != "" && !strings.HasPrefix(msgs[0], tc.wantPrefix) {
+				t.Errorf("message = %q, want prefix %q", msgs[0], tc.wantPrefix)
 			}
 		})
 	}

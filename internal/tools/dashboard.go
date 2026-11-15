@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -21,6 +22,11 @@ import (
 // Production code uses dashboard.OpenBrowser unchanged.
 var dashboardOpenBrowser = dashboard.OpenBrowser
 
+// dashboardDefaultDeps is dashboard.DefaultDeps as a package-level seam, so
+// tests of the registered tool can pass a fake dashboard.Deps that never
+// starts a real process. Production code uses dashboard.DefaultDeps unchanged.
+var dashboardDefaultDeps = dashboard.DefaultDeps
+
 // ---------------------------------------------------------------------------
 // Input / Output
 // ---------------------------------------------------------------------------
@@ -29,12 +35,17 @@ var dashboardOpenBrowser = dashboard.OpenBrowser
 type DashboardIn struct {
 	Action string `json:"action" jsonschema:"enum=ensure,enum=status,enum=stop" jsonschema_description:"Plain text, one of ensure, status, stop. ensure: start the dashboard server if it is not active (or start it again after a version or port change) and return its address. status: report it. stop: end it. Example: ensure"`
 	Open   bool   `json:"open,omitempty" jsonschema_description:"Plain JSON bool, for action ensure only. true opens the address in the default browser. Example: true"`
-	Tab    string `json:"tab,omitempty" jsonschema_description:"Plain text, for action ensure only, one of pipelines, activity, history, preplans, setup. Names the tab of the page. With open true the browser opens that tab. Without open the next field names the address of that tab. The url field never changes. Example: setup"`
+	Tab    string `json:"tab,omitempty" jsonschema:"enum=pipelines,enum=activity,enum=history,enum=preplans,enum=setup" jsonschema_description:"Plain text, for action ensure only, one of pipelines, activity, history, preplans, setup. Names the tab of the page. With open true the browser opens that tab. Without open the next field names the address of that tab. The url field never changes. A tab with action status or stop is an error. Example: setup"`
 }
+
+// dashboardActions lists the actions dashboardRun handles. It must equal the
+// enum tag of DashboardIn.Action (TestDashboardInEnumsMatchLists).
+var dashboardActions = []string{"ensure", "status", "stop"}
 
 // dashboardTabs lists the tab names the dashboard page accepts after the "#"
 // of its address, in page order. It must equal TAB_NAMES in
-// internal/dashboard/web/static/view.js (TestDashboardTabsMatchPage).
+// internal/dashboard/web/static/view.js (TestDashboardTabsMatchPage) and the
+// enum tag and description of DashboardIn.Tab (TestDashboardInEnumsMatchLists).
 var dashboardTabs = []string{"pipelines", "activity", "history", "preplans", "setup"}
 
 // DashboardOut is the dashboard tool's output.
@@ -80,15 +91,15 @@ func dashboardRoot() (string, error) {
 // through a fake Deps without starting a real process. The Register closure
 // below passes dashboard.DefaultDeps() in production.
 func dashboardRun(d dashboard.Deps, root string, in DashboardIn) (DashboardOut, error) {
-	if in.Tab != "" && in.Action != "ensure" && dashboardKnownAction(in.Action) {
+	if in.Tab != "" && in.Action != "ensure" && slices.Contains(dashboardActions, in.Action) {
 		return DashboardOut{}, &mcpserver.DomainError{
-			Msg:        "dashboard: tab is for action ensure only",
+			Msg:        fmt.Sprintf("dashboard: tab is for action ensure only, got action %q", in.Action),
 			Suggestion: `Remove tab, or call dashboard with action="ensure".`,
 		}
 	}
 	switch in.Action {
 	case "ensure":
-		if in.Tab != "" && !dashboardTabKnown(in.Tab) {
+		if in.Tab != "" && !slices.Contains(dashboardTabs, in.Tab) {
 			return DashboardOut{}, &mcpserver.DomainError{
 				Msg:        fmt.Sprintf("dashboard: unknown tab %q; must be one of: %s", in.Tab, strings.Join(dashboardTabs, ", ")),
 				Suggestion: "Pass one of the listed tab names, or leave tab empty.",
@@ -109,24 +120,10 @@ func dashboardRun(d dashboard.Deps, root string, in DashboardIn) (DashboardOut, 
 		return dashboardOut(result, dashboardStopNext(result))
 	default:
 		return DashboardOut{}, &mcpserver.DomainError{
-			Msg: fmt.Sprintf("dashboard: unknown action %q; must be one of: ensure, status, stop", in.Action),
+			Msg:        fmt.Sprintf("dashboard: unknown action %q; must be one of: %s", in.Action, strings.Join(dashboardActions, ", ")),
+			Suggestion: "Pass one of the listed actions.",
 		}
 	}
-}
-
-// dashboardKnownAction reports whether action is one dashboardRun handles.
-func dashboardKnownAction(action string) bool {
-	return action == "ensure" || action == "status" || action == "stop"
-}
-
-// dashboardTabKnown reports whether tab is a name the dashboard page accepts.
-func dashboardTabKnown(tab string) bool {
-	for _, t := range dashboardTabs {
-		if t == tab {
-			return true
-		}
-	}
-	return false
 }
 
 // dashboardEnsure resolves [dashboard] settings at root, then ensures a
@@ -253,7 +250,7 @@ func dashboardSummary(result dashboard.Result, repos []string) string {
 
 // dashboardToolDescription is the description of the dashboard tool. The
 // paths of the data dir and the user file are built from their constants.
-var dashboardToolDescription = "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: " +
+var dashboardToolDescription = "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of " + strings.Join(dashboardTabs, ", ") + "; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: " +
 	"archive a finished run (moves its files to " + paths.DataDir + "/run-archive/ and deletes its working files; the moved files stay there), " +
 	"clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* temp dirs, and empties the server log), " +
 	"delete a preplan topic file (" + paths.DataDir + "/preplan/<slug>.md; no recovery), " +
@@ -281,7 +278,7 @@ func RegisterDashboardTools(s *mcpserver.Server) {
 			if err != nil {
 				return DashboardOut{}, err
 			}
-			return dashboardRun(dashboard.DefaultDeps(), root, in)
+			return dashboardRun(dashboardDefaultDeps(), root, in)
 		},
 	)
 }
