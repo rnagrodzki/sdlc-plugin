@@ -51,10 +51,10 @@ This mode never asks a question and never calls `gh`.
 
 ### 2c. Triage (no arguments)
 
-1. Call `ship_state({action:"deferred_propose_followups"})`. It returns `{openCount, groups, display}`.
+1. Call `ship_state({action:"deferred_propose_followups"})`. It returns `{openCount, groups, display}`. `groups` holds short items with a `title` of at most 80 characters, not the full text.
 2. If `openCount` is 0, print exactly `No deferred items open.` and stop. Ask nothing. Print no table.
 3. Render `display` verbatim.
-4. Follow the triage flow in [`reference.md`](reference.md): the question, the choice of items, then filing or resolving, then the close-out line.
+4. Follow the triage flow in [`reference.md`](reference.md): the question, the choice of items, then filing or resolving, then the close-out line. The issue title is the item `title`. For each item the user picks to file, fetch the full text with `ship_state({action:"deferred_list", detail:{ids:[<picked ids>]}})` before the draft. A title longer than 80 characters from a caller is cut by the title rule in `reference.md`.
 
 ---
 

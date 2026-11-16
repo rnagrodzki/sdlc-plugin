@@ -190,11 +190,18 @@ func TestDeferredSkillParity(t *testing.T) {
 		}
 	})
 
-	t.Run("issue_title_is_first_line", func(t *testing.T) {
-		// A description can have more than one line, so the issue title and
-		// the picker label take only its first line.
-		hardenSkillsAssertOnce(t, "deferred/reference.md", reference, "**Title:** the first line of the item's `description`.")
-		hardenSkillsAssertOnce(t, "deferred/reference.md", reference, "labelled `[<id>] <first line of description>`.")
+	t.Run("issue_title_is_short_title", func(t *testing.T) {
+		// The issue title is the short item title, at most 80 characters. The
+		// body carries the full description, fetched by id for picked items.
+		hardenSkillsAssertOnce(t, "deferred/reference.md", reference, "**Title:** the item `title` from `deferred_propose_followups` (at most 80 characters).")
+		hardenSkillsAssertOnce(t, "deferred/reference.md", reference, "labelled `[<id>] <title>`")
+		hardenSkillsAssertOnce(t, "deferred/reference.md", reference, "Cut a caller `title` longer than 80 characters by the title rule above.")
+		hardenSkillsAssertOnce(t, "deferred/reference.md", reference, "cut it at the last space before character 80 and add `…`")
+		for name, text := range map[string]string{"deferred/SKILL.md": skill, "deferred/reference.md": reference} {
+			if !strings.Contains(text, `detail:{ids:[<picked ids>]}`) {
+				t.Errorf("%s does not fetch the picked items with deferred_list detail:{ids:[<picked ids>]}", name)
+			}
+		}
 		hardenSkillsAssertOnce(t, "deferred/reference.md", reference, "`/ship` passes the finding body, so a `description` can have more than one line.")
 	})
 

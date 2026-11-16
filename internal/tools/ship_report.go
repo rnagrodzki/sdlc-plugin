@@ -68,6 +68,26 @@ type ShipRunReportOut struct {
 	Next               string          `json:"next"`
 }
 
+// ShipRunReportWrittenOut is the report result when detail.write is true. The
+// full report is in the file at Path; this result keeps only what ship steps
+// 9a and 10c read, so the transcript does not carry the whole report.
+type ShipRunReportWrittenOut struct {
+	Branch        string   `json:"branch"`
+	RunID         string   `json:"runId"`
+	Format        string   `json:"format"`
+	Bump          string   `json:"bump,omitempty"`
+	Duration      string   `json:"duration,omitempty"`
+	StepCount     int      `json:"stepCount"`
+	FixedCount    int      `json:"fixedCount"`
+	DeferredCount int      `json:"deferredCount"`
+	IssueCount    int      `json:"issueCount"`
+	GuardrailHits []string `json:"guardrailHits"`        // [] when none
+	Display       string   `json:"display" render:"raw"` // shipReportSummaryLine, emitted verbatim like ShipRunReportOut.Display
+	Path          string   `json:"path"`
+	Written       bool     `json:"written"`
+	Next          string   `json:"next"`
+}
+
 // ShipPlanTiming is the plan run's timing, read from the history store.
 // DurationMs ends at the last plan-file edit, not at plan acceptance.
 type ShipPlanTiming struct {
@@ -235,8 +255,34 @@ func shipStateReport(root, workDir string, in ShipStateIn, now func() time.Time)
 		}
 		out.Path = path
 		out.Written = true
+		return shipReportWrittenOut(out), nil
 	}
 	return out, nil
+}
+
+// shipReportWrittenOut reduces a written report to its short result.
+func shipReportWrittenOut(out ShipRunReportOut) ShipRunReportWrittenOut {
+	hits := out.GuardrailHits
+	if hits == nil {
+		hits = []string{}
+	}
+	fixed, _ := out.Healing["fixed"].([]any)
+	return ShipRunReportWrittenOut{
+		Branch:        out.Branch,
+		RunID:         out.RunID,
+		Format:        out.Format,
+		Bump:          out.Bump,
+		Duration:      out.Duration,
+		StepCount:     len(out.Steps),
+		FixedCount:    len(fixed),
+		DeferredCount: len(out.Deferred),
+		IssueCount:    len(out.Issues),
+		GuardrailHits: hits,
+		Display:       shipReportSummaryLine(out),
+		Path:          out.Path,
+		Written:       out.Written,
+		Next:          out.Next,
+	}
 }
 
 // buildShipRunReport reads every report source for one ship run. All

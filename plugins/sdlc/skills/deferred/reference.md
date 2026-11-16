@@ -28,11 +28,11 @@ All three actions belong to `ship_state`. This flow needs no other MCP tool. It 
 
 | Action | Returns | Notes |
 |---|---|---|
-| `ship_state({action:"deferred_propose_followups"})` | `{openCount, groups, display}` | `groups` maps `high`, `medium` and `low` to the open items of that priority. `display` is markdown. It is empty when `openCount` is 0. |
-| `ship_state({action:"deferred_list"})` | `{issues, openCount}` | `issues` holds every item, resolved ones too. There is no `display`. |
+| `ship_state({action:"deferred_propose_followups"})` | `{openCount, groups, display}` | `groups` maps `high`, `medium` and `low` to short items: `id`, `priority`, `source`, `created`, `title`. `display` is markdown. It is empty when `openCount` is 0. |
+| `ship_state({action:"deferred_list"})` | `{issues, openCount}` | `issues` holds every item, resolved ones too. With `detail:{ids:[…]}` (1 to 50 ids), only those items, in full. |
 | `ship_state({action:"deferred_resolve", detail:{id:"<id>"}})` | `{ok, id}` | An id that is absent from the store is an error. Its suggestion points at `deferred_list`. An id that is already resolved succeeds and changes nothing, so check `status` before you report an item as newly resolved. |
 
-An item has `id`, `created`, `source`, `priority`, `description` and `status`. It may also have `severity`, `file`, `line` and `reason`. It has no body field.
+A short item in `groups` has only `id`, `priority`, `source`, `created` and `title` (at most 80 characters). A full item has `id`, `created`, `source`, `priority`, `description` and `status`. It may also have `severity`, `file`, `line` and `reason`. It has no body field.
 
 `source` names the tool that recorded the item, not the reason it was deferred. `ship_state defer` writes an id `review-deferred-<timestamp>-<N>` and a caller-supplied `source`, defaulting to `review-below-threshold` when the caller omits it — `/received-review` passes `source: "received-review"` explicitly for its `wont-fix`, `disagree` and `needs-direction` findings, which are not below any threshold. Read `reason` to tell those apart. One exception to the new id: a `defer` with reason `needs-direction` on a `file` that already has an open `needs-direction` row adds no row. It appends its description as a line to that row and returns that row's id. `ship_state defer` writes the caller's `description`, or the finding title when the caller passes none. `/ship` passes the finding body, so a `description` can have more than one line. The execute step writes source `execute-drift` and an id `execute-drift-<timestamp>-<N>`, with no `reason`. `deferred_add` takes a caller-supplied `source` and `id` too, so none of this is a closed set. `/sdlc:harden --auto` writes source `harden-pending` for rule edits that need a person. Its `description` starts with the line `Pending rule edits: <section>`. Item 0 of section 3 handles it. The tool that finds an item records it at that moment. This flow never adds an item.
 
@@ -53,14 +53,14 @@ Option 3 ends the flow. Nothing changes. Every item stays open.
 
 ### 2. Pick the items
 
-For option 1 or 2, ask which items to act on. Use one multi-select `AskUserQuestion` with one option per open item, labelled `[<id>] <first line of description>`.
+For option 1 or 2, ask which items to act on. Use one multi-select `AskUserQuestion` with one option per open item, labelled `[<id>] <title>`, with the `title` of the short item.
 
 - If exactly one item is open, it is the pick. Do not ask.
 - `AskUserQuestion` lists only a few options. If more items are open than it can list, print the ids in chat and ask the user to reply with the ids to act on, or with `all`.
 
 ### 3. Option 1: file each picked item
 
-Take the picked items one at a time. For each item:
+Fetch the full text first, and only for the picked items. Call `ship_state({action:"deferred_list", detail:{ids:[<picked ids>]}})`. It takes 1 to 50 ids, so split a larger pick into calls of 50 ids or fewer. The short items in `groups` have no `description`. Then take the picked items one at a time. For each item:
 
 0. **Pending rule edits.** If the item's `source` is `harden-pending`, do not draft an issue. Do not run `gh issue create`. A person must approve rule edits in a harden run. Set `<id>` to the item's `id`, such as `harden-pending-plan` or `harden-pending-plan-2`. Print these two lines:
 
@@ -102,7 +102,9 @@ Print one line with three counts: items filed, items resolved without filing, an
 
 ## The issue text
 
-**Title:** the first line of the item's `description`. The body still carries the whole `description`.
+**Title:** the item `title` from `deferred_propose_followups` (at most 80 characters). A caller title (execute-drift draft) longer than 80 characters: cut it at the last space before character 80 and add `…`.
+
+The body carries the whole `description`, from `ship_state({action:"deferred_list", detail:{ids:[<picked ids>]}})`.
 
 **Body:** built from the item's fields. Leave out any line whose field is empty.
 
@@ -127,7 +129,7 @@ Print one line with three counts: items filed, items resolved without filing, an
 
 The body carries no `Source` line. `source` names the recording tool, not the reason: a `ship_state defer` record carries the caller's `source`, or `review-below-threshold` when the caller omits it, which would contradict a `Reason deferred` of `disagree`, `needs-direction` or `wont-fix`. `Reason deferred` says why the item was deferred, and the `Deferred item id` prefix says which tool recorded it.
 
-A caller that holds a fuller draft passes it in. Ship's execute-drift drafts carry their own `title` and `body`. Use those as the issue text instead of the template. They go through the same show and approve steps.
+A caller that holds a fuller draft passes it in. Ship's execute-drift drafts carry their own `title` and `body`. Use those as the issue text instead of the template. Cut a caller `title` longer than 80 characters by the title rule above. They go through the same show and approve steps.
 
 The store keeps only a title for an execute-drift item. When this flow runs later, outside the ship run that made the draft, the body is therefore short. That is expected. Do not invent detail the item does not have.
 

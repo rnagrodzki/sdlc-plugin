@@ -3565,7 +3565,7 @@ func (f planRunCleanupFixture) writeShipReport(t *testing.T, format string) stri
 	if err != nil {
 		t.Fatalf("report write: %v", err)
 	}
-	rep, ok := out.(ShipRunReportOut)
+	rep, ok := out.(ShipRunReportWrittenOut)
 	if !ok || !rep.Written || rep.Path == "" {
 		t.Fatalf("report output = %#v, want a written report with a path", out)
 	}
