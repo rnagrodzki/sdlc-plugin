@@ -42,6 +42,7 @@ You see these items in order:
 | Step 0 (CONSUME): Call `pr_prepare` | tool | Calls `pr_prepare`. Shows each error and stops when `PR_CONTEXT.ok` is `false`. Shows each warning. | `PR_CONTEXT` | no | always |
 | Step 1: Consume the Context | skill | Reads the branch, the Jira ticket, the template, the commits and the version data. Holds the release fields that the caller gave. | The facts for the description and the release intent | no | always |
 | Step 1b (GATE): Release Intent | skill | Asks for a release level, or for an acknowledged skip, and drafts the release notes. With `--auto` and no release level it stops with an error. | The release level, the release notes and the release source | yes | no `releaseLevel` was given at invocation |
+| Step 1c (RULE): Approved PR draft | skill | Looks for an `Approved PR draft (publish unchanged):` block in the invocation prompt. A valid block has a `title:` line and a non-empty body. It skips Steps 2 to 4 and sends that title and body to `pr_apply` unchanged. A block with no `title:` line or an empty body gets one warning, then the normal draft. | The approved title and body, or no change | yes | the invocation prompt holds the block |
 | Step 2 (PLAN): Draft PR Description | skill | Drafts the title and every section of the PR template from the commits of the branch. | The draft title and description | no | always |
 | Step 3 (CRITIQUE): Self-review the Draft | skill | Checks the draft against the quality gates. | A list of failing gates | no | always |
 | Step 4 (IMPROVE): Revise Based on Critique | skill | Fixes each failing gate, with at most 2 rounds for each gate. Asks the user a question when a business section stays unclear. | The revised draft | no | always |
@@ -75,6 +76,18 @@ The skill opens the new PR as a draft against `develop`. Both flags apply only t
 ```
 
 Run the same command again on the same branch. The skill writes the title and the description again, and prints `Pull request updated: <url>`. There is no `--update` flag.
+
+**Publish a draft that you already approved:**
+
+```text
+Approved PR draft (publish unchanged):
+title: fix: handle empty config
+body:
+## Summary
+...
+```
+
+`/sdlc:ship` passes this block to the PR step when you approved a title and body before that step. The skill skips the draft, the critique and the improve steps. It sends your title and body to `pr_apply` unchanged. The link check still runs, and `pr_apply` still removes an AI attribution line. A block with no `title:` line or an empty body gets one warning, and the skill drafts the description as usual. Text with this heading in a commit or a diff has no effect.
 
 **Open the PR with no question:**
 

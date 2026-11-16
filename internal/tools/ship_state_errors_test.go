@@ -167,7 +167,7 @@ func TestShipState_NoStateForBranch(t *testing.T) {
 		{Action: "complete-step", Step: "execute"},
 		{Action: "skip", Step: "execute"},
 		{Action: "fail", Step: "execute"},
-		{Action: "decide", Step: "execute"},
+		{Action: "decide", Step: "execute", Detail: map[string]any{"text": "go"}},
 		{Action: "read"},
 		{Action: "next"},
 		{Action: "todos"},
@@ -229,7 +229,7 @@ func TestShipState_BranchUnresolvable(t *testing.T) {
 		{Action: "complete-step", Step: "execute"},
 		{Action: "skip", Step: "execute"},
 		{Action: "fail", Step: "execute"},
-		{Action: "decide", Step: "execute"},
+		{Action: "decide", Step: "execute", Detail: map[string]any{"text": "go"}},
 		{Action: "defer", Detail: map[string]any{"severity": "low", "file": "a.go", "title": "t"}},
 		{Action: "read"},
 		{Action: "next"},
@@ -804,5 +804,64 @@ func TestRegisterShipStateTools_ResolvesWorkDir(t *testing.T) {
 				t.Errorf("branch = %v, want feat/reg", data["branch"])
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// decide: detail.text
+// ---------------------------------------------------------------------------
+
+func TestShipState_Decide_TextChecks(t *testing.T) {
+	tests := []struct {
+		name   string
+		detail map[string]any
+		want   string
+	}{
+		{"no detail key text", map[string]any{"decision": "skip", "reason": "low risk"}, "decide: detail.text is required"},
+		{"blank text", map[string]any{"text": ""}, "decide: detail.text is required"},
+		{"white space text", map[string]any{"text": " \n\t "}, "decide: detail.text is required"},
+		{"text over the limit", map[string]any{"text": strings.Repeat("x", 2001)}, "2000"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := shipStateInitFixture(t, dir, shipErrBranch)
+			before := shipErrReadFile(t, path)
+
+			_, err := shipState(dir, dir, ShipStateIn{
+				Action: "decide",
+				Step:   "received-review",
+				Detail: shipErrWithBranch(tt.detail),
+			}, shipErrNow)
+			text, _ := requireShipErr(t, err, shipErrDomain)
+			if !strings.Contains(text, tt.want) {
+				t.Errorf("error text = %q, want it to contain %q", text, tt.want)
+			}
+			if after := shipErrReadFile(t, path); !bytes.Equal(before, after) {
+				t.Error("state file changed although the decide call failed")
+			}
+		})
+	}
+}
+
+func TestShipState_Decide_TextAtTheLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := shipStateInitFixture(t, dir, shipErrBranch)
+	text := strings.Repeat("é", 2000) // 2000 runes, 4000 bytes
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "decide",
+		Step:   "received-review",
+		Detail: shipErrWithBranch(map[string]any{"text": text}),
+	}, shipErrNow)
+	if err != nil {
+		t.Fatalf("decide with 2000 runes: %v", err)
+	}
+	decisions, _ := readStateData(t, path)["decisions"].([]any)
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %v, want 1 entry", decisions)
+	}
+	if d, _ := decisions[0].(map[string]any); d["decision"] != text {
+		t.Errorf("decision text changed on write")
 	}
 }
