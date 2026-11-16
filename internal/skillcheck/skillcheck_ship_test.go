@@ -719,3 +719,61 @@ func TestShipSkillsRemoteReviewOverviewNote(t *testing.T) {
 		}
 	}
 }
+
+// TestShipSkillsArchiveCommitAndDecideShapes pins the archive commit of the
+// archive-openspec section and the detail:{text:...} shape of every decide
+// call in skills/ship/SKILL.md and skills/ship/entry-modes.md. The failure
+// rows are skill text that no Go code runs, so a text pin is the strongest
+// check.
+func TestShipSkillsArchiveCommitAndDecideShapes(t *testing.T) {
+	root := shipSkillsRepoRoot(t)
+	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
+	entry := shipSkillsReadFile(t, root, "skills/ship/entry-modes.md")
+
+	section, ok := shipSkillsSection(content, "### archive-openspec (inline)")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "### archive-openspec (inline)" section`)
+	}
+	for _, pin := range []string{
+		"`git add -A -- <archive paths>`",
+		"`git status --porcelain -- <archive paths>`",
+		"Agent → commit, model haiku, args `--auto --no-instructions`",
+		"`archived, commit <sha>`",
+		"`archive status check failed — <error>`",
+		"`archive stage failed — <error>`",
+		"`archive commit failed — <error>`",
+		"`archive commit failed — timeout`",
+		"| `complete-step` returns an error |",
+		"One Agent dispatch: the archive commit",
+	} {
+		if !strings.Contains(section, pin) {
+			t.Errorf("archive-openspec section does not contain %q", pin)
+		}
+	}
+	if strings.Contains(section, "No Agent dispatch") {
+		t.Error("archive-openspec section still says \"No Agent dispatch\"")
+	}
+
+	declined := `ship_state({action:"decide", step:"archive-openspec", detail:{text:"user declined archive"}})`
+	if n := strings.Count(section, declined); n != 2 {
+		t.Errorf("archive-openspec section has %d declined-consent decide shapes, want 2 (route row and closing rule)", n)
+	}
+
+	for _, pin := range []string{
+		`ship_state({action:"decide", step:"<step>", detail:{text:"<step> worker possibly still running"}})`,
+		`ship_state({action:"decide", step:"rebase", detail:{text:"<outcome>"}})`,
+	} {
+		if !strings.Contains(content, pin) {
+			t.Errorf("skills/ship/SKILL.md does not contain %q", pin)
+		}
+	}
+	commitFixes := `ship_state({action:"decide", step:"commit-fixes", detail:{text:"<outcome>"}})`
+	if !strings.Contains(entry, commitFixes) {
+		t.Errorf("skills/ship/entry-modes.md does not contain %q", commitFixes)
+	}
+
+	overview := "archived` → `complete-step` with result `already archived` when `<archive paths>` is clean, else the archive commit"
+	if !strings.Contains(content, overview) {
+		t.Error("Steps overview bullet of archive-openspec does not name the archive commit")
+	}
+}

@@ -666,7 +666,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 	case "deferred_add":
 		return shipStateDeferredAdd(root, in)
 	case "deferred_list":
-		return shipStateDeferredList(root)
+		return shipStateDeferredList(root, in)
 	case "deferred_propose_followups":
 		return shipStateDeferredProposeFollowups(root)
 	case "deferred_resolve":
@@ -4636,10 +4636,79 @@ func shipStateDeferredResolve(root string, in ShipStateIn) (any, error) {
 }
 
 // ---------------------------------------------------------------------------
-// Action: deferred_list — list all deferred issues
+// Action: deferred_list — list all deferred issues, or the items named by id
 // ---------------------------------------------------------------------------
 
-func shipStateDeferredList(root string) (any, error) {
+// deferredListMaxIDs is the most ids one deferred_list call takes in
+// detail.ids.
+const deferredListMaxIDs = 50
+
+// DeferredFollowupItem is one item of a deferred_propose_followups group. It
+// holds no description: the caller fetches the full item through
+// deferred_list with detail.ids.
+type DeferredFollowupItem struct {
+	ID       string `json:"id"`
+	Priority string `json:"priority"`
+	Source   string `json:"source"`
+	Created  string `json:"created"`
+	Title    string `json:"title"` // history.DeferredIssueTitle
+}
+
+// deferredListIDs reads detail.ids. It returns nil and no error when the key
+// is absent. It checks the shape and the count of the ids before the caller
+// reads any file.
+func deferredListIDs(d map[string]any) ([]string, error) {
+	raw, present := d["ids"]
+	if !present {
+		return nil, nil
+	}
+	var ids []string
+	switch v := raw.(type) {
+	case []string:
+		ids = v
+	case []any:
+		ids = make([]string, 0, len(v))
+		for _, item := range v {
+			s, ok := item.(string)
+			if !ok {
+				ids = nil
+				break
+			}
+			ids = append(ids, s)
+		}
+		if ids == nil && len(v) > 0 {
+			return nil, deferredIDsNotStrings()
+		}
+	default:
+		return nil, deferredIDsNotStrings()
+	}
+	if len(ids) == 0 {
+		return nil, &mcpserver.DomainError{
+			Msg:        "deferred_list: detail.ids is empty",
+			Suggestion: "Pass at least one id, or omit detail.ids to list every item. Nothing was read.",
+		}
+	}
+	if len(ids) > deferredListMaxIDs {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("deferred_list: detail.ids has %d ids, the limit is %d", len(ids), deferredListMaxIDs),
+			Suggestion: fmt.Sprintf("Split the ids into calls of %d or fewer. Nothing was read.", deferredListMaxIDs),
+		}
+	}
+	return ids, nil
+}
+
+func deferredIDsNotStrings() error {
+	return &mcpserver.DomainError{
+		Msg:        "deferred_list: detail.ids must be an array of strings",
+		Suggestion: `Pass detail.ids as ["<id>", …], or omit it to list every item. Nothing was read.`,
+	}
+}
+
+func shipStateDeferredList(root string, in ShipStateIn) (any, error) {
+	ids, err := deferredListIDs(in.Detail)
+	if err != nil {
+		return nil, err
+	}
 	w := history.NewFileWriter(historyDir(root))
 	issues, err := w.ListDeferred()
 	if err != nil {
@@ -4648,10 +4717,41 @@ func shipStateDeferredList(root string) (any, error) {
 	if issues == nil {
 		issues = []history.DeferredIssue{}
 	}
-	open := history.OpenDeferred(issues)
+	openCount := len(history.OpenDeferred(issues))
+	if ids == nil {
+		return map[string]any{
+			"issues":    issues,
+			"openCount": openCount,
+			"next":      "Each item is in full. To file items, draft one issue per chosen item.",
+		}, nil
+	}
+
+	byID := make(map[string]history.DeferredIssue, len(issues))
+	for _, issue := range issues {
+		if _, seen := byID[issue.ID]; !seen {
+			byID[issue.ID] = issue
+		}
+	}
+	chosen := make([]history.DeferredIssue, 0, len(ids))
+	picked := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		issue, ok := byID[id]
+		if !ok {
+			return nil, &mcpserver.DomainError{
+				Msg:        fmt.Sprintf("deferred_list: unknown id %q", id),
+				Suggestion: "Call deferred_propose_followups for the current ids, then retry. Nothing was read.",
+			}
+		}
+		if picked[id] {
+			continue
+		}
+		picked[id] = true
+		chosen = append(chosen, issue)
+	}
 	return map[string]any{
-		"issues":    issues,
-		"openCount": len(open),
+		"issues":    chosen,
+		"openCount": openCount,
+		"next":      "Draft one issue per item. Use the item description as the body.",
 	}, nil
 }
 
@@ -4669,13 +4769,34 @@ func shipStateDeferredProposeFollowups(root string) (any, error) {
 		issues = []history.DeferredIssue{}
 	}
 	open := history.OpenDeferred(issues)
-	groups := history.DeferredByPriority(issues)
-	summary := history.FormatDeferredSummary(issues)
 
+	// The three priorities are always present, so a caller never sees null.
+	groups := map[string][]DeferredFollowupItem{
+		history.PriorityHigh:   {},
+		history.PriorityMedium: {},
+		history.PriorityLow:    {},
+	}
+	for prio, items := range history.DeferredByPriority(issues) {
+		for _, item := range items {
+			groups[prio] = append(groups[prio], DeferredFollowupItem{
+				ID:       item.ID,
+				Priority: item.Priority,
+				Source:   item.Source,
+				Created:  item.Created,
+				Title:    history.DeferredIssueTitle(item),
+			})
+		}
+	}
+
+	next := "No open deferred items. Nothing to file."
+	if len(open) > 0 {
+		next = `To file items, call ship_state({action:"deferred_list", detail:{ids:["<id>", …]}}) for their full text.`
+	}
 	return map[string]any{
 		"openCount": len(open),
 		"groups":    groups,
-		"display":   summary,
+		"display":   history.FormatDeferredSummary(issues),
+		"next":      next,
 	}, nil
 }
 
@@ -4797,8 +4918,8 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - todos: List remaining todos for a step. Optional: step, detail.branch, detail.stateFile.
 - history_record: Append a pipeline run record to .sdlc-v2/history/runs.jsonl (persistent, survives state-file GC). Requires detail.skill, detail.outcome ("success"|"failure"|"partial"). Optional: detail.ts (ISO timestamp, defaults to now), detail.branch, detail.duration_ms, detail.steps, detail.guardrail_hits, detail.deferred_issues, detail.version. For skill "ship" with detail.branch set, the row also gets plan_file, plan_started_at and plan_duration_ms from the linkedPlan of that branch's ship state when present; with no detail.branch the row gets no plan fields and no warning. Returns {ok, ts, next, planFields?, warnings?}: next is "The history row is written." (or a no-retry text when warnings is present), planFields echoes the plan fields written to the row (absent when none), and warnings names a ship state read error or a linkedPlan that is not an object or has a bad time. A warning never fails the call.
 - deferred_add: Add a deferred issue to .sdlc-v2/history/deferred.json. Requires detail.id, detail.description. Optional: detail.created (defaults to now), detail.source, detail.priority ("high"|"medium"|"low", defaults to "medium"), detail.merge (true or false, defaults to false; true appends only the new lines of detail.description to the open item with the same id, and adds the item as <id>-<n> when only a resolved item has that id). Returns {ok, id (the id of the item that holds the text), merged (true when new lines were appended to an open item), created, priority, source, description (the item as deferred.json holds it after the call; for a merge, the merged description), next (a string)}. A deferred.json larger than 8 MiB or one that does not parse returns a DataError and the file stays unchanged.
-- deferred_list: List all deferred issues. Returns {issues, openCount}.
-- deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}.
+- deferred_list: List all deferred issues of .sdlc-v2/history/deferred.json. Returns {issues, openCount}. Optional: detail.ids (1 to 50 item ids) returns only those items, in full, plus next. A bad, empty, too long or unknown detail.ids gives a DomainError and reads nothing.
+- deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}. Each group item has only id, priority, source, created and title (at most 80 characters). Call deferred_list with detail.ids for the full items. Returns next with that call when 1 or more items are open.
 - deferred_resolve: Mark a deferred issue as resolved by ID. Requires detail.id. Returns {ok, id}. Errors if the ID is not found.
 - log-cli: Append one CLI execution row (pipeline "ship") to the CLI evidence JSONL file. Requires: (none). Optional: detail.branch, detail.step, detail.command, detail.exitCode (integer, default 0), detail.outputHead. Returns {ok, action}. A failed append is an InfraError.`,
 		mcpserver.Annotations{
