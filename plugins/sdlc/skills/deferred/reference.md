@@ -28,9 +28,17 @@ All three actions belong to `ship_state`. This flow needs no other MCP tool. It 
 
 | Action | Returns | Notes |
 |---|---|---|
-| `ship_state({action:"deferred_propose_followups"})` | `{openCount, groups, display}` | `groups` maps `high`, `medium` and `low` to short items: `id`, `priority`, `source`, `created`, `title`. `display` is markdown. It is empty when `openCount` is 0. |
-| `ship_state({action:"deferred_list"})` | `{issues, openCount}` | `issues` holds every item, resolved ones too. With `detail:{ids:[…]}` (1 to 50 ids), only those items, in full. |
+| `ship_state({action:"deferred_propose_followups"})` | `{openCount, groups, display, next}` | `groups` maps `high`, `medium` and `low` to short items: `id`, `priority`, `source`, `created`, `title`. `display` is markdown. It is empty when `openCount` is 0. `next` says what to call next. |
+| `ship_state({action:"deferred_list"})` | `{issues, openCount, next}` | `issues` holds every item, resolved ones too. With `detail:{ids:[…]}` (1 to 50 ids), only those items, in full. `openCount` always counts every open item of the store, also with `detail.ids`. See "Fetch by id" below. |
 | `ship_state({action:"deferred_resolve", detail:{id:"<id>"}})` | `{ok, id}` | An id that is absent from the store is an error. Its suggestion points at `deferred_list`. An id that is already resolved succeeds and changes nothing, so check `status` before you report an item as newly resolved. |
+
+**Fetch by id.** `detail.ids` is an array of 1 to 50 non-empty strings. The limit counts the ids of one call. The tool refuses the call and reads nothing in these cases:
+
+- The list is empty, the value is not an array, an element is not a string, or an id is blank. The error names the element and the type that it found.
+- The list has more than 50 ids.
+- One or more ids are not in the store. One error names every unknown id. Its suggestion is to call `deferred_list` without `detail.ids` to see every id, open and resolved.
+
+An id that appears twice is returned once. The items come in the order of the ids. A resolved id is not an error.
 
 A short item in `groups` has only `id`, `priority`, `source`, `created` and `title` (at most 80 characters). A full item has `id`, `created`, `source`, `priority`, `description` and `status`. It may also have `severity`, `file`, `line` and `reason`. It has no body field.
 
@@ -102,7 +110,7 @@ Print one line with three counts: items filed, items resolved without filing, an
 
 ## The issue text
 
-**Title:** the item `title` from `deferred_propose_followups` (at most 80 characters). A caller title (execute-drift draft) longer than 80 characters: cut it at the last space before character 80 and add `…`.
+**Title:** the item `title` from `deferred_propose_followups` (at most 80 characters). The tool makes it from the first non-blank line of `description`, trimmed. A line of 80 characters or fewer stays as it is. The limit counts characters (runes), not bytes. An item with no text gets the title `Deferred follow-up <id>`, which is not cut. A caller title (execute-drift draft) longer than 80 characters: cut it at the last space before character 80 and add `…`. When the first 79 characters hold no space, cut it after character 79 and add `…`.
 
 The body carries the whole `description`, from `ship_state({action:"deferred_list", detail:{ids:[<picked ids>]}})`.
 

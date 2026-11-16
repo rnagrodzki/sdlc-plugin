@@ -307,7 +307,9 @@ do not ask again at Step 5 or Step 6. Hold `skipReleaseCheck: true` for Step 6's
 but `releaseNotes` is empty or absent, draft release notes before proceeding: a few bullet lines
 sourced from `PR_CONTEXT.commitsSinceTag` (when present) or `PR_CONTEXT.commitsSinceBase`,
 covering every commit. This is the same drafting logic as the interactive path above — do not
-skip it just because the level was pre-decided.
+skip it just because the level was pre-decided. One exception: when the invocation prompt holds a
+valid `Approved PR draft` block (Step 1c) whose `releaseNotes:` line has text other than
+`draft them`, do not draft notes here. Step 1c uses the approved notes.
 
 ### Step 1c (RULE): Approved PR draft
 

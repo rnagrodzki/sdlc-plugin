@@ -72,20 +72,20 @@ type ShipRunReportOut struct {
 // full report is in the file at Path; this result keeps only what ship steps
 // 9a and 10c read, so the transcript does not carry the whole report.
 type ShipRunReportWrittenOut struct {
-	Branch        string   `json:"branch"`
-	RunID         string   `json:"runId"`
-	Format        string   `json:"format"`
-	Bump          string   `json:"bump,omitempty"`
-	Duration      string   `json:"duration,omitempty"`
-	StepCount     int      `json:"stepCount"`
-	FixedCount    int      `json:"fixedCount"`
-	DeferredCount int      `json:"deferredCount"`
-	IssueCount    int      `json:"issueCount"`
-	GuardrailHits []string `json:"guardrailHits"`        // [] when none
-	Display       string   `json:"display" render:"raw"` // shipReportSummaryLine, emitted verbatim like ShipRunReportOut.Display
-	Path          string   `json:"path"`
-	Written       bool     `json:"written"`
-	Next          string   `json:"next"`
+	Branch        string   `json:"branch" jsonschema_description:"The branch of the ship run the report covers."`
+	RunID         string   `json:"runId" jsonschema_description:"The run id of the ship run; the report file is named ship-<runId>-report.<format>."`
+	Format        string   `json:"format" jsonschema_description:"The format of the written file: md or json."`
+	Bump          string   `json:"bump,omitempty" jsonschema_description:"The release bump of the run, from flags.bump of the ship state. Left out when flags.bump is absent or empty."`
+	Duration      string   `json:"duration,omitempty" jsonschema_description:"The run duration as text, from startedAt to pipelineCompletedAt (or to now while the run is open). Left out when startedAt is absent or a time cannot be read."`
+	StepCount     int      `json:"stepCount" jsonschema_description:"The number of pipeline steps in the report, in any status."`
+	FixedCount    int      `json:"fixedCount" jsonschema_description:"The number of entries in healing.fixed. 0 when no finding was fixed, or when healing.fixed is not a list; in that case issues holds a cross-read warning and issueCount counts it."`
+	DeferredCount int      `json:"deferredCount" jsonschema_description:"The number of deferredFindings entries in the report; an entry with fixedInRun:true is left out."`
+	IssueCount    int      `json:"issueCount" jsonschema_description:"The number of report issues: the ship state issues plus the cross-read warnings of this report."`
+	GuardrailHits []string `json:"guardrailHits" jsonschema_description:"The guardrail hits of the run. [] when none."`
+	Display       string   `json:"display" render:"raw" jsonschema_description:"One summary line of the report (steps completed, findings fixed, deferred, guardrail hits), emitted verbatim."`
+	Path          string   `json:"path" jsonschema_description:"Absolute path of the written report file under <main worktree>/.sdlc-v2/reports/. The full report is in this file."`
+	Written       bool     `json:"written" jsonschema_description:"Always true in this result: the report file was written."`
+	Next          string   `json:"next" jsonschema_description:"What the ship step does after the report is written."`
 }
 
 // ShipPlanTiming is the plan run's timing, read from the history store.
@@ -260,13 +260,26 @@ func shipStateReport(root, workDir string, in ShipStateIn, now func() time.Time)
 	return out, nil
 }
 
+// shipReportFixedList returns healing.fixed of the report. damaged is true
+// when healing.fixed is present, not null and not a list; list is then nil,
+// so every count of fixed findings is 0. buildShipRunReport adds a
+// cross-read warning for that case.
+func shipReportFixedList(healing map[string]any) (list []any, damaged bool) {
+	raw, ok := healing["fixed"]
+	if !ok || raw == nil {
+		return nil, false
+	}
+	list, isList := raw.([]any)
+	return list, !isList
+}
+
 // shipReportWrittenOut reduces a written report to its short result.
 func shipReportWrittenOut(out ShipRunReportOut) ShipRunReportWrittenOut {
 	hits := out.GuardrailHits
 	if hits == nil {
 		hits = []string{}
 	}
-	fixed, _ := out.Healing["fixed"].([]any)
+	fixed, _ := shipReportFixedList(out.Healing)
 	return ShipRunReportWrittenOut{
 		Branch:        out.Branch,
 		RunID:         out.RunID,
@@ -322,6 +335,13 @@ func buildShipRunReport(root, branch string, shipSt *state.State, format string,
 			"severity": "warning",
 			"category": "cross-read",
 			"summary":  w,
+		})
+	}
+	if _, damaged := shipReportFixedList(out.Healing); damaged {
+		out.Issues = append(out.Issues, map[string]any{
+			"severity": "warning",
+			"category": "cross-read",
+			"summary":  fmt.Sprintf("healing.fixed in %s is not a list (got %T); the report counts 0 fixed findings. Fix or remove data.healing.fixed in that file.", shipSt.Path, out.Healing["fixed"]),
 		})
 	}
 	if raw, ok := data["deferredFindings"].([]any); ok {
@@ -631,7 +651,7 @@ func shipReportSummaryLine(out ShipRunReportOut) string {
 			completed++
 		}
 	}
-	fixed, _ := out.Healing["fixed"].([]any)
+	fixed, _ := shipReportFixedList(out.Healing)
 	return fmt.Sprintf("Ship run %s on %s: %d/%d steps completed, %d findings fixed, %d deferred, %d guardrail hits.",
 		out.RunID, out.Branch, completed, len(out.Steps), len(fixed), len(out.Deferred), len(out.GuardrailHits))
 }
@@ -1144,7 +1164,7 @@ func renderShipReportSummary(w *shipReportWriter, out ShipRunReportOut) {
 		row("Review", fmt.Sprintf("total %d · fixed %d · deferred %d · unaccounted %d", l.Total, l.Fixed, shipReportLedgerDeferred(l), l.Unaccounted))
 	}
 
-	fixedList, _ := out.Healing["fixed"].([]any)
+	fixedList, _ := shipReportFixedList(out.Healing)
 	if fc := shipReportCountFixed(fixedList); fc.total == 0 {
 		row("Fixed by severity", "none")
 	} else {
@@ -1448,7 +1468,7 @@ func renderShipReportHealing(w *shipReportWriter, out ShipRunReportOut) {
 	w.heading("Self-healing")
 	w.line("### Fixed")
 	w.line("")
-	fixed, _ := out.Healing["fixed"].([]any)
+	fixed, _ := shipReportFixedList(out.Healing)
 	renderShipReportFixed(w, fixed)
 
 	w.line("")

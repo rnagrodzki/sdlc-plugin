@@ -488,7 +488,7 @@ func shipStateOpenspecCheck(root, workDir string, in ShipStateIn, now func() tim
 		out.Outcome = shipOutcomeArchived
 		out.Next = completeNext
 		if step == shipmeta.StepArchiveOpenspec {
-			out.Next = "Call complete-step for archive-openspec with result already archived."
+			out.Next = "Run git status --porcelain on the archive paths. Empty: call complete-step for archive-openspec with result already archived. Not empty: stage and commit them (SKILL.md archive-openspec, archived rows)."
 		}
 	case !active:
 		out.Outcome = shipOutcomeMissingOnDisk

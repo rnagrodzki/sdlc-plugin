@@ -576,8 +576,9 @@ If verdict is **APPROVED**: skip — nothing to fix.
 
 ## Step 9 — Cleanup
 
-Remove the temp files of this run on every terminal path (dry-run stop, error stop,
-interruption, and normal completion).
+Run this step on every terminal path (dry-run stop, error stop, interruption, and normal
+completion). It stops the workers, removes the manifest, and removes the scratch folder of this
+run only when the unstoppable list is empty.
 
 First, stop every worker that Step 2 dispatched and that has no `done` entry in the last
 `ledger_status` response: call `TaskStop` with its task ID. On an error stop or an
@@ -605,7 +606,9 @@ rm -rf "{manifest.diff_dir}"
 
 When the unstoppable list is not empty, keep `{manifest.diff_dir}`. A worker that is still
 running reads its slice and diff files from it. Name the kept path in the final output. The
-directory is under `.sdlc-v2/scratch/`. A later `review_prepare` call removes `sdlc-review-*` folders older than 24 hours.
+directory is under `.sdlc-v2/scratch/`. When a later `review_prepare` call creates its own
+folder, it first removes the `sdlc-review-*` folders older than 24 hours. Clear cache on the
+dashboard also removes them.
 
 Do not remove the run's ledger. The dashboard reads it to show the review dimensions of a
 finished run. The first execute `gc` or ship `cleanup-pipeline` sweep after 7 days (the

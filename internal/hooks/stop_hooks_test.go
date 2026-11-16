@@ -12,6 +12,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
 // captureStderr temporarily redirects os.Stderr for the duration of fn and
@@ -1305,31 +1306,37 @@ func TestStopPipelineContinue_BlockCountResetsOnStepChange(t *testing.T) {
 
 // TestStopPipelineContinue_WaitingUntil pins the declared-wait rule: while
 // the in_progress step's waitingUntil is after now, the hook returns silent
-// with no block and no count. A past, absent or invalid waitingUntil gives
-// the behavior of today (block and count); an invalid value also prints one
-// stderr line.
+// with no block and no count. A past, absent, null, equal-to-now or invalid
+// waitingUntil gives the behavior of today (block and count); an invalid
+// value also prints one stderr line, and null prints none.
 func TestStopPipelineContinue_WaitingUntil(t *testing.T) {
 	future := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
 	past := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	// RFC 3339 keeps whole seconds, so this time is at or before the time
+	// the hook reads: time.Now().Before(t) is false, and the hook blocks.
+	now := time.Now().UTC().Format(time.RFC3339)
 	cases := []struct {
 		name       string
 		branch     string
-		until      any // nil means the key is absent
+		until      any  // nil means the key is absent, unless null is set
+		null       bool // the key is present with a JSON null value
 		wantBlock  bool
 		wantStderr bool
 	}{
-		{"future wait is silent", "feat/spc-wait-future", future, false, false},
-		{"past wait blocks", "feat/spc-wait-past", past, true, false},
-		{"absent wait blocks", "feat/spc-wait-absent", nil, true, false},
-		{"bad string blocks", "feat/spc-wait-badstr", "tomorrow", true, true},
-		{"non-string blocks", "feat/spc-wait-number", float64(42), true, true},
+		{"future wait is silent", "feat/spc-wait-future", future, false, false, false},
+		{"past wait blocks", "feat/spc-wait-past", past, false, true, false},
+		{"wait equal to now blocks", "feat/spc-wait-now", now, false, true, false},
+		{"absent wait blocks", "feat/spc-wait-absent", nil, false, true, false},
+		{"null wait blocks", "feat/spc-wait-null", nil, true, true, false},
+		{"bad string blocks", "feat/spc-wait-badstr", "tomorrow", false, true, true},
+		{"non-string blocks", "feat/spc-wait-number", float64(42), false, true, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root := gitFixture(t, tc.branch)
 			step := map[string]any{"name": "review", "status": "in_progress"}
-			if tc.until != nil {
-				step["waitingUntil"] = tc.until
+			if tc.until != nil || tc.null {
+				step[tools.ShipStepWaitingUntilKey] = tc.until
 			}
 			newShipState(t, root, tc.branch, "s1", []any{step}, map[string]any{"auto": true})
 

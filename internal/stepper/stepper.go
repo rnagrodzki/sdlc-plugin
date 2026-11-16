@@ -177,7 +177,7 @@ var readStateDir = os.ReadDir
 // removes <skill>-*.json files in dir older than paths.ScratchMaxAge (best
 // effort). The name keeps scripts/lib/stepper.js::createStateFile's
 // `${skill}-${hash}.json` convention. A failed MkdirAll(dir) returns an error
-// that wraps ErrStateFolder.
+// that wraps both ErrStateFolder and the MkdirAll error.
 //
 // The sweep never fails the call: a failed read of dir stops the sweep, and a
 // failed remove leaves that file and the sweep continues, as
@@ -195,7 +195,7 @@ var readStateDir = os.ReadDir
 // this filename's suffix as a hash.
 func NewStateFilePath(dir, skill string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("%w %s: %v", ErrStateFolder, dir, err)
+		return "", fmt.Errorf("%w %s: %w", ErrStateFolder, dir, err)
 	}
 	removeStaleStateFiles(dir, skill, time.Now())
 	b := make([]byte, 6)

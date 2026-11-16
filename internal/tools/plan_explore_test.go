@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -124,6 +125,26 @@ func TestPlanExplorePrepare_ScratchFailure(t *testing.T) {
 	if pack.Error == nil || !strings.Contains(*pack.Error, "create scratch folder") {
 		t.Errorf("Error = %v, want it to name the failed scratch folder", pack.Error)
 	}
+}
+
+// TestPlanExplorePrepare_HandlerScratchError pins the InfraError of the
+// plan_explore_prepare handler body. A scratch folder that cannot be made
+// keeps the scratchMkdirTemp Suggestion, which names .sdlc-v2/scratch/, and
+// wraps the ENOTDIR cause. A failed MkdirTemp uses the fallback Suggestion and
+// wraps its cause.
+func TestPlanExplorePrepare_HandlerScratchError(t *testing.T) {
+	t.Run("scratch folder is a file", func(t *testing.T) {
+		root := t.TempDir()
+		scratch := makeScratchAFile(t, root)
+		_, err := planExplorePrepare(root, root, PlanExploreIn{})
+		assertScratchInfraError(t, err, "create scratch folder "+scratch, scratchFolderSuggestion(scratch), syscall.ENOTDIR)
+	})
+	t.Run("MkdirTemp fails", func(t *testing.T) {
+		root := t.TempDir()
+		sentinel := stubMkdirTempFailure(t)
+		_, err := planExplorePrepare(root, root, PlanExploreIn{})
+		assertScratchInfraError(t, err, sentinel.Error(), planExploreFallbackSuggestion, sentinel)
+	})
 }
 
 // TestPlanExplorePrepare_ScopeHintsFromCapabilitySpecs pins that OpenSpec

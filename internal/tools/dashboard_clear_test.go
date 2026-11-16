@@ -253,11 +253,11 @@ func TestClearCache_TempDirs(t *testing.T) {
 	tmp := func(name string) string { return filepath.Join(env.tmp, name) }
 
 	oldDir := tmp("sdlc-review-old")
-	ccWriteDir(t, oldDir, 40, clearTempDirMinAge+time.Second)
+	ccWriteDir(t, oldDir, 40, paths.ScratchMaxAge+time.Second)
 	freshDir := tmp("sdlc-harden-fresh")
 	ccWriteDir(t, freshDir, 20, 23*time.Hour)
 	edgeDir := tmp("sdlc-edge")
-	ccWriteDir(t, edgeDir, 8, clearTempDirMinAge) // age equals the gate: kept
+	ccWriteDir(t, edgeDir, 8, paths.ScratchMaxAge) // age equals the gate: kept
 	exploreDir := tmp("sdlc-explore-main-abc123")
 	ccWriteDir(t, exploreDir, 30, 100*time.Hour) // state.GC owns it
 	foreignDir := tmp("other-tool-old")
@@ -652,7 +652,7 @@ func TestClearCache_SweepsScratchFolderOfRepo(t *testing.T) {
 	clearTempDir = paths.ScratchDir // the real default; newCCEnv restores the swap
 
 	oldDir := env.data(paths.ScratchSubdir, "sdlc-review-old")
-	ccWriteDir(t, oldDir, 5, clearTempDirMinAge+time.Hour)
+	ccWriteDir(t, oldDir, 5, paths.ScratchMaxAge+time.Hour)
 	newDir := env.data(paths.ScratchSubdir, "sdlc-review-new")
 	ccWriteDir(t, newDir, 5, time.Hour)
 	exploreDir := env.data(paths.ScratchSubdir, "sdlc-explore-feat-x-abc123")
@@ -684,7 +684,7 @@ func TestClearTooNewReason(t *testing.T) {
 		want   string
 	}{
 		{dashboardStallAfter, "Changed less than 30 minutes ago"},
-		{clearTempDirMinAge, "Changed less than 24 hours ago"},
+		{paths.ScratchMaxAge, "Changed less than 24 hours ago"},
 	}
 	for _, tc := range cases {
 		if got := clearTooNewReason(tc.minAge); got != tc.want {

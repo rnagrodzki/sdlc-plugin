@@ -201,3 +201,83 @@ func TestWriteTempJSON_ScratchErrorKeepsSuggestion(t *testing.T) {
 		t.Errorf("scratchSuggestion(plain) = %q, want the fallback", got)
 	}
 }
+
+// TestRemoveStaleTempDirs_AgeBoundary pins the age gate at the cap: a folder
+// whose age equals paths.ScratchMaxAge stays, and one a second older goes.
+func TestRemoveStaleTempDirs_AgeBoundary(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	mk := func(name string, mtime time.Time) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.Mkdir(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	atCap := mk("sdlc-test-at-cap", now.Add(-paths.ScratchMaxAge))
+	pastCap := mk("sdlc-test-past-cap", now.Add(-paths.ScratchMaxAge-time.Second))
+
+	removeStaleTempDirs(dir, "sdlc-test-", "", now)
+
+	if _, err := os.Stat(atCap); err != nil {
+		t.Errorf("folder aged exactly ScratchMaxAge should stay: %v", err)
+	}
+	if _, err := os.Stat(pastCap); !os.IsNotExist(err) {
+		t.Errorf("folder older than ScratchMaxAge should be removed, stat err = %v", err)
+	}
+}
+
+// makeScratchAFile makes paths.ScratchDir(root) a regular file, so the
+// MkdirAll of scratchMkdirTemp fails with ENOTDIR. It returns that path.
+func makeScratchAFile(t *testing.T, root string) string {
+	t.Helper()
+	scratch := paths.ScratchDir(root)
+	if err := os.MkdirAll(filepath.Dir(scratch), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(scratch, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return scratch
+}
+
+// stubMkdirTempFailure makes mkdirTempFunc fail with a new sentinel error for
+// the rest of the test and returns the sentinel.
+func stubMkdirTempFailure(t *testing.T) error {
+	t.Helper()
+	sentinel := errors.New("simulated MkdirTemp failure")
+	orig := mkdirTempFunc
+	mkdirTempFunc = func(string, string) (string, error) { return "", sentinel }
+	t.Cleanup(func() { mkdirTempFunc = orig })
+	return sentinel
+}
+
+// scratchFolderSuggestion is the Suggestion of scratchMkdirTemp for a scratch
+// folder that MkdirAll cannot make.
+func scratchFolderSuggestion(scratch string) string {
+	return fmt.Sprintf("Check that %s is a folder, not a file, with write permission and free space, then retry.", scratch)
+}
+
+// assertScratchInfraError fails the test unless err is a *mcpserver.InfraError
+// whose Msg contains wantMsg, whose Suggestion equals wantSuggestion, and
+// whose chain holds wantCause (errors.Is).
+func assertScratchInfraError(t *testing.T, err error, wantMsg, wantSuggestion string, wantCause error) {
+	t.Helper()
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %v (%T), want *mcpserver.InfraError", err, err)
+	}
+	if !strings.Contains(ie.Msg, wantMsg) {
+		t.Errorf("Msg = %q, want it to contain %q", ie.Msg, wantMsg)
+	}
+	if ie.Suggestion != wantSuggestion {
+		t.Errorf("Suggestion = %q, want %q", ie.Suggestion, wantSuggestion)
+	}
+	if !errors.Is(err, wantCause) {
+		t.Errorf("errors.Is(err, %v) = false; err = %v", wantCause, err)
+	}
+}

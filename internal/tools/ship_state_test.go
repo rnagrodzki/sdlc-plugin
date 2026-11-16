@@ -7801,6 +7801,12 @@ func TestShipStateHealingRecord_TextsMatchLimits(t *testing.T) {
 		fmt.Sprintf("held (optional, at most %d entries", healingHeldMax),
 		"reason is one of " + strings.Join(healingHeldReasons, " | "),
 		"required for reason " + healingHeldPendingStored,
+		// The tag is a literal, so the numbers of wait, decide and
+		// deferred_list are pinned to their constants here.
+		fmt.Sprintf("text (decide: plain text, 1 to %d characters after trimming)", shipDecideTextMax),
+		fmt.Sprintf("seconds (wait only: a whole number from %d to %d)", shipWaitMinSeconds, shipWaitMaxSeconds),
+		fmt.Sprintf("ids (deferred_list only: a JSON array of 1 to %d non-empty strings.", deferredListMaxIDs),
+		"Every other action refuses detail.seconds and detail.ids with a DomainError that names the action sent and the action that takes the key",
 	}
 	for _, w := range wants {
 		if !strings.Contains(tag, w) {
@@ -7836,6 +7842,19 @@ func TestShipStateHealingRecord_TextsMatchLimits(t *testing.T) {
 		fmt.Sprintf("(at most %d entries; a longer list is a DomainError and writes nothing)", healingAppliedMax),
 		fmt.Sprintf("detail.held, at most %d entries (a longer list is a DomainError and writes nothing)", healingHeldMax),
 		"reason (one of " + strings.Join(healingHeldReasons, " | ") + ")",
+		fmt.Sprintf("trimmed, then 1 to %d characters", shipDecideTextMax),
+		"Optional: detail.branch (a string), detail.detail.",
+		fmt.Sprintf("detail.seconds (a whole number from %d to %d)", shipWaitMinSeconds, shipWaitMaxSeconds),
+		"Returns step, waitingUntil (RFC 3339 UTC: now plus detail.seconds), narration and next",
+		"(wait also changes the state, but returns its own shape: see wait)",
+		fmt.Sprintf("detail.ids (an array of 1 to %d non-empty string ids)", deferredListMaxIDs),
+		"Returns {issues, openCount, next}; openCount always counts every open item of the file",
+		fmt.Sprintf("cut to %d characters or fewer; an empty description gives \"Deferred follow-up <id>\", not cut", history.DeferredTitleMaxRunes),
+		"Returns {openCount, groups, display, next}: next is always set",
+		"detail.seconds (wait), detail.ids (deferred_list); any other action refuses them with a DomainError",
+		fmt.Sprintf("they are equal, or one has at least %d runes and is a prefix of the other", hardenTriggerMinPrefixLen),
+		fmt.Sprintf("the trigger has at least %d runes and is a prefix of it", hardenTriggerMinPrefixLen),
+		fmt.Sprintf("cutting each to its first %d runes", hardenTriggerPrefixLen),
 	} {
 		if !strings.Contains(desc, w) {
 			t.Errorf("ship_state description does not contain %q", w)

@@ -305,7 +305,7 @@ Step 5 starts after a Step 4 pass with no empty section, or after the soft gate.
 - **Start plan now** — runs `/sdlc:plan` in this session with this topic file and the other ready topic files that the user picks. This topic file is always included. The plan skill reads each topic file as a requirements file.
 - **Start a new idea** — asks the next topic name, then runs `/sdlc:preplan <topic>` in this session. This topic file stays `ready for plan`, unless the topic name matches this file; the new run then sets it to `in progress` (Step 2).
 - **Stop** — ends this skill. The topic file stays `ready for plan`.
-- **Check against OpenSpec** — offered only when the Glob finds `openspec/config.yaml`. Runs `Skill(sdlc:verify-requirements, "--topic <topic>")` in this session, prints its report, then asks the handoff question again. With no `openspec/config.yaml`, the question has the 3 options above. With the file, it has these 4.
+- **Check against OpenSpec** — offered only when the Glob finds `openspec/config.yaml`. Runs `Skill(sdlc:verify-requirements, "--topic <topic>")` in this session, prints its report, then asks the handoff question again. With no `openspec/config.yaml`, the question has the 3 options above. With the file, it has these 4. The handoff has no option that goes back to Step 3. To change the topic file after a finding, the user picks **Start a new idea** with this topic name, or stops and runs `/sdlc:preplan <topic>`. The new run sets the status to `in progress` (Step 2) and asks from Step 3.
 
 On a tool error of the status write, follow the error table (see **Topic file writes**): print the error's `## Do this` text, then go to the cancel step. Ask no handoff question.
 

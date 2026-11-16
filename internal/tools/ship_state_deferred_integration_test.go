@@ -438,15 +438,20 @@ func TestShipState_DeferredList_IDErrors(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, ".sdlc-v2", "history", "deferred.json"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	notArr := "Pass detail.ids as [\"<id>\", …], or omit it to list every item. Nothing was read."
+	shape := "Pass detail.ids as [\"<id>\", …] with each id a non-empty string, or omit it to list every item. Nothing was read."
 	for _, tc := range []struct {
 		name      string
 		ids       any
 		msg, sugg string
 	}{
-		{"string", "d1", "deferred_list: detail.ids must be an array of strings", notArr},
-		{"number in array", []any{"d1", 2}, "deferred_list: detail.ids must be an array of strings", notArr},
-		{"null", nil, "deferred_list: detail.ids must be an array of strings", notArr},
+		{"string", "d1", "deferred_list: detail.ids must be an array of strings, got string", shape},
+		{"object", map[string]any{"a": "d1"}, "deferred_list: detail.ids must be an array of strings, got map[string]interface {}", shape},
+		{"null", nil, "deferred_list: detail.ids must be an array of strings, got null", shape},
+		{"number in array", []any{"d1", float64(2)}, "deferred_list: detail.ids[1] must be a non-empty string, got float64", shape},
+		{"null in array", []any{nil}, "deferred_list: detail.ids[0] must be a non-empty string, got null", shape},
+		{"empty string in array", []any{"d1", ""}, "deferred_list: detail.ids[1] must be a non-empty string, got a blank string", shape},
+		{"blank string in array", []any{"  \t"}, "deferred_list: detail.ids[0] must be a non-empty string, got a blank string", shape},
+		{"blank in a []string", []string{"d1", "d2", " "}, "deferred_list: detail.ids[2] must be a non-empty string, got a blank string", shape},
 		{"empty", []any{}, "deferred_list: detail.ids is empty", "Pass at least one id, or omit detail.ids to list every item. Nothing was read."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -456,13 +461,97 @@ func TestShipState_DeferredList_IDErrors(t *testing.T) {
 	}
 }
 
+// deferredListUnknownSugg is the Suggestion of the unknown-id error.
+const deferredListUnknownSugg = "Call deferred_list without detail.ids to see every id, open and resolved, then retry with ids from that list. Nothing was written."
+
 // TestShipState_DeferredList_UnknownID returns the unknown-id error and no
-// issues, even when other ids in the call exist.
+// issues, even when other ids in the call exist. The error names every
+// unknown id once, in input order.
 func TestShipState_DeferredList_UnknownID(t *testing.T) {
 	root := t.TempDir()
 	seedDeferredFile(t, root, deferredRows(2, 10))
+	path := filepath.Join(root, ".sdlc-v2", "history", "deferred.json")
 	_, err := shipState(root, root, ShipStateIn{Action: "deferred_list", Detail: map[string]any{"ids": []any{"d1", "nope"}}}, fixedNow(time.Now()))
-	assertDeferredListError(t, err, `deferred_list: unknown id "nope"`, "Call deferred_propose_followups for the current ids, then retry. Nothing was read.")
+	assertDeferredListError(t, err, `deferred_list: 1 unknown id(s), no item in `+path+` has them: "nope"`, deferredListUnknownSugg)
+
+	_, err = shipState(root, root, ShipStateIn{Action: "deferred_list", Detail: map[string]any{"ids": []any{"x2", "d2", "x1", "x2"}}}, fixedNow(time.Now()))
+	assertDeferredListError(t, err, `deferred_list: 2 unknown id(s), no item in `+path+` has them: "x2", "x1"`, deferredListUnknownSugg)
+}
+
+// TestShipState_DeferredList_ResolvedIDAndOpenCount pins that detail.ids
+// also picks a resolved item, and that openCount counts every open item of
+// the file, not only the picked ones.
+func TestShipState_DeferredList_ResolvedIDAndOpenCount(t *testing.T) {
+	root := t.TempDir()
+	rows := deferredRows(3, 10)
+	rows[2].Status = history.StatusResolved
+	seedDeferredFile(t, root, rows)
+	out, err := shipState(root, root, ShipStateIn{Action: "deferred_list", Detail: map[string]any{"ids": []any{"d3"}}}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := out.(map[string]any)
+	if got := m["issues"].([]history.DeferredIssue); len(got) != 1 || got[0].ID != "d3" {
+		t.Errorf("issues = %+v, want the resolved d3", got)
+	}
+	if m["openCount"] != 2 {
+		t.Errorf("openCount = %v, want 2 (every open item of the file)", m["openCount"])
+	}
+}
+
+// TestIntegration_ShipStateDeferredList_IDs pins deferred_list with
+// detail.ids through the registered tool: the rendered next line of a good
+// call, and the rendered error of a bad, empty, too long and unknown list.
+func TestIntegration_ShipStateDeferredList_IDs(t *testing.T) {
+	dir := shipStateIntegrationRepo(t, "feat/deferred-list-ids-int")
+	seedDeferredFile(t, dir, deferredRows(deferredListMaxIDs+1, 10))
+
+	res, text := callRegisteredShipStateText(t, map[string]any{"action": "deferred_list", "detail": map[string]any{"ids": []any{"d2"}}})
+	if res.IsError {
+		t.Fatalf("deferred_list returned a tool error:\n%s", text)
+	}
+	for _, want := range []string{
+		"# ship_state — ok",
+		"**Next:** Draft one issue per item. Use the item description as the body.",
+		"openCount: 51",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("output missing %q:\n%s", want, text)
+		}
+	}
+
+	many := make([]any, 0, deferredListMaxIDs+1)
+	for i := 1; i <= deferredListMaxIDs+1; i++ {
+		many = append(many, fmt.Sprintf("d%d", i))
+	}
+	shape := "Pass detail.ids as [\"<id>\", …] with each id a non-empty string, or omit it to list every item. Nothing was read."
+	for _, tc := range []struct {
+		name      string
+		ids       any
+		msg, sugg string
+	}{
+		{"bad element", []any{"d1", float64(7)}, "deferred_list: detail.ids[1] must be a non-empty string, got float64", shape},
+		{"blank", []any{" "}, "deferred_list: detail.ids[0] must be a non-empty string, got a blank string", shape},
+		{"empty", []any{}, "deferred_list: detail.ids is empty", "Pass at least one id, or omit detail.ids to list every item. Nothing was read."},
+		{"over the cap", many, fmt.Sprintf("deferred_list: detail.ids has %d ids, the limit is %d", deferredListMaxIDs+1, deferredListMaxIDs), fmt.Sprintf("Split the ids into calls of %d or fewer. Nothing was read.", deferredListMaxIDs)},
+		{"unknown", []any{"d1", "nope"}, `deferred_list: 1 unknown id(s), no item in `, deferredListUnknownSugg},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, text := callRegisteredShipStateText(t, map[string]any{"action": "deferred_list", "detail": map[string]any{"ids": tc.ids}})
+			if !res.IsError {
+				t.Fatalf("deferred_list returned ok, want an error:\n%s", text)
+			}
+			for _, want := range []string{
+				"# ship_state — error (domain)",
+				"## What happened\n" + tc.msg,
+				"## Do this\n" + tc.sugg,
+			} {
+				if !strings.Contains(text, want) {
+					t.Errorf("output missing %q:\n%s", want, text)
+				}
+			}
+		})
+	}
 }
 
 func assertDeferredListError(t *testing.T, err error, msg, sugg string) {

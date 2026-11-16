@@ -3,7 +3,7 @@
 ## ADDED Requirements
 
 ### Requirement: Archive commit in archive-openspec
-After `openspec archive` exits 0, the `archive-openspec` step SHALL stage only `openspec/changes/<change>`, `openspec/changes/archive/*-<change>` and `openspec/specs/` with `git add -A`, commit them through the commit skill, and complete the step with the result `archived, commit <sha>`.
+After `openspec archive` exits 0, the `archive-openspec` step SHALL stage the archive paths with no glob: `openspec/changes/<change>` with `git rm -r --cached --ignore-unmatch`, then the archive folder `openspec/changes/archive/<name>` and each `openspec/specs/<capability>` folder of the change with `git add -A`. It SHALL commit them through the commit skill and complete the step with the result `archived, commit <sha>`.
 
 #### Scenario: Normal archive
 - **WHEN** `openspec archive` exits 0 and the commit Agent returns a `- sha:` bullet
@@ -17,9 +17,16 @@ After `openspec archive` exits 0, the `archive-openspec` step SHALL stage only `
 - **WHEN** a resume finds the change archived and the archive paths dirty
 - **THEN** the step stages and commits them
 
-#### Scenario: Draft of another change
-- **WHEN** `openspec/changes/other-change/` has uncommitted files
+#### Scenario: Untracked draft of another change
+- **WHEN** `openspec/changes/other-change/` has untracked files
 - **THEN** the archive commit does not include them
+
+### Requirement: Archive guard in archive-openspec
+Before the archive, the `archive-openspec` step SHALL check that no tracked edit is open outside `.sdlc-v2/` and the archive paths, because the commit skill commits every tracked change.
+
+#### Scenario: Tracked edit outside the archive paths
+- **WHEN** a tracked file outside the archive paths has an uncommitted edit
+- **THEN** the step fails with `archive precheck failed` before the archive
 
 ### Requirement: Wait between poll probes
 Between two `poll_await` probes, the ship skill SHALL call `ship_state` `wait` with `min(interval_seconds + 30, 3600)` seconds, then run the sleep in the background and end the turn. It SHALL NOT use a foreground `sleep` or `gh pr checks --watch`.

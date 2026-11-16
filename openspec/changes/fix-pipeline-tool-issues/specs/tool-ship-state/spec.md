@@ -80,7 +80,7 @@ With `detail.write:true`, `report` SHALL write the full report file and return o
 - **AND** the written file is byte-equal to the full Markdown
 
 ### Requirement: Compact deferred follow-ups
-`deferred_propose_followups` SHALL return each group item as `{id, priority, source, created, title}`, with `title` of at most 80 runes. `deferred_list` with `detail.ids` (1 to 50 ids) SHALL return only those items, in full.
+`deferred_propose_followups` SHALL return each group item as `{id, priority, source, created, title}`, with `title` the first non-blank line of the description cut to at most 80 runes; an item with an empty description SHALL get the title `Deferred follow-up <id>`, which is not cut. `deferred_list` with `detail.ids` (1 to 50 ids, each a non-empty string) SHALL return only those items, in full.
 
 #### Scenario: Long description
 - **WHEN** an open item has a 400-character first line

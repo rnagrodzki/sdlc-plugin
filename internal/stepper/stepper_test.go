@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // Additive test file: not in the task-33 fact sheet's Files list, but
@@ -198,6 +201,38 @@ func TestNewStateFilePath_MkdirFailureWrapsErrStateFolder(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), dir) {
 		t.Errorf("err %q does not name the folder %q", err, dir)
+	}
+	if !errors.Is(err, syscall.ENOTDIR) {
+		t.Errorf("err %v does not wrap the MkdirAll cause ENOTDIR", err)
+	}
+}
+
+// TestRemoveStaleStateFiles_AgeBoundary pins the age gate at the cap: a
+// file whose age equals paths.ScratchMaxAge stays, and one a second older goes.
+func TestRemoveStaleStateFiles_AgeBoundary(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	mk := func(name string, mtime time.Time) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	atCap := mk("myskill-atcap.json", now.Add(-paths.ScratchMaxAge))
+	pastCap := mk("myskill-pastcap.json", now.Add(-paths.ScratchMaxAge-time.Second))
+
+	removeStaleStateFiles(dir, "myskill", now)
+
+	if !exists(atCap) {
+		t.Errorf("file aged exactly ScratchMaxAge removed, want kept")
+	}
+	if exists(pastCap) {
+		t.Errorf("file older than ScratchMaxAge kept, want removed")
 	}
 }
 

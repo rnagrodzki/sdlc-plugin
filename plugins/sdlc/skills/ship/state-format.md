@@ -135,6 +135,7 @@ This scaffold's entries carry no `kind` field at all (omitted). It gives both `r
 | `condition` | string | on the `received-review` entry that `ship_prepare` seeds after `review`, and on the legacy raw-`init` scaffold's `received-review` and `commit-fixes` entries | `InitialShipStepsFromConfig` never sets it. `shipSeedReceivedReview` sets it. The text is a display label: only the presence of the key exempts a `pending` entry from blocking. |
 | `reason` | string | status is `skipped` and `detail.reason` was passed | Why the step was skipped. |
 | `error` | any | status is `failed` and `detail.error` was passed | Failure detail from `detail.error`. |
+| `waitingUntil` | string | `wait` was called on the `in_progress` step | RFC 3339 time, UTC: now plus `detail.seconds`. The Stop hook does not count turn ends of the step before this time. `begin-step` and `complete-step` remove it. |
 
 ### Status Values
 
@@ -211,6 +212,8 @@ The response carries `clean`, `stagedCount`, `waveCommits`, `stepCompleted`, `re
 ## `decisions` Array
 
 Appended by `ship_state{action:"decide", step, detail:{text}}`, and by `commit-check` when the commit step has nothing to commit (`decision` is then the commit step `result`). Never overwritten, and never validated against `steps[]` — `step` can be any name, tracked or inline, configured or not (it's most useful for `commit-fixes`, which has no other way to record an outcome under a `ship_prepare`-driven run, but nothing stops calling it for a step with an entry too, e.g. to leave a supplementary note, or to record the outcome of the `received-review` dispatch inside `await-remote-review` after step 8 completed the `received-review` entry).
+
+`decide` requires `detail.text`: plain text, 1 to 2000 characters. A blank, absent or longer `detail.text` gives a `DomainError`, and nothing is written.
 
 ```json
 { "step": "archive-openspec", "decision": "user declined archive", "at": "2026-03-27T14:50:00Z" }

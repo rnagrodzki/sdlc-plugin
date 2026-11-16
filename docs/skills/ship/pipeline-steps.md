@@ -63,8 +63,9 @@ validation and the `tasks.md` box count. The skill does not run them itself.
 
 - The change is already archived and the archive paths have no uncommitted
   change: the step completes with the result `already archived`. The archive
-  paths are `openspec/changes/<change>`, `openspec/changes/archive/*-<change>`
-  and `openspec/specs/`.
+  paths are `openspec/changes/<change>`, its archive folder
+  `openspec/changes/archive/<YYYY-MM-DD>-<change>`, and the folders under
+  `openspec/specs/` that the change has specs for.
 - The change is already archived but the archive paths have uncommitted
   changes (an earlier run archived and did not commit): the step commits them,
   as described below.
@@ -87,24 +88,33 @@ validation and the `tasks.md` box count. The skill does not run them itself.
   the cause, then run `/sdlc:ship --resume`. The resumed step starts again,
   and the box sync finds no open box.
 
-After the archive, the step commits it. It stages only the archive paths
-(`git add -A -- <archive paths>`), so a draft of another change under
-`openspec/changes/` stays unstaged. Then it runs
+Before the archive, the step checks that the archive paths hold the only
+tracked edits. [/sdlc:commit](../commit.md) commits every tracked change, so
+another tracked edit would enter the archive commit. An untracked file, such
+as a draft of another change, stays out of the commit.
+
+After the archive, the step stages the archive paths and runs
 [/sdlc:commit](../commit.md) with `--auto --no-instructions`: the consent
 question (or `--auto`) is already the approval. The commit does not push; the
 `pr` step pushes. The step result is `archived, commit <sha>`.
 
-The step fails with one of three causes when the commit does not land:
+The step fails with one of these causes when the commit does not land:
 
 | Fail cause | When | What stays |
 |---|---|---|
-| `archive status check failed` | `git status` on the archive paths exits non-zero | the archived files, not staged |
-| `archive stage failed` | `git add` on the archive paths exits non-zero | the archived files, not staged |
-| `archive commit failed` | the commit returns an error or no commit sha, or times out | the archived files, staged |
+| `archive precheck failed` | a tracked edit outside the archive paths is open | your edit. Commit or stash it |
+| `archive lookup failed` | a resume finds no archive folder, or more than one, for the change | the archived files |
+| `archive status check failed` | `git status` exits non-zero | the archived files, not staged |
+| `archive stage failed` | `git rm --cached` or `git add` on the archive paths exits non-zero | the archived files |
+| `archive commit failed` | the commit returns an error or no commit sha, is stopped, or times out. The error names each commit worker that may still run ("Workers not stopped") | the archived files, staged |
+| `resume: an archive commit worker may still commit` | a resume finds a recorded worker that may still run, and you choose stop, or the run is `--auto` | the archived files, staged |
 
 Fix the cause, then run `/sdlc:ship --resume`. The resumed step finds the
 change archived. When the archive paths are clean (the commit landed), the
-step completes. When they still have changes, the step commits them again.
+step completes. When they still have changes, the step stages and commits
+them again. When the step records its result and that call fails, the step
+stays in progress. The resume then finds clean archive paths and completes
+the step.
 
 ### pr
 
@@ -286,7 +296,12 @@ after at most 3600 seconds.
   still runs at the next turn end.
 - When the step ends before the sleep, ship stops the sleep. A sleep that ship
   cannot stop writes nothing, and ship names it in the "Workers not stopped"
-  part of the step result.
+  part of the step result. A sleep with no task ID shows there as
+  `sleep (no task ID)`.
+- When the sleep does not start, ship polls again at once, at most 3 times in
+  a row. Then the step fails.
+- When a new session or a compaction loses the task ID of a sleep, the sleep
+  ends by itself. The resumed step removes the wait.
 
 ### await-remote-review
 

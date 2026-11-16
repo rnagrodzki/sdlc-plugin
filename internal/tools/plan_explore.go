@@ -63,6 +63,11 @@ type ExplorePack struct {
 	ScopeHintCount    int     `json:"scopeHintCount"`
 	WebResearchSignal bool    `json:"webResearchSignal"`
 	Error             *string `json:"error"`
+
+	// cause is the error behind Error, so plan_explore_prepare can set
+	// InfraError.Cause and reuse the scratch Suggestion. It is unexported, so
+	// neither JSON nor the Markdown renderer emits it.
+	cause error
 }
 
 // exploreManifest is the JSON document written to <outDir>/manifest.json,
@@ -103,7 +108,7 @@ func buildExplorePack(mainRoot, contentRoot, fromOpenspec, userPrompt string) Ex
 	outDir, err := scratchMkdirTemp(mainRoot, fmt.Sprintf("%s%s-", exploreDirPrefix, branchSlug))
 	if err != nil {
 		msg := err.Error()
-		return ExplorePack{Error: &msg}
+		return ExplorePack{Error: &msg, cause: err}
 	}
 
 	scopeHintFiles := mergeScopeHints(
@@ -132,13 +137,13 @@ func buildExplorePack(mainRoot, contentRoot, fromOpenspec, userPrompt string) Ex
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		msg := err.Error()
-		return ExplorePack{OutDir: &outDir, Error: &msg}
+		return ExplorePack{OutDir: &outDir, Error: &msg, cause: err}
 	}
 	data = append(data, '\n')
 
 	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
 		msg := err.Error()
-		return ExplorePack{OutDir: &outDir, Error: &msg}
+		return ExplorePack{OutDir: &outDir, Error: &msg, cause: err}
 	}
 
 	removeStaleTempDirs(filepath.Dir(outDir), exploreDirPrefix, filepath.Base(outDir), time.Now())
@@ -505,18 +510,32 @@ func RegisterPlanExploreTools(s *mcpserver.Server) {
 				}
 			}
 
-			pack := buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, in.UserPrompt)
-			if pack.ManifestPath == nil {
-				msg := "plan-explore: failed to produce manifest"
-				if pack.Error != nil {
-					msg = fmt.Sprintf("plan-explore: %s", *pack.Error)
-				}
-				return PlanExploreOut{}, &mcpserver.InfraError{
-					Msg:        msg,
-					Suggestion: "Check that .sdlc-v2/scratch/ of the main worktree is writable and has free space, then retry plan_explore_prepare.",
-				}
-			}
-			return PlanExploreOut{ManifestPath: *pack.ManifestPath}, nil
+			return planExplorePrepare(mainRoot, contentRoot, in)
 		},
 	)
+}
+
+// planExploreFallbackSuggestion is the plan_explore_prepare Suggestion for a
+// failure that carries no Suggestion of its own (a failed MkdirTemp, marshal
+// or manifest write).
+const planExploreFallbackSuggestion = "Check that .sdlc-v2/scratch/ of the main worktree is writable and has free space, then retry plan_explore_prepare."
+
+// planExplorePrepare runs buildExplorePack for plan_explore_prepare and turns
+// a pack with no manifest into an InfraError. The error wraps the cause of
+// the failure, and a failed create of the scratch folder reuses its
+// Suggestion (see scratchSuggestion).
+func planExplorePrepare(mainRoot, contentRoot string, in PlanExploreIn) (PlanExploreOut, error) {
+	pack := buildExplorePack(mainRoot, contentRoot, in.FromOpenspec, in.UserPrompt)
+	if pack.ManifestPath == nil {
+		msg := "plan-explore: failed to produce manifest"
+		if pack.Error != nil {
+			msg = fmt.Sprintf("plan-explore: %s", *pack.Error)
+		}
+		return PlanExploreOut{}, &mcpserver.InfraError{
+			Msg:        msg,
+			Suggestion: scratchSuggestion(pack.cause, planExploreFallbackSuggestion),
+			Cause:      pack.cause,
+		}
+	}
+	return PlanExploreOut{ManifestPath: *pack.ManifestPath}, nil
 }

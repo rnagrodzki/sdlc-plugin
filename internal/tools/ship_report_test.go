@@ -2107,3 +2107,31 @@ func TestShipReportInstructions(t *testing.T) {
 		}
 	})
 }
+
+// TestShipStateReport_FixedNotAList pins a healing.fixed that is not a list:
+// every fixed count is 0, and the report adds one cross-read warning that
+// names the state file, so issueCount counts it.
+func TestShipStateReport_FixedNotAList(t *testing.T) {
+	root := shipReportRoot(t)
+	createShipReportState(t, root, map[string]any{"healing": map[string]any{"fixed": "oops"}})
+
+	full := runShipReport(t, root, nil)
+	found := false
+	for _, issue := range full.Issues {
+		m, _ := issue.(map[string]any)
+		if summary, _ := m["summary"].(string); m["category"] == "cross-read" && strings.Contains(summary, "healing.fixed in ") && strings.Contains(summary, "is not a list (got string); the report counts 0 fixed findings.") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("issues = %v, want a cross-read warning for healing.fixed", full.Issues)
+	}
+
+	out := runShipReportWritten(t, root, map[string]any{"format": "json"})
+	if out.FixedCount != 0 || out.IssueCount != 1 {
+		t.Errorf("fixedCount = %d, issueCount = %d, want 0 and 1", out.FixedCount, out.IssueCount)
+	}
+	if !strings.Contains(out.Display, "0 findings fixed") {
+		t.Errorf("display = %q, want 0 findings fixed", out.Display)
+	}
+}

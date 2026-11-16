@@ -115,7 +115,7 @@ type ShipRunReportWrittenOut struct {
 | Field | Type | Encoding | Example |
 |---|---|---|---|
 | `detail.seconds` (wait) | int | JSON integer, 1 to 3600 | `90` |
-| `detail.ids` (deferred_list) | array | JSON array of 1 to 50 strings | `["review-deferred-x-1"]` |
+| `detail.ids` (deferred_list) | array | JSON array of 1 to 50 non-empty strings (a blank or whitespace-only id is refused) | `["review-deferred-x-1"]` |
 | `detail.text` (decide) | string | plain text, 1 to 2000 runes | `user declined archive` |
 
 ## Decisions

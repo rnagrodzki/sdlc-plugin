@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"syscall"
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
@@ -688,4 +689,27 @@ func TestPrepareOrchestrator_ErrorReportReturnsSimilarIssues(t *testing.T) {
 	if len(*calls) != 1 || !reflect.DeepEqual((*calls)[0].labels, []string{"tooling-error", "harden"}) {
 		t.Errorf("gh issue list calls = %+v, want one call with labels tooling-error and harden", *calls)
 	}
+}
+
+// TestErrorReportPrepare_ScratchCreateFailure pins the InfraError of a failed
+// scratch create. A scratch folder that is a file keeps the scratchMkdirTemp
+// Suggestion, which names .sdlc-v2/scratch/, and wraps ENOTDIR. A failed
+// MkdirTemp uses the error_report fallback Suggestion and wraps its cause.
+func TestErrorReportPrepare_ScratchCreateFailure(t *testing.T) {
+	in := ErrorReportPrepareIn{Skill: "ship", Step: "step-1", Operation: "do-thing", Error: "boom"}
+	t.Run("scratch folder is a file", func(t *testing.T) {
+		root := t.TempDir()
+		redirectTempDir(t, root)
+		scratch := makeScratchAFile(t, root)
+		_, err := errorReportPrepare(root, in)
+		assertScratchInfraError(t, err, "create scratch folder "+scratch, scratchFolderSuggestion(scratch), syscall.ENOTDIR)
+	})
+	t.Run("MkdirTemp fails", func(t *testing.T) {
+		root := t.TempDir()
+		redirectTempDir(t, root)
+		sentinel := stubMkdirTempFailure(t)
+		_, err := errorReportPrepare(root, in)
+		assertScratchInfraError(t, err, "create temp dir: "+sentinel.Error(),
+			"Check that .sdlc-v2/scratch/ of the main worktree allows new folders, then retry prepare_orchestrator with mode error_report.", sentinel)
+	})
 }

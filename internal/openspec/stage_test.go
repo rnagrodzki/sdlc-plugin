@@ -1388,7 +1388,8 @@ func TestSamePlanPath(t *testing.T) {
 
 // TestSweepStaleScratch pins the 24-hour sweep of newTempChange: an old
 // sdlc-openspec-* folder goes, a young one, a folder with another prefix and a
-// plain file stay, and a missing folder does not panic.
+// plain file stay, and a missing folder does not panic. At the cap, a folder
+// aged exactly paths.ScratchMaxAge stays and one a second older goes.
 func TestSweepStaleScratch(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now()
@@ -1405,6 +1406,8 @@ func TestSweepStaleScratch(t *testing.T) {
 	}
 	mk("sdlc-openspec-old", old)
 	mk("sdlc-openspec-young", now.Add(-time.Hour))
+	mk("sdlc-openspec-at-cap", now.Add(-paths.ScratchMaxAge))
+	mk("sdlc-openspec-past-cap", now.Add(-paths.ScratchMaxAge-time.Second))
 	mk("sdlc-review-old", old)
 	if err := os.WriteFile(filepath.Join(dir, "sdlc-openspec-file"), []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1413,10 +1416,12 @@ func TestSweepStaleScratch(t *testing.T) {
 	sweepStaleScratch(dir, "sdlc-openspec-", now)
 
 	for name, wantExists := range map[string]bool{
-		"sdlc-openspec-old":   false,
-		"sdlc-openspec-young": true,
-		"sdlc-review-old":     true,
-		"sdlc-openspec-file":  true,
+		"sdlc-openspec-old":      false,
+		"sdlc-openspec-young":    true,
+		"sdlc-openspec-at-cap":   true,
+		"sdlc-openspec-past-cap": false,
+		"sdlc-review-old":        true,
+		"sdlc-openspec-file":     true,
 	} {
 		_, err := os.Stat(filepath.Join(dir, name))
 		if (err == nil) != wantExists {

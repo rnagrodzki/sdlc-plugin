@@ -63,6 +63,9 @@ var scratchRemoveAll = os.RemoveAll
 // whose Suggestion a caller can reuse through scratchSuggestion.
 func scratchMkdirTemp(root, prefix string) (string, error) {
 	if root == "" {
+		// InfraError, not DomainError: every handler resolves root from the
+		// server's working directory (worktree.MainRoot), never from input,
+		// so an empty root is an environment fault with no cause to wrap.
 		return "", &mcpserver.InfraError{
 			Msg:        "scratch folder: no repo root",
 			Suggestion: "Run the tool inside a git worktree of a repo that has .sdlc-v2/, then retry.",

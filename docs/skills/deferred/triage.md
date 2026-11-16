@@ -20,9 +20,17 @@ Triage always asks. It has no auto mode. At the end, the skill prints one line w
 
 ## The issue text
 
-**Title:** the title of the item, at most 80 characters. The skill cuts a longer title at the last space before character 80 and adds `…`. This holds for an execute draft with its own title too.
+**Title:** the title of the item, at most 80 characters. The limit counts characters, not bytes.
 
-**Fetch:** the first list holds short items only. After you pick, the skill fetches the full text of the picked items, from 1 to 50 ids in one call. The body carries the whole description.
+- The title comes from the first line of the description that has text, with no spaces at its ends.
+- A longer line is cut at the last space before character 80, and gets `…`. When the first 79 characters hold no space, the cut comes after character 79.
+- An item with no text gets the title `Deferred follow-up <id>`. This title is not cut.
+- The same rule cuts a longer title of an execute draft with its own title.
+
+**Fetch:** the first list holds short items only. After you pick, the skill fetches the full text of the picked items. One call takes 1 to 50 ids, so the skill splits a larger pick into calls of 50 ids or fewer. The body carries the whole description.
+
+- The tool refuses a call with more than 50 ids, an empty list, a blank id or an id that is not in the backlog. It reads nothing and writes nothing then.
+- One error names every unknown id.
 
 **Body:** built from the recorded fields. A line whose field is empty is left out.
 

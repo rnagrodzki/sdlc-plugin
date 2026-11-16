@@ -21,9 +21,10 @@ var systemTempPattern = regexp.MustCompile(`(os\.MkdirTemp|os\.CreateTemp|mkdirT
 // Tool files go to .sdlc-v2/scratch/ of the repo (paths.ScratchDir), never to
 // the temp folder of the system.
 func TestNoSystemTempWrites(t *testing.T) {
+	scanned := 0
 	for _, dir := range []string{"../../internal", "../../cmd"} {
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
-			continue
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("stat %s: %v; the scan needs every source folder", dir, err)
 		}
 		err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
@@ -32,6 +33,7 @@ func TestNoSystemTempWrites(t *testing.T) {
 			if d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 				return nil
 			}
+			scanned++
 			f, err := os.Open(path)
 			if err != nil {
 				return err
@@ -52,6 +54,32 @@ func TestNoSystemTempWrites(t *testing.T) {
 		})
 		if err != nil {
 			t.Fatalf("walk %s: %v", dir, err)
+		}
+	}
+	if scanned == 0 {
+		t.Fatal("scanned no .go files; the walk found nothing to check")
+	}
+}
+
+// TestSystemTempPattern pins what systemTempPattern flags: a temp call with
+// the system temp folder ("") and any os.TempDir use match; a temp call with
+// a folder and t.TempDir do not.
+func TestSystemTempPattern(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{`dir, err := os.MkdirTemp("", "sdlc-x-")`, true},
+		{`f, err := os.CreateTemp("", "x-*.json")`, true},
+		{`dir, err := mkdirTempFunc("", prefix)`, true},
+		{`base := os.TempDir()`, true},
+		{`dir, err := os.MkdirTemp(scratch, "sdlc-x-")`, false},
+		{`f, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")`, false},
+		{`dir, err := mkdirTempFunc(dir, prefix)`, false},
+		{`dir := t.TempDir()`, false},
+	} {
+		if got := systemTempPattern.MatchString(tc.line); got != tc.want {
+			t.Errorf("systemTempPattern.MatchString(%q) = %v, want %v", tc.line, got, tc.want)
 		}
 	}
 }

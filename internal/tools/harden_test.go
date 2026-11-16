@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -1649,3 +1650,24 @@ func readHardenManifest(t *testing.T, path string) map[string]any {
 
 // keep time import used even if a future edit trims a test that needed it directly.
 var _ = time.Now
+
+// TestHardenPrepare_ScratchCreateFailure pins the InfraError of a failed
+// scratch create. A scratch folder that is a file keeps the scratchMkdirTemp
+// Suggestion, which names .sdlc-v2/scratch/, and wraps ENOTDIR. A failed
+// MkdirTemp uses the harden fallback Suggestion and wraps its cause.
+func TestHardenPrepare_ScratchCreateFailure(t *testing.T) {
+	in := HardenPrepareIn{FailureText: "boom", Skill: "ship", SkipConfigCheck: true}
+	t.Run("scratch folder is a file", func(t *testing.T) {
+		root := t.TempDir()
+		scratch := makeScratchAFile(t, root)
+		_, err := hardenPrepare(root, root, in)
+		assertScratchInfraError(t, err, "create scratch folder "+scratch, scratchFolderSuggestion(scratch), syscall.ENOTDIR)
+	})
+	t.Run("MkdirTemp fails", func(t *testing.T) {
+		root := t.TempDir()
+		sentinel := stubMkdirTempFailure(t)
+		_, err := hardenPrepare(root, root, in)
+		assertScratchInfraError(t, err, "create temp dir: "+sentinel.Error(),
+			"Check disk space and write permission on .sdlc-v2/scratch/ of the main worktree, then retry prepare_orchestrator with mode harden.", sentinel)
+	})
+}

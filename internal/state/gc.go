@@ -30,9 +30,13 @@ type GCOptions struct {
 	BranchExists func(branch string) bool
 
 	// TempDir overrides the directory scanned for sdlc-explore-* folders
-	// (see gcTempdirs). Empty means paths.ScratchDir(root). Exists so callers/tests can
-	// point the sweep at an isolated directory instead of the real scratch
-	// folder, mirroring scripts/lib/state.js's SDLC_EXPLORE_TMPDIR_OVERRIDE.
+	// (see gcTempdirs). Empty means paths.ScratchDir(root). Exists so
+	// callers/tests can point the sweep at an isolated directory instead of
+	// the real scratch folder, mirroring scripts/lib/state.js's
+	// SDLC_EXPLORE_TMPDIR_OVERRIDE. The "temp" names (this field, gcTempdirs,
+	// the tempdirsDeleted/tempdirsKept JSON keys) are kept on purpose although
+	// the folder is now the scratch folder: they match that env var and the
+	// ship gc report, and a rename would change both.
 	TempDir string
 }
 

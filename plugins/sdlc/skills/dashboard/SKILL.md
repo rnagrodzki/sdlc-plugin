@@ -18,7 +18,7 @@ The page can also change files. It has no undo for any change. When the user ask
 | Page control | The server changes | Recovery |
 |---|---|---|
 | Archive a run | moves the run files to `.sdlc-v2/run-archive/` and deletes its working files | The moved files stay in `.sdlc-v2/run-archive/` |
-| Clear cache | deletes rotated evidence files, reports of runs that no longer exist and old `sdlc-*` folders of `.sdlc-v2/scratch/`, and empties the server log | None |
+| Clear cache | deletes rotated evidence files older than 30 minutes, reports of runs that no longer exist, and the `sdlc-*` folders of `.sdlc-v2/scratch/` older than 24 hours, except `sdlc-explore-*` folders (the `gc` sweep of state removes those). It also empties the server log | None |
 | Delete a preplan topic file | deletes `.sdlc-v2/preplan/<slug>.md` | None |
 | Delete a deferred item | rewrites `.sdlc-v2/history/deferred.json` | Add the item again with `ship_state` `deferred_add` |
 | Delete a learning | rewrites `.sdlc-v2/learnings/log.md` | Add the entry again with `learnings_log` `append` |
