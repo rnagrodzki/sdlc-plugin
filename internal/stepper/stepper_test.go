@@ -2,6 +2,7 @@ package stepper
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,8 @@ func TestNewError_IncludesErrorKey(t *testing.T) {
 }
 
 func TestNewStateFilePath(t *testing.T) {
-	p1, err := NewStateFilePath("myskill")
+	dir := filepath.Join(t.TempDir(), "nested", "scratch")
+	p1, err := NewStateFilePath(dir, "myskill")
 	if err != nil {
 		t.Fatalf("NewStateFilePath: %v", err)
 	}
@@ -58,16 +60,144 @@ func TestNewStateFilePath(t *testing.T) {
 	if !strings.HasSuffix(p1, ".json") {
 		t.Errorf("path %q does not end in .json", p1)
 	}
-	if filepath.Clean(filepath.Dir(p1)) != filepath.Clean(os.TempDir()) {
-		t.Errorf("path %q not under os.TempDir() (%q)", p1, os.TempDir())
+	if filepath.Clean(filepath.Dir(p1)) != filepath.Clean(dir) {
+		t.Errorf("path %q not under dir %q", p1, dir)
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Errorf("dir %q not created: %v", dir, err)
 	}
 
-	p2, err := NewStateFilePath("myskill")
+	p2, err := NewStateFilePath(dir, "myskill")
 	if err != nil {
 		t.Fatalf("NewStateFilePath: %v", err)
 	}
 	if p1 == p2 {
 		t.Errorf("expected distinct paths across calls, got %q twice", p1)
+	}
+}
+
+// writeAgedFile writes a file at dir/name and sets its modification time to
+// age before now.
+func writeAgedFile(t *testing.T, dir, name string, age time.Duration) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+		t.Fatalf("write %s: %v", p, err)
+	}
+	mt := time.Now().Add(-age)
+	if err := os.Chtimes(p, mt, mt); err != nil {
+		t.Fatalf("chtimes %s: %v", p, err)
+	}
+	return p
+}
+
+func exists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func TestNewStateFilePath_SweepsOldOwnFiles(t *testing.T) {
+	dir := t.TempDir()
+	old1 := writeAgedFile(t, dir, "myskill-aaa.json", 25*time.Hour)
+	old2 := writeAgedFile(t, dir, "myskill-bbb.json", 48*time.Hour)
+	young := writeAgedFile(t, dir, "myskill-ccc.json", time.Hour)
+	otherSkill := writeAgedFile(t, dir, "otherskill-ddd.json", 48*time.Hour)
+	notJSON := writeAgedFile(t, dir, "myskill-eee.txt", 48*time.Hour)
+	oldDir := filepath.Join(dir, "myskill-fff.json")
+	if err := os.Mkdir(oldDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now().Add(-48 * time.Hour)
+	_ = os.Chtimes(oldDir, mt, mt)
+
+	if _, err := NewStateFilePath(dir, "myskill"); err != nil {
+		t.Fatalf("NewStateFilePath: %v", err)
+	}
+	for _, p := range []string{old1, old2} {
+		if exists(p) {
+			t.Errorf("old own file %s not removed", p)
+		}
+	}
+	for _, p := range []string{young, otherSkill, notJSON, oldDir} {
+		if !exists(p) {
+			t.Errorf("%s removed, want kept", p)
+		}
+	}
+}
+
+// Sweep failure default row "remove of one old entry fails": that entry
+// stays, the sweep continues, and the call still returns a path.
+func TestNewStateFilePath_RemoveFailureKeepsGoing(t *testing.T) {
+	dir := t.TempDir()
+	stuck := writeAgedFile(t, dir, "myskill-aaa.json", 48*time.Hour)
+	other1 := writeAgedFile(t, dir, "myskill-bbb.json", 48*time.Hour)
+	other2 := writeAgedFile(t, dir, "myskill-ccc.json", 48*time.Hour)
+
+	orig := removeStateFile
+	t.Cleanup(func() { removeStateFile = orig })
+	removeStateFile = func(p string) error {
+		if p == stuck {
+			return errors.New("injected remove failure")
+		}
+		return orig(p)
+	}
+
+	p, err := NewStateFilePath(dir, "myskill")
+	if err != nil {
+		t.Fatalf("NewStateFilePath: %v", err)
+	}
+	if p == "" {
+		t.Fatal("NewStateFilePath returned an empty path")
+	}
+	if !exists(stuck) {
+		t.Errorf("%s removed, want kept after the injected failure", stuck)
+	}
+	for _, o := range []string{other1, other2} {
+		if exists(o) {
+			t.Errorf("old file %s not removed after another remove failed", o)
+		}
+	}
+}
+
+// Sweep failure default row "ReadDir of the folder fails": the sweep stops,
+// and the call succeeds.
+func TestNewStateFilePath_ReadDirFailureStillReturnsPath(t *testing.T) {
+	dir := t.TempDir()
+	old := writeAgedFile(t, dir, "myskill-aaa.json", 48*time.Hour)
+
+	orig := readStateDir
+	t.Cleanup(func() { readStateDir = orig })
+	readStateDir = func(string) ([]os.DirEntry, error) {
+		return nil, errors.New("injected read failure")
+	}
+
+	p, err := NewStateFilePath(dir, "myskill")
+	if err != nil {
+		t.Fatalf("NewStateFilePath: %v", err)
+	}
+	if filepath.Dir(p) != dir {
+		t.Errorf("path %q not under %q", p, dir)
+	}
+	if !exists(old) {
+		t.Errorf("%s removed although ReadDir failed", old)
+	}
+}
+
+func TestNewStateFilePath_MkdirFailureWrapsErrStateFolder(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(file, "scratch")
+	p, err := NewStateFilePath(dir, "myskill")
+	if !errors.Is(err, ErrStateFolder) {
+		t.Fatalf("err = %v, want one that wraps ErrStateFolder", err)
+	}
+	if p != "" {
+		t.Errorf("path = %q, want empty on error", p)
+	}
+	if !strings.Contains(err.Error(), dir) {
+		t.Errorf("err %q does not name the folder %q", err, dir)
 	}
 }
 

@@ -346,8 +346,8 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath, a file in a new sdlc-plan-snapshot-* folder under .sdlc-v2/scratch/ of the main worktree. Also removes its own sdlc-plan-snapshot-* entries under .sdlc-v2/scratch/ older than 24 hours.
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
-- openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a temp copy of openspec/config.yaml. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing in the repository; a missing openspec CLI returns InfraError.
-- openspec_stage: Write the authored artifacts to `+stagingFolderText("<changeName>")+` (replaces the whole directory), so a run in any worktree of the repo finds them, and validate them in a temp copy of the active worktree. When the main worktree cannot be resolved, it writes under the active worktree and the summary holds a warning; a git output over the size cap while it resolves the main worktree is an InfraError. Requires changeName, files. Optional: planPath. Returns stagingDir (relative to stagingRoot), stagingRoot (absolute path of the main worktree, or of the fallback root), files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). The summary names the absolute staging folder. A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. The stage takes the lock <changeName>.lock next to the staging dirs, writes into a temp dir and renames it into place; a lock younger than 10 minutes returns DomainError 'staging is locked by another stage' and writes nothing. Each artifact that openspec status lists for the schema must be in files: a missing one gives valid false, a 'missing artifact <outputPath>' line in validateOutput, and no validatedAt. A current spec that cannot be read returns InfraError.
+- openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a copy of openspec/config.yaml under .sdlc-v2/scratch/ of the main worktree. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing else in the repository; a missing openspec CLI returns InfraError.
+- openspec_stage: Write the authored artifacts to `+stagingFolderText("<changeName>")+` (replaces the whole directory), so a run in any worktree of the repo finds them, and validate them in a copy under .sdlc-v2/scratch/ of the main worktree. When the main worktree cannot be resolved, it writes under the active worktree and the summary holds a warning; a git output over the size cap while it resolves the main worktree is an InfraError. Requires changeName, files. Optional: planPath. Returns stagingDir (relative to stagingRoot), stagingRoot (absolute path of the main worktree, or of the fallback root), files, valid, validateOutput, stagingReplaced (true when an existing staging dir was replaced, false when it was created) and stagedPlanPath (the planPath written to stage.json; absent when none was passed). The summary names the absolute staging folder. A bad name or path, or a current spec under openspec/specs/ over 1 MiB, returns DomainError and writes nothing. A changeName whose staging dir holds a stage.json with another planPath returns DomainError 'staged by another plan' and writes nothing; a missing, unreadable or unparseable stage.json, or an empty planPath, skips this check. The stage takes the lock <changeName>.lock next to the staging dirs, writes into a temp dir and renames it into place; a lock younger than 10 minutes returns DomainError 'staging is locked by another stage' and writes nothing. Each artifact that openspec status lists for the schema must be in files: a missing one gives valid false, a 'missing artifact <outputPath>' line in validateOutput, and no validatedAt. A current spec that cannot be read returns InfraError.
 - evidence_record: Store a writer's status and items (upsert by id) in the plan run's evidence directory. Each write sets updatedAt (UTC). A write to a writer file that has no startedAt sets startedAt to that updatedAt; later writes keep it. A file written before startedAt existed, or an unreadable file that this call replaces, gets startedAt at this later write, so its startedAt can be later than the writer's real start. Requires runId, writerId. Optional: status, items, brief (writerId main only). Returns record (writerId, status, itemCount, fileBytes, briefPath, startedAt, updatedAt). Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_digest: Compact run summary for resume and polling; never returns item bodies. Requires runId. Optional: expectedWriters, timeoutSeconds, statusOnly. Returns writers, plus digest unless statusOnly. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
 - evidence_get: Full item bodies. Requires runId and at least one of ids or writerIds. Returns get. Invalid input or a limit breach returns DomainError and writes nothing; an OS read/write failure returns InfraError.
@@ -1251,7 +1251,7 @@ func mapOpenspecError(action, mainRoot string, in PlanSupportIn, err error) erro
 			Cause:      err,
 		}
 	case errors.As(err, &stageIO):
-		suggestion := fmt.Sprintf("Fix write access to %s, then call openspec_stage again.", stageIO.Dir)
+		suggestion := fmt.Sprintf("Fix write access to %s, then call %s again.", stageIO.Dir, action)
 		if stageIO.Op == "remove" {
 			suggestion = fmt.Sprintf("Delete %s by hand, then call openspec_stage again.", stageIO.Path)
 		}
@@ -1321,13 +1321,14 @@ func mapOpenspecError(action, mainRoot string, in PlanSupportIn, err error) erro
 
 // openspecInstructions returns the schema name, the ordered artifact
 // guidance for a new change, and the plan guardrails from the main worktree's
-// config. It writes nothing in the repository.
+// config. It writes nothing in the tracked tree: the CLI runs in a throwaway
+// copy under .sdlc-v2/scratch/ of the main worktree.
 func openspecInstructions(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	const action = "openspec_instructions"
 	if err := requireActiveRoot(action, contentRoot); err != nil {
 		return PlanSupportOut{}, err
 	}
-	schema, guides, err := openspec.PrepareInstructions(contentRoot, in.ChangeName)
+	schema, guides, err := openspec.PrepareInstructions(contentRoot, mainRoot, in.ChangeName)
 	if err != nil {
 		return PlanSupportOut{}, mapOpenspecError(action, mainRoot, in, err)
 	}
@@ -1346,7 +1347,8 @@ func openspecInstructions(mainRoot, contentRoot string, in PlanSupportIn) (PlanS
 }
 
 // openspecStage writes the authored artifacts to the main worktree's
-// staging dir and validates a temp copy of them.
+// staging dir and validates a copy of them under .sdlc-v2/scratch/ of the
+// main worktree.
 func openspecStage(mainRoot, contentRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	const action = "openspec_stage"
 	if err := requireActiveRoot(action, contentRoot); err != nil {

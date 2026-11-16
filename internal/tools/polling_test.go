@@ -16,6 +16,8 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/ghx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/openspec"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/stepper"
 )
 
@@ -125,7 +127,7 @@ const (
 func newTimedOutPollState(t *testing.T, skill string) string {
 	t.Helper()
 
-	stateFile, err := stepper.NewStateFilePath(skill)
+	stateFile, err := stepper.NewStateFilePath(t.TempDir(), skill)
 	if err != nil {
 		t.Fatalf("NewStateFilePath: %v", err)
 	}
@@ -149,7 +151,7 @@ func TestAwaitRemoteReview_PendingThenResume(t *testing.T) {
 	defer cleanup()
 
 	in := AwaitRemoteReviewIn{PR: 42, TimeoutSeconds: 600, IntervalSeconds: 60}
-	env, err := awaitRemoteReview(".", in)
+	env, err := awaitRemoteReview(".", t.TempDir(), in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -166,7 +168,7 @@ func TestAwaitRemoteReview_PendingThenResume(t *testing.T) {
 	defer cleanup2()
 
 	in2 := AwaitRemoteReviewIn{PR: 42, TimeoutSeconds: 600, IntervalSeconds: 60, StateFile: *env.StateFile}
-	env2, err := awaitRemoteReview(".", in2)
+	env2, err := awaitRemoteReview(".", t.TempDir(), in2)
 	if err != nil {
 		t.Fatalf("unexpected error on resume: %v", err)
 	}
@@ -178,11 +180,136 @@ func TestAwaitRemoteReview_PendingThenResume(t *testing.T) {
 	}
 }
 
+// TestPollAwait_NewStateFileUnderScratchDir pins that a new poll writes its
+// state_file into the scratch folder it gets, for both targets.
+func TestPollAwait_NewStateFileUnderScratchDir(t *testing.T) {
+	check := func(t *testing.T, env stepper.Envelope, scratch, prefix string) {
+		t.Helper()
+		if env.StateFile == nil || filepath.Dir(*env.StateFile) != scratch {
+			t.Fatalf("state_file = %v, want a file directly under %s", env.StateFile, scratch)
+		}
+		if !strings.HasPrefix(filepath.Base(*env.StateFile), prefix) {
+			t.Fatalf("state_file %s does not start with %s", *env.StateFile, prefix)
+		}
+	}
+
+	t.Run("remote_review", func(t *testing.T) {
+		cleanup := stubGHReviews(t, 42)
+		defer cleanup()
+		scratch := filepath.Join(t.TempDir(), ".sdlc-v2", "scratch")
+		env, err := pollAwait(".", scratch, PollAwaitIn{Target: "remote_review", PR: 42, TimeoutSeconds: 600, IntervalSeconds: 60})
+		if err != nil {
+			t.Fatalf("pollAwait: %v", err)
+		}
+		check(t, env, scratch, "await-remote-review-")
+	})
+
+	t.Run("pipeline", func(t *testing.T) {
+		cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\nexit 8\n")
+		defer cleanup()
+		scratch := filepath.Join(t.TempDir(), ".sdlc-v2", "scratch")
+		env, err := pollAwait(".", scratch, PollAwaitIn{Target: "pipeline", PR: 9, TimeoutSeconds: 600, IntervalSeconds: 60})
+		if err != nil {
+			t.Fatalf("pollAwait: %v", err)
+		}
+		check(t, env, scratch, "verify-pipeline-")
+	})
+}
+
+// TestLoadOrInitPollState_StateFolderError pins the InfraError of a failed
+// create of the scratch folder: its Suggestion names the folder.
+func TestLoadOrInitPollState_StateFolderError(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scratch := filepath.Join(file, "scratch")
+	var out string
+	_, err := loadOrInitPollState(scratch, "", "verify-pipeline", 60, 10, &out)
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("err = %v, want *mcpserver.InfraError", err)
+	}
+	if !errors.Is(err, stepper.ErrStateFolder) {
+		t.Errorf("err = %v, want one that wraps stepper.ErrStateFolder", err)
+	}
+	want := "Check that " + scratch + " is a folder with write permission and free space, then retry."
+	if ie.Suggestion != want {
+		t.Errorf("Suggestion = %q, want %q", ie.Suggestion, want)
+	}
+	if out != "" {
+		t.Errorf("state file = %q, want empty on error", out)
+	}
+}
+
+// TestOpenspecScratchFolderError_IsInfraError pins that openspec_instructions
+// and openspec_stage return a failed create of the scratch folder of the main
+// worktree as an InfraError that names the folder and the action. It lives
+// here, not in plan_support_test.go, because that file is outside the file
+// list of the task that moved the OpenSpec copy to the scratch folder. The
+// create fails before the openspec CLI runs, so no CLI stub is needed.
+func TestOpenspecScratchFolderError_IsInfraError(t *testing.T) {
+	contentRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(contentRoot, "openspec"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(contentRoot, "openspec", "config.yaml"), []byte("schema: spec-driven\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mainRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(mainRoot, ".sdlc-v2"), []byte("not a folder\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scratch := paths.ScratchDir(mainRoot)
+
+	for _, tc := range []struct {
+		action string
+		call   func() error
+	}{
+		{"openspec_instructions", func() error {
+			_, err := openspecInstructions(mainRoot, contentRoot, PlanSupportIn{Action: "openspec_instructions", ChangeName: "add-widget"})
+			return err
+		}},
+		{"openspec_stage", func() error {
+			_, err := openspecStage(mainRoot, contentRoot, PlanSupportIn{
+				Action:     "openspec_stage",
+				ChangeName: "add-widget",
+				Files:      []openspec.StageFile{{Path: "proposal.md", Content: "# Proposal\n"}},
+			})
+			return err
+		}},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
+			err := tc.call()
+			var ie *mcpserver.InfraError
+			if !errors.As(err, &ie) {
+				t.Fatalf("err = %v, want *mcpserver.InfraError", err)
+			}
+			if !strings.Contains(ie.Msg, "create scratch folder "+scratch) {
+				t.Errorf("Msg = %q, want it to name the scratch folder %s", ie.Msg, scratch)
+			}
+			want := "Fix write access to " + scratch + ", then call " + tc.action + " again."
+			if ie.Suggestion != want {
+				t.Errorf("Suggestion = %q, want %q", ie.Suggestion, want)
+			}
+		})
+	}
+}
+
+// TestStateFileSuggestion_OtherError keeps the retry-once Suggestion for an
+// error that is not a failed folder create.
+func TestStateFileSuggestion_OtherError(t *testing.T) {
+	got := stateFileSuggestion("/x", errors.New("stepper: generate state file name: boom"))
+	if !strings.HasPrefix(got, "Retry once;") {
+		t.Errorf("Suggestion = %q, want the retry-once text", got)
+	}
+}
+
 func TestAwaitRemoteReview_ActionableOnChangesRequested(t *testing.T) {
 	cleanup := stubGHReviews(t, 7, ghx.PRReview{Login: "copilot-pull-request-reviewer", State: "CHANGES_REQUESTED"})
 	defer cleanup()
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 7, TimeoutSeconds: 600, IntervalSeconds: 60})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 7, TimeoutSeconds: 600, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +341,7 @@ func TestAwaitRemoteReview_OverviewKey(t *testing.T) {
 			cleanup := stubGHReviewsFile(t, 538, tt.review)
 			defer cleanup()
 
-			env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 538, TimeoutSeconds: 600, IntervalSeconds: 60})
+			env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 538, TimeoutSeconds: 600, IntervalSeconds: 60})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -240,7 +367,7 @@ func TestAwaitRemoteReview_UnconfiguredReviewerIgnored(t *testing.T) {
 	cleanup := stubGHReviews(t, 9, ghx.PRReview{Login: "mallory", State: "APPROVED"})
 	defer cleanup()
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 9, TimeoutSeconds: 600, IntervalSeconds: 60})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 9, TimeoutSeconds: 600, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -254,7 +381,7 @@ func TestAwaitRemoteReview_ReviewerLoginCaseInsensitive(t *testing.T) {
 	cleanup := stubGHReviews(t, 11, ghx.PRReview{Login: "alice", State: "COMMENTED"})
 	defer cleanup()
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 11, TimeoutSeconds: 600, IntervalSeconds: 60, Reviewers: []string{"ALICE"}})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 11, TimeoutSeconds: 600, IntervalSeconds: 60, Reviewers: []string{"ALICE"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -267,7 +394,7 @@ func TestAwaitRemoteReview_EmptyGHOutputIsPending(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nexit 0\n")
 	defer cleanup()
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 3, TimeoutSeconds: 600, IntervalSeconds: 60})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 3, TimeoutSeconds: 600, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -281,7 +408,7 @@ func TestAwaitRemoteReview_MalformedGHOutputIsError(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\necho 'not json'\n")
 	defer cleanup()
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 3, TimeoutSeconds: 600, IntervalSeconds: 60})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 3, TimeoutSeconds: 600, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
 	}
@@ -291,7 +418,7 @@ func TestAwaitRemoteReview_MalformedGHOutputIsError(t *testing.T) {
 }
 
 func TestAwaitRemoteReview_InvalidPR(t *testing.T) {
-	_, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 0})
+	_, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 0})
 	if err == nil {
 		t.Fatal("expected error for pr <= 0")
 	}
@@ -303,7 +430,7 @@ func TestAwaitRemoteReview_MissingGHBinary(t *testing.T) {
 	os.Setenv("PATH", "")
 	defer os.Setenv("PATH", origPath)
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 600, IntervalSeconds: 60})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 600, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
 	}
@@ -322,7 +449,7 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 
 	stateFile := newTimedOutPollState(t, "await-remote-review")
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +462,7 @@ func TestAwaitRemoteReview_Timeout(t *testing.T) {
 
 	// A subsequent call against the now-exhausted state file short-circuits
 	// to "skipped" without probing gh again.
-	env2, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env2, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected error on exhausted resume: %v", err)
 	}
@@ -368,7 +495,7 @@ func TestAwaitRemoteReview_TimedOutFinalProbeFindsVerdict(t *testing.T) {
 
 			stateFile := newTimedOutPollState(t, "await-remote-review")
 
-			env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+			env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -391,7 +518,7 @@ func TestAwaitRemoteReview_ProbeErrorBeforeTimeoutStaysRetryable(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nexit 1\n")
 	defer cleanup()
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 600, IntervalSeconds: 60})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 600, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
 	}
@@ -418,7 +545,7 @@ func TestAwaitRemoteReview_ProbeErrorBeforeTimeoutStaysRetryable(t *testing.T) {
 	cleanup2 := stubGHReviews(t, 5, ghx.PRReview{Login: "copilot-pull-request-reviewer", State: "APPROVED"})
 	defer cleanup2()
 
-	env2, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 600, IntervalSeconds: 60, StateFile: stateFile})
+	env2, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 600, IntervalSeconds: 60, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected error on retry: %v", err)
 	}
@@ -444,7 +571,7 @@ func TestAwaitRemoteReview_TimedOutPersistentProbeErrorEndsPoll(t *testing.T) {
 
 	stateFile := newTimedOutPollState(t, "await-remote-review")
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
 	}
@@ -469,7 +596,7 @@ func TestAwaitRemoteReview_TimedOutPersistentProbeErrorEndsPoll(t *testing.T) {
 
 	// The loop really is over: the next call short-circuits to "skipped"
 	// without probing gh again, even though gh is still failing.
-	env2, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env2, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected error on exhausted resume: %v", err)
 	}
@@ -526,7 +653,7 @@ func TestAwaitRemoteReview_ErrorEnvelopeCarriesClass(t *testing.T) {
 	os.Setenv("PATH", "")
 	defer os.Setenv("PATH", origPath)
 
-	env, err := awaitRemoteReview(".", AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 600, IntervalSeconds: 60})
+	env, err := awaitRemoteReview(".", t.TempDir(), AwaitRemoteReviewIn{PR: 1, TimeoutSeconds: 600, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
 	}
@@ -552,7 +679,7 @@ func TestVerifyPipelineAwait_PendingThenGreen(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\nexit 8\n")
 	defer cleanup()
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1200, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -567,7 +694,7 @@ func TestVerifyPipelineAwait_PendingThenGreen(t *testing.T) {
 	cleanup2 := stubGH(t, "#!/bin/sh\nprintf 'build\\tpass\\t2m\\thttps://x\\n'\n")
 	defer cleanup2()
 
-	env2, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1200, IntervalSeconds: 60, StateFile: *env.StateFile})
+	env2, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1200, IntervalSeconds: 60, StateFile: *env.StateFile})
 	if err != nil {
 		t.Fatalf("unexpected error on resume: %v", err)
 	}
@@ -580,7 +707,7 @@ func TestVerifyPipelineAwait_Failed(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nprintf 'lint\\tfail\\t30s\\thttps://x\\n'\nexit 1\n")
 	defer cleanup()
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -602,7 +729,7 @@ func TestVerifyPipelineAwait_ExitCode8_PendingNotError(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\nexit 8\n")
 	defer cleanup()
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 20, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 20, TimeoutSeconds: 1200, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("exit code 8 must not surface as a Go error: %v", err)
 	}
@@ -623,7 +750,7 @@ func TestVerifyPipelineAwait_Exit1NoRowsIsProbeFailure(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\necho 'GraphQL: Could not resolve to a PullRequest with the number of 9. (repository.pullRequest)' >&2\nexit 1\n")
 	defer cleanup()
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
@@ -653,7 +780,7 @@ func TestVerifyPipelineAwait_Exit1NoRowsAfterDeadline(t *testing.T) {
 
 	stateFile := newTimedOutPollState(t, "verify-pipeline")
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
@@ -677,7 +804,7 @@ func TestVerifyPipelineAwait_NoChecksReportedIsNotGreen(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, filepath.Join(root, ".github", "workflows", "ci.yml"), "on: push\n")
 
-	env, err := verifyPipelineAwait(root, VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	env, err := verifyPipelineAwait(root, t.TempDir(), VerifyPipelineAwaitIn{PR: 9, TimeoutSeconds: 1200, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
@@ -705,7 +832,7 @@ func TestVerifyPipelineAwait_NoChecksReportedWithoutCIConfigIsSkipped(t *testing
 	writeFile(t, filepath.Join(root, ".github", "workflows", "README.md"), "no workflows yet\n")
 	writeFile(t, filepath.Join(root, ".github", "CODEOWNERS"), "* @me\n")
 
-	env, err := pollAwait(root, PollAwaitIn{Target: "pipeline", PR: 9})
+	env, err := pollAwait(root, t.TempDir(), PollAwaitIn{Target: "pipeline", PR: 9})
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
@@ -743,7 +870,7 @@ func TestVerifyPipelineAwait_NoChecksReportedKeepsPollingPerCISystem(t *testing.
 			root := t.TempDir()
 			writeFile(t, filepath.Join(root, tt.file), "x\n")
 
-			env, err := pollAwait(root, PollAwaitIn{Target: "pipeline", PR: 9})
+			env, err := pollAwait(root, t.TempDir(), PollAwaitIn{Target: "pipeline", PR: 9})
 			if err != nil {
 				t.Fatalf("unexpected Go error: %v", err)
 			}
@@ -765,7 +892,7 @@ func TestVerifyPipelineAwait_EmptyOutputExit0IsGreen(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nexit 0\n")
 	defer cleanup()
 
-	env, err := pollAwait(t.TempDir(), PollAwaitIn{Target: "pipeline", PR: 3})
+	env, err := pollAwait(t.TempDir(), t.TempDir(), PollAwaitIn{Target: "pipeline", PR: 3})
 	if err != nil {
 		t.Fatalf("unexpected Go error: %v", err)
 	}
@@ -782,7 +909,7 @@ func TestVerifyPipelineAwait_MissingGHBinary(t *testing.T) {
 	os.Setenv("PATH", "")
 	defer os.Setenv("PATH", origPath)
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 1, TimeoutSeconds: 1200, IntervalSeconds: 60})
+	env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 1, TimeoutSeconds: 1200, IntervalSeconds: 60})
 	if err != nil {
 		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
 	}
@@ -795,7 +922,7 @@ func TestVerifyPipelineAwait_MissingGHBinary(t *testing.T) {
 }
 
 func TestVerifyPipelineAwait_InvalidPR(t *testing.T) {
-	_, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: -1})
+	_, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: -1})
 	if err == nil {
 		t.Fatal("expected error for pr <= 0")
 	}
@@ -811,7 +938,7 @@ func TestVerifyPipelineAwait_Timeout(t *testing.T) {
 
 	stateFile := newTimedOutPollState(t, "verify-pipeline")
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -822,7 +949,7 @@ func TestVerifyPipelineAwait_Timeout(t *testing.T) {
 		t.Fatalf("expected pending_checks to be included in ext on timeout")
 	}
 
-	env2, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env2, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 1, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected error on exhausted resume: %v", err)
 	}
@@ -851,7 +978,7 @@ func TestVerifyPipelineAwait_TimedOutFinalProbeFindsVerdict(t *testing.T) {
 
 			stateFile := newTimedOutPollState(t, "verify-pipeline")
 
-			env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+			env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -877,7 +1004,7 @@ func TestVerifyPipelineAwait_TimedOutPersistentProbeErrorEndsPoll(t *testing.T) 
 
 	stateFile := newTimedOutPollState(t, "verify-pipeline")
 
-	env, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected Go error (should be classified into the envelope): %v", err)
 	}
@@ -900,7 +1027,7 @@ func TestVerifyPipelineAwait_TimedOutPersistentProbeErrorEndsPoll(t *testing.T) 
 		t.Fatal("ending the poll must mark the state exhausted")
 	}
 
-	env2, err := verifyPipelineAwait(".", VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
+	env2, err := verifyPipelineAwait(".", t.TempDir(), VerifyPipelineAwaitIn{PR: 5, TimeoutSeconds: 1, IntervalSeconds: 1, StateFile: stateFile})
 	if err != nil {
 		t.Fatalf("unexpected error on exhausted resume: %v", err)
 	}
@@ -956,7 +1083,7 @@ func TestPollAwait_PipelineOtherExitCodeClassifiedFromStderr(t *testing.T) {
 			cleanup := stubGH(t, tt.script)
 			defer cleanup()
 
-			env, err := pollAwait(".", PollAwaitIn{Target: "pipeline", PR: 5})
+			env, err := pollAwait(".", t.TempDir(), PollAwaitIn{Target: "pipeline", PR: 5})
 			if err != nil {
 				t.Fatalf("unexpected Go error: %v", err)
 			}
@@ -992,7 +1119,7 @@ func TestPollAwait_RemoteReviewDefaultTimeout(t *testing.T) {
 	cleanup := stubGHReviews(t, 42)
 	defer cleanup()
 
-	env, err := pollAwait(".", PollAwaitIn{Target: "remote_review", PR: 42})
+	env, err := pollAwait(".", t.TempDir(), PollAwaitIn{Target: "remote_review", PR: 42})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1018,7 +1145,7 @@ func TestPollAwait_PipelineDefaultTimeout(t *testing.T) {
 	cleanup := stubGH(t, "#!/bin/sh\nprintf 'build\\tpending\\t1m\\thttps://x\\n'\n")
 	defer cleanup()
 
-	env, err := pollAwait(".", PollAwaitIn{Target: "pipeline", PR: 5})
+	env, err := pollAwait(".", t.TempDir(), PollAwaitIn{Target: "pipeline", PR: 5})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1037,7 +1164,7 @@ func TestPollAwait_PipelineDefaultTimeout(t *testing.T) {
 }
 
 func TestPollAwait_UnknownTarget(t *testing.T) {
-	_, err := pollAwait(".", PollAwaitIn{Target: "bogus", PR: 1})
+	_, err := pollAwait(".", t.TempDir(), PollAwaitIn{Target: "bogus", PR: 1})
 	if err == nil {
 		t.Fatal("expected error for unknown target")
 	}
@@ -1066,7 +1193,7 @@ func TestPollAwait_StateFileFromOtherTargetRejected(t *testing.T) {
 			cleanup := stubGH(t, fmt.Sprintf("#!/bin/sh\ntouch %q\nexit 3\n", marker))
 			defer cleanup()
 
-			stateFile, err := stepper.NewStateFilePath(tt.storedSkill)
+			stateFile, err := stepper.NewStateFilePath(t.TempDir(), tt.storedSkill)
 			if err != nil {
 				t.Fatalf("NewStateFilePath: %v", err)
 			}
@@ -1075,7 +1202,7 @@ func TestPollAwait_StateFileFromOtherTargetRejected(t *testing.T) {
 				t.Fatalf("SavePollState: %v", err)
 			}
 
-			env, err := pollAwait(".", PollAwaitIn{Target: tt.target, PR: 5, StateFile: stateFile})
+			env, err := pollAwait(".", t.TempDir(), PollAwaitIn{Target: tt.target, PR: 5, StateFile: stateFile})
 			var domainErr *mcpserver.DomainError
 			if !errors.As(err, &domainErr) {
 				t.Fatalf("expected *mcpserver.DomainError, got err=%v env=%+v", err, env)

@@ -403,6 +403,54 @@ func TestExecActionWaveAwait_StalledTriggersReclaimStamp(t *testing.T) {
 	}
 }
 
+// TestExecActionWaveAwait_StateFileUnderScratch pins that a new wave-await
+// poll writes its state_file into .sdlc-v2/scratch/ of the root it gets.
+func TestExecActionWaveAwait_StateFileUnderScratch(t *testing.T) {
+	root := t.TempDir()
+	runID := "run1"
+	createExecState(t, root, "feat/test", map[string]any{
+		"waves": []any{waveAwaitManifest(1, []map[string]any{waveAwaitPlannedEntry("1")}, nil)},
+	})
+	waveAwaitStoreServerState(t, root, runID, "1", wave.ServerTaskState{
+		DispatchedAt: waveAwaitTs(-10 * time.Second),
+		WorkerName:   "worker-1",
+		Attempt:      1,
+	})
+
+	out, err := execActionWaveAwait(root, root, ExecuteStateIn{Branch: "feat/test", RunID: runID, Wave: intPtr(1)}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("execActionWaveAwait: %v", err)
+	}
+	if out.StateFile == nil {
+		t.Fatal("state_file is nil")
+	}
+	if got, want := filepath.Dir(*out.StateFile), paths.ScratchDir(root); got != want {
+		t.Errorf("state_file folder = %s, want %s", got, want)
+	}
+	if !strings.HasPrefix(filepath.Base(*out.StateFile), "wave-await-") {
+		t.Errorf("state_file %s does not start with wave-await-", *out.StateFile)
+	}
+}
+
+// TestWaveAwaitPollFile_StateFolderError pins the InfraError of a failed
+// create of the scratch folder: its Suggestion names the folder.
+func TestWaveAwaitPollFile_StateFolderError(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "afile")
+	if err := os.WriteFile(file, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	scratch := filepath.Join(file, "scratch")
+	_, _, err := waveAwaitPollFile(scratch, ExecuteStateIn{}, "run1", 1, testNow)
+	ie, ok := err.(*mcpserver.InfraError)
+	if !ok {
+		t.Fatalf("err = %v, want *mcpserver.InfraError", err)
+	}
+	want := "Check that " + scratch + " is a folder with write permission and free space, then retry."
+	if ie.Suggestion != want {
+		t.Errorf("Suggestion = %q, want %q", ie.Suggestion, want)
+	}
+}
+
 // TestExecActionWaveAwait_DuplicateCallsDontRestartGrace verifies that a
 // second wave-await call while a reclaim is already outstanding does not
 // re-stamp reclaimRequestedAt (which would restart the grace window) and

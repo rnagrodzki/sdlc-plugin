@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // stageStatusJSON is the `openspec status --change <c> --json` payload the
@@ -44,6 +45,10 @@ func stubOpenspecStage(t *testing.T, dir string) {
 [ -n "$STUB_LOG" ] && pwd >> "$STUB_LOG"
 case "$1" in
   new)
+    if [ ! -f openspec/config.yaml ]; then
+      echo "no openspec/config.yaml in $(pwd)"
+      exit 1
+    fi
     mkdir -p "openspec/changes/$3" && : > "openspec/changes/$3/.openspec.yaml"
     echo "Created change '$3'"
     exit 0 ;;
@@ -151,6 +156,32 @@ func assertTempDirsRemoved(t *testing.T, log string, wantCalls int) {
 	for _, d := range dirs {
 		if _, err := os.Stat(d); !os.IsNotExist(err) {
 			t.Fatalf("temp dir %s still exists (stat err %v)", d, err)
+		}
+	}
+}
+
+// assertStubDirsUnder checks that every directory the stub ran in is a
+// sdlc-openspec-* folder directly under paths.ScratchDir(scratchRoot).
+func assertStubDirsUnder(t *testing.T, log, scratchRoot string) {
+	t.Helper()
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatalf("read stub log: %v", err)
+	}
+	want := paths.ScratchDir(scratchRoot)
+	if real, err := filepath.EvalSymlinks(want); err == nil {
+		want = real
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		parent := filepath.Dir(line)
+		if real, err := filepath.EvalSymlinks(parent); err == nil {
+			parent = real
+		}
+		if parent != want || !strings.HasPrefix(filepath.Base(line), "sdlc-openspec-") {
+			t.Fatalf("stub ran in %s, want a sdlc-openspec-* folder under %s", line, want)
 		}
 	}
 }
@@ -391,6 +422,7 @@ func TestStage_ValidWritesFilesAndManifest(t *testing.T) {
 
 	// new + status + validate, all in one temp dir that is now gone.
 	assertTempDirsRemoved(t, log, 3)
+	assertStubDirsUnder(t, log, root)
 	assertGitClean(t, root)
 	if _, err := os.Stat(filepath.Join(root, "openspec", "changes")); !os.IsNotExist(err) {
 		t.Fatalf("openspec/changes created in the repo (stat err %v)", err)
@@ -727,7 +759,8 @@ func TestStage_RealCLIOmittedScenario(t *testing.T) {
 func TestPrepareInstructions(t *testing.T) {
 	root, log := setupStageRepo(t)
 
-	schema, guides, err := PrepareInstructions(root, "add-widget")
+	scratchRoot := t.TempDir()
+	schema, guides, err := PrepareInstructions(root, scratchRoot, "add-widget")
 	if err != nil {
 		t.Fatalf("PrepareInstructions: %v", err)
 	}
@@ -757,6 +790,7 @@ func TestPrepareInstructions(t *testing.T) {
 
 	// new + status + one instructions call per artifact.
 	assertTempDirsRemoved(t, log, 2+len(wantIDs))
+	assertStubDirsUnder(t, log, scratchRoot)
 	assertGitClean(t, root)
 	if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "openspec-staging")); !os.IsNotExist(err) {
 		t.Fatalf("PrepareInstructions wrote under the repo (stat err %v)", err)
@@ -765,9 +799,36 @@ func TestPrepareInstructions(t *testing.T) {
 
 func TestPrepareInstructions_InvalidChangeName(t *testing.T) {
 	root, log := setupStageRepo(t)
-	if _, _, err := PrepareInstructions(root, "Bad_Name"); !errors.Is(err, ErrInvalidChangeName) {
+	if _, _, err := PrepareInstructions(root, t.TempDir(), "Bad_Name"); !errors.Is(err, ErrInvalidChangeName) {
 		t.Fatalf("err = %v, want ErrInvalidChangeName", err)
 	}
+	assertTempDirsRemoved(t, log, 0)
+}
+
+// A scratch root whose .sdlc-v2 is a regular file makes the create of the
+// scratch folder fail: both entry points return a *StageIOError with Op
+// "create scratch folder" that names the folder, and the CLI never runs.
+func TestScratchFolderCreateFailure(t *testing.T) {
+	root, log := setupStageRepo(t)
+	scratchRoot := t.TempDir()
+	mustWrite(t, filepath.Join(scratchRoot, ".sdlc-v2"), "not a folder\n")
+	wantDir := paths.ScratchDir(scratchRoot)
+
+	check := func(name string, err error) {
+		t.Helper()
+		var ioErr *StageIOError
+		if !errors.As(err, &ioErr) {
+			t.Fatalf("%s err = %v, want *StageIOError", name, err)
+		}
+		if ioErr.Op != "create scratch folder" || ioErr.Dir != wantDir || ioErr.Path != wantDir {
+			t.Fatalf("%s StageIOError = %+v, want Op create scratch folder and Dir/Path %s", name, ioErr, wantDir)
+		}
+	}
+
+	_, _, err := PrepareInstructions(root, scratchRoot, "add-widget")
+	check("PrepareInstructions", err)
+	_, err = Stage(root, scratchRoot, "add-widget", stageFiles(false), "", fixedNow)
+	check("Stage", err)
 	assertTempDirsRemoved(t, log, 0)
 }
 
