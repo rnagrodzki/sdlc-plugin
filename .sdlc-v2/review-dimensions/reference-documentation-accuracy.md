@@ -55,6 +55,11 @@ severity: high
   parity with the prose. Example: if plan/state-format.md documents
   cleanup-pipeline's return shape, confirm it names every field in the Go
   cleanup pipeline output struct.
+  The check covers fields that the renderer moves out of the field list, such
+  as `Next` and `Warnings`: a shape table that lists the data fields and
+  leaves out `Next` is a finding. A tool with several actions has one shape
+  for each action: grep the return path of each action and compare its fields
+  with the page, including a field that only one action fills.
 - When a reference document describes a persisted row or record (e.g., a
   history row written by plan_mark, a state snapshot row, a ledger entry
   written by recovery paths), verify that every field each writer produces is
@@ -86,6 +91,13 @@ severity: high
   characters but omits that the first character is limited to a subset of
   them (for example `writerIDRe`: the first character is a letter or a
   digit) is a finding.
+  The same holds for any input rule, not only a regex: a count bound, a
+  length cap, a trim step, a duplicate or blank check, or a normalizer
+  function (for example a title cleanup function). Read the whole validator or
+  function body and list each check that it applies. A rule that states one
+  check (for example the upper bound of a count, with no lower bound and no
+  form for each entry) and leaves out another check of the same body is a
+  finding, unless the text says that it names only some.
 - Precedence or conflict claims between two keys or flags (for example
   `steps` wins over `quick`) must match the validator branch that handles
   the pair (for example the reject path in `ship_prepare`). A pair the code
