@@ -2,16 +2,20 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
-// fsseam.go centralizes the three filesystem primitives used to move large
+// fsseam.go centralizes the filesystem primitives used to move large
 // JSON payloads (plan snapshots, commit manifests) out of the LLM's context
-// and onto disk as file-path references. Tests substitute these package vars
+// and onto disk as file-path references under .sdlc-v2/scratch/ of the main
+// worktree. Tests substitute these package vars
 // to simulate filesystem failures deterministically, without relying on
 // platform-specific permission behavior.
 
@@ -44,13 +48,56 @@ func readFileError(what, path string, cause error) error {
 	}
 }
 
-// writeTempJSON creates a fresh temp dir with the given prefix, marshals
-// payload(path) to JSON and writes it to <dir>/<what>.json, returning that
-// path. payload gets the final path so a document can embed its own location.
-// On failure the dir is removed; on success it is left in place because the
-// calling agent reads the file later.
-func writeTempJSON(prefix, what string, payload func(path string) any) (string, error) {
-	dir, err := mkdirTempFunc("", prefix)
+// scratchReadDir matches os.ReadDir's signature. The scratch sweep
+// (removeStaleTempDirs) lists the scratch folder through it.
+var scratchReadDir = os.ReadDir
+
+// scratchRemoveAll matches os.RemoveAll's signature. The scratch sweep
+// (removeStaleTempDirs) removes each old entry through it.
+var scratchRemoveAll = os.RemoveAll
+
+// scratchMkdirTemp makes paths.ScratchDir(root), removes its prefix folders
+// older than paths.ScratchMaxAge (best effort, as removeStaleTempDirs), then
+// calls mkdirTempFunc(paths.ScratchDir(root), prefix). root is the main
+// worktree root. An empty root or a failed MkdirAll returns an InfraError
+// whose Suggestion a caller can reuse through scratchSuggestion.
+func scratchMkdirTemp(root, prefix string) (string, error) {
+	if root == "" {
+		return "", &mcpserver.InfraError{
+			Msg:        "scratch folder: no repo root",
+			Suggestion: "Run the tool inside a git worktree of a repo that has .sdlc-v2/, then retry.",
+		}
+	}
+	dir := paths.ScratchDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("create scratch folder %s: %s", dir, err.Error()),
+			Suggestion: fmt.Sprintf("Check that %s is a folder, not a file, with write permission and free space, then retry.", dir),
+			Cause:      err,
+		}
+	}
+	removeStaleTempDirs(dir, prefix, "", time.Now())
+	return mkdirTempFunc(dir, prefix)
+}
+
+// scratchSuggestion returns the Suggestion of the scratchMkdirTemp error
+// wrapped in err, or fallback when err holds no such error.
+func scratchSuggestion(err error, fallback string) string {
+	var ie *mcpserver.InfraError
+	if errors.As(err, &ie) && ie.Suggestion != "" {
+		return ie.Suggestion
+	}
+	return fallback
+}
+
+// writeTempJSON creates a fresh folder with the given prefix under
+// paths.ScratchDir(root) (see scratchMkdirTemp), marshals payload(path) to
+// JSON and writes it to <dir>/<what>.json, returning that path. payload gets
+// the final path so a document can embed its own location. On failure the dir
+// is removed; on success it is left in place because the calling agent reads
+// the file later.
+func writeTempJSON(root, prefix, what string, payload func(path string) any) (string, error) {
+	dir, err := scratchMkdirTemp(root, prefix)
 	if err != nil {
 		return "", fmt.Errorf("create %s temp dir: %w", what, err)
 	}

@@ -828,7 +828,7 @@ func snapshotPathOf(t *testing.T, fake *fakeFS, name, content string) string {
 	t.Helper()
 	path := "/fake-plans/" + name
 	fake.put(path, content)
-	out, err := materialSnapshot(PlanSupportIn{FilePath: path})
+	out, err := materialSnapshot(t.TempDir(), PlanSupportIn{FilePath: path})
 	if err != nil {
 		t.Fatalf("materialSnapshot: %v", err)
 	}
@@ -953,7 +953,7 @@ func TestPlanMaterialCompare_SamePathTwoCall(t *testing.T) {
 	const planPath = "/fake-plans/plan.md"
 
 	fake.put(planPath, materialBasePlan())
-	snapOut, err := materialSnapshot(PlanSupportIn{FilePath: planPath})
+	snapOut, err := materialSnapshot(t.TempDir(), PlanSupportIn{FilePath: planPath})
 	if err != nil {
 		t.Fatalf("materialSnapshot: %v", err)
 	}
@@ -1145,7 +1145,7 @@ func TestPlanMaterialSnapshot_MkdirTempFailure(t *testing.T) {
 	}
 	defer func() { mkdirTempFunc = origMkdirTemp }()
 
-	_, err := materialSnapshot(PlanSupportIn{FilePath: path})
+	_, err := materialSnapshot(t.TempDir(), PlanSupportIn{FilePath: path})
 	if err == nil {
 		t.Fatal("expected error when mkdirTempFunc fails")
 	}
@@ -1158,7 +1158,8 @@ func TestPlanMaterialSnapshot_MkdirTempFailure(t *testing.T) {
 // write against a real temp root: the sdlc-plan-snapshot-* dir that was created
 // must be removed, and the error must keep its InfraError shape.
 func TestPlanMaterialSnapshot_WriteFailureRemovesTempDir(t *testing.T) {
-	root := redirectTempManifests(t)
+	mainRoot := t.TempDir()
+	root := paths.ScratchDir(mainRoot)
 	planPath := filepath.Join(t.TempDir(), "plan.md")
 	if err := os.WriteFile(planPath, []byte(materialBasePlan()), 0o644); err != nil {
 		t.Fatal(err)
@@ -1168,7 +1169,7 @@ func TestPlanMaterialSnapshot_WriteFailureRemovesTempDir(t *testing.T) {
 	writeFileFunc = func(string, []byte, os.FileMode) error { return os.ErrPermission }
 	t.Cleanup(func() { writeFileFunc = origWriteFile })
 
-	_, err := materialSnapshot(PlanSupportIn{FilePath: planPath})
+	_, err := materialSnapshot(mainRoot, PlanSupportIn{FilePath: planPath})
 	var ie *mcpserver.InfraError
 	if !errors.As(err, &ie) {
 		t.Fatalf("error = %T (%v), want *mcpserver.InfraError", err, err)
@@ -1201,14 +1202,15 @@ func TestWriteTempJSON_FailureRemovesDir(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			root := redirectTempManifests(t)
+			mainRoot := t.TempDir()
+			root := paths.ScratchDir(mainRoot)
 			if tc.writeErr != nil {
 				origWriteFile := writeFileFunc
 				writeFileFunc = func(string, []byte, os.FileMode) error { return tc.writeErr }
 				t.Cleanup(func() { writeFileFunc = origWriteFile })
 			}
 
-			path, err := writeTempJSON("sdlc-test-", "thing", func(string) any { return tc.payload })
+			path, err := writeTempJSON(mainRoot, "sdlc-test-", "thing", func(string) any { return tc.payload })
 			if err == nil {
 				t.Fatal("expected an error")
 			}
@@ -1232,10 +1234,11 @@ func TestWriteTempJSON_FailureRemovesDir(t *testing.T) {
 // keeps its dir (the calling agent reads the file later), hands payload the
 // same path it returns, and leaves valid JSON there.
 func TestWriteTempJSON_SuccessLeavesReadableFile(t *testing.T) {
-	root := redirectTempManifests(t)
+	mainRoot := t.TempDir()
+	root := paths.ScratchDir(mainRoot)
 
 	var seen string
-	path, err := writeTempJSON("sdlc-test-", "thing", func(p string) any {
+	path, err := writeTempJSON(mainRoot, "sdlc-test-", "thing", func(p string) any {
 		seen = p
 		return map[string]string{"selfPath": p}
 	})
@@ -1246,7 +1249,7 @@ func TestWriteTempJSON_SuccessLeavesReadableFile(t *testing.T) {
 		t.Errorf("payload saw path %q, want the returned path %q", seen, path)
 	}
 	if filepath.Base(path) != "thing.json" || filepath.Dir(filepath.Dir(path)) != root {
-		t.Errorf("path = %q, want <root>/sdlc-test-*/thing.json under %q", path, root)
+		t.Errorf("path = %q, want <main>/.sdlc-v2/scratch/sdlc-test-*/thing.json under %q", path, root)
 	}
 
 	raw, err := os.ReadFile(path)
@@ -1539,14 +1542,14 @@ func TestPlanMaterialErrorPaths(t *testing.T) {
 	}{
 		{
 			name:      "snapshot empty filePath",
-			call:      func() (PlanSupportOut, error) { return materialSnapshot(PlanSupportIn{}) },
+			call:      func() (PlanSupportOut, error) { return materialSnapshot(t.TempDir(), PlanSupportIn{}) },
 			wantClass: "domain",
 			wantMsg:   "requires filePath",
 		},
 		{
 			name: "snapshot unreadable plan file",
 			call: func() (PlanSupportOut, error) {
-				return materialSnapshot(PlanSupportIn{FilePath: "/fake-plans/missing.md"})
+				return materialSnapshot(t.TempDir(), PlanSupportIn{FilePath: "/fake-plans/missing.md"})
 			},
 			wantClass: "infra",
 			wantMsg:   "read plan file",
@@ -1559,7 +1562,9 @@ func TestPlanMaterialErrorPaths(t *testing.T) {
 				writeFileFunc = func(string, []byte, os.FileMode) error { return os.ErrPermission }
 				t.Cleanup(func() { writeFileFunc = orig })
 			},
-			call:      func() (PlanSupportOut, error) { return materialSnapshot(PlanSupportIn{FilePath: planPath}) },
+			call: func() (PlanSupportOut, error) {
+				return materialSnapshot(t.TempDir(), PlanSupportIn{FilePath: planPath})
+			},
 			wantClass: "infra",
 			wantMsg:   "write snapshot file",
 		},
@@ -6830,5 +6835,59 @@ func TestDashboardPreplanScanWarningKinds(t *testing.T) {
 	}
 	if !reflect.DeepEqual(notes, wantNotes) {
 		t.Errorf("notes = %q, want %q", notes, wantNotes)
+	}
+}
+
+// TestPlanMaterialSnapshot_WritesUnderScratch pins the snapshot location:
+// <mainRoot>/.sdlc-v2/scratch/sdlc-plan-snapshot-*/snapshot.json, reached
+// through planSupportCore so the main root it passes is the one used.
+func TestPlanMaterialSnapshot_WritesUnderScratch(t *testing.T) {
+	mainRoot := t.TempDir()
+	planPath := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(planPath, []byte(materialBasePlan()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out, err := planSupportCore(mainRoot, "", PlanSupportIn{Action: "material_snapshot", FilePath: planPath})
+	if err != nil {
+		t.Fatalf("material_snapshot: %v", err)
+	}
+	snapDir := filepath.Dir(out.SnapshotPath)
+	if got, want := filepath.Dir(snapDir), paths.ScratchDir(mainRoot); got != want {
+		t.Errorf("snapshot folder parent = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(filepath.Base(snapDir), "sdlc-plan-snapshot-") || filepath.Base(out.SnapshotPath) != "snapshot.json" {
+		t.Errorf("SnapshotPath = %q, want sdlc-plan-snapshot-*/snapshot.json", out.SnapshotPath)
+	}
+	if _, err := os.Stat(out.SnapshotPath); err != nil {
+		t.Errorf("snapshot must be readable: %v", err)
+	}
+}
+
+// TestPlanMaterialSnapshot_ScratchFailureSuggestion pins that a scratch
+// folder that cannot be made (the main root is a file) returns an InfraError
+// with the scratch Suggestion, not the generic material_snapshot one, and
+// that no Suggestion names the OS temp directory.
+func TestPlanMaterialSnapshot_ScratchFailureSuggestion(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	planPath := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(planPath, []byte(materialBasePlan()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := materialSnapshot(file, PlanSupportIn{FilePath: planPath})
+	var ie *mcpserver.InfraError
+	if !errors.As(err, &ie) {
+		t.Fatalf("error = %T (%v), want *mcpserver.InfraError", err, err)
+	}
+	want := "Check that " + paths.ScratchDir(file) + " is a folder, not a file, with write permission and free space, then retry."
+	if ie.Suggestion != want {
+		t.Errorf("Suggestion = %q, want %q", ie.Suggestion, want)
+	}
+	if strings.Contains(ie.Suggestion, "OS temp") {
+		t.Errorf("Suggestion %q still names the OS temp directory", ie.Suggestion)
 	}
 }

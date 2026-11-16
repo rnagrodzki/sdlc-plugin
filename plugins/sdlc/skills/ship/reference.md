@@ -75,6 +75,22 @@ Fix pass: these findings are below the review threshold. Fix each one, or leave 
 
 Before a PR exists, this payload is the only place received-review can find the findings (its Step 1b "Findings passed in the dispatch prompt"). A dispatch with an empty payload leaves every finding unaccounted.
 
+**pr** adds the `Approved PR draft` block to its payload, after the release values that the `### pr` entry forwards, only when the user approved a PR title and body in this session (see the `### pr` entry). Copy the approved title and body verbatim. Write the approved release notes on the `releaseNotes:` line, or `draft them` when the user approved no notes. With no approved draft in this session, and on a resume in a new session, the prompt has no block and the pr skill drafts the text:
+
+```text
+/sdlc:pr [--draft] [--base <branch>] --skip-approval [--auto] --no-instructions
+
+<release values from the ### pr entry>
+
+Approved PR draft (publish unchanged):
+title: <approved title>
+body:
+<approved body, verbatim>
+releaseNotes: <approved notes, or "draft them">
+```
+
+The pr skill (its Step 1c) skips its own drafting for a valid block and sends that title and body to `pr_apply` unchanged. `--skip-approval` stays: the block holds the user approval.
+
 ## DO NOT (R-progressive-disclosure)
 
 - Deviate from the fixed per-step dispatch rules in the Steps section. Unlike the source skill, `ship_prepare`'s output carries no computed `dispatchMode`/`model`/`isolation`/`invocation` per step — this port's SKILL.md itself is the single source of truth for which steps are Agent-dispatched, at which model, and with which args. Do not invent a `dispatchMode` value or dispatch an Agent-dispatched step (execute, commit, review, received-review, commit-fixes, pr) via the Skill tool — always the Agent tool, always with the model fixed in that section. The one inverse case is `harden`: invoke it with the Skill tool from ship's own context, never through an Agent — harden dispatches its own orchestrator Agent and needs `AskUserQuestion` outside `--auto`, and a ship-dispatched Agent has neither reliably.

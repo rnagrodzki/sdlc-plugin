@@ -88,8 +88,9 @@ const exploreDirPrefix = "sdlc-explore-"
 // buildExplorePack runs the full discovery pass (git scope, OpenSpec paths,
 // keyword grep, web-research signal, skill registry sample, recent plans
 // sample), writes a manifest.json into a fresh sdlc-explore-<slug>-XXXXXX
-// tempdir, and returns a summary. After a successful write it removes other
-// sdlc-explore-* dirs older than staleTempDirAge, so the dirs do not pile up
+// folder under .sdlc-v2/scratch/ of mainRoot, and returns a summary. After a
+// successful write it removes other
+// sdlc-explore-* dirs older than paths.ScratchMaxAge, so the dirs do not pile up
 // when a caller never deletes them. Never returns an error to the caller;
 // failures degrade into ExplorePack.Error (mirrors plan-explore.js's R28
 // fallback contract: always exits 0, errors surface via output.error only).
@@ -99,7 +100,7 @@ func buildExplorePack(mainRoot, contentRoot, fromOpenspec, userPrompt string) Ex
 		branchSlug = state.SlugifyBranch(branch)
 	}
 
-	outDir, err := mkdirTempFunc("", fmt.Sprintf("%s%s-", exploreDirPrefix, branchSlug))
+	outDir, err := scratchMkdirTemp(mainRoot, fmt.Sprintf("%s%s-", exploreDirPrefix, branchSlug))
 	if err != nil {
 		msg := err.Error()
 		return ExplorePack{Error: &msg}
@@ -479,7 +480,7 @@ func sampleRecentPlans(mainRoot string) []string {
 // plan_prepare and plan_mark are registered by RegisterPlanTools in plan.go.
 func RegisterPlanExploreTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "plan_explore_prepare",
-		"INTERNAL — called by sdlc skills only. Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh tempdir for plan's explore orchestrator. Each call also removes older sdlc-explore-* temp directories last modified more than 24 hours ago.",
+		"INTERNAL — called by sdlc skills only. Run dynamic-dimension discovery (git scope, OpenSpec paths, keyword grep, web-research signal, skill registry, recent plans) and write a manifest.json into a fresh folder under .sdlc-v2/scratch/ of the main worktree for plan's explore orchestrator. Each call also removes older sdlc-explore-* folders there last modified more than 24 hours ago.",
 		mcpserver.Annotations{
 			Title:      "Prepare plan exploration pack",
 			ReadOnly:   true,
@@ -512,7 +513,7 @@ func RegisterPlanExploreTools(s *mcpserver.Server) {
 				}
 				return PlanExploreOut{}, &mcpserver.InfraError{
 					Msg:        msg,
-					Suggestion: "Check that the OS temp directory is writable and has free space, then retry plan_explore_prepare.",
+					Suggestion: "Check that .sdlc-v2/scratch/ of the main worktree is writable and has free space, then retry plan_explore_prepare.",
 				}
 			}
 			return PlanExploreOut{ManifestPath: *pack.ManifestPath}, nil

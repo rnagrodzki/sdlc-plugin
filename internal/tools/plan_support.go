@@ -343,7 +343,7 @@ func RegisterPlanSupportTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored, except section, content and topicStatus: an action other than preplan_write that gets one of them returns DomainError; and verifyKind and verifyValue: an action other than verify_requirements_context that gets one of them returns DomainError):
 
 - merge_results: Merge lane/lens review results. Requires at least one of laneResults or lensResults. Optional: expectedGates, isRedispatch. Lane status must be pass or fail, and every issue severity must be blocking or advisory; any other value fails with a DomainError and nothing is merged. Every issue in allIssues carries an "id" field: "f-" plus the first 8 hex chars of sha256(gateId|lower(trim(summary))). The same gate and summary always give the same id. An "id" in the input is ignored.
-- material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath.
+- material_snapshot: Snapshot plan material for change detection. Requires filePath. Returns snapshotPath, a file in a new sdlc-plan-snapshot-* folder under .sdlc-v2/scratch/ of the main worktree. Also removes its own sdlc-plan-snapshot-* entries under .sdlc-v2/scratch/ older than 24 hours.
 - material_compare: Compare current plan material against a snapshot. Requires filePath, snapshotPath (from material_snapshot).
 - openspec_appendix: Generate an openspec appendix. Requires changeName. Optional: proposalPath, designPath, specPaths, planTasks.
 - openspec_instructions: Return the artifact templates, instructions, rules and the active plan guardrails for a new OpenSpec change, from a temp copy of openspec/config.yaml. Requires changeName. Returns schemaName, artifacts, guardrails. Writes nothing in the repository; a missing openspec CLI returns InfraError.
@@ -427,7 +427,7 @@ func planSupportCore(mainRoot, contentRoot string, in PlanSupportIn) (PlanSuppor
 	case "merge_results":
 		return mergeResults(in)
 	case "material_snapshot":
-		return materialSnapshot(in)
+		return materialSnapshot(mainRoot, in)
 	case "material_compare":
 		return materialCompare(in)
 	case "openspec_appendix":
@@ -713,7 +713,9 @@ func mergeResults(in PlanSupportIn) (PlanSupportOut, error) {
 // Action: material_snapshot
 // ---------------------------------------------------------------------------
 
-func materialSnapshot(in PlanSupportIn) (PlanSupportOut, error) {
+// materialSnapshot writes the snapshot under .sdlc-v2/scratch/ of mainRoot,
+// the main worktree root.
+func materialSnapshot(mainRoot string, in PlanSupportIn) (PlanSupportOut, error) {
 	if in.FilePath == "" {
 		return PlanSupportOut{}, &mcpserver.DomainError{
 			Msg:        "material_snapshot requires filePath — provide the path to the plan file to snapshot",
@@ -732,7 +734,7 @@ func materialSnapshot(in PlanSupportIn) (PlanSupportOut, error) {
 
 	snap := snapshotPlan(string(content))
 
-	snapshotPath, err := writePlanSnapshot(snap)
+	snapshotPath, err := writePlanSnapshot(mainRoot, snap)
 	if err != nil {
 		return PlanSupportOut{}, err
 	}
@@ -744,16 +746,16 @@ func materialSnapshot(in PlanSupportIn) (PlanSupportOut, error) {
 	}, nil
 }
 
-// writePlanSnapshot marshals snap to JSON and writes it to a fresh temp file
-// via the fsseam, so the caller can pass the file path forward to
-// material_compare instead of round-tripping the full snapshot JSON through
-// its own context.
-func writePlanSnapshot(snap PlanSnapshot) (string, error) {
-	snapshotPath, err := writeTempJSON("sdlc-plan-snapshot-", "snapshot", func(string) any { return snap })
+// writePlanSnapshot marshals snap to JSON and writes it to a fresh file under
+// paths.ScratchDir(root) via the fsseam, so the caller can pass the file path
+// forward to material_compare instead of round-tripping the full snapshot
+// JSON through its own context. root is the main worktree root.
+func writePlanSnapshot(root string, snap PlanSnapshot) (string, error) {
+	snapshotPath, err := writeTempJSON(root, "sdlc-plan-snapshot-", "snapshot", func(string) any { return snap })
 	if err != nil {
 		return "", &mcpserver.InfraError{
 			Msg:        err.Error(),
-			Suggestion: "Check available disk space and permissions on the OS temp directory, then retry material_snapshot.",
+			Suggestion: scratchSuggestion(err, "Check disk space and write permission on .sdlc-v2/scratch/ of the main worktree, then retry material_snapshot."),
 			Cause:      err,
 		}
 	}

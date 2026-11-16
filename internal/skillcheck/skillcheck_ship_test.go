@@ -777,3 +777,75 @@ func TestShipSkillsArchiveCommitAndDecideShapes(t *testing.T) {
 		t.Error("Steps overview bullet of archive-openspec does not name the archive commit")
 	}
 }
+
+// TestShipSkillsWaitsReportAndPRDraft pins the wait rules of the poll loops
+// and of a background worker, the cleanup table of the wait workers, the
+// short report print of step 9a, the title of the follow-up lines and the
+// Approved PR draft block of the pr dispatch. These rules are skill text that
+// no Go code runs, so a text pin is the strongest check.
+func TestShipSkillsWaitsReportAndPRDraft(t *testing.T) {
+	root := shipSkillsRepoRoot(t)
+	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
+	reference := shipSkillsReadFile(t, root, "skills/ship/reference.md")
+
+	gates, ok := shipSkillsSection(content, "## Decisions & gates")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "## Decisions & gates" section`)
+	}
+	pollWait := `ship_state({action:"wait", step:"<step>", detail:{seconds:<min(interval_seconds + 30, 3600)>}})`
+	if n := strings.Count(gates, pollWait); n != 2 {
+		t.Errorf("Decisions & gates has %d poll-loop wait calls, want 2 (verify-pipeline and await-remote-review)", n)
+	}
+	for _, pin := range []string{
+		"then run `sleep <interval_seconds>` with Bash `run_in_background:true` and end the turn.",
+		"When the sleep ends, call `poll_await` again with `state_file`.",
+		"Never use a foreground `sleep` or `gh pr checks --watch`: the harness blocks the first, and the second stops early on a skipped job.",
+		"the same ban on a foreground `sleep` and on `gh pr checks --watch`",
+		// The background-worker wait rule.
+		"- **Wait for a background worker.** Before a step ends its turn while a background Agent runs, call `ship_state({action:\"wait\", step:\"<step>\", detail:{seconds:900}})`.",
+		"When the turn ends again and the worker still runs, call wait again.",
+		// The cleanup table.
+		"| Worker | Stop rule | Not stopped |",
+		"| background `sleep` | keep the task ID that the Bash call returns in the step context until the step ends. When the step ends before the sleep, `TaskStop` that ID |",
+		"| background `sleep`, the Bash call returns no task ID | no stop is possible | add `sleep (no task ID)` to the \"Workers not stopped\" slot |",
+		"| `wait` succeeds, the background `sleep` fails to start | call `poll_await` again at once, with no sleep |",
+		"| background Agent | the worker-stop row of the item 7 exit table",
+		"| wait fields | the next `begin-step` or `complete-step` removes them | they end by time, at most 3600 seconds |",
+		"| a new session or a compaction loses the sleep task ID | no stop: the sleep ends by itself within `interval_seconds` and writes nothing |",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md Decisions & gates", gates, pin)
+	}
+	for _, old := range []string{
+		"sleep `interval_seconds`, resume with `state_file`",
+	} {
+		if strings.Contains(content, old) {
+			t.Errorf("skills/ship/SKILL.md still contains the old poll text %q", old)
+		}
+	}
+
+	loop, ok := shipSkillsSection(content, "## Step loop")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "## Step loop" section`)
+	}
+	for _, pin := range []string{
+		"Print `display` (one summary line), then `path` as the last line of this step's output.",
+		"Each follow-up line shows the item `title` (the `title` field of each `groups` item), never the full description.",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md Step loop", loop, pin)
+	}
+	if strings.Contains(loop, "when `format` is `\"md\"`, print `display` verbatim") {
+		t.Error("step 9a still prints the full md report")
+	}
+
+	block := "Approved PR draft (publish unchanged):\ntitle: <approved title>\nbody:\n<approved body, verbatim>\nreleaseNotes: <approved notes, or \"draft them\">\n"
+	pr, ok := shipSkillsSection(content, "### pr")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "### pr" section`)
+	}
+	hardenSkillsAssertOnce(t, "skills/ship/SKILL.md pr section", pr, block)
+	hardenSkillsAssertOnce(t, "skills/ship/SKILL.md pr section", pr,
+		"With no approved draft in this session, add no block: the pr Agent drafts the text. A resume in a new session adds no block")
+	hardenSkillsAssertOnce(t, "skills/ship/reference.md", reference, block)
+	hardenSkillsAssertOnce(t, "skills/ship/reference.md", reference,
+		"/sdlc:pr [--draft] [--base <branch>] --skip-approval [--auto] --no-instructions\n")
+}
