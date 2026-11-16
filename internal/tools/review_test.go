@@ -527,7 +527,8 @@ func TestIndexEntrySliceFileGating(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReviewPrepareFixture(t *testing.T) {
-	// reviewPrepare creates its manifest folder under TMPDIR: keep it inside t.TempDir.
+	// reviewPrepare writes its manifest folder under .sdlc-v2/scratch/ of root;
+	// TMPDIR points at t.TempDir so a stray system-temp write stays inside it.
 	t.Setenv("TMPDIR", t.TempDir())
 	// Build a minimal git repo with some files and a dimension.
 	root := t.TempDir()
@@ -585,6 +586,9 @@ and adherence to best practices. Check for potential bugs and edge cases.
 
 	if out.ManifestPath == "" {
 		t.Fatal("ManifestPath is empty")
+	}
+	if scratch := paths.ScratchDir(root); !strings.HasPrefix(out.ManifestPath, filepath.Join(scratch, "sdlc-review-")) {
+		t.Errorf("ManifestPath %q is not in an sdlc-review-* folder under the scratch folder %q", out.ManifestPath, scratch)
 	}
 	if out.Summary.TotalDimensions != 1 {
 		t.Errorf("expected 1 dimension, got %d", out.Summary.TotalDimensions)
@@ -689,7 +693,8 @@ and adherence to best practices. Check for potential bugs and edge cases.
 // worker's .diff file. The manifest must flag this via `truncated`/`status`
 // rather than staying silent.
 func TestReviewPrepareDiffByteCapTruncation(t *testing.T) {
-	// reviewPrepare creates its manifest folder under TMPDIR: keep it inside t.TempDir.
+	// reviewPrepare writes its manifest folder under .sdlc-v2/scratch/ of root;
+	// TMPDIR points at t.TempDir so a stray system-temp write stays inside it.
 	t.Setenv("TMPDIR", t.TempDir())
 	root := t.TempDir()
 
@@ -1949,9 +1954,9 @@ func reviewRunPlanDims() map[string]string {
 }
 
 // newReviewRunPlanFixture builds a fixture with reviewRunPlanDims and a
-// limit of 2 agents at the same time. It points TMPDIR at a test folder, so
-// the os.MkdirTemp review folder of a failed call cannot leak outside
-// t.TempDir.
+// limit of 2 agents at the same time. The review folder goes under
+// .sdlc-v2/scratch/ of the fixture root. It points TMPDIR at a test folder,
+// so a stray system-temp write cannot leak outside t.TempDir.
 func newReviewRunPlanFixture(t *testing.T) string {
 	t.Helper()
 	t.Setenv("TMPDIR", t.TempDir())

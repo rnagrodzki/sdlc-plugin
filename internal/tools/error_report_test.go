@@ -99,8 +99,8 @@ func TestErrorReportPrepare_PartialFieldsStillReportsRemainingMissing(t *testing
 // ---------------------------------------------------------------------------
 
 func TestErrorReportPrepare_ManifestFieldFidelity(t *testing.T) {
-	redirectTempDir(t)
 	root := t.TempDir()
+	redirectTempDir(t, root)
 
 	out, err := errorReportPrepare(root, ErrorReportPrepareIn{
 		Skill:                  "  ship  ",
@@ -173,8 +173,9 @@ func TestErrorReportPrepare_ManifestFieldFidelity(t *testing.T) {
 // file, so mirrored fields would be dead. With no match and no failure,
 // similarIssues is an empty array (not null) and similarIssuesNote is absent.
 func TestErrorReportPrepare_ResultHasNoMirroredManifestFields(t *testing.T) {
-	redirectTempDir(t)
-	out, err := errorReportPrepare(t.TempDir(), ErrorReportPrepareIn{
+	root := t.TempDir()
+	redirectTempDir(t, root)
+	out, err := errorReportPrepare(root, ErrorReportPrepareIn{
 		Skill:     "ship",
 		Step:      "step-1",
 		Operation: "do-thing",
@@ -201,8 +202,8 @@ func TestErrorReportPrepare_ResultHasNoMirroredManifestFields(t *testing.T) {
 }
 
 func TestErrorReportPrepare_OptionalFieldsDefaultToEmptyString(t *testing.T) {
-	redirectTempDir(t)
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	out, err := errorReportPrepare(root, ErrorReportPrepareIn{
 		Skill:     "ship",
 		Step:      "step-1",
@@ -290,7 +291,13 @@ func readErrorReportManifest(t *testing.T, path string) map[string]any {
 // working directory, where the plugin's skills/ tree does not exist, so it
 // must get the template from the manifest, not from a project-relative path.
 func TestPrepareOrchestrator_ErrorReportManifestCarriesTemplate(t *testing.T) {
-	redirectTempDir(t)
+	// Read the shipped template before newOrchestratorRepo changes the
+	// working directory to the test repo.
+	want, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "skills", "error-report", "templates", "ToolingError.md"))
+	if err != nil {
+		t.Fatalf("read shipped template: %v", err)
+	}
+	redirectTempDir(t, newOrchestratorRepo(t, ""))
 	out, err := prepareOrchestrator(PrepareOrchestratorIn{
 		Mode:      "error_report",
 		Skill:     "ship",
@@ -303,10 +310,6 @@ func TestPrepareOrchestrator_ErrorReportManifestCarriesTemplate(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(out.ManifestPath)) })
 
-	want, err := os.ReadFile(filepath.Join("..", "..", "plugins", "sdlc", "skills", "error-report", "templates", "ToolingError.md"))
-	if err != nil {
-		t.Fatalf("read shipped template: %v", err)
-	}
 	manifest := readErrorReportManifest(t, out.ManifestPath)
 	got, _ := manifest["template"].(string)
 	if got != string(want) {
@@ -454,10 +457,10 @@ func TestErrorReportPrepare_ResultCarriesSimilarIssuesAndNote(t *testing.T) {
 	in := ErrorReportPrepareIn{Skill: "harden", Step: "step-1", Operation: "do-thing", Error: "boom"}
 
 	t.Run("match", func(t *testing.T) {
-		redirectTempDir(t)
 		match := ghx.Issue{Number: 91, Title: "[harden] pre-flight stop", URL: "https://example.test/91"}
 		calls := stubErrorReportIssueList(t, []ghx.Issue{match, {Number: 2, Title: "[plan] x", URL: "u"}}, nil)
 		root := t.TempDir()
+		redirectTempDir(t, root)
 
 		out, err := errorReportPrepare(root, in)
 		if err != nil {
@@ -475,10 +478,11 @@ func TestErrorReportPrepare_ResultCarriesSimilarIssuesAndNote(t *testing.T) {
 	})
 
 	t.Run("search failure", func(t *testing.T) {
-		redirectTempDir(t)
+		root := t.TempDir()
+		redirectTempDir(t, root)
 		stubErrorReportIssueList(t, nil, &ghx.ExitError{Command: "gh issue list", ExitCode: 1, Stderr: "gh auth login required"})
 
-		out, err := errorReportPrepare(t.TempDir(), in)
+		out, err := errorReportPrepare(root, in)
 		if err != nil {
 			t.Fatalf("a search failure must not fail the call, got: %v", err)
 		}
@@ -657,8 +661,7 @@ func TestPrepareOrchestratorOut_SimilarIssuesWireShape(t *testing.T) {
 // finds two issues. Only the one whose title starts with the skill tag is
 // returned, and next holds the offer sentence for 1 issue.
 func TestPrepareOrchestrator_ErrorReportReturnsSimilarIssues(t *testing.T) {
-	redirectTempDir(t)
-	newOrchestratorRepo(t, "")
+	redirectTempDir(t, newOrchestratorRepo(t, ""))
 	match := ghx.Issue{Number: 91, Title: "[harden] pre-flight stop", URL: "https://example.test/91"}
 	calls := stubErrorReportIssueList(t, []ghx.Issue{match, {Number: 40, Title: "[plan] unrelated", URL: "u"}}, nil)
 

@@ -911,9 +911,9 @@ func writeReviewRunMetaShip(root, branch, shipRunID, runID string, startedAt tim
 }
 
 // reviewPrepare builds the review manifest for the changed files, writes it
-// to a temp directory, and (unless this is a dry run or no wave matches)
-// writes the run.meta file for the review run. In save mode it saves a
-// review report and returns before any of that.
+// to a new folder under .sdlc-v2/scratch/ of projectRoot, and (unless this
+// is a dry run or no wave matches) writes the run.meta file for the review
+// run. In save mode it saves a review report and returns before any of that.
 func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPrepareOut, error) {
 	if in.SaveReview {
 		return saveReviewComment(projectRoot, activeRoot, in)
@@ -1065,12 +1065,14 @@ func reviewPrepare(projectRoot, activeRoot string, in ReviewPrepareIn) (ReviewPr
 		fileDiffMap[fd.Path] = fd.Content
 	}
 
-	// Create temp directory for diff and slice files.
-	tmpDir, err := os.MkdirTemp("", "sdlc-review-")
+	// Create the scratch folder for diff and slice files under
+	// .sdlc-v2/scratch/ of the main worktree; scratchMkdirTemp also removes
+	// old sdlc-review-* folders there.
+	tmpDir, err := scratchMkdirTemp(projectRoot, "sdlc-review-")
 	if err != nil {
 		return ReviewPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
-			Suggestion: "Check available disk space and write permission on the system temp directory, then retry review_prepare.",
+			Suggestion: scratchSuggestion(err, "Check disk space and write permission on .sdlc-v2/scratch/ of the main worktree, then retry review_prepare."),
 			Cause:      err,
 		}
 	}
@@ -1503,7 +1505,7 @@ func saveReviewComment(projectRoot, activeRoot string, in ReviewPrepareIn) (Revi
 // RegisterReviewTools registers review_prepare on the server.
 func RegisterReviewTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "review_prepare",
-		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a temp directory. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxParallelDimensions (review agents that run at the same time, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. The manifest field waves lists every started dimension name, most severe first, in groups of maxParallelDimensions. Start waves[0] first, wait for it, then start the next wave. An old maxDimensions key returns an error that names the new key. An invalid maxParallelDimensions or an unreadable local.toml returns an error. Each call mints a new manifest run_id (\"review-\" plus the sanitized timestamp) and gives each dimension a worker_id (the lowercased name, each run of other characters replaced by one \"-\"). With at least one wave, it writes .sdlc-v2/runs/ledger/<run_id>/run.meta: branch, startedAt, shipRunId (when the branch's ship review step is in_progress), waves of worker ids, and dimensions [{name, workerId, wave}]. When the current branch cannot be read, run.meta has an empty branch and no shipRunId, so the review will not join its ship run; the result warnings say so. When the ship state cannot be read, run.meta has no shipRunId and the result warnings say so. With dryRun:true or zero waves, it writes no run.meta and run_id is \"\". A failed run.meta write returns an error with no manifest path and leaves no ledger run folder.", defaultMaxParallelDimensions),
+		fmt.Sprintf("Pre-compute review manifest: git state, dimension matching, diff slicing, commit context, open-PR lookup via gh. Writes manifest + per-dimension .diff and .slice.json files to a new folder under .sdlc-v2/scratch/ of the main worktree. With saveReview:true, persists content verbatim to .sdlc-v2/reviews/<branch>-<date>.md instead. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. Reads scope and maxParallelDimensions (review agents that run at the same time, default %d, minimum 1) from the [review] section of .sdlc-v2/local.toml, merged over ~/.sdlc/local.toml. The manifest field waves lists every started dimension name, most severe first, in groups of maxParallelDimensions. Start waves[0] first, wait for it, then start the next wave. An old maxDimensions key returns an error that names the new key. An invalid maxParallelDimensions or an unreadable local.toml returns an error. Each call mints a new manifest run_id (\"review-\" plus the sanitized timestamp) and gives each dimension a worker_id (the lowercased name, each run of other characters replaced by one \"-\"). With at least one wave, it writes .sdlc-v2/runs/ledger/<run_id>/run.meta: branch, startedAt, shipRunId (when the branch's ship review step is in_progress), waves of worker ids, and dimensions [{name, workerId, wave}]. When the current branch cannot be read, run.meta has an empty branch and no shipRunId, so the review will not join its ship run; the result warnings say so. When the ship state cannot be read, run.meta has no shipRunId and the result warnings say so. With dryRun:true or zero waves, it writes no run.meta and run_id is \"\". A failed run.meta write returns an error with no manifest path and leaves no ledger run folder.", defaultMaxParallelDimensions),
 		mcpserver.Annotations{
 			Title:       "Prepare code review payload",
 			ReadOnly:    false,

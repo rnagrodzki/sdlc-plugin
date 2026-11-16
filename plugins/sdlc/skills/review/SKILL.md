@@ -597,7 +597,7 @@ itself failed):
 rm -f "<manifestPath>"
 ```
 
-Remove the temp directory only when the unstoppable list is empty:
+Remove the scratch folder only when the unstoppable list is empty:
 
 ```bash
 rm -rf "{manifest.diff_dir}"
@@ -605,7 +605,7 @@ rm -rf "{manifest.diff_dir}"
 
 When the unstoppable list is not empty, keep `{manifest.diff_dir}`. A worker that is still
 running reads its slice and diff files from it. Name the kept path in the final output. The
-directory is under the system temp directory, so the operating system removes it later.
+directory is under `.sdlc-v2/scratch/`. A later `review_prepare` call removes `sdlc-review-*` folders older than 24 hours.
 
 Do not remove the run's ledger. The dashboard reads it to show the review dimensions of a
 finished run. The first execute `gc` or ship `cleanup-pipeline` sweep after 7 days (the
