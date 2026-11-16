@@ -686,6 +686,7 @@ func newTempChange(activeRoot, scratchRoot, change string) (string, func(), erro
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", nil, &StageIOError{Op: "create scratch folder", Path: dir, Dir: dir, Err: err}
 	}
+	sweepStaleScratch(dir, "sdlc-openspec-", time.Now())
 	tmp, err := os.MkdirTemp(dir, "sdlc-openspec-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("openspec: create temp dir: %w", err)
@@ -700,6 +701,27 @@ func newTempChange(activeRoot, scratchRoot, change string) (string, func(), erro
 		return "", nil, err
 	}
 	return tmp, cleanup, nil
+}
+
+// sweepStaleScratch removes the directories in dir whose name starts with
+// prefix and whose age is over paths.ScratchMaxAge. A crashed run leaves such
+// a copy. It is best effort: a failed read or remove is ignored, so it never
+// fails the call that creates a new copy.
+func sweepStaleScratch(dir, prefix string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) <= paths.ScratchMaxAge {
+			continue
+		}
+		os.RemoveAll(filepath.Join(dir, e.Name()))
+	}
 }
 
 // copyTargetSpecs copies <activeRoot>/openspec/specs/<cap>/spec.md into

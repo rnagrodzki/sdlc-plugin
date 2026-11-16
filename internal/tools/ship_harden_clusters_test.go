@@ -589,6 +589,7 @@ func TestShipStateHardenClusters_AlreadyHardenedPrefixMatch(t *testing.T) {
 		runes int
 		want  bool
 	}{
+		{"200 runes", 200, true},
 		{"191 runes", 191, true},
 		{"194 runes", 194, true},
 		{"100 runes", 100, true},
@@ -645,6 +646,43 @@ func TestShipStateHealingRecord_HardenedTriggerPrefixUpsert(t *testing.T) {
 	rec, _ := hardened[0].(map[string]any)
 	if rec["phase"] != "done" || rec["trigger"] != string(full) {
 		t.Errorf("hardened[0] = %v, want the done record with the full trigger", rec)
+	}
+}
+
+// TestShipStateHealingRecord_HardenedTriggerPrefixUpsertTwoMatches pins the
+// 2-matching-rows case: two stored rows that do not match each other both match
+// the incoming trigger. The done record replaces the first match only, and the
+// second row stays.
+func TestShipStateHealingRecord_HardenedTriggerPrefixUpsertTwoMatches(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	branch := "feat/hc-hardened-upsert-two"
+	dir, path := hardenClustersFixture(t, branch)
+	base := strings.Repeat("a", hardenTriggerMinPrefixLen)
+	first, second := base+"-first", base+"-second"
+
+	for _, trigger := range []string{first, second} {
+		healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+			"phase": "started", "trigger": trigger,
+			"applied": []any{}, "skipped": float64(0),
+		}))
+	}
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+		"phase": "done", "trigger": base,
+		"applied": []any{}, "skipped": float64(0),
+	}))
+
+	healing, _ := readStateData(t, path)["healing"].(map[string]any)
+	hardened, _ := healing["hardened"].([]any)
+	if len(hardened) != 2 {
+		t.Fatalf("hardened = %v, want 2 entries", hardened)
+	}
+	r0, _ := hardened[0].(map[string]any)
+	r1, _ := hardened[1].(map[string]any)
+	if r0["phase"] != "done" || r0["trigger"] != base {
+		t.Errorf("hardened[0] = %v, want the done record that replaced the first match", r0)
+	}
+	if r1["phase"] != "started" || r1["trigger"] != second {
+		t.Errorf("hardened[1] = %v, want the second started record unchanged", r1)
 	}
 }
 

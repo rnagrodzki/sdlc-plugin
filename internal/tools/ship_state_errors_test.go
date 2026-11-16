@@ -821,7 +821,7 @@ func TestShipState_Decide_TextChecks(t *testing.T) {
 		{"no detail key text", map[string]any{"decision": "skip", "reason": "low risk"}, "decide: detail.text is required"},
 		{"blank text", map[string]any{"text": ""}, "decide: detail.text is required"},
 		{"white space text", map[string]any{"text": " \n\t "}, "decide: detail.text is required"},
-		{"text over the limit", map[string]any{"text": strings.Repeat("x", 2001)}, "2000"},
+		{"text over the limit", map[string]any{"text": strings.Repeat("x", shipDecideTextMax+1)}, "longer than the limit"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -848,7 +848,7 @@ func TestShipState_Decide_TextChecks(t *testing.T) {
 func TestShipState_Decide_TextAtTheLimit(t *testing.T) {
 	dir := t.TempDir()
 	path := shipStateInitFixture(t, dir, shipErrBranch)
-	text := strings.Repeat("é", 2000) // 2000 runes, 4000 bytes
+	text := strings.Repeat("é", shipDecideTextMax) // shipDecideTextMax runes, twice that in bytes
 
 	_, err := shipState(dir, dir, ShipStateIn{
 		Action: "decide",

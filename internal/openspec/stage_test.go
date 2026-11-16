@@ -1385,3 +1385,43 @@ func TestSamePlanPath(t *testing.T) {
 		})
 	}
 }
+
+// TestSweepStaleScratch pins the 24-hour sweep of newTempChange: an old
+// sdlc-openspec-* folder goes, a young one, a folder with another prefix and a
+// plain file stay, and a missing folder does not panic.
+func TestSweepStaleScratch(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	old := now.Add(-paths.ScratchMaxAge - time.Hour)
+	mk := func(name string, mod time.Time) {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, mod, mod); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("sdlc-openspec-old", old)
+	mk("sdlc-openspec-young", now.Add(-time.Hour))
+	mk("sdlc-review-old", old)
+	if err := os.WriteFile(filepath.Join(dir, "sdlc-openspec-file"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	sweepStaleScratch(dir, "sdlc-openspec-", now)
+
+	for name, wantExists := range map[string]bool{
+		"sdlc-openspec-old":   false,
+		"sdlc-openspec-young": true,
+		"sdlc-review-old":     true,
+		"sdlc-openspec-file":  true,
+	} {
+		_, err := os.Stat(filepath.Join(dir, name))
+		if (err == nil) != wantExists {
+			t.Errorf("%s exists = %v, want %v", name, err == nil, wantExists)
+		}
+	}
+	sweepStaleScratch(filepath.Join(dir, "missing"), "sdlc-openspec-", now)
+}
