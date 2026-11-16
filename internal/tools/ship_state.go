@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -44,9 +45,9 @@ import (
 // empty-string distinction for reason/error/result, are preserved without
 // literal typed struct fields (see detailIntPtr below).
 type ShipStateIn struct {
-	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=commit-check,enum=openspec-check,enum=openspec-tasks,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record,enum=harden_clusters,enum=report,enum=instructions-next,enum=instruction-record" jsonschema_description:"Operation to perform: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start (legacy), complete (legacy), skip, fail, decide, defer, healing_record, harden_clusters, report, instructions-next, instruction-record, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
-	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide; ignored by other actions."`
-	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, severity, file, title, line, force, merge, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, deferredId (kind fixed: the deferred row to resolve; the deferredFindings entries with it get fixedInRun:true), status, phase, trigger, classification, applied (at most 100 entries {surface, action, targetFile, rationale?, patch?}; rationale at most 600 runes; a patch over 1536 bytes is cut and gets patchCut:true, which the caller never sends), skipped, held (optional, at most 100 entries {surface, action, targetFile, reason, deferredId?}; [] is valid; reason is one of pending-stored | pending-not-stored | not-processed; deferredId is a non-empty string, required for reason pending-stored and absent for the other reasons; entries can share one deferredId; not checked against the harden summary or the deferred items; a longer list or a bad entry is a DomainError and writes nothing), branch; harden_clusters reads findings, branch. Each finding may also carry line, deferredId and fixedInRun. report reads write, format, branch; instructions-next and instruction-record read key (one of execute, commit, review, received-review, commit-fixes, verify-openspec, archive-openspec, harden, pr, verify-pipeline, await-remote-review, learnings-commit, ship; example: key: commit) and branch. instruction-record also reads instructionNumber (1 to the record count), instructionAll (true closes each open record of the key; needs instructionStatus not run and an outcome; a pending record becomes not run with the outcome, a running record becomes failed with outcome result not recorded, not run again), instructionStatus (done, failed, not run), instructionOutcome (max 1000 characters after trimming, required for failed and not run; a longer outcome is a DomainError, never cut). Every other action refuses instructionNumber, instructionAll, instructionStatus and instructionOutcome; deferred_add reads id, description, created, source, priority, merge (true to merge into the open item with the same id)). See the action list for which sub-fields each action reads."`
+	Action    string         `json:"action" jsonschema:"enum=init,enum=begin-step,enum=complete-step,enum=commit-check,enum=openspec-check,enum=openspec-tasks,enum=start,enum=complete,enum=skip,enum=fail,enum=decide,enum=defer,enum=wait,enum=read,enum=next,enum=todos,enum=cleanup,enum=cleanup-pipeline,enum=gc,enum=migrate,enum=history_record,enum=deferred_add,enum=deferred_list,enum=deferred_propose_followups,enum=deferred_resolve,enum=log-cli,enum=healing_record,enum=harden_clusters,enum=report,enum=instructions-next,enum=instruction-record" jsonschema_description:"Operation to perform: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start (legacy), complete (legacy), skip, fail, decide, defer, wait, healing_record, harden_clusters, report, instructions-next, instruction-record, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, or log-cli. Each action uses a subset of the other fields (unlisted fields are ignored)."`
+	Step      string         `json:"step,omitempty" jsonschema_description:"Pipeline step name. Required by begin-step, complete-step, start, complete, skip, fail, decide, wait; ignored by other actions."`
+	Detail    map[string]any `json:"detail,omitempty" jsonschema_description:"Action-specific extra fields (e.g. branch, flags, outcome, result, reason, description, error, text, seconds (wait), ids (deferred_list), severity, file, title, line, force, merge, ttlDays, dryRun, from, to, detail; log-cli reads branch, command, exitCode, outputHead, step; healing_record reads kind, total, dimensions, origin, severity, file, line, title, deferredId (kind fixed: the deferred row to resolve; the deferredFindings entries with it get fixedInRun:true), status, phase, trigger, classification, applied (at most 100 entries {surface, action, targetFile, rationale?, patch?}; rationale at most 600 runes; a patch over 1536 bytes is cut and gets patchCut:true, which the caller never sends), skipped, held (optional, at most 100 entries {surface, action, targetFile, reason, deferredId?}; [] is valid; reason is one of pending-stored | pending-not-stored | not-processed; deferredId is a non-empty string, required for reason pending-stored and absent for the other reasons; entries can share one deferredId; not checked against the harden summary or the deferred items; a longer list or a bad entry is a DomainError and writes nothing), branch; harden_clusters reads findings, branch. Each finding may also carry line, deferredId and fixedInRun. report reads write, format, branch; instructions-next and instruction-record read key (one of execute, commit, review, received-review, commit-fixes, verify-openspec, archive-openspec, harden, pr, verify-pipeline, await-remote-review, learnings-commit, ship; example: key: commit) and branch. instruction-record also reads instructionNumber (1 to the record count), instructionAll (true closes each open record of the key; needs instructionStatus not run and an outcome; a pending record becomes not run with the outcome, a running record becomes failed with outcome result not recorded, not run again), instructionStatus (done, failed, not run), instructionOutcome (max 1000 characters after trimming, required for failed and not run; a longer outcome is a DomainError, never cut). Every other action refuses instructionNumber, instructionAll, instructionStatus and instructionOutcome; deferred_add reads id, description, created, source, priority, merge (true to merge into the open item with the same id)). See the action list for which sub-fields each action reads."`
 	SessionID string         `json:"sessionId,omitempty" jsonschema_description:"Session identifier used by init to stamp the created state's sessionId field, for correlating this run with the calling session. init also uses it to keep older ship runs of the branch: a run that is not a dry-run and whose non-empty sessionId differs from this non-empty value is kept. When either value is empty, a sibling run that is not completed is deleted."`
 }
 
@@ -529,6 +530,7 @@ func shipStartStepCore(data map[string]any, stepName string, now func() time.Tim
 	}
 	step["status"] = "in_progress"
 	step["startedAt"] = now().UTC().Format(time.RFC3339)
+	delete(step, "waitingUntil")
 	return nil
 }
 
@@ -548,6 +550,7 @@ func shipCompleteStepCore(data map[string]any, stepName string, hasResult bool, 
 			Suggestion: "Run ship_state read to list the step names recorded in the state file, then pass one of those names.",
 		}
 	}
+	delete(step, "waitingUntil")
 	if outcome == "failure" {
 		step["status"] = "failed"
 		if hasResult {
@@ -645,6 +648,8 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 		return shipStateDecide(root, workDir, in, now)
 	case "defer":
 		return shipStateDefer(root, workDir, in, now)
+	case "wait":
+		return shipStateWait(root, workDir, in, now)
 	case "read":
 		return shipStateRead(root, workDir, in, now)
 	case "cleanup":
@@ -696,7 +701,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 
 	default:
 		return nil, unknownActionError("ship_state action", in.Action, "",
-			"pass one of: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start, complete, skip, fail, decide, defer, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli, healing_record, harden_clusters, report, instructions-next, instruction-record (start and complete are legacy aliases of begin-step and complete-step)")
+			"pass one of: init, begin-step, complete-step, commit-check, openspec-check, openspec-tasks, start, complete, skip, fail, decide, defer, wait, read, next, todos, cleanup, cleanup-pipeline, gc, migrate, history_record, deferred_add, deferred_list, deferred_propose_followups, deferred_resolve, log-cli, healing_record, harden_clusters, report, instructions-next, instruction-record (start and complete are legacy aliases of begin-step and complete-step)")
 	}
 }
 
@@ -705,7 +710,7 @@ func shipState(root, workDir string, in ShipStateIn, now func() time.Time) (any,
 // "concise" or "full", and only instruction-record takes the record inputs.
 func shipCheckActionInputs(in ShipStateIn) error {
 	switch in.Action {
-	case "begin-step", "complete-step", "start", "complete", "skip", "fail", "decide", "defer":
+	case "begin-step", "complete-step", "start", "complete", "skip", "fail", "decide", "defer", "wait":
 		if v := detailStr(in.Detail, "detail"); v != "" && v != "full" && v != "concise" {
 			return &mcpserver.DomainError{
 				Msg:        fmt.Sprintf(`%s: detail must be "concise" or "full", got %q; pass detail.detail="concise" or omit for default "full"`, in.Action, v),
@@ -1728,6 +1733,101 @@ func shipStateDecide(root, workDir string, in ShipStateIn, now func() time.Time)
 		out.Display = pipeline.StepProgressBlock(shipBuildStepRows(st.Data), ts)
 	}
 	return out, nil
+}
+
+// shipWaitMinSeconds and shipWaitMaxSeconds bound detail.seconds of wait.
+// The upper limit stops a lost wait from hiding a real stall for more than
+// one hour.
+const (
+	shipWaitMinSeconds = 1
+	shipWaitMaxSeconds = 3600
+)
+
+// ShipStateWaitOut is the output of the wait action.
+type ShipStateWaitOut struct {
+	Step         string `json:"step"`
+	WaitingUntil string `json:"waitingUntil"`
+	Narration    string `json:"narration"`
+	Next         string `json:"next"`
+}
+
+// shipWaitSeconds reads detail.seconds of wait. It accepts a JSON number
+// with no fraction (float64 after a JSON decode, or an int from a direct
+// call) from shipWaitMinSeconds to shipWaitMaxSeconds. The range check runs
+// on the float before the conversion, so a huge value cannot overflow.
+func shipWaitSeconds(d map[string]any) (int, error) {
+	v, ok := d["seconds"]
+	var f float64
+	valid := false
+	switch n := v.(type) {
+	case float64:
+		f, valid = n, n == math.Trunc(n)
+	case int:
+		f, valid = float64(n), true
+	}
+	if valid && f >= shipWaitMinSeconds && f <= shipWaitMaxSeconds {
+		return int(f), nil
+	}
+	got := "none"
+	if ok {
+		got = fmt.Sprintf("%#v", v)
+	}
+	return 0, &mcpserver.DomainError{
+		Msg:        fmt.Sprintf("wait: detail.seconds must be a whole number from %d to %d, got %s", shipWaitMinSeconds, shipWaitMaxSeconds, got),
+		Suggestion: fmt.Sprintf("Pass detail.seconds from %d to %d. Nothing was written.", shipWaitMinSeconds, shipWaitMaxSeconds),
+	}
+}
+
+// shipStateWait records a declared wait on an in_progress step: it sets
+// step.waitingUntil to now plus detail.seconds (RFC 3339, UTC). The Stop
+// hook does not block or count turn ends for that step before this time.
+// begin-step and complete-step remove the field. wait reads only
+// detail.seconds and detail.branch; it stores no other detail key. It gets
+// the state with shipResolveAndFind, the same call as decide, so both
+// actions give the same result class for each state.
+func shipStateWait(root, workDir string, in ShipStateIn, now func() time.Time) (any, error) {
+	if in.Step == "" {
+		return nil, &mcpserver.DomainError{
+			Msg:        "wait: step is required",
+			Suggestion: "Pass step, the name of the step that waits. Nothing was written.",
+		}
+	}
+	seconds, err := shipWaitSeconds(in.Detail)
+	if err != nil {
+		return nil, err
+	}
+	st, err := shipResolveAndFind(detailStr(in.Detail, "branch"), workDir, root)
+	if err != nil {
+		return nil, err
+	}
+	step := shipFindStepEntry(st.Data, in.Step)
+	if step == nil {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("wait: step %q not found", in.Step),
+			Suggestion: "Pass a step name from ship_state read. Nothing was written.",
+		}
+	}
+	if status, _ := step["status"].(string); status != "in_progress" {
+		return nil, &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("wait: step %q is %s, not in_progress", in.Step, status),
+			Suggestion: fmt.Sprintf("Call begin-step for %q first, then wait. Nothing was written.", in.Step),
+		}
+	}
+	until := now().UTC().Add(time.Duration(seconds) * time.Second).Format(time.RFC3339)
+	step["waitingUntil"] = until
+	if err := shipStateWriteFunc(st); err != nil {
+		return nil, &mcpserver.InfraError{
+			Msg:        fmt.Sprintf("write ship state to %s: %s", st.Path, err.Error()),
+			Suggestion: "Check write permission on the ship state file path above and free disk space on the project root, then retry ship_state wait.",
+			Cause:      err,
+		}
+	}
+	return ShipStateWaitOut{
+		Step:         in.Step,
+		WaitingUntil: until,
+		Narration:    fmt.Sprintf("Wait recorded for step '%s' until %s.", in.Step, until),
+		Next:         fmt.Sprintf("End the turn. The Stop hook does not count turn ends for step %q before %s. When the wait ends, continue the step.", in.Step, until),
+	}, nil
 }
 
 // shipStateDefer records a below-threshold review finding. It writes the
@@ -4903,6 +5003,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - skip: Skip a step. Requires step. Returns narration. Optional: detail.branch, detail.reason, detail.detail. Also closes the open instruction records of that step, in the same write: pending becomes "not run" with outcome "step skipped", running becomes "failed" with outcome "result not recorded, not run again". A damaged instructions list closes no record and adds one warning; the action still completes.
 - fail: Fail a step. Requires step. Returns narration. The first fail of a run also appends one failure row to .sdlc-v2/history/runs.jsonl (state key historyFailureRecorded stops a second row); a failed append does not fail the call but is named in warnings, with the history_record call that adds the row. The failure row carries the same plan fields from linkedPlan as history_record; a linkedPlan that is not an object or has a bad time adds a warnings entry. Optional: detail.branch, detail.error (recorded as issue), detail.detail. Also closes the open instruction records of the run, in the same write: pending becomes "not run" with outcome "step failed or stopped", running becomes "failed" with outcome "result not recorded, not run again". A damaged instructions list closes no record and adds one warning; the action still completes.
 - decide: Record a decision. Requires step and detail.text (plain text, 1 to 2000 characters; a blank, absent or too long detail.text gives a DomainError and writes nothing). Returns narration. Optional: detail.branch.
+- wait: Record a wait on an in_progress step in the ship state file (.sdlc-v2/runs/), so the Stop hook does not count turn ends until the wait ends. Requires step, detail.seconds (1 to 3600). Optional: detail.branch. A bad step or seconds gives a DomainError and writes nothing. A failed state write gives an InfraError. begin-step and complete-step remove the wait.
 - defer: Record a deferred finding. Writes it both to the run-scoped ship state file and durably to .sdlc-v2/history/deferred.json (with source detail.source, default "`+history.SourceReviewBelowThreshold+`"), so it survives state-file GC — no follow-up deferred_add is needed. Returns narration naming the generated deferred id (review-deferred-<timestamp>-<N>) and the file it was written to; a failed deferred.json write does not fail the call but is named in the summary, with the deferred_add call that recovers it (with no ship state file the summary says the item is stored nowhere). Requires detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`, case-insensitive; the lowercase form is recorded), detail.file, detail.title. Optional: detail.branch, detail.line (integer), detail.detail, detail.description (the deferring agent's own reasoning; defaults to detail.title), detail.reason (one of `+strings.Join(history.DeferredReasons(), " | ")+`; an omitted reason records `+history.ReasonBelowThreshold+`), detail.source (the tool recording the deferral, e.g. "received-review"; defaults to "`+history.SourceReviewBelowThreshold+`"). defer and deferred_add read .sdlc-v2/history/deferred.json to merge into an open row: a defer with reason `+history.ReasonNeedsDirection+` on a file that has an open `+history.ReasonNeedsDirection+` row appends its description as a line to that row instead of adding a row. The response names the row id it merged into, and its next field says whether the call merged, added a row, or found the text already there. The run-scoped entry is written after deferred.json and carries deferredId, the id of the deferred.json row that holds the text (absent when the deferred.json write failed). When the deferred.json write succeeded, defer also reads data.healing.fixProgress of the run: when it holds the finding's row (match: the only row with the same file, line and title, else the only queued or fixing row with the same file and line), defer sets it to deferred (a failed row stays failed) and copies deferredId onto it. The summary and next then end with a note: "Fix-progress row set to deferred (was <prior status>)." when the status changed, or "Fix-progress row kept <status> and got the deferred id." when the status stayed and the row only received the deferredId; with no matching row, or nothing to change, defer adds no note. When the deferred.json write failed, defer does not change the row and adds no note. A damaged data.healing (not an object, or a fixProgress that is not a list) leaves the row unchanged and adds a warning with the repair step to the summary and to next, and the defer call does not fail for it. A failed state write after a good deferred.json write names that row: run deferred_resolve on it before a retry (a retry in a later second adds a second row), or retry only when a second row is acceptable.
 - healing_record: Record one self-healing change in the live ship run's data.healing. Requires detail.kind: "review-total" (Requires detail.total, detail.dimensions — non-negative integers; replaces the previous value) | "fixed" (Requires detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1); a repeat with the same (origin, file, line, title) is a duplicate; kind fixed also sets the matching data.healing.fixProgress row to fixed (match: the exact key, else the only row with the same file, line and title, else the only queued or fixing row with the same file and line; it creates no row; a duplicate fixed call still repairs the row, with narration "fix-progress row set to fixed" and written true; when the call changes the status of a row, the response carries fixRow {status, prior, updatedAt} and next names the prior status; a fixProgress value that is not a list does not fail the call: the fixed record is written, no row changes, and summary, next and warnings carry a warning that names the state file); Optional detail.deferredId (string, the id from the finding's Deferred-id line): healing_record kind fixed with deferredId also resolves that row in .sdlc-v2/history/deferred.json. The row is resolved first (a resolved row is left as it is), then fixedInRun:true is set on every deferredFindings entry with that deferredId: entries that share one merged deferred.json row are all flagged by one call, and the whole row is resolved; an id missing from either store (deferredFindings or deferred.json) is a DomainError, and the response echoes deferredId and fixedInRun with next "deferred item <id> resolved. Continue the fix pass." or "deferred item <id> was already resolved. Continue the fix pass.") | "hardened" (Requires detail.phase "started"|"done", detail.trigger, detail.classification, detail.applied [{surface (one of `+strings.Join(healingSurfaceIDs(), " | ")+`), action, targetFile, optional rationale (string, at most `+fmt.Sprint(healingRationaleMaxRunes)+` runes; a longer rationale is a DomainError), optional patch (string; a patch over `+fmt.Sprint(healingPatchMaxBytes)+` bytes is cut, the entry gets patchCut:true, and summary, next and warnings name each cut entry and its received byte count; the caller never sends patchCut)}] (at most `+fmt.Sprint(healingAppliedMax)+` entries; a longer list is a DomainError and writes nothing), detail.skipped (non-negative integer). Optional: detail.held, at most `+fmt.Sprint(healingHeldMax)+` entries (a longer list is a DomainError and writes nothing) [{surface, action, targetFile, reason (one of `+strings.Join(healingHeldReasons, " | ")+`), deferredId (a non-empty string, stored trimmed; required for `+healingHeldPendingStored+`, absent otherwise; entries can share one deferredId)}]; an empty held list is valid and stored as []; the tool does not check that held lists every item of the harden summary, and does not check deferredId against the stored deferred items. A wrong type, a caller patchCut or a bad held entry returns DomainError and writes nothing. A "done" record replaces a "started" record with the same trigger) | "fix-progress" (Requires the finding fields of "fixed" — detail.origin "local-review"|"pr-comment", detail.severity (one of `+strings.Join(dimensions.ValidSeverities, " | ")+`), detail.file, detail.title; Optional detail.line (integer >= 1) — plus detail.status (one of `+strings.Join(healingFixStatuses, " | ")+`). Upserts data.healing.fixProgress[] on the key (origin, file, line, title): a new key appends a record with firstAt and updatedAt; a repeat of the stored status changes nothing (a new severity included); a stored final status (`+strings.Join(healingFixFinal, " | ")+`) is kept when the incoming status is queued or fixing, and a stored failed is kept when the incoming status is deferred (narration "kept <status>"); any other status change replaces the whole record and keeps firstAt and the deferredId of the stored record. At most `+fmt.Sprint(healingFixProgressMax)+` records: a new key past the cap is a DomainError, while a stored key still updates. Never writes data.healing.fixed). Optional: detail.branch. A no-op call returns narration "already recorded — no change" (or "kept <status>"). With no live ship run (no state, or pipelineCompletedAt set) it returns ok and records nothing; a fixed record with detail.deferredId then resolves nothing, and its next says that the deferred item stays open. A damaged data.healing (not an object, or a list key that is not a list) is a DataError that names the state file, except a fixProgress value on kind fixed (see above). Returns summary, kind, written (true only when this call changed the state file), record (the record as stored after the call: recordedAt for review-total, fixed and hardened; status, firstAt and updatedAt for fix-progress; on a no-op call, and on a repeat fixed call that only sets its fixProgress row, the stored entry, not the incoming one; with no live run the validated incoming record), and next (id "continue-fix-pass" with the instruction for the fix pass: kind fix-progress and kind fixed return it (with detail.deferredId, the instruction of kind fixed names the deferred item); kind review-total returns next id "continue-after-review-total" and kind hardened returns next id "continue-harden", each with the instruction for the calling step; for kind hardened, phase started asks for the done record and phase done ends Step 5 of the harden run and names the step after it).
 - harden_clusters: Group review findings into harden clusters (key = file; lone-disagree files dropped; cap 5). Requires detail.findings [{file, severity, title, body, verdict: "agree-will-fix"|"agree-won't-fix"|"disagree"|"needs-direction"|"not-evaluated" (only with reason below-threshold), reason? (one of `+strings.Join(history.DeferredReasons(), " | ")+`), line?, deferredId?, fixedInRun?}]. Optional: detail.branch (the ship run whose healing.hardened triggers set alreadyHardened). failureText has every double quote replaced by a single quote and every backslash by a slash, so it is safe inside a quoted --failure-text argument. A below-threshold finding joins the cluster of its file when that file has another finding that is not below-threshold; a file with only below-threshold findings forms no cluster. Each finding also lands in at most one of three lists, which never change the clusters. The reason of a finding picks its list; the verdict picks it only when the reason is empty. fixNow holds a below-threshold finding with a deferredId and fixedInRun false. staysDeferred holds a below-threshold finding without a deferredId and a needs-direction finding. evidenceOnly holds a disagree or wont-fix finding (the verdict agree-won't-fix counts as wont-fix). Returns clusters with failureText and alreadyHardened, suppressed, loneDisagree, fixNow, staysDeferred, evidenceOnly (each [] when empty), and dirtySurfaces (harden surfaces with uncommitted edits in the active worktree). Works without ship state.
@@ -4919,7 +5020,7 @@ Mutating actions (begin-step, complete-step, start, complete, skip, fail, decide
 - history_record: Append a pipeline run record to .sdlc-v2/history/runs.jsonl (persistent, survives state-file GC). Requires detail.skill, detail.outcome ("success"|"failure"|"partial"). Optional: detail.ts (ISO timestamp, defaults to now), detail.branch, detail.duration_ms, detail.steps, detail.guardrail_hits, detail.deferred_issues, detail.version. For skill "ship" with detail.branch set, the row also gets plan_file, plan_started_at and plan_duration_ms from the linkedPlan of that branch's ship state when present; with no detail.branch the row gets no plan fields and no warning. Returns {ok, ts, next, planFields?, warnings?}: next is "The history row is written." (or a no-retry text when warnings is present), planFields echoes the plan fields written to the row (absent when none), and warnings names a ship state read error or a linkedPlan that is not an object or has a bad time. A warning never fails the call.
 - deferred_add: Add a deferred issue to .sdlc-v2/history/deferred.json. Requires detail.id, detail.description. Optional: detail.created (defaults to now), detail.source, detail.priority ("high"|"medium"|"low", defaults to "medium"), detail.merge (true or false, defaults to false; true appends only the new lines of detail.description to the open item with the same id, and adds the item as <id>-<n> when only a resolved item has that id). Returns {ok, id (the id of the item that holds the text), merged (true when new lines were appended to an open item), created, priority, source, description (the item as deferred.json holds it after the call; for a merge, the merged description), next (a string)}. A deferred.json larger than 8 MiB or one that does not parse returns a DataError and the file stays unchanged.
 - deferred_list: List all deferred issues of .sdlc-v2/history/deferred.json. Returns {issues, openCount}. Optional: detail.ids (1 to 50 item ids) returns only those items, in full, plus next. A bad, empty, too long or unknown detail.ids gives a DomainError and reads nothing.
-- deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}. Each group item has only id, priority, source, created and title (at most 80 characters). Call deferred_list with detail.ids for the full items. Returns next with that call when 1 or more items are open.
+- deferred_propose_followups: Return open deferred issues grouped by priority with a formatted display summary. Returns {openCount, groups, display}. Each group item has only id, priority, source, created and title (80 characters or fewer). Call deferred_list with detail.ids for the full items. Returns next with that call when 1 or more items are open.
 - deferred_resolve: Mark a deferred issue as resolved by ID. Requires detail.id. Returns {ok, id}. Errors if the ID is not found.
 - log-cli: Append one CLI execution row (pipeline "ship") to the CLI evidence JSONL file. Requires: (none). Optional: detail.branch, detail.step, detail.command, detail.exitCode (integer, default 0), detail.outputHead. Returns {ok, action}. A failed append is an InfraError.`,
 		mcpserver.Annotations{

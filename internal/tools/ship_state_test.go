@@ -11359,3 +11359,214 @@ func TestShipStateReadInstructionSummary(t *testing.T) {
 		}
 	})
 }
+
+// ---------------------------------------------------------------------------
+// Action: wait
+// ---------------------------------------------------------------------------
+
+// shipWaitFixture creates a ship state on branch with step review set to
+// in_progress and returns the state file path.
+func shipWaitFixture(t *testing.T, dir, branch string) string {
+	t.Helper()
+	path := shipStateInitFixture(t, dir, branch)
+	setStepStatus(t, path, "review", "in_progress", nil)
+	return path
+}
+
+// TestShipStateWait_SetsWaitingUntil covers the boundary values 1 and 3600:
+// wait sets waitingUntil to now plus detail.seconds (RFC 3339, UTC) and
+// returns {step, waitingUntil, narration, next}. Other detail keys are
+// ignored and not stored. The written state passes the ship-state schema.
+func TestShipStateWait_SetsWaitingUntil(t *testing.T) {
+	validate := shipStateSchemaValidator(t)
+	at := time.Date(2026, 11, 16, 18, 0, 0, 0, time.FixedZone("CET", 3600))
+	for _, tc := range []struct {
+		seconds any
+		want    string
+	}{
+		{float64(1), "2026-11-16T17:00:01Z"},
+		{float64(3600), "2026-11-16T18:00:00Z"},
+		{60, "2026-11-16T17:01:00Z"}, // a direct int, not JSON-decoded
+	} {
+		t.Run(fmt.Sprint(tc.seconds), func(t *testing.T) {
+			dir := t.TempDir()
+			const branch = "feat/wait"
+			path := shipWaitFixture(t, dir, branch)
+
+			out, err := shipState(dir, dir, ShipStateIn{
+				Action: "wait",
+				Step:   "review",
+				Detail: map[string]any{"branch": branch, "seconds": tc.seconds, "note": "x"},
+			}, fixedNow(at))
+			if err != nil {
+				t.Fatalf("wait: %v", err)
+			}
+			got, ok := out.(ShipStateWaitOut)
+			if !ok {
+				t.Fatalf("output = %T, want ShipStateWaitOut", out)
+			}
+			wantNext := `End the turn. The Stop hook does not count turn ends for step "review" before ` + tc.want + `. When the wait ends, continue the step.`
+			if got.Step != "review" || got.WaitingUntil != tc.want || got.Next != wantNext || got.Narration == "" {
+				t.Errorf("output = %+v, want step=review waitingUntil=%s next=%q", got, tc.want, wantNext)
+			}
+
+			data := readStateData(t, path)
+			step := findStepMap(t, data, "review")
+			if step["waitingUntil"] != tc.want {
+				t.Errorf("state waitingUntil = %v, want %s", step["waitingUntil"], tc.want)
+			}
+			if step["status"] != "in_progress" {
+				t.Errorf("state status = %v, want in_progress unchanged", step["status"])
+			}
+			if _, has := step["note"]; has {
+				t.Error("wait stored detail.note on the step")
+			}
+			if _, has := data["note"]; has {
+				t.Error("wait stored detail.note in the state")
+			}
+			if err := validate(data); err != nil {
+				t.Errorf("state written by wait: schema rejected it: %v", err)
+			}
+		})
+	}
+}
+
+// TestShipStateWait_RemovedByBeginStepAndCompleteStep pins that begin-step
+// and complete-step (both outcomes) remove waitingUntil, through the actions
+// and not only the cores.
+func TestShipStateWait_RemovedByBeginStepAndCompleteStep(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		action string
+		detail map[string]any
+	}{
+		{"begin-step", "begin-step", nil},
+		{"complete-step success", "complete-step", nil},
+		{"complete-step failure", "complete-step", map[string]any{"outcome": "failure", "result": "boom"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			const branch = "feat/wait-clear"
+			path := shipStateInitFixture(t, dir, branch)
+			setStepStatus(t, path, "execute", "in_progress", map[string]any{"waitingUntil": "2099-01-01T00:00:00Z"})
+
+			detail := map[string]any{"branch": branch}
+			maps.Copy(detail, tc.detail)
+			if _, err := shipState(dir, dir, ShipStateIn{
+				Action: tc.action,
+				Step:   "execute",
+				Detail: detail,
+			}, fixedNow(time.Date(2026, 11, 16, 18, 0, 0, 0, time.UTC))); err != nil {
+				t.Fatalf("%s: %v", tc.action, err)
+			}
+			step := findStepMap(t, readStateData(t, path), "execute")
+			if v, has := step["waitingUntil"]; has {
+				t.Errorf("%s kept waitingUntil = %v, want it removed", tc.action, v)
+			}
+		})
+	}
+}
+
+// shipResultClass names the result class of a ship_state call: "ok" for
+// success, else the type of the mcpserver error.
+func shipResultClass(err error) string {
+	var (
+		domainErr *mcpserver.DomainError
+		dataErr   *mcpserver.DataError
+		infraErr  *mcpserver.InfraError
+	)
+	switch {
+	case err == nil:
+		return "ok"
+	case errors.As(err, &domainErr):
+		return "domain"
+	case errors.As(err, &dataErr):
+		return "data"
+	case errors.As(err, &infraErr):
+		return "infra"
+	}
+	return fmt.Sprintf("other %T", err)
+}
+
+// TestShipStateWait_DecideParity runs each state of the plan's parity table
+// through decide and wait. Both get the state with shipResolveAndFind, so
+// both give the same result class. Each action gets its own fresh fixture,
+// because decide and wait both write.
+//
+// Two rows of the plan table do not exist in the code: fsx.ReadJSON has no
+// size cap (a large file reads like any other, so the row pins "ok" for
+// both), and shipResolveAndFind returns no warnings (no state can be built
+// for that row, so it is left out). The "steps not an array" row is the one
+// row where the classes differ: decide never reads steps, so it succeeds,
+// and wait cannot find the step, so it gives its own "not found" error.
+func TestShipStateWait_DecideParity(t *testing.T) {
+	const branch = "feat/parity"
+	type setup func(t *testing.T, dir string) (workDir string)
+	plain := func(edit func(t *testing.T, path string)) setup {
+		return func(t *testing.T, dir string) string {
+			path := shipWaitFixture(t, dir, branch)
+			if edit != nil {
+				edit(t, path)
+			}
+			return dir
+		}
+	}
+	rows := []struct {
+		name       string
+		setup      setup
+		wantDecide string
+		wantWait   string
+	}{
+		{"no state file for the branch", func(t *testing.T, dir string) string { return dir }, "data", "data"},
+		{"steps not an array", plain(func(t *testing.T, path string) {
+			data := readStateData(t, path)
+			data["steps"] = "x"
+			writeStateData(t, path, data)
+		}), "ok", "domain"},
+		{"state of another branch, detail.branch given", func(t *testing.T, dir string) string {
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/current")
+			shipWaitFixture(t, dir, branch)
+			return dir
+		}, "ok", "ok"},
+		{"valid state, step in_progress", plain(nil), "ok", "ok"},
+		{"state path is a folder", plain(func(t *testing.T, path string) {
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}), "infra", "infra"},
+		{"large state file (no size cap)", plain(func(t *testing.T, path string) {
+			data := readStateData(t, path)
+			data["padding"] = strings.Repeat("x", 4<<20)
+			writeStateData(t, path, data)
+		}), "ok", "ok"},
+		{"state path is a link", plain(func(t *testing.T, path string) {
+			target := filepath.Join(t.TempDir(), "target.json")
+			if err := os.Rename(path, target); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, path); err != nil {
+				t.Fatal(err)
+			}
+		}), "ok", "ok"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			run := func(in ShipStateIn) string {
+				dir := t.TempDir()
+				workDir := row.setup(t, dir)
+				_, err := shipState(dir, workDir, in, fixedNow(time.Date(2026, 11, 16, 18, 0, 0, 0, time.UTC)))
+				return shipResultClass(err)
+			}
+			gotDecide := run(ShipStateIn{Action: "decide", Step: "review", Detail: map[string]any{"branch": branch, "text": "go"}})
+			gotWait := run(ShipStateIn{Action: "wait", Step: "review", Detail: map[string]any{"branch": branch, "seconds": float64(60)}})
+			if gotDecide != row.wantDecide || gotWait != row.wantWait {
+				t.Errorf("decide = %s, wait = %s; want decide = %s, wait = %s", gotDecide, gotWait, row.wantDecide, row.wantWait)
+			}
+		})
+	}
+}

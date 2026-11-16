@@ -106,6 +106,7 @@
             "type": "string",
             "format": "date-time"
           },
+          "waitingUntil": { "type": "string", "format": "date-time", "description": "Set by ship_state wait. The Stop hook does not count turn ends before this time." },
           "result": {
             "type": "string"
           },

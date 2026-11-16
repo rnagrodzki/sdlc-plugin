@@ -17,6 +17,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
 const shipErrBranch = "feat/errs"
@@ -863,5 +864,78 @@ func TestShipState_Decide_TextAtTheLimit(t *testing.T) {
 	}
 	if d, _ := decisions[0].(map[string]any); d["decision"] != text {
 		t.Errorf("decision text changed on write")
+	}
+}
+
+// TestShipStateWait_Errors covers each wait error row of the plan contract:
+// the exact message and Suggestion, the error class, and no write.
+func TestShipStateWait_Errors(t *testing.T) {
+	const secSugg = "Pass detail.seconds from 1 to 3600. Nothing was written."
+	secMsg := func(got string) string {
+		return "wait: detail.seconds must be a whole number from 1 to 3600, got " + got
+	}
+	cases := []struct {
+		name     string
+		step     string
+		status   string // status of review before the call; "" keeps pending
+		detail   map[string]any
+		wantMsg  string
+		wantSugg string
+	}{
+		{"no step", "", "in_progress", map[string]any{"seconds": float64(60)},
+			"wait: step is required", "Pass step, the name of the step that waits. Nothing was written."},
+		{"step not found", "bogus", "in_progress", map[string]any{"seconds": float64(60)},
+			`wait: step "bogus" not found`, "Pass a step name from ship_state read. Nothing was written."},
+		{"step not in_progress", "review", "", map[string]any{"seconds": float64(60)},
+			`wait: step "review" is pending, not in_progress`, `Call begin-step for "review" first, then wait. Nothing was written.`},
+		{"seconds absent", "review", "in_progress", map[string]any{}, secMsg("none"), secSugg},
+		{"seconds a string", "review", "in_progress", map[string]any{"seconds": "60"}, secMsg(`"60"`), secSugg},
+		{"seconds a fraction", "review", "in_progress", map[string]any{"seconds": 1.5}, secMsg("1.5"), secSugg},
+		{"seconds 0", "review", "in_progress", map[string]any{"seconds": float64(0)}, secMsg("0"), secSugg},
+		{"seconds 3601", "review", "in_progress", map[string]any{"seconds": float64(3601)}, secMsg("3601"), secSugg},
+		{"seconds a huge number", "review", "in_progress", map[string]any{"seconds": 1e300}, secMsg("1e+300"), secSugg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := shipStateInitFixture(t, dir, shipErrBranch)
+			if tc.status != "" {
+				setStepStatus(t, path, "review", tc.status, nil)
+			}
+			before := shipErrReadFile(t, path)
+
+			_, err := shipState(dir, dir, ShipStateIn{
+				Action: "wait",
+				Step:   tc.step,
+				Detail: shipErrWithBranch(tc.detail),
+			}, shipErrNow)
+			requireShipErr(t, err, shipErrDomain)
+			var de *mcpserver.DomainError
+			errors.As(err, &de)
+			if de.Msg != tc.wantMsg || de.Suggestion != tc.wantSugg {
+				t.Errorf("error = (%q, %q), want (%q, %q)", de.Msg, de.Suggestion, tc.wantMsg, tc.wantSugg)
+			}
+			if after := shipErrReadFile(t, path); !bytes.Equal(before, after) {
+				t.Error("state file changed although wait failed")
+			}
+		})
+	}
+}
+
+// TestShipStateWait_WriteFailure pins the InfraError of a failed state write.
+func TestShipStateWait_WriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := shipStateInitFixture(t, dir, shipErrBranch)
+	setStepStatus(t, path, "review", "in_progress", nil)
+	useShipStateWrite(t, func(*state.State) error { return errors.New("disk full") })
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "wait",
+		Step:   "review",
+		Detail: shipErrWithBranch(map[string]any{"seconds": float64(60)}),
+	}, shipErrNow)
+	text, _ := requireShipErr(t, err, shipErrInfra)
+	if !strings.Contains(text, "retry ship_state wait") {
+		t.Errorf("error text = %q, want it to name ship_state wait", text)
 	}
 }

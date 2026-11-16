@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -371,6 +372,15 @@ func stopPipelineContinue(ctx HookCtx, event Event) (Output, error) {
 	status, _ := adv.Step["status"].(string)
 	if status != "in_progress" && !auto {
 		return silent, nil
+	}
+	if raw, present := adv.Step["waitingUntil"]; present {
+		until, isStr := raw.(string)
+		t, err := time.Parse(time.RFC3339, until)
+		if !isStr || err != nil {
+			fmt.Fprintf(os.Stderr, "stop-pipeline-continue: ignored invalid waitingUntil %v\n", raw)
+		} else if time.Now().Before(t) {
+			return silent, nil // a declared wait is not a stall
+		}
 	}
 
 	stepName := stepDisplayName(adv.Step)

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -1299,5 +1300,74 @@ func TestStopPipelineContinue_BlockCountResetsOnStepChange(t *testing.T) {
 	bc2, ok2 := readBlockCounter(t, root, branch)
 	if !ok2 || bc2.StepName != "pr" || bc2.Count != 1 {
 		t.Fatalf("sidecar after step change = (%+v, ok=%v), want pr/1 (fresh budget)", bc2, ok2)
+	}
+}
+
+// TestStopPipelineContinue_WaitingUntil pins the declared-wait rule: while
+// the in_progress step's waitingUntil is after now, the hook returns silent
+// with no block and no count. A past, absent or invalid waitingUntil gives
+// the behavior of today (block and count); an invalid value also prints one
+// stderr line.
+func TestStopPipelineContinue_WaitingUntil(t *testing.T) {
+	future := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
+	past := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	cases := []struct {
+		name       string
+		branch     string
+		until      any // nil means the key is absent
+		wantBlock  bool
+		wantStderr bool
+	}{
+		{"future wait is silent", "feat/spc-wait-future", future, false, false},
+		{"past wait blocks", "feat/spc-wait-past", past, true, false},
+		{"absent wait blocks", "feat/spc-wait-absent", nil, true, false},
+		{"bad string blocks", "feat/spc-wait-badstr", "tomorrow", true, true},
+		{"non-string blocks", "feat/spc-wait-number", float64(42), true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := gitFixture(t, tc.branch)
+			step := map[string]any{"name": "review", "status": "in_progress"}
+			if tc.until != nil {
+				step["waitingUntil"] = tc.until
+			}
+			newShipState(t, root, tc.branch, "s1", []any{step}, map[string]any{"auto": true})
+
+			var out Output
+			var err error
+			stderrText := captureStderr(t, func() {
+				out, err = stopPipelineContinue(HookCtx{SessionID: "s1"}, Event{})
+			})
+
+			bc, counted := readBlockCounter(t, root, tc.branch)
+			if tc.wantBlock {
+				mustBlock(t, out, err, "step 1 of 1 (review) is in_progress")
+				if !counted || bc.StepName != "review" || bc.Count != 1 {
+					t.Errorf("block count = (%+v, ok=%v), want review/1", bc, counted)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertSilent(t, out)
+				if counted {
+					t.Errorf("block count = %+v, want no count during a wait", bc)
+				}
+			}
+
+			lines := 0
+			for _, l := range strings.Split(stderrText, "\n") {
+				if strings.Contains(l, "ignored invalid waitingUntil") {
+					lines++
+				}
+			}
+			want := 0
+			if tc.wantStderr {
+				want = 1
+			}
+			if lines != want {
+				t.Errorf("invalid-waitingUntil stderr lines = %d, want %d; stderr = %q", lines, want, stderrText)
+			}
+		})
 	}
 }
