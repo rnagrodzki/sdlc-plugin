@@ -384,7 +384,7 @@ not list the files, so read this table before you click.
 | Class | What Clear does | Only when |
 |---|---|---|
 | `evidence-rotations` | Deletes `<repo>/.sdlc-v2/evidence/*.jsonl.1` | The file did not change for more than 30 minutes |
-| `temp-dirs` | Deletes the `sdlc-*` folders of the temp folder of the system (`$TMPDIR`, else `/tmp`), except `sdlc-explore-*` | The folder did not change for more than 24 hours |
+| `temp-dirs` | Deletes the `sdlc-*` folders of `.sdlc-v2/scratch/` of the repo, except `sdlc-explore-*` | The folder did not change for more than 24 hours |
 | `orphan-reports` | Deletes the files of `<repo>/.sdlc-v2/reports/` | The run id in the file name matches no ship or execute state in `runs/` |
 | `server-log` | Cuts `~/.sdlc-cache/dashboard/server.log` to 0 bytes. It does not delete the file. | Always, when the file is not empty |
 
@@ -395,7 +395,8 @@ Details of each class:
   rewrite of a live file would lose lines that another process adds at the
   same time.
 - **`temp-dirs`** — Tools such as review, harden, error-report, and the
-  OpenSpec stage check create these folders. The `sdlc-explore-*` folders
+  OpenSpec stage check create these folders in `.sdlc-v2/scratch/` of the
+  repo. The `sdlc-explore-*` folders
   stay, because the state `gc` sweep owns them.
 - **`orphan-reports`** — A report name is `ship-<id>-report.md`,
   `ship-<id>-report.json`, `<id>-report.md`, or `<id>-report.json`. The `<id>`
@@ -413,9 +414,9 @@ evidence files, and `~/.sdlc-cache/bin`. Only [Delete an item](#delete-an-item),
 `runs.jsonl`, and the topic files of `preplan/`.
 
 The button clears every repo that the page lists, one after another. The repo
-filter does not change this. `evidence-rotations` and `orphan-reports` belong
-to one repo. `temp-dirs` and `server-log` are global, so the first repo clears
-them and the next repos find them empty.
+filter does not change this. `evidence-rotations`, `orphan-reports` and
+`temp-dirs` belong to one repo. `server-log` is global, so the first repo
+clears it and the next repos find it empty.
 
 The page shows the freed size, for example "Freed 2.0 MB.", and one line for
 each repo whose request failed. It does not show the list of kept files.
@@ -969,7 +970,7 @@ port = 7385         # 1024-65535, loopback only
 | `~/.sdlc-cache/dashboard/server.log` | server | output of the detached process. Clear cache class `server-log` cuts it to 0 bytes |
 | `<repo>/.sdlc-v2/run-archive/<runId>/` | server | archived runs: state files, ledgers, reports, `archive.json` |
 | `<repo>/.sdlc-v2/evidence/*.jsonl.1` | hook, tool | rotated evidence files. Clear cache class `evidence-rotations` deletes the old ones |
-| `$TMPDIR/sdlc-*` (else `/tmp/sdlc-*`) | tool | temp folders of tools. Clear cache class `temp-dirs` deletes the old ones |
+| `.sdlc-v2/scratch/sdlc-*` | tool | temp folders of tools. Clear cache class `temp-dirs` deletes the old ones |
 | `<repo>/.sdlc-v2/reports/*` | ship, execute | run reports. Clear cache class `orphan-reports` deletes the ones that no run owns |
 | `<repo>/.sdlc-v2/history/deferred.json` | ship_state `defer` and `deferred_add`; server | deferred items. The server rewrites it without one item (see [Delete an item](#delete-an-item)) |
 | `<repo>/.sdlc-v2/learnings/log.md` | `learnings_log`; server | learning entries. The server rewrites it without one entry (see [Delete an item](#delete-an-item)) |

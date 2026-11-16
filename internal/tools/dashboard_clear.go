@@ -69,9 +69,9 @@ const clearTempDirMinAge = 24 * time.Hour
 // rotation (see appendJSONLBounded).
 const clearRotatedSuffix = ".jsonl.1"
 
-// clearTempDir returns the directory that holds the sdlc-* temp dirs. Tests
-// replace it so that they never touch the real temp directory.
-var clearTempDir = os.TempDir
+// clearTempDir returns the folder of the repo root that holds the sdlc-*
+// temp dirs: .sdlc-v2/scratch/. Tests replace it.
+var clearTempDir = paths.ScratchDir
 
 // clearRemove deletes a file or a directory tree. Tests replace it to force a
 // delete error that a real filesystem cannot produce on demand.
@@ -80,7 +80,7 @@ var clearRemove = os.RemoveAll
 // ClearCache deletes the regenerable cache data and reports what it did.
 //
 //	evidence-rotations  root evidence/*.jsonl.1 older than dashboardStallAfter
-//	temp-dirs           sdlc-* dirs in the temp dir older than 24 hours,
+//	temp-dirs           sdlc-* dirs in root .sdlc-v2/scratch/ older than 24 hours,
 //	                    except sdlc-explore-* (state.GC owns those)
 //	orphan-reports      root reports/* whose run id matches no ship or execute
 //	                    state in runs/
@@ -110,7 +110,7 @@ func ClearCache(root, serverLog string, now time.Time) (ClearCacheOut, error) {
 	sweep := &clearSweep{now: now, skipped: []ClearCacheSkip{}}
 	classes := []ClearCacheClass{
 		sweep.evidenceRotations(root),
-		sweep.tempDirs(clearTempDir()),
+		sweep.tempDirs(clearTempDir(root)),
 		sweep.orphanReports(root),
 		sweep.serverLog(serverLog),
 	}

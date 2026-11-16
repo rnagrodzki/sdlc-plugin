@@ -252,7 +252,7 @@ func dashboardSummary(result dashboard.Result, repos []string) string {
 // paths of the data dir and the user file are built from their constants.
 var dashboardToolDescription = "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of " + strings.Join(dashboardTabs, ", ") + "; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: " +
 	"archive a finished run (moves its files to " + paths.DataDir + "/run-archive/ and deletes its working files; the moved files stay there), " +
-	"clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* temp dirs, and empties the server log), " +
+	"clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* folders under .sdlc-v2/scratch/, and empties the server log), " +
 	"delete a preplan topic file (" + paths.DataDir + "/preplan/<slug>.md; no recovery), " +
 	"delete a deferred item (rewrites " + paths.DataDir + "/history/deferred.json; to recover, add it again with ship_state deferred_add), " +
 	"delete a learning (rewrites " + paths.DataDir + "/learnings/log.md; to recover, add it again with learnings_log append), " +

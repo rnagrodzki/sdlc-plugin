@@ -119,7 +119,7 @@ When the verdict is `APPROVED`, the skill does not ask.
 
 ## What stays after a run
 
-**Temp files.** On each end of a run, the skill stops the reviewers that did not finish. Then it deletes its manifest file and its temp diff directory. This applies to a dry run, an error stop and a normal end. The skill keeps the temp directory only when a reviewer could not be stopped, because that reviewer can still read its files. The final output then names the kept path. The directory is under .sdlc-v2/scratch/. A later review_prepare call removes it after 24 hours.
+**Temp files.** On each end of a run, the skill stops the reviewers that did not finish. Then it deletes its manifest file and its scratch diff folder. This applies to a dry run, an error stop and a normal end. The skill keeps the scratch folder only when a reviewer could not be stopped, because that reviewer can still read its files. The final output then names the kept path. The directory is under .sdlc-v2/scratch/. A later review_prepare call removes it after 24 hours.
 
 **The run ledger.** Each run records its reviewers in a ledger under `.sdlc-v2/runs/ledger/`. A dry run writes no ledger. The skill does not delete the ledger. The [dashboard](../dashboard.md) reads the ledger to show the review dimensions of a finished run. The first `execute_state` `gc` sweep or `/sdlc:ship` `cleanup-pipeline` sweep after 7 days (the default `state.gc.ttlDays`) removes the ledger.
 
