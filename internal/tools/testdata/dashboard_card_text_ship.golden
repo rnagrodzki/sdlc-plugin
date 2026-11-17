@@ -1,0 +1,17 @@
+SHIP  [running]
+ship-feat-x-20261116T175538Z
+Branch:    feat/x
+Started:   2026-11-16T17:55:38Z
+Completed: not recorded
+
+STEPS                                   1 of 4 done
+[#>..]
+  [x] execute            completed
+        wave 1   2/2 tasks   completed
+        wave 2   3/3 tasks   completed
+  [>] commit             in_progress
+  [ ] review             pending
+  [ ] pr                 pending
+
+ISSUES   high 1
+Dashboard: http://127.0.0.1:55551#ship-feat-x-20261116T175538Z

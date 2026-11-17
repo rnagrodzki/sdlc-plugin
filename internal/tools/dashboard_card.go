@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
+	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
@@ -47,19 +49,21 @@ type DashboardCardWave struct {
 // DashboardCardOut is the output of the dashboard_card tool. A tool
 // registered with RegisterUI also returns it as structuredContent.
 type DashboardCardOut struct {
-	Summary     string              `json:"summary" jsonschema_description:"One line: the kind, run id, branch and status of the run."`
-	RunID       string              `json:"runId" jsonschema_description:"The run id of the input."`
-	Kind        string              `json:"kind" jsonschema_description:"ship or execute."`
-	Branch      string              `json:"branch" jsonschema_description:"Branch of the run."`
-	Status      string              `json:"status" jsonschema_description:"Run status as the run state stores it: running, completed or failed. The end card (final true) shows a running run as stopped, resumable; this field still says running."`
-	Final       bool                `json:"final" jsonschema_description:"Copy of the final input: true for the end card."`
-	Snapshot    bool                `json:"snapshot,omitempty" jsonschema_description:"true for a middle card that the view draws once and does not refresh. false when final is true, because final wins."`
-	T3ThreadID  string              `json:"t3ThreadId,omitempty" jsonschema_description:"T3 Code thread id stored in the run state. Absent when the run has none."`
-	StartedAt   string              `json:"startedAt" jsonschema_description:"Start time of the run, RFC 3339."`
-	CompletedAt *string             `json:"completedAt" jsonschema_description:"End time of a completed run, RFC 3339. null while the run has no end time; the text renders it as (none)."`
-	Steps       []DashboardCardStep `json:"steps" jsonschema_description:"Steps of the run in order. Empty when the run has no step yet."`
-	Issues      map[string]int      `json:"issues" jsonschema_description:"Count of the issues of the run for each severity. Empty when the run has no issue."`
-	Next        string              `json:"next" jsonschema_description:"What the caller does next."`
+	Summary      string              `json:"summary" jsonschema_description:"One line: the kind, run id, branch and status of the run."`
+	RunID        string              `json:"runId" jsonschema_description:"The run id of the input."`
+	Kind         string              `json:"kind" jsonschema_description:"ship or execute."`
+	Branch       string              `json:"branch" jsonschema_description:"Branch of the run."`
+	Status       string              `json:"status" jsonschema_description:"Run status as the run state stores it: running, completed or failed. The end card (final true) shows a running run as stopped, resumable; this field still says running."`
+	Final        bool                `json:"final" jsonschema_description:"Copy of the final input: true for the end card."`
+	Snapshot     bool                `json:"snapshot,omitempty" jsonschema_description:"true for a middle card that the view draws once and does not refresh. false when final is true, because final wins."`
+	T3ThreadID   string              `json:"t3ThreadId,omitempty" jsonschema_description:"T3 Code thread id stored in the run state. Absent when the run has none."`
+	StartedAt    string              `json:"startedAt" jsonschema_description:"Start time of the run, RFC 3339."`
+	CompletedAt  *string             `json:"completedAt" jsonschema_description:"End time of a completed run, RFC 3339. null while the run has no end time; the text renders it as (none)."`
+	Steps        []DashboardCardStep `json:"steps" jsonschema_description:"Steps of the run in order. Empty when the run has no step yet."`
+	Issues       map[string]int      `json:"issues" jsonschema_description:"Count of the issues of the run for each severity. Empty when the run has no issue."`
+	Next         string              `json:"next" jsonschema_description:"What the caller does next."`
+	Text         string              `json:"text,omitempty" jsonschema_description:"Client with no card only: the run card as a fixed-width text block. Print it in the chat unchanged, in a code block."`
+	DashboardURL string              `json:"dashboardUrl,omitempty" jsonschema_description:"Client with no card only, when the dashboard server runs: the link to the run block, <url>#<runId>."`
 }
 
 // dashboardCardMaxHTML is the size limit of dashboard_card.html. It is
@@ -86,7 +90,7 @@ var dashboardCardHTML string
 var dashboardCardNetworkRe = regexp.MustCompile(`(?i)\bsrc\s*=|\bhref\s*=\s*["']?\s*(https?:|//)|\bfetch\s*\(|XMLHttpRequest`)
 
 // dashboardCardDescription is the MCP description of dashboard_card.
-const dashboardCardDescription = "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the same run summary as text. Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run. When next says this client shows no card, do not call it again in that run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when the run is not found and some run files could not be read, or, in a T3 Code thread, when the run stores a t3ThreadId that is not a string. InfraError when the runs folder cannot be listed."
+const dashboardCardDescription = "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the card as a text block, plus the dashboard link of the run when the dashboard runs. Requires: runId. Optional: final (end card), snapshot (middle card, no refresh). Reads the run state files in <main-worktree>/.sdlc-v2/runs and the dashboard server record, and writes nothing. Call it at each card point of a top-level ship run or a standalone execute run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when the run is not found and some run files could not be read, or, in a T3 Code thread, when the run stores a t3ThreadId that is not a string. InfraError when the runs folder cannot be listed. A dashboard server that cannot be read is not an error: the card says that the dashboard is not running."
 
 // dashboardCardCheckView returns an error when html is larger than
 // dashboardCardMaxHTML or has text that dashboardCardNetworkRe matches.
@@ -154,8 +158,32 @@ func dashboardCardFind(root, runID string) (*state.State, []*state.State, error)
 }
 
 // dashboardCardNoView is the Next text for a client that shows no MCP App
-// view. The ship and execute skills match its first sentence.
-const dashboardCardNoView = "This client shows no card. The text is the run summary. Do not call dashboard_card again in this run."
+// view, when the dashboard server runs. The ship and execute skills match its
+// first sentence.
+const dashboardCardNoView = "This client shows no card. Print the text field in the chat unchanged, in a code block. Call dashboard_card again at the next card point of this run."
+
+// dashboardCardNoViewNoServer is the Next text for a client that shows no MCP
+// App view, when no dashboard server runs. Its two %s verbs are the run id. The
+// first sentence is the same as dashboardCardNoView.
+const dashboardCardNoViewNoServer = "This client shows no card. Print the text field in the chat unchanged, in a code block. If no dashboard ensure ran in this run, call dashboard({action:\"ensure\", runId:\"%s\"}) and print its link with #%s. If ensure fails, print one warning line and continue with no link. Call dashboard_card again at the next card point of this run."
+
+// dashboardCardServerURL returns the address of the running dashboard server
+// and true, or "" and false when no server runs or its record cannot be read.
+// It is a package-level seam, like dashboardDefaultDeps, so tests never reach
+// a real server.
+var dashboardCardServerURL = func() (string, bool) {
+	return dashboardCardServerFrom(dashboard.Status(dashboardDefaultDeps()))
+}
+
+// dashboardCardServerFrom maps the result of dashboard.Status to the address
+// of a running server. A card error must never stop a run, so an error is
+// dropped: the card then says that the dashboard is not running.
+func dashboardCardServerFrom(res dashboard.Result, err error) (string, bool) {
+	if err != nil || !res.Running || res.URL == "" {
+		return "", false
+	}
+	return res.URL, true
+}
 
 // dashboardCardShowsView reports whether the client of the call can show the
 // card view. A client that announces the MCP Apps extension
@@ -231,10 +259,117 @@ func dashboardCard(root, threadID string, showsView bool, in DashboardCardIn) (D
 	}
 	if showsView {
 		out.Next = fmt.Sprintf("Card shows run %s (%s). Continue the current step.", in.RunID, p.Status)
-	} else {
-		out.Next = dashboardCardNoView
+		return out, nil
 	}
+	// A client with no card gets the card as text, with the link to the run
+	// when the dashboard runs.
+	if url, ok := dashboardCardServerURL(); ok {
+		out.DashboardURL = url + "#" + in.RunID
+		out.Next = dashboardCardNoView
+	} else {
+		out.Next = fmt.Sprintf(dashboardCardNoViewNoServer, in.RunID, in.RunID)
+	}
+	out.Text = dashboardCardText(out)
 	return out, nil
+}
+
+// dashboardCardTextNameWidth is the width that a step name is padded to in the
+// text block. A longer name is not cut.
+const dashboardCardTextNameWidth = 18
+
+// dashboardCardTextNotRecorded stands for an empty branch or time.
+const dashboardCardTextNotRecorded = "not recorded"
+
+// dashboardCardMarker returns the marker and the bar character of a step
+// status.
+func dashboardCardMarker(status string) (marker string, bar byte) {
+	switch status {
+	case "completed":
+		return "[x]", '#'
+	case "in_progress":
+		return "[>]", '>'
+	case "skipped":
+		return "[-]", '#'
+	case "failed":
+		return "[!]", '!'
+	}
+	return "[ ]", '.'
+}
+
+// dashboardCardText renders out as the fixed-width text block for a client
+// with no card. The last line is the dashboard link of out.DashboardURL, or
+// "Dashboard: not running". The block has no trailing newline.
+func dashboardCardText(out DashboardCardOut) string {
+	orNotRecorded := func(v string) string {
+		if v == "" {
+			return dashboardCardTextNotRecorded
+		}
+		return v
+	}
+	state := out.Status
+	if out.Final && out.Status == "running" {
+		state = "stopped"
+	}
+	completed := ""
+	if out.CompletedAt != nil {
+		completed = *out.CompletedAt
+	}
+	var b strings.Builder
+	line := func(format string, args ...any) { fmt.Fprintf(&b, format+"\n", args...) }
+	line("%s  [%s]", strings.ToUpper(out.Kind), state)
+	line("%s", out.RunID)
+	line("Branch:    %s", orNotRecorded(out.Branch))
+	line("Started:   %s", orNotRecorded(out.StartedAt))
+	line("Completed: %s", orNotRecorded(completed))
+	line("")
+	if len(out.Steps) == 0 {
+		line("STEPS")
+		line("No steps yet.")
+	} else {
+		done := 0
+		bar := make([]byte, 0, len(out.Steps))
+		for _, s := range out.Steps {
+			if s.Status == "completed" || s.Status == "skipped" {
+				done++
+			}
+			_, c := dashboardCardMarker(s.Status)
+			bar = append(bar, c)
+		}
+		line("%-40s%d of %d done", "STEPS", done, len(out.Steps))
+		line("[%s]", bar)
+		for _, s := range out.Steps {
+			marker, _ := dashboardCardMarker(s.Status)
+			if s.TasksDone != nil && s.TasksTotal != nil {
+				line("  %s %-*s %d/%d tasks  %s", marker, dashboardCardTextNameWidth, s.Name, *s.TasksDone, *s.TasksTotal, s.Status)
+			} else {
+				line("  %s %-*s %s", marker, dashboardCardTextNameWidth, s.Name, s.Status)
+			}
+			for _, w := range s.Waves {
+				line("        %s   %d/%d tasks   %s", w.Name, w.TasksDone, w.TasksTotal, w.Status)
+			}
+		}
+	}
+	line("")
+	issues := "none"
+	if len(out.Issues) > 0 {
+		keys := make([]string, 0, len(out.Issues))
+		for k := range out.Issues {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, k := range keys {
+			parts = append(parts, fmt.Sprintf("%s %d", k, out.Issues[k]))
+		}
+		issues = strings.Join(parts, ", ")
+	}
+	line("ISSUES   %s", issues)
+	if out.DashboardURL != "" {
+		fmt.Fprintf(&b, "Dashboard: %s", out.DashboardURL)
+	} else {
+		b.WriteString("Dashboard: not running")
+	}
+	return b.String()
 }
 
 // dashboardCardSteps returns the card steps of pipeline p. A step whose
