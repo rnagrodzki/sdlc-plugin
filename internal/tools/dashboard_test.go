@@ -818,7 +818,7 @@ func TestDashboardEnsureUsesMainWorktreeRoot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDashboardToolDescriptionExact(t *testing.T) {
-	want := "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of pipelines, activity, history, preplans, setup; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. In a T3 Code thread (T3CODE_THREAD_ID set), ensure with open true opens no browser and returns previewUrl for a T3 preview tab. Optional runId (ensure only, not with tab) points the address at the block of one run. A bad runId, or runId with tab, status or stop, returns DomainError. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: archive a finished run (moves its files to .sdlc-v2/run-archive/ and deletes its working files; the moved files stay there), clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* folders under .sdlc-v2/scratch/, and empties the server log), delete a preplan topic file (.sdlc-v2/preplan/<slug>.md; no recovery), delete a deferred item (rewrites .sdlc-v2/history/deferred.json; to recover, add it again with ship_state deferred_add), delete a learning (rewrites .sdlc-v2/learnings/log.md; to recover, add it again with learnings_log append), set the status of a preplan topic file (rewrites its **Status:** line; to recover, set the old status again), delete History rows (rewrites .sdlc-v2/history/runs.jsonl; no recovery), dismiss a wait (deletes one record in .sdlc-v2/evidence/attention/; the session still waits for its answer), save the Setup form (rewrites the changed keys of .sdlc-v2/config.toml, .sdlc-v2/local.toml or the user file ($SDLC_USER_CONFIG when set, else ~/.sdlc/local.toml); a save to the user file also removes each changed key from .sdlc-v2/local.toml; a save of the version section also creates each missing CI script file and lists it in ciFiles; a refused field value changes no file; to recover, set the old value again, set a removed project key again with the target This project, and delete by hand each file listed in ciFiles), and create the first config of a repo (creates .sdlc-v2/config.toml and .sdlc-v2/local.toml from the templates, each only when it is absent, creates .sdlc-v2/runs/, and adds or updates the sdlc block in .sdlc-v2/.gitignore and in the root .gitignore, and renames a leftover .sdlc-v2/local.json to local.json.bak when no local.json.bak exists; to recover, delete each config file listed in created, and rename local.json.bak back to local.json only when the result lists that rename)."
+	want := "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of pipelines, activity, history, preplans, setup; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. In a T3 Code thread (T3CODE_THREAD_ID set), ensure with open true opens no browser and returns previewUrl for a T3 preview tab. Optional runId (ensure only, not with tab) points the address at the block of one run; only its form is checked, not that the run exists. A bad runId, or runId with tab, status or stop, returns DomainError. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: archive a finished run (moves its files to .sdlc-v2/run-archive/ and deletes its working files; the moved files stay there), clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* folders under .sdlc-v2/scratch/, and empties the server log), delete a preplan topic file (.sdlc-v2/preplan/<slug>.md; no recovery), delete a deferred item (rewrites .sdlc-v2/history/deferred.json; to recover, add it again with ship_state deferred_add), delete a learning (rewrites .sdlc-v2/learnings/log.md; to recover, add it again with learnings_log append), set the status of a preplan topic file (rewrites its **Status:** line; to recover, set the old status again), delete History rows (rewrites .sdlc-v2/history/runs.jsonl; no recovery), dismiss a wait (deletes one record in .sdlc-v2/evidence/attention/; the session still waits for its answer), save the Setup form (rewrites the changed keys of .sdlc-v2/config.toml, .sdlc-v2/local.toml or the user file ($SDLC_USER_CONFIG when set, else ~/.sdlc/local.toml); a save to the user file also removes each changed key from .sdlc-v2/local.toml; a save of the version section also creates each missing CI script file and lists it in ciFiles; a refused field value changes no file; to recover, set the old value again, set a removed project key again with the target This project, and delete by hand each file listed in ciFiles), and create the first config of a repo (creates .sdlc-v2/config.toml and .sdlc-v2/local.toml from the templates, each only when it is absent, creates .sdlc-v2/runs/, and adds or updates the sdlc block in .sdlc-v2/.gitignore and in the root .gitignore, and renames a leftover .sdlc-v2/local.json to local.json.bak when no local.json.bak exists; to recover, delete each config file listed in created, and rename local.json.bak back to local.json only when the result lists that rename)."
 
 	s := mcpserver.New("test", "0.0.0-test")
 	RegisterDashboardTools(s)
@@ -957,6 +957,19 @@ func TestDashboardRunStatusStopUnchangedInT3(t *testing.T) {
 	}
 }
 
+// TestDashboardInRunIDTagFollowsMaxRunSlugLen pins the slug limit that the
+// runId description states as a literal to t3.MaxRunSlugLen.
+func TestDashboardInRunIDTagFollowsMaxRunSlugLen(t *testing.T) {
+	f, ok := reflect.TypeOf(DashboardIn{}).FieldByName("RunID")
+	if !ok {
+		t.Fatal("DashboardIn has no RunID field")
+	}
+	want := fmt.Sprintf("ship-, execute- or plan-, then 1 to %d characters of A-Z a-z 0-9 . _ -.", t3.MaxRunSlugLen)
+	if got := f.Tag.Get("jsonschema_description"); !strings.Contains(got, want) {
+		t.Errorf("RunID description = %q, want it to contain %q", got, want)
+	}
+}
+
 func TestDashboardRunRunIDErrors(t *testing.T) {
 	longSlug := func(n int) string { return strings.Repeat("a", n) }
 	tests := []struct {
@@ -967,11 +980,17 @@ func TestDashboardRunRunIDErrors(t *testing.T) {
 	}{
 		{"status", DashboardIn{Action: "status", RunID: "ship-a"}, `dashboard: runId is for action ensure only, got action "status"`, `Remove runId, or call dashboard with action="ensure".`},
 		{"stop", DashboardIn{Action: "stop", RunID: "ship-a"}, `dashboard: runId is for action ensure only, got action "stop"`, `Remove runId, or call dashboard with action="ensure".`},
-		{"with tab", DashboardIn{Action: "ensure", Tab: "setup", RunID: "ship-a"}, "dashboard: runId and tab cannot be used together", "Pass runId to open one run, or tab to open a tab."},
+		{"with tab", DashboardIn{Action: "ensure", Tab: "setup", RunID: "ship-a"}, "dashboard: runId and tab cannot be used together, got tab \"setup\"", "Pass runId to open one run, or tab to open a tab."},
 		{"no prefix", DashboardIn{Action: "ensure", RunID: "feat-x"}, "dashboard: runId feat-x is not a run id: ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got 6 characters after the prefix)", "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."},
 		{"empty slug", DashboardIn{Action: "ensure", RunID: "ship-"}, "dashboard: runId ship- is not a run id: ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got 0 characters after the prefix)", "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."},
 		{"bad character", DashboardIn{Action: "ensure", RunID: "plan-a/b"}, "dashboard: runId plan-a/b is not a run id: ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got 3 characters after the prefix)", "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."},
 		{"slug too long", DashboardIn{Action: "ensure", RunID: "execute-" + longSlug(t3.MaxRunSlugLen+1)}, "dashboard: runId execute-" + longSlug(201) + " is not a run id: ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got 201 characters after the prefix)", "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."},
+		// Error order: the tab check of a known action runs first, then the
+		// runId checks, then the action switch.
+		{"unknown action with runId and tab", DashboardIn{Action: "bogus", Tab: "setup", RunID: "ship-a"}, "dashboard: runId and tab cannot be used together, got tab \"setup\"", "Pass runId to open one run, or tab to open a tab."},
+		{"unknown action with valid runId", DashboardIn{Action: "bogus", RunID: "ship-a"}, `dashboard: unknown action "bogus"; must be one of: ensure, status, stop`, "Pass one of the listed actions."},
+		{"status with runId and tab", DashboardIn{Action: "status", Tab: "setup", RunID: "ship-a"}, `dashboard: tab is for action ensure only, got action "status"`, `Remove tab, or call dashboard with action="ensure".`},
+		{"stop with runId and tab", DashboardIn{Action: "stop", Tab: "setup", RunID: "ship-a"}, `dashboard: tab is for action ensure only, got action "stop"`, `Remove tab, or call dashboard with action="ensure".`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1142,7 +1161,7 @@ func TestDashboardRegisteredToolRunIDErrors(t *testing.T) {
 	}{
 		{"status", map[string]any{"action": "status", "runId": "ship-a"}, `dashboard: runId is for action ensure only, got action "status"`, ensureOnly},
 		{"stop", map[string]any{"action": "stop", "runId": "ship-a"}, `dashboard: runId is for action ensure only, got action "stop"`, ensureOnly},
-		{"with tab", map[string]any{"action": "ensure", "tab": "setup", "runId": "ship-a"}, "dashboard: runId and tab cannot be used together", "Pass runId to open one run, or tab to open a tab."},
+		{"with tab", map[string]any{"action": "ensure", "tab": "setup", "runId": "ship-a"}, "dashboard: runId and tab cannot be used together, got tab \"setup\"", "Pass runId to open one run, or tab to open a tab."},
 		{"bad runId", map[string]any{"action": "ensure", "runId": "plan-a/b"}, "dashboard: runId plan-a/b is not a run id: " + rule + "3 characters after the prefix)", fileName},
 	}
 	for _, tc := range tests {

@@ -198,7 +198,7 @@ The program names go through the same redaction as the timeline text.
 
 | How to start | Effect |
 |---|---|
-| `/sdlc:dashboard` | Starts the server if it is not active, then opens the page |
+| `/sdlc:dashboard` | Starts the server if it is not active, then opens the page: in the default browser, or in a T3 preview tab in a T3 Code thread |
 | `autoStart = true` in `[dashboard]` of `~/.sdlc/local.toml` | Each session start starts the server and prints the address |
 | Default address | `http://127.0.0.1:7385` |
 | Another program uses port 7385 | Set `port = <1024-65535>` in `[dashboard]` of `~/.sdlc/local.toml`. The next ensure stops the old server and starts the server on the new port. |
@@ -1188,59 +1188,7 @@ After:
             [pending]  ship #1 (team)            Post the PR link and the CI result ...
 ```
 
-## T3 Code
-
-A top-level ship run or a standalone execute run shows a card in the chat of any client that supports MCP Apps. The tool checks the client: a client that announces the MCP Apps extension `io.modelcontextprotocol/ui` in its `initialize` capabilities gets the card. A process in a T3 Code thread also gets the card, because T3 Code renders it. Any other client gets the same run summary as text, and the skill makes no more card calls in that run.
-
-In a T3 Code thread only, the dashboard also opens in a T3 preview tab (the run panel). Outside T3 Code, the run panel does not open.
-
-| Function | T3 preview tab (T3 Code only) | Run card in chat (MCP Apps clients) |
-|---|---|---|
-| Pipelines, run detail, Activity, History, Preplans, Setup | full page | steps, status, issue counts of one run |
-| Change actions | work (token guard) | no, read-only |
-| Live updates | event stream | the card shows the run state at the time of each `dashboard_card` call; refresh behavior is not tested (see Limits) |
-
-The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Code thread. The skill passes `previewUrl` to the T3 `preview_open` tool. No system browser opens. `dashboard_card` takes `runId` and `final`: `final` set to true makes the end card.
-
-### Thread filter
-
-| Address | Shows |
-|---|---|
-| `#pipelines?thread=<id>` | runs of the thread `<id>` |
-
-A thread id is 1 to 128 characters of `A-Z a-z 0-9 . _ -`. The plugin ignores any other value of `T3CODE_THREAD_ID`: the run then records no thread, as outside T3 Code. A run that has a thread records it as `t3ThreadId` in its state file, and the snapshot has `pipelines[].t3ThreadId` (see [Snapshot contract](#snapshot-contract)). `ship_prepare` and `execute_state` `resolve-config` return `t3ThreadId` too. `resolve-config` also returns `shipDispatched`.
-
-### Run panel and narrow width
-
-| When | The T3 preview tab shows |
-|---|---|
-| a top-level ship or a standalone execute run starts | `#<runId>?thread=<id>`: the runs of the thread, scrolled to the block of the run |
-| the panel is 640 px wide or less | one column: History rows as cards, labels above values. Tested at 400 px |
-
-### Limits
-
-The checks ran by hand on 2026-11-17 in T3 Code 0.1.9 (Beta). No check failed. Each row marked `not tested` is an open risk until a person tests it.
-
-| # | Check | Result | Note |
-|---|---|---|---|
-| 1 | The card renders in the chat | pass | The card rendered for a real ship run in a T3 thread. No other MCP Apps client was tested |
-| 2 | A click on Refresh in the card, and the approval it may ask for | not tested | No agent can click the card |
-| 3 | The card between two agent turns | not tested | |
-| 4 | The **Next:** text of the `dashboard_card` result reaches the model | pass | The tool result carried the `next` field |
-| 5 | The card in the remote T3 web client | not tested | |
-| 6 | The run panel opens for the thread of the run | partial | `dashboard` ensure returned `previewUrl`, and `preview_open` showed the dashboard with the thread filter. The check run had no `t3ThreadId`, so the filter showed no run of the thread. The switch to a second thread, then back, is not tested |
-| 7 | The page width follows the panel | pass | `innerWidth` was 1280, then 600 after the tab resize to 600 |
-
-Open risks:
-
-- The card in the remote T3 web client is not tested (row 5).
-- The card in an MCP Apps client other than T3 Code is not tested.
-- It is not verified that T3 Code announces `io.modelcontextprotocol/ui` in `initialize`. The tool treats a process in a T3 Code thread as a client that shows the card, so the card does not depend on that announcement.
-- Whether a thread has its own run panel is not tested (row 6). The thread switch (thread A, then B, then A) did not run.
-- The thread filter is not shown with a matching run (row 6). Repeat the check with a run that starts after the stamping of `t3ThreadId` exists.
-- The refresh of the card is not tested (rows 2 and 3). Do not rely on it. The card shows the run state at the time of each `dashboard_card` call.
-
-### Changed flow 5: dashboard and runs in T3 Code
+### Changed flow 5 (T3 Code)
 
 Flow 1: the user opens the dashboard.
 
@@ -1298,6 +1246,63 @@ flowchart LR
   classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px
   classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
 ```
+
+## T3 Code
+
+A top-level ship run or a standalone execute run shows a card in the chat of any client that supports MCP Apps. The tool checks the client: a client that announces the MCP Apps extension `io.modelcontextprotocol/ui` in its `initialize` capabilities gets the card. A process in a T3 Code thread also gets the card, because T3 Code renders it. Any other client gets the same run summary as text, and the skill makes no more card calls in that run.
+
+In a T3 Code thread only, the dashboard also opens in a T3 preview tab (the run panel). Outside T3 Code, the run panel does not open.
+
+| Function | T3 preview tab (T3 Code only) | Run card in chat (MCP Apps clients) |
+|---|---|---|
+| Pipelines, run detail, Activity, History, Preplans, Setup | full page | steps, status, issue counts of one run |
+| Change actions | work (token guard) | no, read-only |
+| Live updates | event stream | the card shows the run state at the time of each `dashboard_card` call; refresh behavior is not tested (see Limits) |
+
+The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Code thread. The skill passes `previewUrl` to the T3 `preview_open` tool. No system browser opens. `dashboard_card` takes `runId` and `final`: `final` set to true makes the end card.
+
+### The dashboard_card tool
+
+| Input | Rule |
+|---|---|
+| `runId` | The state file name of a ship or execute run, without `.json`: `ship-` or `execute-`, then 1 to 200 characters of `A-Z a-z 0-9 . _ -`. A `plan-` run id is refused |
+| `final` | `true` for the end card. A run whose state still says `running` then shows as stopped, resumable |
+
+| Error | When |
+|---|---|
+| DomainError | `runId` has the wrong form, no run file has that name, or in a T3 Code thread the run stores another `t3ThreadId` |
+| DataError | the run is not found and some run files could not be read, or in a T3 Code thread the run stores a `t3ThreadId` that is not a string |
+| InfraError | the runs folder cannot be listed |
+
+The output has `summary`, `runId`, `kind` (`ship` or `execute`), `branch`, `status`, `final`, `t3ThreadId` (when the run has one), `startedAt`, `completedAt` (`null` while the run has no end time), `steps` (`name` and `status` of each step, or of each wave of an execute run), `issues` (a count for each severity) and `next`. The tool reads the run files and writes nothing. On any error, the ship and execute skills print `Warning: run card not shown — ` and the first line of the error, then continue.
+
+### Thread filter
+
+| Address | Shows |
+|---|---|
+| `#pipelines?thread=<id>` | runs of the thread `<id>` |
+
+A thread id is 1 to 128 characters of `A-Z a-z 0-9 . _ -`. The plugin ignores any other value of `T3CODE_THREAD_ID`: the run then records no thread, as outside T3 Code, and `ship_prepare` and `execute_state` `resolve-config` add one warning that names the variable. A run that has a thread records it as `t3ThreadId` in its state file, and the snapshot has `pipelines[].t3ThreadId` (see [Snapshot contract](#snapshot-contract)). `ship_prepare` and `execute_state` `resolve-config` return `t3ThreadId` too. `resolve-config` also returns `shipDispatched`.
+
+### Run panel and narrow width
+
+| When | The T3 preview tab shows |
+|---|---|
+| a top-level ship or a standalone execute run starts | `#<runId>?thread=<id>`: the runs of the thread, scrolled to the block of the run |
+| the panel is 640 px wide or less | one column: History rows as cards, labels above values. Tested at 400 px |
+
+### Limits
+
+A person checked the card and the run panel by hand in T3 Code. The [check record](internal/t3-card-check.md) lists each check and its result. No check failed.
+
+Open risks:
+
+- The card in the remote T3 web client is not tested (check 5).
+- The card in an MCP Apps client other than T3 Code is not tested.
+- It is not verified that T3 Code announces `io.modelcontextprotocol/ui` in `initialize`. The tool treats a process in a T3 Code thread as a client that shows the card, so the card does not depend on that announcement.
+- Whether a thread has its own run panel is not tested (check 6). The thread switch (thread A, then B, then A) did not run.
+- The thread filter is not shown with a matching run (check 6). Repeat the check with a run that starts after the stamping of `t3ThreadId` exists.
+- The refresh of the card is not tested (checks 2 and 3). Do not rely on it. The card shows the run state at the time of each `dashboard_card` call.
 
 ## Snapshot contract
 

@@ -34,8 +34,9 @@ func (c Ctx) SupportsMCPApps() bool {
 	return ok
 }
 
-// MaxUIHTMLBytes is the largest view HTML that RegisterUI accepts (1 MiB).
-const MaxUIHTMLBytes = 1048576
+// MaxUIHTMLBytes is the largest view HTML that RegisterUI accepts. A tool
+// can set a lower limit for its own view.
+const MaxUIHTMLBytes = 1 << 20
 
 // RegisterUI is Register plus an MCP App view. It sets the tool _meta
 // ui.resourceUri, adds the ui:// resource, and on success also returns Out

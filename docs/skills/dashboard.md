@@ -21,6 +21,8 @@ The skill starts the server when it is not active, opens the page in your defaul
 
 - `Dashboard: <url>`
 
+In a T3 Code thread, the skill opens the page in a T3 preview tab instead, and prints `Dashboard: <previewUrl> (T3 preview tab)`.
+
 `<url>` is the address of the server. The default address is `http://127.0.0.1:7385`.
 [Dashboard](../dashboard.md) describes each tab and each control of the page.
 
@@ -37,8 +39,8 @@ The skill starts the server when it is not active, opens the page in your defaul
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
 | Step 1: Parse arguments | skill | Reads the flag and picks the mode: ensure and open, ensure without opening, status, or stop. It stops with a usage line when two flags or an unknown argument are given. | The chosen mode | no | always |
-| Step 2: Call the tool and print the message | tool | Makes one `dashboard` tool call for the mode. It prints `Dashboard: <url>` for ensure, or the tool `summary` for status and stop. In a T3 Code thread, ensure returns `previewUrl`. | The dashboard address, or the status text | no | always |
-| Step 3: Open the T3 preview tab | skill | Calls the T3 `preview_open` tool with `previewUrl`. On a failed call, prints the address and one warning. No system browser opens. | A T3 preview tab | yes | the output has `previewUrl` |
+| Step 2: Call the tool and print the message | tool | Makes one `dashboard` tool call for the mode. It prints `Dashboard: <url>` for ensure, or the tool `summary` for status and stop. With no argument in a T3 Code thread, ensure returns `previewUrl`: this step then prints nothing, and Step 3 prints. `--no-open`, `--status` and `--stop` never return `previewUrl`. | The dashboard address, or the status text | no | always |
+| Step 3: Open the T3 preview tab | skill | Loads the T3 `preview_open` tool with ToolSearch and calls it with `previewUrl`. On success, prints `Dashboard: <previewUrl> (T3 preview tab)`. On a failed call, or when the tool is absent, prints `Dashboard: <previewUrl>`, then `Warning: T3 preview tab did not open — <reason>.` No system browser opens. | A T3 preview tab | yes | the output has `previewUrl` |
 
 ### Run facts
 

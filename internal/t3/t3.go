@@ -2,6 +2,7 @@
 package t3
 
 import (
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -36,4 +37,15 @@ func ThreadID() string {
 		return ""
 	}
 	return id
+}
+
+// ThreadIDWarning returns one warning line when EnvThreadID is set but does
+// not match ThreadIDPattern, so ThreadID ignores it. It returns "" when the
+// variable is unset, empty or valid. The line does not echo the value.
+func ThreadIDWarning() string {
+	raw := strings.TrimSpace(os.Getenv(EnvThreadID))
+	if raw == "" || threadIDRe.MatchString(raw) {
+		return ""
+	}
+	return fmt.Sprintf("%s is set but is not 1 to %d characters of A-Z a-z 0-9 . _ - (got %d characters): it is ignored, and the run records no T3 Code thread", EnvThreadID, MaxThreadIDLen, len(raw))
 }

@@ -43,5 +43,5 @@ A failed panel or card call MUST print one warning line and MUST NOT stop the ru
 
 #### Scenario: Panel fails
 - **WHEN** `preview_open` fails
-- **THEN** the skill prints `Warning: run panel not opened — <first line of the error>.`
+- **THEN** the skill prints `Warning: run panel not opened — ` and the first line of the error, at most 200 characters, in an inline code span
 - **AND** the run continues

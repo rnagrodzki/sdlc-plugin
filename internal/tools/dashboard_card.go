@@ -36,18 +36,19 @@ type DashboardCardOut struct {
 	RunID       string              `json:"runId" jsonschema_description:"The run id of the input."`
 	Kind        string              `json:"kind" jsonschema_description:"ship or execute."`
 	Branch      string              `json:"branch" jsonschema_description:"Branch of the run."`
-	Status      string              `json:"status" jsonschema_description:"Run status: running, completed or failed."`
+	Status      string              `json:"status" jsonschema_description:"Run status as the run state stores it: running, completed or failed. The end card (final true) shows a running run as stopped, resumable; this field still says running."`
 	Final       bool                `json:"final" jsonschema_description:"Copy of the final input: true for the end card."`
 	T3ThreadID  string              `json:"t3ThreadId,omitempty" jsonschema_description:"T3 Code thread id stored in the run state. Absent when the run has none."`
 	StartedAt   string              `json:"startedAt" jsonschema_description:"Start time of the run, RFC 3339."`
-	CompletedAt *string             `json:"completedAt" jsonschema_description:"End time of a completed run, RFC 3339. Empty while the run has no end time."`
+	CompletedAt *string             `json:"completedAt" jsonschema_description:"End time of a completed run, RFC 3339. null while the run has no end time; the text renders it as (none)."`
 	Steps       []DashboardCardStep `json:"steps" jsonschema_description:"Steps of the run in order. Empty when the run has no step yet."`
 	Issues      map[string]int      `json:"issues" jsonschema_description:"Count of the issues of the run for each severity. Empty when the run has no issue."`
 	Next        string              `json:"next" jsonschema_description:"What the caller does next."`
 }
 
-// dashboardCardMaxHTML is the size limit of dashboard_card.html (64 KiB).
-const dashboardCardMaxHTML = 65536
+// dashboardCardMaxHTML is the size limit of dashboard_card.html. It is
+// lower than mcpserver.MaxUIHTMLBytes, the limit of every view.
+const dashboardCardMaxHTML = 64 << 10
 
 // dashboardCardToolName is the registered name of the tool. The view calls
 // the tool again by this name to refresh.
@@ -69,7 +70,7 @@ var dashboardCardHTML string
 var dashboardCardNetworkRe = regexp.MustCompile(`(?i)\bsrc\s*=|\bhref\s*=\s*["']?\s*(https?:|//)|\bfetch\s*\(|XMLHttpRequest`)
 
 // dashboardCardDescription is the MCP description of dashboard_card.
-const dashboardCardDescription = "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the same run summary as text. Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run. When next says this client shows no card, do not call it again in that run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when run files cannot be read. InfraError when the runs folder cannot be listed."
+const dashboardCardDescription = "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the same run summary as text. Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run. When next says this client shows no card, do not call it again in that run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when the run is not found and some run files could not be read, or, in a T3 Code thread, when the run stores a t3ThreadId that is not a string. InfraError when the runs folder cannot be listed."
 
 // dashboardCardCheckView returns an error when html is larger than
 // dashboardCardMaxHTML or has text that dashboardCardNetworkRe matches.
@@ -87,17 +88,6 @@ func dashboardCardCheckView(html string) error {
 // it, and the card refuses it.
 const dashboardCardPlanPrefix = "plan-"
 
-// dashboardCardSlugLen returns the byte length of runID after its ship-,
-// execute- or plan- prefix, or of the whole runID when it has none of them.
-func dashboardCardSlugLen(runID string) int {
-	for _, prefix := range []string{"ship-", "execute-", dashboardCardPlanPrefix} {
-		if rest, ok := strings.CutPrefix(runID, prefix); ok {
-			return len(rest)
-		}
-	}
-	return len(runID)
-}
-
 // dashboardCardCheckRunID returns a DomainError when runID is not the name of
 // a ship or execute run.
 func dashboardCardCheckRunID(runID string) error {
@@ -106,7 +96,7 @@ func dashboardCardCheckRunID(runID string) error {
 	}
 	return &mcpserver.DomainError{
 		Msg: fmt.Sprintf("runId %s is not a ship or execute run name: ship- or execute-, then 1 to %d characters of A-Z a-z 0-9 . _ - (got %d characters after the prefix)",
-			runID, t3.MaxRunSlugLen, dashboardCardSlugLen(runID)),
+			runID, t3.MaxRunSlugLen, runIDSlugLen(runID)),
 		Suggestion: "Pass the state file name of a ship or execute run without .json, for example ship-feat-x-20261116T175538Z.",
 	}
 }
@@ -130,6 +120,9 @@ func dashboardCardFind(root, runID string) (*state.State, error) {
 			return st, nil
 		}
 	}
+	// state.List returns only a count of the unreadable files, not their
+	// names or causes, so the error names the runs folder. When the run is
+	// found, the unreadable files do not matter to the card and are ignored.
 	if list.Skipped > 0 {
 		return nil, &mcpserver.DataError{
 			Msg:        fmt.Sprintf("run %s not found — %d run files could not be read", runID, list.Skipped),
@@ -170,12 +163,22 @@ func dashboardCard(root, threadID string, showsView bool, in DashboardCardIn) (D
 	if err != nil {
 		return DashboardCardOut{}, err
 	}
+	// In a T3 Code thread, a t3ThreadId that is not a string would read as
+	// "no thread" and skip the thread guard below, so it is refused.
+	if raw, ok := st.Data[t3.StateKey]; ok && threadID != "" {
+		if _, isString := raw.(string); !isString {
+			return DashboardCardOut{}, &mcpserver.DataError{
+				Msg:        fmt.Sprintf("run %s has %s of type %T, expected string", in.RunID, t3.StateKey, raw),
+				Suggestion: fmt.Sprintf("Fix %s in %s: a thread id string, or remove the key. Continue the current step.", t3.StateKey, st.Path),
+			}
+		}
+	}
 	// The prefix is ship or execute (checked above), so ok is always true.
 	p, _, _ := dashboardStatePipeline(st, nil)
 	if threadID != "" && p.T3ThreadID != "" && p.T3ThreadID != threadID {
 		return DashboardCardOut{}, &mcpserver.DomainError{
 			Msg:        fmt.Sprintf("run %s belongs to another T3 thread", in.RunID),
-			Suggestion: "Show only a run of this thread. Continue the current step.",
+			Suggestion: "Pass the runId of a run of this thread: the stateFile of ship_prepare or the filePath of execute_state init, without .json. Continue the current step.",
 		}
 	}
 

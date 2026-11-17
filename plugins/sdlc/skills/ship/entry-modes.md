@@ -18,6 +18,8 @@ If `--resume` was passed (or the pipeline auto-detects an in-flight run — see 
 ship_state({action:"read"})
 ```
 
+A resumed run makes no `dashboard_card` call and opens no run panel (SKILL.md, item 6c and the run card rule). A card that the first invocation showed keeps its last state.
+
 If the response carries a `resumeBriefing` block, the pipeline is genuinely in flight. Render `resumeBriefing.display` **verbatim** (it is a pre-formatted markdown progress block — do not paraphrase or reformat it), then run the open lists ("Open lists first" below) and continue the pipeline from the step named by `resumeBriefing.next.id` using the `flags`/`steps`/`decisions` already in the state object. `resumeBriefing` fields:
 
 ```

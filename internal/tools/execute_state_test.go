@@ -11096,6 +11096,101 @@ func TestExecActionResolveConfig_ShipDispatched(t *testing.T) {
 	}
 }
 
+// resolveConfigFor writes empty config files under a new root, writes ship as
+// the ship state of feat/dispatch (nil writes none), and calls resolve-config.
+func resolveConfigFor(t *testing.T, ship map[string]any, in ExecuteStateIn) ExecuteResolveConfigOut {
+	t.Helper()
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	if ship != nil {
+		createShipState(t, root, "feat/dispatch", ship)
+	}
+	out, err := execActionResolveConfig(root, in)
+	if err != nil {
+		t.Fatalf("execActionResolveConfig: %v", err)
+	}
+	return out.(ExecuteResolveConfigOut)
+}
+
+// TestExecActionResolveConfig_ShipCrossReadCombined pins the cross-read that
+// runs before the auto resolution: one ship state gives both the pipeline
+// auto flag and shipDispatched, and a corrupt ship state warns even with the
+// CLI auto flag.
+func TestExecActionResolveConfig_ShipCrossReadCombined(t *testing.T) {
+	t.Run("pipeline auto and execute in_progress", func(t *testing.T) {
+		ship := execShipStepsState("in_progress")
+		ship["flags"] = map[string]any{"auto": true}
+		got := resolveConfigFor(t, ship, ExecuteStateIn{Branch: "feat/dispatch"})
+		if !got.Auto || got.Sources["auto"] != sourcePipeline || !got.ShipDispatched {
+			t.Errorf("auto = %v, sources[auto] = %q, shipDispatched = %v; want true, pipeline, true", got.Auto, got.Sources["auto"], got.ShipDispatched)
+		}
+	})
+	t.Run("corrupt ship state with CLI auto", func(t *testing.T) {
+		root := t.TempDir()
+		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+		writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+		createShipState(t, root, "feat/dispatch", execShipStepsState("in_progress"))
+		shipSt, err := state.Find(root, "ship", "feat/dispatch")
+		if err != nil || shipSt == nil {
+			t.Fatalf("find ship state: err=%v, st=%v", err, shipSt)
+		}
+		if err := os.WriteFile(shipSt.Path, []byte("{not json"), 0o644); err != nil {
+			t.Fatalf("corrupt ship state: %v", err)
+		}
+		out, err := execActionResolveConfig(root, ExecuteStateIn{Branch: "feat/dispatch", Auto: true})
+		if err != nil {
+			t.Fatalf("execActionResolveConfig: %v", err)
+		}
+		got := out.(ExecuteResolveConfigOut)
+		if !got.Auto || got.Sources["auto"] != sourceCLI || got.ShipDispatched {
+			t.Errorf("auto = %v, sources[auto] = %q, shipDispatched = %v; want true, cli, false", got.Auto, got.Sources["auto"], got.ShipDispatched)
+		}
+		if len(got.Warnings) != 1 || !strings.HasPrefix(got.Warnings[0], "ship state unreadable: ") {
+			t.Errorf("warnings = %q, want one ship state unreadable line", got.Warnings)
+		}
+	})
+}
+
+// TestExecActionResolveConfig_ShipStatusWrongType pins the warning for a ship
+// pipelineStatus or execute step status that is not a string.
+func TestExecActionResolveConfig_ShipStatusWrongType(t *testing.T) {
+	badPipeline := execShipStepsState("in_progress")
+	badPipeline["pipelineStatus"] = 3
+	badStep := map[string]any{"steps": []any{map[string]any{"name": "execute", "status": 3, "kind": "tracked"}}}
+	for _, tc := range []struct {
+		name string
+		ship map[string]any
+		want string
+	}{
+		{"pipelineStatus", badPipeline, "ship state pipelineStatus has type float64, expected string; shipDispatched is false"},
+		{"execute step status", badStep, "ship state status of step execute has type float64, expected string; shipDispatched is false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := resolveConfigFor(t, tc.ship, ExecuteStateIn{Branch: "feat/dispatch"})
+			if got.ShipDispatched {
+				t.Error("ShipDispatched = true, want false")
+			}
+			if !slices.Contains(got.Warnings, tc.want) {
+				t.Errorf("warnings = %q, want them to contain %q", got.Warnings, tc.want)
+			}
+		})
+	}
+}
+
+// TestExecActionResolveConfig_InvalidT3ThreadIDWarns pins the warning for a
+// T3CODE_THREAD_ID that is set but not valid.
+func TestExecActionResolveConfig_InvalidT3ThreadIDWarns(t *testing.T) {
+	t.Setenv(t3.EnvThreadID, "abc/def")
+	got := resolveConfigFor(t, nil, ExecuteStateIn{})
+	if got.T3ThreadID != "" {
+		t.Errorf("T3ThreadID = %q, want empty", got.T3ThreadID)
+	}
+	if want := t3.ThreadIDWarning(); want == "" || !slices.Contains(got.Warnings, want) {
+		t.Errorf("warnings = %q, want them to contain %q", got.Warnings, want)
+	}
+}
+
 // execRegisteredRepo makes a git repository on branch under t.TempDir with
 // empty config files, makes it the working directory, and returns its path.
 // The registered execute_state handler resolves its root from that directory.
@@ -11159,6 +11254,39 @@ func TestRegisteredExecuteState_ResolveConfigT3Facts(t *testing.T) {
 			t.Errorf("output has no line %q:\n%s", "- shipDispatched: false", text)
 		}
 	})
+}
+
+// TestExecState_InitStampsT3ThreadID calls init with T3CODE_THREAD_ID set and
+// checks that the state file holds t3ThreadId, and that a later wave-start
+// write keeps it.
+func TestExecState_InitStampsT3ThreadID(t *testing.T) {
+	t.Setenv(t3.EnvThreadID, "thr-init-1")
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+	clock := fixedClock(testNow)
+
+	if _, err := executeState(root, root, ExecuteStateIn{
+		Action:         "init",
+		Branch:         "feat/t3-init",
+		Quality:        "balanced",
+		TotalTasks:     1,
+		PlannedTaskIds: []string{"T1"},
+		PlanPath:       "plan.md",
+		PlanHash:       "abc123",
+	}, clock); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if got := readExecState(t, root, "feat/t3-init")[t3.StateKey]; got != "thr-init-1" {
+		t.Fatalf("after init: %s = %v, want thr-init-1", t3.StateKey, got)
+	}
+
+	if _, err := executeState(root, root, ExecuteStateIn{Action: "wave-start", Branch: "feat/t3-init", Wave: intPtr(1)}, clock); err != nil {
+		t.Fatalf("wave-start: %v", err)
+	}
+	if got := readExecState(t, root, "feat/t3-init")[t3.StateKey]; got != "thr-init-1" {
+		t.Errorf("after wave-start: %s = %v, want thr-init-1", t3.StateKey, got)
+	}
 }
 
 // ---------------------------------------------------------------------------

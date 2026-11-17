@@ -45,6 +45,10 @@ The `dashboard_card` tool MUST accept only a ship or execute run name and MUST r
 - **WHEN** the run has `t3ThreadId` `t-2` and the server thread is `t-1`
 - **THEN** the tool returns DomainError `run <runId> belongs to another T3 thread`
 
+#### Scenario: Thread id of the wrong type
+- **WHEN** the server thread is `t-1` and the run stores `t3ThreadId` as a value that is not a string
+- **THEN** the tool returns DataError `run <runId> has t3ThreadId of type <type>, expected string`
+
 #### Scenario: Missing run
 - **WHEN** no run file has the name `runId`
 - **THEN** the tool returns DomainError `run <runId> not found`

@@ -62,6 +62,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
   "planHash": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
   "quality": "balanced",
   "totalTasks": 8,
+  "t3ThreadId": "7da2a17d-7244-4ecf-a30c-7e5e50d609a1",
   "plannedTaskIds": ["1", "2", "3", "4", "5", "6", "7", "8"],
   "plannedTasks": [{ "id": "1", "name": "Add the config loader" }, ... ],
   "plannedWaves": [{ "number": 0, "taskIds": ["1"] }, { "number": 1, "taskIds": ["2", "3"] }, ... ],
@@ -83,7 +84,7 @@ If there is only one worktree entry (no linked worktrees), the main working tree
 | `quality`    | string \| null | Execution quality level (`"full"`, `"balanced"`, or `"minimal"`), or `null` if none was applied. Legacy `"A"`/`"B"`/`"C"` values may appear in older state files. |
 | `totalTasks` | number        | Total number of tasks across all waves, as passed to `init`. `0` when `init` got none. |
 | `sessionId`  | string \| null | Claude Code session ID passed to `init`. `null` when `init` got none. |
-| `t3ThreadId` | string \| absent | Same text as the ship row. |
+| `t3ThreadId` | string \| absent | The T3 Code thread of the MCP server process that created the run: the value of `T3CODE_THREAD_ID` when it is 1 to 128 characters of `A-Z a-z 0-9 . _ -` (pattern `^[A-Za-z0-9._-]{1,128}$`), read by `state.Init` when the run is created. Any other value is ignored. Only init writes it; no later action changes it (`execute_state` init, through `state.Init`). It does not come from the hook that stamps `sessionId`. Absent outside T3 Code. Same rule as the [ship row](../ship/state-format.md#top-level-schema). The example shows a run in a T3 Code thread. `resolve-config` returns its own `t3ThreadId`, read from the process environment at the call, not from this key. |
 | `commitWaves` | string       | `"true"` or `"false"`: whether `wave-commit` commits each wave. Stamped by `init`; any other input is stored as `"true"`. |
 | `plannedTaskIds` | string[] \| absent | Every task ID the plan declares, passed as an optional `plannedTaskIds` array on `init`. Absent on state files from a run that didn't supply it (including all pre-this-field state files). Two consumers depend on it: `execRunInFlight` (an ID here with no matching entry in `context.completedTaskIds` means the run is still in flight, triggering `resumeBriefing` on `read`) and `verify-completeness` (cross-checks this list against what actually got recorded; without it, `verify-completeness` fails outright with `"verify-completeness cannot find plannedTaskIds in state — invariant check cannot run"` rather than silently skipping the check). |
 | `plannedTasks` | object[] \| absent | One `{id, name}` for each `### Task N:` heading in the plan, in plan order. `id` is the task number as a string, the same form `wave-compute` returns. `init` reads the plan file at `planPath` and writes this key; headings inside code fences are ignored. Absent when `init` got no `planPath`, the plan file could not be read (`init` then returns the `plan unreadable` warning), or the plan content is empty (no warning). `[]` when the plan has no task headings. Display data only (the dashboard shows task names from it): `verify-completeness` and `execRunInFlight` keep reading `plannedTaskIds`. Absent on state files from before this field. |

@@ -65,7 +65,7 @@ func TestDashboardSkillExitStatesAndRules(t *testing.T) {
 	if strings.Contains(text, "This skill is one step.") {
 		t.Error("skills/dashboard/SKILL.md: the old Rules line \"This skill is one step.\" must be gone")
 	}
-	if !strings.Contains(text, "In a T3 Code thread it also opens a T3 preview tab.") {
+	if !strings.Contains(text, "Run with no argument in a T3 Code thread, it opens a T3 preview tab in place of the browser.") {
 		t.Error("skills/dashboard/SKILL.md: intro does not name the T3 preview tab")
 	}
 }

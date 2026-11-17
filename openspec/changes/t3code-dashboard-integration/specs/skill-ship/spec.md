@@ -47,5 +47,5 @@ A failed panel or card call MUST print one warning line and MUST NOT stop the ru
 
 #### Scenario: Card fails
 - **WHEN** `dashboard_card` returns an error
-- **THEN** the skill prints `Warning: run card not shown — <first line of the error>.`
+- **THEN** the skill prints `Warning: run card not shown — ` and the first line of the error, at most 200 characters, in an inline code span
 - **AND** the pipeline continues

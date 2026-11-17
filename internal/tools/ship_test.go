@@ -3679,6 +3679,27 @@ func TestShipPrepare_T3ThreadID(t *testing.T) {
 			if out.T3ThreadID != tc.want {
 				t.Errorf("T3ThreadID = %q, want %q", out.T3ThreadID, tc.want)
 			}
+			// The new state file carries the same thread id, or no key.
+			raw, err := os.ReadFile(out.StateFile)
+			if err != nil {
+				t.Fatalf("read state file: %v", err)
+			}
+			var data map[string]any
+			if err := json.Unmarshal(raw, &data); err != nil {
+				t.Fatalf("parse state file: %v", err)
+			}
+			stored, has := data[t3.StateKey]
+			if tc.want == "" && has {
+				t.Errorf("state %s = %v, want no key", t3.StateKey, stored)
+			}
+			if tc.want != "" && stored != tc.want {
+				t.Errorf("state %s = %v, want %q", t3.StateKey, stored, tc.want)
+			}
+			// A set but not valid value adds one warning.
+			warned := slices.ContainsFunc(out.Warnings, func(w string) bool { return strings.HasPrefix(w, t3.EnvThreadID+" is set but") })
+			if wantWarn := tc.name == "not a valid id"; warned != wantWarn {
+				t.Errorf("T3 warning present = %v, want %v; warnings = %q", warned, wantWarn, out.Warnings)
+			}
 		})
 	}
 }

@@ -274,7 +274,22 @@ func TestDashboardCard_ErrorTable(t *testing.T) {
 			runID:   cardShipID,
 			isError: true,
 			want: func(string) string {
-				return cardErrText("domain", "run "+cardShipID+" belongs to another T3 thread", "Show only a run of this thread. Continue the current step.")
+				return cardErrText("domain", "run "+cardShipID+" belongs to another T3 thread", "Pass the runId of a run of this thread: the stateFile of ship_prepare or the filePath of execute_state init, without .json. Continue the current step.")
+			},
+		},
+		{
+			name: "run thread id of the wrong type in a T3 thread",
+			setup: func(t *testing.T, root string) {
+				st := cardShipState()
+				st[t3.StateKey] = 42
+				writeCardRun(t, root, cardShipID, st)
+			},
+			thread:  "thread-b",
+			runID:   cardShipID,
+			isError: true,
+			want: func(root string) string {
+				return cardErrText("data", "run "+cardShipID+" has t3ThreadId of type float64, expected string",
+					"Fix t3ThreadId in "+filepath.Join(cardRunsDir(root), cardShipID+".json")+": a thread id string, or remove the key. Continue the current step.")
 			},
 		},
 		{
@@ -381,7 +396,7 @@ func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %T %v, want *DomainError", err, err)
 		}
-		if de.Msg != "run "+cardShipID+" belongs to another T3 thread" || de.Suggestion != "Show only a run of this thread. Continue the current step." || de.Cause != nil {
+		if de.Msg != "run "+cardShipID+" belongs to another T3 thread" || de.Suggestion != "Pass the runId of a run of this thread: the stateFile of ship_prepare or the filePath of execute_state init, without .json. Continue the current step." || de.Cause != nil {
 			t.Errorf("got %+v", de)
 		}
 	})
@@ -417,7 +432,8 @@ func TestDashboardCard_ThreadRules(t *testing.T) {
 	}{
 		{name: "same thread is ok", process: "thread-a", run: "thread-a"},
 		{name: "run with no thread id is ok in T3", process: "thread-a"},
-		{name: "run thread id that is not a string is ok", process: "thread-a", run: 42},
+		{name: "run thread id that is not a string is refused in T3", process: "thread-a", run: 42, wantError: true},
+		{name: "run thread id that is not a string is ok outside T3", run: 42},
 		{name: "run of a thread outside T3 is ok", run: "thread-a"},
 		{name: "other thread is refused", process: "thread-b", run: "thread-a", wantError: true},
 	}
@@ -441,6 +457,26 @@ func TestDashboardCard_ThreadRules(t *testing.T) {
 				t.Errorf("T3ThreadID = %q, want %q", out.T3ThreadID, wantThread)
 			}
 		})
+	}
+}
+
+// TestDashboardCard_WrongTypeThreadID pins the DataError for a stored
+// t3ThreadId that is not a string, in a T3 Code thread.
+func TestDashboardCard_WrongTypeThreadID(t *testing.T) {
+	root := t.TempDir()
+	st := cardShipState()
+	st[t3.StateKey] = 42
+	writeCardRun(t, root, cardShipID, st)
+	_, err := dashboardCard(root, "thread-a", true, DashboardCardIn{RunID: cardShipID})
+	var de *mcpserver.DataError
+	if !errors.As(err, &de) {
+		t.Fatalf("err = %v, want *mcpserver.DataError", err)
+	}
+	if want := "run " + cardShipID + " has t3ThreadId of type float64, expected string"; de.Msg != want {
+		t.Errorf("Msg = %q, want %q", de.Msg, want)
+	}
+	if !strings.HasPrefix(de.Suggestion, "Fix t3ThreadId in ") || !strings.HasSuffix(de.Suggestion, ": a thread id string, or remove the key. Continue the current step.") {
+		t.Errorf("Suggestion = %q", de.Suggestion)
 	}
 }
 
@@ -672,8 +708,9 @@ func TestDashboardCard_FilledValues(t *testing.T) {
 	}
 }
 
-// TestDashboardCard_ExecuteRun pins the card of an execute run: one step for
-// each wave, built by dashboardStatePipeline.
+// TestDashboardCard_ExecuteRun pins the whole text and the structured content
+// of the card of an execute run: one step for each wave, built by
+// dashboardStatePipeline.
 func TestDashboardCard_ExecuteRun(t *testing.T) {
 	root := cardRepo(t)
 	t.Setenv(t3.EnvThreadID, "")
@@ -688,16 +725,45 @@ func TestDashboardCard_ExecuteRun(t *testing.T) {
 			map[string]any{"number": 2, "status": "partial"},
 		},
 	})
-	res, _ := callRegisteredDashboardCard(t, map[string]any{"runId": runID})
-	got := cardStructured(t, res)
-	wantSteps := []any{
-		map[string]any{"name": "wave 1", "status": "completed"},
-		map[string]any{"name": "wave 2", "status": "failed"},
+	res, text := callRegisteredDashboardCard(t, map[string]any{"runId": runID, "final": true})
+
+	summary := "execute run " + runID + " on branch feat/y is completed."
+	wantText := "# dashboard_card — ok\n\n" +
+		"**Next:** " + cardNoViewNext + "\n\n" +
+		"## Summary\n" + summary + "\n\n" +
+		"## Fields\n" +
+		"- runId: " + runID + "\n" +
+		"- kind: execute\n" +
+		"- branch: feat/y\n" +
+		"- status: completed\n" +
+		"- final: true\n" +
+		"- startedAt: 2026-11-16T17:55:38Z\n" +
+		"- completedAt: 2026-11-16T18:00:00Z\n\n" +
+		"## steps[0]\n- name: wave 1\n- status: completed\n\n" +
+		"## steps[1]\n- name: wave 2\n- status: failed\n\n" +
+		"## issues\n- high: 1\n"
+	if text != wantText {
+		t.Errorf("text =\n%s\nwant\n%s", text, wantText)
 	}
-	if got["kind"] != "execute" || got["branch"] != "feat/y" || got["status"] != "completed" ||
-		got["completedAt"] != "2026-11-16T18:00:00Z" || !reflect.DeepEqual(got["steps"], wantSteps) ||
-		!reflect.DeepEqual(got["issues"], map[string]any{"high": float64(1)}) {
-		t.Errorf("structuredContent = %#v", got)
+
+	want := map[string]any{
+		"summary":     summary,
+		"runId":       runID,
+		"kind":        "execute",
+		"branch":      "feat/y",
+		"status":      "completed",
+		"final":       true,
+		"startedAt":   "2026-11-16T17:55:38Z",
+		"completedAt": "2026-11-16T18:00:00Z",
+		"steps": []any{
+			map[string]any{"name": "wave 1", "status": "completed"},
+			map[string]any{"name": "wave 2", "status": "failed"},
+		},
+		"issues": map[string]any{"high": float64(1)},
+		"next":   cardNoViewNext,
+	}
+	if got := cardStructured(t, res); !reflect.DeepEqual(got, want) {
+		t.Errorf("structuredContent = %#v, want %#v", got, want)
 	}
 }
 
@@ -962,7 +1028,7 @@ func TestDashboardCard_Registration(t *testing.T) {
 		t.Fatalf("tools = %v, want only dashboard_card", resp.Tools)
 	}
 	tool := resp.Tools[0]
-	wantDesc := "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the same run summary as text. Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run. When next says this client shows no card, do not call it again in that run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when run files cannot be read. InfraError when the runs folder cannot be listed."
+	wantDesc := "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the same run summary as text. Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run. When next says this client shows no card, do not call it again in that run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when the run is not found and some run files could not be read, or, in a T3 Code thread, when the run stores a t3ThreadId that is not a string. InfraError when the runs folder cannot be listed."
 	if tool.Description != wantDesc {
 		t.Errorf("Description = %q, want %q", tool.Description, wantDesc)
 	}

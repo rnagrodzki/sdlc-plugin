@@ -185,14 +185,14 @@ func register[TIn, TOut any](s *Server, name, desc string, a Annotations, ui *UI
 			}, nil
 		}
 
-		ok := &mcp.CallToolResult{
+		res := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: renderOK(name, out)}},
 			IsError: false,
 		}
 		if ui != nil {
-			ok.StructuredContent = out
+			res.StructuredContent = out
 		}
-		return ok, nil
+		return res, nil
 	}
 
 	s.mcp.AddTool(tool, handler)

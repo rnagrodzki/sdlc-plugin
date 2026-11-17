@@ -11,7 +11,7 @@ model: sonnet
 The sdlc dashboard is one local web page that shows every registered repo's
 pipeline state, session activity, issues, and preplan topic files (Preplans
 tab, and the Preplans box on the Activity tab), without switching sessions or terminals. This skill starts it, reports on it, or stops it through the
-`dashboard` MCP tool. In a T3 Code thread it also opens a T3 preview tab.
+`dashboard` MCP tool. Run with no argument in a T3 Code thread, it opens a T3 preview tab in place of the browser.
 
 The page can also change files. It has no undo for any change. When the user asks to recover from a wrong change, use this table:
 
@@ -82,7 +82,7 @@ Run this step only when the mode is `none` and the `dashboard` call returned `pr
 - **Status** — `--status` reports the server's current state. Print the tool's `summary` (running, with its URL, pid and version, or not running).
 - **T3, tab opened** — tool calls: `dashboard`, `preview_open`. Print `Dashboard: <previewUrl> (T3 preview tab)`.
 - **T3, tab failed or tool absent** — tool calls: `dashboard`, then `preview_open` or none. Print `Dashboard: <previewUrl>` and `Warning: T3 preview tab did not open — <reason>.`
-- **Error** — any tool error, from any mode. Print the error's `## Do this` text exactly as it is, with no paraphrase, and stop. Make no other call and do not retry.
+- **Error** — any `dashboard` tool error, from any mode. Print the error's `## Do this` text exactly as it is, with no paraphrase, and stop. Make no other call and do not retry. A failed `preview_open` call is not this exit: it is a warning (Step 3, "T3, tab failed or tool absent").
 
 ---
 
