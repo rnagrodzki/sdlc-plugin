@@ -45,6 +45,11 @@
       "type": ["string", "null"],
       "description": "Claude Code session ID passed to init; null when init got none."
     },
+    "t3ThreadId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,128}$",
+      "description": "T3 Code thread id of the process that created the run (T3CODE_THREAD_ID). Absent outside T3 Code."
+    },
     "commitWaves": {
       "type": "string",
       "enum": ["true", "false"],

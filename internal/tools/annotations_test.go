@@ -290,6 +290,14 @@ var toolAnnotations = map[string]annotationPolicy{
 		openWorld:   false,
 		reason:      "the call spawns a detached dashboard server process (dashboard.Ensure) and writes only the shared user cache dir (dashboard.Dir(): roots/*.json, server.json, server.log); it never touches a repo file. Its only deletes are its own bookkeeping in that dir: dashboard.Roots prunes stale roots/*.json records, and stop removes server.json. The server it starts serves run-archive (tools.ArchiveRun: moves and deletes files under each repo's .sdlc-v2/) and clear-cache (tools.ClearCache: deletes reports, evidence rotations, orphan reports and sdlc-* temp dirs, and truncates server.log); those run only when a person acts in the page, never from this call. Not destructive: the call itself loses no data, stop ends a process this plugin itself started, and ensure/status/stop all converge on the same recorded state when repeated",
 	},
+	"dashboard_card": {
+		title:       "Show a run card",
+		readOnly:    true,
+		destructive: false,
+		idempotent:  true,
+		openWorld:   false,
+		reason:      "the handler calls only worktree.MainRoot, os.Getwd, state.List and dashboardStatePipeline; none of them writes (state.go, dashboard_snapshot.go) and none of them calls the network",
+	},
 }
 
 // TestEveryToolMatchesItsAnnotationDecision verifies that every registered tool
@@ -325,6 +333,7 @@ func TestEveryToolMatchesItsAnnotationDecision(t *testing.T) {
 	RegisterLearningsTools(s)
 	RegisterInstructionsTools(s)
 	RegisterDashboardTools(s)
+	RegisterDashboardCardTools(s)
 
 	ctx := context.Background()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()
@@ -569,6 +578,13 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				_, _ = runPlanPrepare(t, root, root, PlanPrepareIn{SkipConfigCheck: true})
 			case "setup_prepare":
 				_, _ = setupPrepare(root, SetupPrepareIn{})
+			case "dashboard_card":
+				// Seed a real run file (gitignored), then build its card: the
+				// call lists the run files and must write none.
+				writeCardRun(t, root, cardShipID, cardShipState())
+				if _, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID}); err != nil {
+					t.Fatalf("dashboardCard: %v", err)
+				}
 			case "received_review_verify":
 				// writeReplyBodies mode writes to gitignored
 				// .sdlc-v2/state/artifacts/ — no GitHub API call involved.

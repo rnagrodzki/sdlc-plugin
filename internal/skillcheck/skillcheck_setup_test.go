@@ -325,6 +325,11 @@ func setupSkillsExtractCalls(content string) []setupSkillsCallSite {
 		if setupSkillsBuiltinTools[name] || strings.HasPrefix(name, "mcp__") {
 			continue
 		}
+		// The match may start inside an external tool name that has a hyphen,
+		// such as "mcp__t3-code__preview_open": \b matches after the hyphen.
+		if m[2] > 0 && content[m[2]-1] == '-' {
+			continue
+		}
 		openBrace := m[1] - 1 // the match ends right after the call's opening "{"
 		keys := setupSkillsExtractArgKeys(content, openBrace)
 		line := 1 + strings.Count(content[:m[0]], "\n")
@@ -805,7 +810,9 @@ func TestSetupSkillsStep1bSetupTabQuestion(t *testing.T) {
 		"| `mainWorktree` is true |",
 		"| `needsMigration` is false and `--migrate` is not passed | Step 0 item 1, Arguments |",
 		"Options: `Setup tab (Recommended)`, `Dialogue`.",
-		"| Setup tab, call returns | `dashboard({ action: \"ensure\", open: true, tab: \"setup\" })` | remove each id of `formIds`; set `formsDeferred` to true",
+		"| Setup tab, call returns, no `previewUrl` | `dashboard({ action: \"ensure\", open: true, tab: \"setup\" })` | remove each id of `formIds`; set `formsDeferred` to true",
+		"| Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: \"<previewUrl>\" })`",
+		"Warning: T3 preview tab did not open — <reason>.",
 		"| Setup tab, call error |",
 		"The form sections continue here.",
 		"| Dialogue, free text, dismissed | none | unchanged |",

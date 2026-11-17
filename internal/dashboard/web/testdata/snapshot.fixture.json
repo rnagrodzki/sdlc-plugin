@@ -350,6 +350,7 @@
             }
           ],
           "sessionId": "5b0e8c1a-2f4d-4c7e-9a31-6d8f0b7e4a12",
+          "t3ThreadId": "t3-thread-7f3a",
           "commitWaves": true,
           "attention": {
             "kind": "question",

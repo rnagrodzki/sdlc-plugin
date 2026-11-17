@@ -22,6 +22,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 
 	version "github.com/rnagrodzki/sdlc-plugin"
@@ -176,6 +177,10 @@ type ShipPrepareOut struct {
 	Branch    string `json:"branch"`
 	Worktree  string `json:"worktree"`
 	StateFile string `json:"stateFile,omitempty"`
+
+	// T3ThreadID is t3.ThreadID() read when the call runs. The skills cannot
+	// read the environment, so this field is how ship learns it runs in T3 Code.
+	T3ThreadID string `json:"t3ThreadId,omitempty" jsonschema_description:"T3 Code thread id of this server process (T3CODE_THREAD_ID). Absent outside T3 Code. The ship skill opens the run panel only when it is set."`
 
 	// PrunedOrphans lists the pre-existing ship-<slug>-*.json state files that
 	// the new run's state write deleted (state.PruneTargets, filtered by
@@ -531,6 +536,10 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 
 	binaryVersion := version.GetBuildInfo()
 
+	if w := t3.ThreadIDWarning(); w != "" {
+		warnings = append(warnings, w)
+	}
+
 	out := ShipPrepareOut{
 		Errors:        errors,
 		Warnings:      warnings,
@@ -540,6 +549,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		BinaryVersion: binaryVersion,
 		Branch:        currentBranch,
 		Worktree:      activeRoot,
+		T3ThreadID:    t3.ThreadID(),
 		PrunedOrphans: []string{},
 	}
 
@@ -1742,7 +1752,7 @@ func shipBuildReportData(data map[string]any, now time.Time) ShipReportData {
 // tools.
 func RegisterShipTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "ship_prepare",
-		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. A plan with an **OpenSpec-Create:** line and no **OpenSpec-Staging:** or **OpenSpec-Saved:** line, or with such a line and an OpenSpec Appendix that starts with [TBD, is refused in errors before any write. A staging folder whose stage.json names another plan is refused in errors, and no file changes. When an OpenSpec change is named, it warns about each capability spec that another active or staged change also edits, and stores HEAD as openspecBaseHead in the state file (not on dryRun); a failed git rev-parse HEAD adds a warning and stores no key. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing. Reads the [instructions] section of the team, project local and user-level config. A config problem adds one errors entry. Seeds one pending record for each instruction of the run.",
+		"Merge ship CLI flags with ship config, validate the resolved pipeline (pure checks only — no gh-auth or openspec-aware step computation), and initialize ship execution state. The state file's steps[] holds one entry per configured step; when review is a configured step, it also holds a pending received-review entry with a condition key right after review. pipelineDisplay shows the same rows; flags.steps does not list received-review. ship.steps and ship.quick are tables of true/false per step; the plugin fixes the step order. An old list shape, a non-boolean value or a duplicate --steps name is reported in errors with the fix. Each state write deletes every older ship-<branch-slug>-*.json file of the branch that is not kept; prunedOrphans lists the files that this call deleted (a failed delete is not listed). Kept: a completed run that is not a dry-run, and a run that is not a dry-run whose sessionId differs from the sessionId of this call when both are non-empty. GC (state.gc.ttlDays) deletes a kept file later. When the planFile has an **OpenSpec-Staging:** header, it first creates and git-adds openspec/changes/<name>/ of the active worktree, before the state file is written; a failure is reported in errors and no state file is written. A plan with an **OpenSpec-Create:** line and no **OpenSpec-Staging:** or **OpenSpec-Saved:** line, or with such a line and an OpenSpec Appendix that starts with [TBD, is refused in errors before any write. A staging folder whose stage.json names another plan is refused in errors, and no file changes. When an OpenSpec change is named, it warns about each capability spec that another active or staged change also edits, and stores HEAD as openspecBaseHead in the state file (not on dryRun); a failed git rev-parse HEAD adds a warning and stores no key. "+materializeReadText("<name>")+" With dryRun it only reports the change in openspec with materialized \"dry-run\" and changes nothing. Reads the [instructions] section of the team, project local and user-level config. A config problem adds one errors entry. Seeds one pending record for each instruction of the run. Returns t3ThreadId (the T3 Code thread id of the server process) only in a T3 Code thread; the ship skill opens the run panel only when it is present.",
 		mcpserver.Annotations{
 			Title:       "Prepare ship pipeline run",
 			ReadOnly:    false,

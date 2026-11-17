@@ -25,6 +25,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 )
 
 // ---------------------------------------------------------------------------
@@ -3643,6 +3644,98 @@ func TestInstructionStatusMatchesSchema(t *testing.T) {
 			slices.Sort(want)
 			if !slices.Equal(got, want) {
 				t.Errorf("schema status enum = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+// TestShipPrepare_T3ThreadID checks that t3ThreadId holds the accepted value
+// of T3CODE_THREAD_ID and is empty when the variable is unset or does not
+// match t3.ThreadIDPattern.
+func TestShipPrepare_T3ThreadID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		want string
+	}{
+		{"set", "thr-1", "thr-1"},
+		{"unset", "", ""},
+		{"not a valid id", "bad id!", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(t3.EnvThreadID, tc.env)
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/t3-thread")
+
+			out, err := shipPrepare(dir, dir, ShipPrepareIn{SkipConfigCheck: true})
+			if err != nil {
+				t.Fatalf("shipPrepare: %v", err)
+			}
+			if len(out.Errors) != 0 {
+				t.Fatalf("Errors = %v, want empty", out.Errors)
+			}
+			if out.T3ThreadID != tc.want {
+				t.Errorf("T3ThreadID = %q, want %q", out.T3ThreadID, tc.want)
+			}
+			// The new state file carries the same thread id, or no key.
+			raw, err := os.ReadFile(out.StateFile)
+			if err != nil {
+				t.Fatalf("read state file: %v", err)
+			}
+			var data map[string]any
+			if err := json.Unmarshal(raw, &data); err != nil {
+				t.Fatalf("parse state file: %v", err)
+			}
+			stored, has := data[t3.StateKey]
+			if tc.want == "" && has {
+				t.Errorf("state %s = %v, want no key", t3.StateKey, stored)
+			}
+			if tc.want != "" && stored != tc.want {
+				t.Errorf("state %s = %v, want %q", t3.StateKey, stored, tc.want)
+			}
+			// A set but not valid value adds one warning.
+			warned := slices.ContainsFunc(out.Warnings, func(w string) bool { return strings.HasPrefix(w, t3.EnvThreadID+" is set but") })
+			if wantWarn := tc.name == "not a valid id"; warned != wantWarn {
+				t.Errorf("T3 warning present = %v, want %v; warnings = %q", warned, wantWarn, out.Warnings)
+			}
+		})
+	}
+}
+
+// TestRegisteredShipPrepare_T3ThreadID calls the registered ship_prepare tool
+// and asserts the rendered t3ThreadId line (filled) and its absence (empty).
+func TestRegisteredShipPrepare_T3ThreadID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		want string // exact line, "" means no t3ThreadId line
+	}{
+		{"set", "thr-reg-1", "- t3ThreadId: thr-reg-1"},
+		{"unset", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(t3.EnvThreadID, tc.env)
+			dir := t.TempDir()
+			initGitFixture(t, dir)
+			gitCommit(t, dir, "initial")
+			checkoutBranch(t, dir, "feat/reg-t3-thread")
+			t.Chdir(dir)
+
+			res, text := callRegisteredTool(t, RegisterShipTools, "ship_prepare",
+				map[string]any{"skipConfigCheck": true})
+			if res.IsError {
+				t.Fatalf("ship_prepare returned a tool error:\n%s", text)
+			}
+			var got string
+			for _, l := range strings.Split(text, "\n") {
+				if strings.HasPrefix(l, "- t3ThreadId") {
+					got = l
+				}
+			}
+			if got != tc.want {
+				t.Errorf("t3ThreadId line = %q, want %q:\n%s", got, tc.want, text)
 			}
 		})
 	}

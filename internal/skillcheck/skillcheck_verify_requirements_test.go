@@ -152,11 +152,10 @@ var verifyRequirementsActionPrefix = map[string]string{
 }
 
 // verifyRequirementsPinnedTokens are the tokens that the live sdlc registry
-// does not give: the harness tools, the dashboard tool (registered outside
-// executeSkillsListTools), the Atlassian write tools and the gh command.
+// does not give: the harness tools, the Atlassian write tools and the gh
+// command.
 var verifyRequirementsPinnedTokens = []string{
 	"Edit", "Write", "NotebookEdit", "AskUserQuestion", "Bash", "Skill", "Agent",
-	"dashboard",
 	"addOrEditJiraIssueComment", "editJiraIssue", "transitionJiraIssue", "createJiraIssue",
 	"createConfluenceContent", "updateConfluenceContent", "executeWrite", "executeDestructive", "addGraphContext",
 	"gh ",

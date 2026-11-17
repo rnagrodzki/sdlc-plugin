@@ -33,6 +33,7 @@ At the end, ship prints the step table, the decisions log and the deferred findi
 
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
+| run panel and start card | tool | In a T3 Code thread only, opens the block of the run on the Pipelines tab, filtered to the thread, in the T3 preview tab (`dashboard` ensure with `runId`, then `preview_open` with `previewUrl`). Then calls `dashboard_card` to show the run as a card in the chat of a client that supports MCP Apps; other clients get a text summary, and the run makes no more card calls. A failed call prints one warning, and the run continues. | A preview tab and a card | yes | after the confirmation. The panel also needs `t3ThreadId` from `ship_prepare` |
 | execute | agent | Runs the plan wave by wave. | Changed files on the feature branch | no | always, when a plan file is given |
 | commit | agent | Stages every change except `.sdlc-v2/`. The `commit-check` tool completes the step when nothing is left to commit. Otherwise an agent writes the commit. Then pushes the branch, best effort. A failed push gives a warning, and the step still succeeds. | The feature commit | no | always |
 | review | agent | Reviews the changes across the project review dimensions. | Findings by severity | no | always |
@@ -47,6 +48,7 @@ At the end, ship prints the step table, the decisions log and the deferred findi
 | learnings-commit | tool | Logs the learnings of the run. It does not touch git. | The learnings log | no | always |
 | step instructions | skill | After each step, runs the follow-up instructions of that step from the `[instructions]` config. | One result for each instruction | yes | the step has a list |
 | ship instructions | skill | After the last step, runs the `ship` list. | One result for each instruction | yes | the config has a `ship` list |
+| end card | tool | Calls `dashboard_card` again with `final` set to true, at success and at a stop after a step failure. | The final card | yes | the start card result did not say that the client shows no card |
 
 ### Run facts
 
@@ -56,6 +58,7 @@ At the end, ship prints the step table, the decisions log and the deferred findi
 | Ends | After the learnings-commit step and the `ship` instruction list. Ship writes the run report, cleans up the run state and prints the summary. |
 | Asks the user | Between steps, unless `--auto` is set. With `--auto`, three cases still ask: resume or replace a run in flight on the branch, file a GitHub issue for an execute-step draft, and a critical question of an instruction whose `criticalQuestions` flag is `true`. |
 | Resume | `/sdlc:ship --resume` continues from the saved progress of the run. A resumed run first runs the open instructions of the completed steps. |
+| Run card | In a client that supports MCP Apps. Other clients get the run summary as text. No card for `--dry-run`, `--gc`, `--init-config`, `--resume`, or a stop before the confirmation ends. The run panel opens in a T3 Code thread only, when `ship_prepare` returns `t3ThreadId`. |
 
 ## More examples
 

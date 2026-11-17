@@ -44,3 +44,57 @@ func execPipelineAuto(root, branch string) (shipSt *state.State, auto bool, warn
 	}
 	return shipSt, auto, warnings
 }
+
+// execShipCross is what execShipCrossRead reads from the ship state of a
+// branch.
+type execShipCross struct {
+	pipelineAuto   bool     // flags.auto of the ship state
+	shipDispatched bool     // ship dispatched the current execute run
+	warnings       []string // why a value could not be read
+}
+
+// execShipCrossRead reads the ship state of branch once. With no branch it
+// reads nothing and returns the zero value.
+func execShipCrossRead(root, branch string) execShipCross {
+	if branch == "" {
+		return execShipCross{}
+	}
+	shipSt, pipelineAuto, warnings := execPipelineAuto(root, branch)
+	dispatched, stepWarnings := shipExecuteStepRunning(shipSt)
+	return execShipCross{
+		pipelineAuto:   pipelineAuto,
+		shipDispatched: dispatched,
+		warnings:       append(warnings, stepWarnings...),
+	}
+}
+
+// shipExecuteStepRunning reports whether ship dispatched the current execute
+// run: the ship state is not completed and its execute step is in_progress.
+// A nil state (no ship state for the branch) is false. A stale ship state with
+// an execute step left in_progress also returns true; that is accepted.
+// A pipelineStatus or execute step status that is not a string gives false
+// and one warning that names the key and the type found.
+func shipExecuteStepRunning(shipSt *state.State) (bool, []string) {
+	if shipSt == nil {
+		return false, nil
+	}
+	if raw := shipSt.Data["pipelineStatus"]; raw != nil {
+		status, isString := raw.(string)
+		if !isString {
+			return false, []string{fmt.Sprintf("ship state pipelineStatus has type %T, expected string; shipDispatched is false", raw)}
+		}
+		if status == PipelineCompleted {
+			return false, nil
+		}
+	}
+	step := shipFindStepEntry(shipSt.Data, dashboardShipStepExecute)
+	if step == nil {
+		return false, nil
+	}
+	raw := step["status"]
+	status, isString := raw.(string)
+	if raw != nil && !isString {
+		return false, []string{fmt.Sprintf("ship state status of step %s has type %T, expected string; shipDispatched is false", dashboardShipStepExecute, raw)}
+	}
+	return status == StepInProgress, nil
+}

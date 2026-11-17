@@ -90,7 +90,7 @@ rm -rf ~/.sdlc-cache
 
 ### Tool surface
 
-The MCP server (`sdlc mcp`) registers 34 tools across 17 groups (grepped from
+The MCP server (`sdlc mcp`) registers 35 tools across 17 groups (grepped from
 `internal/tools/*.go`, wired in `cmd/sdlc/main.go`):
 
 | Group | Tools |
@@ -111,7 +111,7 @@ The MCP server (`sdlc mcp`) registers 34 tools across 17 groups (grepped from
 | Dimensions rendering | `dimensions_render_instructions` |
 | Learnings | `learnings_log` |
 | Instructions | `instructions_resolve` |
-| Dashboard | `dashboard` |
+| Dashboard | `dashboard`, `dashboard_card` |
 
 These are consumed by the plugin's skills (under `plugins/sdlc/skills/`), not typically
 called by name directly.

@@ -115,7 +115,7 @@ field that does not exist. Deviations, one line each:
 - **Tool map:** `setup_prepare` (Step 0, the Step 2 snapshot re-run, the Step 3 option
   explain, Steps 3b and 3c), `setup_init` (Step 0, scaffold-only),
   `migrate` (Step 2), `setup_write_sections` (Step 3 "Writing config files"), `scaffold_ci`
-  (Step 3c, only after the user confirms), `dashboard` (Step 1b `ensure`, Step 4 `status`).
+  (Step 3c, only after the user confirms), `dashboard` (Step 1b `ensure`, Step 4 `status`), `mcp__t3-code__preview_open` (Step 1b, only when `ensure` returns `previewUrl`; loaded with ToolSearch).
   `validate` is called only inside the delegated
   companion sub-flows (`setup-dimensions.md`, `setup-pr-template.md`, `setup-guardrails.md`,
   `setup-execution-guardrails.md`), never directly by this file.
@@ -415,7 +415,8 @@ Question (the same question tool as Step 3c): `This run created a config file. T
 
 | Answer | Call | Effect on `selectedIds` | Print |
 |---|---|---|---|
-| Setup tab, call returns | `dashboard({ action: "ensure", open: true, tab: "setup" })` | remove each id of `formIds`; set `formsDeferred` to true and keep `<url>` for Step 4 | `Setup tab: <url>#setup — save the form sections there. This run continues with the sections that need the assistant.`, then `next` |
+| Setup tab, call returns, no `previewUrl` | `dashboard({ action: "ensure", open: true, tab: "setup" })` | remove each id of `formIds`; set `formsDeferred` to true and keep `<url>` for Step 4 | `Setup tab: <url>#setup — save the form sections there. This run continues with the sections that need the assistant.`, then `next` |
+| Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: "<previewUrl>" })` (load it with ToolSearch first) | same as the row above, and also keep `previewUrl` for Step 4 | `Setup tab: <previewUrl> (T3 preview tab) — save the form sections there. This run continues with the sections that need the assistant.` On a failed or absent `preview_open`, print `Setup tab: <previewUrl>` and `Warning: T3 preview tab did not open — <reason>.` |
 | Setup tab, call error | same | unchanged | `Tool error text (dashboard):`, the error in a `text` fence, then `The form sections continue here.` |
 | Dialogue, free text, dismissed | none | unchanged | nothing |
 | the question tool is not available | none | unchanged | nothing (the same rule as Step 3c) |
@@ -1097,7 +1098,8 @@ Print the Setup tab pointer last.
 
 When `formsDeferred` is true, call no tool. Print
 `Save the form sections in the dashboard Setup tab: <url>#setup`, with the `<url>` that Step 1b
-kept. The form sections are not saved yet, so do not print a `Change the form sections later`
+kept. When Step 1b kept a `previewUrl` (a T3 Code thread), print
+`Save the form sections in the dashboard Setup tab: <previewUrl> (T3 preview tab)` instead. The form sections are not saved yet, so do not print a `Change the form sections later`
 line.
 
 Otherwise call `dashboard({ action: "status" })`:

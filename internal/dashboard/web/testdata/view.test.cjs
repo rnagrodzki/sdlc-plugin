@@ -1317,12 +1317,12 @@ describe('parseHash', () => {
   });
 
   test('a tab name selects the tab', () => {
-    assert.deepEqual(view.parseHash('#history', tabs), { tab: 'history' });
-    assert.deepEqual(view.parseHash('#activity', tabs), { tab: 'activity' });
+    assert.deepEqual(view.parseHash('#history', tabs), { tab: 'history', thread: null });
+    assert.deepEqual(view.parseHash('#activity', tabs), { tab: 'activity', thread: null });
   });
 
   test('#preplans selects the Preplans tab', () => {
-    assert.deepEqual(view.parseHash('#preplans', tabs), { tab: 'preplans' });
+    assert.deepEqual(view.parseHash('#preplans', tabs), { tab: 'preplans', thread: null });
   });
 
   test('a pipeline id and a station number select both', () => {
@@ -1340,6 +1340,87 @@ describe('parseHash', () => {
   test('an empty hash gives null', () => {
     assert.equal(view.parseHash('', tabs), null);
     assert.equal(view.parseHash('#', tabs), null);
+    assert.equal(view.parseHash('#?thread=x', tabs), null);
+  });
+
+  test('#pipelines gives the tab and a null thread', () => {
+    assert.deepEqual(view.parseHash('#pipelines', tabs), { tab: 'pipelines', thread: null });
+  });
+
+  test('a tab hash with ?thread= gives the tab and the thread', () => {
+    assert.deepEqual(view.parseHash('#pipelines?thread=7da2a17d-7244', tabs), { tab: 'pipelines', thread: '7da2a17d-7244' });
+    assert.deepEqual(view.parseHash('#history?thread=x', tabs), { tab: 'history', thread: 'x' });
+  });
+
+  test('a thread id with a bad form is dropped', () => {
+    assert.deepEqual(view.parseHash('#pipelines?thread=a/b', tabs), { tab: 'pipelines', thread: null });
+    assert.deepEqual(view.parseHash('#pipelines?thread=', tabs), { tab: 'pipelines', thread: null });
+    assert.deepEqual(view.parseHash('#pipelines?thread=' + 'a'.repeat(129), tabs), { tab: 'pipelines', thread: null });
+    assert.deepEqual(view.parseHash('#ship-x?thread=a%2Fb', tabs), { pipelineId: 'ship-x', station: null });
+  });
+
+  test('only the thread key is read', () => {
+    assert.deepEqual(view.parseHash('#pipelines?x=1&thread=t-2&y=3', tabs), { tab: 'pipelines', thread: 't-2' });
+    assert.deepEqual(view.parseHash('#pipelines?other=t-2', tabs), { tab: 'pipelines', thread: null });
+    assert.deepEqual(view.parseHash('#pipelines?threadx=t-2', tabs), { tab: 'pipelines', thread: null });
+  });
+
+  test('a run hash with ?thread= gives the run, the station and the thread', () => {
+    assert.deepEqual(view.parseHash('#ship-feat-x-20261116T1?thread=t-1', tabs), {
+      pipelineId: 'ship-feat-x-20261116T1',
+      station: null,
+      thread: 't-1',
+    });
+    assert.deepEqual(view.parseHash('#ship-x/3?thread=t-1', tabs), { pipelineId: 'ship-x', station: 3, thread: 't-1' });
+  });
+
+  test('a run hash with no thread has no thread key', () => {
+    assert.deepEqual(view.parseHash('#ship-feat-x-20261116T1/3', tabs), { pipelineId: 'ship-feat-x-20261116T1', station: 3 });
+  });
+});
+
+describe('thread filter', () => {
+  test('THREAD_RE source equals ThreadIDPattern of internal/t3/t3.go', () => {
+    const src = fs.readFileSync(path.join(__dirname, '../../../t3/t3.go'), 'utf8');
+    const match = src.match(/const ThreadIDPattern = `([^`]*)`/);
+    assert.ok(match, 'ThreadIDPattern not found in t3.go');
+    assert.equal(view.THREAD_RE.source, match[1]);
+  });
+
+  test('inThread passes every pipeline with no filter, and only the thread with a filter', () => {
+    assert.equal(view.inThread({ t3ThreadId: 'a' }, null), true);
+    assert.equal(view.inThread({}, ''), true);
+    assert.equal(view.inThread({ t3ThreadId: 'a' }, 'a'), true);
+    assert.equal(view.inThread({ t3ThreadId: 'b' }, 'a'), false);
+    assert.equal(view.inThread({}, 'a'), false);
+  });
+
+  test('threadShort keeps the first 8 characters', () => {
+    assert.equal(view.threadShort('7da2a17d-7244'), '7da2a17d');
+    assert.equal(view.threadShort('abc'), 'abc');
+    assert.equal(view.threadShort(undefined), '');
+  });
+
+  test('panelSignatures: the thread changes the pipelines signature only', () => {
+    const repos = [{ root: '/a', name: 'a', pipelines: [{ id: 'p1' }] }];
+    const none = view.panelSignatures(repos, new Set());
+    const withNull = view.panelSignatures(repos, new Set(), null);
+    const t1 = view.panelSignatures(repos, new Set(), 't-1');
+    const t2 = view.panelSignatures(repos, new Set(), 't-2');
+    assert.deepEqual(withNull, none);
+    assert.notEqual(t1.pipelines, none.pipelines);
+    assert.notEqual(t1.pipelines, t2.pipelines);
+    for (const name of ['activity', 'history', 'preplans', 'setup']) {
+      assert.equal(t1[name], none[name], name);
+    }
+  });
+
+  test('a changed thread draws the Pipelines panel again on a frame', () => {
+    const repos = [{ root: '/a', name: 'a', pipelines: [{ id: 'p1' }] }];
+    const drawn = view.panelSignatures(repos, new Set());
+    const next = view.panelSignatures(repos, new Set(), 't-1');
+    assert.deepEqual(view.panelsToDraw('frame', 'pipelines', next, drawn), ['pipelines']);
+    assert.deepEqual(view.panelsToDraw('frame', 'pipelines', drawn, drawn), []);
   });
 });
 
@@ -2398,7 +2479,48 @@ describe('render filterChips', () => {
   });
 });
 
+describe('render thread filter chip', () => {
+  const chips = [{ root: '/a', name: 'a', count: 1, hasFail: false }];
+
+  test('no chip without a thread', () => {
+    assert.equal(render.filterChips(fakeDoc(), view, chips, new Set(), null).length, 2);
+    assert.equal(render.filterChips(fakeDoc(), view, chips, new Set()).length, 2);
+  });
+
+  test('a thread adds span.thread-filter with the first 8 characters and a clear button', () => {
+    const out = render.filterChips(fakeDoc(), view, chips, new Set(), '7da2a17d-7244');
+    assert.equal(out.length, 3);
+    const chip = out[2];
+    assert.equal(chip.className, 'thread-filter');
+    assert.equal(oneByClass(chip, 'thread-label').textContent, 'Thread 7da2a17d');
+    assert.match(chip.attrs.title, /7da2a17d-7244/);
+    const clear = oneByClass(chip, 'thread-clear');
+    assert.equal(clear.tagName, 'button');
+    assert.equal(clear.attrs.type, 'button');
+    assert.equal('data-thread-clear' in clear.attrs, true);
+  });
+
+  test('emptyState no-thread-run says No run of this thread yet.', () => {
+    const line = render.emptyState(fakeDoc(), 'no-thread-run');
+    assert.equal(line.textContent, 'No run of this thread yet.');
+    assert.equal(line.attrs['data-empty'], 'no-thread-run');
+  });
+});
+
 describe('render blockHead', () => {
+  test('a pipeline with t3ThreadId shows span.pipe-thread with 8 characters and the full id in title', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline({ t3ThreadId: '7da2a17d-7244' }), false, 0);
+    const span = oneByClass(head, 'pipe-thread');
+    assert.equal(span.tagName, 'span');
+    assert.equal(span.textContent, '7da2a17d');
+    assert.equal(span.attrs.title, '7da2a17d-7244');
+  });
+
+  test('a pipeline with no t3ThreadId shows no span.pipe-thread', () => {
+    const head = render.blockHead(fakeDoc(), view, REPO, pipeline(), false, 0);
+    assert.equal(byClass(head, 'pipe-thread').length, 0);
+  });
+
   test('lamp, kind label, branch, repo, status word and the details toggle', () => {
     const head = render.blockHead(fakeDoc(), view, REPO, pipeline({ kind: 'execute' }), false, 3);
     assert.equal(head.tagName, 'header');

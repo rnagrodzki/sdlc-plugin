@@ -213,6 +213,17 @@ button { font-family: inherit; }
 @media (max-width: 1420px) {
   .counts { display: none; }
 }
+/* Below 1000 px the header does not fit one row. The tabs take a row of their own
+   and the header grows to its content. The shell row is auto, not 56 px, so the
+   tabs are not clipped. The tabs scroll sideways when five do not fit. */
+@media (max-width: 1000px) {
+  .shell  { grid-template-rows: auto minmax(0, 1fr); }
+  .topbar { flex-wrap: wrap; overflow: visible; height: auto; row-gap: 8px; padding-top: 8px; }
+  .tabs   { order: 10; flex: 1 0 100%; min-width: 0; overflow-x: auto; }
+  .tab    { min-height: 40px; flex: 0 0 auto; }
+  /* The sheen slides out to the right of an overflow-visible header. It would widen the page. */
+  .topbar::after { display: none; }
+}
 
 .stop-btn, .archive-btn, #clear-btn {
   flex: 0 0 auto;
@@ -392,6 +403,37 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .chip-n { font-family: var(--font-mono); font-weight: 400; font-size: 11px; color: var(--rail); }
 .chip-n.has-fail { color: #FFD9D6; background: rgba(240,86,77,0.16); border-radius: 999px; padding: 0 6px; }
 
+/* The thread filter chip in the filter bar: a label and a clear button. */
+.thread-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 12px;
+  color: var(--ivory);
+  border: 1px solid var(--scan-cyan-dim);
+  border-radius: 999px;
+  background: rgba(85,214,224,0.10);
+  font-family: var(--font-sign);
+  font-weight: 600;
+  font-size: 13px;
+}
+.thread-label { font-family: var(--font-mono); font-weight: 400; font-size: 12px; }
+.thread-clear {
+  appearance: none;
+  cursor: pointer;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+  color: var(--rail);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  font-size: 15px;
+}
+.thread-clear:hover { color: var(--ivory); background: rgba(148,178,196,0.16); }
+.thread-clear:focus-visible { outline: 2px solid var(--scan-cyan); outline-offset: 1px; }
+
 .bar-btn {
   appearance: none;
   margin-left: auto;
@@ -446,6 +488,17 @@ details[open] > summary .chev { transform: rotate(90deg); }
   color: var(--ivory);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The T3 thread of the pipeline: the first 8 characters of its id, after the total time. */
+.pipe-thread {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--rail);
   white-space: nowrap;
 }
 /* Total time of the pipeline, right after the branch. */
@@ -1518,6 +1571,40 @@ details[open] > summary .chev { transform: rotate(90deg); }
 }
 .hd-tl-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); }
 .hd-tl-text { color: var(--ivory); overflow-wrap: anywhere; }
+
+/* Narrow page: less padding, so the History table fits 600 px. The rules sit here,
+   after the base rules that they override, with the same specificity or more.
+   .filter-bar has margin 0 -32px for the stage padding, so both change together. */
+@media (max-width: 700px) {
+  .stage       { padding-left: 12px; padding-right: 12px; }
+  .filter-bar  { margin-left: -12px; margin-right: -12px; padding: 12px; }
+  .list-panel  { padding-left: 12px; padding-right: 12px; }
+  .hist th, .hist td, .hist th.sortable { padding-right: 8px; }
+}
+
+/* Vertical layout for a narrow right panel (400 px). Rows with fixed columns get one
+   column. History and Preplans rows become cards: each cell has its own line, after
+   its data-label text. The rules sit after the 700 px block, so they win at equal
+   specificity. The layout at 641 px and wider does not change. */
+@media (max-width: 640px) {
+  .dim-cols      { grid-template-columns: 8px minmax(0, 1fr); }
+  .dim-cols > :nth-child(n+3) { grid-column: 2; }
+  .round-row     { grid-template-columns: minmax(0, 1fr); }
+  .fix-row       { grid-template-columns: 8px minmax(0, 1fr); }
+  .timeline-row  { grid-template-columns: minmax(0, 1fr); }
+  .hd-edit       { grid-template-columns: minmax(0, 1fr); }
+  .hd-funnel-row { grid-template-columns: minmax(0, 1fr) 28px; }
+  .hist, .hist tbody, .hist tr, .hist td { display: block; }
+  .hist thead { display: none; }
+  .hist tr { padding: 10px 0; border-bottom: 1px solid rgba(148,178,196,0.08); }
+  .hist td { padding: 2px 0; }
+  .hist td.h-pick { width: auto; padding-right: 0; }
+  .hist td::before { content: attr(data-label); display: inline-block; min-width: 72px; color: var(--rail); }
+  .hist td:not([data-label])::before { display: none; }
+  /* The head of a block: the side group goes on its own row, and its items wrap. */
+  .pipe-head { flex-wrap: wrap; row-gap: 6px; }
+  .pipe-side { flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; row-gap: 6px; }
+}
 
 /* Every animation above stops here. */
 @media (prefers-reduced-motion: reduce) {

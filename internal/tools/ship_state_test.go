@@ -1191,6 +1191,74 @@ func TestShipState_Fail_HistoryRow_UnparseableStartedAtGivesZeroDuration(t *test
 	}
 }
 
+// TestShipStateSchema_T3ThreadID proves ship-state.schema.json accepts a state
+// with a valid t3ThreadId and a state without it, and rejects a t3ThreadId
+// that is not a string or does not match the thread id pattern.
+func TestShipStateSchema_T3ThreadID(t *testing.T) {
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	validate := func(t *testing.T, extra map[string]any) error {
+		t.Helper()
+		doc := map[string]any{
+			"version":   float64(1),
+			"startedAt": "2026-03-01T12:00:00Z",
+			"branch":    "feat/schema-test",
+			"flags":     map[string]any{},
+			"steps":     []any{map[string]any{"name": "review", "status": "failed"}},
+		}
+		for k, v := range extra {
+			doc[k] = v
+		}
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal doc: %v", err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("unmarshal doc for schema validation: %v", err)
+		}
+		return sch.Validate(inst)
+	}
+
+	if err := validate(t, nil); err != nil {
+		t.Errorf("state without t3ThreadId: want accepted, got %v", err)
+	}
+	accepted := map[string]string{
+		"typical id":               "abc-1",
+		"shortest id, 1 character": "a",
+		"longest id, 128 chars":    strings.Repeat("a", 128),
+	}
+	for name, id := range accepted {
+		t.Run("accepts "+name, func(t *testing.T) {
+			if err := validate(t, map[string]any{"t3ThreadId": id}); err != nil {
+				t.Errorf("t3ThreadId %q: want accepted, got %v", id, err)
+			}
+		})
+	}
+	rejected := map[string]any{
+		"number":    float64(5),
+		"slash":     "abc/1",
+		"empty":     "",
+		"129 chars": strings.Repeat("a", 129),
+		"null":      nil,
+		"boolean":   true,
+	}
+	for name, v := range rejected {
+		t.Run("rejects "+name, func(t *testing.T) {
+			if err := validate(t, map[string]any{"t3ThreadId": v}); err == nil {
+				t.Errorf("t3ThreadId %v: want schema rejection, got nil", v)
+			}
+		})
+	}
+}
+
 // TestShipStateSchema_HistoryFailureRecorded proves the published schema
 // accepts a state with and without the flag, rejects a non-boolean flag, and
 // accepts the state file the fail action actually writes.
@@ -11587,5 +11655,56 @@ func TestShipStateWait_DecideParity(t *testing.T) {
 				t.Errorf("decide = %s, wait = %s; want decide = %s, wait = %s", gotDecide, gotWait, row.wantDecide, row.wantWait)
 			}
 		})
+	}
+}
+
+// TestShipState_Read_RunID checks that the read action returns runId, the
+// base name of the state file without .json, and that the key does not hide
+// a state key.
+func TestShipState_Read_RunID(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/read-runid")
+	path := shipStateInitFixture(t, dir, "feat/read-runid")
+
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "read",
+		Detail: map[string]any{"branch": "feat/read-runid"},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	data := out.(map[string]any)
+	runID, _ := data["runId"].(string)
+	if !strings.HasPrefix(runID, "ship-") {
+		t.Fatalf("runId = %q, want a ship- run id", runID)
+	}
+	if want := strings.TrimSuffix(filepath.Base(path), ".json"); runID != want {
+		t.Errorf("runId = %q, want %q (the state file name without .json)", runID, want)
+	}
+	if data["branch"] != "feat/read-runid" {
+		t.Errorf("branch = %v, want feat/read-runid (state keys must survive the copy)", data["branch"])
+	}
+}
+
+// TestRegisteredShipState_ReadRunID calls the registered ship_state tool and
+// asserts the runId line of the rendered read output.
+func TestRegisteredShipState_ReadRunID(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/reg-read-runid")
+	path := shipStateInitFixture(t, dir, "feat/reg-read-runid")
+	t.Chdir(dir)
+
+	res, text := callRegisteredTool(t, RegisterShipStateTools, "ship_state",
+		map[string]any{"action": "read", "detail": map[string]any{"branch": "feat/reg-read-runid"}})
+	if res.IsError {
+		t.Fatalf("read returned a tool error:\n%s", text)
+	}
+	want := "- runId: " + strings.TrimSuffix(filepath.Base(path), ".json")
+	if !slices.Contains(strings.Split(text, "\n"), want) {
+		t.Errorf("output has no line %q:\n%s", want, text)
 	}
 }

@@ -29,6 +29,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
@@ -189,7 +190,9 @@ type ExecuteResolveConfigOut struct {
 	CommitWaves         bool              `json:"commitWaves" jsonschema_description:"Effective commit-waves setting: whether execute commits each wave separately. Resolution order CLI > config execute.commitWaves > default true; sources.commitWaves reports which one won."`
 	HighRiskAutoApprove bool              `json:"highRiskAutoApprove" jsonschema_description:"Effective high-risk auto-approval, from executePrefs.highRiskAutoApprove in .sdlc-v2/local.toml (or ~/.sdlc/local.toml) (a personal setting) and false otherwise. No plan-approval state is consulted; sources.highRiskAutoApprove reports whether the value came from local.toml (local) or the built-in default (default)."`
 	Sources             map[string]string `json:"sources" jsonschema_description:"Per-key provenance: cli, pipeline, local (from .sdlc-v2/local.toml (or ~/.sdlc/local.toml): auto, quality, highRiskAutoApprove), config (from .sdlc-v2/config.toml: commitWaves), default, or unset."`
-	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead). Also carries a notice (not a problem) when personal keys were moved from config.toml [execute] to local.toml [executePrefs]."`
+	T3ThreadID          string            `json:"t3ThreadId,omitempty" jsonschema_description:"T3 Code thread id of this server process (T3CODE_THREAD_ID). Absent outside T3 Code. Same as ship_prepare t3ThreadId."`
+	ShipDispatched      bool              `json:"shipDispatched" jsonschema_description:"true when a ship state of this branch is not completed and its execute step is in_progress: ship dispatched this run. false without branch input, when the branch has no ship state, and when the ship state is unreadable or holds a status of the wrong type (warnings names the cause)."`
+	Warnings            []string          `json:"warnings,omitempty" jsonschema_description:"Non-fatal problems: an unreadable ship state or a ship status of the wrong type, a T3CODE_THREAD_ID that is set but not valid, or a config value of the wrong type or outside the allowed enum (the built-in default is used instead). Also carries a notice (not a problem) when personal keys were moved from config.toml [execute] to local.toml [executePrefs]."`
 }
 
 // ExecutionReportOut is the read-only end-of-run report returned by the
@@ -565,8 +568,8 @@ func RegisterExecuteStateTools(s *mcpserver.Server) {
 Pass "action" to select an operation. Each action uses a subset of the input fields (unlisted fields are ignored):
 
 - wave-compute: Stateless — parses the plan file at planPath and computes the wave schedule (no state file read/write). Requires planPath. Optional: extraDepsJson (JSON array of {task, dependsOn, reason} merged with each task's explicit "Depends on" field). Returns {route, preWave, waves[{number, tasks[], expectedFiles[], verificationHint}]}.
-- resolve-config: resolves this run's effective auto mode, quality tier, commit-waves setting and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state auto cross-read), quality (--quality), auto (--auto), commitWaves (--commit-waves, "true"|"false"). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), commitWaves (bool; CLI > config execute.commitWaves > default true), highRiskAutoApprove, sources, warnings?}.
-- init: Create execution state. init runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ of the active worktree before the state file is written at all — a materialize failure aborts init with no state file created. A plan with an **OpenSpec-Create:** line and no **OpenSpec-Staging:** or **OpenSpec-Saved:** line, or with an OpenSpec Appendix that starts with [TBD, returns DomainError before any write. A staging folder whose stage.json names another plan returns DomainError, and no file changes. `+materializeReadText("<name>")+` Returns {filePath, prunedOrphans (the files that this call deleted, [] when none), pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, plannedWavesJson (JSON-encoded array of {number, taskIds}, stored as plannedWaves; wave 0 holds the pre-wave tasks; task IDs are JSON strings; display data only, so the waves need not cover every planned task ID; a malformed value, an empty array, a negative or repeated number, an empty taskIds, a task ID given more than once, or a task ID missing from a non-empty plannedTaskIds fails with a DomainError and writes no state), planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s). When planPath is readable, init also stores plannedTasks in the state: one {id, name} for each "### Task N:" heading, in plan order (display data only; verify-completeness still reads plannedTaskIds). The key is absent when planPath is empty or the plan is unreadable. Each state write deletes every older execute-<branch-slug>-*.json file of the branch that is not kept; a failed delete is not listed in prunedOrphans. Kept: a completed run, and a run whose sessionId differs from the sessionId of this call when both are non-empty. GC deletes a kept file later.
+- resolve-config: resolves this run's effective auto mode, quality tier, commit-waves setting and high-risk auto-approval from CLI flags, this branch's ship state, local.toml [executePrefs] (auto, quality, highRiskAutoApprove) and config.toml [execute] (commitWaves). Reads and writes no run state file, but is not side-effect-free: it first moves auto, quality or highRiskAutoApprove from config.toml [execute] to local.toml [executePrefs] (reported in warnings); fails with a data error (message plus suggestion) when that move is not safe. Optional: branch (enables the ship-state cross-read for the pipeline auto flag and for shipDispatched), quality (--quality), auto (--auto), commitWaves (--commit-waves, "true"|"false"). An out-of-enum quality warns and falls through to config, then the auto default, rather than failing. Returns {auto, quality (always present; empty means "ask the user for a tier"), commitWaves (bool; CLI > config execute.commitWaves > default true), highRiskAutoApprove, sources, t3ThreadId?, shipDispatched, warnings?}.
+- init: Create execution state. init runs the same config auto-migration gate as ship_prepare first (migrates and backs up an outdated config, or fails with a /setup pointer if none exists); result may include a "migration" report. When the plan has an **OpenSpec-Staging:** header, first creates and git-adds openspec/changes/<name>/ of the active worktree before the state file is written at all — a materialize failure aborts init with no state file created. A plan with an **OpenSpec-Create:** line and no **OpenSpec-Staging:** or **OpenSpec-Saved:** line, or with an OpenSpec Appendix that starts with [TBD, returns DomainError before any write. A staging folder whose stage.json names another plan returns DomainError, and no file changes. `+materializeReadText("<name>")+` Returns {filePath, prunedOrphans (the files that this call deleted, [] when none), pipelineAuto (true when this branch's ship state has flags.auto=true — reported for diagnostics only; the execute SKILL.md high-risk gate no longer reads it, because resolve-config performs the same ship-state cross-read at Step 0 and folds the result into its effective auto value), openspec? ({change, materialized: "created"|"already"}; present only when the plan staged a change), warnings? (e.g. this branch's ship state exists but is unreadable), migration?}. Requires branch, quality. Optional: totalTasks, plannedTaskIds, plannedWavesJson (JSON-encoded array of {number, taskIds}, stored as plannedWaves; wave 0 holds the pre-wave tasks; task IDs are JSON strings; display data only, so the waves need not cover every planned task ID; a malformed value, an empty array, a negative or repeated number, an empty taskIds, a task ID given more than once, or a task ID missing from a non-empty plannedTaskIds fails with a DomainError and writes no state), planPath, planHash, commitWaves ("true"|"false"; any other value is stored as "true"), sessionId (Claude Code session ID stamped on the state), waveTimeoutSeconds and waveIntervalSeconds (this run's wave deadline and heartbeat cadence; when omitted or 0 they fall back to this branch's ship state flags.executeWaveTimeout/executeWaveInterval, then 1800s/60s). When planPath is readable, init also stores plannedTasks in the state: one {id, name} for each "### Task N:" heading, in plan order (display data only; verify-completeness still reads plannedTaskIds). The key is absent when planPath is empty or the plan is unreadable. Each state write deletes every older execute-<branch-slug>-*.json file of the branch that is not kept; a failed delete is not listed in prunedOrphans. Kept: a completed run, and a run whose sessionId differs from the sessionId of this call when both are non-empty. GC deletes a kept file later. In a T3 Code thread (T3CODE_THREAD_ID of the server process is a valid thread id), init also stamps t3ThreadId on the new state; no other action writes it. Absent outside T3 Code.
 - wave-start: Begin a wave. Returns narration (summary, display with task list + ETA, next). Requires wave. Optional: branch, tasksJson, runId (for fact sheets), detail ("concise"|"full"). If the run recorded a planHash at init, the plan file's current sha256 is compared against it first; a mismatch returns {halt:true, reason:"plan hash mismatch"} instead of narration and does not start the wave. An unreadable/missing plan file does not halt — it proceeds with a warning in the response's "warnings" field. Seeds server-owned dispatch state (dispatchedAt, workerName, batchId/batchIndex, attempt:1) for every valid tasksJson entry that doesn't already have one — a task that already has server state (wave-start called again on resume) is left untouched. Seeding failure is non-fatal and appends to "warnings".
 - wave-done: Complete a wave. Returns narration (summary, display with outcomes, timing, next wave preview + ETA). Records wave duration to TimingsStore. Requires wave. Optional: branch, decisions, status ("completed" default, or "partial"), timedOut (stamps timedOut:true on the wave), detail ("concise"|"full").
 - wave-fail: Fail a wave. Returns narration (summary, display with failure cause). Requires wave. Optional: branch, timedOut, error (failure cause, recorded as an issue and in failedWave), detail ("concise"|"full").
@@ -579,7 +582,7 @@ Pass "action" to select an operation. Each action uses a subset of the input fie
 - task-redispatch: Reopen a failed task for another attempt. Requires taskId. Optional: branch, runId, wave (searches every wave for the task's closed row when omitted). Re-opens the task's wave-manifest row to "in_progress", then deletes and re-seeds the task's server state with a fresh dispatchedAt and attempt+1 — contextFetchedAt, reclaimRequestedAt, and batchId all come back empty, since a redispatch is always solo even if the failed attempt was batched. Refuses with a DomainError (Suggestion names user escalation) at the 2-retry ceiling (attempt already at 3) instead of seeding a 4th attempt.
 - task-context: Return everything a dispatched per-task worker needs in one call — fact-sheet content (embeds the plan-task's Contract/Acceptance Criteria/Files), a live prior-wave summary, verify guidance, and report-back instructions. Requires taskId. Optional: branch, wave (defaults to the highest in_progress wave, else the highest wave), runId (falls back the same way wave-start does, via startedAt/wave). The serialized payload is capped at 1 MiB; oversize content (fact sheet first, then prior-wave summary if still over cap) is truncated with truncated:true rather than erroring. Unknown taskId fails with an actionable error listing the valid IDs for that run. Stamps the task's server-state contextFetchedAt the first time it's called for that task; never overwrites it on later calls.
 - context: Read/write shared context keys. Requires data (JSON object with allowed keys: planSummary, completedTaskIds, filesAdded, filesModified, interfacesCreated, decisionsFromPriorWaves). Optional: branch.
-- read: Return the full execution state blob. Optional: branch. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the run is in flight (some recorded wave isn't "completed", or plannedTaskIds has IDs not yet in context.completedTaskIds), the blob also carries a "resumeBriefing" (resumable, wavesDone, wavesRemaining, gitCrossCheck, gitMismatches, willRedo, willSkip, summary, display, next) — a dry-run preview of what resume-reset would do. A committedSha that no longer checks out as a git ancestor is reported via gitCrossCheck/gitMismatches, never as a read failure.
+- read: Return the full execution state blob. Optional: branch. Also returns runId: the state file name without .json (for example execute-feat-x-20261116T175538Z); dashboard_card takes it as runId. It is not the wave runId that wave-start returns. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. When the run is in flight (some recorded wave isn't "completed", or plannedTaskIds has IDs not yet in context.completedTaskIds), the blob also carries a "resumeBriefing" (resumable, wavesDone, wavesRemaining, gitCrossCheck, gitMismatches, willRedo, willSkip, summary, display, next) — a dry-run preview of what resume-reset would do. A committedSha that no longer checks out as a git ancestor is reported via gitCrossCheck/gitMismatches, never as a read failure.
 - cleanup: Stamp a branch's execution state terminal (runStatus:"completed", runCompletedAt) instead of deleting it — the state file (and its issues[]) survives for later reads (e.g. /harden) until GC's TTL prunes it. Also removes the per-run working directory and ledger directory (working artifacts only, safe to delete) when the state carries a startedAt to derive the runID from; if startedAt is absent, directories are left untouched. Optional: branch.
 - gc: Garbage-collect stale state files. Optional: ttlDays, dryRun. Always sweeps every branch; there is no branch filter.
 - summarize-prior-wave-context: Summarize context from prior waves. Optional: branch, maxFiles, maxDecisions, maxInterfaces, maxTaskIds.
@@ -2249,8 +2252,9 @@ func openspecSourceChangeFromPlan(planContent string) string {
 // high-risk auto-approval from CLI flags, ship state, and config.
 func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	out := ExecuteResolveConfigOut{
-		Sources:  make(map[string]string),
-		Warnings: []string{},
+		Sources:    make(map[string]string),
+		Warnings:   []string{},
+		T3ThreadID: t3.ThreadID(),
 	}
 
 	// Move any stale auto/quality/highRiskAutoApprove keys out of
@@ -2300,39 +2304,54 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 		prefs = sect
 	}
 
-	// Resolve auto: CLI > pipeline > config > default
-	if in.Auto {
-		out.Auto = true
-		out.Sources["auto"] = sourceCLI
-	} else {
-		// Only cross-read ship state if branch is provided
-		if in.Branch != "" {
-			_, pipelineAuto, plWarnings := execPipelineAuto(root, in.Branch)
-			out.Warnings = append(out.Warnings, plWarnings...)
-			if pipelineAuto {
-				out.Auto = true
-				out.Sources["auto"] = sourcePipeline
-			}
-		}
-
-		if !out.Auto {
-			if ca, ok := prefs["auto"].(bool); ok && ca {
-				out.Auto = true
-				out.Sources["auto"] = sourceLocal
-			} else {
-				out.Sources["auto"] = sourceDefault
-			}
-		}
+	// Cross-read the ship state once when a branch is provided. Both the
+	// pipeline auto flag and shipDispatched come from it, and shipDispatched
+	// must not depend on the CLI auto flag.
+	cross := execShipCrossRead(root, in.Branch)
+	out.ShipDispatched = cross.shipDispatched
+	out.Warnings = append(out.Warnings, cross.warnings...)
+	if w := t3.ThreadIDWarning(); w != "" {
+		out.Warnings = append(out.Warnings, w)
 	}
 
-	// Resolve quality: CLI > config > (default if auto) > unset.
-	// An out-of-enum CLI value is non-fatal and does not short-circuit: it
-	// warns and falls through to the same config/default/unset path an absent
-	// flag takes, mirroring the config branch below. Erroring here instead
-	// would reject the legacy A/B/C tiers the execute skill still accepts and
-	// normalizes (SKILL.md "Quality auto-selection"), which no code path
-	// normalizes before this call.
-	cliQuality := in.Quality
+	execResolveAuto(&out, in.Auto, cross.pipelineAuto, prefs)
+	execResolveQuality(&out, in.Quality, prefs)
+	execResolveCommitWaves(&out, in.CommitWaves, execSection)
+	execResolveHighRiskAutoApprove(&out, prefs)
+	return out, nil
+}
+
+// execResolveAuto sets out.Auto and sources.auto: CLI > pipeline > local
+// executePrefs.auto > default.
+func execResolveAuto(out *ExecuteResolveConfigOut, cliAuto, pipelineAuto bool, prefs map[string]any) {
+	switch {
+	case cliAuto:
+		out.Auto = true
+		out.Sources["auto"] = sourceCLI
+	case pipelineAuto:
+		out.Auto = true
+		out.Sources["auto"] = sourcePipeline
+	default:
+		if ca, ok := prefs["auto"].(bool); ok && ca {
+			out.Auto = true
+			out.Sources["auto"] = sourceLocal
+		} else {
+			out.Sources["auto"] = sourceDefault
+		}
+	}
+}
+
+// execResolveQuality sets out.Quality and sources.quality: CLI > local
+// executePrefs.quality > (default when auto) > unset. Call it after
+// execResolveAuto: the default depends on out.Auto.
+//
+// An out-of-enum CLI value is non-fatal and does not short-circuit: it warns
+// and falls through to the same config/default/unset path an absent flag
+// takes, mirroring the config branch below. Erroring here instead would
+// reject the legacy A/B/C tiers the execute skill still accepts and
+// normalizes (SKILL.md "Quality auto-selection"), which no code path
+// normalizes before this call.
+func execResolveQuality(out *ExecuteResolveConfigOut, cliQuality string, prefs map[string]any) {
 	if cliQuality != "" && !sliceContainsStr(validQuality, cliQuality) {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("--quality %q is not in allowed values %v; falling back to config, then the default", cliQuality, validQuality))
 		cliQuality = ""
@@ -2340,36 +2359,38 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	if cliQuality != "" {
 		out.Quality = cliQuality
 		out.Sources["quality"] = sourceCLI
-	} else {
-		if rawQuality, ok := prefs["quality"]; ok {
-			if cq, isString := rawQuality.(string); isString {
-				if sliceContainsStr(validQuality, cq) {
-					out.Quality = cq
-					out.Sources["quality"] = sourceLocal
-				} else {
-					out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.quality %q is not in allowed values %v; using default", cq, validQuality))
-					out.Sources["quality"] = sourceDefault
-				}
+		return
+	}
+	if rawQuality, ok := prefs["quality"]; ok {
+		if cq, isString := rawQuality.(string); isString {
+			if sliceContainsStr(validQuality, cq) {
+				out.Quality = cq
+				out.Sources["quality"] = sourceLocal
 			} else {
-				// Wrong type
-				out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.quality has wrong type %T; expected string; using default", rawQuality))
+				out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.quality %q is not in allowed values %v; using default", cq, validQuality))
 				out.Sources["quality"] = sourceDefault
 			}
-		}
-
-		// Apply default if still empty
-		if out.Quality == "" {
-			if out.Auto {
-				out.Quality = "balanced"
-				out.Sources["quality"] = sourceDefault
-			} else {
-				out.Sources["quality"] = "unset"
-			}
+		} else {
+			// Wrong type
+			out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.quality has wrong type %T; expected string; using default", rawQuality))
+			out.Sources["quality"] = sourceDefault
 		}
 	}
 
-	// Resolve commitWaves: CLI > config (top-level execute.commitWaves) > default true.
-	cliCommitWaves := in.CommitWaves
+	// Apply default if still empty
+	if out.Quality == "" {
+		if out.Auto {
+			out.Quality = "balanced"
+			out.Sources["quality"] = sourceDefault
+		} else {
+			out.Sources["quality"] = "unset"
+		}
+	}
+}
+
+// execResolveCommitWaves sets out.CommitWaves and sources.commitWaves: CLI >
+// config (top-level execute.commitWaves) > default true.
+func execResolveCommitWaves(out *ExecuteResolveConfigOut, cliCommitWaves string, execSection map[string]any) {
 	if cliCommitWaves != "" && cliCommitWaves != "true" && cliCommitWaves != "false" {
 		out.Warnings = append(out.Warnings, fmt.Sprintf(
 			"--commit-waves %q is not \"true\" or \"false\"; falling back to config, then the default", cliCommitWaves))
@@ -2392,23 +2413,25 @@ func execActionResolveConfig(root string, in ExecuteStateIn) (any, error) {
 	default:
 		out.CommitWaves, out.Sources["commitWaves"] = true, sourceDefault
 	}
+}
 
-	// Resolve highRiskAutoApprove: config > default
-	if rawHraa, ok := prefs["highRiskAutoApprove"]; ok {
-		if hraa, isBool := rawHraa.(bool); isBool {
-			out.HighRiskAutoApprove = hraa
-			out.Sources["highRiskAutoApprove"] = sourceLocal
-		} else {
-			out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
-			out.HighRiskAutoApprove = false
-			out.Sources["highRiskAutoApprove"] = sourceDefault
-		}
-	} else {
+// execResolveHighRiskAutoApprove sets out.HighRiskAutoApprove and its source:
+// local executePrefs.highRiskAutoApprove > default false.
+func execResolveHighRiskAutoApprove(out *ExecuteResolveConfigOut, prefs map[string]any) {
+	rawHraa, ok := prefs["highRiskAutoApprove"]
+	if !ok {
 		out.HighRiskAutoApprove = false
 		out.Sources["highRiskAutoApprove"] = sourceDefault
+		return
 	}
-
-	return out, nil
+	if hraa, isBool := rawHraa.(bool); isBool {
+		out.HighRiskAutoApprove = hraa
+		out.Sources["highRiskAutoApprove"] = sourceLocal
+		return
+	}
+	out.Warnings = append(out.Warnings, fmt.Sprintf("local executePrefs.highRiskAutoApprove has wrong type %T; expected bool; using default", rawHraa))
+	out.HighRiskAutoApprove = false
+	out.Sources["highRiskAutoApprove"] = sourceDefault
 }
 
 // execPlannedWave is one entry of the init plannedWavesJson input: a wave
@@ -4952,6 +4975,9 @@ func execActionRead(root, workDir string, in ExecuteStateIn) (any, error) {
 		out[k] = v
 	}
 	out["style"] = chatStyleFor(root)
+	// runId is the state file name without .json. The skill passes it to
+	// dashboard_card for the end card when a context compaction lost it.
+	out["runId"] = state.RunID(st)
 	if execRunInFlight(st.Data) {
 		_, redoTaskIDs := execResumeResetCandidates(st.Data)
 		out["resumeBriefing"] = execBuildResumeBriefing(workDir, st.Data, redoTaskIDs, true)

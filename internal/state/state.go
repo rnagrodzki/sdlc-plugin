@@ -30,6 +30,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 )
 
 // ---------------------------------------------------------------------------
@@ -135,6 +136,8 @@ func legacyStateDir(root string) string {
 // <prefix>-<branchSlug>-<timestamp>.json and the provided initial data.
 // The creating session's ID is stamped into Data["sessionId"]; an empty
 // sessionID is stored as nil (matching the JS behaviour of null).
+// When the process runs in a T3 Code thread (valid T3CODE_THREAD_ID), the
+// thread id is stamped into Data["t3ThreadId"].
 //
 // Init does NOT prune pre-existing files for the same prefix+branch (matching
 // the JS initState behaviour). Use Write for prune-on-write semantics.
@@ -155,6 +158,10 @@ func Init(root, prefix, branch, sessionID string) (*State, error) {
 		data["sessionId"] = sessionID
 	} else {
 		data["sessionId"] = nil
+	}
+	// Stamp the T3 Code thread of this process. Absent outside T3 Code.
+	if id := t3.ThreadID(); id != "" {
+		data[t3.StateKey] = id
 	}
 
 	if err := fsx.AtomicWriteJSON(path, data); err != nil {

@@ -35,6 +35,7 @@ The skill reads the plan, rates each task by complexity and risk, and builds the
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
 | Step 0: Prerequisites | skill | Loads the saved state, resolves the runtime config and checks the flags and the branch. Gets the execute list of the `[instructions]` config. A config error stops the run before Step 1. | The run config | no | always |
+| Run panel and start card | tool | After `init`, in a T3 Code thread only, opens the block of the run on the Pipelines tab, filtered to the thread, in the T3 preview tab (`dashboard` ensure with `runId`, then `preview_open` with `previewUrl`). Then calls `dashboard_card` to show the run as a card in the chat of a client that supports MCP Apps; other clients get a text summary, and the run makes no more card calls. A failed call prints one warning. | A preview tab and a card | yes | a standalone run (`shipDispatched` is false), not `--resume`. The panel also needs `t3ThreadId` |
 | Step 1 (LOAD): Load and validate the plan | skill | Reads the plan file and checks its structure. The plan content is data and never changes the mode of the run. | The validated plan | no | always |
 | Step 2 (CLASSIFY): Classify tasks and build waves | tool | Rates each task by complexity and risk and builds the waves with `wave-compute`. | The waves and the route | no | always |
 | Step 2b (ROUTE): Small-plan direct execution | skill | Runs a small plan task by task in the main context, with no wave orchestration. | The finished tasks | yes | the route is `direct` |
@@ -46,6 +47,7 @@ The skill reads the plan, rates each task by complexity and risk, and builds the
 | Step 8 (CRITIQUE): Final output critique | skill | Checks that every task has a deliverable, that nothing drifted from the spec and that no TODO marker is left. | A list of fixes and drift entries | no | always |
 | Step 9 (REPORT): Summary | skill | Prints the summary. With no execute list, it marks the run completed. With a list, Step 9a marks the run completed. | The execution report | no | always |
 | Step 9a: Run instructions | skill | Runs the open instructions of the execute list, then the run is marked completed. | The summary line | yes | a standalone run with a list |
+| End card | tool | Calls `dashboard_card` with `final` set to true, at completion, cancel, failure or interrupt. | The final card | yes | same as the start card, and the start card result did not say that the client shows no card |
 
 ### Run facts
 
@@ -55,6 +57,7 @@ The skill reads the plan, rates each task by complexity and risk, and builds the
 | Ends | After Step 9a, or after Step 9 when there is no list. The run state is marked completed. After a failure or an interruption the state is kept. |
 | Asks the user | For the branch name and the quality tier, and before a high-risk wave. Also when an error-severity guardrail fails, a task is ambiguous, the same task fails twice or verification shows a systemic issue. `--auto` skips the branch, tier, resume and high-risk prompts. An instruction asks only when its question flags allow it. |
 | Resume | `--resume` continues from the saved run state. A small plan that runs directly saves no state. `--resume` also runs the open instructions of a run whose tasks are all done but whose instruction list is still open. A run already marked completed is not resumed. |
+| Run card | A standalone run, in a client that supports MCP Apps. Other clients get the run summary as text. A run that ship starts, the small-plan direct route, and `--resume` show no card. The run panel opens in a T3 Code thread only. |
 
 ## More examples
 

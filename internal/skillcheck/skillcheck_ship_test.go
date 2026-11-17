@@ -103,6 +103,8 @@ func shipSkillsBuildRegistry(t *testing.T) map[string]bool {
 	tools.RegisterValidateTools(srv)
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterSetupWriteTools(srv)
+	tools.RegisterDashboardTools(srv)
+	tools.RegisterDashboardCardTools(srv)
 	tools.RegisterLearningsTools(srv)
 	tools.RegisterInstructionsTools(srv)
 

@@ -70,6 +70,7 @@ import (
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
@@ -80,6 +81,9 @@ import (
 var sdlcBinPath string
 
 func TestMain(m *testing.M) {
+	// Tests can run inside a T3 Code thread; keep the run-state stamp off.
+	// Unset before the server binary starts so the child process inherits it.
+	os.Unsetenv(t3.EnvThreadID)
 	os.Exit(runTests(m))
 }
 

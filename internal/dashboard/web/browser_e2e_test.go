@@ -30,6 +30,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
@@ -657,6 +658,11 @@ func browserBlock(id string) string {
 // the browser stop when the test ends, and the log of the server shows when
 // the test fails. The caller calls isolateCacheDir before it writes the seeds.
 func browserLaunch(t *testing.T, chrome string, roots []string) (string, *browserPage) {
+	return browserLaunchSize(t, chrome, roots, 1400, 1000)
+}
+
+// browserLaunchSize is browserLaunch with a window size.
+func browserLaunchSize(t *testing.T, chrome string, roots []string, width, height int) (string, *browserPage) {
 	t.Helper()
 	stderrBuf := captureStderr(t)
 	shortTimings(t, browserSnapshotEvery, time.Second)
@@ -700,7 +706,7 @@ func browserLaunch(t *testing.T, chrome string, roots []string) (string, *browse
 		chromedp.ExecPath(chrome),
 		chromedp.NoSandbox,
 		chromedp.UserDataDir(t.TempDir()),
-		chromedp.WindowSize(1400, 1000),
+		chromedp.WindowSize(width, height),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
 	t.Cleanup(cancelAlloc)
@@ -2056,4 +2062,339 @@ func TestBrowserE2E_DetailLoad(t *testing.T) {
 	}
 	page.click("the History tab", "#tab-history")
 	page.wait("the new row in the History panel tab", `document.querySelectorAll(`+browserJSON(histRow(browserLateBranch))+`).length === 1`)
+}
+
+// browserNarrowThread is the T3 thread id of run A of TestBrowserE2E_Narrow.
+const browserNarrowThread = "t3-narrow-a"
+
+// browserNarrowWidth is the window width of TestBrowserE2E_Narrow.
+const browserNarrowWidth = 600
+
+// TestBrowserE2E_Narrow opens the dashboard in a 600 px window. Each of the five
+// tabs must not scroll sideways, and the header controls must stay inside the
+// window. A thread filter in the hash must show run A only.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_Narrow(t *testing.T) {
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "local.toml"))
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+
+	root := t.TempDir()
+	browserSetupSeedA(t, root)
+	now := time.Now().UTC()
+	// Long branch names and many columns make the History table as wide as it gets.
+	browserWriteRuns(t, root, []history.RunRecord{
+		{Timestamp: browserTS(now.Add(-60 * time.Minute)), Skill: "ship", Branch: browserBranch, Outcome: "success", DurationMs: 1200000},
+		{Timestamp: browserTS(now.Add(-50 * time.Minute)), Skill: "commit", Branch: "fix/a-very-long-branch-name-for-the-narrow-window", Outcome: "failure", DurationMs: 30000},
+	})
+	// Run A has the thread, run B has none.
+	t.Setenv(t3.EnvThreadID, browserNarrowThread)
+	shipA := browserSeedShip(t, root, now)
+	t.Setenv(t3.EnvThreadID, "")
+	pathB := browserSeedFailedShip(t, root, now)
+	idA := strings.TrimSuffix(filepath.Base(shipA.st.Path), ".json")
+	idB := strings.TrimSuffix(filepath.Base(pathB), ".json")
+
+	base, page := browserLaunchSize(t, chrome, []string{root}, browserNarrowWidth, 900)
+	page.do("open the dashboard", chromedp.Navigate(base+"/"))
+	page.wait("the first snapshot", `document.getElementById('conn').getAttribute('data-state') === 'snapshot'`)
+	if w := browserMust[int](page, "the window width", `window.innerWidth`); w > 700 {
+		t.Fatalf("window.innerWidth = %d; want a narrow window of about %d", w, browserNarrowWidth)
+	}
+
+	// Each tab: the page does not scroll sideways.
+	panelContent := map[string]string{
+		"pipelines": `#feed > [data-id]`,
+		"activity":  `#panel-activity .list-panel`,
+		"history":   `#panel-history .hist tbody tr`,
+		"preplans":  `#panel-preplans > *`,
+		"setup":     browserSetupForm,
+	}
+	for _, tab := range []string{"pipelines", "activity", "history", "preplans", "setup"} {
+		page.click("the "+tab+" tab", "#tab-"+tab)
+		page.wait("the "+tab+" tab to be selected", `document.getElementById('tab-`+tab+`').getAttribute('aria-selected') === 'true'`)
+		page.wait("content in the "+tab+" tab", `document.querySelectorAll(`+browserJSON(panelContent[tab])+`).length > 0`)
+		over := browserMust[string](page, "the width of the "+tab+" tab", `(function () {
+			var de = document.documentElement;
+			return de.scrollWidth <= window.innerWidth ? '' : 'scrollWidth ' + de.scrollWidth + ' > innerWidth ' + window.innerWidth;
+		})()`)
+		if over != "" {
+			t.Errorf("the %s tab scrolls sideways at %d px: %s", tab, browserNarrowWidth, over)
+		}
+	}
+
+	// The header controls stay inside the window and have a size.
+	for _, sel := range []string{"#tab-pipelines", "#tab-activity", "#tab-history", "#tab-preplans", "#tab-setup", ".conn", "#clear-btn", "#stop-btn"} {
+		bad := browserMust[string](page, "the box of "+sel, `(function () {
+			var n = document.querySelector(`+browserJSON(sel)+`);
+			if (!n) return 'missing';
+			var r = n.getBoundingClientRect();
+			if (r.height <= 0) return 'height ' + r.height;
+			return r.right <= window.innerWidth ? '' : 'right ' + r.right + ' > innerWidth ' + window.innerWidth;
+		})()`)
+		if bad != "" {
+			t.Errorf("%s at %d px: %s", sel, browserNarrowWidth, bad)
+		}
+	}
+
+	// The thread filter shows run A only.
+	page.do("open the thread filter", chromedp.Navigate(base+"/#pipelines?thread="+browserNarrowThread))
+	page.wait("run A", `document.querySelectorAll(`+browserJSON(browserBlock(idA))+`).length === 1`)
+	page.wait("the thread filter to hide run B", `document.querySelectorAll(`+browserJSON(browserBlock(idB))+`).length === 0`)
+}
+
+// browserStateThread returns the t3ThreadId of a state file, or "" when it has none.
+func browserStateThread(t *testing.T, path string) string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the state file %s: %v", path, err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse the state file %s: %v", path, err)
+	}
+	id, _ := doc["t3ThreadId"].(string)
+	return id
+}
+
+// browserVerticalWidth is the window width of TestBrowserE2E_Vertical: the width of
+// the T3 Code right panel.
+const browserVerticalWidth = 400
+
+// browserOverflowJS returns an empty string when no visible element of the active tab ends right
+// of the window. The tab bar sits outside .stage and scrolls by design. An element
+// inside a box that clips or scrolls sideways is skipped, because the box shows it.
+const browserOverflowJS = `(function () {
+	var stage = document.querySelector('.stage');
+	var nodes = stage.querySelectorAll('*');
+	for (var i = 0; i < nodes.length; i++) {
+		var n = nodes[i];
+		var r = n.getBoundingClientRect();
+		if (r.width <= 0 || r.height <= 0 || r.right <= window.innerWidth + 0.5) continue;
+		var clipped = false;
+		for (var p = n.parentElement; p && p !== stage; p = p.parentElement) {
+			var ox = getComputedStyle(p).overflowX;
+			if (ox === 'auto' || ox === 'scroll' || ox === 'hidden') { clipped = true; break; }
+		}
+		if (clipped) continue;
+		return n.tagName.toLowerCase() + '.' + n.className + ' right ' + r.right + ' > innerWidth ' + window.innerWidth;
+	}
+	return '';
+})()`
+
+// browserCardsJS returns an empty string when each row of the table in sel is a card: each cell is
+// a block, each cell with a data-label shows that text before it, and each cell is on
+// its own line. It returns 'no rows' when the table has no row.
+const browserCardsJS = `(function (sel) {
+	var rows = document.querySelectorAll(sel + ' tbody tr');
+	if (rows.length === 0) return 'no rows';
+	for (var i = 0; i < rows.length; i++) {
+		var cells = rows[i].children;
+		var bottom = -Infinity;
+		for (var j = 0; j < cells.length; j++) {
+			var td = cells[j];
+			var cs = getComputedStyle(td);
+			if (cs.display !== 'block') return 'row ' + i + ' cell ' + j + ' display ' + cs.display;
+			var label = td.getAttribute('data-label');
+			var text = td.className === 'h-pick' || td.className === 'pp-act' ? null : label;
+			if (text !== null && !label) return 'row ' + i + ' cell ' + j + ' has no data-label';
+			if (label && getComputedStyle(td, '::before').content !== '"' + label + '"') {
+				return 'row ' + i + ' cell ' + j + ' before text ' + getComputedStyle(td, '::before').content + ' want ' + label;
+			}
+			var box = td.getBoundingClientRect();
+			if (box.top < bottom - 1) return 'row ' + i + ' cell ' + j + ' starts at ' + box.top + ' above the cell before, which ends at ' + bottom;
+			bottom = box.bottom;
+		}
+	}
+	return '';
+})`
+
+// TestBrowserE2E_Vertical opens the dashboard in a 400 px window, the width of the
+// T3 Code right panel. Each tab and each station of run A must not reach right of
+// the window. The History rows must be cards. The Setup labels must sit above their
+// inputs. The hash of run A with its thread must show run A only.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_Vertical(t *testing.T) {
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "local.toml"))
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+
+	root := t.TempDir()
+	browserSetupSeedA(t, root)
+	now := time.Now().UTC()
+	browserWriteRuns(t, root, []history.RunRecord{
+		{Timestamp: browserTS(now.Add(-60 * time.Minute)), Skill: "ship", Branch: browserBranch, Outcome: "success", DurationMs: 1200000},
+		{Timestamp: browserTS(now.Add(-50 * time.Minute)), Skill: "commit", Branch: "fix/a-very-long-branch-name-for-the-narrow-window", Outcome: "failure", DurationMs: 30000},
+	})
+
+	// Call 1: run A has the thread.
+	t.Setenv(t3.EnvThreadID, browserNarrowThread)
+	shipA := browserSeedShip(t, root, now)
+	if got := browserStateThread(t, shipA.st.Path); got != browserNarrowThread {
+		t.Fatalf("t3ThreadId in the state file of run A = %q; want %q", got, browserNarrowThread)
+	}
+	// Call 2: run B has none.
+	t.Setenv(t3.EnvThreadID, "")
+	pathB := browserSeedFailedShip(t, root, now)
+	if got := browserStateThread(t, pathB); got != "" {
+		t.Fatalf("t3ThreadId in the state file of run B = %q; want none", got)
+	}
+	idA := strings.TrimSuffix(filepath.Base(shipA.st.Path), ".json")
+	idB := strings.TrimSuffix(filepath.Base(pathB), ".json")
+
+	// Call 3.
+	base, page := browserLaunchSize(t, chrome, []string{root}, browserVerticalWidth, 900)
+	// Chrome does not open a window narrower than 500 px, so the viewport is set.
+	page.do("set the viewport to the panel size", chromedp.EmulateViewport(browserVerticalWidth, 900))
+	page.do("open the dashboard", chromedp.Navigate(base+"/"))
+	page.wait("the first snapshot", `document.getElementById('conn').getAttribute('data-state') === 'snapshot'`)
+	if w := browserMust[int](page, "the window width", `window.innerWidth`); w != browserVerticalWidth {
+		t.Fatalf("window.innerWidth = %d; want %d", w, browserVerticalWidth)
+	}
+
+	// Call 4: the hash of run A with its thread shows run A and hides run B.
+	page.do("leave the dashboard", chromedp.Navigate("about:blank"))
+	page.do("open the hash of run A with its thread", chromedp.Navigate(base+"/#"+idA+"?thread="+browserNarrowThread))
+	page.wait("run A", `document.querySelectorAll(`+browserJSON(browserBlock(idA))+`).length === 1`)
+	page.wait("the thread filter to hide run B", `document.querySelectorAll(`+browserJSON(browserBlock(idB))+`).length === 0`)
+	page.wait("the block of run A in view", `(function () {
+		var block = document.querySelector(`+browserJSON(browserBlock(idA))+`);
+		var stage = document.querySelector('.stage').getBoundingClientRect();
+		var box = block.getBoundingClientRect();
+		return box.height > 0 && box.top < stage.bottom && box.bottom > stage.top;
+	})()`)
+
+	// Call 5: each station of run A stays inside the window.
+	stations := page.count(browserBlock(idA) + " .station")
+	if stations == 0 {
+		t.Fatalf("stations in the block of run A = 0; want at least 1")
+	}
+	for n := range stations {
+		t.Run(fmt.Sprintf("station %d", n), func(t *testing.T) {
+			page.do("open the hash of the station", chromedp.Navigate("about:blank"))
+			page.do("open the station", chromedp.Navigate(base+"/#"+idA+"/"+strconv.Itoa(n)))
+			page.wait("the station to be selected", `document.querySelectorAll(`+browserJSON(browserBlock(idA)+` .station.selected`)+`).length === 1`)
+			if over := browserMust[string](page, "the right edge of the station", browserOverflowJS); over != "" {
+				t.Errorf("station %d at %d px: %s", n, browserVerticalWidth, over)
+			}
+		})
+	}
+
+	// Call 6: each tab does not scroll sideways, and the History rows are cards.
+	panelContent := map[string]string{
+		"pipelines": `#feed > [data-id]`,
+		"activity":  `#panel-activity .list-panel`,
+		"history":   `#panel-history .hist tbody tr`,
+		"preplans":  `#panel-preplans > *`,
+		"setup":     browserSetupForm,
+	}
+	for _, tab := range []string{"pipelines", "activity", "history", "preplans", "setup"} {
+		t.Run("tab "+tab, func(t *testing.T) {
+			page.click("the "+tab+" tab", "#tab-"+tab)
+			page.wait("the "+tab+" tab to be selected", `document.getElementById('tab-`+tab+`').getAttribute('aria-selected') === 'true'`)
+			page.wait("content in the "+tab+" tab", `document.querySelectorAll(`+browserJSON(panelContent[tab])+`).length > 0`)
+			over := browserMust[string](page, "the width of the "+tab+" tab", `(function () {
+				var de = document.documentElement;
+				return de.scrollWidth <= window.innerWidth ? '' : 'scrollWidth ' + de.scrollWidth + ' > innerWidth ' + window.innerWidth;
+			})()`)
+			if over != "" {
+				t.Errorf("the %s tab scrolls sideways at %d px: %s", tab, browserVerticalWidth, over)
+			}
+			if over := browserMust[string](page, "the right edges of the "+tab+" tab", browserOverflowJS); over != "" {
+				t.Errorf("the %s tab at %d px: %s", tab, browserVerticalWidth, over)
+			}
+			switch tab {
+			case "history":
+				if bad := browserMust[string](page, "the History cards", browserCardsJS+`('#panel-history .hist')`); bad != "" {
+					t.Errorf("History rows at %d px are not cards: %s", browserVerticalWidth, bad)
+				}
+			case "preplans":
+				// The seed may have no Preplans row. A row, if any, is a card too.
+				if bad := browserMust[string](page, "the Preplans cards", browserCardsJS+`('#panel-preplans .hist.pp')`); bad != "" && bad != "no rows" {
+					t.Errorf("Preplans rows at %d px are not cards: %s", browserVerticalWidth, bad)
+				}
+			case "setup":
+				// Each field label is above its input.
+				bad := browserMust[string](page, "the Setup label and input", `(function () {
+					var label = document.querySelector('`+browserSetupField+`-label');
+					var input = document.querySelector('`+browserSetupField+`');
+					if (!label || !input) return 'missing label or input';
+					var l = label.getBoundingClientRect();
+					var i = input.getBoundingClientRect();
+					return l.bottom <= i.top + 1 ? '' : 'label bottom ' + l.bottom + ' > input top ' + i.top;
+				})()`)
+				if bad != "" {
+					t.Errorf("Setup field at %d px: %s", browserVerticalWidth, bad)
+				}
+			}
+		})
+	}
+}
+
+// TestBrowserE2E_VerticalRules reads the CSS files and checks that the 640 px block
+// holds each rule of the vertical layout. The seed of the browser test does not draw
+// every row kind, so this check covers the rows that the browser does not reach.
+// Each row of the table is a subtest.
+func TestBrowserE2E_VerticalRules(t *testing.T) {
+	block := func(t *testing.T, file string) string {
+		t.Helper()
+		raw, err := os.ReadFile(filepath.Join("static", file))
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		css := string(raw)
+		const open = "@media (max-width: 640px) {"
+		start := strings.Index(css, open)
+		if start < 0 {
+			t.Fatalf("%s has no %q block", file, open)
+		}
+		depth := 0
+		for i := start + len(open) - 1; i < len(css); i++ {
+			switch css[i] {
+			case '{':
+				depth++
+			case '}':
+				depth--
+				if depth == 0 {
+					return strings.Join(strings.Fields(css[start+len(open):i]), " ")
+				}
+			}
+		}
+		t.Fatalf("%s: the %q block has no closing brace", file, open)
+		return ""
+	}
+
+	tests := []struct {
+		name string
+		file string
+		rule string
+	}{
+		{"dim-cols columns", "app.css", ".dim-cols { grid-template-columns: 8px minmax(0, 1fr); }"},
+		{"dim-cols third cell on a new row", "app.css", ".dim-cols > :nth-child(n+3) { grid-column: 2; }"},
+		{"round-row", "app.css", ".round-row { grid-template-columns: minmax(0, 1fr); }"},
+		{"fix-row", "app.css", ".fix-row { grid-template-columns: 8px minmax(0, 1fr); }"},
+		{"timeline-row", "app.css", ".timeline-row { grid-template-columns: minmax(0, 1fr); }"},
+		{"hd-edit", "app.css", ".hd-edit { grid-template-columns: minmax(0, 1fr); }"},
+		{"hd-funnel-row", "app.css", ".hd-funnel-row { grid-template-columns: minmax(0, 1fr) 28px; }"},
+		{"hist blocks (History and Preplans, the same class)", "app.css", ".hist, .hist tbody, .hist tr, .hist td { display: block; }"},
+		{"hist head hidden", "app.css", ".hist thead { display: none; }"},
+		{"hist card row", "app.css", ".hist tr { padding: 10px 0; border-bottom: 1px solid rgba(148,178,196,0.08); }"},
+		{"hist card cell", "app.css", ".hist td { padding: 2px 0; }"},
+		{"hist data-label", "app.css", ".hist td::before { content: attr(data-label); display: inline-block; min-width: 72px; color: var(--rail); }"},
+		{"pipe-head wraps", "app.css", ".pipe-head { flex-wrap: wrap; row-gap: 6px; }"},
+		{"pipe-side on its own row", "app.css", ".pipe-side { flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; row-gap: 6px; }"},
+		{"setup-bar pulls out by the stage padding", "setup.css", ".setup-bar { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }"},
+		{"setup-search and number input", "setup.css", `.setup-search, input.setup-input[type="number"] { width: 100%; }`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := block(t, tc.file)
+			if !strings.Contains(got, tc.rule) {
+				t.Errorf("the 640 px block of %s lacks the rule\n  %s\nblock: %s", tc.file, tc.rule, got)
+			}
+		})
+	}
 }

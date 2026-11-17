@@ -3,7 +3,9 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -34,13 +37,20 @@ var dashboardDefaultDeps = dashboard.DefaultDeps
 // DashboardIn is the dashboard tool's input.
 type DashboardIn struct {
 	Action string `json:"action" jsonschema:"enum=ensure,enum=status,enum=stop" jsonschema_description:"Plain text, one of ensure, status, stop. ensure: start the dashboard server if it is not active (or start it again after a version or port change) and return its address. status: report it. stop: end it. Example: ensure"`
-	Open   bool   `json:"open,omitempty" jsonschema_description:"Plain JSON bool, for action ensure only. true opens the address in the default browser. Example: true"`
+	Open   bool   `json:"open,omitempty" jsonschema_description:"Plain JSON bool, for action ensure only. true opens the address in the default browser. In a T3 Code thread (T3CODE_THREAD_ID set) it opens no browser and returns previewUrl for the T3 preview tab. Example: true"`
 	Tab    string `json:"tab,omitempty" jsonschema:"enum=pipelines,enum=activity,enum=history,enum=preplans,enum=setup" jsonschema_description:"Plain text, for action ensure only, one of pipelines, activity, history, preplans, setup. Names the tab of the page. With open true the browser opens that tab. Without open the next field names the address of that tab. The url field never changes. A tab with action status or stop is an error. Example: setup"`
+	RunID  string `json:"runId,omitempty" jsonschema_description:"Plain text, for action ensure only: a ship, execute or plan run id (the state file name without .json): ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ -. The opened address goes to the block of that run, <url>#<runId>. In a T3 Code thread, previewUrl is <url>#<runId>?thread=<id>. Only the form is checked: the run need not exist, and the page then shows no block. Not allowed with tab. Omitted: the address is the page or the tab. Example: ship-feat-x-20261116T175538Z"`
 }
+
+// runIDRe is t3.RunIDPattern compiled once.
+var runIDRe = regexp.MustCompile(t3.RunIDPattern)
 
 // dashboardActions lists the actions dashboardRun handles. It must equal the
 // enum tag of DashboardIn.Action (TestDashboardInEnumsMatchLists).
-var dashboardActions = []string{"ensure", "status", "stop"}
+var dashboardActions = []string{dashboardActionEnsure, "status", "stop"}
+
+// dashboardActionEnsure is the only action that takes tab and runId.
+const dashboardActionEnsure = "ensure"
 
 // dashboardTabs lists the tab names the dashboard page accepts after the "#"
 // of its address, in page order. It must equal TAB_NAMES in
@@ -58,7 +68,8 @@ type DashboardOut struct {
 	Port    int      `json:"port"`
 	Version string   `json:"version"`
 	Repos   []string `json:"repos"`
-	Next    string   `json:"next"`
+	PreviewURL string `json:"previewUrl,omitempty" jsonschema_description:"ensure in a T3 Code thread with open true only, for the T3 preview_open tool: <url>#<runId>?thread=<id> when runId is set, else <url>#<tab>?thread=<id> (tab pipelines when tab is omitted). Absent otherwise."`
+	Next       string `json:"next"`
 }
 
 // ---------------------------------------------------------------------------
@@ -97,6 +108,9 @@ func dashboardRun(d dashboard.Deps, root string, in DashboardIn) (DashboardOut, 
 			Suggestion: `Remove tab, or call dashboard with action="ensure".`,
 		}
 	}
+	if err := dashboardCheckRunID(in); err != nil {
+		return DashboardOut{}, err
+	}
 	switch in.Action {
 	case "ensure":
 		if in.Tab != "" && !slices.Contains(dashboardTabs, in.Tab) {
@@ -105,7 +119,7 @@ func dashboardRun(d dashboard.Deps, root string, in DashboardIn) (DashboardOut, 
 				Suggestion: "Pass one of the listed tab names, or leave tab empty.",
 			}
 		}
-		return dashboardEnsure(d, root, in.Open, in.Tab)
+		return dashboardEnsure(d, root, in.Open, in.Tab, in.RunID)
 	case "status":
 		result, err := dashboard.Status(d)
 		if err != nil {
@@ -126,13 +140,56 @@ func dashboardRun(d dashboard.Deps, root string, in DashboardIn) (DashboardOut, 
 	}
 }
 
+// dashboardCheckRunID validates the runId input: it is for action ensure
+// only, never with tab, and it must match t3.RunIDPattern.
+func dashboardCheckRunID(in DashboardIn) error {
+	if in.RunID == "" {
+		return nil
+	}
+	if slices.Contains(dashboardActions, in.Action) && in.Action != dashboardActionEnsure {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("dashboard: runId is for action %s only, got action %q", dashboardActionEnsure, in.Action),
+			Suggestion: fmt.Sprintf(`Remove runId, or call dashboard with action=%q.`, dashboardActionEnsure),
+		}
+	}
+	if in.Tab != "" {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("dashboard: runId and tab cannot be used together, got tab %q", in.Tab),
+			Suggestion: "Pass runId to open one run, or tab to open a tab.",
+		}
+	}
+	if !runIDRe.MatchString(in.RunID) {
+		return &mcpserver.DomainError{
+			Msg:        fmt.Sprintf("dashboard: runId %s is not a run id: ship-, execute- or plan-, then 1 to %d characters of A-Z a-z 0-9 . _ - (got %d characters after the prefix)", in.RunID, t3.MaxRunSlugLen, runIDSlugLen(in.RunID)),
+			Suggestion: "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z.",
+		}
+	}
+	return nil
+}
+
+// runIDSlugLen returns the byte length of runID after its prefix from
+// archiveStatePrefixes (ship-, execute- or plan-), or of the whole runID when
+// it has none of them. The runId errors of dashboard and dashboard_card use
+// it.
+func runIDSlugLen(runID string) int {
+	for _, prefix := range archiveStatePrefixes {
+		if rest, ok := strings.CutPrefix(runID, prefix); ok {
+			return len(rest)
+		}
+	}
+	return len(runID)
+}
+
 // dashboardEnsure resolves [dashboard] settings at root, then ensures a
 // server of this version listens on the configured port. A settings error
 // stops here — Ensure is never called, so no server starts on a bad config.
 // A non-empty tab (already validated) selects the page tab through the "#"
 // suffix of the address that is opened or named in Next; the result URL
-// never carries the suffix.
-func dashboardEnsure(d dashboard.Deps, root string, open bool, tab string) (DashboardOut, error) {
+// never carries the suffix. A non-empty runID (already validated, never with
+// tab) points the address at the block of that run. In a T3 Code thread, with
+// open true, no browser opens and PreviewURL carries the address for the
+// T3 preview tab.
+func dashboardEnsure(d dashboard.Deps, root string, open bool, tab, runID string) (DashboardOut, error) {
 	settings, err := dashboard.ReadSettings(root)
 	if err != nil {
 		// ReadSettings' own errors already satisfy "carries the settings
@@ -165,8 +222,25 @@ func dashboardEnsure(d dashboard.Deps, root string, open bool, tab string) (Dash
 	if tab != "" {
 		target += "#" + tab
 	}
+	if runID != "" {
+		target += "#" + runID // block of the run on the Pipelines tab
+	}
 	next := fmt.Sprintf("Open %s in a browser to view the dashboard.", target)
-	if open {
+	thread := t3.ThreadID()
+	var preview string
+	if open && thread != "" {
+		// In a T3 Code thread the skill opens a T3 preview tab, not the browser.
+		if runID != "" {
+			preview = target + "?thread=" + url.QueryEscape(thread)
+		} else {
+			t := tab
+			if t == "" {
+				t = dashboardTabs[0]
+			}
+			preview = result.URL + "#" + t + "?thread=" + url.QueryEscape(thread)
+		}
+		next = fmt.Sprintf("T3 Code thread detected. Call mcp__t3-code__preview_open with url %s. If that call fails, print %s and continue.", preview, preview)
+	} else if open {
 		if openErr := dashboardOpenBrowser(target); openErr != nil {
 			// Opening the browser is a convenience; it never fails the tool
 			// call itself, but the caller is told it did not happen.
@@ -175,7 +249,12 @@ func dashboardEnsure(d dashboard.Deps, root string, open bool, tab string) (Dash
 			next = fmt.Sprintf("Opened %s in the default browser.", target)
 		}
 	}
-	return dashboardOut(result, next)
+	out, err := dashboardOut(result, next)
+	if err != nil {
+		return DashboardOut{}, err
+	}
+	out.PreviewURL = preview
+	return out, nil
 }
 
 // dashboardStatusNext returns the Next guidance for action="status".
@@ -250,7 +329,7 @@ func dashboardSummary(result dashboard.Result, repos []string) string {
 
 // dashboardToolDescription is the description of the dashboard tool. The
 // paths of the data dir and the user file are built from their constants.
-var dashboardToolDescription = "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of " + strings.Join(dashboardTabs, ", ") + "; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: " +
+var dashboardToolDescription = "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of " + strings.Join(dashboardTabs, ", ") + "; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. In a T3 Code thread (T3CODE_THREAD_ID set), ensure with open true opens no browser and returns previewUrl for a T3 preview tab. Optional runId (ensure only, not with tab) points the address at the block of one run; only its form is checked, not that the run exists. A bad runId, or runId with tab, status or stop, returns DomainError. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: " +
 	"archive a finished run (moves its files to " + paths.DataDir + "/run-archive/ and deletes its working files; the moved files stay there), " +
 	"clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* folders under .sdlc-v2/scratch/, and empties the server log), " +
 	"delete a preplan topic file (" + paths.DataDir + "/preplan/<slug>.md; no recovery), " +

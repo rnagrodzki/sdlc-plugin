@@ -14,6 +14,10 @@ type Ctx struct {
 	SessionID string
 	Quiet     bool // Reserved for future use; defaults to false.
 	Warnings  *Dedup
+	// ClientExtensions is the extensions map that the client announced in
+	// its initialize request (capabilities.extensions). Nil when the client
+	// announced none or the session has no initialize params.
+	ClientExtensions map[string]any
 }
 
 // Annotations is the full MCP annotation set for a tool. Every registered
@@ -104,6 +108,11 @@ func actionEnum(schema *jsonschema.Schema) []string {
 // arrive as zero values, so a handler that treats a zero value as meaningful
 // must reject it itself -- see shipStateGC's detail.dryRun type check.
 func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func(ctx Ctx, in TIn) (TOut, error)) {
+	register(s, name, desc, a, nil, h)
+}
+
+// register is the shared body of Register and RegisterUI. ui nil gives a text-only tool.
+func register[TIn, TOut any](s *Server, name, desc string, a Annotations, ui *UIResource, h func(ctx Ctx, in TIn) (TOut, error)) {
 	inSchema, err := schemaFor[TIn]()
 	if err != nil {
 		panic(fmt.Sprintf("mcpserver: register %q: input schema: %v", name, err))
@@ -116,6 +125,9 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 	}
 
 	a.apply(tool)
+	if ui != nil {
+		tool.Meta = mcp.Meta{"ui": map[string]any{"resourceUri": ui.URI}}
+	}
 	s.recordTool(name, actionEnum(inSchema))
 
 	handler := func(_ context.Context, req *mcp.CallToolRequest) (result *mcp.CallToolResult, _ error) {
@@ -124,13 +136,18 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 
 		// Build Ctx.
 		sessionID := ""
+		var extensions map[string]any
 		if req.Session != nil {
 			sessionID = req.Session.ID()
+			if p := req.Session.InitializeParams(); p != nil && p.Capabilities != nil {
+				extensions = p.Capabilities.Extensions
+			}
 		}
 		tCtx := Ctx{
-			SessionID: sessionID,
-			Quiet:     false,
-			Warnings:  warnings,
+			SessionID:        sessionID,
+			Quiet:            false,
+			Warnings:         warnings,
+			ClientExtensions: extensions,
 		}
 
 		// Panic recovery -- convert to a rendered "infra" error result.
@@ -168,10 +185,14 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 			}, nil
 		}
 
-		return &mcp.CallToolResult{
+		res := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: renderOK(name, out)}},
 			IsError: false,
-		}, nil
+		}
+		if ui != nil {
+			res.StructuredContent = out
+		}
+		return res, nil
 	}
 
 	s.mcp.AddTool(tool, handler)

@@ -17,6 +17,7 @@
 
   var EMPTY_TEXTS = {
     'none-in-scope': 'No pipelines for the selected repos.',
+    'no-thread-run': 'No run of this thread yet.',
     'no-deferred': 'No open deferred items.',
     'no-learnings': 'No learnings today.',
     'no-history': 'No finished runs for the selected repos.',
@@ -50,6 +51,13 @@
       if (children[i]) parent.appendChild(children[i]);
     }
     return parent;
+  }
+
+  // Sets data-label on a table cell and returns the cell. Below 640 px the table rows
+  // are cards, and the CSS shows the label before the cell text.
+  function labelled(node, text) {
+    if (text) node.setAttribute('data-label', text);
+    return node;
   }
 
   // 'in_progress' reads as 'in progress' in an accessible name.
@@ -296,9 +304,11 @@
    * @param {object} view window.sdlcView
    * @param {Array<{root: string, name: string, count: number, hasFail: boolean}>} chips view.repoChips output
    * @param {Set<string>} scope selected repo roots; empty means every repo
-   * @returns {Array<Element>} buttons; data-root is '' for `All`
+   * @param {string|null} [thread] the thread filter; a set value adds the thread chip at the end
+   * @returns {Array<Element>} buttons; data-root is '' for `All`. The thread chip is span.thread-filter
+   *   with the label `Thread <first 8 characters>` and button[data-thread-clear]
    */
-  function filterChips(doc, view, chips, scope) {
+  function filterChips(doc, view, chips, scope, thread) {
     var list = chips || [];
     var none = !scope || scope.size === 0;
     var total = 0;
@@ -324,7 +334,26 @@
       );
       out.push(button);
     }
+    if (thread) out.push(threadChip(doc, view, thread));
     return out;
+  }
+
+  /**
+   * The thread filter chip: the label and a clear button. app.js sets the
+   * hash to '#pipelines' when the button is clicked.
+   * @param {Document} doc
+   * @param {object} view window.sdlcView
+   * @param {string} thread the full thread id
+   * @returns {Element} span.thread-filter
+   */
+  function threadChip(doc, view, thread) {
+    var chip = el(doc, 'span', 'thread-filter', null);
+    chip.setAttribute('title', 'Thread ' + thread + '. The filter applies to the Pipelines tab only.');
+    var clear = el(doc, 'button', 'thread-clear', '×');
+    clear.setAttribute('type', 'button');
+    clear.setAttribute('data-thread-clear', '');
+    clear.setAttribute('aria-label', 'Clear the thread filter');
+    return append(chip, [el(doc, 'span', 'thread-label', 'Thread ' + view.threadShort(thread)), clear]);
   }
 
   // Pipeline statuses whose row can be archived. A running row cannot.
@@ -400,13 +429,14 @@
     append(fold, [chev, el(doc, 'span', 'fold-label', 'details'), el(doc, 'span', 'fold-count', tiles)]);
     side.appendChild(fold);
 
-    return append(head, [
-      lamp,
-      el(doc, 'span', 'pipe-kind', view.kindLabel(pipeline.kind)),
-      branch,
-      pipelineDuration(doc, view, pipeline, now),
-      side,
-    ]);
+    var parts = [lamp, el(doc, 'span', 'pipe-kind', view.kindLabel(pipeline.kind)), branch, pipelineDuration(doc, view, pipeline, now)];
+    if (pipeline.t3ThreadId) {
+      var thread = el(doc, 'span', 'pipe-thread', view.threadShort(pipeline.t3ThreadId));
+      thread.setAttribute('title', pipeline.t3ThreadId);
+      parts.push(thread);
+    }
+    parts.push(side);
+    return append(head, parts);
   }
 
   /**
@@ -1890,19 +1920,22 @@
       box.setAttribute('data-hist-pick', key);
       box.setAttribute('aria-label', 'Select ' + run.kind + ' ' + run.branch + ', ' + (run.endedAt || ''));
       box.checked = !!picked[key];
-      body.appendChild(
-        append(el(doc, 'tr', box.checked ? 'picked' : ''), [
-          append(el(doc, 'td', 'h-pick'), [box]),
-          append(el(doc, 'td', ''), [outcomeTag]),
-          el(doc, 'td', 'h-kind', run.kind),
-          el(doc, 'td', 'h-branch', run.branch),
-          repoCell,
-          when,
-          planCell,
-          historyTime(doc, view, cells.shipMs),
-          totalCell,
-        ])
-      );
+      // The first cell is the checkbox and has no label. The others follow HISTORY_COLUMNS.
+      var tds = [
+        append(el(doc, 'td', 'h-pick'), [box]),
+        append(el(doc, 'td', ''), [outcomeTag]),
+        el(doc, 'td', 'h-kind', run.kind),
+        el(doc, 'td', 'h-branch', run.branch),
+        repoCell,
+        when,
+        planCell,
+        historyTime(doc, view, cells.shipMs),
+        totalCell,
+      ];
+      HISTORY_COLUMNS.forEach(function (name, i) {
+        labelled(tds[i + 1], name);
+      });
+      body.appendChild(append(el(doc, 'tr', box.checked ? 'picked' : ''), tds));
     });
     var table = append(el(doc, 'table', 'hist'), [append(el(doc, 'thead', ''), [headRow]), body]);
     return append(panel, [table]);
@@ -2280,16 +2313,19 @@
       // historyTime shows '—' for null. positiveMs turns the unknown value 0 into null.
       var duration = historyTime(doc, view, view.positiveMs(item.durationMs));
       duration.setAttribute('title', 'Time from the start of the preplan to its last change');
-      body.appendChild(
-        append(el(doc, 'tr', ''), [
-          append(el(doc, 'td', ''), [tag]),
-          topic,
-          repoCell,
-          when,
-          duration,
-          append(el(doc, 'td', 'pp-act'), [remove]),
-        ])
-      );
+      // The cells follow PREPLAN_COLUMNS. The last column has no name and no label.
+      var ppCells = [
+        append(el(doc, 'td', ''), [tag]),
+        topic,
+        repoCell,
+        when,
+        duration,
+        append(el(doc, 'td', 'pp-act'), [remove]),
+      ];
+      PREPLAN_COLUMNS.forEach(function (name, i) {
+        labelled(ppCells[i], name);
+      });
+      body.appendChild(append(el(doc, 'tr', ''), ppCells));
     });
     var table = append(el(doc, 'table', 'hist pp'), [append(el(doc, 'thead', ''), [headRow]), body]);
     return append(panel, [table]);
@@ -2326,7 +2362,7 @@
   /**
    * One empty-state line.
    * @param {Document} doc
-   * @param {string} kind no-pipelines | none-in-scope | repo-error | repo-warning | no-deferred |
+   * @param {string} kind no-pipelines | none-in-scope | no-thread-run | repo-error | repo-warning | no-deferred |
    *   no-deferred-priority | no-learnings | no-history | no-history-outcome | no-preplans | no-preplans-status |
    *   no-preplans-activity
    * @param {string|{name: string, error?: string, warning?: string}} [detail] the text for no-pipelines

@@ -20,6 +20,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 )
 
 // ---------------------------------------------------------------------------
@@ -817,7 +818,7 @@ func TestDashboardEnsureUsesMainWorktreeRoot(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestDashboardToolDescriptionExact(t *testing.T) {
-	want := "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of pipelines, activity, history, preplans, setup; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: archive a finished run (moves its files to .sdlc-v2/run-archive/ and deletes its working files; the moved files stay there), clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* folders under .sdlc-v2/scratch/, and empties the server log), delete a preplan topic file (.sdlc-v2/preplan/<slug>.md; no recovery), delete a deferred item (rewrites .sdlc-v2/history/deferred.json; to recover, add it again with ship_state deferred_add), delete a learning (rewrites .sdlc-v2/learnings/log.md; to recover, add it again with learnings_log append), set the status of a preplan topic file (rewrites its **Status:** line; to recover, set the old status again), delete History rows (rewrites .sdlc-v2/history/runs.jsonl; no recovery), dismiss a wait (deletes one record in .sdlc-v2/evidence/attention/; the session still waits for its answer), save the Setup form (rewrites the changed keys of .sdlc-v2/config.toml, .sdlc-v2/local.toml or the user file ($SDLC_USER_CONFIG when set, else ~/.sdlc/local.toml); a save to the user file also removes each changed key from .sdlc-v2/local.toml; a save of the version section also creates each missing CI script file and lists it in ciFiles; a refused field value changes no file; to recover, set the old value again, set a removed project key again with the target This project, and delete by hand each file listed in ciFiles), and create the first config of a repo (creates .sdlc-v2/config.toml and .sdlc-v2/local.toml from the templates, each only when it is absent, creates .sdlc-v2/runs/, and adds or updates the sdlc block in .sdlc-v2/.gitignore and in the root .gitignore, and renames a leftover .sdlc-v2/local.json to local.json.bak when no local.json.bak exists; to recover, delete each config file listed in created, and rename local.json.bak back to local.json only when the result lists that rename)."
+	want := "Start, check, or stop the local sdlc dashboard: one web page on this computer that shows the pipelines of every registered repo. Requires: action. Optional: open, tab (ensure only; one of pipelines, activity, history, preplans, setup; it changes only the opened address and the next text, never url). ensure starts the server when it is not active and returns its address. In a T3 Code thread (T3CODE_THREAD_ID set), ensure with open true opens no browser and returns previewUrl for a T3 preview tab. Optional runId (ensure only, not with tab) points the address at the block of one run; only its form is checked, not that the run exists. A bad runId, or runId with tab, status or stop, returns DomainError. status reports it. stop ends it. This call changes no repo file. The page it serves lets a person change files, and it has no undo: archive a finished run (moves its files to .sdlc-v2/run-archive/ and deletes its working files; the moved files stay there), clear a repo's cache (deletes rotated evidence files, reports of runs that no longer exist and old sdlc-* folders under .sdlc-v2/scratch/, and empties the server log), delete a preplan topic file (.sdlc-v2/preplan/<slug>.md; no recovery), delete a deferred item (rewrites .sdlc-v2/history/deferred.json; to recover, add it again with ship_state deferred_add), delete a learning (rewrites .sdlc-v2/learnings/log.md; to recover, add it again with learnings_log append), set the status of a preplan topic file (rewrites its **Status:** line; to recover, set the old status again), delete History rows (rewrites .sdlc-v2/history/runs.jsonl; no recovery), dismiss a wait (deletes one record in .sdlc-v2/evidence/attention/; the session still waits for its answer), save the Setup form (rewrites the changed keys of .sdlc-v2/config.toml, .sdlc-v2/local.toml or the user file ($SDLC_USER_CONFIG when set, else ~/.sdlc/local.toml); a save to the user file also removes each changed key from .sdlc-v2/local.toml; a save of the version section also creates each missing CI script file and lists it in ciFiles; a refused field value changes no file; to recover, set the old value again, set a removed project key again with the target This project, and delete by hand each file listed in ciFiles), and create the first config of a repo (creates .sdlc-v2/config.toml and .sdlc-v2/local.toml from the templates, each only when it is absent, creates .sdlc-v2/runs/, and adds or updates the sdlc block in .sdlc-v2/.gitignore and in the root .gitignore, and renames a leftover .sdlc-v2/local.json to local.json.bak when no local.json.bak exists; to recover, delete each config file listed in created, and rename local.json.bak back to local.json only when the result lists that rename)."
 
 	s := mcpserver.New("test", "0.0.0-test")
 	RegisterDashboardTools(s)
@@ -847,4 +848,337 @@ func TestDashboardToolDescriptionExact(t *testing.T) {
 		}
 	}
 	t.Fatal(`ListTools: no "dashboard" tool registered`)
+}
+
+// ---------------------------------------------------------------------------
+// T3 Code preview address and runId input
+// ---------------------------------------------------------------------------
+
+// fakeBrowser replaces dashboardOpenBrowser and records each address it gets.
+func fakeBrowser(t *testing.T) *[]string {
+	t.Helper()
+	var calls []string
+	orig := dashboardOpenBrowser
+	dashboardOpenBrowser = func(addr string) error {
+		calls = append(calls, addr)
+		return nil
+	}
+	t.Cleanup(func() { dashboardOpenBrowser = orig })
+	return &calls
+}
+
+func wantT3Next(preview string) string {
+	return fmt.Sprintf("T3 Code thread detected. Call mcp__t3-code__preview_open with url %s. If that call fails, print %s and continue.", preview, preview)
+}
+
+func TestDashboardRunEnsureT3(t *testing.T) {
+	const runID = "ship-feat-x-20261116T175538Z"
+	tests := []struct {
+		name     string
+		in       DashboardIn
+		thread   string
+		wantFrag string // preview suffix after url; "" means no previewUrl
+		wantNext string // "" means wantT3Next(preview)
+		wantOpen []string
+	}{
+		{name: "T3 open, no tab", thread: "thr-1", in: DashboardIn{Action: "ensure", Open: true}, wantFrag: "#pipelines?thread=thr-1"},
+		{name: "T3 open, tab", thread: "thr-1", in: DashboardIn{Action: "ensure", Open: true, Tab: "setup"}, wantFrag: "#setup?thread=thr-1"},
+		{name: "T3 open, runId", thread: "thr-1", in: DashboardIn{Action: "ensure", Open: true, RunID: runID}, wantFrag: "#" + runID + "?thread=thr-1"},
+		{name: "T3 no open", thread: "thr-1", in: DashboardIn{Action: "ensure"}, wantNext: "Open %s in a browser to view the dashboard."},
+		{name: "T3 no open, runId", thread: "thr-1", in: DashboardIn{Action: "ensure", RunID: runID}, wantNext: "Open %s#" + runID + " in a browser to view the dashboard."},
+		{name: "no T3 open", in: DashboardIn{Action: "ensure", Open: true}, wantNext: "Opened %s in the default browser.", wantOpen: []string{"%s"}},
+		{name: "no T3 open, runId", in: DashboardIn{Action: "ensure", Open: true, RunID: runID}, wantNext: "Opened %s#" + runID + " in the default browser.", wantOpen: []string{"%s#" + runID}},
+		{name: "no T3 no open", in: DashboardIn{Action: "ensure"}, wantNext: "Open %s in a browser to view the dashboard."},
+		{name: "no T3 no open, runId", in: DashboardIn{Action: "ensure", RunID: runID}, wantNext: "Open %s#" + runID + " in a browser to view the dashboard."},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateDashboardTest(t)
+			t.Setenv(t3.EnvThreadID, tc.thread)
+			root := mkDashboardRoot(t)
+			w := newFakeDashWorld()
+			calls := fakeBrowser(t)
+
+			out, err := dashboardRun(w.deps(), root, tc.in)
+			if err != nil {
+				t.Fatalf("dashboardRun: %v", err)
+			}
+			wantPreview := ""
+			if tc.wantFrag != "" {
+				wantPreview = out.URL + tc.wantFrag
+			}
+			if out.PreviewURL != wantPreview {
+				t.Errorf("PreviewURL = %q, want %q", out.PreviewURL, wantPreview)
+			}
+			wantNext := wantT3Next(wantPreview)
+			if tc.wantNext != "" {
+				wantNext = fmt.Sprintf(tc.wantNext, out.URL)
+			}
+			if out.Next != wantNext {
+				t.Errorf("Next = %q, want %q", out.Next, wantNext)
+			}
+			var wantOpen []string
+			for _, o := range tc.wantOpen {
+				wantOpen = append(wantOpen, fmt.Sprintf(o, out.URL))
+			}
+			if !reflect.DeepEqual(*calls, wantOpen) {
+				t.Errorf("browser calls = %v, want %v", *calls, wantOpen)
+			}
+			if strings.Contains(out.URL, "#") {
+				t.Errorf("URL = %q, want it without a fragment", out.URL)
+			}
+		})
+	}
+}
+
+func TestDashboardRunStatusStopUnchangedInT3(t *testing.T) {
+	for _, action := range []string{"status", "stop"} {
+		t.Run(action, func(t *testing.T) {
+			isolateDashboardTest(t)
+			t.Setenv(t3.EnvThreadID, "thr-1")
+			root := mkDashboardRoot(t)
+			w := newFakeDashWorld()
+			calls := fakeBrowser(t)
+
+			out, err := dashboardRun(w.deps(), root, DashboardIn{Action: action, Open: true})
+			if err != nil {
+				t.Fatalf("dashboardRun: %v", err)
+			}
+			if out.PreviewURL != "" {
+				t.Errorf("PreviewURL = %q, want empty", out.PreviewURL)
+			}
+			if strings.Contains(out.Next, "T3") {
+				t.Errorf("Next = %q, want no T3 text", out.Next)
+			}
+			if len(*calls) != 0 {
+				t.Errorf("browser calls = %v, want none", *calls)
+			}
+		})
+	}
+}
+
+// TestDashboardInRunIDTagFollowsMaxRunSlugLen pins the slug limit that the
+// runId description states as a literal to t3.MaxRunSlugLen.
+func TestDashboardInRunIDTagFollowsMaxRunSlugLen(t *testing.T) {
+	f, ok := reflect.TypeOf(DashboardIn{}).FieldByName("RunID")
+	if !ok {
+		t.Fatal("DashboardIn has no RunID field")
+	}
+	want := fmt.Sprintf("ship-, execute- or plan-, then 1 to %d characters of A-Z a-z 0-9 . _ -.", t3.MaxRunSlugLen)
+	if got := f.Tag.Get("jsonschema_description"); !strings.Contains(got, want) {
+		t.Errorf("RunID description = %q, want it to contain %q", got, want)
+	}
+}
+
+func TestDashboardRunRunIDErrors(t *testing.T) {
+	longSlug := func(n int) string { return strings.Repeat("a", n) }
+	tests := []struct {
+		name       string
+		in         DashboardIn
+		wantMsg    string
+		wantSuggst string
+	}{
+		{"status", DashboardIn{Action: "status", RunID: "ship-a"}, `dashboard: runId is for action ensure only, got action "status"`, `Remove runId, or call dashboard with action="ensure".`},
+		{"stop", DashboardIn{Action: "stop", RunID: "ship-a"}, `dashboard: runId is for action ensure only, got action "stop"`, `Remove runId, or call dashboard with action="ensure".`},
+		{"with tab", DashboardIn{Action: "ensure", Tab: "setup", RunID: "ship-a"}, "dashboard: runId and tab cannot be used together, got tab \"setup\"", "Pass runId to open one run, or tab to open a tab."},
+		{"no prefix", DashboardIn{Action: "ensure", RunID: "feat-x"}, "dashboard: runId feat-x is not a run id: ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got 6 characters after the prefix)", "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."},
+		{"empty slug", DashboardIn{Action: "ensure", RunID: "ship-"}, "dashboard: runId ship- is not a run id: ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got 0 characters after the prefix)", "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."},
+		{"bad character", DashboardIn{Action: "ensure", RunID: "plan-a/b"}, "dashboard: runId plan-a/b is not a run id: ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got 3 characters after the prefix)", "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."},
+		{"slug too long", DashboardIn{Action: "ensure", RunID: "execute-" + longSlug(t3.MaxRunSlugLen+1)}, "dashboard: runId execute-" + longSlug(201) + " is not a run id: ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got 201 characters after the prefix)", "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."},
+		// Error order: the tab check of a known action runs first, then the
+		// runId checks, then the action switch.
+		{"unknown action with runId and tab", DashboardIn{Action: "bogus", Tab: "setup", RunID: "ship-a"}, "dashboard: runId and tab cannot be used together, got tab \"setup\"", "Pass runId to open one run, or tab to open a tab."},
+		{"unknown action with valid runId", DashboardIn{Action: "bogus", RunID: "ship-a"}, `dashboard: unknown action "bogus"; must be one of: ensure, status, stop`, "Pass one of the listed actions."},
+		{"status with runId and tab", DashboardIn{Action: "status", Tab: "setup", RunID: "ship-a"}, `dashboard: tab is for action ensure only, got action "status"`, `Remove tab, or call dashboard with action="ensure".`},
+		{"stop with runId and tab", DashboardIn{Action: "stop", Tab: "setup", RunID: "ship-a"}, `dashboard: tab is for action ensure only, got action "stop"`, `Remove tab, or call dashboard with action="ensure".`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateDashboardTest(t)
+			root := mkDashboardRoot(t)
+			w := newFakeDashWorld()
+			_, err := dashboardRun(w.deps(), root, tc.in)
+			if err == nil {
+				t.Fatal("dashboardRun: expected an error, got nil")
+			}
+			de := domainErrorOf(t, err)
+			if de.Msg != tc.wantMsg {
+				t.Errorf("DomainError.Msg = %q, want %q", de.Msg, tc.wantMsg)
+			}
+			if de.Suggestion != tc.wantSuggst {
+				t.Errorf("DomainError.Suggestion = %q, want %q", de.Suggestion, tc.wantSuggst)
+			}
+			if de.Cause != nil {
+				t.Errorf("DomainError.Cause = %v, want nil", de.Cause)
+			}
+			if w.spawns != 0 {
+				t.Errorf("spawns = %d, want 0", w.spawns)
+			}
+		})
+	}
+}
+
+func TestDashboardRunRunIDValid(t *testing.T) {
+	for _, id := range []string{
+		"ship-feat-x-20261116T175538Z",
+		"execute-a.b_c-D",
+		"plan-x",
+		"ship-" + strings.Repeat("a", t3.MaxRunSlugLen),
+	} {
+		t.Run(fmt.Sprintf("%d chars", len(id)), func(t *testing.T) {
+			isolateDashboardTest(t)
+			root := mkDashboardRoot(t)
+			w := newFakeDashWorld()
+			out, err := dashboardRun(w.deps(), root, DashboardIn{Action: "ensure", RunID: id})
+			if err != nil {
+				t.Fatalf("dashboardRun: %v", err)
+			}
+			if want := fmt.Sprintf("Open %s#%s in a browser to view the dashboard.", out.URL, id); out.Next != want {
+				t.Errorf("Next = %q, want %q", out.Next, want)
+			}
+		})
+	}
+}
+
+// setupRegisteredDashboard prepares a fake dashboard world for calls of the
+// registered dashboard tool. It returns the repo root the tool reports.
+func setupRegisteredDashboard(t *testing.T) string {
+	t.Helper()
+	isolateDashboardTest(t)
+	root := mkDashboardRoot(t)
+	writeDashboardLocalTOML(t, root, map[string]any{"dashboard": map[string]any{"port": 7400}})
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(root))
+	t.Chdir(root)
+	w := newFakeDashWorld()
+	origDeps := dashboardDefaultDeps
+	dashboardDefaultDeps = w.deps
+	t.Cleanup(func() { dashboardDefaultDeps = origDeps })
+	return root
+}
+
+// wantDashboardEnsureText is the whole rendered output of a started ensure on
+// the fake world: the next text, the summary and every field. A non-empty
+// previewURL adds the previewUrl line; an empty one leaves it out.
+func wantDashboardEnsureText(root, next, previewURL string) string {
+	const url = "http://127.0.0.1:7400"
+	text := "# dashboard \u2014 ok\n\n**Next:** " + next + "\n\n" +
+		"## Summary\nDashboard is running at " + url + " (pid 99, version " + version.Plugin + "). Repos: " + root + ".\n\n" +
+		"## Fields\n- url: " + url + "\n- running: true\n- started: true\n- pid: 99\n- port: 7400\n- version: " + version.Plugin + "\n- repos:\n  - " + root + "\n"
+	if previewURL != "" {
+		text += "- previewUrl: " + previewURL + "\n"
+	}
+	return text
+}
+
+// TestDashboardRegisteredToolT3 calls the registered dashboard tool for each
+// path of previewUrl and of runId, and asserts the whole rendered output.
+func TestDashboardRegisteredToolT3(t *testing.T) {
+	const (
+		url   = "http://127.0.0.1:7400"
+		runID = "ship-feat-x-20261116T175538Z"
+	)
+	tests := []struct {
+		name        string
+		thread      string
+		args        map[string]any
+		wantNext    string
+		wantPreview string
+		wantOpen    []string
+	}{
+		{
+			name: "T3 open sets previewUrl", thread: "thr-1",
+			args:        map[string]any{"action": "ensure", "open": true},
+			wantPreview: url + "#pipelines?thread=thr-1",
+			wantNext:    wantT3Next(url + "#pipelines?thread=thr-1"),
+		},
+		{
+			name: "T3 open with tab", thread: "thr-1",
+			args:        map[string]any{"action": "ensure", "open": true, "tab": "setup"},
+			wantPreview: url + "#setup?thread=thr-1",
+			wantNext:    wantT3Next(url + "#setup?thread=thr-1"),
+		},
+		{
+			name: "T3 open with runId", thread: "thr-1",
+			args:        map[string]any{"action": "ensure", "open": true, "runId": runID},
+			wantPreview: url + "#" + runID + "?thread=thr-1",
+			wantNext:    wantT3Next(url + "#" + runID + "?thread=thr-1"),
+		},
+		{
+			name: "T3 no open leaves previewUrl out", thread: "thr-1",
+			args:     map[string]any{"action": "ensure"},
+			wantNext: "Open " + url + " in a browser to view the dashboard.",
+		},
+		{
+			name:     "no T3 open leaves previewUrl out",
+			args:     map[string]any{"action": "ensure", "open": true},
+			wantNext: "Opened " + url + " in the default browser.",
+			wantOpen: []string{url},
+		},
+		{
+			name:     "no T3 open with runId",
+			args:     map[string]any{"action": "ensure", "open": true, "runId": runID},
+			wantNext: "Opened " + url + "#" + runID + " in the default browser.",
+			wantOpen: []string{url + "#" + runID},
+		},
+		{
+			name:     "no T3 no open with runId",
+			args:     map[string]any{"action": "ensure", "runId": runID},
+			wantNext: "Open " + url + "#" + runID + " in a browser to view the dashboard.",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			root := setupRegisteredDashboard(t)
+			t.Setenv(t3.EnvThreadID, tc.thread)
+			calls := fakeBrowser(t)
+			res, text := callRegisteredTool(t, RegisterDashboardTools, "dashboard", tc.args)
+			if res.IsError {
+				t.Fatalf("IsError = true, text:\n%s", text)
+			}
+			if want := wantDashboardEnsureText(root, tc.wantNext, tc.wantPreview); text != want {
+				t.Errorf("text =\n%q\nwant\n%q", text, want)
+			}
+			if !reflect.DeepEqual(*calls, tc.wantOpen) {
+				t.Errorf("browser calls = %v, want %v", *calls, tc.wantOpen)
+			}
+		})
+	}
+}
+
+// TestDashboardRegisteredToolRunIDErrors calls the registered dashboard tool
+// with each refused runId and asserts the whole rendered error.
+func TestDashboardRegisteredToolRunIDErrors(t *testing.T) {
+	const (
+		ensureOnly = `Remove runId, or call dashboard with action="ensure".`
+		fileName   = "Pass the state file name of the run without .json, for example ship-feat-x-20261116T175538Z."
+		rule       = "ship-, execute- or plan-, then 1 to 200 characters of A-Z a-z 0-9 . _ - (got "
+	)
+	tests := []struct {
+		name    string
+		args    map[string]any
+		wantMsg string
+		wantFix string
+	}{
+		{"status", map[string]any{"action": "status", "runId": "ship-a"}, `dashboard: runId is for action ensure only, got action "status"`, ensureOnly},
+		{"stop", map[string]any{"action": "stop", "runId": "ship-a"}, `dashboard: runId is for action ensure only, got action "stop"`, ensureOnly},
+		{"with tab", map[string]any{"action": "ensure", "tab": "setup", "runId": "ship-a"}, "dashboard: runId and tab cannot be used together, got tab \"setup\"", "Pass runId to open one run, or tab to open a tab."},
+		{"bad runId", map[string]any{"action": "ensure", "runId": "plan-a/b"}, "dashboard: runId plan-a/b is not a run id: " + rule + "3 characters after the prefix)", fileName},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			setupRegisteredDashboard(t)
+			calls := fakeBrowser(t)
+			res, text := callRegisteredTool(t, RegisterDashboardTools, "dashboard", tc.args)
+			if !res.IsError {
+				t.Fatalf("IsError = false, want an error result; text:\n%s", text)
+			}
+			want := "# dashboard \u2014 error (domain)\n\n## What happened\n" + tc.wantMsg + "\n\n## Do this\n" + tc.wantFix + "\n"
+			if text != want {
+				t.Errorf("text =\n%q\nwant\n%q", text, want)
+			}
+			if len(*calls) != 0 {
+				t.Errorf("browser calls = %v, want none", *calls)
+			}
+		})
+	}
 }

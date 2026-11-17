@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 )
 
 // TestMain isolates every test in this package from whatever user-level
@@ -18,6 +19,9 @@ import (
 // exist, which ReadLocalLayers treats as an empty user layer — the same
 // "no user config" case every test in this package expects by default.
 func TestMain(m *testing.M) {
+	// Tests can run inside a T3 Code thread; keep the run-state stamp off.
+	os.Unsetenv(t3.EnvThreadID)
+
 	dir, err := os.MkdirTemp("", "sdlc-user-config-")
 	if err != nil {
 		panic(err)

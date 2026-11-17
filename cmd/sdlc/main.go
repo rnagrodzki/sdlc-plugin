@@ -85,6 +85,7 @@ func runMCP() {
 	tools.RegisterLearningsTools(s)
 	tools.RegisterInstructionsTools(s)
 	tools.RegisterDashboardTools(s)
+	tools.RegisterDashboardCardTools(s)
 
 	if err := s.ServeStdio(); err != nil {
 		fmt.Fprintf(os.Stderr, "sdlc mcp: %v\n", err)
