@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.6.2] - 2026-11-17
+
+### RC 1
+
+- Move pipeline temp files (harden, error-report, review, poll, OpenSpec validation, commit, plan, explore) to the scratch folder and block system temp writes
+- Add `ship_state wait` so the Stop hook does not count turn ends during polling waits
+- Shorten deferred issue titles and commit the OpenSpec archive in the ship pipeline
+- Fix dashboard duplicate review queue rows and make doc and reference reviews check full sets
+- Sweep stale OpenSpec scratch copies before creating a new one
+
+### RC 2
+
+- Add T3 Code support: runs record the T3 thread id, and the dashboard filters runs by thread.
+- Add the `dashboard_card` tool: a run card for ship and execute runs in the chat of any MCP Apps client, with a text fallback.
+- Add `previewUrl` and `runId` to the `dashboard` tool, and T3 preview tab steps to the ship, execute, setup and dashboard skills.
+- Redesign the run card (progress strip, stepper, host themes) and add a vertical dashboard layout at 640 px.
+- Fix 59 code review findings, add 5 review guardrails, and update the documentation and the site.
+
 ## [0.6.1] - 2026-11-15
 
 ### RC 1
