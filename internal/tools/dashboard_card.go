@@ -19,14 +19,29 @@ import (
 
 // DashboardCardIn is the input for the dashboard_card tool.
 type DashboardCardIn struct {
-	RunID string `json:"runId" jsonschema_description:"Plain text: the state file name of a ship or execute run, without .json: ship- or execute-, then 1 to 200 characters of A-Z a-z 0-9 . _ -. A plan- run id is refused. Example: ship-feat-x-20261116T175538Z"`
-	Final bool   `json:"final,omitempty" jsonschema_description:"Plain JSON bool. true for the end card: the view does not refresh, and a run whose state still says running shows as stopped, resumable. Omitted: the start card, which refreshes while the run runs. Example: true"`
+	RunID    string `json:"runId" jsonschema_description:"Plain text: the state file name of a ship or execute run, without .json: ship- or execute-, then 1 to 200 characters of A-Z a-z 0-9 . _ -. A plan- run id is refused. Example: ship-feat-x-20261116T175538Z"`
+	Final    bool   `json:"final,omitempty" jsonschema_description:"Plain JSON bool. true for the end card: the view does not refresh, and a run whose state still says running shows as stopped, resumable. Omitted: the start card, which refreshes while the run runs. Example: true"`
+	Snapshot bool   `json:"snapshot,omitempty" jsonschema_description:"Plain JSON bool. true for a middle card: the view draws the run once and does not refresh. final wins when both are true. Omitted: a live card. Example: true"`
 }
 
 // DashboardCardStep is one step of the run that the card shows.
 type DashboardCardStep struct {
-	Name   string `json:"name" jsonschema_description:"Step name: a ship step, or wave <n> for an execute run."`
-	Status string `json:"status" jsonschema_description:"Step status as the run state stores it, for example pending, in_progress, completed, skipped or failed."`
+	Name       string              `json:"name" jsonschema_description:"Step name: a ship step, or wave <n> for an execute run."`
+	Status     string              `json:"status" jsonschema_description:"Step status as the run state stores it, for example pending, in_progress, completed, skipped or failed."`
+	TasksDone  *int                `json:"tasksDone,omitempty" jsonschema_description:"Count of the tasks of the wave with status completed. Only on a wave <n> step of an execute run."`
+	TasksTotal *int                `json:"tasksTotal,omitempty" jsonschema_description:"Count of all tasks of the wave. Only on a wave <n> step of an execute run."`
+	Waves      []DashboardCardWave `json:"waves,omitempty" jsonschema_description:"Waves of the execute run that the dashboard joins to the ship run. Only on the execute step of a ship run, and only when an execute run is joined."`
+}
+
+// DashboardCardWave is one wave of the execute run joined to a ship run. It
+// is a flat type, not a DashboardCardStep: a []DashboardCardStep field inside
+// DashboardCardStep is a recursive type, and the schema inference of
+// RegisterUI fails on a cycle.
+type DashboardCardWave struct {
+	Name       string `json:"name" jsonschema_description:"wave <n>."`
+	Status     string `json:"status" jsonschema_description:"Wave status, the same as the wave <n> step of the execute run card."`
+	TasksDone  int    `json:"tasksDone" jsonschema_description:"Count of the tasks of the wave with status completed."`
+	TasksTotal int    `json:"tasksTotal" jsonschema_description:"Count of all tasks of the wave."`
 }
 
 // DashboardCardOut is the output of the dashboard_card tool. A tool
@@ -38,6 +53,7 @@ type DashboardCardOut struct {
 	Branch      string              `json:"branch" jsonschema_description:"Branch of the run."`
 	Status      string              `json:"status" jsonschema_description:"Run status as the run state stores it: running, completed or failed. The end card (final true) shows a running run as stopped, resumable; this field still says running."`
 	Final       bool                `json:"final" jsonschema_description:"Copy of the final input: true for the end card."`
+	Snapshot    bool                `json:"snapshot,omitempty" jsonschema_description:"true for a middle card that the view draws once and does not refresh. false when final is true, because final wins."`
 	T3ThreadID  string              `json:"t3ThreadId,omitempty" jsonschema_description:"T3 Code thread id stored in the run state. Absent when the run has none."`
 	StartedAt   string              `json:"startedAt" jsonschema_description:"Start time of the run, RFC 3339."`
 	CompletedAt *string             `json:"completedAt" jsonschema_description:"End time of a completed run, RFC 3339. null while the run has no end time; the text renders it as (none)."`
@@ -101,15 +117,17 @@ func dashboardCardCheckRunID(runID string) error {
 	}
 }
 
-// dashboardCardFind returns the run of root whose state.RunID is runID. The
-// error is an InfraError when the runs folder cannot be listed, a DataError
-// when the run is missing and some run files could not be read, and a
-// DomainError when the run is missing and every run file was read.
-func dashboardCardFind(root, runID string) (*state.State, error) {
+// dashboardCardFind returns the run of root whose state.RunID is runID, and
+// every state that the one state.List call read, so the caller can join runs
+// without a second list. The error is an InfraError when the runs folder
+// cannot be listed, a DataError when the run is missing and some run files
+// could not be read, and a DomainError when the run is missing and every run
+// file was read.
+func dashboardCardFind(root, runID string) (*state.State, []*state.State, error) {
 	runsDir := filepath.Join(root, paths.DataDir, paths.RunsSubdir)
 	list, err := state.List(root)
 	if err != nil {
-		return nil, &mcpserver.InfraError{
+		return nil, nil, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("cannot list runs: %s", err.Error()),
 			Suggestion: fmt.Sprintf("Check that %s is a readable folder, then call again.", runsDir),
 			Cause:      err,
@@ -117,19 +135,19 @@ func dashboardCardFind(root, runID string) (*state.State, error) {
 	}
 	for _, st := range list.States {
 		if state.RunID(st) == runID {
-			return st, nil
+			return st, list.States, nil
 		}
 	}
 	// state.List returns only a count of the unreadable files, not their
 	// names or causes, so the error names the runs folder. When the run is
 	// found, the unreadable files do not matter to the card and are ignored.
 	if list.Skipped > 0 {
-		return nil, &mcpserver.DataError{
+		return nil, nil, &mcpserver.DataError{
 			Msg:        fmt.Sprintf("run %s not found — %d run files could not be read", runID, list.Skipped),
 			Suggestion: fmt.Sprintf("Open the run files in %s and check their JSON. The dashboard skips the same files.", runsDir),
 		}
 	}
-	return nil, &mcpserver.DomainError{
+	return nil, nil, &mcpserver.DomainError{
 		Msg:        fmt.Sprintf("run %s not found", runID),
 		Suggestion: "Use the stateFile of ship_prepare or the filePath of execute_state init, without .json.",
 	}
@@ -159,7 +177,7 @@ func dashboardCard(root, threadID string, showsView bool, in DashboardCardIn) (D
 	if err := dashboardCardCheckRunID(in.RunID); err != nil {
 		return DashboardCardOut{}, err
 	}
-	st, err := dashboardCardFind(root, in.RunID)
+	st, all, err := dashboardCardFind(root, in.RunID)
 	if err != nil {
 		return DashboardCardOut{}, err
 	}
@@ -189,17 +207,27 @@ func dashboardCard(root, threadID string, showsView bool, in DashboardCardIn) (D
 		Branch:      p.Branch,
 		Status:      p.Status,
 		Final:       in.Final,
+		Snapshot:    in.Snapshot && !in.Final, // final wins
 		T3ThreadID:  p.T3ThreadID,
 		StartedAt:   p.StartedAt,
 		CompletedAt: p.CompletedAt,
-		Steps:       make([]DashboardCardStep, 0, len(p.Steps)),
+		Steps:       dashboardCardSteps(p),
 		Issues:      map[string]int{},
 	}
-	for _, s := range p.Steps {
-		out.Steps = append(out.Steps, DashboardCardStep{Name: s.Name, Status: s.Status})
-	}
+	// The issue counts come from the run itself. The join below adds no
+	// issue of the joined execute run to the ship card.
 	for _, issue := range p.Issues {
 		out.Issues[issue.Severity]++
+	}
+	if p.Kind == "ship" {
+		if waves := dashboardCardShipWaves(st, p, all); waves != nil {
+			for i := range out.Steps {
+				if out.Steps[i].Name == dashboardShipStepExecute {
+					out.Steps[i].Waves = waves
+					break
+				}
+			}
+		}
 	}
 	if showsView {
 		out.Next = fmt.Sprintf("Card shows run %s (%s). Continue the current step.", in.RunID, p.Status)
@@ -207,6 +235,92 @@ func dashboardCard(root, threadID string, showsView bool, in DashboardCardIn) (D
 		out.Next = dashboardCardNoView
 	}
 	return out, nil
+}
+
+// dashboardCardSteps returns the card steps of pipeline p. A step whose
+// detail holds exactly one wave (a wave <n> step of an execute run) gets the
+// task counters of that wave. Every other step, such as the queued step of an
+// execute run or a ship step, gets no counters.
+func dashboardCardSteps(p DashboardPipeline) []DashboardCardStep {
+	out := make([]DashboardCardStep, 0, len(p.Steps))
+	for _, s := range p.Steps {
+		step := DashboardCardStep{Name: s.Name, Status: s.Status}
+		if s.Detail != nil && s.Detail.Kind == dashboardKindWaves && len(s.Detail.Waves) == 1 {
+			done, total := dashboardCardWaveCounts(s.Detail.Waves[0])
+			step.TasksDone, step.TasksTotal = &done, &total
+		}
+		out = append(out, step)
+	}
+	return out
+}
+
+// dashboardCardWaveCounts returns the count of the tasks of w with status
+// completed and the count of all tasks of w. A failed, skipped-dependency or
+// pending task is not done, the same as the counter of the dashboard page.
+func dashboardCardWaveCounts(w DashboardWave) (done, total int) {
+	for _, t := range w.Tasks {
+		if t.Status == StepCompleted {
+			done++
+		}
+	}
+	return done, len(w.Tasks)
+}
+
+// dashboardCardShipWaves returns the waves rows of the ship execute step: the
+// wave steps of the execute run that dashboardJoinRuns joins to the ship run
+// ship (pipeline p), the same join as the dashboard page. It returns nil when
+// no execute run joins. all is the state list of the one state.List call of
+// this card call. Only the execute runs of the same branch slug as the ship
+// go to the join, so the card builds no pipeline of an unrelated run. When
+// two ship runs of one branch overlap in time, the page can join the execute
+// run to the other ship; the card does not see that ship.
+func dashboardCardShipWaves(ship *state.State, p DashboardPipeline, all []*state.State) []DashboardCardWave {
+	slug := dashboardCardBranchSlug(ship)
+	if slug == "" {
+		return nil
+	}
+	ps := []DashboardPipeline{p}
+	execs := map[string]DashboardPipeline{}
+	for _, st := range all {
+		if st.Prefix != "execute" || dashboardCardBranchSlug(st) != slug {
+			continue
+		}
+		// The prefix is execute, so ok is always true.
+		ep, _, _ := dashboardStatePipeline(st, nil)
+		ps = append(ps, ep)
+		execs[ep.ID] = ep
+	}
+	if len(execs) == 0 {
+		return nil
+	}
+	// dashboardJoinRuns keeps the order of its input, so the ship stays at
+	// index 0, and it adds the id of the joined execute run to the join
+	// members of the ship.
+	joined := dashboardJoinRuns(ps)
+	for _, id := range joined[0].join.members {
+		ep, ok := execs[id]
+		if !ok {
+			continue
+		}
+		waves := []DashboardCardWave{}
+		for _, s := range dashboardCardSteps(ep) {
+			if s.TasksDone == nil {
+				continue // the queued step is not a wave
+			}
+			waves = append(waves, DashboardCardWave{Name: s.Name, Status: s.Status, TasksDone: *s.TasksDone, TasksTotal: *s.TasksTotal})
+		}
+		return waves
+	}
+	return nil
+}
+
+// dashboardCardBranchSlug returns the branch slug of st with the rule of the
+// join: the slug of the branch key, else the branch slug of the file name.
+func dashboardCardBranchSlug(st *state.State) string {
+	if b := dashboardStr(st.Data["branch"]); b != "" {
+		return state.SlugifyBranch(b)
+	}
+	return st.BranchSlug
 }
 
 // ---------------------------------------------------------------------------
