@@ -67,7 +67,7 @@ Each status change in this skill matches one row of this table. The skill makes 
 | 2 | Read `preplanFile`. If `preplanCreated` is false, call `preplan_write` with `topicStatus: "in progress"`, convert an old-form file with `preplan_write`, and list the open questions, if any | Step 3. On a tool error: print it, then stop |
 | 3 | Ask one question with AskUserQuestion, from the first gap. Challenge a vague answer with one follow-up question. Record each refused scope option under `## Non-goals`. Call `preplan_write` with the full new body of each changed section. If a proposal changes a flow, send a before/after Mermaid diagram and its text twin as the `## Flows` body | Step 3 route table. On a tool error: the error table |
 | 4 | Check every live proposal against each guardrail. Write the kept and drop notes and prune the `Smallest cut:` line in one `preplan_write` call for `## Decisions`. Unless the user cancels, call `preplan_check` with the counts, then read `preplanFile` again. Keep `emptySections` | Step 4 route table: Step 5, the soft gate, Step 3 or cancel. On a tool error: the error table |
-| 5 | Reached from a Step 4 pass with no empty section, or from the soft gate. Call `plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "ready for plan" })`. Keep `readyTopicFiles`, `readyLeftOut` and `summary`. Ask with AskUserQuestion: start the plan now, start a new idea, or stop | Step 5 route table |
+| 5 | Reached from a Step 4 pass with no empty section, or from the soft gate. Call `plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "ready for plan" })`. Keep `readyTopicFiles`, `readyLeftOut` and `summary`. Glob `openspec/config.yaml`. Ask with AskUserQuestion: start the plan now, start a new idea, or stop, and `Check against OpenSpec` when the file exists | Step 5 route table |
 | cancel | Call `plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "paused" })`. Keep the file | end |
 
 Every exit state names its next instruction:
@@ -300,11 +300,12 @@ When Step 4 goes back to Step 3 with `final` set, tell the user what is missing:
 
 ## Step 5: Hand off to plan
 
-Step 5 starts after a Step 4 pass with no empty section, or after the soft gate. Call `plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "ready for plan" })`. Keep `readyTopicFiles`, `readyLeftOut` and `summary`. Then ask with AskUserQuestion. Restate the topic, the number of live proposals (`passCount + keptCount` of the last check), and the path `preplanFile`. Options:
+Step 5 starts after a Step 4 pass with no empty section, or after the soft gate. Call `plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "ready for plan" })`. Keep `readyTopicFiles`, `readyLeftOut` and `summary`. Then Glob `openspec/config.yaml` in the project root. Then ask with AskUserQuestion. Restate the topic, the number of live proposals (`passCount + keptCount` of the last check), and the path `preplanFile`. Options:
 
 - **Start plan now** — runs `/sdlc:plan` in this session with this topic file and the other ready topic files that the user picks. This topic file is always included. The plan skill reads each topic file as a requirements file.
 - **Start a new idea** — asks the next topic name, then runs `/sdlc:preplan <topic>` in this session. This topic file stays `ready for plan`, unless the topic name matches this file; the new run then sets it to `in progress` (Step 2).
 - **Stop** — ends this skill. The topic file stays `ready for plan`.
+- **Check against OpenSpec** — offered only when the Glob finds `openspec/config.yaml`. Runs `Skill(sdlc:verify-requirements, "--topic <topic>")` in this session, prints its report, then asks the handoff question again. With no `openspec/config.yaml`, the question has the 3 options above. With the file, it has these 4. The handoff has no option that goes back to Step 3. To change the topic file after a finding, the user picks **Start a new idea** with this topic name, or stops and runs `/sdlc:preplan <topic>`. The new run sets the status to `in progress` (Step 2) and asks from Step 3.
 
 On a tool error of the status write, follow the error table (see **Topic file writes**): print the error's `## Do this` text, then go to the cancel step. Ask no handoff question.
 
@@ -321,7 +322,9 @@ Step 5 routes (one row matches each result):
 | Start plan now | 2 to 4 paths, `preplanFile` first | AskUserQuestion, multiSelect, one option for each path. Label the `preplanFile` option "always included". The text says `readyLeftOut` more files are ready and can go to `/sdlc:plan` as arguments. The text also holds each sentence of `summary` that starts with `Ready topic files` | `Skill(sdlc:plan, "\"<p1>\" \"<p2>\"")`: `preplanFile` first, then each picked other path, in option order, each path in double quotes. A deselect of `preplanFile` does not remove it. No pick or free text: `preplanFile` only |
 | Start a new idea | any | AskUserQuestion: "What is the short name of the next topic? An existing topic name reopens that file." with a cancel option | `Skill(sdlc:preplan, "<topic>")`. Cancel: end |
 | Stop | any | none | end. Status stays `ready for plan` |
-| any other answer to the handoff question, for example free text or no pick | any | restate the three options | Step 5: ask the handoff question again |
+| Check against OpenSpec | any | `Skill(sdlc:verify-requirements, "--topic <topic>")`. Print its report. The check changes no file | Step 5: ask the handoff question again, with the same options |
+| the OpenSpec check stops with an error | any | print the error | Step 5: ask the handoff question again. Status stays `ready for plan` |
+| any other answer to the handoff question, for example free text or no pick | any | restate the options that the question holds (3, or 4 with `Check against OpenSpec`) | Step 5: ask the handoff question again |
 | plan skill stops with an error | any | the plan skill stops its own explorers first (plan **Error Recovery**). Print the error. Tell the user to run `/sdlc:plan <paths>` | end. Status stays `ready for plan` |
 | plan skill returns without an error | any | none | end. Status stays `ready for plan` |
 | the new preplan run returns | any | none | end. This file stays `ready for plan`, unless the topic name matches this file; the new run then sets it to `in progress` (Step 2) |

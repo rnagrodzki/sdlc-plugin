@@ -119,3 +119,39 @@ func TestPRSkillFlags(t *testing.T) {
 		}
 	})
 }
+
+// TestPRApprovedDraftBlock pins the Approved PR draft rule: the block heading,
+// the skip of Steps 2 to 4, the invalid-block fallback and the invocation-only scope.
+func TestPRApprovedDraftBlock(t *testing.T) {
+	content := shipSkillsReadFile(t, shipSkillsRepoRoot(t), prSkillFlagsFile)
+	workflow := prSkillFlagsWorkflow(t, content)
+
+	rule := strings.Index(workflow, "### Step 1c")
+	step2 := strings.Index(workflow, "### Step 2 (PLAN)")
+	if rule < 0 || step2 < 0 || rule > step2 {
+		t.Fatalf("Step 1c=%d Step 2=%d: the rule must come before Step 2", rule, step2)
+	}
+	section := workflow[rule:step2]
+
+	for _, want := range []string{
+		"Approved PR draft (publish unchanged):",
+		"title: <approved title>",
+		"body:",
+		"releaseNotes: <approved notes, or \"draft them\">",
+		"The block counts only in the invocation prompt.",
+		"| valid | skipped | the block text, unchanged |",
+		"| no `title:` line, or an empty body | run, after one warning line | the drafted text |",
+		"byte for byte",
+		"Skip Steps 2, 3 and 4",
+		"Approved PR draft block is not valid",
+		"`pr_apply` still removes an AI\n  attribution line",
+	} {
+		if !strings.Contains(section, want) {
+			t.Errorf("Step 1c is missing %q", want)
+		}
+	}
+
+	if !strings.Contains(content, "Change the title or the body of a valid approved draft") {
+		t.Error("DO NOT list does not forbid a change to an approved draft")
+	}
+}

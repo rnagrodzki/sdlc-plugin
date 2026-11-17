@@ -23,12 +23,15 @@ package stepper
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/fsx"
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // ---------------------------------------------------------------------------
@@ -162,9 +165,24 @@ func (s PollState) WaitedSeconds() int {
 	return int(time.Since(time.Unix(s.StartedAt, 0)).Seconds())
 }
 
-// NewStateFilePath returns a new resume-file path under os.TempDir(),
-// mirroring scripts/lib/stepper.js::createStateFile's
-// `path.join(os.tmpdir(), \`${skill}-${hash}.json\`)` convention.
+// ErrStateFolder marks a failed create of the state folder.
+var ErrStateFolder = errors.New("stepper: create state folder")
+
+// removeStateFile and readStateDir are os.Remove and os.ReadDir. Tests
+// replace them to make a remove or a folder read fail.
+var removeStateFile = os.Remove
+var readStateDir = os.ReadDir
+
+// NewStateFilePath returns a new resume-file path under dir, after it
+// removes <skill>-*.json files in dir older than paths.ScratchMaxAge (best
+// effort). The name keeps scripts/lib/stepper.js::createStateFile's
+// `${skill}-${hash}.json` convention. A failed MkdirAll(dir) returns an error
+// that wraps both ErrStateFolder and the MkdirAll error.
+//
+// The sweep never fails the call: a failed read of dir stops the sweep, and a
+// failed remove leaves that file and the sweep continues, as
+// removeStaleTempDirs in internal/tools does. The sweep only deletes old
+// files, so a failure loses no data.
 //
 // RULING: the task fact sheet's Notes describe the naming convention as
 // "<skill>-<sha256>.json", but the JS source itself
@@ -175,13 +193,41 @@ func (s PollState) WaitedSeconds() int {
 // port reproduces the random-bytes-hex suffix rather than a sha256 hash.
 // Cost if wrong: cosmetic only (resume file name shape); nothing parses
 // this filename's suffix as a hash.
-func NewStateFilePath(skill string) (string, error) {
+func NewStateFilePath(dir, skill string) (string, error) {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("%w %s: %w", ErrStateFolder, dir, err)
+	}
+	removeStaleStateFiles(dir, skill, time.Now())
 	b := make([]byte, 6)
 	if _, err := rand.Read(b); err != nil {
 		return "", fmt.Errorf("stepper: generate state file name: %w", err)
 	}
 	name := fmt.Sprintf("%s-%s.json", skill, hex.EncodeToString(b))
-	return filepath.Join(os.TempDir(), name), nil
+	return filepath.Join(dir, name), nil
+}
+
+// removeStaleStateFiles deletes the regular files in dir named
+// <skill>-*.json whose modification time is older than paths.ScratchMaxAge.
+// Only direct children of dir are checked. Best effort: a failed read of dir
+// stops the sweep, and a failed remove leaves that file and the sweep
+// continues.
+func removeStaleStateFiles(dir, skill string, now time.Time) {
+	entries, err := readStateDir(dir)
+	if err != nil {
+		return
+	}
+	prefix := skill + "-"
+	for _, e := range entries {
+		name := e.Name()
+		if !e.Type().IsRegular() || !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) <= paths.ScratchMaxAge {
+			continue
+		}
+		_ = removeStateFile(filepath.Join(dir, name))
+	}
 }
 
 // LoadPollState reads and parses a resume-state file written by

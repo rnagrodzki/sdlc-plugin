@@ -44,7 +44,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  true,
-		reason:     "os.ReadFile/os.Stat plus os.MkdirTemp(\"\", \"sdlc-plan-snapshot-\") for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join; written through an O_EXCL lock .sdlc-v2/openspec-staging/<changeName>.lock, a temp dir .tmp-<changeName>-<n>/ and a rename, with the old dir moved aside to .old-<changeName>-<n>/ and deleted) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context, plus one temp-and-rename rewrite of an existing regular .sdlc-v2/preplan/*.md file that keeps its mode: for preplan_check (each call writes a new Last check time, so two calls give two files), for preplan_context when the file lacks a section heading (additive: it inserts the absent headings and, when a code fence is still open at the end of the file, one closing fence line before them; a second call writes nothing), and for preplan_write (one section body or the Status line: it replaces the body or the first Status line, adds an absent Open questions section or Status line, or deletes the Open questions or Guardrail check section when content is empty; a temp-and-rename rewrite that keeps the mode; two equal calls give the same file). readOnly:true and idempotent:true stay because the plan-tools exception of docs/internal/mcp-tool-annotations.md keeps readOnly:true for the plan skill in plan mode, and idempotent has no meaning under readOnly:true, plus one gh issue view <n> --json title,body for verify_requirements_context with verifyKind issue (GitHub API, so openWorld:true)",
+		reason:     "os.ReadFile/os.Stat plus scratchMkdirTemp(mainRoot, \"sdlc-plan-snapshot-\") under gitignored .sdlc-v2/scratch/, with os.RemoveAll of its own sdlc-plan-snapshot-* dirs older than 24h, for material_snapshot's snapshotPath output, plus fsx.AtomicWrite* under gitignored .sdlc-v2/runs/<runId>.evidence/ for evidence_record, plus gitignored .sdlc-v2/openspec-staging/<changeName>/ (name and paths checked before any join; written through an O_EXCL lock .sdlc-v2/openspec-staging/<changeName>.lock, a temp dir .tmp-<changeName>-<n>/ and a rename, with the old dir moved aside to .old-<changeName>-<n>/ and deleted) and os.MkdirTemp(\"\", \"sdlc-openspec-*\") for openspec_instructions/openspec_stage, plus one read of at most 10001 names (Readdirnames) of gitignored .sdlc-v2/preplan/ and one O_EXCL create of .sdlc-v2/preplan/YYYY-MM-DD-<slug>.md (slug from branch.Slug, checked before the join) for preplan_context, plus one temp-and-rename rewrite of an existing regular .sdlc-v2/preplan/*.md file that keeps its mode: for preplan_check (each call writes a new Last check time, so two calls give two files), for preplan_context when the file lacks a section heading (additive: it inserts the absent headings and, when a code fence is still open at the end of the file, one closing fence line before them; a second call writes nothing), and for preplan_write (one section body or the Status line: it replaces the body or the first Status line, adds an absent Open questions section or Status line, or deletes the Open questions or Guardrail check section when content is empty; a temp-and-rename rewrite that keeps the mode; two equal calls give the same file). readOnly:true and idempotent:true stay because the plan-tools exception of docs/internal/mcp-tool-annotations.md keeps readOnly:true for the plan skill in plan mode, and idempotent has no meaning under readOnly:true, plus one gh issue view <n> --json title,body for verify_requirements_context with verifyKind issue (GitHub API, so openWorld:true)",
 	},
 	"verify_pipeline_classify": {
 		title:      "Classify CI failure logs",
@@ -65,7 +65,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "local git reads plus os.MkdirTemp(\"\", \"sdlc-commit-manifest-\") for the manifestPath output, and os.RemoveAll of sibling sdlc-commit-manifest-* dirs older than 24h under os.TempDir()",
+		reason:     "local git reads plus scratchMkdirTemp(cfgRoot, \"sdlc-commit-manifest-\") for the manifestPath output, and os.RemoveAll of sibling sdlc-commit-manifest-* dirs older than 24h under .sdlc-v2/scratch/",
 	},
 	"links_validate": {
 		title:      "Check documentation links",
@@ -100,7 +100,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		readOnly:   true,
 		idempotent: true,
 		openWorld:  false,
-		reason:     "mkdirTempFunc(\"\", \"sdlc-explore-<slug>-\") for the manifest, and os.RemoveAll of sibling sdlc-explore-* dirs older than 24h under os.TempDir()",
+		reason:     "scratchMkdirTemp(mainRoot, \"sdlc-explore-<slug>-\") for the manifest, and os.RemoveAll of sibling sdlc-explore-* dirs older than 24h under .sdlc-v2/scratch/",
 	},
 	"instructions_resolve": {
 		title:      "Resolve skill instructions",
@@ -548,18 +548,14 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 			case "verify_tag_ancestry":
 				_, _ = verifyTagAncestry(root, "v0.0.0-does-not-exist")
 			case "commit_prepare":
-				// commitPrepare writes its manifest through
-				// mkdirTempFunc("", ...); redirect it into a t.TempDir() so
-				// this run does not leak an sdlc-commit-manifest-* directory
-				// into the OS temp dir.
-				redirectTempManifests(t)
+				// commitPrepare writes its manifest under the gitignored
+				// .sdlc-v2/scratch/ of root; check the write stays untracked.
 				_, _ = commitPrepare(root, root, CommitPrepareIn{SkipConfigCheck: true})
 			case "plan_mark":
 				_, _ = planMark(root, root, PlanMarkIn{Marker: "guardrailsEvaluated"})
 			case "plan_explore_prepare":
-				// Same mkdirTempFunc redirect as commit_prepare, so no
-				// sdlc-explore-* directory leaks into the OS temp dir.
-				redirectTempManifests(t)
+				// The explore pack goes under the gitignored
+				// .sdlc-v2/scratch/ of root, as commit_prepare's manifest.
 				_ = buildExplorePack(root, root, "", "investigate the widget rendering pipeline")
 			case "instructions_resolve":
 				_, _ = instructionsResolve(root, InstructionsResolveIn{Key: "pr"})

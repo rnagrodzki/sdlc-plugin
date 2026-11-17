@@ -2,7 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -245,12 +244,12 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 	// their own context. Mirrors the rest of this function's soft-fail
 	// style: a write failure becomes a warning, not a hard error, and
 	// ManifestPath is left empty.
-	if manifestPath, err := writeCommitManifest(out); err != nil {
+	// The manifest goes under .sdlc-v2/scratch/ of cfgRoot (the main
+	// worktree root); scratchMkdirTemp also sweeps old manifest folders there.
+	if manifestPath, err := writeCommitManifest(cfgRoot, out); err != nil {
 		out.Warnings = append(out.Warnings, fmt.Sprintf("manifestPath: %s", err.Error()))
 	} else {
 		out.ManifestPath = manifestPath
-		manifestDir := filepath.Dir(manifestPath)
-		removeStaleTempDirs(filepath.Dir(manifestDir), commitManifestPrefix, filepath.Base(manifestDir), time.Now())
 	}
 
 	return out, nil
@@ -259,21 +258,17 @@ func commitPrepare(cfgRoot, gitRoot string, in CommitPrepareIn) (CommitPrepareOu
 // commitManifestPrefix names every commit_prepare manifest directory.
 const commitManifestPrefix = "sdlc-commit-manifest-"
 
-// staleTempDirAge is how old a per-call temp directory (an
-// sdlc-commit-manifest-* or sdlc-explore-* dir) must be before the tool that
-// creates that kind of dir removes it. A day is far longer than any flow that
-// still needs to read a manifest from it.
-const staleTempDirAge = 24 * time.Hour
-
 // removeStaleTempDirs deletes the directories in tempRoot whose name starts
-// with prefix and whose modification time is older than staleTempDirAge.
-// keep is the directory the calling tool just wrote; it is never removed,
-// because the caller hands its manifest to an agent after the tool returns.
-// Only direct children of tempRoot are checked. Best effort: every read or
-// remove error is ignored, since a leftover directory is harmless and must not
-// fail the calling tool.
+// with prefix and whose modification time is older than paths.ScratchMaxAge.
+// keep is a directory the calling tool just wrote ("" keeps none); it is never
+// removed, because the caller hands its manifest to an agent after the tool
+// returns. Only direct children of tempRoot are checked. Best effort: a failed
+// read of tempRoot stops the sweep, and a failed remove leaves that entry and
+// the sweep continues, since a leftover directory is harmless and must not
+// fail the calling tool. It reads and removes through the scratchReadDir and
+// scratchRemoveAll seams.
 func removeStaleTempDirs(tempRoot, prefix, keep string, now time.Time) {
-	entries, err := os.ReadDir(tempRoot)
+	entries, err := scratchReadDir(tempRoot)
 	if err != nil {
 		return
 	}
@@ -283,19 +278,20 @@ func removeStaleTempDirs(tempRoot, prefix, keep string, now time.Time) {
 			continue
 		}
 		info, err := e.Info()
-		if err != nil || now.Sub(info.ModTime()) <= staleTempDirAge {
+		if err != nil || now.Sub(info.ModTime()) <= paths.ScratchMaxAge {
 			continue
 		}
-		_ = os.RemoveAll(filepath.Join(tempRoot, name))
+		_ = scratchRemoveAll(filepath.Join(tempRoot, name))
 	}
 }
 
 // writeCommitManifest marshals out (with ManifestPath already pointed at the
-// file it is about to write) to JSON and writes it via the fsseam, returning
-// the path.
-func writeCommitManifest(out CommitPrepareOut) (string, error) {
+// file it is about to write) to JSON and writes it via the fsseam into a new
+// folder under paths.ScratchDir(root), returning the path. root is the main
+// worktree root.
+func writeCommitManifest(root string, out CommitPrepareOut) (string, error) {
 	out.Style = nil // the commit-orchestrator subagent must not apply chat style to the commit message
-	return writeTempJSON(commitManifestPrefix, "manifest", func(path string) any {
+	return writeTempJSON(root, commitManifestPrefix, "manifest", func(path string) any {
 		out.ManifestPath = path
 		return out
 	})
@@ -710,7 +706,7 @@ func commitApply(cfgRoot, gitRoot string, in CommitApplyIn) (CommitApplyOut, err
 // RegisterCommitTools registers commit_prepare and commit_apply on the server.
 func RegisterCommitTools(s *mcpserver.Server) {
 	mcpserver.Register(s, "commit_prepare",
-		"Gather commit context: staged/unstaged/untracked files, diffs, recent commits, commit config, and branch information. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. style is not written to the manifest. Also writes the full result as a JSON manifest into a new temp directory and returns its path as manifestPath (hand that path to sdlc:commit-orchestrator instead of the payload); if the write fails, manifestPath is empty and the reason is appended to warnings. Each call also removes older sdlc-commit-manifest-* temp directories last modified more than 24 hours ago.",
+		"Gather commit context: staged/unstaged/untracked files, diffs, recent commits, commit config, and branch information. Also returns style: the plugin-wide communication style; follow style.guide in chat and questions. style is not written to the manifest. Also writes the full result as a JSON manifest into a new folder under .sdlc-v2/scratch/ of the main worktree and returns its path as manifestPath (hand that path to sdlc:commit-orchestrator instead of the payload); if the write fails, manifestPath is empty and the reason is appended to warnings. Each call also removes older sdlc-commit-manifest-* folders there last modified more than 24 hours ago.",
 		mcpserver.Annotations{
 			Title:      "Prepare commit context",
 			ReadOnly:   true,

@@ -187,7 +187,7 @@ func TestShipStateOpenspecCheck_OutcomeArchived(t *testing.T) {
 			}
 			wantNext := "Call complete-step for verify-openspec."
 			if step == "archive-openspec" {
-				wantNext = "Call complete-step for archive-openspec with result already archived."
+				wantNext = "Run git status --porcelain on the archive paths. Empty: call complete-step for archive-openspec with result already archived. Not empty: stage and commit them (SKILL.md archive-openspec, archived rows)."
 			}
 			if out.Outcome != "archived" || out.Next != wantNext || out.ValidateOutput != "" {
 				t.Errorf("out = %+v, want archived with next %q and no validate output", out, wantNext)

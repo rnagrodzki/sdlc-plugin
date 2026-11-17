@@ -914,11 +914,11 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 		PreflightFindings:  preflight,
 	}
 
-	tmpDir, err := os.MkdirTemp("", "sdlc-harden-")
+	tmpDir, err := scratchMkdirTemp(root, "sdlc-harden-")
 	if err != nil {
 		return HardenPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
-			Suggestion: "Check available disk space and write permission on the OS temp directory, then retry prepare_orchestrator with mode harden.",
+			Suggestion: scratchSuggestion(err, "Check disk space and write permission on .sdlc-v2/scratch/ of the main worktree, then retry prepare_orchestrator with mode harden."),
 			Cause:      err,
 		}
 	}
@@ -926,7 +926,7 @@ func hardenPrepare(root, contentRoot string, in HardenPrepareIn) (HardenPrepareO
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
 		return HardenPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
-			Suggestion: "Check write permission on the temp directory named in the error above and that disk space isn't exhausted, then retry prepare_orchestrator with mode harden.",
+			Suggestion: "Check write permission on the scratch folder named in the error above and free disk space, then retry prepare_orchestrator with mode harden.",
 			Cause:      err,
 		}
 	}

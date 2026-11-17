@@ -50,7 +50,8 @@ type ClearCacheSkip struct {
 const (
 	// clearClassEvidence is the class of rotated evidence files (*.jsonl.1).
 	clearClassEvidence = "evidence-rotations"
-	// clearClassTempDirs is the class of old sdlc-* temp dirs.
+	// clearClassTempDirs is the class of old sdlc-* dirs of the scratch
+	// folder. The name "temp-dirs" is kept: it is part of the output.
 	clearClassTempDirs = "temp-dirs"
 	// clearClassReports is the class of reports that no run state owns.
 	clearClassReports = "orphan-reports"
@@ -58,20 +59,17 @@ const (
 	clearClassServerLog = "server-log"
 )
 
-// clearTempDirPrefix is the name prefix of the temp dirs that the plugin tools
-// create. Clear sweeps the dirs whose name starts with it.
+// clearTempDirPrefix is the name prefix of the scratch dirs that the plugin
+// tools create. Clear sweeps the dirs whose name starts with it.
 const clearTempDirPrefix = "sdlc-"
-
-// clearTempDirMinAge is the age a temp dir needs before Clear deletes it.
-const clearTempDirMinAge = 24 * time.Hour
 
 // clearRotatedSuffix ends the name of an evidence file after a size-cap
 // rotation (see appendJSONLBounded).
 const clearRotatedSuffix = ".jsonl.1"
 
-// clearTempDir returns the directory that holds the sdlc-* temp dirs. Tests
-// replace it so that they never touch the real temp directory.
-var clearTempDir = os.TempDir
+// clearTempDir returns the scratch folder of the repo root that holds the
+// sdlc-* dirs: .sdlc-v2/scratch/. Tests replace it.
+var clearTempDir = paths.ScratchDir
 
 // clearRemove deletes a file or a directory tree. Tests replace it to force a
 // delete error that a real filesystem cannot produce on demand.
@@ -80,7 +78,7 @@ var clearRemove = os.RemoveAll
 // ClearCache deletes the regenerable cache data and reports what it did.
 //
 //	evidence-rotations  root evidence/*.jsonl.1 older than dashboardStallAfter
-//	temp-dirs           sdlc-* dirs in the temp dir older than 24 hours,
+//	temp-dirs           sdlc-* dirs in root .sdlc-v2/scratch/ older than 24 hours,
 //	                    except sdlc-explore-* (state.GC owns those)
 //	orphan-reports      root reports/* whose run id matches no ship or execute
 //	                    state in runs/
@@ -110,7 +108,7 @@ func ClearCache(root, serverLog string, now time.Time) (ClearCacheOut, error) {
 	sweep := &clearSweep{now: now, skipped: []ClearCacheSkip{}}
 	classes := []ClearCacheClass{
 		sweep.evidenceRotations(root),
-		sweep.tempDirs(clearTempDir()),
+		sweep.tempDirs(clearTempDir(root)),
 		sweep.orphanReports(root),
 		sweep.serverLog(serverLog),
 	}
@@ -211,8 +209,8 @@ func (s *clearSweep) evidenceRotations(root string) ClearCacheClass {
 	return class
 }
 
-// tempDirs deletes the sdlc-* dirs of dir that are older than
-// clearTempDirMinAge. It leaves sdlc-explore-* dirs to state.GC.
+// tempDirs deletes the sdlc-* dirs of the scratch folder dir that are older
+// than paths.ScratchMaxAge. It leaves sdlc-explore-* dirs to state.GC.
 func (s *clearSweep) tempDirs(dir string) ClearCacheClass {
 	class := ClearCacheClass{Name: clearClassTempDirs}
 	entries, ok := s.readDir(dir)
@@ -224,7 +222,7 @@ func (s *clearSweep) tempDirs(dir string) ClearCacheClass {
 		if !e.Type().IsDir() || !strings.HasPrefix(name, clearTempDirPrefix) || strings.HasPrefix(name, exploreDirPrefix) {
 			continue
 		}
-		s.removeIfOlder(&class, filepath.Join(dir, name), e, clearTempDirMinAge)
+		s.removeIfOlder(&class, filepath.Join(dir, name), e, paths.ScratchMaxAge)
 	}
 	return class
 }

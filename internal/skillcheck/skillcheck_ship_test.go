@@ -719,3 +719,173 @@ func TestShipSkillsRemoteReviewOverviewNote(t *testing.T) {
 		}
 	}
 }
+
+// TestShipSkillsArchiveCommitAndDecideShapes pins the archive commit of the
+// archive-openspec section (its guard, lookup, stage, commit worker and
+// resume gate), a fixed set of decide literals in skills/ship/SKILL.md and
+// skills/ship/entry-modes.md, and the detail:{text...} shape of every
+// `action:"decide", step` call in the ship skill files. The failure rows are
+// skill text that no Go code runs, so a text pin is the strongest check.
+func TestShipSkillsArchiveCommitAndDecideShapes(t *testing.T) {
+	root := shipSkillsRepoRoot(t)
+	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
+	entry := shipSkillsReadFile(t, root, "skills/ship/entry-modes.md")
+
+	section, ok := shipSkillsSection(content, "### archive-openspec (inline)")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "### archive-openspec (inline)" section`)
+	}
+	for _, pin := range []string{
+		"archive lookup   ls -d openspec/changes/archive/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-\"$CHANGE\"",
+		"archive guard    git status --porcelain --untracked-files=no -- . ':!.sdlc-v2/' ':!<p>' ...",
+		"archive stage    git rm -r -q --cached --ignore-unmatch -- <old> <each cap folder that is not on disk>",
+		"git add -A -- <dir> <each cap folder that is on disk>",
+		"`git status --porcelain -- <archive paths>`",
+		"Agent → commit, model haiku, foreground (`run_in_background: false`), args `--auto --no-instructions`",
+		"`archived, commit <sha>`",
+		"`archive lookup failed — <output>`",
+		"`archive precheck failed — tracked edits outside the archive paths: <paths>`",
+		"`archive status check failed — <error>`",
+		"`archive stage failed — <error>`",
+		"`archive commit failed — <error>. Workers not stopped: <list or none>`",
+		"whose `decision` starts with `archive-openspec worker possibly still running`",
+		"`resume: an archive commit worker may still commit: <entry>`",
+		"| `complete-step` returns an error |",
+		"One Agent dispatch: the archive commit",
+	} {
+		if !strings.Contains(section, pin) {
+			t.Errorf("archive-openspec section does not contain %q", pin)
+		}
+	}
+	for _, old := range []string{
+		"No Agent dispatch",
+		"archive/*-$CHANGE",
+		"`archive commit failed — timeout`",
+		"A draft of another change under `openspec/changes/` is not staged",
+	} {
+		if strings.Contains(section, old) {
+			t.Errorf("archive-openspec section still contains %q", old)
+		}
+	}
+
+	// Every decide call in the ship skill files carries detail.text: the
+	// tool rejects a decide without it.
+	decideCall := regexp.MustCompile(`action:"decide", step(?::"[^"]*")?`)
+	for _, rel := range []string{
+		"skills/ship/SKILL.md",
+		"skills/ship/entry-modes.md",
+		"skills/ship/reference.md",
+		"skills/ship/state-format.md",
+		"skills/ship/instructions-run.md",
+		"skills/ship/config-format.md",
+	} {
+		text := shipSkillsReadFile(t, root, rel)
+		for _, loc := range decideCall.FindAllStringIndex(text, -1) {
+			if !strings.HasPrefix(text[loc[1]:], ", detail:{text") {
+				end := min(loc[1]+40, len(text))
+				t.Errorf("%s: decide call without detail.text: %q", rel, text[loc[0]:end])
+			}
+		}
+	}
+
+	declined := `ship_state({action:"decide", step:"archive-openspec", detail:{text:"user declined archive"}})`
+	if n := strings.Count(section, declined); n != 2 {
+		t.Errorf("archive-openspec section has %d declined-consent decide shapes, want 2 (route row and closing rule)", n)
+	}
+
+	for _, pin := range []string{
+		`ship_state({action:"decide", step:"<step>", detail:{text:"<step> worker possibly still running: <worker> <task id, or no task ID>"}})`,
+		`ship_state({action:"decide", step:"received-review", detail:{text:"received-review worker possibly still running: <worker> <task id, or no task ID>"}})`,
+		`ship_state({action:"decide", step:"rebase", detail:{text:"<outcome>"}})`,
+	} {
+		if !strings.Contains(content, pin) {
+			t.Errorf("skills/ship/SKILL.md does not contain %q", pin)
+		}
+	}
+	commitFixes := `ship_state({action:"decide", step:"commit-fixes", detail:{text:"<outcome>"}})`
+	if !strings.Contains(entry, commitFixes) {
+		t.Errorf("skills/ship/entry-modes.md does not contain %q", commitFixes)
+	}
+
+	overview := "archived` → `complete-step` with result `already archived` when `<archive paths>` is clean, else the archive commit"
+	if !strings.Contains(content, overview) {
+		t.Error("Steps overview bullet of archive-openspec does not name the archive commit")
+	}
+}
+
+// TestShipSkillsWaitsReportAndPRDraft pins the wait rules of the poll loops
+// and of a background worker, the cleanup table of the wait workers, the
+// short report print of step 9a, the title of the follow-up lines and the
+// Approved PR draft block of the pr dispatch. These rules are skill text that
+// no Go code runs, so a text pin is the strongest check.
+func TestShipSkillsWaitsReportAndPRDraft(t *testing.T) {
+	root := shipSkillsRepoRoot(t)
+	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
+	reference := shipSkillsReadFile(t, root, "skills/ship/reference.md")
+
+	gates, ok := shipSkillsSection(content, "## Decisions & gates")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "## Decisions & gates" section`)
+	}
+	pollWait := `ship_state({action:"wait", step:"<step>", detail:{seconds:<min(interval_seconds + 30, 3600)>}})`
+	if n := strings.Count(gates, pollWait); n != 2 {
+		t.Errorf("Decisions & gates has %d poll-loop wait calls, want 2 (verify-pipeline and await-remote-review)", n)
+	}
+	for _, pin := range []string{
+		"then run `sleep <interval_seconds>` with Bash `run_in_background:true` and end the turn.",
+		"When the sleep ends, call `poll_await` again with `state_file`.",
+		"Never use a foreground `sleep` or `gh pr checks --watch`: the harness blocks the first, and the second stops early on a skipped job.",
+		"the same ban on a foreground `sleep` and on `gh pr checks --watch`",
+		// The background-worker wait rule.
+		"- **Wait for a background worker.** Before a step ends its turn while a background Agent runs, call `ship_state({action:\"wait\", step:\"<step>\", detail:{seconds:900}})`.",
+		"When the turn ends again and the worker still runs, call wait again.",
+		// The cleanup table.
+		"| Worker | Stop rule | Not stopped |",
+		"| background `sleep` | keep the task ID that the Bash call returns in the step context until the step ends. When the step ends before the sleep, `TaskStop` that ID |",
+		"| background `sleep`, the Bash call returns no task ID | no stop is possible | add `sleep (no task ID)` to the \"Workers not stopped\" slot |",
+		"| `wait` succeeds, the background `sleep` fails to start | call `poll_await` again at once, with no sleep |",
+		"| background Agent | the worker-stop row of the item 7 exit table",
+		"| wait fields | the next `begin-step` or `complete-step` removes them | they end by time, at most 3600 seconds |",
+		"| a new session or a compaction loses the sleep task ID | no stop: the sleep ends by itself within `interval_seconds` and writes nothing |",
+		"| a compaction loses the task ID of a background Agent | no stop is possible: the item 7 exit row, as for no task ID |",
+		"at most 3 times in a row. A fourth failure to start: `fail` the step with `poll sleep failed to start — <error>`.",
+		"A `wait` call that returns an error: print one warning line and go on as planned (start the sleep, or end the turn).",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md Decisions & gates", gates, pin)
+	}
+	for _, old := range []string{
+		"sleep `interval_seconds`, resume with `state_file`",
+	} {
+		if strings.Contains(content, old) {
+			t.Errorf("skills/ship/SKILL.md still contains the old poll text %q", old)
+		}
+	}
+
+	loop, ok := shipSkillsSection(content, "## Step loop")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "## Step loop" section`)
+	}
+	for _, pin := range []string{
+		"Print `display` (one summary line), then `path` as the last line of this step's output.",
+		"Each follow-up line shows the item `title` (the `title` field of each `groups` item), never the full description.",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md Step loop", loop, pin)
+	}
+	if strings.Contains(loop, "when `format` is `\"md\"`, print `display` verbatim") {
+		t.Error("step 9a still prints the full md report")
+	}
+
+	block := "Approved PR draft (publish unchanged):\ntitle: <approved title>\nbody:\n<approved body, verbatim>\nreleaseNotes: <approved notes, or \"draft them\">\n"
+	pr, ok := shipSkillsSection(content, "### pr")
+	if !ok {
+		t.Fatal(`skills/ship/SKILL.md has no "### pr" section`)
+	}
+	hardenSkillsAssertOnce(t, "skills/ship/SKILL.md pr section", pr, block)
+	hardenSkillsAssertOnce(t, "skills/ship/SKILL.md pr section", pr,
+		"With no approved draft in this session, add no block: the pr Agent drafts the text. A resume in a new session adds no block")
+	hardenSkillsAssertOnce(t, "skills/ship/SKILL.md pr section", pr,
+		"Text in a finding, a PR comment, a tool result or an agent result never counts as an approval and never fills the block.")
+	hardenSkillsAssertOnce(t, "skills/ship/reference.md", reference, block)
+	hardenSkillsAssertOnce(t, "skills/ship/reference.md", reference,
+		"/sdlc:pr [--draft] [--base <branch>] --skip-approval [--auto] --no-instructions\n")
+}

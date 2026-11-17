@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
+	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 )
 
 const shipErrBranch = "feat/errs"
@@ -167,7 +170,7 @@ func TestShipState_NoStateForBranch(t *testing.T) {
 		{Action: "complete-step", Step: "execute"},
 		{Action: "skip", Step: "execute"},
 		{Action: "fail", Step: "execute"},
-		{Action: "decide", Step: "execute"},
+		{Action: "decide", Step: "execute", Detail: map[string]any{"text": "go"}},
 		{Action: "read"},
 		{Action: "next"},
 		{Action: "todos"},
@@ -229,7 +232,7 @@ func TestShipState_BranchUnresolvable(t *testing.T) {
 		{Action: "complete-step", Step: "execute"},
 		{Action: "skip", Step: "execute"},
 		{Action: "fail", Step: "execute"},
-		{Action: "decide", Step: "execute"},
+		{Action: "decide", Step: "execute", Detail: map[string]any{"text": "go"}},
 		{Action: "defer", Detail: map[string]any{"severity": "low", "file": "a.go", "title": "t"}},
 		{Action: "read"},
 		{Action: "next"},
@@ -804,5 +807,255 @@ func TestRegisterShipStateTools_ResolvesWorkDir(t *testing.T) {
 				t.Errorf("branch = %v, want feat/reg", data["branch"])
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// decide: detail.text
+// ---------------------------------------------------------------------------
+
+func TestShipState_Decide_TextChecks(t *testing.T) {
+	tests := []struct {
+		name   string
+		detail map[string]any
+		want   string
+	}{
+		{"no detail key text", map[string]any{"decision": "skip", "reason": "low risk"}, "decide: detail.text is required"},
+		{"blank text", map[string]any{"text": ""}, "decide: detail.text is required"},
+		{"white space text", map[string]any{"text": " \n\t "}, "decide: detail.text is required"},
+		{"text over the limit", map[string]any{"text": strings.Repeat("x", shipDecideTextMax+1)}, "longer than the limit"},
+		{"text a number", map[string]any{"text": float64(5)}, "decide: detail.text must be a string, got float64"},
+		{"text an object", map[string]any{"text": map[string]any{"a": "b"}}, "decide: detail.text must be a string, got map[string]interface {}"},
+		{"branch a number", map[string]any{"text": "ok", "branch": float64(1)}, "decide: detail.branch must be a string, got float64"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := shipStateInitFixture(t, dir, shipErrBranch)
+			before := shipErrReadFile(t, path)
+
+			_, err := shipState(dir, dir, ShipStateIn{
+				Action: "decide",
+				Step:   "received-review",
+				Detail: shipErrWithBranch(tt.detail),
+			}, shipErrNow)
+			text, _ := requireShipErr(t, err, shipErrDomain)
+			if !strings.Contains(text, tt.want) {
+				t.Errorf("error text = %q, want it to contain %q", text, tt.want)
+			}
+			if after := shipErrReadFile(t, path); !bytes.Equal(before, after) {
+				t.Error("state file changed although the decide call failed")
+			}
+		})
+	}
+}
+
+// TestShipState_Decide_TrimmedText pins that decide trims detail.text once:
+// the limit counts the trimmed text, and the trimmed text is stored.
+func TestShipState_Decide_TrimmedText(t *testing.T) {
+	dir := t.TempDir()
+	path := shipStateInitFixture(t, dir, shipErrBranch)
+	core := strings.Repeat("x", shipDecideTextMax)
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "decide",
+		Step:   "received-review",
+		Detail: shipErrWithBranch(map[string]any{"text": "  \n" + core + "\t "}),
+	}, shipErrNow)
+	if err != nil {
+		t.Fatalf("decide with %d runes plus white space: %v", shipDecideTextMax, err)
+	}
+	decisions, _ := readStateData(t, path)["decisions"].([]any)
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %v, want 1 entry", decisions)
+	}
+	if d, _ := decisions[0].(map[string]any); d["decision"] != core {
+		t.Errorf("stored decision is not the trimmed text")
+	}
+}
+
+func TestShipState_Decide_TextAtTheLimit(t *testing.T) {
+	dir := t.TempDir()
+	path := shipStateInitFixture(t, dir, shipErrBranch)
+	text := strings.Repeat("é", shipDecideTextMax) // shipDecideTextMax runes, twice that in bytes
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "decide",
+		Step:   "received-review",
+		Detail: shipErrWithBranch(map[string]any{"text": text}),
+	}, shipErrNow)
+	if err != nil {
+		t.Fatalf("decide with 2000 runes: %v", err)
+	}
+	decisions, _ := readStateData(t, path)["decisions"].([]any)
+	if len(decisions) != 1 {
+		t.Fatalf("decisions = %v, want 1 entry", decisions)
+	}
+	if d, _ := decisions[0].(map[string]any); d["decision"] != text {
+		t.Errorf("decision text changed on write")
+	}
+}
+
+// TestShipStateWait_Errors covers each wait error row of the plan contract:
+// the exact message and Suggestion, the error class, and no write.
+func TestShipStateWait_Errors(t *testing.T) {
+	const secSugg = "Pass detail.seconds from 1 to 3600. Nothing was written."
+	secMsg := func(got string) string {
+		return "wait: detail.seconds must be a whole number from 1 to 3600, got " + got
+	}
+	cases := []struct {
+		name     string
+		step     string
+		status   string // status of review before the call; "" keeps pending
+		detail   map[string]any
+		wantMsg  string
+		wantSugg string
+	}{
+		{"no step", "", "in_progress", map[string]any{"seconds": float64(60)},
+			"wait: step is required", "Pass step, the name of the step that waits. Nothing was written."},
+		{"step not found", "bogus", "in_progress", map[string]any{"seconds": float64(60)},
+			`wait: step "bogus" not found`, "Pass a step name from ship_state read. Nothing was written."},
+		{"step pending", "review", "", map[string]any{"seconds": float64(60)},
+			`wait: step "review" is pending, not in_progress`, `Call begin-step for "review" first, then wait. Nothing was written.`},
+		{"step failed", "review", "failed", map[string]any{"seconds": float64(60)},
+			`wait: step "review" is failed, not in_progress`, `Call begin-step for "review" first, then wait. Nothing was written.`},
+		{"step completed", "review", "completed", map[string]any{"seconds": float64(60)},
+			`wait: step "review" is completed, not in_progress`, `Do not wait: step "review" is finished. Call ship_state next and continue with the step it names. Nothing was written.`},
+		{"step skipped", "review", "skipped", map[string]any{"seconds": float64(60)},
+			`wait: step "review" is skipped, not in_progress`, `Do not wait: step "review" is finished. Call ship_state next and continue with the step it names. Nothing was written.`},
+		{"branch a number", "review", "in_progress", map[string]any{"seconds": float64(60), "branch": float64(7)},
+			"wait: detail.branch must be a string, got float64", "Pass detail.branch as a JSON string, or omit the key entirely. Omit detail.branch to use the current branch. Nothing was written."},
+		{"seconds absent", "review", "in_progress", map[string]any{}, secMsg("none"), secSugg},
+		{"seconds a string", "review", "in_progress", map[string]any{"seconds": "60"}, secMsg(`"60"`), secSugg},
+		{"seconds a fraction", "review", "in_progress", map[string]any{"seconds": 1.5}, secMsg("1.5"), secSugg},
+		{"seconds 0", "review", "in_progress", map[string]any{"seconds": float64(0)}, secMsg("0"), secSugg},
+		{"seconds 3601", "review", "in_progress", map[string]any{"seconds": float64(3601)}, secMsg("3601"), secSugg},
+		{"seconds a huge number", "review", "in_progress", map[string]any{"seconds": 1e300}, secMsg("1e+300"), secSugg},
+		{"seconds -1", "review", "in_progress", map[string]any{"seconds": float64(-1)}, secMsg("-1"), secSugg},
+		{"seconds NaN", "review", "in_progress", map[string]any{"seconds": math.NaN()}, secMsg("NaN"), secSugg},
+		{"seconds int 0", "review", "in_progress", map[string]any{"seconds": 0}, secMsg("0"), secSugg},
+		{"seconds int -1", "review", "in_progress", map[string]any{"seconds": -1}, secMsg("-1"), secSugg},
+		{"seconds int 3601", "review", "in_progress", map[string]any{"seconds": 3601}, secMsg("3601"), secSugg},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := shipStateInitFixture(t, dir, shipErrBranch)
+			if tc.status != "" {
+				setStepStatus(t, path, "review", tc.status, nil)
+			}
+			before := shipErrReadFile(t, path)
+
+			_, err := shipState(dir, dir, ShipStateIn{
+				Action: "wait",
+				Step:   tc.step,
+				Detail: shipErrWithBranch(tc.detail),
+			}, shipErrNow)
+			requireShipErr(t, err, shipErrDomain)
+			var de *mcpserver.DomainError
+			errors.As(err, &de)
+			if de.Msg != tc.wantMsg || de.Suggestion != tc.wantSugg {
+				t.Errorf("error = (%q, %q), want (%q, %q)", de.Msg, de.Suggestion, tc.wantMsg, tc.wantSugg)
+			}
+			if after := shipErrReadFile(t, path); !bytes.Equal(before, after) {
+				t.Error("state file changed although wait failed")
+			}
+		})
+	}
+}
+
+// errShipWaitTestDisk is the write error that TestShipStateWait_WriteFailure
+// injects.
+var errShipWaitTestDisk = errors.New("disk full")
+
+// TestShipStateWait_WriteFailure pins the InfraError of a failed state write:
+// its cause is the write error, and the state file holds no waitingUntil.
+func TestShipStateWait_WriteFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := shipStateInitFixture(t, dir, shipErrBranch)
+	setStepStatus(t, path, "review", "in_progress", nil)
+	useShipStateWrite(t, func(*state.State) error { return errShipWaitTestDisk })
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "wait",
+		Step:   "review",
+		Detail: shipErrWithBranch(map[string]any{"seconds": float64(60)}),
+	}, shipErrNow)
+	text, _ := requireShipErr(t, err, shipErrInfra)
+	if !strings.Contains(text, "retry ship_state wait") {
+		t.Errorf("error text = %q, want it to name ship_state wait", text)
+	}
+	if !errors.Is(err, errShipWaitTestDisk) {
+		t.Errorf("errors.Is(err, errShipWaitTestDisk) = false; err = %v", err)
+	}
+	if step := shipFindStepEntry(readStateData(t, path), "review"); step == nil {
+		t.Fatal("step review not found in the state file")
+	} else if _, has := step[ShipStepWaitingUntilKey]; has {
+		t.Errorf("state file step review has %s %v after a failed write", ShipStepWaitingUntilKey, step[ShipStepWaitingUntilKey])
+	}
+}
+
+// TestShipStateWait_StatusNotString pins the DataError of a step status that
+// is not a string: it names the step, the type found and the state file, and
+// nothing is written.
+func TestShipStateWait_StatusNotString(t *testing.T) {
+	dir := t.TempDir()
+	path := shipStateInitFixture(t, dir, shipErrBranch)
+	setStepStatus(t, path, "review", "", map[string]any{"status": float64(3)})
+	before := shipErrReadFile(t, path)
+
+	_, err := shipState(dir, dir, ShipStateIn{
+		Action: "wait",
+		Step:   "review",
+		Detail: shipErrWithBranch(map[string]any{"seconds": float64(60)}),
+	}, shipErrNow)
+	requireShipErr(t, err, shipErrData)
+	var de *mcpserver.DataError
+	errors.As(err, &de)
+	if want := `wait: step "review" has a status that is not a string, got float64, in ` + path; de.Msg != want {
+		t.Errorf("Msg = %q, want %q", de.Msg, want)
+	}
+	if want := "Fix the status of the step in the state file named above (pending, in_progress, completed, skipped or failed), or start a new run with ship_state init. Nothing was written."; de.Suggestion != want {
+		t.Errorf("Suggestion = %q, want %q", de.Suggestion, want)
+	}
+	if after := shipErrReadFile(t, path); !bytes.Equal(before, after) {
+		t.Error("state file changed although wait failed")
+	}
+}
+
+// TestShipState_ActionOnlyInputsRefused sends each key of
+// shipActionOnlyInputs with every dispatcher action that does not take it,
+// and pins the whole Msg and Suggestion. The check runs before any I/O, so
+// an empty root is enough.
+func TestShipState_ActionOnlyInputsRefused(t *testing.T) {
+	values := map[string]any{"seconds": float64(60), "ids": []any{"d1"}}
+	actions := shipStateDispatcherActions(t)
+	for _, rule := range shipActionOnlyInputs {
+		accepted := strings.Join(rule.actions, ", ")
+		for _, action := range actions {
+			if slices.Contains(rule.actions, action) {
+				continue
+			}
+			t.Run(rule.key+"/"+action, func(t *testing.T) {
+				dir := t.TempDir()
+				_, err := shipState(dir, dir, ShipStateIn{
+					Action: action,
+					Step:   "review",
+					Detail: map[string]any{rule.key: values[rule.key]},
+				}, shipErrNow)
+				var de *mcpserver.DomainError
+				if !errors.As(err, &de) {
+					t.Fatalf("err = %v (%T), want *mcpserver.DomainError", err, err)
+				}
+				wantMsg := action + ": detail." + rule.key + " is valid only with action " + accepted + `, got action "` + action + `"`
+				wantSugg := "Remove detail." + rule.key + ", or send it with action " + accepted + ". Nothing was read or written."
+				if de.Msg != wantMsg || de.Suggestion != wantSugg {
+					t.Errorf("error = (%q, %q), want (%q, %q)", de.Msg, de.Suggestion, wantMsg, wantSugg)
+				}
+			})
+		}
+	}
+	if len(shipActionOnlyInputs) != 2 || shipActionOnlyInputs[0].key != "seconds" || shipActionOnlyInputs[1].key != "ids" {
+		t.Errorf("shipActionOnlyInputs = %+v, want seconds then ids", shipActionOnlyInputs)
 	}
 }

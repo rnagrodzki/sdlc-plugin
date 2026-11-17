@@ -20,12 +20,12 @@ import (
 var ccNow = time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
 
 // ccEnv is one isolated ClearCache fixture. Every path is under t.TempDir.
-// newCCEnv points clearTempDir at tmp, so a test can never reach the real
-// temp directory. A test that swaps package vars must not run in parallel.
+// newCCEnv points clearTempDir at tmp, so a test can never reach a real
+// scratch folder. A test that swaps package vars must not run in parallel.
 type ccEnv struct {
 	t    *testing.T
 	root string // repo root
-	tmp  string // stands in for os.TempDir()
+	tmp  string // stands in for .sdlc-v2/scratch/ of the repo
 	log  string // stands in for the dashboard server.log
 }
 
@@ -46,7 +46,7 @@ func newCCEnv(t *testing.T) *ccEnv {
 		}
 	}
 	origTemp, origRemove := clearTempDir, clearRemove
-	clearTempDir = func() string { return env.tmp }
+	clearTempDir = func(string) string { return env.tmp }
 	t.Cleanup(func() { clearTempDir, clearRemove = origTemp, origRemove })
 	return env
 }
@@ -253,11 +253,11 @@ func TestClearCache_TempDirs(t *testing.T) {
 	tmp := func(name string) string { return filepath.Join(env.tmp, name) }
 
 	oldDir := tmp("sdlc-review-old")
-	ccWriteDir(t, oldDir, 40, clearTempDirMinAge+time.Second)
+	ccWriteDir(t, oldDir, 40, paths.ScratchMaxAge+time.Second)
 	freshDir := tmp("sdlc-harden-fresh")
 	ccWriteDir(t, freshDir, 20, 23*time.Hour)
 	edgeDir := tmp("sdlc-edge")
-	ccWriteDir(t, edgeDir, 8, clearTempDirMinAge) // age equals the gate: kept
+	ccWriteDir(t, edgeDir, 8, paths.ScratchMaxAge) // age equals the gate: kept
 	exploreDir := tmp("sdlc-explore-main-abc123")
 	ccWriteDir(t, exploreDir, 30, 100*time.Hour) // state.GC owns it
 	foreignDir := tmp("other-tool-old")
@@ -566,7 +566,7 @@ func TestClearCache_KeepsEverythingElse(t *testing.T) {
 func TestClearCache_MissingDirsAreNotErrors(t *testing.T) {
 	env := newCCEnv(t)
 	// root has no .sdlc-v2, and the temp dir does not exist
-	clearTempDir = func() string { return filepath.Join(env.tmp, "does-not-exist") }
+	clearTempDir = func(string) string { return filepath.Join(env.tmp, "does-not-exist") }
 
 	out, err := ClearCache(env.root, env.log, ccNow)
 	if err != nil {
@@ -634,12 +634,45 @@ func TestClearCache_RootReadErrorIsInfraErrorWithSuggestion(t *testing.T) {
 	}
 }
 
-// TestClearCache_ClearTempDirDefaultsToOSTempDir asserts that the clearTempDir
-// seam returns os.TempDir() when no test replaces it.
-func TestClearCache_ClearTempDirDefaultsToOSTempDir(t *testing.T) {
-	// The seam must default to the real temp dir; tests swap it, nothing else does.
-	if got, want := clearTempDir(), os.TempDir(); got != want {
-		t.Errorf("clearTempDir() = %q, want os.TempDir() %q", got, want)
+// TestClearCache_ClearTempDirDefaultsToScratchDir asserts that the clearTempDir
+// seam returns the scratch folder of the repo root when no test replaces it.
+func TestClearCache_ClearTempDirDefaultsToScratchDir(t *testing.T) {
+	// The seam must default to .sdlc-v2/scratch/ of the root; tests swap it, nothing else does.
+	root := t.TempDir()
+	if got, want := clearTempDir(root), paths.ScratchDir(root); got != want {
+		t.Errorf("clearTempDir(root) = %q, want paths.ScratchDir(root) %q", got, want)
+	}
+}
+
+// TestClearCache_SweepsScratchFolderOfRepo asserts that, with the default
+// seam, Clear deletes the sdlc-* folders older than 24 hours from
+// .sdlc-v2/scratch/ of the repo, and keeps new folders and sdlc-explore-*.
+func TestClearCache_SweepsScratchFolderOfRepo(t *testing.T) {
+	env := newCCEnv(t)
+	clearTempDir = paths.ScratchDir // the real default; newCCEnv restores the swap
+
+	oldDir := env.data(paths.ScratchSubdir, "sdlc-review-old")
+	ccWriteDir(t, oldDir, 5, paths.ScratchMaxAge+time.Hour)
+	newDir := env.data(paths.ScratchSubdir, "sdlc-review-new")
+	ccWriteDir(t, newDir, 5, time.Hour)
+	exploreDir := env.data(paths.ScratchSubdir, "sdlc-explore-feat-x-abc123")
+	ccWriteDir(t, exploreDir, 5, 48*time.Hour)
+	otherTmp := filepath.Join(env.tmp, "sdlc-other-old")
+	ccWriteDir(t, otherTmp, 5, 48*time.Hour)
+
+	env.clear()
+
+	if ccExists(oldDir) {
+		t.Errorf("old scratch folder %s must be deleted", oldDir)
+	}
+	if !ccExists(newDir) {
+		t.Errorf("new scratch folder %s must be kept", newDir)
+	}
+	if !ccExists(exploreDir) {
+		t.Errorf("sdlc-explore-* folder %s belongs to state.GC and must be kept", exploreDir)
+	}
+	if !ccExists(otherTmp) {
+		t.Errorf("Clear must not touch a folder outside the scratch folder of the repo: %s", otherTmp)
 	}
 }
 
@@ -651,7 +684,7 @@ func TestClearTooNewReason(t *testing.T) {
 		want   string
 	}{
 		{dashboardStallAfter, "Changed less than 30 minutes ago"},
-		{clearTempDirMinAge, "Changed less than 24 hours ago"},
+		{paths.ScratchMaxAge, "Changed less than 24 hours ago"},
 	}
 	for _, tc := range cases {
 		if got := clearTooNewReason(tc.minAge); got != tc.want {

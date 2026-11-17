@@ -15,7 +15,7 @@ A `/sdlc:ship` run ended, and its summary says that deferred items are still ope
 
     /deferred
 
-The skill prints each open item under its priority, as `[<id>] <first line of the description> (source: <source>)`. Then it asks what to do:
+The skill prints each open item under its priority, as `[<id>] <title> (source: <source>)`. The title is the first line of the description that has text, at most 80 characters (see [Deferred items](deferred/items.md)). Then it asks what to do:
 
 - **Create GitHub issues**: file the items you pick as issues.
 - **Resolve without filing**: mark the items you pick as resolved.

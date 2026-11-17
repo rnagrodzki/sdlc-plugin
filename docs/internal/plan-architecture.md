@@ -458,7 +458,7 @@ Step 6 (and again on a Step 7 reject with feedback):**
    (`openspec.PrepareInstructions`) resolves the artifact list and
    per-artifact authoring guidance (template, instruction, context, rules)
    for `changeName`. It never touches the real repo: it copies
-   `openspec/config.yaml` into a throwaway temp directory, runs `openspec
+   `openspec/config.yaml` into a throwaway folder under `.sdlc-v2/scratch/`, runs `openspec
    new change <changeName>` there, and asks the CLI about that temp change.
 2. The skill authors each artifact's content, following the returned
    guidance and the plan's guardrails.

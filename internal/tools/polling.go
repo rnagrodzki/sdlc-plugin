@@ -275,7 +275,7 @@ func approvedOrCommentedStatus(state string, ov CopilotOverview, hasOverview boo
 }
 
 // awaitRemoteReview implements one KD8 probe of await_remote_review.
-func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envelope, error) {
+func awaitRemoteReview(activeRoot, scratchDir string, in AwaitRemoteReviewIn) (stepper.Envelope, error) {
 	if in.PR <= 0 {
 		return stepper.Envelope{}, &mcpserver.DomainError{
 			Msg:        "pr must be a positive integer",
@@ -297,7 +297,7 @@ func awaitRemoteReview(activeRoot string, in AwaitRemoteReviewIn) (stepper.Envel
 	}
 
 	stateFile := in.StateFile
-	st, err := loadOrInitPollState(stateFile, "await-remote-review", timeoutSeconds, intervalSeconds, &stateFile)
+	st, err := loadOrInitPollState(scratchDir, stateFile, "await-remote-review", timeoutSeconds, intervalSeconds, &stateFile)
 	if err != nil {
 		return stepper.Envelope{}, err
 	}
@@ -479,7 +479,7 @@ func hasCIConfig(root string) bool {
 }
 
 // verifyPipelineAwait implements one KD8 probe of verify_pipeline_await.
-func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.Envelope, error) {
+func verifyPipelineAwait(activeRoot, scratchDir string, in VerifyPipelineAwaitIn) (stepper.Envelope, error) {
 	if in.PR <= 0 {
 		return stepper.Envelope{}, &mcpserver.DomainError{
 			Msg:        "pr must be a positive integer",
@@ -497,7 +497,7 @@ func verifyPipelineAwait(activeRoot string, in VerifyPipelineAwaitIn) (stepper.E
 	}
 
 	stateFile := in.StateFile
-	st, err := loadOrInitPollState(stateFile, "verify-pipeline", timeoutSeconds, intervalSeconds, &stateFile)
+	st, err := loadOrInitPollState(scratchDir, stateFile, "verify-pipeline", timeoutSeconds, intervalSeconds, &stateFile)
 	if err != nil {
 		return stepper.Envelope{}, err
 	}
@@ -612,10 +612,10 @@ type PollAwaitIn struct {
 // pollAwait dispatches a poll_await call to the target's existing core
 // probe function, unchanged. Extracted as a standalone function (rather
 // than inlined in the Register closure) so it is directly unit-testable.
-func pollAwait(activeRoot string, in PollAwaitIn) (stepper.Envelope, error) {
+func pollAwait(activeRoot, scratchDir string, in PollAwaitIn) (stepper.Envelope, error) {
 	switch in.Target {
 	case "remote_review":
-		return awaitRemoteReview(activeRoot, AwaitRemoteReviewIn{
+		return awaitRemoteReview(activeRoot, scratchDir, AwaitRemoteReviewIn{
 			PR:              in.PR,
 			TimeoutSeconds:  in.TimeoutSeconds,
 			IntervalSeconds: in.IntervalSeconds,
@@ -623,7 +623,7 @@ func pollAwait(activeRoot string, in PollAwaitIn) (stepper.Envelope, error) {
 			StateFile:       in.StateFile,
 		})
 	case "pipeline":
-		return verifyPipelineAwait(activeRoot, VerifyPipelineAwaitIn{
+		return verifyPipelineAwait(activeRoot, scratchDir, VerifyPipelineAwaitIn{
 			PR:              in.PR,
 			TimeoutSeconds:  in.TimeoutSeconds,
 			IntervalSeconds: in.IntervalSeconds,
@@ -644,14 +644,16 @@ func pollAwait(activeRoot string, in PollAwaitIn) (stepper.Envelope, error) {
 // loadOrInitPollState resolves the resume state for one bounded-poll call:
 // if stateFile is empty or fails to load (mirroring the JS source's
 // readStateFile, which fails open on any read/parse error and starts over),
-// a fresh PollState and a new state file path are created. *stateFile is
-// updated in place to the resolved path either way.
+// a fresh PollState and a new state file path under scratchDir are created.
+// *stateFile is updated in place to the resolved path either way. A
+// state_file from a poll that started before the scratch folder (a path
+// under the system temp folder) still loads from that path.
 //
 // A state file that loads but was written by the other target (its stored
 // skill differs from skill) is a DomainError, not a fresh start: resuming it
 // would reuse the other poll's budget and exhausted marker, and silently
 // starting over would hide the caller's mix-up.
-func loadOrInitPollState(stateFile, skill string, timeoutSeconds, intervalSeconds int, out *string) (stepper.PollState, error) {
+func loadOrInitPollState(scratchDir, stateFile, skill string, timeoutSeconds, intervalSeconds int, out *string) (stepper.PollState, error) {
 	if stateFile != "" {
 		st, err := stepper.LoadPollState(stateFile)
 		if err == nil {
@@ -664,16 +666,26 @@ func loadOrInitPollState(stateFile, skill string, timeoutSeconds, intervalSecond
 			return st, nil
 		}
 	}
-	newPath, err := stepper.NewStateFilePath(skill)
+	newPath, err := stepper.NewStateFilePath(scratchDir, skill)
 	if err != nil {
 		return stepper.PollState{}, &mcpserver.InfraError{
 			Msg:        "create resume state file: " + err.Error(),
-			Suggestion: "Retry once; if it recurs, the OS random source is unavailable while naming the state file — escalate rather than looping.",
+			Suggestion: stateFileSuggestion(scratchDir, err),
 			Cause:      err,
 		}
 	}
 	*out = newPath
 	return stepper.NewPollState(skill, timeoutSeconds, intervalSeconds), nil
+}
+
+// stateFileSuggestion returns the Suggestion for a failed
+// stepper.NewStateFilePath(dir, …): a failed create of dir names dir, and
+// any other error (the OS random source) keeps the retry-once advice.
+func stateFileSuggestion(dir string, err error) string {
+	if errors.Is(err, stepper.ErrStateFolder) {
+		return fmt.Sprintf("Check that %s is a folder with write permission and free space, then retry.", dir)
+	}
+	return "Retry once; if it recurs, the OS random source is unavailable while naming the state file — escalate rather than looping."
 }
 
 // probeFailureEnvelope is DD3: the single failed-probe branch both polling
@@ -937,7 +949,8 @@ func pollAwaitDescription() string {
 		`For target "remote_review" ext.verdict is one of "approved-clean", "actionable", "timeout" (deadline passed with no verdict) or "skipped" (this state_file already timed out; ext.reason "exhausted"). ` +
 		`The verdict comes from the latest submitted review of the first configured reviewer that has one: CHANGES_REQUESTED gives "actionable" and DISMISSED gives no verdict. For APPROVED or COMMENTED, a Copilot overview header line in the body decides: "` + overviewHeaders[0].text + `" with no open item, no previously missed item and every block read in full gives "approved-clean"; every other overview, a partly read one included, gives "actionable". With no header line, APPROVED gives "approved-clean" and COMMENTED gives "actionable". ` +
 		`Only the "approved-clean" and "actionable" results carry ext.overview: one of ` + strings.Join(quoted, ", ") + `, or "" when the body has no header line. The "timeout" and "skipped" results have no ext.overview key. ` +
-		`For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped" (ext.reason "exhausted", or "no-ci" when gh reports no checks and the repo has no CI config: no .github/workflows/*.yml|*.yaml, no .circleci/, no Jenkinsfile). Every "done" verdict ends the poll.`
+		`For target "pipeline" it is "green" (all checks passed), "failed" (a check failed; ext.checks_raw holds the raw check list), "timeout" or "skipped" (ext.reason "exhausted", or "no-ci" when gh reports no checks and the repo has no CI config: no .github/workflows/*.yml|*.yaml, no .circleci/, no Jenkinsfile). Every "done" verdict ends the poll. ` +
+		`Also removes its own await-remote-review-* or verify-pipeline-* entries (the prefix of the target) under .sdlc-v2/scratch/ older than 24 hours when it starts a new poll.`
 }
 
 // RegisterPollingTools registers poll_await and verify_pipeline_classify on
@@ -967,7 +980,7 @@ func RegisterPollingTools(s *mcpserver.Server) {
 			if err != nil {
 				activeRoot = root
 			}
-			return pollAwait(activeRoot, in)
+			return pollAwait(activeRoot, paths.ScratchDir(root), in)
 		},
 	)
 

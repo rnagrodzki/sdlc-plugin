@@ -68,10 +68,10 @@ func manifestPathFromText(t *testing.T, text string) string {
 // stop. The manifest on disk holds one preflightFindings entry with bytesOver
 // 450, and the output carries the count 1 and the next sentence for findings.
 func TestIntegration_PrepareOrchestratorHarden_WritesPreflightFindings(t *testing.T) {
-	tmpDir := redirectTempDir(t)
-	newOrchestratorRepo(t, ""+
+	root := newOrchestratorRepo(t, ""+
 		"[execute.guardrails.long-rule]\n"+
 		"description = \""+strings.Repeat("a", 1474)+"\"\n")
+	tmpDir := redirectTempDir(t, root)
 
 	res, text := callRegisteredPrepareOrchestratorText(t, map[string]any{
 		"mode":            "harden",
@@ -85,7 +85,7 @@ func TestIntegration_PrepareOrchestratorHarden_WritesPreflightFindings(t *testin
 
 	manifestPath := manifestPathFromText(t, text)
 	if !strings.HasPrefix(manifestPath, tmpDir+string(filepath.Separator)) {
-		t.Errorf("manifestPath %q is not under the redirected temp dir %q", manifestPath, tmpDir)
+		t.Errorf("manifestPath %q is not under the scratch folder %q", manifestPath, tmpDir)
 	}
 	findings := manifestPreflightFindings(t, manifestPath)
 	if len(findings) != 1 {
@@ -109,10 +109,10 @@ func TestIntegration_PrepareOrchestratorHarden_WritesPreflightFindings(t *testin
 // a clean config. The manifest on disk holds preflightFindings as an empty
 // array (not null), and the output carries the count 0 and the plain next text.
 func TestIntegration_PrepareOrchestratorHarden_CleanConfigWritesEmptyList(t *testing.T) {
-	redirectTempDir(t)
-	newOrchestratorRepo(t, ""+
+	root := newOrchestratorRepo(t, ""+
 		"[execute.guardrails.good-rule]\n"+
 		"description = \"Every task names its files.\"\n")
+	redirectTempDir(t, root)
 
 	res, text := callRegisteredPrepareOrchestratorText(t, map[string]any{
 		"mode":            "harden",

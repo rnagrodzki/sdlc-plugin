@@ -59,7 +59,7 @@ Do not run step 8 again, and never dispatch received-review again for these find
 
 1. `in_progress` or `failed` only: run `git status --porcelain -- . ':!.sdlc-v2/'`. Empty output: go to item 2.
    - Output not empty, and a `reportData.healing.fixProgress` record with `origin:"local-review"` has `status:"fixing"`: a fix can be half done. Call `ship_state({action:"fail", step:"received-review", detail:{error:"received-review: resumed with a fix in progress; check the uncommitted changes, commit or discard them, then run /ship --resume"}})`. Print the resume instruction ([`reference.md`](reference.md)'s Error Recovery) and stop.
-   - Output not empty, no such record: the changes are the finished fixes of the stopped worker. Run commit-fixes as step 8 does: stage, dispatch commit, record `decide` for `commit-fixes`. A failed commit takes the step 8 failure row.
+   - Output not empty, no such record: the changes are the finished fixes of the stopped worker. Run commit-fixes as step 8 does: stage, dispatch commit, record `ship_state({action:"decide", step:"commit-fixes", detail:{text:"<outcome>"}})`. A failed commit takes the step 8 failure row.
 2. `ship_state({action:"begin-step", step:"received-review"})`.
 3. `ship_state({action:"decide", step:"received-review", detail:{text:"resumed after a stop: review output lost; findings with no fix or deferral record stay unaccounted"}})`.
 4. `ship_state({action:"complete-step", step:"received-review", detail:{outcome:"success", result:"resumed — review output lost"}})`. Apply loop items 7b and 7d to items 2 and 4.

@@ -21,7 +21,7 @@ record before it.
 | Field | Description |
 |-------|-------------|
 | `phase` | `started` or `done` |
-| `trigger` | The first 200 characters of the failure text. It is the key of the record |
+| `trigger` | The first 200 characters of the failure text. It is the key of the record. A trigger cut shorter still matches the same failure when it has at least 100 characters and is a prefix of the failure text (`harden_clusters` and `healing_record` both use this match) |
 | `classification` | `user-code`, `plugin-defect` or `ambiguous` |
 | `applied[]` | One entry for each proposal that was written: `surface`, `action`, `targetFile`, `rationale?`, `patch?`. At most 100 entries |
 | `applied[].rationale?` | The rationale of the proposal, at most 600 characters. The key is absent when the proposal has no rationale |

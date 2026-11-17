@@ -731,10 +731,10 @@ func TestHardenDeadRefs_SkillWithoutArgumentHintSkipsFlagCheck(t *testing.T) {
 // manifest holds deadReferences and deadReferenceSkips as empty arrays, not
 // null, and no deadReferencesTruncated key.
 func TestHardenPrepare_DeadReferencesCleanRuleSet(t *testing.T) {
-	redirectTempDir(t)
 	stubGitLsFiles(t, deadRefTrackedFiles, nil)
 	newDeadRefPlugin(t, map[string]string{"ship": deadRefShipSkill})
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
 		"[plan.guardrails.good-rule]\n"+
 		"description = \"Every task names `internal/tools/harden.go` and calls `execute_state({action:\\\"wave-start\\\"})`.\"\n")
@@ -773,10 +773,10 @@ func TestHardenPrepare_DeadReferencesCleanRuleSet(t *testing.T) {
 // no catalog it lists no hit and the tool skip note, and the errors key keeps
 // no entry for the scan.
 func TestHardenPrepare_DeadReferencesInManifest(t *testing.T) {
-	redirectTempDir(t)
 	stubGitLsFiles(t, deadRefTrackedFiles, nil)
 	newDeadRefPlugin(t, map[string]string{"ship": deadRefShipSkill})
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
 		"[execute.guardrails.old-tool]\n"+
 		"description = \"Call `harden_prepare()` first.\"\n")

@@ -154,3 +154,32 @@ func TestPreplanSkillNoFileEdits(t *testing.T) {
 		}
 	}
 }
+
+// preplanSkillsOpenSpecCheck lists the texts of the OpenSpec check at the
+// handoff. Each one must stay in the preplan SKILL.md: the option label, the
+// config file that turns it on, the skill call that runs it, and the route
+// back to the handoff question.
+var preplanSkillsOpenSpecCheck = []string{
+	"Check against OpenSpec",
+	"openspec/config.yaml",
+	`Skill(sdlc:verify-requirements, "--topic <topic>")`,
+	"the OpenSpec check stops with an error",
+	"ask the handoff question again",
+}
+
+// TestPreplanSkillOpenSpecCheck is a regression guard on exact texts only. It
+// checks that the Step 5 handoff of the preplan SKILL.md offers the OpenSpec
+// check, and that the docs page names it.
+func TestPreplanSkillOpenSpecCheck(t *testing.T) {
+	pluginRoot := executeSkillsRepoRoot(t)
+	skill := executeSkillsReadFile(t, filepath.Join(pluginRoot, "skills", "preplan", "SKILL.md"))
+	docs := executeSkillsReadFile(t, filepath.Join(filepath.Dir(filepath.Dir(pluginRoot)), "docs", "skills", "preplan.md"))
+	for _, text := range preplanSkillsOpenSpecCheck {
+		if !strings.Contains(skill, text) {
+			t.Errorf("preplan/SKILL.md does not hold %q: keep the OpenSpec check at the handoff", text)
+		}
+	}
+	if !strings.Contains(docs, "Check against OpenSpec") {
+		t.Error("docs/skills/preplan.md does not name the option \"Check against OpenSpec\"")
+	}
+}

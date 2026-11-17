@@ -267,8 +267,7 @@ func TestPrepareOrchestrator_HardenReturnsInstructionsAndNext(t *testing.T) {
 // error_report mode returns next and leaves customInstructions out of the
 // output.
 func TestPrepareOrchestrator_ErrorReportOmitsInstructions(t *testing.T) {
-	redirectTempDir(t)
-	newOrchestratorRepo(t, hardenInstructionsConfig)
+	redirectTempDir(t, newOrchestratorRepo(t, hardenInstructionsConfig))
 
 	out, err := prepareOrchestrator(PrepareOrchestratorIn{
 		Mode:      "error_report",
@@ -296,8 +295,7 @@ func TestPrepareOrchestrator_ErrorReportOmitsInstructions(t *testing.T) {
 // TestPrepareOrchestrator_ErrorReportWritesFreshManifestPerCall asserts that
 // two error_report calls with the same input return different manifest paths.
 func TestPrepareOrchestrator_ErrorReportWritesFreshManifestPerCall(t *testing.T) {
-	redirectTempDir(t)
-	newOrchestratorRepo(t, hardenInstructionsConfig)
+	redirectTempDir(t, newOrchestratorRepo(t, hardenInstructionsConfig))
 	in := PrepareOrchestratorIn{
 		Mode:      "error_report",
 		Skill:     "ship",
@@ -375,8 +373,7 @@ func TestPrepareOrchestrator_HardenReportsPreflightFindings(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			redirectTempDir(t)
-			newOrchestratorRepo(t, tc.config)
+			redirectTempDir(t, newOrchestratorRepo(t, tc.config))
 
 			out, err := prepareOrchestrator(PrepareOrchestratorIn{
 				Mode:            "harden",

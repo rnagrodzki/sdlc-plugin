@@ -39,7 +39,7 @@ At the end, ship prints the step table, the decisions log and the deferred findi
 | received-review | agent | Sends the findings at or above the review threshold to `/sdlc:received-review`, which applies the fixes. Ship commits the fixes as a separate commit when `/sdlc:received-review` changed files. Ship defers the findings below the threshold. | Fixes in the working tree | no | the review found issues at or above the threshold |
 | rebase | tool | Rebases the branch onto the base branch. The step skips when the branch is already up to date. | A rebased branch | no | after review, when the `rebase` setting is true, the default |
 | verify-openspec | tool | Runs the strict OpenSpec validation of the change. | A validation result | yes | in the steps list and a change exists |
-| archive-openspec | tool | Asks for consent, syncs the `tasks.md` boxes when boxes are open, and archives the change. | The archived change | no | a change exists |
+| archive-openspec | tool | Asks for consent, checks that no other tracked edit is open, syncs the `tasks.md` boxes when boxes are open, and archives the change. An agent commits the archive with `/sdlc:commit`. | The archive commit | no | a change exists |
 | harden | skill | Runs `/sdlc:harden` through the Skill tool to propose guardrail edits. | Approved guardrail edits | yes | in the steps list |
 | pr | agent | Creates the pull request, or updates the open one. Pushes with a lease when the branch is already on the remote. | The PR URL | no | always |
 | verify-pipeline | tool | Polls the CI checks of the PR. An agent fixes a failed run. | The CI verdict | yes | in the steps list |

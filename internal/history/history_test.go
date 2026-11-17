@@ -195,6 +195,56 @@ func TestFormatDeferredSummary_MultiLineDescription(t *testing.T) {
 	}
 }
 
+// TestDeferredIssueTitle pins the title table: the boundary cases of the
+// 80-rune limit, blank first lines, and a multi-byte cut.
+func TestDeferredIssueTitle(t *testing.T) {
+	r80 := strings.Repeat("a", 80)
+	long := "No code reads receivedReview.alwaysFixSeverities: received-review's own Scope section says the rest"
+	tests := []struct {
+		name string
+		desc string
+		want string
+	}{
+		{"80 runes unchanged", r80, r80},
+		{"81 runes with spaces cuts at the last space", strings.Repeat("word ", 15) + "abcdefghij", strings.TrimSpace(strings.Repeat("word ", 15)) + "…"},
+		{"81 runes no space cuts at 79", strings.Repeat("a", 81), strings.Repeat("a", 79) + "…"},
+		{"space at rune 80 keeps 79 runes", strings.Repeat("a", 79) + " tail", strings.Repeat("a", 79) + "…"},
+		{"empty", "", "Deferred follow-up d1"},
+		{"only blank lines", " \n\t\n  ", "Deferred follow-up d1"},
+		{"first non-blank line", "\n  \nsecond\nthird", "second"},
+		{"multi-byte runes", strings.Repeat("é", 81), strings.Repeat("é", 79) + "…"},
+		{"plan example", long, "No code reads receivedReview.alwaysFixSeverities: received-review's own Scope…"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DeferredIssueTitle(DeferredIssue{ID: "d1", Description: tc.desc})
+			if got != tc.want {
+				t.Errorf("DeferredIssueTitle = %q, want %q", got, tc.want)
+			}
+			if n := len([]rune(got)); n > DeferredTitleMaxRunes {
+				t.Errorf("title has %d runes, limit %d", n, DeferredTitleMaxRunes)
+			}
+		})
+	}
+}
+
+// TestFormatDeferredSummary_LongFirstLine verifies the display line uses the
+// cut title.
+func TestFormatDeferredSummary_LongFirstLine(t *testing.T) {
+	issues := []DeferredIssue{
+		{ID: "d1", Created: "2026-01-01", Source: "ship:review", Priority: "high",
+			Description: strings.Repeat("word ", 130), Status: "open"},
+	}
+	summary := FormatDeferredSummary(issues)
+	want := "- [d1] " + DeferredIssueTitle(issues[0]) + " (source: ship:review)\n"
+	if !strings.Contains(summary, want) {
+		t.Errorf("summary = %q, want it to contain %q", summary, want)
+	}
+	if strings.Contains(summary, strings.Repeat("word ", 20)) {
+		t.Errorf("summary holds more than the title:\n%s", summary)
+	}
+}
+
 // TestFileWriter_DeferredFileMode pins the mode of deferred.json. The atomic
 // write creates it as 0600: the file is per-user pipeline state.
 func TestFileWriter_DeferredFileMode(t *testing.T) {

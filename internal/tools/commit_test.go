@@ -22,18 +22,14 @@ import (
 // commit_prepare tests
 // ---------------------------------------------------------------------------
 
-// redirectTempManifests points the fsseam's mkdirTempFunc at a t.TempDir()
-// root for the duration of t. commitPrepare always ends by writing its
-// manifest through mkdirTempFunc("", "sdlc-commit-manifest-"); without this
-// redirect the directory lands in os.TempDir() and stays there for a day
-// (commitPrepare only removes manifest dirs older than 24h), so every
-// `go test` run leaks one sdlc-commit-manifest-* directory per test that calls
-// commitPrepare with the real fsseam installed. The stale-dir sweep scans the
-// manifest's parent directory, so it also stays inside root.
-//
-// Unlike installFakeFS this keeps real file I/O, so tests that assert on
-// git-driven behaviour are unaffected — only the manifest's destination moves.
-// It returns the root so a test can list what the code under test left behind.
+// redirectTempManifests points a mkdirTempFunc call with an empty dir (the OS
+// temp directory) at a t.TempDir() root for the duration of t, and returns
+// that root. commit_prepare, material_snapshot and the explore pack now write
+// under paths.ScratchDir of the root they get (scratchMkdirTemp), which is a
+// t.TempDir() in tests, so no production call passes an empty dir and this
+// redirect no longer changes where they write. Tests that check the written
+// folders use paths.ScratchDir(<repo root>) instead. plan_test.go still calls
+// it.
 func redirectTempManifests(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
@@ -48,8 +44,8 @@ func redirectTempManifests(t *testing.T) string {
 	return root
 }
 
-// tempEntries returns the names inside root, the directory that
-// redirectTempManifests returned.
+// tempEntries returns the names inside root, for example the scratch folder
+// paths.ScratchDir(<repo root>) that the code under test wrote to.
 func tempEntries(t *testing.T, root string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(root)
@@ -66,7 +62,6 @@ func tempEntries(t *testing.T, root string) []string {
 // TestCommitPrepare_KeySet verifies that CommitPrepareOut marshals exactly
 // the top-level and nested key sets expected by the commit orchestrator.
 func TestCommitPrepare_KeySet(t *testing.T) {
-	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -324,8 +319,8 @@ func TestCommitPrepare_ManifestFileWriteFailure(t *testing.T) {
 // manifest write against a real temp root: the sdlc-commit-manifest-* dir that
 // was created must be removed, not left behind empty.
 func TestCommitPrepare_ManifestFileWriteFailureRemovesTempDir(t *testing.T) {
-	root := redirectTempManifests(t)
 	dir := t.TempDir()
+	root := paths.ScratchDir(dir)
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
@@ -351,8 +346,8 @@ func TestCommitPrepare_ManifestFileWriteFailureRemovesTempDir(t *testing.T) {
 // call removes sdlc-commit-manifest-* directories older than 24h, keeps
 // younger ones and the one it just wrote, and leaves other directories alone.
 func TestCommitPrepare_RemovesStaleManifestDirs(t *testing.T) {
-	root := redirectTempManifests(t)
 	dir := t.TempDir()
+	root := paths.ScratchDir(dir)
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
@@ -397,10 +392,33 @@ func TestCommitPrepare_RemovesStaleManifestDirs(t *testing.T) {
 	}
 }
 
+// TestCommitPrepare_ManifestUnderScratch pins the manifest location:
+// <cfgRoot>/.sdlc-v2/scratch/sdlc-commit-manifest-*/manifest.json, never the
+// OS temp directory.
+func TestCommitPrepare_ManifestUnderScratch(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	out, err := commitPrepare(dir, dir, CommitPrepareIn{SkipConfigCheck: true})
+	if err != nil || out.ManifestPath == "" {
+		t.Fatalf("commitPrepare: manifestPath=%q err=%v warnings=%v", out.ManifestPath, err, out.Warnings)
+	}
+	manifestDir := filepath.Dir(out.ManifestPath)
+	if got, want := filepath.Dir(manifestDir), paths.ScratchDir(dir); got != want {
+		t.Errorf("manifest folder parent = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(filepath.Base(manifestDir), commitManifestPrefix) || filepath.Base(out.ManifestPath) != "manifest.json" {
+		t.Errorf("ManifestPath = %q, want %s*/manifest.json", out.ManifestPath, commitManifestPrefix)
+	}
+	if _, err := os.Stat(out.ManifestPath); err != nil {
+		t.Errorf("manifest must be readable: %v", err)
+	}
+}
+
 // TestCommitPrepare_NilSlicesSerializeAsArrays verifies that all slice
 // fields serialize as JSON arrays (not null).
 func TestCommitPrepare_NilSlicesSerializeAsArrays(t *testing.T) {
-	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -434,7 +452,6 @@ func TestCommitPrepare_NilSlicesSerializeAsArrays(t *testing.T) {
 // TestCommitPrepare_NoStagedFiles verifies that with nothing staged,
 // errors contains the expected message but no Go error is returned.
 func TestCommitPrepare_NoStagedFiles(t *testing.T) {
-	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -464,7 +481,6 @@ func TestCommitPrepare_NoStagedFiles(t *testing.T) {
 // must not appear there, or the commit plan shows it under "Also staged by
 // commit_apply" and disagrees with what commit_apply actually stages.
 func TestCommitPrepare_UnstagedExcludesStagedOnly(t *testing.T) {
-	redirectTempManifests(t)
 	dir := newCommitApplyRepo(t)
 
 	// new.txt: new file, staged only.
@@ -498,7 +514,6 @@ func TestCommitPrepare_UnstagedExcludesStagedOnly(t *testing.T) {
 // TestCommitPrepare_UnstagedEmptyWhenAllStaged pins that a fully staged tree
 // reports no unstaged changes.
 func TestCommitPrepare_UnstagedEmptyWhenAllStaged(t *testing.T) {
-	redirectTempManifests(t)
 	dir := newCommitApplyRepo(t)
 
 	writeRepoFile(t, dir, "new.txt", "new")
@@ -1207,7 +1222,6 @@ func TestCommit_NonASCIIUntrackedNamesAreRaw(t *testing.T) {
 	const name = "été notes.txt"
 
 	t.Run("commit_prepare untracked.files", func(t *testing.T) {
-		redirectTempManifests(t)
 		dir := newCommitApplyRepo(t)
 		writeRepoFile(t, dir, name, "x")
 
@@ -1243,7 +1257,6 @@ func TestCommitPrepare_NonASCIIStagedAndUnstagedNamesAreRaw(t *testing.T) {
 	const staged = "été staged.txt"
 	const unstaged = "naïve notes.txt"
 
-	redirectTempManifests(t)
 	dir := newCommitApplyRepo(t)
 	writeRepoFile(t, dir, unstaged, "v1")
 	runGit(t, dir, "add", unstaged)
@@ -1274,7 +1287,6 @@ func TestCommitPrepare_NonASCIITruncatedFilesAreRaw(t *testing.T) {
 	const nonASCII = "été small.txt"
 	const plain = "plain small.txt"
 
-	redirectTempManifests(t)
 	dir := newCommitApplyRepo(t)
 	writeRepoFile(t, dir, "big.txt", strings.Repeat("line of text here\n", 1000))
 	writeRepoFile(t, dir, nonASCII, strings.Repeat("y\n", 10))
@@ -1315,7 +1327,6 @@ func TestUntrackedPaths_SkipsRenameSourceRecord(t *testing.T) {
 // TestCommitPrepare_ConfigCheckFailsWithoutSkip verifies that with a stale
 // config, commit_prepare fails unless skipConfigCheck is set.
 func TestCommitPrepare_ConfigCheckFailsWithoutSkip(t *testing.T) {
-	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -1368,7 +1379,6 @@ func TestCommitPrepare_ConfigCheckFailsWithoutSkip(t *testing.T) {
 // TestCommitPrepare_WipSquashDetection verifies WIP commit detection on
 // a feature branch.
 func TestCommitPrepare_WipSquashDetection(t *testing.T) {
-	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
@@ -1406,7 +1416,6 @@ func TestCommitPrepare_WipSquashDetection(t *testing.T) {
 // against "main" (the old, base-branch-unaware behavior) would also pick up
 // develop's own WIP commit, which does not belong to this branch.
 func TestCommitRangeBaseBranch(t *testing.T) {
-	redirectTempManifests(t)
 	dir := t.TempDir()
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")

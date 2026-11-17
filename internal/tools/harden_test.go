@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -174,8 +175,8 @@ func TestHardenPrepare_MissingRequiredFields(t *testing.T) {
 // manifest, and lists the finding with its surface, id, file, severity and
 // fix. The description is short, so bytesOver is absent.
 func TestHardenPrepare_PreflightGuardrailFindingInManifest(t *testing.T) {
-	redirectTempDir(t)
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
 		"[plan.guardrails.Bad_ID]\n"+
 		"description = \"desc\"\n")
@@ -215,13 +216,13 @@ func TestHardenPrepare_PreflightGuardrailFindingInManifest(t *testing.T) {
 // only in root gives no finding; the same invalid guardrail placed in
 // contentRoot gives one finding, and neither case stops the run.
 func TestHardenPrepare_PreflightUsesContentRoot(t *testing.T) {
-	redirectTempDir(t)
 	badConfig := "" +
 		"[plan.guardrails.Bad_ID]\n" +
 		"description = \"desc\"\n"
 
 	t.Run("invalid guardrail only in root is ignored", func(t *testing.T) {
 		root := t.TempDir()
+		redirectTempDir(t, root)
 		contentRoot := t.TempDir()
 		writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), badConfig)
 
@@ -240,6 +241,7 @@ func TestHardenPrepare_PreflightUsesContentRoot(t *testing.T) {
 
 	t.Run("same invalid guardrail in contentRoot", func(t *testing.T) {
 		root := t.TempDir()
+		redirectTempDir(t, root)
 		contentRoot := t.TempDir()
 		writeFile(t, filepath.Join(contentRoot, paths.DataDir, "config.toml"), badConfig)
 
@@ -261,8 +263,8 @@ func TestHardenPrepare_PreflightUsesContentRoot(t *testing.T) {
 // review-dimension file with no frontmatter does not stop the run: it is one
 // finding with severity error, the file name as id and an empty fix.
 func TestHardenPrepare_PreflightDimensionFindingInManifest(t *testing.T) {
-	redirectTempDir(t)
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "bad.md"), "no frontmatter here\n")
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
@@ -290,8 +292,8 @@ func TestHardenPrepare_PreflightDimensionFindingInManifest(t *testing.T) {
 // warning goes into the same list as the errors, with severity warning and the
 // frontmatter name as id.
 func TestHardenPrepare_PreflightDimensionWarningInManifest(t *testing.T) {
-	redirectTempDir(t)
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "review-dimensions", "sec.md"),
 		"---\n"+
 			"name: security-review\n"+
@@ -335,8 +337,8 @@ func TestHardenPrepare_PreflightDimensionWarningInManifest(t *testing.T) {
 // 1474-byte guardrail description gives ok, a written manifest, and one
 // finding with bytesOver 450 and the split fix text.
 func TestHardenPrepare_PreflightLongDescriptionBytesOver(t *testing.T) {
-	redirectTempDir(t)
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
 		"[execute.guardrails.long-rule]\n"+
 		"description = \""+strings.Repeat("a", 1474)+"\"\n")
@@ -369,8 +371,8 @@ func TestHardenPrepare_PreflightLongDescriptionBytesOver(t *testing.T) {
 // TestHardenPrepare_PreflightCleanConfigEmptyList pins that clean rules give
 // preflightFindings as an empty JSON array (never null) and a count of 0.
 func TestHardenPrepare_PreflightCleanConfigEmptyList(t *testing.T) {
-	redirectTempDir(t)
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
 		"[plan.guardrails.good-rule]\n"+
 		"description = \"Every task names its files.\"\n")
@@ -400,8 +402,8 @@ func TestHardenPrepare_PreflightCleanConfigEmptyList(t *testing.T) {
 // parse stops the run and writes no manifest: hardenPrepare returns the
 // InfraError of validateGuardrailsAction and creates no manifest directory.
 func TestHardenPrepare_PreflightInvalidTOMLStops(t *testing.T) {
-	tmpDir := redirectTempDir(t)
 	root := t.TempDir()
+	tmpDir := redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "[plan\nthis is = = not toml\n")
 
 	out, err := hardenPrepare(root, root, HardenPrepareIn{
@@ -432,8 +434,8 @@ func TestHardenPrepare_PreflightUnreadableDimensionsDirStops(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("root reads a 0o000 directory, so the permission error cannot happen")
 	}
-	tmpDir := redirectTempDir(t)
 	root := t.TempDir()
+	tmpDir := redirectTempDir(t, root)
 	dir := filepath.Join(root, paths.DataDir, "review-dimensions")
 	writeFile(t, filepath.Join(dir, "sec.md"), "no frontmatter here\n")
 	if err := os.Chmod(dir, 0o000); err != nil {
@@ -472,8 +474,8 @@ func TestHardenPrepare_PreflightUnreadableDimensionsDirStops(t *testing.T) {
 // 1474-byte description, so it yields two findings with the same bytesOver of
 // 450.
 func TestHardenPrepare_PreflightOneGuardrailManyFindingsShareBytesOver(t *testing.T) {
-	redirectTempDir(t)
 	root := t.TempDir()
+	redirectTempDir(t, root)
 	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), ""+
 		"[plan.guardrails.Bad_ID]\n"+
 		"description = \""+strings.Repeat("a", 1474)+"\"\n")
@@ -1552,22 +1554,27 @@ func errorsAsInfraError(err error, target **mcpserver.InfraError) bool {
 }
 
 // redirectTempDir points the OS temporary directory (TMPDIR) at a fresh
-// directory under t.TempDir for the rest of the test and returns that
-// directory. A call that writes a manifest through os.MkdirTemp("", ...)
-// then writes inside the test directory, which the test framework removes.
-func redirectTempDir(t *testing.T) string {
+// directory under t.TempDir for the rest of the test, so a stray system-temp
+// write stays inside the test directory. It returns the scratch folder
+// (paths.ScratchDir) of root after filepath.EvalSymlinks: the manifest tools
+// write there, and git gives /private/var/... on macOS where t.TempDir gives
+// /var/....
+func redirectTempDir(t *testing.T, root string) string {
 	t.Helper()
-	dir := t.TempDir()
-	t.Setenv("TMPDIR", dir)
-	return dir
+	t.Setenv("TMPDIR", t.TempDir())
+	resolved, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatalf("resolve root %s: %v", root, err)
+	}
+	return paths.ScratchDir(resolved)
 }
 
-// assertNoHardenManifestDir fails the test when tmpDir holds a directory that
-// hardenPrepare creates for a manifest (sdlc-harden-*). It proves that a run
-// which stops with an error wrote no manifest.
-func assertNoHardenManifestDir(t *testing.T, tmpDir string) {
+// assertNoHardenManifestDir fails the test when scratchDir holds a directory
+// that hardenPrepare creates for a manifest (sdlc-harden-*). It proves that a
+// run which stops with an error wrote no manifest.
+func assertNoHardenManifestDir(t *testing.T, scratchDir string) {
 	t.Helper()
-	matches, err := filepath.Glob(filepath.Join(tmpDir, "sdlc-harden-*"))
+	matches, err := filepath.Glob(filepath.Join(scratchDir, "sdlc-harden-*"))
 	if err != nil {
 		t.Fatalf("glob manifest dirs: %v", err)
 	}
@@ -1643,3 +1650,24 @@ func readHardenManifest(t *testing.T, path string) map[string]any {
 
 // keep time import used even if a future edit trims a test that needed it directly.
 var _ = time.Now
+
+// TestHardenPrepare_ScratchCreateFailure pins the InfraError of a failed
+// scratch create. A scratch folder that is a file keeps the scratchMkdirTemp
+// Suggestion, which names .sdlc-v2/scratch/, and wraps ENOTDIR. A failed
+// MkdirTemp uses the harden fallback Suggestion and wraps its cause.
+func TestHardenPrepare_ScratchCreateFailure(t *testing.T) {
+	in := HardenPrepareIn{FailureText: "boom", Skill: "ship", SkipConfigCheck: true}
+	t.Run("scratch folder is a file", func(t *testing.T) {
+		root := t.TempDir()
+		scratch := makeScratchAFile(t, root)
+		_, err := hardenPrepare(root, root, in)
+		assertScratchInfraError(t, err, "create scratch folder "+scratch, scratchFolderSuggestion(scratch), syscall.ENOTDIR)
+	})
+	t.Run("MkdirTemp fails", func(t *testing.T) {
+		root := t.TempDir()
+		sentinel := stubMkdirTempFailure(t)
+		_, err := hardenPrepare(root, root, in)
+		assertScratchInfraError(t, err, "create temp dir: "+sentinel.Error(),
+			"Check disk space and write permission on .sdlc-v2/scratch/ of the main worktree, then retry prepare_orchestrator with mode harden.", sentinel)
+	})
+}

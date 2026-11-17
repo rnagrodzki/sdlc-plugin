@@ -748,10 +748,25 @@ func (p *browserPage) do(what string, steps ...chromedp.Action[chromedp.Void]) {
 }
 
 // click clicks the first element that matches the CSS selector sel. The click
-// is a real mouse click, so the element must be visible.
+// is a real mouse click, so the element must be visible. The page can redraw
+// the feed between the lookup of the element and the click. The lookup is then
+// stale and Chrome answers "Could not find node with given id". The click
+// looks up the element again, until browserStepLimit passes.
 func (p *browserPage) click(what, sel string) {
 	p.t.Helper()
-	p.do("click "+what+" ("+sel+")", chromedp.Click(chromedp.CSS(sel)))
+	deadline := time.Now().Add(browserStepLimit)
+	for {
+		tctx, cancel := context.WithTimeout(p.ctx, browserStepLimit)
+		err := chromedp.Do(tctx, chromedp.Click(chromedp.CSS(sel)))
+		cancel()
+		if err == nil {
+			return
+		}
+		if !strings.Contains(err.Error(), "Could not find node with given id") || time.Now().After(deadline) {
+			p.t.Fatalf("click %s (%s): %v", what, sel, err)
+		}
+		time.Sleep(browserStepEvery)
+	}
 }
 
 // fail stops the test with msg and the state of the page: the start of its
