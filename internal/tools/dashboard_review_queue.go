@@ -193,8 +193,9 @@ func dashboardQueueCut(rows []DashboardQueueRow) ([]DashboardQueueRow, []Dashboa
 // dashboardQueueAddFindings joins the review findings of dims into q. Called
 // in dashboardNestReview after dims is built. A queue with no row gets the
 // open rows of dashboardQueueOpenRows. A queue with rows gets the dimension
-// and text of its rows from dashboardQueueMatchFindings. issues holds the
-// issue of open rows cut at dashboardQueueRowsMax.
+// and text of its rows from dashboardQueueMatchFindings, then an open row for
+// each finding with no row at its file and line from dashboardQueueAddMissing.
+// issues holds the issue of rows cut at dashboardQueueRowsMax.
 func dashboardQueueAddFindings(q *DashboardReviewQueue, dims []DashboardDimension) (issues []DashboardIssue) {
 	if q == nil {
 		return nil
@@ -203,7 +204,58 @@ func dashboardQueueAddFindings(q *DashboardReviewQueue, dims []DashboardDimensio
 		return dashboardQueueOpenRows(q, dims)
 	}
 	dashboardQueueMatchFindings(q, dims)
-	return nil
+	return dashboardQueueAddMissing(q, dims)
+}
+
+// dashboardQueueAddMissing appends one "open" row (origin healingOriginLocal,
+// dimension name, text) for each finding of dims whose file:line key has no
+// row in q. New rows go after the existing rows, highest severity first. A
+// finding with no file or no line gets no row. Two findings on a key with no
+// row both get a row, as in dashboardQueueOpenRows. A key that has a row gets
+// no new row: the row stands for it. When it appends 1 or more rows, Reason
+// becomes "" and Unrouted becomes 0, as in dashboardQueueOpenRows. When it
+// appends none, both keep their values. issues holds the issue of rows cut at
+// dashboardQueueRowsMax.
+func dashboardQueueAddMissing(q *DashboardReviewQueue, dims []DashboardDimension) (issues []DashboardIssue) {
+	hasRow := map[string]bool{}
+	for _, r := range q.Rows {
+		if r.File != "" && r.Line != "" {
+			hasRow[dashboardQueueKey(r.File, r.Line, "")] = true
+		}
+	}
+	var added []DashboardQueueRow
+	for _, d := range dims {
+		for _, f := range d.FindingItems {
+			if f.File == "" || f.Line == "" || hasRow[dashboardQueueKey(f.File, f.Line, "")] {
+				continue
+			}
+			added = append(added, dashboardQueueOpenRow(d.Name, f))
+		}
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	sort.SliceStable(added, func(i, j int) bool {
+		return severityRank[added[i].Severity] > severityRank[added[j].Severity]
+	})
+	q.Rows, issues = dashboardQueueCut(append(q.Rows, added...))
+	q.Reason, q.Unrouted = "", 0
+	return issues
+}
+
+// dashboardQueueOpenRow returns the "open" row of finding f of the dimension
+// named dimension.
+func dashboardQueueOpenRow(dimension string, f DashboardReviewFinding) DashboardQueueRow {
+	return DashboardQueueRow{
+		Title:     dashboardPreview(dashboardFirstLine(f.Text)),
+		Severity:  dashboardSeverity(f.Severity),
+		File:      f.File,
+		Line:      f.Line,
+		Status:    dashboardQueueStatusOpen,
+		Origin:    healingOriginLocal,
+		Dimension: dimension,
+		Text:      f.Text,
+	}
 }
 
 // dashboardQueueOpenRows fills the empty queue q with one row for each
@@ -216,16 +268,7 @@ func dashboardQueueOpenRows(q *DashboardReviewQueue, dims []DashboardDimension) 
 	var rows []DashboardQueueRow
 	for _, d := range dims {
 		for _, f := range d.FindingItems {
-			rows = append(rows, DashboardQueueRow{
-				Title:     dashboardPreview(dashboardFirstLine(f.Text)),
-				Severity:  dashboardSeverity(f.Severity),
-				File:      f.File,
-				Line:      f.Line,
-				Status:    dashboardQueueStatusOpen,
-				Origin:    healingOriginLocal,
-				Dimension: d.Name,
-				Text:      f.Text,
-			})
+			rows = append(rows, dashboardQueueOpenRow(d.Name, f))
 		}
 	}
 	if len(rows) == 0 {

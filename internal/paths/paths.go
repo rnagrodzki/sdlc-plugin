@@ -6,6 +6,7 @@ package paths
 import (
 	"os"
 	"path/filepath"
+	"time"
 )
 
 // DataDir is the project-level directory name that holds SDLC configuration,
@@ -96,6 +97,19 @@ func ProjectDir(root string) string {
 func HistoryDir(root string) string {
 	return filepath.Join(root, DataDir, HistorySubdir)
 }
+
+// ScratchDir is the folder for scratch files that a tool hands to the
+// model by path: <root>/.sdlc-v2/scratch. root is the main worktree root.
+// The folder is never linked between worktrees (see UnlinkedStateEntries),
+// so callers pass the main worktree root to keep one scratch folder per repo.
+func ScratchDir(root string) string {
+	return filepath.Join(root, DataDir, ScratchSubdir)
+}
+
+// ScratchMaxAge is how old a scratch entry must be before the tool that
+// creates that kind of entry removes it. One age for every scratch sweep: a
+// day is far longer than any flow that still needs to read a file from it.
+const ScratchMaxAge = 24 * time.Hour
 
 // CacheDir returns the user cache root shared with sdlc-launcher.sh:
 // $SDLC_CACHE_DIR when set, else <home>/.sdlc-cache, else ./.sdlc-cache.

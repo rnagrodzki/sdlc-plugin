@@ -34,7 +34,7 @@ Stop with a one-line usage message, `/sdlc:deferred [--list | --resolve <id>]`, 
 
 ### 2a. `--list`
 
-1. Call `ship_state({action:"deferred_list"})`. It returns `{issues, openCount}`. `issues` includes resolved items and has no `display`, so this mode formats its own output.
+1. Call `ship_state({action:"deferred_list"})`. It returns `{issues, openCount, next}`. `issues` includes resolved items and has no `display`, so this mode formats its own output.
 2. If `openCount` is 0, print exactly `No deferred items open.` and stop. Print no table.
 3. Otherwise print a markdown table of the items whose `status` is `open`, with the columns `ID`, `Priority`, `Reason`, `Created` and `Description`. Fill `Reason` from the item's `reason`, falling back to its `source` when `reason` is unset — `source` names the tool that recorded the item, not why it was deferred (`ship_state defer` takes it from the caller and defaults to `review-below-threshold`; `/received-review` passes `received-review`). Put high priority first, and the oldest first within one priority. Fill `Description` with the first line of the item's `description` only: a description can span several lines, and a line break breaks the table row. When an item has `file`, add ` (file:line)` after that line, and drop `:line` when `line` is 0. Do not print resolved items.
 4. Stop. Ask nothing and change nothing.
@@ -51,10 +51,10 @@ This mode never asks a question and never calls `gh`.
 
 ### 2c. Triage (no arguments)
 
-1. Call `ship_state({action:"deferred_propose_followups"})`. It returns `{openCount, groups, display}`.
+1. Call `ship_state({action:"deferred_propose_followups"})`. It returns `{openCount, groups, display, next}`. `groups` holds short items with a `title` of at most 80 characters, not the full text.
 2. If `openCount` is 0, print exactly `No deferred items open.` and stop. Ask nothing. Print no table.
 3. Render `display` verbatim.
-4. Follow the triage flow in [`reference.md`](reference.md): the question, the choice of items, then filing or resolving, then the close-out line.
+4. Follow the triage flow in [`reference.md`](reference.md): the question, the choice of items, then filing or resolving, then the close-out line. The issue title is the item `title`. For each item the user picks to file, fetch the full text with `ship_state({action:"deferred_list", detail:{ids:[<picked ids>]}})` before the draft. A title longer than 80 characters from a caller is cut by the title rule in `reference.md`.
 
 ---
 

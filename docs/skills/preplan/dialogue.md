@@ -132,8 +132,19 @@ succeeds, the skill asks you to choose:
   `in progress`. If you cancel at the topic question, the skill ends, and
   this file stays `ready for plan`.
 - **Stop:** the skill ends. The status stays `ready for plan`.
-- **Any other answer**, for example free text: the skill restates the three
-  options and asks again.
+- **Check against OpenSpec:** offered only when `openspec/config.yaml`
+  exists. The skill runs `/sdlc:verify-requirements --topic <topic>` and
+  prints its report. The check changes no file. Then the skill asks you to
+  choose again. If the check stops with an error, the skill prints the
+  error and asks again. The status stays `ready for plan`.
+- **Any other answer**, for example free text: the skill restates the
+  options of the question (3, or 4 with `Check against OpenSpec`) and asks
+  again.
+
+The handoff has no option that goes back to the questions. To change the
+topic file after a finding of the check, choose **Start a new idea** and
+give the same topic name, or stop and run `/sdlc:preplan <topic>`. The new
+run sets the status to `in progress` and asks its questions again.
 
 If the plan skill stops with an error, the skill prints the error. The
 topic file stays `ready for plan`. Run `/sdlc:plan` with the same topic-file

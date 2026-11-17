@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
 // GCOptions configures GC behavior.
@@ -27,10 +29,14 @@ type GCOptions struct {
 	// If nil, all branches are treated as existing (no branch-pruning).
 	BranchExists func(branch string) bool
 
-	// TempDir overrides the directory scanned for sdlc-explore-* tempdirs
-	// (see gcTempdirs). Empty means os.TempDir(). Exists so callers/tests can
-	// point the sweep at an isolated directory instead of the real system
-	// tempdir, mirroring scripts/lib/state.js's SDLC_EXPLORE_TMPDIR_OVERRIDE.
+	// TempDir overrides the directory scanned for sdlc-explore-* folders
+	// (see gcTempdirs). Empty means paths.ScratchDir(root). Exists so
+	// callers/tests can point the sweep at an isolated directory instead of
+	// the real scratch folder, mirroring scripts/lib/state.js's
+	// SDLC_EXPLORE_TMPDIR_OVERRIDE. The "temp" names (this field, gcTempdirs,
+	// the tempdirsDeleted/tempdirsKept JSON keys) are kept on purpose although
+	// the folder is now the scratch folder: they match that env var and the
+	// ship gc report, and a rename would change both.
 	TempDir string
 }
 
@@ -138,7 +144,7 @@ func GC(root string, opt GCOptions) (*GCReport, error) {
 	// defaulted at the top of this function).
 	tempDir := opt.TempDir
 	if tempDir == "" {
-		tempDir = os.TempDir()
+		tempDir = paths.ScratchDir(root)
 	}
 	report.TempdirsDeleted, report.TempdirsKept = gcTempdirs(tempDir, opt.TTL, opt.BranchExists)
 

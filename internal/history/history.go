@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -598,9 +599,46 @@ func OpenDeferred(issues []DeferredIssue) []DeferredIssue {
 	return open
 }
 
+// DeferredTitleMaxRunes is the longest GitHub issue title that
+// DeferredIssueTitle returns, counted in runes.
+const DeferredTitleMaxRunes = 80
+
+// DeferredIssueTitle returns the GitHub issue title for item: the first
+// non-blank line of Description, cut to DeferredTitleMaxRunes runes. A line
+// that is too long is cut at the last space before rune 80 and ends with
+// "…". A line with no such space is cut at 79 runes and ends with "…". A
+// description with no text gives "Deferred follow-up <id>".
+func DeferredIssueTitle(item DeferredIssue) string {
+	first := ""
+	for _, line := range strings.Split(item.Description, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			first = t
+			break
+		}
+	}
+	if first == "" {
+		return "Deferred follow-up " + item.ID
+	}
+	runes := []rune(first)
+	if len(runes) <= DeferredTitleMaxRunes {
+		return first
+	}
+	head := runes[:DeferredTitleMaxRunes-1]
+	// A space right after the head means the head ends on a word boundary.
+	if !unicode.IsSpace(runes[DeferredTitleMaxRunes-1]) {
+		for i := len(head) - 1; i > 0; i-- {
+			if unicode.IsSpace(head[i]) {
+				head = head[:i]
+				break
+			}
+		}
+	}
+	return strings.TrimRightFunc(string(head), unicode.IsSpace) + "…"
+}
+
 // FormatDeferredSummary produces a markdown summary of open deferred issues
 // grouped by priority, suitable for display in the ship pipeline summary.
-// Each issue shows only the first line of its description.
+// Each issue shows its DeferredIssueTitle.
 func FormatDeferredSummary(issues []DeferredIssue) string {
 	open := OpenDeferred(issues)
 	if len(open) == 0 {
@@ -618,10 +656,7 @@ func FormatDeferredSummary(issues []DeferredIssue) string {
 		sort.Slice(items, func(i, j int) bool { return items[i].Created < items[j].Created })
 		fmt.Fprintf(&sb, "**%s:**\n", cases.Title(language.English).String(prio))
 		for _, item := range items {
-			// A description can span several lines; only its first line fits
-			// one list item.
-			first, _, _ := strings.Cut(strings.TrimSpace(item.Description), "\n")
-			fmt.Fprintf(&sb, "- [%s] %s (source: %s)\n", item.ID, strings.TrimSpace(first), item.Source)
+			fmt.Fprintf(&sb, "- [%s] %s (source: %s)\n", item.ID, DeferredIssueTitle(item), item.Source)
 		}
 		sb.WriteString("\n")
 	}

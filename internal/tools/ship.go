@@ -89,7 +89,7 @@ type ShipPrepareIn struct {
 	// --ttl-days; nil means "not supplied on the CLI" (0 is a legal explicit
 	// value, so this cannot be a plain int with a zero-means-unset
 	// convention).
-	Gc      bool `json:"gc" jsonschema_description:"Short-circuits into the --gc on-demand pruning branch: normal flag-merge/step-validation/state-init is skipped entirely and stale state files/tempdirs are pruned instead."`
+	Gc      bool `json:"gc" jsonschema_description:"Short-circuits into the --gc on-demand pruning branch: normal flag-merge/step-validation/state-init is skipped entirely and stale state files and old .sdlc-v2/scratch/ entries are pruned instead."`
 	TtlDays *int `json:"ttlDays,omitempty" jsonschema_description:"Time-to-live in days for gc pruning, mirroring --ttl-days. Omit to use the default TTL; 0 is a legal explicit value meaning no grace period."`
 
 	// SessionID is stamped into the initialized state's sessionId field

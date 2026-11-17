@@ -136,7 +136,8 @@ config (`enabled`, and `format`: `"json"` or `"md"`, default `"md"`).
 - When enabled, the tool persists it under
   `.sdlc-v2/reports/ship-<runId>-report.{json,md}` in the main worktree (not
   wherever the session happens to be running from, e.g. a linked worktree).
-  Ship prints that path as the last line of that step's output.
+  Ship prints a one-line summary, then that path, as the last lines of that
+  step's output. The full report stays in the file.
 - Disabled reporting (`automation.report.enabled = false`) skips this step
   silently — nothing is written.
 

@@ -21,11 +21,11 @@ import (
 // the removed tool and the missing path only, and has no "no tool catalog"
 // or path skip note.
 func TestIntegration_PrepareOrchestratorHarden_ListsDeadReferences(t *testing.T) {
-	redirectTempDir(t)
 	newDeadRefPlugin(t, map[string]string{"ship": deadRefShipSkill})
 	dir := newOrchestratorRepo(t, ""+
 		"[execute.guardrails.old-tool]\n"+
 		"description = \"Call `harden_prepare()` and then `prepare_orchestrator()`. Read `.sdlc-v2/config.toml`, not `internal/gone.go`.\"\n")
+	redirectTempDir(t, dir)
 	configPath := filepath.Join(paths.DataDir, paths.ConfigFile)
 	if out, err := exec.Command("git", "-C", dir, "add", "--", configPath).CombinedOutput(); err != nil {
 		t.Fatalf("git add %s: %v: %s", configPath, err, out)

@@ -564,6 +564,128 @@ func TestShipStateHardenClusters_AlreadyHardenedNoMatch(t *testing.T) {
 	}
 }
 
+// hcLongFailureText returns the FailureText of a one-finding cluster whose
+// text is longer than the 200 rune trigger key.
+func hcLongFailureText(t *testing.T, dir, branch string) string {
+	t.Helper()
+	hc, err := hardenClustersCall(t, dir, branch, []any{
+		hcFinding("a.go", "high", "t", strings.Repeat("long body ", 40), "agree-will-fix"),
+	})
+	if err != nil {
+		t.Fatalf("harden_clusters: %v", err)
+	}
+	if len(hc.Clusters) != 1 || len([]rune(hc.Clusters[0].FailureText)) <= hardenTriggerPrefixLen {
+		t.Fatalf("clusters = %+v, want 1 cluster with a failureText over %d runes", hc.Clusters, hardenTriggerPrefixLen)
+	}
+	return hc.Clusters[0].FailureText
+}
+
+// TestShipStateHardenClusters_AlreadyHardenedPrefixMatch pins the trigger
+// prefix match: a trigger cut shorter than 200 runes matches when it has at
+// least 100 runes, and does not match below that.
+func TestShipStateHardenClusters_AlreadyHardenedPrefixMatch(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		runes int
+		want  bool
+	}{
+		{"200 runes", 200, true},
+		{"191 runes", 191, true},
+		{"194 runes", 194, true},
+		{"100 runes", 100, true},
+		{"99 runes", 99, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubCleanSurfaceStatus(t)
+			branch := "feat/hc-hardened-prefix"
+			dir, _ := hardenClustersFixture(t, branch)
+			failure := hcLongFailureText(t, dir, branch)
+
+			healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+				"phase": "done", "trigger": string([]rune(failure)[:tc.runes]),
+				"applied": []any{}, "skipped": float64(0),
+			}))
+
+			hc, err := hardenClustersCall(t, dir, branch, []any{
+				hcFinding("a.go", "high", "t", strings.Repeat("long body ", 40), "agree-will-fix"),
+			})
+			if err != nil {
+				t.Fatalf("harden_clusters: %v", err)
+			}
+			if len(hc.Clusters) != 1 || hc.Clusters[0].AlreadyHardened != tc.want {
+				t.Fatalf("clusters = %+v, want alreadyHardened %v for a %d rune trigger", hc.Clusters, tc.want, tc.runes)
+			}
+		})
+	}
+}
+
+// TestShipStateHealingRecord_HardenedTriggerPrefixUpsert pins that
+// healing_record treats a cut trigger and the full trigger as one record: the
+// done record replaces the started record in place, and the list keeps one
+// entry.
+func TestShipStateHealingRecord_HardenedTriggerPrefixUpsert(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	branch := "feat/hc-hardened-upsert"
+	dir, path := hardenClustersFixture(t, branch)
+	full := []rune(hcLongFailureText(t, dir, branch))[:hardenTriggerPrefixLen]
+
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+		"phase": "started", "trigger": string(full[:150]),
+		"applied": []any{}, "skipped": float64(0),
+	}))
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+		"phase": "done", "trigger": string(full),
+		"applied": []any{}, "skipped": float64(0),
+	}))
+
+	healing, _ := readStateData(t, path)["healing"].(map[string]any)
+	hardened, _ := healing["hardened"].([]any)
+	if len(hardened) != 1 {
+		t.Fatalf("hardened = %v, want 1 entry", hardened)
+	}
+	rec, _ := hardened[0].(map[string]any)
+	if rec["phase"] != "done" || rec["trigger"] != string(full) {
+		t.Errorf("hardened[0] = %v, want the done record with the full trigger", rec)
+	}
+}
+
+// TestShipStateHealingRecord_HardenedTriggerPrefixUpsertTwoMatches pins the
+// 2-matching-rows case: two stored rows that do not match each other both match
+// the incoming trigger. The done record replaces the first match only, and the
+// second row stays.
+func TestShipStateHealingRecord_HardenedTriggerPrefixUpsertTwoMatches(t *testing.T) {
+	stubCleanSurfaceStatus(t)
+	branch := "feat/hc-hardened-upsert-two"
+	dir, path := hardenClustersFixture(t, branch)
+	base := strings.Repeat("a", hardenTriggerMinPrefixLen)
+	first, second := base+"-first", base+"-second"
+
+	for _, trigger := range []string{first, second} {
+		healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+			"phase": "started", "trigger": trigger,
+			"applied": []any{}, "skipped": float64(0),
+		}))
+	}
+	healingCall(t, dir, branch, healingHardenedDetail(map[string]any{
+		"phase": "done", "trigger": base,
+		"applied": []any{}, "skipped": float64(0),
+	}))
+
+	healing, _ := readStateData(t, path)["healing"].(map[string]any)
+	hardened, _ := healing["hardened"].([]any)
+	if len(hardened) != 2 {
+		t.Fatalf("hardened = %v, want 2 entries", hardened)
+	}
+	r0, _ := hardened[0].(map[string]any)
+	r1, _ := hardened[1].(map[string]any)
+	if r0["phase"] != "done" || r0["trigger"] != base {
+		t.Errorf("hardened[0] = %v, want the done record that replaced the first match", r0)
+	}
+	if r1["phase"] != "started" || r1["trigger"] != second {
+		t.Errorf("hardened[1] = %v, want the second started record unchanged", r1)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // next
 // ---------------------------------------------------------------------------

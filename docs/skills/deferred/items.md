@@ -5,8 +5,10 @@ Read this page when you want to know where an item of the backlog comes from and
 Triage prints one line for each open item, under its priority (`High`, `Medium` or `Low`):
 
 ```text
-- [<id>] <first line of the description> (source: <source>)
+- [<id>] <title> (source: <source>)
 ```
+
+The title is the first line of the description that has text, with no spaces at its ends. A line longer than 80 characters is cut and ends with `…`. An item with no text has the title `Deferred follow-up <id>`. [Triage](triage.md#the-issue-text) gives the full rule.
 
 The [overview](../deferred.md#example) shows the command.
 
@@ -32,7 +34,7 @@ An item has `id`, `created`, `source`, `priority`, `description` and `status`. I
 |---|---|
 | `priority` | `high`, `medium` or `low`. Triage groups the open items by this field. |
 | `status` | `open` until the item is resolved. The lists show open items only. |
-| `description` | The text of the item. It can have more than one line. The lists and the issue title use the first line only. |
+| `description` | The text of the item. It can have more than one line. The triage list and the issue title use the title, made from the first line that has text. The `--list` table uses the first line only. |
 | `reason` | Why the item was deferred: `below-threshold`, `needs-direction`, `disagree` or `wont-fix`. An execute draft has no reason. |
 | `file`, `line`, `severity` | The location and the severity of a finding, when the recording step set them. |
 

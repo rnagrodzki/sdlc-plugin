@@ -7,10 +7,10 @@
 //
 // Both entry points here need the CLI to describe a change that does not
 // exist yet, and the CLI can only describe an existing change. So each one
-// works in a throwaway temp directory that holds a copy of
-// openspec/config.yaml, runs `openspec new change <change>` there, and asks
-// the CLI about that temp change. The repository itself is never touched by
-// the CLI, and the temp directory is removed on every return path.
+// works in a throwaway folder under <main-worktree>/.sdlc-v2/scratch/ that
+// holds a copy of openspec/config.yaml, runs `openspec new change <change>`
+// there, and asks the CLI about that temp change. The tracked tree is never
+// touched by the CLI, and the folder is removed on every return path.
 package openspec
 
 import (
@@ -216,13 +216,14 @@ func StagingDirRel(change string) string {
 
 // PrepareInstructions returns the schema name and the authoring guidance for
 // every artifact of change, in the CLI's `status` artifacts order. It runs
-// the CLI only in a temp directory (see the file comment); nothing under
-// activeRoot is written.
-func PrepareInstructions(activeRoot, change string) (schema string, guides []ArtifactGuide, err error) {
+// the CLI only in a throwaway folder under paths.ScratchDir(scratchRoot) (see
+// the file comment); nothing under activeRoot is written. scratchRoot is the
+// main worktree root.
+func PrepareInstructions(activeRoot, scratchRoot, change string) (schema string, guides []ArtifactGuide, err error) {
 	if !ValidChangeName(change) {
 		return "", nil, fmt.Errorf("%w: %q", ErrInvalidChangeName, change)
 	}
-	tmp, cleanup, err := newTempChange(activeRoot, change)
+	tmp, cleanup, err := newTempChange(activeRoot, scratchRoot, change)
 	if err != nil {
 		return "", nil, err
 	}
@@ -252,9 +253,9 @@ func PrepareInstructions(activeRoot, change string) (schema string, guides []Art
 
 // Stage writes files into <stagingRoot>/.sdlc-v2/openspec-staging/<change>/,
 // replacing any earlier staging of the same change, writes stage.json, and
-// validates a temp copy of the staged change with `openspec validate
-// <change> --strict`. It reads openspec/config.yaml and the current specs from
-// activeRoot.
+// validates a copy of the staged change under paths.ScratchDir(stagingRoot)
+// with `openspec validate <change> --strict`. It reads openspec/config.yaml
+// and the current specs from activeRoot.
 //
 // Before validating, Stage copies the current spec of each capability that a
 // staged specs/<capability>/spec.md names into the temp directory, so a
@@ -291,7 +292,7 @@ func Stage(activeRoot, stagingRoot, change string, files []StageFile, planPath s
 		return StageResult{}, err
 	}
 
-	tmp, cleanup, err := newTempChange(activeRoot, change)
+	tmp, cleanup, err := newTempChange(activeRoot, stagingRoot, change)
 	if err != nil {
 		return StageResult{}, err
 	}
@@ -670,16 +671,23 @@ func resolvePlanPath(p string) string {
 	return abs
 }
 
-// newTempChange creates a temp directory holding a copy of
+// newTempChange creates a throwaway folder sdlc-openspec-* under
+// paths.ScratchDir(scratchRoot) holding a copy of
 // <activeRoot>/openspec/config.yaml, runs `openspec new change <change>`
-// there, and returns the temp directory and a cleanup func that removes it.
-// On error the temp directory is already removed.
-func newTempChange(activeRoot, change string) (string, func(), error) {
+// there, and returns the folder and a cleanup func that removes it. On error
+// the folder is already removed. A failed create of the scratch folder
+// returns a *StageIOError with Op "create scratch folder".
+func newTempChange(activeRoot, scratchRoot, change string) (string, func(), error) {
 	config, err := os.ReadFile(filepath.Join(activeRoot, "openspec", "config.yaml"))
 	if err != nil {
 		return "", nil, fmt.Errorf("openspec: read openspec/config.yaml: %w", err)
 	}
-	tmp, err := os.MkdirTemp("", "sdlc-openspec-*")
+	dir := paths.ScratchDir(scratchRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", nil, &StageIOError{Op: "create scratch folder", Path: dir, Dir: dir, Err: err}
+	}
+	sweepStaleScratch(dir, "sdlc-openspec-", time.Now())
+	tmp, err := os.MkdirTemp(dir, "sdlc-openspec-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("openspec: create temp dir: %w", err)
 	}
@@ -693,6 +701,27 @@ func newTempChange(activeRoot, change string) (string, func(), error) {
 		return "", nil, err
 	}
 	return tmp, cleanup, nil
+}
+
+// sweepStaleScratch removes the directories in dir whose name starts with
+// prefix and whose age is over paths.ScratchMaxAge. A crashed run leaves such
+// a copy. It is best effort: a failed read or remove is ignored, so it never
+// fails the call that creates a new copy.
+func sweepStaleScratch(dir, prefix string, now time.Time) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), prefix) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || now.Sub(info.ModTime()) <= paths.ScratchMaxAge {
+			continue
+		}
+		os.RemoveAll(filepath.Join(dir, e.Name()))
+	}
 }
 
 // copyTargetSpecs copies <activeRoot>/openspec/specs/<cap>/spec.md into

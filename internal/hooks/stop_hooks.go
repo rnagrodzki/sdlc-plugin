@@ -6,9 +6,11 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/gitx"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 )
 
@@ -371,6 +373,18 @@ func stopPipelineContinue(ctx HookCtx, event Event) (Output, error) {
 	status, _ := adv.Step["status"].(string)
 	if status != "in_progress" && !auto {
 		return silent, nil
+	}
+	// A declared wait (ship_state wait) is not a stall. A JSON null counts as
+	// no wait; any other value that is not an RFC 3339 string is logged and
+	// ignored.
+	if raw := adv.Step[tools.ShipStepWaitingUntilKey]; raw != nil {
+		if until, isStr := raw.(string); !isStr {
+			fmt.Fprintf(os.Stderr, "stop-pipeline-continue: ignored invalid %s: type %T, want an RFC 3339 string\n", tools.ShipStepWaitingUntilKey, raw)
+		} else if t, err := time.Parse(time.RFC3339, until); err != nil {
+			fmt.Fprintf(os.Stderr, "stop-pipeline-continue: ignored invalid %s %q: %v\n", tools.ShipStepWaitingUntilKey, until, err)
+		} else if time.Now().Before(t) {
+			return silent, nil
+		}
 	}
 
 	stepName := stepDisplayName(adv.Step)

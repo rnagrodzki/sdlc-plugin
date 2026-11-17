@@ -19,3 +19,5 @@ Default severity: high
 - A filename, id or key pattern lists every prefix or alternative that the code regex accepts, in the prose, the tables and the examples; a table row that names writers carries the id pattern too.
 - A claim that names a count or list of cleanup, writer or caller paths names every call site that grep finds.
 - A claim of "once", "only", "always" or "never" holds against every other rule and table row of the same doc.
+- A reference doc that describes a return shape names every exported field of the output of each action, including `Next` and `Warnings`, which the renderer moves out of the field list; a table of the data fields alone is incomplete.
+- A reference doc rule for an input field, or for a value that a function normalizes (a count bound, a length cap, a trim, a duplicate or blank check), states every check that the whole validator applies, or says that it names only some; a rule that states one bound only is a finding.

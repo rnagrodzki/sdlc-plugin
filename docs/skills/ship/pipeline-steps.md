@@ -61,8 +61,14 @@ skips when no change is named or detected. It calls the `ship_state` actions
 `openspec-check` and `openspec-tasks`. The tools do the file checks, the
 validation and the `tasks.md` box count. The skill does not run them itself.
 
-- The change is already archived: the step completes with the result
-  `already archived`.
+- The change is already archived and the archive paths have no uncommitted
+  change: the step completes with the result `already archived`. The archive
+  paths are `openspec/changes/<change>`, its archive folder
+  `openspec/changes/archive/<YYYY-MM-DD>-<change>`, and the folders under
+  `openspec/specs/` that the change has specs for.
+- The change is already archived but the archive paths have uncommitted
+  changes (an earlier run archived and did not commit): the step commits them,
+  as described below.
 - The named change is missing on disk, lacks `proposal.md` or a
   `specs/*/spec.md` file (missing artifacts), or fails
   `openspec validate --strict`: the action writes the fail row and the
@@ -82,6 +88,34 @@ validation and the `tasks.md` box count. The skill does not run them itself.
   the cause, then run `/sdlc:ship --resume`. The resumed step starts again,
   and the box sync finds no open box.
 
+Before the archive, the step checks that the archive paths hold the only
+tracked edits. [/sdlc:commit](../commit.md) commits every tracked change, so
+another tracked edit would enter the archive commit. An untracked file, such
+as a draft of another change, stays out of the commit.
+
+After the archive, the step stages the archive paths and runs
+[/sdlc:commit](../commit.md) with `--auto --no-instructions`: the consent
+question (or `--auto`) is already the approval. The commit does not push; the
+`pr` step pushes. The step result is `archived, commit <sha>`.
+
+The step fails with one of these causes when the commit does not land:
+
+| Fail cause | When | What stays |
+|---|---|---|
+| `archive precheck failed` | a tracked edit outside the archive paths is open | your edit. Commit or stash it |
+| `archive lookup failed` | a resume finds no archive folder, or more than one, for the change | the archived files |
+| `archive status check failed` | `git status` exits non-zero | the archived files, not staged |
+| `archive stage failed` | `git rm --cached` or `git add` on the archive paths exits non-zero | the archived files |
+| `archive commit failed` | the commit returns an error or no commit sha, is stopped, or times out. The error names each commit worker that may still run ("Workers not stopped") | the archived files, staged |
+| `resume: an archive commit worker may still commit` | a resume finds a recorded worker that may still run, and you choose stop, or the run is `--auto` | the archived files, staged |
+
+Fix the cause, then run `/sdlc:ship --resume`. The resumed step finds the
+change archived. When the archive paths are clean (the commit landed), the
+step completes. When they still have changes, the step stages and commits
+them again. When the step records its result and that call fails, the step
+stays in progress. The resume then finds clean archive paths and completes
+the step.
+
 ### pr
 
 The `pr` step runs [/sdlc:pr](../pr.md) with the release level that ship
@@ -97,6 +131,12 @@ commits that the upstream does not have:
   `remote branch <branch> changed since the last push. pr stopped.` No pull
   request is created or edited. Fetch the branch, review the other commits,
   integrate them, then run `/sdlc:ship --resume`.
+
+When you approved a PR title and body in chat in the same session, ship
+sends them to `/sdlc:pr` in an `Approved PR draft (publish unchanged):` block.
+`/sdlc:pr` then publishes that title and body unchanged and does not draft
+again. With no approved draft, or on a resume in a new session, `/sdlc:pr`
+drafts the text itself.
 
 ## OpenSpec checks at the start of a run
 
@@ -239,6 +279,30 @@ instead.
 Polls CI after the PR is created and analyzes or fixes failures. See
 [/sdlc:verify-pipeline](../verify-pipeline.md).
 
+#### Waits between polls
+
+When a poll is still pending, ship records a wait on the step with
+`ship_state` `wait`. The wait lasts the poll interval plus 30 seconds, from 1
+to 3600 seconds. Then ship starts a background `sleep` for the poll interval
+and ends its turn. When the sleep ends, ship polls again. During the wait, the
+Stop hook does not count the turn ends of that step as a stall. The next
+`begin-step` or `complete-step` removes the wait, and a wait ends by itself
+after at most 3600 seconds.
+
+- Ship never runs a foreground `sleep`: the harness blocks it.
+- Ship never runs `gh pr checks --watch`: it stops early on a skipped job.
+- Ship records the same kind of wait, for 900 seconds, before it ends a turn
+  while a background agent runs. It records the wait again when the agent
+  still runs at the next turn end.
+- When the step ends before the sleep, ship stops the sleep. A sleep that ship
+  cannot stop writes nothing, and ship names it in the "Workers not stopped"
+  part of the step result. A sleep with no task ID shows there as
+  `sleep (no task ID)`.
+- When the sleep does not start, ship polls again at once, at most 3 times in
+  a row. Then the step fails.
+- When a new session or a compaction loses the task ID of a sleep, the sleep
+  ends by itself. The resumed step removes the wait.
+
 ### await-remote-review
 
 Waits for an automated reviewer (for example Copilot) to respond.
@@ -264,7 +328,8 @@ Copilot overview header. An open or missed issue is an item of the "open" or
 | the poll state already timed out | skipped | continues |
 
 A poll that ends in `error` follows the same `ext.retryable` rule as the CI
-poll.
+poll. A pending poll waits as the CI poll does (see
+[Waits between polls](#waits-between-polls)).
 
 The approved-clean and actionable results also carry `ext.overview`:
 `approval-recommended`, `changes-recommended`, `needs-closer-look`, or empty

@@ -64,6 +64,23 @@ func runShipReport(t *testing.T, root string, detail map[string]any) ShipRunRepo
 	return out
 }
 
+func runShipReportWritten(t *testing.T, root string, detail map[string]any) ShipRunReportWrittenOut {
+	t.Helper()
+	d := map[string]any{"branch": shipReportBranch, "write": true}
+	for k, v := range detail {
+		d[k] = v
+	}
+	result, err := shipState(root, root, ShipStateIn{Action: "report", Detail: d}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("report: unexpected error: %v", err)
+	}
+	out, ok := result.(ShipRunReportWrittenOut)
+	if !ok {
+		t.Fatalf("report: expected ShipRunReportWrittenOut, got %T", result)
+	}
+	return out
+}
+
 func appendPlanRun(t *testing.T, root string, rec history.RunRecord) {
 	t.Helper()
 	if err := history.NewFileWriter(historyDir(root)).AppendRun(rec); err != nil {
@@ -171,10 +188,14 @@ func TestShipStateReport_StampedState(t *testing.T) {
 		"flags":               map[string]any{"bump": "minor"},
 	})
 
-	out := runShipReport(t, root, map[string]any{"write": true})
-	if !out.Written || out.Path == "" {
-		t.Fatalf("expected report written on a stamped state, got written=%v path=%q", out.Written, out.Path)
+	written := runShipReportWritten(t, root, nil)
+	if !written.Written || written.Path == "" {
+		t.Fatalf("expected report written on a stamped state, got written=%v path=%q", written.Written, written.Path)
 	}
+	if written.Bump != "minor" || written.Duration != "1h 00m" {
+		t.Errorf("expected short result bump minor and duration 1h 00m, got bump=%q duration=%q", written.Bump, written.Duration)
+	}
+	out := runShipReport(t, root, nil)
 	if out.Bump != "minor" || out.Duration != "1h 00m" {
 		t.Errorf("expected bump minor and duration 1h 00m, got bump=%q duration=%q", out.Bump, out.Duration)
 	}
@@ -218,7 +239,7 @@ func TestShipStateReport_WriteMD(t *testing.T) {
 	root := shipReportRoot(t)
 	createShipReportState(t, root, nil)
 
-	out := runShipReport(t, root, map[string]any{"write": true})
+	out := runShipReportWritten(t, root, nil)
 	want := filepath.Join(root, paths.DataDir, "reports", "ship-"+out.RunID+"-report.md")
 	if out.Path != want || !out.Written {
 		t.Fatalf("expected written to %s, got path=%q written=%v", want, out.Path, out.Written)
@@ -227,8 +248,12 @@ func TestShipStateReport_WriteMD(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read report: %v", err)
 	}
-	if string(body) != out.Display {
-		t.Errorf("written file must equal display\nfile:\n%s\ndisplay:\n%s", body, out.Display)
+	full := runShipReport(t, root, nil)
+	if string(body) != full.Display {
+		t.Errorf("written file must equal the full Markdown of the read result\nfile:\n%s\ndisplay:\n%s", body, full.Display)
+	}
+	if out.Display != shipReportSummaryLine(full) || strings.Contains(out.Display, "\n") {
+		t.Errorf("written result display must be the one-line summary, got %q", out.Display)
 	}
 	if !strings.HasPrefix(out.Next, "Report persisted.") {
 		t.Errorf("next = %q, want the persisted instruction", out.Next)
@@ -243,7 +268,7 @@ func TestShipStateReport_WriteJSON(t *testing.T) {
 	writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "[automation.report]\nformat = \"json\"\n")
 	createShipReportState(t, root, nil)
 
-	out := runShipReport(t, root, map[string]any{"write": true})
+	out := runShipReportWritten(t, root, nil)
 	if out.Format != "json" {
 		t.Fatalf("expected json format from config, got %q", out.Format)
 	}
@@ -270,6 +295,79 @@ func TestShipStateReport_WriteJSON(t *testing.T) {
 	md := runShipReport(t, root, map[string]any{"format": "md"})
 	if md.Format != "md" || !strings.HasPrefix(md.Display, "# Ship run report") {
 		t.Errorf("detail.format md must override config json, got format=%q", md.Format)
+	}
+}
+
+// TestShipStateReport_WrittenResultShort pins the write:true result: only the
+// fields of ShipRunReportWrittenOut, guardrailHits [] when empty, counts from
+// the full report, and a result under 5,000 characters for 500 findings while
+// the file keeps the full Markdown.
+func TestShipStateReport_WrittenResultShort(t *testing.T) {
+	root := shipReportRoot(t)
+	fixed := make([]any, 0, 300)
+	for i := 0; i < 300; i++ {
+		fixed = append(fixed, map[string]any{"origin": "local-review", "severity": "high", "file": fmt.Sprintf("f%d.go", i), "line": i, "title": fmt.Sprintf("finding %d with a long title to grow the report", i)})
+	}
+	deferred := make([]any, 0, 200)
+	for i := 0; i < 200; i++ {
+		deferred = append(deferred, map[string]any{"severity": "low", "file": fmt.Sprintf("d%d.go", i), "title": fmt.Sprintf("deferred %d", i), "reason": "wont-fix"})
+	}
+	createShipReportState(t, root, map[string]any{
+		"healing":          map[string]any{"fixed": fixed},
+		"deferredFindings": deferred,
+	})
+
+	result, err := shipState(root, root, ShipStateIn{Action: "report", Detail: map[string]any{"branch": shipReportBranch, "write": true}}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	out, ok := result.(ShipRunReportWrittenOut)
+	if !ok {
+		t.Fatalf("expected ShipRunReportWrittenOut, got %T", result)
+	}
+	if out.StepCount != 2 || out.FixedCount != 300 || out.DeferredCount != 200 || out.IssueCount != 0 {
+		t.Errorf("unexpected counts: %+v", out)
+	}
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if len(raw) >= 5000 {
+		t.Errorf("written result is %d characters, want under 5000", len(raw))
+	}
+	var keys map[string]any
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	wantKeys := []string{"branch", "runId", "format", "stepCount", "fixedCount", "deferredCount", "issueCount", "guardrailHits", "display", "path", "written", "next"}
+	for _, k := range wantKeys {
+		if _, ok := keys[k]; !ok {
+			t.Errorf("written result missing key %q: %s", k, raw)
+		}
+	}
+	for k := range keys {
+		if k == "bump" || k == "duration" {
+			continue
+		}
+		found := false
+		for _, w := range wantKeys {
+			if k == w {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("written result has unexpected key %q", k)
+		}
+	}
+	if !strings.Contains(string(raw), `"guardrailHits":[]`) {
+		t.Errorf("guardrailHits must marshal as [], got %s", raw)
+	}
+	body, err := os.ReadFile(out.Path)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+	if len(body) <= 5000 || !strings.HasPrefix(string(body), "# Ship run report") {
+		t.Errorf("written file must keep the full Markdown, got %d bytes", len(body))
 	}
 }
 
@@ -2008,4 +2106,32 @@ func TestShipReportInstructions(t *testing.T) {
 			t.Errorf("report = %+v", out.InstructionSummary)
 		}
 	})
+}
+
+// TestShipStateReport_FixedNotAList pins a healing.fixed that is not a list:
+// every fixed count is 0, and the report adds one cross-read warning that
+// names the state file, so issueCount counts it.
+func TestShipStateReport_FixedNotAList(t *testing.T) {
+	root := shipReportRoot(t)
+	createShipReportState(t, root, map[string]any{"healing": map[string]any{"fixed": "oops"}})
+
+	full := runShipReport(t, root, nil)
+	found := false
+	for _, issue := range full.Issues {
+		m, _ := issue.(map[string]any)
+		if summary, _ := m["summary"].(string); m["category"] == "cross-read" && strings.Contains(summary, "healing.fixed in ") && strings.Contains(summary, "is not a list (got string); the report counts 0 fixed findings.") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("issues = %v, want a cross-read warning for healing.fixed", full.Issues)
+	}
+
+	out := runShipReportWritten(t, root, map[string]any{"format": "json"})
+	if out.FixedCount != 0 || out.IssueCount != 1 {
+		t.Errorf("fixedCount = %d, issueCount = %d, want 0 and 1", out.FixedCount, out.IssueCount)
+	}
+	if !strings.Contains(out.Display, "0 findings fixed") {
+		t.Errorf("display = %q, want 0 findings fixed", out.Display)
+	}
 }

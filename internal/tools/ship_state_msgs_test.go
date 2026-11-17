@@ -32,6 +32,7 @@ func TestShipState_InputErrorMsgsStartWithAction(t *testing.T) {
 		{"defer", ShipStateIn{Action: "defer"}, "defer: severity, file, and title are required"},
 		{"migrate", ShipStateIn{Action: "migrate"}, "migrate: from and to are required"},
 		{"history_record no detail", ShipStateIn{Action: "history_record"}, "history_record: detail with run record fields is required"},
+		{"decide no text", ShipStateIn{Action: "decide", Step: "pr"}, "decide: detail.text is required"},
 		{"history_record no skill", ShipStateIn{Action: "history_record", Detail: map[string]any{"outcome": "success"}}, "history_record: detail.skill is required"},
 		{"deferred_add no detail", ShipStateIn{Action: "deferred_add"}, "deferred_add: detail with issue fields is required"},
 		{"deferred_resolve no detail", ShipStateIn{Action: "deferred_resolve"}, "deferred_resolve: detail with id field is required"},
@@ -232,5 +233,28 @@ func TestShipState_HistoryErrorMsgsNameWriterPath(t *testing.T) {
 				t.Errorf("Msg = %q, want it to contain %q", infraErr.Msg, want)
 			}
 		})
+	}
+}
+
+// TestShipState_HistoryRecordNoSkillSuggestion pins that the Suggestion of a
+// history_record call without detail.skill shows a full example call.
+func TestShipState_HistoryRecordNoSkillSuggestion(t *testing.T) {
+	root := t.TempDir()
+	_, err := shipState(root, root, ShipStateIn{
+		Action: "history_record",
+		Detail: map[string]any{"outcome": "success"},
+	}, fixedNow(time.Now()))
+	var domainErr *mcpserver.DomainError
+	if !errors.As(err, &domainErr) {
+		t.Fatalf("error = %v (%T), want *mcpserver.DomainError", err, err)
+	}
+	for _, want := range []string{
+		`ship_state({action:"history_record", detail:{skill:"ship"`,
+		"branch:",
+		"outcome:",
+	} {
+		if !strings.Contains(domainErr.Suggestion, want) {
+			t.Errorf("Suggestion = %q, want it to contain %q", domainErr.Suggestion, want)
+		}
 	}
 }

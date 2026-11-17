@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -527,7 +528,8 @@ func TestIndexEntrySliceFileGating(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestReviewPrepareFixture(t *testing.T) {
-	// reviewPrepare creates its manifest folder under TMPDIR: keep it inside t.TempDir.
+	// reviewPrepare writes its manifest folder under .sdlc-v2/scratch/ of root;
+	// TMPDIR points at t.TempDir so a stray system-temp write stays inside it.
 	t.Setenv("TMPDIR", t.TempDir())
 	// Build a minimal git repo with some files and a dimension.
 	root := t.TempDir()
@@ -585,6 +587,9 @@ and adherence to best practices. Check for potential bugs and edge cases.
 
 	if out.ManifestPath == "" {
 		t.Fatal("ManifestPath is empty")
+	}
+	if scratch := paths.ScratchDir(root); !strings.HasPrefix(out.ManifestPath, filepath.Join(scratch, "sdlc-review-")) {
+		t.Errorf("ManifestPath %q is not in an sdlc-review-* folder under the scratch folder %q", out.ManifestPath, scratch)
 	}
 	if out.Summary.TotalDimensions != 1 {
 		t.Errorf("expected 1 dimension, got %d", out.Summary.TotalDimensions)
@@ -689,7 +694,8 @@ and adherence to best practices. Check for potential bugs and edge cases.
 // worker's .diff file. The manifest must flag this via `truncated`/`status`
 // rather than staying silent.
 func TestReviewPrepareDiffByteCapTruncation(t *testing.T) {
-	// reviewPrepare creates its manifest folder under TMPDIR: keep it inside t.TempDir.
+	// reviewPrepare writes its manifest folder under .sdlc-v2/scratch/ of root;
+	// TMPDIR points at t.TempDir so a stray system-temp write stays inside it.
 	t.Setenv("TMPDIR", t.TempDir())
 	root := t.TempDir()
 
@@ -1949,9 +1955,9 @@ func reviewRunPlanDims() map[string]string {
 }
 
 // newReviewRunPlanFixture builds a fixture with reviewRunPlanDims and a
-// limit of 2 agents at the same time. It points TMPDIR at a test folder, so
-// the os.MkdirTemp review folder of a failed call cannot leak outside
-// t.TempDir.
+// limit of 2 agents at the same time. The review folder goes under
+// .sdlc-v2/scratch/ of the fixture root. It points TMPDIR at a test folder,
+// so a stray system-temp write cannot leak outside t.TempDir.
 func newReviewRunPlanFixture(t *testing.T) string {
 	t.Helper()
 	t.Setenv("TMPDIR", t.TempDir())
@@ -2423,4 +2429,31 @@ func TestReviewPrepareBranchReadFails(t *testing.T) {
 	if meta.Branch != "" || strings.Contains(string(raw), "shipRunId") {
 		t.Errorf("run.meta = %s, want an empty branch and no shipRunId", raw)
 	}
+}
+
+// TestReviewPrepare_ScratchCreateFailure pins the InfraError of a failed
+// scratch create. A scratch folder that is a file keeps the scratchMkdirTemp
+// Suggestion, which names .sdlc-v2/scratch/, and wraps ENOTDIR. A failed
+// MkdirTemp uses the review_prepare fallback Suggestion and wraps its cause.
+func TestReviewPrepare_ScratchCreateFailure(t *testing.T) {
+	fixture := func(t *testing.T) string {
+		t.Helper()
+		return newReviewFixture(t, map[string]string{"src/a.go": "package main\n"}, map[string]string{
+			"dim.md": "---\nname: dim-a\ndescription: Dimension\ntriggers:\n  - \"**/*.go\"\nseverity: medium\n---\nReview.\n",
+		})
+	}
+	in := ReviewPrepareIn{SkipConfigCheck: true, Target: "main"}
+	t.Run("scratch folder is a file", func(t *testing.T) {
+		root := fixture(t)
+		scratch := makeScratchAFile(t, root)
+		_, err := reviewPrepare(root, root, in)
+		assertScratchInfraError(t, err, "create scratch folder "+scratch, scratchFolderSuggestion(scratch), syscall.ENOTDIR)
+	})
+	t.Run("MkdirTemp fails", func(t *testing.T) {
+		root := fixture(t)
+		sentinel := stubMkdirTempFailure(t)
+		_, err := reviewPrepare(root, root, in)
+		assertScratchInfraError(t, err, "create temp dir: "+sentinel.Error(),
+			"Check disk space and write permission on .sdlc-v2/scratch/ of the main worktree, then retry review_prepare.", sentinel)
+	})
 }

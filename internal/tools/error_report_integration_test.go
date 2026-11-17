@@ -31,10 +31,10 @@ func errorReportCallArgs(skill string) map[string]any {
 // the registered prepare_orchestrator tool in error_report mode with a fake
 // search that returns two issues. The tool output lists only the issue whose
 // title starts with the skill tag, and next holds the offer sentence for 1
-// issue. The manifest on disk is written under the redirected temp dir.
+// issue. The manifest on disk is written under the scratch folder of the repo.
 func TestIntegration_PrepareOrchestratorErrorReport_ReturnsSimilarIssues(t *testing.T) {
-	tmpDir := redirectTempDir(t)
-	newOrchestratorRepo(t, "")
+	root := newOrchestratorRepo(t, "")
+	tmpDir := redirectTempDir(t, root)
 	calls := stubErrorReportIssueList(t, []ghx.Issue{
 		{Number: 91, Title: "[harden] pre-flight stop", URL: "https://example.test/91"},
 		{Number: 40, Title: "[plan] unrelated", URL: "https://example.test/40"},
@@ -47,7 +47,7 @@ func TestIntegration_PrepareOrchestratorErrorReport_ReturnsSimilarIssues(t *test
 
 	manifestPath := manifestPathFromText(t, text)
 	if !strings.HasPrefix(manifestPath, tmpDir+string(filepath.Separator)) {
-		t.Errorf("manifestPath %q is not under the redirected temp dir %q", manifestPath, tmpDir)
+		t.Errorf("manifestPath %q is not under the scratch folder %q", manifestPath, tmpDir)
 	}
 	manifest := readErrorReportManifest(t, manifestPath)
 	if manifest["skill"] != "harden" || manifest["operation"] != "do-thing" {
@@ -75,8 +75,7 @@ func TestIntegration_PrepareOrchestratorErrorReport_ReturnsSimilarIssues(t *test
 // registered tool with a fake search that finds nothing. The call succeeds,
 // the output has no issue entries and no note, and next is the base text.
 func TestIntegration_PrepareOrchestratorErrorReport_NoMatchOmitsNote(t *testing.T) {
-	redirectTempDir(t)
-	newOrchestratorRepo(t, "")
+	redirectTempDir(t, newOrchestratorRepo(t, ""))
 	stubErrorReportIssueList(t, nil, nil)
 
 	res, text := callRegisteredPrepareOrchestratorText(t, errorReportCallArgs("harden"))
@@ -101,8 +100,7 @@ func TestIntegration_PrepareOrchestratorErrorReport_NoMatchOmitsNote(t *testing.
 // output carries the exact note text with no issue entries. Next ends with the
 // note, so the skipped search does not read as "no match".
 func TestIntegration_PrepareOrchestratorErrorReport_SearchFailureStillSucceeds(t *testing.T) {
-	redirectTempDir(t)
-	newOrchestratorRepo(t, "")
+	redirectTempDir(t, newOrchestratorRepo(t, ""))
 	stubErrorReportIssueList(t, nil, &ghx.ExitError{Command: "gh issue list", ExitCode: 4, Stderr: "To get started with GitHub CLI, please run:  gh auth login\nsecond line"})
 
 	res, text := callRegisteredPrepareOrchestratorText(t, errorReportCallArgs("harden"))
@@ -134,10 +132,10 @@ func TestIntegration_PrepareOrchestratorErrorReport_SearchFailureStillSucceeds(t
 // registered tool in harden mode. The harden output must not carry
 // similarIssues or similarIssuesNote, and the duplicate search must not run.
 func TestIntegration_PrepareOrchestratorHarden_HasNoSimilarIssues(t *testing.T) {
-	redirectTempDir(t)
-	newOrchestratorRepo(t, ""+
+	root := newOrchestratorRepo(t, ""+
 		"[execute.guardrails.good-rule]\n"+
 		"description = \"Every task names its files.\"\n")
+	redirectTempDir(t, root)
 	calls := stubErrorReportIssueList(t, []ghx.Issue{{Number: 1, Title: "[ship] x", URL: "u"}}, nil)
 
 	res, text := callRegisteredPrepareOrchestratorText(t, map[string]any{

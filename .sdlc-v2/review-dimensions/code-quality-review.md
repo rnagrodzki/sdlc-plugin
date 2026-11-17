@@ -338,7 +338,14 @@ Review Go source changes for baseline code quality in this module
   returns an error that names the file and the key (a `DataError` in
   `internal/tools`). Reading a damaged value as absent lets the next write
   overwrite it. Every reader of the same key treats a wrong type the same way:
-  grep the package for the key and compare the readers.
+  grep the package for the key and compare the readers. The same assertion on
+  the same key written at two or more sites is one block: write the checked
+  read once, in one helper that returns the value and the error, and call it
+  from each reader. An unchecked copy of the assertion at each site is a
+  finding for each copy, because a fix of one copy leaves the others unchecked.
+  This extends the two-value rule above, which asks that each reader checks
+  `ok` and not that the check is written once. Example: an unchecked assertion
+  on the `fixed` value of a `healing` map, written at three sites.
 - Helper duplication is checked by behavior, not only by literal. Before
   adding a helper, grep the package and the module for an existing function
   that does the same work, even under another name (for example

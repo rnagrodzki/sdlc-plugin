@@ -39,7 +39,7 @@ What happens:
 | Step 2: Read the topic file | skill | Reads the topic file, sets the status to `in progress` and converts an old-form file. | The gaps in the topic file | no | always |
 | Step 3: Ask one question | skill | Asks one question about the first gap and writes the answer into its section. | An updated topic file section | no | until no section is empty or the user is done |
 | Step 4: Check the proposals against the guardrails | skill | Checks each live proposal against the guardrails. It reworks or drops a proposal that breaks an `error` guardrail. | A topic file with a `**Guardrail check:**` line | no | after each Step 3 answer |
-| Step 5: Hand off to plan | skill | Sets the status to `ready for plan` and asks what to do next: start `/sdlc:plan`, start a new idea, or stop. | A topic file with the status `ready for plan` | no | the check passes with no empty section |
+| Step 5: Hand off to plan | skill | Sets the status to `ready for plan` and asks what to do next: start `/sdlc:plan`, start a new idea, or stop. When `openspec/config.yaml` exists, it also offers `Check against OpenSpec`: it prints the report of `/sdlc:verify-requirements`, changes no file and asks again (see [Hand off to plan](preplan/dialogue.md#hand-off-to-plan)). | A topic file with the status `ready for plan` | no | the check passes with no empty section |
 
 ### Run facts
 

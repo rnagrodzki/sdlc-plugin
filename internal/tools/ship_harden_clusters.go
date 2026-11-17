@@ -6,6 +6,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/dimensions"
 	"github.com/rnagrodzki/sdlc-plugin/internal/execx"
@@ -100,6 +101,11 @@ const hardenFailureTextCap = 4096
 // repeat without storing (and comparing) the full text.
 const hardenTriggerPrefixLen = 200
 
+// hardenTriggerMinPrefixLen is the shortest recorded trigger key that may
+// match a longer failure key as a prefix. A key shorter than this matches
+// only an equal key, so a short trigger cannot claim an unrelated failure.
+const hardenTriggerMinPrefixLen = 100
+
 // shipStateHardenClusters groups review findings into harden clusters (see
 // ship_state's harden_clusters tool-description line for the full
 // contract). It is read-only: no ship state field is written. With no
@@ -120,7 +126,7 @@ func shipStateHardenClusters(root, workDir string, in ShipStateIn) (any, error) 
 		return nil, err
 	}
 	for i := range clusters {
-		clusters[i].AlreadyHardened = triggers[hardenTriggerKey(clusters[i].FailureText)]
+		clusters[i].AlreadyHardened = hardenAnyTriggerMatches(triggers, clusters[i].FailureText)
 	}
 
 	dirty, err := hardenDirtySurfaces(activeWorktreeRootSafe())
@@ -423,30 +429,58 @@ func hardenTriggerKey(s string) string {
 	return strings.TrimSpace(hardenCapRunes(strings.TrimSpace(s), hardenTriggerPrefixLen))
 }
 
-// hardenLiveTriggers returns the set of healing.hardened[].trigger values,
-// normalized by hardenTriggerKey, recorded in the live ship run for
+// hardenTriggerMatches reports whether a recorded trigger covers a failure
+// text. Both sides are normalized by hardenTriggerKey. They match when the
+// keys are equal, or when the recorded key is a prefix of the failure key
+// and has at least hardenTriggerMinPrefixLen runes. A trigger that was cut
+// short when it was copied still matches its failure.
+func hardenTriggerMatches(recorded, failure string) bool {
+	rk := hardenTriggerKey(recorded)
+	fk := hardenTriggerKey(failure)
+	if rk == "" {
+		return false
+	}
+	if rk == fk {
+		return true
+	}
+	return utf8.RuneCountInString(rk) >= hardenTriggerMinPrefixLen && strings.HasPrefix(fk, rk)
+}
+
+// hardenAnyTriggerMatches reports whether any recorded trigger matches the
+// failure text by hardenTriggerMatches.
+func hardenAnyTriggerMatches(triggers []string, failure string) bool {
+	for _, t := range triggers {
+		if hardenTriggerMatches(t, failure) {
+			return true
+		}
+	}
+	return false
+}
+
+// hardenLiveTriggers returns the healing.hardened[].trigger values
+// recorded in the live ship run for
 // branchIn, across both phases (started and done) — either one means
 // harden already targeted that exact failure.
-// No ship state for the branch is not an error: it returns an empty set, so
+// No ship state for the branch is not an error: it returns an empty list, so
 // AlreadyHardened comes back false for every cluster.
-func hardenLiveTriggers(root, workDir, branchIn string) (map[string]bool, error) {
+func hardenLiveTriggers(root, workDir, branchIn string) ([]string, error) {
 	st, err := shipResolveAndFind(branchIn, workDir, root)
 	if errors.Is(err, errNoShipState) {
-		return map[string]bool{}, nil
+		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	healing, _ := st.Data["healing"].(map[string]any)
 	hardened, _ := healing["hardened"].([]any)
-	triggers := make(map[string]bool, len(hardened))
+	triggers := make([]string, 0, len(hardened))
 	for _, h := range hardened {
 		m, ok := h.(map[string]any)
 		if !ok {
 			continue
 		}
 		if t, _ := m["trigger"].(string); t != "" {
-			triggers[hardenTriggerKey(t)] = true
+			triggers = append(triggers, t)
 		}
 	}
 	return triggers, nil

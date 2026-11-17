@@ -3,6 +3,7 @@ package paths
 import (
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestHistoryDir pins the durable history directory to <root>/.sdlc-v2/history.
@@ -114,5 +115,23 @@ func TestStateEntryListsCoverEveryEntry(t *testing.T) {
 		if name == BakSuffix {
 			t.Errorf("BakSuffix must not appear in UnlinkedStateEntries (it is a suffix pattern, not a named entry)")
 		}
+	}
+}
+
+// TestScratchDir pins the scratch folder to <root>/.sdlc-v2/scratch. Tools
+// that hand a file to the model by path write it there, and the dashboard
+// Clear cache action reads the same folder.
+func TestScratchDir(t *testing.T) {
+	root := filepath.Join("/repo", "main")
+	want := filepath.Join(root, ".sdlc-v2", "scratch")
+	if got := ScratchDir(root); got != want {
+		t.Errorf("ScratchDir(%q) = %q, want %q", root, got, want)
+	}
+}
+
+// TestScratchMaxAge pins the one age that every scratch sweep uses.
+func TestScratchMaxAge(t *testing.T) {
+	if ScratchMaxAge != 24*time.Hour {
+		t.Errorf("ScratchMaxAge = %v, want 24h", ScratchMaxAge)
 	}
 }

@@ -3,7 +3,6 @@ package tools
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -168,11 +167,11 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 		Template:               version.ToolingErrorTemplate,
 	}
 
-	tmpDir, err := os.MkdirTemp("", "sdlc-error-report-")
+	tmpDir, err := scratchMkdirTemp(root, "sdlc-error-report-")
 	if err != nil {
 		return ErrorReportPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("create temp dir: %s", err.Error()),
-			Suggestion: "Check that the OS temp directory allows creating new directories, then retry prepare_orchestrator with mode error_report.",
+			Suggestion: scratchSuggestion(err, "Check that .sdlc-v2/scratch/ of the main worktree allows new folders, then retry prepare_orchestrator with mode error_report."),
 			Cause:      err,
 		}
 	}
@@ -180,7 +179,7 @@ func errorReportPrepare(root string, in ErrorReportPrepareIn) (ErrorReportPrepar
 	if err := fsx.AtomicWriteJSON(manifestPath, manifest); err != nil {
 		return ErrorReportPrepareOut{}, &mcpserver.InfraError{
 			Msg:        fmt.Sprintf("write manifest: %s", err.Error()),
-			Suggestion: "Check available disk space and write permission on the temp directory created just before this step, then retry prepare_orchestrator with mode error_report — it creates a fresh one each call.",
+			Suggestion: "Check available disk space and write permission on the scratch folder created just before this step, then retry prepare_orchestrator with mode error_report — it creates a fresh one each call.",
 			Cause:      err,
 		}
 	}

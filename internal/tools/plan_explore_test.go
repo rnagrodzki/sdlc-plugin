@@ -4,15 +4,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 )
 
-// readExploreManifest runs buildExplorePack, removes its temp dir when the
-// test ends, and returns the decoded manifest.
+// readExploreManifest runs buildExplorePack, removes its scratch folder when
+// the test ends, and returns the decoded manifest.
 func readExploreManifest(t *testing.T, mainRoot, contentRoot, fromOpenspec string) exploreManifest {
 	t.Helper()
-	redirectTempManifests(t)
 	pack := buildExplorePack(mainRoot, contentRoot, fromOpenspec, "")
 	if pack.OutDir != nil {
 		outDir := *pack.OutDir
@@ -37,8 +40,8 @@ func readExploreManifest(t *testing.T, mainRoot, contentRoot, fromOpenspec strin
 // younger ones and the one it just wrote, and leaves other directories alone,
 // including an old sdlc-commit-manifest-* one.
 func TestPlanExplorePrepare_RemovesStaleExploreDirs(t *testing.T) {
-	root := redirectTempManifests(t)
 	dir := t.TempDir()
+	root := paths.ScratchDir(dir)
 	initGitFixture(t, dir)
 	gitCommit(t, dir, "initial")
 
@@ -81,6 +84,67 @@ func TestPlanExplorePrepare_RemovesStaleExploreDirs(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(current, "manifest.json")); err != nil {
 		t.Errorf("current manifest must stay readable: %v", err)
 	}
+}
+
+// TestPlanExplorePrepare_ManifestUnderScratch pins the explore pack location:
+// <mainRoot>/.sdlc-v2/scratch/sdlc-explore-<slug>-*/manifest.json, never the
+// OS temp directory, and the manifest's outDir names that folder.
+func TestPlanExplorePrepare_ManifestUnderScratch(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+
+	pack := buildExplorePack(dir, dir, "", "")
+	if pack.Error != nil || pack.OutDir == nil || pack.ManifestPath == nil {
+		t.Fatalf("buildExplorePack: pack = %+v", pack)
+	}
+	outDir := *pack.OutDir
+	if got, want := filepath.Dir(outDir), paths.ScratchDir(dir); got != want {
+		t.Errorf("outDir parent = %q, want %q", got, want)
+	}
+	if !strings.HasPrefix(filepath.Base(outDir), exploreDirPrefix) {
+		t.Errorf("outDir = %q, want a %s* folder", outDir, exploreDirPrefix)
+	}
+	if got, want := *pack.ManifestPath, filepath.Join(outDir, "manifest.json"); got != want {
+		t.Errorf("ManifestPath = %q, want %q", got, want)
+	}
+}
+
+// TestPlanExplorePrepare_ScratchFailure pins that a scratch folder that
+// cannot be made (the main root is a file) degrades into ExplorePack.Error
+// with no manifest, so plan_explore_prepare returns its InfraError.
+func TestPlanExplorePrepare_ScratchFailure(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pack := buildExplorePack(file, file, "", "")
+	if pack.ManifestPath != nil {
+		t.Fatalf("ManifestPath = %q, want nil when the scratch folder cannot be made", *pack.ManifestPath)
+	}
+	if pack.Error == nil || !strings.Contains(*pack.Error, "create scratch folder") {
+		t.Errorf("Error = %v, want it to name the failed scratch folder", pack.Error)
+	}
+}
+
+// TestPlanExplorePrepare_HandlerScratchError pins the InfraError of the
+// plan_explore_prepare handler body. A scratch folder that cannot be made
+// keeps the scratchMkdirTemp Suggestion, which names .sdlc-v2/scratch/, and
+// wraps the ENOTDIR cause. A failed MkdirTemp uses the fallback Suggestion and
+// wraps its cause.
+func TestPlanExplorePrepare_HandlerScratchError(t *testing.T) {
+	t.Run("scratch folder is a file", func(t *testing.T) {
+		root := t.TempDir()
+		scratch := makeScratchAFile(t, root)
+		_, err := planExplorePrepare(root, root, PlanExploreIn{})
+		assertScratchInfraError(t, err, "create scratch folder "+scratch, scratchFolderSuggestion(scratch), syscall.ENOTDIR)
+	})
+	t.Run("MkdirTemp fails", func(t *testing.T) {
+		root := t.TempDir()
+		sentinel := stubMkdirTempFailure(t)
+		_, err := planExplorePrepare(root, root, PlanExploreIn{})
+		assertScratchInfraError(t, err, sentinel.Error(), planExploreFallbackSuggestion, sentinel)
+	})
 }
 
 // TestPlanExplorePrepare_ScopeHintsFromCapabilitySpecs pins that OpenSpec

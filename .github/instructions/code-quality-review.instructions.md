@@ -13,6 +13,7 @@ Default severity: medium
 - A conversion or parse call (`strconv.Atoi`, `strconv.ParseInt`, `time.Parse`) whose error goes to `_` needs a comment on the line that states why the zero value is safe. Without it, a value that did not parse reads as a real zero in a count or a verdict.
 - A parser of text that the code did not write (a review overview, a Markdown file) returns an error, or counts and warns, for a row it cannot read. It does not drop the row with no signal. Its tests cover an indented row, CRLF line ends, a block that never closes and a number that does not parse.
 - A helper that two or more handlers, tools or routes call builds error and warning text with no tool, action or route name of its own. Each caller passes its name or adds its own prefix, and has a test that asserts the whole text. A reader that copies another reader and changes only a size cap, an error prefix or a type is a finding: give the existing reader a parameter.
+- A type assertion on a value read from a stored file or a state map uses the two-value form (`v, ok := x.(T)`) and handles `ok == false` with an error that names the file and the key. The same assertion on one key at two or more sites is one helper that every reader calls. An unchecked copy at any site is a finding.
 
 ## Note
 

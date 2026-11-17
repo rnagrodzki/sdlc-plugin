@@ -55,7 +55,7 @@ Before the skill builds the comment, it checks the findings of all reviewers tog
 | A finding has a wrong severity, for example `info` for a credential exposure | The skill corrects the severity |
 | A dimension has zero findings | The skill asks if the diff of that dimension holds possible problems for its concern |
 
-The skill saves the comment as `review-comment.md` in the temp directory of the run. The comment never holds an AI-tool attribution line.
+The skill saves the comment as `review-comment.md` in the scratch folder of the run (under `.sdlc-v2/scratch/`). The comment never holds an AI-tool attribution line.
 
 ## Verdict
 
@@ -119,7 +119,7 @@ When the verdict is `APPROVED`, the skill does not ask.
 
 ## What stays after a run
 
-**Temp files.** On each end of a run, the skill stops the reviewers that did not finish. Then it deletes its manifest file and its temp diff directory. This applies to a dry run, an error stop and a normal end. The skill keeps the temp directory only when a reviewer could not be stopped, because that reviewer can still read its files. The final output then names the kept path. The directory is under the system temp directory, so the operating system removes it later.
+**Scratch files.** On each end of a run, the skill stops the reviewers that did not finish. Then it deletes its manifest file and its scratch diff folder. This applies to a dry run, an error stop and a normal end. The skill keeps the scratch folder only when a reviewer could not be stopped, because that reviewer can still read its files. The final output then names the kept path. The folder is under `.sdlc-v2/scratch/`. When a later `review_prepare` call creates its own folder, it removes the `sdlc-review-*` folders older than 24 hours. Clear cache on the [dashboard](../dashboard.md) removes them too.
 
 **The run ledger.** Each run records its reviewers in a ledger under `.sdlc-v2/runs/ledger/`. A dry run writes no ledger. The skill does not delete the ledger. The [dashboard](../dashboard.md) reads the ledger to show the review dimensions of a finished run. The first `execute_state` `gc` sweep or `/sdlc:ship` `cleanup-pipeline` sweep after 7 days (the default `state.gc.ttlDays`) removes the ledger.
 

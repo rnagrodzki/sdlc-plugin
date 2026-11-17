@@ -361,6 +361,32 @@ func TestGC_IntegratesTempdirSweep(t *testing.T) {
 	}
 }
 
+// TestGC_DefaultTempDirIsScratch pins that GC with no TempDir option sweeps
+// the scratch folder of the repo (.sdlc-v2/scratch/), not the system temp
+// folder.
+func TestGC_DefaultTempDirIsScratch(t *testing.T) {
+	root := t.TempDir()
+	scratch := paths.ScratchDir(root)
+
+	dead := filepath.Join(scratch, "sdlc-explore-dead-branch-abc123")
+	mustMkdir(t, dead)
+	setMtime(t, dead, time.Now().Add(-30*24*time.Hour))
+
+	rpt, err := GC(root, GCOptions{
+		TTL:          7 * 24 * time.Hour,
+		BranchExists: func(string) bool { return false },
+	})
+	if err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if !containsPath(rpt.TempdirsDeleted, dead) {
+		t.Fatalf("expected scratch explore folder in TempdirsDeleted, got %v", rpt.TempdirsDeleted)
+	}
+	if _, err := os.Stat(dead); !os.IsNotExist(err) {
+		t.Fatalf("scratch explore folder should have been removed")
+	}
+}
+
 func mustMkdir(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {

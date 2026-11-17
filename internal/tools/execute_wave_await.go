@@ -360,7 +360,7 @@ func execActionWaveAwait(root, workDir string, in ExecuteStateIn, now func() tim
 		status = "done"
 	}
 
-	ps, statePath, err := waveAwaitPollFile(in, in.RunID, waveNum, nowT)
+	ps, statePath, err := waveAwaitPollFile(paths.ScratchDir(root), in, in.RunID, waveNum, nowT)
 	if err != nil {
 		return WaveAwaitOut{}, err
 	}
@@ -669,16 +669,17 @@ func waveAwaitStrPtr(s string) *string {
 // waveAwaitPollFile loads (or starts fresh) the resume-state persisted at
 // in.StateFile, keyed by runId+wave so a state file left over from a
 // different run or an earlier wave is detected and discarded rather than
-// silently reused. now is only used to seed startedAt on a fresh state; it
-// is never used to gate status (KD10).
-func waveAwaitPollFile(in ExecuteStateIn, runID string, waveNum int, nowT time.Time) (waveAwaitPollState, string, error) {
+// silently reused. A new state file goes under scratchDir (the scratch
+// folder of the main worktree). now is only used to seed startedAt on a
+// fresh state; it is never used to gate status (KD10).
+func waveAwaitPollFile(scratchDir string, in ExecuteStateIn, runID string, waveNum int, nowT time.Time) (waveAwaitPollState, string, error) {
 	statePath := in.StateFile
 	if statePath == "" {
-		p, err := stepper.NewStateFilePath("wave-await")
+		p, err := stepper.NewStateFilePath(scratchDir, "wave-await")
 		if err != nil {
 			return waveAwaitPollState{}, "", &mcpserver.InfraError{
 				Msg:        "create wave-await state file: " + err.Error(),
-				Suggestion: "Retry once; if it recurs, the OS random source is unavailable while naming the state file — escalate rather than looping.",
+				Suggestion: stateFileSuggestion(scratchDir, err),
 				Cause:      err,
 			}
 		}
