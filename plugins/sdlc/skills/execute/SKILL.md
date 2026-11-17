@@ -30,6 +30,7 @@ If the system context contains "Plan mode is active":
 Call `execute_state({ action: "resolve-config", branch: "<current branch>", quality: "<--quality value, omit when the flag was absent>", auto: <true only when --auto was passed>, commitWaves: "<--commit-waves value, omit when the flag was absent>" })`.
 
 Store from the response: `auto` as EXECUTE_AUTO, `quality` as EXECUTE_QUALITY (may be empty), `highRiskAutoApprove` as EXECUTE_HIGH_RISK_AUTO, `commitWaves` as EXECUTE_COMMIT_WAVES — the response's `commitWaves` is a JSON boolean; store it as the string `"true"`/`"false"` (matching `--commit-waves`'s own value shape), since that is the form `init` (below) expects. Print one line: `Execute config: auto=<EXECUTE_AUTO> (<sources.auto>), quality=<EXECUTE_QUALITY or "prompt"> (<sources.quality>), highRiskAutoApprove=<EXECUTE_HIGH_RISK_AUTO> (<sources.highRiskAutoApprove>), commitWaves=<EXECUTE_COMMIT_WAVES> (<sources.commitWaves>)`. Surface any `warnings` verbatim (this includes the notice when personal keys were moved from `.sdlc-v2/config.toml` to `.sdlc-v2/local.toml`). If the call returns an error (a personal key that could not be moved automatically), show its message and suggestion, then stop. Do not fall back to defaults.
+Also store `t3ThreadId` as EXECUTE_T3_THREAD (empty when absent) and `shipDispatched` as EXECUTE_SHIP_DISPATCHED.
 
 **Resolve instructions — the third action of this skill, immediately after resolve-config:** Skip this item when `--no-instructions` was passed. Otherwise run:
 
@@ -205,6 +206,35 @@ One `execute_state` bootstrap, before wave 1 (`wave-start` requires the state fi
 execute_state({ action: "init", branch: "<branch>", quality: "<X>", totalTasks: N, plannedTaskIds: [<every task id from the plan>], planPath: "<PLAN_FILE>", planHash: "<sha256 of PLAN_FILE bytes>", waveTimeoutSeconds: WAVE_TIMEOUT, waveIntervalSeconds: WAVE_INTERVAL, commitWaves: "<EXECUTE_COMMIT_WAVES>", plannedWavesJson: "[{\"number\":0,\"taskIds\":[\"1\"]},{\"number\":1,\"taskIds\":[\"2\",\"3\"]}]" })
 execute_state({ action: "context", data: "{\"planSummary\": \"<2-3 sentence goal of the plan>\"}" })
 ```
+**Run panel and start card.** Apply the run panel rule, then the run card rule, with the `filePath` of `init` (both best effort).
+
+The run card rule:
+
+```text
+Run card (best effort): only when t3ThreadId is non-empty and shipDispatched is false and --resume is absent.
+This run uses the wave route. The Step 2b direct route writes no state file, so it makes no card call.
+Start card: call dashboard_card({ runId: "<state file name without .json>" }).
+End card: call dashboard_card({ runId: "<same>", final: true }).
+On any error, print: Warning: run card not shown — <first line of the error>.
+Then continue. A card error never fails the run.
+End card after a context compaction: only when this invocation started the run with init, never with --resume.
+If you cannot tell that, skip the end card.
+If runId, t3ThreadId or shipDispatched is not in context, read them again:
+execute: execute_state({action:"read"}) returns runId and t3ThreadId. resolve-config returns shipDispatched.
+```
+
+`runId` is the base name, without `.json`, of `filePath` of `init`. Example: `/repo/.sdlc-v2/runs/execute-feat-x-20261116T175538Z.json` gives `execute-feat-x-20261116T175538Z`.
+
+The run panel rule:
+
+```text
+Run panel (best effort, at run start only, same condition as the run card):
+Call dashboard({ action: "ensure", open: true, runId: "<runId>" }).
+If the output has previewUrl, load mcp__t3-code__preview_open with ToolSearch, then call it with { url: previewUrl }.
+On any error, print: Warning: run panel not opened — <first line of the error>.
+Then continue. A panel error never fails the run.
+```
+
 Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — the tool stores it verbatim and compares it against the plan file's current hash server-side at `wave-start` (mismatch halts, see stage 1). `plannedTaskIds` seeds the completeness gate below. `plannedWavesJson` is the final wave schedule that Step 4 (Revise and Confirm) confirmed, after any critique edits, as a JSON-encoded string: an array of `{number, taskIds}` with the pre-wave tasks as wave `0`, then one entry per wave in order. Pass only wave numbers and task IDs — no names, models or file lists — and leave out wave `0` when there are no pre-wave tasks. Task IDs are JSON strings (`"2"`), not numbers. Put each task ID in one wave, once. Every task ID must be in `plannedTaskIds`, or `init` fails and writes no state. On that error, correct `plannedWavesJson` from the Suggestion of the error and call `init` again. Do not drop the field and do not start wave 1 first. If `init` still fails on `plannedWavesJson` after 2 more calls, stop the run and print the last error. No state was written, so there is nothing to clean up. The dashboard reads the stored schedule to list waves that have not started. EXECUTE_AUTO is already folded into the effective auto state by resolve-config — including a dispatching `/ship` run's approved auto, which resolve-config picks up through its own ship-state cross-read when `branch` is passed at Step 0, so `init`'s `pipelineAuto` response field is no longer read here. Stage 1's high-risk gate is what reads EXECUTE_AUTO; the completeness gate does not. Start `abortedSyncWaves` (stage 7, Step 9) empty here; a resumed run seeds it in `## Resume` step 5 instead.
 
 **Pre-wave:** 1 trivial task → execute inline. 2+ trivial tasks → one batch Agent (haiku) via `## Worker dispatch prompt` below. Direct dispatch from main context, same as every wave below — there is no wave-runner middle agent.
@@ -215,6 +245,7 @@ Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — t
    - `yes` → proceed with this wave.
    - `skip` → do not dispatch this wave. Record each of its tasks with `execute_state({ action: "task-fail", wave: N, taskId: "<id>", taskName: "<name>", complexity: "<complexity>", risk: "<risk>", error: "skipped by user at the high-risk gate" })`, then `execute_state({ action: "wave-fail", wave: N, error: "skipped by user at the high-risk gate" })`, and continue with the next wave. A later task that depends on a skipped task is not dispatched either: record it with `task-fail` and `skippedDependency: true`. Step 9 lists every skipped task as not implemented.
    - `cancel` → stop before `wave-start`. Do not call `cleanup`; the state stays resumable. Print the "Execution state preserved at ..." line from Step 9.
+     Before that line, apply the run card rule (end card).
 
    When a high-risk wave proceeds without a prompt **and** the deciding value came from a saved config file rather than a per-run signal — Step 0 reported `sources.highRiskAutoApprove` or `sources.auto` as `"local"` — print this line before dispatching, so a saved setting can never skip a high-risk approval silently:
 
@@ -414,6 +445,7 @@ Instructions (execute): N total, X done, Y failed, Z not run.
 ```
 
 If the list stops before its end (an interrupt), do not call `cleanup`. A record stays running and the run stays in flight. Print:
+Apply the run card rule (end card) before the print below.
 `Execution state preserved at <main-worktree>/.sdlc-v2/runs/execute-<branch>-<timestamp>.json — use --resume to run the open instructions.`
 A `--resume` run turns the running record into failed, runs the rest of the list, then calls `cleanup` (see `## Resume`).
 
@@ -426,8 +458,10 @@ A `--resume` run turns the running record into failed, runs the rest of the list
 | Step 9a interrupted | partial | a record stays running, no `cleanup` | `--resume` runs the open records, then calls `cleanup` |
 
 **Completion:** `execute_state({ action: "cleanup" })` stamps `runStatus:"completed"` and `runCompletedAt` on the state file — it does **not** delete it. The file (with its `issues[]`) stays on disk, findable via later reads (e.g. `/harden`), until `gc`'s TTL sweep eventually prunes it; only the per-run working directory (fact sheets, progress markers) and the ledger directory are actually removed by `cleanup` itself. Print: `Run complete — state stamped runStatus:"completed".`, then the issue summary described above, then the Step 9a summary line. Call `cleanup` only after Step 9a ends: the in-flight state covers the list, and `cleanup` ends it.
+After `cleanup`, apply the run card rule (end card), then print the summary.
 
 On failure or interruption (not all tasks completed), `cleanup` is not called at all — the state file is simply left as-is, still resumable. Print:
+Before the print, apply the run card rule (end card).
 `Execution state preserved at <main-worktree>/.sdlc-v2/runs/execute-<branch>-<timestamp>.json — use --resume to continue.`
 
 ---

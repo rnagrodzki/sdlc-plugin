@@ -62,7 +62,7 @@ On option 1, follow [`entry-modes.md`](entry-modes.md)'s `--resume` handler. On 
     
     On option 1: `git checkout -b {derivedName}`. On option 2: ask for the name, then `git checkout -b {userProvidedName}`. Either way, `ship_prepare` captures the branch synchronously.
 
-**4. Call `ship_prepare`** with the parsed flags (`skipConfigCheck:false`, `hasPlan`, `auto`, `steps`, `quick`, `quality`, `bump`, `draft`, `dryRun`, `resume:false`, `rebase`, `openspecChange`, `planFile`, `gc:false`) → `{errors, warnings, flags, sources, branch, worktree, stateFile, prunedOrphans, report}`. The config-version check migrates nothing: a missing or pre-TOML config comes back as one `errors` entry prefixed `config-version:` that points at `/setup`, handled by the `errors` rule below — never hand-instruct a user to edit `schemaVersion`. `errors` non-empty: print each string verbatim, stop (no state was created). `warnings` non-empty: print each string verbatim, continue. `--dry-run`: render the pipeline table from `flags`/`sources` ([`entry-modes.md`](entry-modes.md)'s Dry-run section), then `ship_state({action:"skip", step, detail:{reason:"dry-run"}})` for every step in `flags.steps` and `ship_state({action:"cleanup-pipeline", detail:{force:false}})` to stamp the throwaway run terminal — `force:true` no longer deletes anything (it just preserves the file un-stamped), so it would leave a live-looking run behind for the next invocation to trip over. The seeded `received-review` entry is not in `flags.steps` and gets no `skip`: it stays `pending`, and its `condition` key keeps the cleanup contract check from flagging it. Then stop.
+**4. Call `ship_prepare`** with the parsed flags (`skipConfigCheck:false`, `hasPlan`, `auto`, `steps`, `quick`, `quality`, `bump`, `draft`, `dryRun`, `resume:false`, `rebase`, `openspecChange`, `planFile`, `gc:false`) → `{errors, warnings, flags, sources, branch, worktree, stateFile, prunedOrphans, report}`. The config-version check migrates nothing: a missing or pre-TOML config comes back as one `errors` entry prefixed `config-version:` that points at `/setup`, handled by the `errors` rule below — never hand-instruct a user to edit `schemaVersion`. `errors` non-empty: print each string verbatim, stop (no state was created). `warnings` non-empty: print each string verbatim, continue. `--dry-run`: render the pipeline table from `flags`/`sources` ([`entry-modes.md`](entry-modes.md)'s Dry-run section), then `ship_state({action:"skip", step, detail:{reason:"dry-run"}})` for every step in `flags.steps` and `ship_state({action:"cleanup-pipeline", detail:{force:false}})` to stamp the throwaway run terminal — `force:true` no longer deletes anything (it just preserves the file un-stamped), so it would leave a live-looking run behind for the next invocation to trip over. The seeded `received-review` entry is not in `flags.steps` and gets no `skip`: it stays `pending`, and its `condition` key keeps the cleanup contract check from flagging it. Then stop. Keep `t3ThreadId` of the output for item 6c.
 
 **5. `gh auth status`.** On failure, stop and tell the user to `gh auth login`.
 
@@ -78,6 +78,34 @@ On option 1, follow [`entry-modes.md`](entry-modes.md)'s `--resume` handler. On 
 
 On option 2: ask which level (`major`/`minor`/`patch`, optionally with an RC pre-release label) and use it in place of `flags.bump` for the rest of this run. Hold the resolved value and its `releaseSource` in working context — see the `### pr` step below for how it's translated into `releaseLevel`/`releasePreRelease` and forwarded.
 
+**6c. Run panel and start card.** Apply the run panel rule, then the run card rule (both best effort). `--dry-run` never reaches this item: item 4 stops it.
+
+The run card rule:
+
+```text
+Run card (best effort): only when t3ThreadId is non-empty.
+Start card: call dashboard_card({ runId: "<state file name without .json>" }).
+End card: call dashboard_card({ runId: "<same>", final: true }).
+On any error, print: Warning: run card not shown — <first line of the error>.
+Then continue. A card error never fails the run.
+End card after a context compaction: only when this invocation started the run with ship_prepare, never with --resume.
+If you cannot tell that, skip the end card.
+If runId or t3ThreadId is not in context, read them again:
+ship: ship_state({action:"read"}) returns runId and t3ThreadId.
+```
+
+`runId` is the base name, without `.json`, of `stateFile` of `ship_prepare`. Example: `/repo/.sdlc-v2/runs/ship-feat-x-20261116T175538Z.json` gives `ship-feat-x-20261116T175538Z`.
+
+The run panel rule:
+
+```text
+Run panel (best effort, at run start only, same condition as the run card):
+Call dashboard({ action: "ensure", open: true, runId: "<runId>" }).
+If the output has previewUrl, load mcp__t3-code__preview_open with ToolSearch, then call it with { url: previewUrl }.
+On any error, print: Warning: run panel not opened — <first line of the error>.
+Then continue. A panel error never fails the run.
+```
+
 **7. Main loop.** For each of `execute, commit, review, verify-openspec, archive-openspec, harden, pr, verify-pipeline, await-remote-review, learnings-commit` **present in `flags.steps`**, in that order — skip entirely (no `ship_state` call of any kind) for a name absent from `flags.steps`; there is no `steps[]` entry to skip against:
 
   a. Announce `→ <step>`.
@@ -85,7 +113,7 @@ On option 2: ask which level (`major`/`minor`/`patch`, optionally with an RC pre
   c. Do the work: Agent-dispatch (tracked steps) or inline work (inline steps) per the Steps section and Decisions & gates below.
   c2. Record the side effect — `commit` and `pr` only, after the sub-skill reports success. This writes the `sideEffects` journal that (b)'s `alreadyDone` reads on a resumed run. `commit`: print each push warning line of the commit agent's returned result (commit/SKILL.md "Push warnings"), run `git rev-parse HEAD`, then `ship_verify_side_effect({step:"commit", expected:"<that full sha>"})`. `pr`: `ship_verify_side_effect({step:"pr"})`. `landed:false` is not a step failure: log one warning line and continue to (d) — the step stays un-journaled, so a resume re-dispatches it. When `commit-check` returns `stepCompleted: true`, no sub-skill runs. Skip c2 and d for that step. Print each entry of the `commit-check` `warnings`, then run (g) for key `commit`.
   d. `ship_state({action:"complete-step", step, detail:{outcome:"success", result:"<summary>"}}) → {todos, display, issueCount, issueHighlights, warnings?, linkedPlan?}`. `TodoWrite(todos)`; render `display` verbatim. Show each `warnings` entry to the user as one line (for `execute`, the plan times were not saved); do not retry the step. Then run (g).
-  e. On failure: `ship_state({action:"fail", step, detail:{error:"<error summary>"}})` — `detail.error` is the only detail field that feeds the recorded issue (`fail` also reads the optional `detail.branch` and `detail.detail`); `fail` records the issue with severity `error` and category `ship-fail` itself. The first `fail` of a run also appends one `failure` row to `runs.jsonl`. Then follow [`reference.md`](reference.md)'s Error Recovery table. (g) does not run: `fail` sweeps every open instruction record of the run (pending → `not run` with `step failed or stopped`, running → `failed`), so a failed step skips all later lists, the `ship` list included.
+  e. On failure: `ship_state({action:"fail", step, detail:{error:"<error summary>"}})` — `detail.error` is the only detail field that feeds the recorded issue (`fail` also reads the optional `detail.branch` and `detail.detail`); `fail` records the issue with severity `error` and category `ship-fail` itself. The first `fail` of a run also appends one `failure` row to `runs.jsonl`. Then follow [`reference.md`](reference.md)'s Error Recovery table. (g) does not run: `fail` sweeps every open instruction record of the run (pending → `not run` with `step failed or stopped`, running → `failed`), so a failed step skips all later lists, the `ship` list included. When the Error Recovery table stops the run, apply the run card rule (end card) before the stop message.
   f. Where a step can be legitimately bypassed at runtime despite being configured (no active OpenSpec change, etc.) call `ship_state({action:"skip", step, detail:{reason}})` instead of (c)/(d) — see Decisions & gates for exactly which steps. (g) does not run: `skip` sweeps the records of that step. Go to the next step.
   g. **7g instruction loop.** Runs after (d) of every step of this loop, inline steps included (`verify-openspec`, `archive-openspec`, `await-remote-review`, `learnings-commit`), and on the commit-check route of (c2). Item 8 and 9-pre run the same loop. Run it in this main session: never put an instruction in a dispatch prompt. The rules for each instruction (question kinds, run mode, `onQuestionNotAllowed`, failure) are in [`instructions-run.md`](instructions-run.md):
 
@@ -176,6 +204,8 @@ A crash between 9a and 9b needs no special handling: the retried 9a overwrites t
 - `reviewLedger.unaccounted` is non-zero: print that same line, then a second line, `UNACCOUNTED: <unaccounted> finding(s) have no fix or deferral record` — `<unaccounted>` is `reviewLedger.unaccounted` verbatim, never clamped to 0.
 
 In every branch above, when `reportData.deferredFindings` is non-zero, also print `Run /sdlc:deferred to act on the <reportData.deferredFindings> deferred finding(s).` — `received-review` can defer findings under any of the three branches, including when `reviewLedger` is `null`.
+
+**10a. End card.** Apply the run card rule (best effort).
 
 **10b. Deferred Follow-ups.** After rendering the summary, call `ship_state({action:"deferred_propose_followups"})`. When `openCount` is 0, render nothing: no line, no prompt. Otherwise render `display` verbatim. Each follow-up line shows the item `title` (the `title` field of each `groups` item), never the full description. The full text comes from `ship_state({action:"deferred_list", detail:{ids:[…]}})`, only for the items the user picks. Then:
 - In `--auto` mode: stop here. No question, no prompt.

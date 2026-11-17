@@ -53,6 +53,13 @@
     return parent;
   }
 
+  // Sets data-label on a table cell and returns the cell. Below 640 px the table rows
+  // are cards, and the CSS shows the label before the cell text.
+  function labelled(node, text) {
+    if (text) node.setAttribute('data-label', text);
+    return node;
+  }
+
   // 'in_progress' reads as 'in progress' in an accessible name.
   function statusWords(status) {
     return String(status || '').split('_').join(' ');
@@ -1913,19 +1920,22 @@
       box.setAttribute('data-hist-pick', key);
       box.setAttribute('aria-label', 'Select ' + run.kind + ' ' + run.branch + ', ' + (run.endedAt || ''));
       box.checked = !!picked[key];
-      body.appendChild(
-        append(el(doc, 'tr', box.checked ? 'picked' : ''), [
-          append(el(doc, 'td', 'h-pick'), [box]),
-          append(el(doc, 'td', ''), [outcomeTag]),
-          el(doc, 'td', 'h-kind', run.kind),
-          el(doc, 'td', 'h-branch', run.branch),
-          repoCell,
-          when,
-          planCell,
-          historyTime(doc, view, cells.shipMs),
-          totalCell,
-        ])
-      );
+      // The first cell is the checkbox and has no label. The others follow HISTORY_COLUMNS.
+      var tds = [
+        append(el(doc, 'td', 'h-pick'), [box]),
+        append(el(doc, 'td', ''), [outcomeTag]),
+        el(doc, 'td', 'h-kind', run.kind),
+        el(doc, 'td', 'h-branch', run.branch),
+        repoCell,
+        when,
+        planCell,
+        historyTime(doc, view, cells.shipMs),
+        totalCell,
+      ];
+      HISTORY_COLUMNS.forEach(function (name, i) {
+        labelled(tds[i + 1], name);
+      });
+      body.appendChild(append(el(doc, 'tr', box.checked ? 'picked' : ''), tds));
     });
     var table = append(el(doc, 'table', 'hist'), [append(el(doc, 'thead', ''), [headRow]), body]);
     return append(panel, [table]);
@@ -2303,16 +2313,19 @@
       // historyTime shows '—' for null. positiveMs turns the unknown value 0 into null.
       var duration = historyTime(doc, view, view.positiveMs(item.durationMs));
       duration.setAttribute('title', 'Time from the start of the preplan to its last change');
-      body.appendChild(
-        append(el(doc, 'tr', ''), [
-          append(el(doc, 'td', ''), [tag]),
-          topic,
-          repoCell,
-          when,
-          duration,
-          append(el(doc, 'td', 'pp-act'), [remove]),
-        ])
-      );
+      // The cells follow PREPLAN_COLUMNS. The last column has no name and no label.
+      var ppCells = [
+        append(el(doc, 'td', ''), [tag]),
+        topic,
+        repoCell,
+        when,
+        duration,
+        append(el(doc, 'td', 'pp-act'), [remove]),
+      ];
+      PREPLAN_COLUMNS.forEach(function (name, i) {
+        labelled(ppCells[i], name);
+      });
+      body.appendChild(append(el(doc, 'tr', ''), ppCells));
     });
     var table = append(el(doc, 'table', 'hist pp'), [append(el(doc, 'thead', ''), [headRow]), body]);
     return append(panel, [table]);

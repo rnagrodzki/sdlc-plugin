@@ -585,6 +585,12 @@ textarea.setup-input { display: block; resize: vertical; min-height: 34px; field
   .setup-body { grid-template-columns: minmax(0, 1fr); }
   .setup-rail { display: none; }
 }
+/* The panel is 400 px wide: inputs fill the row. */
+@media (max-width: 640px) {
+  .setup-search, input.setup-input[type="number"] { width: 100%; }
+  /* The stage padding is 12 px here (app.css), so the bar pulls out by 12 px. */
+  .setup-bar { margin-left: -12px; margin-right: -12px; padding-left: 12px; padding-right: 12px; }
+}
 @media (prefers-reduced-motion: reduce) {
   .setup-switch-track, .setup-switch-track::after { transition: none; }
 }

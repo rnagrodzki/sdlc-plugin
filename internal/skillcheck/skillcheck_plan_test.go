@@ -80,6 +80,8 @@ func planSkillsListTools(t *testing.T) []*mcp.Tool {
 	srv := mcpserver.New("skillcheck-plan-test", "0.0.0-test")
 
 	tools.RegisterCommitTools(srv)
+	tools.RegisterDashboardTools(srv)
+	tools.RegisterDashboardCardTools(srv)
 	tools.RegisterPrepareOrchestratorTools(srv)
 	tools.RegisterLinksTools(srv)
 	tools.RegisterMCPFailureTools(srv)

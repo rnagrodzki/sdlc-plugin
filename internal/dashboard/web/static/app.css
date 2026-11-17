@@ -1582,6 +1582,30 @@ details[open] > summary .chev { transform: rotate(90deg); }
   .hist th, .hist td, .hist th.sortable { padding-right: 8px; }
 }
 
+/* Vertical layout for a narrow right panel (400 px). Rows with fixed columns get one
+   column. History and Preplans rows become cards: each cell has its own line, after
+   its data-label text. The rules sit after the 700 px block, so they win at equal
+   specificity. The layout at 641 px and wider does not change. */
+@media (max-width: 640px) {
+  .dim-cols      { grid-template-columns: 8px minmax(0, 1fr); }
+  .dim-cols > :nth-child(n+3) { grid-column: 2; }
+  .round-row     { grid-template-columns: minmax(0, 1fr); }
+  .fix-row       { grid-template-columns: 8px minmax(0, 1fr); }
+  .timeline-row  { grid-template-columns: minmax(0, 1fr); }
+  .hd-edit       { grid-template-columns: minmax(0, 1fr); }
+  .hd-funnel-row { grid-template-columns: minmax(0, 1fr) 28px; }
+  .hist, .hist tbody, .hist tr, .hist td { display: block; }
+  .hist thead { display: none; }
+  .hist tr { padding: 10px 0; border-bottom: 1px solid rgba(148,178,196,0.08); }
+  .hist td { padding: 2px 0; }
+  .hist td.h-pick { width: auto; padding-right: 0; }
+  .hist td::before { content: attr(data-label); display: inline-block; min-width: 72px; color: var(--rail); }
+  .hist td:not([data-label])::before { display: none; }
+  /* The head of a block: the side group goes on its own row, and its items wrap. */
+  .pipe-head { flex-wrap: wrap; row-gap: 6px; }
+  .pipe-side { flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; row-gap: 6px; }
+}
+
 /* Every animation above stops here. */
 @media (prefers-reduced-motion: reduce) {
   .topbar::after { animation: none; }
