@@ -13,6 +13,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 )
 
 // Pipeline status values of a dashboard pipeline. Other dashboard code uses
@@ -123,6 +124,7 @@ type DashboardPipeline struct {
 	Steps       []DashboardStep     `json:"steps"`
 	Issues      []DashboardIssue    `json:"issues"`
 	SessionID   string              `json:"sessionId"`             // "" when unknown
+	T3ThreadID  string              `json:"t3ThreadId,omitempty"`  // absent outside T3 Code
 	CommitWaves *bool               `json:"commitWaves,omitempty"` // execute and ship only; absent elsewhere
 	Attention   *DashboardAttention `json:"attention,omitempty"`   // absent when no wait is open
 	// IssueCount is the number of issues of the run. Only the page snapshot
@@ -955,11 +957,12 @@ func dashboardBuildEvidenceTimes(files []string) (map[string]time.Time, error) {
 func dashboardStatePipeline(st *state.State, evidence map[string]time.Time) (DashboardPipeline, time.Time, bool) {
 	data := st.Data
 	p := DashboardPipeline{
-		ID:     state.RunID(st),
-		Kind:   st.Prefix,
-		Branch: dashboardStr(data["branch"]),
-		Steps:  []DashboardStep{},
-		Issues: []DashboardIssue{},
+		ID:         state.RunID(st),
+		Kind:       st.Prefix,
+		Branch:     dashboardStr(data["branch"]),
+		T3ThreadID: dashboardStr(data[t3.StateKey]),
+		Steps:      []DashboardStep{},
+		Issues:     []DashboardIssue{},
 	}
 	if p.Branch == "" {
 		p.Branch = st.BranchSlug

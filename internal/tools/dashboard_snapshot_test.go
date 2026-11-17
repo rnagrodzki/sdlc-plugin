@@ -1742,3 +1742,65 @@ func TestDashboardStepTimes_StepTime(t *testing.T) {
 		}
 	}
 }
+
+// TestDashboardSnapshot_T3ThreadID checks that the thread id of a run state
+// reaches the full and the slim snapshot, and that a state without the key
+// gives no t3ThreadId key in the JSON.
+func TestDashboardSnapshot_T3ThreadID(t *testing.T) {
+	cases := []struct {
+		name string
+		file string
+		data map[string]any
+	}{
+		{"ship", "ship-feat-x-20261007T090000Z.json", map[string]any{
+			"branch": "feat/x", "steps": dashSteps(StepCompleted, StepInProgress),
+		}},
+		{"execute", "execute-feat-x-20261007T090000Z.json", map[string]any{
+			"branch": "feat/x", "waves": []any{map[string]any{"number": 1, "status": "in_progress"}},
+		}},
+		{"plan", "plan-feat-x-20261007T090000Z.json", map[string]any{
+			"branch": "feat/x", "phase": "explore",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/with key", func(t *testing.T) {
+			root := dashRoot(t)
+			data := map[string]any{"t3ThreadId": "t-1"}
+			for k, v := range tc.data {
+				data[k] = v
+			}
+			dashWriteState(t, root, tc.file, data, dashNow.Add(-time.Minute))
+			snap := CollectDashboardSnapshot([]string{root}, dashNow, "test")
+			for label, s := range map[string]DashboardSnapshot{"full": snap, "slim": SlimDashboardSnapshot(snap)} {
+				if len(s.Repos) != 1 || len(s.Repos[0].Pipelines) != 1 {
+					t.Fatalf("%s: want 1 repo with 1 pipeline, got %+v", label, s.Repos)
+				}
+				if got := s.Repos[0].Pipelines[0].T3ThreadID; got != "t-1" {
+					t.Errorf("%s: T3ThreadID = %q, want %q", label, got, "t-1")
+				}
+				b, err := json.Marshal(s.Repos[0].Pipelines[0])
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(b), `"t3ThreadId":"t-1"`) {
+					t.Errorf("%s: JSON lacks t3ThreadId: %s", label, b)
+				}
+			}
+		})
+		t.Run(tc.name+"/without key", func(t *testing.T) {
+			root := dashRoot(t)
+			dashWriteState(t, root, tc.file, tc.data, dashNow.Add(-time.Minute))
+			p := dashOne(t, root)
+			if p.T3ThreadID != "" {
+				t.Errorf("T3ThreadID = %q, want empty", p.T3ThreadID)
+			}
+			b, err := json.Marshal(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(b), "t3ThreadId") {
+				t.Errorf("JSON has a t3ThreadId key: %s", b)
+			}
+		})
+	}
+}

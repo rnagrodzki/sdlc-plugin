@@ -1191,6 +1191,74 @@ func TestShipState_Fail_HistoryRow_UnparseableStartedAtGivesZeroDuration(t *test
 	}
 }
 
+// TestShipStateSchema_T3ThreadID proves ship-state.schema.json accepts a state
+// with a valid t3ThreadId and a state without it, and rejects a t3ThreadId
+// that is not a string or does not match the thread id pattern.
+func TestShipStateSchema_T3ThreadID(t *testing.T) {
+	schemaPath, err := filepath.Abs(filepath.Join("..", "..", "plugins", "sdlc", "schemas", "ship-state.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sch, err := jsonschema.NewCompiler().Compile(schemaPath)
+	if err != nil {
+		t.Fatalf("compile schema: %v", err)
+	}
+
+	validate := func(t *testing.T, extra map[string]any) error {
+		t.Helper()
+		doc := map[string]any{
+			"version":   float64(1),
+			"startedAt": "2026-03-01T12:00:00Z",
+			"branch":    "feat/schema-test",
+			"flags":     map[string]any{},
+			"steps":     []any{map[string]any{"name": "review", "status": "failed"}},
+		}
+		for k, v := range extra {
+			doc[k] = v
+		}
+		raw, err := json.Marshal(doc)
+		if err != nil {
+			t.Fatalf("marshal doc: %v", err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(string(raw)))
+		if err != nil {
+			t.Fatalf("unmarshal doc for schema validation: %v", err)
+		}
+		return sch.Validate(inst)
+	}
+
+	if err := validate(t, nil); err != nil {
+		t.Errorf("state without t3ThreadId: want accepted, got %v", err)
+	}
+	accepted := map[string]string{
+		"typical id":               "abc-1",
+		"shortest id, 1 character": "a",
+		"longest id, 128 chars":    strings.Repeat("a", 128),
+	}
+	for name, id := range accepted {
+		t.Run("accepts "+name, func(t *testing.T) {
+			if err := validate(t, map[string]any{"t3ThreadId": id}); err != nil {
+				t.Errorf("t3ThreadId %q: want accepted, got %v", id, err)
+			}
+		})
+	}
+	rejected := map[string]any{
+		"number":    float64(5),
+		"slash":     "abc/1",
+		"empty":     "",
+		"129 chars": strings.Repeat("a", 129),
+		"null":      nil,
+		"boolean":   true,
+	}
+	for name, v := range rejected {
+		t.Run("rejects "+name, func(t *testing.T) {
+			if err := validate(t, map[string]any{"t3ThreadId": v}); err == nil {
+				t.Errorf("t3ThreadId %v: want schema rejection, got nil", v)
+			}
+		})
+	}
+}
+
 // TestShipStateSchema_HistoryFailureRecorded proves the published schema
 // accepts a state with and without the flag, rejects a non-boolean flag, and
 // accepts the state file the fail action actually writes.

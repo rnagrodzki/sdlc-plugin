@@ -154,6 +154,51 @@ func TestInit_EmptySessionIDStoresNil(t *testing.T) {
 	}
 }
 
+func TestInit_StampsT3ThreadID(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     string
+		want    string
+		wantKey bool
+	}{
+		{"valid id", "abc-1", "abc-1", true},
+		{"shortest id, 1 character", "a", "a", true},
+		{"id with padding is trimmed", " t.3_x ", "t.3_x", true},
+		{"unset", "", "", false},
+		{"bad character", "abc/1", "", false},
+		{"too long", strings.Repeat("a", 129), "", false},
+		{"max length", strings.Repeat("a", 128), strings.Repeat("a", 128), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("T3CODE_THREAD_ID", tt.env)
+			for _, prefix := range []string{"ship", "execute", "plan"} {
+				st, err := Init(t.TempDir(), prefix, "main", "s1")
+				if err != nil {
+					t.Fatalf("Init(%s): %v", prefix, err)
+				}
+				raw, err := os.ReadFile(st.Path)
+				if err != nil {
+					t.Fatalf("ReadFile: %v", err)
+				}
+				var parsed map[string]any
+				if err := json.Unmarshal(raw, &parsed); err != nil {
+					t.Fatalf("Unmarshal: %v", err)
+				}
+				for where, data := range map[string]map[string]any{"memory": st.Data, "disk": parsed} {
+					got, ok := data["t3ThreadId"]
+					if ok != tt.wantKey {
+						t.Fatalf("%s %s: t3ThreadId present = %v, want %v", prefix, where, ok, tt.wantKey)
+					}
+					if tt.wantKey && got != tt.want {
+						t.Fatalf("%s %s: t3ThreadId = %v, want %q", prefix, where, got, tt.want)
+					}
+				}
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Find — delimiter-aware matching + mtime-newest
 // ---------------------------------------------------------------------------
