@@ -19,7 +19,7 @@ import (
 
 // DashboardCardIn is the input for the dashboard_card tool.
 type DashboardCardIn struct {
-	RunID string `json:"runId" jsonschema_description:"Plain text: the state file name of a ship or execute run, without .json. Example: ship-feat-x-20261116T175538Z"`
+	RunID string `json:"runId" jsonschema_description:"Plain text: the state file name of a ship or execute run, without .json: ship- or execute-, then 1 to 200 characters of A-Z a-z 0-9 . _ -. A plan- run id is refused. Example: ship-feat-x-20261116T175538Z"`
 	Final bool   `json:"final,omitempty" jsonschema_description:"Plain JSON bool. true for the end card: the view does not refresh, and a run whose state still says running shows as stopped, resumable. Omitted: the start card, which refreshes while the run runs. Example: true"`
 }
 
@@ -57,7 +57,8 @@ const dashboardCardToolName = "dashboard_card"
 const dashboardCardViewURI = "ui://sdlc/dashboard-card"
 
 // dashboardCardHTML is the card view: one self-contained HTML file, because
-// T3 Code blocks every asset and network call of a view.
+// an MCP Apps host such as T3 Code can block every asset and network call of
+// a view.
 //
 //go:embed dashboard_card.html
 var dashboardCardHTML string
@@ -68,7 +69,7 @@ var dashboardCardHTML string
 var dashboardCardNetworkRe = regexp.MustCompile(`(?i)\bsrc\s*=|\bhref\s*=\s*["']?\s*(https?:|//)|\bfetch\s*\(|XMLHttpRequest`)
 
 // dashboardCardDescription is the MCP description of dashboard_card.
-const dashboardCardDescription = "Show one ship or execute run as a card in a T3 Code chat (MCP App view ui://sdlc/dashboard-card). Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run, only when ship_prepare or execute_state resolve-config returned t3ThreadId. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when run files cannot be read. InfraError when the runs folder cannot be listed."
+const dashboardCardDescription = "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the same run summary as text. Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run. When next says this client shows no card, do not call it again in that run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when run files cannot be read. InfraError when the runs folder cannot be listed."
 
 // dashboardCardCheckView returns an error when html is larger than
 // dashboardCardMaxHTML or has text that dashboardCardNetworkRe matches.
@@ -141,10 +142,27 @@ func dashboardCardFind(root, runID string) (*state.State, error) {
 	}
 }
 
+// dashboardCardNoView is the Next text for a client that shows no MCP App
+// view. The ship and execute skills match its first sentence.
+const dashboardCardNoView = "This client shows no card. The text is the run summary. Do not call dashboard_card again in this run."
+
+// dashboardCardShowsView reports whether the client of the call can show the
+// card view. A client that announces the MCP Apps extension
+// (mcpserver.MCPAppsExtension) can. A process in a T3 Code thread (threadID
+// non-empty) also counts as one: T3 Code renders the card (manual check of
+// 2026-11-17), but which capabilities T3 Code announces in initialize is not
+// verified. Without this fallback a T3 client that does not announce the
+// extension would get the no-view text, and the skills would stop calling
+// the card there.
+func dashboardCardShowsView(ctx mcpserver.Ctx, threadID string) bool {
+	return ctx.SupportsMCPApps() || threadID != ""
+}
+
 // dashboardCard builds the card of run in.RunID under root. threadID is the
 // T3 Code thread id of this process, "" outside T3 Code. A run that stores
-// another thread id is refused only when threadID is set.
-func dashboardCard(root, threadID string, in DashboardCardIn) (DashboardCardOut, error) {
+// another thread id is refused only when threadID is set. showsView is true
+// when the client can show the card view; it selects the Next text.
+func dashboardCard(root, threadID string, showsView bool, in DashboardCardIn) (DashboardCardOut, error) {
 	if err := dashboardCardCheckRunID(in.RunID); err != nil {
 		return DashboardCardOut{}, err
 	}
@@ -180,10 +198,10 @@ func dashboardCard(root, threadID string, in DashboardCardIn) (DashboardCardOut,
 	for _, issue := range p.Issues {
 		out.Issues[issue.Severity]++
 	}
-	if threadID == "" {
-		out.Next = "No T3 Code thread: no card renders here. The text is the run summary. Continue."
-	} else {
+	if showsView {
 		out.Next = fmt.Sprintf("Card shows run %s (%s). Continue the current step.", in.RunID, p.Status)
+	} else {
+		out.Next = dashboardCardNoView
 	}
 	return out, nil
 }
@@ -216,7 +234,8 @@ func RegisterDashboardCardTools(s *mcpserver.Server) {
 			if err != nil {
 				return DashboardCardOut{}, err
 			}
-			return dashboardCard(root, t3.ThreadID(), in)
+			threadID := t3.ThreadID()
+			return dashboardCard(root, threadID, dashboardCardShowsView(ctx, threadID), in)
 		},
 	)
 }

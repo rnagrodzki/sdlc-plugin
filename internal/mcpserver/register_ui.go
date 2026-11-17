@@ -18,6 +18,22 @@ type UIResource struct {
 // MCPAppMIMEType is the MIME type of an MCP App view.
 const MCPAppMIMEType = "text/html;profile=mcp-app"
 
+// MCPAppsExtension is the client capability extension key of MCP Apps
+// (spec 2026-01-26, "Client<>Server Capability Negotiation"). A client that
+// can show an MCP App view announces it in initialize, under
+// capabilities.extensions, with the setting mimeTypes, for example
+// ["text/html;profile=mcp-app"].
+const MCPAppsExtension = "io.modelcontextprotocol/ui"
+
+// SupportsMCPApps reports whether the client extensions map announces MCP
+// Apps: the MCPAppsExtension key is present. It does not check mimeTypes:
+// the key alone is the announcement, and a strict check could hide the view
+// from a client that announces the extension with other settings.
+func (c Ctx) SupportsMCPApps() bool {
+	_, ok := c.ClientExtensions[MCPAppsExtension]
+	return ok
+}
+
 // MaxUIHTMLBytes is the largest view HTML that RegisterUI accepts (1 MiB).
 const MaxUIHTMLBytes = 1048576
 

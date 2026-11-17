@@ -1190,9 +1190,11 @@ After:
 
 ## T3 Code
 
-In a T3 Code thread, the dashboard opens in a T3 preview tab, and a ship run or a standalone execute run shows a card in the chat. Outside T3 Code, nothing changes.
+A top-level ship run or a standalone execute run shows a card in the chat of any client that supports MCP Apps. The tool checks the client: a client that announces the MCP Apps extension `io.modelcontextprotocol/ui` in its `initialize` capabilities gets the card. A process in a T3 Code thread also gets the card, because T3 Code renders it. Any other client gets the same run summary as text, and the skill makes no more card calls in that run.
 
-| Function | T3 preview tab | Run card in chat |
+In a T3 Code thread only, the dashboard also opens in a T3 preview tab (the run panel). Outside T3 Code, the run panel does not open.
+
+| Function | T3 preview tab (T3 Code only) | Run card in chat (MCP Apps clients) |
 |---|---|---|
 | Pipelines, run detail, Activity, History, Preplans, Setup | full page | steps, status, issue counts of one run |
 | Change actions | work (token guard) | no, read-only |
@@ -1221,7 +1223,7 @@ The checks ran by hand on 2026-11-17 in T3 Code 0.1.9 (Beta). No check failed. E
 
 | # | Check | Result | Note |
 |---|---|---|---|
-| 1 | The card renders in the chat | pass | The card rendered for a real ship run in a T3 thread |
+| 1 | The card renders in the chat | pass | The card rendered for a real ship run in a T3 thread. No other MCP Apps client was tested |
 | 2 | A click on Refresh in the card, and the approval it may ask for | not tested | No agent can click the card |
 | 3 | The card between two agent turns | not tested | |
 | 4 | The **Next:** text of the `dashboard_card` result reaches the model | pass | The tool result carried the `next` field |
@@ -1232,6 +1234,8 @@ The checks ran by hand on 2026-11-17 in T3 Code 0.1.9 (Beta). No check failed. E
 Open risks:
 
 - The card in the remote T3 web client is not tested (row 5).
+- The card in an MCP Apps client other than T3 Code is not tested.
+- It is not verified that T3 Code announces `io.modelcontextprotocol/ui` in `initialize`. The tool treats a process in a T3 Code thread as a client that shows the card, so the card does not depend on that announcement.
 - Whether a thread has its own run panel is not tested (row 6). The thread switch (thread A, then B, then A) did not run.
 - The thread filter is not shown with a matching run (row 6). Repeat the check with a run that starts after the stamping of `t3ThreadId` exists.
 - The refresh of the card is not tested (rows 2 and 3). Do not rely on it. The card shows the run state at the time of each `dashboard_card` call.
@@ -1258,7 +1262,7 @@ flowchart LR
   classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
 ```
 
-Flow 2: a top ship run or a standalone execute run in a T3 thread.
+Flow 2: a top ship run or a standalone execute run. The panel steps run in a T3 thread only. The card steps run in every client.
 
 ```mermaid
 flowchart LR

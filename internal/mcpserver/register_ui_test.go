@@ -255,3 +255,25 @@ func TestRegisterUI_HTMLSizeBoundary(t *testing.T) {
 		}
 	})
 }
+
+// TestCtx_SupportsMCPApps pins the MCP Apps check: only the extension key
+// counts, whatever its settings.
+func TestCtx_SupportsMCPApps(t *testing.T) {
+	tests := []struct {
+		name string
+		ext  map[string]any
+		want bool
+	}{
+		{name: "no extensions", ext: nil, want: false},
+		{name: "other extension only", ext: map[string]any{"io.example/other": map[string]any{}}, want: false},
+		{name: "MCP Apps with mimeTypes", ext: map[string]any{MCPAppsExtension: map[string]any{"mimeTypes": []any{MCPAppMIMEType}}}, want: true},
+		{name: "MCP Apps with empty settings", ext: map[string]any{MCPAppsExtension: map[string]any{}}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := (Ctx{ClientExtensions: tt.ext}).SupportsMCPApps(); got != tt.want {
+				t.Errorf("SupportsMCPApps() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}

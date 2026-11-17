@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Shows one ship or execute run as a read-only MCP App card in a T3 Code chat, so the user sees the run state next to the thread.
+Shows one ship or execute run as a read-only MCP App card in the chat of any client that supports MCP Apps, so the user sees the run state next to the chat. Other clients get the same run summary as text.
 
 ## ADDED Requirements
 
@@ -14,9 +14,21 @@ The `dashboard_card` tool SHALL return the run summary as Markdown text and as c
 - **THEN** the result holds the run status, steps and issue counts
 - **AND** the tool writes no file
 
-#### Scenario: Outside T3 Code
-- **WHEN** `T3CODE_THREAD_ID` is not set
-- **THEN** the result `next` is `No T3 Code thread: no card renders here. The text is the run summary. Continue.`
+### Requirement: Client support for the card
+The `dashboard_card` tool SHALL treat a client as one that shows the card when the client announces the MCP Apps extension `io.modelcontextprotocol/ui` in `initialize` `capabilities.extensions`, or when `T3CODE_THREAD_ID` holds a valid thread id. The tool MUST return the run data and no error for every other client.
+
+#### Scenario: Client announces MCP Apps
+- **WHEN** the client announces `io.modelcontextprotocol/ui` and the run status is `running`
+- **THEN** the result `next` is `Card shows run <runId> (running). Continue the current step.`
+
+#### Scenario: T3 thread fallback
+- **WHEN** the client announces no extension and `T3CODE_THREAD_ID` is a valid thread id
+- **THEN** the result `next` is `Card shows run <runId> (<status>). Continue the current step.`
+
+#### Scenario: Client shows no card
+- **WHEN** the client does not announce `io.modelcontextprotocol/ui` and `T3CODE_THREAD_ID` is not set
+- **THEN** the result `next` is `This client shows no card. The text is the run summary. Do not call dashboard_card again in this run.`
+- **AND** the result holds the run status, steps and issue counts, with no error
 
 ### Requirement: Card run selector
 The `dashboard_card` tool MUST accept only a ship or execute run name and MUST refuse a run of another T3 thread.

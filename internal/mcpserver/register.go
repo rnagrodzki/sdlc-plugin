@@ -14,6 +14,10 @@ type Ctx struct {
 	SessionID string
 	Quiet     bool // Reserved for future use; defaults to false.
 	Warnings  *Dedup
+	// ClientExtensions is the extensions map that the client announced in
+	// its initialize request (capabilities.extensions). Nil when the client
+	// announced none or the session has no initialize params.
+	ClientExtensions map[string]any
 }
 
 // Annotations is the full MCP annotation set for a tool. Every registered
@@ -132,13 +136,18 @@ func register[TIn, TOut any](s *Server, name, desc string, a Annotations, ui *UI
 
 		// Build Ctx.
 		sessionID := ""
+		var extensions map[string]any
 		if req.Session != nil {
 			sessionID = req.Session.ID()
+			if p := req.Session.InitializeParams(); p != nil && p.Capabilities != nil {
+				extensions = p.Capabilities.Extensions
+			}
 		}
 		tCtx := Ctx{
-			SessionID: sessionID,
-			Quiet:     false,
-			Warnings:  warnings,
+			SessionID:        sessionID,
+			Quiet:            false,
+			Warnings:         warnings,
+			ClientExtensions: extensions,
 		}
 
 		// Panic recovery -- convert to a rendered "infra" error result.

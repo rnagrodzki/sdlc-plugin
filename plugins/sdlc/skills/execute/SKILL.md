@@ -30,7 +30,7 @@ If the system context contains "Plan mode is active":
 Call `execute_state({ action: "resolve-config", branch: "<current branch>", quality: "<--quality value, omit when the flag was absent>", auto: <true only when --auto was passed>, commitWaves: "<--commit-waves value, omit when the flag was absent>" })`.
 
 Store from the response: `auto` as EXECUTE_AUTO, `quality` as EXECUTE_QUALITY (may be empty), `highRiskAutoApprove` as EXECUTE_HIGH_RISK_AUTO, `commitWaves` as EXECUTE_COMMIT_WAVES — the response's `commitWaves` is a JSON boolean; store it as the string `"true"`/`"false"` (matching `--commit-waves`'s own value shape), since that is the form `init` (below) expects. Print one line: `Execute config: auto=<EXECUTE_AUTO> (<sources.auto>), quality=<EXECUTE_QUALITY or "prompt"> (<sources.quality>), highRiskAutoApprove=<EXECUTE_HIGH_RISK_AUTO> (<sources.highRiskAutoApprove>), commitWaves=<EXECUTE_COMMIT_WAVES> (<sources.commitWaves>)`. Surface any `warnings` verbatim (this includes the notice when personal keys were moved from `.sdlc-v2/config.toml` to `.sdlc-v2/local.toml`). If the call returns an error (a personal key that could not be moved automatically), show its message and suggestion, then stop. Do not fall back to defaults.
-Also store `t3ThreadId` as EXECUTE_T3_THREAD (empty when absent) and `shipDispatched` as EXECUTE_SHIP_DISPATCHED.
+Also store `t3ThreadId` as EXECUTE_T3_THREAD (empty when absent; the run panel rule reads it) and `shipDispatched` as EXECUTE_SHIP_DISPATCHED (the run card and run panel rules read it).
 
 **Resolve instructions — the third action of this skill, immediately after resolve-config:** Skip this item when `--no-instructions` was passed. Otherwise run:
 
@@ -211,16 +211,17 @@ execute_state({ action: "context", data: "{\"planSummary\": \"<2-3 sentence goal
 The run card rule:
 
 ```text
-Run card (best effort): only when t3ThreadId is non-empty and shipDispatched is false and --resume is absent.
+Run card (best effort): in every client, only when shipDispatched is false and --resume is absent.
 This run uses the wave route. The Step 2b direct route writes no state file, so it makes no card call.
 Start card: call dashboard_card({ runId: "<state file name without .json>" }).
 End card: call dashboard_card({ runId: "<same>", final: true }).
+If the next of a card result starts with "This client shows no card", make no more card calls in this run.
 On any error, print: Warning: run card not shown — <first line of the error>.
 Then continue. A card error never fails the run.
 End card after a context compaction: only when this invocation started the run with init, never with --resume.
 If you cannot tell that, skip the end card.
-If runId, t3ThreadId or shipDispatched is not in context, read them again:
-execute: execute_state({action:"read"}) returns runId and t3ThreadId. resolve-config returns shipDispatched.
+If runId or shipDispatched is not in context, read them again:
+execute: execute_state({action:"read"}) returns runId. resolve-config returns shipDispatched.
 ```
 
 `runId` is the base name, without `.json`, of `filePath` of `init`. Example: `/repo/.sdlc-v2/runs/execute-feat-x-20261116T175538Z.json` gives `execute-feat-x-20261116T175538Z`.
@@ -228,11 +229,12 @@ execute: execute_state({action:"read"}) returns runId and t3ThreadId. resolve-co
 The run panel rule:
 
 ```text
-Run panel (best effort, at run start only, same condition as the run card):
+Run panel (best effort, at run start only): only when t3ThreadId is non-empty, shipDispatched is false and --resume is absent.
 Call dashboard({ action: "ensure", open: true, runId: "<runId>" }).
 If the output has previewUrl, load mcp__t3-code__preview_open with ToolSearch, then call it with { url: previewUrl }.
 On any error, print: Warning: run panel not opened — <first line of the error>.
 Then continue. A panel error never fails the run.
+If t3ThreadId is not in context, read it again: execute_state({action:"read"}) returns t3ThreadId.
 ```
 
 Compute `planHash` yourself (`shasum -a 256 "$PLAN_FILE" | cut -d' ' -f1`) — the tool stores it verbatim and compares it against the plan file's current hash server-side at `wave-start` (mismatch halts, see stage 1). `plannedTaskIds` seeds the completeness gate below. `plannedWavesJson` is the final wave schedule that Step 4 (Revise and Confirm) confirmed, after any critique edits, as a JSON-encoded string: an array of `{number, taskIds}` with the pre-wave tasks as wave `0`, then one entry per wave in order. Pass only wave numbers and task IDs — no names, models or file lists — and leave out wave `0` when there are no pre-wave tasks. Task IDs are JSON strings (`"2"`), not numbers. Put each task ID in one wave, once. Every task ID must be in `plannedTaskIds`, or `init` fails and writes no state. On that error, correct `plannedWavesJson` from the Suggestion of the error and call `init` again. Do not drop the field and do not start wave 1 first. If `init` still fails on `plannedWavesJson` after 2 more calls, stop the run and print the last error. No state was written, so there is nothing to clean up. The dashboard reads the stored schedule to list waves that have not started. EXECUTE_AUTO is already folded into the effective auto state by resolve-config — including a dispatching `/ship` run's approved auto, which resolve-config picks up through its own ship-state cross-read when `branch` is passed at Step 0, so `init`'s `pipelineAuto` response field is no longer read here. Stage 1's high-risk gate is what reads EXECUTE_AUTO; the completeness gate does not. Start `abortedSyncWaves` (stage 7, Step 9) empty here; a resumed run seeds it in `## Resume` step 5 instead.

@@ -582,7 +582,7 @@ func TestReadOnlyToolsWriteNothingTracked(t *testing.T) {
 				// Seed a real run file (gitignored), then build its card: the
 				// call lists the run files and must write none.
 				writeCardRun(t, root, cardShipID, cardShipState())
-				if _, err := dashboardCard(root, "", DashboardCardIn{RunID: cardShipID}); err != nil {
+				if _, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID}); err != nil {
 					t.Fatalf("dashboardCard: %v", err)
 				}
 			case "received_review_verify":

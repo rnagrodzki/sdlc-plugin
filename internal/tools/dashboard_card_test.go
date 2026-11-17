@@ -91,8 +91,15 @@ func cardShipState() map[string]any {
 }
 
 // connectDashboardCard returns a client session of a server that has only
-// the dashboard_card tool.
+// the dashboard_card tool. The client announces no extension.
 func connectDashboardCard(t *testing.T) *mcp.ClientSession {
+	t.Helper()
+	return connectDashboardCardWith(t, nil)
+}
+
+// connectDashboardCardWith is connectDashboardCard with client options opts,
+// for example the capabilities that the client announces in initialize.
+func connectDashboardCardWith(t *testing.T, opts *mcp.ClientOptions) *mcp.ClientSession {
 	t.Helper()
 	s := mcpserver.New("test", "0.0.0-test")
 	RegisterDashboardCardTools(s)
@@ -101,7 +108,7 @@ func connectDashboardCard(t *testing.T) *mcp.ClientSession {
 	if _, err := s.MCPServer().Connect(ctx, serverTransport, nil); err != nil {
 		t.Fatalf("server Connect: %v", err)
 	}
-	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "0.0.0"}, opts)
 	c, err := client.Connect(ctx, clientTransport, nil)
 	if err != nil {
 		t.Fatalf("client Connect: %v", err)
@@ -110,11 +117,26 @@ func connectDashboardCard(t *testing.T) *mcp.ClientSession {
 	return c
 }
 
+// mcpAppsClient returns client options that announce the MCP Apps extension
+// as the spec 2026-01-26 shows it.
+func mcpAppsClient() *mcp.ClientOptions {
+	caps := &mcp.ClientCapabilities{}
+	caps.AddExtension(mcpserver.MCPAppsExtension, map[string]any{"mimeTypes": []any{mcpserver.MCPAppMIMEType}})
+	return &mcp.ClientOptions{Capabilities: caps}
+}
+
 // callRegisteredDashboardCard calls the registered dashboard_card tool over an
-// in-memory MCP session and returns the result and its text.
+// in-memory MCP session and returns the result and its text. The client
+// announces no extension.
 func callRegisteredDashboardCard(t *testing.T, args map[string]any) (*mcp.CallToolResult, string) {
 	t.Helper()
-	c := connectDashboardCard(t)
+	return callDashboardCardOn(t, connectDashboardCard(t), args)
+}
+
+// callDashboardCardOn calls dashboard_card on the client session c and
+// returns the result and its text.
+func callDashboardCardOn(t *testing.T, c *mcp.ClientSession, args map[string]any) (*mcp.CallToolResult, string) {
+	t.Helper()
 	res, err := c.CallTool(context.Background(), &mcp.CallToolParams{Name: "dashboard_card", Arguments: args})
 	if err != nil {
 		t.Fatalf("CallTool: %v", err)
@@ -139,7 +161,7 @@ func cardBadRunIDMsg(runID string, n int) string {
 	return fmt.Sprintf("runId %s is not a ship or execute run name: ship- or execute-, then 1 to %d characters of A-Z a-z 0-9 . _ - (got %d characters after the prefix)", runID, t3.MaxRunSlugLen, n)
 }
 
-// cardRunningText is the text of the cardShipState run read in a T3 thread.
+// cardRunningText is the text of the cardShipState run with the Next text next.
 func cardRunningText(next string) string {
 	return "# dashboard_card — ok\n\n" +
 		"**Next:** " + next + "\n\n" +
@@ -157,13 +179,13 @@ func cardRunningText(next string) string {
 		"## issues\n(none)\n"
 }
 
-// cardInT3Next is the Next text of a card shown in a T3 thread.
-func cardInT3Next(runID, status string) string {
+// cardViewNext is the Next text of a client that shows the card view.
+func cardViewNext(runID, status string) string {
 	return fmt.Sprintf("Card shows run %s (%s). Continue the current step.", runID, status)
 }
 
-// cardNoT3Next is the Next text outside T3 Code.
-const cardNoT3Next = "No T3 Code thread: no card renders here. The text is the run summary. Continue."
+// cardNoViewNext is the Next text of a client that shows no card view.
+const cardNoViewNext = "This client shows no card. The text is the run summary. Do not call dashboard_card again in this run."
 
 // ---------------------------------------------------------------------------
 // Error table: one row for each row of the contract error table
@@ -256,17 +278,17 @@ func TestDashboardCard_ErrorTable(t *testing.T) {
 			},
 		},
 		{
-			name:  "no T3 thread: ok with the summary next text",
+			name:  "plain client, no T3 thread: ok with the no-view next text",
 			setup: func(t *testing.T, root string) { writeCardRun(t, root, cardShipID, cardShipState()) },
 			runID: cardShipID,
-			want:  func(string) string { return cardRunningText(cardNoT3Next) },
+			want:  func(string) string { return cardRunningText(cardNoViewNext) },
 		},
 		{
-			name:   "ok in T3: card next text",
+			name:   "plain client in T3: card next text (T3 fallback)",
 			setup:  func(t *testing.T, root string) { writeCardRun(t, root, cardShipID, cardShipState()) },
 			thread: "thread-b",
 			runID:  cardShipID,
-			want:   func(string) string { return cardRunningText(cardInT3Next(cardShipID, "running")) },
+			want:   func(string) string { return cardRunningText(cardViewNext(cardShipID, "running")) },
 		},
 	}
 	for _, tt := range tests {
@@ -294,7 +316,7 @@ func TestDashboardCard_ErrorTable(t *testing.T) {
 // cause of each error of the handler.
 func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 	t.Run("bad runId is a DomainError with no cause", func(t *testing.T) {
-		_, err := dashboardCard(t.TempDir(), "", DashboardCardIn{RunID: "plan-x"})
+		_, err := dashboardCard(t.TempDir(), "", false, DashboardCardIn{RunID: "plan-x"})
 		var de *mcpserver.DomainError
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %T %v, want *DomainError", err, err)
@@ -311,7 +333,7 @@ func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 		if err := os.WriteFile(cardRunsDir(root), []byte("x"), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
-		_, err := dashboardCard(root, "", DashboardCardIn{RunID: cardShipID})
+		_, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
 		var ie *mcpserver.InfraError
 		if !errors.As(err, &ie) {
 			t.Fatalf("err = %T %v, want *InfraError", err, err)
@@ -327,7 +349,7 @@ func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 		}
 	})
 	t.Run("missing run is a DomainError with no cause", func(t *testing.T) {
-		_, err := dashboardCard(t.TempDir(), "", DashboardCardIn{RunID: cardShipID})
+		_, err := dashboardCard(t.TempDir(), "", false, DashboardCardIn{RunID: cardShipID})
 		var de *mcpserver.DomainError
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %T %v, want *DomainError", err, err)
@@ -339,7 +361,7 @@ func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 	t.Run("missing run with skipped files is a DataError with no cause", func(t *testing.T) {
 		root := t.TempDir()
 		writeCardBadRun(t, root, "ship-bad-20261116T175538Z.json")
-		_, err := dashboardCard(root, "", DashboardCardIn{RunID: cardShipID})
+		_, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
 		var de *mcpserver.DataError
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %T %v, want *DataError", err, err)
@@ -354,7 +376,7 @@ func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 		st := cardShipState()
 		st[t3.StateKey] = "thread-a"
 		writeCardRun(t, root, cardShipID, st)
-		_, err := dashboardCard(root, "thread-b", DashboardCardIn{RunID: cardShipID})
+		_, err := dashboardCard(root, "thread-b", true, DashboardCardIn{RunID: cardShipID})
 		var de *mcpserver.DomainError
 		if !errors.As(err, &de) {
 			t.Fatalf("err = %T %v, want *DomainError", err, err)
@@ -407,7 +429,7 @@ func TestDashboardCard_ThreadRules(t *testing.T) {
 				st[t3.StateKey] = tt.run
 			}
 			writeCardRun(t, root, cardShipID, st)
-			out, err := dashboardCard(root, tt.process, DashboardCardIn{RunID: cardShipID})
+			out, err := dashboardCard(root, tt.process, tt.process != "", DashboardCardIn{RunID: cardShipID})
 			if (err != nil) != tt.wantError {
 				t.Fatalf("err = %v, wantError %v", err, tt.wantError)
 			}
@@ -417,6 +439,55 @@ func TestDashboardCard_ThreadRules(t *testing.T) {
 			wantThread, _ := tt.run.(string)
 			if out.T3ThreadID != wantThread {
 				t.Errorf("T3ThreadID = %q, want %q", out.T3ThreadID, wantThread)
+			}
+		})
+	}
+}
+
+// TestDashboardCard_ClientSupport pins the Next text for each kind of client
+// over a real MCP session: the client capabilities of initialize reach the
+// handler. A client that announces the MCP Apps extension gets the card text,
+// in or out of T3 Code. A client that announces nothing gets the no-view
+// text, still with the run data and no error, unless the process runs in a
+// T3 Code thread (the T3 fallback).
+func TestDashboardCard_ClientSupport(t *testing.T) {
+	emptySettings := &mcp.ClientCapabilities{}
+	emptySettings.AddExtension(mcpserver.MCPAppsExtension, nil)
+	otherExt := &mcp.ClientCapabilities{}
+	otherExt.AddExtension("io.example/other", nil)
+
+	tests := []struct {
+		name   string
+		opts   *mcp.ClientOptions
+		thread string
+		want   string
+	}{
+		{name: "MCP Apps client outside T3", opts: mcpAppsClient(), want: cardViewNext(cardShipID, "running")},
+		{name: "MCP Apps client in T3", opts: mcpAppsClient(), thread: "thread-a", want: cardViewNext(cardShipID, "running")},
+		{name: "extension with empty settings", opts: &mcp.ClientOptions{Capabilities: emptySettings}, want: cardViewNext(cardShipID, "running")},
+		{name: "plain client outside T3", want: cardNoViewNext},
+		{name: "other extension only", opts: &mcp.ClientOptions{Capabilities: otherExt}, want: cardNoViewNext},
+		{name: "plain client in T3 (T3 fallback)", thread: "thread-a", want: cardViewNext(cardShipID, "running")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := cardRepo(t)
+			t.Setenv(t3.EnvThreadID, tt.thread)
+			writeCardRun(t, root, cardShipID, cardShipState())
+
+			res, text := callDashboardCardOn(t, connectDashboardCardWith(t, tt.opts), map[string]any{"runId": cardShipID})
+			if res.IsError {
+				t.Fatalf("isError = true, want a result:\n%s", text)
+			}
+			if want := cardRunningText(tt.want); text != want {
+				t.Errorf("text =\n%s\nwant\n%s", text, want)
+			}
+			got := cardStructured(t, res)
+			if got["next"] != tt.want {
+				t.Errorf("structuredContent next = %v, want %q", got["next"], tt.want)
+			}
+			if got["runId"] != cardShipID || got["status"] != "running" || len(got["steps"].([]any)) != 2 {
+				t.Errorf("structuredContent = %#v, want the run data", got)
 			}
 		})
 	}
@@ -499,7 +570,7 @@ func TestDashboardCard_EmptyValues(t *testing.T) {
 
 	res, text := callRegisteredDashboardCard(t, map[string]any{"runId": cardShipID})
 	wantText := "# dashboard_card — ok\n\n" +
-		"**Next:** " + cardNoT3Next + "\n\n" +
+		"**Next:** " + cardNoViewNext + "\n\n" +
 		"## Summary\nship run " + cardShipID + " on branch feat/x is running.\n\n" +
 		"## Fields\n" +
 		"- runId: " + cardShipID + "\n" +
@@ -529,7 +600,7 @@ func TestDashboardCard_EmptyValues(t *testing.T) {
 		"completedAt": nil,
 		"steps":       []any{},
 		"issues":      map[string]any{},
-		"next":        cardNoT3Next,
+		"next":        cardNoViewNext,
 	}
 	if got := cardStructured(t, res); !reflect.DeepEqual(got, want) {
 		t.Errorf("structuredContent = %#v, want %#v", got, want)
@@ -559,7 +630,7 @@ func TestDashboardCard_FilledValues(t *testing.T) {
 	})
 
 	res, text := callRegisteredDashboardCard(t, map[string]any{"runId": cardShipID, "final": true})
-	next := cardInT3Next(cardShipID, "completed")
+	next := cardViewNext(cardShipID, "completed")
 	wantText := "# dashboard_card — ok\n\n" +
 		"**Next:** " + next + "\n\n" +
 		"## Summary\nship run " + cardShipID + " on branch feat/x is completed.\n\n" +
@@ -716,7 +787,7 @@ func TestDashboardCard_WritesNoFile(t *testing.T) {
 // cardOutcome is the outcome of the card for one run id: "ok" or the error
 // code of the failed call.
 func cardOutcome(root, runID string) string {
-	if _, err := dashboardCard(root, "", DashboardCardIn{RunID: runID}); err != nil {
+	if _, err := dashboardCard(root, "", false, DashboardCardIn{RunID: runID}); err != nil {
 		code, _, _ := mcpserver.ErrorParts(err)
 		return code
 	}
@@ -891,9 +962,18 @@ func TestDashboardCard_Registration(t *testing.T) {
 		t.Fatalf("tools = %v, want only dashboard_card", resp.Tools)
 	}
 	tool := resp.Tools[0]
-	wantDesc := "Show one ship or execute run as a card in a T3 Code chat (MCP App view ui://sdlc/dashboard-card). Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run, only when ship_prepare or execute_state resolve-config returned t3ThreadId. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when run files cannot be read. InfraError when the runs folder cannot be listed."
+	wantDesc := "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the same run summary as text. Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run. When next says this client shows no card, do not call it again in that run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when run files cannot be read. InfraError when the runs folder cannot be listed."
 	if tool.Description != wantDesc {
 		t.Errorf("Description = %q, want %q", tool.Description, wantDesc)
+	}
+	// The runId description states the slug limit as a literal; it must
+	// follow t3.MaxRunSlugLen.
+	schema, _ := tool.InputSchema.(map[string]any)
+	props, _ := schema["properties"].(map[string]any)
+	runIDProp, _ := props["runId"].(map[string]any)
+	wantRunID := fmt.Sprintf("Plain text: the state file name of a ship or execute run, without .json: ship- or execute-, then 1 to %d characters of A-Z a-z 0-9 . _ -. A plan- run id is refused. Example: ship-feat-x-20261116T175538Z", t3.MaxRunSlugLen)
+	if got := runIDProp["description"]; got != wantRunID {
+		t.Errorf("runId description = %v, want %q", got, wantRunID)
 	}
 	a := tool.Annotations
 	if a == nil || a.Title != "Show a run card" || !a.ReadOnlyHint || !a.IdempotentHint ||
