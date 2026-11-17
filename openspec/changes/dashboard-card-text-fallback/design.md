@@ -98,6 +98,6 @@ sequenceDiagram
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Two ship runs of one branch overlap in time | the card can join another execute run than the page | the card gives the join only the ship run and the execute runs of its branch. The limit is in the docs. |
-| Many live cards poll at the same time | more reads of the runs folder | middle cards are snapshots. Only the start card and the execute step card are live. |
-| Text clients see ship waves only after execute ends | less detail during the execute step | the execute step card in a card client is live |
-| A dashboard server record that cannot be read | no link | the text card says `Dashboard: not running`. The call does not fail. |
+| Many live cards poll at the same time | more reads of the runs folder | middle cards are snapshots. Only the start card is live. |
+| Text clients see ship waves only after execute ends | less detail during the execute step | the start card in a card client is live, and it shows the execute step, the first step of the run |
+| A dashboard server record that cannot be read | no link | the text card says `Dashboard: link unavailable`, and `next` orders no ensure: a server can run while only its record read fails. The call does not fail. |

@@ -59,31 +59,36 @@ A failed panel or card call MUST NOT stop the run. The skill SHALL print one war
 ## ADDED Requirements
 
 ### Requirement: Step card at each ship step
-At item 7b of each step after the first step of the invocation, the ship skill SHALL call `dashboard_card` with `runId`. The skill SHALL pass `snapshot` true for each step except `execute`. The `execute` step card SHALL be live.
+After item 7b `begin-step` of each step after the first step of the invocation, the ship skill SHALL call `dashboard_card` with `runId` and `snapshot` true. A step that gets no `begin-step` (a step absent from `flags.steps`, commit-fixes, rebase) SHALL get no step card.
 
 #### Scenario: Commit step starts
 - **WHEN** the step `commit` starts and it is not the first step of the invocation
 - **THEN** the skill calls `dashboard_card` with `runId` and `snapshot` true
 
-#### Scenario: Execute step starts
-- **WHEN** the step `execute` starts and it is not the first step of the invocation
-- **THEN** the skill calls `dashboard_card` with `runId` and no `snapshot`
+#### Scenario: Execute step
+- **WHEN** the run has the step `execute`
+- **THEN** `execute` is the first step of the invocation, so it gets no step card
+- **AND** the live start card shows it
 
 #### Scenario: First step of the invocation
 - **WHEN** a step is the first step of the invocation
 - **THEN** the skill makes no step card call, because the live start card covers it
 
 ### Requirement: Dashboard link fallback in ship
-When a card `next` tells the skill to call `dashboard` `ensure`, the ship skill SHALL call it at most once in the run, with `runId` and no `open`. The skill MUST NOT open a browser.
+When a card `next` tells the skill to call `dashboard` `ensure`, the ship skill SHALL call it at most once in the run, with `runId` and no `open`. The skill MUST NOT open a browser. When the card result has `dashboardUrl`, the text block already ends with the link, so the skill SHALL make no ensure call and print no second `Dashboard:` line.
 
 #### Scenario: Ensure succeeds
 - **WHEN** the card `next` names `dashboard({action:"ensure"` and no ensure ran in this run
 - **THEN** the skill calls `dashboard` `ensure` with `runId`
 - **AND** it prints `Dashboard: <url>#<runId>`
 
+#### Scenario: Server already runs
+- **WHEN** the card result has `dashboardUrl`
+- **THEN** the skill makes no ensure call and prints no `Dashboard:` line after the text block
+
 #### Scenario: Ensure fails
 - **WHEN** `dashboard` `ensure` returns an error
-- **THEN** the skill prints `Warning: dashboard not started — ` and the error text
+- **THEN** the skill prints `Warning: dashboard not started — ` and the first line of the error, at most 200 characters, with a token, key or password in it replaced by `***`
 - **AND** the skill makes no more ensure calls in this run
 
 #### Scenario: Resumed run

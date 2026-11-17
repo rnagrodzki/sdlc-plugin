@@ -296,7 +296,7 @@ var toolAnnotations = map[string]annotationPolicy{
 		destructive: false,
 		idempotent:  true,
 		openWorld:   false,
-		reason:      "the handler calls only worktree.MainRoot, os.Getwd, state.List and dashboardStatePipeline; none of them writes (state.go, dashboard_snapshot.go) and none of them calls the network",
+		reason:      "the handler calls only worktree.MainRoot, os.Getwd, state.List, dashboardStatePipeline and dashboard.Status; none of them writes (state.go, dashboard_snapshot.go, internal/dashboard/control.go). dashboard.Status reads the server record and makes one loopback HTTP health probe to the local dashboard server (control.go Status, Health): a local process of this plugin, not an external entity, the same as the dashboard tool",
 	},
 }
 

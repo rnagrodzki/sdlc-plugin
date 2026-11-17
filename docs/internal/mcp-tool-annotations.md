@@ -32,7 +32,7 @@ Idempotent:true indicates repeating a call with the same arguments has no furthe
 
 ### OpenWorld
 
-OpenWorld:true indicates the tool reaches external entities: network (HTTP, git remote, GitHub API), cloud services, or any caller-controlled endpoint. Local-only tools (pure string processing, local git, writes to .sdlc-v2/scratch/) are false. **This field is required on every tool, read-only or writer.** Go's zero value is false; the MCP spec's default is true. Never omit it.
+OpenWorld:true indicates the tool reaches external entities: network (HTTP, git remote, GitHub API), cloud services, or any caller-controlled endpoint. Local-only tools (pure string processing, local git, writes to .sdlc-v2/scratch/) are false. **Exception: loopback to the local dashboard server.** An HTTP call to 127.0.0.1 that reaches only the dashboard server of this plugin (the health probe of `dashboard.Status` and `dashboard.Ensure`) is local, so `dashboard` and `dashboard_card` are false. Any other HTTP call, loopback to a caller-chosen port included, is OpenWorld:true. **This field is required on every tool, read-only or writer.** Go's zero value is false; the MCP spec's default is true. Never omit it.
 
 ## Zero-Value Hazard
 

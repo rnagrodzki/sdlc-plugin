@@ -34,7 +34,7 @@ Completed: not recorded
 STEPS                                   1 of 4 done
 [#>..]
   [x] execute            completed
-        wave 1   2/2 tasks   completed
+        wave 1  2/2 tasks  completed
   [>] commit             in_progress
   [ ] review             pending
   [ ] pr                 pending
@@ -69,13 +69,15 @@ The `dashboard_card` tool SHALL read the dashboard server status and MUST NOT st
 - **AND** the last line of `text` is `Dashboard: <url>#<runId>`
 
 #### Scenario: No server
-- **WHEN** the client shows no card and no dashboard server record exists
-- **THEN** the last line of `text` is `Dashboard: not running`
-- **AND** `next` tells the skill to call `dashboard` `ensure` with `runId` if no ensure ran in this run
+- **WHEN** the client shows no card and no dashboard server record exists (a broken link at the record path included), or the server does not answer its health probe
+- **THEN** `text` has no `Dashboard:` line: its last line is the `ISSUES` line
+- **AND** `next` tells the skill to call `dashboard` `ensure` with `runId`, then print its url with `#<runId>`
+- **AND** the result has no `dashboardUrl` field
 
 #### Scenario: Server record cannot be read
-- **WHEN** the server record is a folder, a broken link or bad JSON
-- **THEN** the last line of `text` is `Dashboard: not running`
+- **WHEN** the server record exists and cannot be read (a folder, bad JSON or no read permission)
+- **THEN** the last line of `text` is `Dashboard: link unavailable`
+- **AND** `next` orders no `dashboard` `ensure` call
 - **AND** the card call returns no error
 
 ### Requirement: Snapshot card
@@ -88,7 +90,8 @@ The `dashboard_card` tool SHALL take `snapshot`. A snapshot card view MUST draw 
 
 #### Scenario: Final and snapshot
 - **WHEN** `final` is true and `snapshot` is true
-- **THEN** the result has `final` true and `snapshot` false
+- **THEN** the result has `final` true and no `snapshot` field
+- **AND** `next` ends with `snapshot was ignored because final is true.`
 
 ### Requirement: Wave task counters
 The `dashboard_card` tool SHALL give each `wave <n>` step of an execute run the count of tasks with status `completed` and the count of all tasks of the wave.

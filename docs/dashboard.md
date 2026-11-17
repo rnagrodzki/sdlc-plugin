@@ -1278,7 +1278,23 @@ The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Co
 | DataError | the run is not found and some run files could not be read, or in a T3 Code thread the run stores a `t3ThreadId` that is not a string |
 | InfraError | the runs folder cannot be listed |
 
-The output has `summary`, `runId`, `kind` (`ship` or `execute`), `branch`, `status`, `final`, `t3ThreadId` (when the run has one), `startedAt`, `completedAt` (`null` while the run has no end time), `steps` (`name` and `status` of each step, or of each wave of an execute run, with the task counts of a wave), `issues` (a count for each severity) and `next`. A client with no card also gets `text` and, when the dashboard runs, `dashboardUrl`. The tool reads the run files and the dashboard server record, and writes nothing. On the first error, the ship and execute skills print `Warning: run card not shown — ` and the first line of the error, then continue.
+The output has these fields:
+
+| Field | Value |
+|---|---|
+| `summary`, `runId`, `kind`, `branch`, `status` | one line about the run; the run id; `ship` or `execute`; the branch; the run status |
+| `final` | a copy of the `final` input |
+| `snapshot` | `true` for a middle card. Absent when `snapshot` was not sent, and absent when `final` is also `true`: `final` wins, and `next` then ends with `snapshot was ignored because final is true.` |
+| `t3ThreadId` | the thread id of the run, when it has one |
+| `startedAt`, `completedAt` | the start time; the end time, `null` while the run has no end time |
+| `steps[]` | `name` and `status` of each step of a ship run, or of each wave of an execute run. A wave step of an execute run also has `tasksDone` and `tasksTotal` |
+| `steps[].waves[]` | on the `execute` step of a ship run only, when the dashboard joins an execute run to the ship run: `name`, `status`, `tasksDone` and `tasksTotal` of each wave of that execute run |
+| `issues` | a count for each severity |
+| `next` | what the skill does next |
+| `text` | a client with no card only: the text block |
+| `dashboardUrl` | a client with no card only, when the dashboard runs: `<url>#<runId>` |
+
+The tool reads the run files and the dashboard server record, probes the server over loopback HTTP, and writes nothing. On the first error, the ship and execute skills print `Warning: run card not shown — ` and the first line of the error, then continue.
 
 Card kinds:
 
@@ -1300,8 +1316,8 @@ Completed: not recorded
 STEPS                                   1 of 4 done
 [#>..]
   [x] execute            completed
-        wave 1   2/2 tasks   completed
-        wave 2   3/3 tasks   completed
+        wave 1  2/2 tasks  completed
+        wave 2  3/3 tasks  completed
   [>] commit             in_progress
   [ ] review             pending
   [ ] pr                 pending
@@ -1310,7 +1326,13 @@ ISSUES   high 1
 Dashboard: http://127.0.0.1:55551#ship-feat-x-20261116T175538Z
 ```
 
-The last line is the dashboard link rule. When the dashboard runs, the line shows the address of the run block. When the dashboard does not run, the line says `Dashboard: not running`. The skill then starts the dashboard once and prints the link, or prints one warning and continues with no link.
+The last line is the dashboard link rule:
+
+| Dashboard server | Last line of the block | What the skill does |
+|---|---|---|
+| runs | `Dashboard: <url>#<runId>` | nothing more: the block holds the link |
+| does not run | the `ISSUES` line: the block has no `Dashboard:` line | starts the dashboard once in the run and prints `Dashboard: <url>#<runId>`, or prints `Warning: dashboard not started` and continues with no link |
+| record cannot be read | `Dashboard: link unavailable` | nothing more: `next` orders no start, because a server can run while only its record read fails |
 
 ### Thread filter
 

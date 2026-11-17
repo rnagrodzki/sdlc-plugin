@@ -900,12 +900,22 @@ func TestShipSkillRunCardRule(t *testing.T) {
 	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
 	for _, pin := range []string{
 		`dashboard_card({ runId: "<same>", snapshot: true })`,
-		"Step card: after item 7b of each step except the first step of this invocation",
-		"Print the text field in the chat unchanged, in a code block.",
+		"Step card: after the item 7b begin-step of each step except the first step of this invocation",
+		"execute is always the first step of the main loop, so it never gets a step card.",
+		"Then print the text field unchanged in a code block. The communication style does not apply to it.",
+		"Make the code fence longer than the longest run of backticks in the text",
+		"If the result has dashboardUrl, the text already ends with the link: make no ensure call",
+		`If next orders a dashboard ensure call, make it at most once in this run: dashboard({ action: "ensure", runId: "<runId>" }).`,
 		"A dashboard ensure of the run panel rule counts as the one ensure of this run.",
+		"with a token, key or password in it replaced by ***.\nPrint <error text> in a code span",
 		"Then apply the run card rule (step card).",
 	} {
 		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md", content, pin)
+	}
+	for _, gone := range []string{"leave out snapshot", "the last-step and retry rules", "Ensure on a running server returns its link and starts nothing"} {
+		if strings.Contains(content, gone) {
+			t.Errorf("skills/ship/SKILL.md still holds %q", gone)
+		}
 	}
 
 	entry := shipSkillsReadFile(t, root, "skills/ship/entry-modes.md")

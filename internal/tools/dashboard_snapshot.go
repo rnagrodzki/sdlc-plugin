@@ -25,6 +25,13 @@ const (
 	PipelineFailed    = "failed"
 )
 
+// Run kinds of a dashboard pipeline: the state file prefix of a ship or
+// execute run (DashboardPipeline.Kind).
+const (
+	dashboardRunKindShip    = "ship"
+	dashboardRunKindExecute = "execute"
+)
+
 // Step status values of a dashboard step: the same set as steps[].status in
 // plugins/sdlc/schemas/ship-state.schema.json. Second copy:
 // internal/dashboard/web/static/view.js (stepGlyph). Tests check both
@@ -746,7 +753,7 @@ func collectDashboardRepo(root string, now time.Time) DashboardRepo {
 			// execute state and runs.jsonl. A read problem is a warning,
 			// never repo.Error, because repo.Error blocks the archive of
 			// every run of the repo.
-			if p.Kind == "ship" {
+			if p.Kind == dashboardRunKindShip {
 				if w := dashboardAttachPlanTimes(root, &p, st); w != "" {
 					repo.Warnings = append(repo.Warnings, w)
 				}
@@ -952,6 +959,16 @@ func dashboardBuildEvidenceTimes(files []string) (map[string]time.Time, error) {
 	return out, err
 }
 
+// dashboardStateBranch returns the branch of the pipeline of st: the branch
+// key, else the branch slug of the file name. The join compares
+// state.SlugifyBranch of this value.
+func dashboardStateBranch(st *state.State) string {
+	if b := dashboardStr(st.Data["branch"]); b != "" {
+		return b
+	}
+	return st.BranchSlug
+}
+
 // dashboardStatePipeline builds the pipeline of one ship, execute, or plan
 // state file and returns its updatedAt. ok is false for other prefixes.
 func dashboardStatePipeline(st *state.State, evidence map[string]time.Time) (DashboardPipeline, time.Time, bool) {
@@ -959,13 +976,10 @@ func dashboardStatePipeline(st *state.State, evidence map[string]time.Time) (Das
 	p := DashboardPipeline{
 		ID:         state.RunID(st),
 		Kind:       st.Prefix,
-		Branch:     dashboardStr(data["branch"]),
+		Branch:     dashboardStateBranch(st),
 		T3ThreadID: dashboardStr(data[t3.StateKey]),
 		Steps:      []DashboardStep{},
 		Issues:     []DashboardIssue{},
-	}
-	if p.Branch == "" {
-		p.Branch = st.BranchSlug
 	}
 
 	updated := dashboardModTime(st.Path)
@@ -974,12 +988,12 @@ func dashboardStatePipeline(st *state.State, evidence map[string]time.Time) (Das
 	}
 
 	switch st.Prefix {
-	case "ship":
+	case dashboardRunKindShip:
 		p.Worktree = dashboardStr(data["worktree"])
 		dashboardShip(&p, data)
 		dashboardShipDetail(&p, st)
 		dashboardStateIssues(&p, data)
-	case "execute":
+	case dashboardRunKindExecute:
 		p.Worktree = dashboardStr(data["worktree"])
 		updated = dashboardLatest(updated, dashboardExecute(&p, st))
 		dashboardExecuteSteps(&p, st)

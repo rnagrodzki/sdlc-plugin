@@ -7,8 +7,8 @@ Completed: not recorded
 STEPS                                   1 of 4 done
 [#>..]
   [x] execute            completed
-        wave 1   2/2 tasks   completed
-        wave 2   3/3 tasks   completed
+        wave 1  2/2 tasks  completed
+        wave 2  3/3 tasks  completed
   [>] commit             in_progress
   [ ] review             pending
   [ ] pr                 pending

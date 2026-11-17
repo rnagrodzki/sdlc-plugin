@@ -16,9 +16,13 @@ When `resolve-config` returns `shipDispatched` false and the run uses the wave r
 - **AND** the skill calls `dashboard_card` again at the next card point of this run, the end card included
 
 #### Scenario: Direct route
-- **WHEN** the run uses the Step 2b direct route
+- **WHEN** the run uses the Step 2b direct route and `shipDispatched` is false
 - **THEN** the skill makes no card call
 - **AND** it prints `Run card: not shown on the direct route.`
+
+#### Scenario: Hard stop after the start card
+- **WHEN** the run stops after the start card at a plan hash mismatch, a failed base-sync abort, a drift-log halt or a verify-completeness halt
+- **THEN** the skill calls `dashboard_card` with `runId` and `final` true before the stop message
 
 ### Requirement: Run panel in T3 Code only
 When `resolve-config` returns `t3ThreadId` and `shipDispatched` false, the execute skill SHALL open the run panel before the start card. The skill MUST NOT open the run panel when `t3ThreadId` is absent. Outside T3 Code, the skill prints a dashboard link only by the rule of the text card.
@@ -37,9 +41,14 @@ When `resolve-config` returns `t3ThreadId` and `shipDispatched` false, the execu
 - **THEN** the skill makes no panel call and no card call
 
 #### Scenario: Resume
-- **WHEN** the flag is `--resume`
+- **WHEN** the flag is `--resume` and `shipDispatched` is false
 - **THEN** the skill makes no panel call and no card call
 - **AND** it prints `Run card: not shown on a resumed run.`
+
+#### Scenario: Resume dispatched by ship
+- **WHEN** the flag is `--resume` and `shipDispatched` is true
+- **THEN** the skill makes no panel call and no card call
+- **AND** it prints no run card line
 
 ### Requirement: Panel and card failures never stop execute
 A failed panel or card call MUST NOT stop the run. The skill SHALL print one warning line at the first card error of the run and nothing at a later card error.
