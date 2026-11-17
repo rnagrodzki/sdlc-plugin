@@ -891,3 +891,28 @@ func TestShipSkillsWaitsReportAndPRDraft(t *testing.T) {
 	hardenSkillsAssertOnce(t, "skills/ship/reference.md", reference,
 		"/sdlc:pr [--draft] [--base <branch>] --skip-approval [--auto] --no-instructions\n")
 }
+
+// TestShipSkillRunCardRule pins the run card rule of the ship skill: the step
+// card with the snapshot flag, the text field fallback with the one dashboard
+// ensure, and the skip lines of the resume and dry-run handlers.
+func TestShipSkillRunCardRule(t *testing.T) {
+	root := shipSkillsRepoRoot(t)
+	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
+	for _, pin := range []string{
+		`dashboard_card({ runId: "<same>", snapshot: true })`,
+		"Step card: after item 7b of each step except the first step of this invocation",
+		"Print the text field in the chat unchanged, in a code block.",
+		"A dashboard ensure of the run panel rule counts as the one ensure of this run.",
+		"Then apply the run card rule (step card).",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md", content, pin)
+	}
+
+	entry := shipSkillsReadFile(t, root, "skills/ship/entry-modes.md")
+	for _, pin := range []string{
+		"`Run card: not shown on a resumed run.`",
+		"`Run card: not shown in a dry run.`",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/entry-modes.md", entry, pin)
+	}
+}

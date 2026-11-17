@@ -463,3 +463,27 @@ func TestExecuteSkillsInstructionsText(t *testing.T) {
 		t.Errorf("%s: the Completion call (cleanup) must come after Step 9a", label)
 	}
 }
+
+// TestExecuteSkillRunCardRule pins the run card rule of the execute skill: the
+// wave card call, the text fallback, the resume skip line and the end card at
+// the verify-completeness halt.
+func TestExecuteSkillRunCardRule(t *testing.T) {
+	const label = "skills/execute/SKILL.md"
+	skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "execute", "SKILL.md"))
+
+	for _, want := range []string{
+		"snapshot: true",
+		"Wave card:",
+		"Print the text field",
+		"Apply the run card rule (end card), then halt",
+		"Run card: not shown on a resumed run.",
+		"| verify-completeness halt (`## Wave loop`, after the final wave) | no |",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Errorf("%s: missing %q", label, want)
+		}
+	}
+	if strings.Contains(skill, "no more card calls") {
+		t.Errorf("%s: the old rule %q must be gone", label, "no more card calls")
+	}
+}

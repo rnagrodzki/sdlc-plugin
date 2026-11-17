@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>card shots</title>
+<!--
+  Fake MCP Apps host for screenshots of the run card. It is a dev tool and
+  is not part of the site build (site/scripts is not a source of Astro).
+
+  Serve the repository root with any static server, for example:
+    python3 -m http.server 8099   (run in the repository root)
+  Then open one of:
+    http://localhost:8099/site/scripts/card-shots.html#live
+    http://localhost:8099/site/scripts/card-shots.html#snapshot
+    http://localhost:8099/site/scripts/card-shots.html#end
+  Add ?theme=dark or ?theme=light to send the host theme to the card.
+
+  The page draws one card in an iframe. The iframe loads
+  /internal/tools/dashboard_card.html and talks to this page with the
+  MCP Apps JSON-RPC messages that the card uses: ui/initialize,
+  ui/notifications/initialized, ui/notifications/tool-result,
+  ui/notifications/size-changed and tools/call.
+-->
+<style>
+  html, body { margin: 0; background: #f4f5f7; }
+  @media (prefers-color-scheme: dark) { html, body { background: #101114; } }
+  #frame { display: block; width: 440px; max-width: 100%; margin: 24px auto; border: 0; height: 200px; background: transparent; }
+</style>
+</head>
+<body>
+<iframe id="frame" title="run card" src="/internal/tools/dashboard_card.html"></iframe>
+<script>
+(function () {
+  'use strict';
+
+  var CARD_PATH = '/internal/tools/dashboard_card.html';
+  var RUN_ID = 'ship-feat-x-20261116T175538Z';
+
+  // Steps of a ship run: execute is completed with 2 waves, commit runs.
+  function steps(commitStatus, allDone) {
+    var done = allDone ? 'completed' : null;
+    return [
+      { name: 'execute', status: 'completed', tasksDone: 5, tasksTotal: 5, waves: [
+        { name: 'wave 1', status: 'completed', tasksDone: 2, tasksTotal: 2 },
+        { name: 'wave 2', status: 'completed', tasksDone: 3, tasksTotal: 3 }
+      ] },
+      { name: 'commit', status: done || commitStatus },
+      { name: 'review', status: done || 'pending' },
+      { name: 'pr', status: done || 'pending' }
+    ];
+  }
+
+  function card(extra) {
+    var base = {
+      runId: RUN_ID,
+      kind: 'ship',
+      status: 'running',
+      branch: 'feat/x',
+      startedAt: '2026-11-16T17:55:38Z',
+      steps: steps('in_progress', false),
+      issues: { high: 1 }
+    };
+    Object.keys(extra).forEach(function (k) { base[k] = extra[k]; });
+    return base;
+  }
+
+  var SCENES = {
+    // A running run: the card polls with tools/call.
+    live: function () {
+      return card({ startedAt: new Date(Date.now() - 12 * 60 * 1000).toISOString() });
+    },
+    // A snapshot card: a frozen view that does not update.
+    snapshot: function () {
+      return card({ snapshot: true });
+    },
+    // An end card: the run is over.
+    end: function () {
+      return card({
+        status: 'completed',
+        completedAt: '2026-11-16T18:21:07Z',
+        final: true,
+        steps: steps('completed', true),
+        issues: {}
+      });
+    }
+  };
+
+  var name = (location.hash || '#live').slice(1);
+  if (!SCENES[name]) { name = 'live'; }
+  var theme = new URLSearchParams(location.search).get('theme');
+
+  var frame = document.getElementById('frame');
+  if (frame.getAttribute('src') !== CARD_PATH) { frame.setAttribute('src', CARD_PATH); }
+
+  function toolResult() {
+    var out = SCENES[name]();
+    return { content: [{ type: 'text', text: 'dashboard_card ' + out.runId }], structuredContent: out };
+  }
+
+  function post(msg) { frame.contentWindow.postMessage(msg, '*'); }
+
+  window.addEventListener('message', function (ev) {
+    if (ev.source !== frame.contentWindow) { return; }
+    var m = ev.data;
+    if (!m || m.jsonrpc !== '2.0' || typeof m.method !== 'string') { return; }
+
+    if (m.method === 'ui/initialize') {
+      var hostContext = { styles: { variables: {} } };
+      if (theme === 'light' || theme === 'dark') { hostContext.theme = theme; }
+      post({ jsonrpc: '2.0', id: m.id, result: { protocolVersion: m.params && m.params.protocolVersion, hostContext: hostContext } });
+    } else if (m.method === 'ui/notifications/initialized') {
+      post({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: toolResult() });
+    } else if (m.method === 'ui/notifications/size-changed') {
+      frame.style.height = Math.ceil(m.params.height) + 'px';
+    } else if (m.method === 'tools/call') {
+      post({ jsonrpc: '2.0', id: m.id, result: toolResult() });
+    }
+  });
+
+  window.addEventListener('hashchange', function () { location.reload(); });
+})();
+</script>
+</body>
+</html>

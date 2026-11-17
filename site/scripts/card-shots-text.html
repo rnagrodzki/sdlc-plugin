@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>card shots text</title>
+<!--
+  Screenshot frame for the text card. It shows the golden file of the text
+  card in a dark frame. It is a dev tool and is not part of the site build
+  (site/scripts is not a source of Astro).
+
+  Serve the repository root with any static server, for example:
+    python3 -m http.server 8099   (run in the repository root)
+  Then open http://localhost:8099/site/scripts/card-shots-text.html
+-->
+<style>
+  html, body { margin: 0; background: #101114; }
+  body { padding: 24px; }
+  #frame {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    margin: 0 auto;
+    padding: 16px 20px;
+    overflow-x: auto;
+    border: 1px solid rgba(255, 255, 255, .1);
+    border-radius: 12px;
+    background: #1b1d23;
+    box-shadow: 0 6px 18px -8px rgba(0, 0, 0, .6);
+  }
+  pre {
+    margin: 0;
+    color: #e6e8ee;
+    font: 13px/1.5 ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre;
+  }
+</style>
+</head>
+<body>
+<div id="frame"><pre id="text">Loading...</pre></div>
+<script>
+(function () {
+  'use strict';
+  var GOLDEN = '/internal/tools/testdata/dashboard_card_text_ship.golden';
+  var pre = document.getElementById('text');
+  fetch(GOLDEN).then(function (res) {
+    if (!res.ok) { throw new Error('HTTP ' + res.status); }
+    return res.text();
+  }).then(function (text) {
+    pre.textContent = text.replace(/\n$/, '');
+  }, function (err) {
+    pre.textContent = 'Could not load ' + GOLDEN + ': ' + err.message;
+  });
+})();
+</script>
+</body>
+</html>
