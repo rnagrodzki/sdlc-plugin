@@ -94,6 +94,7 @@ Review Go source changes for baseline code quality in this module
   bullet above, which asks that a literal is replaced by a constant and does not
   say where the constants of a set live. Example: section-name constants defined
   in three places, and an action list typed in four places.
+- A constant that names one member of a family of literals of one kind (a set of prefixes, markers or separators) MUST NOT sit beside inline copies of the other members. Grep the package for the sibling literals before adding the constant. Define one constant for each member in the one block that holds the family, or build each member from one helper, and use them at every site. A one-member constant with its siblings typed inline is a finding: a reader takes the constant for the full set, and the inline copies drift when a prefix changes. This extends the closed-set constants bullet above, which covers values of a set and not a family that is only partly named. Example: an inline prefix literal beside a constant for the other prefix.
 - Naming is consistent with sibling files in the same package — check for
   drift before introducing a second convention.
 - A parameter, closure parameter, local variable or named result must not take

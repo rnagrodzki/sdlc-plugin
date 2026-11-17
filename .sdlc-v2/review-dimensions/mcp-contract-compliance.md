@@ -161,6 +161,8 @@ error with an empty or missing `## Do this` section is a defect.
 `defaultRecovery` is called from `renderError`; locate both with
 `grep -rn 'defaultRecovery' internal/`.
 
+- An error or warning about a stored or skipped file (a file that failed to parse, a file that the handler skipped, a file over a cap) MUST name the file path and the cause. A `DataError` or `InfraError` sets `Cause` to the lower-level error, and its `Msg` names the file. A skip reported with no file name, or with a fixed text that drops the cause, is a finding: the caller cannot tell which file to repair or why. When the handler skips several files, the output names each one, or states the cap and the count left out. A test makes one file fail and asserts the whole `Msg`, the `Suggestion` and the cause with `errors.Is` or `errors.As`. This extends the error-class bullet above, which picks the class and does not require the file or the cause in the text. Example: a skipped-file `DataError` that named no file and no cause.
+
 ## Handler input validation
 
 - When a handler receives new fields in an `*In` struct, it must explicitly
@@ -249,6 +251,7 @@ error with an empty or missing `## Do this` section is a defect.
   finding. This extends the description bullets above, which check that the
   text is present and true, not that the model can use it. Example: an `*In`
   field description that named a Go identifier.
+- A `jsonschema_description`, or a registered tool or action description, of a bool, status or reason field whose false, unset or failed value can come from several causes MUST name every cause: the action did not run, a check was skipped, a call failed, an input was refused, or a precondition was missing. The other choice is a second field in the struct (a reason or a warning) that tells the causes apart. A text that names one cause of several is a finding, because the caller reads each other cause as the named one. List each code path that sets the field to that value and read the text against all of them. A test asserts the rendered output for each cause. This extends the two-cause bullet for list and count fields, and the case-coverage bullet, which names forms of a value and the actions that take an input. Example: a `ShipDispatched` description that lists only one cause of `false`.
 
 ## Review procedure for closed-set enum tags and error-field coverage
 
@@ -269,6 +272,7 @@ When reviewing changes to MCP handler code, perform these concrete checks:
   (e.g. `DONE_WITH_CONCERNS` distinct from `DONE`) — flag any invented or
   conflated status string.
 - A key that a handler reads from inside a JSON-encoded or free-form input (for example a `detail` object) is a handler input like a top-level field. The `jsonschema_description` of the outer field MUST state, for each key: its JSON type, its unit, its minimum and maximum (a number) or its maximum entry count (a list), the actions that read it, and the result when an action that does not read it receives it (rejected, or ignored with a warning that names the key). The handler MUST reject a key of the wrong type with an error that names the key, the type found and, for a list, the index of the bad entry. A read through a helper that turns a wrong type into an empty value is a finding. The value that the handler checks, stores and echoes is the same value, trimmed once. A key with no stated type or range, a key silently ignored on another action, and a wrong-typed key read as empty are findings. A test for each case calls the registered tool and asserts the whole error or warning. This extends the closed-set bullet and the validation bullets above, which cover the values of a set and the top-level fields only. Example: `seconds` and `ids` keys with no stated type or range that were silently ignored on other actions.
+- A `jsonschema_description`, or a registered tool or action description, of a field MUST cover each case that the code tells apart for that field. (1) A value that the code builds in more than one form (a URL made from a host and a URL made from a path, a name with and without a prefix) is described in each form: a text that names one form is a finding. (2) An input that more than one action takes states, for each action, whether the action uses it, checks it or ignores it, and an action that accepts the value without checking it says so. This extends the JSON-encoded key bullet to top-level fields. It also extends the stale-description bullets above, which catch a text that omits new behavior or claims too much, not a text that is true but names one case of several. Verify: list the cases in the handler code for each field in the diff and read the text against each. Example: a preview URL field whose text gave one URL form, and a run ID input that one action accepted without checking while the text did not say so.
 
 ## Annotation reason accuracy
 
