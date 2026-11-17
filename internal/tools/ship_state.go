@@ -3843,6 +3843,7 @@ func shipStateRead(root, workDir string, in ShipStateIn, now func() time.Time) (
 	// final report needs this exactly as much as a resumed one's does.
 	out["reportData"] = shipBuildReportData(st.Data, nowVal)
 	out["style"] = chatStyleFor(root)
+	out["runId"] = strings.TrimSuffix(filepath.Base(st.Path), ".json") // end card after a compaction (Task 13)
 	if shipRunInFlight(st.Data) {
 		out["resumeBriefing"] = shipBuildResumeBriefing(root, st.Data, nowVal)
 	}

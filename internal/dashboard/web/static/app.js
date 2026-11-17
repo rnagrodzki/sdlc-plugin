@@ -38,7 +38,10 @@ var ui = {
   source: null,
   stopped: false, // true after the stop request succeeded; the page opens no new stream
   panelSig: Object.create(null), // panel name -> signature of its last draw
-  hash: null, // a pipeline hash that waits for the first snapshot
+  hash: null, // a pipeline hash that waits for the first snapshot, or for its block to be drawn
+  // The T3 thread id of the Pipelines tab filter, or null. It comes from the
+  // hash only ('#pipelines?thread=<id>') and is never saved in localStorage.
+  thread: null,
   // The detail key of the open detail viewer, or null. The viewer reads its
   // item again from each snapshot, so it never holds a row element.
   detail: null,
@@ -289,14 +292,18 @@ function renderFeed(snapshot, repos, scope, now, tz) {
   repos.forEach(function (repo) {
     if (!view.inScope(scope, repo.root)) return;
     // A lone wait has no pipeline block. Its card goes before every block.
-    (repo.loneWaits || []).forEach(function (wait) {
-      waits.push(draw.loneWaitCard(document, view, repo, wait, now));
-    });
+    // A lone wait has no thread id, so a thread filter hides it.
+    if (!ui.thread) {
+      (repo.loneWaits || []).forEach(function (wait) {
+        waits.push(draw.loneWaitCard(document, view, repo, wait, now));
+      });
+    }
     if (repo.error) nodes.push(draw.emptyState(document, 'repo-error', repo));
     (repo.warnings || []).forEach(function (w) {
       nodes.push(draw.emptyState(document, 'repo-warning', { name: repo.name, warning: w }));
     });
     (repo.pipelines || []).forEach(function (p) {
+      if (!view.inThread(p, ui.thread)) return;
       pipelines.push(p);
       owner.set(p, repo);
     });
@@ -318,7 +325,8 @@ function renderFeed(snapshot, repos, scope, now, tz) {
 
   if (blocks.length === 0 && waits.length === 0) {
     var empty = view.emptyText(snapshot);
-    nodes.push(empty ? draw.emptyState(document, 'no-pipelines', empty) : draw.emptyState(document, 'none-in-scope'));
+    if (ui.thread) nodes.push(draw.emptyState(document, 'no-thread-run'));
+    else nodes.push(empty ? draw.emptyState(document, 'no-pipelines', empty) : draw.emptyState(document, 'none-in-scope'));
   }
   replaceChildren(byId('feed'), waits.concat(nodes));
   watchDimensionGrids();
@@ -461,7 +469,7 @@ function render(snapshot, reason) {
   // A filter change calls render too, so the title follows the filter.
   syncTitle(repos, scope);
   replaceChildren(byId('totals'), draw.headerTotals(document, view, repos));
-  replaceChildren(byId('filter-chips'), draw.filterChips(document, view, view.repoChips(repos), scope));
+  replaceChildren(byId('filter-chips'), draw.filterChips(document, view, view.repoChips(repos), scope, ui.thread));
 
   var counts = view.scopedCounts(repos, scope);
   view.TAB_NAMES.forEach(function (name) {
@@ -472,7 +480,7 @@ function render(snapshot, reason) {
 
   var now = Date.now();
   var tz = timeZone();
-  var sigs = view.panelSignatures(repos, scope);
+  var sigs = view.panelSignatures(repos, scope, ui.thread);
   view.panelsToDraw(reason || 'click', ui.tab, sigs, ui.panelSig).forEach(function (name) {
     if (name === 'pipelines') renderFeed(ui.lastSnapshot, repos, scope, now, tz);
     if (name === 'preplans') replaceChildren(tabs.preplans.panel, [draw.preplanPanel(document, view, repos, scope, ui)]);
@@ -606,20 +614,29 @@ function selectStation(key, index, reveal) {
 }
 
 // '#activity', '#history', '#preplans' and '#setup' pick a tab. '#<pipeline id>[/<n>]'
-// scrolls to the first block with that id and selects station n.
+// scrolls to the first block with that id and selects station n. A '?thread=<id>'
+// part sets the thread filter of the Pipelines tab; a hash with no such part clears it.
+// A pipeline hash whose block is not drawn yet stays in ui.hash. render() applies it
+// again after each draw, until the block exists.
 function applyHash(hash) {
   var target = view.parseHash(hash, view.TAB_NAMES);
   if (!target) return;
-  if (target.tab) {
-    selectTab(target.tab);
-    return;
-  }
-  if (!ui.lastSnapshot) {
+  // A new hash replaces a pending one.
+  ui.hash = null;
+  var thread = target.thread || null;
+  var threadChanged = thread !== ui.thread;
+  ui.thread = thread;
+  var tabName = target.tab || 'pipelines';
+  var tabChanged = tabName !== ui.tab;
+  if (!target.tab && !ui.lastSnapshot) {
     ui.hash = hash;
     return;
   }
   // blocks fills only when the Pipelines tab draws, so the tab is selected first.
-  selectTab('pipelines');
+  selectTab(tabName);
+  // selectTab draws only when the tab changed.
+  if (threadChanged && !tabChanged && ui.lastSnapshot) render(ui.lastSnapshot);
+  if (target.tab) return;
   var block = null;
   for (var i = 0; i < blocks.length; i++) {
     if (blocks[i].pipeline.id === target.pipelineId) {
@@ -627,7 +644,10 @@ function applyHash(hash) {
       break;
     }
   }
-  if (!block) return;
+  if (!block) {
+    ui.hash = hash;
+    return;
+  }
   block.node.scrollIntoView({ block: 'start', behavior: 'auto' });
   if (target.station !== null) selectStation(block.key, target.station, true);
 }
@@ -1029,16 +1049,23 @@ function init() {
   view.TAB_NAMES.forEach(function (name, index) {
     var tab = tabs[name].tab;
     tab.addEventListener('click', function () {
+      ui.hash = null; // the user picked a tab: a pending run hash is dropped
       selectTab(name);
     });
     tab.addEventListener('keydown', function (event) {
       if (TAB_KEYS.indexOf(event.key) === -1) return;
       event.preventDefault();
+      ui.hash = null;
       selectTab(view.TAB_NAMES[view.nextTabIndex(index, event.key, view.TAB_NAMES.length)], true);
     });
   });
 
   byId('filter-chips').addEventListener('click', function (event) {
+    if (event.target.closest('[data-thread-clear]')) {
+      // applyHash runs on the hashchange event and clears ui.thread.
+      location.hash = '#pipelines';
+      return;
+    }
     var chip = event.target.closest('[data-root]');
     if (chip) applyScope(chip.getAttribute('data-root'));
   });

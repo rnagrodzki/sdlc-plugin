@@ -22,6 +22,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/pipeline"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 	"github.com/rnagrodzki/sdlc-plugin/internal/worktree"
 
 	version "github.com/rnagrodzki/sdlc-plugin"
@@ -176,6 +177,10 @@ type ShipPrepareOut struct {
 	Branch    string `json:"branch"`
 	Worktree  string `json:"worktree"`
 	StateFile string `json:"stateFile,omitempty"`
+
+	// T3ThreadID is t3.ThreadID() read when the call runs. The skills cannot
+	// read the environment, so this field is how ship learns it runs in T3 Code.
+	T3ThreadID string `json:"t3ThreadId,omitempty" jsonschema_description:"T3 Code thread id of this server process (T3CODE_THREAD_ID). Absent outside T3 Code. The ship skill shows the run card only when it is set."`
 
 	// PrunedOrphans lists the pre-existing ship-<slug>-*.json state files that
 	// the new run's state write deleted (state.PruneTargets, filtered by
@@ -540,6 +545,7 @@ func shipPrepare(cfgRoot, activeRoot string, in ShipPrepareIn) (ShipPrepareOut, 
 		BinaryVersion: binaryVersion,
 		Branch:        currentBranch,
 		Worktree:      activeRoot,
+		T3ThreadID:    t3.ThreadID(),
 		PrunedOrphans: []string{},
 	}
 

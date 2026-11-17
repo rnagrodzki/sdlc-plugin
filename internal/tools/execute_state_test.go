@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -34,6 +35,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/shipmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 	"github.com/rnagrodzki/sdlc-plugin/internal/wave"
 )
 
@@ -11005,5 +11007,208 @@ func TestExecuteStateInstructionResumeClosesRunning(t *testing.T) {
 	want := []string{"execute#1 failed result not recorded, not run again", "execute#2 running "}
 	if got := storedRecords(t, path); !slices.Equal(got, want) {
 		t.Errorf("stored = %q, want %q", got, want)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// resolve-config: t3ThreadId and shipDispatched (direct handler)
+// ---------------------------------------------------------------------------
+
+// TestExecActionResolveConfig_T3ThreadID checks that t3ThreadId holds the
+// accepted value of T3CODE_THREAD_ID and is empty when the variable is unset
+// or does not match t3.ThreadIDPattern.
+func TestExecActionResolveConfig_T3ThreadID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  string
+		want string
+	}{
+		{"set", "thr-1", "thr-1"},
+		{"unset", "", ""},
+		{"not a valid id", "bad id!", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(t3.EnvThreadID, tc.env)
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+			writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+
+			out, err := execActionResolveConfig(root, ExecuteStateIn{})
+			if err != nil {
+				t.Fatalf("execActionResolveConfig: %v", err)
+			}
+			if got := out.(ExecuteResolveConfigOut).T3ThreadID; got != tc.want {
+				t.Errorf("T3ThreadID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// execShipStepsState returns ship state data with one execute step of status.
+func execShipStepsState(status string) map[string]any {
+	return map[string]any{"steps": []any{
+		map[string]any{"name": "review", "status": "pending", "kind": "tracked"},
+		map[string]any{"name": "execute", "status": status, "kind": "tracked"},
+	}}
+}
+
+// TestExecActionResolveConfig_ShipDispatched has one row for each row of the
+// shipDispatched table: only a ship state that is not completed and has its
+// execute step in_progress gives true. The extra rows pin the branch input,
+// the CLI auto flag and a ship state without an execute step.
+func TestExecActionResolveConfig_ShipDispatched(t *testing.T) {
+	completed := execShipStepsState("in_progress")
+	completed["pipelineStatus"] = "completed"
+
+	for _, tc := range []struct {
+		name   string
+		ship   map[string]any // nil: no ship state
+		branch string
+		auto   bool
+		want   bool
+	}{
+		{"no ship state", nil, "feat/dispatch", false, false},
+		{"no branch input", execShipStepsState("in_progress"), "", false, false},
+		{"pipeline completed, execute in_progress", completed, "feat/dispatch", false, false},
+		{"execute in_progress", execShipStepsState("in_progress"), "feat/dispatch", false, true},
+		{"execute in_progress with CLI auto", execShipStepsState("in_progress"), "feat/dispatch", true, true},
+		{"execute failed", execShipStepsState("failed"), "feat/dispatch", false, false},
+		{"execute completed", execShipStepsState("completed"), "feat/dispatch", false, false},
+		{"execute pending", execShipStepsState("pending"), "feat/dispatch", false, false},
+		{"no execute step", map[string]any{"steps": []any{map[string]any{"name": "review", "status": "in_progress"}}}, "feat/dispatch", false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+			writeFile(t, filepath.Join(root, paths.DataDir, "local.toml"), "")
+			if tc.ship != nil {
+				createShipState(t, root, "feat/dispatch", tc.ship)
+			}
+
+			out, err := execActionResolveConfig(root, ExecuteStateIn{Branch: tc.branch, Auto: tc.auto})
+			if err != nil {
+				t.Fatalf("execActionResolveConfig: %v", err)
+			}
+			if got := out.(ExecuteResolveConfigOut).ShipDispatched; got != tc.want {
+				t.Errorf("ShipDispatched = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// execRegisteredRepo makes a git repository on branch under t.TempDir with
+// empty config files, makes it the working directory, and returns its path.
+// The registered execute_state handler resolves its root from that directory.
+func execRegisteredRepo(t *testing.T, branch string) string {
+	t.Helper()
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, branch)
+	writeFile(t, filepath.Join(dir, paths.DataDir, "config.toml"), "")
+	writeFile(t, filepath.Join(dir, paths.DataDir, "local.toml"), "")
+	t.Chdir(dir)
+	return dir
+}
+
+// TestRegisteredExecuteState_ResolveConfigT3Facts calls the registered
+// execute_state tool and asserts the rendered lines of t3ThreadId (filled and
+// omitted) and of shipDispatched (true and false).
+func TestRegisteredExecuteState_ResolveConfigT3Facts(t *testing.T) {
+	const branch = "feat/reg-t3-facts"
+	hasLine := func(text, line string) bool { return slices.Contains(strings.Split(text, "\n"), line) }
+	hasPrefix := func(text, prefix string) bool {
+		for _, l := range strings.Split(text, "\n") {
+			if strings.HasPrefix(l, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	t.Run("thread set and ship dispatched", func(t *testing.T) {
+		dir := execRegisteredRepo(t, branch)
+		createShipState(t, dir, branch, execShipStepsState("in_progress"))
+		t.Setenv(t3.EnvThreadID, "thr-reg-1")
+
+		res, text := callRegisteredTool(t, RegisterExecuteStateTools, "execute_state",
+			map[string]any{"action": "resolve-config", "branch": branch})
+		if res.IsError {
+			t.Fatalf("resolve-config returned a tool error:\n%s", text)
+		}
+		for _, want := range []string{"- t3ThreadId: thr-reg-1", "- shipDispatched: true"} {
+			if !hasLine(text, want) {
+				t.Errorf("output has no line %q:\n%s", want, text)
+			}
+		}
+	})
+
+	t.Run("thread unset and no ship state", func(t *testing.T) {
+		execRegisteredRepo(t, branch)
+		t.Setenv(t3.EnvThreadID, "")
+
+		res, text := callRegisteredTool(t, RegisterExecuteStateTools, "execute_state",
+			map[string]any{"action": "resolve-config", "branch": branch})
+		if res.IsError {
+			t.Fatalf("resolve-config returned a tool error:\n%s", text)
+		}
+		if hasPrefix(text, "- t3ThreadId") {
+			t.Errorf("output has a t3ThreadId line, want it omitted:\n%s", text)
+		}
+		if !hasLine(text, "- shipDispatched: false") {
+			t.Errorf("output has no line %q:\n%s", "- shipDispatched: false", text)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// read: runId
+// ---------------------------------------------------------------------------
+
+// TestExecuteStateRead_RunID checks that the read action returns runId, the
+// base name of the state file without .json, and that the key does not hide
+// a state key.
+func TestExecuteStateRead_RunID(t *testing.T) {
+	const branch = "feat/read-runid"
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, paths.DataDir, "config.toml"), "")
+	createExecState(t, root, branch, map[string]any{"branch": branch, "planPath": "plan.md"})
+
+	out, err := executeState(root, root, ExecuteStateIn{Action: "read", Branch: branch}, fixedClock(testNow))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	data := out.(map[string]any)
+	runID, _ := data["runId"].(string)
+	if !regexp.MustCompile(t3.RunIDPattern).MatchString(runID) || !strings.HasPrefix(runID, "execute-") {
+		t.Fatalf("runId = %q, want an execute- run id", runID)
+	}
+	if _, err := os.Stat(filepath.Join(root, paths.DataDir, paths.RunsSubdir, runID+".json")); err != nil {
+		t.Errorf("runId %q does not name the state file: %v", runID, err)
+	}
+	if data["planPath"] != "plan.md" {
+		t.Errorf("planPath = %v, want plan.md (state keys must survive the copy)", data["planPath"])
+	}
+}
+
+// TestRegisteredExecuteState_ReadRunID calls the registered execute_state
+// tool and asserts the runId line of the rendered read output.
+func TestRegisteredExecuteState_ReadRunID(t *testing.T) {
+	const branch = "feat/reg-read-runid"
+	dir := execRegisteredRepo(t, branch)
+	createExecState(t, dir, branch, map[string]any{"branch": branch})
+	st, err := state.Find(dir, "execute", branch)
+	if err != nil || st == nil {
+		t.Fatalf("state.Find: %v, %v", st, err)
+	}
+
+	res, text := callRegisteredTool(t, RegisterExecuteStateTools, "execute_state",
+		map[string]any{"action": "read", "branch": branch})
+	if res.IsError {
+		t.Fatalf("read returned a tool error:\n%s", text)
+	}
+	want := "- runId: " + strings.TrimSuffix(filepath.Base(st.Path), ".json")
+	if !slices.Contains(strings.Split(text, "\n"), want) {
+		t.Errorf("output has no line %q:\n%s", want, text)
 	}
 }

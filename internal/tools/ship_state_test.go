@@ -11657,3 +11657,54 @@ func TestShipStateWait_DecideParity(t *testing.T) {
 		})
 	}
 }
+
+// TestShipState_Read_RunID checks that the read action returns runId, the
+// base name of the state file without .json, and that the key does not hide
+// a state key.
+func TestShipState_Read_RunID(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/read-runid")
+	path := shipStateInitFixture(t, dir, "feat/read-runid")
+
+	out, err := shipState(dir, dir, ShipStateIn{
+		Action: "read",
+		Detail: map[string]any{"branch": "feat/read-runid"},
+	}, fixedNow(time.Now()))
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	data := out.(map[string]any)
+	runID, _ := data["runId"].(string)
+	if !strings.HasPrefix(runID, "ship-") {
+		t.Fatalf("runId = %q, want a ship- run id", runID)
+	}
+	if want := strings.TrimSuffix(filepath.Base(path), ".json"); runID != want {
+		t.Errorf("runId = %q, want %q (the state file name without .json)", runID, want)
+	}
+	if data["branch"] != "feat/read-runid" {
+		t.Errorf("branch = %v, want feat/read-runid (state keys must survive the copy)", data["branch"])
+	}
+}
+
+// TestRegisteredShipState_ReadRunID calls the registered ship_state tool and
+// asserts the runId line of the rendered read output.
+func TestRegisteredShipState_ReadRunID(t *testing.T) {
+	dir := t.TempDir()
+	initGitFixture(t, dir)
+	gitCommit(t, dir, "initial")
+	checkoutBranch(t, dir, "feat/reg-read-runid")
+	path := shipStateInitFixture(t, dir, "feat/reg-read-runid")
+	t.Chdir(dir)
+
+	res, text := callRegisteredTool(t, RegisterShipStateTools, "ship_state",
+		map[string]any{"action": "read", "detail": map[string]any{"branch": "feat/reg-read-runid"}})
+	if res.IsError {
+		t.Fatalf("read returned a tool error:\n%s", text)
+	}
+	want := "- runId: " + strings.TrimSuffix(filepath.Base(path), ".json")
+	if !slices.Contains(strings.Split(text, "\n"), want) {
+		t.Errorf("output has no line %q:\n%s", want, text)
+	}
+}

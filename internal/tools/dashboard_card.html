@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sdlc run card</title>
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #1f2328;
+  --muted: #59636e;
+  --line: #d1d9e0;
+  --chip: #f6f8fa;
+  --ok: #1a7f37;
+  --bad: #cf222e;
+  --run: #0969da;
+  --warn: #9a6700;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --fg: #e6edf3;
+    --muted: #9198a1;
+    --line: #3d444d;
+    --chip: #151b23;
+    --ok: #3fb950;
+    --bad: #f85149;
+    --run: #4493f8;
+    --warn: #d29922;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body { font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+#card { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; }
+.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
+.kind { text-transform: uppercase; font-size: 11px; letter-spacing: .04em; color: var(--muted); }
+.run { font-weight: 600; word-break: break-all; }
+.status { font-weight: 600; }
+.status.running { color: var(--run); }
+.status.completed { color: var(--ok); }
+.status.failed, .status.stopped { color: var(--bad); }
+.meta { margin-top: 4px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 14px; }
+.chips { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { background: var(--chip); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
+h2 { font-size: 12px; margin: 10px 0 4px; color: var(--muted); font-weight: 600; }
+ol { margin: 0; padding-left: 20px; }
+li .st { color: var(--muted); }
+li.completed .st, li.skipped .st { color: var(--ok); }
+li.failed .st { color: var(--bad); }
+li.in_progress .st { color: var(--run); }
+.empty { margin: 0; color: var(--muted); }
+.note { margin: 10px 0 0; color: var(--warn); }
+.bar { margin-top: 10px; }
+button { font: inherit; color: var(--fg); background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+</style>
+</head>
+<body>
+<div id="card"><p class="empty">Waiting for the run.</p></div>
+<script>
+(function () {
+  'use strict';
+
+  var TOOL = 'dashboard_card';
+  var PROTOCOL = '2026-01-26';
+  var REFRESH_MS = 15000;
+  var STOPPED = 'Stopped — resume with --resume';
+
+  var root = document.getElementById('card');
+  var view = { phase: 'waiting', runId: '', final: false, timer: null, busy: false, last: null, nextId: 1, pending: {} };
+
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // firstLine returns the first line of s that is not empty and not a
+  // Markdown heading, so a rendered tool error gives its message line.
+  function firstLine(s) {
+    var lines = String(s == null ? '' : s).split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (line && line.charAt(0) !== '#') { return line; }
+    }
+    return 'no error text';
+  }
+
+  function send(msg) { window.parent.postMessage(msg, '*'); }
+
+  function request(method, params) {
+    return new Promise(function (resolve, reject) {
+      var id = view.nextId++;
+      view.pending[id] = { resolve: resolve, reject: reject };
+      send({ jsonrpc: '2.0', id: id, method: method, params: params });
+    });
+  }
+
+  function notify(method, params) {
+    var msg = { jsonrpc: '2.0', method: method };
+    if (params) { msg.params = params; }
+    send(msg);
+  }
+
+  function resultText(res) {
+    var parts = (res && res.content) || [];
+    for (var i = 0; i < parts.length; i++) {
+      if (parts[i] && parts[i].type === 'text') { return parts[i].text; }
+    }
+    return '';
+  }
+
+  function cardOf(res) {
+    var out = res && res.structuredContent;
+    return out && typeof out === 'object' && typeof out.runId === 'string' ? out : null;
+  }
+
+  // stoppedRun is true for an end card whose run state still says running.
+  function stoppedRun(out) { return !!out.final && out.status === 'running'; }
+
+  function statusText(out) {
+    if (stoppedRun(out)) { return STOPPED; }
+    var s = String(out.status || '');
+    return s ? s.charAt(0).toUpperCase() + s.slice(1) : 'Unknown';
+  }
+
+  function statusClass(out) {
+    if (stoppedRun(out)) { return 'stopped'; }
+    return /^[a-z_]+$/.test(out.status || '') ? out.status : 'unknown';
+  }
+
+  function stepsHTML(steps) {
+    if (!steps || !steps.length) { return '<p class="empty">No steps yet.</p>'; }
+    var rows = steps.map(function (s) {
+      var cls = /^[a-z_]+$/.test(s.status || '') ? s.status : '';
+      return '<li class="' + cls + '">' + esc(s.name) + ' <span class="st">' + esc(s.status) + '</span></li>';
+    });
+    return '<ol>' + rows.join('') + '</ol>';
+  }
+
+  function issuesHTML(issues) {
+    var keys = Object.keys(issues || {}).sort();
+    if (!keys.length) { return '<p class="empty">No issues.</p>'; }
+    return '<div class="chips">' + keys.map(function (k) {
+      return '<span class="chip">' + esc(k) + ' ' + esc(issues[k]) + '</span>';
+    }).join('') + '</div>';
+  }
+
+  function sendSize() {
+    var el = document.documentElement;
+    if (el && typeof el.scrollHeight === 'number' && typeof el.scrollWidth === 'number') {
+      notify('ui/notifications/size-changed', { width: el.scrollWidth, height: el.scrollHeight });
+    }
+  }
+
+  function draw(out, note) {
+    var ended = out.completedAt ? out.completedAt : (stoppedRun(out) ? STOPPED : 'Running');
+    var html = '<div class="head">' +
+      '<span class="kind">' + esc(out.kind) + '</span>' +
+      '<span class="run">' + esc(out.runId) + '</span>' +
+      '<span class="status ' + statusClass(out) + '">' + esc(statusText(out)) + '</span>' +
+      '</div>' +
+      '<div class="meta"><span>Branch: ' + esc(out.branch) + '</span>' +
+      '<span>Started: ' + esc(out.startedAt) + '</span>' +
+      '<span>Completed: ' + esc(ended) + '</span></div>';
+    if (out.t3ThreadId) {
+      html += '<div class="chips"><span class="chip thread">T3 thread ' + esc(out.t3ThreadId) + '</span></div>';
+    }
+    html += '<h2>Steps</h2>' + stepsHTML(out.steps) + '<h2>Issues</h2>' + issuesHTML(out.issues);
+    if (note) { html += '<p class="note">' + esc(note) + '</p>'; }
+    html += '<div class="bar"><button type="button" data-action="refresh">Refresh</button></div>';
+    root.innerHTML = html;
+    sendSize();
+  }
+
+  function drawError(text) {
+    root.innerHTML = '<p class="note">' + esc(text) + '</p>';
+    sendSize();
+  }
+
+  function stopTimer() {
+    if (view.timer !== null) { clearTimeout(view.timer); view.timer = null; }
+  }
+
+  // apply draws a card and moves to polling or stopped by the refresh rules.
+  function apply(out) {
+    view.last = out;
+    view.runId = out.runId;
+    view.final = !!out.final;
+    draw(out);
+    if (!out.final && out.status === 'running') {
+      view.phase = 'polling';
+      stopTimer();
+      view.timer = setTimeout(onTimer, REFRESH_MS);
+    } else {
+      view.phase = 'stopped';
+      stopTimer();
+    }
+  }
+
+  function fail(text) {
+    stopTimer();
+    view.phase = 'stopped';
+    var note = 'Refresh stopped: ' + text;
+    if (view.last) { draw(view.last, note); } else { drawError(note); }
+  }
+
+  function refresh() {
+    if (!view.runId || view.busy) { return; }
+    view.busy = true;
+    var args = { runId: view.runId };
+    if (view.final) { args.final = true; }
+    request('tools/call', { name: TOOL, arguments: args }).then(function (res) {
+      view.busy = false;
+      var out = cardOf(res);
+      if (!res || res.isError || !out) { fail(firstLine(resultText(res))); return; }
+      apply(out);
+    }, function (err) {
+      view.busy = false;
+      fail(firstLine(err && err.message ? err.message : err));
+    });
+  }
+
+  function onTimer() {
+    view.timer = null;
+    refresh();
+  }
+
+  function onToolResult(res) {
+    var out = cardOf(res);
+    if (!res || res.isError || !out) {
+      view.phase = 'stopped';
+      drawError('Card error: ' + firstLine(resultText(res)));
+      return;
+    }
+    apply(out);
+  }
+
+  window.addEventListener('message', function (ev) {
+    if (ev.source !== window.parent) { return; }
+    var m = ev.data;
+    if (!m || m.jsonrpc !== '2.0') { return; }
+    if (m.method === undefined && m.id !== undefined && view.pending[m.id]) {
+      var p = view.pending[m.id];
+      delete view.pending[m.id];
+      if (m.error) { p.reject(m.error); } else { p.resolve(m.result); }
+      return;
+    }
+    if (m.method === 'ui/notifications/tool-result') { onToolResult(m.params); }
+  });
+
+  root.addEventListener('click', function (ev) {
+    var t = ev.target;
+    if (t && t.getAttribute && t.getAttribute('data-action') === 'refresh') { refresh(); }
+  });
+
+  request('ui/initialize', {
+    protocolVersion: PROTOCOL,
+    appInfo: { name: 'sdlc-dashboard-card', version: '1.0.0' },
+    appCapabilities: {}
+  }).then(function () {
+    notify('ui/notifications/initialized');
+  }, function (err) {
+    drawError('Card host error: ' + firstLine(err && err.message ? err.message : err));
+  });
+})();
+</script>
+</body>
+</html>

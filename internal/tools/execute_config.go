@@ -44,3 +44,33 @@ func execPipelineAuto(root, branch string) (shipSt *state.State, auto bool, warn
 	}
 	return shipSt, auto, warnings
 }
+
+// execShipCrossRead reads the ship state of branch once and returns its
+// flags.auto and whether ship dispatched this execute run. With no branch it
+// reads nothing and returns false, false, nil.
+func execShipCrossRead(root, branch string) (pipelineAuto, shipDispatched bool, warnings []string) {
+	if branch == "" {
+		return false, false, nil
+	}
+	shipSt, pipelineAuto, warnings := execPipelineAuto(root, branch)
+	return pipelineAuto, shipExecuteStepRunning(shipSt), warnings
+}
+
+// shipExecuteStepRunning reports whether ship dispatched the current execute
+// run: the ship state is not completed and its execute step is in_progress.
+// A nil state (no ship state for the branch) is false. A stale ship state with
+// an execute step left in_progress also returns true; that is accepted.
+func shipExecuteStepRunning(shipSt *state.State) bool {
+	if shipSt == nil {
+		return false
+	}
+	if status, _ := shipSt.Data["pipelineStatus"].(string); status == PipelineCompleted {
+		return false
+	}
+	step := shipFindStepEntry(shipSt.Data, "execute")
+	if step == nil {
+		return false
+	}
+	status, _ := step["status"].(string)
+	return status == StepInProgress
+}

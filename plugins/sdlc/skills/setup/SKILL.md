@@ -415,7 +415,8 @@ Question (the same question tool as Step 3c): `This run created a config file. T
 
 | Answer | Call | Effect on `selectedIds` | Print |
 |---|---|---|---|
-| Setup tab, call returns | `dashboard({ action: "ensure", open: true, tab: "setup" })` | remove each id of `formIds`; set `formsDeferred` to true and keep `<url>` for Step 4 | `Setup tab: <url>#setup — save the form sections there. This run continues with the sections that need the assistant.`, then `next` |
+| Setup tab, call returns, no `previewUrl` | `dashboard({ action: "ensure", open: true, tab: "setup" })` | remove each id of `formIds`; set `formsDeferred` to true and keep `<url>` for Step 4 | `Setup tab: <url>#setup — save the form sections there. This run continues with the sections that need the assistant.`, then `next` |
+| Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: "<previewUrl>" })` (load it with ToolSearch first) | same as the row above | `Setup tab: <previewUrl> (T3 preview tab) — save the form sections there. This run continues with the sections that need the assistant.` On a failed or absent `preview_open`, print `Setup tab: <previewUrl>` and `Warning: T3 preview tab did not open — <reason>.` |
 | Setup tab, call error | same | unchanged | `Tool error text (dashboard):`, the error in a `text` fence, then `The form sections continue here.` |
 | Dialogue, free text, dismissed | none | unchanged | nothing |
 | the question tool is not available | none | unchanged | nothing (the same rule as Step 3c) |

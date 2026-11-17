@@ -156,9 +156,10 @@
    * the same repo data.
    * @param {Array<object>} repos snapshot repos
    * @param {Set<string>} scope selected repo roots; empty means every repo
+   * @param {string|null} [thread] the thread filter; it changes the Pipelines signature only
    * @returns {{pipelines: string, activity: string, history: string, preplans: string}}
    */
-  function panelSignatures(repos, scope) {
+  function panelSignatures(repos, scope, thread) {
     var sigs = {};
     TAB_NAMES.forEach(function (name) {
       var parts = [];
@@ -172,6 +173,8 @@
       });
       sigs[name] = JSON.stringify(parts);
     });
+    // The Pipelines panel draws only the pipelines of the thread, so the thread is part of its input.
+    if (thread) sigs.pipelines += '|thread:' + thread;
     return sigs;
   }
 
@@ -1485,28 +1488,78 @@
     return key + '/' + name;
   }
 
+  // The form of a T3 thread id. It is the text of ThreadIDPattern in internal/t3/t3.go.
+  var THREAD_RE = /^[A-Za-z0-9._-]{1,128}$/;
+
+  // How many characters of a thread id the page shows.
+  var THREAD_SHORT_LEN = 8;
+
+  function decodeHashPart(text) {
+    try {
+      return decodeURIComponent(text);
+    } catch (e) {
+      // Keep the raw text when it is not valid URI encoding.
+      return text;
+    }
+  }
+
+  // The thread id of the query part of a hash ('thread=<id>&...'), or null
+  // when the part has no thread key or the id has a bad form.
+  function threadOfQuery(query) {
+    var pairs = query.split('&');
+    for (var i = 0; i < pairs.length; i++) {
+      var eq = pairs[i].indexOf('=');
+      if (eq === -1 || decodeHashPart(pairs[i].slice(0, eq)) !== 'thread') continue;
+      var id = decodeHashPart(pairs[i].slice(eq + 1));
+      return THREAD_RE.test(id) ? id : null;
+    }
+    return null;
+  }
+
   /**
    * '#<tab>' selects a tab when the name is in tabs. '#<pipeline id>/<n>'
    * selects a pipeline and station n; '#<pipeline id>' a pipeline only. A
    * part after the last '/' that is not a whole number stays in the id.
+   * A '?' ends the part above; the part after it may hold 'thread=<id>'.
+   * A tab result always has thread (null when the hash has none or the id has
+   * a bad form). A pipeline result has thread only when the hash holds a good id.
    * @param {string} hash location.hash
    * @param {Array<string>} tabs
-   * @returns {{tab: string}|{pipelineId: string, station: (number|null)}|null}
+   * @returns {{tab: string, thread: (string|null)}|{pipelineId: string, station: (number|null), thread?: string}|null}
    */
   function parseHash(hash, tabs) {
     var raw = (hash || '').replace(/^#/, '');
-    if (!raw) return null;
-    try {
-      raw = decodeURIComponent(raw);
-    } catch (e) {
-      // Keep the raw text when it is not valid URI encoding.
+    var mark = raw.indexOf('?');
+    var thread = mark === -1 ? null : threadOfQuery(raw.slice(mark + 1));
+    var base = decodeHashPart(mark === -1 ? raw : raw.slice(0, mark));
+    if (!base) return null;
+    if ((tabs || []).indexOf(base) !== -1) return { tab: base, thread: thread };
+    var target;
+    var slash = base.lastIndexOf('/');
+    if (slash > 0 && /^\d+$/.test(base.slice(slash + 1))) {
+      target = { pipelineId: base.slice(0, slash), station: Number(base.slice(slash + 1)) };
+    } else {
+      target = { pipelineId: base, station: null };
     }
-    if ((tabs || []).indexOf(raw) !== -1) return { tab: raw };
-    var slash = raw.lastIndexOf('/');
-    if (slash > 0 && /^\d+$/.test(raw.slice(slash + 1))) {
-      return { pipelineId: raw.slice(0, slash), station: Number(raw.slice(slash + 1)) };
-    }
-    return { pipelineId: raw, station: null };
+    if (thread) target.thread = thread;
+    return target;
+  }
+
+  /**
+   * @param {{t3ThreadId?: string}} pipeline
+   * @param {string|null} thread the thread filter; empty means no filter
+   * @returns {boolean} true when the pipeline belongs to the thread, or no filter is set
+   */
+  function inThread(pipeline, thread) {
+    return !thread || pipeline.t3ThreadId === thread;
+  }
+
+  /**
+   * @param {string} id a thread id
+   * @returns {string} the first THREAD_SHORT_LEN characters
+   */
+  function threadShort(id) {
+    return (id || '').slice(0, THREAD_SHORT_LEN);
   }
 
   // --- Detail viewer keys and items ------------------------------------------------
@@ -2270,6 +2323,9 @@
     pipelineKey: pipelineKey,
     sectionKey: sectionKey,
     parseHash: parseHash,
+    THREAD_RE: THREAD_RE,
+    inThread: inThread,
+    threadShort: threadShort,
     loadTab: loadTab,
     saveTab: saveTab,
     loadRepoFilter: loadRepoFilter,

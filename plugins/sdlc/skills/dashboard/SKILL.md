@@ -11,7 +11,7 @@ model: sonnet
 The sdlc dashboard is one local web page that shows every registered repo's
 pipeline state, session activity, issues, and preplan topic files (Preplans
 tab, and the Preplans box on the Activity tab), without switching sessions or terminals. This skill starts it, reports on it, or stops it through the
-`dashboard` MCP tool, in one step.
+`dashboard` MCP tool. In a T3 Code thread it also opens a T3 preview tab.
 
 The page can also change files. It has no undo for any change. When the user asks to recover from a wrong change, use this table:
 
@@ -51,27 +51,44 @@ Make exactly one `dashboard` tool call, from the mode found in Step 1:
 
 | Arguments | Tool call | Message |
 |---|---|---|
-| none | `dashboard({action:"ensure", open:true})` | `Dashboard: <url>` |
+| none | `dashboard({action:"ensure", open:true})` | `Dashboard: <url>`. When the tool returns `previewUrl`, print nothing here and run Step 3 |
 | `--no-open` | `dashboard({action:"ensure", open:false})` | `Dashboard: <url>` |
 | `--status` | `dashboard({action:"status"})` | the tool's `summary` |
 | `--stop` | `dashboard({action:"stop"})` | the tool's `summary` |
 | tool error | none | print the `## Do this` text as it is, then stop |
 
-`<url>` is the tool's `url` field.
+`<url>` is the tool's `url` field. `--no-open`, `--status` and `--stop` never return `previewUrl`. Step 3 does not run for these modes.
+
+## Step 3: Open the T3 preview tab
+
+Run this step only when the mode is `none` and the `dashboard` call returned `previewUrl`. In any other case, skip it.
+
+1. Load the tool with ToolSearch: `select:mcp__t3-code__preview_open`.
+2. Call `mcp__t3-code__preview_open({ url: "<previewUrl>" })`.
+3. Print the result:
+
+| Result | Print |
+|---|---|
+| Tab opened | `Dashboard: <previewUrl> (T3 preview tab)` |
+| Tab failed, or the tool is absent | `Dashboard: <previewUrl>`, then `Warning: T3 preview tab did not open — <reason>.` |
+
+`<previewUrl>` is the tool's `previewUrl` field. A failed tab is a warning, never an error. End the skill after the print, with no error. A second run of this step is safe: `ensure` starts no second server, and `preview_open` opens the same address again.
 
 ### Every exit state
 
-- **Started** — the first `ensure` call on this machine (or after a version or port change): the tool returns `Started:true`. Print `Dashboard: <url>`.
-- **Already active** — `ensure` finds a server of the current version already listening: the tool returns `Started:false`, `Running:true`. No second server starts. Print the same `Dashboard: <url>` — the message does not change between this case and "started", only the tool's `started` field does.
+- **Started** — the first `ensure` call on this machine (or after a version or port change): the tool returns `Started:true`. Print `Dashboard: <url>`, or run Step 3 when `previewUrl` is set.
+- **Already active** — `ensure` finds a server of the current version already listening: the tool returns `Started:false`, `Running:true`. No second server starts. Print the same `Dashboard: <url>`, or run Step 3 when `previewUrl` is set — the message does not change between this case and "started", only the tool's `started` field does.
 - **Stopped** — `--stop` succeeds and the server is down. Print the tool's `summary` (it reports the server as not running, with its last known address). If the tool's `running` field is still `true` (the server did not stop within its wait window), also print the tool's `next` line, which says to check the server's log and try again.
 - **Status** — `--status` reports the server's current state. Print the tool's `summary` (running, with its URL, pid and version, or not running).
+- **T3, tab opened** — tool calls: `dashboard`, `preview_open`. Print `Dashboard: <previewUrl> (T3 preview tab)`.
+- **T3, tab failed or tool absent** — tool calls: `dashboard`, then `preview_open` or none. Print `Dashboard: <previewUrl>` and `Warning: T3 preview tab did not open — <reason>.`
 - **Error** — any tool error, from any mode. Print the error's `## Do this` text exactly as it is, with no paraphrase, and stop. Make no other call and do not retry.
 
 ---
 
 ## Rules
 
-- This skill is one step. It starts no sub-agents.
+- This skill makes one dashboard call and at most one mcp__t3-code__preview_open call. It starts no sub-agents.
 - It is safe to run twice: `ensure` is idempotent, so running it again with a server already active returns the same URL instead of starting a second server.
 - Never paraphrase a tool error's `## Do this` text. Print it exactly as it is.
 

@@ -392,6 +392,37 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .chip-n { font-family: var(--font-mono); font-weight: 400; font-size: 11px; color: var(--rail); }
 .chip-n.has-fail { color: #FFD9D6; background: rgba(240,86,77,0.16); border-radius: 999px; padding: 0 6px; }
 
+/* The thread filter chip in the filter bar: a label and a clear button. */
+.thread-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 12px;
+  color: var(--ivory);
+  border: 1px solid var(--scan-cyan-dim);
+  border-radius: 999px;
+  background: rgba(85,214,224,0.10);
+  font-family: var(--font-sign);
+  font-weight: 600;
+  font-size: 13px;
+}
+.thread-label { font-family: var(--font-mono); font-weight: 400; font-size: 12px; }
+.thread-clear {
+  appearance: none;
+  cursor: pointer;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  line-height: 1;
+  color: var(--rail);
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  font-size: 15px;
+}
+.thread-clear:hover { color: var(--ivory); background: rgba(148,178,196,0.16); }
+.thread-clear:focus-visible { outline: 2px solid var(--scan-cyan); outline-offset: 1px; }
+
 .bar-btn {
   appearance: none;
   margin-left: auto;
@@ -446,6 +477,17 @@ details[open] > summary .chev { transform: rotate(90deg); }
   color: var(--ivory);
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The T3 thread of the pipeline: the first 8 characters of its id, after the total time. */
+.pipe-thread {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid var(--glass-border);
+  border-radius: 10px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--rail);
   white-space: nowrap;
 }
 /* Total time of the pipeline, right after the branch. */
