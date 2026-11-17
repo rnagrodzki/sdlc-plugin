@@ -1257,7 +1257,7 @@ In a T3 Code thread only, the dashboard also opens in a T3 preview tab (the run 
 |---|---|---|
 | Pipelines, run detail, Activity, History, Preplans, Setup | full page | steps, status, issue counts of one run |
 | Change actions | work (token guard) | no, read-only |
-| Live updates | event stream | the card shows the run state at the time of each `dashboard_card` call; refresh behavior is not tested (see Limits) |
+| Live updates | event stream | the card shows the run state at the time of each `dashboard_card` call; the Refresh button was clicked by hand and works (check 2); the refresh between turns is not tested (see Limits) |
 
 The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Code thread. The skill passes `previewUrl` to the T3 `preview_open` tool. No system browser opens. `dashboard_card` takes `runId` and `final`: `final` set to true makes the end card.
 
@@ -1302,7 +1302,7 @@ Open risks:
 - It is not verified that T3 Code announces `io.modelcontextprotocol/ui` in `initialize`. The tool treats a process in a T3 Code thread as a client that shows the card, so the card does not depend on that announcement.
 - Whether a thread has its own run panel is not tested (check 6). The thread switch (thread A, then B, then A) did not run.
 - The thread filter is not shown with a matching run (check 6). Repeat the check with a run that starts after the stamping of `t3ThreadId` exists.
-- The refresh of the card is not tested (checks 2 and 3). Do not rely on it. The card shows the run state at the time of each `dashboard_card` call.
+- The refresh of the card between two agent turns is not tested (check 3). The Refresh button works (check 2). Do not rely on a refresh without a click. The card shows the run state at the time of each `dashboard_card` call.
 
 ## Snapshot contract
 

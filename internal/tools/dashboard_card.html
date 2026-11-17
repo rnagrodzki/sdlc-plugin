@@ -5,54 +5,271 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>sdlc run card</title>
 <style>
+/* Tokens. Host theme variables (MCP Apps hostContext.styles.variables) win;
+   the values after the comma are the fallbacks of this view. light-dark()
+   follows color-scheme: the user preference, or the host theme when the host
+   sends one. */
 :root {
-  --bg: #ffffff;
-  --fg: #1f2328;
-  --muted: #59636e;
-  --line: #d1d9e0;
-  --chip: #f6f8fa;
-  --ok: #1a7f37;
-  --bad: #cf222e;
-  --run: #0969da;
-  --warn: #9a6700;
+  color-scheme: light dark;
+  --fg: var(--color-text-primary, light-dark(#1f2328, #e6e8ee));
+  --muted: var(--color-text-secondary, light-dark(#57606a, #9ea5b2));
+  --surface: var(--color-background-secondary, light-dark(#ffffff, #1b1d23));
+  --line: var(--color-border-primary, light-dark(rgba(31, 35, 40, .13), rgba(255, 255, 255, .1)));
+  --track: light-dark(rgba(31, 35, 40, .08), rgba(255, 255, 255, .08));
+  --sheen: light-dark(rgba(31, 35, 40, .035), rgba(255, 255, 255, .03));
+  --run: light-dark(#4f46e5, #8f92fb);
+  --ok: var(--color-text-success, light-dark(#16692f, #4ac26b));
+  --bad: var(--color-text-danger, light-dark(#b8232c, #ff6b63));
+  --warn: var(--color-text-warning, light-dark(#865700, #e3b341));
+  --ring: var(--color-ring-primary, var(--run));
+  --shadow: inset 0 1px 0 light-dark(transparent, rgba(255, 255, 255, .04)),
+    0 1px 2px light-dark(rgba(16, 24, 40, .06), transparent),
+    0 6px 18px -8px light-dark(rgba(16, 24, 40, .16), rgba(0, 0, 0, .6));
+  --sans: var(--font-sans, -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Helvetica, Arial, sans-serif);
+  --mono: var(--font-mono, ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace);
+  --accent: var(--muted);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0d1117;
-    --fg: #e6edf3;
-    --muted: #9198a1;
-    --line: #3d444d;
-    --chip: #151b23;
-    --ok: #3fb950;
-    --bad: #f85149;
-    --run: #4493f8;
-    --warn: #d29922;
-  }
-}
+
 * { box-sizing: border-box; }
-html, body { margin: 0; background: var(--bg); color: var(--fg); }
-body { font: 13px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
-#card { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; }
-.head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
-.kind { text-transform: uppercase; font-size: 11px; letter-spacing: .04em; color: var(--muted); }
-.run { font-weight: 600; word-break: break-all; }
-.status { font-weight: 600; }
-.status.running { color: var(--run); }
-.status.completed { color: var(--ok); }
-.status.failed, .status.stopped { color: var(--bad); }
-.meta { margin-top: 4px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 2px 14px; }
+html, body { margin: 0; background: transparent; }
+body {
+  padding: 4px 6px 16px;
+  color: var(--fg);
+  font: 13px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+svg { display: block; flex: none; pointer-events: none; }
+
+/* Card surface: a quiet gradient, a hairline border and a glow in the color of the status. */
+#card {
+  position: relative;
+  overflow: hidden;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background:
+    radial-gradient(140% 90% at 100% 0%, color-mix(in srgb, var(--accent) 12%, transparent), transparent 58%),
+    linear-gradient(180deg, var(--sheen), transparent 48%),
+    var(--surface);
+  box-shadow: var(--shadow);
+}
+#card::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent) 70%, transparent) 30%, transparent);
+  opacity: .8;
+}
+#card.st-running { --accent: var(--run); }
+#card.st-completed { --accent: var(--ok); }
+#card.st-failed { --accent: var(--bad); }
+#card.st-stopped { --accent: var(--warn); }
+
+/* Header */
+.head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.kind {
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--track);
+}
+.status::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status.running { color: var(--run); background: color-mix(in srgb, var(--run) 12%, transparent); }
+.status.completed { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.status.failed { color: var(--bad); background: color-mix(in srgb, var(--bad) 12%, transparent); }
+.status.stopped { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.status.running::before { animation: pulse 1.6s ease-out infinite; }
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--run) 55%, transparent); }
+  100% { box-shadow: 0 0 0 7px transparent; }
+}
+.dur {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.run {
+  display: block;
+  margin-top: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font: 500 12px/1.4 var(--mono);
+  color: var(--fg);
+  opacity: .82;
+}
+.meta {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.meta span { overflow-wrap: anywhere; }
+
 .chips { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { background: var(--chip); border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px; font-size: 12px; }
-h2 { font-size: 12px; margin: 10px 0 4px; color: var(--muted); font-weight: 600; }
-ol { margin: 0; padding-left: 20px; }
-li .st { color: var(--muted); }
-li.completed .st, li.skipped .st { color: var(--ok); }
-li.failed .st { color: var(--bad); }
-li.in_progress .st { color: var(--run); }
-.empty { margin: 0; color: var(--muted); }
-.note { margin: 10px 0 0; color: var(--warn); }
-.bar { margin-top: 10px; }
-button { font: inherit; color: var(--fg); background: var(--chip); border: 1px solid var(--line); border-radius: 6px; padding: 2px 10px; cursor: pointer; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg);
+  background: var(--track);
+}
+.chip.thread { color: var(--muted); background: none; border-radius: 8px; overflow-wrap: anywhere; }
+.chip.sev::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--sev); }
+.chip.sev { --sev: var(--muted); border-color: color-mix(in srgb, var(--sev) 32%, transparent); background: color-mix(in srgb, var(--sev) 10%, transparent); }
+.chip.sev-critical, .chip.sev-high { --sev: var(--bad); }
+.chip.sev-medium { --sev: var(--warn); }
+
+/* Sections */
+.sec { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.sec-h { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+h2 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.count .n { color: var(--fg); font-weight: 600; }
+.sec .chips { margin-top: 0; }
+.sec.row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.sec.row .sec-h { margin: 0; }
+.sec.row .chips { justify-content: flex-end; }
+
+/* Progress strip: one segment for each step. */
+.track { display: flex; gap: 3px; height: 6px; margin-bottom: 8px; }
+.seg { flex: 1 1 0; min-width: 4px; border-radius: 3px; background: var(--track); }
+.seg.completed { background: var(--ok); }
+.seg.skipped { background: color-mix(in srgb, var(--ok) 45%, transparent); }
+.seg.failed { background: var(--bad); }
+.seg.in_progress {
+  background: linear-gradient(90deg, var(--run) 0 45%, color-mix(in srgb, var(--run) 30%, transparent) 45%);
+  background-size: 200% 100%;
+  animation: flow 1.8s ease-in-out infinite alternate;
+}
+@keyframes flow { from { background-position: 100% 0; } to { background-position: 0 0; } }
+
+/* Stepper */
+.steps { list-style: none; margin: 0; padding: 0; }
+.steps li {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 8px;
+}
+.steps li:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 15.5px;
+  top: 22px;
+  bottom: -6px;
+  width: 1px;
+  background: var(--line);
+}
+.ic { position: relative; z-index: 1; width: 16px; height: 16px; color: var(--muted); }
+.nm { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.st { flex: none; font-size: 11.5px; color: var(--muted); }
+.steps li.completed .ic, .steps li.skipped .ic { color: var(--ok); }
+.steps li.failed .ic, .steps li.failed .nm, .steps li.failed .st { color: var(--bad); }
+.steps li.failed .nm { font-weight: 600; }
+.steps li.in_progress { background: color-mix(in srgb, var(--run) 11%, transparent); }
+.steps li.in_progress .ic, .steps li.in_progress .st { color: var(--run); }
+.steps li.in_progress .nm { font-weight: 600; }
+.steps li.pending .nm { color: var(--muted); }
+.spin { transform-origin: 8px 8px; animation: turn .9s linear infinite; }
+/* A run that is not running has no live step: freeze its motion. */
+#card:not(.st-running) .spin, #card:not(.st-running) .seg.in_progress { animation: none; }
+#card.st-stopped { --run: var(--warn); }
+@keyframes turn { to { transform: rotate(360deg); } }
+
+.empty { margin: 0; color: var(--muted); font-size: 12px; }
+.note {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 11%, transparent);
+}
+#card > .note:first-child { margin-top: 0; }
+
+/* Footer */
+.foot {
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.hint { color: var(--muted); font-size: 12px; }
+button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px 0 10px;
+  font: 600 12px/1 var(--sans);
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color .15s, border-color .15s;
+}
+button:hover { background: color-mix(in srgb, var(--fg) 11%, transparent); border-color: color-mix(in srgb, var(--fg) 22%, transparent); }
+button:active { background: color-mix(in srgb, var(--fg) 15%, transparent); }
+button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+button:disabled, #card.busy button { cursor: progress; opacity: .6; }
+#card.busy button svg { animation: turn .9s linear infinite; }
+
+@media (max-width: 400px) {
+  body { padding: 4px 4px 12px; }
+  #card { padding: 12px; }
+  .st { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .status.running::before, .seg.in_progress, .spin, #card.busy button svg { animation: none; }
+  .status.running::before { box-shadow: 0 0 0 3px color-mix(in srgb, var(--run) 30%, transparent); }
+}
 </style>
 </head>
 <body>
@@ -67,7 +284,21 @@ button { font: inherit; color: var(--fg); background: var(--chip); border: 1px s
   var STOPPED = 'Stopped — resume with --resume';
 
   var root = document.getElementById('card');
-  var view = { phase: 'waiting', runId: '', final: false, timer: null, busy: false, last: null, nextId: 1, pending: {} };
+  var view = { phase: 'waiting', runId: '', final: false, timer: null, busy: false, last: null, nextId: 1, pending: {}, cls: '' };
+
+  // Icons of a step row, by step status. Other statuses use the pending icon.
+  var RING = '<circle cx="8" cy="8" r="7" fill="currentColor" opacity=".15"/>';
+  var LINE = ' fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"';
+  var ICONS = {
+    completed: RING + '<path d="M5 8.3l2 2 4-4.5"' + LINE + '/>',
+    skipped: RING + '<path d="M6.5 5.5L9 8l-2.5 2.5"' + LINE + '/>',
+    failed: RING + '<path d="M5.8 5.8l4.4 4.4m0-4.4l-4.4 4.4"' + LINE + '/>',
+    in_progress: '<circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.6" opacity=".25"/>' +
+      '<path class="spin" d="M8 1.8a6.2 6.2 0 0 1 6.2 6.2"' + LINE + '/><circle cx="8" cy="8" r="2" fill="currentColor"/>',
+    pending: '<circle cx="8" cy="8" r="6.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6 8h4"' + LINE + '/>'
+  };
+  var CLOCK = '<svg width="13" height="13" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.2"' + LINE + '/><path d="M8 4.8V8l2.2 1.4"' + LINE + '/></svg>';
+  var REFRESH_ICON = '<svg width="14" height="14" viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7M13.2 2.6v2.9h-2.9"' + LINE + '/></svg>';
 
   function esc(s) {
     return String(s == null ? '' : s)
@@ -102,6 +333,22 @@ button { font: inherit; color: var(--fg); background: var(--chip); border: 1px s
     send(msg);
   }
 
+  // applyHost copies the theme and the style variables of the host context
+  // to the page. It posts nothing and does not redraw.
+  function applyHost(ctx) {
+    var el = document.documentElement;
+    if (!ctx || typeof ctx !== 'object' || !el || !el.style) { return; }
+    var vars = ctx.styles && ctx.styles.variables;
+    if (vars && typeof vars === 'object') {
+      Object.keys(vars).forEach(function (k) {
+        if (/^--[a-z0-9-]+$/.test(k) && typeof vars[k] === 'string') { el.style.setProperty(k, vars[k]); }
+      });
+    }
+    if (ctx.theme === 'light' || ctx.theme === 'dark') {
+      el.style.colorScheme = ctx.theme;
+    }
+  }
+
   function resultText(res) {
     var parts = (res && res.content) || [];
     for (var i = 0; i < parts.length; i++) {
@@ -129,20 +376,45 @@ button { font: inherit; color: var(--fg); background: var(--chip); border: 1px s
     return /^[a-z_]+$/.test(out.status || '') ? out.status : 'unknown';
   }
 
+  function classOf(s) { return /^[a-z_]+$/.test(s || '') ? s : ''; }
+
+  // duration gives the run time: start to end, or start to now while the
+  // run runs. It is empty when a time is missing or not valid.
+  function duration(out) {
+    var from = Date.parse(out.startedAt || '');
+    var to = out.completedAt ? Date.parse(out.completedAt) : (out.status === 'running' && !out.final ? Date.now() : NaN);
+    if (isNaN(from) || isNaN(to) || to < from) { return ''; }
+    var s = Math.floor((to - from) / 1000);
+    var d = Math.floor(s / 86400), h = Math.floor(s / 3600) % 24, m = Math.floor(s / 60) % 60;
+    if (d) { return d + 'd ' + h + 'h'; }
+    if (h) { return h + 'h ' + (m < 10 ? '0' : '') + m + 'm'; }
+    if (m) { return m + 'm ' + (s % 60 < 10 ? '0' : '') + (s % 60) + 's'; }
+    return (s % 60) + 's';
+  }
+
   function stepsHTML(steps) {
     if (!steps || !steps.length) { return '<p class="empty">No steps yet.</p>'; }
-    var rows = steps.map(function (s) {
-      var cls = /^[a-z_]+$/.test(s.status || '') ? s.status : '';
-      return '<li class="' + cls + '">' + esc(s.name) + ' <span class="st">' + esc(s.status) + '</span></li>';
+    var done = 0;
+    var segs = steps.map(function (s) {
+      if (s.status === 'completed' || s.status === 'skipped') { done++; }
+      return '<i class="seg ' + classOf(s.status) + '"></i>';
     });
-    return '<ol>' + rows.join('') + '</ol>';
+    var rows = steps.map(function (s) {
+      var cls = classOf(s.status);
+      return '<li class="' + cls + '"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true">' + (ICONS[cls] || ICONS.pending) + '</svg>' +
+        '<span class="nm">' + esc(s.name) + '</span> <span class="st">' + esc(String(s.status == null ? '' : s.status).replace(/_/g, ' ')) + '</span></li>';
+    });
+    return '<div class="sec-h"><h2>Steps</h2><span class="count"><span class="n">' + done + '</span> of ' + steps.length + ' done</span></div>' +
+      '<div class="track" role="progressbar" aria-label="Steps done" aria-valuemin="0" aria-valuemax="' + steps.length + '" aria-valuenow="' + done + '">' +
+      segs.join('') + '</div><ol class="steps">' + rows.join('') + '</ol>';
   }
 
   function issuesHTML(issues) {
     var keys = Object.keys(issues || {}).sort();
     if (!keys.length) { return '<p class="empty">No issues.</p>'; }
     return '<div class="chips">' + keys.map(function (k) {
-      return '<span class="chip">' + esc(k) + ' ' + esc(issues[k]) + '</span>';
+      var sev = classOf(k);
+      return '<span class="chip sev' + (sev ? ' sev-' + sev : '') + '">' + esc(k) + ' ' + esc(issues[k]) + '</span>';
     }).join('') + '</div>';
   }
 
@@ -153,28 +425,45 @@ button { font: inherit; color: var(--fg); background: var(--chip); border: 1px s
     }
   }
 
+  // paintState sets the status and busy classes of the card and disables
+  // Refresh while a call runs.
+  function paintState() {
+    root.className = view.cls + (view.busy ? ' busy' : '');
+    var b = root.querySelector ? root.querySelector('[data-action="refresh"]') : null;
+    if (b) { b.disabled = view.busy; }
+  }
+
   function draw(out, note) {
     var ended = out.completedAt ? out.completedAt : (stoppedRun(out) ? STOPPED : 'Running');
+    var dur = duration(out);
     var html = '<div class="head">' +
       '<span class="kind">' + esc(out.kind) + '</span>' +
-      '<span class="run">' + esc(out.runId) + '</span>' +
       '<span class="status ' + statusClass(out) + '">' + esc(statusText(out)) + '</span>' +
+      (dur ? '<span class="dur" title="Run time">' + CLOCK + esc(dur) + '</span>' : '') +
       '</div>' +
+      '<span class="run" title="' + esc(out.runId) + '">' + esc(out.runId) + '</span>' +
       '<div class="meta"><span>Branch: ' + esc(out.branch) + '</span>' +
       '<span>Started: ' + esc(out.startedAt) + '</span>' +
       '<span>Completed: ' + esc(ended) + '</span></div>';
     if (out.t3ThreadId) {
       html += '<div class="chips"><span class="chip thread">T3 thread ' + esc(out.t3ThreadId) + '</span></div>';
     }
-    html += '<h2>Steps</h2>' + stepsHTML(out.steps) + '<h2>Issues</h2>' + issuesHTML(out.issues);
+    html += '<div class="sec">' + stepsHTML(out.steps) + '</div>' +
+      '<div class="sec row"><div class="sec-h"><h2>Issues</h2></div>' + issuesHTML(out.issues) + '</div>';
     if (note) { html += '<p class="note">' + esc(note) + '</p>'; }
-    html += '<div class="bar"><button type="button" data-action="refresh">Refresh</button></div>';
+    var hint = out.final ? 'End of run' : (out.status === 'running' ? 'Updates every 15 s' : 'Updates stopped');
+    html += '<div class="foot"><span class="hint">' + hint + '</span>' +
+      '<button type="button" data-action="refresh">' + REFRESH_ICON + 'Refresh</button></div>';
     root.innerHTML = html;
+    view.cls = 'st-' + statusClass(out);
+    paintState();
     sendSize();
   }
 
   function drawError(text) {
     root.innerHTML = '<p class="note">' + esc(text) + '</p>';
+    view.cls = '';
+    paintState();
     sendSize();
   }
 
@@ -208,6 +497,7 @@ button { font: inherit; color: var(--fg); background: var(--chip); border: 1px s
   function refresh() {
     if (!view.runId || view.busy) { return; }
     view.busy = true;
+    paintState();
     var args = { runId: view.runId };
     if (view.final) { args.final = true; }
     request('tools/call', { name: TOOL, arguments: args }).then(function (res) {
@@ -247,6 +537,7 @@ button { font: inherit; color: var(--fg); background: var(--chip); border: 1px s
       return;
     }
     if (m.method === 'ui/notifications/tool-result') { onToolResult(m.params); }
+    if (m.method === 'ui/notifications/host-context-changed') { applyHost(m.params); }
   });
 
   root.addEventListener('click', function (ev) {
@@ -258,7 +549,8 @@ button { font: inherit; color: var(--fg); background: var(--chip); border: 1px s
     protocolVersion: PROTOCOL,
     appInfo: { name: 'sdlc-dashboard-card', version: '1.0.0' },
     appCapabilities: {}
-  }).then(function () {
+  }).then(function (res) {
+    applyHost(res && res.hostContext);
     notify('ui/notifications/initialized');
   }, function (err) {
     drawError('Card host error: ' + firstLine(err && err.message ? err.message : err));

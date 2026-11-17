@@ -286,7 +286,7 @@ describe('empty and absent values', () => {
     const h = await start();
     toolResult(h, card({ t3ThreadId: 'thread-a', issues: { medium: 2, high: 1 } }));
     assert.match(h.root.innerHTML, /<span class="chip thread">T3 thread thread-a<\/span>/);
-    assert.match(h.root.innerHTML, /<span class="chip">high 1<\/span><span class="chip">medium 2<\/span>/);
+    assert.match(h.root.innerHTML, /<span class="chip sev sev-high">high 1<\/span><span class="chip sev sev-medium">medium 2<\/span>/);
   });
 });
 
