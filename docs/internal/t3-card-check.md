@@ -16,6 +16,7 @@ Setup check: `dashboard_card` is listed in `tools/list` in the T3 thread. Result
 | 5 | Remote T3 web client | open the thread from the web client | not tested | |
 | 6 | The run panel opens in the right panel of this thread only | `dashboard` ensure with `open:true` and `runId`, then `preview_open` with `previewUrl`, in thread A. Switch to thread B, then back | partial | `dashboard` ensure returned `previewUrl`. `preview_open` showed the dashboard with the "Thread eeb2e7ba" filter. The run showed "No run of this thread yet" because the run file has no `t3ThreadId`: the run started before the stamping existed. The switch to thread B is not tested |
 | 7 | The page width follows the panel | in the panel, read `window.innerWidth`, then make the panel narrower | pass | `innerWidth` was 1280, then 600 after the tab resize to 600 |
+| 8 | Snapshot and wave rows render | run a ship run in a T3 thread to the commit step, then look at the step cards | pending | re-check after the dashboard-card-text-fallback change |
 
 ## Effect on the plan
 

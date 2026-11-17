@@ -69,4 +69,4 @@ The test file toolAnnotations map is the source of truth. It lists all 35 tools 
 
 TestReadOnlyToolsWriteNothingTracked runs every read-only tool against a minimal fixture repo and verifies git status --porcelain is empty afterward. Tools requiring external dependencies (links_validate, received_review_prepare, received_review_verify) are skipped with the reason recorded in the map, so skipping is visible rather than silent.
 
-`dashboard_card` is read-only: it reads the run state files through `state.List` and writes nothing. Its direct-call case in TestReadOnlyToolsWriteNothingTracked calls `dashboardCard` against the fixture repo.
+`dashboard_card` is read-only: it reads the run state files through `state.List` and the dashboard server record through `dashboard.Status`, and writes nothing. Its direct-call case in TestReadOnlyToolsWriteNothingTracked calls `dashboardCard` against the fixture repo.

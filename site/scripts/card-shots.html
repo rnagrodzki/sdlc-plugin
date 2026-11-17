@@ -41,7 +41,7 @@
   function steps(commitStatus, allDone) {
     var done = allDone ? 'completed' : null;
     return [
-      { name: 'execute', status: 'completed', tasksDone: 5, tasksTotal: 5, waves: [
+      { name: 'execute', status: 'completed', waves: [
         { name: 'wave 1', status: 'completed', tasksDone: 2, tasksTotal: 2 },
         { name: 'wave 2', status: 'completed', tasksDone: 3, tasksTotal: 3 }
       ] },
@@ -65,14 +65,19 @@
     return base;
   }
 
+  // A start time a few minutes before the page loads, so a screenshot shows a short run time.
+  function minutesAgo(n) {
+    return new Date(Date.now() - n * 60 * 1000).toISOString().replace(/\.\d+Z$/, 'Z');
+  }
+
   var SCENES = {
     // A running run: the card polls with tools/call.
     live: function () {
-      return card({ startedAt: new Date(Date.now() - 12 * 60 * 1000).toISOString() });
+      return card({ startedAt: minutesAgo(12) });
     },
     // A snapshot card: a frozen view that does not update.
     snapshot: function () {
-      return card({ snapshot: true });
+      return card({ snapshot: true, startedAt: minutesAgo(12) });
     },
     // An end card: the run is over.
     end: function () {
