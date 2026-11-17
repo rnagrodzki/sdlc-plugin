@@ -78,6 +78,8 @@ func executeSkillsListTools(t *testing.T) []*mcp.Tool {
 	srv := mcpserver.New("skillcheck-execute-test", "0.0.0-test")
 
 	tools.RegisterCommitTools(srv)
+	tools.RegisterDashboardTools(srv)     // the execute skill calls dashboard
+	tools.RegisterDashboardCardTools(srv) // the execute skill calls dashboard_card
 	tools.RegisterDimensionsRenderTools(srv)
 	tools.RegisterExecuteStateTools(srv)
 	tools.RegisterJiraTools(srv)

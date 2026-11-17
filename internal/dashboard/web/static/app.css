@@ -213,6 +213,17 @@ button { font-family: inherit; }
 @media (max-width: 1420px) {
   .counts { display: none; }
 }
+/* Below 1000 px the header does not fit one row. The tabs take a row of their own
+   and the header grows to its content. The shell row is auto, not 56 px, so the
+   tabs are not clipped. The tabs scroll sideways when five do not fit. */
+@media (max-width: 1000px) {
+  .shell  { grid-template-rows: auto minmax(0, 1fr); }
+  .topbar { flex-wrap: wrap; overflow: visible; height: auto; row-gap: 8px; padding-top: 8px; }
+  .tabs   { order: 10; flex: 1 0 100%; min-width: 0; overflow-x: auto; }
+  .tab    { min-height: 40px; flex: 0 0 auto; }
+  /* The sheen slides out to the right of an overflow-visible header. It would widen the page. */
+  .topbar::after { display: none; }
+}
 
 .stop-btn, .archive-btn, #clear-btn {
   flex: 0 0 auto;
@@ -1560,6 +1571,16 @@ details[open] > summary .chev { transform: rotate(90deg); }
 }
 .hd-tl-time { font-family: var(--font-mono); font-size: 11.5px; color: var(--rail); }
 .hd-tl-text { color: var(--ivory); overflow-wrap: anywhere; }
+
+/* Narrow page: less padding, so the History table fits 600 px. The rules sit here,
+   after the base rules that they override, with the same specificity or more.
+   .filter-bar has margin 0 -32px for the stage padding, so both change together. */
+@media (max-width: 700px) {
+  .stage       { padding-left: 12px; padding-right: 12px; }
+  .filter-bar  { margin-left: -12px; margin-right: -12px; padding: 12px; }
+  .list-panel  { padding-left: 12px; padding-right: 12px; }
+  .hist th, .hist td, .hist th.sortable { padding-right: 8px; }
+}
 
 /* Every animation above stops here. */
 @media (prefers-reduced-motion: reduce) {

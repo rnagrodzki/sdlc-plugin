@@ -30,6 +30,7 @@ import (
 	"github.com/rnagrodzki/sdlc-plugin/internal/paths"
 	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
+	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
@@ -657,6 +658,11 @@ func browserBlock(id string) string {
 // the browser stop when the test ends, and the log of the server shows when
 // the test fails. The caller calls isolateCacheDir before it writes the seeds.
 func browserLaunch(t *testing.T, chrome string, roots []string) (string, *browserPage) {
+	return browserLaunchSize(t, chrome, roots, 1400, 1000)
+}
+
+// browserLaunchSize is browserLaunch with a window size.
+func browserLaunchSize(t *testing.T, chrome string, roots []string, width, height int) (string, *browserPage) {
 	t.Helper()
 	stderrBuf := captureStderr(t)
 	shortTimings(t, browserSnapshotEvery, time.Second)
@@ -700,7 +706,7 @@ func browserLaunch(t *testing.T, chrome string, roots []string) (string, *browse
 		chromedp.ExecPath(chrome),
 		chromedp.NoSandbox,
 		chromedp.UserDataDir(t.TempDir()),
-		chromedp.WindowSize(1400, 1000),
+		chromedp.WindowSize(width, height),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), opts...)
 	t.Cleanup(cancelAlloc)
@@ -2056,4 +2062,84 @@ func TestBrowserE2E_DetailLoad(t *testing.T) {
 	}
 	page.click("the History tab", "#tab-history")
 	page.wait("the new row in the History panel tab", `document.querySelectorAll(`+browserJSON(histRow(browserLateBranch))+`).length === 1`)
+}
+
+// browserNarrowThread is the T3 thread id of run A of TestBrowserE2E_Narrow.
+const browserNarrowThread = "t3-narrow-a"
+
+// browserNarrowWidth is the window width of TestBrowserE2E_Narrow.
+const browserNarrowWidth = 600
+
+// TestBrowserE2E_Narrow opens the dashboard in a 600 px window. Each of the five
+// tabs must not scroll sideways, and the header controls must stay inside the
+// window. A thread filter in the hash must show run A only.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_Narrow(t *testing.T) {
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "local.toml"))
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+
+	root := t.TempDir()
+	browserSetupSeedA(t, root)
+	now := time.Now().UTC()
+	// Long branch names and many columns make the History table as wide as it gets.
+	browserWriteRuns(t, root, []history.RunRecord{
+		{Timestamp: browserTS(now.Add(-60 * time.Minute)), Skill: "ship", Branch: browserBranch, Outcome: "success", DurationMs: 1200000},
+		{Timestamp: browserTS(now.Add(-50 * time.Minute)), Skill: "commit", Branch: "fix/a-very-long-branch-name-for-the-narrow-window", Outcome: "failure", DurationMs: 30000},
+	})
+	// Run A has the thread, run B has none.
+	t.Setenv(t3.EnvThreadID, browserNarrowThread)
+	shipA := browserSeedShip(t, root, now)
+	t.Setenv(t3.EnvThreadID, "")
+	pathB := browserSeedFailedShip(t, root, now)
+	idA := strings.TrimSuffix(filepath.Base(shipA.st.Path), ".json")
+	idB := strings.TrimSuffix(filepath.Base(pathB), ".json")
+
+	base, page := browserLaunchSize(t, chrome, []string{root}, browserNarrowWidth, 900)
+	page.do("open the dashboard", chromedp.Navigate(base+"/"))
+	page.wait("the first snapshot", `document.getElementById('conn').getAttribute('data-state') === 'snapshot'`)
+	if w := browserMust[int](page, "the window width", `window.innerWidth`); w > 700 {
+		t.Fatalf("window.innerWidth = %d; want a narrow window of about %d", w, browserNarrowWidth)
+	}
+
+	// Each tab: the page does not scroll sideways.
+	panelContent := map[string]string{
+		"pipelines": `#feed > [data-id]`,
+		"activity":  `#panel-activity .list-panel`,
+		"history":   `#panel-history .hist tbody tr`,
+		"preplans":  `#panel-preplans > *`,
+		"setup":     browserSetupForm,
+	}
+	for _, tab := range []string{"pipelines", "activity", "history", "preplans", "setup"} {
+		page.click("the "+tab+" tab", "#tab-"+tab)
+		page.wait("the "+tab+" tab to be selected", `document.getElementById('tab-`+tab+`').getAttribute('aria-selected') === 'true'`)
+		page.wait("content in the "+tab+" tab", `document.querySelectorAll(`+browserJSON(panelContent[tab])+`).length > 0`)
+		over := browserMust[string](page, "the width of the "+tab+" tab", `(function () {
+			var de = document.documentElement;
+			return de.scrollWidth <= window.innerWidth ? '' : 'scrollWidth ' + de.scrollWidth + ' > innerWidth ' + window.innerWidth;
+		})()`)
+		if over != "" {
+			t.Errorf("the %s tab scrolls sideways at %d px: %s", tab, browserNarrowWidth, over)
+		}
+	}
+
+	// The header controls stay inside the window and have a size.
+	for _, sel := range []string{"#tab-pipelines", "#tab-activity", "#tab-history", "#tab-preplans", "#tab-setup", ".conn", "#clear-btn", "#stop-btn"} {
+		bad := browserMust[string](page, "the box of "+sel, `(function () {
+			var n = document.querySelector(`+browserJSON(sel)+`);
+			if (!n) return 'missing';
+			var r = n.getBoundingClientRect();
+			if (r.height <= 0) return 'height ' + r.height;
+			return r.right <= window.innerWidth ? '' : 'right ' + r.right + ' > innerWidth ' + window.innerWidth;
+		})()`)
+		if bad != "" {
+			t.Errorf("%s at %d px: %s", sel, browserNarrowWidth, bad)
+		}
+	}
+
+	// The thread filter shows run A only.
+	page.do("open the thread filter", chromedp.Navigate(base+"/#pipelines?thread="+browserNarrowThread))
+	page.wait("run A", `document.querySelectorAll(`+browserJSON(browserBlock(idA))+`).length === 1`)
+	page.wait("the thread filter to hide run B", `document.querySelectorAll(`+browserJSON(browserBlock(idB))+`).length === 0`)
 }

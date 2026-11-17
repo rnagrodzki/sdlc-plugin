@@ -65,6 +65,8 @@ Re-audit means re-deriving each read-only tool's write set from its call closure
 
 ## Golden Data — internal/tools/annotations_test.go
 
-The test file toolAnnotations map is the source of truth. It lists all 34 tools with all five annotation values and a reason for each. A tool missing from the map or a value mismatch fails TestEveryToolMatchesItsAnnotationDecision.
+The test file toolAnnotations map is the source of truth. It lists all 35 tools with all five annotation values and a reason for each. A tool missing from the map or a value mismatch fails TestEveryToolMatchesItsAnnotationDecision.
 
 TestReadOnlyToolsWriteNothingTracked runs every read-only tool against a minimal fixture repo and verifies git status --porcelain is empty afterward. Tools requiring external dependencies (links_validate, received_review_prepare, received_review_verify) are skipped with the reason recorded in the map, so skipping is visible rather than silent.
+
+`dashboard_card` is read-only: it reads the run state files through `state.List` and writes nothing. Its direct-call case in TestReadOnlyToolsWriteNothingTracked calls `dashboardCard` against the fixture repo.
