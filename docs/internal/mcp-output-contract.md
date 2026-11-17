@@ -15,6 +15,18 @@ Source of truth:
 - `internal/mcpserver/register.go` — wires both into the four exit paths of every registered tool's
   handler: recovered panic, input unmarshal failure, handler error, success.
 
+## MCP App exception (`RegisterUI`)
+
+A tool registered with `RegisterUI` adds three things, and nothing else changes:
+
+| Part | Value |
+|---|---|
+| tool `_meta` | `{"ui": {"resourceUri": "<ui:// URI>"}}` |
+| resource | the `ui://` URI, MIME `text/html;profile=mcp-app`, inline HTML |
+| success result | the same Markdown text, plus the `*Out` struct as `structuredContent` |
+
+Error results stay text only. Tools registered with `Register` never return `structuredContent` (`server_test.go:256`).
+
 ## First line
 
 Every rendered result — success or error — starts with exactly one line:

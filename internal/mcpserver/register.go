@@ -104,6 +104,11 @@ func actionEnum(schema *jsonschema.Schema) []string {
 // arrive as zero values, so a handler that treats a zero value as meaningful
 // must reject it itself -- see shipStateGC's detail.dryRun type check.
 func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func(ctx Ctx, in TIn) (TOut, error)) {
+	register(s, name, desc, a, nil, h)
+}
+
+// register is the shared body of Register and RegisterUI. ui nil gives a text-only tool.
+func register[TIn, TOut any](s *Server, name, desc string, a Annotations, ui *UIResource, h func(ctx Ctx, in TIn) (TOut, error)) {
 	inSchema, err := schemaFor[TIn]()
 	if err != nil {
 		panic(fmt.Sprintf("mcpserver: register %q: input schema: %v", name, err))
@@ -116,6 +121,9 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 	}
 
 	a.apply(tool)
+	if ui != nil {
+		tool.Meta = mcp.Meta{"ui": map[string]any{"resourceUri": ui.URI}}
+	}
 	s.recordTool(name, actionEnum(inSchema))
 
 	handler := func(_ context.Context, req *mcp.CallToolRequest) (result *mcp.CallToolResult, _ error) {
@@ -168,10 +176,14 @@ func Register[TIn, TOut any](s *Server, name, desc string, a Annotations, h func
 			}, nil
 		}
 
-		return &mcp.CallToolResult{
+		ok := &mcp.CallToolResult{
 			Content: []mcp.Content{&mcp.TextContent{Text: renderOK(name, out)}},
 			IsError: false,
-		}, nil
+		}
+		if ui != nil {
+			ok.StructuredContent = out
+		}
+		return ok, nil
 	}
 
 	s.mcp.AddTool(tool, handler)
