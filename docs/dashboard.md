@@ -1188,6 +1188,113 @@ After:
             [pending]  ship #1 (team)            Post the PR link and the CI result ...
 ```
 
+## T3 Code
+
+In a T3 Code thread, the dashboard opens in a T3 preview tab, and a ship run or a standalone execute run shows a card in the chat. Outside T3 Code, nothing changes.
+
+| Function | T3 preview tab | Run card in chat |
+|---|---|---|
+| Pipelines, run detail, Activity, History, Preplans, Setup | full page | steps, status, issue counts of one run |
+| Change actions | work (token guard) | no, read-only |
+| Live updates | event stream | the card shows the run state at the time of each `dashboard_card` call; refresh behavior is not tested (see Limits) |
+
+The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Code thread. The skill passes `previewUrl` to the T3 `preview_open` tool. No system browser opens. `dashboard_card` takes `runId` and `final`: `final` set to true makes the end card.
+
+### Thread filter
+
+| Address | Shows |
+|---|---|
+| `#pipelines?thread=<id>` | runs of the thread `<id>` |
+
+A thread id is 1 to 128 characters of `A-Z a-z 0-9 . _ -`. The plugin ignores any other value of `T3CODE_THREAD_ID`: the run then records no thread, as outside T3 Code. A run that has a thread records it as `t3ThreadId` in its state file, and the snapshot has `pipelines[].t3ThreadId` (see [Snapshot contract](#snapshot-contract)). `ship_prepare` and `execute_state` `resolve-config` return `t3ThreadId` too. `resolve-config` also returns `shipDispatched`.
+
+### Run panel and narrow width
+
+| When | The T3 preview tab shows |
+|---|---|
+| a top-level ship or a standalone execute run starts | `#<runId>?thread=<id>`: the runs of the thread, scrolled to the block of the run |
+| the panel is 640 px wide or less | one column: History rows as cards, labels above values. Tested at 400 px |
+
+### Limits
+
+The checks ran by hand on 2026-11-17 in T3 Code 0.1.9 (Beta). No check failed. Each row marked `not tested` is an open risk until a person tests it.
+
+| # | Check | Result | Note |
+|---|---|---|---|
+| 1 | The card renders in the chat | pass | The card rendered for a real ship run in a T3 thread |
+| 2 | A click on Refresh in the card, and the approval it may ask for | not tested | No agent can click the card |
+| 3 | The card between two agent turns | not tested | |
+| 4 | The **Next:** text of the `dashboard_card` result reaches the model | pass | The tool result carried the `next` field |
+| 5 | The card in the remote T3 web client | not tested | |
+| 6 | The run panel opens for the thread of the run | partial | `dashboard` ensure returned `previewUrl`, and `preview_open` showed the dashboard with the thread filter. The check run had no `t3ThreadId`, so the filter showed no run of the thread. The switch to a second thread, then back, is not tested |
+| 7 | The page width follows the panel | pass | `innerWidth` was 1280, then 600 after the tab resize to 600 |
+
+Open risks:
+
+- The card in the remote T3 web client is not tested (row 5).
+- Whether a thread has its own run panel is not tested (row 6). The thread switch (thread A, then B, then A) did not run.
+- The thread filter is not shown with a matching run (row 6). Repeat the check with a run that starts after the stamping of `t3ThreadId` exists.
+- The refresh of the card is not tested (rows 2 and 3). Do not rely on it. The card shows the run state at the time of each `dashboard_card` call.
+
+### Changed flow 5: dashboard and runs in T3 Code
+
+Flow 1: the user opens the dashboard.
+
+```mermaid
+flowchart LR
+  subgraph Before
+    B1[User runs /sdlc:dashboard] --> B2[dashboard ensure open true]
+    B2 --> B3[System browser opens the page]
+  end
+  subgraph After
+    A1[User runs /sdlc:dashboard] --> A2[dashboard ensure open true]
+    A2 --> A3{T3 thread id valid?}:::new
+    A3 -- no --> A4[System browser opens the page]
+    A3 -- yes --> A5[No browser, previewUrl returned]:::changed
+    A5 --> A6[Skill calls preview_open with previewUrl]:::new
+    A6 -- fails --> A7[Skill prints previewUrl and one warning]:::new
+  end
+  classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px
+  classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
+```
+
+Flow 2: a top ship run or a standalone execute run in a T3 thread.
+
+```mermaid
+flowchart LR
+  subgraph Before
+    B1[Run starts] --> B2[State: sessionId]
+    B2 --> B3[Steps run]
+    B3 --> B4[Run ends]
+  end
+  subgraph After
+    A1[Run starts] --> A2[State: sessionId and t3ThreadId]:::changed
+    A2 --> P1[dashboard ensure open true runId]:::new
+    P1 --> P2[preview_open url#runId?thread=ID: block of the run in the T3 preview tab]:::new
+    P2 --> A3[dashboard_card runId: start card]:::new
+    A3 --> A4[Steps run]
+    A4 --> A5[Run ends or fails]
+    A5 --> A6[dashboard_card runId final true: end card]:::new
+  end
+  classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px
+  classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
+```
+
+Flow 3: the page reads the address.
+
+```mermaid
+flowchart LR
+  subgraph Before
+    B1["#pipelines"] --> B2[Pipelines tab, all runs]
+  end
+  subgraph After
+    A1["#pipelines?thread=ID"]:::new --> A2[Pipelines tab, runs of thread ID only]:::new
+    A2 --> A3[Thread chip with clear button]:::new
+  end
+  classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px
+  classDef changed fill:#8a6d00,stroke:#4a3a00,color:#ffffff,stroke-width:2px
+```
+
 ## Snapshot contract
 
 This section is for plugin contributors. The page reads one JSON snapshot.
@@ -1249,6 +1356,7 @@ collector reads the data, and the tool action that writes it.
 | `steps[].detail.roundTotals`, `.repairLimit`, `.outcomes` | From `reviewRounds` and `reviewOutcome` of the plan state. `roundTotals` holds `iterations` (the number of stored rounds), `violations`, `fixes`, and `distinct`. When every round has a `findings` list, `violations` and `fixes` count distinct finding IDs across all rounds, a finding counts as fixed when any round fixed it, and `distinct` is `true`. Else they are the sums of the `found` and `fixed` counts of the rounds, and `distinct` is `false`. `repairLimit` is derived, not stored: it is `true` when the last stored round has a number of at least the review-loop limit (5) and its merged status is Issues Found. `outcomes` is one `{id, text, choice, reason}` for each finding of `reviewOutcome.findings`, in stored order. | plan_mark `review-round`, `review-outcome` |
 | `issues[].source`, `.severity`, `.text`, `.file`, `.line`, `.ref` | Failed ship steps, failed or partial waves, failed tasks that have an error, `issues[]` of the state file, review findings, review ledger files that cannot be used and a damaged `healing.fixProgress` (as `state` issues with no `ref`), a harden record that cannot be read or a ship state list that is not a list (as `medium` `state` issues), a cut harden list (as an `info` issue), and the stalled notice. `source` is `step`, `wave`, `review`, `state`, `task`, or `pipeline`. `.file` and `.line` are set for `review` issues only. `ref` is the step, wave, dimension, or task. | Collector, derived. Inputs come from ship_state `fail`, the execute_state wave and task actions, and `ledger_checkout` |
 | `sessionId` | `sessionId` of the ship, execute or plan state; `""` when unknown. A plan state gets its session ID from the `record-mcp-invocation` hook after each `plan_prepare` call. A review block has none. | ship_prepare or ship_state `init`; execute_state `init`; hook `record-mcp-invocation` |
+| `pipelines[].t3ThreadId` | `t3ThreadId` of the ship, execute or plan state, the T3 Code thread of the process that created the run. The key is absent outside T3 Code and for a run that started before the stamping existed. The page filter `#pipelines?thread=<id>` reads it (see [T3 Code](#t3-code)). | ship_prepare or ship_state `init`; execute_state `init`; plan_prepare (state init) |
 | `attention` | The newest open wait record of the pipeline session and branch. It holds `kind` (`question` or `permission`), `askedAt`, `header`, and `text`. Only a `running` pipeline with a `sessionId` has it. Absent when no wait is open. | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
 | `repos[].loneWaits[]` | Open waits that no shown running pipeline owns (same session ID and branch), newest first, max 50. `[]` when none. A wait record older than 24 hours is not listed. Each item has `kind` (`question` or `permission`), `sessionId`, `toolUseId` (`""` for a permission), `branch`, `header`, `text` and `askedAt`. See [Dismiss a wait](#dismiss-a-wait). | Hooks `block-askuserquestion-auto`, `record-permission-wait` |
 | `commitWaves` | `commitWaves` of the execute state; an absent key counts as `true`. A ship block gets it from its joined execute run. It is absent on a plan block, a review block, and a ship block with no joined execute run. | execute_state `init` |

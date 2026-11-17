@@ -37,14 +37,15 @@ The skill starts the server when it is not active, opens the page in your defaul
 | Step | Actor | What it does | Hands over | Optional | When |
 |---|---|---|---|---|---|
 | Step 1: Parse arguments | skill | Reads the flag and picks the mode: ensure and open, ensure without opening, status, or stop. It stops with a usage line when two flags or an unknown argument are given. | The chosen mode | no | always |
-| Step 2: Call the tool and print the message | tool | Makes one `dashboard` tool call for the mode. It prints `Dashboard: <url>` for ensure, or the tool `summary` for status and stop. | The dashboard address, or the status text | no | always |
+| Step 2: Call the tool and print the message | tool | Makes one `dashboard` tool call for the mode. It prints `Dashboard: <url>` for ensure, or the tool `summary` for status and stop. In a T3 Code thread, ensure returns `previewUrl`. | The dashboard address, or the status text | no | always |
+| Step 3: Open the T3 preview tab | skill | Calls the T3 `preview_open` tool with `previewUrl`. On a failed call, prints the address and one warning. No system browser opens. | A T3 preview tab | yes | the output has `previewUrl` |
 
 ### Run facts
 
 | Fact | Value |
 |---|---|
 | Starts | With `/sdlc:dashboard`, with no flag or with exactly one of `--status`, `--stop` or `--no-open`. |
-| Ends | After Step 2 prints one message. A tool error stops the skill after it prints the error `## Do this` text as it is. |
+| Ends | After Step 2 prints one message, or after Step 3 in a T3 Code thread. A tool error stops the skill after it prints the error `## Do this` text as it is. A failed preview tab does not stop it. |
 | Asks the user | Never. The skill has no question and no gate. |
 | Resume | none |
 

@@ -52,6 +52,7 @@ Managed by the shared `internal/state` package (the same one `execute_state`, `p
 | `branch` | string | Git branch name at pipeline start. |
 | `worktree` | string | Absolute path of the working directory at init. |
 | `sessionId` | string | The `sessionId` passed to init. For ship and execute runs, only init stamps it: no later action changes it. The ship skill passes no `sessionId`. |
+| `t3ThreadId` | string \| absent | The T3 Code thread of the process that created the run (`T3CODE_THREAD_ID`): 1 to 128 characters of `A-Z a-z 0-9 . _ -`. Only init writes it. Absent outside T3 Code. |
 | `flags` | object | The resolved pipeline configuration `ship_prepare` merged — see below. |
 | `steps` | array | One entry per configured step, plus a seeded `received-review` entry when `review` is configured. See "The `steps[]` scaffold" below — this is config-driven, not a fixed list. |
 | `decisions` | array | Appended by `ship_state{action:"decide"}` and by `ship_state{action:"commit-check"}`. See "`decisions` Array" below. |

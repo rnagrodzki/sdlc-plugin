@@ -32,6 +32,7 @@ export const features = [
       { text: 'Each step lists its follow-up instructions, one row for each, with the status of each instruction', doc: 'docs/instructions.md#what-you-see' },
       { text: 'One form shows and saves the plugin config of a repo', doc: 'docs/dashboard.md#setup-tab' },
       { text: 'On a new repo, /sdlc:setup offers to open the Setup tab for the form sections', doc: 'docs/getting-started.md#2-set-up-a-project' },
+      { text: 'Opens in a T3 Code preview tab and shows each run as a card in its thread', doc: 'docs/dashboard.md#t3-code' },
       { text: 'Open it with one command', doc: 'docs/skills/dashboard.md' },
     ],
   },
