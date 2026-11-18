@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.6.3] - 2026-11-18
+
+### RC 1
+
+- Dashboard run cards now give clients that show no card a fixed-width text block with a dashboard link, at every card point.
+- Step cards use snapshot mode: middle cards render without a refresh.
+- Card rows show execute waves with done and total task counts, also for the ship execute step.
+- The card text reports the dashboard server state.
+
 ## [0.6.2] - 2026-11-17
 
 ### RC 1
