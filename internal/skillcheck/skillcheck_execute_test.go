@@ -428,7 +428,7 @@ func TestExecuteSkillsInstructionsText(t *testing.T) {
 		"an `instructions` record has status `pending` or `running`",
 		"Then run the Completion call (`cleanup`) of Step 9",
 		"| resolve error (Step 0) | no |",
-		"| wave `cancel` (`## Wave loop` stage 1) | no |",
+		"| wave `cancel` (`## Wave loop` stage 1: the high-risk gate or the pre-wave guardrail; stage 6: the post-wave guardrail) | no |",
 		"| failed or partial run (Step 6) | no | existing. Records stay pending. |",
 		"| all tasks completed (Step 9) | yes, before `cleanup` |",
 		"| Step 9a interrupted | partial |",
@@ -461,5 +461,40 @@ func TestExecuteSkillsInstructionsText(t *testing.T) {
 	completion := strings.Index(skill, "**Completion:** `execute_state({ action: \"cleanup\" })`")
 	if step9a < 0 || completion < 0 || completion < step9a {
 		t.Errorf("%s: the Completion call (cleanup) must come after Step 9a", label)
+	}
+}
+
+// TestExecuteSkillRunCardRule pins the run card rule of the execute skill: the
+// wave card call, the text fallback, the skip lines of the direct route and of
+// a resumed run (each at its own trigger point), and the end card at each hard
+// stop after the start card.
+func TestExecuteSkillRunCardRule(t *testing.T) {
+	const label = "skills/execute/SKILL.md"
+	skill := executeSkillsReadFile(t, filepath.Join(executeSkillsRepoRoot(t), "skills", "execute", "SKILL.md"))
+
+	for _, want := range []string{
+		`Wave card: in stage 6, after the progress report, only when another wave follows, call dashboard_card({ runId: "<same>", snapshot: true }).`,
+		"Then print the text field unchanged in a code block. The communication style does not apply to it.",
+		"Make the code fence longer than the longest run of backticks in the text",
+		"If the result has dashboardUrl, the text already ends with the link: make no ensure call",
+		`If next orders a dashboard ensure call, make it at most once in this run: dashboard({ action: "ensure", runId: "<runId>" }).`,
+		"with a token, key or password in it replaced by ***.\nPrint <error text> in a code span",
+		"When EXECUTE_SHIP_DISPATCHED is false, also print once: `Run card: not shown on the direct route.`",
+		"When EXECUTE_SHIP_DISPATCHED is false, print once at the start of the resume: `Run card: not shown on a resumed run.`",
+		"stop and dispatch nothing: apply the run card rule (end card), then render `reason`/`next`.",
+		"Apply the run card rule (end card), then print the \"Execution state preserved at ...\" line from Step 9. `## Resume` retries the abort.",
+		"Before the escalation, apply the run card rule (end card)",
+		"Apply the run card rule (end card), then halt with these lines:",
+		"| verify-completeness halt, `missingIds` (`## Wave loop`, after the final wave) | no |",
+		"| plan hash mismatch (`## Wave loop` stage 1) | no |",
+		"| base-sync abort fails (`## Wave loop` stage 7) | no |",
+		"| drift-log halt (Step 8) | no |",
+	} {
+		hardenSkillsAssertOnce(t, label, skill, want)
+	}
+	for _, gone := range []string{"no more card calls", "Ensure on a running server returns its link and starts nothing"} {
+		if strings.Contains(skill, gone) {
+			t.Errorf("%s: the old rule %q must be gone", label, gone)
+		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rnagrodzki/sdlc-plugin/internal/dashboard"
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
 	"github.com/rnagrodzki/sdlc-plugin/internal/state"
 	"github.com/rnagrodzki/sdlc-plugin/internal/t3"
@@ -101,6 +102,8 @@ func connectDashboardCard(t *testing.T) *mcp.ClientSession {
 // for example the capabilities that the client announces in initialize.
 func connectDashboardCardWith(t *testing.T, opts *mcp.ClientOptions) *mcp.ClientSession {
 	t.Helper()
+	// A test of the registered tool never reads a real server record.
+	dashboardCardStubServer(t, "", false)
 	s := mcpserver.New("test", "0.0.0-test")
 	RegisterDashboardCardTools(s)
 	ctx := context.Background()
@@ -161,8 +164,51 @@ func cardBadRunIDMsg(runID string, n int) string {
 	return fmt.Sprintf("runId %s is not a ship or execute run name: ship- or execute-, then 1 to %d characters of A-Z a-z 0-9 . _ - (got %d characters after the prefix)", runID, t3.MaxRunSlugLen, n)
 }
 
-// cardRunningText is the text of the cardShipState run with the Next text next.
+// cardShipText is the text block of the cardShipState run for a client with
+// no card, with dashboardLine as its last line. An empty dashboardLine (no
+// server runs) leaves the ISSUES line last.
+func cardShipText(dashboardLine string) string {
+	block := "SHIP  [running]\n" +
+		cardShipID + "\n" +
+		"Branch:    feat/x\n" +
+		"Started:   2026-11-16T17:55:38Z\n" +
+		"Completed: not recorded\n" +
+		"\n" +
+		"STEPS                                   1 of 2 done\n" +
+		"[#>]\n" +
+		"  [x] execute            completed\n" +
+		"  [>] commit             in_progress\n" +
+		"\n" +
+		"ISSUES   none"
+	if dashboardLine != "" {
+		block += "\n" + dashboardLine
+	}
+	return block
+}
+
+// cardRunningText is the text of the cardShipState run with the Next text next,
+// for a client that shows the card: it has no text field.
 func cardRunningText(next string) string {
+	return cardRunningTextWith(next, "", "")
+}
+
+// cardNoCardRunningText is the text of the cardShipState run for a client with
+// no card and no dashboard server: the text block and the no-server next.
+func cardNoCardRunningText() string {
+	return cardRunningTextWith(cardNoViewNext(cardShipID), cardShipText(""), "")
+}
+
+// cardRunningTextWith is the text of the cardShipState run with the Next text
+// next. A non-empty block adds the text field, and a non-empty url the
+// dashboardUrl field.
+func cardRunningTextWith(next, block, url string) string {
+	extra := ""
+	if block != "" {
+		extra += "- text:\n```\n" + block + "\n```\n"
+	}
+	if url != "" {
+		extra += "- dashboardUrl: " + url + "\n"
+	}
 	return "# dashboard_card — ok\n\n" +
 		"**Next:** " + next + "\n\n" +
 		"## Summary\nship run " + cardShipID + " on branch feat/x is running.\n\n" +
@@ -173,7 +219,7 @@ func cardRunningText(next string) string {
 		"- status: running\n" +
 		"- final: false\n" +
 		"- startedAt: 2026-11-16T17:55:38Z\n" +
-		"- completedAt: (none)\n\n" +
+		"- completedAt: (none)\n" + extra + "\n" +
 		"## steps[0]\n- name: execute\n- status: completed\n\n" +
 		"## steps[1]\n- name: commit\n- status: in_progress\n\n" +
 		"## issues\n(none)\n"
@@ -184,8 +230,37 @@ func cardViewNext(runID, status string) string {
 	return fmt.Sprintf("Card shows run %s (%s). Continue the current step.", runID, status)
 }
 
-// cardNoViewNext is the Next text of a client that shows no card view.
-const cardNoViewNext = "This client shows no card. The text is the run summary. Do not call dashboard_card again in this run."
+// cardNoViewNextServer is the Next text of a client that shows no card view,
+// when the dashboard server runs.
+const cardNoViewNextServer = "This client shows no card. Print the text field in the chat unchanged, in a code block. Call dashboard_card again at the next card point of this run."
+
+// cardNoViewNext is the Next text of a client that shows no card view, when no
+// dashboard server runs.
+func cardNoViewNext(runID string) string {
+	return "This client shows no card. Print the text field in the chat unchanged, in a code block. No dashboard runs: call dashboard({action:\"ensure\", runId:\"" + runID + "\"}), then print its url with #" + runID + ". Call dashboard_card again at the next card point of this run."
+}
+
+// cardNoViewNextUnknown is the Next text of a client that shows no card view,
+// when the dashboard server record cannot be read.
+const cardNoViewNextUnknown = "This client shows no card. Print the text field in the chat unchanged, in a code block. The dashboard server record could not be read: the text has no link. Call dashboard_card again at the next card point of this run."
+
+// dashboardCardStubServer sets the dashboardCardServerStatus seam for the
+// test: dashboard.Status returns a server at url, answering when running is
+// true. Every test of the card for a client with no card calls it, so no test
+// reads a real server record.
+func dashboardCardStubServer(t *testing.T, url string, running bool) {
+	t.Helper()
+	dashboardCardStubStatus(t, dashboard.Result{URL: url, Running: running}, nil)
+}
+
+// dashboardCardStubStatus sets the dashboardCardServerStatus seam for the
+// test to return res and err.
+func dashboardCardStubStatus(t *testing.T, res dashboard.Result, err error) {
+	t.Helper()
+	old := dashboardCardServerStatus
+	dashboardCardServerStatus = func() (dashboard.Result, error) { return res, err }
+	t.Cleanup(func() { dashboardCardServerStatus = old })
+}
 
 // ---------------------------------------------------------------------------
 // Error table: one row for each row of the contract error table
@@ -296,7 +371,7 @@ func TestDashboardCard_ErrorTable(t *testing.T) {
 			name:  "plain client, no T3 thread: ok with the no-view next text",
 			setup: func(t *testing.T, root string) { writeCardRun(t, root, cardShipID, cardShipState()) },
 			runID: cardShipID,
-			want:  func(string) string { return cardRunningText(cardNoViewNext) },
+			want:  func(string) string { return cardNoCardRunningText() },
 		},
 		{
 			name:   "plain client in T3: card next text (T3 fallback)",
@@ -331,6 +406,7 @@ func TestDashboardCard_ErrorTable(t *testing.T) {
 // cause of each error of the handler.
 func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 	t.Run("bad runId is a DomainError with no cause", func(t *testing.T) {
+		dashboardCardStubServer(t, "", false)
 		_, err := dashboardCard(t.TempDir(), "", false, DashboardCardIn{RunID: "plan-x"})
 		var de *mcpserver.DomainError
 		if !errors.As(err, &de) {
@@ -348,6 +424,7 @@ func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 		if err := os.WriteFile(cardRunsDir(root), []byte("x"), 0o644); err != nil {
 			t.Fatalf("WriteFile: %v", err)
 		}
+		dashboardCardStubServer(t, "", false)
 		_, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
 		var ie *mcpserver.InfraError
 		if !errors.As(err, &ie) {
@@ -364,6 +441,7 @@ func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 		}
 	})
 	t.Run("missing run is a DomainError with no cause", func(t *testing.T) {
+		dashboardCardStubServer(t, "", false)
 		_, err := dashboardCard(t.TempDir(), "", false, DashboardCardIn{RunID: cardShipID})
 		var de *mcpserver.DomainError
 		if !errors.As(err, &de) {
@@ -376,6 +454,7 @@ func TestDashboardCard_ErrorClassAndCause(t *testing.T) {
 	t.Run("missing run with skipped files is a DataError with no cause", func(t *testing.T) {
 		root := t.TempDir()
 		writeCardBadRun(t, root, "ship-bad-20261116T175538Z.json")
+		dashboardCardStubServer(t, "", false)
 		_, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
 		var de *mcpserver.DataError
 		if !errors.As(err, &de) {
@@ -445,6 +524,7 @@ func TestDashboardCard_ThreadRules(t *testing.T) {
 				st[t3.StateKey] = tt.run
 			}
 			writeCardRun(t, root, cardShipID, st)
+			dashboardCardStubServer(t, "", false)
 			out, err := dashboardCard(root, tt.process, tt.process != "", DashboardCardIn{RunID: cardShipID})
 			if (err != nil) != tt.wantError {
 				t.Fatalf("err = %v, wantError %v", err, tt.wantError)
@@ -497,12 +577,13 @@ func TestDashboardCard_ClientSupport(t *testing.T) {
 		opts   *mcp.ClientOptions
 		thread string
 		want   string
+		noCard bool // the result has the text block of a client with no card
 	}{
 		{name: "MCP Apps client outside T3", opts: mcpAppsClient(), want: cardViewNext(cardShipID, "running")},
 		{name: "MCP Apps client in T3", opts: mcpAppsClient(), thread: "thread-a", want: cardViewNext(cardShipID, "running")},
 		{name: "extension with empty settings", opts: &mcp.ClientOptions{Capabilities: emptySettings}, want: cardViewNext(cardShipID, "running")},
-		{name: "plain client outside T3", want: cardNoViewNext},
-		{name: "other extension only", opts: &mcp.ClientOptions{Capabilities: otherExt}, want: cardNoViewNext},
+		{name: "plain client outside T3", want: cardNoViewNext(cardShipID), noCard: true},
+		{name: "other extension only", opts: &mcp.ClientOptions{Capabilities: otherExt}, want: cardNoViewNext(cardShipID), noCard: true},
 		{name: "plain client in T3 (T3 fallback)", thread: "thread-a", want: cardViewNext(cardShipID, "running")},
 	}
 	for _, tt := range tests {
@@ -515,10 +596,17 @@ func TestDashboardCard_ClientSupport(t *testing.T) {
 			if res.IsError {
 				t.Fatalf("isError = true, want a result:\n%s", text)
 			}
-			if want := cardRunningText(tt.want); text != want {
+			want := cardRunningText(tt.want)
+			if tt.noCard {
+				want = cardNoCardRunningText()
+			}
+			if text != want {
 				t.Errorf("text =\n%s\nwant\n%s", text, want)
 			}
 			got := cardStructured(t, res)
+			if _, has := got["text"]; has != tt.noCard {
+				t.Errorf("structuredContent has text = %v, want %v", has, tt.noCard)
+			}
 			if got["next"] != tt.want {
 				t.Errorf("structuredContent next = %v, want %q", got["next"], tt.want)
 			}
@@ -605,8 +693,18 @@ func TestDashboardCard_EmptyValues(t *testing.T) {
 	writeCardRun(t, root, cardShipID, map[string]any{"branch": "feat/x", "startedAt": "2026-11-16T17:55:38Z"})
 
 	res, text := callRegisteredDashboardCard(t, map[string]any{"runId": cardShipID})
+	emptyBlock := "SHIP  [running]\n" +
+		cardShipID + "\n" +
+		"Branch:    feat/x\n" +
+		"Started:   2026-11-16T17:55:38Z\n" +
+		"Completed: not recorded\n" +
+		"\n" +
+		"STEPS\n" +
+		"No steps yet.\n" +
+		"\n" +
+		"ISSUES   none"
 	wantText := "# dashboard_card — ok\n\n" +
-		"**Next:** " + cardNoViewNext + "\n\n" +
+		"**Next:** " + cardNoViewNext(cardShipID) + "\n\n" +
 		"## Summary\nship run " + cardShipID + " on branch feat/x is running.\n\n" +
 		"## Fields\n" +
 		"- runId: " + cardShipID + "\n" +
@@ -615,7 +713,8 @@ func TestDashboardCard_EmptyValues(t *testing.T) {
 		"- status: running\n" +
 		"- final: false\n" +
 		"- startedAt: 2026-11-16T17:55:38Z\n" +
-		"- completedAt: (none)\n\n" +
+		"- completedAt: (none)\n" +
+		"- text:\n```\n" + emptyBlock + "\n```\n\n" +
 		"## steps\n(none)\n\n" +
 		"## issues\n(none)\n"
 	if text != wantText {
@@ -636,7 +735,8 @@ func TestDashboardCard_EmptyValues(t *testing.T) {
 		"completedAt": nil,
 		"steps":       []any{},
 		"issues":      map[string]any{},
-		"next":        cardNoViewNext,
+		"next":        cardNoViewNext(cardShipID),
+		"text":        emptyBlock,
 	}
 	if got := cardStructured(t, res); !reflect.DeepEqual(got, want) {
 		t.Errorf("structuredContent = %#v, want %#v", got, want)
@@ -728,8 +828,20 @@ func TestDashboardCard_ExecuteRun(t *testing.T) {
 	res, text := callRegisteredDashboardCard(t, map[string]any{"runId": runID, "final": true})
 
 	summary := "execute run " + runID + " on branch feat/y is completed."
+	block := "EXECUTE  [completed]\n" +
+		runID + "\n" +
+		"Branch:    feat/y\n" +
+		"Started:   2026-11-16T17:55:38Z\n" +
+		"Completed: 2026-11-16T18:00:00Z\n" +
+		"\n" +
+		"STEPS                                   1 of 2 done\n" +
+		"[#!]\n" +
+		"  [x] wave 1             1/1 tasks  completed\n" +
+		"  [!] wave 2             0/0 tasks  failed\n" +
+		"\n" +
+		"ISSUES   high 1"
 	wantText := "# dashboard_card — ok\n\n" +
-		"**Next:** " + cardNoViewNext + "\n\n" +
+		"**Next:** " + cardNoViewNext(runID) + "\n\n" +
 		"## Summary\n" + summary + "\n\n" +
 		"## Fields\n" +
 		"- runId: " + runID + "\n" +
@@ -738,9 +850,10 @@ func TestDashboardCard_ExecuteRun(t *testing.T) {
 		"- status: completed\n" +
 		"- final: true\n" +
 		"- startedAt: 2026-11-16T17:55:38Z\n" +
-		"- completedAt: 2026-11-16T18:00:00Z\n\n" +
-		"## steps[0]\n- name: wave 1\n- status: completed\n\n" +
-		"## steps[1]\n- name: wave 2\n- status: failed\n\n" +
+		"- completedAt: 2026-11-16T18:00:00Z\n" +
+		"- text:\n```\n" + block + "\n```\n\n" +
+		"## steps[0]\n- name: wave 1\n- status: completed\n- tasksDone: 1\n- tasksTotal: 1\n\n" +
+		"## steps[1]\n- name: wave 2\n- status: failed\n- tasksDone: 0\n- tasksTotal: 0\n\n" +
 		"## issues\n- high: 1\n"
 	if text != wantText {
 		t.Errorf("text =\n%s\nwant\n%s", text, wantText)
@@ -756,14 +869,487 @@ func TestDashboardCard_ExecuteRun(t *testing.T) {
 		"startedAt":   "2026-11-16T17:55:38Z",
 		"completedAt": "2026-11-16T18:00:00Z",
 		"steps": []any{
-			map[string]any{"name": "wave 1", "status": "completed"},
-			map[string]any{"name": "wave 2", "status": "failed"},
+			map[string]any{"name": "wave 1", "status": "completed", "tasksDone": float64(1), "tasksTotal": float64(1)},
+			map[string]any{"name": "wave 2", "status": "failed", "tasksDone": float64(0), "tasksTotal": float64(0)},
 		},
 		"issues": map[string]any{"high": float64(1)},
-		"next":   cardNoViewNext,
+		"next":   cardNoViewNext(runID),
+		"text":   block,
 	}
 	if got := cardStructured(t, res); !reflect.DeepEqual(got, want) {
 		t.Errorf("structuredContent = %#v, want %#v", got, want)
+	}
+}
+
+// TestDashboardCard_Snapshot pins the snapshot rule: the output echoes the
+// snapshot input, and final wins when both are true.
+func TestDashboardCard_Snapshot(t *testing.T) {
+	root := t.TempDir()
+	writeCardRun(t, root, cardShipID, cardShipState())
+	cases := []struct {
+		final, snapshot         bool
+		wantFinal, wantSnapshot bool
+	}{
+		{false, false, false, false},
+		{false, true, false, true},
+		{true, false, true, false},
+		{true, true, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("final=%v snapshot=%v", tc.final, tc.snapshot), func(t *testing.T) {
+			dashboardCardStubServer(t, "", false)
+			out, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID, Final: tc.final, Snapshot: tc.snapshot})
+			if err != nil {
+				t.Fatalf("dashboardCard: %v", err)
+			}
+			if out.Final != tc.wantFinal || out.Snapshot != tc.wantSnapshot {
+				t.Errorf("final, snapshot = %v, %v, want %v, %v", out.Final, out.Snapshot, tc.wantFinal, tc.wantSnapshot)
+			}
+			wantNote := tc.final && tc.snapshot
+			if got := strings.HasSuffix(out.Next, " snapshot was ignored because final is true."); got != wantNote {
+				t.Errorf("next has the snapshot note = %v, want %v: %q", got, wantNote, out.Next)
+			}
+		})
+	}
+}
+
+// TestDashboardCard_SnapshotStructured checks that the registered tool puts
+// snapshot true in structuredContent for a middle card.
+func TestDashboardCard_SnapshotStructured(t *testing.T) {
+	root := cardRepo(t)
+	t.Setenv(t3.EnvThreadID, "")
+	writeCardRun(t, root, cardShipID, cardShipState())
+	res, _ := callRegisteredDashboardCard(t, map[string]any{"runId": cardShipID, "snapshot": true})
+	if got := cardStructured(t, res)["snapshot"]; got != true {
+		t.Errorf("structuredContent snapshot = %v, want true", got)
+	}
+}
+
+// TestDashboardCard_FinalWinsStructured calls the registered tool with final
+// and snapshot both true and pins the whole structuredContent: no snapshot
+// key, and a Next text that says that snapshot was ignored.
+func TestDashboardCard_FinalWinsStructured(t *testing.T) {
+	root := cardRepo(t)
+	t.Setenv(t3.EnvThreadID, "")
+	writeCardRun(t, root, cardShipID, cardShipState())
+	res, _ := callDashboardCardOn(t, connectDashboardCardWith(t, mcpAppsClient()), map[string]any{"runId": cardShipID, "final": true, "snapshot": true})
+	next := cardViewNext(cardShipID, "running") + " snapshot was ignored because final is true."
+	want := map[string]any{
+		"summary":     "ship run " + cardShipID + " on branch feat/x is running.",
+		"runId":       cardShipID,
+		"kind":        "ship",
+		"branch":      "feat/x",
+		"status":      "running",
+		"final":       true,
+		"startedAt":   "2026-11-16T17:55:38Z",
+		"completedAt": nil,
+		"steps": []any{
+			map[string]any{"name": "execute", "status": "completed"},
+			map[string]any{"name": "commit", "status": "in_progress"},
+		},
+		"issues": map[string]any{},
+		"next":   next,
+	}
+	if got := cardStructured(t, res); !reflect.DeepEqual(got, want) {
+		t.Errorf("structuredContent = %#v, want %#v", got, want)
+	}
+}
+
+// TestDashboardCard_ServerRunsRegistered calls the registered tool for a
+// client with no card while a dashboard server runs, and pins the whole
+// rendered text and structuredContent: the dashboardUrl field, the Next text
+// of a running server, and the Dashboard line that ends the text block.
+func TestDashboardCard_ServerRunsRegistered(t *testing.T) {
+	root := cardRepo(t)
+	t.Setenv(t3.EnvThreadID, "")
+	writeCardRun(t, root, cardShipID, cardShipState())
+	c := connectDashboardCard(t)
+	// connectDashboardCard stubs no server; this stub replaces it.
+	dashboardCardStubServer(t, "http://127.0.0.1:55551", true)
+	res, text := callDashboardCardOn(t, c, map[string]any{"runId": cardShipID})
+	url := "http://127.0.0.1:55551#" + cardShipID
+	block := cardShipText("Dashboard: " + url)
+	if want := cardRunningTextWith(cardNoViewNextServer, block, url); text != want {
+		t.Errorf("text =\n%s\nwant\n%s", text, want)
+	}
+	want := map[string]any{
+		"summary":      "ship run " + cardShipID + " on branch feat/x is running.",
+		"runId":        cardShipID,
+		"kind":         "ship",
+		"branch":       "feat/x",
+		"status":       "running",
+		"final":        false,
+		"startedAt":    "2026-11-16T17:55:38Z",
+		"completedAt":  nil,
+		"steps":        []any{map[string]any{"name": "execute", "status": "completed"}, map[string]any{"name": "commit", "status": "in_progress"}},
+		"issues":       map[string]any{},
+		"next":         cardNoViewNextServer,
+		"text":         block,
+		"dashboardUrl": url,
+	}
+	if got := cardStructured(t, res); !reflect.DeepEqual(got, want) {
+		t.Errorf("structuredContent = %#v, want %#v", got, want)
+	}
+}
+
+// cardStepCounts returns "name status done/total" for each step of out. A
+// step with no counters gives "name status -".
+func cardStepCounts(out DashboardCardOut) []string {
+	var got []string
+	for _, s := range out.Steps {
+		if s.TasksDone == nil || s.TasksTotal == nil {
+			got = append(got, fmt.Sprintf("%s %s -", s.Name, s.Status))
+			continue
+		}
+		got = append(got, fmt.Sprintf("%s %s %d/%d", s.Name, s.Status, *s.TasksDone, *s.TasksTotal))
+	}
+	return got
+}
+
+// cardExecState returns an execute state on branch that started at
+// startedAt: wave 1 completed with 2 completed tasks, wave 2 partial with 5
+// tasks (3 completed, 1 failed, 1 skipped-dependency), planned wave 3 with 4
+// tasks that did not start, and planned task 9 in no wave (the queued step).
+func cardExecState(branch, startedAt string) map[string]any {
+	task := func(id, status string) map[string]any { return map[string]any{"id": id, "status": status} }
+	return map[string]any{
+		"branch":    branch,
+		"startedAt": startedAt,
+		"waves": []any{
+			map[string]any{"number": 1, "status": "completed", "tasks": []any{task("1", "completed"), task("2", "completed")}},
+			map[string]any{"number": 2, "status": "partial", "tasks": []any{
+				task("3", "completed"), task("4", "completed"), task("5", "completed"),
+				task("6", "failed"), task("7", "skipped-dependency"),
+			}},
+		},
+		"plannedWaves": []any{
+			map[string]any{"number": 3, "taskIds": []any{"10", "11", "12", "13"}},
+		},
+		"plannedTasks": []any{
+			map[string]any{"id": "9", "name": "queued task"},
+		},
+	}
+}
+
+// TestDashboardCard_WaveCounters covers the counter cases of an execute run:
+// a failed or skipped-dependency task is not done, a planned wave that did not
+// start has 0 of its planned count, and the queued step has no counters.
+func TestDashboardCard_WaveCounters(t *testing.T) {
+	root := t.TempDir()
+	const runID = "execute-feat-y-20261116T175538Z"
+	writeCardRun(t, root, runID, cardExecState("feat/y", "2026-11-16T17:55:38Z"))
+
+	dashboardCardStubServer(t, "", false)
+	out, err := dashboardCard(root, "", false, DashboardCardIn{RunID: runID})
+	if err != nil {
+		t.Fatalf("dashboardCard: %v", err)
+	}
+	want := []string{
+		"wave 1 completed 2/2",
+		"wave 2 failed 3/5",
+		"wave 3 pending 0/4",
+		"queued pending -",
+	}
+	if got := cardStepCounts(out); !reflect.DeepEqual(got, want) {
+		t.Errorf("steps = %v, want %v", got, want)
+	}
+	for _, s := range out.Steps {
+		if s.Waves != nil {
+			t.Errorf("step %s has waves %v, want none on an execute run", s.Name, s.Waves)
+		}
+	}
+}
+
+// cardShipWaveRows returns "name status done/total" for each waves row of
+// the ship execute step of out, or nil when the step has no waves.
+func cardShipWaveRows(t *testing.T, out DashboardCardOut) []string {
+	t.Helper()
+	for _, s := range out.Steps {
+		if s.Name != "execute" {
+			continue
+		}
+		if s.TasksDone != nil || s.TasksTotal != nil {
+			t.Errorf("ship execute step has counters %v/%v, want none", s.TasksDone, s.TasksTotal)
+		}
+		if s.Waves == nil {
+			return nil
+		}
+		got := []string{}
+		for _, w := range s.Waves {
+			got = append(got, fmt.Sprintf("%s %s %d/%d", w.Name, w.Status, w.TasksDone, w.TasksTotal))
+		}
+		return got
+	}
+	t.Fatalf("no execute step in %+v", out.Steps)
+	return nil
+}
+
+// TestDashboardCard_ShipWaves covers the join of a ship run to its execute
+// run: the rule of the dashboard page decides which execute run, if any,
+// gives the waves of the ship execute step.
+func TestDashboardCard_ShipWaves(t *testing.T) {
+	joinedRows := []string{"wave 1 completed 2/2", "wave 2 failed 3/5", "wave 3 pending 0/4"}
+	completedShip := func() map[string]any {
+		s := cardShipState()
+		s["pipelineStatus"] = "completed"
+		s["pipelineCompletedAt"] = "2026-11-16T18:30:00Z"
+		return s
+	}
+	noBranch := func(s map[string]any) map[string]any {
+		delete(s, "branch")
+		return s
+	}
+	type execRun struct {
+		id   string
+		data map[string]any
+	}
+	cases := []struct {
+		name  string
+		ship  map[string]any
+		execs []execRun
+		want  []string
+	}{
+		{
+			name:  "execute run in the ship window joins",
+			ship:  cardShipState(),
+			execs: []execRun{{"execute-feat-x-20261116T175600Z", cardExecState("feat/x", "2026-11-16T17:56:00Z")}},
+			want:  joinedRows,
+		},
+		{
+			name: "two execute runs in the window: the newer one joins",
+			ship: cardShipState(),
+			execs: []execRun{
+				{"execute-feat-x-20261116T175600Z", map[string]any{"branch": "feat/x", "startedAt": "2026-11-16T17:56:00Z", "waves": []any{
+					map[string]any{"number": 1, "status": "failed", "tasks": []any{map[string]any{"id": "1", "status": "failed"}}},
+				}}},
+				{"execute-feat-x-20261116T180000Z", cardExecState("feat/x", "2026-11-16T18:00:00Z")},
+			},
+			want: joinedRows,
+		},
+		{
+			name:  "execute run on another branch does not join",
+			ship:  cardShipState(),
+			execs: []execRun{{"execute-feat-z-20261116T175600Z", cardExecState("feat/z", "2026-11-16T17:56:00Z")}},
+			want:  nil,
+		},
+		{
+			name:  "execute run before the ship start does not join",
+			ship:  cardShipState(),
+			execs: []execRun{{"execute-feat-x-20261116T170000Z", cardExecState("feat/x", "2026-11-16T17:00:00Z")}},
+			want:  nil,
+		},
+		{
+			name:  "execute run after the ship end does not join",
+			ship:  completedShip(),
+			execs: []execRun{{"execute-feat-x-20261116T190000Z", cardExecState("feat/x", "2026-11-16T19:00:00Z")}},
+			want:  nil,
+		},
+		{
+			name:  "no execute run",
+			ship:  cardShipState(),
+			execs: nil,
+			want:  nil,
+		},
+		{
+			name:  "execute run at exactly the ship start joins",
+			ship:  cardShipState(),
+			execs: []execRun{{"execute-feat-x-20261116T175538Z", cardExecState("feat/x", "2026-11-16T17:55:38Z")}},
+			want:  joinedRows,
+		},
+		{
+			name:  "execute run at exactly the ship end joins",
+			ship:  completedShip(),
+			execs: []execRun{{"execute-feat-x-20261116T183000Z", cardExecState("feat/x", "2026-11-16T18:30:00Z")}},
+			want:  joinedRows,
+		},
+		{
+			name:  "ship with no branch key joins by the branch slug of its file name",
+			ship:  noBranch(cardShipState()),
+			execs: []execRun{{"execute-feat-x-20261116T175600Z", cardExecState("feat/x", "2026-11-16T17:56:00Z")}},
+			want:  joinedRows,
+		},
+		{
+			name:  "execute run with no branch key joins by the branch slug of its file name",
+			ship:  cardShipState(),
+			execs: []execRun{{"execute-feat-x-20261116T175600Z", noBranch(cardExecState("feat/x", "2026-11-16T17:56:00Z"))}},
+			want:  joinedRows,
+		},
+		{
+			name: "joined execute run with no wave step gives an empty list",
+			ship: cardShipState(),
+			execs: []execRun{{"execute-feat-x-20261116T175600Z", map[string]any{
+				"branch": "feat/x", "startedAt": "2026-11-16T17:56:00Z",
+				"plannedTasks": []any{map[string]any{"id": "9", "name": "queued task"}},
+			}}},
+			want: []string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeCardRun(t, root, cardShipID, tc.ship)
+			for _, e := range tc.execs {
+				writeCardRun(t, root, e.id, e.data)
+			}
+			dashboardCardStubServer(t, "", false)
+			out, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
+			if err != nil {
+				t.Fatalf("dashboardCard: %v", err)
+			}
+			got := cardShipWaveRows(t, out)
+			if !reflect.DeepEqual(got, tc.want) || (got == nil) != (tc.want == nil) {
+				t.Errorf("execute waves = %#v, want %#v", got, tc.want)
+			}
+			// The join adds no issue of the execute run to the ship card.
+			if len(out.Issues) != 0 {
+				t.Errorf("issues = %v, want none: the ship run has no issue", out.Issues)
+			}
+		})
+	}
+}
+
+// TestDashboardCard_ShipWavesStructured pins the structured content and the
+// text of a ship card with a joined execute run, and that a ship run with no
+// joined execute run gives the same structured content as before the join.
+func TestDashboardCard_ShipWavesStructured(t *testing.T) {
+	base := func(steps []any, text string) map[string]any {
+		return map[string]any{
+			"summary":     "ship run " + cardShipID + " on branch feat/x is running.",
+			"runId":       cardShipID,
+			"kind":        "ship",
+			"branch":      "feat/x",
+			"status":      "running",
+			"final":       false,
+			"startedAt":   "2026-11-16T17:55:38Z",
+			"completedAt": nil,
+			"steps":       steps,
+			"issues":      map[string]any{},
+			"next":        cardNoViewNext(cardShipID),
+			"text":        text,
+		}
+	}
+
+	t.Run("no joined execute run", func(t *testing.T) {
+		root := cardRepo(t)
+		t.Setenv(t3.EnvThreadID, "")
+		writeCardRun(t, root, cardShipID, cardShipState())
+		writeCardRun(t, root, "execute-feat-z-20261116T175600Z", cardExecState("feat/z", "2026-11-16T17:56:00Z"))
+		res, _ := callRegisteredDashboardCard(t, map[string]any{"runId": cardShipID})
+		want := base([]any{
+			map[string]any{"name": "execute", "status": "completed"},
+			map[string]any{"name": "commit", "status": "in_progress"},
+		}, cardShipText(""))
+		if got := cardStructured(t, res); !reflect.DeepEqual(got, want) {
+			t.Errorf("structuredContent = %#v, want %#v", got, want)
+		}
+	})
+
+	t.Run("joined execute run", func(t *testing.T) {
+		root := cardRepo(t)
+		t.Setenv(t3.EnvThreadID, "")
+		writeCardRun(t, root, cardShipID, cardShipState())
+		writeCardRun(t, root, "execute-feat-x-20261116T175600Z", cardExecState("feat/x", "2026-11-16T17:56:00Z"))
+		res, text := callRegisteredDashboardCard(t, map[string]any{"runId": cardShipID})
+		joinedText := "SHIP  [running]\n" +
+			cardShipID + "\n" +
+			"Branch:    feat/x\n" +
+			"Started:   2026-11-16T17:55:38Z\n" +
+			"Completed: not recorded\n" +
+			"\n" +
+			"STEPS                                   1 of 2 done\n" +
+			"[#>]\n" +
+			"  [x] execute            completed\n" +
+			"        wave 1  2/2 tasks  completed\n" +
+			"        wave 2  3/5 tasks  failed\n" +
+			"        wave 3  0/4 tasks  pending\n" +
+			"  [>] commit             in_progress\n" +
+			"\n" +
+			"ISSUES   none"
+		wave := func(name, status string, done, total int) map[string]any {
+			return map[string]any{"name": name, "status": status, "tasksDone": float64(done), "tasksTotal": float64(total)}
+		}
+		want := base([]any{
+			map[string]any{"name": "execute", "status": "completed", "waves": []any{
+				wave("wave 1", "completed", 2, 2),
+				wave("wave 2", "failed", 3, 5),
+				wave("wave 3", "pending", 0, 4),
+			}},
+			map[string]any{"name": "commit", "status": "in_progress"},
+		}, joinedText)
+		if got := cardStructured(t, res); !reflect.DeepEqual(got, want) {
+			t.Errorf("structuredContent = %#v, want %#v", got, want)
+		}
+		// The whole rendered text pins the nested waves rows of the
+		// markdown, not only the text block that also names each wave.
+		wantText := "# dashboard_card — ok\n\n" +
+			"**Next:** " + cardNoViewNext(cardShipID) + "\n\n" +
+			"## Summary\nship run " + cardShipID + " on branch feat/x is running.\n\n" +
+			"## Fields\n" +
+			"- runId: " + cardShipID + "\n" +
+			"- kind: ship\n" +
+			"- branch: feat/x\n" +
+			"- status: running\n" +
+			"- final: false\n" +
+			"- startedAt: 2026-11-16T17:55:38Z\n" +
+			"- completedAt: (none)\n" +
+			"- text:\n```\n" + joinedText + "\n```\n\n" +
+			"## steps[0]\n- name: execute\n- status: completed\n\n" +
+			"### steps[0].waves[0]\n- name: wave 1\n- status: completed\n- tasksDone: 2\n- tasksTotal: 2\n\n" +
+			"### steps[0].waves[1]\n- name: wave 2\n- status: failed\n- tasksDone: 3\n- tasksTotal: 5\n\n" +
+			"### steps[0].waves[2]\n- name: wave 3\n- status: pending\n- tasksDone: 0\n- tasksTotal: 4\n\n" +
+			"## steps[1]\n- name: commit\n- status: in_progress\n\n" +
+			"## issues\n(none)\n"
+		if text != wantText {
+			t.Errorf("text =\n%s\nwant\n%s", text, wantText)
+		}
+	})
+}
+
+// TestDashboardCard_FindReturnsList checks that dashboardCardFind returns the
+// run and every state of its one state.List call, and nil states on error.
+func TestDashboardCard_FindReturnsList(t *testing.T) {
+	root := t.TempDir()
+	writeCardRun(t, root, cardShipID, cardShipState())
+	writeCardRun(t, root, "execute-feat-x-20261116T175600Z", cardExecState("feat/x", "2026-11-16T17:56:00Z"))
+	writeCardBadRun(t, root, "execute-feat-x-20261116T175700Z.json")
+
+	st, all, err := dashboardCardFind(root, cardShipID)
+	if err != nil {
+		t.Fatalf("dashboardCardFind: %v", err)
+	}
+	if state.RunID(st) != cardShipID {
+		t.Errorf("run = %s, want %s", state.RunID(st), cardShipID)
+	}
+	list, err := state.List(root)
+	if err != nil {
+		t.Fatalf("state.List: %v", err)
+	}
+	if len(all) != len(list.States) || len(all) != 2 {
+		t.Errorf("states = %d, want %d (the readable run files)", len(all), len(list.States))
+	}
+
+	if _, all, err := dashboardCardFind(root, "ship-absent-20261116T175538Z"); err == nil || all != nil {
+		t.Errorf("missing run: states = %v, err = %v, want nil states and an error", all, err)
+	}
+}
+
+// TestDashboardCard_ShipWavesUnreadableFile checks the read failure rule: a
+// found ship run joins its execute run, and an unreadable run file next to
+// them is ignored.
+func TestDashboardCard_ShipWavesUnreadableFile(t *testing.T) {
+	root := t.TempDir()
+	writeCardRun(t, root, cardShipID, cardShipState())
+	writeCardRun(t, root, "execute-feat-x-20261116T175600Z", cardExecState("feat/x", "2026-11-16T17:56:00Z"))
+	writeCardBadRun(t, root, "execute-feat-x-20261116T175700Z.json")
+
+	dashboardCardStubServer(t, "", false)
+	out, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
+	if err != nil {
+		t.Fatalf("dashboardCard: %v", err)
+	}
+	want := []string{"wave 1 completed 2/2", "wave 2 failed 3/5", "wave 3 pending 0/4"}
+	if got := cardShipWaveRows(t, out); !reflect.DeepEqual(got, want) {
+		t.Errorf("execute waves = %v, want %v", got, want)
 	}
 }
 
@@ -890,6 +1476,7 @@ func TestDashboardCard_ParityWithSnapshot(t *testing.T) {
 				if got := snapshotOutcome(root, r.runID); got != r.snapshot {
 					t.Errorf("snapshot = %s, want %s", got, r.snapshot)
 				}
+				dashboardCardStubServer(t, "", false)
 				if got := cardOutcome(root, r.runID); got != r.card {
 					t.Errorf("card = %s, want %s", got, r.card)
 				}
@@ -1028,7 +1615,7 @@ func TestDashboardCard_Registration(t *testing.T) {
 		t.Fatalf("tools = %v, want only dashboard_card", resp.Tools)
 	}
 	tool := resp.Tools[0]
-	wantDesc := "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. Other clients get the same run summary as text. Requires: runId. Reads the run state files in <main-worktree>/.sdlc-v2/runs and writes nothing. Call it at the start and end of a top-level ship run or a standalone execute run. When next says this client shows no card, do not call it again in that run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when the run is not found and some run files could not be read, or, in a T3 Code thread, when the run stores a t3ThreadId that is not a string. InfraError when the runs folder cannot be listed."
+	wantDesc := "Show one ship or execute run as an MCP App card (view ui://sdlc/dashboard-card) in a client that supports MCP Apps. A process in a T3 Code thread (T3CODE_THREAD_ID set) also counts as such a client, whatever capabilities the client announces. Other clients get the card as a text block, plus the dashboard link of the run when the dashboard runs. Requires: runId. Optional: final (end card), snapshot (middle card, no refresh). Reads the run state files in <main-worktree>/.sdlc-v2/runs and the dashboard server record, probes that server over loopback HTTP, and writes nothing. Call it at each card point of a top-level ship run or a standalone execute run. Errors: DomainError for a bad runId, a missing run, or a run of another T3 thread. DataError when the run is not found and some run files could not be read, or, in a T3 Code thread, when the run stores a t3ThreadId that is not a string. InfraError when the runs folder cannot be listed. A dashboard server record that cannot be read is not an error: the text card says that the link is unavailable."
 	if tool.Description != wantDesc {
 		t.Errorf("Description = %q, want %q", tool.Description, wantDesc)
 	}
@@ -1101,5 +1688,298 @@ func TestRegisterDashboardCardTools_BadViewPanics(t *testing.T) {
 	}
 	if _, err := c.ReadResource(ctx, &mcp.ReadResourceParams{URI: dashboardCardViewURI}); err == nil {
 		t.Error("ReadResource of the view: err = nil, want no such resource")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Text block and dashboard link for a client with no card
+// ---------------------------------------------------------------------------
+
+// TestDashboardCard_TextGolden pins the text block of the example ship run of
+// the plan: a running ship run with 4 steps, a high issue and a joined execute
+// run with 2 waves, and a dashboard server that runs. The golden file holds the
+// block with one trailing newline.
+func TestDashboardCard_TextGolden(t *testing.T) {
+	root := t.TempDir()
+	const (
+		runID = "ship-feat-x-20261116T175538Z"
+		url   = "http://127.0.0.1:55551"
+	)
+	writeCardRun(t, root, runID, map[string]any{
+		"branch":    "feat/x",
+		"startedAt": "2026-11-16T17:55:38Z",
+		"steps": []any{
+			map[string]any{"name": "execute", "status": "completed"},
+			map[string]any{"name": "commit", "status": "in_progress"},
+			map[string]any{"name": "review", "status": "pending"},
+			map[string]any{"name": "pr", "status": "pending"},
+		},
+		"issues": []any{map[string]any{"severity": "error", "text": "e1"}},
+	})
+	task := func(id, status string) map[string]any { return map[string]any{"id": id, "status": status} }
+	writeCardRun(t, root, "execute-feat-x-20261116T175600Z", map[string]any{
+		"branch":    "feat/x",
+		"startedAt": "2026-11-16T17:56:00Z",
+		"waves": []any{
+			map[string]any{"number": 1, "status": "completed", "tasks": []any{task("1", "completed"), task("2", "completed")}},
+			map[string]any{"number": 2, "status": "completed", "tasks": []any{task("3", "completed"), task("4", "completed"), task("5", "completed")}},
+		},
+	})
+	dashboardCardStubServer(t, url, true)
+
+	out, err := dashboardCard(root, "", false, DashboardCardIn{RunID: runID})
+	if err != nil {
+		t.Fatalf("dashboardCard: %v", err)
+	}
+	golden, err := os.ReadFile(filepath.Join("testdata", "dashboard_card_text_ship.golden"))
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if got := out.Text + "\n"; got != string(golden) {
+		t.Errorf("text =\n%s\nwant golden\n%s", got, golden)
+	}
+	if out.DashboardURL != url+"#"+runID {
+		t.Errorf("DashboardURL = %q, want %q", out.DashboardURL, url+"#"+runID)
+	}
+	if out.Next != cardNoViewNextServer {
+		t.Errorf("Next = %q, want the server-runs text", out.Next)
+	}
+}
+
+// TestDashboardCard_TextMarkers pins the marker and the bar character of each
+// step status, and the done count: completed and skipped steps are done.
+func TestDashboardCard_TextMarkers(t *testing.T) {
+	statuses := []string{"completed", "in_progress", "pending", "skipped", "failed", "weird"}
+	steps := make([]DashboardCardStep, 0, len(statuses))
+	for i, s := range statuses {
+		steps = append(steps, DashboardCardStep{Name: fmt.Sprintf("s%d", i), Status: s})
+	}
+	text := dashboardCardText(DashboardCardOut{Kind: "ship", RunID: "r", Status: "running", Steps: steps, Issues: map[string]int{}}, dashboardCardServerNone)
+	for _, want := range []string{
+		"STEPS                                   2 of 6 done\n",
+		"[#>.#!.]\n",
+		"  [x] s0                 completed\n",
+		"  [>] s1                 in_progress\n",
+		"  [ ] s2                 pending\n",
+		"  [-] s3                 skipped\n",
+		"  [!] s4                 failed\n",
+		"  [ ] s5                 weird\n",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("text has no %q:\n%s", want, text)
+		}
+	}
+}
+
+// TestDashboardCard_TextHeader pins the header state: [stopped] only for an
+// end card whose run still says running, else the run status.
+func TestDashboardCard_TextHeader(t *testing.T) {
+	cases := []struct {
+		name          string
+		status        string
+		final         bool
+		kind, wantTop string
+	}{
+		{"running live", "running", false, "ship", "SHIP  [running]\n"},
+		{"running end card", "running", true, "ship", "SHIP  [stopped]\n"},
+		{"completed end card", "completed", true, "execute", "EXECUTE  [completed]\n"},
+		{"failed", "failed", false, "execute", "EXECUTE  [failed]\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			text := dashboardCardText(DashboardCardOut{Kind: tc.kind, RunID: "r", Status: tc.status, Final: tc.final}, dashboardCardServerNone)
+			if !strings.HasPrefix(text, tc.wantTop) {
+				t.Errorf("text = %q, want prefix %q", text, tc.wantTop)
+			}
+		})
+	}
+}
+
+// TestDashboardCard_TextIssuesAndEmptyValues covers ISSUES none, issues sorted
+// by key, an empty branch and start time, a completed time, a step name over
+// 18 characters, and a run with 0 steps.
+func TestDashboardCard_TextIssuesAndEmptyValues(t *testing.T) {
+	done := "2026-11-16T18:10:00Z"
+	t.Run("empty branch and start, no steps, no issue", func(t *testing.T) {
+		got := dashboardCardText(DashboardCardOut{Kind: "ship", RunID: "r", Status: "running"}, dashboardCardServerNone)
+		want := "SHIP  [running]\n" +
+			"r\n" +
+			"Branch:    not recorded\n" +
+			"Started:   not recorded\n" +
+			"Completed: not recorded\n" +
+			"\n" +
+			"STEPS\n" +
+			"No steps yet.\n" +
+			"\n" +
+			"ISSUES   none"
+		if got != want {
+			t.Errorf("text =\n%s\nwant\n%s", got, want)
+		}
+	})
+	t.Run("issues sorted, completed time, long step name", func(t *testing.T) {
+		long := "a-step-name-over-18-chars"
+		got := dashboardCardText(DashboardCardOut{
+			Kind: "ship", RunID: "r", Status: "completed", Branch: "b", StartedAt: "s", CompletedAt: &done,
+			Steps:        []DashboardCardStep{{Name: long, Status: "completed"}},
+			Issues:       map[string]int{"medium": 2, "high": 1},
+			DashboardURL: "http://127.0.0.1:1#r",
+		}, dashboardCardServerRunning)
+		want := "SHIP  [completed]\n" +
+			"r\n" +
+			"Branch:    b\n" +
+			"Started:   s\n" +
+			"Completed: " + done + "\n" +
+			"\n" +
+			"STEPS                                   1 of 1 done\n" +
+			"[#]\n" +
+			"  [x] " + long + " completed\n" +
+			"\n" +
+			"ISSUES   high 1, medium 2\n" +
+			"Dashboard: http://127.0.0.1:1#r"
+		if got != want {
+			t.Errorf("text =\n%s\nwant\n%s", got, want)
+		}
+	})
+}
+
+// TestDashboardCard_ServerCases covers the dashboard link of a client with no
+// card, and that a client with a card gets neither text nor dashboardUrl.
+func TestDashboardCard_ServerCases(t *testing.T) {
+	root := t.TempDir()
+	writeCardRun(t, root, cardShipID, cardShipState())
+
+	t.Run("server runs", func(t *testing.T) {
+		dashboardCardStubServer(t, "http://127.0.0.1:55551", true)
+		out, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
+		if err != nil {
+			t.Fatalf("dashboardCard: %v", err)
+		}
+		link := "http://127.0.0.1:55551#" + cardShipID
+		if out.DashboardURL != link || out.Next != cardNoViewNextServer {
+			t.Errorf("DashboardURL, Next = %q, %q", out.DashboardURL, out.Next)
+		}
+		if !strings.HasSuffix(out.Text, "\nDashboard: "+link) {
+			t.Errorf("text does not end with the link:\n%s", out.Text)
+		}
+	})
+	t.Run("no server", func(t *testing.T) {
+		dashboardCardStubServer(t, "http://127.0.0.1:55551", false)
+		out, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
+		if err != nil {
+			t.Fatalf("card call failed: %v", err)
+		}
+		if out.DashboardURL != "" || out.Next != cardNoViewNext(cardShipID) {
+			t.Errorf("DashboardURL, Next = %q, %q", out.DashboardURL, out.Next)
+		}
+		// The caller starts the server and prints the link, so the block
+		// has no Dashboard line.
+		if out.Text != cardShipText("") {
+			t.Errorf("text =\n%s\nwant\n%s", out.Text, cardShipText(""))
+		}
+	})
+	t.Run("server record cannot be read", func(t *testing.T) {
+		dashboardCardStubStatus(t, dashboard.Result{}, errors.New("dashboard: read server.json: permission denied"))
+		out, err := dashboardCard(root, "", false, DashboardCardIn{RunID: cardShipID})
+		if err != nil {
+			t.Fatalf("card call failed: %v", err)
+		}
+		if out.DashboardURL != "" || out.Next != cardNoViewNextUnknown {
+			t.Errorf("DashboardURL, Next = %q, %q", out.DashboardURL, out.Next)
+		}
+		if want := cardShipText("Dashboard: link unavailable"); out.Text != want {
+			t.Errorf("text =\n%s\nwant\n%s", out.Text, want)
+		}
+	})
+	t.Run("client with a card gets no text and no link", func(t *testing.T) {
+		dashboardCardStubServer(t, "http://127.0.0.1:55551", true)
+		out, err := dashboardCard(root, "", true, DashboardCardIn{RunID: cardShipID})
+		if err != nil {
+			t.Fatalf("dashboardCard: %v", err)
+		}
+		if out.Text != "" || out.DashboardURL != "" || out.Next != cardViewNext(cardShipID, "running") {
+			t.Errorf("Text, DashboardURL, Next = %q, %q, %q", out.Text, out.DashboardURL, out.Next)
+		}
+	})
+}
+
+// TestDashboardCardServerURL has one row for each outcome of the
+// dashboard.Status call, through the dashboardCardServerStatus seam: a missing
+// record (Status returns no error), a server that does not answer, a server
+// that answers, a running result with no URL, and a record that cannot be read
+// (any error from Status, which the card cannot tell from a running server).
+func TestDashboardCardServerURL(t *testing.T) {
+	rows := []struct {
+		name       string
+		res        dashboard.Result
+		err        error
+		wantURL    string
+		wantServer dashboardCardServer
+	}{
+		{name: "no record file", res: dashboard.Result{}, wantServer: dashboardCardServerNone},
+		{name: "probe fails or times out", res: dashboard.Result{URL: "http://127.0.0.1:1", Port: 1}, wantServer: dashboardCardServerNone},
+		{name: "server answers", res: dashboard.Result{URL: "http://127.0.0.1:55551", Port: 55551, Running: true}, wantURL: "http://127.0.0.1:55551", wantServer: dashboardCardServerRunning},
+		{name: "running with no URL", res: dashboard.Result{Running: true}, wantServer: dashboardCardServerNone},
+		{name: "record cannot be read", err: errors.New("dashboard: read server.json: bad json"), wantServer: dashboardCardServerUnknown},
+	}
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			dashboardCardStubStatus(t, r.res, r.err)
+			url, server := dashboardCardServerURL()
+			if url != r.wantURL || server != r.wantServer {
+				t.Errorf("got %q, %v, want %q, %v", url, server, r.wantURL, r.wantServer)
+			}
+		})
+	}
+}
+
+// TestDashboardCardServerStatus_Default runs the default seam, the real
+// dashboard.Status, against a server record in a temp cache folder
+// (SDLC_CACHE_DIR). A running server is not reachable here: the rows cover the
+// record cases, where Status makes no HTTP call.
+func TestDashboardCardServerStatus_Default(t *testing.T) {
+	rows := []struct {
+		name       string
+		record     func(t *testing.T, path string)
+		wantServer dashboardCardServer
+	}{
+		{name: "no record file", record: func(*testing.T, string) {}, wantServer: dashboardCardServerNone},
+		{name: "bad record JSON", record: func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("{bad"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, wantServer: dashboardCardServerUnknown},
+		{name: "folder at the record path", record: func(t *testing.T, path string) {
+			if err := os.MkdirAll(path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}, wantServer: dashboardCardServerUnknown},
+		// os.ReadFile of a broken link gives os.ErrNotExist, which
+		// ReadServerRecord maps to ErrNoServer: the same case as no record.
+		{name: "broken link at the record path", record: func(t *testing.T, path string) {
+			if err := os.Symlink(filepath.Join(filepath.Dir(path), "no-such-record"), path); err != nil {
+				t.Fatal(err)
+			}
+		}, wantServer: dashboardCardServerNone},
+		{name: "record with no read permission", record: func(t *testing.T, path string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root reads a file with mode 000")
+			}
+			if err := os.WriteFile(path, []byte(`{"port":1}`), 0o000); err != nil {
+				t.Fatal(err)
+			}
+		}, wantServer: dashboardCardServerUnknown},
+	}
+	for _, r := range rows {
+		t.Run(r.name, func(t *testing.T) {
+			t.Setenv("SDLC_CACHE_DIR", t.TempDir())
+			if err := os.MkdirAll(dashboard.Dir(), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			r.record(t, filepath.Join(dashboard.Dir(), "server.json"))
+			url, server := dashboardCardServerURL()
+			if url != "" || server != r.wantServer {
+				t.Errorf("got %q, %v, want \"\", %v", url, server, r.wantServer)
+			}
+		})
 	}
 }

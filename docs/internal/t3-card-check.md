@@ -16,6 +16,18 @@ Setup check: `dashboard_card` is listed in `tools/list` in the T3 thread. Result
 | 5 | Remote T3 web client | open the thread from the web client | not tested | |
 | 6 | The run panel opens in the right panel of this thread only | `dashboard` ensure with `open:true` and `runId`, then `preview_open` with `previewUrl`, in thread A. Switch to thread B, then back | partial | `dashboard` ensure returned `previewUrl`. `preview_open` showed the dashboard with the "Thread eeb2e7ba" filter. The run showed "No run of this thread yet" because the run file has no `t3ThreadId`: the run started before the stamping existed. The switch to thread B is not tested |
 | 7 | The page width follows the panel | in the panel, read `window.innerWidth`, then make the panel narrower | pass | `innerWidth` was 1280, then 600 after the tab resize to 600 |
+| 8 | Snapshot and wave rows render | run a ship run in a T3 thread to the commit step, then look at the step cards | pending | re-check after the dashboard-card-text-fallback change |
+
+## Run card screenshots
+
+The four run card images of the site (`run-card-live`, `run-card-snapshot`, `run-card-end` and `run-card-text` in `site/src/data/assets.json`) come from two dev pages. They are not part of the site build.
+
+| Page | Draws | Images |
+|---|---|---|
+| `site/scripts/card-shots.html` | a fake MCP Apps host that loads `internal/tools/dashboard_card.html` in an iframe; open it with `#live`, `#snapshot` or `#end` | `run-card-live.png`, `run-card-snapshot.png`, `run-card-end.png` |
+| `site/scripts/card-shots-text.html` | the text card of `internal/tools/testdata/dashboard_card_text_ship.golden` in a dark frame | `run-card-text.png` |
+
+Serve the repository root with a static server (for example `python3 -m http.server 8099`), open the page, and take a screenshot of the card. Each page has the full steps in its header comment. Take new images when the card view or the golden file changes.
 
 ## Effect on the plan
 

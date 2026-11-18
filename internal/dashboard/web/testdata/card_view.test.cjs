@@ -310,3 +310,113 @@ describe('escaping', () => {
     assert.match(h.root.innerHTML, /Refresh stopped: &lt;script&gt;bad/);
   });
 });
+
+describe('snapshot card', () => {
+  test('snapshot true draws once, sets no timer and says it does not update', async () => {
+    const h = await start();
+    toolResult(h, card({ snapshot: true }));
+    assert.match(h.root.innerHTML, /class="status running">Running</);
+    assert.match(h.root.innerHTML, /Snapshot — does not update/);
+    assert.doesNotMatch(h.root.innerHTML, /Updates every 15 s/);
+    assert.equal(h.timers.size, 0);
+  });
+
+  test('Refresh on a snapshot card sends snapshot true and starts no timer', async () => {
+    const h = await start();
+    toolResult(h, card({ snapshot: true }));
+    h.click('refresh');
+    assert.deepEqual(h.calls()[0].params, { name: 'dashboard_card', arguments: { runId: RUN_ID, snapshot: true } });
+    await reply(h, { result: result(card({ snapshot: true, branch: 'feat/next' })) });
+    assert.match(h.root.innerHTML, /Branch: feat\/next/);
+    assert.match(h.root.innerHTML, /Snapshot — does not update/);
+    assert.equal(h.timers.size, 0);
+  });
+
+  test('final wins over snapshot: end card, no timer, Refresh sends final only', async () => {
+    const h = await start();
+    toolResult(h, card({ final: true, snapshot: true }));
+    assert.match(h.root.innerHTML, /End of run/);
+    assert.doesNotMatch(h.root.innerHTML, /Snapshot — does not update/);
+    assert.equal(h.timers.size, 0);
+    h.click('refresh');
+    assert.deepEqual(h.calls()[0].params, { name: 'dashboard_card', arguments: { runId: RUN_ID, final: true } });
+  });
+
+  test('a live card after a snapshot card polls again and refreshes without snapshot', async () => {
+    const h = await start();
+    toolResult(h, card({ snapshot: true }));
+    toolResult(h, card());
+    assert.deepEqual([...h.timers.values()].map((t) => t.ms), [15000]);
+    assert.match(h.root.innerHTML, /Updates every 15 s/);
+    h.fireTimer();
+    assert.deepEqual(h.calls()[0].params, { name: 'dashboard_card', arguments: { runId: RUN_ID } });
+  });
+
+  test('the run time of a snapshot card does not count up', async () => {
+    const h = await start();
+    toolResult(h, card({ snapshot: true }));
+    const first = h.root.innerHTML.match(/<span class="dur"[^>]*>.*?<\/span>/);
+    assert.ok(first, 'the head has a run time');
+    assert.equal(h.timers.size, 0, 'no timer redraws the card');
+    assert.equal(h.root.innerHTML.match(/<span class="dur"[^>]*>.*?<\/span>/)[0], first[0]);
+  });
+});
+
+describe('wave rows and task counters', () => {
+  const waveStep = {
+    name: 'execute',
+    status: 'in_progress',
+    tasksDone: 3,
+    tasksTotal: 5,
+    waves: [
+      { name: 'wave 1', status: 'completed', tasksDone: 2, tasksTotal: 2 },
+      { name: 'wave 2', status: 'in_progress', tasksDone: 1, tasksTotal: 3 },
+    ],
+  };
+
+  test('a step with waves shows one nested row for each wave and its own counter', async () => {
+    const h = await start();
+    toolResult(h, card({ steps: [waveStep] }));
+    const out = h.root.innerHTML;
+    assert.match(out, /<span class="nm">execute<\/span> <span class="tc">3\/5 tasks<\/span> <span class="st">in progress<\/span><ol class="waves">/);
+    assert.match(out, /<li class="card-wave completed"><span class="nm">wave 1<\/span> <span class="tc">2\/2 tasks<\/span> <span class="st">completed<\/span><\/li>/);
+    assert.match(out, /<li class="card-wave in_progress"><span class="nm">wave 2<\/span> <span class="tc">1\/3 tasks<\/span> <span class="st">in progress<\/span><\/li>/);
+    assert.equal(out.match(/class="card-wave /g).length, 2);
+  });
+
+  test('a step with a counter and no waves shows the counter only', async () => {
+    const h = await start();
+    toolResult(h, card({ steps: [{ name: 'execute', status: 'completed', tasksDone: 4, tasksTotal: 4 }] }));
+    assert.match(h.root.innerHTML, /<span class="tc">4\/4 tasks<\/span>/);
+    assert.doesNotMatch(h.root.innerHTML, /class="waves"|card-wave/);
+  });
+
+  test('a step with no counter and no waves keeps the old row', async () => {
+    const h = await start();
+    toolResult(h, card({ steps: [{ name: 'commit', status: 'pending' }] }));
+    assert.doesNotMatch(h.root.innerHTML, /class="tc"|class="waves"/);
+  });
+
+  test('N of M done counts the top-level steps only', async () => {
+    const h = await start();
+    toolResult(h, card({ steps: [{ name: 'plan', status: 'completed' }, waveStep] }));
+    assert.match(h.root.innerHTML, /<span class="n">1<\/span> of 2 done/);
+    assert.match(h.root.innerHTML, /aria-valuemax="2" aria-valuenow="1"/);
+    assert.equal(h.root.innerHTML.match(/<i class="seg /g).length, 2);
+  });
+
+  test('wave text is escaped', async () => {
+    const h = await start();
+    toolResult(h, card({ steps: [Object.assign({}, waveStep, { waves: [{ name: '<b>w</b>', status: 'x"y', tasksDone: 0, tasksTotal: 1 }] })] }));
+    assert.match(h.root.innerHTML, /&lt;b&gt;w&lt;\/b&gt;/);
+    assert.doesNotMatch(h.root.innerHTML, /<b>w/);
+  });
+});
+
+describe('view limits', () => {
+  test('the view is under 65536 bytes and has no src=, fetch( or XMLHttpRequest', () => {
+    const html = fs.readFileSync(HTML, 'utf8');
+    assert.ok(Buffer.byteLength(html) < 65536);
+    assert.doesNotMatch(html, /src=|fetch\(|XMLHttpRequest/);
+  });
+});

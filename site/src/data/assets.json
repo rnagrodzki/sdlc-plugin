@@ -79,5 +79,41 @@
     "captured": "2026-11-15",
     "alt": "The detail of one ship run in the sdlc dashboard: the ten steps with their times, the plan findings by area, and the review rounds with the verdict of each lens.",
     "caption": "The detail of one ship run"
+  },
+  {
+    "id": "run-card-live",
+    "kind": "image",
+    "file": "src/assets/run-card-live.png",
+    "version": "0.6.3",
+    "captured": "2026-11-17",
+    "alt": "The run card of a running ship run: the execute step is done with two waves, the commit step is in progress, and one high finding is open. The card updates every 15 seconds.",
+    "caption": "Live run card with waves and task counts"
+  },
+  {
+    "id": "run-card-snapshot",
+    "kind": "image",
+    "file": "src/assets/run-card-snapshot.png",
+    "version": "0.6.3",
+    "captured": "2026-11-17",
+    "alt": "A snapshot of the run card of a ship run. The footer says that the card does not update, and the Refresh button reads the run again.",
+    "caption": "Snapshot card at a step change"
+  },
+  {
+    "id": "run-card-end",
+    "kind": "image",
+    "file": "src/assets/run-card-end.png",
+    "version": "0.6.3",
+    "captured": "2026-11-17",
+    "alt": "The run card at the end of a ship run: all four steps are completed, the run took 25 minutes, and no issues are open.",
+    "caption": "End card of a finished run"
+  },
+  {
+    "id": "run-card-text",
+    "kind": "image",
+    "file": "src/assets/run-card-text.png",
+    "version": "0.6.3",
+    "captured": "2026-11-17",
+    "alt": "The text card of a ship run in a dark frame, for clients that cannot show a card: the steps with their waves, the issue counts, and the dashboard link.",
+    "caption": "Text card in a client with no card support"
   }
 ]

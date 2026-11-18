@@ -1224,8 +1224,11 @@ flowchart LR
     A2 --> P1[dashboard ensure open true runId]:::new
     P1 --> P2[preview_open url#runId?thread=ID: block of the run in the T3 preview tab]:::new
     P2 --> A3[dashboard_card runId: start card]:::new
-    A3 --> A4[Steps run]
+    A3 --> A4[Step or wave runs]
+    A4 --> C5[dashboard_card runId snapshot true: step card or wave card]:::new
+    C5 --> A4
     A4 --> A5[Run ends or fails]
+    A3 -.-> C8[client with no card: text block and dashboard link]:::new
     A5 --> A6[dashboard_card runId final true: end card]:::new
   end
   classDef new fill:#1f7a3a,stroke:#0b3d1c,color:#ffffff,stroke-width:2px
@@ -1249,7 +1252,7 @@ flowchart LR
 
 ## T3 Code
 
-A top-level ship run or a standalone execute run shows a card in the chat of any client that supports MCP Apps. The tool checks the client: a client that announces the MCP Apps extension `io.modelcontextprotocol/ui` in its `initialize` capabilities gets the card. A process in a T3 Code thread also gets the card, because T3 Code renders it. Any other client gets the same run summary as text, and the skill makes no more card calls in that run.
+A top-level ship run or a standalone execute run shows a card in the chat of any client that supports MCP Apps. The tool checks the client: a client that announces the MCP Apps extension `io.modelcontextprotocol/ui` in its `initialize` capabilities gets the card. A process in a T3 Code thread also gets the card, because T3 Code renders it. Any other client gets the same card as a text block, with the dashboard link of the run when the dashboard runs. The skill calls the tool at each card point in every client.
 
 In a T3 Code thread only, the dashboard also opens in a T3 preview tab (the run panel). Outside T3 Code, the run panel does not open.
 
@@ -1259,7 +1262,7 @@ In a T3 Code thread only, the dashboard also opens in a T3 preview tab (the run 
 | Change actions | work (token guard) | no, read-only |
 | Live updates | event stream | the card shows the run state at the time of each `dashboard_card` call; the Refresh button was clicked by hand and works (check 2); the refresh between turns is not tested (see Limits) |
 
-The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Code thread. The skill passes `previewUrl` to the T3 `preview_open` tool. No system browser opens. `dashboard_card` takes `runId` and `final`: `final` set to true makes the end card.
+The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Code thread. The skill passes `previewUrl` to the T3 `preview_open` tool. No system browser opens. `dashboard_card` takes `runId`, `final` and `snapshot`: `final` set to true makes the end card, and `snapshot` set to true makes a step card or a wave card.
 
 ### The dashboard_card tool
 
@@ -1267,6 +1270,7 @@ The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Co
 |---|---|
 | `runId` | The state file name of a ship or execute run, without `.json`: `ship-` or `execute-`, then 1 to 200 characters of `A-Z a-z 0-9 . _ -`. A `plan-` run id is refused |
 | `final` | `true` for the end card. A run whose state still says `running` then shows as stopped, resumable |
+| `snapshot` | `true` for a step card or a wave card, a card of one moment. The card draws the run once and does not refresh. `final` wins when both are `true` |
 
 | Error | When |
 |---|---|
@@ -1274,7 +1278,61 @@ The `dashboard` tool returns `previewUrl` for ensure with `open` true in a T3 Co
 | DataError | the run is not found and some run files could not be read, or in a T3 Code thread the run stores a `t3ThreadId` that is not a string |
 | InfraError | the runs folder cannot be listed |
 
-The output has `summary`, `runId`, `kind` (`ship` or `execute`), `branch`, `status`, `final`, `t3ThreadId` (when the run has one), `startedAt`, `completedAt` (`null` while the run has no end time), `steps` (`name` and `status` of each step, or of each wave of an execute run), `issues` (a count for each severity) and `next`. The tool reads the run files and writes nothing. On any error, the ship and execute skills print `Warning: run card not shown — ` and the first line of the error, then continue.
+The output has these fields:
+
+| Field | Value |
+|---|---|
+| `summary`, `runId`, `kind`, `branch`, `status` | one line about the run; the run id; `ship` or `execute`; the branch; the run status |
+| `final` | a copy of the `final` input |
+| `snapshot` | `true` for a middle card. Absent when `snapshot` was not sent, and absent when `final` is also `true`: `final` wins, and `next` then ends with `snapshot was ignored because final is true.` |
+| `t3ThreadId` | the thread id of the run, when it has one |
+| `startedAt`, `completedAt` | the start time; the end time, `null` while the run has no end time |
+| `steps[]` | `name` and `status` of each step of a ship run, or of each wave of an execute run. A wave step of an execute run also has `tasksDone` and `tasksTotal` |
+| `steps[].waves[]` | on the `execute` step of a ship run only, when the dashboard joins an execute run to the ship run: `name`, `status`, `tasksDone` and `tasksTotal` of each wave of that execute run |
+| `issues` | a count for each severity |
+| `next` | what the skill does next |
+| `text` | a client with no card only: the text block |
+| `dashboardUrl` | a client with no card only, when the dashboard runs: `<url>#<runId>` |
+
+The tool reads the run files and the dashboard server record, probes the server over loopback HTTP, and writes nothing. On the first error, the ship and execute skills print `Warning: run card not shown — ` and the first line of the error, then continue.
+
+Card kinds:
+
+| Card | When it shows | Refresh | Client with no card |
+|---|---|---|---|
+| Start card | after the run starts | every 15 s while the run runs | text block and dashboard link |
+| Step card (ship) or wave card (execute) | at each ship step after the first, and after each execute wave except the last | none: a snapshot of that moment | text block and dashboard link |
+| End card | at every exit after the start card | none | text block and dashboard link |
+
+A client with no card gets the same card as a text block. The skill prints the `text` field in the chat unchanged, in a code block. This is the text block of a ship run in progress:
+
+```text
+SHIP  [running]
+ship-feat-x-20261116T175538Z
+Branch:    feat/x
+Started:   2026-11-16T17:55:38Z
+Completed: not recorded
+
+STEPS                                   1 of 4 done
+[#>..]
+  [x] execute            completed
+        wave 1  2/2 tasks  completed
+        wave 2  3/3 tasks  completed
+  [>] commit             in_progress
+  [ ] review             pending
+  [ ] pr                 pending
+
+ISSUES   high 1
+Dashboard: http://127.0.0.1:55551#ship-feat-x-20261116T175538Z
+```
+
+The last line is the dashboard link rule:
+
+| Dashboard server | Last line of the block | What the skill does |
+|---|---|---|
+| runs | `Dashboard: <url>#<runId>` | nothing more: the block holds the link |
+| does not run | the `ISSUES` line: the block has no `Dashboard:` line | starts the dashboard once in the run and prints `Dashboard: <url>#<runId>`, or prints `Warning: dashboard not started` and continues with no link |
+| record cannot be read | `Dashboard: link unavailable` | nothing more: `next` orders no start, because a server can run while only its record read fails |
 
 ### Thread filter
 
@@ -1297,6 +1355,7 @@ A person checked the card and the run panel by hand in T3 Code. The [check recor
 
 Open risks:
 
+- A client with no card sees the waves of the ship execute step only at the next step card. Execute runs as a separate agent, and ship makes no card call while that agent runs.
 - The card in the remote T3 web client is not tested (check 5).
 - The card in an MCP Apps client other than T3 Code is not tested.
 - It is not verified that T3 Code announces `io.modelcontextprotocol/ui` in `initialize`. The tool treats a process in a T3 Code thread as a client that shows the card, so the card does not depend on that announcement.

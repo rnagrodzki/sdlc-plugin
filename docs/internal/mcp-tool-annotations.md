@@ -32,7 +32,7 @@ Idempotent:true indicates repeating a call with the same arguments has no furthe
 
 ### OpenWorld
 
-OpenWorld:true indicates the tool reaches external entities: network (HTTP, git remote, GitHub API), cloud services, or any caller-controlled endpoint. Local-only tools (pure string processing, local git, writes to .sdlc-v2/scratch/) are false. **This field is required on every tool, read-only or writer.** Go's zero value is false; the MCP spec's default is true. Never omit it.
+OpenWorld:true indicates the tool reaches external entities: network (HTTP, git remote, GitHub API), cloud services, or any caller-controlled endpoint. Local-only tools (pure string processing, local git, writes to .sdlc-v2/scratch/) are false. **Exception: loopback to the local dashboard server.** An HTTP call to 127.0.0.1 that reaches only the dashboard server of this plugin (the health probe of `dashboard.Status` and `dashboard.Ensure`) is local, so `dashboard` and `dashboard_card` are false. Any other HTTP call, loopback to a caller-chosen port included, is OpenWorld:true. **This field is required on every tool, read-only or writer.** Go's zero value is false; the MCP spec's default is true. Never omit it.
 
 ## Zero-Value Hazard
 
@@ -69,4 +69,4 @@ The test file toolAnnotations map is the source of truth. It lists all 35 tools 
 
 TestReadOnlyToolsWriteNothingTracked runs every read-only tool against a minimal fixture repo and verifies git status --porcelain is empty afterward. Tools requiring external dependencies (links_validate, received_review_prepare, received_review_verify) are skipped with the reason recorded in the map, so skipping is visible rather than silent.
 
-`dashboard_card` is read-only: it reads the run state files through `state.List` and writes nothing. Its direct-call case in TestReadOnlyToolsWriteNothingTracked calls `dashboardCard` against the fixture repo.
+`dashboard_card` is read-only: it reads the run state files through `state.List` and the dashboard server record through `dashboard.Status`, and writes nothing. Its direct-call case in TestReadOnlyToolsWriteNothingTracked calls `dashboardCard` against the fixture repo.

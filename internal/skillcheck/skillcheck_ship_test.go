@@ -891,3 +891,38 @@ func TestShipSkillsWaitsReportAndPRDraft(t *testing.T) {
 	hardenSkillsAssertOnce(t, "skills/ship/reference.md", reference,
 		"/sdlc:pr [--draft] [--base <branch>] --skip-approval [--auto] --no-instructions\n")
 }
+
+// TestShipSkillRunCardRule pins the run card rule of the ship skill: the step
+// card with the snapshot flag, the text field fallback with the one dashboard
+// ensure, and the skip lines of the resume and dry-run handlers.
+func TestShipSkillRunCardRule(t *testing.T) {
+	root := shipSkillsRepoRoot(t)
+	content := shipSkillsReadFile(t, root, "skills/ship/SKILL.md")
+	for _, pin := range []string{
+		`dashboard_card({ runId: "<same>", snapshot: true })`,
+		"Step card: after the item 7b begin-step of each step except the first step of this invocation",
+		"execute is always the first step of the main loop, so it never gets a step card.",
+		"Then print the text field unchanged in a code block. The communication style does not apply to it.",
+		"Make the code fence longer than the longest run of backticks in the text",
+		"If the result has dashboardUrl, the text already ends with the link: make no ensure call",
+		`If next orders a dashboard ensure call, make it at most once in this run: dashboard({ action: "ensure", runId: "<runId>" }).`,
+		"A dashboard ensure of the run panel rule counts as the one ensure of this run.",
+		"with a token, key or password in it replaced by ***.\nPrint <error text> in a code span",
+		"Then apply the run card rule (step card).",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/SKILL.md", content, pin)
+	}
+	for _, gone := range []string{"leave out snapshot", "the last-step and retry rules", "Ensure on a running server returns its link and starts nothing"} {
+		if strings.Contains(content, gone) {
+			t.Errorf("skills/ship/SKILL.md still holds %q", gone)
+		}
+	}
+
+	entry := shipSkillsReadFile(t, root, "skills/ship/entry-modes.md")
+	for _, pin := range []string{
+		"`Run card: not shown on a resumed run.`",
+		"`Run card: not shown in a dry run.`",
+	} {
+		hardenSkillsAssertOnce(t, "skills/ship/entry-modes.md", entry, pin)
+	}
+}
