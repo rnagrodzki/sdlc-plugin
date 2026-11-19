@@ -642,3 +642,160 @@ func TestE2E_SetupSaveAndCreate(t *testing.T) {
 		}
 	})
 }
+
+// setupE2EGuardrailConfig is the config.toml of TestE2E_SetupGuardrails: two
+// plan guardrails, not in id order, and one execute guardrail, in the
+// named-table form. Its comment must stay after a save.
+const setupE2EGuardrailConfig = `# Team guardrails. Keep ids in kebab-case.
+[plan.guardrails.old-rule]
+description = "Old rule."
+severity = "error"
+
+[plan.guardrails.dry]
+description = "Keep code DRY."
+severity = "error"
+`
+
+// TestE2E_SetupGuardrails runs the state and save routes with the real
+// functions of internal/tools on real files: the layers and the guardrail lists
+// of the state, a guardrail save that is read back, a refused save on an array
+// form list, and a guardrail save larger than 8 KiB.
+func TestE2E_SetupGuardrails(t *testing.T) {
+	userPath := filepath.Join(t.TempDir(), "local.toml")
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	// guardrailRepo returns a repo root whose config.toml holds configText.
+	guardrailRepo := func(t *testing.T, configText string) (root, configPath string) {
+		t.Helper()
+		root = t.TempDir()
+		configPath = filepath.Join(root, ".sdlc-v2", "config.toml")
+		e2eWriteFile(t, configPath, configText)
+		return root, configPath
+	}
+	// saveGuardrails posts a save of the guardrail changes in changes.
+	saveGuardrails := func(t *testing.T, h *handler, root string, changes map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body := e2eMarshal(t, map[string]any{
+			"repo":       root,
+			"changes":    []any{},
+			"targets":    map[string]string{},
+			"guardrails": changes,
+		})
+		return postJSON(h, "/api/setup-save", body, mutationHeader())
+	}
+
+	t.Run("layers", func(t *testing.T) {
+		root, _ := guardrailRepo(t, setupE2EConfig)
+		e2eWriteFile(t, filepath.Join(root, ".sdlc-v2", "local.toml"), "[ship]\nbump = \"minor\"\n")
+		e2eWriteFile(t, userPath, "[ship]\nbump = \"major\"\n")
+		t.Cleanup(func() { _ = os.Remove(userPath) })
+		h := e2eSetupHandler(t, root)
+
+		state := e2eSetupState(t, h, root)
+		layers := state.Layers["ship.bump"]
+		if layers["project"] != "minor" || layers["user"] != "major" || len(layers) != 2 {
+			t.Errorf("layers[ship.bump] = %v; want project minor and user major", layers)
+		}
+		if got := state.Values["ship"]["bump"]; got.Value != "minor" || got.Source != "project" {
+			t.Errorf("ship.bump = %+v; want minor from project", got)
+		}
+	})
+
+	t.Run("lists", func(t *testing.T) {
+		root, _ := guardrailRepo(t, setupE2EGuardrailConfig)
+		h := e2eSetupHandler(t, root)
+
+		rec := do(h, "GET", "/api/setup-state?repo="+url.QueryEscape(root), testHost, nil)
+		if !strings.Contains(rec.Body.String(), `"execute.guardrails":[]`) {
+			t.Errorf("body %q; want execute.guardrails as []", rec.Body.String())
+		}
+		state := e2eSetupState(t, h, root)
+		wantPlan := []tools.DashboardGuardrail{
+			{ID: "dry", Severity: "error", Description: "Keep code DRY."},
+			{ID: "old-rule", Severity: "error", Description: "Old rule."},
+		}
+		if got := state.Guardrails["plan.guardrails"]; !reflect.DeepEqual(got, wantPlan) {
+			t.Errorf("plan.guardrails = %+v; want %+v", got, wantPlan)
+		}
+		if got := state.Guardrails["execute.guardrails"]; got == nil || len(got) != 0 {
+			t.Errorf("execute.guardrails = %#v; want []", got)
+		}
+	})
+
+	t.Run("save-roundtrip", func(t *testing.T) {
+		root, configPath := guardrailRepo(t, setupE2EGuardrailConfig)
+		h := e2eSetupHandler(t, root)
+
+		rec := saveGuardrails(t, h, root, map[string]any{"plan-guardrails": []map[string]any{
+			{"id": "new-rule", "op": "add", "severity": "error", "description": "New rule."},
+			{"id": "dry", "op": "change", "severity": "warning", "description": "Keep code DRY."},
+			{"id": "old-rule", "op": "remove"},
+		}})
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ok":true`) {
+			t.Fatalf("save = %d (body %q); want 200 with ok true", rec.Code, rec.Body.String())
+		}
+
+		state := e2eSetupState(t, h, root)
+		want := []tools.DashboardGuardrail{
+			{ID: "dry", Severity: "warning", Description: "Keep code DRY."},
+			{ID: "new-rule", Severity: "error", Description: "New rule."},
+		}
+		if got := state.Guardrails["plan.guardrails"]; !reflect.DeepEqual(got, want) {
+			t.Errorf("plan.guardrails = %+v; want %+v", got, want)
+		}
+		onDisk, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(onDisk), "# Team guardrails. Keep ids in kebab-case.") {
+			t.Errorf("config.toml lost its comment:\n%s", onDisk)
+		}
+	})
+
+	t.Run("array-form-refused", func(t *testing.T) {
+		arrayConfig := "[[plan.guardrails]]\nid = \"dry\"\ndescription = \"Keep code DRY.\"\n"
+		root, configPath := guardrailRepo(t, arrayConfig)
+		h := e2eSetupHandler(t, root)
+
+		rec := saveGuardrails(t, h, root, map[string]any{"plan-guardrails": []map[string]any{
+			{"id": "new-rule", "op": "add", "severity": "error", "description": "New rule."},
+		}})
+		wantAPIError(t, rec, 400, codeBadRequest)
+		onDisk, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(onDisk) != arrayConfig {
+			t.Errorf("config.toml changed:\n%s", onDisk)
+		}
+	})
+
+	t.Run("large-body", func(t *testing.T) {
+		root, _ := guardrailRepo(t, setupE2EGuardrailConfig)
+		h := e2eSetupHandler(t, root)
+
+		// 12 adds with a 1000-byte description make a body over 8 KiB, and far
+		// under maxSetupSaveBody.
+		var adds []map[string]any
+		for i := range 12 {
+			adds = append(adds, map[string]any{
+				"id": fmt.Sprintf("big-rule-%02d", i), "op": "add",
+				"severity": "error", "description": strings.Repeat("x", 1000),
+			})
+		}
+		body := e2eMarshal(t, map[string]any{
+			"repo": root, "changes": []any{}, "targets": map[string]string{},
+			"guardrails": map[string]any{"plan-guardrails": adds},
+		})
+		if len(body) <= maxMutationBody || len(body) >= maxSetupSaveBody {
+			t.Fatalf("body is %d bytes; want over %d and under %d", len(body), maxMutationBody, maxSetupSaveBody)
+		}
+		rec := postJSON(h, "/api/setup-save", body, mutationHeader())
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ok":true`) {
+			t.Fatalf("save = %d (body %q); want 200 with ok true", rec.Code, rec.Body.String())
+		}
+		if got := len(e2eSetupState(t, h, root).Guardrails["plan.guardrails"]); got != 14 {
+			t.Errorf("plan.guardrails has %d entries; want 14", got)
+		}
+	})
+}

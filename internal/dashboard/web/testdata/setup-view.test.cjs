@@ -467,6 +467,19 @@ describe('saveNote', () => {
       + ' Edit it by hand. Edit section ship in .sdlc-v2/local.toml by hand, then run setup again for that section.');
   });
 
+  test('200 with ok false names the id of a failed guardrail', () => {
+    const out = sv.saveNote(200, {
+      ok: false,
+      written: [],
+      failed: [
+        { section: 'plan-guardrails', id: 'dry', file: '/r/.sdlc-v2/config.toml', message: 'disk full' },
+        { section: 'version', file: '/r/.sdlc-v2/config.toml', message: 'locked' },
+      ],
+    }, 2);
+    assert.equal(out.note, 'Saved 0 of 2 sections. Not saved: plan-guardrails dry (/r/.sdlc-v2/config.toml). disk full'
+      + ' Not saved: version (/r/.sdlc-v2/config.toml). locked');
+  });
+
   test('400 SETUP_INVALID gives the field errors', () => {
     const fields = [{ section: 'ship', field: 'bump', path: 'ship.bump', message: 'bad' }];
     assert.deepEqual(sv.saveNote(400, { error: { code: 'SETUP_INVALID', fields } }, 2), {

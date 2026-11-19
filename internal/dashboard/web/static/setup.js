@@ -355,6 +355,11 @@
     return '';
   }
 
+  // grRowError is the text that the row shows: the local check first, then the server error.
+  function grRowError(sec, g) {
+    return grError(sec, g) || cur().errors[sec.id + '/' + g.id] || '';
+  }
+
   function grErrorCount() {
     var n = 0;
     grSections.forEach(function (sec) {
@@ -431,7 +436,7 @@
     } else {
       row.appendChild(grEditor(sec, g, base, row));
     }
-    var err = grError(sec, g);
+    var err = grRowError(sec, g);
     var errNode = h('p', 'setup-f-error', err);
     errNode.setAttribute('role', 'alert');
     errNode.hidden = !err;
@@ -549,7 +554,7 @@
     tag.textContent = state === 'set' ? '' : state.toUpperCase();
     tag.hidden = state === 'set';
     ref.row.setAttribute('data-state', state);
-    var err = grError(sec, g);
+    var err = grRowError(sec, g);
     ref.err.textContent = err;
     ref.err.hidden = !err;
     ref.row.classList.toggle('has-error', !!err);

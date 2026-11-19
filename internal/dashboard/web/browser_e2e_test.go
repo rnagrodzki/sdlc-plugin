@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/chromedp/chromedp"
+	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/attention"
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
@@ -2031,6 +2032,199 @@ func TestBrowserE2E_SetupFileFilter(t *testing.T) {
 	})()`)
 	if !closed {
 		t.Error("the plan guardrail list opened after the index click; want it closed")
+	}
+}
+
+// browserSetupGrJS runs body with the variable row set to the row of the plan
+// guardrail id. It returns null when the list has no such row. The page draws
+// the row again after a click, so each call looks the row up again.
+func browserSetupGrJS(id, body string) string {
+	return `(function () {
+		var row = Array.prototype.find.call(document.querySelectorAll('#setup-gr-list-plan-guardrails .setup-gr-row'), function (r) {
+			return r.querySelector('.setup-gr-id').textContent === ` + browserJSON(id) + `;
+		});
+		if (!row) return null;
+		` + body + `
+	})()`
+}
+
+// browserSetupGrSet sets the value of the input or textarea that matches sel
+// and sends the input event that the page listens to.
+func browserSetupGrSet(page *browserPage, sel, value string) {
+	page.t.Helper()
+	browserMust[bool](page, "set "+sel, `(function () {
+		var n = document.querySelector(`+browserJSON(sel)+`);
+		if (!n) return false;
+		n.value = `+browserJSON(value)+`;
+		n.dispatchEvent(new Event('input', { bubbles: true }));
+		return true;
+	})()`)
+}
+
+// browserSetupGrSeverity opens the row of the plan guardrail id and picks the
+// severity sev.
+func browserSetupGrSeverity(page *browserPage, id, sev string) {
+	page.t.Helper()
+	if !browserMust[bool](page, "open "+id, browserSetupGrJS(id, `row.querySelector('.setup-gr-desc').click(); return true;`)) {
+		page.t.Fatalf("the plan guardrail list has no row %q", id)
+	}
+	if !browserMust[bool](page, "pick "+sev+" for "+id, browserSetupGrJS(id, `
+		var b = row.querySelector('.setup-gr-sevseg [data-sev="`+sev+`"]');
+		if (!b) return false;
+		b.click();
+		return true;`)) {
+		page.t.Fatalf("the row %q has no severity choice %q", id, sev)
+	}
+}
+
+// browserSetupGrReview clicks Review and save, then Save in the dialog.
+func browserSetupGrReview(page *browserPage) {
+	page.t.Helper()
+	page.click("Review and save", browserSetupSave)
+	page.wait("the review dialog", `document.getElementById('setup-review').open`)
+	page.click("Save in the review dialog", "#setup-review-ok")
+}
+
+// browserSetupGrTable returns the plan guardrail tables of the config file.
+func browserSetupGrTable(t *testing.T, path string) map[string]map[string]any {
+	t.Helper()
+	var doc struct {
+		Plan struct {
+			Guardrails map[string]map[string]any `toml:"guardrails"`
+		} `toml:"plan"`
+	}
+	if err := toml.Unmarshal([]byte(browserReadFile(t, path)), &doc); err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	return doc.Plan.Guardrails
+}
+
+// TestBrowserE2E_SetupGuardrails drives the guardrail save of the Setup tab in
+// a real browser: an id that is not kebab-case blocks the save, one save adds,
+// changes and removes a guardrail, the page reloads the lists with no change
+// mark, and a guardrail table that left the disk shows the server error on its
+// row.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_SetupGuardrails(t *testing.T) {
+	t.Setenv(config.UserConfigPathEnv, filepath.Join(t.TempDir(), "local.toml"))
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+
+	repo := t.TempDir()
+	configPath, _ := browserSetupSeedA(t, repo)
+	seeded := browserSetupGrTable(t, configPath)
+	for _, id := range []string{"no-ci-bypass", "test-coverage-required"} {
+		if seeded[id]["severity"] != "error" {
+			t.Fatalf("seeded config.toml: plan guardrail %q = %v; want severity error", id, seeded[id])
+		}
+	}
+	wantForm := 0
+	for _, sec := range setupmeta.Sections() {
+		if sec.ConfigPath != "" && len(sec.Fields) > 0 {
+			wantForm++
+		}
+	}
+	base, page := browserLaunch(t, chrome, []string{repo})
+	const (
+		grList  = "#setup-gr-list-plan-guardrails"
+		grAdd   = "#setup-sec-plan-guardrails .setup-gr-tools .setup-btn:not(.setup-gr-toggle)"
+		grIDIn  = grList + " .setup-gr-idin"
+		grText  = grList + " .setup-gr-text"
+		kebabEr = "Use lowercase words joined by single hyphens, e.g. no-ci-bypass."
+	)
+	page.do("open the Setup tab", chromedp.Navigate(base+"/#setup"))
+	page.wait("the form sections", `document.querySelectorAll(`+browserJSON(browserSetupForm)+`).length === `+strconv.Itoa(wantForm))
+
+	// Step 1: a new guardrail with an id that is not kebab-case shows the row
+	// error and blocks the save.
+	page.click("Add guardrail", grAdd)
+	page.wait("the id input of the new guardrail", `!!document.querySelector(`+browserJSON(grIDIn)+`)`)
+	browserSetupGrSet(page, grIDIn, "Bad_Id")
+	page.wait("the kebab-case error on the new row", `(function () {
+		var e = document.querySelector(`+browserJSON(grList+` .setup-gr-row[data-state="new"] .setup-f-error`)+`);
+		return !!e && !e.hidden && e.textContent === `+browserJSON(kebabEr)+`;
+	})()`)
+	page.wait("the save button to be disabled", `(function () {
+		var b = document.querySelector(`+browserJSON(browserSetupSave)+`);
+		return !!b && !b.hidden && b.disabled;
+	})()`)
+	if got := browserSetupGrTable(t, configPath); len(got) != len(seeded) {
+		t.Errorf("config.toml has %d plan guardrails after an invalid id; want %d", len(got), len(seeded))
+	}
+
+	// Step 2: fix the id, add a description, change no-ci-bypass to warning,
+	// and remove test-coverage-required. The save button takes only guardrail
+	// edits.
+	browserSetupGrSet(page, grIDIn, "new-rule")
+	browserSetupGrSet(page, grText, "New rule.")
+	browserSetupGrSeverity(page, "no-ci-bypass", "warning")
+	if !browserMust[bool](page, "remove test-coverage-required", browserSetupGrJS("test-coverage-required", `row.querySelector('.setup-gr-icon-trash').click(); return true;`)) {
+		t.Fatal("the plan guardrail list has no row test-coverage-required")
+	}
+	page.wait("the save button to be active", `(function () {
+		var b = document.querySelector(`+browserJSON(browserSetupSave)+`);
+		return !!b && !b.hidden && !b.disabled;
+	})()`)
+	browserSetupGrReview(page)
+	page.wait("the save note", `(function () {
+		var n = document.querySelector(`+browserJSON(browserSetupNote)+`);
+		return !!n && n.textContent === 'Saved 3 changes.';
+	})()`)
+	got := browserSetupGrTable(t, configPath)
+	if _, ok := got["test-coverage-required"]; ok {
+		t.Error("config.toml still has test-coverage-required after the remove")
+	}
+	if got["no-ci-bypass"]["severity"] != "warning" {
+		t.Errorf("no-ci-bypass in config.toml = %v; want severity warning", got["no-ci-bypass"])
+	}
+	if got["new-rule"]["severity"] != "error" || got["new-rule"]["description"] != "New rule." {
+		t.Errorf("new-rule in config.toml = %v; want severity error and description \"New rule.\"", got["new-rule"])
+	}
+
+	// Step 3: after ok: true the page loads the state again. No row shows NEW,
+	// CHANGED or REMOVED.
+	page.wait("the reloaded guardrail list", `Array.prototype.map.call(
+		document.querySelectorAll(`+browserJSON(grList+" .setup-gr-id")+`),
+		function (n) { return n.textContent; }).join(',') === 'new-rule,no-ci-bypass'`)
+	if n := page.count(grList + ` .setup-gr-row:not([data-state="set"])`); n != 0 {
+		t.Errorf("rows with a NEW, CHANGED or REMOVED state after the save = %d; want 0", n)
+	}
+	if n := page.count(grList + " .setup-gr-tag:not([hidden])"); n != 0 {
+		t.Errorf("visible state tags after the save = %d; want 0", n)
+	}
+
+	// Step 4: a guardrail table leaves the disk after the page load. The save
+	// of that id shows the server message on its row.
+	browserSetupGrSeverity(page, "no-ci-bypass", "error")
+	page.wait("the save button to be active", `(function () {
+		var b = document.querySelector(`+browserJSON(browserSetupSave)+`);
+		return !!b && !b.hidden && !b.disabled;
+	})()`)
+	var doc map[string]any
+	if err := toml.Unmarshal([]byte(browserReadFile(t, configPath)), &doc); err != nil {
+		t.Fatal(err)
+	}
+	delete(doc["plan"].(map[string]any)["guardrails"].(map[string]any), "no-ci-bypass")
+	out, err := toml.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2eWriteFile(t, configPath, string(out))
+	diskBefore := browserReadFile(t, configPath)
+	browserSetupGrReview(page)
+	page.wait("the server message on the row", `(function () {
+		var row = Array.prototype.find.call(document.querySelectorAll(`+browserJSON(grList+" .setup-gr-row")+`), function (r) {
+			return r.querySelector('.setup-gr-id').textContent === 'no-ci-bypass';
+		});
+		var e = row && row.querySelector('.setup-f-error');
+		return !!e && !e.hidden && e.textContent.indexOf('guardrail no-ci-bypass is not in config.toml') === 0;
+	})()`)
+	if got := page.text(browserSetupNote); got != "Not saved. The config check refused 1 field. No file changed." {
+		t.Errorf("save note after the refused save = %q", got)
+	}
+	if got := browserReadFile(t, configPath); got != diskBefore {
+		t.Errorf("config.toml changed by a refused save:\n%s", got)
 	}
 }
 

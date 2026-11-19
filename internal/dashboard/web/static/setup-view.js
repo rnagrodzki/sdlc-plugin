@@ -324,7 +324,7 @@
       var failed = obj.failed || [];
       var parts = ['Saved ' + written + ' of ' + (written + failed.length) + ' sections.'];
       failed.forEach(function (f) {
-        parts.push('Not saved: ' + f.section + ' (' + f.file + '). ' + f.message + (f.suggestion ? ' ' + f.suggestion : ''));
+        parts.push('Not saved: ' + f.section + (f.id ? ' ' + f.id : '') + ' (' + f.file + '). ' + f.message + (f.suggestion ? ' ' + f.suggestion : ''));
       });
       if (obj.next) {
         parts.push(obj.next);
