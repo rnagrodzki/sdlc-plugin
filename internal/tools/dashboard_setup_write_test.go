@@ -400,41 +400,55 @@ func TestDashboardSetupSave_RequestRules(t *testing.T) {
 	atLimit := slices.Repeat([]DashboardSetupChange{bad}, maxSetupChanges)
 	unknownSection := fmt.Sprintf(`section "nope" is not a form section. Form sections: %s`, saveFormSectionIDs())
 	emptySuggestion := "Change a field or a guardrail, then save."
+	sectionSuggestion := "Use a form section id from the list."
+	badTargetSuggestion := "Name in targets only a local form section that has a change in changes."
 	cases := []struct {
 		name       string
 		in         DashboardSetupSaveIn
 		rule       string
-		suggestion string // "" means the common request Suggestion
+		suggestion string // the recovery step of the rule
 	}{
 		{"absent changes", DashboardSetupSaveIn{}, "changes and guardrails are empty", emptySuggestion},
 		{"empty changes", DashboardSetupSaveIn{Changes: []DashboardSetupChange{}}, "changes and guardrails are empty", emptySuggestion},
 		{"empty changes and empty guardrails", DashboardSetupSaveIn{Changes: []DashboardSetupChange{}, Guardrails: map[string][]DashboardSetupGuardrailChange{}}, "changes and guardrails are empty", emptySuggestion},
-		{"too many changes", DashboardSetupSaveIn{Changes: tooMany}, fmt.Sprintf("changes has %d entries, over the limit of %d", maxSetupChanges+1, maxSetupChanges), ""},
-		{"changes at the limit", DashboardSetupSaveIn{Changes: atLimit}, unknownSection, ""},
-		{"unknown section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("nope", "x", "y")}}, unknownSection, ""},
+		{"too many changes", DashboardSetupSaveIn{Changes: tooMany}, fmt.Sprintf("changes has %d entries, over the limit of %d", maxSetupChanges+1, maxSetupChanges),
+			fmt.Sprintf("Save at most %d field changes at one time.", maxSetupChanges)},
+		{"changes at the limit", DashboardSetupSaveIn{Changes: atLimit}, unknownSection, sectionSuggestion},
+		{"unknown section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("nope", "x", "y")}}, unknownSection, sectionSuggestion},
 		{"delegated section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("commit", "allowedTypes", []any{"feat"})}},
-			fmt.Sprintf(`section "commit" is a delegated section; the form cannot change it. Form sections: %s`, saveFormSectionIDs()), ""},
+			fmt.Sprintf(`section "commit" is a delegated section; the form cannot change it. Form sections: %s`, saveFormSectionIDs()),
+			"Run /sdlc:setup --only commit in the repo to change this section."},
 		{"unknown field", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "nope", "y")}},
-			fmt.Sprintf(`field "nope" is not a field of section "ship". Fields: %s`, saveFieldNames(t, "ship")), ""},
-		{"same field twice", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor"), saveReset("ship", "bump")}}, `section "ship" field "bump" is in changes more than once`, ""},
-		{"bad op", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "delete"}}}, `op "delete" is not set or reset`, ""},
-		{"set with no value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "set"}}}, `section "ship" field "bump" has op set with no value; use op reset to remove a value`, ""},
-		{"reset with a value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "reset", Value: "minor"}}}, `section "ship" field "bump" has op reset with a value; op reset takes no value`, ""},
-		{"target of a config.toml section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("jira", "defaultProject", "A")}, Targets: map[string]string{"jira": "user"}}, `targets names section "jira", which is not a local form section with a change`, ""},
-		{"target with no change", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"review": "user"}}, `targets names section "review", which is not a local form section with a change`, ""},
-		{"bad target value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"ship": "both"}}, `target "both" is not project or user`, ""},
+			fmt.Sprintf(`field "nope" is not a field of section "ship". Fields: %s`, saveFieldNames(t, "ship")), "Use a field name from the list."},
+		{"same field twice", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor"), saveReset("ship", "bump")}}, `section "ship" field "bump" is in changes more than once`,
+			"Send one change for each field."},
+		{"bad op", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "delete"}}}, `section "ship" field "bump" has op "delete", which is not set or reset`,
+			"Use op set or op reset."},
+		{"set with no value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "set"}}}, `section "ship" field "bump" has op set with no value`,
+			"Send a value with op set, or use op reset to remove the value."},
+		{"reset with a value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{{Section: "ship", Field: "bump", Op: "reset", Value: "minor"}}}, `section "ship" field "bump" has op reset with a value`,
+			"Send op reset with no value."},
+		{"target of a config.toml section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("jira", "defaultProject", "A")}, Targets: map[string]string{"jira": "user"}}, `targets names section "jira", which is not a local form section with a change`, badTargetSuggestion},
+		{"target with no change", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"review": "user"}}, `targets names section "review", which is not a local form section with a change`, badTargetSuggestion},
+		{"bad target value", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"ship": "both"}}, `section "ship" has target "both", which is not project or user`,
+			"Use target project or target user."},
 		// Two bad targets: the ids are checked in sorted order, so the first
 		// id (automation, no change) is reported, not the bad value of ship.
-		{"two bad targets", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"ship": "both", "automation": "user"}}, `targets names section "automation", which is not a local form section with a change`, ""},
-		{"two targets with no change", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"review": "user", "github": "project"}}, `targets names section "github", which is not a local form section with a change`, ""},
-		// A guardrail section stays a delegated section for a form change, and
-		// targets cannot name it: guardrails go only to config.toml.
+		{"two bad targets", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"ship": "both", "automation": "user"}}, `targets names section "automation", which is not a local form section with a change`, badTargetSuggestion},
+		{"two targets with no change", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("ship", "bump", "minor")}, Targets: map[string]string{"review": "user", "github": "project"}}, `targets names section "github", which is not a local form section with a change`, badTargetSuggestion},
+		// A form change of a guardrail section names the guardrails field of
+		// the request, and targets cannot name a guardrail section: guardrails
+		// go only to config.toml.
 		{"form change of a guardrail section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("plan-guardrails", "dry", "x")}},
-			fmt.Sprintf(`section "plan-guardrails" is a delegated section; the form cannot change it. Form sections: %s`, saveFormSectionIDs()), ""},
+			`section "plan-guardrails" is a guardrail section; changes cannot change it`,
+			`Send a change of section "plan-guardrails" in the guardrails field of the request, not in changes.`},
+		{"form change of the execution guardrail section", DashboardSetupSaveIn{Changes: []DashboardSetupChange{saveSet("execution-guardrails", "dry", "x")}},
+			`section "execution-guardrails" is a guardrail section; changes cannot change it`,
+			`Send a change of section "execution-guardrails" in the guardrails field of the request, not in changes.`},
 		{"target of a guardrail section", DashboardSetupSaveIn{
 			Guardrails: map[string][]DashboardSetupGuardrailChange{"plan-guardrails": {{ID: "dry", Op: "remove"}}},
 			Targets:    map[string]string{"plan-guardrails": "project"},
-		}, `targets names section "plan-guardrails", which is not a local form section with a change`, ""},
+		}, `targets names section "plan-guardrails", which is not a local form section with a change`, badTargetSuggestion},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -448,12 +462,8 @@ func TestDashboardSetupSave_RequestRules(t *testing.T) {
 			if want := saveRequestMsg(tc.rule); de.Msg != want {
 				t.Errorf("msg = %q, want %q", de.Msg, want)
 			}
-			want := tc.suggestion
-			if want == "" {
-				want = "The page sent a request that breaks this rule. Reload the Setup tab, then save again."
-			}
-			if de.Suggestion != want {
-				t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
+			if de.Suggestion != tc.suggestion {
+				t.Errorf("suggestion = %q, want %q", de.Suggestion, tc.suggestion)
 			}
 			if got := saveSnapshot(saveConfigPath(root), saveLocalPath(root), userPath); fmt.Sprint(got) != fmt.Sprint(before) {
 				t.Error("a refused request changed a file")
@@ -621,6 +631,12 @@ func replaceSetupWrite(t *testing.T, fn func(call int, contentRoot, stateRoot st
 	return &calls
 }
 
+// saveCheckSuggestion is the Suggestion of a failed write of key in file that
+// the write call did not refuse to keep comments.
+func saveCheckSuggestion(key, file string) string {
+	return "Check " + key + " in " + file + ", then reload the Setup tab and save again."
+}
+
 // TestDashboardSetupSave_UserWriteFails checks that a failed user file write
 // of a section leaves the key of that section in the project file.
 func TestDashboardSetupSave_UserWriteFails(t *testing.T) {
@@ -642,7 +658,7 @@ func TestDashboardSetupSave_UserWriteFails(t *testing.T) {
 	if out.OK {
 		t.Error("ok = true, want false")
 	}
-	wantFailed := []DashboardSetupFailure{{Section: "ship", File: userPath, Message: "disk full"}}
+	wantFailed := []DashboardSetupFailure{{Section: "ship", File: userPath, Message: "disk full", Suggestion: saveCheckSuggestion("ship", userPath)}}
 	if !slices.Equal(out.Failed, wantFailed) || len(out.Written) != 0 {
 		t.Errorf("failed = %+v, written = %+v; want failed %+v", out.Failed, out.Written, wantFailed)
 	}
@@ -1217,21 +1233,27 @@ func TestDashboardSetupSave_CollectFallbackMessage(t *testing.T) {
 	if out.OK {
 		t.Error("ok = true, want false")
 	}
-	want := []DashboardSetupFailure{{Section: "jira", File: saveConfigPath(root), Message: "setup_write_sections did not write the section and gave no reason"}}
+	cfg := saveConfigPath(root)
+	want := []DashboardSetupFailure{{Section: "jira", File: cfg,
+		Message:    "jira in " + cfg + " was not written, and the write gave no reason",
+		Suggestion: saveCheckSuggestion("jira", cfg)}}
 	if !slices.Equal(out.Failed, want) || len(out.Written) != 0 {
 		t.Errorf("failed = %+v, written = %+v; want failed %+v", out.Failed, out.Written, want)
 	}
 }
 
 // TestDashboardSetupSave_CollectSectionErrors checks that each failed section
-// of one write call gets its own message from the result of that call.
+// of one write call gets its own message from the result of that call, and a
+// suggestion: the hand-edit step for a section that the call refused to keep
+// its comments, else a step to check the file.
 func TestDashboardSetupSave_CollectSectionErrors(t *testing.T) {
 	root, _ := saveRepo(t, "[jira]\ndefaultProject = \"X\"\n", "", "")
 	replaceSetupWrite(t, func(int, string, string, SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
 		return SetupWriteSectionsOut{
-			Written:     []string{"ship"},
-			Errors:      []string{"section jira: jira reason", "section plan.tasks: plan reason"},
-			sectionErrs: map[string]string{"jira": "jira reason", "plan.tasks": "plan reason"},
+			Written:        []string{"ship"},
+			Errors:         []string{"section jira: jira reason", "section plan.tasks: plan reason"},
+			sectionErrs:    map[string]string{"jira": "jira reason", "plan.tasks": "plan reason"},
+			sectionRefused: map[string]bool{"plan.tasks": true},
 		}, nil
 	})
 	out, err := DashboardSetupSave(root, DashboardSetupSaveIn{
@@ -1251,9 +1273,10 @@ func TestDashboardSetupSave_CollectSectionErrors(t *testing.T) {
 	if want := []DashboardSetupWrite{{Section: "ship", File: saveLocalPath(root)}}; !slices.Equal(out.Written, want) {
 		t.Errorf("written = %+v, want %+v", out.Written, want)
 	}
+	cfg := saveConfigPath(root)
 	wantFailed := []DashboardSetupFailure{
-		{Section: "jira", File: saveConfigPath(root), Message: "jira reason"},
-		{Section: "plan-tasks", File: saveConfigPath(root), Message: "plan reason"},
+		{Section: "jira", File: cfg, Message: "jira reason", Suggestion: saveCheckSuggestion("jira", cfg)},
+		{Section: "plan-tasks", File: cfg, Message: "plan reason", Suggestion: "Edit plan.tasks in " + cfg + " by hand, then reload the Setup tab."},
 	}
 	if !slices.Equal(out.Failed, wantFailed) {
 		t.Errorf("failed = %+v, want %+v", out.Failed, wantFailed)
@@ -1628,39 +1651,55 @@ func TestDashboardSetupSave_GuardrailRequest(t *testing.T) {
 	idSuggestion := fmt.Sprintf("Use an id of at most %d bytes.", guardrailIDMaxBytes)
 	needsSuggestion := "Send both fields. change replaces both stored values."
 	removeSuggestion := "Send only id and op for a remove."
+	emptyIDSuggestion := "Send the kebab-case id of the guardrail, for example no-ci-bypass."
 	cases := []struct {
 		name, rule, suggestion string
 		in                     DashboardSetupSaveIn
 	}{
-		{"unknown section", "guardrails has unknown section commit", "Use plan-guardrails or execution-guardrails.",
+		{"unknown section", `guardrails has unknown section "commit"`, "Use plan-guardrails or execution-guardrails.",
 			saveGrIn("commit", saveGrRemove("dry"))},
 		{"empty list", "guardrails.plan-guardrails is empty", "Omit a section with no change.",
 			DashboardSetupSaveIn{Guardrails: map[string][]DashboardSetupGuardrailChange{"plan-guardrails": {}}}},
 		{"over the change limit", fmt.Sprintf("guardrails.plan-guardrails has %d changes, over the limit of %d", maxGuardrailChangesPerList+1, maxGuardrailChangesPerList), limitSuggestion,
 			saveGrIn("plan-guardrails", saveGrAdds(maxGuardrailChangesPerList+1)...)},
-		{"one id twice", "guardrails.plan-guardrails changes id dry twice", "Send one change for each id.",
+		{"one id twice", `guardrails.plan-guardrails changes id "dry" twice`, "Send one change for each id.",
 			saveGrIn("plan-guardrails", saveGrRemove("dry"), saveGrAdd("dry", "error", "Keep code DRY."))},
+		{"empty id on a remove", "guardrails.plan-guardrails has a change with an empty id", emptyIDSuggestion,
+			saveGrIn("plan-guardrails", saveGrRemove(""))},
+		{"empty id on a change", "guardrails.execution-guardrails has a change with an empty id", emptyIDSuggestion,
+			saveGrIn("execution-guardrails", saveGrChange("", "error", "A rule."))},
+		// The empty-id rule runs before the repeat rule.
+		{"empty id twice", "guardrails.plan-guardrails has a change with an empty id", emptyIDSuggestion,
+			saveGrIn("plan-guardrails", saveGrRemove(""), saveGrRemove(""))},
+		// The length rule runs before the repeat rule, so a long id is not
+		// printed in the repeat message.
+		{"long id twice", fmt.Sprintf("guardrails.plan-guardrails has an id of %d bytes, over the limit of %d", guardrailIDMaxBytes+1, guardrailIDMaxBytes), idSuggestion,
+			saveGrIn("plan-guardrails", saveGrRemove(strings.Repeat("a", guardrailIDMaxBytes+1)), saveGrRemove(strings.Repeat("a", guardrailIDMaxBytes+1)))},
+		// The limit counts bytes, not characters: 32 two-byte characters are
+		// 64 bytes and pass the length rule, one more character is refused.
+		{"multi-byte id over the limit", fmt.Sprintf("guardrails.plan-guardrails has an id of %d bytes, over the limit of %d", guardrailIDMaxBytes+2, guardrailIDMaxBytes), idSuggestion,
+			saveGrIn("plan-guardrails", saveGrRemove(strings.Repeat("é", guardrailIDMaxBytes/2+1)))},
 		{"id over the limit", fmt.Sprintf("guardrails.execution-guardrails has an id of %d bytes, over the limit of %d", guardrailIDMaxBytes+1, guardrailIDMaxBytes), idSuggestion,
 			saveGrIn("execution-guardrails", saveGrAdd(strings.Repeat("a", guardrailIDMaxBytes+1), "error", "A rule."))},
-		{"bad op", "guardrails.plan-guardrails: op delete is not add, change or remove", "Use add, change or remove.",
+		{"bad op", `guardrails.plan-guardrails: op "delete" of "dry" is not add, change or remove`, "Use add, change or remove.",
 			saveGrIn("plan-guardrails", DashboardSetupGuardrailChange{ID: "dry", Op: "delete"})},
-		{"add with no severity", "guardrails.plan-guardrails: add of new-rule needs severity and description", needsSuggestion,
+		{"add with no severity", `guardrails.plan-guardrails: add of "new-rule" needs severity and description`, needsSuggestion,
 			saveGrIn("plan-guardrails", saveGrAdd("new-rule", "", "A rule."))},
-		{"add with a 0-byte description", "guardrails.plan-guardrails: add of new-rule needs severity and description", needsSuggestion,
+		{"add with a 0-byte description", `guardrails.plan-guardrails: add of "new-rule" needs severity and description`, needsSuggestion,
 			saveGrIn("plan-guardrails", saveGrAdd("new-rule", "error", ""))},
-		{"change with no severity", "guardrails.plan-guardrails: change of dry needs severity and description", needsSuggestion,
+		{"change with no severity", `guardrails.plan-guardrails: change of "dry" needs severity and description`, needsSuggestion,
 			saveGrIn("plan-guardrails", saveGrChange("dry", "", "Keep code DRY."))},
-		{"change with no description", "guardrails.plan-guardrails: change of dry needs severity and description", needsSuggestion,
+		{"change with no description", `guardrails.plan-guardrails: change of "dry" needs severity and description`, needsSuggestion,
 			saveGrIn("plan-guardrails", saveGrChange("dry", "warning", ""))},
-		{"remove with a severity", "guardrails.plan-guardrails: remove of dry takes no severity or description", removeSuggestion,
+		{"remove with a severity", `guardrails.plan-guardrails: remove of "dry" takes no severity or description`, removeSuggestion,
 			saveGrIn("plan-guardrails", DashboardSetupGuardrailChange{ID: "dry", Op: "remove", Severity: "error"})},
-		{"remove with a description", "guardrails.plan-guardrails: remove of dry takes no severity or description", removeSuggestion,
+		{"remove with a description", `guardrails.plan-guardrails: remove of "dry" takes no severity or description`, removeSuggestion,
 			saveGrIn("plan-guardrails", DashboardSetupGuardrailChange{ID: "dry", Op: "remove", Description: "x"})},
 		// Two broken sections: the keys are checked in sorted order.
 		{"two empty lists", "guardrails.execution-guardrails is empty", "Omit a section with no change.",
 			DashboardSetupSaveIn{Guardrails: map[string][]DashboardSetupGuardrailChange{"plan-guardrails": {}, "execution-guardrails": {}}}},
 		// A form change does not hide a broken guardrail change.
-		{"form change and a bad guardrail change", "guardrails.plan-guardrails: op delete is not add, change or remove", "Use add, change or remove.",
+		{"form change and a bad guardrail change", `guardrails.plan-guardrails: op "delete" of "dry" is not add, change or remove`, "Use add, change or remove.",
 			DashboardSetupSaveIn{
 				Changes:    []DashboardSetupChange{saveSet("jira", "defaultProject", "A")},
 				Guardrails: map[string][]DashboardSetupGuardrailChange{"plan-guardrails": {{ID: "dry", Op: "delete"}}},
@@ -1696,6 +1735,10 @@ func TestDashboardSetupSave_GuardrailLimits(t *testing.T) {
 	check := func(t *testing.T, in DashboardSetupSaveIn) (setupGuardrailWrites, error) {
 		t.Helper()
 		root, _ := saveRepo(t, saveGuardrailConfig, "", "")
+		// The save runs the request rules before checkSetupGuardrails.
+		if err := checkSetupGuardrailRequest(in.Guardrails); err != nil {
+			return nil, err
+		}
 		return checkSetupGuardrails(root, "", in, setupDocCache{})
 	}
 	t.Run("100 changes", func(t *testing.T) {
@@ -1727,6 +1770,13 @@ func TestDashboardSetupSave_GuardrailLimits(t *testing.T) {
 		_, err := check(t, saveGrIn("plan-guardrails", saveGrAdd(strings.Repeat("a", guardrailIDMaxBytes+1), "error", "A rule.")))
 		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("over the limit of %d", guardrailIDMaxBytes)) {
 			t.Errorf("err = %v, want a refusal that names the limit %d", err, guardrailIDMaxBytes)
+		}
+	})
+	t.Run("64-byte id of 2-byte characters", func(t *testing.T) {
+		// The length rule counts bytes: 32 two-byte characters pass it.
+		in := saveGrIn("plan-guardrails", saveGrRemove(strings.Repeat("é", guardrailIDMaxBytes/2)))
+		if err := checkSetupGuardrailRequest(in.Guardrails); err != nil {
+			t.Errorf("err = %v, want nil", err)
 		}
 	})
 	t.Run("1024-byte description", func(t *testing.T) {
@@ -1815,8 +1865,17 @@ func TestDashboardSetupSave_GuardrailStale(t *testing.T) {
 	var got []string
 	for _, f := range invalid.Fields {
 		got = append(got, f.Section+" "+f.Field+" "+f.Path)
-		if !strings.HasSuffix(f.Message, "Reload the page.") {
-			t.Errorf("message %q does not end with the reload step", f.Message)
+		var want string
+		switch f.Field {
+		case "dry", "no-skip":
+			want = fmt.Sprintf("guardrail %q is already in config.toml, so the add is stale. Reload the Setup tab to see the stored guardrail, then change it in place of the add.", f.Field)
+		case "gone":
+			want = `guardrail "gone" is not in config.toml, so the change is stale. Reload the Setup tab to see the stored list, then make the change again.`
+		case "also-gone":
+			want = `guardrail "also-gone" is not in config.toml, so the remove is stale. Reload the Setup tab to see the stored list, then make the change again.`
+		}
+		if f.Message != want {
+			t.Errorf("message = %q, want %q", f.Message, want)
 		}
 	}
 	want := []string{
@@ -1938,19 +1997,22 @@ func TestDashboardSetupSave_GuardrailInputStates(t *testing.T) {
 
 	for _, l := range lists {
 		in := saveGrIn(l.section, saveGrAdd("new-rule", "error", "New rule."))
-		notTable := func(key string) func(t *testing.T, err error) {
-			return func(t *testing.T, err error) {
+		// notTable checks the DataError of key; table names the table that
+		// the Suggestion asks for.
+		notTable := func(key, table string) func(t *testing.T, root string, err error) {
+			return func(t *testing.T, root string, err error) {
 				var de *mcpserver.DataError
 				if !errors.As(err, &de) || !strings.Contains(de.Msg, key+" in ") || !strings.Contains(de.Msg, "is not a table") {
 					t.Errorf("err = %v, want a DataError that %s is not a table", err, key)
 					return
 				}
-				if want := "Fix " + key + " in config.toml manually."; de.Suggestion != want {
+				want := fmt.Sprintf("Change %s in %s to %s, or remove the key. Then save again. Nothing was written.", key, saveConfigPath(root), table)
+				if de.Suggestion != want {
 					t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
 				}
 			}
 		}
-		arrayForm := func(t *testing.T, err error) {
+		arrayForm := func(t *testing.T, _ string, err error) {
 			var de *mcpserver.DomainError
 			if !errors.As(err, &de) {
 				t.Fatalf("err = %v, want a DomainError", err)
@@ -1963,21 +2025,21 @@ func TestDashboardSetupSave_GuardrailInputStates(t *testing.T) {
 				t.Errorf("suggestion = %q, want %q", de.Suggestion, want)
 			}
 		}
-		ok := func(t *testing.T, err error) {
+		ok := func(t *testing.T, _ string, err error) {
 			if err != nil {
 				t.Errorf("err = %v, want nil", err)
 			}
 		}
 		tableStates := []struct {
 			name, config string
-			check        func(t *testing.T, err error)
+			check        func(t *testing.T, root string, err error)
 			unchanged    bool
 		}{
 			{"no parent table", "[jira]\ndefaultProject = \"X\"\n", ok, false},
 			{"no guardrails key", "[" + l.parent + "]\n", ok, false},
-			{"parent is a string", l.parent + " = \"x\"\n", notTable(l.parent), true},
-			{"guardrails is a string", "[" + l.parent + "]\nguardrails = \"x\"\n", notTable(l.path), true},
-			{"entry is not a table", "[" + l.path + "]\ndry = \"x\"\n", notTable(l.path + ".dry"), true},
+			{"parent is a string", l.parent + " = \"x\"\n", notTable(l.parent, "a table"), true},
+			{"guardrails is a string", "[" + l.parent + "]\nguardrails = \"x\"\n", notTable(l.path, "a table"), true},
+			{"entry is not a table", "[" + l.path + "]\ndry = \"x\"\n", notTable(l.path+".dry", "a table with description and severity"), true},
 			{"array of tables", "[[" + l.path + "]]\nid = \"dry\"\ndescription = \"Keep code DRY.\"\n", arrayForm, true},
 			{"inline array", "[" + l.parent + "]\nguardrails = [{ id = \"dry\", description = \"Keep code DRY.\" }]\n", arrayForm, true},
 		}
@@ -1985,9 +2047,17 @@ func TestDashboardSetupSave_GuardrailInputStates(t *testing.T) {
 			t.Run(l.section+"/"+ts.name, func(t *testing.T) {
 				root, userPath := saveRepo(t, ts.config, "", "")
 				before := saveSnapshot(saveConfigPath(root), saveLocalPath(root), userPath)
-				_, err := DashboardSetupSave(root, in)
-				ts.check(t, err)
+				out, err := DashboardSetupSave(root, in)
+				ts.check(t, root, err)
 				if !ts.unchanged {
+					// The save wrote the new guardrail and lists it.
+					want := []DashboardSetupWrite{{Section: l.section, ID: "new-rule", File: saveConfigPath(root)}}
+					if !slices.Equal(out.Written, want) {
+						t.Errorf("written = %+v, want %+v", out.Written, want)
+					}
+					if got, _ := setupTable(saveDoc(t, saveConfigPath(root)), l.path+".new-rule"); !reflect.DeepEqual(got, map[string]any{"description": "New rule.", "severity": "error"}) {
+						t.Errorf("%s.new-rule on disk = %v, want the new table", l.path, got)
+					}
 					return
 				}
 				if got := saveSnapshot(saveConfigPath(root), saveLocalPath(root), userPath); fmt.Sprint(got) != fmt.Sprint(before) {
@@ -2107,37 +2177,93 @@ func TestDashboardSetupSave_GuardrailWrite(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := []DashboardSetupFailure{{Section: "plan-guardrails", ID: "new-rule", File: saveConfigPath(root), Message: "disk full"}}
+		cfg := saveConfigPath(root)
+		want := []DashboardSetupFailure{{Section: "plan-guardrails", ID: "new-rule", File: cfg, Message: "disk full",
+			Suggestion: saveCheckSuggestion("plan.guardrails.new-rule", cfg)}}
 		if out.OK || !slices.Equal(out.Failed, want) || len(out.Written) != 0 {
 			t.Errorf("out = %+v, want ok false, failed %+v and no written", out, want)
 		}
 	})
 
-	t.Run("a whole call error gives a failed entry with the id", func(t *testing.T) {
+	t.Run("one call with written, deleted and failed keys lists each with its owner", func(t *testing.T) {
+		root, _ := saveRepo(t, saveGuardrailConfig, "", "")
+		replaceSetupWrite(t, func(int, string, string, SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
+			return SetupWriteSectionsOut{
+				Written:     []string{"plan.guardrails.new-rule"},
+				Deleted:     []DeletedSection{{ID: "plan.guardrails.old-rule"}},
+				sectionErrs: map[string]string{"jira": "jira reason", "plan.guardrails.dry": "dry reason"},
+			}, nil
+		})
+		out, err := DashboardSetupSave(root, DashboardSetupSaveIn{
+			Changes: []DashboardSetupChange{saveSet("jira", "defaultProject", "A")},
+			Guardrails: map[string][]DashboardSetupGuardrailChange{"plan-guardrails": {
+				saveGrAdd("new-rule", "error", "New rule."),
+				saveGrChange("dry", "warning", "Keep code DRY."),
+				saveGrRemove("old-rule"),
+			}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg := saveConfigPath(root)
+		wantWritten := []DashboardSetupWrite{
+			{Section: "plan-guardrails", ID: "new-rule", File: cfg},
+			{Section: "plan-guardrails", ID: "old-rule", File: cfg},
+		}
+		wantFailed := []DashboardSetupFailure{
+			{Section: "jira", File: cfg, Message: "jira reason", Suggestion: saveCheckSuggestion("jira", cfg)},
+			{Section: "plan-guardrails", ID: "dry", File: cfg, Message: "dry reason", Suggestion: saveCheckSuggestion("plan.guardrails.dry", cfg)},
+		}
+		if out.OK || !slices.Equal(out.Written, wantWritten) || !slices.Equal(out.Failed, wantFailed) {
+			t.Errorf("out = %+v\nwant ok false, written %+v, failed %+v", out, wantWritten, wantFailed)
+		}
+	})
+
+	t.Run("a whole call error after the user write gives a failed entry for each key", func(t *testing.T) {
+		// The user write succeeds, then the config.toml write fails as a
+		// whole. That write holds a form section (jira) and a guardrail key.
 		root, userPath := saveRepo(t, saveGuardrailConfig, "", "")
+		errDiskFull := errors.New("disk full")
 		replaceSetupWrite(t, func(call int, contentRoot, stateRoot string, in SetupWriteSectionsIn) (SetupWriteSectionsOut, error) {
 			if in.Target == "user" {
 				return setupWriteSections(contentRoot, stateRoot, in)
 			}
-			return SetupWriteSectionsOut{}, errors.New("disk full")
+			return SetupWriteSectionsOut{}, errDiskFull
 		})
+		before := saveSnapshot(saveConfigPath(root))
 		out, err := DashboardSetupSave(root, DashboardSetupSaveIn{
-			Changes:    []DashboardSetupChange{saveSet("ship", "bump", "minor")},
+			Changes:    []DashboardSetupChange{saveSet("ship", "bump", "minor"), saveSet("jira", "defaultProject", "A")},
 			Targets:    map[string]string{"ship": "user"},
 			Guardrails: map[string][]DashboardSetupGuardrailChange{"plan-guardrails": {saveGrRemove("dry")}},
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
+		if out.OK {
+			t.Error("ok = true, want false")
+		}
+		if want := []DashboardSetupWrite{{Section: "ship", File: userPath}}; !slices.Equal(out.Written, want) {
+			t.Errorf("written = %+v, want %+v: the user write stays written", out.Written, want)
+		}
+		if got, _ := setupTable(saveDoc(t, userPath), "ship"); got["bump"] != "minor" {
+			t.Errorf("user file ship = %v, want bump minor", got)
+		}
 		var ids []string
 		for _, f := range out.Failed {
 			ids = append(ids, f.Section+"/"+f.ID)
-			if f.Section == "plan-guardrails" && f.File != saveConfigPath(root) {
+			if f.File != saveConfigPath(root) {
 				t.Errorf("file = %q, want %q", f.File, saveConfigPath(root))
 			}
+			if f.Message != errDiskFull.Error() {
+				t.Errorf("message = %q, want the cause %q", f.Message, errDiskFull.Error())
+			}
 		}
-		if want := []string{"plan-guardrails/dry"}; !slices.Equal(ids, want) {
-			t.Errorf("failed = %v, want %v (user file %s)", ids, want, userPath)
+		// The form section has an empty id; the guardrail has its id.
+		if want := []string{"jira/", "plan-guardrails/dry"}; !slices.Equal(ids, want) {
+			t.Errorf("failed = %v, want %v", ids, want)
+		}
+		if got := saveSnapshot(saveConfigPath(root)); fmt.Sprint(got) != fmt.Sprint(before) {
+			t.Error("config.toml changed")
 		}
 	})
 
@@ -2147,24 +2273,25 @@ func TestDashboardSetupSave_GuardrailWrite(t *testing.T) {
 		if doc := saveDoc(t, saveConfigPath(root)); doc == nil {
 			t.Fatal("config.toml does not decode")
 		}
-		if got := dashSetupState(t, root).Guardrails[setupPlanGuardrailsKey]; len(got) != 0 {
+		if got := dashSetupState(t, root).Guardrails["plan.guardrails"]; len(got) != 0 {
 			t.Errorf("state guardrails = %+v, want empty", got)
 		}
 	})
 
 	t.Run("a rule error in one list or in the form refuses the whole save", func(t *testing.T) {
 		cases := []struct {
-			name string
-			in   DashboardSetupSaveIn
+			name  string
+			in    DashboardSetupSaveIn
+			paths []string // the paths of the refused values
 		}{
 			{"valid form, bad guardrail", DashboardSetupSaveIn{
 				Changes:    []DashboardSetupChange{saveSet("jira", "defaultProject", "A")},
 				Guardrails: map[string][]DashboardSetupGuardrailChange{"plan-guardrails": {saveGrAdd("Bad_ID", "error", "A rule.")}},
-			}},
+			}, []string{"plan.guardrails.Bad_ID"}},
 			{"bad form, valid guardrail", DashboardSetupSaveIn{
 				Changes:    []DashboardSetupChange{saveSet("ship", "bump", "huge")},
 				Guardrails: map[string][]DashboardSetupGuardrailChange{"plan-guardrails": {saveGrAdd("new-rule", "error", "New rule.")}},
-			}},
+			}, []string{"ship.bump"}},
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
@@ -2174,6 +2301,13 @@ func TestDashboardSetupSave_GuardrailWrite(t *testing.T) {
 				var invalid *DashboardSetupInvalid
 				if !errors.As(err, &invalid) {
 					t.Fatalf("err = %v, want *DashboardSetupInvalid", err)
+				}
+				var paths []string
+				for _, f := range invalid.Fields {
+					paths = append(paths, f.Path)
+				}
+				if !slices.Equal(paths, c.paths) {
+					t.Errorf("refused paths = %v, want %v", paths, c.paths)
 				}
 				if got := saveSnapshot(saveConfigPath(root), saveLocalPath(root), userPath); fmt.Sprint(got) != fmt.Sprint(before) {
 					t.Error("a refused save changed a file")

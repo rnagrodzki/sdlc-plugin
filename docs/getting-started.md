@@ -83,7 +83,7 @@ write that section: edit the files by hand.
 
 ### Who changes each section
 
-The Setup tab shows the 10 form sections (48 fields). Only `/sdlc:setup` changes the other 9 sections.
+The Setup tab shows the 10 form sections (48 fields) in its form. The other 9 sections have no form fields. Of these sections, the Setup tab changes only the guardrails of `plan-guardrails` and `execution-guardrails`. Only `/sdlc:setup` changes the rest of them, and only `/sdlc:setup` scans the code for guardrails.
 
 <!-- setup-owner-table:start -->
 

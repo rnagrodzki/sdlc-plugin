@@ -75,6 +75,10 @@ type SetupWriteSectionsOut struct {
 	// the tool output: the dashboard save reads it, so it does not parse the
 	// text of Errors.
 	sectionErrs map[string]string
+	// sectionRefused holds each section id that the call refused because
+	// the write would delete comments (config.ErrWouldDropComments). It is
+	// not part of the tool output.
+	sectionRefused map[string]bool
 }
 
 // DeletedSection is one guardrail table that a JSON null deleted.
@@ -634,6 +638,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 	var deleted []DeletedSection
 	var errs []string
 	sectionErrs := map[string]string{}
+	sectionRefused := map[string]bool{}
 	var warnings []string
 	var refused []string // one "Edit section <id> in <file> by hand" per ErrWouldDropComments section
 	var absent []string  // guardrail ids whose null found no table to delete
@@ -645,6 +650,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 				errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 				sectionErrs[id] = err.Error()
 				if errors.Is(err, config.ErrWouldDropComments) {
+					sectionRefused[id] = true
 					refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id, in.Target, userPath)))
 				}
 				continue
@@ -679,6 +685,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 			errs = append(errs, fmt.Sprintf("section %s: %s", id, err.Error()))
 			sectionErrs[id] = err.Error()
 			if errors.Is(err, config.ErrWouldDropComments) {
+				sectionRefused[id] = true
 				refused = append(refused, fmt.Sprintf("Edit section %s in %s by hand", id, sectionFile(id, in.Target, userPath)))
 			}
 			continue
@@ -705,7 +712,7 @@ func setupWriteSections(contentRoot, stateRoot string, in SetupWriteSectionsIn) 
 		next = note
 	}
 
-	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Deleted: deleted, Root: contentRoot, Warnings: warnings, Next: next, sectionErrs: sectionErrs}
+	out := SetupWriteSectionsOut{OK: len(errs) == 0, Written: written, Deleted: deleted, Root: contentRoot, Warnings: warnings, Next: next, sectionErrs: sectionErrs, sectionRefused: sectionRefused}
 	if len(errs) > 0 {
 		out.Errors = errs
 	}

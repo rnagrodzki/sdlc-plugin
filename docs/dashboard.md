@@ -715,10 +715,11 @@ Three limits apply to the tab:
   `~/.sdlc/local.toml`, `Default` and `Other files`. `Default` shows the fields
   that no file sets. `Other files` shows the sections that live outside the
   config, for example the review dimensions and the templates. Each chip shows
-  a count, and the counts of the chips add up to `Any file`. The counts of the
-  two `local.toml` chips include a value that another file overrides. A
-  guardrail section counts as one item of `config.toml`, or of `Default` when
-  its list is empty.
+  a count. The counts of the two `local.toml` chips include a value that
+  another file overrides, and `Any file` counts that field one time. So the
+  counts of the chips add up to `Any file` only when no field is set in two
+  files. A guardrail section counts as one item of `config.toml`, or of
+  `Default` when its list is empty.
 - **Override lines.** When more than one file sets a field, the field shows
   one line under the shown value for each other file. The line holds the file,
   its value and the reason: `overridden by <file>`, or `same value · overridden
@@ -745,7 +746,20 @@ The answer also has two fields for the file chips and the guardrail sections:
 | Field | Meaning |
 |---|---|
 | `layers` | Maps `<section id>.<field>` to the value of each file that sets the field: `{"config": …, "project": …, "user": …}`. It includes a value that another file overrides. `values` stays the winning value. |
-| `guardrails` | Maps `plan.guardrails` and `execute.guardrails` to the guardrails of `config.toml`, sorted by `id`. Each entry is `{id, severity, description}`. A guardrail with no severity shows `error`. A list with no guardrail is `[]`. |
+| `guardrails` | Maps `plan.guardrails` and `execute.guardrails` to the guardrails of `config.toml`, sorted by `id`. Each entry is `{id, severity, description}`. A list with no guardrail is `[]`. Both lists are `[]` when the state is not `ready`. See the table below for the other cases. |
+
+How the `guardrails` lists read each value of `config.toml`:
+
+| Value in `config.toml` | Entry in the list |
+|---|---|
+| No `severity`, or a `severity` that is not text | `severity` is `error` |
+| No `description`, or a `description` that is not text | `description` is `""` |
+| A list in array form (`[[plan.guardrails]]` or `guardrails = [...]`) | One entry for each table with a text `id`, in `id` order. Two tables with the same `id` give two entries |
+| An entry that is not a table, or an array entry with no text `id` | No entry |
+
+A value that is present and not text, and a skipped entry, each add one
+sentence to `configError`. The sentence names the file, the path and the
+`id` or the entry number.
 
 `delegated` still lists the two guardrail sections with their `count`.
 
@@ -824,8 +838,19 @@ Each entry of a `guardrails` list is `{id, op, severity, description}`:
 
 `<path>` is `plan.guardrails` for `plan-guardrails`, and `execute.guardrails`
 for `execution-guardrails`. The write keeps the comment lines and the key order
-of the file. An operator may change a severity from `error` to `warning`. The
-save does not refuse a lower severity.
+of the file. When the write cannot keep a comment line, it does not write that
+guardrail. Two causes:
+
+- A `remove` of a table that holds a comment line.
+- A table that the write cannot edit in place, for example a table in an array
+  of tables or in an inline table, in a file that has a comment line.
+
+That guardrail is then in `failed[]` with the suggestion `Edit <path>.<id> in
+<file> by hand, then reload the Setup tab.`, and `next` names the same step.
+The other guardrails and sections of the save are written.
+
+An operator may change a severity from `error` to `warning`. The save does not
+refuse a lower severity.
 
 The server checks these rules before any write, in this order. Each request
 rule answers `400 BAD_REQUEST`, and no file changes:
@@ -833,16 +858,18 @@ rule answers `400 BAD_REQUEST`, and no file changes:
 | Rule | Message | Suggestion |
 |---|---|---|
 | `changes` and `guardrails` are both empty | `changes and guardrails are empty` | Change a field or a guardrail, then save. |
-| A section key is not known | `guardrails has unknown section <key>` | Use `plan-guardrails` or `execution-guardrails`. |
+| A section key is not known | `guardrails has unknown section "<key>"` | Use plan-guardrails or execution-guardrails. |
 | A list is empty | `guardrails.<key> is empty` | Omit a section with no change. |
 | A list has more than 100 changes | `guardrails.<key> has <n> changes, over the limit of 100` | Save at most 100 guardrail changes of one list at one time. |
-| One `id` has two changes | `guardrails.<key> changes id <id> twice` | Send one change for each id. |
+| An `id` is empty | `guardrails.<key> has a change with an empty id` | Send the kebab-case id of the guardrail, for example no-ci-bypass. |
 | An `id` has more than 64 bytes | `guardrails.<key> has an id of <n> bytes, over the limit of 64` | Use an id of at most 64 bytes. |
-| The `op` is not `add`, `change` or `remove` | `guardrails.<key>: op <op> is not add, change or remove` | Use add, change or remove. |
-| An `add` or a `change` has no severity or no description | `guardrails.<key>: <op> of <id> needs severity and description` | Send both fields. change replaces both stored values. |
-| A `remove` has a severity or a description | `guardrails.<key>: remove of <id> takes no severity or description` | Send only id and op for a remove. |
-| `targets` names a guardrail section | `targets names section "<id>", which is not a local form section with a change` | `The page sent a request that breaks this rule. Reload the Setup tab, then save again.` |
-| `config.toml` holds the list as an array (`[[<path>]]` or `<key> = [...]`) | `config.toml holds <path> as an array ([[<path>]] or an inline array). The dashboard edits only [<path>.<id>] tables` | Change the list in `config.toml` to `[<path>.<id>]` tables by hand, then reload the page. |
+| One `id` has two changes | `guardrails.<key> changes id "<id>" twice` | Send one change for each id. |
+| The `op` is not `add`, `change` or `remove` | `guardrails.<key>: op "<op>" of "<id>" is not add, change or remove` | Use add, change or remove. |
+| An `add` or a `change` has no severity or no description | `guardrails.<key>: <op> of "<id>" needs severity and description` | Send both fields. change replaces both stored values. |
+| A `remove` has a severity or a description | `guardrails.<key>: remove of "<id>" takes no severity or description` | Send only id and op for a remove. |
+| A form change in `changes` names a guardrail section | `section "<id>" is a guardrail section; changes cannot change it` | `Send a change of section "<id>" in the guardrails field of the request, not in changes.` |
+| `targets` names a guardrail section | `targets names section "<id>", which is not a local form section with a change` | Name in targets only a local form section that has a change in changes. |
+| `config.toml` holds the list as an array (`[[<path>]]` or `<key> = [...]`) | `config.toml holds <path> as an array ([[<path>]] or an inline array). The dashboard edits only [<path>.<id>] tables` | `Change the list in config.toml to [<path>.<id>] tables manually, then reload the page.` |
 
 Each message starts with `dashboard setup save:` and ends with `Nothing was
 written.` The last rule of the table needs the content of `config.toml`, so it
@@ -853,14 +880,20 @@ list against the file:
 
 1. A `config.toml` that is too large, not valid TOML, or not readable gives the
    same error as a save of form fields. A missing `config.toml` gives
-   `409 SETUP_NOT_READY`. A `plan.guardrails`, an `execute.guardrails` or one
-   guardrail that is not a table gives `500 SETUP_SAVE_FAILED`. Its suggestion
-   is `Fix <path> in config.toml manually.` The array form of the last rule
-   comes before this check.
+   `409 SETUP_NOT_READY`. A `plan`, an `execute`, a `plan.guardrails`, an
+   `execute.guardrails` or one guardrail that is not a table gives
+   `500 SETUP_SAVE_FAILED`. Its suggestion is `Change <key> in <file> to a
+   table, or remove the key. Then save again. Nothing was written.` For one
+   guardrail, the suggestion asks for `a table with description and severity`.
+   The array form of the last rule comes before this check.
 2. A change that is stale gives `SETUP_INVALID` with one entry in `fields` for
-   each stale `id`: an `add` of an `id` that the file holds, or a `change` or a
-   `remove` of an `id` that the file does not hold. The message ends with
-   `Reload the page.` The page shows the message under the row.
+   each stale `id`. The page shows the message under the row:
+
+   | Stale change | Message |
+   |---|---|
+   | An `add` of an `id` that the file holds | `guardrail "<id>" is already in config.toml, so the add is stale. Reload the Setup tab to see the stored guardrail, then change it in place of the add.` |
+   | A `change` or a `remove` of an `id` that the file does not hold | `guardrail "<id>" is not in config.toml, so the <op> is stale. Reload the Setup tab to see the stored list, then make the change again.` |
+
 3. The server builds the list that the save would write: the guardrails of the
    file, minus each `remove`, with each `add` and `change` applied. It checks
    each entry with the guardrail rules of the config check: an `id` in
@@ -868,7 +901,11 @@ list against the file:
    description of 1 to 1024 bytes. A finding gives `SETUP_INVALID` with one
    entry in `fields` for each finding.
 
-All stale entries and all rule findings come in one answer, sorted by path.
+The stale check runs first. When one or more changes are stale, the answer
+holds only the stale entries of both lists, sorted by path, and the server does
+not check the rules of step 3. The rule findings show after a reload and a new
+save. When no change is stale, the answer holds all rule findings of both
+lists, sorted by path.
 
 The value check runs before any write. It checks new values only. A value that
 the target file already holds passes, so a repo with a hand-written value can
@@ -894,7 +931,10 @@ change:
   and none in `guardrails`.
 - A `guardrails` entry breaks a rule of [Guardrail changes](#guardrail-changes).
 - A change names a delegated section, or a section that is not a form section.
-  For an unknown section, the message lists the allowed sections.
+  For an unknown section, the message lists the allowed sections. For a
+  guardrail section, the suggestion names the `guardrails` field of the
+  request. For another delegated section, the suggestion names the
+  `/sdlc:setup --only <id>` command.
 - A change names a field that the section does not have. The message lists the
   allowed fields.
 - Two changes name the same section and field.
@@ -913,7 +953,7 @@ The server also refuses a save in these cases:
   The 64 KiB limit applies to `POST /api/setup-save` only. `POST
   /api/setup-create` keeps 8 KiB.
 - A guardrail change is stale: the file no longer holds the guardrail state
-  that the page showed (`400 SETUP_INVALID`). Reload the page. See
+  that the page showed (`400 SETUP_INVALID`). Reload the Setup tab. See
   [Guardrail changes](#guardrail-changes).
 - The repo has the state `no-config` or `legacy-config`
   (`409 SETUP_NOT_READY`).
@@ -945,12 +985,22 @@ The answer of a save is:
 |---|---|---|
 | `ok` | boolean | `true` when the save wrote each section |
 | `written[]` | list | Each written section: `section` (the form section id) and `file` (the absolute path). A guardrail entry has `section` (the guardrail section id) and `id` (the guardrail id), with `file` as the path of `config.toml`. One entry is for one guardrail, also for a `remove`. A form section has no `id` |
-| `failed[]` | list | Each section that the save did not write: `section`, `file`, `message` and `suggestion`. `suggestion` is the recovery step of the error. It is absent when the error has none. A guardrail entry also has `id` |
+| `failed[]` | list | Each section that the save did not write: `section`, `file`, `message` and `suggestion`. A guardrail entry also has `id`. See the table below for `suggestion` |
 | `warnings[]` | list | The warnings of the write and of `scaffold_ci`, for example an outdated CI script file |
 | `ciFiles[]` | list | The CI script files that the save created, as paths in the repo |
 | `next` | string | The step to edit a failed section by hand. The write did not change that section, because the write would delete comment lines of the file. `""` when there is none |
 
 An empty list is `[]`.
+
+The `suggestion` of a `failed[]` entry:
+
+| Cause | `suggestion` |
+|---|---|
+| The write call failed as a whole, after the user file write | The suggestion of the error. Absent when the error has none |
+| The write did not write the key, because the write would delete a comment line | `Edit <key> in <file> by hand, then reload the Setup tab.` |
+| The write did not write the key for another cause | `Check <key> in <file>, then reload the Setup tab and save again.` |
+
+`<key>` is the config path of the section, or `<path>.<id>` for a guardrail.
 
 What the user sees when a save fails:
 
@@ -958,7 +1008,7 @@ What the user sees when a save fails:
 |---|---|---|
 | Request check, state check, value check, guardrail check | None | An error at each field or guardrail row, and the error text in the save bar note |
 | Write of one section | Other sections of the same save | A save bar note that lists each failed section with its file |
-| Write of one guardrail | Other sections and guardrails of the same save | A save bar note that lists each failed guardrail with its section, its `id` and `config.toml` |
+| Write of one guardrail | Other sections and guardrails of the same save | A save bar note that lists each failed guardrail with its section, its `id` and `config.toml`. The cause is in `message`. For a guardrail table with a comment line, edit the table by hand as `suggestion` and `next` say, then reload the Setup tab |
 | User file write of one section | No file for that section. The project file keeps its key | A save bar note that lists the section with the user file |
 | Project file write after the user file write | The user file | A save bar note that lists the section. The old project value still applies |
 
@@ -1043,7 +1093,7 @@ add these codes:
 
 | Code | HTTP status | Cause | What to do |
 |---|---|---|---|
-| `SETUP_INVALID` | 400 | The value check refused one or more fields, or the guardrail check refused one or more guardrails. A guardrail is refused when its change is stale, or when the merged list breaks a guardrail rule. The answer has a `fields` list. For a guardrail, `section` is the guardrail section id and `field` is the guardrail id. No file changed. | Correct each field or guardrail that the page marks, then save again. For a stale guardrail, reload the page first. |
+| `SETUP_INVALID` | 400 | The value check refused one or more fields, or the guardrail check refused one or more guardrails. A guardrail is refused when its change is stale, or when the merged list breaks a guardrail rule. The answer has a `fields` list. For a guardrail, `section` is the guardrail section id and `field` is the guardrail id. No file changed. | Correct each field or guardrail that the page marks, then save again. For a stale guardrail, reload the Setup tab first. |
 | `SETUP_NOT_READY` | 409 | The state of the repo does not allow the call: a save for a repo with the state `no-config` or `legacy-config`, or a create for a repo that has a config. The message names the state. | Reload the page. Use Create config, or `/sdlc:setup --migrate`. |
 | `SETUP_READ_FAILED` | 500 | The server could not read the config files of the repo. | Read the suggestion in the message. It names the file to check. |
 | `SETUP_SAVE_FAILED` | 500 | The save failed with an error. | Read the suggestion in the message. Load the form again to see what was written. |
@@ -1051,8 +1101,9 @@ add these codes:
 
 `SETUP_INVALID` reads `1 field value is refused by the config check` or
 `<n> field values are refused by the config check`. A stale guardrail entry in
-`fields` reads, for example, `guardrail dry is not in config.toml, so the
-remove is stale. Reload the page.` A guardrail request that breaks a rule of
+`fields` reads, for example, `guardrail "dry" is not in config.toml, so the
+remove is stale. Reload the Setup tab to see the stored list, then make the
+change again.` A guardrail request that breaks a rule of
 the [rules table](#guardrail-changes) gets `400 BAD_REQUEST` with the message
 and the suggestion of its row, not `SETUP_INVALID`. The other codes of
 these routes (`BAD_REQUEST`, `REPO_NOT_FOUND`, `BODY_TOO_LARGE`,

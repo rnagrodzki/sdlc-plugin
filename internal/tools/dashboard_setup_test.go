@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -918,12 +919,13 @@ func TestDashboardSetupState_LayersAndGuardrailsEmpty(t *testing.T) {
 }
 
 // The guardrail lists are sorted by id and default the severity to error and
-// the description to "".
+// the description to "". The execute list reads [execute.guardrails].
 func TestDashboardSetupState_Guardrails(t *testing.T) {
 	root, _ := dashSetupRoot(t)
 	dashSetupConfig(t, root, "[plan.guardrails.zeta]\ndescription = \"Last.\"\nseverity = \"warning\"\n"+
 		"[plan.guardrails.alpha]\ndescription = \"First.\"\n"+
-		"[plan.guardrails.bare]\n")
+		"[plan.guardrails.bare]\n"+
+		"[execute.guardrails.no-skip]\ndescription = \"Do not skip tests.\"\nseverity = \"warning\"\n")
 	out := dashSetupState(t, root)
 
 	want := []DashboardGuardrail{
@@ -940,8 +942,9 @@ func TestDashboardSetupState_Guardrails(t *testing.T) {
 			t.Errorf("plan.guardrails[%d] = %+v, want %+v", i, got[i], want[i])
 		}
 	}
-	if got := out.Guardrails["execute.guardrails"]; got == nil || len(got) != 0 {
-		t.Errorf("execute.guardrails = %#v, want []", got)
+	wantExecute := []DashboardGuardrail{{ID: "no-skip", Severity: "warning", Description: "Do not skip tests."}}
+	if got := out.Guardrails["execute.guardrails"]; !slices.Equal(got, wantExecute) {
+		t.Errorf("execute.guardrails = %+v, want %+v", got, wantExecute)
 	}
 }
 
@@ -965,6 +968,13 @@ func TestSetupGuardrailList(t *testing.T) {
 			{"id": "b", "description": "B."}, {"id": "c"}, {"id": "a", "severity": "warning"}, {"description": "no id"}}},
 			[]DashboardGuardrail{{"a", "warning", ""}, {"b", "error", "B."}, {"c", "error", ""}},
 			[]string{file + ": plan.guardrails entry 4 has no text id. The page skips it."}},
+		// The state shows a list in array form as it is: a repeated id gives
+		// one entry for each table, in file order. The save refuses to edit
+		// a list in array form.
+		{"array of tables with a repeated id", map[string]any{"guardrails": []map[string]any{
+			{"id": "a", "description": "First."}, {"id": "b"}, {"id": "a", "description": "Second."}}},
+			[]DashboardGuardrail{{"a", "error", "First."}, {"a", "error", "Second."}, {"b", "error", ""}},
+			nil},
 		{"inline list", map[string]any{"guardrails": []any{map[string]any{"id": "a"}, "x", map[string]any{"id": 3}}},
 			[]DashboardGuardrail{{"a", "error", ""}},
 			[]string{

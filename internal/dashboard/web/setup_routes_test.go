@@ -654,6 +654,10 @@ severity = "error"
 [plan.guardrails.dry]
 description = "Keep code DRY."
 severity = "error"
+
+[execute.guardrails.no-skip]
+description = "Do not skip tests."
+severity = "warning"
 `
 
 // TestE2E_SetupGuardrails runs the state and save routes with the real
@@ -705,10 +709,6 @@ func TestE2E_SetupGuardrails(t *testing.T) {
 		root, _ := guardrailRepo(t, setupE2EGuardrailConfig)
 		h := e2eSetupHandler(t, root)
 
-		rec := do(h, "GET", "/api/setup-state?repo="+url.QueryEscape(root), testHost, nil)
-		if !strings.Contains(rec.Body.String(), `"execute.guardrails":[]`) {
-			t.Errorf("body %q; want execute.guardrails as []", rec.Body.String())
-		}
 		state := e2eSetupState(t, h, root)
 		wantPlan := []tools.DashboardGuardrail{
 			{ID: "dry", Severity: "error", Description: "Keep code DRY."},
@@ -717,8 +717,9 @@ func TestE2E_SetupGuardrails(t *testing.T) {
 		if got := state.Guardrails["plan.guardrails"]; !reflect.DeepEqual(got, wantPlan) {
 			t.Errorf("plan.guardrails = %+v; want %+v", got, wantPlan)
 		}
-		if got := state.Guardrails["execute.guardrails"]; got == nil || len(got) != 0 {
-			t.Errorf("execute.guardrails = %#v; want []", got)
+		wantExecute := []tools.DashboardGuardrail{{ID: "no-skip", Severity: "warning", Description: "Do not skip tests."}}
+		if got := state.Guardrails["execute.guardrails"]; !reflect.DeepEqual(got, wantExecute) {
+			t.Errorf("execute.guardrails = %+v; want %+v", got, wantExecute)
 		}
 	})
 
@@ -760,7 +761,13 @@ func TestE2E_SetupGuardrails(t *testing.T) {
 		rec := saveGuardrails(t, h, root, map[string]any{"plan-guardrails": []map[string]any{
 			{"id": "new-rule", "op": "add", "severity": "error", "description": "New rule."},
 		}})
-		wantAPIError(t, rec, 400, codeBadRequest)
+		body := wantAPIError(t, rec, 400, codeBadRequest)
+		wantMsg := "dashboard setup save: config.toml holds plan.guardrails as an array ([[plan.guardrails]] or an inline array). " +
+			"The dashboard edits only [plan.guardrails.<id>] tables. Nothing was written."
+		wantSuggestion := "Change the list in config.toml to [plan.guardrails.<id>] tables manually, then reload the page."
+		if body.Error.Message != wantMsg || body.Error.Suggestion != wantSuggestion {
+			t.Errorf("error = %+v; want message %q and suggestion %q", body.Error, wantMsg, wantSuggestion)
+		}
 		onDisk, err := os.ReadFile(configPath)
 		if err != nil {
 			t.Fatal(err)

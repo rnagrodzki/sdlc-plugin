@@ -24,7 +24,7 @@ var gettingStartedOwnerRowRe = regexp.MustCompile("^\\| `([^`]+)` \\| (.+?) \\|$
 //   - the start and end markers are present, in that order
 //   - each id appears exactly once, and no other id appears
 //   - owner == "Setup tab and `/sdlc:setup`" when DelegatedTo == "", else "`/sdlc:setup` only"
-//   - the sentence "The Setup tab shows the <F> form sections (<N> fields). Only `/sdlc:setup` changes the other <D> sections." uses the computed F, N, D
+//   - the sentence "The Setup tab shows the <F> form sections (<N> fields) in its form. The other <D> sections have no form fields." uses the computed F, N, D
 //
 // A message names the id, the marker or the sentence.
 func checkOwnerTable(doc string, sections []setupmeta.Section) []string {
@@ -37,7 +37,7 @@ func checkOwnerTable(doc string, sections []setupmeta.Section) []string {
 			formFields += len(s.Fields)
 		}
 	}
-	sentence := fmt.Sprintf("The Setup tab shows the %d form sections (%d fields). Only `/sdlc:setup` changes the other %d sections.",
+	sentence := fmt.Sprintf("The Setup tab shows the %d form sections (%d fields) in its form. The other %d sections have no form fields.",
 		formSections, formFields, len(sections)-formSections)
 	if !strings.Contains(doc, sentence) {
 		msgs = append(msgs, fmt.Sprintf("count sentence is missing or wrong, want: %q", sentence))

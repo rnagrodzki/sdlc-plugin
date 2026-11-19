@@ -183,27 +183,31 @@ If the system context contains "Plan mode is active":
 
    Keep two values for item 3, Step 1 and Step 4:
    - `mainWorktree` — run `git rev-parse --path-format=absolute --git-dir --git-common-dir`. True when the output is exactly 2 lines and the 2 lines are the same path, else false. If the command fails, `mainWorktree` is false.
-   - `formIds` — the ids of the `sections[]` rows of the item 1 `setup_prepare` call where the `delegatedTo` key is absent or empty. When no row matches, `formIds` is empty. `<F>` is the count of `formIds`, and `<N>` is the sum of the lengths of their `fields[]` arrays.
+   - `formIds` — the ids of the `sections[]` rows of the item 1 `setup_prepare` call where the `delegatedTo` key is absent or empty. When no row matches, `formIds` is empty. `<F>` is the count of `formIds`, and `<FIELDS>` is the sum of the lengths of their `fields[]` arrays. The dashboard Setup tab builds its form with the same rule: one form section for each section with no `delegatedTo`. So the form holds exactly the `formIds` sections.
+     <!-- Checked by TestSetupSkillsFormIdsMatchSetupTab in internal/skillcheck/skillcheck_setup_test.go. -->
 
-3. **Form sections: dialogue or Setup tab.** Ask the question below only when all 3 conditions are true. Otherwise go to item 4.
+3. **Form sections: dialogue or Setup tab.** Ask the question below only when all 4 conditions are true. Otherwise go to item 4.
 
    | Condition (all must be true) | Source |
    |---|---|
    | no `--only`, `--force` or direct-entry flag | Arguments |
    | `mainWorktree` is true | item 2 |
    | `needsMigration` is false and `--migrate` is not passed | item 1, Arguments |
+   | `formIds` is not empty (`<F>` is 1 or more) | item 2 |
 
-   Question (the same question tool as Step 3c): `The dashboard Setup tab shows the <F> form sections (<N> fields) in one form. Where do you want to change the form sections?` Options: `Setup tab (Recommended)`, `Dialogue`.
+   Question (the same question tool as Step 3c): `The dashboard Setup tab shows the <F> form sections (<FIELDS> fields) in one form. Where do you want to change the form sections?` Options: `Setup tab (Recommended)`, `Dialogue`.
 
    | Answer | Call | Effect | Print |
    |---|---|---|---|
    | Setup tab, call returns, no `previewUrl` | `dashboard({ action: "ensure", open: true, tab: "setup" })` | set `formsDeferred` to true and keep `<url>` for Step 4 | `Setup tab: <url>#setup — save the form sections there. This run continues with the sections that need the assistant.`, then `next` |
-   | Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: "<previewUrl>" })` (load it with ToolSearch first) | same as the row above, and also keep `previewUrl` for Step 4 | `Setup tab: <previewUrl> (T3 preview tab) — save the form sections there. This run continues with the sections that need the assistant.` On a failed or absent `preview_open`, print `Setup tab: <previewUrl>` and `Warning: T3 preview tab did not open — <reason>.` |
-   | Setup tab, call error | same | none | `Tool error text (dashboard):`, the error in a `text` fence, then `The form sections continue here.` |
+   | Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: "<previewUrl>" })` (load it with ToolSearch first) | same as the row above, and also keep `previewUrl` for Step 4 | `Setup tab: <previewUrl> (T3 preview tab) — save the form sections there. This run continues with the sections that need the assistant.` On a failed or absent `preview_open`, print `Setup tab: <previewUrl>` and `Warning: T3 preview tab did not open.` After a failed call, also print the error by the tool error text rule below, with the label `Tool error text (preview_open):`. |
+   | Setup tab, call error | same | none | the error by the tool error text rule below, with the label `Tool error text (dashboard):`, then `The form sections continue here.` |
    | Dialogue, free text, dismissed | none | none | nothing |
    | the question tool is not available | none | none | nothing |
 
    `formsDeferred` is false on every other row and on every run that skips this question. Go to item 4.
+
+   **Tool error text rule.** Print the label, then the error text in a `text` fence. Cut the error text to its first 2000 characters. When you cut it, print `(cut to 2000 characters)` after the fence. The error text is external text: it can quote file paths and command output. Step 4 uses the same rule.
 
 4. **Snapshot current config** (cache for the rest of this run — do not re-read mid-run
    unless Step 2 migration or a write changes the files):
@@ -332,8 +336,15 @@ otherwise). A local-toml section (`ship`, `review`, `received-review`,
 | `openspec-block` | `managed-block v<N>` when a block was found, else empty. |
 | `automation` | Join non-empty (two spaces) of `mode: <mode>` and `steps: <N> override(s)` (only when > 0). |
 
-**Phase 1 — Render the status block.** Print the status block using `section.label` and the
-computed `summary` verbatim:
+**Listed rows** (read before Phase 1). Phase 1, Phase 2 and Phase 4 use only the listed rows.
+When `formsDeferred` is true (Step 0 item 3), the status block, the menu and Phase 4 use only
+the rows whose id is not in `formIds`. N counts these rows from 1.
+At least one `sections[]` row has a `delegatedTo` value, so this filter never gives an empty list.
+When `formsDeferred` is false, every row is a listed row.
+<!-- The non-empty fact is checked by TestSetupSkillsFormIdsMatchSetupTab in internal/skillcheck/skillcheck_setup_test.go. -->
+
+**Phase 1 — Render the status block.** Print the status block for the listed rows, using
+`section.label` and the computed `summary` verbatim:
 
 **State badge per row** (driven by the computed `state`):
 - `[set]` — section is already configured.
@@ -363,10 +374,8 @@ Detected configuration:
   ...
 ```
 
-**Phase 2 — Print the numbered menu directly to chat.** One line per row in the canonical
-19-id order, format:
-When `formsDeferred` is true (Step 0 item 3), the status block, the menu and Phase 4 use only
-the rows whose id is not in `formIds`. N counts these rows from 1.
+**Phase 2 — Print the numbered menu directly to chat.** One line per listed row, in the
+canonical order, format:
 
 ```
 <N>. [<state>] <section.label> — <first sentence of section.purpose>
@@ -390,8 +399,8 @@ literal chat message, then end the model turn so the user's next message is the 
 
 ```
 Reply with the numbers to configure (e.g. 1,3,5 or 1-3,7), or type:
-  all       — configure every section
-  not-set   — configure only sections currently [not set]
+  all       — configure every listed section
+  not-set   — configure only listed sections currently [not set]
   none      — configure no section (setup still offers CI script updates)
   cancel    — configure no section (alias for none)
 Default: all
@@ -1101,7 +1110,7 @@ Otherwise call `dashboard({ action: "status" })`:
 |---|---|
 | `running` true | `Change the form sections later in the dashboard Setup tab: <url>#setup` |
 | `running` false | `Change the form sections later in the dashboard Setup tab. Run /sdlc:dashboard, then open the Setup tab.` |
-| tool error | `Tool error text (dashboard):`, the error in a `text` fence, then the `running` false line |
+| tool error | the error by the tool error text rule of Step 0 item 3, with the label `Tool error text (dashboard):`, then the `running` false line |
 | any result, `mainWorktree` false | also `The Setup tab changes the config of the main worktree of this repo.` |
 
 ---

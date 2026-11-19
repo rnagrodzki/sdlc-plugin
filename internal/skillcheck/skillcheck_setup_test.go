@@ -28,6 +28,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/mcpserver"
+	"github.com/rnagrodzki/sdlc-plugin/internal/setupmeta"
 	"github.com/rnagrodzki/sdlc-plugin/internal/tools"
 )
 
@@ -797,7 +798,7 @@ func setupSkillsAssertInOrder(t *testing.T, label, text string, parts []string) 
 }
 
 // TestSetupSkillsStep0SetupTabHandoff asserts the Step 0 section of the
-// setup skill holds, in order, the item 3 Setup tab question with its 3
+// setup skill holds, in order, the item 3 Setup tab question with its 4
 // conditions, the answer rows and the route to item 4, before the item 4
 // config snapshot. Step 2 also names needsMigration and --migrate, so the
 // check reads only the Step 0 body.
@@ -806,21 +807,27 @@ func TestSetupSkillsStep0SetupTabHandoff(t *testing.T) {
 	setupSkillsAssertInOrder(t, "skills/setup/SKILL.md Step 0", section, []string{
 		"`formIds` — the ids of the `sections[]` rows",
 		"3. **Form sections: dialogue or Setup tab.**",
-		"all 3 conditions",
+		"all 4 conditions",
 		"| no `--only`, `--force` or direct-entry flag | Arguments |",
 		"| `mainWorktree` is true | item 2 |",
 		"| `needsMigration` is false and `--migrate` is not passed | item 1, Arguments |",
+		"| `formIds` is not empty (`<F>` is 1 or more) | item 2 |",
 		"Where do you want to change the form sections?",
 		"Options: `Setup tab (Recommended)`, `Dialogue`.",
 		"| Setup tab, call returns, no `previewUrl` | `dashboard({ action: \"ensure\", open: true, tab: \"setup\" })` | set `formsDeferred` to true",
 		"| Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: \"<previewUrl>\" })`",
-		"Warning: T3 preview tab did not open — <reason>.",
+		"Warning: T3 preview tab did not open.",
+		"`Tool error text (preview_open):`",
 		"| Setup tab, call error | same | none |",
+		"`Tool error text (dashboard):`",
 		"The form sections continue here.",
 		"| Dialogue, free text, dismissed | none | none |",
 		"| the question tool is not available | none | none |",
 		"`formsDeferred` is false on every other row",
 		"Go to item 4.",
+		"**Tool error text rule.**",
+		"Cut the error text to its first 2000 characters.",
+		"`(cut to 2000 characters)`",
 		"4. **Snapshot current config**",
 	})
 	for _, gone := range []string{"This run created a config file.", "selected form sections"} {
@@ -837,8 +844,14 @@ func TestSetupSkillsStep0SetupTabHandoff(t *testing.T) {
 func TestSetupSkillsStep1DeferredMenu(t *testing.T) {
 	section := setupSkillsSection(t, "### Step 1", "### Step 2")
 	setupSkillsAssertInOrder(t, "skills/setup/SKILL.md Step 1", section, []string{
+		"**Listed rows** (read before Phase 1).",
 		"When `formsDeferred` is true (Step 0 item 3), the status block, the menu and Phase 4 use only",
 		"the rows whose id is not in `formIds`. N counts these rows from 1.",
+		"this filter never gives an empty list.",
+		"**Phase 1 — Render the status block.** Print the status block for the listed rows",
+		"**Phase 2 — Print the numbered menu directly to chat.** One line per listed row",
+		"all       — configure every listed section",
+		"not-set   — configure only listed sections currently [not set]",
 		"- `all` → every id of the listed rows.",
 		"- `not-set` → the ids of the listed rows whose computed `state === 'not-set'`.",
 		"Store the resolved section ids as `selectedIds`. Go to Step 2.",
@@ -867,7 +880,7 @@ func TestSetupSkillsStep4SetupTabPointer(t *testing.T) {
 		"| `running` true | `Change the form sections later in the dashboard Setup tab: <url>#setup` |",
 		"| `running` false |",
 		"/sdlc:dashboard",
-		"| tool error | `Tool error text (dashboard):`",
+		"| tool error | the error by the tool error text rule of Step 0 item 3, with the label `Tool error text (dashboard):`",
 		"| any result, `mainWorktree` false |",
 	})
 }
@@ -884,7 +897,7 @@ func TestSetupSkillsStep0ValueRules(t *testing.T) {
 		"`formIds` — the ids of the `sections[]` rows",
 		"the `delegatedTo` key is absent or empty",
 		"When no row matches, `formIds` is empty.",
-		"the sum of the lengths of their `fields[]` arrays",
+		"`<FIELDS>` is the sum of the lengths of their `fields[]` arrays",
 	} {
 		if !strings.Contains(section, want) {
 			t.Errorf("skills/setup/SKILL.md Step 0: missing %q", want)
@@ -892,5 +905,38 @@ func TestSetupSkillsStep0ValueRules(t *testing.T) {
 	}
 	if got := strings.Count(section, "else false"); got != 1 {
 		t.Errorf("skills/setup/SKILL.md Step 0: %q appears %d times, want 1 (mainWorktree)", "else false", got)
+	}
+}
+
+// TestSetupSkillsFormIdsMatchSetupTab checks the two facts that Step 0 item 2
+// and Step 1 of the setup skill state about formIds: the dashboard Setup tab
+// builds its form from the sections with no delegatedTo (the same rule as
+// formIds), and setupmeta.Sections() holds at least one section of each
+// kind, so the Setup tab question shows a form count above 0 and the
+// filtered Step 1 menu is never empty.
+func TestSetupSkillsFormIdsMatchSetupTab(t *testing.T) {
+	form, delegated := 0, 0
+	for _, sec := range setupmeta.Sections() {
+		if sec.DelegatedTo == "" {
+			form++
+		} else {
+			delegated++
+		}
+	}
+	if form == 0 {
+		t.Error("setupmeta.Sections(): no section without delegatedTo, so the Setup tab question would show 0 form sections")
+	}
+	if delegated == 0 {
+		t.Error("setupmeta.Sections(): no section with delegatedTo, so the filtered Step 1 menu would be empty")
+	}
+
+	path := filepath.Join(filepath.Dir(filepath.Dir(setupSkillsRepoRoot(t))), "internal", "dashboard", "web", "static", "setup.js")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	want := "var formSections = data.sections.filter(function (sec) {\n    return !sec.delegatedTo;\n  });"
+	if !strings.Contains(string(data), want) {
+		t.Errorf("internal/dashboard/web/static/setup.js: the Setup tab form does not use the formIds rule (a section with no delegatedTo); want %q", want)
 	}
 }

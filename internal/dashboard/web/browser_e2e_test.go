@@ -2218,7 +2218,7 @@ func TestBrowserE2E_SetupGuardrails(t *testing.T) {
 			return r.querySelector('.setup-gr-id').textContent === 'no-ci-bypass';
 		});
 		var e = row && row.querySelector('.setup-f-error');
-		return !!e && !e.hidden && e.textContent.indexOf('guardrail no-ci-bypass is not in config.toml') === 0;
+		return !!e && !e.hidden && e.textContent.indexOf('guardrail "no-ci-bypass" is not in config.toml') === 0;
 	})()`)
 	if got := page.text(browserSetupNote); got != "Not saved. The config check refused 1 field. No file changed." {
 		t.Errorf("save note after the refused save = %q", got)

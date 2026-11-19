@@ -635,6 +635,13 @@ var automationFields = []Field{
 	},
 }
 
+// The ids of the two guardrail sections. The dashboard Setup tab edits the
+// guardrails of these sections.
+const (
+	PlanGuardrailsID      = "plan-guardrails"
+	ExecutionGuardrailsID = "execution-guardrails"
+)
+
 // Sections returns the ordered list of setup section descriptors.
 // The order and IDs are frozen and must match the Node.js source
 // (scripts/lib/setup-sections.js SETUP_SECTIONS) exactly.
@@ -842,8 +849,8 @@ func Sections() []Section {
 			Fields:          planTasksFields,
 		},
 		{
-			ID:              "plan-guardrails",
-			Label:           "plan-guardrails",
+			ID:              PlanGuardrailsID,
+			Label:           PlanGuardrailsID,
 			Purpose:         "Custom rules at .sdlc-v2/config.toml#plan.guardrails evaluated by /plan during its critique phases. Each guardrail is a natural-language constraint (e.g., \"no direct DB access from controllers\") that flags drift in plans before execution.",
 			ConfigFile:      ".sdlc-v2/config.toml",
 			ConfigPath:      "plan.guardrails",
@@ -855,8 +862,8 @@ func Sections() []Section {
 			Fields:          nil,
 		},
 		{
-			ID:              "execution-guardrails",
-			Label:           "execution-guardrails",
+			ID:              ExecutionGuardrailsID,
+			Label:           ExecutionGuardrailsID,
 			Purpose:         "Runtime guardrails at .sdlc-v2/config.toml#execute.guardrails evaluated by /execute and /ship before and after each wave. Error-severity violations halt execution; warning-severity violations are reported but non-blocking.",
 			ConfigFile:      ".sdlc-v2/config.toml",
 			ConfigPath:      "execute.guardrails",
