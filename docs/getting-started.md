@@ -111,6 +111,8 @@ The Setup tab shows the 10 form sections (48 fields). Only `/sdlc:setup` changes
 
 <!-- setup-owner-table:end -->
 
+In the table, `/sdlc:setup` only means that the Setup tab has no form fields for the section. The Setup tab still lists, adds, edits and removes the guardrails of `plan-guardrails` and `execution-guardrails`. See [Guardrail sections](dashboard.md#guardrail-sections). Only `/sdlc:setup` scans the code and proposes guardrails.
+
 ### User-level personal settings
 Put values that you want in every project in `~/.sdlc/local.toml` (or the path in `SDLC_USER_CONFIG`).
 The file uses the same sections as `.sdlc-v2/local.toml`.
