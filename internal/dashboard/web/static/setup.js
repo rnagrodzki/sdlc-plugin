@@ -27,15 +27,30 @@
     { id: 'user', label: 'All my projects', file: '~/.sdlc/local.toml' },
   ];
   var SOURCE_FILE = { config: '.sdlc-v2/config.toml', project: '.sdlc-v2/local.toml', user: '~/.sdlc/local.toml' };
+  var FILE_FILTERS = [
+    { id: 'any', label: 'Any file', title: 'Show the fields of every file' },
+    { id: 'config', label: 'config.toml', title: '.sdlc-v2/config.toml · team file, in git' },
+    { id: 'project', label: 'local.toml', title: '.sdlc-v2/local.toml · this project, not in git' },
+    { id: 'user', label: '~/.sdlc/local.toml', title: '~/.sdlc/local.toml · all my projects' },
+    { id: 'default', label: 'Default', title: 'No value in any file. The default applies.' },
+    { id: 'other', label: 'Other files', title: 'Files outside the config: review dimensions, templates, openspec/config.yaml' },
+  ];
 
   var RUNNING = ['running', 'in progress', 'in_progress'];
 
   var formSections = data.sections.filter(function (sec) {
     return !sec.delegatedTo;
   });
-  var delegSections = data.sections.filter(function (sec) {
-    return !!sec.delegatedTo;
+  // The guardrail sections: the form lists and edits each guardrail.
+  var GR_IDS = ['plan-guardrails', 'execution-guardrails'];
+  var grSections = data.sections.filter(function (sec) {
+    return GR_IDS.indexOf(sec.id) !== -1;
   });
+  var delegSections = data.sections.filter(function (sec) {
+    return !!sec.delegatedTo && GR_IDS.indexOf(sec.id) === -1;
+  });
+  var GR_KEBAB = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+  var GR_MAX_BYTES = 1024;
 
   var ui = {
     panel: null,
@@ -44,6 +59,7 @@
     sig: '', // the repo list of the last build
     filter: '',
     show: 'all', // 'all' | 'changed' | 'unset'
+    file: 'any', // 'any' | 'config' | 'project' | 'user': the file filter of the bar
     note: '', // the result line of the save bar
     noteState: '',
     refs: null,
@@ -52,6 +68,9 @@
     configError: '', // the configError of the state answer
     req: 0, // the number of the last state request
     fields: null, // the promise of the field list
+    grOpen: {}, // the open guardrail rows, by '<section id>#<uid>'
+    grSev: {}, // the severity filter of each guardrail section: 'all' | 'error' | 'warning'
+    grExpanded: {}, // true for a guardrail section with an open list. Lists start closed.
   };
   // The form state of each repo, by root. A repo switch keeps unsaved changes.
   var byRoot = Object.create(null);
@@ -171,7 +190,30 @@
         st.target[sec.id] = target;
       }
     });
+    // Guardrails: base is the list on disk, draft is the edited list. A draft
+    // entry has { id, severity, description, isNew, removed }.
+    st.grBase = {};
+    st.gr = {};
+    grSections.forEach(function (sec) {
+      st.grBase[sec.id] = withValues ? grLoad(sec) : [];
+      st.gr[sec.id] = grFresh(st.grBase[sec.id]);
+    });
     return st;
+  }
+
+  // The guardrail list of a section from the state field guardrails
+  // (key: the config path, plan.guardrails or execute.guardrails).
+  function grLoad(sec) {
+    var all = data.guardrails || {};
+    return (all[sec.configPath] || []).map(function (g) {
+      return { id: g.id, severity: g.severity, description: g.description };
+    });
+  }
+
+  function grFresh(base) {
+    return base.map(function (g) {
+      return { id: g.id, severity: g.severity, description: g.description, isNew: false, removed: false };
+    });
   }
 
   function cur() {
@@ -245,7 +287,415 @@
         out.push({ sec: sec, field: field, file: file, key: keyPath(sec, field), from: show(from), to: show(to) });
       });
     });
+    grSections.forEach(function (sec) {
+      st.gr[sec.id].forEach(function (g) {
+        var state = grState(sec, g);
+        if (state === 'set') return;
+        var base = grBase(sec, g);
+        var key = sec.configPath + '.' + (g.id || '(no id)');
+        var to = state === 'removed' ? 'removed' : state === 'new' ? 'new · ' + g.severity : grEditText(base, g);
+        out.push({ sec: sec, guardrail: g, file: sec.configFile, key: key, from: base ? base.severity : 'not set', to: to });
+      });
+    });
     return out;
+  }
+
+  // --- Guardrails ---------------------------------------------------------------
+
+  // The disk entry of a guardrail, or null for a new one.
+  function grBase(sec, g) {
+    return g.isNew ? null : grBaseOf(sec, g.id);
+  }
+
+  function grBaseOf(sec, id) {
+    var list = cur().grBase[sec.id];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) return list[i];
+    }
+    return null;
+  }
+
+  // 'set' | 'changed' | 'new' | 'removed'
+  function grState(sec, g) {
+    if (g.isNew) return g.removed ? 'set' : 'new';
+    if (g.removed) return 'removed';
+    var base = grBaseOf(sec, g.id);
+    return base && base.severity === g.severity && base.description === g.description ? 'set' : 'changed';
+  }
+
+  function grEditText(base, g) {
+    var parts = [];
+    if (base.severity !== g.severity) parts.push(g.severity);
+    if (base.description !== g.description) parts.push('description changed');
+    return parts.join(' · ');
+  }
+
+  function grBytes(text) {
+    return new TextEncoder().encode(text || '').length;
+  }
+
+  // The error of one guardrail, or ''. The rules follow the guardrails
+  // validator: kebab-case unique id, severity error or warning, a description
+  // of 1 to 1024 bytes.
+  function grError(sec, g) {
+    if (g.removed) return '';
+    if (g.isNew) {
+      if (!g.id) return 'Add an id, e.g. no-ci-bypass.';
+      if (!GR_KEBAB.test(g.id)) return 'Use lowercase words joined by single hyphens, e.g. no-ci-bypass.';
+      var dup = cur().gr[sec.id].some(function (o) {
+        return o !== g && !o.removed && o.id === g.id;
+      });
+      if (dup) return 'Another guardrail of this list has this id. Pick a new id.';
+    }
+    if (!g.description.trim()) return 'Add a description that states what the guardrail enforces.';
+    var bytes = grBytes(g.description);
+    if (bytes > GR_MAX_BYTES) {
+      return 'The description has ' + bytes + ' bytes. The maximum is ' + GR_MAX_BYTES + '. Shorten it, or split it into two guardrails.';
+    }
+    return '';
+  }
+
+  function grErrorCount() {
+    var n = 0;
+    grSections.forEach(function (sec) {
+      cur().gr[sec.id].forEach(function (g) {
+        if (grError(sec, g)) n++;
+      });
+    });
+    return n;
+  }
+
+  function grKey(sec, g) {
+    return sec.id + '#' + g.uid;
+  }
+
+  var grUid = 0;
+  function grUidOf(g) {
+    if (!g.uid) g.uid = ++grUid;
+    return g.uid;
+  }
+
+  // One guardrail row. Collapsed: severity, id, state, and two lines of the
+  // description. Open: the severity choice, the description editor, the byte
+  // count, and the id for a new guardrail.
+  function grRow(sec, g) {
+    grUidOf(g);
+    var key = grKey(sec, g);
+    var open = !!ui.grOpen[key];
+    var state = grState(sec, g);
+    var base = grBase(sec, g);
+    var row = h('li', 'setup-gr-row');
+    var head = h('div', 'setup-gr-head');
+    var sev = h('span', 'setup-gr-sev', g.severity.toUpperCase());
+    var idNode = h('code', 'setup-gr-id', g.id || 'new guardrail');
+    var tag = h('span', 'setup-gr-tag', state === 'set' ? '' : state.toUpperCase());
+    var toggle = grIconBtn(open ? 'close' : 'edit', open ? 'Close the editor' : 'Edit ' + (g.id || 'the new guardrail'));
+    var remove = grIconBtn(g.removed ? 'undo' : 'trash', g.removed ? 'Restore ' + g.id : 'Remove ' + (g.id || 'the new guardrail'));
+    var desc = h('p', 'setup-gr-desc', g.description || 'No description yet.');
+
+    row.setAttribute('data-state', state);
+    row.setAttribute('data-sev', g.severity);
+    row.setAttribute('data-open', String(open));
+    tag.hidden = state === 'set';
+    toggle.setAttribute('aria-expanded', String(open));
+    toggle.addEventListener('click', function () {
+      ui.grOpen[key] = !open;
+      grRedrawRow(sec, g, toggle);
+    });
+    remove.addEventListener('click', function () {
+      if (g.isNew && !g.removed) {
+        // A new guardrail that the user removes goes away at once.
+        var list = cur().gr[sec.id];
+        list.splice(list.indexOf(g), 1);
+        grRedraw(sec);
+        refreshChrome();
+        return;
+      }
+      g.removed = !g.removed;
+      if (g.removed) ui.grOpen[key] = false;
+      grRedrawRow(sec, g);
+      refreshChrome();
+    });
+    desc.addEventListener('click', function () {
+      if (open || g.removed) return;
+      ui.grOpen[key] = true;
+      grRedrawRow(sec, g);
+    });
+    // An open row puts the severity choice in the place of the badge, so the
+    // value and its control are in one place.
+    add(head, open && !g.removed ? grSevSeg(sec, g) : sev, idNode, tag, h('span', 'spacer'), g.removed ? null : toggle, remove);
+    add(row, head);
+
+    if (!open) {
+      row.appendChild(desc);
+    } else {
+      row.appendChild(grEditor(sec, g, base, row));
+    }
+    var err = grError(sec, g);
+    var errNode = h('p', 'setup-f-error', err);
+    errNode.setAttribute('role', 'alert');
+    errNode.hidden = !err;
+    row.appendChild(errNode);
+    row.classList.toggle('has-error', !!err);
+    ui.refs.gr[key] = { row: row, sec: sec, g: g, err: errNode };
+    return row;
+  }
+
+  // An icon button of a guardrail row. The icon is a CSS mask (setup.css,
+  // --icon-<name>), so it takes the text color. The label is for screen
+  // readers and the tooltip.
+  function grIconBtn(name, label) {
+    var b = button('setup-gr-icon setup-gr-icon-' + name);
+    b.setAttribute('aria-label', label);
+    b.title = label;
+    return b;
+  }
+
+  var GR_SEV_HELP = {
+    error: 'error: a plan or a wave that breaks it fails.',
+    warning: 'warning: a break gives a warning only.',
+  };
+
+  // The severity choice of an open row. It sits in the row head.
+  function grSevSeg(sec, g) {
+    var seg = h('div', 'setup-seg setup-gr-sevseg');
+    seg.setAttribute('role', 'radiogroup');
+    seg.setAttribute('aria-label', 'Severity of ' + (g.id || 'the new guardrail'));
+    var buttons = ['error', 'warning'].map(function (s) {
+      var b = button('', s.toUpperCase());
+      b.setAttribute('role', 'radio');
+      b.setAttribute('data-sev', s);
+      b.setAttribute('aria-checked', String(g.severity === s));
+      b.title = GR_SEV_HELP[s];
+      b.addEventListener('click', function () {
+        if (g.severity === s) return;
+        g.severity = s;
+        grRedrawRow(sec, g, null, s);
+        refreshChrome();
+      });
+      seg.appendChild(b);
+      return b;
+    });
+    radioKeys(seg, buttons, function (b) { b.click(); });
+    rove(buttons);
+    return seg;
+  }
+
+  function grEditor(sec, g, base, row) {
+    var box = h('div', 'setup-gr-edit');
+    if (g.isNew) {
+      var idLabel = h('label', 'setup-gr-label', 'ID');
+      var idInput = h('input', 'setup-input setup-gr-idin');
+      idInput.value = g.id;
+      idInput.placeholder = 'no-ci-bypass';
+      idInput.spellcheck = false;
+      idInput.addEventListener('input', function () {
+        g.id = idInput.value.trim();
+        row.querySelector('.setup-gr-id').textContent = g.id || 'new guardrail';
+        grRefreshRowMeta(sec, g);
+      });
+      add(box, add(idLabel, idInput));
+    }
+    if (base && base.severity === 'error' && g.severity === 'warning') {
+      box.appendChild(h('p', 'setup-gr-lower', 'This lowers the severity from error to warning. /sdlc:harden never lowers a severity.'));
+    }
+
+    var area = h('textarea', 'setup-gr-text');
+    area.value = g.description;
+    area.rows = Math.min(10, Math.max(3, Math.ceil(g.description.length / 90)));
+    area.setAttribute('aria-label', 'Description of ' + (g.id || 'the new guardrail'));
+    var meta = h('div', 'setup-gr-meta');
+    area.addEventListener('input', function () {
+      g.description = area.value;
+      grRefreshRowMeta(sec, g);
+    });
+    box.appendChild(add(h('label', 'setup-gr-label', 'DESCRIPTION'), area));
+    box.appendChild(meta);
+    ui.grMeta = ui.grMeta || {};
+    ui.grMeta[grKey(sec, g)] = meta;
+    grFillMeta(sec, g, base, meta);
+    return box;
+  }
+
+  function grFillMeta(sec, g, base, meta) {
+    var bytes = grBytes(g.description);
+    var count = h('span', 'setup-gr-bytes', bytes + ' / ' + GR_MAX_BYTES + ' bytes');
+    count.setAttribute('data-over', String(bytes > GR_MAX_BYTES));
+    var parts = [count];
+    if (base && (base.description !== g.description || base.severity !== g.severity)) {
+      var undo = button('setup-link setup-gr-undo', 'Undo changes');
+      undo.title = 'Puts back the saved severity and description, and closes the editor';
+      undo.addEventListener('click', function () {
+        g.description = base.description;
+        g.severity = base.severity;
+        // The row has nothing left to edit, so the editor closes.
+        ui.grOpen[grKey(sec, g)] = false;
+        grRedrawRow(sec, g, true);
+        refreshChrome();
+      });
+      parts.push(undo);
+    }
+    meta.replaceChildren.apply(meta, parts);
+  }
+
+  // Updates the state tag, the byte count and the error of a row while the
+  // user types, with no rebuild, so the text box keeps the focus.
+  function grRefreshRowMeta(sec, g) {
+    var key = grKey(sec, g);
+    var ref = ui.refs.gr[key];
+    if (!ref) return;
+    var state = grState(sec, g);
+    var tag = ref.row.querySelector('.setup-gr-tag');
+    tag.textContent = state === 'set' ? '' : state.toUpperCase();
+    tag.hidden = state === 'set';
+    ref.row.setAttribute('data-state', state);
+    var err = grError(sec, g);
+    ref.err.textContent = err;
+    ref.err.hidden = !err;
+    ref.row.classList.toggle('has-error', !!err);
+    if (ui.grMeta && ui.grMeta[key]) grFillMeta(sec, g, grBase(sec, g), ui.grMeta[key]);
+    grRefreshHead(sec);
+    refreshChrome();
+  }
+
+  function grRedrawRow(sec, g, focusLike, sevFocus) {
+    var ref = ui.refs.gr[grKey(sec, g)];
+    if (!ref) return grRedraw(sec);
+    var next = grRow(sec, g);
+    ref.row.replaceWith(next);
+    if (sevFocus) {
+      var b = next.querySelector('.setup-seg [aria-checked="true"]');
+      if (b) b.focus();
+    } else if (focusLike) {
+      var t = next.querySelector('.setup-gr-head .setup-gr-icon');
+      if (t) t.focus();
+    }
+    grRefreshHead(sec);
+    applyVisibility();
+  }
+
+  function grRedraw(sec) {
+    var sref = ui.refs.grSec[sec.id];
+    sref.list.replaceChildren.apply(
+      sref.list,
+      cur().gr[sec.id].map(function (g) {
+        return grRow(sec, g);
+      })
+    );
+    grRefreshHead(sec);
+    applyVisibility();
+  }
+
+  // The severity chips and the counts of a guardrail section.
+  function grRefreshHead(sec) {
+    var sref = ui.refs.grSec[sec.id];
+    if (!sref) return;
+    var list = cur().gr[sec.id].filter(function (g) {
+      return !g.removed;
+    });
+    var n = { all: list.length, error: 0, warning: 0 };
+    list.forEach(function (g) {
+      n[g.severity]++;
+    });
+    Object.keys(sref.sevChips).forEach(function (s) {
+      sref.sevChips[s].count.textContent = String(n[s]);
+      sref.sevChips[s].chip.setAttribute('aria-pressed', String((ui.grSev[sec.id] || 'all') === s));
+    });
+  }
+
+  // The two ways to change the guardrails: in this form, or with the
+  // assistant, which scans the code and proposes guardrails. Always visible.
+  function grWays(sec) {
+    var ways = h('div', 'setup-gr-ways');
+    var form = h('div', 'setup-gr-way');
+    var llm = h('div', 'setup-gr-way');
+    var command = '/sdlc:setup --only ' + sec.id;
+    var cmdRow = h('div', 'setup-cmd-row');
+    var copy = button('setup-copy', 'Copy');
+    copy.setAttribute('aria-label', 'Copy the command ' + command);
+    copy.addEventListener('click', function () {
+      var done = function (text) {
+        copy.textContent = text;
+        window.setTimeout(function () {
+          copy.textContent = 'Copy';
+        }, 1500);
+      };
+      if (!navigator.clipboard) return done('Not copied');
+      navigator.clipboard.writeText(command).then(
+        function () {
+          done('Copied');
+        },
+        function () {
+          done('Not copied');
+        }
+      );
+    });
+    add(cmdRow, h('code', 'setup-cmd', command), copy);
+    add(
+      form,
+      h('p', 'setup-gr-way-title', 'IN THIS FORM'),
+      h('p', 'setup-gr-way-text', 'Add, edit or remove each guardrail yourself. The save writes config.toml.')
+    );
+    add(
+      llm,
+      h('p', 'setup-gr-way-title', 'WITH THE ASSISTANT'),
+      h('p', 'setup-gr-way-text', 'The assistant scans the code and proposes guardrails for you to accept. Run the command in Claude Code in the repo.'),
+      cmdRow
+    );
+    return add(ways, form, llm);
+  }
+
+  function buildGr(sec) {
+    var card = h('section', 'setup-sec setup-gr list-panel');
+    var tools = h('div', 'setup-gr-tools');
+    var chips = h('span', 'chips');
+    var shown = h('span', 'setup-gr-shown');
+    var addBtn = button('setup-btn', '+ Add guardrail');
+    var toggle = button('setup-btn setup-gr-toggle');
+    toggle.setAttribute('aria-controls', 'setup-gr-list-' + sec.id);
+    toggle.addEventListener('click', function () {
+      ui.grExpanded[sec.id] = !ui.grExpanded[sec.id];
+      applyVisibility();
+      if (!ui.grExpanded[sec.id]) card.scrollIntoView({ block: 'start', behavior: 'auto' });
+    });
+    var list = h('ol', 'setup-gr-list');
+    var sevChips = {};
+
+    card.id = 'setup-sec-' + sec.id;
+    [['all', 'All'], ['error', 'Error'], ['warning', 'Warning']].forEach(function (pair) {
+      var chip = button('chip', pair[1] + ' ');
+      var count = h('span', 'chip-n');
+      chip.appendChild(count);
+      chip.addEventListener('click', function () {
+        ui.grSev[sec.id] = pair[0];
+        ui.grExpanded[sec.id] = true;
+        grRefreshHead(sec);
+        applyVisibility();
+      });
+      sevChips[pair[0]] = { chip: chip, count: count };
+      chips.appendChild(chip);
+    });
+    addBtn.addEventListener('click', function () {
+      var g = { id: '', severity: 'error', description: '', isNew: true, removed: false };
+      cur().gr[sec.id].unshift(g);
+      grUidOf(g);
+      ui.grOpen[grKey(sec, g)] = true;
+      ui.grSev[sec.id] = 'all';
+      ui.grExpanded[sec.id] = true;
+      grRedraw(sec);
+      refreshChrome();
+      var input = list.querySelector('.setup-gr-idin');
+      if (input) input.focus();
+    });
+    list.id = 'setup-gr-list-' + sec.id;
+    add(tools, chips, h('span', 'spacer'), shown, toggle, addBtn);
+    add(card, buildHead(sec, sec.configFile), h('p', 'setup-purpose', sec.purpose), grWays(sec), tools, list);
+    ui.refs.grSec[sec.id] = { node: card, list: list, shown: shown, sevChips: sevChips, toggle: toggle };
+    cur().gr[sec.id].forEach(function (g) {
+      list.appendChild(grRow(sec, g));
+    });
+    grRefreshHead(sec);
+    return card;
   }
 
   // Arrow keys, Home, and End move the choice of a group with one choice.
@@ -571,7 +1021,9 @@
     error.id = id + '-error';
     (control.node.id === id ? control.node : control.node.querySelector('#' + id) || control.node).setAttribute('aria-describedby', error.id);
     add(box, control.node);
-    add(ctl, box, meta, error);
+    var over = h('div', 'setup-over');
+    over.hidden = true;
+    add(ctl, box, meta, over, error);
     add(row, text, ctl);
 
     ui.refs.fields[key] = {
@@ -580,6 +1032,7 @@
       row: row,
       control: control,
       meta: meta,
+      over: over,
       error: error,
       hay: (field.label + ' ' + keyPath(sec, field) + ' ' + field.description + ' ' + sec.id + ' ' + optionText).toLowerCase(),
     };
@@ -640,6 +1093,25 @@
     }
     if (rangeText(field)) parts.push(h('span', '', rangeText(field)));
     ref.meta.replaceChildren.apply(ref.meta, parts);
+
+    // The values of other files that the shown value overrides.
+    var overs = overridesOf(sec, field);
+    var lines = Object.keys(overs).map(function (file) {
+      var line = h('p', 'setup-over-line');
+      var same_ = same(overs[file], value);
+      var why = sv.overrideText(field.type, same_, SOURCE_FILE[valueFile(sec, field)]);
+      line.setAttribute('data-file', file);
+      line.classList.toggle('is-merged', !why.struck);
+      add(
+        line,
+        h('code', '', SOURCE_FILE[file]),
+        h('span', 'setup-over-val', show(overs[file])),
+        h('span', 'setup-over-why', why.text)
+      );
+      return line;
+    });
+    ref.over.replaceChildren.apply(ref.over, lines);
+    ref.over.hidden = !lines.length;
 
     var message = validate(field, value) || st.errors[key] || '';
     ref.error.textContent = message;
@@ -883,7 +1355,77 @@
       views.appendChild(chip);
     });
 
-    return add(bar, h('span', 'filter-label', 'REPO'), chips, h('span', 'sep'), search, views);
+    // The file filter: shows only the fields whose value is in one file, or
+    // only the fields with no value (Default). A section that needs the
+    // assistant counts as one item. The chip counts add up to Any file.
+    var files = h('span', 'chips setup-file-chips');
+    files.setAttribute('role', 'group');
+    files.setAttribute('aria-label', 'Show only the values of one file');
+    ui.refs.files = {};
+    FILE_FILTERS.forEach(function (f) {
+      var chip = button('chip', f.label + ' ');
+      var count = h('span', 'chip-n');
+      chip.title = f.title;
+      chip.setAttribute('data-file', f.id);
+      chip.appendChild(count);
+      chip.addEventListener('click', function () {
+        ui.file = f.id;
+        applyVisibility();
+        refreshChrome();
+      });
+      ui.refs.files[f.id] = { chip: chip, count: count };
+      files.appendChild(chip);
+    });
+
+    return add(
+      bar,
+      h('span', 'filter-label', 'REPO'),
+      chips,
+      h('span', 'sep'),
+      search,
+      views,
+      h('span', 'sep'),
+      // The label and its chips wrap as one unit, so the label never stays alone at the end of a row.
+      add(h('span', 'setup-bar-group'), h('span', 'filter-label', 'FILE'), files)
+    );
+  }
+
+  // The file of the value that a field shows: the save file for a changed
+  // value, the source file for a value from disk, 'default' for no value.
+  function valueFile(sec, field) {
+    var st = cur();
+    var value = st.draft[sec.id][field.name];
+    if (value === undefined) return 'default';
+    if (!same(st.base[sec.id][field.name], value)) return isLocal(sec) ? st.target[sec.id] : 'config';
+    return st.source[sec.id][field.name] || (isLocal(sec) ? st.target[sec.id] : 'config');
+  }
+
+  // The values of the other files for one field: { file: value } for each
+  // file that sets the field but loses to the shown value. The per-file
+  // values come from the state field layers (key '<section id>.<field name>').
+  function overridesOf(sec, field) {
+    var all = data.layers || {};
+    var mine = all[sec.id + '.' + field.name] || {};
+    var shown = valueFile(sec, field);
+    var out = {};
+    Object.keys(mine).forEach(function (file) {
+      if (file !== shown) out[file] = mine[file];
+    });
+    return out;
+  }
+
+  // True when the field has a value in the file: the shown value or a value
+  // that the shown value overrides.
+  function inFile(sec, field, file) {
+    return valueFile(sec, field) === file || Object.prototype.hasOwnProperty.call(overridesOf(sec, field), file);
+  }
+
+  // The file group of a section that needs the assistant: 'default' when the
+  // section has no value, 'config' for a section in config.toml (commit, pr,
+  // pr labels, guardrails), 'other' for a section in its own file.
+  function delegFile(sec) {
+    if (!delegState(sec).on) return 'default';
+    return sec.configFile === SOURCE_FILE.config ? 'config' : 'other';
   }
 
   function buildNotes() {
@@ -921,6 +1463,7 @@
     var main = h('div', 'setup-main');
     var formList = h('div', 'setup-rail-list');
     var delegList = h('div', 'setup-rail-list');
+    var grList = h('div', 'setup-rail-list');
     var grid = h('div', 'setup-deleg-grid');
     var delegHead = h('div', 'setup-deleg-head');
     var none = h('p', 'setup-none', 'No field matches the filter.');
@@ -935,6 +1478,11 @@
     formSections.forEach(function (sec) {
       formList.appendChild(railItem(sec, jump(sec)));
       main.appendChild(buildSection(sec));
+    });
+    grSections.forEach(function (sec) {
+      // A click in the index only scrolls. The list stays closed.
+      grList.appendChild(railItem(sec, jump(sec)));
+      main.appendChild(buildGr(sec));
     });
     add(
       delegHead,
@@ -956,7 +1504,8 @@
     ui.refs.delegHead = delegHead;
     ui.refs.delegTitle = h('p', 'setup-rail-title', 'NEED THE ASSISTANT');
     ui.refs.none = none;
-    add(rail, h('p', 'setup-rail-title', 'FORM SECTIONS'), formList, ui.refs.delegTitle, delegList);
+    ui.refs.grTitle = h('p', 'setup-rail-title', 'GUARDRAILS');
+    add(rail, h('p', 'setup-rail-title', 'FORM SECTIONS'), formList, ui.refs.grTitle, grList, ui.refs.delegTitle, delegList);
     add(main, delegHead, grid, none);
     return add(body, rail, main);
   }
@@ -975,6 +1524,10 @@
       var st = cur();
       st.draft = clone(st.base);
       st.target = clone(st.baseTarget);
+      grSections.forEach(function (sec) {
+        st.gr[sec.id] = grFresh(st.grBase[sec.id]);
+      });
+      ui.grOpen = {};
       st.errors = {};
       ui.note = '';
       refreshAll();
@@ -1041,7 +1594,7 @@
   function applyVisibility() {
     if (!ui.refs || !ui.refs.none) return;
     var query = ui.filter.trim().toLowerCase();
-    var narrowed = !!query || ui.show !== 'all';
+    var narrowed = !!query || ui.show !== 'all' || ui.file !== 'any';
     var active = activeSteps();
     var total = 0;
 
@@ -1055,7 +1608,10 @@
         var shown = 0;
         group.rows.forEach(function (row) {
           var state = row.row.getAttribute('data-state');
-          var match = (!query || row.hay.indexOf(query) !== -1) && (ui.show === 'all' || ui.show === state);
+          var match =
+            (!query || row.hay.indexOf(query) !== -1) &&
+            (ui.show === 'all' || ui.show === state) &&
+            (ui.file === 'any' || inFile(row.sec, row.field, ui.file));
           row.row.hidden = !match || off;
           if (match && !off) shown++;
           if (match && off) offCount++;
@@ -1077,10 +1633,51 @@
       total += visible;
     });
 
+    var grShownSecs = 0;
+    grSections.forEach(function (sec) {
+      var sref = ui.refs.grSec[sec.id];
+      var list = cur().gr[sec.id];
+      var sevPick = ui.grSev[sec.id] || 'all';
+      var file = list.length ? 'config' : 'default';
+      var fileOk = ui.file === 'any' || ui.file === file;
+      var shown = 0;
+      list.forEach(function (g) {
+        var ref = ui.refs.gr[grKey(sec, g)];
+        if (!ref) return;
+        var state = grState(sec, g);
+        var hay = (g.id + ' ' + g.description).toLowerCase();
+        var match =
+          fileOk &&
+          ui.show !== 'unset' &&
+          (ui.show === 'all' || state !== 'set') &&
+          (sevPick === 'all' || g.severity === sevPick) &&
+          (!query || hay.indexOf(query) !== -1);
+        ref.row.hidden = !match;
+        if (match) shown++;
+      });
+      // A closed list opens by itself while the search or the Changed view
+      // narrows it, so a match is never hidden.
+      var forced = !!query || ui.show === 'changed';
+      var open = !!ui.grExpanded[sec.id] || forced;
+      sref.list.hidden = !open;
+      sref.toggle.hidden = forced;
+      sref.toggle.textContent = open ? 'Hide guardrails' : 'Show ' + plural(list.length, 'guardrail');
+      sref.toggle.setAttribute('aria-expanded', String(open));
+      sref.node.setAttribute('data-open', String(open));
+      sref.shown.hidden = !open;
+      sref.shown.textContent = 'Showing ' + shown + ' of ' + list.length;
+      sref.node.hidden = !fileOk || ui.show === 'unset' || (narrowed && shown === 0 && sevPick === 'all');
+      ui.refs.rail[sec.id].node.hidden = sref.node.hidden;
+      if (!sref.node.hidden) grShownSecs++;
+      total += shown;
+    });
+    ui.refs.grTitle.hidden = grShownSecs === 0;
+
     var delegShown = 0;
     delegSections.forEach(function (sec) {
       var ref = ui.refs.deleg[sec.id];
-      var match = ui.show === 'all' && (!query || ref.hay.indexOf(query) !== -1);
+      var match =
+        ui.show === 'all' && (ui.file === 'any' || delegFile(sec) === ui.file) && (!query || ref.hay.indexOf(query) !== -1);
       ref.node.hidden = !match;
       ui.refs.rail[sec.id].node.hidden = !match;
       if (match) delegShown++;
@@ -1103,6 +1700,12 @@
     var total = 0;
     var unset = 0;
     var errors = 0;
+    var perSource = { any: 0, config: 0, project: 0, user: 0, default: 0, other: 0 };
+    // A section that needs the assistant counts as one item in its file group.
+    delegSections.forEach(function (sec) {
+      perSource.any++;
+      perSource[delegFile(sec)]++;
+    });
 
     formSections.forEach(function (sec) {
       var changed = 0;
@@ -1110,7 +1713,13 @@
       sec.fields.forEach(function (field) {
         var ref = ui.refs.fields[fieldKey(sec, field)];
         var state = ref.row.getAttribute('data-state');
+        var vf = valueFile(sec, field);
         total++;
+        perSource.any++;
+        perSource[vf]++;
+        Object.keys(overridesOf(sec, field)).forEach(function (file) {
+          perSource[file]++;
+        });
         if (state === 'changed') changed++;
         if (state === 'unset') unset++;
         if (st.draft[sec.id][field.name] !== undefined) set++;
@@ -1131,11 +1740,35 @@
       }
     });
 
+    grSections.forEach(function (sec) {
+      var list = cur().gr[sec.id];
+      var changed = list.filter(function (g) {
+        return grState(sec, g) !== 'set';
+      }).length;
+      var live = list.filter(function (g) {
+        return !g.removed;
+      }).length;
+      var rail = ui.refs.rail[sec.id];
+      rail.node.setAttribute('data-state', changed ? 'changed' : live ? 'set' : 'unset');
+      rail.meta.textContent = changed ? changed + ' changed' : String(live);
+      // A guardrail section counts as one item of its file.
+      perSource.any++;
+      perSource[list.length ? 'config' : 'default']++;
+    });
+    errors += grErrorCount();
+
     ui.refs.views.all.count.textContent = String(total);
     ui.refs.views.changed.count.textContent = String(changes.length);
     ui.refs.views.unset.count.textContent = String(unset);
     Object.keys(ui.refs.views).forEach(function (name) {
       ui.refs.views[name].chip.setAttribute('aria-pressed', String(ui.show === name));
+    });
+    var setupPanel = doc.getElementById('panel-setup');
+    if (setupPanel) setupPanel.setAttribute('data-file', ui.file);
+    Object.keys(ui.refs.files).forEach(function (name) {
+      ui.refs.files[name].count.textContent = String(perSource[name]);
+      // The counts of the two local files include overridden values.
+      ui.refs.files[name].chip.setAttribute('aria-pressed', String(ui.file === name));
     });
 
     if (badge) badge.textContent = changes.length ? String(changes.length) : '';
@@ -1161,13 +1794,16 @@
     save.discard.hidden = !changes.length;
     save.save.hidden = !changes.length;
     save.save.disabled = errors > 0 && !ui.note;
-    save.note.textContent = errors && !ui.note ? plural(errors, 'field') + (errors === 1 ? ' has' : ' have') + ' an error. Correct it before the save.' : ui.note;
+    save.note.textContent = errors && !ui.note ? plural(errors, 'item') + (errors === 1 ? ' has' : ' have') + ' an error. Correct it before the save.' : ui.note;
     save.bar.setAttribute('data-state', errors || ui.noteState === 'error' ? 'error' : changes.length ? 'changed' : 'set');
     if (!ui.note) ui.noteState = '';
   }
 
   function refreshAll() {
     Object.keys(ui.refs.fields).forEach(refreshField);
+    grSections.forEach(function (sec) {
+      if (ui.refs.grSec[sec.id]) grRedraw(sec);
+    });
     applyVisibility();
     refreshChrome();
   }
@@ -1206,7 +1842,8 @@
         var row = h('tr');
         var value = h('td');
         add(value, h('span', 'from', c.from), h('span', 'arrow', '→'), h('span', 'to', c.to));
-        add(row, h('td', '', c.key), value);
+        var keyCell = h('td', '', c.key);
+        add(row, keyCell, value);
         table.appendChild(row);
       });
       nodes.push(title, table);
@@ -1252,7 +1889,7 @@
   function build() {
     var panel = ui.panel;
     if (!panel) return;
-    ui.refs = { fields: {}, sections: {}, deleg: {}, rail: {} };
+    ui.refs = { fields: {}, sections: {}, deleg: {}, rail: {}, gr: {}, grSec: {} };
     var kids = [];
     if (!ui.repos.length) {
       kids.push(h('p', 'setup-none', 'No repo is registered. Run an sdlc skill in a repo. Then the repo shows here.'));
@@ -1305,8 +1942,11 @@
       formSections = data.sections.filter(function (sec) {
         return !sec.delegatedTo;
       });
+      grSections = data.sections.filter(function (sec) {
+        return GR_IDS.indexOf(sec.id) !== -1;
+      });
       delegSections = data.sections.filter(function (sec) {
-        return !!sec.delegatedTo;
+        return !!sec.delegatedTo && GR_IDS.indexOf(sec.id) === -1;
       });
     });
     return ui.fields;
@@ -1337,6 +1977,8 @@
           var state = sv.draftState(res.body);
           data.values = state.values;
           data.delegated = state.delegated;
+          data.layers = state.layers;
+          data.guardrails = state.guardrails;
           ui.configError = res.body.configError || '';
           ui.load = res.body.state;
           if (fresh) delete byRoot[root];
@@ -1401,7 +2043,8 @@
     var stage = doc.querySelector('.stage');
     var line = stage.getBoundingClientRect().top + 110;
     var current = null;
-    data.sections.forEach(function (sec) {
+    // Page order, not field-list order: the last section above the line wins.
+    formSections.concat(grSections, delegSections).forEach(function (sec) {
       var node = doc.getElementById('setup-sec-' + sec.id);
       if (node && !node.hidden && node.getBoundingClientRect().top <= line) current = sec.id;
     });

@@ -1696,7 +1696,8 @@ func browserCommentLines(text string) []string {
 // Selectors and note text of the Setup tab, shared by the Setup test and its
 // helpers.
 const (
-	browserSetupForm      = ".setup-sec:not(.setup-deleg)"
+	browserSetupForm      = ".setup-sec:not(.setup-deleg):not(.setup-gr)"
+	browserSetupGr        = ".setup-sec.setup-gr"
 	browserSetupDeleg     = ".setup-sec.setup-deleg"
 	browserSetupNote      = ".setup-save-note"
 	browserSetupField     = "#setup-f-ship-verifyPipelineMaxIterations"
@@ -1783,21 +1784,31 @@ func TestBrowserE2E_Setup(t *testing.T) {
 	base, page := browserLaunch(t, chrome, []string{repoA, repoB})
 
 	// Step 1: open #setup. The form shows one form section for each section
-	// of setupmeta.Sections() with a config path and fields, and one card for
-	// each delegated section.
-	wantForm, wantDeleg := 0, 0
+	// of setupmeta.Sections() with a config path and fields, one guardrail
+	// section for each of the two guardrail lists, and one card for each other
+	// delegated section.
+	wantForm, wantGr, wantDeleg := 0, 0, 0
 	for _, sec := range setupmeta.Sections() {
 		if sec.ConfigPath != "" && len(sec.Fields) > 0 {
 			wantForm++
 		}
-		if sec.DelegatedTo != "" {
+		switch {
+		case sec.ID == "plan-guardrails" || sec.ID == "execution-guardrails":
+			wantGr++
+		case sec.DelegatedTo != "":
 			wantDeleg++
 		}
+	}
+	if wantGr != 2 {
+		t.Fatalf("setupmeta guardrail sections = %d; want 2", wantGr)
 	}
 	page.do("open the Setup tab", chromedp.Navigate(base+"/#setup"))
 	page.wait("the form sections", `document.querySelectorAll(`+browserJSON(browserSetupForm)+`).length === `+strconv.Itoa(wantForm))
 	if n := page.count(browserSetupForm); n != wantForm {
 		t.Errorf("form sections = %d; want %d", n, wantForm)
+	}
+	if n := page.count(browserSetupGr); n != wantGr {
+		t.Errorf("guardrail sections = %d; want %d", n, wantGr)
 	}
 	if n := page.count(browserSetupDeleg); n != wantDeleg {
 		t.Errorf("delegated cards = %d; want %d", n, wantDeleg)
@@ -1835,6 +1846,191 @@ func TestBrowserE2E_Setup(t *testing.T) {
 	page.wait("the form of repo B", `document.querySelectorAll(`+browserJSON(browserSetupForm)+`).length === 10`)
 	if _, err := os.Stat(filepath.Join(repoB, ".sdlc-v2", "config.toml")); err != nil {
 		t.Errorf("config.toml of repo B after Create config: %v", err)
+	}
+}
+
+// browserSetupFileCounts is the count of each file chip of the Setup bar.
+type browserSetupFileCounts struct {
+	Any     int `json:"any"`
+	Config  int `json:"config"`
+	Project int `json:"project"`
+	User    int `json:"user"`
+	Default int `json:"default"`
+	Other   int `json:"other"`
+}
+
+// sum is the total of the chips other than Any file.
+func (c browserSetupFileCounts) sum() int {
+	return c.Config + c.Project + c.User + c.Default + c.Other
+}
+
+// browserSetupFileCountsJS reads the count of each file chip.
+const browserSetupFileCountsJS = `(function () {
+	var out = {};
+	['any', 'config', 'project', 'user', 'default', 'other'].forEach(function (id) {
+		var n = document.querySelector('.setup-file-chips .chip[data-file="' + id + '"] .chip-n');
+		out[id] = n ? Number(n.textContent) : -1;
+	});
+	return out;
+})()`
+
+// browserSetupOverJS returns the override line of the user file for the field
+// with the data-key key: its text, its is-merged class and the computed text
+// decoration of its value. It returns null when the field has no such line.
+func browserSetupOverJS(key string) string {
+	return `(function () {
+		var line = document.querySelector('.setup-field[data-key=` + browserJSON(key) + `] .setup-over-line[data-file="user"]');
+		if (!line) return null;
+		return {
+			why: line.querySelector('.setup-over-why').textContent,
+			merged: line.classList.contains('is-merged'),
+			decoration: getComputedStyle(line.querySelector('.setup-over-val')).textDecorationLine
+		};
+	})()`
+}
+
+// browserSetupOver is the answer of browserSetupOverJS.
+type browserSetupOver struct {
+	Why        string `json:"why"`
+	Merged     bool   `json:"merged"`
+	Decoration string `json:"decoration"`
+}
+
+// TestBrowserE2E_SetupFileFilter drives the file filter of the Setup tab in a
+// real browser: the chip counts, the override lines of a field that the
+// project file and the user file both set, the user chip filter, the
+// guardrail lists of the state, and a click on a guardrail section in the
+// left index.
+//
+// With no Chrome the test fails when CI is set, else it skips.
+func TestBrowserE2E_SetupFileFilter(t *testing.T) {
+	userPath := filepath.Join(t.TempDir(), "local.toml")
+	t.Setenv(config.UserConfigPathEnv, userPath)
+	isolateCacheDir(t)
+	chrome := browserPath(t)
+
+	repo := t.TempDir()
+	_, localPath := browserSetupSeedA(t, repo)
+	// The project file also sets bump, so the user file below overrides it.
+	local := browserReadFile(t, localPath)
+	if !strings.Contains(local, browserSetupStepsLine+"\n") {
+		t.Fatalf("seeded local.toml has no steps line:\n%s", local)
+	}
+	e2eWriteFile(t, localPath, strings.Replace(local, browserSetupStepsLine+"\n", browserSetupStepsLine+"\nbump = \"minor\"\n", 1))
+
+	wantForm := 0
+	grLabel := ""
+	for _, sec := range setupmeta.Sections() {
+		if sec.ConfigPath != "" && len(sec.Fields) > 0 {
+			wantForm++
+		}
+		if sec.ID == "plan-guardrails" {
+			grLabel = sec.Label
+		}
+	}
+	if grLabel == "" {
+		t.Fatal("setupmeta has no plan-guardrails section")
+	}
+	base, page := browserLaunch(t, chrome, []string{repo})
+
+	// Step 1: with no user file, no value is overridden. The counts of the
+	// file chips add up to Any file.
+	page.do("open the Setup tab", chromedp.Navigate(base+"/#setup"))
+	page.wait("the form sections", `document.querySelectorAll(`+browserJSON(browserSetupForm)+`).length === `+strconv.Itoa(wantForm))
+	before := browserMust[browserSetupFileCounts](page, "the chip counts", browserSetupFileCountsJS)
+	if before.Any == 0 || before.sum() != before.Any {
+		t.Errorf("chip counts with no override = %+v; want the sum %d to equal Any file %d", before, before.sum(), before.Any)
+	}
+	if before.User != 0 {
+		t.Errorf("user chip count with no user file = %d; want 0", before.User)
+	}
+	if n := page.count(`.setup-over-line`); n != 0 {
+		t.Errorf("override lines with no user file = %d; want 0", n)
+	}
+
+	// Step 2: the user file sets bump and steps, which the project file also
+	// sets. Each field adds one to the user chip and shows an override line.
+	e2eWriteFile(t, userPath, "[ship]\nbump = \"patch\"\nsteps = { pr = false }\n")
+	page.do("reload the page", chromedp.Reload())
+	page.wait("the user chip count of 2", `(function () {
+		var n = document.querySelector('.setup-file-chips .chip[data-file="user"] .chip-n');
+		return !!n && n.textContent === '2';
+	})()`)
+	after := browserMust[browserSetupFileCounts](page, "the chip counts", browserSetupFileCountsJS)
+	want := before
+	want.User = 2
+	if after != want {
+		t.Errorf("chip counts with the user file = %+v; want %+v", after, want)
+	}
+
+	bump := browserMust[*browserSetupOver](page, "the override line of bump", browserSetupOverJS("ship/bump"))
+	if bump == nil {
+		t.Fatal("bump has no override line of the user file")
+	}
+	if want := "overridden by .sdlc-v2/local.toml"; bump.Why != want || bump.Merged || bump.Decoration != "line-through" {
+		t.Errorf("bump override line = %+v; want why %q, not merged, line-through", *bump, want)
+	}
+	steps := browserMust[*browserSetupOver](page, "the override line of steps", browserSetupOverJS("ship/steps"))
+	if steps == nil {
+		t.Fatal("steps has no override line of the user file")
+	}
+	if want := "merged with .sdlc-v2/local.toml"; steps.Why != want || !steps.Merged || steps.Decoration != "none" {
+		t.Errorf("steps override line = %+v; want why %q, merged, no strike", *steps, want)
+	}
+
+	// Step 3: the user chip shows only the fields with a value in the user file.
+	page.click("the user file chip", `.setup-file-chips .chip[data-file="user"]`)
+	shownJS := `Array.prototype.filter.call(document.querySelectorAll('.setup-field'), function (n) {
+		return !n.closest('[hidden]');
+	}).map(function (n) { return n.getAttribute('data-key'); }).sort().join(',')`
+	page.wait("only the fields of the user file", shownJS+` === 'ship/bump,ship/steps'`)
+	if n := page.count(`.setup-gr:not([hidden])`); n != 0 {
+		t.Errorf("guardrail sections shown for the user file = %d; want 0", n)
+	}
+	page.click("the Any file chip", `.setup-file-chips .chip[data-file="any"]`)
+
+	// Step 4: the plan guardrail list comes from the state, sorted by id.
+	page.wait("the closed plan guardrail list", `(function () {
+		var t = document.querySelector('#setup-sec-plan-guardrails .setup-gr-toggle');
+		return !!t && t.textContent === 'Show 2 guardrails';
+	})()`)
+	ids := browserMust[string](page, "the plan guardrail ids", `Array.prototype.map.call(
+		document.querySelectorAll('#setup-gr-list-plan-guardrails .setup-gr-id'),
+		function (n) { return n.textContent; }).join(',')`)
+	if want := "no-ci-bypass,test-coverage-required"; ids != want {
+		t.Errorf("plan guardrail ids = %q; want %q", ids, want)
+	}
+
+	// Step 5: a click on the guardrail section in the left index highlights
+	// that section. Its list stays closed.
+	clicked := browserMust[bool](page, "click the plan guardrails in the index", `(function () {
+		var item = Array.prototype.find.call(document.querySelectorAll('.setup-rail-item'), function (n) {
+			return n.querySelector('.setup-rail-name').textContent === `+browserJSON(grLabel)+`;
+		});
+		if (!item) return false;
+		item.click();
+		return true;
+	})()`)
+	if !clicked {
+		t.Fatalf("the left index has no item %q", grLabel)
+	}
+	page.wait("the highlight of the plan guardrails", `(function () {
+		var item = Array.prototype.find.call(document.querySelectorAll('.setup-rail-item'), function (n) {
+			return n.querySelector('.setup-rail-name').textContent === `+browserJSON(grLabel)+`;
+		});
+		var current = document.querySelectorAll('.setup-rail-item[aria-current="true"]');
+		return !!item && current.length === 1 && current[0] === item;
+	})()`)
+	if got := page.text(`#setup-sec-plan-guardrails .setup-gr-toggle`); got != "Show 2 guardrails" {
+		t.Errorf("plan guardrail toggle after the index click = %q; want the closed list", got)
+	}
+	closed := browserMust[bool](page, "the plan guardrail list state", `(function () {
+		var sec = document.getElementById('setup-sec-plan-guardrails');
+		var list = document.getElementById('setup-gr-list-plan-guardrails');
+		return sec.getAttribute('data-open') === 'false' && list.hidden;
+	})()`)
+	if !closed {
+		t.Error("the plan guardrail list opened after the index click; want it closed")
 	}
 }
 

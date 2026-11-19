@@ -90,13 +90,15 @@ type DashboardSetupSaveIn struct {
 
 // DashboardSetupWrite is one section that a save wrote.
 type DashboardSetupWrite struct {
-	Section string `json:"section"` // form section id
-	File    string `json:"file"`    // absolute path
+	Section string `json:"section"`      // form section id, or guardrail section id
+	ID      string `json:"id,omitempty"` // guardrail id; absent for a form section
+	File    string `json:"file"`         // absolute path
 }
 
 // DashboardSetupFailure is one section that a save did not write.
 type DashboardSetupFailure struct {
-	Section    string `json:"section"` // form section id
+	Section    string `json:"section"`      // form section id, or guardrail section id
+	ID         string `json:"id,omitempty"` // guardrail id; absent for a form section
 	File       string `json:"file"`
 	Message    string `json:"message"`
 	Suggestion string `json:"suggestion,omitempty"` // the recovery step of the error; absent when there is none
@@ -189,8 +191,7 @@ func DashboardSetupSave(root string, in DashboardSetupSaveIn) (DashboardSetupSav
 	if err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
-	_ = gr // the write of the guardrail keys joins writeSetupSave in a later change
-	return writeSetupSave(root, userPath, sections)
+	return writeSetupSave(root, userPath, sections, gr)
 }
 
 // checkSetupSaveState refuses a save in a repo that has no config or a
@@ -307,8 +308,9 @@ func checkSetupSaveValues(sections []*setupSaveSection) error {
 }
 
 // writeSetupSave writes the user file first, then the config.toml sections
-// and the project sections, and builds the result.
-func writeSetupSave(root, userPath string, sections []*setupSaveSection) (DashboardSetupSaveOut, error) {
+// and the project sections, and builds the result. gr holds the guardrail
+// keys. They join the config.toml write call.
+func writeSetupSave(root, userPath string, sections []*setupSaveSection, gr setupGuardrailWrites) (DashboardSetupSaveOut, error) {
 	out := DashboardSetupSaveOut{
 		Written:  []DashboardSetupWrite{},
 		Failed:   []DashboardSetupFailure{},
@@ -323,7 +325,7 @@ func writeSetupSave(root, userPath string, sections []*setupSaveSection) (Dashbo
 	if err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
-	if err := writeSetupSaveProject(root, userPath, sections, byKey, userWritten, userRan, &out); err != nil {
+	if err := writeSetupSaveProject(root, userPath, sections, byKey, gr, userWritten, userRan, &out); err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
 	out.OK = len(out.Failed) == 0
@@ -350,16 +352,17 @@ func writeSetupSaveUser(root, userPath string, sections []*setupSaveSection, byK
 	for _, key := range res.Written {
 		userWritten[key] = true
 	}
-	setupSaveCollect(out, root, userPath, setupTargetUser, userSections, res, byKey)
+	setupSaveCollect(out, root, userPath, setupTargetUser, userSections, res, byKey, nil)
 	return userWritten, true, nil
 }
 
 // writeSetupSaveProject writes the config.toml sections and the project
 // sections. A project section of a user-target section is written only when
-// the user write wrote its key and the project copy lost a key. When this
+// the user write wrote its key and the project copy lost a key. The guardrail
+// keys in gr always go to this write. When this
 // write fails after the user write ran, the failure goes to out.Failed. When
 // no user write ran, the failure is the error of the save.
-func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, byKey map[string]*setupSaveSection, userWritten map[string]bool, userRan bool, out *DashboardSetupSaveOut) error {
+func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, byKey map[string]*setupSaveSection, gr setupGuardrailWrites, userWritten map[string]bool, userRan bool, out *DashboardSetupSaveOut) error {
 	projectSections := map[string]map[string]any{}
 	for _, s := range sections {
 		switch {
@@ -368,6 +371,9 @@ func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, 
 		case s.projectRemoved && userWritten[s.key]:
 			projectSections[s.key] = s.project
 		}
+	}
+	for key, w := range gr {
+		projectSections[key] = w.value // nil removes the table
 	}
 	if len(projectSections) == 0 {
 		return nil
@@ -378,11 +384,14 @@ func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, 
 			return err
 		}
 		for _, key := range sortedSetupKeys(projectSections) {
-			out.Failed = append(out.Failed, setupFailure(byKey[key].sec.ID, setupTargetPath(root, root, userPath, "", key), err))
+			section, id := setupKeyOwner(key, byKey, gr)
+			f := setupFailure(section, setupTargetPath(root, root, userPath, "", key), err)
+			f.ID = id
+			out.Failed = append(out.Failed, f)
 		}
 		return nil
 	}
-	setupSaveCollect(out, root, userPath, "", projectSections, res, byKey)
+	setupSaveCollect(out, root, userPath, "", projectSections, res, byKey, gr)
 	for _, rep := range res.Scaffold {
 		if scaffoldActionWrites(rep.Action) {
 			out.CIFiles = append(out.CIFiles, rep.Path)
@@ -400,6 +409,16 @@ func setupFailure(section, file string, err error) DashboardSetupFailure {
 		msg += ": " + cause.Error()
 	}
 	return DashboardSetupFailure{Section: section, File: file, Message: msg, Suggestion: suggestion}
+}
+
+// setupKeyOwner returns the section id and the guardrail id of a write key.
+// A guardrail key gives its guardrail section id and its guardrail id. Any
+// other key gives the form section id and an empty id.
+func setupKeyOwner(key string, byKey map[string]*setupSaveSection, gr setupGuardrailWrites) (section, id string) {
+	if g, ok := gr[key]; ok {
+		return g.section, g.id
+	}
+	return byKey[key].sec.ID, ""
 }
 
 // setupFormIndex lists the sections that the form can change.
@@ -938,10 +957,15 @@ func setupSaveCall(root string, sections map[string]map[string]any, target strin
 // setupSaveCollect adds the written and the failed sections, the warnings,
 // and the hand-edit step of one write call to out. sent holds the keys of
 // that call. The message of a failed section is its entry in
-// res.sectionErrs.
+// res.sectionErrs. gr holds the guardrail keys of the call. A removed
+// guardrail is in res.Deleted, not in res.Written, and it is a written entry.
 func setupSaveCollect(out *DashboardSetupSaveOut, root, userPath, target string,
-	sent map[string]map[string]any, res SetupWriteSectionsOut, byKey map[string]*setupSaveSection) {
+	sent map[string]map[string]any, res SetupWriteSectionsOut, byKey map[string]*setupSaveSection, gr setupGuardrailWrites) {
 	for _, key := range res.Written {
+		if g, ok := gr[key]; ok {
+			out.Written = append(out.Written, DashboardSetupWrite{Section: g.section, ID: g.id, File: setupTargetPath(root, root, userPath, target, key)})
+			continue
+		}
 		s := byKey[key]
 		if s == nil {
 			continue
@@ -951,16 +975,26 @@ func setupSaveCollect(out *DashboardSetupSaveOut, root, userPath, target string,
 			File:    setupTargetPath(root, root, userPath, target, key),
 		})
 	}
+	for _, d := range res.Deleted {
+		if g, ok := gr[d.ID]; ok {
+			out.Written = append(out.Written, DashboardSetupWrite{Section: g.section, ID: g.id, File: setupTargetPath(root, root, userPath, target, d.ID)})
+		}
+	}
+	deleted := func(key string) bool {
+		return slices.ContainsFunc(res.Deleted, func(d DeletedSection) bool { return d.ID == key })
+	}
 	for _, key := range sortedSetupKeys(sent) {
-		if slices.Contains(res.Written, key) {
+		if slices.Contains(res.Written, key) || deleted(key) {
 			continue
 		}
 		msg, ok := res.sectionErrs[key]
 		if !ok {
 			msg = "setup_write_sections did not write the section and gave no reason"
 		}
+		section, id := setupKeyOwner(key, byKey, gr)
 		out.Failed = append(out.Failed, DashboardSetupFailure{
-			Section: byKey[key].sec.ID,
+			Section: section,
+			ID:      id,
 			File:    setupTargetPath(root, root, userPath, target, key),
 			Message: msg,
 		})

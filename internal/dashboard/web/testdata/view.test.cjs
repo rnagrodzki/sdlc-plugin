@@ -6505,6 +6505,12 @@ describe('page scripts ship no preview code', () => {
       }
     });
   }
+  test('setup.js has no preview calls', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../static', 'setup.js'), 'utf8');
+    for (const word of ['designDep', 'draftDep']) {
+      assert.ok(!source.includes(word), `setup.js contains ${word}`);
+    }
+  });
 });
 
 describe('render.js browser global fallback', () => {
