@@ -16,7 +16,7 @@ The skill SHALL stop before any tool call when plan mode is active.
 - **AND** calls no MCP tool
 
 ### Requirement: Main flow and pre-flight order
-The skill SHALL call `setup_prepare({ skipConfigCheck: false })` first, then `setup_init({})` once, then take a config snapshot, before it shows the menu or asks any question.
+The skill SHALL call `setup_prepare({ skipConfigCheck: false })` first, then `setup_init({})` once, then ask the Setup tab question when its conditions hold, then take a config snapshot, before it shows the menu.
 
 Main `/setup` flow without direct-entry flags:
 
@@ -26,6 +26,7 @@ sequenceDiagram
     participant Skill as setup skill
     participant P as setup_prepare
     participant I as setup_init
+    participant B as dashboard
     participant D as dimensions_render_instructions
     participant M as migrate
     participant W as setup_write_sections
@@ -34,6 +35,12 @@ sequenceDiagram
     Skill->>P: skipConfigCheck false
     P-->>Skill: needsMigration, sections, defaultBranch, remoteOwner, ciScriptDrift, ciScriptDriftError, localValues, userConfigPath
     Skill->>I: scaffold mode, no input
+    opt main worktree, no migration
+        Skill->>User: AskUserQuestion Setup tab or Dialogue
+        opt Setup tab
+            Skill->>B: ensure, open true, tab setup
+        end
+    end
     Skill->>FS: Read .sdlc-v2/config.toml
     Skill->>D: listDimensions true
     Skill->>I: checkPRTemplate true, then checkPlanTemplate true
@@ -83,6 +90,11 @@ Version detection for the `version` section:
 - **WHEN** `.sdlc-v2/config.json` exists without `config.toml`
 - **THEN** the skill receives `needsMigration: true` from `setup_prepare`
 - **AND** only then calls `setup_init({})`
+
+#### Scenario: Setup tab question before the snapshot
+- **WHEN** a plain `/sdlc:setup` run starts in the main worktree with no migration
+- **THEN** the skill asks the Setup tab question after `setup_init({})`
+- **AND** the skill reads `.sdlc-v2/config.toml` for the snapshot after the answer
 
 #### Scenario: No version file
 - **WHEN** none of the five version files exist
@@ -141,7 +153,7 @@ Without `--only`, `--force`, or a direct-entry flag, the skill SHALL print a sta
 
 - Status rows: `[set]` or `[not set]`, the section id, and the row summary (or `—`).
 - Menu line: `<N>. [<state>] <label> — <first sentence of purpose>`, `<state>` is `set` or `not-set`.
-- 18 lines in canonical order, numbered from 1.
+- 19 lines in canonical order, numbered from 1. After a `Setup tab` answer whose `dashboard` call returned, only the 9 rows of the sections that need the assistant, numbered from 1.
 - Labels and purposes come from `setup_prepare`'s `sections`, never hard-coded.
 - When `needsMigration` is `true`, one line is printed above the status block: `⚠ Legacy or outdated config detected — see Step 2 (migration) before configuring sections below.`
 - The reply prompt lists `all`, `not-set`, `none`, `cancel` and says `Default: all`.
@@ -150,6 +162,11 @@ Without `--only`, `--force`, or a direct-entry flag, the skill SHALL print a sta
 - **WHEN** the skill prints the menu
 - **THEN** its turn ends
 - **AND** the user's next message is parsed as the reply
+
+#### Scenario: Menu after a tab answer
+- **WHEN** the user answered `Setup tab` and the `dashboard` call returned
+- **THEN** the status block and the menu list only the rows whose section has a `delegatedTo` value
+- **AND** the rows are numbered from 1
 
 ### Requirement: Row state
 The skill SHALL compute each row's state itself from the snapshot; no tool returns it.
@@ -184,15 +201,15 @@ The skill SHALL compute each row's state itself from the snapshot; no tool retur
 - **THEN** the `review` row is `set`
 
 ### Requirement: Menu reply parsing
-The skill SHALL resolve the reply to a set of section ids as below, and SHALL allow at most 3 retries on invalid input.
+The skill SHALL resolve the reply to a set of section ids of the listed menu rows as below, and SHALL allow at most 3 retries on invalid input.
 
 | Reply | Selected ids |
 |---|---|
-| empty | all 18 |
-| `all` | all 18 |
-| `not-set` | rows with state `not-set` |
+| empty | all listed rows |
+| `all` | all listed rows |
+| `not-set` | listed rows with state `not-set` |
 | `none` or `cancel` | none; prints `No sections selected — no config changes.` and goes to the CI script update step, then the summary |
-| Numbers and `M-N` ranges, comma- or space-separated | union of the rows at those positions |
+| Numbers and `M-N` ranges, comma- or space-separated | union of the listed rows at those positions |
 
 - Invalid token: print `Invalid input: "<token>" is not a number, range, or known keyword. Try again.`, then re-print the menu and prompt.
 - After 3 failed retries: print `No valid input after 3 attempts — no changes made.` and exit.
@@ -205,6 +222,11 @@ The skill SHALL resolve the reply to a set of section ids as below, and SHALL al
 - **WHEN** the user replies `42`
 - **THEN** the skill prints `Invalid input: "42" is not a number, range, or known keyword. Try again.`
 - **AND** re-prints the menu
+
+#### Scenario: All after a tab answer
+- **WHEN** the menu lists only the 9 rows of the sections that need the assistant
+- **AND** the user replies `all`
+- **THEN** the selected ids are the ids of these 9 rows
 
 #### Scenario: No section selected with an outdated CI script
 - **WHEN** the user replies `none`
@@ -707,48 +729,6 @@ The skill SHALL ask no CI script question and SHALL NOT call `scaffold_ci` when 
 - **AND** the skill does not call `scaffold_ci`
 - **AND** the summary prints `CI script check failed. Tool error text (setup_prepare):` followed by the error and its Suggestion in a `text` fence, once
 
-### Requirement: Setup tab question on a fresh repo
-The skill SHALL ask once, after the section menu, whether to change the selected form sections in the dialogue or in the dashboard Setup tab, only when all 5 conditions hold: this run created a config file, no `--only`, `--force` or direct-entry flag, a form section is selected, the main worktree is active, and no migration runs.
-
-```mermaid
-sequenceDiagram
-  participant U as user
-  participant K as setup skill
-  participant T as dashboard tool
-  K->>U: dialogue or Setup tab
-  U-->>K: Setup tab
-  K->>T: ensure, open true, tab setup
-  T-->>K: URL
-  K-->>U: Setup tab address
-```
-
-#### Scenario: Tab answer
-- **WHEN** the user answers `Setup tab`
-- **THEN** the skill calls `dashboard` with `action:"ensure"`, `open:true` and `tab:"setup"`
-- **AND** the form sections leave the selection of this run
-
-#### Scenario: Dialogue answer
-- **WHEN** the user answers `Dialogue`, answers with free text, or dismisses the question
-- **THEN** the selection stays unchanged
-
-#### Scenario: Dashboard error
-- **WHEN** the `dashboard` call returns an error
-- **THEN** the skill prints the error in a `text` fence
-- **AND** the form sections stay in the selection
-
-#### Scenario: No section left
-- **WHEN** the tab answer leaves no section
-- **THEN** the skill prints `No sections left for this run.`
-- **AND** the run goes to the CI script step, then the summary
-
-#### Scenario: Legacy config
-- **WHEN** a JSON-era config needs migration, or `--migrate` is passed
-- **THEN** the skill does not ask the question
-
-#### Scenario: Second run
-- **WHEN** both config files already exist before the run
-- **THEN** the skill does not ask the question
-
 ### Requirement: Setup tab pointer at the end
 The summary SHALL end with a pointer to the dashboard Setup tab on every run that reaches the summary. After a tab answer the pointer uses the address that the question step kept; on every other run it comes from `dashboard` with `action:"status"`.
 
@@ -783,3 +763,49 @@ When the `dashboard` output has `previewUrl`, the setup skill SHALL open the Set
 #### Scenario: Setup tab fails
 - **WHEN** `preview_open` fails
 - **THEN** the skill prints the address and one warning line and continues
+
+### Requirement: Setup tab question before the section menu
+The skill SHALL ask once, after `setup_init({})` and before the config snapshot and the menu, whether to change the form sections in the dialogue or in the dashboard Setup tab, only when all 3 conditions hold: no `--only`, `--force` or direct-entry flag, the main worktree is active, and no migration runs.
+
+```mermaid
+sequenceDiagram
+  participant U as user
+  participant K as setup skill
+  participant T as dashboard tool
+  K->>U: dialogue or Setup tab
+  U-->>K: Setup tab
+  K->>T: ensure, open true, tab setup
+  T-->>K: URL
+  K-->>U: Setup tab address
+  K->>U: menu of the sections that need the assistant
+```
+
+#### Scenario: Tab answer
+- **WHEN** the user answers `Setup tab`
+- **THEN** the skill calls `dashboard` with `action:"ensure"`, `open:true` and `tab:"setup"`
+- **AND** the menu lists only the sections that need the assistant
+
+#### Scenario: Existing config
+- **WHEN** both config files already exist before the run
+- **THEN** the skill asks the question
+
+#### Scenario: Dialogue answer
+- **WHEN** the user answers `Dialogue`, answers with free text, or dismisses the question
+- **THEN** the menu lists all 19 sections
+
+#### Scenario: Dashboard error
+- **WHEN** the `dashboard` call returns an error
+- **THEN** the skill prints the error in a `text` fence
+- **AND** the menu lists all 19 sections
+
+#### Scenario: Legacy config
+- **WHEN** a JSON-era config needs migration, or `--migrate` is passed
+- **THEN** the skill does not ask the question
+
+#### Scenario: Direct-entry flag
+- **WHEN** `--only`, `--force` or a direct-entry flag is passed
+- **THEN** the skill does not ask the question
+
+#### Scenario: Linked worktree
+- **WHEN** the run is in a linked worktree
+- **THEN** the skill does not ask the question
