@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -366,12 +368,17 @@ func TestHandler_ServeWriteRepoLengthLimit(t *testing.T) {
 }
 
 // TestHandler_SetupPostGuards pins that both POST routes refuse a wrong
-// Origin, an absent token, a wrong content type and a body over 8 KiB, like
-// the other change routes, and call nothing.
+// Origin, an absent token, a wrong content type and a body over their limit,
+// like the other change routes, and call nothing. The limit of setup-save is
+// maxSetupSaveBody (64 KiB); the limit of setup-create is maxMutationBody
+// (8 KiB).
 func TestHandler_SetupPostGuards(t *testing.T) {
-	routes := []struct{ path, body string }{
-		{"/api/setup-save", `{"repo":"/repo/a","changes":[]}`},
-		{"/api/setup-create", `{"repo":"/repo/a"}`},
+	routes := []struct {
+		path, body string
+		limit      int // largest body, in bytes, that the route accepts
+	}{
+		{"/api/setup-save", `{"repo":"/repo/a","changes":[]}`, maxSetupSaveBody},
+		{"/api/setup-create", `{"repo":"/repo/a"}`, maxMutationBody},
 	}
 	with := func(k, v string) map[string]string {
 		m := mutationHeader()
@@ -385,18 +392,18 @@ func TestHandler_SetupPostGuards(t *testing.T) {
 	cases := []struct {
 		name   string
 		header map[string]string
-		pad    int
+		pad    func(limit int) int // bytes of the pad field; 0 for none
 		status int
 		code   string
 	}{
-		{"good request passes", mutationHeader(), 0, 200, ""},
-		{"missing origin", with("Origin", ""), 0, 403, "FORBIDDEN_ORIGIN"},
-		{"foreign origin", with("Origin", "http://evil.example"), 0, 403, "FORBIDDEN_ORIGIN"},
-		{"missing token", with(tokenHeader, ""), 0, 403, "FORBIDDEN_TOKEN"},
-		{"wrong token", with(tokenHeader, strings.Repeat("f", 64)), 0, 403, "FORBIDDEN_TOKEN"},
-		{"missing content type", with("Content-Type", ""), 0, 415, "BAD_CONTENT_TYPE"},
-		{"text content type", with("Content-Type", "text/plain"), 0, 415, "BAD_CONTENT_TYPE"},
-		{"body over 8 KiB", mutationHeader(), maxMutationBody + 1, 413, "BODY_TOO_LARGE"},
+		{"good request passes", mutationHeader(), nil, 200, ""},
+		{"missing origin", with("Origin", ""), nil, 403, "FORBIDDEN_ORIGIN"},
+		{"foreign origin", with("Origin", "http://evil.example"), nil, 403, "FORBIDDEN_ORIGIN"},
+		{"missing token", with(tokenHeader, ""), nil, 403, "FORBIDDEN_TOKEN"},
+		{"wrong token", with(tokenHeader, strings.Repeat("f", 64)), nil, 403, "FORBIDDEN_TOKEN"},
+		{"missing content type", with("Content-Type", ""), nil, 415, "BAD_CONTENT_TYPE"},
+		{"text content type", with("Content-Type", "text/plain"), nil, 415, "BAD_CONTENT_TYPE"},
+		{"body over the route limit", mutationHeader(), func(limit int) int { return limit + 1 }, 413, "BODY_TOO_LARGE"},
 	}
 	for _, rt := range routes {
 		for _, tc := range cases {
@@ -404,8 +411,8 @@ func TestHandler_SetupPostGuards(t *testing.T) {
 				f := &fakeSetup{}
 				h := newSetupHandler(t, f)
 				body := rt.body
-				if tc.pad > 0 {
-					body = strings.TrimSuffix(rt.body, "}") + `,"pad":"` + strings.Repeat("x", tc.pad) + `"}`
+				if tc.pad != nil {
+					body = strings.TrimSuffix(rt.body, "}") + `,"pad":"` + strings.Repeat("x", tc.pad(rt.limit)) + `"}`
 				}
 				rec := postJSON(h, rt.path, body, tc.header)
 				if tc.code == "" {
@@ -417,12 +424,84 @@ func TestHandler_SetupPostGuards(t *testing.T) {
 					}
 					return
 				}
-				wantAPIError(t, rec, tc.status, tc.code)
+				if tc.code == "BODY_TOO_LARGE" {
+					wantBodyTooLarge(t, rec, rt.limit)
+				} else {
+					wantAPIError(t, rec, tc.status, tc.code)
+				}
 				if f.calls() != 0 {
 					t.Errorf("a refused request made %d calls; want 0", f.calls())
 				}
 			})
 		}
+	}
+}
+
+// TestHandler_SetupBodyLimits pins the two body limits: setup-save accepts a
+// body between 8 KiB and 64 KiB and refuses one over 64 KiB; setup-create keeps
+// the 8 KiB limit and refuses a body of 8 KiB plus one byte.
+func TestHandler_SetupBodyLimits(t *testing.T) {
+	// padded builds a body of exactly size bytes from base, a JSON object.
+	padded := func(base string, size int) string {
+		const key = `,"pad":"`
+		fill := size - len(base) - len(key) - 1 // the base loses its "}"; the tail adds `"}`
+		return strings.TrimSuffix(base, "}") + key + strings.Repeat("x", fill) + `"}`
+	}
+	const (
+		saveBase   = `{"repo":"/repo/a","changes":[]}`
+		createBase = `{"repo":"/repo/a"}`
+	)
+	cases := []struct {
+		name   string
+		path   string
+		body   string
+		status int
+		code   string
+		limit  int // limit of the route, for the 413 text
+	}{
+		{"save accepts 8 KiB plus one byte", "/api/setup-save", padded(saveBase, maxMutationBody+1), 200, "", maxSetupSaveBody},
+		{"save accepts exactly 64 KiB", "/api/setup-save", padded(saveBase, maxSetupSaveBody), 200, "", maxSetupSaveBody},
+		{"save refuses 64 KiB plus one byte", "/api/setup-save", padded(saveBase, maxSetupSaveBody+1), 413, "BODY_TOO_LARGE", maxSetupSaveBody},
+		{"create accepts exactly 8 KiB", "/api/setup-create", padded(createBase, maxMutationBody), 200, "", maxMutationBody},
+		{"create refuses 8 KiB plus one byte", "/api/setup-create", padded(createBase, maxMutationBody+1), 413, "BODY_TOO_LARGE", maxMutationBody},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeSetup{}
+			h := newSetupHandler(t, f)
+			rec := postJSON(h, tc.path, tc.body, mutationHeader())
+			if tc.code == "" {
+				if rec.Code != tc.status {
+					t.Fatalf("status = %d (body %q); want %d", rec.Code, rec.Body.String(), tc.status)
+				}
+				if f.calls() != 1 {
+					t.Errorf("function calls = %d; want 1", f.calls())
+				}
+				return
+			}
+			wantBodyTooLarge(t, rec, tc.limit)
+			if f.calls() != 0 {
+				t.Errorf("a refused request made %d calls; want 0", f.calls())
+			}
+		})
+	}
+}
+
+// wantBodyTooLarge fails the test unless rec is the 413 BODY_TOO_LARGE error of
+// a route with a body limit of limit bytes. The suggestion names that limit in
+// KiB. wantAPIError cannot check it: its text is fixed at 8 KiB.
+func wantBodyTooLarge(t *testing.T, rec *httptest.ResponseRecorder, limit int) {
+	t.Helper()
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d; want 413 (body %q)", rec.Code, rec.Body.String())
+	}
+	var body apiErrorBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+	}
+	want := fmt.Sprintf("Send a body of at most %d KiB.", limit>>10)
+	if body.Error.Code != "BODY_TOO_LARGE" || body.Error.Message != "Request body is too large" || body.Error.Suggestion != want {
+		t.Errorf("error = %+v; want BODY_TOO_LARGE with suggestion %q", body.Error, want)
 	}
 }
 
@@ -560,6 +639,170 @@ func TestE2E_SetupSaveAndCreate(t *testing.T) {
 		}
 		if _, err := os.Stat(filepath.Join(root, ".sdlc-v2", "config.toml")); err != nil {
 			t.Errorf("config.toml: %v", err)
+		}
+	})
+}
+
+// setupE2EGuardrailConfig is the config.toml of TestE2E_SetupGuardrails: two
+// plan guardrails, not in id order, and one execute guardrail, in the
+// named-table form. Its comment must stay after a save.
+const setupE2EGuardrailConfig = `# Team guardrails. Keep ids in kebab-case.
+[plan.guardrails.old-rule]
+description = "Old rule."
+severity = "error"
+
+[plan.guardrails.dry]
+description = "Keep code DRY."
+severity = "error"
+
+[execute.guardrails.no-skip]
+description = "Do not skip tests."
+severity = "warning"
+`
+
+// TestE2E_SetupGuardrails runs the state and save routes with the real
+// functions of internal/tools on real files: the layers and the guardrail lists
+// of the state, a guardrail save that is read back, a refused save on an array
+// form list, and a guardrail save larger than 8 KiB.
+func TestE2E_SetupGuardrails(t *testing.T) {
+	userPath := filepath.Join(t.TempDir(), "local.toml")
+	t.Setenv(config.UserConfigPathEnv, userPath)
+
+	// guardrailRepo returns a repo root whose config.toml holds configText.
+	guardrailRepo := func(t *testing.T, configText string) (root, configPath string) {
+		t.Helper()
+		root = t.TempDir()
+		configPath = filepath.Join(root, ".sdlc-v2", "config.toml")
+		e2eWriteFile(t, configPath, configText)
+		return root, configPath
+	}
+	// saveGuardrails posts a save of the guardrail changes in changes.
+	saveGuardrails := func(t *testing.T, h *handler, root string, changes map[string]any) *httptest.ResponseRecorder {
+		t.Helper()
+		body := e2eMarshal(t, map[string]any{
+			"repo":       root,
+			"changes":    []any{},
+			"targets":    map[string]string{},
+			"guardrails": changes,
+		})
+		return postJSON(h, "/api/setup-save", body, mutationHeader())
+	}
+
+	t.Run("layers", func(t *testing.T) {
+		root, _ := guardrailRepo(t, setupE2EConfig)
+		e2eWriteFile(t, filepath.Join(root, ".sdlc-v2", "local.toml"), "[ship]\nbump = \"minor\"\n")
+		e2eWriteFile(t, userPath, "[ship]\nbump = \"major\"\n")
+		t.Cleanup(func() { _ = os.Remove(userPath) })
+		h := e2eSetupHandler(t, root)
+
+		state := e2eSetupState(t, h, root)
+		layers := state.Layers["ship.bump"]
+		if layers["project"] != "minor" || layers["user"] != "major" || len(layers) != 2 {
+			t.Errorf("layers[ship.bump] = %v; want project minor and user major", layers)
+		}
+		if got := state.Values["ship"]["bump"]; got.Value != "minor" || got.Source != "project" {
+			t.Errorf("ship.bump = %+v; want minor from project", got)
+		}
+	})
+
+	t.Run("lists", func(t *testing.T) {
+		root, _ := guardrailRepo(t, setupE2EGuardrailConfig)
+		h := e2eSetupHandler(t, root)
+
+		state := e2eSetupState(t, h, root)
+		wantPlan := []tools.DashboardGuardrail{
+			{ID: "dry", Severity: "error", Description: "Keep code DRY."},
+			{ID: "old-rule", Severity: "error", Description: "Old rule."},
+		}
+		if got := state.Guardrails["plan.guardrails"]; !reflect.DeepEqual(got, wantPlan) {
+			t.Errorf("plan.guardrails = %+v; want %+v", got, wantPlan)
+		}
+		wantExecute := []tools.DashboardGuardrail{{ID: "no-skip", Severity: "warning", Description: "Do not skip tests."}}
+		if got := state.Guardrails["execute.guardrails"]; !reflect.DeepEqual(got, wantExecute) {
+			t.Errorf("execute.guardrails = %+v; want %+v", got, wantExecute)
+		}
+	})
+
+	t.Run("save-roundtrip", func(t *testing.T) {
+		root, configPath := guardrailRepo(t, setupE2EGuardrailConfig)
+		h := e2eSetupHandler(t, root)
+
+		rec := saveGuardrails(t, h, root, map[string]any{"plan-guardrails": []map[string]any{
+			{"id": "new-rule", "op": "add", "severity": "error", "description": "New rule."},
+			{"id": "dry", "op": "change", "severity": "warning", "description": "Keep code DRY."},
+			{"id": "old-rule", "op": "remove"},
+		}})
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ok":true`) {
+			t.Fatalf("save = %d (body %q); want 200 with ok true", rec.Code, rec.Body.String())
+		}
+
+		state := e2eSetupState(t, h, root)
+		want := []tools.DashboardGuardrail{
+			{ID: "dry", Severity: "warning", Description: "Keep code DRY."},
+			{ID: "new-rule", Severity: "error", Description: "New rule."},
+		}
+		if got := state.Guardrails["plan.guardrails"]; !reflect.DeepEqual(got, want) {
+			t.Errorf("plan.guardrails = %+v; want %+v", got, want)
+		}
+		onDisk, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(onDisk), "# Team guardrails. Keep ids in kebab-case.") {
+			t.Errorf("config.toml lost its comment:\n%s", onDisk)
+		}
+	})
+
+	t.Run("array-form-refused", func(t *testing.T) {
+		arrayConfig := "[[plan.guardrails]]\nid = \"dry\"\ndescription = \"Keep code DRY.\"\n"
+		root, configPath := guardrailRepo(t, arrayConfig)
+		h := e2eSetupHandler(t, root)
+
+		rec := saveGuardrails(t, h, root, map[string]any{"plan-guardrails": []map[string]any{
+			{"id": "new-rule", "op": "add", "severity": "error", "description": "New rule."},
+		}})
+		body := wantAPIError(t, rec, 400, codeBadRequest)
+		wantMsg := "dashboard setup save: config.toml holds plan.guardrails as an array ([[plan.guardrails]] or an inline array). " +
+			"The dashboard edits only [plan.guardrails.<id>] tables. Nothing was written."
+		wantSuggestion := "Change the list in config.toml to [plan.guardrails.<id>] tables manually, then reload the page."
+		if body.Error.Message != wantMsg || body.Error.Suggestion != wantSuggestion {
+			t.Errorf("error = %+v; want message %q and suggestion %q", body.Error, wantMsg, wantSuggestion)
+		}
+		onDisk, err := os.ReadFile(configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(onDisk) != arrayConfig {
+			t.Errorf("config.toml changed:\n%s", onDisk)
+		}
+	})
+
+	t.Run("large-body", func(t *testing.T) {
+		root, _ := guardrailRepo(t, setupE2EGuardrailConfig)
+		h := e2eSetupHandler(t, root)
+
+		// 12 adds with a 1000-byte description make a body over 8 KiB, and far
+		// under maxSetupSaveBody.
+		var adds []map[string]any
+		for i := range 12 {
+			adds = append(adds, map[string]any{
+				"id": fmt.Sprintf("big-rule-%02d", i), "op": "add",
+				"severity": "error", "description": strings.Repeat("x", 1000),
+			})
+		}
+		body := e2eMarshal(t, map[string]any{
+			"repo": root, "changes": []any{}, "targets": map[string]string{},
+			"guardrails": map[string]any{"plan-guardrails": adds},
+		})
+		if len(body) <= maxMutationBody || len(body) >= maxSetupSaveBody {
+			t.Fatalf("body is %d bytes; want over %d and under %d", len(body), maxMutationBody, maxSetupSaveBody)
+		}
+		rec := postJSON(h, "/api/setup-save", body, mutationHeader())
+		if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"ok":true`) {
+			t.Fatalf("save = %d (body %q); want 200 with ok true", rec.Code, rec.Body.String())
+		}
+		if got := len(e2eSetupState(t, h, root).Guardrails["plan.guardrails"]); got != 14 {
+			t.Errorf("plan.guardrails has %d entries; want 14", got)
 		}
 	})
 }

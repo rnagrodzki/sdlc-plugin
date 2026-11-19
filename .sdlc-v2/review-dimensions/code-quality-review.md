@@ -41,9 +41,13 @@ Review Go source changes for baseline code quality in this module
 - A change that grows a function to about 80 lines or more, or to about 8 return
   statements or more, is a finding too, even when the function stays under the
   limit above. Put the new block in a named helper instead of adding to the
-  function, or state why the function stays whole. This extends the limit rule
-  above. Example: `dashboardPreplans`, flagged as near the limit after a change
-  added to it.
+  function, or state why the function stays whole. A change that grows a type
+  declaration (a struct with its fields, tags and comments) to about 80 lines or
+  more is a finding in the same way: count its lines from `type` to the closing
+  brace, and split the type into named parts that it embeds or holds as fields,
+  or state why it stays whole. This extends the limit rule above. Example:
+  `dashboardPreplans`, flagged as near the limit after a change added to it, and
+  `DashboardSetupState`, flagged as a type near the limit.
 - Package-scope regexes, constants, and helpers must not repeat an existing
   package-scope pattern. Before adding one, grep the package for the same
   literal and reuse the existing identifier. Example: `openspecStagingLineRe`
@@ -246,6 +250,7 @@ Review Go source changes for baseline code quality in this module
   instead, or state in the review why the argument order cannot be swapped by
   mistake. This extends the named-struct rule above. Example: `PruneTargets`
   took five adjacent `string` parameters.
+- A function or helper with about six or more parameters in total, counted after the change, is a finding even when no run of adjacent parameters shares one type. A change that grows a signature to that count is a finding too. Group the values that travel together into a named struct, or state in the review why the signature stays whole. A helper that takes a write entry and its outcome as separate parameters, when the caller already holds the entry, is a candidate for one record type. This extends the same-type-parameters bullet above, which counts only adjacent parameters of one type. Example: a collector helper that took eight parameters and rebuilt a write entry that its caller already held.
 - A function must not take an `error` as an input parameter to decide its
   own result. The caller handles the error where it arises and passes the
   callee only the values that the callee needs; the callee returns its own
@@ -280,6 +285,7 @@ Review Go source changes for baseline code quality in this module
   rule above, which checks that a comment says enough, not that it adds nothing
   already stated beside it. Example: new `*Out` fields whose trailing comments
   repeated the text of their `jsonschema_description` tags.
+- A trailing comment or a doc comment on a constant, variable or field must not restate the value that the declaration already shows (`maxBytes = 64 << 10 // 64 KiB`, `sectionID = "x" // the x section`). The comment and the value are two copies of one fact, and the comment goes stale when the value changes. Delete the comment, or keep only what the value does not show, such as why the value was chosen or which code reads it. Compare each comment on a constant that the change adds or changes with its value. This extends the limit bullet above, which names only a doc comment that gives a limit as a number, and the struct-tag comment bullet above. Example: trailing comments that repeated the value of the constant they sat beside.
 - Functions or types with near-identical names (differing only by a package
   prefix or a single token, e.g. `openspec.StagedChangeFromPlan` vs a local
   `openspecChangeFromPlan`) that extract different things from the same

@@ -83,6 +83,7 @@ These rules apply to `--guardrails` and `--execution-guardrails`.
 - The sub-flows do not check which ids are already configured. A reselected id overwrites its description and severity.
 - When the tool refuses a write, the sub-flow stops. There is no bypass. The tool refuses when the guardrails section is an array of tables, `[[plan.guardrails]]`.
 - To remove a guardrail on purpose, send JSON null on `<section>.guardrails.<id>` with `setup_write_sections`.
+- The [Setup tab](../../dashboard.md#guardrail-sections) of the dashboard also adds, edits and removes guardrails. When `config.toml` holds a list as an array of tables (`[[plan.guardrails]]`) or as an inline array, a save with a change of that list fails. A save that does not change that list is not refused. Change the list to `[plan.guardrails.<id>]` tables by hand, then reload the page.
 
 ## Copilot mirrors
 

@@ -16,6 +16,8 @@ Default severity: medium
 - A type assertion on a value read from a stored file or a state map uses the two-value form (`v, ok := x.(T)`) and handles `ok == false` with an error that names the file and the key. The same assertion on one key at two or more sites is one helper that every reader calls. An unchecked copy at any site is a finding.
 - A comment on a struct field that has a `jsonschema_description` tag adds only what the tag cannot say, or is left out. A comment that repeats the tag text is a finding, because the two copies drift when one is edited.
 - A constant that names one member of a family of literals of one kind (prefixes, markers, separators) has a constant for each sibling in the same block, or all members come from one helper. A one-member constant beside inline copies of the other members is a finding, because the copies drift when a prefix changes.
+- A change that grows a function or a type declaration (a struct with its fields, tags and comments) to about 80 lines or more, or a function to about 8 return statements or more, is a finding, even when it stays under the hard limit of about 100 lines or about 10 returns. Put the new block in a named helper, or split the type into named parts, or state why it stays whole.
+- A hand-written loop that reimplements a standard-library helper is a finding: a membership test over a slice (`slices.Contains`, `slices.Index`), a copy, a sort, a minimum or maximum, or the key list of a map (`slices.Sorted(maps.Keys(m))`). Check the Go version in `go.mod` and call the helper. A membership test over a closed set reads the one canonical list of the set and keeps no second typed-in list.
 
 ## Note
 

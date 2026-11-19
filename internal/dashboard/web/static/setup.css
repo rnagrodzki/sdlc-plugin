@@ -594,3 +594,145 @@ textarea.setup-input { display: block; resize: vertical; min-height: 34px; field
 @media (prefers-reduced-motion: reduce) {
   .setup-switch-track, .setup-switch-track::after { transition: none; }
 }
+
+/* Values of other files that the shown value overrides (file filter). */
+.setup-over { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.setup-over-line {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  margin: 0; padding: 4px 8px;
+  font-size: 12px; color: var(--setup-soft);
+  border-left: 2px solid var(--glass-border);
+  background: var(--setup-well);
+}
+.setup-over-line code { font-family: var(--font-mono); font-size: 11px; color: var(--rail); }
+.setup-over-val { font-family: var(--font-mono); color: var(--ivory); text-decoration: line-through; text-decoration-color: rgba(169,187,198,0.5); }
+.setup-over-why { font-size: 11px; }
+.setup-over-line.is-merged .setup-over-val { text-decoration: none; }
+/* A way box can shrink below its command text, so a 400 px window does not scroll sideways. */
+.setup-gr-way { min-width: 0; }
+/* The file chip of the bar picks the override line of the same file. */
+#panel-setup[data-file="user"] .setup-over-line[data-file="user"],
+#panel-setup[data-file="project"] .setup-over-line[data-file="project"],
+#panel-setup[data-file="config"] .setup-over-line[data-file="config"] {
+  border-left-color: var(--scan-cyan-dim);
+  background: rgba(85,214,224,0.08);
+}
+#panel-setup[data-file="user"] .setup-over-line[data-file="user"] .setup-over-val,
+#panel-setup[data-file="project"] .setup-over-line[data-file="project"] .setup-over-val,
+#panel-setup[data-file="config"] .setup-over-line[data-file="config"] .setup-over-val { text-decoration: none; }
+
+/* A bar label and its chips: one flex item of the bar, so they wrap together. */
+.setup-bar-group { display: inline-flex; align-items: center; gap: 10px 14px; flex-wrap: wrap; }
+
+/* ---------- Guardrail sections: list and edit each guardrail ---------- */
+.setup-gr-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; margin: 4px 0 12px; }
+.setup-gr-tools .spacer { flex: 1; }
+.setup-gr-shown { font: 11px var(--font-mono); color: var(--rail); }
+.setup-gr-list { list-style: none; margin: 0; padding: 0; border-top: 1px solid var(--setup-line); }
+.setup-gr-row { padding: 10px 4px 10px 12px; border-bottom: 1px solid var(--setup-line); border-left: 2px solid transparent; }
+.setup-gr-row[data-state="changed"] { border-left-color: var(--scan-cyan-dim); }
+.setup-gr-row[data-state="new"] { border-left-color: var(--scan-cyan); background: rgba(85,214,224,0.04); }
+.setup-gr-row[data-state="removed"] { opacity: 0.55; }
+.setup-gr-row[data-state="removed"] .setup-gr-id,
+.setup-gr-row[data-state="removed"] .setup-gr-desc { text-decoration: line-through; }
+.setup-gr-row.has-error { border-left-color: var(--signal-red); }
+.setup-gr-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.setup-gr-head .spacer { flex: 1; }
+.setup-gr-sev {
+  flex: none; font: 600 10px var(--font-mono); letter-spacing: 0.06em;
+  padding: 2px 7px; border-radius: 999px; border: 1px solid currentColor;
+}
+.setup-gr-row[data-sev="error"] .setup-gr-sev { color: var(--signal-red); }
+.setup-gr-row[data-sev="warning"] .setup-gr-sev { color: var(--signal-amber); }
+.setup-gr-id { font: 12.5px var(--font-mono); color: var(--ivory); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.setup-gr-tag { flex: none; font: 600 10px var(--font-mono); letter-spacing: 0.06em; color: var(--scan-cyan); }
+.setup-gr-desc {
+  margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--setup-soft); cursor: pointer;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.setup-gr-desc:hover { color: var(--ivory); }
+.setup-gr-edit { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.setup-gr-label { display: flex; flex-direction: column; gap: 6px; font: 600 11px var(--font-mono); letter-spacing: 0.08em; color: var(--setup-soft); }
+.setup-gr-idin { max-width: 360px; }
+.setup-gr-lower { margin: 0; font-size: 12px; color: var(--signal-amber); }
+.setup-gr-text {
+  box-sizing: border-box; width: 100%; resize: vertical;
+  background: var(--setup-well); color: var(--ivory);
+  border: 1px solid var(--glass-border); border-radius: 7px;
+  padding: 8px 10px; font: 12.5px/1.55 var(--font-body);
+}
+.setup-gr-text:focus-visible { outline: none; border-color: var(--scan-cyan); }
+.setup-gr-meta { display: flex; align-items: center; gap: 14px; }
+.setup-gr-bytes { font: 11px var(--font-mono); color: var(--rail); }
+.setup-gr-bytes[data-over="true"] { color: var(--signal-red); }
+.setup-gr-row .setup-f-error { margin: 6px 0 0; }
+/* A closed guardrail section shows only its head, its chips and the open button. */
+.setup-gr[data-open="false"] { padding-bottom: 16px; }
+.setup-gr[data-open="false"] .setup-gr-tools { margin-bottom: 0; }
+.setup-gr-toggle { color: var(--ivory); }
+/* The severity choice in the head of an open guardrail row. */
+.setup-gr-sevseg { flex: none; border-radius: 999px; }
+.setup-gr-sevseg button { padding: 3px 10px; font: 600 11px var(--font-mono); letter-spacing: 0.06em; color: var(--setup-soft); }
+.setup-gr-sevseg button:hover { color: var(--ivory); }
+/* The picked severity takes the color of its badge: light text on a tint of
+   the severity color, so it reads like the badge of a closed row. */
+.setup-gr-sevseg button[data-sev="error"][aria-checked="true"] {
+  color: #FFD9D6; background: rgba(240,86,77,0.22); box-shadow: inset 0 0 0 1px var(--signal-red);
+}
+.setup-gr-sevseg button[data-sev="warning"][aria-checked="true"] {
+  color: #FFE7C2; background: rgba(242,169,60,0.20); box-shadow: inset 0 0 0 1px var(--signal-amber);
+}
+
+/* Icon buttons of a guardrail row: edit, close, remove, restore, undo. */
+#panel-setup {
+  --icon-edit: url("data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 20h9'/%3E%3Cpath d='M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z'/%3E%3C/svg%3E");
+  --icon-close: url("data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M18 15l-6-6-6 6'/%3E%3C/svg%3E");
+  --icon-undo: url("data:image/svg+xml,%3Csvg xmlns='http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 7v6h6'/%3E%3Cpath d='M3 13a9 9 0 1 0 3-7.7L3 8'/%3E%3C/svg%3E");
+}
+.setup-gr-icon {
+  appearance: none;
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--setup-soft);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+.setup-gr-icon::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  background: currentColor;
+  -webkit-mask: var(--gr-icon) center / contain no-repeat;
+  mask: var(--gr-icon) center / contain no-repeat;
+}
+.setup-gr-icon:hover, .setup-gr-icon:focus-visible { color: var(--ivory); border-color: var(--glass-border); background: rgba(148,178,196,0.06); }
+.setup-gr-icon-edit { --gr-icon: var(--icon-edit); }
+.setup-gr-icon-close { --gr-icon: var(--icon-close); }
+.setup-gr-icon-undo { --gr-icon: var(--icon-undo); }
+.setup-gr-icon-trash { --gr-icon: var(--icon-trash); }
+.setup-gr-icon-trash:hover, .setup-gr-icon-trash:focus-visible { color: #FFD9D6; border-color: rgba(240,86,77,0.45); background: rgba(240,86,77,0.10); }
+/* Undo changes: an undo icon in front of the text. */
+.setup-gr-undo { display: inline-flex; align-items: center; gap: 6px; }
+.setup-gr-undo::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  background: currentColor;
+  -webkit-mask: var(--icon-undo) center / contain no-repeat;
+  mask: var(--icon-undo) center / contain no-repeat;
+}
+
+/* The two ways to change the guardrails, side by side. */
+.setup-gr-ways { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 6px 0 14px; }
+.setup-gr-way { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--setup-line); border-radius: 9px; background: var(--setup-well); }
+.setup-gr-way-title { margin: 0; font: 600 10.5px var(--font-mono); letter-spacing: 0.08em; color: var(--setup-soft); }
+.setup-gr-way-text { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--setup-soft); }
+.setup-gr-way .setup-cmd-row { margin-top: auto; }
+@media (max-width: 720px) { .setup-gr-ways { grid-template-columns: 1fr; } }

@@ -13,8 +13,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
@@ -50,21 +50,59 @@ type DashboardSetupChange struct {
 	Value   any    `json:"value,omitempty"` // required with set; refused with reset
 }
 
+// The ops of a guardrail change.
+const (
+	setupGuardrailOpAdd    = "add"
+	setupGuardrailOpChange = "change"
+	setupGuardrailOpRemove = "remove"
+)
+
+// maxGuardrailChangesPerList is the largest number of changes of one
+// guardrails list in one save. It bounds the merged rule check and the error
+// list.
+const maxGuardrailChangesPerList = 100
+
+// guardrailIDMaxBytes is the longest id of an add, change or remove. The id
+// pattern of validateOneGuardrail has no maximum of its own.
+const guardrailIDMaxBytes = 64
+
+// DashboardSetupGuardrailChange is one change of a guardrails list.
+// add and change need both Severity and Description. change replaces both
+// stored fields. remove takes neither.
+type DashboardSetupGuardrailChange struct {
+	ID          string `json:"id"`
+	Op          string `json:"op"`                    // one of the setupGuardrailOp* values
+	Severity    string `json:"severity,omitempty"`    // add, change: a guardrail severity (validateOneGuardrail)
+	Description string `json:"description,omitempty"` // add, change: at most guardrailDescMaxBytes bytes
+}
+
+// table returns the table that config.toml stores for an add or a change.
+func (c DashboardSetupGuardrailChange) table() map[string]any {
+	return map[string]any{"description": c.Description, "severity": c.Severity}
+}
+
 // DashboardSetupSaveIn is the request of a save.
 type DashboardSetupSaveIn struct {
 	Changes []DashboardSetupChange `json:"changes"`
 	Targets map[string]string      `json:"targets"` // form section id of a local section -> "project" | "user"
+	// Guardrails maps a guardrail section id (setupmeta.PlanGuardrailsID or
+	// setupmeta.ExecutionGuardrailsID) to its changes. Omitted or empty: no guardrail
+	// change. A listed section needs 1 to maxGuardrailChangesPerList changes,
+	// each id at most once.
+	Guardrails map[string][]DashboardSetupGuardrailChange `json:"guardrails,omitempty"`
 }
 
 // DashboardSetupWrite is one section that a save wrote.
 type DashboardSetupWrite struct {
-	Section string `json:"section"` // form section id
-	File    string `json:"file"`    // absolute path
+	Section string `json:"section"`      // form section id, or guardrail section id
+	ID      string `json:"id,omitempty"` // guardrail id; absent for a form section
+	File    string `json:"file"`         // absolute path
 }
 
 // DashboardSetupFailure is one section that a save did not write.
 type DashboardSetupFailure struct {
-	Section    string `json:"section"` // form section id
+	Section    string `json:"section"`      // form section id, or guardrail section id
+	ID         string `json:"id,omitempty"` // guardrail id; absent for a form section
 	File       string `json:"file"`
 	Message    string `json:"message"`
 	Suggestion string `json:"suggestion,omitempty"` // the recovery step of the error; absent when there is none
@@ -112,7 +150,6 @@ var setupWriteFunc = setupWriteSections
 
 // Suggestion texts of the save and the create.
 const (
-	dashboardSetupRequestSuggestion   = "The page sent a request that breaks this rule. Reload the Setup tab, then save again."
 	dashboardSetupNoConfigSuggestion  = "Select Create config on the Setup tab, or run /sdlc:setup in the repo. Then save again."
 	dashboardSetupLegacySuggestion    = "Run /sdlc:setup --migrate in the repo. Then save again."
 	dashboardSetupHasConfigSuggestion = "The repo already has a config. Reload the Setup tab."
@@ -144,13 +181,20 @@ func DashboardSetupSave(root string, in DashboardSetupSaveIn) (DashboardSetupSav
 	if err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
-	if err := readSetupSaveSections(root, userPath, sections); err != nil {
+	// One cache serves the form save and the guardrail save, so both give the
+	// same outcome for each state of config.toml.
+	docs := setupDocCache{}
+	if err := readSetupSaveSections(root, userPath, sections, docs); err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
 	if err := checkSetupSaveValues(sections); err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
-	return writeSetupSave(root, userPath, sections)
+	gr, err := checkSetupGuardrails(root, userPath, in, docs)
+	if err != nil {
+		return DashboardSetupSaveOut{}, err
+	}
+	return writeSetupSave(root, userPath, sections, gr)
 }
 
 // checkSetupSaveState refuses a save in a repo that has no config or a
@@ -185,10 +229,9 @@ func (c setupDocCache) read(path string) (map[string]any, error) {
 	return doc, nil
 }
 
-// readSetupSaveSections reads each target file one time. For each section it
-// sets stored and next, and for a user target also project.
-func readSetupSaveSections(root, userPath string, sections []*setupSaveSection) error {
-	docs := setupDocCache{}
+// readSetupSaveSections reads each target file one time through docs. For
+// each section it sets stored and next, and for a user target also project.
+func readSetupSaveSections(root, userPath string, sections []*setupSaveSection, docs setupDocCache) error {
 	for _, s := range sections {
 		if err := readSetupSaveSection(root, userPath, s, docs); err != nil {
 			return err
@@ -225,7 +268,7 @@ func readSetupSaveTable(docs setupDocCache, file, key string, changes []Dashboar
 	}
 	stored, ok := setupTable(doc, key)
 	if !ok {
-		return nil, nil, false, setupSaveNotTableError(key, file)
+		return nil, nil, false, setupSaveNotTableError(key, file, "")
 	}
 	next = setupCopyTable(stored)
 	for _, c := range changes {
@@ -235,7 +278,7 @@ func readSetupSaveTable(docs setupDocCache, file, key string, changes []Dashboar
 		}
 		bad, rm := setupApplyChange(next, c.Field, op, value)
 		if bad != "" {
-			return nil, nil, false, setupSaveNotTableError(key+"."+bad, file)
+			return nil, nil, false, setupSaveNotTableError(key+"."+bad, file, "")
 		}
 		removed = removed || rm
 	}
@@ -268,8 +311,9 @@ func checkSetupSaveValues(sections []*setupSaveSection) error {
 }
 
 // writeSetupSave writes the user file first, then the config.toml sections
-// and the project sections, and builds the result.
-func writeSetupSave(root, userPath string, sections []*setupSaveSection) (DashboardSetupSaveOut, error) {
+// and the project sections, and builds the result. gr holds the guardrail
+// keys. They join the config.toml write call.
+func writeSetupSave(root, userPath string, sections []*setupSaveSection, gr setupGuardrailWrites) (DashboardSetupSaveOut, error) {
 	out := DashboardSetupSaveOut{
 		Written:  []DashboardSetupWrite{},
 		Failed:   []DashboardSetupFailure{},
@@ -284,7 +328,7 @@ func writeSetupSave(root, userPath string, sections []*setupSaveSection) (Dashbo
 	if err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
-	if err := writeSetupSaveProject(root, userPath, sections, byKey, userWritten, userRan, &out); err != nil {
+	if err := writeSetupSaveProject(root, userPath, sections, byKey, gr, userWritten, userRan, &out); err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
 	out.OK = len(out.Failed) == 0
@@ -311,16 +355,17 @@ func writeSetupSaveUser(root, userPath string, sections []*setupSaveSection, byK
 	for _, key := range res.Written {
 		userWritten[key] = true
 	}
-	setupSaveCollect(out, root, userPath, setupTargetUser, userSections, res, byKey)
+	setupSaveCollect(out, setupSaveFileOf(root, userPath, setupTargetUser), userSections, res, byKey, nil)
 	return userWritten, true, nil
 }
 
 // writeSetupSaveProject writes the config.toml sections and the project
 // sections. A project section of a user-target section is written only when
-// the user write wrote its key and the project copy lost a key. When this
+// the user write wrote its key and the project copy lost a key. The guardrail
+// keys in gr always go to this write. When this
 // write fails after the user write ran, the failure goes to out.Failed. When
 // no user write ran, the failure is the error of the save.
-func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, byKey map[string]*setupSaveSection, userWritten map[string]bool, userRan bool, out *DashboardSetupSaveOut) error {
+func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, byKey map[string]*setupSaveSection, gr setupGuardrailWrites, userWritten map[string]bool, userRan bool, out *DashboardSetupSaveOut) error {
 	projectSections := map[string]map[string]any{}
 	for _, s := range sections {
 		switch {
@@ -329,6 +374,9 @@ func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, 
 		case s.projectRemoved && userWritten[s.key]:
 			projectSections[s.key] = s.project
 		}
+	}
+	for key, w := range gr {
+		projectSections[key] = w.value // nil removes the table
 	}
 	if len(projectSections) == 0 {
 		return nil
@@ -339,17 +387,27 @@ func writeSetupSaveProject(root, userPath string, sections []*setupSaveSection, 
 			return err
 		}
 		for _, key := range sortedSetupKeys(projectSections) {
-			out.Failed = append(out.Failed, setupFailure(byKey[key].sec.ID, setupTargetPath(root, root, userPath, "", key), err))
+			section, id := setupKeyOwner(key, byKey, gr)
+			f := setupFailure(section, setupTargetPath(root, root, userPath, "", key), err)
+			f.ID = id
+			out.Failed = append(out.Failed, f)
 		}
 		return nil
 	}
-	setupSaveCollect(out, root, userPath, "", projectSections, res, byKey)
+	setupSaveCollect(out, setupSaveFileOf(root, userPath, ""), projectSections, res, byKey, gr)
 	for _, rep := range res.Scaffold {
 		if scaffoldActionWrites(rep.Action) {
 			out.CIFiles = append(out.CIFiles, rep.Path)
 		}
 	}
 	return nil
+}
+
+// setupSaveFileOf returns the function that gives the absolute path of the
+// target file of a write key, for a write call with target ("" or
+// setupTargetUser).
+func setupSaveFileOf(root, userPath, target string) func(key string) string {
+	return func(key string) string { return setupTargetPath(root, root, userPath, target, key) }
 }
 
 // setupFailure is the failure of a section whose write call returned err. The
@@ -361,6 +419,16 @@ func setupFailure(section, file string, err error) DashboardSetupFailure {
 		msg += ": " + cause.Error()
 	}
 	return DashboardSetupFailure{Section: section, File: file, Message: msg, Suggestion: suggestion}
+}
+
+// setupKeyOwner returns the section id and the guardrail id of a write key.
+// A guardrail key gives its guardrail section id and its guardrail id. Any
+// other key gives the form section id and an empty id.
+func setupKeyOwner(key string, byKey map[string]*setupSaveSection, gr setupGuardrailWrites) (section, id string) {
+	if g, ok := gr[key]; ok {
+		return g.section, g.id
+	}
+	return byKey[key].sec.ID, ""
 }
 
 // setupFormIndex lists the sections that the form can change.
@@ -393,10 +461,15 @@ func newSetupFormIndex() setupFormIndex {
 // user).
 func checkSetupSaveRequest(in DashboardSetupSaveIn) ([]*setupSaveSection, string, error) {
 	if len(in.Changes) > maxSetupChanges {
-		return nil, "", setupRequestError(fmt.Sprintf("changes has %d entries, over the limit of %d", len(in.Changes), maxSetupChanges))
+		return nil, "", setupRequestError(fmt.Sprintf("changes has %d entries, over the limit of %d", len(in.Changes), maxSetupChanges),
+			fmt.Sprintf("Save at most %d field changes at one time.", maxSetupChanges))
 	}
-	if len(in.Changes) == 0 {
-		return nil, "", setupRequestError("changes is empty")
+	// A save with no form change is valid when it has a guardrail change.
+	if len(in.Changes) == 0 && len(in.Guardrails) == 0 {
+		return nil, "", setupRequestError("changes and guardrails are empty", "Change a field or a guardrail, then save.")
+	}
+	if err := checkSetupGuardrailRequest(in.Guardrails); err != nil {
+		return nil, "", err
 	}
 	idx := newSetupFormIndex()
 	byID, err := groupSetupChanges(in.Changes, idx)
@@ -446,34 +519,49 @@ func groupSetupChanges(changes []DashboardSetupChange, idx setupFormIndex) (map[
 func checkSetupChange(c DashboardSetupChange, idx setupFormIndex, seen map[string]bool) (setupmeta.Section, error) {
 	sec, ok := idx.sections[c.Section]
 	if !ok {
-		if idx.delegated[c.Section] {
-			return sec, setupRequestError(fmt.Sprintf("section %q is a delegated section; the form cannot change it. Form sections: %s", c.Section, strings.Join(idx.order, ", ")))
+		if _, isGuardrail := setupGuardrailPaths()[c.Section]; isGuardrail {
+			return sec, setupRequestError(
+				fmt.Sprintf("section %q is a guardrail section; changes cannot change it", c.Section),
+				fmt.Sprintf("Send a change of section %q in the guardrails field of the request, not in changes.", c.Section))
 		}
-		return sec, setupRequestError(fmt.Sprintf("section %q is not a form section. Form sections: %s", c.Section, strings.Join(idx.order, ", ")))
+		if idx.delegated[c.Section] {
+			return sec, setupRequestError(
+				fmt.Sprintf("section %q is a delegated section; the form cannot change it. Form sections: %s", c.Section, strings.Join(idx.order, ", ")),
+				fmt.Sprintf("Run /sdlc:setup --only %s in the repo to change this section.", c.Section))
+		}
+		return sec, setupRequestError(
+			fmt.Sprintf("section %q is not a form section. Form sections: %s", c.Section, strings.Join(idx.order, ", ")),
+			"Use a form section id from the list.")
 	}
 	if !slices.ContainsFunc(sec.Fields, func(f setupmeta.Field) bool { return f.Name == c.Field }) {
 		names := make([]string, 0, len(sec.Fields))
 		for _, f := range sec.Fields {
 			names = append(names, f.Name)
 		}
-		return sec, setupRequestError(fmt.Sprintf("field %q is not a field of section %q. Fields: %s", c.Field, c.Section, strings.Join(names, ", ")))
+		return sec, setupRequestError(
+			fmt.Sprintf("field %q is not a field of section %q. Fields: %s", c.Field, c.Section, strings.Join(names, ", ")),
+			"Use a field name from the list.")
 	}
 	pair := c.Section + "\x00" + c.Field
 	if seen[pair] {
-		return sec, setupRequestError(fmt.Sprintf("section %q field %q is in changes more than once", c.Section, c.Field))
+		return sec, setupRequestError(fmt.Sprintf("section %q field %q is in changes more than once", c.Section, c.Field),
+			"Send one change for each field.")
 	}
 	seen[pair] = true
 	switch c.Op {
 	case setupOpSet:
 		if c.Value == nil {
-			return sec, setupRequestError(fmt.Sprintf("section %q field %q has op set with no value; use op reset to remove a value", c.Section, c.Field))
+			return sec, setupRequestError(fmt.Sprintf("section %q field %q has op set with no value", c.Section, c.Field),
+				"Send a value with op set, or use op reset to remove the value.")
 		}
 	case setupOpReset:
 		if c.Value != nil {
-			return sec, setupRequestError(fmt.Sprintf("section %q field %q has op reset with a value; op reset takes no value", c.Section, c.Field))
+			return sec, setupRequestError(fmt.Sprintf("section %q field %q has op reset with a value", c.Section, c.Field),
+				"Send op reset with no value.")
 		}
 	default:
-		return sec, setupRequestError(fmt.Sprintf("op %q is not set or reset", c.Op))
+		return sec, setupRequestError(fmt.Sprintf("section %q field %q has op %q, which is not set or reset", c.Section, c.Field, c.Op),
+			"Use op set or op reset.")
 	}
 	return sec, nil
 }
@@ -482,18 +570,15 @@ func checkSetupChange(c DashboardSetupChange, idx setupFormIndex, seen map[strin
 // change, and that each value is project or user. It checks the ids in sorted
 // order.
 func checkSetupTargets(targets map[string]string, byID map[string]*setupSaveSection) error {
-	ids := make([]string, 0, len(targets))
-	for id := range targets {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
+	for _, id := range slices.Sorted(maps.Keys(targets)) {
 		s := byID[id]
 		if s == nil || !setupLocalKey(s.key) {
-			return setupRequestError(fmt.Sprintf("targets names section %q, which is not a local form section with a change", id))
+			return setupRequestError(fmt.Sprintf("targets names section %q, which is not a local form section with a change", id),
+				"Name in targets only a local form section that has a change in changes.")
 		}
 		if v := targets[id]; v != setupTargetProject && v != setupTargetUser {
-			return setupRequestError(fmt.Sprintf("target %q is not project or user", v))
+			return setupRequestError(fmt.Sprintf("section %q has target %q, which is not project or user", id, v),
+				"Use target project or target user.")
 		}
 	}
 	return nil
@@ -524,12 +609,268 @@ func resolveSetupTargets(targets map[string]string, order []string, byID map[str
 }
 
 // setupRequestError is the DomainError of a broken request rule. msg names
-// the rule.
-func setupRequestError(msg string) error {
+// the rule; suggestion is the recovery step of that rule.
+func setupRequestError(msg, suggestion string) error {
 	return &mcpserver.DomainError{
 		Msg:        "dashboard setup save: " + msg + ". Nothing was written.",
-		Suggestion: dashboardSetupRequestSuggestion,
+		Suggestion: suggestion,
 	}
+}
+
+// setupGuardrailWrite is one guardrail key to write. The map key of
+// setupGuardrailWrites is the write key "<config path>.<id>", for example
+// "plan.guardrails.dry".
+type setupGuardrailWrite struct {
+	section string         // guardrail section id (setupGuardrailSections)
+	id      string         // guardrail id
+	value   map[string]any // {"description": d, "severity": s}; nil for a remove
+}
+
+// setupGuardrailWrites maps each write key to its guardrail write.
+type setupGuardrailWrites map[string]setupGuardrailWrite
+
+// setupGuardrailSections returns the guardrail sections of
+// setupmeta.Sections() (setupmeta.PlanGuardrailsID and
+// setupmeta.ExecutionGuardrailsID), in that order.
+func setupGuardrailSections() []setupmeta.Section {
+	var out []setupmeta.Section
+	for _, sec := range setupmeta.Sections() {
+		if sec.ID == setupmeta.PlanGuardrailsID || sec.ID == setupmeta.ExecutionGuardrailsID {
+			out = append(out, sec)
+		}
+	}
+	return out
+}
+
+// setupGuardrailIDs returns the ids of setupGuardrailSections, in order.
+func setupGuardrailIDs() []string {
+	var out []string
+	for _, sec := range setupGuardrailSections() {
+		out = append(out, sec.ID)
+	}
+	return out
+}
+
+// setupGuardrailPaths maps each guardrail section id to its config path.
+func setupGuardrailPaths() map[string]string {
+	out := map[string]string{}
+	for _, sec := range setupGuardrailSections() {
+		out[sec.ID] = sec.ConfigPath
+	}
+	return out
+}
+
+// checkSetupGuardrailRequest checks the request rules of the guardrail
+// changes. It reads no file. It checks the section keys in sorted order, and
+// the changes of each section in request order.
+func checkSetupGuardrailRequest(guardrails map[string][]DashboardSetupGuardrailChange) error {
+	paths := setupGuardrailPaths()
+	for _, key := range slices.Sorted(maps.Keys(guardrails)) {
+		if _, ok := paths[key]; !ok {
+			return setupRequestError(fmt.Sprintf("guardrails has unknown section %q", key),
+				"Use "+strings.Join(setupGuardrailIDs(), " or ")+".")
+		}
+		list := guardrails[key]
+		if len(list) == 0 {
+			return setupRequestError("guardrails."+key+" is empty", "Omit a section with no change.")
+		}
+		if len(list) > maxGuardrailChangesPerList {
+			return setupRequestError(
+				fmt.Sprintf("guardrails.%s has %d changes, over the limit of %d", key, len(list), maxGuardrailChangesPerList),
+				fmt.Sprintf("Save at most %d guardrail changes of one list at one time.", maxGuardrailChangesPerList))
+		}
+		seen := map[string]bool{}
+		for _, c := range list {
+			if err := checkSetupGuardrailChange(key, c, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkSetupGuardrailChange checks the empty id, the id length, the repeat,
+// the op, and the fields of one guardrail change of the section key, in this
+// order. The length check runs before any rule that prints the id. It
+// records the id in seen.
+func checkSetupGuardrailChange(key string, c DashboardSetupGuardrailChange, seen map[string]bool) error {
+	if c.ID == "" {
+		return setupRequestError(fmt.Sprintf("guardrails.%s has a change with an empty id", key),
+			"Send the kebab-case id of the guardrail, for example no-ci-bypass.")
+	}
+	if n := len(c.ID); n > guardrailIDMaxBytes {
+		return setupRequestError(
+			fmt.Sprintf("guardrails.%s has an id of %d bytes, over the limit of %d", key, n, guardrailIDMaxBytes),
+			fmt.Sprintf("Use an id of at most %d bytes.", guardrailIDMaxBytes))
+	}
+	if seen[c.ID] {
+		return setupRequestError(fmt.Sprintf("guardrails.%s changes id %q twice", key, c.ID), "Send one change for each id.")
+	}
+	seen[c.ID] = true
+	switch c.Op {
+	case setupGuardrailOpAdd, setupGuardrailOpChange:
+		if c.Severity == "" || c.Description == "" {
+			return setupRequestError(fmt.Sprintf("guardrails.%s: %s of %q needs severity and description", key, c.Op, c.ID),
+				"Send both fields. change replaces both stored values.")
+		}
+	case setupGuardrailOpRemove:
+		if c.Severity != "" || c.Description != "" {
+			return setupRequestError(fmt.Sprintf("guardrails.%s: remove of %q takes no severity or description", key, c.ID),
+				"Send only id and op for a remove.")
+		}
+	default:
+		return setupRequestError(fmt.Sprintf("guardrails.%s: op %q of %q is not add, change or remove", key, c.Op, c.ID), "Use add, change or remove.")
+	}
+	return nil
+}
+
+// checkSetupGuardrails checks the guardrail changes of in against config.toml
+// and returns the keys to write. checkSetupSaveRequest already checked the
+// request rules of the changes. It returns an empty map, and reads no file,
+// when in has no guardrail change. Otherwise it reads config.toml through docs, refuses a list in array form or an entry
+// that is not a table, refuses each stale change, and checks the merged list
+// with the per-entry guardrail rules. It does not check a lower severity: an
+// operator may change error to warning. A stale change or a rule finding is a
+// *DashboardSetupInvalid.
+func checkSetupGuardrails(root, userPath string, in DashboardSetupSaveIn, docs setupDocCache) (setupGuardrailWrites, error) {
+	writes := setupGuardrailWrites{}
+	if len(in.Guardrails) == 0 {
+		return writes, nil
+	}
+	file := setupSavePath(root, userPath, setupTargetConfig, "plan")
+	doc, err := docs.read(file)
+	if err != nil {
+		return nil, err
+	}
+	paths := setupGuardrailPaths()
+	keys := slices.Sorted(maps.Keys(in.Guardrails))
+	disk := map[string]map[string]map[string]any{}
+	var stale []SetupFieldError
+	for _, key := range keys {
+		list, err := setupGuardrailDiskList(doc, paths[key], file)
+		if err != nil {
+			return nil, err
+		}
+		disk[key] = list
+		stale = append(stale, setupGuardrailStale(key, paths[key], in.Guardrails[key], list)...)
+	}
+	if len(stale) > 0 {
+		return nil, setupGuardrailInvalid(stale)
+	}
+	var findings []SetupFieldError
+	for _, key := range keys {
+		path := paths[key]
+		merged := mergeSetupGuardrails(disk[key], in.Guardrails[key])
+		findings = append(findings, checkSetupGuardrailList(key, path, merged)...)
+		for _, c := range in.Guardrails[key] {
+			w := setupGuardrailWrite{section: key, id: c.ID}
+			if c.Op != setupGuardrailOpRemove {
+				w.value = c.table()
+			}
+			writes[path+"."+c.ID] = w
+		}
+	}
+	if len(findings) > 0 {
+		return nil, setupGuardrailInvalid(findings)
+	}
+	return writes, nil
+}
+
+// setupGuardrailDiskList returns the guardrails at the config path path of
+// doc, by id. An absent parent table or an absent key gives an empty map. A
+// list in array form ([[path]] or an inline array) is a DomainError. A path,
+// a parent, or an entry that is not a table is a DataError. file is the path
+// of config.toml, for the error text.
+func setupGuardrailDiskList(doc map[string]any, path, file string) (map[string]map[string]any, error) {
+	parentKey, leaf, _ := strings.Cut(path, ".")
+	parent, ok := setupTable(doc, parentKey)
+	if !ok {
+		return nil, setupSaveNotTableError(parentKey, file, "")
+	}
+	raw, present := parent[leaf]
+	if !present {
+		return map[string]map[string]any{}, nil
+	}
+	switch list := raw.(type) {
+	case []any, []map[string]any:
+		return nil, setupRequestError(
+			fmt.Sprintf("config.toml holds %s as an array ([[%s]] or an inline array). The dashboard edits only [%s.<id>] tables", path, path, path),
+			fmt.Sprintf("Change the list in config.toml to [%s.<id>] tables manually, then reload the page.", path))
+	case map[string]any:
+		out := make(map[string]map[string]any, len(list))
+		for _, id := range slices.Sorted(maps.Keys(list)) {
+			entry, isTable := list[id].(map[string]any)
+			if !isTable {
+				return nil, setupSaveNotTableError(path+"."+id, file, "description and severity")
+			}
+			out[id] = entry
+		}
+		return out, nil
+	}
+	return nil, setupSaveNotTableError(path, file, "")
+}
+
+// setupGuardrailStale returns one field error for each stale change of the
+// section key: an add of an id that disk holds, or a change or a remove of
+// an id that disk does not hold.
+func setupGuardrailStale(key, path string, changes []DashboardSetupGuardrailChange, disk map[string]map[string]any) []SetupFieldError {
+	var out []SetupFieldError
+	for _, c := range changes {
+		_, onDisk := disk[c.ID]
+		var msg string
+		switch {
+		case c.Op == setupGuardrailOpAdd && onDisk:
+			msg = fmt.Sprintf("guardrail %q is already in config.toml, so the add is stale. Reload the Setup tab to see the stored guardrail, then change it in place of the add.", c.ID)
+		case c.Op != setupGuardrailOpAdd && !onDisk:
+			msg = fmt.Sprintf("guardrail %q is not in config.toml, so the %s is stale. Reload the Setup tab to see the stored list, then make the change again.", c.ID, c.Op)
+		default:
+			continue
+		}
+		out = append(out, SetupFieldError{Section: key, Field: c.ID, Path: path + "." + c.ID, Message: msg})
+	}
+	return out
+}
+
+// mergeSetupGuardrails returns a copy of disk with each change applied: a
+// remove deletes the id, and an add or a change sets the description and the
+// severity of the change.
+func mergeSetupGuardrails(disk map[string]map[string]any, changes []DashboardSetupGuardrailChange) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(disk))
+	for id, g := range disk {
+		out[id] = setupCopyTable(g)
+	}
+	for _, c := range changes {
+		if c.Op == setupGuardrailOpRemove {
+			delete(out, c.ID)
+			continue
+		}
+		out[c.ID] = c.table()
+	}
+	return out
+}
+
+// checkSetupGuardrailList checks each entry of the merged list of the
+// section key with validateOneGuardrail, in id order. A named table has no
+// id key, so the check sets it from the table key. It returns one field
+// error for each finding.
+func checkSetupGuardrailList(key, path string, merged map[string]map[string]any) []SetupFieldError {
+	var out []SetupFieldError
+	seenIDs := map[string]bool{}
+	for _, id := range slices.Sorted(maps.Keys(merged)) {
+		g := merged[id]
+		g["id"] = id
+		for _, f := range validateOneGuardrail(g, seenIDs) {
+			out = append(out, SetupFieldError{Section: key, Field: id, Path: path + "." + id, Message: f.Message + ". " + f.Fix})
+		}
+	}
+	return out
+}
+
+// setupGuardrailInvalid is the *DashboardSetupInvalid of fields, sorted by
+// path.
+func setupGuardrailInvalid(fields []SetupFieldError) error {
+	slices.SortStableFunc(fields, func(a, b SetupFieldError) int { return strings.Compare(a.Path, b.Path) })
+	return &DashboardSetupInvalid{Fields: fields}
 }
 
 // setupLocalKey reports whether the config path key lives in local.toml.
@@ -548,11 +889,16 @@ func setupSavePath(root, userPath, target, key string) string {
 }
 
 // setupSaveNotTableError is the DataError of a stored value that is not a
-// table where the save needs a table.
-func setupSaveNotTableError(key, file string) error {
+// table where the save needs a table. keys names the keys that the table
+// needs; "" names none.
+func setupSaveNotTableError(key, file, keys string) error {
+	table := "a table"
+	if keys != "" {
+		table += " with " + keys
+	}
 	return &mcpserver.DataError{
 		Msg:        fmt.Sprintf("dashboard setup save: %s in %s is not a table.", key, file),
-		Suggestion: fmt.Sprintf("Change %s in %s to a table, or remove the key. Then save again. Nothing was written.", key, file),
+		Suggestion: fmt.Sprintf("Change %s in %s to %s, or remove the key. Then save again. Nothing was written.", key, file, table),
 	}
 }
 
@@ -638,34 +984,39 @@ func setupSaveCall(root string, sections map[string]map[string]any, target strin
 }
 
 // setupSaveCollect adds the written and the failed sections, the warnings,
-// and the hand-edit step of one write call to out. sent holds the keys of
-// that call. The message of a failed section is its entry in
-// res.sectionErrs.
-func setupSaveCollect(out *DashboardSetupSaveOut, root, userPath, target string,
-	sent map[string]map[string]any, res SetupWriteSectionsOut, byKey map[string]*setupSaveSection) {
+// and the hand-edit step of one write call to out. fileOf returns the
+// absolute path of the target file of a key of that call. sent holds the keys
+// of that call. gr holds the guardrail keys of the call. A removed guardrail
+// is in res.Deleted, not in res.Written, and it is a written entry.
+func setupSaveCollect(out *DashboardSetupSaveOut, fileOf func(key string) string,
+	sent map[string]map[string]any, res SetupWriteSectionsOut, byKey map[string]*setupSaveSection, gr setupGuardrailWrites) {
+	guardrailWritten := func(key string) bool {
+		g, ok := gr[key]
+		if ok {
+			out.Written = append(out.Written, DashboardSetupWrite{Section: g.section, ID: g.id, File: fileOf(key)})
+		}
+		return ok
+	}
 	for _, key := range res.Written {
-		s := byKey[key]
-		if s == nil {
+		if guardrailWritten(key) {
 			continue
 		}
-		out.Written = append(out.Written, DashboardSetupWrite{
-			Section: s.sec.ID,
-			File:    setupTargetPath(root, root, userPath, target, key),
-		})
+		if s := byKey[key]; s != nil {
+			out.Written = append(out.Written, DashboardSetupWrite{Section: s.sec.ID, File: fileOf(key)})
+		}
+	}
+	for _, d := range res.Deleted {
+		guardrailWritten(d.ID)
+	}
+	deleted := func(key string) bool {
+		return slices.ContainsFunc(res.Deleted, func(d DeletedSection) bool { return d.ID == key })
 	}
 	for _, key := range sortedSetupKeys(sent) {
-		if slices.Contains(res.Written, key) {
+		if slices.Contains(res.Written, key) || deleted(key) {
 			continue
 		}
-		msg, ok := res.sectionErrs[key]
-		if !ok {
-			msg = "setup_write_sections did not write the section and gave no reason"
-		}
-		out.Failed = append(out.Failed, DashboardSetupFailure{
-			Section: byKey[key].sec.ID,
-			File:    setupTargetPath(root, root, userPath, target, key),
-			Message: msg,
-		})
+		section, id := setupKeyOwner(key, byKey, gr)
+		out.Failed = append(out.Failed, setupWriteFailure(section, id, key, fileOf(key), res))
 	}
 	out.Warnings = append(out.Warnings, res.Warnings...)
 	if res.Next != "" {
@@ -676,14 +1027,26 @@ func setupSaveCollect(out *DashboardSetupSaveOut, root, userPath, target string,
 	}
 }
 
+// setupWriteFailure is the failure of the key, which a write call to file
+// did not write. section and id name the owner of the key (setupKeyOwner).
+// The message is the entry of the key in res.sectionErrs. The suggestion is
+// the hand-edit step when the call refused the key because the write would
+// delete comments, else a step to check the file.
+func setupWriteFailure(section, id, key, file string, res SetupWriteSectionsOut) DashboardSetupFailure {
+	msg, ok := res.sectionErrs[key]
+	if !ok {
+		msg = fmt.Sprintf("%s in %s was not written, and the write gave no reason", key, file)
+	}
+	suggestion := fmt.Sprintf("Check %s in %s, then reload the Setup tab and save again.", key, file)
+	if res.sectionRefused[key] {
+		suggestion = fmt.Sprintf("Edit %s in %s by hand, then reload the Setup tab.", key, file)
+	}
+	return DashboardSetupFailure{Section: section, ID: id, File: file, Message: msg, Suggestion: suggestion}
+}
+
 // sortedSetupKeys returns the keys of m in sorted order.
 func sortedSetupKeys(m map[string]map[string]any) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
+	return slices.Sorted(maps.Keys(m))
 }
 
 // DashboardSetupCreate writes the first config of root through the init code

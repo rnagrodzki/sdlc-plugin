@@ -9,8 +9,10 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/rnagrodzki/sdlc-plugin/internal/config"
@@ -55,6 +57,16 @@ type DashboardDelegatedState struct {
 	Mode  string `json:"mode,omitempty"`  // pr-labels only: the key mode of [pr.labels]; "" when absent
 }
 
+// DashboardGuardrail is one guardrail of a plan or execute guardrail list.
+type DashboardGuardrail struct {
+	ID          string `json:"id"`
+	Severity    string `json:"severity"` // "error" when the table has no severity
+	Description string `json:"description"`
+}
+
+// setupGuardrailDefaultSeverity is the severity of a guardrail with no severity.
+const setupGuardrailDefaultSeverity = "error"
+
 // DashboardSetupStateOut is the answer of DashboardSetupState.
 type DashboardSetupStateOut struct {
 	Root        string                                    `json:"root"`
@@ -63,6 +75,13 @@ type DashboardSetupStateOut struct {
 	ConfigError string                                    `json:"configError"` // "" when config.Read gives no error
 	Values      map[string]map[string]DashboardSetupValue `json:"values"`      // form section id -> field name
 	Delegated   []DashboardDelegatedState                 `json:"delegated"`
+	// Layers maps "<section id>.<field>" to the value of each file that sets
+	// the field. The keys of the inner map are setupTargetConfig,
+	// setupTargetProject and setupTargetUser.
+	Layers map[string]map[string]any `json:"layers"`
+	// Guardrails maps "plan.guardrails" and "execute.guardrails" to the
+	// guardrails of config.toml, sorted by id. Each list is [] when empty.
+	Guardrails map[string][]DashboardGuardrail `json:"guardrails"`
 }
 
 // DashboardSetupFields returns the full field list: every section of
@@ -103,7 +122,6 @@ func DashboardSetupState(root string) (DashboardSetupStateOut, error) {
 		Root:      root,
 		State:     state,
 		Files:     DashboardSetupFiles{Config: filepath.Join(root, paths.DataDir, paths.ConfigFile), Project: filepath.Join(root, paths.DataDir, paths.LocalConfigFile)},
-		Values:    map[string]map[string]DashboardSetupValue{},
 		Delegated: []DashboardDelegatedState{},
 	}
 	if p, ok := config.UserConfigPath(); ok {
@@ -134,13 +152,9 @@ func DashboardSetupState(root string) (DashboardSetupStateOut, error) {
 		}
 		notes = append(notes, s)
 	}
-	for _, sec := range setupmeta.Sections() {
-		if sec.ConfigPath == "" || len(sec.Fields) == 0 {
-			continue
-		}
-		out.Values[sec.ID] = setupSectionValues(sec, out.Files, configDoc, projectDoc, userDoc, addNote)
-	}
+	out.Values, out.Layers = setupFormValues(out.Files, configDoc, projectDoc, userDoc, addNote)
 
+	var guardrailDoc map[string]any // nil gives [] for each guardrail list
 	if state == SetupStateReady {
 		if _, err := config.Read(root); err != nil {
 			out.ConfigError = err.Error()
@@ -148,7 +162,9 @@ func DashboardSetupState(root string) (DashboardSetupStateOut, error) {
 		if out.Delegated, err = dashboardDelegated(root, out.Files.Config, configDoc, addNote); err != nil {
 			return DashboardSetupStateOut{}, err
 		}
+		guardrailDoc = configDoc
 	}
+	out.Guardrails = setupStateGuardrails(guardrailDoc, out.Files.Config, addNote)
 	if len(notes) > 0 {
 		if out.ConfigError != "" {
 			notes = append([]string{out.ConfigError}, notes...)
@@ -158,13 +174,49 @@ func DashboardSetupState(root string) (DashboardSetupStateOut, error) {
 	return out, nil
 }
 
+// setupFormValues returns the value of each field of each form section, by
+// form section id, and the layers of each field (setupSectionValues).
+func setupFormValues(files DashboardSetupFiles, configDoc, projectDoc, userDoc map[string]any,
+	addNote func(string)) (map[string]map[string]DashboardSetupValue, map[string]map[string]any) {
+	values := map[string]map[string]DashboardSetupValue{}
+	fieldLayers := map[string]map[string]any{}
+	for _, sec := range setupmeta.Sections() {
+		if sec.ConfigPath == "" || len(sec.Fields) == 0 {
+			continue
+		}
+		values[sec.ID] = setupSectionValues(sec, files, configDoc, projectDoc, userDoc, addNote, fieldLayers)
+	}
+	return values, fieldLayers
+}
+
+// setupStateGuardrails returns the guardrail lists of configDoc, keyed by the
+// config path of each guardrail section, in setupmeta.Sections() order. A
+// list is [] when its parent table is absent or is not a table.
+// dashboardDelegated already notes a parent value that is not a table, and a
+// guardrails value that is not a list or a table.
+func setupStateGuardrails(configDoc map[string]any, configFile string, addNote func(string)) map[string][]DashboardGuardrail {
+	out := map[string][]DashboardGuardrail{}
+	for _, sec := range setupGuardrailSections() {
+		out[sec.ConfigPath] = []DashboardGuardrail{}
+		parent, _, _ := strings.Cut(sec.ConfigPath, ".")
+		if table, ok := setupTable(configDoc, parent); ok {
+			out[sec.ConfigPath] = setupGuardrailList(table, sec.ConfigPath, configFile, addNote)
+		}
+	}
+	return out
+}
+
 // setupSectionValues returns the value of each field of the form section sec.
 // A section of config.toml reads the file config.toml. A section of
 // local.toml reads the project file first, then the user file, so the
 // project file wins. addNote receives the sentence for a value that is not a
-// table where the field list needs a table.
+// table where the field list needs a table, also in a file that another file
+// overrides. fieldLayers receives, under the key "<section id>.<field name>",
+// the value of each file that sets the field, including the files that
+// another file overrides.
 func setupSectionValues(sec setupmeta.Section, files DashboardSetupFiles,
-	configDoc, projectDoc, userDoc map[string]any, addNote func(string)) map[string]DashboardSetupValue {
+	configDoc, projectDoc, userDoc map[string]any, addNote func(string),
+	fieldLayers map[string]map[string]any) map[string]DashboardSetupValue {
 	type layer struct {
 		source string
 		file   string
@@ -176,6 +228,12 @@ func setupSectionValues(sec setupmeta.Section, files DashboardSetupFiles,
 		layers = []layer{{setupTargetConfig, files.Config, configDoc}}
 	}
 
+	addLayer := func(k, source string, v any) {
+		if fieldLayers[k] == nil {
+			fieldLayers[k] = map[string]any{}
+		}
+		fieldLayers[k][source] = v
+	}
 	values := map[string]DashboardSetupValue{}
 	for _, l := range layers {
 		if l.doc == nil {
@@ -187,20 +245,88 @@ func setupSectionValues(sec setupmeta.Section, files DashboardSetupFiles,
 			continue
 		}
 		for _, f := range sec.Fields {
-			if _, set := values[f.Name]; set {
-				continue
-			}
 			value, present, badParent := setupFieldValue(table, f.Name)
 			if badParent != "" {
 				addNote(fmt.Sprintf("%s: %s.%s is not a table.", l.file, sec.ConfigPath, badParent))
 				continue
 			}
-			if present {
+			if !present {
+				continue
+			}
+			addLayer(sec.ID+"."+f.Name, l.source, value)
+			if _, set := values[f.Name]; !set {
 				values[f.Name] = DashboardSetupValue{Value: value, Source: l.source}
 			}
 		}
 	}
 	return values
+}
+
+// setupGuardrailList returns the guardrails in the guardrails key of section,
+// sorted by id. The named-table form ([plan.guardrails.<id>]) gives one entry
+// for each table. The array form ([[plan.guardrails]]) gives one entry for
+// each table with a text id. An entry with no severity gets the severity
+// "error", and an entry with no description gets "". A severity or a
+// description that is not text gets the same default, and addNote receives a
+// sentence that names path, the id and the field in configFile. An entry that
+// is not a table, or an array entry with no text id, is skipped, and addNote
+// receives a sentence for it. An absent key or a value of another type gives
+// [] with no note; setupGuardrailCount notes the value of another type.
+func setupGuardrailList(section map[string]any, path, configFile string, addNote func(string)) []DashboardGuardrail {
+	list := []DashboardGuardrail{}
+	text := func(id string, table map[string]any, field, def string) string {
+		raw, present := table[field]
+		if !present {
+			return def
+		}
+		s, ok := raw.(string)
+		if !ok {
+			addNote(fmt.Sprintf("%s: %s.%s %s is not a string. The page shows %q.", configFile, path, id, field, def))
+			return def
+		}
+		return s
+	}
+	entry := func(id string, table map[string]any) {
+		list = append(list, DashboardGuardrail{
+			ID:          id,
+			Severity:    text(id, table, "severity", setupGuardrailDefaultSeverity),
+			Description: text(id, table, "description", ""),
+		})
+	}
+	arrayEntry := func(i int, v any) {
+		table, ok := v.(map[string]any)
+		if !ok {
+			addNote(fmt.Sprintf("%s: %s entry %d is not a table. The page skips it.", configFile, path, i+1))
+			return
+		}
+		id, ok := table["id"].(string)
+		if !ok || id == "" {
+			addNote(fmt.Sprintf("%s: %s entry %d has no text id. The page skips it.", configFile, path, i+1))
+			return
+		}
+		entry(id, table)
+	}
+	switch raw := section["guardrails"].(type) {
+	case map[string]any:
+		for _, id := range slices.Sorted(maps.Keys(raw)) {
+			table, ok := raw[id].(map[string]any)
+			if !ok {
+				addNote(fmt.Sprintf("%s: %s.%s is not a table. The page skips it.", configFile, path, id))
+				continue
+			}
+			entry(id, table)
+		}
+	case []map[string]any:
+		for i, table := range raw {
+			arrayEntry(i, table)
+		}
+	case []any:
+		for i, v := range raw {
+			arrayEntry(i, v)
+		}
+	}
+	slices.SortStableFunc(list, func(a, b DashboardGuardrail) int { return strings.Compare(a.ID, b.ID) })
+	return list
 }
 
 // setupFieldValue returns the value of the field name in table. A dotted name
@@ -285,10 +411,10 @@ func dashboardDelegated(root, configFile string, configDoc map[string]any, addNo
 				return nil, dashboardSetupInfraError("check the template "+name, err)
 			}
 			row.Set = res.Exists
-		case "plan-guardrails":
-			count(setupGuardrailCount(table("plan"), "plan.guardrails", configFile, addNote))
-		case "execution-guardrails":
-			count(setupGuardrailCount(table("execute"), "execute.guardrails", configFile, addNote))
+		case setupmeta.PlanGuardrailsID:
+			count(setupGuardrailCount(table("plan"), sec.ConfigPath, configFile, addNote))
+		case setupmeta.ExecutionGuardrailsID:
+			count(setupGuardrailCount(table("execute"), sec.ConfigPath, configFile, addNote))
 		case "openspec-block":
 			set, err := openspecBlockSet(root)
 			if err != nil {
