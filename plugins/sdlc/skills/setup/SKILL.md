@@ -205,7 +205,7 @@ If the system context contains "Plan mode is active":
    | Dialogue, free text, dismissed | none | none | nothing |
    | the question tool is not available | none | none | nothing |
 
-   `formsDeferred` is false on every other row and on every run that skips this question. Go to item 4.
+   `formsDeferred` is false on every other row and on every run that skips this question. The Setup tab also lists, adds, edits and removes the guardrails of `plan-guardrails` and `execution-guardrails`. These two sections have a `delegatedTo`, so they are not in `formIds` and stay in the Step 1 menu after a `Setup tab` answer. A guardrail edit in the Setup tab and the guardrail sub-flow of this skill change the same `plan.guardrails.<id>` and `execute.guardrails.<id>` keys of the project config. Only this skill scans the code and proposes guardrails. Go to item 4.
 
    **Tool error text rule.** Print the label, then the error text in a `text` fence. Cut the error text to its first 2000 characters. When you cut it, print `(cut to 2000 characters)` after the fence. The error text is external text: it can quote file paths and command output. Step 4 uses the same rule.
 
