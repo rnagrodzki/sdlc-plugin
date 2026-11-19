@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.6.4] - 2026-11-19
+
+### RC 1
+
+- Dashboard Setup tab filters config files
+- Dashboard Setup tab adds, edits and removes plan and execute guardrails, with a 64 KiB save limit
+- Setup save errors show recovery steps
+- /sdlc:setup offers the dashboard Setup tab before its section menu
+- Review-driven hardening of review dimensions, Copilot instructions and execute guardrails
+
 ## [0.6.3] - 2026-11-18
 
 ### RC 1
