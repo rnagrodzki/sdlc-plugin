@@ -796,44 +796,73 @@ func setupSkillsAssertInOrder(t *testing.T, label, text string, parts []string) 
 	}
 }
 
-// TestSetupSkillsStep1bSetupTabQuestion asserts the Step 1b section of the
-// setup skill holds, in order, its 5 conditions, the question, the answer
-// rows and the empty-list route. Step 2 also names needsMigration and
-// --migrate, so the check reads only the Step 1b body.
-func TestSetupSkillsStep1bSetupTabQuestion(t *testing.T) {
-	section := setupSkillsSection(t, "### Step 1b", "### Step 2")
-	setupSkillsAssertInOrder(t, "skills/setup/SKILL.md Step 1b", section, []string{
-		"all 5 conditions",
-		"| `freshConfig` is true |",
-		"| no `--only`, `--force` or direct-entry flag |",
-		"| `selectedIds` holds at least one id of `formIds` |",
-		"| `mainWorktree` is true |",
-		"| `needsMigration` is false and `--migrate` is not passed | Step 0 item 1, Arguments |",
+// TestSetupSkillsStep0SetupTabHandoff asserts the Step 0 section of the
+// setup skill holds, in order, the item 3 Setup tab question with its 3
+// conditions, the answer rows and the route to item 4, before the item 4
+// config snapshot. Step 2 also names needsMigration and --migrate, so the
+// check reads only the Step 0 body.
+func TestSetupSkillsStep0SetupTabHandoff(t *testing.T) {
+	section := setupSkillsSection(t, "### Step 0", "### Step 1")
+	setupSkillsAssertInOrder(t, "skills/setup/SKILL.md Step 0", section, []string{
+		"`formIds` — the ids of the `sections[]` rows",
+		"3. **Form sections: dialogue or Setup tab.**",
+		"all 3 conditions",
+		"| no `--only`, `--force` or direct-entry flag | Arguments |",
+		"| `mainWorktree` is true | item 2 |",
+		"| `needsMigration` is false and `--migrate` is not passed | item 1, Arguments |",
+		"Where do you want to change the form sections?",
 		"Options: `Setup tab (Recommended)`, `Dialogue`.",
-		"| Setup tab, call returns, no `previewUrl` | `dashboard({ action: \"ensure\", open: true, tab: \"setup\" })` | remove each id of `formIds`; set `formsDeferred` to true",
+		"| Setup tab, call returns, no `previewUrl` | `dashboard({ action: \"ensure\", open: true, tab: \"setup\" })` | set `formsDeferred` to true",
 		"| Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: \"<previewUrl>\" })`",
 		"Warning: T3 preview tab did not open — <reason>.",
-		"| Setup tab, call error |",
+		"| Setup tab, call error | same | none |",
 		"The form sections continue here.",
-		"| Dialogue, free text, dismissed | none | unchanged |",
-		"| the question tool is not available | none | unchanged |",
+		"| Dialogue, free text, dismissed | none | none |",
+		"| the question tool is not available | none | none |",
 		"`formsDeferred` is false on every other row",
-		"No sections left for this run.",
+		"Go to item 4.",
+		"4. **Snapshot current config**",
 	})
+	for _, gone := range []string{"This run created a config file.", "selected form sections"} {
+		if strings.Contains(section, gone) {
+			t.Errorf("skills/setup/SKILL.md Step 0: holds %q, the question runs on every plain run", gone)
+		}
+	}
+}
+
+// TestSetupSkillsStep1DeferredMenu asserts the Step 1 section of the setup
+// skill lists only the rows that need the assistant after a Setup tab
+// answer, that all and not-set select from the listed rows, and that the
+// menu goes to Step 2 with no empty-list route.
+func TestSetupSkillsStep1DeferredMenu(t *testing.T) {
+	section := setupSkillsSection(t, "### Step 1", "### Step 2")
+	setupSkillsAssertInOrder(t, "skills/setup/SKILL.md Step 1", section, []string{
+		"When `formsDeferred` is true (Step 0 item 3), the status block, the menu and Phase 4 use only",
+		"the rows whose id is not in `formIds`. N counts these rows from 1.",
+		"- `all` → every id of the listed rows.",
+		"- `not-set` → the ids of the listed rows whose computed `state === 'not-set'`.",
+		"Store the resolved section ids as `selectedIds`. Go to Step 2.",
+	})
+	for _, gone := range []string{"No sections left for this run.", "every id from the 19-id canonical list"} {
+		if strings.Contains(section, gone) {
+			t.Errorf("skills/setup/SKILL.md Step 1: holds %q", gone)
+		}
+	}
 }
 
 // TestSetupSkillsStep4SetupTabPointer asserts the Step 4 section of the setup
 // skill holds, in order, the Deferred summary block, the pointer after the
-// Step 1b Setup tab answer and the dashboard status pointer rows.
+// Step 0 item 3 Setup tab answer and the dashboard status pointer rows.
 func TestSetupSkillsStep4SetupTabPointer(t *testing.T) {
 	section := setupSkillsSection(t, "### Step 4", "## Idempotency")
 	setupSkillsAssertInOrder(t, "skills/setup/SKILL.md Step 4", section, []string{
 		"Deferred:",
 		"deferred to the dashboard Setup tab; this run did not save them",
-		"Show the `Deferred` block only when `formsDeferred` is true",
+		"Show the `Deferred` block only when `formsDeferred` is true (Step 0 item 3).",
 		"Print the Setup tab pointer last.",
 		"When `formsDeferred` is true, call no tool.",
-		"`Save the form sections in the dashboard Setup tab: <url>#setup`",
+		"`Save the form sections in the dashboard Setup tab: <url>#setup`, with the `<url>` that Step 0 item 3",
+		"When Step 0 item 3 kept a `previewUrl`",
 		"Otherwise call `dashboard({ action: \"status\" })`",
 		"| `running` true | `Change the form sections later in the dashboard Setup tab: <url>#setup` |",
 		"| `running` false |",
@@ -844,15 +873,13 @@ func TestSetupSkillsStep4SetupTabPointer(t *testing.T) {
 }
 
 // TestSetupSkillsStep0ValueRules asserts the Step 0 section of the setup skill
-// defines freshConfig, mainWorktree and formIds, with the false or empty
-// result for a missing value or a failed call.
+// defines mainWorktree and formIds, with the false or empty result for a
+// missing value or a failed call.
 func TestSetupSkillsStep0ValueRules(t *testing.T) {
 	section := setupSkillsSection(t, "### Step 0", "### Step 1")
 	for _, want := range []string{
 		"--path-format=absolute",
 		"exactly 2 lines",
-		"`freshConfig` is false",
-		"`ok` false",
 		"`mainWorktree` is false",
 		"`formIds` — the ids of the `sections[]` rows",
 		"the `delegatedTo` key is absent or empty",
@@ -863,7 +890,7 @@ func TestSetupSkillsStep0ValueRules(t *testing.T) {
 			t.Errorf("skills/setup/SKILL.md Step 0: missing %q", want)
 		}
 	}
-	if got := strings.Count(section, "else false"); got != 2 {
-		t.Errorf("skills/setup/SKILL.md Step 0: %q appears %d times, want 2 (freshConfig, mainWorktree)", "else false", got)
+	if got := strings.Count(section, "else false"); got != 1 {
+		t.Errorf("skills/setup/SKILL.md Step 0: %q appears %d times, want 1 (mainWorktree)", "else false", got)
 	}
 }

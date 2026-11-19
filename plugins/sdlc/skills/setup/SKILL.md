@@ -115,7 +115,7 @@ field that does not exist. Deviations, one line each:
 - **Tool map:** `setup_prepare` (Step 0, the Step 2 snapshot re-run, the Step 3 option
   explain, Steps 3b and 3c), `setup_init` (Step 0, scaffold-only),
   `migrate` (Step 2), `setup_write_sections` (Step 3 "Writing config files"), `scaffold_ci`
-  (Step 3c, only after the user confirms), `dashboard` (Step 1b `ensure`, Step 4 `status`), `mcp__t3-code__preview_open` (Step 1b, only when `ensure` returns `previewUrl`; loaded with ToolSearch).
+  (Step 3c, only after the user confirms), `dashboard` (Step 0 item 3 `ensure`, Step 4 `status`), `mcp__t3-code__preview_open` (Step 0 item 3, only when `ensure` returns `previewUrl`; loaded with ToolSearch).
   `validate` is called only inside the delegated
   companion sub-flows (`setup-dimensions.md`, `setup-pr-template.md`, `setup-guardrails.md`,
   `setup-execution-guardrails.md`), never directly by this file.
@@ -181,12 +181,31 @@ If the system context contains "Plan mode is active":
    `config.toml` / `local.toml` holds the full commented template (every field, heavily
    commented), so users can also edit settings by hand. An existing file is left unchanged.
 
-   Keep three values for Step 1b and Step 4:
-   - `freshConfig` — true when `ok` of `setup_init` is true and its `created[]` holds `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml`, else false. If `setup_init` returns an error, or returns `ok` false, `freshConfig` is false.
+   Keep two values for item 3, Step 1 and Step 4:
    - `mainWorktree` — run `git rev-parse --path-format=absolute --git-dir --git-common-dir`. True when the output is exactly 2 lines and the 2 lines are the same path, else false. If the command fails, `mainWorktree` is false.
    - `formIds` — the ids of the `sections[]` rows of the item 1 `setup_prepare` call where the `delegatedTo` key is absent or empty. When no row matches, `formIds` is empty. `<F>` is the count of `formIds`, and `<N>` is the sum of the lengths of their `fields[]` arrays.
 
-3. **Snapshot current config** (cache for the rest of this run — do not re-read mid-run
+3. **Form sections: dialogue or Setup tab.** Ask the question below only when all 3 conditions are true. Otherwise go to item 4.
+
+   | Condition (all must be true) | Source |
+   |---|---|
+   | no `--only`, `--force` or direct-entry flag | Arguments |
+   | `mainWorktree` is true | item 2 |
+   | `needsMigration` is false and `--migrate` is not passed | item 1, Arguments |
+
+   Question (the same question tool as Step 3c): `The dashboard Setup tab shows the <F> form sections (<N> fields) in one form. Where do you want to change the form sections?` Options: `Setup tab (Recommended)`, `Dialogue`.
+
+   | Answer | Call | Effect | Print |
+   |---|---|---|---|
+   | Setup tab, call returns, no `previewUrl` | `dashboard({ action: "ensure", open: true, tab: "setup" })` | set `formsDeferred` to true and keep `<url>` for Step 4 | `Setup tab: <url>#setup — save the form sections there. This run continues with the sections that need the assistant.`, then `next` |
+   | Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: "<previewUrl>" })` (load it with ToolSearch first) | same as the row above, and also keep `previewUrl` for Step 4 | `Setup tab: <previewUrl> (T3 preview tab) — save the form sections there. This run continues with the sections that need the assistant.` On a failed or absent `preview_open`, print `Setup tab: <previewUrl>` and `Warning: T3 preview tab did not open — <reason>.` |
+   | Setup tab, call error | same | none | `Tool error text (dashboard):`, the error in a `text` fence, then `The form sections continue here.` |
+   | Dialogue, free text, dismissed | none | none | nothing |
+   | the question tool is not available | none | none | nothing |
+
+   `formsDeferred` is false on every other row and on every run that skips this question. Go to item 4.
+
+4. **Snapshot current config** (cache for the rest of this run — do not re-read mid-run
    unless Step 2 migration or a write changes the files):
    - Read `.sdlc-v2/config.toml` → `projectConfig` (absent file = `{}`, not an error).
    - Use `setup_prepare`'s `localValues` and `userConfigPath` (from the Step 0 item 1 call
@@ -214,14 +233,14 @@ If the system context contains "Plan mode is active":
      `# BEGIN MANAGED BY sdlc-v2 (v<N>)` (the exact marker `openspec_enrich` writes); capture `<N>` as the managed-block version
      (no match, or file absent → no managed block).
 
-4. **Version detection** (source's `detected.versionFile`/`fileType`/`tagPrefix` — no Go
+5. **Version detection** (source's `detected.versionFile`/`fileType`/`tagPrefix` — no Go
    field carries this): Glob in this priority order — `package.json`, `Cargo.toml`,
    `pyproject.toml`, `pubspec.yaml`, `plugin.json` — first match sets `detected.versionFile`
    and the matching `fileType` enum value. Run `git tag --list` (Bash); if any tags exist,
    take the common leading non-digit substring of the most recent few tags as
    `detected.tagPrefix`; default to `v` when there are no tags or no consistent prefix.
 
-5. **Flag routing** (unchanged from source). The direct-entry flags map onto `--only`, which
+6. **Flag routing** (unchanged from source). The direct-entry flags map onto `--only`, which
    drives Step 3 directly:
 
    | Flag passed | Equivalent `--only <id>` |
@@ -245,7 +264,7 @@ If the system context contains "Plan mode is active":
    ignore `--force`; the `--only` id set wins.
 
    If none of the direct-entry flags, `--only`, or `--force` were passed: continue with the
-   full interactive flow (Steps 1 → 1b → 2 → 2b → 3 → 3b → 3c → 4).
+   full interactive flow (Steps 1 → 2 → 2b → 3 → 3b → 3c → 4).
 
 ---
 
@@ -346,6 +365,8 @@ Detected configuration:
 
 **Phase 2 — Print the numbered menu directly to chat.** One line per row in the canonical
 19-id order, format:
+When `formsDeferred` is true (Step 0 item 3), the status block, the menu and Phase 4 use only
+the rows whose id is not in `formIds`. N counts these rows from 1.
 
 ```
 <N>. [<state>] <section.label> — <first sentence of section.purpose>
@@ -383,8 +404,8 @@ default is always `all`.)
 
 **Phase 4 — Parse the reply**:
 - Empty reply → `all`.
-- `all` → every id from the 19-id canonical list.
-- `not-set` → ids whose computed `state === 'not-set'`.
+- `all` → every id of the listed rows.
+- `not-set` → the ids of the listed rows whose computed `state === 'not-set'`.
 - `none` or `cancel` → empty list → print `No sections selected — no config changes.` and jump
   to Step 3c.
 - Comma- or space-separated numbers, optionally including `M-N` ranges → resolve each token
@@ -394,36 +415,8 @@ default is always `all`.)
   re-print the numbered list and the prompt; wait for a new reply. Maximum 3 retries; after
   that, exit with `No valid input after 3 attempts — no changes made.`
 
-Store the resolved section ids as `selectedIds`. Go to Step 1b. Defer migration and field
+Store the resolved section ids as `selectedIds`. Go to Step 2. Defer migration and field
 collection to Step 2 / Step 2b / Step 3.
-
----
-
-### Step 1b — Form sections: dialogue or Setup tab
-
-Ask the question below only when all 5 conditions are true. Otherwise go to Step 2.
-
-| Condition (all must be true) | Source |
-|---|---|
-| `freshConfig` is true | Step 0 |
-| no `--only`, `--force` or direct-entry flag | Step 0 item 5 |
-| `selectedIds` holds at least one id of `formIds` | Step 1 |
-| `mainWorktree` is true | Step 0 |
-| `needsMigration` is false and `--migrate` is not passed | Step 0 item 1, Arguments |
-
-Question (the same question tool as Step 3c): `This run created a config file. The dashboard Setup tab shows the <F> form sections (<N> fields) in one form. Where do you want to change the selected form sections?` Options: `Setup tab (Recommended)`, `Dialogue`.
-
-| Answer | Call | Effect on `selectedIds` | Print |
-|---|---|---|---|
-| Setup tab, call returns, no `previewUrl` | `dashboard({ action: "ensure", open: true, tab: "setup" })` | remove each id of `formIds`; set `formsDeferred` to true and keep `<url>` for Step 4 | `Setup tab: <url>#setup — save the form sections there. This run continues with the sections that need the assistant.`, then `next` |
-| Setup tab, call returns `previewUrl` | same, then `mcp__t3-code__preview_open({ url: "<previewUrl>" })` (load it with ToolSearch first) | same as the row above, and also keep `previewUrl` for Step 4 | `Setup tab: <previewUrl> (T3 preview tab) — save the form sections there. This run continues with the sections that need the assistant.` On a failed or absent `preview_open`, print `Setup tab: <previewUrl>` and `Warning: T3 preview tab did not open — <reason>.` |
-| Setup tab, call error | same | unchanged | `Tool error text (dashboard):`, the error in a `text` fence, then `The form sections continue here.` |
-| Dialogue, free text, dismissed | none | unchanged | nothing |
-| the question tool is not available | none | unchanged | nothing (the same rule as Step 3c) |
-
-`formsDeferred` is false on every other row and on every run that skips this question.
-
-If selectedIds is now empty, print "No sections left for this run." and go to Step 3c. Otherwise go to Step 2.
 
 ---
 
@@ -1078,7 +1071,7 @@ CI scripts needing an update:
 ```
 
 Only show sections that were actually created, updated, or migrated. Omit sections that were
-skipped or unchanged. Show the `Deferred` block only when `formsDeferred` is true (Step 1b).
+skipped or unchanged. Show the `Deferred` block only when `formsDeferred` is true (Step 0 item 3).
 
 The `CI scripts needing an update` block comes from `ciScriptDrift[]` of the latest drift
 result: the Step 3c re-check when Step 3c made one, else Step 3b's `setup_prepare` call,
@@ -1097,8 +1090,8 @@ Two cases replace the block:
 Print the Setup tab pointer last.
 
 When `formsDeferred` is true, call no tool. Print
-`Save the form sections in the dashboard Setup tab: <url>#setup`, with the `<url>` that Step 1b
-kept. When Step 1b kept a `previewUrl` (a T3 Code thread), print
+`Save the form sections in the dashboard Setup tab: <url>#setup`, with the `<url>` that Step 0 item 3
+kept. When Step 0 item 3 kept a `previewUrl` (a T3 Code thread), print
 `Save the form sections in the dashboard Setup tab: <previewUrl> (T3 preview tab)` instead. The form sections are not saved yet, so do not print a `Change the form sections later`
 line.
 

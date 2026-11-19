@@ -841,7 +841,7 @@ rule answers `400 BAD_REQUEST`, and no file changes:
 | The `op` is not `add`, `change` or `remove` | `guardrails.<key>: op <op> is not add, change or remove` | Use add, change or remove. |
 | An `add` or a `change` has no severity or no description | `guardrails.<key>: <op> of <id> needs severity and description` | Send both fields. change replaces both stored values. |
 | A `remove` has a severity or a description | `guardrails.<key>: remove of <id> takes no severity or description` | Send only id and op for a remove. |
-| `targets` names a guardrail section | `targets names section "<id>", which is not a local form section with a change` | The rule of the form save. A guardrail section is not a form section. |
+| `targets` names a guardrail section | `targets names section "<id>", which is not a local form section with a change` | `The page sent a request that breaks this rule. Reload the Setup tab, then save again.` |
 | `config.toml` holds the list as an array (`[[<path>]]` or `<key> = [...]`) | `config.toml holds <path> as an array ([[<path>]] or an inline array). The dashboard edits only [<path>.<id>] tables` | Change the list in `config.toml` to `[<path>.<id>]` tables by hand, then reload the page. |
 
 Each message starts with `dashboard setup save:` and ends with `Nothing was

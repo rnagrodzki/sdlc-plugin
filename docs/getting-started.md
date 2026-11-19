@@ -61,8 +61,8 @@ Run `/sdlc:setup` first in each repository. A second run is safe: run it again a
 
 1. Install the plugin (section 1).
 2. Run `/sdlc:setup` in the repo. It creates `.sdlc-v2/config.toml`, `.sdlc-v2/local.toml` and `.sdlc-v2/runs/`, and adds the sdlc block to `.sdlc-v2/.gitignore` and to the root `.gitignore`.
-3. Select the sections in the menu.
-4. When this run creates `.sdlc-v2/config.toml` or `.sdlc-v2/local.toml`, in the main worktree, with no old config to migrate, and you select a form section, answer the Setup tab question. `Setup tab` opens the [dashboard Setup tab](dashboard.md#setup-tab) for the form sections, in a T3 preview tab when you work in a T3 Code thread. `Dialogue` asks each field here.
+3. In the main worktree, with no old config to migrate, answer the Setup tab question. `/sdlc:setup` asks it before the section menu, for a new config and for an existing config. `Setup tab` opens the [dashboard Setup tab](dashboard.md#setup-tab) for the form sections, in a T3 preview tab when you work in a T3 Code thread. `Dialogue` asks each field here.
+4. Select the sections in the menu. After a `Setup tab` answer, the menu lists only the sections that need the assistant.
 5. `/sdlc:setup` asks the sections that need the assistant. It then prints the summary and a pointer: after a `Setup tab` answer, the address to save the form sections; else the Setup tab address when the dashboard runs, or `/sdlc:dashboard`.
 
 ### Two start points
