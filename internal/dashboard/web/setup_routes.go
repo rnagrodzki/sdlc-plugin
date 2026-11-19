@@ -71,10 +71,10 @@ func (h *handler) serveSetupState(w http.ResponseWriter, r *http.Request) {
 }
 
 // serveSetupSave saves changed fields of the Setup form in one registered
-// repo (serveWriteWith). Its errors go through writeSetupError. A save that
-// wrote only some sections is a 200 with ok false.
+// repo (serveWriteLimit with maxSetupSaveBody). Its errors go through
+// writeSetupError. A save that wrote only some sections is a 200 with ok false.
 func (h *handler) serveSetupSave(w http.ResponseWriter, r *http.Request) {
-	serveWriteWith(h, w, r, "Setup save", h.o.SetupSave != nil,
+	serveWriteLimit(h, w, r, maxSetupSaveBody, "Setup save", h.o.SetupSave != nil,
 		func(req setupSaveRequest) string { return req.Repo },
 		func(root string, req setupSaveRequest) (any, error) {
 			return h.o.SetupSave(root, req.DashboardSetupSaveIn)

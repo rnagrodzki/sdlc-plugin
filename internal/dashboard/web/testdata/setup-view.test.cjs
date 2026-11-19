@@ -12,11 +12,10 @@ const assert = require('node:assert/strict');
 const sv = require('../static/setup-view.js');
 
 describe('exports', () => {
-  test('setup-view.js exports the 11 names', () => {
-    ['FIELDS_URL', 'stateURL', 'draftSections', 'draftState', 'helpTable', 'saveBody',
-      'saveRequest', 'createRequest', 'answerText', 'saveNote', 'plural'].forEach((name) => {
-      assert.ok(name in sv, name);
-    });
+  test('setup-view.js exports the 13 names', () => {
+    const names = ['FIELDS_URL', 'stateURL', 'draftSections', 'draftState', 'overrideText', 'guardrailChanges',
+      'helpTable', 'saveBody', 'saveRequest', 'createRequest', 'answerText', 'saveNote', 'plural'];
+    assert.deepEqual(Object.keys(sv).sort(), names.slice().sort());
   });
 });
 
@@ -117,7 +116,115 @@ describe('draftState', () => {
 
   test('a state that is not ready gives empty data', () => {
     assert.deepEqual(sv.draftState({ state: 'no-config', values: {}, delegated: [] }),
-      { values: {}, delegated: {} });
+      { values: {}, delegated: {}, layers: {}, guardrails: {} });
+  });
+
+  test('passes layers and guardrails through with the keys of the answer', () => {
+    const layers = { 'ship.bump': { project: 'minor', user: 'patch' } };
+    const guardrails = {
+      'plan.guardrails': [{ id: 'dry', severity: 'warning', description: 'Keep code DRY.' }],
+      'execute.guardrails': [],
+    };
+    const out = sv.draftState({ values: {}, delegated: [], layers, guardrails });
+    assert.deepEqual(out.layers, layers);
+    assert.deepEqual(out.guardrails, guardrails);
+    assert.deepEqual(Object.keys(out.guardrails), ['plan.guardrails', 'execute.guardrails']);
+  });
+
+  test('a missing or null layers and guardrails give {}', () => {
+    const out = sv.draftState({ values: {}, delegated: [], layers: null });
+    assert.deepEqual(out.layers, {});
+    assert.deepEqual(out.guardrails, {});
+    assert.deepEqual(sv.draftState(undefined).guardrails, {});
+  });
+});
+
+describe('overrideText', () => {
+  test('a flag-set field gives merged with and no strike', () => {
+    assert.deepEqual(sv.overrideText('flag-set', false, 'local.toml'), { text: 'merged with local.toml', struck: false });
+    assert.deepEqual(sv.overrideText('flag-set', true, 'local.toml'), { text: 'merged with local.toml', struck: false });
+  });
+
+  test('another type with another value gives overridden by and a strike', () => {
+    assert.deepEqual(sv.overrideText('enum', false, '~/.sdlc/local.toml'),
+      { text: 'overridden by ~/.sdlc/local.toml', struck: true });
+  });
+
+  test('another type with the same value gives same value and a strike', () => {
+    assert.deepEqual(sv.overrideText('string', true, 'local.toml'),
+      { text: 'same value · overridden by local.toml', struck: true });
+  });
+});
+
+describe('guardrailChanges', () => {
+  const g = (id, severity, description) => ({ id, severity, description });
+  const row = (id, severity, description, isNew, removed) => ({ id, severity, description, isNew, removed });
+
+  test('an unchanged disk row gives no change', () => {
+    assert.deepEqual(sv.guardrailChanges(
+      { 'plan-guardrails': [g('a', 'error', 'one')] },
+      { 'plan-guardrails': [row('a', 'error', 'one', false, false)] }), {});
+  });
+
+  test('a disk row with other values gives change with both values', () => {
+    assert.deepEqual(sv.guardrailChanges(
+      { 'execution-guardrails': [g('a', 'error', 'one')] },
+      { 'execution-guardrails': [row('a', 'warning', 'two', false, false)] }),
+    { 'execution-guardrails': [{ id: 'a', op: 'change', severity: 'warning', description: 'two' }] });
+  });
+
+  test('a removed disk row gives remove', () => {
+    assert.deepEqual(sv.guardrailChanges(
+      { 'plan-guardrails': [g('a', 'error', 'one')] },
+      { 'plan-guardrails': [row('a', 'error', 'one', false, true)] }),
+    { 'plan-guardrails': [{ id: 'a', op: 'remove' }] });
+  });
+
+  test('a new row gives add with both values', () => {
+    assert.deepEqual(sv.guardrailChanges(
+      { 'plan-guardrails': [] },
+      { 'plan-guardrails': [row('b', 'error', 'New rule.', true, false)] }),
+    { 'plan-guardrails': [{ id: 'b', op: 'add', severity: 'error', description: 'New rule.' }] });
+  });
+
+  test('a removed disk row plus a new row with the same id give one change', () => {
+    assert.deepEqual(sv.guardrailChanges(
+      { 'plan-guardrails': [g('a', 'error', 'one')] },
+      { 'plan-guardrails': [row('a', 'error', 'one', false, true), row('a', 'warning', 'two', true, false)] }),
+    { 'plan-guardrails': [{ id: 'a', op: 'change', severity: 'warning', description: 'two' }] });
+  });
+
+  test('a removed new row gives no change', () => {
+    assert.deepEqual(sv.guardrailChanges(
+      { 'plan-guardrails': [] },
+      { 'plan-guardrails': [row('b', 'error', 'x', true, true)] }), {});
+  });
+
+  test('example: add, change and remove in two sections; a section with no change gives no key', () => {
+    const base = {
+      'plan-guardrails': [g('dry', 'error', 'Keep code DRY.'), g('old-rule', 'error', 'Old rule.')],
+      'execution-guardrails': [g('x', 'error', 'X.')],
+    };
+    const draft = {
+      'plan-guardrails': [
+        row('dry', 'warning', 'Keep code DRY.', false, false),
+        row('old-rule', 'error', 'Old rule.', false, true),
+        row('new-rule', 'error', 'New rule.', true, false),
+      ],
+      'execution-guardrails': [row('x', 'error', 'X.', false, false)],
+    };
+    assert.deepEqual(sv.guardrailChanges(base, draft), {
+      'plan-guardrails': [
+        { id: 'dry', op: 'change', severity: 'warning', description: 'Keep code DRY.' },
+        { id: 'old-rule', op: 'remove' },
+        { id: 'new-rule', op: 'add', severity: 'error', description: 'New rule.' },
+      ],
+    });
+  });
+
+  test('no draft gives {}', () => {
+    assert.deepEqual(sv.guardrailChanges({}, {}), {});
+    assert.deepEqual(sv.guardrailChanges(undefined, undefined), {});
   });
 });
 
@@ -214,6 +321,39 @@ describe('saveBody', () => {
     st.draft.ship.steps = ['a'];
     assert.deepEqual(sv.saveBody('/r', secs, st).changes,
       [{ section: 'ship', field: 'steps', op: 'set', value: ['a'] }]);
+  });
+
+  test('a guardrail change adds the guardrails key', () => {
+    const st = state();
+    st.grBase = { 'plan-guardrails': [{ id: 'old', severity: 'error', description: 'd' }] };
+    st.gr = { 'plan-guardrails': [{ id: 'old', severity: 'error', description: 'd', isNew: false, removed: true }] };
+    assert.deepEqual(sv.saveBody('/repo', sections, st), {
+      repo: '/repo',
+      changes: [],
+      targets: {},
+      guardrails: { 'plan-guardrails': [{ id: 'old', op: 'remove' }] },
+    });
+  });
+
+  test('no guardrail change gives no guardrails key', () => {
+    const st = state();
+    st.grBase = { 'plan-guardrails': [{ id: 'a', severity: 'error', description: 'd' }] };
+    st.gr = { 'plan-guardrails': [{ id: 'a', severity: 'error', description: 'd', isNew: false, removed: false }] };
+    assert.equal('guardrails' in sv.saveBody('/repo', sections, st), false);
+  });
+
+  test('a body with form changes only is byte-equal to the body with no guardrail state', () => {
+    const before = state();
+    before.draft.ship.bump = 'minor';
+    const after = state();
+    after.draft.ship.bump = 'minor';
+    after.grBase = { 'plan-guardrails': [{ id: 'a', severity: 'error', description: 'd' }] };
+    after.gr = { 'plan-guardrails': [{ id: 'a', severity: 'error', description: 'd', isNew: false, removed: false }] };
+    assert.equal(JSON.stringify(sv.saveBody('/repo', sections, after)),
+      JSON.stringify({ repo: '/repo', changes: [{ section: 'ship', field: 'bump', op: 'set', value: 'minor' }],
+        targets: { ship: 'project' } }));
+    assert.equal(JSON.stringify(sv.saveBody('/repo', sections, after)),
+      JSON.stringify(sv.saveBody('/repo', sections, before)));
   });
 
   test('a config.toml section gets no target', () => {
@@ -341,7 +481,7 @@ describe('saveNote', () => {
 
   test('413 BODY_TOO_LARGE', () => {
     assert.deepEqual(sv.saveNote(413, { error: { code: 'BODY_TOO_LARGE' } }, 9), {
-      note: 'Not saved. The save is larger than the server accepts. Save fewer fields at one time.',
+      note: 'Not saved. The save is larger than the server accepts. Save fewer fields or guardrails at one time.',
       noteState: 'error',
       errors: [],
       reload: false,

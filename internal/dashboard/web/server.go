@@ -48,6 +48,9 @@ const (
 	tokenHeader = "X-Sdlc-Token"
 	// maxMutationBody is the largest body guardMutation accepts.
 	maxMutationBody = 8 << 10
+	// maxSetupSaveBody is the largest body the Setup save route accepts. A save
+	// can carry guardrail text, so it needs more room than other routes.
+	maxSetupSaveBody = 64 << 10
 	// maxDetailID is the longest id, in bytes, that a detail route accepts. A
 	// run or session id is far shorter; the limit stops a large query value
 	// before the collect.
@@ -477,6 +480,12 @@ func (h *handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 // it reads the body once and puts it back, so the route can decode it. It
 // writes the JSON error and returns false when the request must stop.
 func (h *handler) guardMutation(w http.ResponseWriter, r *http.Request, needsBody bool) bool {
+	return h.guardMutationLimit(w, r, needsBody, maxMutationBody)
+}
+
+// guardMutationLimit is guardMutation with a body limit of maxBody bytes in
+// place of maxMutationBody.
+func (h *handler) guardMutationLimit(w http.ResponseWriter, r *http.Request, needsBody bool, maxBody int64) bool {
 	origin := r.Header.Get("Origin")
 	if origin != h.origins[0] && origin != h.origins[1] {
 		writeAPIError(w, http.StatusForbidden, "FORBIDDEN_ORIGIN", "Forbidden origin", "Open the dashboard from its own URL.")
@@ -493,12 +502,12 @@ func (h *handler) guardMutation(w http.ResponseWriter, r *http.Request, needsBod
 		writeAPIError(w, http.StatusUnsupportedMediaType, "BAD_CONTENT_TYPE", "Content type must be application/json", "Send the body as application/json.")
 		return false
 	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxMutationBody))
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxBody))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE", "Request body is too large",
-				fmt.Sprintf("Send a body of at most %d KiB.", maxMutationBody>>10))
+				fmt.Sprintf("Send a body of at most %d KiB.", maxBody>>10))
 		} else {
 			writeAPIError(w, http.StatusBadRequest, "BAD_BODY", "Request body could not be read", "Send the body again.")
 		}
@@ -681,15 +690,21 @@ func serveWrite[Req any](h *handler, w http.ResponseWriter, r *http.Request, nam
 	})
 }
 
-// serveWriteWith runs the steps of a route that changes repo files. The
-// request must pass guardMutation. A false configured (the Options function
+// serveWriteWith is serveWriteLimit with the body limit maxMutationBody.
+func serveWriteWith[Req any](h *handler, w http.ResponseWriter, r *http.Request, name string, configured bool,
+	repo func(Req) string, call func(root string, req Req) (any, error), writeErr func(http.ResponseWriter, error)) {
+	serveWriteLimit(h, w, r, maxMutationBody, name, configured, repo, call, writeErr)
+}
+
+// serveWriteLimit runs the steps of a route that changes repo files. The
+// request must pass guardMutationLimit with maxBody. A false configured (the Options function
 // is nil) writes the NOT_CONFIGURED error with name. The body must decode into
 // Req, repo(req) must be at most maxDetailRepo bytes, and it must name a
 // display root. Then call runs the Options function with that root and the
 // request. Its error goes to writeErr; its result is the 200 body.
-func serveWriteWith[Req any](h *handler, w http.ResponseWriter, r *http.Request, name string, configured bool,
+func serveWriteLimit[Req any](h *handler, w http.ResponseWriter, r *http.Request, maxBody int64, name string, configured bool,
 	repo func(Req) string, call func(root string, req Req) (any, error), writeErr func(http.ResponseWriter, error)) {
-	if !h.guardMutation(w, r, true) {
+	if !h.guardMutationLimit(w, r, true, maxBody) {
 		return
 	}
 	if !configured {

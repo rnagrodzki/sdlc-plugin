@@ -850,3 +850,181 @@ func TestDashboardSetupState_ReadErrorNamesCaller(t *testing.T) {
 		t.Errorf("suggestion = %q, want %q", suggestion, want)
 	}
 }
+
+// Layers hold the value of each file that sets a field, also the files that
+// another file overrides. Values keep the winning file.
+func TestDashboardSetupState_Layers(t *testing.T) {
+	root, userPath := dashSetupRoot(t)
+	dashSetupConfig(t, root, "[version.tag]\nenabled = true\n")
+	dashSetupWrite(t, filepath.Join(root, ".sdlc-v2", "local.toml"), "[ship]\nbump = \"minor\"\n")
+	dashSetupWrite(t, userPath, "[ship]\nbump = \"patch\"\nauto = true\n")
+	out := dashSetupState(t, root)
+
+	if got := out.Layers["ship.bump"]; len(got) != 2 || got["project"] != "minor" || got["user"] != "patch" {
+		t.Errorf("layers[ship.bump] = %v, want project minor and user patch", got)
+	}
+	if got := out.Layers["ship.auto"]; len(got) != 1 || got["user"] != true {
+		t.Errorf("layers[ship.auto] = %v, want user true only", got)
+	}
+	if got := out.Values["ship"]["bump"]; got.Source != "project" || got.Value != "minor" {
+		t.Errorf("values ship.bump = %+v, want minor from project", got)
+	}
+	if got := out.Layers["version.tag.enabled"]; len(got) != 1 || got["config"] != true {
+		t.Errorf("layers[version.tag.enabled] = %v, want config true only", got)
+	}
+	if got := out.Layers["ship.verifyPipelineMaxIterations"]; got != nil {
+		t.Errorf("layers of a field no file sets = %v, want absent", got)
+	}
+}
+
+// A bad parent table in the user file gives a note, also when the project
+// file sets the field.
+func TestDashboardSetupState_LayersBadParentInLowerFile(t *testing.T) {
+	root, userPath := dashSetupRoot(t)
+	dashSetupConfig(t, root, "[version.tag]\nenabled = true\n")
+	dashSetupWrite(t, filepath.Join(root, ".sdlc-v2", "local.toml"), "[automation.report]\nenabled = true\n")
+	dashSetupWrite(t, userPath, "[automation]\nreport = \"x\"\n")
+	out := dashSetupState(t, root)
+
+	if got := out.Values["automation"]["report.enabled"]; got.Source != "project" || got.Value != true {
+		t.Errorf("values automation.report.enabled = %+v, want true from project", got)
+	}
+	if got := out.Layers["automation.report.enabled"]; len(got) != 1 || got["project"] != true {
+		t.Errorf("layers[automation.report.enabled] = %v, want project true only", got)
+	}
+	if want := userPath + ": automation.report is not a table."; strings.Count(out.ConfigError, want) != 1 {
+		t.Errorf("configError = %q, want it to contain %q once", out.ConfigError, want)
+	}
+}
+
+// A repo with no config answers empty layers and empty lists, never null.
+func TestDashboardSetupState_LayersAndGuardrailsEmpty(t *testing.T) {
+	root, _ := dashSetupRoot(t)
+	out := dashSetupState(t, root)
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(m["layers"]); got != "{}" {
+		t.Errorf("layers = %s, want {}", got)
+	}
+	if got := string(m["guardrails"]); got != `{"execute.guardrails":[],"plan.guardrails":[]}` {
+		t.Errorf("guardrails = %s, want two empty lists", got)
+	}
+}
+
+// The guardrail lists are sorted by id and default the severity to error and
+// the description to "".
+func TestDashboardSetupState_Guardrails(t *testing.T) {
+	root, _ := dashSetupRoot(t)
+	dashSetupConfig(t, root, "[plan.guardrails.zeta]\ndescription = \"Last.\"\nseverity = \"warning\"\n"+
+		"[plan.guardrails.alpha]\ndescription = \"First.\"\n"+
+		"[plan.guardrails.bare]\n")
+	out := dashSetupState(t, root)
+
+	want := []DashboardGuardrail{
+		{ID: "alpha", Severity: "error", Description: "First."},
+		{ID: "bare", Severity: "error", Description: ""},
+		{ID: "zeta", Severity: "warning", Description: "Last."},
+	}
+	got := out.Guardrails["plan.guardrails"]
+	if len(got) != len(want) {
+		t.Fatalf("plan.guardrails = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("plan.guardrails[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if got := out.Guardrails["execute.guardrails"]; got == nil || len(got) != 0 {
+		t.Errorf("execute.guardrails = %#v, want []", got)
+	}
+}
+
+// setupGuardrailList reads each form of the guardrails value. A skipped entry
+// gives one note.
+func TestSetupGuardrailList(t *testing.T) {
+	const file = "/repo/.sdlc-v2/config.toml"
+	for _, tc := range []struct {
+		name    string
+		section map[string]any
+		want    []DashboardGuardrail
+		notes   []string
+	}{
+		{"absent", map[string]any{}, []DashboardGuardrail{}, nil},
+		{"text", map[string]any{"guardrails": "x"}, []DashboardGuardrail{}, nil},
+		{"named tables skip other values", map[string]any{"guardrails": map[string]any{
+			"b": map[string]any{"severity": "warning", "description": "B."}, "a": map[string]any{}, "note": "x"}},
+			[]DashboardGuardrail{{"a", "error", ""}, {"b", "warning", "B."}},
+			[]string{file + ": plan.guardrails.note is not a table. The page skips it."}},
+		{"array of tables", map[string]any{"guardrails": []map[string]any{
+			{"id": "b", "description": "B."}, {"id": "c"}, {"id": "a", "severity": "warning"}, {"description": "no id"}}},
+			[]DashboardGuardrail{{"a", "warning", ""}, {"b", "error", "B."}, {"c", "error", ""}},
+			[]string{file + ": plan.guardrails entry 4 has no text id. The page skips it."}},
+		{"inline list", map[string]any{"guardrails": []any{map[string]any{"id": "a"}, "x", map[string]any{"id": 3}}},
+			[]DashboardGuardrail{{"a", "error", ""}},
+			[]string{
+				file + ": plan.guardrails entry 2 is not a table. The page skips it.",
+				file + ": plan.guardrails entry 3 has no text id. The page skips it.",
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var notes []string
+			got := setupGuardrailList(tc.section, "plan.guardrails", file, func(s string) { notes = append(notes, s) })
+			if got == nil || len(got) != len(tc.want) {
+				t.Fatalf("list = %#v, want %#v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Errorf("list[%d] = %+v, want %+v", i, got[i], tc.want[i])
+				}
+			}
+			if strings.Join(notes, "|") != strings.Join(tc.notes, "|") {
+				t.Errorf("notes = %q, want %q", notes, tc.notes)
+			}
+		})
+	}
+}
+
+// A severity or a description that is present and not text gives the
+// default and one note that names the file, the path, the id and the field.
+// An absent field gives no note.
+func TestSetupGuardrailList_WrongType(t *testing.T) {
+	const file = "/repo/.sdlc-v2/config.toml"
+	section := map[string]any{"guardrails": map[string]any{
+		"dry":  map[string]any{"severity": int64(3), "description": map[string]any{"text": "x"}},
+		"bare": map[string]any{},
+	}}
+	var notes []string
+	got := setupGuardrailList(section, "execute.guardrails", file, func(s string) { notes = append(notes, s) })
+
+	want := []DashboardGuardrail{{"bare", "error", ""}, {"dry", "error", ""}}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("list = %+v, want %+v", got, want)
+	}
+	wantNotes := []string{
+		file + `: execute.guardrails.dry severity is not a string. The page shows "error".`,
+		file + `: execute.guardrails.dry description is not a string. The page shows "".`,
+	}
+	if strings.Join(notes, "|") != strings.Join(wantNotes, "|") {
+		t.Errorf("notes = %q, want %q", notes, wantNotes)
+	}
+}
+
+// A guardrail note reaches configError.
+func TestDashboardSetupState_GuardrailNotes(t *testing.T) {
+	root, _ := dashSetupRoot(t)
+	cfg := filepath.Join(root, ".sdlc-v2", "config.toml")
+	dashSetupConfig(t, root, "[plan.guardrails.dry]\nseverity = 3\n")
+	out := dashSetupState(t, root)
+	if want := cfg + `: plan.guardrails.dry severity is not a string. The page shows "error".`; !strings.Contains(out.ConfigError, want) {
+		t.Errorf("configError = %q, want it to contain %q", out.ConfigError, want)
+	}
+	if got := out.Guardrails["plan.guardrails"]; len(got) != 1 || got[0] != (DashboardGuardrail{"dry", "error", ""}) {
+		t.Errorf("plan.guardrails = %+v, want dry with severity error", got)
+	}
+}

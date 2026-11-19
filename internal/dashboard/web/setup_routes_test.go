@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -366,12 +368,17 @@ func TestHandler_ServeWriteRepoLengthLimit(t *testing.T) {
 }
 
 // TestHandler_SetupPostGuards pins that both POST routes refuse a wrong
-// Origin, an absent token, a wrong content type and a body over 8 KiB, like
-// the other change routes, and call nothing.
+// Origin, an absent token, a wrong content type and a body over their limit,
+// like the other change routes, and call nothing. The limit of setup-save is
+// maxSetupSaveBody (64 KiB); the limit of setup-create is maxMutationBody
+// (8 KiB).
 func TestHandler_SetupPostGuards(t *testing.T) {
-	routes := []struct{ path, body string }{
-		{"/api/setup-save", `{"repo":"/repo/a","changes":[]}`},
-		{"/api/setup-create", `{"repo":"/repo/a"}`},
+	routes := []struct {
+		path, body string
+		limit      int // largest body, in bytes, that the route accepts
+	}{
+		{"/api/setup-save", `{"repo":"/repo/a","changes":[]}`, maxSetupSaveBody},
+		{"/api/setup-create", `{"repo":"/repo/a"}`, maxMutationBody},
 	}
 	with := func(k, v string) map[string]string {
 		m := mutationHeader()
@@ -385,18 +392,18 @@ func TestHandler_SetupPostGuards(t *testing.T) {
 	cases := []struct {
 		name   string
 		header map[string]string
-		pad    int
+		pad    func(limit int) int // bytes of the pad field; 0 for none
 		status int
 		code   string
 	}{
-		{"good request passes", mutationHeader(), 0, 200, ""},
-		{"missing origin", with("Origin", ""), 0, 403, "FORBIDDEN_ORIGIN"},
-		{"foreign origin", with("Origin", "http://evil.example"), 0, 403, "FORBIDDEN_ORIGIN"},
-		{"missing token", with(tokenHeader, ""), 0, 403, "FORBIDDEN_TOKEN"},
-		{"wrong token", with(tokenHeader, strings.Repeat("f", 64)), 0, 403, "FORBIDDEN_TOKEN"},
-		{"missing content type", with("Content-Type", ""), 0, 415, "BAD_CONTENT_TYPE"},
-		{"text content type", with("Content-Type", "text/plain"), 0, 415, "BAD_CONTENT_TYPE"},
-		{"body over 8 KiB", mutationHeader(), maxMutationBody + 1, 413, "BODY_TOO_LARGE"},
+		{"good request passes", mutationHeader(), nil, 200, ""},
+		{"missing origin", with("Origin", ""), nil, 403, "FORBIDDEN_ORIGIN"},
+		{"foreign origin", with("Origin", "http://evil.example"), nil, 403, "FORBIDDEN_ORIGIN"},
+		{"missing token", with(tokenHeader, ""), nil, 403, "FORBIDDEN_TOKEN"},
+		{"wrong token", with(tokenHeader, strings.Repeat("f", 64)), nil, 403, "FORBIDDEN_TOKEN"},
+		{"missing content type", with("Content-Type", ""), nil, 415, "BAD_CONTENT_TYPE"},
+		{"text content type", with("Content-Type", "text/plain"), nil, 415, "BAD_CONTENT_TYPE"},
+		{"body over the route limit", mutationHeader(), func(limit int) int { return limit + 1 }, 413, "BODY_TOO_LARGE"},
 	}
 	for _, rt := range routes {
 		for _, tc := range cases {
@@ -404,8 +411,8 @@ func TestHandler_SetupPostGuards(t *testing.T) {
 				f := &fakeSetup{}
 				h := newSetupHandler(t, f)
 				body := rt.body
-				if tc.pad > 0 {
-					body = strings.TrimSuffix(rt.body, "}") + `,"pad":"` + strings.Repeat("x", tc.pad) + `"}`
+				if tc.pad != nil {
+					body = strings.TrimSuffix(rt.body, "}") + `,"pad":"` + strings.Repeat("x", tc.pad(rt.limit)) + `"}`
 				}
 				rec := postJSON(h, rt.path, body, tc.header)
 				if tc.code == "" {
@@ -417,12 +424,84 @@ func TestHandler_SetupPostGuards(t *testing.T) {
 					}
 					return
 				}
-				wantAPIError(t, rec, tc.status, tc.code)
+				if tc.code == "BODY_TOO_LARGE" {
+					wantBodyTooLarge(t, rec, rt.limit)
+				} else {
+					wantAPIError(t, rec, tc.status, tc.code)
+				}
 				if f.calls() != 0 {
 					t.Errorf("a refused request made %d calls; want 0", f.calls())
 				}
 			})
 		}
+	}
+}
+
+// TestHandler_SetupBodyLimits pins the two body limits: setup-save accepts a
+// body between 8 KiB and 64 KiB and refuses one over 64 KiB; setup-create keeps
+// the 8 KiB limit and refuses a body of 8 KiB plus one byte.
+func TestHandler_SetupBodyLimits(t *testing.T) {
+	// padded builds a body of exactly size bytes from base, a JSON object.
+	padded := func(base string, size int) string {
+		const key = `,"pad":"`
+		fill := size - len(base) - len(key) - 1 // the base loses its "}"; the tail adds `"}`
+		return strings.TrimSuffix(base, "}") + key + strings.Repeat("x", fill) + `"}`
+	}
+	const (
+		saveBase   = `{"repo":"/repo/a","changes":[]}`
+		createBase = `{"repo":"/repo/a"}`
+	)
+	cases := []struct {
+		name   string
+		path   string
+		body   string
+		status int
+		code   string
+		limit  int // limit of the route, for the 413 text
+	}{
+		{"save accepts 8 KiB plus one byte", "/api/setup-save", padded(saveBase, maxMutationBody+1), 200, "", maxSetupSaveBody},
+		{"save accepts exactly 64 KiB", "/api/setup-save", padded(saveBase, maxSetupSaveBody), 200, "", maxSetupSaveBody},
+		{"save refuses 64 KiB plus one byte", "/api/setup-save", padded(saveBase, maxSetupSaveBody+1), 413, "BODY_TOO_LARGE", maxSetupSaveBody},
+		{"create accepts exactly 8 KiB", "/api/setup-create", padded(createBase, maxMutationBody), 200, "", maxMutationBody},
+		{"create refuses 8 KiB plus one byte", "/api/setup-create", padded(createBase, maxMutationBody+1), 413, "BODY_TOO_LARGE", maxMutationBody},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeSetup{}
+			h := newSetupHandler(t, f)
+			rec := postJSON(h, tc.path, tc.body, mutationHeader())
+			if tc.code == "" {
+				if rec.Code != tc.status {
+					t.Fatalf("status = %d (body %q); want %d", rec.Code, rec.Body.String(), tc.status)
+				}
+				if f.calls() != 1 {
+					t.Errorf("function calls = %d; want 1", f.calls())
+				}
+				return
+			}
+			wantBodyTooLarge(t, rec, tc.limit)
+			if f.calls() != 0 {
+				t.Errorf("a refused request made %d calls; want 0", f.calls())
+			}
+		})
+	}
+}
+
+// wantBodyTooLarge fails the test unless rec is the 413 BODY_TOO_LARGE error of
+// a route with a body limit of limit bytes. The suggestion names that limit in
+// KiB. wantAPIError cannot check it: its text is fixed at 8 KiB.
+func wantBodyTooLarge(t *testing.T, rec *httptest.ResponseRecorder, limit int) {
+	t.Helper()
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d; want 413 (body %q)", rec.Code, rec.Body.String())
+	}
+	var body apiErrorBody
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+	}
+	want := fmt.Sprintf("Send a body of at most %d KiB.", limit>>10)
+	if body.Error.Code != "BODY_TOO_LARGE" || body.Error.Message != "Request body is too large" || body.Error.Suggestion != want {
+		t.Errorf("error = %+v; want BODY_TOO_LARGE with suggestion %q", body.Error, want)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -50,10 +51,41 @@ type DashboardSetupChange struct {
 	Value   any    `json:"value,omitempty"` // required with set; refused with reset
 }
 
+// The ops of a guardrail change.
+const (
+	setupGuardrailOpAdd    = "add"
+	setupGuardrailOpChange = "change"
+	setupGuardrailOpRemove = "remove"
+)
+
+// maxGuardrailChangesPerList is the largest number of changes of one
+// guardrails list in one save. It bounds the merged rule check and the error
+// list.
+const maxGuardrailChangesPerList = 100
+
+// guardrailIDMaxBytes is the longest id of an add, change or remove. The id
+// pattern of validateOneGuardrail has no maximum of its own.
+const guardrailIDMaxBytes = 64
+
+// DashboardSetupGuardrailChange is one change of a guardrails list.
+// add and change need both Severity and Description. change replaces both
+// stored fields. remove takes neither.
+type DashboardSetupGuardrailChange struct {
+	ID          string `json:"id"`
+	Op          string `json:"op"`                    // "add" | "change" | "remove"
+	Severity    string `json:"severity,omitempty"`    // add, change: "error" | "warning"
+	Description string `json:"description,omitempty"` // add, change: 1 to guardrailDescMaxBytes (1024) bytes
+}
+
 // DashboardSetupSaveIn is the request of a save.
 type DashboardSetupSaveIn struct {
 	Changes []DashboardSetupChange `json:"changes"`
 	Targets map[string]string      `json:"targets"` // form section id of a local section -> "project" | "user"
+	// Guardrails maps a guardrail section id ("plan-guardrails" |
+	// "execution-guardrails") to its changes. Omitted or empty: no guardrail
+	// change. A listed section needs 1 to maxGuardrailChangesPerList changes,
+	// each id at most once.
+	Guardrails map[string][]DashboardSetupGuardrailChange `json:"guardrails,omitempty"`
 }
 
 // DashboardSetupWrite is one section that a save wrote.
@@ -144,12 +176,20 @@ func DashboardSetupSave(root string, in DashboardSetupSaveIn) (DashboardSetupSav
 	if err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
-	if err := readSetupSaveSections(root, userPath, sections); err != nil {
+	// One cache serves the form save and the guardrail save, so both give the
+	// same outcome for each state of config.toml.
+	docs := setupDocCache{}
+	if err := readSetupSaveSections(root, userPath, sections, docs); err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
 	if err := checkSetupSaveValues(sections); err != nil {
 		return DashboardSetupSaveOut{}, err
 	}
+	gr, err := checkSetupGuardrails(root, userPath, in, docs)
+	if err != nil {
+		return DashboardSetupSaveOut{}, err
+	}
+	_ = gr // the write of the guardrail keys joins writeSetupSave in a later change
 	return writeSetupSave(root, userPath, sections)
 }
 
@@ -185,10 +225,9 @@ func (c setupDocCache) read(path string) (map[string]any, error) {
 	return doc, nil
 }
 
-// readSetupSaveSections reads each target file one time. For each section it
-// sets stored and next, and for a user target also project.
-func readSetupSaveSections(root, userPath string, sections []*setupSaveSection) error {
-	docs := setupDocCache{}
+// readSetupSaveSections reads each target file one time through docs. For
+// each section it sets stored and next, and for a user target also project.
+func readSetupSaveSections(root, userPath string, sections []*setupSaveSection, docs setupDocCache) error {
 	for _, s := range sections {
 		if err := readSetupSaveSection(root, userPath, s, docs); err != nil {
 			return err
@@ -395,8 +434,10 @@ func checkSetupSaveRequest(in DashboardSetupSaveIn) ([]*setupSaveSection, string
 	if len(in.Changes) > maxSetupChanges {
 		return nil, "", setupRequestError(fmt.Sprintf("changes has %d entries, over the limit of %d", len(in.Changes), maxSetupChanges))
 	}
-	if len(in.Changes) == 0 {
-		return nil, "", setupRequestError("changes is empty")
+	// The guardrail rules hold the empty rule of the request: a save with no
+	// form change is valid when it has a guardrail change.
+	if err := checkSetupGuardrailRequest(in); err != nil {
+		return nil, "", err
 	}
 	idx := newSetupFormIndex()
 	byID, err := groupSetupChanges(in.Changes, idx)
@@ -530,6 +571,263 @@ func setupRequestError(msg string) error {
 		Msg:        "dashboard setup save: " + msg + ". Nothing was written.",
 		Suggestion: dashboardSetupRequestSuggestion,
 	}
+}
+
+// setupGuardrailRequestError is the DomainError of a broken guardrail request
+// rule. msg names the rule; suggestion is the recovery step of that rule.
+func setupGuardrailRequestError(msg, suggestion string) error {
+	return &mcpserver.DomainError{
+		Msg:        "dashboard setup save: " + msg + ". Nothing was written.",
+		Suggestion: suggestion,
+	}
+}
+
+// setupGuardrailWrite is one guardrail key to write. The map key of
+// setupGuardrailWrites is the write key "<config path>.<id>", for example
+// "plan.guardrails.dry".
+type setupGuardrailWrite struct {
+	section string         // "plan-guardrails" | "execution-guardrails"
+	id      string         // guardrail id
+	value   map[string]any // {"description": d, "severity": s}; nil for a remove
+}
+
+// setupGuardrailWrites maps each write key to its guardrail write.
+type setupGuardrailWrites map[string]setupGuardrailWrite
+
+// setupGuardrailPaths maps each guardrail section id of setupmeta.Sections()
+// to its config path: plan-guardrails to plan.guardrails, and
+// execution-guardrails to execute.guardrails.
+func setupGuardrailPaths() map[string]string {
+	out := map[string]string{}
+	for _, sec := range setupmeta.Sections() {
+		if sec.ID == "plan-guardrails" || sec.ID == "execution-guardrails" {
+			out[sec.ID] = sec.ConfigPath
+		}
+	}
+	return out
+}
+
+// checkSetupGuardrailRequest checks the request rules of the guardrail
+// changes, and the rule that a save has a form change or a guardrail change.
+// It reads no file. It checks the section keys in sorted order, and the
+// changes of each section in request order.
+func checkSetupGuardrailRequest(in DashboardSetupSaveIn) error {
+	if len(in.Changes) == 0 && len(in.Guardrails) == 0 {
+		return setupGuardrailRequestError("changes and guardrails are empty", "Change a field or a guardrail, then save.")
+	}
+	paths := setupGuardrailPaths()
+	for _, key := range slices.Sorted(maps.Keys(in.Guardrails)) {
+		if _, ok := paths[key]; !ok {
+			return setupGuardrailRequestError("guardrails has unknown section "+key, "Use plan-guardrails or execution-guardrails.")
+		}
+		list := in.Guardrails[key]
+		if len(list) == 0 {
+			return setupGuardrailRequestError("guardrails."+key+" is empty", "Omit a section with no change.")
+		}
+		if len(list) > maxGuardrailChangesPerList {
+			return setupGuardrailRequestError(
+				fmt.Sprintf("guardrails.%s has %d changes, over the limit of %d", key, len(list), maxGuardrailChangesPerList),
+				fmt.Sprintf("Save at most %d guardrail changes of one list at one time.", maxGuardrailChangesPerList))
+		}
+		seen := map[string]bool{}
+		for _, c := range list {
+			if err := checkSetupGuardrailChange(key, c, seen); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkSetupGuardrailChange checks the repeat, the id length, the op, and the
+// fields of one guardrail change of the section key, in this order. It
+// records the id in seen.
+func checkSetupGuardrailChange(key string, c DashboardSetupGuardrailChange, seen map[string]bool) error {
+	if seen[c.ID] {
+		return setupGuardrailRequestError(fmt.Sprintf("guardrails.%s changes id %s twice", key, c.ID), "Send one change for each id.")
+	}
+	seen[c.ID] = true
+	if n := len(c.ID); n > guardrailIDMaxBytes {
+		return setupGuardrailRequestError(
+			fmt.Sprintf("guardrails.%s has an id of %d bytes, over the limit of %d", key, n, guardrailIDMaxBytes),
+			fmt.Sprintf("Use an id of at most %d bytes.", guardrailIDMaxBytes))
+	}
+	switch c.Op {
+	case setupGuardrailOpAdd, setupGuardrailOpChange:
+		if c.Severity == "" || c.Description == "" {
+			return setupGuardrailRequestError(fmt.Sprintf("guardrails.%s: %s of %s needs severity and description", key, c.Op, c.ID),
+				"Send both fields. change replaces both stored values.")
+		}
+	case setupGuardrailOpRemove:
+		if c.Severity != "" || c.Description != "" {
+			return setupGuardrailRequestError(fmt.Sprintf("guardrails.%s: remove of %s takes no severity or description", key, c.ID),
+				"Send only id and op for a remove.")
+		}
+	default:
+		return setupGuardrailRequestError(fmt.Sprintf("guardrails.%s: op %s is not add, change or remove", key, c.Op), "Use add, change or remove.")
+	}
+	return nil
+}
+
+// checkSetupGuardrails checks the guardrail changes of in against config.toml
+// and returns the keys to write. It returns an empty map, and reads no file,
+// when in has no guardrail change. Otherwise it applies the request rules,
+// reads config.toml through docs, refuses a list in array form or an entry
+// that is not a table, refuses each stale change, and checks the merged list
+// with the per-entry guardrail rules. It does not check a lower severity: an
+// operator may change error to warning. A stale change or a rule finding is a
+// *DashboardSetupInvalid.
+func checkSetupGuardrails(root, userPath string, in DashboardSetupSaveIn, docs setupDocCache) (setupGuardrailWrites, error) {
+	writes := setupGuardrailWrites{}
+	if len(in.Guardrails) == 0 {
+		return writes, nil
+	}
+	if err := checkSetupGuardrailRequest(in); err != nil {
+		return nil, err
+	}
+	file := setupSavePath(root, userPath, setupTargetConfig, "plan")
+	doc, err := docs.read(file)
+	if err != nil {
+		return nil, err
+	}
+	paths := setupGuardrailPaths()
+	keys := slices.Sorted(maps.Keys(in.Guardrails))
+	disk := map[string]map[string]map[string]any{}
+	var stale []SetupFieldError
+	for _, key := range keys {
+		list, err := setupGuardrailDiskList(doc, paths[key], file)
+		if err != nil {
+			return nil, err
+		}
+		disk[key] = list
+		stale = append(stale, setupGuardrailStale(key, paths[key], in.Guardrails[key], list)...)
+	}
+	if len(stale) > 0 {
+		return nil, setupGuardrailInvalid(stale)
+	}
+	var findings []SetupFieldError
+	for _, key := range keys {
+		path := paths[key]
+		merged := mergeSetupGuardrails(disk[key], in.Guardrails[key])
+		findings = append(findings, checkSetupGuardrailList(key, path, merged)...)
+		for _, c := range in.Guardrails[key] {
+			w := setupGuardrailWrite{section: key, id: c.ID}
+			if c.Op != setupGuardrailOpRemove {
+				w.value = map[string]any{"description": c.Description, "severity": c.Severity}
+			}
+			writes[path+"."+c.ID] = w
+		}
+	}
+	if len(findings) > 0 {
+		return nil, setupGuardrailInvalid(findings)
+	}
+	return writes, nil
+}
+
+// setupGuardrailDiskList returns the guardrails at the config path path of
+// doc, by id. An absent parent table or an absent key gives an empty map. A
+// list in array form ([[path]] or an inline array) is a DomainError. A path,
+// a parent, or an entry that is not a table is a DataError. file is the path
+// of config.toml, for the error text.
+func setupGuardrailDiskList(doc map[string]any, path, file string) (map[string]map[string]any, error) {
+	parentKey, leaf, _ := strings.Cut(path, ".")
+	parent, ok := setupTable(doc, parentKey)
+	if !ok {
+		return nil, setupGuardrailNotTableError(parentKey, file)
+	}
+	raw, present := parent[leaf]
+	if !present {
+		return map[string]map[string]any{}, nil
+	}
+	switch list := raw.(type) {
+	case []any, []map[string]any:
+		return nil, setupGuardrailRequestError(
+			fmt.Sprintf("config.toml holds %s as an array ([[%s]] or an inline array). The dashboard edits only [%s.<id>] tables", path, path, path),
+			fmt.Sprintf("Change the list in config.toml to [%s.<id>] tables manually, then reload the page.", path))
+	case map[string]any:
+		out := make(map[string]map[string]any, len(list))
+		for _, id := range slices.Sorted(maps.Keys(list)) {
+			entry, isTable := list[id].(map[string]any)
+			if !isTable {
+				return nil, setupGuardrailNotTableError(path+"."+id, file)
+			}
+			out[id] = entry
+		}
+		return out, nil
+	}
+	return nil, setupGuardrailNotTableError(path, file)
+}
+
+// setupGuardrailNotTableError is the DataError of a guardrail key in
+// config.toml that is not a table where the save needs a table.
+func setupGuardrailNotTableError(key, file string) error {
+	return &mcpserver.DataError{
+		Msg:        fmt.Sprintf("dashboard setup save: %s in %s is not a table. Nothing was written.", key, file),
+		Suggestion: fmt.Sprintf("Fix %s in config.toml manually.", key),
+	}
+}
+
+// setupGuardrailStale returns one field error for each stale change of the
+// section key: an add of an id that disk holds, or a change or a remove of
+// an id that disk does not hold.
+func setupGuardrailStale(key, path string, changes []DashboardSetupGuardrailChange, disk map[string]map[string]any) []SetupFieldError {
+	var out []SetupFieldError
+	for _, c := range changes {
+		_, onDisk := disk[c.ID]
+		var msg string
+		switch {
+		case c.Op == setupGuardrailOpAdd && onDisk:
+			msg = fmt.Sprintf("guardrail %s is already in config.toml, so the add is stale. Reload the page.", c.ID)
+		case c.Op != setupGuardrailOpAdd && !onDisk:
+			msg = fmt.Sprintf("guardrail %s is not in config.toml, so the %s is stale. Reload the page.", c.ID, c.Op)
+		default:
+			continue
+		}
+		out = append(out, SetupFieldError{Section: key, Field: c.ID, Path: path + "." + c.ID, Message: msg})
+	}
+	return out
+}
+
+// mergeSetupGuardrails returns a copy of disk with each change applied: a
+// remove deletes the id, and an add or a change sets the description and the
+// severity of the change.
+func mergeSetupGuardrails(disk map[string]map[string]any, changes []DashboardSetupGuardrailChange) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(disk))
+	for id, g := range disk {
+		out[id] = setupCopyTable(g)
+	}
+	for _, c := range changes {
+		if c.Op == setupGuardrailOpRemove {
+			delete(out, c.ID)
+			continue
+		}
+		out[c.ID] = map[string]any{"description": c.Description, "severity": c.Severity}
+	}
+	return out
+}
+
+// checkSetupGuardrailList checks each entry of the merged list of the
+// section key with validateOneGuardrail, in id order. A named table has no
+// id key, so the check sets it from the table key. It returns one field
+// error for each finding.
+func checkSetupGuardrailList(key, path string, merged map[string]map[string]any) []SetupFieldError {
+	var out []SetupFieldError
+	seenIDs := map[string]bool{}
+	for _, id := range slices.Sorted(maps.Keys(merged)) {
+		g := merged[id]
+		g["id"] = id
+		for _, f := range validateOneGuardrail(g, seenIDs) {
+			out = append(out, SetupFieldError{Section: key, Field: id, Path: path + "." + id, Message: f.Message + ". " + f.Fix})
+		}
+	}
+	return out
+}
+
+// setupGuardrailInvalid is the *DashboardSetupInvalid of fields, sorted by
+// path.
+func setupGuardrailInvalid(fields []SetupFieldError) error {
+	sort.SliceStable(fields, func(i, j int) bool { return fields[i].Path < fields[j].Path })
+	return &DashboardSetupInvalid{Fields: fields}
 }
 
 // setupLocalKey reports whether the config path key lives in local.toml.

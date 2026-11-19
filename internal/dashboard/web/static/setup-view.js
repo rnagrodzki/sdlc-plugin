@@ -78,10 +78,12 @@
   }
 
   /**
-   * The state of the API as the values and the delegated state of the draft
-   * script. A delegated row with no count gives the count 0.
+   * The state of the API as the values, the value of each file, the guardrail
+   * lists and the delegated state of the draft script. A delegated row with
+   * no count gives the count 0. layers and guardrails are the keys of the
+   * answer as they are, and {} when the answer has none.
    * @param {object} stateOut answer of GET /api/setup-state
-   * @returns {{values: object, delegated: object}}
+   * @returns {{values: object, delegated: object, layers: object, guardrails: object}}
    */
   function draftState(stateOut) {
     var delegated = {};
@@ -111,7 +113,85 @@
           break;
       }
     });
-    return { values: (stateOut && stateOut.values) || {}, delegated: delegated };
+    return {
+      values: (stateOut && stateOut.values) || {},
+      delegated: delegated,
+      layers: (stateOut && stateOut.layers) || {},
+      guardrails: (stateOut && stateOut.guardrails) || {},
+    };
+  }
+
+  /**
+   * The text after the value of a file that another file wins over. The
+   * runtime merges a flag-set field key by key, so that text is not struck.
+   * @param {string} fieldType type of the field, for example 'flag-set'
+   * @param {boolean} sameValue true when the value equals the value of the file that wins
+   * @param {string} winnerFileName name of the file that wins, for example 'local.toml'
+   * @returns {{text: string, struck: boolean}}
+   */
+  function overrideText(fieldType, sameValue, winnerFileName) {
+    if (fieldType === 'flag-set') {
+      return { text: 'merged with ' + winnerFileName, struck: false };
+    }
+    if (sameValue) {
+      return { text: 'same value \u00b7 overridden by ' + winnerFileName, struck: true };
+    }
+    return { text: 'overridden by ' + winnerFileName, struck: true };
+  }
+
+  /**
+   * The guardrail changes between the disk lists and the rows of the form, as
+   * the guardrails field of POST /api/setup-save:
+   * - a row that is not new gives change when its values differ from the disk
+   *   row, and remove when it is removed;
+   * - a new row that is not removed gives add, or one change when a removed
+   *   disk row has the same id (the server takes one change for each id);
+   * - a new row that is removed gives nothing.
+   * A row that is not new and has no disk row counts as a new row.
+   * @param {Object<string, {id: string, severity: string, description: string}[]>} base
+   *   section id -> disk list
+   * @param {Object<string, {id: string, severity: string, description: string,
+   *   isNew: boolean, removed: boolean}[]>} draft section id -> rows of the form
+   * @returns {Object<string, {id: string, op: 'add'|'change'|'remove',
+   *   severity?: string, description?: string}[]>} only sections with a change; {} when none
+   */
+  function guardrailChanges(base, draft) {
+    var out = {};
+    Object.keys(draft || {}).forEach(function (section) {
+      var rows = draft[section] || [];
+      var disk = Object.create(null);
+      ((base && base[section]) || []).forEach(function (g) {
+        disk[g.id] = g;
+      });
+      var list = [];
+      var removedAt = Object.create(null);
+      var added = [];
+      rows.forEach(function (row) {
+        var old = disk[row.id];
+        if (row.isNew || !old) {
+          if (!row.removed) added.push(row);
+          return;
+        }
+        if (row.removed) {
+          removedAt[row.id] = list.length;
+          list.push({ id: row.id, op: 'remove' });
+        } else if (old.severity !== row.severity || old.description !== row.description) {
+          list.push({ id: row.id, op: 'change', severity: row.severity, description: row.description });
+        }
+      });
+      added.forEach(function (row) {
+        var entry = { id: row.id, op: 'add', severity: row.severity, description: row.description };
+        if (row.id in removedAt) {
+          entry.op = 'change';
+          list[removedAt[row.id]] = entry;
+          delete removedAt[row.id];
+        } else {
+          list.push(entry);
+        }
+      });
+      if (list.length) out[section] = list;
+    });
+    return out;
   }
 
   /**
@@ -145,12 +225,15 @@
   }
 
   /**
-   * The body of POST /api/setup-save: one entry for each changed field, and
-   * the target file of each local section with a change.
+   * The body of POST /api/setup-save: one entry for each changed field, the
+   * target file of each local section with a change, and the guardrail
+   * changes. The key guardrails is there only when a guardrail list changed.
    * @param {string} repo repo root
    * @param {object[]} sections the form sections of the draft
-   * @param {{base: object, draft: object, target: object}} st form state of the repo
-   * @returns {{repo: string, changes: object[], targets: Object<string, string>}}
+   * @param {{base: object, draft: object, target: object, grBase?: object, gr?: object}} st
+   *   form state of the repo; grBase and gr are the base and draft of guardrailChanges
+   * @returns {{repo: string, changes: object[], targets: Object<string, string>,
+   *   guardrails?: object}}
    */
   function saveBody(repo, sections, st) {
     var changes = [];
@@ -173,7 +256,10 @@
         targets[sec.id] = st.target[sec.id];
       }
     });
-    return { repo: repo, changes: changes, targets: targets };
+    var body = { repo: repo, changes: changes, targets: targets };
+    var gr = guardrailChanges(st.grBase || {}, st.gr || {});
+    if (Object.keys(gr).length) body.guardrails = gr;
+    return body;
   }
 
   /**
@@ -257,7 +343,7 @@
     }
     if (status === 413 && code === 'BODY_TOO_LARGE') {
       return {
-        note: 'Not saved. The save is larger than the server accepts. Save fewer fields at one time.',
+        note: 'Not saved. The save is larger than the server accepts. Save fewer fields or guardrails at one time.',
         noteState: 'error',
         errors: [],
         reload: false,
@@ -271,6 +357,8 @@
     stateURL: stateURL,
     draftSections: draftSections,
     draftState: draftState,
+    overrideText: overrideText,
+    guardrailChanges: guardrailChanges,
     helpTable: helpTable,
     saveBody: saveBody,
     saveRequest: saveRequest,
