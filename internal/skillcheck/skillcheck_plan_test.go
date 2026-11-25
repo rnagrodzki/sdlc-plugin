@@ -589,6 +589,13 @@ var planSkillsTopicBulletWants = map[string][]string{
 		"With no `Smallest cut:` line",
 		"the smallest cut is all live proposals",
 	},
+	"`## Contracts` — each block starts with a label line": {
+		"Skip each `#` value that is not a live `## Decisions` row",
+		"copies the block into the `shape` of its `**Contract:**`",
+		"The `No contract:` line adds nothing.",
+		"Under `--auto`, ask none",
+		"`asked=no`",
+	},
 	"Several topic files: read each file with the rules above, in argument order.": {
 		"Step 0 **Flag parsing** already checked that each path is a preplan topic file by the rule above.",
 		"Each of them follows the template condition and the fallback of its single-file rule above",

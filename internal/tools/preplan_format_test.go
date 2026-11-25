@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"reflect"
 	"slices"
@@ -17,6 +18,14 @@ import (
 // three backticks. Write a run of four or more backticks as an ordinary quoted
 // string.
 func fenced(s string) string { return strings.ReplaceAll(s, "'''", "```") }
+
+// The parts of a ## Contracts body in the P12 cases: a label line, a closed
+// fence and a table. Each ends with a line end.
+const (
+	contractLabel = "**#2 Endpoint: POST /x**\n"
+	contractFence = "```http\nPOST /x\n```\n"
+	contractTable = "| A | B |\n|---|---|\n| 1 | 2 |\n"
+)
 
 // formatDecisionsHead is the header and separator lines of a ## Decisions
 // table, with LF line ends. Test bodies add rows after it.
@@ -163,6 +172,39 @@ var formatRuleCases = []formatRuleCase{
 	{"P10 fail space after classDef line", "Flows", strings.Replace(formatMermaid, "stroke-width:2px\n  classDef changed", "stroke-width:2px \n  classDef changed", 1), "P10",
 		[]string{"classDef on line 6 is not allowed"}},
 
+	// P12: Contracts
+	{"P12 pass fence", "Contracts", contractLabel + contractFence, "", nil},
+	{"P12 pass tilde fence", "Contracts", contractLabel + "~~~json\n{}\n~~~\n", "", nil},
+	{"P12 pass table", "Contracts", contractLabel + contractTable, "", nil},
+	{"P12 pass indented table", "Contracts", contractLabel + "  " + strings.ReplaceAll(strings.TrimSuffix(contractTable, "\n"), "\n", "\n  ") + "\n", "", nil},
+	{"P12 pass table on the last line", "Contracts", contractLabel + strings.TrimSuffix(contractTable, "\n"), "", nil},
+	{"P12 pass blank line after label", "Contracts", contractLabel + "\n" + contractFence, "", nil},
+	{"P12 pass two ids", "Contracts", "**#1, #3 Data: topics table**\n" + contractTable, "", nil},
+	{"P12 pass no-contract only", "Contracts", "No contract: #2, #5.\n", "", nil},
+	{"P12 pass blocks and no-contract", "Contracts", contractLabel + contractFence + "\nNo contract: #3.\n", "", nil},
+	{"P12 fail blank", "Contracts", "\n", "P12", []string{"the body is blank: send a labelled block or a No contract line"}},
+	{"P12 fail prose", "Contracts", "The endpoint takes a name.\n", "P12",
+		[]string{"line 1 is not a label line, a code fence, a table row or the No contract line"}},
+	{"P12 fail mixed prose", "Contracts", contractLabel + contractFence + "Errors are 4xx.\n", "P12",
+		[]string{"line 5 is not a label line, a code fence, a table row or the No contract line"}},
+	{"P12 fail old line", "Contracts", "No contract change.\n", "P12", []string{"line 1 is not a label line"}},
+	{"P12 fail no label", "Contracts", contractFence, "P12", []string{"line 1 starts a code fence or a table with no label line above it"}},
+	{"P12 fail label without block", "Contracts", contractLabel + "**#3 Data: t**\n" + contractTable, "P12",
+		[]string{"line 1 is a label line with no code fence or table below it"}},
+	{"P12 fail label on the last line", "Contracts", contractLabel + contractFence + "**#3 Data: t**\n", "P12",
+		[]string{"line 5 is a label line with no code fence or table below it"}},
+	{"P12 fail bad kind", "Contracts", "**#2 Api: x**\n" + contractFence, "P12", []string{"line 1 is not a label line"}},
+	{"P12 fail bad id", "Contracts", "**#0 Data: t**\n" + contractTable, "P12", []string{`line 1 has the id "#0"`}},
+	{"P12 fail repeated id", "Contracts", "**#1, #1 Data: t**\n" + contractTable, "P12", []string{"line 1 lists #1 twice"}},
+	{"P12 fail duplicate name", "Contracts", "**#1 Data: Topics**\n" + contractTable + "**#2 Data: topics**\n" + contractTable, "P12",
+		[]string{`Data "topics" has two blocks`}},
+	{"P12 fail two no-contract lines", "Contracts", "No contract: #1.\nNo contract: #2.\n", "P12", []string{"line 2 is a second No contract line"}},
+	{"P12 fail not ascending", "Contracts", "No contract: #5, #2.\n", "P12", []string{"#2 is not in ascending order"}},
+	{"P12 fail id in both", "Contracts", contractLabel + contractFence + "No contract: #2.\n", "P12",
+		[]string{"#2 is in a label line and in the No contract line"}},
+	{"P3 fail open fence in Contracts comes before P12", "Contracts", contractLabel + "```http\nGET /x\n", "P3", []string{"the fence on line 2 does not close"}},
+	{"P2 fail heading in Contracts comes before P12", "Contracts", "## Endpoint\n", "P2", []string{"line 1 starts a heading"}},
+
 	// P11: legacy Guardrail check section
 	{"P11 pass empty body", "Guardrail check", "", "", nil},
 	{"P11 fail blank body", "Guardrail check", "\n\n", "P11", []string{"only an empty body deletes this section"}},
@@ -172,7 +214,7 @@ var formatRuleCases = []formatRuleCase{
 	{"Goal has P1 to P3 only", "Goal", "Any prose. | not a table\n- not a bullet check\n", "", nil},
 }
 
-// TestPreplanFormatRules checks the rules P1 to P11. Each rule has one case
+// TestPreplanFormatRules checks the rules P1 to P12. Each rule has one case
 // that passes and one that fails. A failing case names the rule, and the
 // Detail of its error holds the expected text.
 func TestPreplanFormatRules(t *testing.T) {
@@ -211,7 +253,7 @@ func TestPreplanFormatRules(t *testing.T) {
 			}
 		})
 	}
-	for i := 1; i <= 11; i++ {
+	for i := 1; i <= 12; i++ {
 		for _, kind := range []string{"pass", "fail"} {
 			if key := "P" + strconv.Itoa(i) + " " + kind; !covered[key] {
 				t.Errorf("the table has no %q case", key)
@@ -435,7 +477,7 @@ func TestPreplanFormatClassDefParity(t *testing.T) {
 }
 
 // formatRealTopicFile is a topic file of the real shape: head lines, the
-// seven skeleton sections, a Flows section with a mermaid fence, a fenced
+// eight skeleton sections, a Flows section with a mermaid fence, a fenced
 // block that holds a "## " line, a Decisions table with a dropped, a moved and
 // a kept row, a Smallest cut line and an Open questions section.
 var formatRealTopicFile = fenced(`# Preplan: sample topic
@@ -503,6 +545,15 @@ After:
 1. The user runs preplan.
 2. The tool writes the section (changed).
 3. The tool refuses bad content (new).
+
+## Contracts
+
+**#1 Data: topic file sections**
+| Field | Type | Change | Notes |
+|---|---|---|---|
+| ` + "`" + `## Contracts` + "`" + ` | section | + | between Flows and Decisions |
+
+No contract: #4.
 
 ## Decisions
 
@@ -869,6 +920,10 @@ After:
 4. The skill prints the report of findings (new).
 5. The person corrects the requirements at their source, for a topic file in ` + "`" + `/sdlc:preplan` + "`" + `, or starts the plan run with ` + "`" + `/sdlc:plan` + "`" + ` (changed: the person decides with the report).
 
+## Contracts
+
+No contract: #1, #2, #3, #4, #5, #6, #7, #8, #9.
+
 ## Decisions
 
 | # | Decision | Reason |
@@ -893,7 +948,7 @@ func structureTopic(flows, decisions, questions string) string {
 	s := "# Preplan: sample\n\n**Status:** in progress\n\n" +
 		"## Goal\n\nG.\n\n## Problem and benefit\n\nP.\n\n## Users and effect\n\nU.\n\n" +
 		"## Risk if wrong\n\nR.\n\n## Non-goals\n\nNone stated.\n\n" +
-		"## Flows\n\n" + flows + "\n## Decisions\n\n" + decisions
+		"## Flows\n\n" + flows + "\n## Contracts\n\nNo contract: #1.\n\n## Decisions\n\n" + decisions
 	if questions != "" {
 		s += "\n## Open questions\n\n" + questions
 	}
@@ -955,6 +1010,7 @@ func TestPreplanStructureFindings(t *testing.T) {
 				finding("open-fence", "", "", "A code fence that starts with ~~~~ never closes. Each section after it counts as absent."),
 				finding("empty-section", sec("Non-goals"), "", "Section ## Non-goals is empty."),
 				finding("empty-section", sec("Flows"), "", "Section ## Flows is empty."),
+				finding("empty-section", sec("Contracts"), "", "Section ## Contracts is empty."),
 				finding("empty-section", sec("Decisions"), "", "Section ## Decisions is empty."),
 			}},
 
@@ -978,6 +1034,7 @@ func TestPreplanStructureFindings(t *testing.T) {
 				finding("empty-section", sec("Risk if wrong"), "", "Section ## Risk if wrong is empty."),
 				finding("empty-section", sec("Non-goals"), "", "Section ## Non-goals is empty."),
 				finding("empty-section", sec("Flows"), "", "Section ## Flows is empty."),
+				finding("empty-section", sec("Contracts"), "", "Section ## Contracts is empty."),
 				finding("empty-section", sec("Decisions"), "", "Section ## Decisions is empty."),
 			}},
 
@@ -1199,5 +1256,32 @@ func TestPreplanStructureFindingsEmptyInput(t *testing.T) {
 				t.Errorf("finding %d = %+v", i, f)
 			}
 		}
+	}
+}
+
+// TestPreplanContractIDs checks which ids preplanContractIDs reads from a
+// ## Contracts body.
+func TestPreplanContractIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		want       []int
+	}{
+		{"valid body", contractLabel + contractFence + "\n**#1, #3 Data: t**\n" + contractTable + "\nNo contract: #5.\n", []int{1, 2, 3, 5}},
+		{"label inside a fence", "```text\n**#7 Data: t**\nNo contract: #8.\n```\n", nil},
+		{"bad kind", "**#1 Api: x**\n" + contractFence, nil},
+		{"no contract line", "No contract: #4, #6.\n", []int{4, 6}},
+		{"bad id is skipped", "**#0 Data: t**\n" + contractTable, nil},
+		{"CRLF body", strings.ReplaceAll(contractLabel+contractFence+"No contract: #3.\n", "\n", "\r\n"), []int{2, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := preplanContractIDs(tc.body)
+			want := map[int]bool{}
+			for _, id := range tc.want {
+				want[id] = true
+			}
+			if !maps.Equal(got, want) {
+				t.Errorf("preplanContractIDs = %v, want %v", got, want)
+			}
+		})
 	}
 }
