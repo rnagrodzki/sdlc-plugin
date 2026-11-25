@@ -269,6 +269,7 @@ new changes to that same bar:
   arms are swapped. This extends the decoy bullet above and the
   error-classification-switch bullet. Example: an issue-view error mapper
   with no decoy rows for the order of its arms.
+- A check of a Markdown block that has several accepted shapes (a table, a list, a labelled line such as a pending or none label) has one test for each shape and for each per-field check of it, through the real entry point. Shapes to cover: a row with no header (a bare row), a table split by a blank line or a text line, a row with the wrong cell count, a one-line form with a repeated, a malformed and a missing id, and each label form. Each arm of a label chain (for example each pending label) has a test with an input that only that arm accepts. A shape or arm with no test is a finding. This extends the rejection-branch bullet above and the classifier-order bullet, which count branches and not the shapes of the block. Example: a contract check with no test for a bare table row, a split table, the id checks of its one-line form, and each pending-label arm.
 - A limit, cap or maximum count is tested on both sides of its boundary: one
   case exactly at the limit (accepted) and one case at limit+1 (rejected,
   and the error text names the limit and the value). Derive both inputs
