@@ -17,6 +17,7 @@ rules of this page.
 | Problem and benefit, Risk if wrong | Context |
 | Non-goals, `Smallest cut:` line | Key Decisions |
 | Decisions rows | requirements |
+| Contracts blocks of live rows | Key Decisions and requirements. Each task that builds the surface copies the block into its Contract |
 
 - If the plan template has no `Context` or `Key Decisions` section, the plan
   records the same content as requirement items.
@@ -25,6 +26,8 @@ rules of this page.
 - A scope option under `Non-goals` that starts with `Offered, not picked:` is
   a non-goal, not a requirement. The line `None stated.` gives the Key
   Decisions bullet "Non-goals: none stated" and no discovery question.
+- A `Contracts` block whose label lists no live row is not a requirement. The
+  `No contract:` line adds nothing.
 
 The plan writes the smallest cut with the decision text of each picked row,
 not the row number. With no `Smallest cut:` line, the smallest cut is all
@@ -43,6 +46,14 @@ row with `asked=no`.
 A section that the topic file already fills answers its question, so the plan
 does not ask it again. An empty `Goal`, `Users and effect` or `Flows` section
 makes the requirements vague, so the plan asks its usual discovery questions.
+An empty `Contracts` section, or a live row with no contract answer, gives one
+discovery question for the shapes. The plan records each shape of the answer
+as it records a block. With `--auto`, the plan asks no question. It writes the
+Key Decisions bullet "Contracts: not stated for <the decision text of each
+live row with no answer>; each task decides its Contract shape" and adds one
+`Deviations & assumptions` row with `asked=no`. A task that changes the shape
+of a contract also adds one `Deviations & assumptions` row that names the
+contract.
 
 ## Several topic files
 
@@ -55,8 +66,8 @@ Give two or more topic files to plan them in one run:
 - The plan reads each file with the rules above, in argument order, and
   numbers the requirements across all files.
 - For each topic, it writes one non-goal entry and one smallest-cut entry in
-  Key Decisions, and one root problem in Context. Each entry starts with the
-  topic name. If the plan template has no such section, the plan records the
+  Key Decisions, one contract entry for each live block, and one root problem
+  in Context. Each entry starts with the topic name. If the plan template has no such section, the plan records the
   entry as a requirement item.
 - When two files contradict each other, the plan asks one question for each
   conflict. With `--auto`, the earlier file wins, and the plan records the

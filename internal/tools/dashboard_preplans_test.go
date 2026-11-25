@@ -934,6 +934,12 @@ var summaryConditionCases = []summaryCase{
 				t.Errorf("gaps %v, live %d, smallestCut %q, want [Flows Decisions], 0 and %q", row.Gaps, row.Live, row.SmallestCut, dashboardPreplanCutNotSet)
 			}
 		}},
+	{"Contracts body blank", summaryWrite(summaryTopic(map[string]string{preplanContractsSection: ""})),
+		[]string{}, summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
+			if !reflect.DeepEqual(row.Gaps, []string{preplanFlowsSection, preplanContractsSection}) {
+				t.Errorf("gaps %v, want [Flows Contracts]", row.Gaps)
+			}
+		}},
 	{"CRLF line ends", summaryWrite(strings.ReplaceAll(summaryTopic(nil), "\n", "\r\n")),
 		[]string{}, summaryNoWarning, func(t *testing.T, row DashboardPreplan) {
 			if want := summaryAllFieldsRow(); !reflect.DeepEqual(row, want) {

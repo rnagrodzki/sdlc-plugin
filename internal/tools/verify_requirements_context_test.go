@@ -543,7 +543,7 @@ func TestVerifyRequirementsContextGuardrailsUnavailable(t *testing.T) {
 		status func(root string) string // the status sentence of the kind
 	}{
 		{verifyIn("topic", "auth flow"), func(string) string {
-			return "Read auth-flow.md: 7 structure finding(s), 0 open question(s)."
+			return "Read auth-flow.md: 8 structure finding(s), 0 open question(s)."
 		}},
 		{verifyIn("file", "docs/req.md"), func(root string) string {
 			return "Checked the file " + filepath.Join(root, "docs", "req.md") + ": a regular file of 15 bytes."
@@ -1828,7 +1828,7 @@ func TestVerifyRequirementsContextTopicSummary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("verify_requirements_context: %v", err)
 	}
-	want := "Read 2026-11-13-auth-flow.md: 8 structure finding(s), 1 open question(s)." +
+	want := "Read 2026-11-13-auth-flow.md: 9 structure finding(s), 1 open question(s)." +
 		" A ``` fence is still open at the end of the file, so each ## heading after it counts as absent." +
 		` ## Open questions holds 3 lines that are not "- " bullets; the first is: "* star".` +
 		" Guardrails unavailable: " + preplanWarningText(warning) + "."

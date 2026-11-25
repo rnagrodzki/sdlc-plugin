@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -88,8 +90,8 @@ type PlanSupportIn struct {
 
 	// preplan_write. Another action that gets one of these fields returns
 	// DomainError (preplanWriteFieldError).
-	Section     string  `json:"section,omitempty" jsonschema:"enum=Goal,enum=Problem and benefit,enum=Users and effect,enum=Risk if wrong,enum=Non-goals,enum=Flows,enum=Decisions,enum=Open questions,enum=Guardrail check" jsonschema_description:"preplan_write only. One of: Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions, Open questions, Guardrail check. Omit it to write only the status. Example: Decisions"`
-	Content     *string `json:"content,omitempty" jsonschema_description:"preplan_write only. Required with section, not allowed without section. The full new body of section, at most 65536 bytes; a larger body is rejected by rule P1; the body is stored without its final line ends and with the line ends of the file. An empty string clears the body, and deletes the Open questions or Guardrail check section. Outside a code fence no line starts with # or ## (P2), and each code fence closes (P3). Decisions is blank, or the two lines | # | Decision | Reason | and |---|---|---|, then rows of 3 cells, then at most one Smallest cut: line (P4-P7). Non-goals is None stated. or - bullets (P8). Open questions is - bullets (P9). Flows is No flow change. or a mermaid fence (P10). Guardrail check takes only an empty string (P11). Example: Ship the login page first."`
+	Section     string  `json:"section,omitempty" jsonschema:"enum=Goal,enum=Problem and benefit,enum=Users and effect,enum=Risk if wrong,enum=Non-goals,enum=Flows,enum=Contracts,enum=Decisions,enum=Open questions,enum=Guardrail check" jsonschema_description:"preplan_write only. One of: Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Contracts, Decisions, Open questions, Guardrail check. Omit it to write only the status. Example: Decisions"`
+	Content     *string `json:"content,omitempty" jsonschema_description:"preplan_write only. Required with section, not allowed without section. The full new body of section, at most 65536 bytes; a larger body is rejected by rule P1; the body is stored without its final line ends and with the line ends of the file. An empty string clears the body, and deletes the Open questions or Guardrail check section; Flows and Contracts refuse an empty string (P10, P12). Outside a code fence no line starts with # or ## (P2), and each code fence closes (P3). Decisions is blank, or the two lines | # | Decision | Reason | and |---|---|---|, then rows of 3 cells, then at most one Smallest cut: line (P4-P7). Non-goals is None stated. or - bullets (P8). Open questions is - bullets (P9). Flows is No flow change. or a mermaid fence (P10). Contracts is one or more labelled blocks and at most one line No contract: #<id>, #<id>. A label line is **#<id>[, #<id>] <Kind>: <name>**, Kind is Endpoint, Data, Config or Message, and a code fence or a table follows it. Every other line, and a blank body, is refused (P12). Guardrail check takes only an empty string (P11). Example: Ship the login page first."`
 	TopicStatus string  `json:"topicStatus,omitempty" jsonschema:"enum=in progress,enum=ready for plan,enum=paused" jsonschema_description:"preplan_write only. The new Status line value: in progress, ready for plan or paused. Example: ready for plan"`
 
 	// verify_requirements_context only. Another action that gets one of these
@@ -212,14 +214,21 @@ type PlanSupportOut struct {
 	PreplanCreated *bool  `json:"preplanCreated,omitempty"` // true only when this call created the file
 	// AddedSections is a pointer so an empty list still renders (none) for
 	// preplan_context while every other action omits it.
-	AddedSections *[]string `json:"addedSections,omitempty" jsonschema_description:"preplan_context only: the ## section headings that this call added to an existing topic file, in skeleton order (Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions). (none) when the call created the file or the file already had every heading."`
+	AddedSections *[]string `json:"addedSections,omitempty" jsonschema_description:"preplan_context only: the ## section headings that this call added to an existing topic file, in skeleton order (Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Contracts, Decisions). (none) when the call created the file or the file already had every heading."`
 
 	// preplan_check (PreplanFile above is also set by this action).
 	GuardrailCheckLine string `json:"guardrailCheckLine,omitempty"` // the check line as written, with no line end
 	// EmptySections is a pointer so an empty list still renders (none) for
 	// preplan_check while every other action omits it.
-	EmptySections *[]string `json:"emptySections,omitempty" jsonschema_description:"preplan_check only: the ## headings of the skeleton sections that are absent or hold only blank lines, in skeleton order (Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Decisions). Open questions is not a skeleton section. Decisions is empty when its table has no row: no line that starts with | (after leading spaces) below the header and separator rows. (none) when every section has content."`
+	EmptySections *[]string `json:"emptySections,omitempty" jsonschema_description:"preplan_check only: the ## headings of the skeleton sections that are absent or hold only blank lines, in skeleton order (Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Contracts, Decisions). Open questions is not a skeleton section. Decisions is empty when its table has no row: no line that starts with | (after leading spaces) below the header and separator rows. (none) when every section has content."`
 
+	// ContractMissing and ContractStale are pointers so an empty list renders
+	// (none) for preplan_check while every other action omits them.
+	ContractMissing *[]string `json:"contractMissing,omitempty" jsonschema_description:"preplan_check only: #<n> for each live ## Decisions row that has no contract answer in ## Contracts. An answer is a label line that lists #<n>, or #<n> in the No contract line. A live row has a Decision cell that starts with neither Dropped: nor Moved:. Ascending order. (none) when each live row has an answer, when no row is live, or when contractChecked is false. A label line that P12 refuses answers no id: next then names the P12 error."`
+	ContractStale   *[]string `json:"contractStale,omitempty" jsonschema_description:"preplan_check only: each #<n> that a label line or the No contract line of ## Contracts lists, but that is not a live ## Decisions row. Ascending order. (none) when no such id exists, or when contractChecked is false."`
+	// ContractChecked is a pointer so false still renders for preplan_check
+	// while every other action omits it.
+	ContractChecked *bool `json:"contractChecked,omitempty" jsonschema_description:"preplan_check only: true when the contract check ran. false when a code fence is still open at the end of the file, when the file has no ## Decisions heading, or when the ## Decisions table breaks rule P4 or P5; contractMissing and contractStale are then (none), and summary and next name the cause. Example: true"`
 	// preplan_write (PreplanFile above is also set by this action). Each is a
 	// pointer so an empty list or 0 still renders for preplan_write while
 	// every other action omits it.
@@ -1449,7 +1458,7 @@ var PreplanStatuses = []string{preplanStatusInProgress, preplanStatusReadyForPla
 // emptySections list of preplan_check read it.
 var preplanSections = []string{
 	preplanGoalSection, "Problem and benefit", "Users and effect", "Risk if wrong",
-	preplanNonGoalsSection, preplanFlowsSection, preplanDecisionsSection,
+	preplanNonGoalsSection, preplanFlowsSection, preplanContractsSection, preplanDecisionsSection,
 }
 
 // The section names that code reads by name: the skeleton sections that the
@@ -1460,6 +1469,7 @@ const (
 	preplanGoalSection      = "Goal"
 	preplanNonGoalsSection  = "Non-goals"
 	preplanFlowsSection     = "Flows"
+	preplanContractsSection = "Contracts"
 	preplanDecisionsSection = "Decisions" // its body starts with the table header
 
 	preplanOpenQuestionsSection  = "Open questions"
@@ -1531,6 +1541,9 @@ func preplanToolDescription() string {
 		"When the plan config cannot be read, the call still succeeds: the line ends with \" Guardrails unavailable: <warning>.\" and summary names the warning. " +
 		"It writes a temp file and renames it, and the file keeps its mode. " +
 		"Returns preplanFile, guardrailCheckLine, emptySections (the ## headings of the " + sections + " skeleton sections, " + order + ", that are absent or hold only blank lines, in skeleton order; Decisions is empty when its table has no row below the header and separator rows, where a row is a line that starts with | after its leading spaces; (none) when every section has content), " +
+		"contractMissing (#<n> of each live ## Decisions row with no contract answer in ## Contracts, ascending; (none) when each has one), " +
+		"contractStale (#<n> that ## Contracts lists but that is not a live row, ascending; (none) when none), " +
+		"contractChecked (true when the contract check ran; false, with both contract lists (none), when a code fence is still open, when the file has no ## Decisions heading, or when " + preplanDecisionsRulesBroken + "; summary and next name the cause), " +
 		"summary (added or replaced, the old line, the count of other check lines that stay in the file, the empty sections, and a code fence that is still open at the end of the file, which makes each ## heading after it count as absent), next. " +
 		"A bad count or topic, a missing file, or a link, a folder or another file that is not regular returns DomainError and writes nothing; two matching files, a file over " + dashboardDeleteReadMaxText + " or no place for the line returns DataError; a list, Lstat, read or write failure returns InfraError and leaves the file as it was. A dangling link at the preplan folder returns InfraError.\n" +
 		verifyRequirementsContextDescription() + "\n" +
@@ -1720,6 +1733,97 @@ func preplanEmptySectionsOf(data []byte, spans []preplanSpan) (empty []string) {
 		}
 	}
 	return empty
+}
+
+// The causes that stop the contract check of preplan_check. Next and
+// Summary name the cause; preplanDecisionsRulesBroken is also part of the
+// registered tool description.
+const (
+	preplanDecisionsRulesBroken  = "the ## Decisions table breaks rule P4 or P5"
+	preplanContractsOpenFence    = "a code fence is still open, so the headings after it count as absent"
+	preplanContractsNoDecisions  = "the file has no ## Decisions heading"
+	preplanContractCheckNotRun   = "The contract check did not run: "
+	preplanContractsFormatBroken = "## Contracts breaks a format rule, so contractMissing can list a proposal whose answer the check cannot read: "
+)
+
+// preplanContractResult is the contract check of preplan_check.
+type preplanContractResult struct {
+	missing []string // each live id with no answer, "#<n>", ascending, non-nil
+	stale   []string // each answered id that is not live, "#<n>", ascending, non-nil
+	// notRun is the cause that stopped the check, one of the constants
+	// above, or "" when the check ran. missing and stale are then empty.
+	notRun string
+	// formatIssue is the format error text (P1 to P3, or P12) of a
+	// ## Contracts body that is not blank and breaks a rule, or ""
+	// (preplanContractIDs skips the lines that it cannot read).
+	formatIssue string
+}
+
+// checked reports whether the contract check ran.
+func (r preplanContractResult) checked() bool { return r.notRun == "" }
+
+// preplanContractGaps reads the ## Decisions and ## Contracts spans of data.
+// spans and openFence are the preplanSectionSpans result of data. It reads
+// the live ids with preplanDecisionTable and preplanCheckRowIDs, the same
+// checks as preplan_write. missing is each live id that no label line and no
+// No contract line lists. stale is each id that a label line or the No
+// contract line lists but that is not a live row.
+//
+// The check does not run (notRun is set, missing and stale are empty) when a
+// fence is still open (the headings after it are hidden), when the file has
+// no ## Decisions heading, or when the Decisions body is not blank and breaks
+// rule P4 or P5: no table header, a row with a cell count other than 3, an id
+// that preplanParseID refuses, or a repeated id. A blank Decisions body gives
+// no live id, and the check runs. An absent ## Contracts heading answers no
+// id.
+func preplanContractGaps(data []byte, spans []preplanSpan, openFence string) preplanContractResult {
+	r := preplanContractResult{missing: []string{}, stale: []string{}}
+	if openFence != "" {
+		r.notRun = preplanContractsOpenFence
+		return r
+	}
+	i := preplanFindSpan(spans, preplanDecisionsSection)
+	if i < 0 {
+		r.notRun = preplanContractsNoDecisions
+		return r
+	}
+	lines := preplanBodyLines(string(data[spans[i].bodyStart:spans[i].bodyEnd]))
+	live := map[int]bool{}
+	if !preplanBlank(lines) {
+		rows, _, ok := preplanDecisionTable(lines)
+		var err *preplanFormatError
+		if ok {
+			live, err = preplanCheckRowIDs(rows)
+		}
+		if !ok || err != nil {
+			r.notRun = preplanDecisionsRulesBroken
+			return r
+		}
+	}
+	var contracts string
+	if j := preplanFindSpan(spans, preplanContractsSection); j >= 0 {
+		contracts = string(data[spans[j].bodyStart:spans[j].bodyEnd])
+	}
+	if !preplanBlank(preplanBodyLines(contracts)) {
+		// The span starts at the line end of the heading, so the line ends
+		// before the body go: a line number of the error then counts from
+		// the first line of the body that preplan_write stored.
+		if ferr := preplanCheckSection(preplanContractsSection, strings.TrimLeft(contracts, "\r\n")); ferr != nil {
+			r.formatIssue = ferr.Error()
+		}
+	}
+	answered := preplanContractIDs(contracts)
+	for _, id := range slices.Sorted(maps.Keys(live)) {
+		if live[id] && !answered[id] {
+			r.missing = append(r.missing, "#"+strconv.Itoa(id))
+		}
+	}
+	for _, id := range slices.Sorted(maps.Keys(answered)) {
+		if !live[id] {
+			r.stale = append(r.stale, "#"+strconv.Itoa(id))
+		}
+	}
+	return r
 }
 
 // preplanHasDecisionRow reports whether body, the body of ## Decisions, holds
@@ -2327,27 +2431,52 @@ func planPreplanCheck(mainRoot string, in PlanSupportIn) (PlanSupportOut, error)
 	if err := preplanWriteBytes(topic.file, next); err != nil {
 		return PlanSupportOut{}, preplanWriteFailure(action, topic.dir, err)
 	}
-	empty, openFence := preplanEmptySections(next)
+	spans, openFence := preplanSectionSpans(next)
+	empty := preplanEmptySectionsOf(next, spans)
+	contract := preplanContractGaps(next, spans, openFence)
+	checked := contract.checked()
+	summary := preplanCheckSummary(topic.name, prior, warning, next, empty, openFence)
+	if !checked {
+		summary += " " + preplanContractCheckNotRun + contract.notRun + "."
+	}
 	return PlanSupportOut{
-		Summary:            preplanCheckSummary(topic.name, prior, warning, next, empty, openFence),
-		Next:               preplanCheckNext(empty, openFence),
+		Summary:            summary,
+		Next:               preplanCheckNext(empty, openFence, contract),
 		PreplanFile:        topic.file,
 		GuardrailCheckLine: line,
 		EmptySections:      &empty,
+		ContractMissing:    &contract.missing,
+		ContractStale:      &contract.stale,
+		ContractChecked:    &checked,
 	}, nil
 }
 
 // preplanCheckNext returns the Next of a successful preplan_check call. With
 // 1 or more empty sections it adds the count and points at the Step 4 route
-// table of the skill. With a fence still open at the end of the file
+// table of the skill. It adds one sentence for each contract list that is
+// not empty, one for a ## Contracts body that breaks P12, and one when the
+// contract check did not run. With a fence still open at the end of the file
 // (openFence), it says to close the fence first with tool calls only
 // (preplan_context, else preplan_write of the last section), as the Step 4
 // open-fence repair of the preplan skill does: the headings after it count
 // as absent.
-func preplanCheckNext(empty []string, openFence string) string {
+func preplanCheckNext(empty []string, openFence string, contract preplanContractResult) string {
 	next := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."
 	if len(empty) > 0 {
 		next += fmt.Sprintf(" emptySections lists %d empty section(s). The Step 4 route table of the skill picks the next step.", len(empty))
+	}
+	if n := len(contract.missing); n > 0 {
+		next += fmt.Sprintf(" contractMissing lists %d live proposal(s) with no contract answer: %s.", n, strings.Join(contract.missing, ", "))
+	}
+	if n := len(contract.stale); n > 0 {
+		next += fmt.Sprintf(" contractStale lists %d id(s) that are not live: %s. Readers skip them. The next ## Contracts write that keeps another block removes them.",
+			n, strings.Join(contract.stale, ", "))
+	}
+	if contract.formatIssue != "" {
+		next += " " + preplanContractsFormatBroken + contract.formatIssue + ". Send the full ## Contracts body again with preplan_write."
+	}
+	if !contract.checked() {
+		next += " " + preplanContractCheckNotRun + contract.notRun + ". contractChecked is false and both contract lists are empty: repair the file, then call preplan_check again."
 	}
 	if openFence != "" {
 		next += fmt.Sprintf(" First close the open %s fence with tool calls, not a file edit: call plan_support preplan_context with the same topic; when its summary names no closing fence line, send the full body of the last section with preplan_write, with the fence closed. Each ## heading after the fence counts as absent until then.", openFence)

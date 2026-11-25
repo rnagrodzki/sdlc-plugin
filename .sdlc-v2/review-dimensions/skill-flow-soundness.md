@@ -155,6 +155,7 @@ severity: high
   no longer does, or keeps a number the body renumbered, is a finding. An
   overview that lists steps out of run order misstates the flow, so it is
   a finding.
+- **Restatement parity.** This extends Overview order and content. A restatement of a step in the Steps overview, a write table, a routes table or a header summary gives the same condition and the same scope as the step body. Walk each row or cell against the step that it restates. A row that says an action always runs while the step runs it only under a condition is a finding. A row that says one question for all items while the step asks once for each item, or the reverse, is a finding. A step text and a table that disagree on when a call runs are a finding, also when each place reads correctly alone.
 - **Count and flag sources.** A route that counts findings (found, open,
   blocking) must count every source, including findings recorded without an
   id. A route must not advance on a flag that the fixer set on its own work
@@ -171,6 +172,7 @@ severity: high
   member of a set that routes the flow to a question (for example each
   section still empty) has a defined question or a named source that fills
   it. A member with no defined question or source is a finding.
+- **Overlapping fields and exclusive forms.** When a skill reads two or more tool result fields or stored lists that can hold the same item (for example a list of empty sections and a list of sections with a missing contract), the text states whether the lists overlap and which one a step acts on, so that one item gets one question and one write. When a stored item has two forms that exclude each other (for example an id kept as a checked id or as a pending line), each step that writes one form says to remove the item from the other form, and says what a read does when both forms are present. A step that writes the second form and leaves the first in place is a finding. So is an overlap that the text leaves open and that makes a step act twice on one item. This extends Count and flag sources, which checks that a routing set leaves out items that need no action, to sets that overlap.
 - **Delegated next routes.** A step that defers to a tool result's `next`
   string is a route. List each `next` value the tool can return, and confirm
   that each one reaches every enabled opt-in step. An offer that hands off
@@ -178,7 +180,14 @@ severity: high
   the flow must skip the offer when the precondition fails.
 - **Unattended answers.** An AskUserQuestion that `--auto` or a run without
   a user can reach must state the answer the flow uses without a user. This
-  extends the option-quality default rule above.
+  extends the option-quality default rule above. A question that a change adds,
+  or splits out of an existing question (for example a question for a new
+  section kind), is walked the same way: the step that asks it states the
+  `--auto` outcome (the default answer, a skip or a stop), and each place that
+  lists `--auto` behavior (the Arguments row for `--auto`, a flag table, the
+  overview, the hand-off text) names that outcome or says that it names only
+  some. A new question with no stated unattended outcome is a finding, also
+  when the older questions of the same step state theirs.
 - **Resume and checkpoint inference.** Walk each interruption point of the flow, including a crash between a dispatch and the write of its checkpoint. A resume rule that reads a missing record as 'not started' is a finding unless the record is written before the dispatch. Workers found running on resume must be stopped or adopted. A foreground Agent call that timed out counts as a started worker that may still run. Each value that a later step reads after context compaction (for example a 'material change detected' flag) must be saved in a checkpoint. A value kept only in the conversation is lost.
 - **Repeat-safe commands and staged paths.** A step that runs a command that changes the git index, the working tree or a stored file (git add, git mv, git rm, git commit, a move, a delete) is walked as a step that a resume or a retry runs a second time. List the commands in order and the state that each leaves. For each command, read what it does when its work is already done: a path that already moved, a path that no longer exists, nothing staged, nothing to commit. The step states the check that skips the command in that state, or states that the command is safe to repeat. A command that fails on a repeat (for example `git add` of a path that no longer exists exits with 128) and has no stated route is a finding. A step that stages names each path or pathspec it stages. A pathspec is quoted, and a glob is expanded to a list or shown with the shell that expands it. A folder staged whole, or a glob that matches more than the step wrote, is a finding. A commit step that stages by path states the clean-tree check that runs before it, so that a change the step did not make is not committed. This extends Resume and checkpoint inference, which checks records and workers, to the commands that a resume runs again.
 - **Multi-call write atomicity.** When one step changes one stored record, or a set of linked records, with two or more tool calls (for example a rework that clears a section and then writes another, or one write for each answer), list the calls in order. State the record after each call, and after a failure or an interruption between two calls. When the tool accepts all the changes in one call, a step that uses two calls is a finding. When two calls stay, the step must name how the next entry detects a half-changed record and what it does: finish the change, undo it or ask the user. A step that leaves a half-changed record with no detection and no recovery is a finding. This extends Resume and checkpoint inference, which walks an interruption between a dispatch and its checkpoint, to writes that one step makes in sequence.

@@ -60,6 +60,29 @@ the cut question again before the handoff (see
 [The cut question](./dialogue.md#the-cut-question)). A `Smallest cut: all.`
 line stays as it is.
 
+## Effect on the Contracts section
+
+After the `Smallest cut:` prune, the skill removes from each label line of
+`Contracts`, and from the `No contract:` line, the number of each proposal
+that is dropped or moved. It deletes a block whose label line then lists no
+number, and a `No contract:` line that lists no number. When a rework changes
+an endpoint, a data shape, a config key or a message, the skill writes the new
+shape into its block in the same write. The skill sends the new `Contracts`
+body after the `Decisions` write. It sends no `Contracts` write when the new
+body is blank or unchanged: the tool refuses a blank body (rule P12).
+
+After the check, the skill tells you in one line about each number in
+`Contracts` that is not a live proposal. Such a number blocks nothing, and the
+next `Contracts` write that keeps another block removes it. The skill goes on
+to the handoff only when each live proposal has a contract answer (see
+[The contract question](./dialogue.md#the-contract-question)).
+
+When the check of the contract answers cannot run, the tool says why: a code
+fence is still open, the file has no `Decisions` heading, or the `Decisions`
+table breaks a format rule. The skill repairs the file with tool calls and runs
+the check once more. If the check still cannot run, the skill prints the reason
+and goes to the cancel step.
+
 ## Errors that stop the check
 
 The check can stop the dialogue with an error. The skill prints the error,

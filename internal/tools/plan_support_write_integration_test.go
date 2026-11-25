@@ -175,3 +175,64 @@ func TestPlanSupportPreplanWriteIntegrationUnknownSection(t *testing.T) {
 	// refuses the value with its own DomainError.
 	wantPreplanIntegrationText(t, text, "# plan_support — error (domain)", `section "Notes" is not a topic-file section`)
 }
+
+// preplanIntegrationContractBlock1 and preplanIntegrationContractBlock2 are
+// two valid blocks of a ## Contracts body: a label line and a table, and a
+// label line and a code fence.
+const (
+	preplanIntegrationContractBlock1 = "**#1 Data: topics table**\n\n| Field | Type |\n|---|---|\n| id | int |"
+	preplanIntegrationContractBlock2 = "**#2 Config: feature flag**\n\n```\nfeature.enabled = true\n```"
+)
+
+// withPreplanIntegrationContracts returns the seed with body as the body of
+// ## Contracts.
+func withPreplanIntegrationContracts(body string) string {
+	return strings.Replace(preplanIntegrationSeed, "## Contracts\n\n", "## Contracts\n\n"+body+"\n\n", 1)
+}
+
+// TestPlanSupportPreplanWriteIntegrationContractsBlank sends empty content for
+// ## Contracts through the MCP tool, with a valid Contracts body in the file:
+// the result is an error that names rule P12, and the file bytes stay the same.
+func TestPlanSupportPreplanWriteIntegrationContractsBlank(t *testing.T) {
+	root, file := preplanIntegrationRepo(t)
+	seed := withPreplanIntegrationContracts(preplanIntegrationContractBlock1)
+	writeFile(t, file, seed)
+	if err := os.Chmod(file, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	text, isError := preplanIntegrationCall(t, root, map[string]any{
+		"action": "preplan_write", "topic": "auth flow", "section": "Contracts", "content": "",
+	})
+	if !isError {
+		t.Fatalf("preplan_write returned no error for a blank Contracts body:\n%s", text)
+	}
+	wantPreplanIntegrationFile(t, file, seed)
+	wantPreplanIntegrationText(t, text, "# plan_support — error (domain)",
+		`preplan_write: Section "Contracts" breaks rule P12: the body is blank: send a labelled block or a No contract line`,
+		"Send one labelled block for each contract: a label line **#<id>[, #<id>] <Kind>: <name>**, for example **#2 Endpoint: POST /api/topics**, "+
+			"where Kind is one of Endpoint, Data, Config, Message, then a code fence or a table right below it. "+
+			"Put each live proposal with no contract on one line such as No contract: #3, #5. The error detail names the line to fix"+preplanWriteAgain)
+}
+
+// TestPlanSupportPreplanWriteIntegrationContractsFullBody sends 3 calls for
+// ## Contracts through the MCP tool. Each call replaces the whole body: after
+// call 2 the file holds both blocks, and after call 3 only block 2.
+func TestPlanSupportPreplanWriteIntegrationContractsFullBody(t *testing.T) {
+	root, file := preplanIntegrationRepo(t)
+	for _, step := range []struct {
+		name, content string
+	}{
+		{"call 1: block #1", preplanIntegrationContractBlock1},
+		{"call 2: blocks #1 and #2", preplanIntegrationContractBlock1 + "\n\n" + preplanIntegrationContractBlock2},
+		{"call 3: block #2 only", preplanIntegrationContractBlock2},
+	} {
+		text, isError := preplanIntegrationCall(t, root, map[string]any{
+			"action": "preplan_write", "topic": "auth flow", "section": "Contracts", "content": step.content,
+		})
+		if isError {
+			t.Fatalf("%s: preplan_write returned an error:\n%s", step.name, text)
+		}
+		wantPreplanIntegrationFile(t, file, withPreplanIntegrationContracts(step.content))
+		wantPreplanIntegrationText(t, text, "- written:\n  - Contracts\n")
+	}
+}

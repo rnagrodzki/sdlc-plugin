@@ -22,9 +22,9 @@ import (
 // for a topic with no ASCII letter or digit.
 const preplanWordsSuggestion = `Pass a topic name with ASCII letters or digits, for example "auth flow".`
 
-// preplanLegacyTopic is a topic file from before the 7-section skeleton: it has
+// preplanLegacyTopic is a topic file from before the 8-section skeleton: it has
 // the 4 old sections (Goal, Users and effect, Flows, Decisions) and lacks
-// Problem and benefit, Risk if wrong and Non-goals.
+// Problem and benefit, Risk if wrong, Non-goals and Contracts.
 const preplanLegacyTopic = `# Preplan: legacy topic
 
 **Status:** in progress
@@ -50,7 +50,7 @@ Old flow.
 | 1 | Keep it | Cheap |
 `
 
-// preplanRepairedTopic is preplanLegacyTopic after preplan_context adds the 3
+// preplanRepairedTopic is preplanLegacyTopic after preplan_context adds the 4
 // absent headings. Each heading goes after its nearest earlier section, and no
 // other byte changes.
 const preplanRepairedTopic = `# Preplan: legacy topic
@@ -77,6 +77,8 @@ Old users.
 
 Old flow.
 
+## Contracts
+
 ## Decisions
 
 | # | Decision | Reason |
@@ -87,7 +89,7 @@ Old flow.
 // preplanAllSections is the "## " heading of each topic section, in skeleton order.
 var preplanAllSections = []string{
 	"## Goal", "## Problem and benefit", "## Users and effect", "## Risk if wrong",
-	"## Non-goals", "## Flows", "## Decisions",
+	"## Non-goals", "## Flows", "## Contracts", "## Decisions",
 }
 
 // preplanRenderedList returns the items that the renderer prints for the list
@@ -140,7 +142,7 @@ func preplanDirEntries(t *testing.T, dir string) []string {
 // file with the skeleton and reports it, that a second call leaves an edited
 // file unchanged and reports preplanCreated false, and that a bad topic returns
 // a domain error with a Suggestion and creates no file. The sub-test
-// "legacy file gets headings" checks that a 4-section file gets the 3 absent
+// "legacy file gets headings" checks that a 4-section file gets the 4 absent
 // headings (addedSections) and that a second call changes nothing.
 func TestMCPStdio_PreplanContext(t *testing.T) {
 	dir := realPath(t, t.TempDir())
@@ -220,7 +222,7 @@ func TestMCPStdio_PreplanContext(t *testing.T) {
 		t.Errorf("preplan dir entries = %v, want only [%s]", names, name)
 	}
 
-	// A topic file from before the 7-section skeleton gets the 3 absent headings
+	// A topic file from before the 8-section skeleton gets the 4 absent headings
 	// on the first call and nothing on the second. The sub-test uses its own
 	// repo and server.
 	t.Run("legacy file gets headings", func(t *testing.T) {
@@ -238,12 +240,12 @@ func TestMCPStdio_PreplanContext(t *testing.T) {
 		c := connectStdioClient(t, dir)
 		args := map[string]any{"action": "preplan_context", "topic": "legacy topic"}
 
-		// First call: the file exists, so the call adds the 3 headings in place.
+		// First call: the file exists, so the call adds the 4 headings in place.
 		env := callTool(t, c, "plan_support", args)
 		if !env.OK {
 			t.Fatalf("preplan_context: not ok: code=%s body=%s", env.Code, env.Body)
 		}
-		added := []string{"## Problem and benefit", "## Risk if wrong", "## Non-goals"}
+		added := []string{"## Problem and benefit", "## Risk if wrong", "## Non-goals", "## Contracts"}
 		if got := preplanRenderedList(t, env.Body, "addedSections"); !slices.Equal(got, added) {
 			t.Errorf("first call: addedSections = %q, want %q; body:\n%s", got, added, env.Body)
 		}
@@ -251,7 +253,7 @@ func TestMCPStdio_PreplanContext(t *testing.T) {
 			"- preplanCreated: false",
 			"- preplanFile: " + file,
 			"Topic file 2026-01-15-legacy-topic.md exists.",
-			"Added 3 section heading(s): ## Problem and benefit, ## Risk if wrong, ## Non-goals.",
+			"Added 4 section heading(s): ## Problem and benefit, ## Risk if wrong, ## Non-goals, ## Contracts.",
 		} {
 			if !strings.Contains(env.Body, want) {
 				t.Errorf("first call: want %q in body, got:\n%s", want, env.Body)
@@ -425,7 +427,7 @@ func TestMCPStdio_PreplanCheck(t *testing.T) {
 			return env.Body
 		}
 
-		// A new skeleton file: all 7 sections are empty.
+		// A new skeleton file: all 8 sections are empty.
 		body := check("new skeleton")
 		if got := preplanRenderedList(t, body, "emptySections"); !slices.Equal(got, preplanAllSections) {
 			t.Errorf("new skeleton: emptySections = %q, want %q; body:\n%s", got, preplanAllSections, body)
@@ -447,7 +449,7 @@ func TestMCPStdio_PreplanCheck(t *testing.T) {
 			t.Errorf("goal and decision filled: emptySections = %q, want %q; body:\n%s", got, wantEmpty, body)
 		}
 
-		// Fill the other 5 sections: the list is empty and renders (none).
+		// Fill the other 6 sections: the list is empty and renders (none).
 		for _, h := range wantEmpty {
 			text = strings.Replace(text, h+"\n\n", h+"\n\nText.\n\n", 1)
 		}

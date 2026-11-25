@@ -154,6 +154,7 @@ and `mcp-output-drives-behavior` guardrails.
   is specific and that the named tool can fix the error, not that the call it
   describes keeps the target. Example: a retry hint that omitted `runId`, and
   a `Next` that named a `runId` that could be `(none)`.
+- A format check that reports each refusal as a finding or an error with its own `Msg` and `Suggestion` (a heading shape, a table layout, a one-line form such as a `P12` row) is read branch by branch. List each refusing branch and each cause that reaches it. These are findings: a `Suggestion` shared by several unlike causes; a `Suggestion` for a closed-set field (a `Kind`, a label) that omits an allowed value or types the list by hand; a fallback branch whose text does not print the offending line (cut to one named cap); a branch that two causes reach under one text (a repeated id and a malformed id). Split the branch by cause, or word the text for both. A test for each branch asserts the whole `Msg` and `Suggestion`. This extends the branch-state bullet above, which covers the error branches of a handler, to the findings of a format check. Example: one `Suggestion` that served about ten refusals of a format rule, and a fallback message with no offending line.
 
 Every error result MUST render a non-empty `## Do this` section. When a typed
 error carries no `Suggestion`, `defaultRecovery(code)` supplies one; a rendered

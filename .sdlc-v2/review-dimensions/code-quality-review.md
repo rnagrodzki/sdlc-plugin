@@ -149,6 +149,7 @@ Review Go source changes for baseline code quality in this module
   parameter kept to satisfy an interface or a function type is exempt.
   Example: `planDoneTiming` took an unused `mainRoot` parameter, and
   `planTimingReport` had no production caller.
+- A function or method that takes five or more parameters of any type is a finding, also when no two neighbours share a type. A caller can swap two arguments of a similar kind (two counts, two flags, two lists of ids) and the code still compiles, and a reader cannot tell what each position means at the call site. Pass one named struct that holds the values, or compute the values inside the function from the one record they come from. Count a helper that a change extracts from a larger function. A final `error` and a comma-ok bool do not count. A parameter kept to satisfy an interface or a function type is exempt. This extends the unused-parameter rule above, which checks that each parameter is read and not how many a signature carries. Example: a `Next` builder that took five counts and flags that all came from one check result.
 - When a struct field's type changes from non-pointer to pointer (`*int`,
   `*string`, `*bool`), every dereference site must be nil-guarded before
   use or use a local-default pattern (e.g. `value := 0; if ptr != nil {

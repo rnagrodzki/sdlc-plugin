@@ -42,15 +42,21 @@ not build.
 
 | Input | Requirement statements | Scope limits |
 |-------|------------------------|--------------|
-| Topic file | The body of `## Goal`, `## Problem and benefit`, `## Users and effect` and `## Risk if wrong`. Each `## Flows` diagram with its text twin. Each live `## Decisions` row: a row whose Decision cell does not start with `Moved:` or `Dropped:`. | Each `## Non-goals` bullet. A bullet `Offered, not picked: <option>.` is an option that the user refused. It is a scope limit, never a need. |
+| Topic file | The body of `## Goal`, `## Problem and benefit`, `## Users and effect` and `## Risk if wrong`. Each `## Flows` diagram with its text twin. Each `## Contracts` block whose label line lists a live `## Decisions` row. Each live `## Decisions` row: a row whose Decision cell does not start with `Moved:` or `Dropped:`. | Each `## Non-goals` bullet. A bullet `Offered, not picked: <option>.` is an option that the user refused. It is a scope limit, never a need. |
 | File, Jira ticket, GitHub issue | Each sentence or bullet that states a need. | Each sentence or bullet that excludes scope. |
 
 These texts of a topic file are not statements and not scope limits: the line
-`No flow change.`, the line `None stated.`, the `Smallest cut:` line, the
+`No flow change.`, the `No contract:` line, a `## Contracts` block whose label
+line lists no live row, the line `None stated.`, the `Smallest cut:` line, the
 `**Status:**` line, the `**Guardrail check:**` line or a `## Guardrail check`
 section, the `# Preplan:` title, and the `## Open questions` bullets. An empty
 or absent section gives no statement. The `empty-section` structure finding
 reports it.
+
+Each statement has a reference in the report: the number of a `## Decisions`
+row (`#3`), the heading of a topic body (`## Goal`), `## Contracts: <Kind>:
+<name>` for a `## Contracts` block (`## Contracts: Endpoint: POST /api/topics`),
+or `statement <n>` in text order for a file, a Jira ticket or a GitHub issue.
 
 These sources follow the rules that `/plan` uses to read a topic file.
 

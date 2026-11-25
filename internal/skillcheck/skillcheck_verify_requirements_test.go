@@ -8,8 +8,8 @@
 // The shared helpers live in skillcheck_flags_test.go. The Flags table parser
 // and the argument tokenizer come from skillcheck_preplan_test.go. Every
 // unexported identifier below is prefixed verifyRequirements, and the declared
-// Test functions are TestVerifyRequirementsSkillParity and
-// TestVerifyRequirementsSkillReadOnly.
+// Test functions are TestVerifyRequirementsSkillParity,
+// TestVerifyRequirementsSkillReadOnly and TestVerifyRequirementsSkillContracts.
 package skillcheck
 
 import (
@@ -324,4 +324,20 @@ func TestVerifyRequirementsSkillReadOnly(t *testing.T) {
 			t.Errorf("verify-requirements/SKILL.md holds the token %q outside the ## DO NOT section", tok)
 		}
 	})
+}
+
+// TestVerifyRequirementsSkillContracts checks that the statements table of the
+// skill counts each live-row Contracts block as a statement and keeps the
+// No contract: line out of the statements.
+func TestVerifyRequirementsSkillContracts(t *testing.T) {
+	pluginRoot := executeSkillsRepoRoot(t)
+	skill := executeSkillsReadFile(t, filepath.Join(pluginRoot, "skills", verifyRequirementsWantName, "SKILL.md"))
+	for _, want := range []string{
+		"each `## Contracts` block whose label line lists a live `## Decisions` row",
+		"the `No contract:` line in `## Contracts`, a `## Contracts` block whose label line lists no live row",
+	} {
+		if !strings.Contains(skill, want) {
+			t.Errorf("verify-requirements SKILL.md lacks %q", want)
+		}
+	}
 }

@@ -399,7 +399,7 @@ func browserSeedRepoA(t *testing.T, root string, now time.Time) *browserShip {
 }
 
 // browserFullTopic returns the text of full-topic.md. It is a topic file that
-// passes the format checker of preplan_write (rules P1 to P11), so the
+// passes the format checker of preplan_write (rules P1 to P12), so the
 // collector reads every summary field: the goal sentence, 3 live rows (1 kept),
 // 1 dropped row, the check time, 1 open question and no unread name. The file
 // has no **Started:** line, so its duration is 0.
@@ -417,6 +417,7 @@ func browserFullTopic() string {
 		{"Risk if wrong", "The box shows a wrong count.\n"},
 		{"Non-goals", "None stated.\n"},
 		{"Flows", "No flow change.\n"},
+		{"Contracts", "No contract: #1, #2, #3.\n"},
 		{"Decisions", decisions},
 		{"Open questions", "- Which repos does the box list?\n"},
 	}
