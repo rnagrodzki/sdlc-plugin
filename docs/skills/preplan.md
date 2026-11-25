@@ -26,7 +26,7 @@ What happens:
 
 - **Think the idea through before you plan.** The questions are about function and effect: who uses the change, what changes, and what fails. None is about code.
 - **Find a guardrail conflict early.** The skill reworks or drops a proposal that breaks an `error` guardrail, and asks you about a `warning` guardrail.
-- **Get a written record.** One Markdown file holds the goal, the problem, the users, the risk, the non-goals, the flows and the decisions.
+- **Get a written record.** One Markdown file holds the goal, the problem, the users, the risk, the non-goals, the flows, the contracts and the decisions.
 - **Stop and continue later.** The topic file is the only state. Run the command again with the same topic, and the dialogue goes on from the file.
 - **Go from the idea to the plan in one session.** At the end, start `/sdlc:plan` with one or more ready topic files.
 
@@ -37,8 +37,8 @@ What happens:
 | Step 0: Announce and take the topic | skill | Prints the announce line and takes the topic from the argument. It asks for the topic when the argument is empty. | The topic name | no | always |
 | Step 1: Load the guardrails and the topic file | tool | Calls `preplan_context` to load the plan guardrails and to create the topic file, or to add the absent section headings. | The guardrails and the topic file path | no | always |
 | Step 2: Read the topic file | skill | Reads the topic file, sets the status to `in progress` and converts an old-form file. | The gaps in the topic file | no | always |
-| Step 3: Ask one question | skill | Asks one question about the first gap and writes the answer into its section. | An updated topic file section | no | until no section is empty or the user is done |
-| Step 4: Check the proposals against the guardrails | skill | Checks each live proposal against the guardrails. It reworks or drops a proposal that breaks an `error` guardrail. | A topic file with a `**Guardrail check:**` line | no | after each Step 3 answer |
+| Step 3: Ask one question | skill | Asks one question about the first gap and writes the answer into its section. It asks for one contract answer for each proposal. | An updated topic file section | no | until no section is empty or the user is done |
+| Step 4: Check the proposals against the guardrails | skill | Checks each live proposal against the guardrails. It reworks or drops a proposal that breaks an `error` guardrail. It goes on to the handoff only when each live proposal has a contract answer. | A topic file with a `**Guardrail check:**` line | no | after each Step 3 answer |
 | Step 5: Hand off to plan | skill | Sets the status to `ready for plan` and asks what to do next: start `/sdlc:plan`, start a new idea, or stop. When `openspec/config.yaml` exists, it also offers `Check against OpenSpec`: it prints the report of `/sdlc:verify-requirements`, changes no file and asks again (see [Hand off to plan](preplan/dialogue.md#hand-off-to-plan)). | A topic file with the status `ready for plan` | no | the check passes with no empty section |
 
 ### Run facts

@@ -34,8 +34,9 @@ A run of `/sdlc:preplan auth flow` on a new topic goes like this:
   4. `Risk if wrong`
   5. `Non-goals`
 
-  Then it asks the open questions, then a missing `Flows` entry, then the next
-  proposal. It starts at the first section that has a gap.
+  Then it asks the open questions, then a missing `Flows` entry, then one
+  contract answer for each proposal that has none, then the next proposal. It
+  starts at the first section that has a gap.
 - If an answer is vague, the skill asks one follow-up question.
 - If a benefit has no measure or no baseline, the skill asks one follow-up
   question for both.
@@ -95,7 +96,7 @@ Then the guardrail check runs. If a section is still empty after the check,
 the skill lists the empty sections and asks: fill them, or go to the handoff
 with the empty sections. It asks on each final check that still finds an
 empty section. A section is empty when it is absent or
-holds only blank lines. Only the seven sections from `Goal` to `Decisions` count:
+holds only blank lines. Only the eight sections from `Goal` to `Decisions` count:
 `Open questions` is never an empty section. A `Decisions` table with no row is empty too. The
 skill says that `/sdlc:plan` can start with the empty sections, but each one is a
 gap in its requirements. The "done" option means go to the handoff. The skill

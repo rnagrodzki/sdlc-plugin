@@ -159,10 +159,10 @@ A requirement statement is one unit of text that states a need. A scope limit is
 
 | Kind | Requirement statements | Scope limits |
 |---|---|---|
-| `topic` | the body of `## Goal`, `## Problem and benefit`, `## Users and effect` and `## Risk if wrong` (one statement each); each `## Flows` diagram with its text twin; each live `## Decisions` row. A row is live when its Decision cell does not start with `Moved:` or `Dropped:` | each `## Non-goals` bullet. A bullet `Offered, not picked: <option>.` is an option that the user refused. It is a scope limit, never a need |
+| `topic` | the body of `## Goal`, `## Problem and benefit`, `## Users and effect` and `## Risk if wrong` (one statement each); each `## Flows` diagram with its text twin; each `## Contracts` block whose label line lists a live `## Decisions` row; each live `## Decisions` row. A row is live when its Decision cell does not start with `Moved:` or `Dropped:` | each `## Non-goals` bullet. A bullet `Offered, not picked: <option>.` is an option that the user refused. It is a scope limit, never a need |
 | `file`, `jira`, `issue` | each sentence or bullet that states a need | each sentence or bullet that excludes scope |
 
-These texts of a topic file are not statements and not scope limits: the line `No flow change.` in `## Flows`, the line `None stated.` in `## Non-goals`, the `Smallest cut:` line under the Decisions table, the `**Status:**` line, the `**Guardrail check:**` line or a `## Guardrail check` section, the `# Preplan:` title, and the `## Open questions` bullets (they come from `openQuestions`). An empty or absent section gives no statement. The `empty-section` structure finding reports it. Add no other finding for it.
+These texts of a topic file are not statements and not scope limits: the line `No flow change.` in `## Flows`, the `No contract:` line in `## Contracts`, a `## Contracts` block whose label line lists no live row, the line `None stated.` in `## Non-goals`, the `Smallest cut:` line under the Decisions table, the `**Status:**` line, the `**Guardrail check:**` line or a `## Guardrail check` section, the `# Preplan:` title, and the `## Open questions` bullets (they come from `openQuestions`). An empty or absent section gives no statement. The `empty-section` structure finding reports it. Add no other finding for it.
 
 Give each statement a reference: the Decisions `#` value of a row (`#3`), the section of a topic body (`## Goal`), or `statement <n>` in text order for the other kinds.
 

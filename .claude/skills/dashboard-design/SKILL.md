@@ -269,6 +269,7 @@ While preplan runs, the preplan rules stay in force. Use `requirements.md` only 
 | `## Users and effect` | The `Why` cells of `## Requests`. Many cells are `—`, because the loop does not ask for a reason. Preplan asks the user for the missing ones. |
 | `## Risk if wrong` | No source. Preplan asks the user. |
 | `## Non-goals` | No source. Preplan asks the user. Rows of `## Not in the draft` stay in `## Open questions`, because they are undecided. |
+| `## Contracts` | No source. Preplan asks the user. |
 | `## Decisions` | One proposal for each row of `## Requests`. One for each record of `## Dependencies`. One for the port: copy the draft to the shipped folder, remove each `designDep` call and each `sample` value. |
 | `## Open questions` | Each row of `## Not in the draft`. Each missing behavior rule or acceptance check. |
 

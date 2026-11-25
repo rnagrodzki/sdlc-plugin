@@ -9,7 +9,7 @@ reads it as its requirements file.
 
 On 2026-10-12 (UTC), `/sdlc:preplan auth flow` creates
 `.sdlc-v2/preplan/2026-10-12-auth-flow.md`. A new file holds the heading, the
-status, the start time and seven empty sections:
+status, the start time and eight empty sections:
 
 ```markdown
 # Preplan: auth flow
@@ -29,6 +29,8 @@ status, the start time and seven empty sections:
 ## Non-goals
 
 ## Flows
+
+## Contracts
 
 ## Decisions
 ```
@@ -83,6 +85,7 @@ and deletes it with the last one.
 | `Risk if wrong` | Who or what fails if the change has a defect. |
 | `Non-goals` | What the change does not build, one bullet for each. A scope option that you did not pick is a bullet `Offered, not picked: <option>.` If you say that the change excludes nothing, the line `None stated.` |
 | `Flows` | A before and after diagram for each flow that a proposal changes, with the same steps as a numbered list. If no flow changes, the line `No flow change.` |
+| `Contracts` | One answer for each live proposal: a block with a label line such as `**#2 Endpoint: POST /api/topics**` for each endpoint, data shape, config key or message that the proposal adds or changes, or its number in the one line `No contract: #3, #5.`. |
 | `Decisions` | A table with one row for each proposal. The number of a row never changes, and the skill never uses it again. Under the table, one line holds your answer to the cut question (see [The cut question](./dialogue.md#the-cut-question)), for example `Smallest cut: #1, #3.`, `Smallest cut: #2.` or `Smallest cut: all.`. The numbers are in ascending order. The line is not a row. |
 | `Open questions` | One bullet for each question that has no answer yet. After the skill converts an older file, the section exists only when at least one question is open. |
 
@@ -208,6 +211,7 @@ The dashboard uses the same check: a section that breaks a rule is unread
 | P9 | `Open questions` | Each line that is not blank starts with `- `. |
 | P10 | `Flows` | The body is `No flow change.`, or it holds a `mermaid` code fence. Each `classDef` line is one of the two `classDef` lines that the skill copies into each diagram (`classDef new ...` and `classDef changed ...`), with no change except leading spaces. |
 | P11 | `Guardrail check` | Only an empty body. It deletes this older section. A body of spaces is not empty. |
+| P12 | `Contracts` | Each line outside a code fence is a label line `**#<id>[, #<id>] <Kind>: <name>**` (Kind is `Endpoint`, `Data`, `Config` or `Message`), a line of the code fence or table below it, or the one line `No contract: #<id>, #<id>.` with ascending numbers. No two labels share a kind and a name. No number is in a label and in the `No contract:` line. A blank body is refused. |
 
 A section with no rule of its own, for example `Goal`, has rules P1 to P3
 only.
