@@ -164,7 +164,7 @@ A requirement statement is one unit of text that states a need. A scope limit is
 
 These texts of a topic file are not statements and not scope limits: the line `No flow change.` in `## Flows`, the `No contract:` line in `## Contracts`, a `## Contracts` block whose label line lists no live row, the line `None stated.` in `## Non-goals`, the `Smallest cut:` line under the Decisions table, the `**Status:**` line, the `**Guardrail check:**` line or a `## Guardrail check` section, the `# Preplan:` title, and the `## Open questions` bullets (they come from `openQuestions`). An empty or absent section gives no statement. The `empty-section` structure finding reports it. Add no other finding for it.
 
-Give each statement a reference: the Decisions `#` value of a row (`#3`), the section of a topic body (`## Goal`), or `statement <n>` in text order for the other kinds.
+Give each statement a reference: the Decisions `#` value of a row (`#3`), the section of a topic body (`## Goal`), `## Contracts: <Kind>: <name>` for a `## Contracts` block, with the kind and the name of its label line (`## Contracts: Endpoint: POST /api/topics`), or `statement <n>` in text order for the other kinds.
 
 | Statements found | Next |
 |---|---|

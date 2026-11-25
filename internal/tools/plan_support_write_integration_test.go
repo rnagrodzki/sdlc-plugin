@@ -207,7 +207,11 @@ func TestPlanSupportPreplanWriteIntegrationContractsBlank(t *testing.T) {
 		t.Fatalf("preplan_write returned no error for a blank Contracts body:\n%s", text)
 	}
 	wantPreplanIntegrationFile(t, file, seed)
-	wantPreplanIntegrationText(t, text, "# plan_support — error (domain)", `Section "Contracts" breaks rule P12`)
+	wantPreplanIntegrationText(t, text, "# plan_support — error (domain)",
+		`preplan_write: Section "Contracts" breaks rule P12: the body is blank: send a labelled block or a No contract line`,
+		"Send one labelled block for each contract: a label line **#<id>[, #<id>] <Kind>: <name>**, for example **#2 Endpoint: POST /api/topics**, "+
+			"where Kind is one of Endpoint, Data, Config, Message, then a code fence or a table right below it. "+
+			"Put each live proposal with no contract on one line such as No contract: #3, #5. The error detail names the line to fix"+preplanWriteAgain)
 }
 
 // TestPlanSupportPreplanWriteIntegrationContractsFullBody sends 3 calls for

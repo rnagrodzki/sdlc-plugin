@@ -146,7 +146,7 @@ The `preplan_write` action SHALL refuse a `Contracts` body that breaks rule P12 
 
 #### Scenario: Prose line in Contracts
 - **WHEN** the `Contracts` body is the line `The endpoint takes a name.`
-- **THEN** the tool returns the `DomainError` `Section "Contracts" breaks rule P12: line 1 is not a label line, a code fence, a table row or the No contract line`
+- **THEN** the tool returns the `DomainError` `Section "Contracts" breaks rule P12: line 1 is not a label line, a code fence, a table row or the No contract line: "The endpoint takes a name.". A label line is **#<id>[, #<id>] <Kind>: <name>**, and Kind is one of Endpoint, Data, Config, Message`
 
 #### Scenario: Old no-contract line
 - **WHEN** the `Contracts` body is the line `No contract change.`
@@ -154,7 +154,7 @@ The `preplan_write` action SHALL refuse a `Contracts` body that breaks rule P12 
 
 #### Scenario: Label with no block
 - **WHEN** the `Contracts` body is `**#2 Endpoint: POST /x**`, then `**#3 Data: t**` and a table
-- **THEN** the tool returns the `DomainError` `Section "Contracts" breaks rule P12: line 1 is a label line with no code fence or table below it`
+- **THEN** the tool returns the `DomainError` `Section "Contracts" breaks rule P12: line 1 is a label line with no code fence or table below it: put a code fence or a table right below each label line`
 
 #### Scenario: Unknown kind
 - **WHEN** the `Contracts` body is `**#2 Api: x**` and a code fence
@@ -162,7 +162,7 @@ The `preplan_write` action SHALL refuse a `Contracts` body that breaks rule P12 
 
 #### Scenario: Id in a label and in the no-contract line
 - **WHEN** the `Contracts` body is `**#2 Endpoint: POST /x**`, a code fence and `No contract: #2.`
-- **THEN** the tool returns the `DomainError` `Section "Contracts" breaks rule P12: #2 is in a label line and in the No contract line`
+- **THEN** the tool returns the `DomainError` `Section "Contracts" breaks rule P12: #2 is in a label line and in the No contract line: keep each id in one place only`
 
 #### Scenario: Two blocks with one kind and name
 - **WHEN** the `Contracts` body has `**#1 Data: Topics**` with a table and `**#2 Data: topics**` with a table
@@ -171,6 +171,14 @@ The `preplan_write` action SHALL refuse a `Contracts` body that breaks rule P12 
 #### Scenario: No-contract ids out of order
 - **WHEN** the `Contracts` body is the line `No contract: #5, #2.`
 - **THEN** the tool returns a `DomainError` that names rule `P12`
+
+#### Scenario: Repeated no-contract id
+- **WHEN** the `Contracts` body is the line `No contract: #2, #2.`
+- **THEN** the tool returns the `DomainError` `Section "Contracts" breaks rule P12: line 1 (the No contract line) lists #2 twice: list each id once`
+
+#### Scenario: P12 Suggestion
+- **WHEN** the tool refuses a `Contracts` body with rule `P12`
+- **THEN** the Suggestion names the label form `**#<id>[, #<id>] <Kind>: <name>**` and each kind: `Endpoint, Data, Config, Message`
 
 #### Scenario: Open fence in Contracts
 - **WHEN** the `Contracts` body is a label line and a code fence that does not close
@@ -202,7 +210,7 @@ The `preplan_check` action SHALL return `contractMissing` and `contractStale`, r
 - **WHEN** row 1 is live, row 2 starts with `Dropped:`, row 3 starts with `Moved:`, and `## Contracts` holds `**#1, #2 Data: topics table**` with a table and `No contract: #3.`
 - **THEN** `contractMissing` is `(none)`
 - **AND** `contractStale` lists `#2` and `#3`
-- **AND** `next` holds `contractStale lists 2 id(s) that are not live: #2, #3. Remove them in the next ## Contracts write.`
+- **AND** `next` holds `contractStale lists 2 id(s) that are not live: #2, #3. Readers skip them. The next ## Contracts write that keeps another block removes them.`
 
 #### Scenario: No Contracts heading
 - **WHEN** row 1 is live and the topic file has no `## Contracts` heading
@@ -211,11 +219,29 @@ The `preplan_check` action SHALL return `contractMissing` and `contractStale`, r
 #### Scenario: Label that is not valid
 - **WHEN** row 1 is live and the only text that names `#1` in `## Contracts` is `**#1 Api: x**` or a line inside a code fence
 - **THEN** `contractMissing` lists `#1`
+- **AND** `next` holds `## Contracts breaks a format rule` and the P12 error of the body
 
 #### Scenario: Decisions table that breaks P4 or P5
 - **WHEN** `## Decisions` has two rows with `#` value `1`, or a row with 2 cells, or a damaged header line
 - **THEN** `contractMissing` and `contractStale` are `(none)`
-- **AND** `next` holds `The ## Decisions table breaks rule P4 or P5, so the contract check did not run.`
+- **AND** `contractChecked` is false
+- **AND** `next` holds `The contract check did not run: the ## Decisions table breaks rule P4 or P5.`
+
+### Requirement: Preplan check contract status
+The `preplan_check` action SHALL return `contractChecked`: true when the contract check ran, and false when a code fence is still open at the end of the file, when the file has no `## Decisions` heading, or when the `## Decisions` table breaks rule P4 or P5.
+
+- When `contractChecked` is false, `contractMissing` and `contractStale` are `(none)`, and `summary` and `next` name the cause.
+- Other actions do not return the field.
+
+#### Scenario: Open fence hides Contracts and Decisions
+- **WHEN** a code fence that opens in `## Flows` is still open at the end of the file
+- **THEN** `contractChecked` is false and both lists are `(none)`
+- **AND** `next` holds `The contract check did not run: a code fence is still open, so the headings after it count as absent.`
+
+#### Scenario: No Decisions heading
+- **WHEN** the topic file has no `## Decisions` heading and `## Contracts` lists `#1`
+- **THEN** `contractChecked` is false and `contractStale` is `(none)`
+- **AND** `next` holds `The contract check did not run: the file has no ## Decisions heading.`
 
 #### Scenario: Other action
 - **WHEN** `action` is `preplan_context`

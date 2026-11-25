@@ -59,7 +59,7 @@ When a preplan topic file has `## Contracts` blocks, the plan skill SHALL write 
 #### Scenario: Missing contracts under auto mode
 - **WHEN** `## Contracts` is empty and `--auto` is set
 - **THEN** the skill asks no question
-- **AND** `## Key Decisions` holds the bullet `Contracts: not stated; each task decides its Contract shape`
+- **AND** `## Key Decisions` holds the bullet `Contracts: not stated for <the Decision text of each live row with no answer>; each task decides its Contract shape`
 - **AND** `## Deviations & assumptions` has one row with `asked=no`
 
 #### Scenario: Template with no Key Decisions

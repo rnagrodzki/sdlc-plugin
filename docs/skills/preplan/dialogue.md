@@ -22,7 +22,9 @@ A run of `/sdlc:preplan auth flow` on a new topic goes like this:
 ## How the dialogue works
 
 - The skill asks one question at a time. It asks about function and effect:
-  who uses it, what changes, and what fails. It does not ask about code.
+  who uses it, what changes, and what fails. It does not ask about code,
+  except the contract shapes of `Contracts`: URLs, payload fields, data
+  fields, config keys and message fields.
 - Before each question, the skill restates the facts that you need to answer.
 - Each question has a "done" option and a "cancel" option.
 - After each answer, the skill sends each changed section to the tool, then
@@ -69,6 +71,31 @@ form the smallest version that still gives value.
 The guardrail check can also change the line (see
 [Effect on the Smallest cut line](./guardrail-check.md#effect-on-the-smallest-cut-line)).
 
+## The contract question
+
+After the `Flows` entry, the skill asks one contract question for the live
+proposal with the lowest number that has no contract answer. A live proposal
+is a `Decisions` row that is not dropped or moved. A contract answer is a
+label line in `Contracts` that lists the number, or the number in the
+`No contract:` line.
+
+- The skill restates the proposal and its number. It asks which endpoints,
+  data shapes, config keys or flags, and messages the proposal adds or
+  changes, and the exact shape of each.
+- The options are: give the shapes, `no contract`, "done" and "cancel".
+- When you give the shapes, the skill writes one labelled block for each
+  shape (see [Sections](./topic-file.md#sections)).
+- When you answer `no contract`, the skill adds the number to the one line
+  `No contract: #<id>, #<id>.`, in ascending order.
+- A number is in a label line or in the `No contract:` line, never in both.
+  When you change an answer, the skill removes the number from the other form.
+- Each write sends the full `Contracts` body, so the skill keeps every other
+  block and the `No contract:` line.
+- The next guardrail check checks the proposal with its blocks.
+
+The guardrail check also prunes `Contracts` (see
+[Effect on the Contracts section](./guardrail-check.md#effect-on-the-contracts-section)).
+
 ## When a write fails
 
 - When the tool refuses a write, the skill fixes the section and sends it
@@ -86,9 +113,14 @@ The guardrail check can also change the line (see
 ## Hand off to plan
 
 When you answer "done", the skill needs at least one proposal that is not
-dropped, and either a flow diagram or the line `No flow change.` under
-`Flows`. If one is missing, the skill tells you what is missing and keeps
-asking. If the file has two or more proposals that are not dropped or moved,
+dropped, either a flow diagram or the line `No flow change.` under
+`Flows`, and a contract answer for each live proposal (see
+[The contract question](#the-contract-question)). If one is missing, the
+skill tells you what is missing and keeps asking. When `Contracts` lists a
+number that is not a live proposal, the skill tells you in one line. Such a
+number blocks nothing. When the check of the contract answers did not run,
+for example because a code fence is still open, the skill repairs the file
+and runs the check again before the handoff. If the file has two or more proposals that are not dropped or moved,
 and no `Smallest cut:` line, the skill asks the cut question first (see
 [The cut question](#the-cut-question)).
 
@@ -96,8 +128,10 @@ Then the guardrail check runs. If a section is still empty after the check,
 the skill lists the empty sections and asks: fill them, or go to the handoff
 with the empty sections. It asks on each final check that still finds an
 empty section. A section is empty when it is absent or
-holds only blank lines. Only the eight sections from `Goal` to `Decisions` count:
-`Open questions` is never an empty section. A `Decisions` table with no row is empty too. The
+holds only blank lines. Only the sections from `Goal` to `Decisions` in
+[Sections](./topic-file.md#sections) count:
+`Open questions` is never an empty section. An empty `Contracts` section never
+reaches this question: each live proposal needs a contract answer first. A `Decisions` table with no row is empty too. The
 skill says that `/sdlc:plan` can start with the empty sections, but each one is a
 gap in its requirements. The "done" option means go to the handoff. The skill
 does not record your answer in the file, so a later "done" with an empty

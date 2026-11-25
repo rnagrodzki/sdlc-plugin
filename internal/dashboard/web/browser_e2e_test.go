@@ -417,6 +417,7 @@ func browserFullTopic() string {
 		{"Risk if wrong", "The box shows a wrong count.\n"},
 		{"Non-goals", "None stated.\n"},
 		{"Flows", "No flow change.\n"},
+		{"Contracts", "No contract: #1, #2, #3.\n"},
 		{"Decisions", decisions},
 		{"Open questions", "- Which repos does the box list?\n"},
 	}

@@ -47,7 +47,13 @@ A section that the topic file already fills answers its question, so the plan
 does not ask it again. An empty `Goal`, `Users and effect` or `Flows` section
 makes the requirements vague, so the plan asks its usual discovery questions.
 An empty `Contracts` section, or a live row with no contract answer, gives one
-discovery question for the shapes, except with `--auto`.
+discovery question for the shapes. The plan records each shape of the answer
+as it records a block. With `--auto`, the plan asks no question. It writes the
+Key Decisions bullet "Contracts: not stated for <the decision text of each
+live row with no answer>; each task decides its Contract shape" and adds one
+`Deviations & assumptions` row with `asked=no`. A task that changes the shape
+of a contract also adds one `Deviations & assumptions` row that names the
+contract.
 
 ## Several topic files
 
@@ -60,8 +66,8 @@ Give two or more topic files to plan them in one run:
 - The plan reads each file with the rules above, in argument order, and
   numbers the requirements across all files.
 - For each topic, it writes one non-goal entry and one smallest-cut entry in
-  Key Decisions, and one root problem in Context. Each entry starts with the
-  topic name. If the plan template has no such section, the plan records the
+  Key Decisions, one contract entry for each live block, and one root problem
+  in Context. Each entry starts with the topic name. If the plan template has no such section, the plan records the
   entry as a requirement item.
 - When two files contradict each other, the plan asks one question for each
   conflict. With `--auto`, the earlier file wins, and the plan records the

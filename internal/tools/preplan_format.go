@@ -48,9 +48,14 @@ var preplanAllowedClassDefs = []string{
 // table, without line ends. They come from preplanDecisionsHeader.
 var preplanDecisionsHeaderLines = strings.Split(strings.TrimSuffix(preplanDecisionsHeader, "\n"), "\n")
 
+// preplanIDListPattern matches an id list such as "#1, #3": ids joined by
+// ", ". It does not check the ids; preplanIDFields parses them. The Smallest
+// cut, label and No contract patterns build on it.
+const preplanIDListPattern = `#[0-9]+(?:, #[0-9]+)*`
+
 // preplanSmallestCutRe matches a valid Smallest cut line: "Smallest cut: all."
 // or "Smallest cut: #1, #3.". It does not check that the ids are live.
-var preplanSmallestCutRe = regexp.MustCompile(`^Smallest cut: (all|#[0-9]+(?:, #[0-9]+)*)\.$`)
+var preplanSmallestCutRe = regexp.MustCompile(`^Smallest cut: (all|` + preplanIDListPattern + `)\.$`)
 
 // preplanSmallestCutLabel starts every Smallest cut line. A line that starts
 // with it in any letter case, but that preplanSmallestCutRe does not match, is
@@ -83,8 +88,9 @@ func preplanRuleError(rule, format string, args ...any) *preplanFormatError {
 // preplanRuleSuggestion returns the Suggestion of a preplan_write call whose
 // content breaks rule: the form that the rule accepts. A second call with a
 // body of that form passes the rule. P11 accepts only an empty string. P12
-// accepts labelled blocks and one No contract line. An
-// unknown rule gives a general text.
+// accepts labelled blocks and one No contract line; each P12 detail ends
+// with the step that fixes its own failure. An unknown rule gives a general
+// text.
 func preplanRuleSuggestion(rule string) string {
 	switch rule {
 	case "P1":
@@ -116,8 +122,10 @@ func preplanRuleSuggestion(rule string) string {
 		return "Call preplan_write again with section " + preplanGuardrailCheckSection +
 			" and content as an empty string: it deletes the section. No other body is valid."
 	case "P12":
-		return "Send one labelled block for each contract: a label line such as **#2 Endpoint: POST /api/topics**, " +
-			"then a code fence or a table. Put each live proposal with no contract on one line such as No contract: #3, #5." + preplanWriteAgain
+		return "Send one labelled block for each contract: a label line " + preplanContractLabelForm +
+			", for example **#2 Endpoint: POST /api/topics**, where Kind is one of " + preplanContractKindList +
+			", then a code fence or a table right below it. Put each live proposal with no contract on one line such as No contract: #3, #5." +
+			" The error detail names the line to fix" + preplanWriteAgain
 	}
 	return "Fix the content" + preplanWriteAgain
 }
@@ -329,6 +337,32 @@ func preplanParseID(s string) (int, bool) {
 	return n, true
 }
 
+// preplanIDField is one field of an id list: its text, such as "#3", and the
+// id that preplanParseID reads from it. ok is false when preplanParseID
+// refuses the text after the "#".
+type preplanIDField struct {
+	text string
+	id   int
+	ok   bool
+}
+
+// preplanIDFields splits list, an id list that preplanIDListPattern matched,
+// into its fields in list order. Each caller applies its own rule to the
+// fields, so the order of its checks stays the order of the list.
+func preplanIDFields(list string) []preplanIDField {
+	parts := strings.Split(list, ", ")
+	fields := make([]preplanIDField, 0, len(parts))
+	for _, text := range parts {
+		id, ok := preplanParseID(strings.TrimPrefix(text, "#"))
+		fields = append(fields, preplanIDField{text: text, id: id, ok: ok})
+	}
+	return fields
+}
+
+// preplanBadIDDetail is the detail of an id that preplanParseID refuses: the
+// line number and the field text. P7 uses it as it is, and P12 adds the rule.
+const preplanBadIDDetail = "line %d has the id %q"
+
 // preplanCheckRowNotes runs P6. It returns the first failure.
 func preplanCheckRowNotes(rows [][]string) *preplanFormatError {
 	for i, cells := range rows {
@@ -376,17 +410,16 @@ func preplanCheckCutIDs(list string, lineNo int, live map[int]bool) *preplanForm
 		return nil
 	}
 	prev := 0
-	for _, field := range strings.Split(list, ", ") {
-		id, ok := preplanParseID(strings.TrimPrefix(field, "#"))
+	for _, f := range preplanIDFields(list) {
 		switch {
-		case !ok:
-			return preplanRuleError("P7", "line %d has the id %q", lineNo, field)
-		case id <= prev:
-			return preplanRuleError("P7", "%s is not in ascending order", field)
-		case !live[id]:
-			return preplanRuleError("P7", "%s is not a live row", field)
+		case !f.ok:
+			return preplanRuleError("P7", preplanBadIDDetail, lineNo, f.text)
+		case f.id <= prev:
+			return preplanRuleError("P7", "%s is not in ascending order", f.text)
+		case !live[f.id]:
+			return preplanRuleError("P7", "%s is not a live row", f.text)
 		}
-		prev = id
+		prev = f.id
 	}
 	return nil
 }
@@ -453,125 +486,200 @@ func preplanCheckGuardrailSection(body string) *preplanFormatError {
 	return nil
 }
 
-// preplanContractKinds is the one source of the kind list: the label pattern,
-// the P12 text and the tests read it.
+// preplanContractKinds is the one source of the kind list of a Contracts
+// label line. preplanContractLabelRe, preplanContractKindList (the P12
+// Suggestion and the unknown-line detail) and the tests read it. The Content
+// description of PlanSupportIn types the list by hand, because a struct tag
+// cannot read a variable; TestPreplanContractKindsInContentTag pins it.
 var preplanContractKinds = []string{"Endpoint", "Data", "Config", "Message"}
+
+// preplanContractKindList is the kind list for a text: "Endpoint, Data,
+// Config, Message".
+var preplanContractKindList = strings.Join(preplanContractKinds, ", ")
+
+// preplanContractLabelForm is the form of a label line, for the error texts.
+const preplanContractLabelForm = "**#<id>[, #<id>] <Kind>: <name>**"
 
 // preplanContractLabelRe matches a label line of ## Contracts:
 // "**#2 Endpoint: POST /x**" or "**#1, #3 Data: topics table**". Group 1 is
 // the id list, group 2 the kind, group 3 the name. It does not check the ids.
-var preplanContractLabelRe = regexp.MustCompile(`^\*\*(#[0-9]+(?:, #[0-9]+)*) (` + strings.Join(preplanContractKinds, "|") + `): (\S(?:.*\S)?)\*\*$`)
+var preplanContractLabelRe = regexp.MustCompile(`^\*\*(` + preplanIDListPattern + `) (` + strings.Join(preplanContractKinds, "|") + `): (\S(?:.*\S)?)\*\*$`)
 
 // preplanNoContractRe matches the No contract line: "No contract: #3, #5."
-var preplanNoContractRe = regexp.MustCompile(`^No contract: (#[0-9]+(?:, #[0-9]+)*)\.$`)
+var preplanNoContractRe = regexp.MustCompile(`^No contract: (` + preplanIDListPattern + `)\.$`)
+
+// The P12 details that more than one place returns. Each detail ends with
+// the step that fixes the body, because the P12 Suggestion gives only the
+// general form.
+const (
+	preplanP12NoBlock = "line %d is a label line with no code fence or table below it: put a code fence or a table right below each label line"
+	preplanP12NoLabel = "line %d starts a code fence or a table with no label line above it: put a label line " + preplanContractLabelForm + " right above each block"
+	preplanP12BadID   = preplanBadIDDetail + "%s: write each id as # and a positive whole number, for example #2"
+	preplanP12Twice   = "line %d%s lists #%d twice: list each id once"
+)
+
+// preplanInNoContractLine is the "%s" part of preplanP12BadID and
+// preplanP12Twice for the No contract line. A label line uses "".
+const preplanInNoContractLine = " (the No contract line)"
+
+// preplanContractLabelKey is the key that makes two blocks the same: the
+// kind and the name in lower case.
+type preplanContractLabelKey struct{ kind, name string }
+
+// preplanContractsScan holds the P12 state between the lines of one body.
+type preplanContractsScan struct {
+	labelIDs   map[int]bool                     // each id that a label line lists
+	seenLabels map[preplanContractLabelKey]bool // each kind and name with a block
+	noContract []int                            // the ids of the No contract line
+	noLine     int                              // line number of the No contract line, 0 when none
+	pending    int                              // line number of a label that still waits for its block
+}
 
 // preplanCheckContracts runs P12 on lines that passed P1 to P3. The body is
 // one or more blocks and at most one No contract line. A block is a label
-// line, optional blank lines, then a code fence or a run of table rows. The
-// first failure in line order is returned.
+// line, optional blank lines, then a code fence or a run of table rows. A
+// blank line ends a run of table rows. The first failure in line order is
+// returned. The loop tracks only the fence and the table; the scan methods
+// check the label lines, the No contract line and the ids.
 func preplanCheckContracts(lines []string) *preplanFormatError {
 	if preplanBlank(lines) {
 		return preplanRuleError("P12", "the body is blank: send a labelled block or a No contract line")
 	}
-	type labelKey struct{ kind, name string }
-	var (
-		labelIDs   = map[int]bool{}
-		seenLabels = map[labelKey]bool{}
-		noContract []int
-		noLine     int    // line number of the No contract line, 0 when none
-		fence      string // the run that opened the current fence, "" outside a fence
-		pending    int    // line number of a label that still waits for its block
-		inTable    bool   // the last block is a table that more rows can extend
-	)
-	const noLabel = "line %d starts a code fence or a table with no label line above it"
+	s := preplanContractsScan{labelIDs: map[int]bool{}, seenLabels: map[preplanContractLabelKey]bool{}}
+	fence := ""      // the run that opened the current fence, "" outside a fence
+	inTable := false // the last block is a table that more rows can extend
 	for i, raw := range lines {
 		no := i + 1
 		if fence != "" {
 			fence = preplanFenceStep(fence, raw)
 			continue
 		}
-		if preplanFenceRun(raw) != "" {
-			if pending == 0 {
-				return preplanRuleError("P12", noLabel, no)
-			}
-			fence, pending, inTable = preplanFenceStep("", raw), 0, false
-			continue
-		}
 		line := strings.TrimSpace(raw)
+		var err *preplanFormatError
 		switch {
+		case preplanFenceRun(raw) != "":
+			err = s.startBlock(no)
+			fence, inTable = preplanFenceStep("", raw), false
 		case line == "":
 			inTable = false
-			continue
 		case strings.HasPrefix(line, "|"):
-			if pending == 0 && !inTable {
-				return preplanRuleError("P12", noLabel, no)
+			if !inTable {
+				err = s.startBlock(no)
 			}
-			pending, inTable = 0, true
-			continue
+			inTable = true
+		default:
+			inTable = false
+			err = s.textLine(no, line)
 		}
-		inTable = false
-		if m := preplanContractLabelRe.FindStringSubmatch(line); m != nil {
-			if pending != 0 {
-				return preplanRuleError("P12", "line %d is a label line with no code fence or table below it", pending)
-			}
-			seen := map[int]bool{}
-			for _, field := range strings.Split(m[1], ", ") {
-				id, ok := preplanParseID(strings.TrimPrefix(field, "#"))
-				switch {
-				case !ok:
-					return preplanRuleError("P12", "line %d has the id %q", no, field)
-				case seen[id]:
-					return preplanRuleError("P12", "line %d lists #%d twice", no, id)
-				}
-				seen[id] = true
-				labelIDs[id] = true
-			}
-			key := labelKey{m[2], strings.ToLower(m[3])}
-			if seenLabels[key] {
-				return preplanRuleError("P12", "%s %q has two blocks", m[2], m[3])
-			}
-			seenLabels[key] = true
-			pending = no
-			continue
+		if err != nil {
+			return err
 		}
-		if m := preplanNoContractRe.FindStringSubmatch(line); m != nil {
-			if pending != 0 {
-				return preplanRuleError("P12", "line %d is a label line with no code fence or table below it", pending)
-			}
-			if noLine != 0 {
-				return preplanRuleError("P12", "line %d is a second No contract line", no)
-			}
-			noLine = no
-			prev := 0
-			for _, field := range strings.Split(m[1], ", ") {
-				id, ok := preplanParseID(strings.TrimPrefix(field, "#"))
-				switch {
-				case !ok:
-					return preplanRuleError("P12", "line %d has the id %q", no, field)
-				case id <= prev:
-					return preplanRuleError("P12", "#%d is not in ascending order", id)
-				}
-				prev = id
-				noContract = append(noContract, id)
-			}
-			continue
-		}
-		return preplanRuleError("P12", "line %d is not a label line, a code fence, a table row or the No contract line", no)
 	}
-	if pending != 0 {
-		return preplanRuleError("P12", "line %d is a label line with no code fence or table below it", pending)
+	return s.finish()
+}
+
+// startBlock takes a code fence or the first table row on line no: the block
+// of the label that waits for one.
+func (s *preplanContractsScan) startBlock(no int) *preplanFormatError {
+	if s.pending == 0 {
+		return preplanRuleError("P12", preplanP12NoLabel, no)
 	}
-	for _, id := range noContract {
-		if labelIDs[id] {
-			return preplanRuleError("P12", "#%d is in a label line and in the No contract line", id)
+	s.pending = 0
+	return nil
+}
+
+// waiting returns the P12 error of a label that still waits for its block.
+func (s *preplanContractsScan) waiting() *preplanFormatError {
+	if s.pending != 0 {
+		return preplanRuleError("P12", preplanP12NoBlock, s.pending)
+	}
+	return nil
+}
+
+// textLine checks line no, a line that is not blank, not a fence and not a
+// table row: a label line or the No contract line.
+func (s *preplanContractsScan) textLine(no int, line string) *preplanFormatError {
+	if m := preplanContractLabelRe.FindStringSubmatch(line); m != nil {
+		return s.labelLine(no, m)
+	}
+	if m := preplanNoContractRe.FindStringSubmatch(line); m != nil {
+		return s.noContractLine(no, m[1])
+	}
+	return preplanRuleError("P12", "line %d is not a label line, a code fence, a table row or the No contract line: %q. "+
+		"A label line is %s, and Kind is one of %s", no, line, preplanContractLabelForm, preplanContractKindList)
+}
+
+// labelLine checks the label line no. m holds the groups of
+// preplanContractLabelRe.
+func (s *preplanContractsScan) labelLine(no int, m []string) *preplanFormatError {
+	if err := s.waiting(); err != nil {
+		return err
+	}
+	seen := map[int]bool{}
+	for _, f := range preplanIDFields(m[1]) {
+		switch {
+		case !f.ok:
+			return preplanRuleError("P12", preplanP12BadID, no, f.text, "")
+		case seen[f.id]:
+			return preplanRuleError("P12", preplanP12Twice, no, "", f.id)
+		}
+		seen[f.id] = true
+		s.labelIDs[f.id] = true
+	}
+	key := preplanContractLabelKey{m[2], strings.ToLower(m[3])}
+	if s.seenLabels[key] {
+		return preplanRuleError("P12", "line %d: %s %q has two blocks: keep one block for each kind and name, and list all its ids in its label line", no, m[2], m[3])
+	}
+	s.seenLabels[key] = true
+	s.pending = no
+	return nil
+}
+
+// noContractLine checks the No contract line no. list is its id list.
+func (s *preplanContractsScan) noContractLine(no int, list string) *preplanFormatError {
+	if err := s.waiting(); err != nil {
+		return err
+	}
+	if s.noLine != 0 {
+		return preplanRuleError("P12", "line %d is a second No contract line: put every id with no contract in the one No contract line", no)
+	}
+	s.noLine = no
+	prev := 0
+	for _, f := range preplanIDFields(list) {
+		switch {
+		case !f.ok:
+			return preplanRuleError("P12", preplanP12BadID, no, f.text, preplanInNoContractLine)
+		case f.id == prev:
+			return preplanRuleError("P12", preplanP12Twice, no, preplanInNoContractLine, f.id)
+		case f.id < prev:
+			return preplanRuleError("P12", "line %d%s lists #%d after #%d: list the ids in ascending order", no, preplanInNoContractLine, f.id, prev)
+		}
+		prev = f.id
+		s.noContract = append(s.noContract, f.id)
+	}
+	return nil
+}
+
+// finish runs the checks of the whole body after the last line: no label
+// waits for its block, and no id is in a label line and in the No contract
+// line.
+func (s *preplanContractsScan) finish() *preplanFormatError {
+	if err := s.waiting(); err != nil {
+		return err
+	}
+	for _, id := range s.noContract {
+		if s.labelIDs[id] {
+			return preplanRuleError("P12", "#%d is in a label line and in the No contract line: keep each id in one place only", id)
 		}
 	}
 	return nil
 }
 
-// preplanContractIDs returns each id that a valid label line or a valid No
-// contract line outside a fence lists. It skips every other line, so a body
-// edited by hand gives the ids it can read.
+// preplanContractIDs returns each id that a label line or the No contract
+// line outside a fence lists, when preplanParseID accepts it. It skips every
+// other line and every other id, so a body edited by hand gives the ids it
+// can read. preplan_check names the P12 error of such a body (see
+// preplanContractGaps).
 func preplanContractIDs(body string) map[int]bool {
 	ids := map[int]bool{}
 	fence := ""
@@ -589,9 +697,9 @@ func preplanContractIDs(body string) map[int]bool {
 		if m == nil {
 			continue
 		}
-		for _, field := range strings.Split(m[1], ", ") {
-			if id, ok := preplanParseID(strings.TrimPrefix(field, "#")); ok {
-				ids[id] = true
+		for _, f := range preplanIDFields(m[1]) {
+			if f.ok {
+				ids[f.id] = true
 			}
 		}
 	}
@@ -886,9 +994,9 @@ func preplanCutFindings(rows [][]string, tail []string) []preplanStructureFindin
 			continue
 		}
 		if m[1] != "all" {
-			for _, field := range strings.Split(m[1], ", ") {
-				if id, ok := preplanParseID(strings.TrimPrefix(field, "#")); ok {
-					ids = append(ids, id)
+			for _, f := range preplanIDFields(m[1]) {
+				if f.ok {
+					ids = append(ids, f.id)
 				}
 			}
 		}

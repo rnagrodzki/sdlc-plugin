@@ -90,7 +90,7 @@ sequenceDiagram
   S->>T: preplan_write Contracts prune
   S->>T: preplan_check with the counts
   T->>F: write the Guardrail check line
-  T-->>S: emptySections, contractMissing, contractStale
+  T-->>S: emptySections, contractMissing, contractStale, contractChecked
   S-->>U: Step 5, soft gate or Step 3
 ```
 
@@ -114,6 +114,9 @@ stateDiagram-v2
 // while every other action omits them.
 ContractMissing *[]string `json:"contractMissing,omitempty"`
 ContractStale   *[]string `json:"contractStale,omitempty"`
+// Pointer, so false renders. false when an open fence, an absent
+// ## Decisions heading or a P4/P5 break stops the check.
+ContractChecked *bool `json:"contractChecked,omitempty"`
 ```
 
 `preplan_check` output, after:
@@ -124,6 +127,7 @@ ContractStale   *[]string `json:"contractStale,omitempty"`
   - #3
 - contractStale:
   - #5
+- contractChecked: true
 ```
 
 Contracts body grammar (P12):

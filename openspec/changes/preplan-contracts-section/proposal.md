@@ -13,7 +13,7 @@
 | Topic file skeleton | 7 sections | 8 sections: `## Contracts` between `## Flows` and `## Decisions` |
 | `preplan_context` repair | adds the 7 skeleton headings | adds the 8 skeleton headings, `## Contracts` included |
 | `preplan_write` | refuses the section name `Contracts` | accepts `Contracts`. Rule P12 checks the body form |
-| `preplan_check` output | `emptySections` | also `contractMissing` and `contractStale` |
+| `preplan_check` output | `emptySections` | also `contractMissing`, `contractStale` and `contractChecked` |
 | preplan Step 3 | no contract question | asks one contract answer for each live proposal |
 | preplan Step 4 | route to the handoff needs a `## Flows` entry | also prunes `## Contracts`, and the route needs `contractMissing` = `(none)` |
 | `/sdlc:plan` | drops the topic contracts | each live block gives a Key Decisions bullet and an R-item. The task copies the shape |
@@ -31,7 +31,7 @@ flowchart LR
   D --> E["Step 4: guardrail check with blocks"]
   E --> P["preplan_write Decisions"]
   P --> L["preplan_write Contracts prune"]
-  L --> Q["preplan_check: contractMissing, contractStale"]
+  L --> Q["preplan_check: contractMissing, contractStale, contractChecked"]
   Q --> F{"Flows entry and contractMissing none"}
   F -->|missing| K
   F -->|all present| G["Step 5 or soft gate"]

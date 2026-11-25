@@ -5547,11 +5547,17 @@ func TestPreplanCheckOpenFence(t *testing.T) {
 		t.Fatalf("preplan_check: %v", err)
 	}
 	if want := "Added the Guardrail check line to auth-flow.md. Empty sections: ## Contracts, ## Decisions." +
-		" A ``` fence is still open at the end of the file, so each ## heading after it counts as absent."; out.Summary != want {
+		" A ``` fence is still open at the end of the file, so each ## heading after it counts as absent." +
+		" The contract check did not run: a code fence is still open, so the headings after it count as absent."; out.Summary != want {
 		t.Errorf("Summary = %q, want %q", out.Summary, want)
+	}
+	if out.ContractChecked == nil || *out.ContractChecked {
+		t.Errorf("ContractChecked = %v, want false: the fence hides ## Contracts and ## Decisions", out.ContractChecked)
 	}
 	if want := "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table." +
 		" emptySections lists 2 empty section(s). The Step 4 route table of the skill picks the next step." +
+		" The contract check did not run: a code fence is still open, so the headings after it count as absent." +
+		" contractChecked is false and both contract lists are empty: repair the file, then call preplan_check again." +
 		" First close the open ``` fence with tool calls, not a file edit: call plan_support preplan_context with the same topic; when its summary names no closing fence line, send the full body of the last section with preplan_write, with the fence closed. Each ## heading after the fence counts as absent until then."; out.Next != want {
 		t.Errorf("Next = %q, want %q", out.Next, want)
 	}
@@ -5591,87 +5597,119 @@ func TestPreplanCheckEmptySectionsOverMCP(t *testing.T) {
 	if text := evidenceRender(t, root, args); !strings.Contains(text, "- contractMissing:\n  - #1\n  - #2\n") {
 		t.Errorf("a file with 2 proposals and no contract answer must list them:\n%s", text)
 	}
+
+	writeFile(t, file, preplanTopicWithBodies(map[string]string{
+		preplanDecisionsSection: preplanDecisionsHeader + "| 1 | pick A | because |\n",
+		preplanContractsSection: "No contract: #1, #4, #7.\n",
+	}))
+	text = evidenceRender(t, root, args)
+	for _, want := range []string{"- contractStale:\n  - #4\n  - #7\n", "- contractChecked: true\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("a file with 2 ids that are not live must render %q:\n%s", want, text)
+		}
+	}
+
+	writeFile(t, file, preplanTopicWithBodies(map[string]string{
+		preplanDecisionsSection: preplanDecisionsHeader + "| 1 | pick A |\n",
+	}))
+	text = evidenceRender(t, root, args)
+	for _, want := range []string{"- contractChecked: false\n", "- contractMissing: (none)\n", "- contractStale: (none)\n"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("a Decisions table that breaks P5 must render %q:\n%s", want, text)
+		}
+	}
 }
 
 // TestPreplanCheckContractGaps runs preplan_check through the real handler on
 // each row of the contract case table: the lists contractMissing and
-// contractStale, and the sentences that Next adds for them.
+// contractStale, contractChecked, and the full Next text.
 func TestPreplanCheckContractGaps(t *testing.T) {
 	setPreplanNow(t, preplanCheckTestNow)
 	const (
-		row1       = "| 1 | pick A | because |\n"
-		row2       = "| 2 | pick B | because |\n"
-		table      = "| Field | Type |\n|---|---|\n| id | int |\n"
-		label1     = "**#1 Data: topics table**\n\n" + table
-		missingMsg = " contractMissing lists "
-		staleMsg   = " contractStale lists "
-		unchecked  = "so the contract check did not run."
+		row1   = "| 1 | pick A | because |\n"
+		row2   = "| 2 | pick B | because |\n"
+		table  = "| Field | Type |\n|---|---|\n| id | int |\n"
+		label1 = "**#1 Data: topics table**\n\n" + table
+		base   = "Read preplanFile again before your next edit: preplan_check rewrote it. Then follow the Step 4 route table."
+		empty2 = " emptySections lists 2 empty section(s). The Step 4 route table of the skill picks the next step."
+		empty1 = " emptySections lists 1 empty section(s). The Step 4 route table of the skill picks the next step."
+		retry  = ". contractChecked is false and both contract lists are empty: repair the file, then call preplan_check again."
+		p45    = " The contract check did not run: the ## Decisions table breaks rule P4 or P5" + retry
 	)
 	damagedHeader := "| # | Decision | Why |\n|---|---|---|\n" + row1
 	for _, tc := range []struct {
-		name      string
-		decisions string // body of ## Decisions
-		contracts string // body of ## Contracts
-		noHeading bool   // the file has no ## Contracts heading
-		missing   []string
-		stale     []string
-		wantNext  []string // text that Next must hold
-		noNext    []string // text that Next must not hold
+		name       string
+		decisions  string // body of ## Decisions
+		contracts  string // body of ## Contracts
+		noHeading  string // a heading that the file does not have
+		openFence  bool   // the file ends inside a code fence that opens in ## Flows
+		missing    []string
+		stale      []string
+		notChecked bool
+		next       string // the full Next text
 	}{
 		{name: "skeleton", decisions: "", contracts: "",
-			missing: []string{}, stale: []string{},
-			noNext: []string{missingMsg, staleMsg, unchecked}},
+			missing: []string{}, stale: []string{}, next: base + empty2},
 		{name: "no answers", decisions: preplanDecisionsHeader + row1 + row2, contracts: "",
 			missing: []string{"#1", "#2"}, stale: []string{},
-			wantNext: []string{missingMsg + "2 live proposal(s) with no contract answer: #1, #2."},
-			noNext:   []string{staleMsg, unchecked}},
+			next: base + empty1 + " contractMissing lists 2 live proposal(s) with no contract answer: #1, #2."},
 		{name: "all answered", decisions: preplanDecisionsHeader + row1 + row2, contracts: label1 + "\nNo contract: #2.\n",
-			missing: []string{}, stale: []string{},
-			noNext: []string{missingMsg, staleMsg, unchecked}},
+			missing: []string{}, stale: []string{}, next: base},
 		{name: "dropped and moved",
 			decisions: preplanDecisionsHeader + row1 + "| 2 | Dropped: pick B | Dropped by: G3 |\n| 3 | Moved: pick C | because |\n",
 			contracts: "**#1, #2 Data: topics table**\n\n" + table + "\nNo contract: #3.\n",
 			missing:   []string{}, stale: []string{"#2", "#3"},
-			wantNext: []string{staleMsg + "2 id(s) that are not live: #2, #3. Remove them in the next ## Contracts write."},
-			noNext:   []string{missingMsg, unchecked}},
-		{name: "absent heading", decisions: preplanDecisionsHeader + row1, noHeading: true,
-			missing:  []string{"#1"},
-			stale:    []string{},
-			wantNext: []string{missingMsg + "1 live proposal(s) with no contract answer: #1."},
-			noNext:   []string{staleMsg, unchecked}},
+			next: base + " contractStale lists 2 id(s) that are not live: #2, #3. Readers skip them. The next ## Contracts write that keeps another block removes them."},
+		{name: "missing and stale in one file", decisions: preplanDecisionsHeader + row1 + row2, contracts: "No contract: #2, #5.\n",
+			missing: []string{"#1"}, stale: []string{"#5"},
+			next: base + " contractMissing lists 1 live proposal(s) with no contract answer: #1." +
+				" contractStale lists 1 id(s) that are not live: #5. Readers skip them. The next ## Contracts write that keeps another block removes them."},
+		{name: "absent Contracts heading", decisions: preplanDecisionsHeader + row1, noHeading: preplanContractsSection,
+			missing: []string{"#1"}, stale: []string{},
+			next: base + empty1 + " contractMissing lists 1 live proposal(s) with no contract answer: #1."},
 		{name: "hand-edited label", decisions: preplanDecisionsHeader + row1, contracts: "**#1 Api: x**\n\n```\nGET /x\n```\n",
-			missing:  []string{"#1"},
-			stale:    []string{},
-			wantNext: []string{missingMsg + "1 live proposal(s) with no contract answer: #1."},
-			noNext:   []string{staleMsg, unchecked}},
+			missing: []string{"#1"}, stale: []string{},
+			next: base + " contractMissing lists 1 live proposal(s) with no contract answer: #1." +
+				` ## Contracts breaks a format rule, so contractMissing can list a proposal whose answer the check cannot read: Section "Contracts" breaks rule P12: ` +
+				`line 1 is not a label line, a code fence, a table row or the No contract line: "**#1 Api: x**". ` +
+				"A label line is **#<id>[, #<id>] <Kind>: <name>**, and Kind is one of Endpoint, Data, Config, Message. Send the full ## Contracts body again with preplan_write."},
 		{name: "label in a fence", decisions: preplanDecisionsHeader + row1, contracts: "```\n**#1 Data: x**\n```\n",
-			missing:  []string{"#1"},
-			stale:    []string{},
-			wantNext: []string{missingMsg + "1 live proposal(s) with no contract answer: #1."},
-			noNext:   []string{staleMsg, unchecked}},
+			missing: []string{"#1"}, stale: []string{},
+			next: base + " contractMissing lists 1 live proposal(s) with no contract answer: #1." +
+				` ## Contracts breaks a format rule, so contractMissing can list a proposal whose answer the check cannot read: Section "Contracts" breaks rule P12: ` +
+				"line 1 starts a code fence or a table with no label line above it: put a label line **#<id>[, #<id>] <Kind>: <name>** right above each block." +
+				" Send the full ## Contracts body again with preplan_write."},
+		{name: "absent Decisions heading", contracts: label1, noHeading: preplanDecisionsSection,
+			missing: []string{}, stale: []string{}, notChecked: true,
+			next: base + empty1 + " The contract check did not run: the file has no ## Decisions heading" + retry},
+		{name: "open fence in Flows", decisions: preplanDecisionsHeader + row1, contracts: label1, openFence: true,
+			missing: []string{}, stale: []string{}, notChecked: true,
+			next: base + empty2 + " The contract check did not run: a code fence is still open, so the headings after it count as absent" + retry +
+				" First close the open ``` fence with tool calls, not a file edit: call plan_support preplan_context with the same topic; when its summary names no closing fence line, send the full body of the last section with preplan_write, with the fence closed. Each ## heading after the fence counts as absent until then."},
 		{name: "no table header", decisions: damagedHeader, contracts: "**#9 Data: x**\n\n" + table,
-			missing: []string{}, stale: []string{},
-			wantNext: []string{unchecked}, noNext: []string{missingMsg, staleMsg}},
+			missing: []string{}, stale: []string{}, notChecked: true, next: base + p45},
 		{name: "wrong cell count", decisions: preplanDecisionsHeader + "| 1 | pick A |\n", contracts: label1,
-			missing: []string{}, stale: []string{},
-			wantNext: []string{unchecked}, noNext: []string{missingMsg, staleMsg}},
+			missing: []string{}, stale: []string{}, notChecked: true, next: base + p45},
 		{name: "bad id", decisions: preplanDecisionsHeader + "| x | pick A | because |\n", contracts: label1,
-			missing: []string{}, stale: []string{},
-			wantNext: []string{unchecked}, noNext: []string{missingMsg, staleMsg}},
+			missing: []string{}, stale: []string{}, notChecked: true, next: base + p45},
 		{name: "repeated id", decisions: preplanDecisionsHeader + row1 + row1, contracts: label1,
-			missing: []string{}, stale: []string{},
-			wantNext: []string{unchecked}, noNext: []string{missingMsg, staleMsg}},
+			missing: []string{}, stale: []string{}, notChecked: true, next: base + p45},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
-			content := preplanTopicWithBodies(map[string]string{
+			bodies := map[string]string{
 				preplanDecisionsSection: tc.decisions,
 				preplanContractsSection: tc.contracts,
-			})
-			if tc.noHeading {
-				content = strings.Replace(content, preplanHeadingPrefix+preplanContractsSection+"\n\n\n", "", 1)
-				if strings.Contains(content, preplanHeadingPrefix+preplanContractsSection) {
-					t.Fatal("the fixture still has the Contracts heading")
+			}
+			if tc.openFence {
+				bodies[preplanFlowsSection] = "```mermaid\nflowchart LR\n"
+			}
+			content := preplanTopicWithBodies(bodies)
+			if tc.noHeading != "" {
+				heading := preplanHeadingPrefix + tc.noHeading + "\n"
+				content = strings.Replace(content, heading, "", 1)
+				if strings.Contains(content, heading) {
+					t.Fatalf("the fixture still has the %s heading", tc.noHeading)
 				}
 			}
 			writePreplanTopic(t, root, "auth-flow.md", content)
@@ -5685,15 +5723,40 @@ func TestPreplanCheckContractGaps(t *testing.T) {
 			if out.ContractStale == nil || !reflect.DeepEqual(*out.ContractStale, tc.stale) {
 				t.Errorf("ContractStale = %v, want %v", out.ContractStale, tc.stale)
 			}
-			for _, want := range tc.wantNext {
-				if !strings.Contains(out.Next, want) {
-					t.Errorf("Next = %q, want it to hold %q", out.Next, want)
-				}
+			if out.ContractChecked == nil || *out.ContractChecked == tc.notChecked {
+				t.Errorf("ContractChecked = %v, want %v", out.ContractChecked, !tc.notChecked)
 			}
-			for _, bad := range tc.noNext {
-				if strings.Contains(out.Next, bad) {
-					t.Errorf("Next = %q, want it not to hold %q", out.Next, bad)
-				}
+			if out.Next != tc.next {
+				t.Errorf("Next =\n%q\nwant\n%q", out.Next, tc.next)
+			}
+		})
+	}
+}
+
+// TestPreplanContractGaps calls preplanContractGaps directly: ids sort as
+// numbers (#2, #9, #10), not as text and not in table order, and a blank
+// Decisions body with ids in ## Contracts makes each of them stale.
+func TestPreplanContractGaps(t *testing.T) {
+	for _, tc := range []struct {
+		name, decisions, contracts string
+		missing, stale             []string
+	}{
+		{"numeric order", preplanDecisionsHeader + "| 10 | A | r |\n| 9 | B | r |\n| 2 | C | r |\n| 11 | D | r |\n",
+			"No contract: #9, #12.\n", []string{"#2", "#10", "#11"}, []string{"#12"}},
+		{"blank Decisions", "", "**#3, #20 Data: t**\n| a |\nNo contract: #4.\n", []string{}, []string{"#3", "#4", "#20"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := []byte(preplanTopicWithBodies(map[string]string{
+				preplanDecisionsSection: tc.decisions,
+				preplanContractsSection: tc.contracts,
+			}))
+			spans, openFence := preplanSectionSpans(data)
+			got := preplanContractGaps(data, spans, openFence)
+			if !got.checked() || got.formatIssue != "" {
+				t.Fatalf("notRun = %q, formatIssue = %q, want both empty", got.notRun, got.formatIssue)
+			}
+			if !reflect.DeepEqual(got.missing, tc.missing) || !reflect.DeepEqual(got.stale, tc.stale) {
+				t.Errorf("missing = %v, stale = %v, want %v and %v", got.missing, got.stale, tc.missing, tc.stale)
 			}
 		})
 	}
@@ -6309,7 +6372,7 @@ var preplanWriteErrorCases = []preplanWriteErrorCase{
 		`preplan_write: section "Notes" is not a topic-file section`, "Use one of: Goal, Problem and benefit, Users and effect, Risk if wrong, Non-goals, Flows, Contracts, Decisions, Open questions, Guardrail check."}},
 	{"section with no content", preplanWriteSkeleton, PlanSupportIn{Action: preplanWriteAction, Topic: "auth flow", Section: "Decisions"}, preplanErrWant{"domain",
 		"preplan_write: section needs content",
-		"Add content with the full new body of section. Send content as an empty string only to clear the body, or to delete the Open questions or Guardrail check section."}},
+		"Add content with the full new body of section. Send content as an empty string only to clear the body, or to delete the Open questions or Guardrail check section. Flows and Contracts refuse an empty string (rules P10 and P12)."}},
 	{"an empty content with no section", preplanWriteSkeleton, PlanSupportIn{Action: preplanWriteAction, Topic: "auth flow", Content: preplanContentPtr(""), TopicStatus: preplanStatusPaused}, preplanErrWant{"domain",
 		"preplan_write: content needs section", "Add section with the name of the section to write, or remove content."}},
 	{"topicStatus not in the 3 values", preplanWriteSkeleton, preplanWriteIn("", "", "done"), preplanErrWant{"domain",
@@ -6833,7 +6896,9 @@ func TestPreplanRuleSuggestions(t *testing.T) {
 		{"P9", `"- "`},
 		{"P10", preplanAllowedClassDefs[1]},
 		{"P11", "content as an empty string"},
-		{"P12", "No contract: #3, #5."},
+		{"P12", "Send one labelled block for each contract: a label line **#<id>[, #<id>] <Kind>: <name>**, for example **#2 Endpoint: POST /api/topics**, " +
+			"where Kind is one of Endpoint, Data, Config, Message, then a code fence or a table right below it. " +
+			"Put each live proposal with no contract on one line such as No contract: #3, #5. The error detail names the line to fix" + preplanWriteAgain},
 	} {
 		got := preplanRuleSuggestion(tc.rule)
 		if !strings.Contains(got, tc.has) {
@@ -6855,8 +6920,29 @@ func TestPreplanRuleSuggestions(t *testing.T) {
 			t.Errorf("preplanCheckSection(%q, %q) = %v, want nil", ok.section, ok.body, err)
 		}
 	}
+	// The P12 Suggestion lists every kind of preplanContractKinds.
+	for _, kind := range preplanContractKinds {
+		if got := preplanRuleSuggestion("P12"); !strings.Contains(got, kind) {
+			t.Errorf("P12 Suggestion %q lacks the kind %q", got, kind)
+		}
+	}
 	if got := preplanRuleSuggestion("P99"); got != "Fix the content"+preplanWriteAgain {
 		t.Errorf("unknown rule Suggestion = %q", got)
+	}
+}
+
+// TestPreplanContractKindsInContentTag pins the kind list that the Content
+// description of PlanSupportIn types by hand to preplanContractKinds: a
+// struct tag cannot read the variable, so a new kind must change both.
+func TestPreplanContractKindsInContentTag(t *testing.T) {
+	field, ok := reflect.TypeOf(PlanSupportIn{}).FieldByName("Content")
+	if !ok {
+		t.Fatal("PlanSupportIn has no Content field")
+	}
+	kinds := preplanContractKinds
+	want := "Kind is " + strings.Join(kinds[:len(kinds)-1], ", ") + " or " + kinds[len(kinds)-1]
+	if desc := field.Tag.Get("jsonschema_description"); !strings.Contains(desc, want) {
+		t.Errorf("the Content description lacks %q:\n%s", want, desc)
 	}
 }
 

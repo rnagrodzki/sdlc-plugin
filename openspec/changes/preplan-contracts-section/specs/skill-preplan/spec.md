@@ -38,6 +38,10 @@ In Step 3, the skill SHALL ask for one contract answer for each live proposal th
 - **WHEN** the user answers `no contract` for proposal 3 and `## Contracts` holds `No contract: #5.`
 - **THEN** the new `## Contracts` body holds `No contract: #3, #5.`
 
+#### Scenario: Answer moves an id to the other form
+- **WHEN** `## Contracts` holds `No contract: #3, #5.` and the user gives a shape for proposal 3
+- **THEN** the new body holds the block of proposal 3 and `No contract: #5.`
+
 #### Scenario: One answer changes Decisions and Contracts
 - **WHEN** one answer changes `## Decisions` and `## Contracts`
 - **THEN** the skill sends the Decisions call before the Contracts call
@@ -89,13 +93,13 @@ sequenceDiagram
   S->>T: preplan_write Decisions
   S->>T: preplan_write Contracts
   S->>T: preplan_check
-  T-->>S: contractMissing and contractStale
+  T-->>S: contractMissing, contractStale and contractChecked
 ```
 
 #### Scenario: Contracts call fails after the Decisions call
 - **WHEN** the Decisions call drops proposal 2 and the Contracts call then fails
 - **THEN** the next `preplan_check` lists `#2` in `contractStale`
-- **AND** the next Contracts write removes `#2`
+- **AND** the next Contracts write that keeps another block removes `#2`
 
 #### Scenario: Decisions call fails
 - **WHEN** the Decisions call of Step 4 fails
@@ -106,7 +110,7 @@ After the `## Decisions` write of Step 4, the skill SHALL remove from `## Contra
 
 - A block whose label line then lists no `#` value is deleted, and so is a `No contract:` line that lists none.
 - A rework that changes a shape writes the new shape into its block in the same body.
-- When the pruned body is blank, the skill sends no Contracts call.
+- When the pruned body is blank or unchanged, the skill sends no Contracts call.
 
 #### Scenario: Block of a dropped proposal
 - **WHEN** proposal 2 is dropped in this pass and `## Contracts` holds `**#2 Endpoint: POST /x**` and its fence
@@ -130,7 +134,7 @@ After the `## Decisions` write of Step 4, the skill SHALL remove from `## Contra
 - **THEN** the pruned body holds the new URL in the block of proposal 1
 
 ### Requirement: Contract gate before the handoff
-Step 4 SHALL go to Step 5 or to the soft gate only when `preplan_check` returns `contractMissing` as `(none)`, and SHALL go back to Step 3 when `contractMissing` lists 1 or more `#` values.
+Step 4 SHALL go to Step 5 or to the soft gate only when `preplan_check` returns `contractChecked` as true and `contractMissing` as `(none)`, and SHALL go back to Step 3 when `contractMissing` lists 1 or more `#` values.
 
 - The first matching route row applies, so the cut question comes first.
 - `contractStale` routes nothing. The skill tells the user its ids in one line.
@@ -156,3 +160,11 @@ Step 4 SHALL go to Step 5 or to the soft gate only when `preplan_check` returns 
 - **WHEN** `contractStale` lists `#5`
 - **THEN** the skill prints one line that names `#5`
 - **AND** the route is the same as with `contractStale` `(none)`
+
+### Requirement: Contract check that did not run
+When `preplan_check` returns `contractChecked` as false, the skill SHALL repair the cause that `next` names with tool calls, SHALL call `preplan_check` once more, and SHALL go to the cancel step when `contractChecked` is still false.
+
+#### Scenario: Open fence at the check
+- **WHEN** `final` is set, 1 proposal is live, `## Flows` has an entry and `preplan_check` returns `contractChecked` false because a code fence is still open
+- **THEN** the skill runs the open-fence repair and calls `preplan_check` again
+- **AND** the skill does not go to Step 5 or the soft gate while `contractChecked` is false

@@ -137,7 +137,8 @@ func preplanWriteInputError(in PlanSupportIn) error {
 	case in.Section != "" && in.Content == nil:
 		msg = "section needs content"
 		suggestion = "Add content with the full new body of section. Send content as an empty string only to clear the body, or to delete the " +
-			preplanOpenQuestionsSection + " or " + preplanGuardrailCheckSection + " section."
+			preplanOpenQuestionsSection + " or " + preplanGuardrailCheckSection + " section. " +
+			preplanFlowsSection + " and " + preplanContractsSection + " refuse an empty string (rules P10 and P12)."
 	case in.TopicStatus != "" && !slices.Contains(PreplanStatuses, in.TopicStatus):
 		msg = fmt.Sprintf("topicStatus %q is not a preplan status", in.TopicStatus)
 		suggestion = "Use " + preplanStatusInProgress + ", " + preplanStatusReadyForPlan + " or " + preplanStatusPaused + "."

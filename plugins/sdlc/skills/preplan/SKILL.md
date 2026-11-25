@@ -66,8 +66,8 @@ Each status change in this skill matches one row of this table. The skill makes 
 | 0 | Announce. Take the topic from the argument, or ask one question for it | Step 1. On cancel: end. No file exists yet, so nothing changes |
 | 1 | Call `plan_support({ action: "preplan_context", topic: "<topic>" })` | Step 2. On a tool error: print it, then stop |
 | 2 | Read `preplanFile`. If `preplanCreated` is false, call `preplan_write` with `topicStatus: "in progress"`, convert an old-form file with `preplan_write`, and list the open questions, if any | Step 3. On a tool error: print it, then stop |
-| 3 | Ask one question with AskUserQuestion, from the first gap. Challenge a vague answer with one follow-up question. Record each refused scope option under `## Non-goals`. Call `preplan_write` with the full new body of each changed section. If a proposal changes a flow, send a before/after Mermaid diagram and its text twin as the `## Flows` body. Ask one contract answer for each live proposal, and send the full `## Contracts` body after the Decisions call | Step 3 route table. On a tool error: the error table |
-| 4 | Check every live proposal against each guardrail. Write the kept and drop notes and prune the `Smallest cut:` line in one `preplan_write` call for `## Decisions`. Then prune `## Contracts` in one call. Unless the user cancels, call `preplan_check` with the counts, then read `preplanFile` again. Keep `emptySections`, `contractMissing` and `contractStale` | Step 4 route table: Step 5, the soft gate, Step 3 or cancel. On a tool error: the error table |
+| 3 | Ask one question with AskUserQuestion, from the first gap. Challenge a vague answer with one follow-up question. Record each refused scope option under `## Non-goals`. Call `preplan_write` with the full new body of each changed section. If a proposal changes a flow, send a before/after Mermaid diagram and its text twin as the `## Flows` body. Ask one contract question for the first live proposal with no contract answer, and send the full `## Contracts` body after the Decisions call | Step 3 route table. On a tool error: the error table |
+| 4 | Check every live proposal against each guardrail. Write the kept and drop notes and prune the `Smallest cut:` line in one `preplan_write` call for `## Decisions`. Then send the pruned `## Contracts` body in one call, unless that body is blank or unchanged. Unless the user cancels, call `preplan_check` with the counts, then read `preplanFile` again. Keep `emptySections`, `contractMissing`, `contractStale` and `contractChecked` | Step 4 route table: Step 5, the soft gate, Step 3 or cancel. On a tool error: the error table |
 | 5 | Reached from a Step 4 pass with no empty section, or from the soft gate. Call `plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "ready for plan" })`. Keep `readyTopicFiles`, `readyLeftOut` and `summary`. Glob `openspec/config.yaml`. Ask with AskUserQuestion: start the plan now, start a new idea, or stop, and `Check against OpenSpec` when the file exists | Step 5 route table |
 | cancel | Call `plan_support({ action: "preplan_write", topic: "<topic>", topicStatus: "paused" })`. Keep the file | end |
 
@@ -83,6 +83,7 @@ Every exit state names its next instruction:
 | cancelled during the dialogue | Step 3 or Step 4 | go to the cancel step: set status `paused`, keep the file, end |
 | cancelled at the soft gate | Step 4 | go to the cancel step: set status `paused`, keep the file, end |
 | tool error at the soft gate | Step 4 | print the error's `## Do this` text as it is, then go to the cancel step |
+| `contractChecked` is false on the `preplan_check` call after a repair | Step 4 | print `next`, then go to the cancel step |
 | user stops at the handoff | Step 5 | end. Status stays `ready for plan` |
 | plan skill ends | Step 5 | end |
 | plan skill stops with an error | Step 5 | print the error. Status stays `ready for plan`. Tell the user to run `/sdlc:plan` with the picked paths. End |
@@ -109,8 +110,9 @@ Steps that call `preplan_write`:
 | 2 | `topicStatus: "in progress"` when `preplanCreated` is false. Then one old-form call for each old-form condition that holds (1 to 3 calls, see Step 2), only for an old-form file | Step 3 |
 | 3 | `section`, `content` after each answer that changes a section. When one answer changes `## Decisions` and `## Contracts`, the Decisions call goes first | next question |
 | 4, a `Moved:` row in the pass | `section: "Open questions"` with the question of the row, before the Decisions call | the Decisions call |
-| 4 | `section: "Decisions"` for notes and the prune, then `section: "Contracts"` for the contract prune (none when the pruned body is blank), then `preplan_check` | Step 4 route table |
+| 4 | `section: "Decisions"` for notes and the prune, then `section: "Contracts"` for the contract prune and the new shapes of a rework (none when the new body is blank or unchanged), then `preplan_check` | Step 4 route table |
 | 4, open-fence repair | `section` of the last section with the fence closed, when `preplan_context` names no closing fence line. Then `section: "Open questions"` when the fence hid that heading | read `preplanFile` again, then the Step 4 route table |
+| 4, `contractChecked` false because rule P4 or P5 breaks | `section: "Decisions"` with a body that passes the rules | `preplan_check` again, then the Step 4 route table |
 | 5 | `topicStatus: "ready for plan"` | Step 5 route table |
 | cancel | `topicStatus: "paused"` | end |
 
@@ -195,7 +197,7 @@ After each answer that changes a section, call `preplan_write` with the full new
 - Add a new question as a bullet to the `## Open questions` body. If the section does not exist, `preplan_write` adds it after `## Decisions`. Remove a bullet when an answer closes it. When the last bullet goes, send an empty `content`: `preplan_write` deletes the section.
 - Add a proposal as a new row of `## Decisions`, with the next unused `#` value. The row goes above the `Smallest cut:` line, if the file has one. If that line lists ids, delete it: the cut question did not offer the new proposal, so the Step 3 and Step 4 routes ask it again. Keep a `Smallest cut: all.` line: `all` includes the new proposal.
 - When a proposal changes a flow, add a before/after diagram and its text twin to the `## Flows` body (see **Mermaid rule**). When the user confirms that no flow changes, write the line `No flow change.` under `## Flows`.
-- After a contract answer, send the full new `## Contracts` body. Each call replaces the whole body, so keep each other block and the `No contract:` line. Add the block (see **Contracts rule**), or add the `#` value to the `No contract:` line in ascending order. Remove each `#` value that is not live, as the Step 4 prune does. When an answer also changes `## Decisions`, send the Decisions call first.
+- After a contract answer, send the full new `## Contracts` body. Each call replaces the whole body, so keep each other block and the `No contract:` line. Add the block (see **Contracts rule**), or add the `#` value to the `No contract:` line in ascending order. A `#` value is in one form only, because rule P12 refuses a `#` value in a label line and in the `No contract:` line. When a block now lists the `#` value, remove it from the `No contract:` line, and delete that line when it lists no `#` value. When the `No contract:` line now lists it, remove it from each label line, and delete a block whose label line lists no `#` value. Remove each `#` value that is not live, as the Step 4 prune does. When an answer also changes `## Decisions`, send the Decisions call first.
 
 Do not show a new proposal to the user as accepted before Step 4 checks it.
 
@@ -249,14 +251,14 @@ Prune the `Smallest cut:` line after the check and before the count. Remove from
 | `Smallest cut: all.` | `Smallest cut: all.` | no change |
 | `Smallest cut: #1, #3.` | `Smallest cut: #1, #3.` | no change: the line does not list #2 |
 
-Prune `## Contracts` after the `Smallest cut:` prune. Remove from each label line and from the `No contract:` line each `#` value whose row is not live. Delete a block whose label line then lists no `#` value. Delete the `No contract:` line when it lists no `#` value. A rework changes a proposal so that it no longer breaks a guardrail. When a rework changes an endpoint, data shape, config key or message, write the new shape into its block in the same body. When the pruned body is blank, send no Contracts call: rule P12 refuses a blank body. Example: proposal #2 is dropped in this pass:
+Prune `## Contracts` after the `Smallest cut:` prune. Remove from each label line and from the `No contract:` line each `#` value whose row is not live. Delete a block whose label line then lists no `#` value. Delete the `No contract:` line when it lists no `#` value. A rework changes a proposal so that it no longer breaks a guardrail. When a rework changes an endpoint, data shape, config key or message, write the new shape into its block in the same body. When the pruned body is blank, send no Contracts call: rule P12 refuses a blank body. When the body does not change, send no Contracts call either. Example: proposal #2 is dropped in this pass:
 
 | Body before | Body after | Outcome |
 |---|---|---|
 | `**#2 Endpoint: POST /x**` and its fence | block deleted | the label lists no live `#` |
 | `**#1, #2 Data: topics**` and its table | `**#1 Data: topics**` and its table | #1 stays |
 | `No contract: #2, #4.` | `No contract: #4.` | #4 stays |
-| only `No contract: #2.` | no Contracts call | `contractStale` lists #2. Readers skip it |
+| only `No contract: #2.` | no Contracts call | `contractStale` lists #2. Readers skip it, and it stays until a Contracts write that keeps another block |
 
 Write the result of the check and the prune before the count. Each Step 4 pass sends one `## Decisions` body:
 
@@ -264,7 +266,7 @@ Write the result of the check and the prune before the count. Each Step 4 pass s
 |---|---|
 | the question of a `Moved:` row | first, one call with `section: "Open questions"`. A failure of the Decisions call then leaves a live row and its bullet, not a `Moved:` row with no bullet |
 | `Kept with warning:` notes, `Dropped:` and `Moved:` prefixes, rework rows, `Smallest cut:` prune | then one `preplan_write` call with `section: "Decisions"` |
-| contract prune, and new shapes from a rework | then one `preplan_write` call with `section: "Contracts"`, after the Decisions call. Skip it when the pruned body is blank. A failure leaves ids that are not live: `contractStale` lists them, readers skip them, and the next Contracts write removes them |
+| contract prune, and new shapes from a rework | then one `preplan_write` call with `section: "Contracts"`, after the Decisions call. Skip it when the new body is blank or unchanged. A failure leaves ids that are not live: `contractStale` lists them, readers skip them, and the next Contracts write that keeps another block removes them |
 
 ```
 plan_support({ action: "preplan_write", topic: "<topic>", section: "Decisions", content: "<full new Decisions body>" })
@@ -282,23 +284,25 @@ After the check, count the rows and make one call:
 plan_support({ action: "preplan_check", topic: "<topic>", passCount: <n>, keptCount: <n>, droppedCount: <n> })
 ```
 
-Then read `preplanFile` again. The tool changed the file. Keep `contractMissing` (the live proposals with no contract answer) and `contractStale` (ids in `## Contracts` that are not live). When `contractStale` lists an id, tell the user in one line. Keep `emptySections`: the `## ` headings of the skeleton sections (`## Goal` to `## Decisions`) that are absent or hold only blank lines (for `## Decisions`, a table with no row), or `(none)`. `## Open questions` is not a skeleton section, so it is never in the list. When `summary` says that a code fence is still open, each heading after the fence counts as absent. A fence stays open only after a change that did not go through `preplan_write`, for example a change by hand, because `preplan_write` refuses a body with an open fence (rule P3). Repair it with a tool call, never with a file edit:
+Then read `preplanFile` again. The tool changed the file. Keep `contractMissing` (the live proposals with no contract answer), `contractStale` (ids in `## Contracts` that are not live) and `contractChecked` (true when the contract check ran). When `contractChecked` is false, both contract lists are `(none)` because the check did not run, not because each proposal has an answer: `summary` and `next` name the cause. When `contractStale` lists an id, tell the user in one line. When `next` says that `## Contracts` breaks a format rule, tell the user the line, then send a fixed `## Contracts` body in the next Contracts write. Keep `emptySections`: the `## ` headings of the skeleton sections (`## Goal` to `## Decisions`) that are absent or hold only blank lines (for `## Decisions`, a table with no row), or `(none)`. A blank or absent `## Contracts` is in `emptySections` too. With 1 or more live proposals, `contractMissing` then lists each of them, and the route table sends that state to Step 3 before the soft gate, so the soft gate never offers an empty `## Contracts`. `## Open questions` is not a skeleton section, so it is never in the list. When `summary` says that a code fence is still open, each heading after the fence counts as absent. A fence stays open only after a change that did not go through `preplan_write`, for example a change by hand, because `preplan_write` refuses a body with an open fence (rule P3). Repair it with a tool call, never with a file edit:
 
 1. Call `plan_support({ action: "preplan_context", topic: "<topic>" })` once more. When the fence hides a skeleton heading, the tool adds the closing fence line at the end of the file and the heading, and its `summary` names the line.
 2. When the `summary` names no closing fence line, the fence is in the body of the last section. Send the full body of that section with `preplan_write`, with the fence closed. The write replaces the text up to the end of the file. When the hidden text holds an `## Open questions` heading, send its bullets after this write in a second call with `section: "Open questions"`.
-3. Read `preplanFile` again, tell the user what the repair changed, then follow the route table. `emptySections` stays valid: an added heading is empty, and step 2 adds no skeleton heading. On a tool error, follow the error table (see **Topic file writes**).
+3. Read `preplanFile` again, tell the user what the repair changed, then follow the route table. `emptySections` stays valid: an added heading is empty, and step 2 adds no skeleton heading. The contract lists do not: `contractChecked` stays false, and the route table sends this state to one more `preplan_check` call. On a tool error, follow the error table (see **Topic file writes**).
 
 Step 4 routes. Live = `passCount + keptCount`. The first row that matches applies. A state can match more than one row, and then the first row wins. A `## Flows` entry is a diagram or the line `No flow change.`:
 
 | Step 4 result | Next |
 |---|---|
 | `preplan_check` returns an error | print the error's `## Do this` text as it is, then go to the cancel step |
+| `contractChecked` is false, and the call is not the `preplan_check` call after a repair | repair the cause that `next` names, with tool calls only. Open fence: the open-fence repair above, when it has not run yet. No `## Decisions` heading: call `plan_support({ action: "preplan_context", topic: "<topic>" })`, which adds it. Rule P4 or P5: send a `## Decisions` body that passes the rules with `preplan_write`. Then call `preplan_check` again with the same counts and use this table again. On a tool error, follow the error table |
+| `contractChecked` is false on the `preplan_check` call after a repair | print `next`, then go to the cancel step |
 | `final` set, call ok, live ≥ 2, no `Smallest cut:` line | Step 3: the cut question |
-| `final` set, call ok, live = 1 or (live ≥ 2 and a `Smallest cut:` line), Flows entry, `contractMissing` is `(none)`, `emptySections` is `(none)` | Step 5 |
-| `final` set, call ok, live = 1 or (live ≥ 2 and a `Smallest cut:` line), Flows entry, `contractMissing` is `(none)`, `emptySections` lists 1 or more | soft gate |
+| `final` set, call ok, live = 1 or (live ≥ 2 and a `Smallest cut:` line), Flows entry, `contractChecked` is true, `contractMissing` is `(none)`, `emptySections` is `(none)` | Step 5 |
+| `final` set, call ok, live = 1 or (live ≥ 2 and a `Smallest cut:` line), Flows entry, `contractChecked` is true, `contractMissing` is `(none)`, `emptySections` lists 1 or more | soft gate |
 | every other state: `final` not set, live = 0, no Flows entry, or `contractMissing` lists 1 or more | Step 3. With `final` set, name what is missing |
 
-`contractStale` routes nothing. Step 4 tells the user its ids in one line. Readers skip them, and the next Contracts write removes them.
+`contractStale` routes nothing. Step 4 tells the user its ids in one line. Readers skip them, and the next Contracts write that keeps another block removes them. When only those ids are left, the skill sends no Contracts call, so they stay.
 
 Soft gate question: ask with AskUserQuestion. Restate each section in `emptySections` and what it holds (see the section table). Say that `/sdlc:plan` can start with the empty sections, but each one is a gap in its requirements. Options: fill the sections, go to the handoff with the empty sections, or cancel. Here the "done" option is the handoff option: offer it once, labelled "go to the handoff (done)". The answer is not recorded in the topic file, so the next `final` pass with empty sections asks again.
 
@@ -398,7 +402,9 @@ The `## Contracts` body holds one labelled block for each contract of a live pro
 | `Config` | config key, CLI flag, env var | table `Op \| Key \| Type \| Default \| Values` |
 | `Message` | webhook, queue message, tool input or output fields | ```` ```json ```` fence with every field |
 
-Write one label line `**#<id>[, #<id>] <Kind>: <name>**` directly above each block. Every other line goes into a fence or a table cell. Give one elided (`…`) example for each distinct shape. Write one line `No contract: #<id>, #<id>.` for the live proposals with no contract. The section adds no `classDef` line. The format reference is `../plan/plan-format-reference.md` (Concrete Artifacts catalog).
+Write one label line `**#<id>[, #<id>] <Kind>: <name>**` directly above each block. Blank lines can go between a label line and its block, and between blocks. Every other line, except the `No contract:` line, goes into a fence or a table cell. A label line lists each `#` value once. Each kind and name has one block: a second block with the same kind and name, in any letter case, is refused. Give one elided (`…`) example for each distinct shape. Write one line `No contract: #<id>, #<id>.`, with the `#` values in ascending order, for the live proposals with no contract. A `#` value is in a label line or in the `No contract:` line, never in both. The section adds no `classDef` line. Rule P12 of `preplan_write` checks the label lines, the blocks and the `#` values. It does not check the columns of a table or the text of a fence.
+
+The render forms in the table above are the source for `## Contracts`. The render catalog of plan (`../plan/plan-format-reference.md`, Concrete Artifacts catalog) differs: its `Data` form (#2) is a field-diff fence, its `Config` form (#7) has the columns `Op | Key | Type | Value | Notes`, and it has no `Message` entry. Only `Endpoint` matches its #1 form. A plan task copies the block of this section as it is.
 
 ---
 

@@ -53,6 +53,11 @@ section, the `# Preplan:` title, and the `## Open questions` bullets. An empty
 or absent section gives no statement. The `empty-section` structure finding
 reports it.
 
+Each statement has a reference in the report: the number of a `## Decisions`
+row (`#3`), the heading of a topic body (`## Goal`), `## Contracts: <Kind>:
+<name>` for a `## Contracts` block (`## Contracts: Endpoint: POST /api/topics`),
+or `statement <n>` in text order for a file, a Jira ticket or a GitHub issue.
+
 These sources follow the rules that `/plan` uses to read a topic file.
 
 ## Checks
